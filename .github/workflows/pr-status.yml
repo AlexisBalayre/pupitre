@@ -2,10 +2,11 @@
 # to merge. First match wins:
 #   pr/draft > pr/conflicts > pr/changes-requested > pr/ci-failing > pr/ci-pending > pr/ready
 #
-# Recomputed when the PR is opened, reopened, pushed to, marked ready or draft or closed, on a
-# review, when a Claude Code Review run ends, and on a push to main (which can
-# introduce conflicts in other PRs). A closed PR loses its label.
-# The workflow names under `workflow_run` must match the `name:` of those workflows.
+# Recomputed when the PR is opened, reopened, pushed to, retargeted, marked ready or draft or
+# closed, on a review, and when a Claude Code Review run for it ends. Only a push to main
+# recomputes every open PR (it can introduce conflicts anywhere): no event an outsider can start
+# does. A closed PR loses its label.
+# The name under `workflow_run` must match that workflow's `name:`.
 #
 # pull_request_target and workflow_run run with write access, so nothing here checks out or runs
 # PR code: it only reads PR metadata through the API.
@@ -13,7 +14,7 @@ name: PR status
 
 on:
   pull_request_target:
-    types: [opened, reopened, synchronize, ready_for_review, converted_to_draft, closed]
+    types: [opened, reopened, synchronize, edited, ready_for_review, converted_to_draft, closed]
   pull_request_review:
     types: [submitted, dismissed]
   workflow_run:
@@ -30,18 +31,21 @@ permissions:
 
 jobs:
   pr-status:
-    # Per PR, so one PR's event cannot cancel another's pending recompute. The group is on the job
-    # so a run skipped by the `if` below never joins it. Runs with no linked PR (a push to main, a
-    # run on main) share one group: each recomputes every open PR, so a burst collapses to one
-    # running and one pending run.
+    # Per PR, so one PR's event cannot cancel another's pending recompute; a push to main, which
+    # recomputes them all, has its own group. The group is on the job so a skipped run never joins.
     concurrency:
-      group: pr-status-${{ github.event.pull_request.number || github.event.workflow_run.pull_requests[0].number || 'all' }}
+      group: pr-status-${{ github.event.pull_request.number || github.event.workflow_run.pull_requests[0].number || 'main' }}
     # A fork's review event gets a read-only token and cannot label; its PR is still relabelled by
-    # pull_request_target and by pushes to main. A skipped workflow_run did no work (Claude Code
-    # Review fires on every issue comment, and its jobs skip unless the comment asks for a review).
+    # pull_request_target and by pushes to main. A workflow_run counts only when it is a real
+    # review of this repo's own PR: a fork can name a workflow "Claude Code Review" too, and a
+    # skipped run (every issue comment starts one) or a run on main links no PR. A title or body
+    # edit cannot change the label; a new base branch can (conflicts).
     if: >-
-      (github.event_name != 'pull_request_review' || github.event.pull_request.head.repo.full_name == github.repository)
-      && (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion != 'skipped')
+      (github.event_name != 'pull_request_target' || github.event.action != 'edited' || github.event.changes.base)
+      && (github.event_name != 'pull_request_review' || github.event.pull_request.head.repo.full_name == github.repository)
+      && (github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion != 'skipped'
+          && github.event.workflow_run.head_repository.full_name == github.repository
+          && github.event.workflow_run.pull_requests[0].number != null))
     runs-on: ubuntu-latest
     steps:
       - name: Set the pr/* status label
@@ -61,9 +65,7 @@ jobs:
             const numbers = await (async () => {
               if (context.payload.pull_request) return [context.payload.pull_request.number];
               if (context.payload.workflow_run) {
-                // Empty for a run on main (an `@claude review` retry): recompute them all.
-                const linked = context.payload.workflow_run.pull_requests.map((p) => p.number);
-                if (linked.length) return linked;
+                return context.payload.workflow_run.pull_requests.map((p) => p.number);
               }
               const open = await github.paginate(github.rest.pulls.list, { owner, repo, state: "open" });
               return open.map((p) => p.number);
@@ -97,9 +99,9 @@ jobs:
 
               // The review poster reports a commit status, which an `@claude review` retry on main
               // updates while the failed check run on the head stays: for a context that has a
-              // status, the status decides. This job's own check run is on the head too (in progress
-              // now, possibly failed earlier) and says nothing about the PR; it is named after the
-              // job id, so give the job a `name:` and this filter must follow.
+              // status, the status decides. This job's check run and labeler.yml's `label` job
+              // say nothing about the PR; a check run is named after its job id unless the job has
+              // a `name:`, so renaming either job means changing this filter.
               const { data: combined } = await github.rest.repos.getCombinedStatusForRef({
                 owner, repo, ref: pr.head.sha, per_page: 100,
               });
