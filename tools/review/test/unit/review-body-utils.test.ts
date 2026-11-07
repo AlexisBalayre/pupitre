@@ -1,4 +1,4 @@
-import { bodyLines, collapsedSections, commentBody, findingLine } from "@src/review-body.utils";
+import { bodyLines, collapsedSections, commentBody, findingLine, unresolvedPrior } from "@src/review-body.utils";
 import type { Finding, ReviewSummary } from "@src/review-metrics.schemas";
 import { describe, expect, it } from "vitest";
 
@@ -354,6 +354,14 @@ describe("bodyLines", () => {
         0,
       ).join("\n");
       expect(rendered).toContain("No reviewer was spawned for the changes since abcdef0.");
+      expect(rendered).toContain("the guard misses deletions");
+    });
+
+    it("keeps listing it when the next round copies the unresolved entries forward", () => {
+      const round1 = summary({ ...incremental, prior_importants: [owed] });
+      const round2 = summary({ ...incremental, prior_importants: unresolvedPrior(round1) });
+      const rendered = bodyLines(round2, null, [], 0).join("\n");
+      expect(rendered).not.toContain("No issues found");
       expect(rendered).toContain("the guard misses deletions");
     });
 
