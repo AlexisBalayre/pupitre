@@ -1,0 +1,88 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-07T16:57:41.706Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42393754686",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42393754686",
+  "actor": "AlexisBalayre",
+  "commit_sha": "f1acfd0fc5b16abb905294a03877e186e258dcc7",
+  "source": "pr",
+  "pr_number": 233,
+  "action": "review",
+  "reviewers_spawned": [
+    "docs",
+    "conventions"
+  ],
+  "reviewers_returned": [
+    "docs",
+    "conventions"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "context",
+    "maintainability",
+    "spec"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "e4c24075025d85684a400486e1d242a4e62103b9",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": ".claude/skills/pr-description/SKILL.md",
+      "line": "48",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "L48 says \"The tracker wording below is kept for reuse in a repo that has one\", but this delta removed `(PROJ-XXXX)` from the Title format, so the only tracker wording left below is in Body rules (L169). Reword it to \"The tracker wording in Body rules is kept for reuse in a repo that has one\", or drop the sentence.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/skills/pr-description/SKILL.md",
+      "line": "147",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "\"There is no tracker id.\" at L147 repeats the callout at L45-48 (\"This repo has no issue tracker. There is no ticket id in the title.\"). Delete the second sentence.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.5394401,
+  "duration_ms": 65403,
+  "num_turns": 9,
+  "tokens": {
+    "input": 10,
+    "output": 4022,
+    "cache_read": 202246,
+    "cache_creation": 37584,
+    "total": 243862
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 10,
+      "output": 4022,
+      "cache_read": 202246,
+      "cache_creation": 37584,
+      "cost_usd": 0.4216012
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 14,
+      "output": 3186,
+      "cache_read": 58109,
+      "cache_creation": 32056,
+      "cost_usd": 0.1178389
+    }
+  ],
+  "permission_denials": []
+}
