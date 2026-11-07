@@ -1899,6 +1899,7 @@ async function gateAndMerge(
   // checkout, with the compare-and-swap as the backstop.
   if (!pullRequest) assertTargetAt(req.repoPath, target, targetSha);
   const commitSubjects = commitSubjectsBetween(req.repoPath, targetSha, sha);
+  const ownSubject = firstOwnSubject(req.repoPath, targetSha, sha);
   // What `--accept-debt` filed, for the refusals that must stay after it.
   const ledgerKept = fileAcceptedDebt(db, req, measured.projectId, flaggedDebt);
 
@@ -1908,7 +1909,7 @@ async function gateAndMerge(
   if (pullRequest) {
     const newPr = {
       ...pullRequest,
-      ...pullRequestText(spec, session.id, report, commitSubjects, sha),
+      ...pullRequestText(spec, session.id, report, commitSubjects, sha, ownSubject),
     };
     try {
       pushBranch(req.repoPath, pullRequest.originUrl, session.branch, sha, !pullRequest.adoptedUrl);
@@ -2629,10 +2630,51 @@ export function refuseGate(
  * leave entries filed with no kept note.
  */
 export function commitSubjectsBetween(repoPath: string, targetSha: string, sha: string): string[] {
-  return runGit(repoPath, ['log', '--reverse', '--format=%s', `${targetSha}..${sha}`])
+  return runGit(repoPath, [
+    ...SUBJECT_LOG_PINS,
+    'log',
+    '--reverse',
+    '--format=%s',
+    `${targetSha}..${sha}`,
+  ])
     .trim()
     .split('\n')
     .filter(Boolean);
+}
+
+/**
+ * What a subject read pins past `runGit`'s own, which already turn replace refs
+ * off: the commit graph is a cache in the object store a session can write, and
+ * a planted one can hand `log` other parents, so a merge would read as a commit
+ * of the session's and a commit as a merge (decision 137, as decision 131 pins
+ * it for `pup land`).
+ */
+const SUBJECT_LOG_PINS = ['-c', 'core.commitGraph=false'];
+
+/**
+ * The oldest gated commit's subject that is not a merge's, for the PR title: a
+ * `Merge main into …` the gate wrote (decision 105) or the session ran is never
+ * the change a squash lands. Merges are told by their parents, so a commit of
+ * the session's whose message reads like one is still its own. Undefined when
+ * every commit is a merge. Read before the ledger write, as
+ * `commitSubjectsBetween` is. Session-written: `prTitle` scrubs it.
+ */
+export function firstOwnSubject(
+  repoPath: string,
+  targetSha: string,
+  sha: string,
+): string | undefined {
+  return runGit(repoPath, [
+    ...SUBJECT_LOG_PINS,
+    'log',
+    '--reverse',
+    '--no-merges',
+    '--format=%s',
+    `${targetSha}..${sha}`,
+  ])
+    .split('\n')
+    .map((subject) => subject.trim())
+    .find(Boolean);
 }
 
 /**
@@ -2697,16 +2739,22 @@ export function recordMerge(
   });
 }
 
-/** The title and body pupitre writes on a PR it opens or adopts. */
+/**
+ * The title and body pupitre writes on a PR it opens or adopts. A squash merge
+ * makes the title the subject of the commit on the target (decision 137), so
+ * it is `ownSubject`, the session's first non-merge commit subject, when that
+ * fits, else the goal's first line.
+ */
 export function pullRequestText(
   spec: TaskSpec,
   sessionId: string,
   report: GateReport,
   commitSubjects: string[],
   sha: string,
+  ownSubject: string | undefined,
 ): { title: string; body: string } {
   return {
-    title: prTitle(spec.goal) || `pup session ${sessionId}`,
+    title: prTitle(spec.goal, ownSubject) || `pup session ${sessionId}`,
     body: prBody(spec, report, commitSubjects, sha),
   };
 }
@@ -2854,9 +2902,57 @@ export function withScratchGitDir<TResult>(
   }
 }
 
-function prTitle(goal: string): string {
-  const line = (goal.split('\n')[0] as string).trim();
-  return line.length <= PR_TITLE_MAX_CHARS ? line : `${line.slice(0, PR_TITLE_MAX_CHARS - 1)}…`;
+/**
+ * Characters that render as nothing or reorder what follows them: the soft
+ * hyphen, the combining grapheme joiner, the Hangul fillers, the Mongolian
+ * vowel separator, zero-width spaces and joiners, directional marks,
+ * embeddings, overrides and isolates, invisible operators, variation
+ * selectors, the byte-order mark, and the tag block, which spells out text
+ * no one sees and is how instructions get hidden from AI reviewers. Dropped,
+ * not spaced, so one cannot split a closing keyword past `CLOSING_REFERENCE`.
+ */
+const INVISIBLE_FORMAT_CHARS =
+  // biome-ignore lint/suspicious/noMisleadingCharacterClass: each is dropped alone, combining ones included
+  /[\u00ad\u034f\u061c\u115f\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\u3164\ufe00-\ufe0f\ufeff\u{e0000}-\u{e007f}\u{e0100}-\u{e01ef}]/gu;
+
+/** A terminal escape sequence (CSI, 7-bit or 8-bit), dropped whole so no `[31m` is left. */
+// biome-ignore lint/suspicious/noControlCharactersInRegex: matching them is the point
+const ANSI_ESCAPE = /(?:\u001b\[|\u009b)[0-?]*[ -/]*[@-~]/g;
+
+/**
+ * A GitHub closing keyword followed by an issue reference, `#n`,
+ * `owner/repo#n`, `GH-n` or an issue or pull URL: on the default branch's
+ * commit a squash writes, GitHub closes the issue it names.
+ */
+const CLOSING_REFERENCE =
+  /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b\s*:?\s*(?:(?:[\w.-]+\/[\w.-]+)?#\d+|GH-\d+|https?:\/\/\S+\/(?:issues|pull)\/\d+)/i;
+
+/**
+ * A line as a title can carry it: escape sequences and invisible format
+ * characters dropped, then `sanitizeReason`'s one line with C0/C1 controls
+ * spaced out.
+ */
+function scrubTitleText(text: string): string {
+  return sanitizeReason(text.replace(ANSI_ESCAPE, '').replace(INVISIBLE_FORMAT_CHARS, ''));
+}
+
+/**
+ * A title that reads as a commit subject: `ownSubject`, scrubbed, when it fits
+ * and names no issue to close (it is session-written, decision 137), else the
+ * goal's first line scrubbed the same way, cut at the last word boundary that
+ * fits with no ellipsis and no dangling separator. Empty when no boundary
+ * fits, never a cut word.
+ */
+function prTitle(goal: string, ownSubject: string | undefined): string {
+  const subject = scrubTitleText(ownSubject ?? '');
+  if (subject && subject.length <= PR_TITLE_MAX_CHARS && !CLOSING_REFERENCE.test(subject)) {
+    return subject;
+  }
+  const line = scrubTitleText(goal.split('\n')[0] as string);
+  if (line.length <= PR_TITLE_MAX_CHARS) return line;
+  // The last whitespace at or before the limit: what precedes it is whole words.
+  const cut = line.slice(0, PR_TITLE_MAX_CHARS + 1).search(/\s\S*$/);
+  return cut < 0 ? '' : line.slice(0, cut).replace(/[\s,;:–—-]+$/, '');
 }
 
 function prBody(spec: TaskSpec, report: GateReport, commitSubjects: string[], sha: string): string {
