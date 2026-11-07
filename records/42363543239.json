@@ -1,0 +1,107 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-07T10:22:14.553Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42363543239",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42363543239",
+  "actor": "AlexisBalayre",
+  "commit_sha": "5b54cfea9ac72df240865d0739d6548aaf6eb880",
+  "source": "pr",
+  "pr_number": 238,
+  "action": "review",
+  "reviewers_spawned": [
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "context",
+    "maintainability",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/profile-compiler.test.ts",
+      "line": "726",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new file-level `vi.setConfig({ testTimeout: 30_000 })` (line 29) makes the per-test `}, 30_000);` overrides at lines 726, 742, 769, 803, 852, 1403 and 1416 redundant, because they set the same value. The two `}, 20_000);` overrides at 1447 and 2687 now shorten the timeout below the 30 s file default, which is probably unintended. Drop the seven redundant overrides and decide deliberately about the two 20_000 ones.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.test.ts",
+      "line": "29",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Other test files set timeouts with the suite-scoped `describe('...', { timeout: N }, ...)` form (code-map.test.ts:42, review.test.ts:75, fix-round.test.ts:162). This file is the only one using the global `vi.setConfig`. That is defensible because the file has several top-level describes, but it departs from the established pattern.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.test.ts",
+      "line": "27-28",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The WHY comment is accurate: a timeout fails the instrumented vitest run, so `pup audit` reports coverage as unavailable. The phrase 'times out a different one each run' is flaky-test narration that will go stale. A tighter wording would be: \"Many tests spawn real git and sh and exceed the 5 s default under load or coverage; a timeout fails the instrumented run, so `pup audit` reports coverage as not measured.\"",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "platform",
+      "description": "Every Bash call (orchestrator and subagents) failed with `apply-seccomp: write /proc/self/setgroups (nested userns is capability-restricted; caller must provide CAP_SYS_ADMIN): Permission denied`. The review could not read `gh pr view`, `gh pr diff`, `git diff <merge_base>..HEAD`, or `git log -L`. Reviewers inspected only the HEAD state of src/core/profile-compiler.test.ts (located via Grep), so provenance of the per-test 30_000 overrides could not be established. The §2 second freshness assertion (HEAD vs headRefOid) could not be performed. PR title/body, steering threads and closing-issue references could not be read."
+    },
+    {
+      "component": "orchestrator",
+      "description": "Because the diff was unreadable, gating relied on the latest commit message (5b54cfe, test-only timeout change) and Grep. Only conventions and docs were spawned; correctness, security, maintainability, context and spec were skipped as untouched/no spec source found, but this could not be confirmed against the actual file list."
+    }
+  ],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.49676789999999993,
+  "duration_ms": 62351,
+  "num_turns": 12,
+  "tokens": {
+    "input": 16,
+    "output": 4424,
+    "cache_read": 293926,
+    "cache_creation": 30789,
+    "total": 329155
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 16,
+      "output": 4424,
+      "cache_read": 293926,
+      "cache_creation": 30789,
+      "cost_usd": 0.3936412
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 18,
+      "output": 3624,
+      "cache_read": 63757,
+      "cache_creation": 24190,
+      "cost_usd": 0.1031267
+    }
+  ],
+  "permission_denials": []
+}
