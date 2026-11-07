@@ -1,12 +1,14 @@
+import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { beforeEach, describe, expect, it } from 'vitest';
+import { tempDir } from '../test/temp-dir.mock.js';
 import { openStore } from './db.client.js';
 import { InvalidProfileError } from './profile.errors.js';
 import {
   appendEvent,
   claimingSession,
   decodeEvent,
-  deleteTask,
+  dropTask,
   editTaskSpec,
   ensureProject,
   findSessionByWorktree,
@@ -236,9 +238,11 @@ describe('the backlog', () => {
   it('drops a planned task and reports when there was none to drop', () => {
     planned('t-1');
 
-    expect(deleteTask(db, 't-1')).toBe(true);
-    expect(deleteTask(db, 't-1')).toBe(false);
+    expect(dropTask(db, 't-1')).toEqual({ kind: 'dropped' });
+    expect(dropTask(db, 't-1')).toEqual({ kind: 'unknown' });
     expect(listBacklogTasks(db, 'proj-1')).toEqual([]);
+    // No session ever ran for it, so there is no history to keep.
+    expect(getTask(db, 't-1')).toBeUndefined();
   });
 
   it("rewrites a planned task's spec", () => {
@@ -248,27 +252,30 @@ describe('the backlog', () => {
     expect(JSON.parse(getTask(db, 't-1')?.spec ?? '{}')).toEqual({ goal: 'sharper' });
   });
 
-  // The spec is compiled into the session's context.md at launch, so editing or
-  // deleting it afterwards would leave the store disagreeing with what the
-  // agent was actually told.
-  // `sessions.task_id` is a NOT NULL foreign key, so a task with history cannot
-  // be deleted at all — the guard must refuse rather than let SQLite abort the
-  // statement and surface a raw constraint error to the operator.
-  it('refuses to drop a task whose killed session returned it to the backlog', () => {
+  // `sessions.task_id` is a NOT NULL foreign key, so a task with history
+  // cannot be deleted: it is marked dropped, and its sessions stay
+  // (decision 147).
+  it('drops a task whose sessions were all killed, keeping their history', () => {
     planned('t-1');
-    insertSession(db, {
-      id: 's1',
-      taskId: 't-1',
-      worktreePath: '/repo/.worktrees/s1',
-      branch: 'pup/s1',
-      profileHash: 'hash',
-    });
-    transitionSession(db, 's1', 'killed');
+    for (const id of ['s1', 's2']) {
+      insertSession(db, {
+        id,
+        taskId: 't-1',
+        worktreePath: `/repo/.worktrees/${id}`,
+        branch: `pup/${id}`,
+        profileHash: 'hash',
+      });
+      transitionSession(db, id, 'killed');
+    }
     expect(listBacklogTasks(db, 'proj-1').map((t) => t.id)).toEqual(['t-1']);
 
-    expect(() => deleteTask(db, 't-1')).not.toThrow();
-    expect(deleteTask(db, 't-1')).toBe(false);
-    expect(getTask(db, 't-1')).toBeDefined();
+    expect(dropTask(db, 't-1')).toEqual({ kind: 'dropped' });
+
+    expect(listBacklogTasks(db, 'proj-1')).toEqual([]);
+    expect(getTask(db, 't-1')?.dropped_at).not.toBeNull();
+    expect(listTaskSessions(db, 't-1').map((s) => s.id)).toEqual(['s1', 's2']);
+    expect(dropTask(db, 't-1')).toEqual({ kind: 'unknown' });
+    expect(editTaskSpec(db, 't-1', { goal: 'revived' })).toBe('unknown');
   });
 
   it('names the session that claimed a task, and nothing for a planned one', () => {
@@ -287,7 +294,10 @@ describe('the backlog', () => {
     expect(claimingSession(db, 't-1')).toBe('s1');
   });
 
-  it('refuses to drop or edit a task a session has claimed', () => {
+  // The spec is compiled into the session's context.md at launch, so editing or
+  // dropping it afterwards would leave the store disagreeing with what the
+  // agent was actually told.
+  it('refuses to drop or edit a task a session has claimed, naming it', () => {
     planned('t-1');
     insertSession(db, {
       id: 's1',
@@ -298,9 +308,31 @@ describe('the backlog', () => {
     });
     transitionSession(db, 's1', 'running');
 
-    expect(deleteTask(db, 't-1')).toBe(false);
+    expect(dropTask(db, 't-1')).toEqual({ kind: 'claimed', sessionId: 's1' });
+    expect(getTask(db, 't-1')?.dropped_at).toBeNull();
     expect(updateTaskSpec(db, 't-1', '{}')).toBe(false);
     expect(getTask(db, 't-1')?.spec).toBe(JSON.stringify({ goal: 't-1' }));
+  });
+});
+
+describe('dropped_at (decision 147)', () => {
+  it('is added to a store created before it, its tasks still live', () => {
+    const dbPath = join(tempDir('pup-store-'), 'pup.db');
+    const old = openStore(dbPath);
+    old.exec(`
+      ALTER TABLE tasks DROP COLUMN dropped_at;
+      INSERT INTO projects (id, repo_path) VALUES ('proj-1', '/repo');
+      INSERT INTO tasks (id, project_id, spec) VALUES ('t-1', 'proj-1', '{}');
+    `);
+    old.close();
+
+    const reopened = openStore(dbPath);
+    const task = getTask(reopened, 't-1');
+    const backlog = listBacklogTasks(reopened, 'proj-1').map((t) => t.id);
+    reopened.close();
+
+    expect(task?.dropped_at).toBeNull();
+    expect(backlog).toEqual(['t-1']);
   });
 });
 

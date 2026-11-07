@@ -102,6 +102,8 @@ export interface TaskRow {
   origin: string;
   /** The tier the operator set with `--tier`; null when the scope-in decides it (decision 92). */
   tier: string | null;
+  /** When `pup plan drop` retired a task with session history; null while it is live (decision 147). */
+  dropped_at: string | null;
   created_at: string;
 }
 
@@ -253,7 +255,8 @@ export function claimingSession(db: Database, taskId: string): string | undefine
 }
 
 /**
- * The backlog: tasks no live or finished session has claimed, oldest first.
+ * The backlog: tasks no live or finished session has claimed and the operator
+ * has not dropped, oldest first.
  *
  * Derived rather than stored. `tasks.status` used to carry this and was written
  * but never read, so it could drift from the sessions table without anything
@@ -266,6 +269,7 @@ export function listBacklogTasks(db: Database, projectId: string): TaskRow[] {
     .prepare(
       `SELECT * FROM tasks t
         WHERE t.project_id = ?
+          AND t.dropped_at IS NULL
           AND NOT EXISTS (
             SELECT 1 FROM sessions s
              WHERE s.task_id = t.id AND s.state IN (${claimed.map(() => '?').join(', ')})
@@ -275,24 +279,39 @@ export function listBacklogTasks(db: Database, projectId: string): TaskRow[] {
     .all(projectId, ...claimed) as TaskRow[];
 }
 
+export type DropTaskOutcome =
+  | { kind: 'dropped' }
+  | { kind: 'unknown' }
+  | { kind: 'claimed'; sessionId: string };
+
 /**
- * Returns false when the task does not exist or any session ever ran for it.
- *
- * The guard is "no session row at all", not "no claiming session": a killed
- * session's task returns to the backlog, but `sessions.task_id` is a NOT NULL
- * foreign key, so deleting the task would abort on the constraint rather than
- * refuse. History outlives the backlog entry (decision 40).
+ * Take a task off the backlog (decision 147). A task no session ever ran for
+ * is deleted outright. One whose sessions were all killed is marked dropped
+ * instead: `sessions.task_id` is a NOT NULL foreign key, so deleting it would
+ * abort on the constraint, and its sessions' history outlives the backlog
+ * entry (decision 40). A task some session still claims stays, and the
+ * outcome names that session. An already-dropped task is unknown, as it is
+ * not in the backlog to drop.
  */
-export function deleteTask(db: Database, id: string): boolean {
-  return (
-    db
-      .prepare(
-        `DELETE FROM tasks
-          WHERE id = ?
-            AND NOT EXISTS (SELECT 1 FROM sessions s WHERE s.task_id = tasks.id)`,
-      )
-      .run(id).changes > 0
-  );
+export function dropTask(db: Database, id: string): DropTaskOutcome {
+  return db.transaction((): DropTaskOutcome => {
+    const row = getTask(db, id);
+    if (!row || row.dropped_at !== null) return { kind: 'unknown' };
+    const sessionId = claimingSession(db, id);
+    if (sessionId) return { kind: 'claimed', sessionId };
+    const deleted =
+      db
+        .prepare(
+          `DELETE FROM tasks
+            WHERE id = ?
+              AND NOT EXISTS (SELECT 1 FROM sessions s WHERE s.task_id = tasks.id)`,
+        )
+        .run(id).changes > 0;
+    if (!deleted) {
+      db.prepare("UPDATE tasks SET dropped_at = datetime('now') WHERE id = ?").run(id);
+    }
+    return { kind: 'dropped' };
+  })();
 }
 
 /**
@@ -393,7 +412,8 @@ type TaskSpecPatch = Partial<Pick<TaskSpec, 'goal' | 'scopeIn' | 'scopeOut' | 'a
  * `UPDATE tasks SET spec` there is, so it runs exactly the validation
  * `plan add` runs — otherwise edit could store a spec add would have refused,
  * and the failure would surface at launch. The stored spec is not validated
- * first: edit is how a row that fails it gets repaired.
+ * first: edit is how a row that fails it gets repaired. A dropped task is
+ * unknown, as `pup plan` no longer lists it (decision 147).
  */
 export function editTaskSpec(
   db: Database,
@@ -401,7 +421,7 @@ export function editTaskSpec(
   patch: TaskSpecPatch,
 ): 'updated' | 'unknown' | 'claimed' {
   const row = getTask(db, id);
-  if (!row) return 'unknown';
+  if (!row || row.dropped_at !== null) return 'unknown';
   const spec = decodeTaskSpec(row);
   const edited: TaskSpec = {
     ...spec,
