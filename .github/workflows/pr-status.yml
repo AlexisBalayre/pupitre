@@ -2,7 +2,7 @@
 # to merge. First match wins:
 #   pr/draft > pr/conflicts > pr/changes-requested > pr/ci-failing > pr/ci-pending > pr/ready
 #
-# Recomputed when the PR changes, on a review, when a Claude Code Review or Label PRs run ends,
+# Recomputed when the PR is opened, reopened, pushed to, marked ready or draft or closed, on a review, when a Claude Code Review or Label PRs run ends,
 # and on a push to main (which can introduce conflicts in other PRs). A closed PR loses its label.
 # The workflow names under `workflow_run` must match the `name:` of those workflows.
 #
@@ -27,13 +27,13 @@ permissions:
   checks: read
   statuses: read
 
-# One run at a time: the label update is read-modify-write, and a recompute is idempotent, so a
-# queued run replacing an older queued one loses nothing.
-concurrency:
-  group: pr-status
-
 jobs:
   pr-status:
+    # Per PR, so one PR's event cannot cancel another's pending recompute. The group is on the job
+    # so a run skipped by the `if` below never joins it. Runs without a PR payload (a push to main,
+    # a workflow_run) get their own group: they recompute every open PR and are idempotent.
+    concurrency:
+      group: pr-status-${{ github.event.pull_request.number || github.run_id }}
     # A fork's review event gets a read-only token and cannot label; its PR is still relabelled by
     # pull_request_target and by pushes to main.
     if: github.event_name != 'pull_request_review' || github.event.pull_request.head.repo.full_name == github.repository
@@ -56,7 +56,9 @@ jobs:
             const numbers = await (async () => {
               if (context.payload.pull_request) return [context.payload.pull_request.number];
               if (context.payload.workflow_run) {
-                return context.payload.workflow_run.pull_requests.map((p) => p.number);
+                // Empty for a run on main (an `@claude review` retry, Label PRs): recompute them all.
+                const linked = context.payload.workflow_run.pull_requests.map((p) => p.number);
+                if (linked.length) return linked;
               }
               const open = await github.paginate(github.rest.pulls.list, { owner, repo, state: "open" });
               return open.map((p) => p.number);
@@ -69,7 +71,7 @@ jobs:
               let pr;
               for (let i = 0; i < 5; i++) {
                 ({ data: pr } = await github.rest.pulls.get({ owner, repo, pull_number: number }));
-                if (pr.mergeable !== null) break;
+                if (pr.mergeable !== null || pr.state !== "open" || pr.draft) break;
                 await sleep(3000);
               }
               if (pr.state !== "open") return undefined;
@@ -82,28 +84,35 @@ jobs:
               const latest = new Map();
               for (const r of reviews) {
                 if (r.state === "COMMENTED" || !r.user) continue;
-                // Anyone can submit a review on a public repo; only write access counts.
+                // Anyone can submit a review on a public repo; only repo insiders count.
                 if (!["OWNER", "MEMBER", "COLLABORATOR"].includes(r.author_association)) continue;
                 latest.set(r.user.login, r.state);
               }
               if ([...latest.values()].includes("CHANGES_REQUESTED")) return "pr/changes-requested";
 
-              // This job's own check run is on the head too: in progress now, possibly failed from an
-              // earlier run. It says nothing about the PR.
+              // The review poster reports a commit status, which an `@claude review` retry on main
+              // updates while the failed check run on the head stays: for a context that has a
+              // status, the status decides. This job's own check run is on the head too (in progress
+              // now, possibly failed earlier) and says nothing about the PR; it is named after the
+              // job id, so give the job a `name:` and this filter must follow.
+              const { data: combined } = await github.rest.repos.getCombinedStatusForRef({
+                owner, repo, ref: pr.head.sha, per_page: 100,
+              });
+              const contexts = new Set(combined.statuses.map((s) => s.context));
               const runs = (
                 await github.paginate(github.rest.checks.listForRef, {
                   owner, repo, ref: pr.head.sha, per_page: 100,
                 })
-              ).filter((c) => c.name !== context.job);
-              // The review poster also reports a commit status, which a retry on main updates.
-              const { data: combined } = await github.rest.repos.getCombinedStatusForRef({
-                owner, repo, ref: pr.head.sha,
-              });
+              ).filter((c) => c.name !== context.job && !contexts.has(c.name));
               const bad = new Set(["failure", "timed_out", "cancelled", "action_required"]);
-              if (runs.some((c) => bad.has(c.conclusion)) || ["failure", "error"].includes(combined.state)) {
+              // Not combined.state: it is "pending" when a head has no status at all.
+              if (
+                runs.some((c) => bad.has(c.conclusion)) ||
+                combined.statuses.some((s) => ["failure", "error"].includes(s.state))
+              ) {
                 return "pr/ci-failing";
               }
-              if (runs.some((c) => c.status !== "completed") || combined.state === "pending") {
+              if (runs.some((c) => c.status !== "completed") || combined.statuses.some((s) => s.state === "pending")) {
                 return "pr/ci-pending";
               }
               return "pr/ready";
