@@ -75,8 +75,9 @@ export interface TestSlotOptions {
    */
   onSlotsUnusable?: (error: unknown) => void;
   /**
-   * Called once, the first time every slot is taken or a gate is waiting
-   * ahead of a worker: who holds the slots, and the gates queued first.
+   * Called the first time the run waits, and again whenever the gates a
+   * worker waits for change to others: who holds the slots, and the gates
+   * queued first.
    */
   onWait?: (holders: SlotHolder[], gatesAhead: SlotHolder[]) => void;
 }
@@ -175,8 +176,8 @@ function liveHolders(dir: string, slots: number, token: string): (SlotRecord | u
  * a gate ever waits, or dated ahead, is no gate's wait, so it holds no worker
  * back.
  */
-function waitingGates(dir: string): SlotHolder[] {
-  const gates: SlotHolder[] = [];
+function waitingGates(dir: string): SlotRecord[] {
+  const gates: SlotRecord[] = [];
   for (const name of readdirSync(dir)) {
     if (!name.endsWith('.wait')) continue;
     const path = join(dir, name);
@@ -284,7 +285,9 @@ export class SlotWaitInterruptedError extends Error {
  * when it settles (decision 96). A slot is a lock file holding its holder's
  * pid, and a slot whose holder is dead is reclaimed. A waiting gate is served
  * before every waiting worker: it leaves a wait file for as long as it waits,
- * and no worker takes a free slot while a live gate's is there.
+ * and no worker takes a free slot while a live gate's is there. Nor while a
+ * gate holds a slot (decision 140): the gate's run has the machine to itself
+ * but for the workers already running, beside whom it still takes a free slot.
  *
  * Runs `fn` with no slot inside a run that already holds one: the child of a
  * `pup session test`, and a gate's sandboxed child, which cannot write the
@@ -323,8 +326,9 @@ export async function withTestSlot<TResult>(
 }
 
 /**
- * Wait for a free slot and take it, a gate ahead of every worker; answers its
- * path, or undefined once `maxWaitMs` ran out with none taken.
+ * Wait for a free slot and take it, a gate ahead of every worker and a worker
+ * never beside a gate's run; answers its path, or undefined once `maxWaitMs`
+ * ran out with none taken.
  */
 async function acquire(record: SlotRecord, options: TestSlotOptions): Promise<string | undefined> {
   const dir = options.dir ?? slotsDir();
@@ -349,22 +353,28 @@ async function acquire(record: SlotRecord, options: TestSlotOptions): Promise<st
     // Staged and renamed in, so no worker reads it empty and removes it as a dead gate's.
     if (waitFile) renameSync(stage(dir, record), waitFile);
     const deadline = Date.now() + (options.maxWaitMs ?? Number.POSITIVE_INFINITY);
-    let told = false;
+    // The gates last told of, so a worker that began waiting on sessions is
+    // told again once a gate is what holds it back.
+    let told: string | undefined;
     for (;;) {
       if (interrupted) throw new SlotWaitInterruptedError(interrupted);
-      const holders = liveHolders(dir, slots, record.token);
+      const held = liveHolders(dir, slots, record.token).filter(
+        (holder): holder is SlotRecord => holder !== undefined,
+      );
       const gatesAhead = waitFile ? [] : waitingGates(dir);
-      if (gatesAhead.length === 0 && holders.includes(undefined)) {
+      const gatesRunning = waitFile ? [] : held.filter((holder) => holder.kind === 'gate');
+      if (gatesAhead.length === 0 && gatesRunning.length === 0 && held.length < slots) {
         const slot = take(dir, slots, record);
         if (slot) return slot;
       }
       if (Date.now() >= deadline) return undefined;
-      if (!told) {
-        told = true;
-        options.onWait?.(
-          holders.filter((held): held is SlotRecord => held !== undefined),
-          gatesAhead,
-        );
+      const gates = [...gatesRunning, ...gatesAhead]
+        .map((gate) => gate.token)
+        .sort()
+        .join(' ');
+      if (told === undefined || (gates !== '' && gates !== told)) {
+        told = gates;
+        options.onWait?.(held, gatesAhead);
       }
       await new Promise<void>((resolve) => {
         const timer = setTimeout(resolve, options.pollMs ?? POLL_MS);
@@ -387,14 +397,22 @@ async function acquire(record: SlotRecord, options: TestSlotOptions): Promise<st
 }
 
 /**
- * The line a run that waits prints once: who holds the slots, and the gates
- * served before it. Labels are store text, so each is scrubbed.
+ * The line a run that waits prints: who holds the slots, the gate's run first
+ * since a worker waits for it whatever else is free (decision 140), and the
+ * gates served before it. Labels are store text, so each is scrubbed.
  */
 export function describeSlotWait(holders: SlotHolder[], gatesAhead: SlotHolder[]): string {
   const named = (holder: SlotHolder): string =>
     `${holder.kind === 'gate' ? 'the merge gate for' : 'session'} ${sanitizeReason(holder.label)} (pid ${holder.pid})`;
-  const held = holders.length > 0 ? `, held by ${holders.map(named).join(' and ')}` : '';
   const ahead = gatesAhead.length > 0 ? `; ${gatesAhead.map(named).join(' and ')} waits first` : '';
+  const gates = holders.filter((holder) => holder.kind === 'gate');
+  if (gates.length > 0) {
+    const sessions = holders.filter((holder) => holder.kind !== 'gate');
+    const beside = sessions.length > 0 ? `, beside ${sessions.map(named).join(' and ')}` : '';
+    const runs = gates.length > 1 ? 'their test runs' : 'its test run';
+    return `Waiting for ${gates.map(named).join(' and ')} to end ${runs}${beside}${ahead}.`;
+  }
+  const held = holders.length > 0 ? `, held by ${holders.map(named).join(' and ')}` : '';
   return `Waiting for a test slot${held}${ahead}.`;
 }
 

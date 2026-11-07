@@ -17,6 +17,7 @@ import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 
 import { tempDir } from '../test/temp-dir.mock.js';
 import {
   availableMemoryBytes,
+  describeSlotWait,
   GATE_SLOT_WAIT_MS,
   HELD_SLOT_ENV,
   runSessionTest,
@@ -230,13 +231,96 @@ describe('withTestSlot (decision 96)', () => {
 
     second.end();
     await second.settled;
+    gate.end();
+    await gate.settled;
     await tick();
-    expect(log).toHaveLength(4);
-    expect(log.slice(3)[0]).toMatch(/^s[34]$/);
-    for (const held of [gate, worker, lateWorker]) held.end();
-    await Promise.all([gate.settled, worker.settled, lateWorker.settled]);
-    expect(log).toHaveLength(5);
+    expect(log.slice(3).sort()).toEqual(['s3', 's4']);
+    for (const held of [worker, lateWorker]) held.end();
+    await Promise.all([worker.settled, lateWorker.settled]);
     expect(readdirSync(dir)).toEqual([]);
+  });
+
+  describe('a gate holding a slot (decision 140)', () => {
+    it("keeps a worker from the free slot until the gate's run ends", async () => {
+      const log: string[] = [];
+      const gate = run('gate', 'gate s9', log);
+      const worker = run('worker', 's1', log);
+      await tick();
+      expect(log).toEqual(['gate s9']);
+      expect(readdirSync(dir)).toEqual(['slot-0.lock']);
+
+      gate.end();
+      await gate.settled;
+      await tick();
+      expect(log).toEqual(['gate s9', 's1']);
+      worker.end();
+      await worker.settled;
+    });
+
+    it('names the gate a worker waits for, and keeps it waiting once the other slot frees', async () => {
+      const log: string[] = [];
+      const waits: string[] = [];
+      const first = run('worker', 's1', log);
+      const gate = run('gate', 'gate s9', log);
+      const worker = run('worker', 's2', log, {
+        onWait: (holders, gatesAhead) => waits.push(describeSlotWait(holders, gatesAhead)),
+      });
+      await tick();
+      first.end();
+      await first.settled;
+      await tick();
+
+      expect(log).toEqual(['s1', 'gate s9']);
+      expect(waits).toEqual([
+        `Waiting for the merge gate for gate s9 (pid ${process.pid}) to end its test run, beside session s1 (pid ${process.pid}).`,
+      ]);
+      gate.end();
+      await gate.settled;
+      await tick();
+      expect(log).toEqual(['s1', 'gate s9', 's2']);
+      worker.end();
+      await worker.settled;
+    });
+
+    it('takes a free slot beside a worker already running', async () => {
+      const log: string[] = [];
+      const worker = run('worker', 's1', log);
+      const gate = run('gate', 'gate s9', log);
+      await tick();
+      expect(log).toEqual(['s1', 'gate s9']);
+      for (const held of [worker, gate]) held.end();
+      await Promise.all([worker.settled, gate.settled]);
+    });
+
+    it('tells a worker that began waiting on sessions again once a gate queues ahead, and keeps it out of the run', async () => {
+      const log: string[] = [];
+      const waits: string[] = [];
+      const first = run('worker', 's1', log);
+      const second = run('worker', 's2', log);
+      const worker = run('worker', 's3', log, {
+        onWait: (holders, gatesAhead) => waits.push(describeSlotWait(holders, gatesAhead)),
+      });
+      await tick();
+      const gate = run('gate', 'gate s9', log);
+      await tick();
+      first.end();
+      await first.settled;
+      second.end();
+      await second.settled;
+      await tick();
+
+      expect(log).toEqual(['s1', 's2', 'gate s9']);
+      expect(waits).toEqual([
+        `Waiting for a test slot, held by session s1 (pid ${process.pid}) and session s2 (pid ${process.pid}).`,
+        `Waiting for a test slot, held by session s1 (pid ${process.pid}) and session s2 (pid ${process.pid}); the merge gate for gate s9 (pid ${process.pid}) waits first.`,
+      ]);
+      gate.end();
+      await gate.settled;
+      await tick();
+      expect(log).toEqual(['s1', 's2', 'gate s9', 's3']);
+      worker.end();
+      await worker.settled;
+    });
   });
 
   it('ends its wait on an interrupt, running nothing and leaving no wait file', async () => {

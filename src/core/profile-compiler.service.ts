@@ -435,8 +435,8 @@ function buildContextMarkdown(
     '## Session protocol\n' +
       '- Work only inside this worktree, on the current branch. Never touch `.claude/`.\n' +
       '- Run tests only with `pup session test <test files>`: it runs the project’s test ' +
-      'command on the files you name once one of the machine’s test slots is free, and says ' +
-      'whom it is waiting for. Running the test runner directly is refused. Name only the ' +
+      'command on the files you name once one of the machine’s test slots is free and no ' +
+      'merge gate is running its tests, and says whom it is waiting for. Running the test runner directly is refused. Name only the ' +
       'tests related to what you changed: the test files for the code you touched and for ' +
       'the code that imports it. Leave the full suite to the merge gate, which runs it.\n' +
       '- Run commits, the pre-commit hook they trigger and `pup session test` in the ' +
@@ -1300,8 +1300,8 @@ function buildConductorContext(
       '- A session signals completion with `pup session done`; `pup status` then lists it ' +
       '`awaiting-review`.\n' +
       '- Sessions run their tests through `pup session test`, which waits for one of the ' +
-      "machine's few test slots, the merge gate's run first. A session waiting there is not " +
-      'stalled.\n' +
+      "machine's few test slots, the merge gate's run first and alone but for the runs already " +
+      'going. A session waiting there is not stalled.\n' +
       '- Every session is told to commit and run its tests in the foreground and never to end ' +
       'a turn on a background job of its own; do not repeat that in a launch or a steer. ' +
       '`pup status` shows a session whose turn ended on its own background shell as ' +

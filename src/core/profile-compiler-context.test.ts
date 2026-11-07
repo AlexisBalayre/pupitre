@@ -86,8 +86,8 @@ describe('compileProfile', () => {
 
     expect(compiled.contextMarkdown).toContain(
       '- Run tests only with `pup session test <test files>`: it runs the project’s test ' +
-        'command on the files you name once one of the machine’s test slots is free, and says ' +
-        'whom it is waiting for. Running the test runner directly is refused. Name only the ' +
+        'command on the files you name once one of the machine’s test slots is free and no ' +
+        'merge gate is running its tests, and says whom it is waiting for. Running the test runner directly is refused. Name only the ' +
         'tests related to what you changed: the test files for the code you touched and for ' +
         'the code that imports it. Leave the full suite to the merge gate, which runs it.',
     );
