@@ -34,7 +34,7 @@ export const GIT_ENV: NodeJS.ProcessEnv = {
 /** A repo with no adapter markers (no package.json, pyproject.toml, ...). */
 export function initRepo(): string {
   const repo = tempDir('pup-cli-');
-  runGit(repo, ['init', '-b', 'main']);
+  runGit(repo, ['init', '-b', 'main'], { env: GIT_ENV });
   return repo;
 }
 
