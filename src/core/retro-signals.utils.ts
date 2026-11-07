@@ -1,12 +1,15 @@
 import { basename, isAbsolute, relative } from 'node:path';
 
 import {
+  addCalls,
+  addToolCarry,
+  type Bucket,
   CACHE_WRITE_1H_MULTIPLIER,
   contextOf,
   percentile,
   priceOf,
-  recachedTokens,
   type ScannedTranscript,
+  type ToolCarry,
   type UsageClass,
 } from './usage-report.service.js';
 
@@ -100,52 +103,30 @@ export function repoRelative(path: string, repoPath: string): string {
 const sum = (values: number[]): number => values.reduce((n, v) => n + v, 0);
 
 export function carryRows(scanned: ScannedTranscript[]): CarryRow[] {
-  const rows = new Map<string, CarryRow>();
-  for (const { read } of scanned) {
-    for (const result of read.toolResults) {
-      const bucket = sizeBucket(result.tokens);
-      const key = `${result.tool}\u0000${bucket}`;
-      const row = rows.get(key) ?? {
-        tool: label(result.tool),
-        sizeBucket: bucket,
-        results: 0,
-        tokens: 0,
-        carriedTokens: 0,
-      };
-      row.results += 1;
-      row.tokens += result.tokens;
-      row.carriedTokens += result.tokens * (read.calls.size - result.callsBefore);
-      rows.set(key, row);
-    }
-  }
-  return [...rows.values()].sort((a, b) => b.carriedTokens - a.carriedTokens);
+  const carry = new Map<string, ToolCarry>();
+  for (const { read } of scanned) addToolCarry(carry, read, sizeBucket);
+  return [...carry.values()]
+    .map((c) => ({
+      tool: label(c.tool),
+      sizeBucket: c.sizeBucket ?? '',
+      results: c.results,
+      tokens: c.tokens,
+      carriedTokens: c.carriedTokens,
+    }))
+    .sort((a, b) => b.carriedTokens - a.carriedTokens);
 }
 
 export function classRows(scanned: ScannedTranscript[]): ClassRow[] {
-  const byClass = new Map<UsageClass, ScannedTranscript[]>();
-  for (const item of scanned) byClass.set(item.class, [...(byClass.get(item.class) ?? []), item]);
-  return [...byClass.entries()]
+  const buckets = new Map<string, Bucket>();
+  const transcripts = new Map<UsageClass, ScannedTranscript[]>();
+  for (const item of scanned) {
+    addCalls(buckets, item.class, item.read);
+    transcripts.set(item.class, [...(transcripts.get(item.class) ?? []), item]);
+  }
+  return [...transcripts.entries()]
     .map(([klass, items]) => {
-      let recaches = 0;
-      let recached = 0;
-      let recacheCost = 0;
-      const floors: number[] = [];
-      const calls = items.flatMap(({ read }) => {
-        const ordered = [...read.calls.values()].sort((a, b) => a.at - b.at);
-        let previous = read.before;
-        for (const call of ordered) {
-          const again = recachedTokens(call, previous);
-          if (again > 0) {
-            recaches += 1;
-            recached += again;
-            recacheCost +=
-              (again * (priceOf(call.model)?.input ?? 0) * CACHE_WRITE_1H_MULTIPLIER) / 1e6;
-          }
-          previous = call;
-        }
-        if (!read.before && ordered[0]) floors.push(contextOf(ordered[0]));
-        return ordered;
-      });
+      const mine = [...buckets.values()].filter((b) => b.class === klass);
+      const calls = mine.flatMap((b) => b.calls);
       const context = sum(calls.map(contextOf));
       return {
         class: klass,
@@ -153,11 +134,19 @@ export function classRows(scanned: ScannedTranscript[]): ClassRow[] {
         calls: calls.length,
         contextTokens: context,
         cacheHitRate: context > 0 ? sum(calls.map((c) => c.read)) / context : 0,
-        recaches,
-        recachedTokens: recached,
-        recacheCost,
+        recaches: sum(mine.map((b) => b.recaches)),
+        recachedTokens: sum(mine.map((b) => b.recachedTokens)),
+        recacheCost: sum(
+          mine.map(
+            (b) =>
+              (b.recachedTokens * (priceOf(b.model)?.input ?? 0) * CACHE_WRITE_1H_MULTIPLIER) / 1e6,
+          ),
+        ),
         compactions: sum(items.map(({ read }) => read.compactions)),
-        firstRequestFloor: percentile(floors, 0.5),
+        firstRequestFloor: percentile(
+          mine.flatMap((b) => b.floors),
+          0.5,
+        ),
       };
     })
     .sort((a, b) => b.calls - a.calls);

@@ -1,4 +1,5 @@
 import { readdirSync, readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 
@@ -55,8 +56,10 @@ interface UsageRow {
   recachedTokens: number;
 }
 
-interface ToolCarry {
+export interface ToolCarry {
   tool: string;
+  /** Set when the carry is split by result size, as `pup retro` does. */
+  sizeBucket?: string;
   results: number;
   tokens: number;
   carriedTokens: number;
@@ -69,6 +72,11 @@ interface UsageReport {
   rows: UsageRow[];
   toolCarry: ToolCarry[];
   unpricedModels: string[];
+}
+
+/** The dirs a window of the project may have written to: the project's own, then the operator shell's. */
+export function claudeDirsOf(userDir: string): string[] {
+  return [userDir, process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')];
 }
 
 export interface UsageOptions {
@@ -88,7 +96,7 @@ export interface Call {
   output: number;
 }
 
-interface Bucket {
+export interface Bucket {
   class: UsageClass;
   model: string;
   effort: string;
@@ -411,7 +419,7 @@ export function recachedTokens(call: Call, previous: Call | undefined): number {
   return written > call.read ? written : 0;
 }
 
-function addCalls(buckets: Map<string, Bucket>, klass: UsageClass, read: Transcript): void {
+export function addCalls(buckets: Map<string, Bucket>, klass: UsageClass, read: Transcript): void {
   let previous = read.before;
   for (const call of [...read.calls.values()].sort((a, b) => a.at - b.at)) {
     const bucket = bucketFor(buckets, klass, call);
@@ -427,10 +435,17 @@ function addCalls(buckets: Map<string, Bucket>, klass: UsageClass, read: Transcr
   }
 }
 
-function addToolCarry(carry: Map<string, ToolCarry>, read: Transcript): void {
+export function addToolCarry(
+  carry: Map<string, ToolCarry>,
+  read: Transcript,
+  bucketOf?: (tokens: number) => string,
+): void {
   for (const result of read.toolResults) {
-    const entry = carry.get(result.tool) ?? {
+    const sizeBucket = bucketOf?.(result.tokens);
+    const key = sizeBucket ? `${result.tool}\u0000${sizeBucket}` : result.tool;
+    const entry = carry.get(key) ?? {
       tool: result.tool,
+      ...(sizeBucket ? { sizeBucket } : {}),
       results: 0,
       tokens: 0,
       carriedTokens: 0,
@@ -438,7 +453,7 @@ function addToolCarry(carry: Map<string, ToolCarry>, read: Transcript): void {
     entry.results += 1;
     entry.tokens += result.tokens;
     entry.carriedTokens += result.tokens * (read.calls.size - result.callsBefore);
-    carry.set(result.tool, entry);
+    carry.set(key, entry);
   }
 }
 

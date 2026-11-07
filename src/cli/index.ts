@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, readSync, realpathSync, writeFileSync } from 'node:fs';
-import { homedir, constants as osConstants, tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { constants as osConstants, tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { Database } from 'better-sqlite3';
 import { Command, CommanderError } from 'commander';
@@ -76,7 +76,7 @@ import { UnknownProfileError } from '../core/profile-store.errors.js';
 import { getProfileLayer, listProfileLayers } from '../core/profile-store.service.js';
 import { listProjects, putProjectToSleep, wakeProject } from '../core/project.service.js';
 import { renderReportHtml } from '../core/report.service.js';
-import { buildRetro, writeRetro } from '../core/retro.service.js';
+import { buildRetro, retroWindowStart, writeRetro } from '../core/retro.service.js';
 import { formatRetro, serializeRetro } from '../core/retro-signals.utils.js';
 import { buildReviewQueue, buildSessionReview } from '../core/review.service.js';
 import { asTier, taskTier } from '../core/routing.utils.js';
@@ -149,7 +149,7 @@ import type { GateReport, MergeOutcome } from '../core/types/merge-gate.types.js
 import type { TaskId, TaskSpec } from '../core/types/profile.types.js';
 import type { StoredGateStage } from '../core/types/session-event.types.js';
 import type { NewSessionRequest, RouteOverride } from '../core/types/session-lifecycle.types.js';
-import { buildUsageReport, formatUsageReport } from '../core/usage-report.service.js';
+import { buildUsageReport, claudeDirsOf, formatUsageReport } from '../core/usage-report.service.js';
 import { startWebDashboard } from '../core/web-dashboard.service.js';
 import { runOrReportNoAdapter } from './no-adapter-guard.utils.js';
 import {
@@ -2600,8 +2600,7 @@ export function buildProgram(): Command {
       // on; the console under the operator shell's own.
       const userDir = configDirOrRefuse(repoPath);
       if (userDir === undefined) return;
-      const claudeDirs = [userDir, process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')];
-      const report = buildUsageReport(db, repoPath, { since, claudeDirs });
+      const report = buildUsageReport(db, repoPath, { since, claudeDirs: claudeDirsOf(userDir) });
       // JSON.stringify leaves DEL and C1 raw, and a terminal can read U+009B
       // as CSI; outside a string literal JSON has no such character, so the
       // `\uXXXX` form parses back to the same value (decision 68).
@@ -2627,22 +2626,17 @@ export function buildProgram(): Command {
       if (callingSession(db) || callingConductor()) {
         return refuse('`pup retro` is operator-only; sessions and the conductor cannot run it.');
       }
-      const days = Number(opts.since);
-      if (!Number.isFinite(days) || days <= 0) {
+      const now = new Date();
+      const since = retroWindowStart(opts.since, now);
+      if (!since) {
         return refuse(
           `--since needs a number of days such as 7, not "${sanitizeReason(opts.since)}".`,
         );
       }
       const userDir = configDirOrRefuse(repoPath);
       if (userDir === undefined) return;
-      const claudeDirs = [userDir, process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')];
-      const now = new Date();
-      const report = buildRetro(db, repoPath, {
-        since: new Date(now.getTime() - days * 86_400_000),
-        claudeDirs,
-      });
-      const outDir = opts.out ? resolve(opts.out) : join(projectPaths(repoPath).root, 'retro');
-      const files = writeRetro(report, outDir, now);
+      const report = buildRetro(db, repoPath, { since, claudeDirs: claudeDirsOf(userDir) });
+      const files = writeRetro(report, repoPath, opts.out, now);
       console.log(opts.json ? serializeRetro(report) : formatRetro(report));
       console.error(
         `Written to ${sanitizeReason(files.markdown)} and ${sanitizeReason(files.json)}`,

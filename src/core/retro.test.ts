@@ -153,7 +153,7 @@ describe('pup retro', () => {
     const report = retro();
     const outDir = join(claudeDir, 'out');
 
-    const files = writeRetro(report, outDir, new Date(T0));
+    const files = writeRetro(report, REPO, outDir, new Date(T0));
     const everything = [
       serializeRetro(report),
       formatRetro(report),
@@ -179,7 +179,7 @@ describe('pup retro', () => {
     transcript([call('r1', 0)]);
     const outDir = join(claudeDir, 'out');
 
-    const files = writeRetro(retro(), outDir, new Date('2026-10-21T08:00:00Z'));
+    const files = writeRetro(retro(), REPO, outDir, new Date('2026-10-21T08:00:00Z'));
 
     expect(files.markdown).toBe(join(outDir, 'retro-2026-10-21.md'));
     expect(statSync(files.json).mode & 0o777).toBe(0o600);
