@@ -2104,24 +2104,35 @@ function isRerunnable(error: unknown): boolean {
   return status === 1 && !signal && code === undefined;
 }
 
+/** The machine's 1-minute load average; a platform with none reads 0. */
+function oneMinuteLoad(): number {
+  return loadavg()[0] ?? 0;
+}
+
 /**
- * Refuse the merge when a test run ran out `GATE_COMMAND_TIMEOUT_MS` while the
- * machine's 1-minute load average is at or over its available parallelism, the
- * same ceiling `waitForLoad` uses (decision 138, amending 7): at that load the
+ * Refuse the merge when a test run ran out `GATE_COMMAND_TIMEOUT_MS` on a
+ * machine other runs had loaded (decision 138, amending 7): at that load the
  * suite runs longer than its cap whatever the branch holds, so the timeout says
- * nothing about the code. It throws, so it climbs no rung of the reject cap and
- * injects nothing into the session, and the gate stops before any merge or
- * push. A timeout under the cores, and every failure that is not a timeout,
- * returns, and the stage fails and rejects as before.
+ * nothing about the code. Loaded means three things, at the ceiling
+ * `waitForLoad` uses: the 1-minute load average was at or over the available
+ * parallelism before the suites started (`loadBefore`), it still is, and
+ * another process holds a test slot or waits for one (`testRunsElsewhere`).
+ * That last is the evidence a session's own tests cannot make: a suite that
+ * fills the cores by itself until its cap is still rejected. It throws, so it
+ * climbs no rung of the reject cap and injects nothing into the session, and
+ * the gate stops before any merge or push. Every other timeout, and every
+ * failure that is not a timeout, returns, and the stage fails and rejects as
+ * before.
  */
-function refuseTimeoutUnderLoad(error: unknown): void {
+function refuseTimeoutUnderLoad(error: unknown, loadBefore: number): void {
   if ((error as { code?: string }).code !== 'ETIMEDOUT') return;
-  const load = loadavg()[0] ?? 0;
   const cores = availableParallelism();
-  if (load < cores) return;
+  const load = oneMinuteLoad();
+  if (loadBefore < cores || load < cores || !testRunsElsewhere()) return;
   throw new Error(
     `The test stage timed out under load ${load.toFixed(1)}, at or over the machine's ` +
-      `${cores} cores; nothing was merged; run pup merge again when the load falls.`,
+      `${cores} cores, with other test runs going; nothing was merged; run pup merge again ` +
+      'when the load falls.',
   );
 }
 
@@ -2141,7 +2152,7 @@ function refuseTimeoutUnderLoad(error: unknown): void {
  * unless a test passes its own.
  */
 export async function waitForLoad(
-  readLoad: () => number = () => loadavg()[0] ?? 0,
+  readLoad: () => number = oneMinuteLoad,
   ceiling = availableParallelism(),
   othersTesting: () => boolean = () => testRunsElsewhere(),
 ): Promise<void> {
@@ -2248,7 +2259,9 @@ export async function measureBranch(
     const started = Date.now();
     const first = await runCommand(command, cwd);
     if (first === undefined) return timedSince(started, { stage, status: 'pass' });
-    if (command.stage === 'test') refuseTimeoutUnderLoad(first);
+    // Only a test stage reads `loadBeforeSuites`, and every one runs after it
+    // is set below.
+    if (command.stage === 'test') refuseTimeoutUnderLoad(first, loadBeforeSuites);
     if (command.stage !== 'test' || !isRerunnable(first)) {
       return timedSince(started, { stage, status: 'fail', detail: commandFailureDetail(first) });
     }
@@ -2324,6 +2337,9 @@ export async function measureBranch(
   // Before the slot and before the stages that run alongside the suites, so
   // the load measured is the machine's and not this gate's own children.
   if (hasSuite && req.wait) await waitForLoad();
+  // Read here for the same reason: a test run that times out counts as timed
+  // out under load only if the machine was loaded before it (decision 138).
+  const loadBeforeSuites = oneMinuteLoad();
   const coverageAdapter = req.adapters.find((a) => a.coverage);
   const covered =
     test && coverageAdapter === primary ? primary?.coveredTest?.(capabilityContext) : undefined;
