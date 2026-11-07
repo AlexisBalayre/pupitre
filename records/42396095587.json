@@ -1,0 +1,131 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-07T17:31:09.857Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42396095587",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42396095587",
+  "actor": "AlexisBalayre",
+  "commit_sha": "86bee65a98f3843b58374462c25f549be76dca7a",
+  "source": "pr",
+  "pr_number": 237,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/sandbox-utils.test.ts",
+      "line": "349",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The test comment cites \"Decision 132\", but the ADR was renumbered to 0136 in the last merge, and this reference was missed.",
+      "body": "**Stale ADR reference.** This new comment opens with `// Decision 132.` In 86bee65 the lifeline ADR was renumbered to `docs/adr/0136-a-gate-child-s-group-dies-with-pup-through-a.md`. Decision 0132 is now `docs/adr/0132-pup-land-no-audit-lets-several-lands-share-one.md`, an unrelated decision about `pup land --no-audit`, which is how `land.service.ts` and `land-squash.test.ts` cite it. A reader who follows this pointer ends up on the wrong decision. `src/core/sandbox.utils.ts` already cites decision 136 for the same behaviour, and ADR 0136 describes this exact vitest SIGTERM-then-SIGKILL scenario.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/86bee65a98f3843b58374462c25f549be76dca7a/src/core/sandbox-utils.test.ts#L349",
+      "suggestion": "  // Decision 136. The case that ran for three days: vitest stops a worker with"
+    },
+    {
+      "file": "src/core/sandbox.utils.ts",
+      "line": "213-216",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The comment says the command runs with fd 3 closed so that \"nothing it starts holds the lifeline open\". Copies of the child-side end cannot do that: the watcher's `read` on its socketpair end hits EOF once every copy of pup's end is closed, however many child-side copies exist. `3<&-` only keeps a stray fd (and a write path into pup's socket) away from the stage. The ADR's wording, \"nothing it starts inherits the lifeline\", is accurate; the code comment states the wrong reason.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/sandbox.utils.ts",
+      "line": "204",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "In the LIFELINE_SCRIPT JSDoc, \"The group is in a session of its own (see `runGateChild`)\" points at a comment that only says \"Its own process group\" next to `detached: true` and never mentions a session. The claim is true, but the pointer doesn't back it up. Drop the parenthetical or write \"(`detached: true`)\".",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/sandbox-utils.test.ts",
+      "line": "369",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The pup-killed test hard-codes vitest's 500 ms gap between SIGTERM and SIGKILL as a real sleep. It only covers the intended window while pup's SIGTERM grace stays longer than 500 ms. Naming the 500 ms, or asserting it is shorter than the grace constant, would turn the test red if the grace ever shrinks, instead of letting it pass while testing nothing.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/sandbox.utils.ts",
+      "line": "262-276",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Releasing the lifeline is spread over three listeners and a counter inside an already busy `runGateChild`, so shutdown logic now lives in both `settle` and `letGo`, and each comment points at the other. A small helper that owns the three-event release would keep `runGateChild` readable.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/sandbox.utils.ts",
+      "line": "331-334",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `Command failed:` and ETIMEDOUT messages now name the caller's command, not `invocation.*`, so on darwin they no longer show the `sandbox-exec` wrapper either. That could make a sandbox-profile failure harder to diagnose. The comment explains why the lifeline is hidden but doesn't say the sandbox wrapper is hidden too.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.2418365999999996,
+  "duration_ms": 399477,
+  "num_turns": 14,
+  "tokens": {
+    "input": 14,
+    "output": 8341,
+    "cache_read": 307148,
+    "cache_creation": 41002,
+    "total": 356505
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 60,
+      "output": 46891,
+      "cache_read": 1082568,
+      "cache_creation": 141773,
+      "cost_usd": 1.9864446
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 30,
+      "output": 7357,
+      "cache_read": 183020,
+      "cache_creation": 65384,
+      "cost_usd": 0.25539200000000006
+    }
+  ],
+  "permission_denials": []
+}
