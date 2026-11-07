@@ -284,11 +284,20 @@ describe('withTestSlot (decision 96)', () => {
       await worker.settled;
     });
 
-    it("holds no worker back with a dead gate's slot, reclaiming it", async () => {
+    /** Slot 0 a gate's whose pid is `gatePid`, slot 1 a live session's in another process. */
+    function gateBesideSession(gatePid: number): void {
       writeFileSync(
         join(dir, 'slot-0.lock'),
-        JSON.stringify({ kind: 'gate', label: 'gone', pid: deadPid(), token: 'x' }),
+        JSON.stringify({ kind: 'gate', label: 't-9', pid: gatePid, token: 'x' }),
       );
+      writeFileSync(
+        join(dir, 'slot-1.lock'),
+        JSON.stringify({ kind: 'worker', label: 'other', pid: process.ppid, token: 'y' }),
+      );
+    }
+
+    it("holds no worker back with a dead gate's slot, reclaiming it", async () => {
+      gateBesideSession(deadPid());
       const log: string[] = [];
       const held = run('worker', 's1', log);
       await tick();
@@ -298,6 +307,24 @@ describe('withTestSlot (decision 96)', () => {
         kind: 'worker',
         label: 's1',
       });
+      held.end();
+      await held.settled;
+    });
+
+    it("keeps a worker waiting on a live gate's slot, the control for the dead one", async () => {
+      gateBesideSession(process.ppid);
+      const log: string[] = [];
+      const held = run('worker', 's1', log);
+      await tick();
+
+      expect(log).toEqual([]);
+      expect(JSON.parse(readFileSync(join(dir, 'slot-0.lock'), 'utf8'))).toMatchObject({
+        kind: 'gate',
+        label: 't-9',
+      });
+      rmSync(join(dir, 'slot-0.lock'));
+      await tick();
+      expect(log).toEqual(['s1']);
       held.end();
       await held.settled;
     });
@@ -741,6 +768,41 @@ describe('runSessionTest (decision 96)', () => {
         'runs. Nothing ran; retry `pup session test`.',
     );
     expect(readdirSync(slots)).toEqual(['slot-0.lock']);
+  });
+
+  it('asks for a retry at `SESSION_SLOT_WAIT_MS` when no bound is named', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
+    const dir = tempDir('pup-session-test-');
+    const slots = join(dir, 'slots');
+    mkdirSync(slots);
+    writeFileSync(
+      join(slots, 'slot-0.lock'),
+      JSON.stringify({ kind: 'gate', label: 't-9', pid: process.ppid, token: 'x' }),
+    );
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    onTestFinished(() => errors.mockRestore());
+    let status: number | undefined;
+    void runSessionTest({
+      command: { stage: 'test', command: 'touch', args: [join(dir, 'ran')] },
+      args: [],
+      cwd: dir,
+      sessionId: 's1',
+      slots: { dir: slots },
+    }).then((answered) => {
+      status = answered;
+    });
+
+    await vi.advanceTimersByTimeAsync(SESSION_SLOT_WAIT_MS - 1000);
+    expect(status).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(status).toBe(SLOTS_BUSY_STATUS);
+    expect(errors).toHaveBeenCalledWith(
+      expect.stringMatching(/^No test slot came free in 480\.0s: /),
+    );
+    expect(existsSync(join(dir, 'ran'))).toBe(false);
   });
 
   it('bounds its wait under the 600 s a worker gives a Bash call', () => {

@@ -3,8 +3,8 @@
 - Status: accepted
 - Amends: [0096](0096-test-runs-queue-for-a-few-machine-wide.md)
 
-140. **A merge gate's test run takes the machine: no session takes a test slot while a gate
-    holds one (2026-11-07).**
+140. **A merge gate's test run takes the machine: no session takes a test slot while a gate holds
+    one (2026-11-07).**
     Amends decision 96. The machine has 2 test slots, and decision 96 served the gate first only
     while it waited: a gate's wait file held every worker back, but once the gate held one slot a
     session's `pup session test` took the other. With up to 6 workers testing and committing, the
@@ -14,18 +14,18 @@
     So a worker now takes a free slot only when no live gate waits for one and no live gate holds
     one (`withTestSlot`). It waits, polling each second as before, and starts once the gate's run
     ends and frees its slot. A gate is not held back by anything new: it still takes a free slot
-    beside a session's run already going, which is not stopped, and beside another project's
-    gate. Only a slot's holder decides this, read the way every slot is, so a dead gate's slot is
+    beside a session's run already going, which is not stopped, and beside another project's gate.
+    Only a slot's holder decides this, read the way every slot is, so a dead gate's slot is
     reclaimed and holds no worker back. A run with `PUP_TEST_SLOT` set still takes no slot, so a
     gate run inside a session's test run is unaffected.
-    A worker's wait is now bounded, where decision 96 left it unbounded. A gate's whole suite
-    runs before the worker's (10 minutes at the stage cap), back-to-back gates from several
-    projects could keep a worker out without end, and a worker's Bash call runs 600 s before it
-    is moved to the background. So `pup session test` waits at most 8 minutes
-    (`SESSION_SLOT_WAIT_MS`), then runs nothing, prints `No test slot came free in 480.0s: the
-    test slots are busy with merge gates or other sessions' runs. Nothing ran; retry ``pup
-    session test``.` and exits 75 (sysexits' `EX_TEMPFAIL`). Only the wait is bounded: a run that
-    starts late in it can still outlast the 600 s.
+    A worker's wait is now bounded, where decision 96 left it unbounded. A gate's whole suite runs
+    before the worker's (10 minutes at the stage cap), back-to-back gates from several projects
+    could keep a worker out without end, and a worker's Bash call runs 600 s before it is moved to
+    the background. So `pup session test` waits at most 8 minutes (`SESSION_SLOT_WAIT_MS`), then
+    runs nothing, prints `No test slot came free in 480.0s: the test slots are busy with merge
+    gates or other sessions' runs. Nothing ran; retry ``pup session test``.` and exits 75
+    (sysexits' `EX_TEMPFAIL`). Only the wait is bounded: a run that starts late in it can still
+    outlast the 600 s.
     The wait line names the gate first, since it is what the worker waits for whatever else is
     free: `Waiting for the merge gate for t-2 (pid 4343) to end its test run, beside session t-1
     (pid 4242).` With no gate holding a slot the line is decision 96's. A run was told once; a
@@ -36,22 +36,24 @@
     checkout's `.claude/project.env`, `pnpm test`, the full Vitest suite, with `bash -c`. The
     session's test guard reads only the Bash tool's command, `git commit ...`, so it neither
     refuses nor queues that run: every worker commit runs the full suite unqueued, beside the
-    gate's, and adds to the load measured above. It is not routed here: the
-    hook lives in `scripts/pre-commit`, outside this change, is installed per clone by copying,
-    and runs for human commits where no pup session or slot exists. Routing it, or narrowing a
-    session's commit-time suite to what the gate does not already run, is a follow-up; until then
-    this rule protects the gate from `pup session test` runs only.
+    gate's, and adds to the load measured above. It is not routed here: the hook lives in
+    `scripts/pre-commit`, outside this change, is installed per clone by copying, and runs for
+    human commits where no pup session or slot exists. Routing it, or narrowing a session's
+    commit-time suite to what the gate does not already run, is a follow-up; until then this rule
+    protects the gate from `pup session test` runs only.
     Ceilings: a gate's slot now keeps every worker's test run waiting, not one of two, so a gate
     run that hangs, or a live process holding a slot forged as a gate's, fails every session's
-    `pup session test` after its 8-minute wait until it ends; a gate's run is bounded by its stages' timeouts, and a forged slot is decision
-    96's ceiling already. The rule is fairness among cooperating sessions, as decision 96's
-    priority is, not a boundary.
+    `pup session test` after its 8-minute wait until it ends; a gate's run is bounded by its
+    stages' timeouts, and a forged slot is decision 96's ceiling already. The rule is fairness
+    among cooperating sessions, as decision 96's priority is, not a boundary.
     Tests: a worker waits while a gate holds one slot and the other is free, and starts when the
-    gate ends; a dead gate's slot is reclaimed and holds no worker back; a `pup session test`
-    whose wait outlasts its bound runs nothing, prints the retry line and answers 75, and the
-    bound is under 600 s; a worker waiting beside a gate and a session prints the gate's line and stays
+    gate ends; a dead gate's slot is reclaimed and holds no worker back, where a live gate's keeps
+    it waiting; a `pup session test` whose wait outlasts its bound runs nothing, prints the retry
+    line and answers 75, at the 8-minute default as at a bound a test names, and the default is
+    under 600 s; a worker waiting beside a gate and a session prints the gate's line and stays
     waiting after the session's slot frees; a gate takes a free slot beside a worker's run; a
-    worker that began waiting on two sessions is told again when a gate queues ahead of it; a
-    gate served before longer-waiting workers now keeps both of them out until its run ends. The
+    worker that began waiting on two sessions is told again when a gate queues ahead of it; a gate
+    served before longer-waiting workers now keeps both of them out until its run ends. The
     session protocol and the conductor's context say a session's run waits while a gate runs its
-    tests.
+    tests, and the session protocol says an exit 75 means the slots stayed busy: retry later, it
+    is not a test failure.

@@ -436,9 +436,11 @@ function buildContextMarkdown(
       '- Work only inside this worktree, on the current branch. Never touch `.claude/`.\n' +
       '- Run tests only with `pup session test <test files>`: it runs the project’s test ' +
       'command on the files you name once one of the machine’s test slots is free and no ' +
-      'merge gate is running its tests, and says whom it is waiting for. Running the test runner directly is refused. Name only the ' +
-      'tests related to what you changed: the test files for the code you touched and for ' +
-      'the code that imports it. Leave the full suite to the merge gate, which runs it.\n' +
+      'merge gate is running its tests, and says whom it is waiting for. If it exits 75, the ' +
+      'slots stayed busy and nothing ran: retry later, it is not a test failure. Running the ' +
+      'test runner directly is refused. Name only the tests related to what you changed: the ' +
+      'test files for the code you touched and for the code that imports it. Leave the full ' +
+      'suite to the merge gate, which runs it.\n' +
       '- Run commits, the pre-commit hook they trigger and `pup session test` in the ' +
       'foreground, never with `run_in_background`, and give a long one a Bash `timeout` of up ' +
       'to 600000 ms so it is not moved to the background. Never end a turn while a ' +
