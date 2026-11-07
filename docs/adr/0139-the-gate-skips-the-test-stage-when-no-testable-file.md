@@ -33,9 +33,19 @@
     *What is left off the list.* `README.md` is left off because Rust's `include_str!` and
     doctest globs read it. `skills/` is left off because a plugin's tests check its
     `SKILL.md`. `.github/actions/` is left off because an action's own tests live there.
-    The list is fixed rather than read from the project, so a project cannot widen it. It
-    does not see a suite configured to read one of these files, such as a doctest glob
-    over `docs/`.
+    *Every repo, and the wrong skips.* The list is fixed in pupitre rather than read from
+    the project, so a session cannot widen it, and it applies to every repo pup manages, not
+    only to pupitre. The proof below covers pupitre's own suite only. In another repo, a test
+    command that reads a listed file is skipped wrongly on a change of only listed files.
+    Examples are a test that checks an ADR index under `docs/`, `pytest --doctest-glob` over
+    Markdown, and a VitePress, MkDocs, Sphinx or MyST build run from the test script. There
+    is no per-project switch. An operator in such a repo avoids the wrong skip in one of two
+    ways. The first is to run that check from the build or lint script, which the gate still
+    runs on every change. The second is to read a `skipped: no testable file changed` test
+    stage in the gate report as untested, and run the suite by hand before `pup land`.
+    When the adapter declares no test command at all, the test stage keeps its usual
+    `not measured — no command available`, because a change of only listed files does not
+    explain the missing test stage.
     *The proof.* Before the list was written, src/ was searched for every test that names
     `docs/adr`, `SKILL.md`, `.github` or a root prose file. `decision-record.test.ts`,
     `overlap.test.ts`, `routing-utils.test.ts`, `pre-commit.test.ts` and the gate tests
@@ -55,6 +65,7 @@
     Tests: a change of only `.github/workflows/ci.yml` and an ADR merges under a test command
     that always fails. Its test and coverage stages are skipped with `no testable file changed
     (2 files)`, coverage is never measured, and build, lint, the scope audit and the diff size
-    pass. The full test stage runs, and fails, in four cases: one source file is changed beside
+    pass. The same change under an adapter with no test command reports
+    `not measured — no command available`. The full test stage runs, and fails, in four cases: one source file is changed beside
     a workflow, a source file is renamed into `docs/`, a Docusaurus config compiles the changed
     Markdown, and a symlink reaches the changed path.

@@ -2646,7 +2646,11 @@ export async function measureBranch(
   // Reported in today's order, stopping where today's run stopped.
   const { results: suiteResults, folded } = await suites;
   for (const [stage, result] of [
-    ['test', suiteResults.get('test') ?? (untested ? notTested('test') : undefined)],
+    // With no test command to skip, the stage says so, as on any other change.
+    [
+      'test',
+      suiteResults.get('test') ?? (untested && commandFor('test') ? notTested('test') : undefined),
+    ],
     ['lint', await linted],
   ] as const) {
     const reported = result ?? notMeasured(stage);

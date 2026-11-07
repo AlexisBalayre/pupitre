@@ -99,6 +99,25 @@ describe('the test stage on a change no test reads (decision 139)', { timeout: 2
     expect(coverage).not.toHaveBeenCalled();
   });
 
+  it('reports a missing test command as not measured, not as skipped for the change', async () => {
+    const worktree = seedSession(db, repo, { scopeIn: ['**'] });
+    commitIn(worktree, '.github/workflows/ci.yml', 'on: push\n');
+    const adapter = debtAdapter({
+      gateCommands: () => [
+        { stage: 'build', command: 'true', args: [] },
+        { stage: 'lint', command: 'true', args: [] },
+      ],
+    });
+
+    const outcome = await merge(adapter);
+
+    expect(untimed(outcome.report.stages)).toContainEqual({
+      stage: 'test',
+      status: 'skipped',
+      detail: 'not measured — no command available',
+    });
+  });
+
   it('runs the full test stage when one changed file is off the list', async () => {
     const worktree = seedSession(db, repo, { scopeIn: ['**'] });
     commitIn(worktree, '.github/workflows/ci.yml', 'on: push\n');
