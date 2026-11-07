@@ -169,40 +169,6 @@ describe('pythonAdapter', () => {
     expect(coverable).toEqual(['app.py']);
   });
 
-  // The diff-size split counts as test only what pytest, as the test stage,
-  // collects under both checkouts' python_files (decision 143).
-  it('collects as test only what python_files names, and never conftest.py', () => {
-    const repo = makeRepo({ 'pytest.ini': '[pytest]\n' });
-
-    expect(
-      pythonAdapter.testFiles?.(localContext(repo), [
-        'test_app.py',
-        'pkg/app_test.py',
-        'pkg/conftest.py',
-        'app.py',
-        'check_app.py',
-        'test_app.txt',
-      ]),
-    ).toEqual(['test_app.py', 'pkg/app_test.py']);
-  });
-
-  it('collects as test only what both checkouts call a test', () => {
-    const declaring = (patterns: string) =>
-      `[project]\nname = "x"\n\n[tool.pytest.ini_options]\npython_files = [${patterns}]\n`;
-    const configPath = makeRepo({ 'pyproject.toml': declaring('"check_*.py", "test_*.py"') });
-    const measurePath = makeRepo({ 'pyproject.toml': declaring('"check_*.py"') });
-
-    expect(
-      pythonAdapter.testFiles?.({ configPath, measurePath }, ['check_app.py', 'test_payments.py']),
-    ).toEqual(['check_app.py']);
-  });
-
-  it('collects nothing where the trusted checkout declares no pytest stage', () => {
-    const repo = makeRepo({ 'pyproject.toml': '[project]\nname = "x"\n' });
-
-    expect(pythonAdapter.testFiles?.(localContext(repo), ['test_app.py'])).toEqual([]);
-  });
-
   it('reads python_files spread across a multi-line TOML array', () => {
     const pyproject = [
       '[tool.pytest.ini_options]',

@@ -56,23 +56,16 @@
     against the whole path, extended to match it up to any `/`, not once per ancestor
     directory, which made a deep path cost its depth times over. A file in a
     nested package is its own runner's (decision 58) and is never a root test.
-    **Python** answers from pytest. Only where the trusted checkout declares the pytest stage
-    `gateCommands` runs (`declaresPytest`, now shared by both), and only a `.py` whose name
-    both checkouts' `python_files` match, through decision 31's `pytestFilePatterns`, its
-    canary and its wildcard budget. `conftest.py` stays exempt from coverage but is not a test
-    here: pytest loads it and never collects it. Decision 110 counted `test_*.py` as source
-    because pytest, unlike vitest, passes a collected module that holds no test; that
-    difference stands, and what keeps a Python test file honest is the reach check, which
-    counts a test production code names as source. So that check now reads a dotted module
-    path: a token's part between dots, not only its prefix, is a name, so `from
-    pkg.test_big import X`, `from .test_big import X` and `import_module("pkg.test_big")`
-    reach `test_big.py`, one more linear pass over each token. A test's name is its file name
-    without whatever extension it has, no longer without `.ts` alone.
-    Ceilings, stated. pytest collects less than `python_files` says where `testpaths`,
-    `norecursedirs`, `addopts`' `--ignore` or a `conftest.py`'s `collect_ignore` narrows it,
-    none of which is read (the last is code), so a `test_*.py` there still counts as test; the
-    reach check is what bounds it, as above. A vitest config that is a link collects
-    nothing, and one named by `--config` is never read, as the script rule refuses the flag.
+    A collected test is named by its file name without whatever extension it has, no longer
+    without `.ts` alone, so the reach check finds `./big.spec.js` naming `big.spec.tsx`.
+    **Python does not answer**, and keeps decision 110's rule: every `.py`, `test_*.py`
+    included, counts as source. Reading pytest's `python_files` the same way was weighed and
+    refused. Vitest fails a collected file with no test in it, so collection proves a file is
+    test code. Pytest collects a module with no test and passes it, so a `test_*.py` it
+    collects can hold production code and pass the test stage. Counting it as test would
+    loosen decision 110, not close its item.
+    Ceilings, stated. A vitest config that is a link collects nothing, and one named by
+    `--config` is never read, as the script rule refuses the flag.
     The gate's own branch is measured
     by the main checkout's adapter (the metric-scope lesson of decision 39), so this change
     first applies to the merge after it lands. Tests: in the TypeScript adapter, an `include`
@@ -83,12 +76,8 @@
     narrowing script, another runner, a function config, a run-time include, a spread exclude,
     a braced exclude, a spread `test`, `projects`, `dir`, `root` and a workspace file each
     collect nothing, and a branch narrowing its include or excluding a file drops it; in the
-    Python adapter, the defaults collect `test_app.py` and `pkg/app_test.py` but not
-    `conftest.py`, only what both checkouts' `python_files` name is collected, and no
-    declared pytest collects nothing; in the gate, `scripts/x.test.ts` outside the trusted
-    include counts as source while `src/a.test.ts` counts as test, with a second adapter
-    claiming every file not asked, `check_app.py` under a trusted `python_files =
-    ["check_*.py"]` counts as test and `test_app.py` as source, a collected test production
-    code imports by `pkg.test_big` or `.test_rel` counts as source, a file renamed and
-    rewritten onto a collected name from one not collected counts as source, and a deleted
-    collected test counts as test.
+    gate, `scripts/x.test.ts` outside the trusted include counts as source while
+    `src/a.test.ts` counts as test, with a second adapter claiming every file not asked, a
+    collected `big.spec.tsx` production code imports by `./big.spec.js` counts as source while
+    an uncollected `a.test.ts` does too, a file renamed and rewritten onto a collected name
+    from one not collected counts as source, and a deleted collected test counts as test.

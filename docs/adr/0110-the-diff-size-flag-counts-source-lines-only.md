@@ -105,8 +105,9 @@
     reads, tests and docs included. `docs/04-gates-and-debt.md` described the stage as "diff
     size vs task size", which the code never had; it now says what is counted. Owed, each its
     own task. A `*.test.ts` outside the runner's `include` (here anything outside `src/**`)
-    still counted as test; decision 143 closes it with the adapters' `testFiles`, read from
-    both checkouts' runner config. Production code reaching a test file through a specifier that does not spell its
+    still counts as test, and closing that needs the trusted checkout's runner config from the
+    adapters (vitest's `include`, pytest's `python_files` from both checkouts, decision 31's
+    pattern). Production code reaching a test file through a specifier that does not spell its
     name still counts it as test until the gate reads the module graph rather than names: one
     built at run time (`import('./big' + '.test.js')`), an alias mapped in package.json
     `imports` or tsconfig `paths` (`"#t/*": "./src/*.test.ts"` with `import '#t/big'`), a string
@@ -148,3 +149,6 @@
     off and the rename limit at 1 in the shared config (where the numstat, which leaves the
     limit to that config, also counts the delete) while a test renamed onto a test stays a test,
     a root lockfile counts nothing and a lockfile-named file elsewhere still counts.
+
+Note (2026-11-07): decision 143 closes the owed runner-collection item. Only TypeScript reads
+its runner's config; Python keeps this decision's rule, so a `test_*.py` still counts as source.

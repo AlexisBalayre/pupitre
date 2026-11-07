@@ -587,13 +587,6 @@ function filesNaming(
         if (byName.has(token.slice(0, dot))) names.add(token.slice(0, dot));
       }
       if (token.length <= longest && byName.has(token)) names.add(token);
-      // A Python module is named by a dotted path whose last part, or any
-      // part, is its name: `pkg.test_big`, `.test_big`, `pkg.test_big.f`.
-      for (let start = token.indexOf('.') + 1; start > 0; start = token.indexOf('.', start) + 1) {
-        const end = token.indexOf('.', start);
-        const segment = token.slice(start, end === -1 ? undefined : end);
-        if (segment.length <= longest && byName.has(segment)) names.add(segment);
-      }
     }
     const hits = new Set([...names].flatMap((name) => byName.get(name) ?? []));
     hits.delete(importer);

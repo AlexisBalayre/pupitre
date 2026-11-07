@@ -116,7 +116,6 @@ import {
 } from '@test/helpers/merge-gate.mock.js';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import { formatDuration } from '../adapters/capability.utils.js';
-import { pythonAdapter } from '../adapters/python.adapter.js';
 import type { Adapter, CapabilityContext } from '../adapters/types/adapter.types.js';
 import { typescriptAdapter } from '../adapters/typescript.adapter.js';
 import { killSession, steerPane } from '../claude/session-runtime.service.js';
@@ -590,25 +589,6 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       stage: 'diff-size',
       status: 'pass',
       detail: '5 source + 3 test + 0 docs changed lines',
-    });
-  });
-
-  it('counts a Python test the trusted python_files collects as test, and one it does not as source', async () => {
-    commitIn(
-      repo,
-      'pyproject.toml',
-      '[project]\nname = "x"\n\n[tool.pytest.ini_options]\npython_files = ["check_*.py"]\n',
-    );
-    const worktree = seedSession(db, repo);
-    commitIn(worktree, 'src/check_app.py', 'x = 1\n'.repeat(2));
-    commitIn(worktree, 'src/test_app.py', 'x = 1\n'.repeat(4));
-
-    const outcome = await merge({ ...passingAdapter, testFiles: pythonAdapter.testFiles });
-
-    expect(untimed(outcome.report.stages)).toContainEqual({
-      stage: 'diff-size',
-      status: 'pass',
-      detail: '4 source + 2 test + 0 docs changed lines',
     });
   });
 
@@ -1560,22 +1540,21 @@ describe('countChangedLines', () => {
     sh(repo, 'git', 'commit', '-q', '-m', 'from the index');
   }
 
-  // A runner's answer replaces the spelling (decision 143), and a Python test
-  // module is named by a dotted path whose part, not prefix, is its name.
-  it('counts a collected test production code imports by a dotted path as source', () => {
+  // A runner's answer replaces the spelling (decision 143), and a collected
+  // test is named without whatever extension it has, not `.ts` alone.
+  it('counts a collected test production code imports as source', () => {
     const repo = initRepo();
     sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
     commitBlobs(repo, [
-      ['100644', 'pkg/test_big.py', 'X = 1\n'.repeat(5)],
-      ['100644', 'pkg/test_rel.py', 'Y = 1\n'.repeat(3)],
-      ['100644', 'pkg/test_kept.py', 'def test_k(): pass\n'.repeat(2)],
-      ['100644', 'pkg/main.py', 'from pkg.test_big import X\nfrom .test_rel import Y\n'],
+      ['100644', 'src/big.spec.tsx', 'export const X = 1;\n'.repeat(5)],
+      ['100644', 'src/kept.spec.tsx', 'it("k", () => {});\n'.repeat(2)],
+      ['100644', 'src/main.ts', "import { X } from './big.spec.js';\n"],
       ['100644', 'src/a.test.ts', 'x\n'],
     ]);
-    const collects = (files: string[]) => files.filter((file) => /\/test_[^/]*\.py$/.test(file));
+    const collects = (files: string[]) => files.filter((file) => file.endsWith('.spec.tsx'));
 
     expect(countChangedLines(repo, 'main', 'feature', collects)).toEqual({
-      source: 11,
+      source: 7,
       test: 2,
       docs: 0,
       forged: [],
@@ -1584,11 +1563,11 @@ describe('countChangedLines', () => {
 
   it('counts a deleted test the runner collected as test', () => {
     const repo = initRepo();
-    commitIn(repo, 'pkg/test_old.py', 'def test_o(): pass\n'.repeat(7));
+    commitIn(repo, 'src/old.spec.ts', 'it("o", () => {});\n'.repeat(7));
     sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
-    sh(repo, 'git', 'rm', '-q', 'pkg/test_old.py');
+    sh(repo, 'git', 'rm', '-q', 'src/old.spec.ts');
     sh(repo, 'git', 'commit', '-q', '-m', 'drop the old test');
-    const collects = (files: string[]) => files.filter((file) => /\/test_[^/]*\.py$/.test(file));
+    const collects = (files: string[]) => files.filter((file) => file.endsWith('.spec.ts'));
 
     expect(countChangedLines(repo, 'main', 'feature', collects)).toEqual({
       source: 0,
@@ -1600,11 +1579,15 @@ describe('countChangedLines', () => {
 
   it('counts a file renamed onto a collected name from one the runner does not collect as source', () => {
     const repo = initRepo();
-    commitIn(repo, 'pkg/payments.py', 'RATE = 1\n'.repeat(20));
+    commitIn(repo, 'src/payments.ts', 'export const RATE = 1;\n'.repeat(20));
     sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
-    sh(repo, 'git', 'mv', 'pkg/payments.py', 'pkg/test_payments.py');
-    commitIn(repo, 'pkg/test_payments.py', `${'RATE = 1\n'.repeat(20)}${'FEE = 2\n'.repeat(5)}`);
-    const collects = (files: string[]) => files.filter((file) => /\/test_[^/]*\.py$/.test(file));
+    sh(repo, 'git', 'mv', 'src/payments.ts', 'src/payments.spec.ts');
+    commitIn(
+      repo,
+      'src/payments.spec.ts',
+      `${'export const RATE = 1;\n'.repeat(20)}${'export const FEE = 2;\n'.repeat(5)}`,
+    );
+    const collects = (files: string[]) => files.filter((file) => file.endsWith('.spec.ts'));
 
     expect(countChangedLines(repo, 'main', 'feature', collects)).toEqual({
       source: 5,
