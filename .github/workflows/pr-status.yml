@@ -152,10 +152,6 @@ jobs:
               ) {
                 return "pr/review-open";
               }
-              // A quick or area-restricted pass is no merge signal.
-              if (review?.state === "success" && review.description?.startsWith("partial review")) {
-                return "pr/ci-pending";
-              }
               const contexts = new Set(combined.statuses.map((s) => s.context));
               const runs = (
                 await github.paginate(github.rest.checks.listForRef, {
@@ -169,6 +165,11 @@ jobs:
                 combined.statuses.some((s) => ["failure", "error"].includes(s.state))
               ) {
                 return "pr/ci-failing";
+              }
+              // A quick or area-restricted pass is no merge signal. It comes after the failure scan
+              // so a partial round cannot hide a failing check.
+              if (review?.state === "success" && review.description?.startsWith("partial review")) {
+                return "pr/ci-pending";
               }
               // The review preflight leaves a final "Not reviewed" pending status on a comment-only
               // push: nothing is running, so it does not count as pending.
