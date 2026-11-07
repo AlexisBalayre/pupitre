@@ -1,0 +1,64 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-07T09:04:08.109Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42358032944",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42358032944",
+  "actor": "AlexisBalayre",
+  "commit_sha": "92ca985e83fdd689413daf7a1a0b163d035bf0bd",
+  "source": "pr",
+  "pr_number": 235,
+  "action": "review",
+  "reviewers_spawned": [],
+  "reviewers_returned": [],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "conventions",
+    "context",
+    "maintainability",
+    "docs",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "platform",
+      "description": "Every Bash invocation failed before executing with the sandbox error `apply-seccomp: write /proc/self/setgroups (nested userns is capability-restricted; caller must provide CAP_SYS_ADMIN): Permission denied` (seen on `gh pr view 235 --json ...`, `git diff --stat b98e363..HEAD`, and `git rev-parse HEAD`, each retried). So the PR diff, head SHA, intent, and steering context could not be read."
+    },
+    {
+      "component": "orchestrator",
+      "description": "No reviewers were spawned: they share the same sandbox, so their mandated diff reads (`gh pr diff`, `git diff <merge_base>..HEAD`) would fail identically, and a review not grounded in the diff would be speculative. From Glob alone, the change appears to be commit 92ca985, which moves the src/adapters tests to test/unit/adapters/ (11 files) and the shared mock to test/helpers/temp-dir.mock.ts. This round reviewed nothing; re-run once the runner's sandbox can start."
+    }
+  ],
+  "comments_posted_actual": 0,
+  "is_error": true,
+  "incomplete_reason": "Not reviewed: no reviewer was spawned; re-run",
+  "cost_usd": 0.3925924,
+  "duration_ms": 34454,
+  "num_turns": 7,
+  "tokens": {
+    "input": 12,
+    "output": 2219,
+    "cache_read": 187422,
+    "cache_creation": 38835,
+    "total": 228488
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 12,
+      "output": 2219,
+      "cache_read": 187422,
+      "cache_creation": 38835,
+      "cost_usd": 0.3925924
+    }
+  ],
+  "permission_denials": []
+}
