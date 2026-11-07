@@ -1,6 +1,7 @@
 # 0107. Every compiled settings file turns off the Artifact and Workflow tools and prompt suggestions, and a worker's denies the tools and the skill listing it never uses (2026-10-27).
 
 - Status: accepted
+- Amended by: [0135](0135-a-worker-turns-off-auto-memory-the-claude-ai-connectors.md)
 
 107. **Every compiled settings file turns off the Artifact and Workflow tools and prompt
     suggestions, and a worker's denies the tools and the skill listing it never uses

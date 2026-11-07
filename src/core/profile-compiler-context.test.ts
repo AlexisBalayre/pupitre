@@ -222,11 +222,34 @@ describe('compileProfile', () => {
       JSON.parse(ProfileCompiler.compileProfile(input).files['settings.json'] as string);
 
     it('turns off the Artifact and Workflow tools and prompt suggestions', () => {
-      expect(settingsOf(makeInput()).env).toEqual({
+      expect(settingsOf(makeInput()).env).toMatchObject({
         CLAUDE_CODE_DISABLE_ARTIFACT: '1',
         CLAUDE_CODE_DISABLE_WORKFLOWS: '1',
         CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: 'false',
       });
+    });
+
+    // Decision 135: the operator's memory, connectors and browser are theirs.
+    it('turns off auto-memory, the claude.ai connectors and Claude in Chrome', () => {
+      const settings = settingsOf(makeInput());
+
+      expect(settings.autoMemoryEnabled).toBe(false);
+      expect(settings.env).toEqual({
+        CLAUDE_CODE_DISABLE_ARTIFACT: '1',
+        CLAUDE_CODE_DISABLE_WORKFLOWS: '1',
+        CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: 'false',
+        ENABLE_CLAUDEAI_MCP_SERVERS: 'false',
+        CLAUDE_CODE_ENABLE_CFC: 'false',
+      });
+    });
+
+    it('keeps the tools a worker reaches peers and delegates reading with', () => {
+      const deny = settingsOf(makeInput({ base: DEFAULT_BASE_PROFILE, role: undefined }))
+        .permissions.deny;
+
+      for (const tool of ['SendMessage', 'ListAgents', 'Agent']) {
+        expect(deny).not.toContain(tool);
+      }
     });
 
     it('denies by bare name the tools a worker never calls, and the Skill tool', () => {
@@ -239,6 +262,18 @@ describe('compileProfile', () => {
         'SendFeedback',
         'ScheduleWakeup',
         'ReportFindings',
+        'CronCreate',
+        'CronDelete',
+        'CronList',
+        'DesignSync',
+        'EndConversation',
+        'EnterWorktree',
+        'ExitWorktree',
+        'NotebookEdit',
+        'PushNotification',
+        'RemoteTrigger',
+        'WebFetch',
+        'WebSearch',
         'Skill',
       ]);
     });
@@ -258,6 +293,18 @@ describe('compileProfile', () => {
           'SendFeedback',
           'ScheduleWakeup',
           'ReportFindings',
+          'CronCreate',
+          'CronDelete',
+          'CronList',
+          'DesignSync',
+          'EndConversation',
+          'EnterWorktree',
+          'ExitWorktree',
+          'NotebookEdit',
+          'PushNotification',
+          'RemoteTrigger',
+          'WebFetch',
+          'WebSearch',
         ]);
       }
     });
@@ -275,6 +322,18 @@ describe('compileProfile', () => {
       'SendFeedback',
       'ScheduleWakeup',
       'ReportFindings',
+      'CronCreate',
+      'CronDelete',
+      'CronList',
+      'DesignSync',
+      'EndConversation',
+      'EnterWorktree',
+      'ExitWorktree',
+      'NotebookEdit',
+      'PushNotification',
+      'RemoteTrigger',
+      'WebFetch',
+      'WebSearch',
       'Skill',
     ];
 
@@ -287,10 +346,10 @@ describe('compileProfile', () => {
     it("unions a child layer's deny with its parent's", () => {
       const input = makeInput({
         base: { name: 'base', deny: ['Agent'] },
-        role: { name: 'copiste', deny: ['WebFetch', 'Agent'] },
+        role: { name: 'copiste', deny: ['Monitor', 'Agent'] },
       });
 
-      expect(denyOf(input)).toEqual([...WORKER_DENY, 'Agent', 'WebFetch']);
+      expect(denyOf(input)).toEqual([...WORKER_DENY, 'Agent', 'Monitor']);
     });
 
     it('keeps a base-only deny when no role is given', () => {
@@ -973,14 +1032,17 @@ describe('compileConductorProfile', () => {
   });
 
   // Decision 107: the conductor gets a worker's env block and keeps its tools.
-  it('turns off the Artifact and Workflow tools and prompt suggestions', () => {
+  // Decision 135: and keeps the operator's memory, connectors and browser.
+  it('turns off the Artifact and Workflow tools and prompt suggestions, and nothing else', () => {
     const compiled = ProfileCompiler.compileConductorProfile(conductorInput);
 
-    expect(JSON.parse(compiled.files['settings.json'] as string).env).toEqual({
+    const settings = JSON.parse(compiled.files['settings.json'] as string);
+    expect(settings.env).toEqual({
       CLAUDE_CODE_DISABLE_ARTIFACT: '1',
       CLAUDE_CODE_DISABLE_WORKFLOWS: '1',
       CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: 'false',
     });
+    expect(Object.keys(settings).sort()).toEqual(['env', 'hooks', 'permissions']);
   });
 
   // The conductor's graph is main's, pinned the way a session's is pinned to
