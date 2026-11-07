@@ -1,0 +1,100 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-07T22:20:26.109Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42419835529",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42419835529",
+  "actor": "AlexisBalayre",
+  "commit_sha": "cfed1a4c6b317a1f17b23e3ae8ffa76923f46d3d",
+  "source": "pr",
+  "pr_number": 256,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "tools/review/src/review-response.script.ts",
+      "line": "75-80",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "botReviews counts every Bot review as a round, but the poster's fallback path (postEach, POST /pulls/{n}/comments) makes GitHub create one extra empty-body review per inline comment, so any round that fell back adds N phantom rounds and pushes that round's threads, minors and every later round onto the wrong row.",
+      "body": "**Concern.** `roundsOf` and `summarize` both assume that *the n-th bot review is round n*, as the `BotReview` doc in `review-response.utils.ts` (L13) says. That only holds on the poster's batch path. When the batch `POST /pulls/{n}/reviews` fails, `post-review.script.ts` (L216-L224) falls back to `postEach` (L154-L175). `postEach` posts each anchored comment on its own through `POST /pulls/{n}/comments`, then posts the summary review with no comments. GitHub wraps every standalone review comment in its own `PullRequestReview`: state `COMMENTED`, empty body, author the bot. `GET /pulls/{n}/reviews` returns those wrappers, and `botReviews` keeps all of them:\n\n```ts\nreturn reviews.filter((r) => r.user?.type === \"Bot\").map((r) => ({ pr, submittedAt: r.submitted_at, minors: minorsIn(r.body) }));\n```\n\n**Failure scenario.** Round 1 of a PR falls back with 2 anchored importants and 3 minors. Its bot reviews become `[wrapper(c1), wrapper(c2), summary(minors 3)]`:\n- `roundsOf` puts thread c1 at index 0 and c2 at index 1, because each thread's own wrapper is the first review at or after its `createdAt`.\n- `summarize` books the 3 minors under round 3.\n- The PR's real round 2 lands at index 3, under `4+`.\n\nThe fallback fires whenever GitHub rejects an anchor in the batch, typically because the head moved after checkout. The table only warns on the poster side, so the numbers come out wrong with no error. No test fixture includes an empty-body wrapper review, so nothing pins this.\n\n**Fix.** Count only the poster's summary reviews. Every body the poster writes starts with `REVIEW_HEADING` (`## Claude code review`, `post-review.script.ts` L20), and the heading has been there since the poster was introduced. Wrapper reviews have empty bodies, so they drop out. The fallback threads' `createdAt` then falls before the summary review's `submittedAt`, and they map to the right round. This also keeps other bots' reviews out of the round count.\n\nThe suggestion below inlines the heading literal. Exporting `REVIEW_HEADING` from a shared utils module instead would stop it drifting from the poster. Also update the `BotReview` doc to match.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/cfed1a4c6b317a1f17b23e3ae8ffa76923f46d3d/tools/review/src/review-response.script.ts#L75-L80\n\n_Confidence is medium: the wrapper-review behavior comes from what is known of GitHub's REST API and could not be exercised in this static review._",
+      "suggestion": null
+    },
+    {
+      "file": "tools/review/src/review-response.utils.ts",
+      "line": "61-72",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `roundsOf` doc says a thread's round is the first bot review submitted at or after its first comment, but leaves out the fallback on L72: when no review qualifies, the thread goes to the PR's last review, or to round 0 when the PR has none.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "tools/review/src/review-response.utils.ts",
+      "line": "53",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `reviewsByPr` doc (\"the n-th is round n\") repeats the `BotReview` and `roundsOf` docs. The only extra fact it gives, \"oldest first\", is already visible in the `.sort` on L57, so drop the comment.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.2338688999999996,
+  "duration_ms": 173364,
+  "num_turns": 12,
+  "tokens": {
+    "input": 10,
+    "output": 9688,
+    "cache_read": 203702,
+    "cache_creation": 46716,
+    "total": 260116
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 38,
+      "output": 19435,
+      "cache_read": 386709,
+      "cache_creation": 89186,
+      "cost_usd": 1.0522718
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 28,
+      "output": 4493,
+      "cache_read": 148611,
+      "cache_creation": 48700,
+      "cost_usd": 0.1815971
+    }
+  ],
+  "permission_denials": []
+}
