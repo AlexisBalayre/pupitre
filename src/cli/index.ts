@@ -133,6 +133,7 @@ import {
   SessionCapReachedError,
   steerSession,
 } from '../core/session-lifecycle.service.js';
+import { type RetireOutcome, retireSession } from '../core/session-retire.service.js';
 import {
   describeSlotWait,
   runSessionTest,
@@ -2342,6 +2343,47 @@ export function buildProgram(): Command {
       }
       if (outcome.audit) printAuditOutcome(db, outcome.audit, repoPath);
       else console.log('Audit skipped: run `pup audit` once after the last land.');
+    });
+  program
+    .command('retire <session>')
+    .description(
+      'After its PR was closed because another PR re-landed the work: clean up the merged session',
+    )
+    .option('--superseded-by <pr>', 'the merged PR that re-landed the work: its number or url')
+    .action(async (session: string, opts: { supersededBy?: string }) => {
+      const { repoPath, db } = project();
+      // Declaring work superseded is a judgement about what landed, and the
+      // command deletes a branch: the operator's call (decision 132).
+      if (callingSession(db) || callingConductor()) {
+        return refuse('`pup retire` is operator-only; sessions and the conductor cannot run it.');
+      }
+      if (opts.supersededBy === undefined) {
+        return refuse(
+          '`pup retire` needs `--superseded-by <pr>`, the merged PR that re-landed the work.',
+        );
+      }
+      let outcome: RetireOutcome;
+      try {
+        outcome = await retireSession(db, {
+          repoPath,
+          sessionId: session,
+          supersededBy: opts.supersededBy,
+          wait: true,
+        });
+      } catch (error) {
+        if (error instanceof GateInterruptedError) throw error;
+        return refuseScrubbed(error);
+      }
+      console.log(
+        `Retired ${sanitizeReason(session)}: ${outcome.prUrl} was closed, superseded by ` +
+          `${outcome.supersededBy}.`,
+      );
+      if (outcome.removedWorktree) console.log('Removed the session worktree.');
+      if (outcome.keptBranch !== undefined) {
+        console.log(
+          `Kept ${sanitizeReason(outcome.keptBranch)}: it holds commits past the sha its PR carried.`,
+        );
+      }
     });
   program
     .command('fix <session>')

@@ -42,6 +42,7 @@ the ones refused to sessions and conductors. Explain before you act on anything 
 | Review a branch | `pup review` (risk-ordered queue), `pup review <session>` |
 | Gate and open the PR | `pup merge <session> --pr`; add `--accept-debt "<reason>" --review-by "<condition>"` for flagged stages. Always `--pr`: without it the gate fast-forwards local main |
 | Wait on and answer the CI review | `pup ci wait <session\|pr> [--timeout <minutes>]` blocks until the review of the PR's head finished and prints one digest line ending in the next step; `pup fix <session>` hands its open threads back to the worker, and the re-gate replies on and resolves them |
+| Close out a PR another PR re-landed | `pup retire <session> --superseded-by <pr>` (operator-only): the session's PR must be closed unmerged and `<pr>` (number or url) merged into the same target; removes the worktree and branch and records the superseding PR |
 | Debt and decisions | `pup debt`, `pup debt close <n>`, `pup log [module]`, `pup audit` |
 | Delegate the whole loop | `pup conductor start` (Opus 5.5 high; `--model`, `--effort`, `--worker-model` override; `--max-sessions <n>` sets the session cap, default 4), `pup conductor stop` |
 | Project brief and registry | `pup brief show|edit`, `pup project list|dormant|wake <id>` |

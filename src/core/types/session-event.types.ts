@@ -41,6 +41,12 @@ export interface EventPayloads {
    */
   landed: { sha: string; target: string; prUrl: string };
   /**
+   * `pup retire` saw the session's PR closed unmerged on GitHub and the PR the
+   * operator named as its successor merged, and removed the session's worktree
+   * and branch (decision 132).
+   */
+  retired: { prUrl: string; supersededBy: string };
+  /**
    * `pup fix` handed the PR's CI review back to the session's worker
    * (decision 90): the head the bot reviewed, the ids of the open threads the
    * kickoff listed, and the session's rejection count as the round started,

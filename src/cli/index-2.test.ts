@@ -97,6 +97,8 @@ vi.mock('../core/merge-gate.service.js', () => ({
 }));
 // The land's own git and gh work is land.test.ts's, against a real repo.
 vi.mock('../core/land.service.js', () => ({ landSession: vi.fn() }));
+// So is the retire's, in session-retire.test.ts.
+vi.mock('../core/session-retire.service.js', () => ({ retireSession: vi.fn() }));
 // So is the fix round's, in fix-round.test.ts; `pup status` asks GitHub nothing here.
 vi.mock('../core/fix-round.service.js', () => ({
   ciReviewLookup: vi.fn(),
@@ -183,6 +185,7 @@ import {
   recordSteerMessage,
   steerSession,
 } from '../core/session-lifecycle.service.js';
+import { retireSession } from '../core/session-retire.service.js';
 import type { LandOutcome } from '../core/types/land.types.js';
 import {
   firstCall,
@@ -1781,6 +1784,91 @@ describe('CLI commands', () => {
       buildProgram().parse(['status'], { from: 'user' });
 
       expect(logs.join('\n')).not.toContain('PR opened');
+    });
+  });
+
+  describe('retire', () => {
+    const PR = 'https://github.com/o/r/pull/7';
+    const SUPERSEDING = 'https://github.com/o/r/pull/9';
+
+    it('refuses a session running it from its worktree, retiring nothing', async () => {
+      const repo = initRepo();
+      const worktree = join(repo, '.worktrees', 's1');
+      mkdirSync(worktree, { recursive: true });
+      seedSession(repo, 's1', worktree);
+      useCwd(worktree);
+
+      await buildProgram().parseAsync(['retire', 's1', '--superseded-by', '9'], { from: 'user' });
+
+      expect(errors).toEqual([
+        '`pup retire` is operator-only; sessions and the conductor cannot run it.',
+      ]);
+      expect(process.exitCode).toBe(1);
+      expect(retireSession).not.toHaveBeenCalled();
+    });
+
+    it('refuses the conductor, retiring nothing', async () => {
+      const repo = initRepo();
+      useCwd(repo);
+      vi.stubEnv('PUP_CONDUCTOR', projectId(repo));
+
+      await buildProgram().parseAsync(['retire', 's1', '--superseded-by', '9'], { from: 'user' });
+
+      expect(errors).toEqual([
+        '`pup retire` is operator-only; sessions and the conductor cannot run it.',
+      ]);
+      expect(process.exitCode).toBe(1);
+      expect(retireSession).not.toHaveBeenCalled();
+    });
+
+    it('refuses without --superseded-by, retiring nothing', async () => {
+      useCwd(initRepo());
+
+      await buildProgram().parseAsync(['retire', 's1'], { from: 'user' });
+
+      expect(errors).toEqual([
+        '`pup retire` needs `--superseded-by <pr>`, the merged PR that re-landed the work.',
+      ]);
+      expect(process.exitCode).toBe(1);
+      expect(retireSession).not.toHaveBeenCalled();
+    });
+
+    it('retires and reports what it removed and kept', async () => {
+      const repo = initRepo();
+      useCwd(repo);
+      vi.mocked(retireSession).mockResolvedValue({
+        prUrl: PR,
+        supersededBy: SUPERSEDING,
+        removedWorktree: true,
+        keptBranch: 'pup/s1',
+      });
+
+      await buildProgram().parseAsync(['retire', 's1', '--superseded-by', '9'], { from: 'user' });
+
+      expect(firstCall(retireSession)[1]).toEqual({
+        repoPath: repo,
+        sessionId: 's1',
+        supersededBy: '9',
+        wait: true,
+      });
+      expect(logs).toEqual([
+        `Retired s1: ${PR} was closed, superseded by ${SUPERSEDING}.`,
+        'Removed the session worktree.',
+        'Kept pup/s1: it holds commits past the sha its PR carried.',
+      ]);
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it('prints a refusal on one line with its control characters gone', async () => {
+      useCwd(initRepo());
+      vi.mocked(retireSession).mockImplementation(() => {
+        throw new Error('PR is OPEN\u001b[2J on GitHub, not CLOSED. Nothing was retired.');
+      });
+
+      await buildProgram().parseAsync(['retire', 's1', '--superseded-by', '9'], { from: 'user' });
+
+      expect(errors).toEqual(['PR is OPEN [2J on GitHub, not CLOSED. Nothing was retired.']);
+      expect(process.exitCode).toBe(1);
     });
   });
 
