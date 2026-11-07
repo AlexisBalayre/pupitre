@@ -56,8 +56,18 @@ export const DIFF_SIZE_DEPENDENCY_FILES = [
   ...LOCKFILE_NAMES,
 ];
 
-/** Per-file rise in decision points above which the complexity stage flags (docs/04 stage 4). */
+/**
+ * Per-file rise in decision points above which the complexity stage flags a file
+ * the before-measure holds (docs/04 stage 4).
+ */
 export const COMPLEXITY_FILE_FLAG_DELTA = 15;
+
+/**
+ * Decision points above which the complexity stage flags a file absent from the
+ * before-measure: it has nothing to rise from, so it is judged on its own count
+ * (decision 145).
+ */
+export const COMPLEXITY_NEW_FILE_FLAG_CAP = 50;
 
 /** Findings/blocks quoted in a flagged debt stage's detail; the rest is elided. */
 export const DEBT_DETAIL_SAMPLES = 3;

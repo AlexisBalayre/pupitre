@@ -10,6 +10,7 @@ import type {
 import { repoCoverageRatio } from './coverage.utils.js';
 import {
   COMPLEXITY_FILE_FLAG_DELTA,
+  COMPLEXITY_NEW_FILE_FLAG_CAP,
   COVERAGE_RATIO_EPSILON,
   DEBT_DETAIL_SAMPLES,
   DUPLICATION_RULE_ID,
@@ -399,14 +400,31 @@ function judgeComplexity(measured: GateDebtMeasurement, sessionId: string): Stag
   }
   const before = new Map(measured.complexity.before.map((f) => [f.file, f.complexity]));
   const risen = measured.complexity.after
-    .map((f) => ({ ...f, delta: f.complexity - (before.get(f.file) ?? 0) }))
-    .filter((f) => f.delta > COMPLEXITY_FILE_FLAG_DELTA);
+    .map((f) => {
+      const was = before.get(f.file);
+      return was === undefined
+        ? {
+            file: f.file,
+            points: f.complexity,
+            limit: COMPLEXITY_NEW_FILE_FLAG_CAP,
+            label: `new file, ${f.complexity} decision points`,
+          }
+        : {
+            file: f.file,
+            points: f.complexity - was,
+            limit: COMPLEXITY_FILE_FLAG_DELTA,
+            label: `+${f.complexity - was}`,
+          };
+    })
+    .filter((f) => f.points > f.limit);
   if (risen.length === 0) {
-    const detail = `no touched file rose by more than ${COMPLEXITY_FILE_FLAG_DELTA} decision points`;
+    const detail =
+      `no touched file rose by more than ${COMPLEXITY_FILE_FLAG_DELTA} decision points, ` +
+      `and no new file holds more than ${COMPLEXITY_NEW_FILE_FLAG_CAP}`;
     return verdict(stage, 'pass', detail);
   }
-  const quoted = samples(risen.map((f) => `${quotePath(f.file)} (+${f.delta})`));
-  const points = risen.reduce((sum, f) => sum + f.delta, 0);
+  const quoted = samples(risen.map((f) => `${quotePath(f.file)} (${f.label})`));
+  const points = risen.reduce((sum, f) => sum + f.points, 0);
   return verdict(
     stage,
     'flagged',
