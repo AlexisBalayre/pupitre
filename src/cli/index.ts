@@ -77,7 +77,7 @@ import { getProfileLayer, listProfileLayers } from '../core/profile-store.servic
 import { listProjects, putProjectToSleep, wakeProject } from '../core/project.service.js';
 import { renderReportHtml } from '../core/report.service.js';
 import { buildRetro, retroWindowStart, writeRetro } from '../core/retro.service.js';
-import { formatRetro, serializeRetro } from '../core/retro-signals.utils.js';
+import { formatRetro, serializeRetro } from '../core/retro-signals.service.js';
 import { buildReviewQueue, buildSessionReview } from '../core/review.service.js';
 import { asTier, taskTier } from '../core/routing.utils.js';
 import {

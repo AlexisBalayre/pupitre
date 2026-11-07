@@ -30,7 +30,7 @@ const MODEL_PRICES: Record<string, { input: number; output: number }> = {
 /** What a cached token costs, as a multiple of the model's uncached input price. */
 const CACHE_READ_MULTIPLIER = 0.1;
 const CACHE_WRITE_5M_MULTIPLIER = 1.25;
-export const CACHE_WRITE_1H_MULTIPLIER = 2;
+const CACHE_WRITE_1H_MULTIPLIER = 2;
 
 /** A request after a gap longer than this finds its cache expired (the 1h tier). */
 const IDLE_RECACHE_MS = 60 * 60 * 1000;
@@ -104,6 +104,7 @@ export interface Bucket {
   floors: number[];
   recaches: number;
   recachedTokens: number;
+  recachedCost: number;
 }
 
 // A session writes its own transcript, so a field that is counted, coerced or
@@ -229,6 +230,8 @@ interface ToolResult {
 
 export interface FileRead {
   path: string;
+  /** The offset and limit asked for: reading a file in chunks is not reading it again. */
+  range: string;
   tokens: number;
 }
 
@@ -238,7 +241,7 @@ export interface Transcript {
   before: Call | undefined;
   toolNames: Map<string, string>;
   toolResults: ToolResult[];
-  readPaths: Map<string, string>;
+  readPaths: Map<string, { path: string; range: string }>;
   reads: FileRead[];
   /** Compactions inside the window. */
   compactions: number;
@@ -263,17 +266,19 @@ function noteOrigin(state: Transcript, entry: TranscriptEntry): void {
   state.conductor = textOf(entry.message?.content).includes('# Pupitre conductor ');
 }
 
-function readPathOf(input: unknown): string | undefined {
-  const path = (input as { file_path?: unknown } | null)?.file_path;
-  return typeof path === 'string' && path ? path : undefined;
+function readOf(input: unknown): { path: string; range: string } | undefined {
+  const { file_path: path, offset, limit } = (input ?? {}) as Record<string, unknown>;
+  if (typeof path !== 'string' || !path) return undefined;
+  const num = (v: unknown): number | '' => (typeof v === 'number' ? v : '');
+  return { path, range: `${num(offset)}:${num(limit)}` };
 }
 
 function noteAssistant(state: Transcript, entry: TranscriptEntry, at: number): void {
   for (const block of blocksOf(entry.message?.content)) {
     if (block.type === 'tool_use' && block.id && typeof block.name === 'string') {
       state.toolNames.set(block.id, block.name);
-      const path = block.name === 'Read' ? readPathOf(block.input) : undefined;
-      if (path !== undefined) state.readPaths.set(block.id, path);
+      const read = block.name === 'Read' ? readOf(block.input) : undefined;
+      if (read) state.readPaths.set(block.id, read);
     }
   }
   const call = parseCall(entry, at);
@@ -290,8 +295,8 @@ function noteToolResults(state: Transcript, entry: TranscriptEntry): void {
       tokens,
       callsBefore: state.calls.size,
     });
-    const path = state.readPaths.get(block.tool_use_id ?? '');
-    if (path !== undefined) state.reads.push({ path, tokens });
+    const read = state.readPaths.get(block.tool_use_id ?? '');
+    if (read) state.reads.push({ ...read, tokens });
   }
 }
 
@@ -407,13 +412,14 @@ function bucketFor(buckets: Map<string, Bucket>, klass: UsageClass, call: Call):
     floors: [],
     recaches: 0,
     recachedTokens: 0,
+    recachedCost: 0,
   };
   buckets.set(key, bucket);
   return bucket;
 }
 
 /** Tokens a call wrote again after the cache expired idle, or 0 when it did not. */
-export function recachedTokens(call: Call, previous: Call | undefined): number {
+function recachedTokens(call: Call, previous: Call | undefined): number {
   if (!previous || call.at - previous.at <= IDLE_RECACHE_MS) return 0;
   const written = call.write5m + call.write1h;
   return written > call.read ? written : 0;
@@ -430,6 +436,7 @@ export function addCalls(buckets: Map<string, Bucket>, klass: UsageClass, read: 
     if (again > 0) {
       bucket.recaches += 1;
       bucket.recachedTokens += again;
+      bucket.recachedCost += costOf(call).write;
     }
     previous = call;
   }

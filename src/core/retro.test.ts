@@ -1,4 +1,12 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
@@ -13,8 +21,9 @@ import {
   type RetroReport,
   repoRelative,
   serializeRetro,
-} from './retro-signals.utils.js';
+} from './retro-signals.service.js';
 import { ensureProject } from './session.repository.js';
+import { priceOf } from './usage-report.service.js';
 
 const REPO = '/repo';
 const T0 = Date.parse('2026-10-20T10:00:00Z');
@@ -166,6 +175,83 @@ describe('pup retro', () => {
     expect(everything).not.toContain('curl');
   });
 
+  it('leaves an existing --out folder at its mode', () => {
+    transcript([call('r1', 0)]);
+    const outDir = join(claudeDir, 'shared');
+    mkdirSync(outDir);
+    chmodSync(outDir, 0o755);
+
+    writeRetro(retro(), REPO, outDir, new Date(T0));
+
+    expect(statSync(outDir).mode & 0o777).toBe(0o755);
+  });
+
+  it('prices re-caches as pup usage does, by cache tier', () => {
+    const tier = (id: string, ms: number, write5m: number, write1h: number): string =>
+      JSON.stringify({
+        type: 'assistant',
+        requestId: id,
+        timestamp: at(ms),
+        effort: 'high',
+        message: {
+          model: 'claude-opus-5-5',
+          content: [],
+          usage: {
+            input_tokens: 1,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: write5m + write1h,
+            cache_creation: { ephemeral_1h_input_tokens: write1h },
+            output_tokens: 1,
+          },
+        },
+      });
+    transcript([tier('r1', 0, 0, 100), tier('r2', 2 * 3_600_000, 4_000, 1_000)]);
+
+    const row = retro().classes[0];
+    const perToken = (priceOf('claude-opus-5-5')?.input ?? 0) / 1e6;
+
+    expect(row?.recachedTokens).toBe(5_000);
+    expect(row?.recacheCost).toBeCloseTo(perToken * (4_000 * 1.25 + 1_000 * 2), 10);
+  });
+
+  it('gives a compaction in a session that began before the window an impact', () => {
+    const before = call('r0', -3_600_000);
+    transcript([
+      before,
+      call('r1', 0),
+      JSON.stringify({ type: 'system', subtype: 'compact_boundary', timestamp: at(5) }),
+      call('r2', 10),
+    ]);
+
+    const finding = retro().findings.find((f) => f.signal === 'context compactions');
+
+    expect(finding?.impactTokens).toBe(1_010);
+  });
+
+  it('does not count a file read in chunks as read again, but a true repeat is', () => {
+    const file = `${REPO}/.worktrees/w1/src/big.ts`;
+    const read = (n: number, input: Record<string, unknown>): string[] => [
+      call(`r${n}`, n * 10, { id: `t${n}`, name: 'Read', input: { file_path: file, ...input } }),
+      result(`t${n}`, n * 10 + 1, 'y'.repeat(400)),
+    ];
+    transcript([
+      ...read(1, { offset: 0, limit: 100 }),
+      ...read(2, { offset: 100, limit: 100 }),
+      ...read(3, { offset: 200, limit: 100 }),
+    ]);
+    expect(retro().filesReadRepeatedly).toBe(0);
+
+    transcript(
+      [
+        ...read(1, { offset: 0, limit: 100 }),
+        ...read(2, { offset: 0, limit: 100 }),
+        ...read(3, { offset: 0, limit: 100 }),
+      ],
+      'b.jsonl',
+    );
+    expect(retro().repeatedReads.map((r) => r.path)).toEqual(['src/big.ts']);
+  });
+
   it('copies only the fields it names', () => {
     const report = { ...retro(), prompt: SECRET } as RetroReport;
     report.carry = [
@@ -192,6 +278,14 @@ describe('repoRelative', () => {
     expect(repoRelative('/repo/src/a.ts', '/repo')).toBe('src/a.ts');
     expect(repoRelative('/repo/.worktrees/w1/src/a.ts', '/repo')).toBe('src/a.ts');
     expect(repoRelative('/home/me/private/notes.md', '/repo')).toBe('notes.md');
+  });
+
+  it('reduces a relative path that leaves the repo, or a home path, to its basename', () => {
+    expect(repoRelative('../other-repo/x.ts', '/repo')).toBe('x.ts');
+    expect(repoRelative('src/../../secret-project/x.ts', '/repo')).toBe('x.ts');
+    expect(repoRelative('~/secret-project/file.ts', '/repo')).toBe('file.ts');
+    expect(repoRelative('/Users/someone/secret-project/file.ts', '/repo')).toBe('file.ts');
+    expect(repoRelative('/repo/.worktrees/w1/../../../secret/x.ts', '/repo')).toBe('x.ts');
   });
 
   it('replaces characters outside the path alphabet', () => {

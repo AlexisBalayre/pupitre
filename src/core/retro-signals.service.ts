@@ -1,13 +1,11 @@
-import { basename, isAbsolute, relative } from 'node:path';
+import { basename, isAbsolute, normalize, relative } from 'node:path';
 
 import {
   addCalls,
   addToolCarry,
   type Bucket,
-  CACHE_WRITE_1H_MULTIPLIER,
   contextOf,
   percentile,
-  priceOf,
   type ScannedTranscript,
   type ToolCarry,
   type UsageClass,
@@ -47,6 +45,7 @@ export interface ClassRow {
   recachedTokens: number;
   recacheCost: number;
   compactions: number;
+  medianContext: number;
   firstRequestFloor: number;
 }
 
@@ -89,8 +88,10 @@ function sizeBucket(tokens: number): string {
 }
 
 /** A path inside the repo or one of its worktrees, relative to that root; outside it, the basename only. */
-export function repoRelative(path: string, repoPath: string): string {
-  if (!isAbsolute(path)) return label(path);
+export function repoRelative(raw: string, repoPath: string): string {
+  const path = normalize(raw);
+  // A relative path that climbs out, or a home path, names a directory outside the repo.
+  if (!isAbsolute(path)) return label(/^(\.\.|~)(\/|$)/.test(path) ? basename(path) : path);
   const worktree = path.match(
     new RegExp(`^${repoPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/\\.worktrees/[^/]+/(.+)$`),
   );
@@ -136,13 +137,9 @@ export function classRows(scanned: ScannedTranscript[]): ClassRow[] {
         cacheHitRate: context > 0 ? sum(calls.map((c) => c.read)) / context : 0,
         recaches: sum(mine.map((b) => b.recaches)),
         recachedTokens: sum(mine.map((b) => b.recachedTokens)),
-        recacheCost: sum(
-          mine.map(
-            (b) =>
-              (b.recachedTokens * (priceOf(b.model)?.input ?? 0) * CACHE_WRITE_1H_MULTIPLIER) / 1e6,
-          ),
-        ),
+        recacheCost: sum(mine.map((b) => b.recachedCost)),
         compactions: sum(items.map(({ read }) => read.compactions)),
+        medianContext: percentile(calls.map(contextOf), 0.5),
         firstRequestFloor: percentile(
           mine.flatMap((b) => b.floors),
           0.5,
@@ -160,12 +157,15 @@ export function repeatedReads(
   const byPath = new Map<string, RepeatedRead>();
   let files = 0;
   for (const { read } of scanned) {
-    const perFile = new Map<string, number[]>();
-    for (const { path, tokens } of read.reads) {
-      const key = repoRelative(path, repoPath);
-      perFile.set(key, [...(perFile.get(key) ?? []), tokens]);
+    const perFile = new Map<string, { path: string; sizes: number[] }>();
+    for (const { path, range, tokens } of read.reads) {
+      const shown = repoRelative(path, repoPath);
+      const key = `${shown}\u0000${range}`;
+      const entry = perFile.get(key) ?? { path: shown, sizes: [] };
+      entry.sizes.push(tokens);
+      perFile.set(key, entry);
     }
-    for (const [path, sizes] of perFile) {
+    for (const { path, sizes } of perFile.values()) {
       if (sizes.length < REPEATED_READS) continue;
       files += 1;
       const row = byPath.get(path) ?? { path, sessions: 0, reads: 0, rereadTokens: 0 };
@@ -215,8 +215,8 @@ function classFindings(row: ClassRow): RetroFinding[] {
   if (row.compactions > 0) {
     found.push({
       signal: 'context compactions',
-      impactTokens: row.compactions * row.firstRequestFloor,
-      evidence: `${row.class}: ${row.compactions} compactions, median first-request context ${Math.round(row.firstRequestFloor)} tokens`,
+      impactTokens: row.compactions * row.medianContext,
+      evidence: `${row.class}: ${row.compactions} compactions, median context ${Math.round(row.medianContext)} tokens`,
       why: 'a compaction rewrites the summary and rebuilds the cache, and the work after it starts from a lossy context',
       fix: 'split the task earlier or lower the compaction threshold for this class',
     });
@@ -303,6 +303,7 @@ export function serializeRetro(report: RetroReport): string {
         recachedTokens: finite(c.recachedTokens),
         recacheCost: finite(c.recacheCost),
         compactions: finite(c.compactions),
+        medianContext: finite(c.medianContext),
         firstRequestFloor: finite(c.firstRequestFloor),
       })),
       repeatedReads: report.repeatedReads.map((r) => ({
