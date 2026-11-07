@@ -1512,7 +1512,7 @@ describe('countChangedLines', () => {
   });
 });
 
-describe('pullRequestText (decision 136)', () => {
+describe('pullRequestText (decision 137)', () => {
   const report = { sessionId: SESSION_ID, passed: true, sandbox: 'test', stages: [] };
   const title = (goal: string, ownSubject: string | undefined): string =>
     pullRequestText(
@@ -1590,7 +1590,7 @@ describe('pullRequestText (decision 136)', () => {
   });
 });
 
-describe('firstOwnSubject (decision 136)', () => {
+describe('firstOwnSubject (decision 137)', () => {
   it('skips a merge the session ran before its first commit', () => {
     const repo = initRepo();
     sh(repo, 'git', 'branch', 'side');

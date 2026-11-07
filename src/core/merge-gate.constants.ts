@@ -95,7 +95,7 @@ export const GATE_OUTPUT_TAIL_CHARS = 2000;
 /** Gate failures beyond this park the session as blocked (decision 7). */
 export const MAX_REJECTS_BEFORE_BLOCKED = 2;
 
-/** The longest PR title, the subject a squash merge writes on the target (decision 136). */
+/** The longest PR title, the subject a squash merge writes on the target (decision 137). */
 export const PR_TITLE_MAX_CHARS = 72;
 
 /** A sha as the gate pins it, which can then never read as an option. */

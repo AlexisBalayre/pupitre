@@ -2646,7 +2646,7 @@ export function commitSubjectsBetween(repoPath: string, targetSha: string, sha: 
  * What a subject read pins past `runGit`'s own, which already turn replace refs
  * off: the commit graph is a cache in the object store a session can write, and
  * a planted one can hand `log` other parents, so a merge would read as a commit
- * of the session's and a commit as a merge (decision 136, as decision 131 pins
+ * of the session's and a commit as a merge (decision 137, as decision 131 pins
  * it for `pup land`).
  */
 const SUBJECT_LOG_PINS = ['-c', 'core.commitGraph=false'];
@@ -2741,7 +2741,7 @@ export function recordMerge(
 
 /**
  * The title and body pupitre writes on a PR it opens or adopts. A squash merge
- * makes the title the subject of the commit on the target (decision 136), so
+ * makes the title the subject of the commit on the target (decision 137), so
  * it is `ownSubject`, the session's first non-merge commit subject, when that
  * fits, else the goal's first line.
  */
@@ -2938,7 +2938,7 @@ function scrubTitleText(text: string): string {
 
 /**
  * A title that reads as a commit subject: `ownSubject`, scrubbed, when it fits
- * and names no issue to close (it is session-written, decision 136), else the
+ * and names no issue to close (it is session-written, decision 137), else the
  * goal's first line scrubbed the same way, cut at the last word boundary that
  * fits with no ellipsis and no dangling separator. Empty when no boundary
  * fits, never a cut word.

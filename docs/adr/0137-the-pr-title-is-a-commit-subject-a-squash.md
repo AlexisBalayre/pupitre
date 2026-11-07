@@ -1,9 +1,9 @@
-# 0136. The PR title is a commit subject a squash merge can land as is (2026-11-07)
+# 0137. The PR title is a commit subject a squash merge can land as is (2026-11-07)
 
 - Status: accepted
 - Amends: [0026](0026-pup-merge-pr-same-gate-pull-request-instead.md)
 
-136. **The PR title is a commit subject a squash merge can land as is (2026-11-07).**
+137. **The PR title is a commit subject a squash merge can land as is (2026-11-07).**
     Amends decision 26, whose mechanical title was the task goal's first line, cut at 72
     characters with an ellipsis. The operator squash-merges on GitHub, and with the repo's "commit
     or PR title" setting a multi-commit PR's title becomes the subject of the one commit main
