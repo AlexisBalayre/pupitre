@@ -105,9 +105,8 @@
     reads, tests and docs included. `docs/04-gates-and-debt.md` described the stage as "diff
     size vs task size", which the code never had; it now says what is counted. Owed, each its
     own task. A `*.test.ts` outside the runner's `include` (here anything outside `src/**`)
-    still counts as test, and closing that needs the trusted checkout's runner config from the
-    adapters (vitest's `include`, pytest's `python_files` from both checkouts, decision 31's
-    pattern). Production code reaching a test file through a specifier that does not spell its
+    still counted as test; decision 143 closes it with the adapters' `testFiles`, read from
+    both checkouts' runner config. Production code reaching a test file through a specifier that does not spell its
     name still counts it as test until the gate reads the module graph rather than names: one
     built at run time (`import('./big' + '.test.js')`), an alias mapped in package.json
     `imports` or tsconfig `paths` (`"#t/*": "./src/*.test.ts"` with `import '#t/big'`), a string

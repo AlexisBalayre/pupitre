@@ -116,7 +116,9 @@ import {
 } from '@test/helpers/merge-gate.mock.js';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import { formatDuration } from '../adapters/capability.utils.js';
+import { pythonAdapter } from '../adapters/python.adapter.js';
 import type { Adapter, CapabilityContext } from '../adapters/types/adapter.types.js';
+import { typescriptAdapter } from '../adapters/typescript.adapter.js';
 import { killSession, steerPane } from '../claude/session-runtime.service.js';
 import { runUtility } from '../claude/utility.service.js';
 import { openStore } from './db.client.js';
@@ -563,6 +565,51 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(stage?.detail).toContain(
       '601 source + 50 test + 0 docs changed lines: source exceeds the 600-line flag',
     );
+  });
+
+  // Decision 143: where the test stage's adapter says what its runner
+  // collects, that is what counts as test, and no other adapter is asked.
+  it('counts a .test.ts outside the trusted vitest include as source', async () => {
+    commitIn(repo, 'package.json', JSON.stringify({ scripts: { test: 'vitest run' } }));
+    commitIn(
+      repo,
+      'vitest.config.ts',
+      "export default { test: { include: ['src/**/*.test.ts'] } };\n",
+    );
+    const worktree = seedSession(db, repo, { scopeIn: ['src/**', 'scripts/**'] });
+    commitIn(worktree, 'src/a.test.ts', 'x\n'.repeat(3));
+    commitIn(worktree, 'scripts/x.test.ts', 'x\n'.repeat(5));
+    const claimsEverything: Adapter = { ...passingAdapter, testFiles: (_, files) => files };
+
+    const outcome = await merge([
+      { ...passingAdapter, testFiles: typescriptAdapter.testFiles },
+      claimsEverything,
+    ]);
+
+    expect(untimed(outcome.report.stages)).toContainEqual({
+      stage: 'diff-size',
+      status: 'pass',
+      detail: '5 source + 3 test + 0 docs changed lines',
+    });
+  });
+
+  it('counts a Python test the trusted python_files collects as test, and one it does not as source', async () => {
+    commitIn(
+      repo,
+      'pyproject.toml',
+      '[project]\nname = "x"\n\n[tool.pytest.ini_options]\npython_files = ["check_*.py"]\n',
+    );
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/check_app.py', 'x = 1\n'.repeat(2));
+    commitIn(worktree, 'src/test_app.py', 'x = 1\n'.repeat(4));
+
+    const outcome = await merge({ ...passingAdapter, testFiles: pythonAdapter.testFiles });
+
+    expect(untimed(outcome.report.stages)).toContainEqual({
+      stage: 'diff-size',
+      status: 'pass',
+      detail: '4 source + 2 test + 0 docs changed lines',
+    });
   });
 
   it('refuses to run while another merge holds the lock', async () => {
@@ -1512,6 +1559,60 @@ describe('countChangedLines', () => {
     }
     sh(repo, 'git', 'commit', '-q', '-m', 'from the index');
   }
+
+  // A runner's answer replaces the spelling (decision 143), and a Python test
+  // module is named by a dotted path whose part, not prefix, is its name.
+  it('counts a collected test production code imports by a dotted path as source', () => {
+    const repo = initRepo();
+    sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
+    commitBlobs(repo, [
+      ['100644', 'pkg/test_big.py', 'X = 1\n'.repeat(5)],
+      ['100644', 'pkg/test_rel.py', 'Y = 1\n'.repeat(3)],
+      ['100644', 'pkg/test_kept.py', 'def test_k(): pass\n'.repeat(2)],
+      ['100644', 'pkg/main.py', 'from pkg.test_big import X\nfrom .test_rel import Y\n'],
+      ['100644', 'src/a.test.ts', 'x\n'],
+    ]);
+    const collects = (files: string[]) => files.filter((file) => /\/test_[^/]*\.py$/.test(file));
+
+    expect(countChangedLines(repo, 'main', 'feature', collects)).toEqual({
+      source: 11,
+      test: 2,
+      docs: 0,
+      forged: [],
+    });
+  });
+
+  it('counts a deleted test the runner collected as test', () => {
+    const repo = initRepo();
+    commitIn(repo, 'pkg/test_old.py', 'def test_o(): pass\n'.repeat(7));
+    sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
+    sh(repo, 'git', 'rm', '-q', 'pkg/test_old.py');
+    sh(repo, 'git', 'commit', '-q', '-m', 'drop the old test');
+    const collects = (files: string[]) => files.filter((file) => /\/test_[^/]*\.py$/.test(file));
+
+    expect(countChangedLines(repo, 'main', 'feature', collects)).toEqual({
+      source: 0,
+      test: 7,
+      docs: 0,
+      forged: [],
+    });
+  });
+
+  it('counts a file renamed onto a collected name from one the runner does not collect as source', () => {
+    const repo = initRepo();
+    commitIn(repo, 'pkg/payments.py', 'RATE = 1\n'.repeat(20));
+    sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
+    sh(repo, 'git', 'mv', 'pkg/payments.py', 'pkg/test_payments.py');
+    commitIn(repo, 'pkg/test_payments.py', `${'RATE = 1\n'.repeat(20)}${'FEE = 2\n'.repeat(5)}`);
+    const collects = (files: string[]) => files.filter((file) => /\/test_[^/]*\.py$/.test(file));
+
+    expect(countChangedLines(repo, 'main', 'feature', collects)).toEqual({
+      source: 5,
+      test: 0,
+      docs: 0,
+      forged: [],
+    });
+  });
 
   // On macOS `core.precomposeUnicode`, which `git init` turns on and a session
   // can write into the shared config, rewrites an NFD `<rev>:<path>` to NFC,

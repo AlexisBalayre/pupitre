@@ -170,6 +170,13 @@ export interface Adapter {
    */
   coverableFiles?(ctx: CapabilityContext, files: string[]): string[];
   /**
+   * Which of `files` this adapter's test stage collects as test modules, read
+   * from the runner's config in both checkouts and by path alone, so a path a
+   * rename left behind is answered too. The diff-size split counts only these
+   * as test; without it the gate keeps the `*.test.ts` spelling (decision 143).
+   */
+  testFiles?(ctx: CapabilityContext, files: string[]): string[];
+  /**
    * The nested packages `files` touch, which every capability above leaves
    * out: the gate runs their own scripts and names what was dropped
    * (decisions 29, 59). An adapter without it has no nested packages.

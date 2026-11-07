@@ -278,6 +278,139 @@ describe('typescriptAdapter.coveredTest', () => {
   });
 });
 
+// The diff-size split counts as test only what the test stage's vitest run
+// collects, read from both checkouts (decision 143).
+describe('typescriptAdapter.testFiles', () => {
+  const plainVitest = JSON.stringify({ scripts: { test: 'vitest run' } });
+  const configWith = (test: string): string =>
+    `import { defineConfig } from 'vitest/config';\n\nexport default defineConfig({\n  test: ${test},\n});\n`;
+  const testFilesIn = (files: Record<string, string>, paths: string[]) =>
+    typescriptAdapter.testFiles?.(localContext(makeRepo(files)), paths);
+
+  it('collects only what the include names, so a .test.ts outside it is not a test', () => {
+    const files = {
+      'package.json': plainVitest,
+      'vitest.config.ts': configWith("{ include: ['src/**/*.test.ts'] }"),
+    };
+
+    expect(
+      testFilesIn(files, ['src/a.test.ts', 'src/deep/b.test.ts', 'scripts/x.test.ts', 'src/a.ts']),
+    ).toEqual(['src/a.test.ts', 'src/deep/b.test.ts']);
+  });
+
+  it("collects vitest's default include, past its default exclude, with no config", () => {
+    expect(
+      testFilesIn({ 'package.json': plainVitest }, [
+        'src/a.spec.tsx',
+        'b.test.js',
+        'src/c.test.mts',
+        'src/d.ts',
+        'node_modules/pkg/e.test.ts',
+        'dist/f.test.ts',
+        'vitest.config.test.ts',
+      ]),
+    ).toEqual(['src/a.spec.tsx', 'b.test.js', 'src/c.test.mts']);
+  });
+
+  it('reads vitest.config before vite.config, as vitest does', () => {
+    const files = {
+      'package.json': plainVitest,
+      'vite.config.ts': configWith("{ include: ['**/*.test.ts'] }"),
+      'vitest.config.mts': configWith("{ include: ['src/**/*.test.ts'] }"),
+    };
+
+    expect(testFilesIn(files, ['src/a.test.ts', 'scripts/x.test.ts'])).toEqual(['src/a.test.ts']);
+  });
+
+  it('drops what an exclude names, as a file or as a directory above it', () => {
+    const files = {
+      'package.json': plainVitest,
+      'vitest.config.ts': configWith(
+        "{ include: ['src/**/*.test.ts'], exclude: ['src/legacy', 'src/**/slow.test.ts', '**/fixtures/**'] }",
+      ),
+    };
+
+    expect(
+      testFilesIn(files, [
+        'src/a.test.ts',
+        'src/legacy/b.test.ts',
+        'src/deep/slow.test.ts',
+        'src/fixtures/c.test.ts',
+      ]),
+    ).toEqual(['src/a.test.ts']);
+  });
+
+  // An include pattern it does not read collects nothing; any other config it
+  // cannot read leaves every file uncollected, which only counts more as source.
+  it('collects nothing an include pattern it cannot read in linear time names', () => {
+    const files = {
+      'package.json': plainVitest,
+      'vitest.config.ts': configWith(
+        "{ include: ['src/*a*b.test.ts', '**/x/**/c.test.ts', 'src/**/d.test.ts'] }",
+      ),
+    };
+
+    expect(testFilesIn(files, ['src/ab.test.ts', 'w/x/y/c.test.ts', 'src/d.test.ts'])).toEqual([
+      'src/d.test.ts',
+    ]);
+  });
+
+  it.each([
+    ['a test script that narrows the run', { test: 'vitest run src/core' }, undefined],
+    ['another runner', { test: 'jest' }, undefined],
+    ['a function config', undefined, 'export default defineConfig(() => ({}));\n'],
+    ['an include built at run time', undefined, configWith('{ include: patterns }')],
+    [
+      'an exclude spreading the defaults',
+      undefined,
+      configWith("{ exclude: [...configDefaults.exclude, 'e2e/**'] }"),
+    ],
+    ['an exclude with braces', undefined, configWith("{ exclude: ['src/{a,b}.test.ts'] }")],
+    ['a spread into test', undefined, configWith('{ ...shared }')],
+    ['projects', undefined, configWith("{ projects: ['packages/*'] }")],
+    ['a test dir', undefined, configWith("{ dir: 'src/core' }")],
+    ['a root', undefined, "export default { root: 'src', test: {} };\n"],
+  ])('collects nothing under %s', (_, scripts, config) => {
+    const files: Record<string, string> = {
+      'package.json': JSON.stringify({ scripts: scripts ?? { test: 'vitest run' } }),
+    };
+    if (config !== undefined) files['vitest.config.ts'] = config;
+
+    expect(testFilesIn(files, ['src/a.test.ts'])).toEqual([]);
+  });
+
+  it('collects nothing beside a workspace file', () => {
+    expect(
+      testFilesIn({ 'package.json': plainVitest, 'vitest.workspace.ts': 'export default [];\n' }, [
+        'src/a.test.ts',
+      ]),
+    ).toEqual([]);
+  });
+
+  // The run reads the measured checkout's config, so a branch that narrows it
+  // leaves a file vitest never collects.
+  it('collects only what both checkouts collect', () => {
+    const configPath = makeRepo({
+      'package.json': plainVitest,
+      'vitest.config.ts': configWith("{ include: ['src/**/*.test.ts'] }"),
+    });
+    const measurePath = makeRepo({
+      'package.json': plainVitest,
+      'vitest.config.ts': configWith(
+        "{ include: ['src/**/*.test.ts', 'scripts/**/*.test.ts'], exclude: ['src/big.test.ts'] }",
+      ),
+    });
+
+    expect(
+      typescriptAdapter.testFiles?.({ configPath, measurePath }, [
+        'src/a.test.ts',
+        'src/big.test.ts',
+        'scripts/x.test.ts',
+      ]),
+    ).toEqual(['src/a.test.ts']);
+  });
+});
+
 describe('typescriptAdapter.depGraph', () => {
   function makeSourceRepo(files: Record<string, string>): string {
     const dir = tempDir('pup-graph-');

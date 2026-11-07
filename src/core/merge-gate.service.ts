@@ -14,7 +14,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { availableParallelism, homedir, loadavg, tmpdir } from 'node:os';
-import { basename, dirname, join, resolve } from 'node:path';
+import { basename, dirname, extname, join, resolve } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import {
   failureSummary,
@@ -328,10 +328,11 @@ type DiffSizeKind = 'source' | 'test' | 'docs';
 
 /**
  * What the branch's tree tells the diff-size split beyond a path's own name
- * (decision 110): whether a symlink can reach the path, and whether a
- * Docusaurus config compiles the Markdown under `docs/`.
+ * (decision 110): every path on it, whether a symlink can reach the path, and
+ * whether a Docusaurus config compiles the Markdown under `docs/`.
  */
 interface BranchTree {
+  paths: string[];
   linked: (path: string) => boolean;
   markdownIsCode: boolean;
 }
@@ -396,6 +397,7 @@ function dependenciesNameDocusaurus(repoPath: string, branch: string): boolean {
  * ASCII may be a config or dependency file no case-insensitive match finds.
  */
 function readBranchTree(repoPath: string, branch: string): BranchTree {
+  const paths: string[] = [];
   const landings: string[] = [];
   let anywhere = false;
   let markdownIsCode = dependenciesNameDocusaurus(repoPath, branch);
@@ -405,6 +407,7 @@ function readBranchTree(repoPath: string, branch: string): BranchTree {
     const tab = entry.indexOf('\t');
     const [mode, , oid = ''] = entry.slice(0, tab).split(' ');
     const path = entry.slice(tab + 1);
+    paths.push(path);
     markdownIsCode ||= DIFF_SIZE_DOCUSAURUS_CONFIG.test(path) || NON_ASCII.test(basename(path));
     if (mode !== '120000') continue;
     markdownIsCode ||= DIFF_SIZE_DEPENDENCY_FILES.some(
@@ -424,6 +427,7 @@ function readBranchTree(repoPath: string, branch: string): BranchTree {
     landings.push(folded(lands));
   }
   return {
+    paths,
     linked: (path) => {
       const key = folded(path);
       return (
@@ -448,15 +452,18 @@ const UNSPELLABLE_NAME = /[^\w.$+@-]/;
  * Which part of the diff-size split a path counts toward (decision 110). A
  * symlink is source wherever it sits, and so is any path one can reach and any
  * path holding a character outside ASCII, which a link spelled in ASCII may
- * reach through the filesystem's folding. A test is only the trusted suffix
- * under a name a token can spell, and never a file renamed onto it from a name
- * that was not one, which would carry production code in under the test count.
- * `.md` under `docs/` is code where a Docusaurus config compiles it.
+ * reach through the filesystem's folding. A test is only a path the test
+ * stage's runner collects, or the trusted suffix where its adapter cannot say
+ * (`collected` undefined, decision 143), under a name a token can spell, and
+ * never a file renamed onto it from a name that was not one, which would carry
+ * production code in under the test count. `.md` under `docs/` is code where a
+ * Docusaurus config compiles it.
  */
 function diffSizeKind(
   path: string,
   entry: RawDiffEntry | undefined,
   tree: BranchTree,
+  collected: Set<string> | undefined,
 ): DiffSizeKind {
   if (entry?.mode === '120000' || NON_ASCII.test(path) || tree.linked(path)) return 'source';
   if (
@@ -467,14 +474,20 @@ function diffSizeKind(
     return 'docs';
   }
   const isTest = (candidate: string): boolean =>
-    candidate.endsWith(DIFF_SIZE_TEST_SUFFIX) && !UNSPELLABLE_NAME.test(basename(candidate));
+    (collected ? collected.has(candidate) : candidate.endsWith(DIFF_SIZE_TEST_SUFFIX)) &&
+    !UNSPELLABLE_NAME.test(basename(candidate));
   if (isTest(path) && (entry?.renamedFrom === undefined || isTest(entry.renamedFrom))) {
     return 'test';
   }
   return 'source';
 }
 
-const testStem = (path: string): string => basename(path).slice(0, -'.ts'.length);
+/** A test's name as a specifier spells it: its file name without the extension. */
+const testStem = (path: string): string => {
+  const name = basename(path);
+  const extension = extname(name);
+  return extension ? name.slice(0, -extension.length) : name;
+};
 
 /**
  * A run of the characters a name may hold. Every other character ends one, so
@@ -574,6 +587,13 @@ function filesNaming(
         if (byName.has(token.slice(0, dot))) names.add(token.slice(0, dot));
       }
       if (token.length <= longest && byName.has(token)) names.add(token);
+      // A Python module is named by a dotted path whose last part, or any
+      // part, is its name: `pkg.test_big`, `.test_big`, `pkg.test_big.f`.
+      for (let start = token.indexOf('.') + 1; start > 0; start = token.indexOf('.', start) + 1) {
+        const end = token.indexOf('.', start);
+        const segment = token.slice(start, end === -1 ? undefined : end);
+        if (segment.length <= longest && byName.has(segment)) names.add(segment);
+      }
     }
     const hits = new Set([...names].flatMap((name) => byName.get(name) ?? []));
     hits.delete(importer);
@@ -631,7 +651,11 @@ function reachableTestFiles(
 
 /**
  * Adds + deletes across the branch diff, excluding lockfiles and binary files,
- * split into source, test files and prose under `docs/` (decision 110). A null numstat is
+ * split into source, test files and prose under `docs/` (decision 110).
+ * `testFiles` is the test stage's adapter saying which paths its runner
+ * collects (decision 143), asked once for every path on the branch, every
+ * changed path, deletions included, and every path a rename left; without it
+ * a test is the `*.test.ts` spelling. A null numstat is
  * a measurement, not a skip: a file git reports as binary whose content is
  * text is recounted from its patch and named in `forged`, because git was told
  * to call it binary by something no diff shows (decision 53).
@@ -640,15 +664,23 @@ export function countChangedLines(
   repoPath: string,
   target: string,
   branch: string,
+  testFiles?: (files: string[]) => string[],
 ): { source: number; test: number; docs: number; forged: string[] } {
   const counts = { source: 0, test: 0, docs: 0 };
   const forged: string[] = [];
   const raw = rawDiffEntries(repoPath, target, branch);
   const tree = readBranchTree(repoPath, branch);
-  const kindOf = (path: string): DiffSizeKind => diffSizeKind(path, raw.get(path), tree);
   const stats = gitDiffNumstat(repoPath, target, branch).filter(
     (stat) => !LOCKFILE_NAMES.includes(stat.path),
   );
+  // A deleted test is on no branch path but still a test the runner collected.
+  const asked = new Set([
+    ...tree.paths,
+    ...stats.map((stat) => stat.path),
+    ...[...raw.values()].flatMap((entry) => entry.renamedFrom ?? []),
+  ]);
+  const collected = testFiles && new Set(testFiles([...asked]));
+  const kindOf = (path: string): DiffSizeKind => diffSizeKind(path, raw.get(path), tree, collected);
   const kinds = new Map(stats.map((stat) => [stat.path, kindOf(stat.path)]));
   const tests = [...kinds].filter(([, kind]) => kind === 'test').map(([path]) => path);
   for (const path of reachableTestFiles(repoPath, branch, tests, kindOf)) {
@@ -2846,7 +2878,15 @@ export async function measureBranch(
     : undefined;
 
   started = Date.now();
-  const changed = countChangedLines(req.repoPath, targetSha, sha);
+  // The primary adapter's runner is the one the test stage ran, so it alone
+  // says which changed files are tests (decision 143).
+  const collects = primary?.testFiles;
+  const changed = countChangedLines(
+    req.repoPath,
+    targetSha,
+    sha,
+    collects && ((files) => collects(capabilityContext, files)),
+  );
   const split = `${changed.source} source + ${changed.test} test + ${changed.docs} docs changed lines`;
   const sizeFindings: string[] = [];
   if (changed.source > DIFF_SIZE_FLAG_LINES) {

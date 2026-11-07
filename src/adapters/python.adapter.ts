@@ -183,6 +183,15 @@ function isPythonTestFile(file: string, patterns: string[]): boolean {
   return name === 'conftest.py' || patterns.some((pattern) => globToRegExp(pattern).test(name));
 }
 
+/** Whether the checkout's test stage is pytest, the one `gateCommands` runs. */
+function declaresPytest(repoPath: string): boolean {
+  return (
+    existsSync(join(repoPath, 'pytest.ini')) ||
+    readIfPresent(repoPath, 'pyproject.toml').includes('pytest') ||
+    readIfPresent(repoPath, 'setup.cfg').includes('[tool:pytest]')
+  );
+}
+
 /** Raw-text probe across the config files a Python tool can be declared in. */
 function declaresTool(repoPath: string, tool: string): boolean {
   return PYTHON_CONFIGS.some((name) => readIfPresent(repoPath, name).includes(tool));
@@ -253,7 +262,6 @@ export const pythonAdapter: Adapter = {
   gateCommands(repoPath: string): GateCommand[] {
     const prefix = runnerPrefix(repoPath);
     const pyproject = readIfPresent(repoPath, 'pyproject.toml');
-    const setupCfg = readIfPresent(repoPath, 'setup.cfg');
     const commands: GateCommand[] = [];
 
     // "Build" for Python is a syntax check: byte-compile everything outside
@@ -273,11 +281,7 @@ export const pythonAdapter: Adapter = {
       ]),
     );
 
-    const hasPytest =
-      existsSync(join(repoPath, 'pytest.ini')) ||
-      pyproject.includes('pytest') ||
-      setupCfg.includes('[tool:pytest]');
-    if (hasPytest) commands.push(toCommand('test', [...prefix, 'pytest']));
+    if (declaresPytest(repoPath)) commands.push(toCommand('test', [...prefix, 'pytest']));
 
     const hasRuff =
       existsSync(join(repoPath, 'ruff.toml')) ||
@@ -340,6 +344,22 @@ export const pythonAdapter: Adapter = {
         !(isPythonTestFile(file, trusted) && isPythonTestFile(file, measured)) &&
         existsSync(join(measurePath, file)),
     );
+  },
+
+  testFiles({ measurePath, configPath }: CapabilityContext, files: string[]): string[] {
+    // A test module only where the trusted checkout's test stage is pytest and
+    // both checkouts' python_files collect it: the run reads the measured
+    // config, so a branch narrowing it leaves a module pytest never collects
+    // (decisions 31, 143). `conftest.py` is loaded, never collected, so it is
+    // not one, unlike for coverage.
+    if (!declaresPytest(configPath)) return [];
+    const sides = [configPath, measurePath].map((path) =>
+      pytestFilePatterns(path).map((pattern) => globToRegExp(pattern)),
+    );
+    return files.filter((file) => {
+      const name = file.split('/').at(-1) ?? '';
+      return file.endsWith('.py') && sides.every((globs) => globs.some((glob) => glob.test(name)));
+    });
   },
 
   async coverage(ctx: CapabilityContext): Promise<CoverageReport | CapabilityUnavailable> {

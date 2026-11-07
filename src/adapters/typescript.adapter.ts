@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, normalize, relative, sep } from 'node:path';
 import ts from 'typescript';
 import { withoutFiles } from '../core/coverage.utils.js';
+import { globToRegExp } from '../core/glob.utils.js';
 import { GateInterruptedError, removeGateDir, runGateChild } from '../core/sandbox.utils.js';
 import { failureSummary, isUnavailable, readPlainFile } from './capability.utils.js';
 import { nestedPackageDirs } from './git-tree.client.js';
@@ -201,6 +202,226 @@ function declaresCoverageThresholds(repoPath: string): boolean {
   });
 }
 
+/** The root configs vitest looks for, in its own order: the first one present is the one it loads. */
+const VITEST_CONFIG_FILES = ['vitest', 'vite'].flatMap((stem) =>
+  ['ts', 'mts', 'cts', 'js', 'mjs', 'cjs'].map((ext) => `${stem}.config.${ext}`),
+);
+
+/** A workspace file, which turns one run into several projects the gate does not read. */
+const VITEST_WORKSPACE_FILE = /^vitest\.workspace\.[cm]?[jt]s$|^vitest\.workspace\.json$/;
+
+/** What vitest collects when its config declares no `include` (vitest 3 and 4). */
+const VITEST_DEFAULT_INCLUDE = /(?:^|\/)[^/]*\.(?:test|spec)\.[cm]?[jt]sx?$/;
+
+/**
+ * Vitest 3's default `exclude`, a superset of vitest 4's: a directory segment or
+ * a tool config's name. Applied whatever the config declares, since excluding
+ * more only counts more as source.
+ */
+const VITEST_DEFAULT_EXCLUDED_DIRS = new Set([
+  'node_modules',
+  'dist',
+  'cypress',
+  '.idea',
+  '.git',
+  '.cache',
+  '.output',
+  '.temp',
+]);
+const VITEST_DEFAULT_EXCLUDED_NAME =
+  /^(?:karma|rollup|webpack|vite|vitest|jest|ava|babel|nyc|cypress|tsup|build|eslint|prettier)\.config\./;
+
+/** Patterns honoured from one `include` or `exclude`, as pytest's are capped (decision 31). */
+const VITEST_MAX_PATTERNS = 64;
+
+/**
+ * `**` segments allowed in one pattern before its last: each is a `(?:[^/]+/)*`
+ * the next can backtrack into, so two cost a path of k segments k squared. A
+ * last `**` is a `.*$`, which matches whatever reaches it.
+ */
+const VITEST_PATTERN_MAX_INNER_GLOBSTARS = 1;
+
+/** Glob syntax `globToRegExp` escapes rather than honours: braces, classes, extglobs, negation. */
+const UNSUPPORTED_GLOB = /[{}[\]()!+@]/;
+
+/** Config keys under `test` that move or split what one run collects. */
+const VITEST_UNREAD_TEST_KEYS = ['dir', 'root', 'projects', 'workspace'];
+
+/**
+ * A glob's regex, or undefined where it is not one this reads in linear time
+ * on a path: each segment is `**` or holds at most one `*`, and at most one
+ * before the last is `**`. Patterns come from config a session writes, or one
+ * merge earlier wrote, and are matched against every path on the branch inside
+ * the merge lock.
+ */
+function vitestGlob(pattern: string): RegExp | undefined {
+  const segments = pattern.trim().replace(/^\.\//, '').split('/');
+  if (
+    pattern.startsWith('/') ||
+    segments.includes('..') ||
+    /[\0\r\n]/.test(pattern) ||
+    segments.slice(0, -1).filter((segment) => segment === '**').length >
+      VITEST_PATTERN_MAX_INNER_GLOBSTARS ||
+    segments.some(
+      (segment) =>
+        segment !== '**' && (segment.includes('**') || (segment.match(/\*/g)?.length ?? 0) > 1),
+    )
+  ) {
+    return undefined;
+  }
+  return globToRegExp(pattern);
+}
+
+/** An expression with its parentheses, `as` and `satisfies` taken off. */
+function unwrapExpression(node: ts.Expression): ts.Expression {
+  let expression = node;
+  while (
+    ts.isParenthesizedExpression(expression) ||
+    ts.isAsExpression(expression) ||
+    ts.isSatisfiesExpression(expression)
+  ) {
+    expression = expression.expression;
+  }
+  return expression;
+}
+
+/**
+ * The `keys` an object literal assigns, or undefined where it cannot be read
+ * statically: a spread, a computed name, a key named twice, or one of `keys`
+ * given any way but `key: value`. Other keys are not looked at.
+ */
+function literalProperties(
+  node: ts.Expression,
+  keys: string[],
+): Map<string, ts.Expression> | undefined {
+  const object = unwrapExpression(node);
+  if (!ts.isObjectLiteralExpression(object)) return undefined;
+  const found = new Map<string, ts.Expression>();
+  for (const property of object.properties) {
+    if (ts.isSpreadAssignment(property)) return undefined;
+    const { name } = property;
+    if (name === undefined || ts.isComputedPropertyName(name)) return undefined;
+    const key = ts.isPrivateIdentifier(name) ? undefined : name.text;
+    if (key === undefined || !keys.includes(key)) continue;
+    if (!ts.isPropertyAssignment(property) || found.has(key)) return undefined;
+    found.set(key, property.initializer);
+  }
+  return found;
+}
+
+/** An array of string literals, or undefined for anything built at run time. */
+function literalStrings(node: ts.Expression): string[] | undefined {
+  const array = unwrapExpression(node);
+  if (!ts.isArrayLiteralExpression(array)) return undefined;
+  const strings: string[] = [];
+  for (const element of array.elements) {
+    if (!ts.isStringLiteral(element) && !ts.isNoSubstitutionTemplateLiteral(element)) {
+      return undefined;
+    }
+    strings.push(element.text);
+  }
+  return strings;
+}
+
+/**
+ * The object a vitest config exports by default, through `defineConfig` or as
+ * a literal; undefined for a function config, a `mergeConfig`, an identifier
+ * or CommonJS, which no static read answers.
+ */
+function exportedConfig(text: string, file: string): ts.Expression | undefined {
+  const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, false, ts.ScriptKind.TS);
+  const exported = source.statements.filter(
+    (statement): statement is ts.ExportAssignment =>
+      ts.isExportAssignment(statement) && !statement.isExportEquals,
+  );
+  if (exported.length !== 1) return undefined;
+  let config = unwrapExpression((exported[0] as ts.ExportAssignment).expression);
+  if (
+    ts.isCallExpression(config) &&
+    ts.isIdentifier(config.expression) &&
+    config.expression.text === 'defineConfig' &&
+    config.arguments.length === 1
+  ) {
+    config = unwrapExpression(config.arguments[0] as ts.Expression);
+  }
+  return ts.isObjectLiteralExpression(config) ? config : undefined;
+}
+
+/**
+ * Which paths the test stage's vitest run at `repoPath` collects, or undefined
+ * where that cannot be read: a `test` script other than plain vitest, a
+ * workspace, or a config whose `include`, `exclude`, `root`, `dir` or projects
+ * are not literals this reads. A declared `exclude` is honoured beside the
+ * default one, an `include` pattern this does not read collects nothing, and an
+ * `exclude` pattern it does not read leaves the whole answer unknown.
+ */
+function vitestCollection(repoPath: string): ((path: string) => boolean) | undefined {
+  try {
+    const scripts = readManifest(repoPath)?.scripts ?? {};
+    if (!PLAIN_VITEST_SCRIPT.test(scripts.test?.trim() ?? '')) return undefined;
+    if (readdirSync(repoPath).some((name) => VITEST_WORKSPACE_FILE.test(name))) return undefined;
+    const file = VITEST_CONFIG_FILES.find((name) => existsSync(join(repoPath, name)));
+    let include: RegExp[] | undefined;
+    let exclude: RegExp[] = [];
+    if (file !== undefined) {
+      const config = exportedConfig(
+        readPlainFile(join(repoPath, file), { followLinks: false }),
+        file,
+      );
+      const top = config && literalProperties(config, ['test', 'root']);
+      if (top === undefined || top.has('root')) return undefined;
+      const testConfig = top.get('test');
+      const test = testConfig
+        ? literalProperties(testConfig, ['include', 'exclude', ...VITEST_UNREAD_TEST_KEYS])
+        : new Map<string, ts.Expression>();
+      if (test === undefined || VITEST_UNREAD_TEST_KEYS.some((key) => test.has(key))) {
+        return undefined;
+      }
+      const included = test.get('include');
+      if (included !== undefined) {
+        const patterns = literalStrings(included);
+        if (patterns === undefined) return undefined;
+        include = patterns
+          .slice(0, VITEST_MAX_PATTERNS)
+          .map(vitestGlob)
+          .filter((glob): glob is RegExp => glob !== undefined);
+      }
+      const excluded = test.get('exclude');
+      if (excluded !== undefined) {
+        const patterns = literalStrings(excluded);
+        if (
+          patterns === undefined ||
+          patterns.length > VITEST_MAX_PATTERNS ||
+          patterns.some((pattern) => UNSUPPORTED_GLOB.test(pattern))
+        ) {
+          return undefined;
+        }
+        const globs = patterns.map(vitestGlob);
+        if (globs.some((glob) => glob === undefined)) return undefined;
+        // An exclude names a directory as well as a file, and drops everything
+        // under one: the path itself, or it up to a `/`, matches.
+        exclude = (globs as RegExp[]).map(
+          (glob) => new RegExp(`${glob.source.slice(0, -1)}(?:/.*)?$`),
+        );
+      }
+    }
+    return (path) => {
+      const segments = path.split('/');
+      const name = segments.at(-1) ?? '';
+      if (
+        segments.slice(0, -1).some((segment) => VITEST_DEFAULT_EXCLUDED_DIRS.has(segment)) ||
+        VITEST_DEFAULT_EXCLUDED_NAME.test(name) ||
+        exclude.some((glob) => glob.test(path))
+      ) {
+        return false;
+      }
+      return include ? include.some((glob) => glob.test(path)) : VITEST_DEFAULT_INCLUDE.test(path);
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * The instrumented vitest run behind `coverage` and `coveredTest`, or why the
  * trusted manifest allows none. Its report directory exists from here on, and
@@ -367,6 +588,20 @@ export const typescriptAdapter: Adapter = {
         !isCoverageExcluded(file) &&
         !isInNestedPackage(file, nested) &&
         existsSync(join(ctx.measurePath, file)),
+    );
+  },
+
+  testFiles(ctx: CapabilityContext, files: string[]): string[] {
+    // Both checkouts: the trusted one is what the gate trusts, and the measured
+    // one is what the test stage's run reads, so a branch that narrows its own
+    // include or exclude leaves a file vitest never collects, which then fails
+    // nothing when it holds no test (decisions 31, 143). A nested package's file
+    // is its own runner's (decision 58).
+    const sides = [...new Set([ctx.configPath, ctx.measurePath])].map(vitestCollection);
+    if (sides.some((collects) => collects === undefined)) return [];
+    const nested = nestedPackageDirs(ctx);
+    return files.filter(
+      (file) => !isInNestedPackage(file, nested) && sides.every((collects) => collects?.(file)),
     );
   },
 
