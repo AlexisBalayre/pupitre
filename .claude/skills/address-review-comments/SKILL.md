@@ -47,6 +47,8 @@ Ask the user whether to commit/push and whether to reply to the threads. Then, p
 - **Conceded challenge** (the finding was a false positive) → reply that it was retracted as a false positive and why; resolve.
 - **Leave-as-is** (intentional, out-of-scope, or a finding the user overrides after it was defended) → reply with the rationale but leave the thread **open**. Never unilaterally close a disagreement.
 
+A blocking `important` (see `pr-ci-review/REVIEW.md` §2) is never left as-is: fix it, or challenge it with code evidence in its thread and keep it open until it is fixed or the user rules it wrong.
+
 ## Invariants
 
 - The user may change the code at any point; work from, and commit, the actual current state, not your recollection.

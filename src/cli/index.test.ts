@@ -6008,7 +6008,7 @@ describe('CLI commands', () => {
             adapters: [],
             capturedAt: '2026-10-14T00:00:00Z',
             stages: [],
-          } as unknown as LandOutcome['audit']['baseline'],
+          } as unknown as NonNullable<LandOutcome['audit']>['baseline'],
           transitions: [],
           debtTransitions: [],
           hasRegression: false,
