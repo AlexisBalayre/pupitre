@@ -1,0 +1,127 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-07T10:49:51.303Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42365417357",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42365417357",
+  "actor": "AlexisBalayre",
+  "commit_sha": "9a41efac949140ccb17546276ea73d6f33f4b873",
+  "source": "pr",
+  "pr_number": 233,
+  "action": "review",
+  "reviewers_spawned": [
+    "docs",
+    "conventions"
+  ],
+  "reviewers_returned": [
+    "docs",
+    "conventions"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "context",
+    "maintainability",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": ".claude/skills/pr-description/SKILL.md",
+      "line": "49",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The instruction to \"mark the change with `classDef` (`added`, `removed`, `changed`)\" is given for every diagram type in the table, but `classDef` is not valid in all of them.",
+      "body": "The new Summary guidance tells agents to \"mark the change with `classDef` (`added`, `removed`, `changed`)\" right after a table (lines 41-47) that offers `sequenceDiagram` and `erDiagram`. Nothing limits the instruction to particular diagram types, and line 60 (\"Define every class you use\") presents `classDef` as the universal mechanism.\n\n- **`sequenceDiagram`** has no `classDef` or `:::` syntax, so a `classDef` line there is a parse error and the diagram won't render.\n- **`erDiagram`** only gained `classDef` in Mermaid 11.x, so whether it works depends on GitHub's renderer version.\n\nAn agent that follows the skill for an API-flow or schema change would plausibly put a broken diagram in the PR body. Limit the instruction to the types that support it (`flowchart`, `classDiagram`, `stateDiagram-v2`) and give a fallback for the others.\n\nThis is based on pinned-version knowledge of Mermaid, not a test render, which is why confidence is medium.",
+      "suggestion": "Show what changed, not the whole system: draw only the nodes the reader needs. In a `flowchart`, `classDiagram` or `stateDiagram-v2`, mark the change with `classDef` (`added`, `removed`, `changed`) so the diff reads at a glance; `sequenceDiagram` has no `classDef` (and `erDiagram` support depends on the renderer's Mermaid version), so name the changed participant or entity in its label or a note instead."
+    },
+    {
+      "file": ".claude/skills/pr-description/SKILL.md",
+      "line": "55-57",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The example flowchart defines `removed` and `changed` but uses only `added`; say it is a copy-paste block, or the unused definitions read as noise.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/skills/pr-description/SKILL.md",
+      "line": "60",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "\"never paste a file tree, a pseudocode block or a whole function\" is a bare prohibition with no positive target; writing-for-agents/SKILL.md:74 says to state the target behaviour, or pair a guardrail with one.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/skills/writing-for-agents/SKILL.md",
+      "line": "87",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "pre-existing",
+      "description": "Many skills still point at the removed docs/09-decisions.md: writing-for-agents:87, domain-modeling:15 and :19, DECISION-FORMAT.md:3, pr-ci-review:74, wayfinder:93, tdd:10. This PR moves pr-description to docs/adr/, so the other skills now disagree with it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/agents/architecture-explainer.md",
+      "line": "3, 41, 43-44",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "pre-existing",
+      "description": "Em-dashes in prose, including the frontmatter description, break writing-for-agents/SKILL.md:91 (\"No em/en dashes in prose you write\"). These lines are unchanged by this PR.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "platform",
+      "description": "Every Bash call failed with 'apply-seccomp: write /proc/self/setgroups (nested userns is capability-restricted; caller must provide CAP_SYS_ADMIN): Permission denied'. As a result: gh pr view/diff, git diff, git status and git rev-parse were unavailable, so there was no PR file list, no diff, and no head SHA. The second freshness assertion (HEAD vs headRefOid) could not run. The important finding's body has no full-SHA permalink."
+    },
+    {
+      "component": "orchestrator",
+      "description": "The changed-file set was inferred from the session's git-status snapshot (the config-restore dirty files .claude/agents/architecture-explainer.md and .claude/skills/pr-description/SKILL.md) and from the commit subjects. Reviewers compared .claude-pr/ copies against the in-tree base copies with Read. Changes outside the config-restore set would not have been visible, and steering (PR body, comments, closing issues) was skipped. Only docs and conventions were spawned, because the visible change is prose-only. correctness, security, maintainability, context and spec were gated out."
+    }
+  ],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.6790924,
+  "duration_ms": 97742,
+  "num_turns": 9,
+  "tokens": {
+    "input": 12,
+    "output": 6026,
+    "cache_read": 213168,
+    "cache_creation": 31645,
+    "total": 250851
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 12,
+      "output": 6026,
+      "cache_read": 213168,
+      "cache_creation": 31645,
+      "cost_usd": 0.4163616
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 22,
+      "output": 7670,
+      "cache_read": 91793,
+      "cache_creation": 70723,
+      "cost_usd": 0.2627308
+    }
+  ],
+  "permission_denials": []
+}
