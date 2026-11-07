@@ -1,0 +1,101 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-07T16:43:35.018Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42392464648",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42392464648",
+  "actor": "AlexisBalayre",
+  "commit_sha": "0debf781a1e65a8564da9484d153e031cd9cd0f6",
+  "source": "pr",
+  "pr_number": 249,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "conventions",
+    "maintainability"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "conventions",
+    "maintainability"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context",
+    "docs",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/profile-compiler-context.test.ts",
+      "line": "32-1709",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The shards are named by run time, not subject: `profile-compiler.test.ts` now holds only the bash re-check describe, `-hooks` holds only the merge-of-target describe, and `-context` holds compileProfile, parseProfileLayer, scope hook, bash guard and the rest. New tests will land in the wrong shard and undo the balancing. Rename the shards after their contents, or add a one-line header to each saying what belongs there.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/test/helpers/profile-compiler.mock.ts",
+      "line": "34-57",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`runHook` and `commandScopeConfig` are imported only by `profile-compiler-context.test.ts`. They could stay local to that shard, leaving the shared module as just the `task` + `makeInput` fixture (testing.md: a double only one suite needs stays in that suite).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0124-the-worktree-hooks-reads-run-under-a-deadline.md",
+      "line": "113",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "ADR 0124's *Tests* line still points at `profile-compiler.test.ts`, but its MERGE_HEAD/scope-hook-PATH tests moved to `profile-compiler-hooks.test.ts`. ADRs 0112, 0103 and 0107 may also point at tests that moved to `profile-compiler-context.test.ts`.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.2944953,
+  "duration_ms": 148166,
+  "num_turns": 10,
+  "tokens": {
+    "input": 14,
+    "output": 6689,
+    "cache_read": 225688,
+    "cache_creation": 35977,
+    "total": 268368
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 100,
+      "output": 23136,
+      "cache_read": 929669,
+      "cache_creation": 94189,
+      "cost_usd": 1.2279298
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 10,
+      "output": 2315,
+      "cache_read": 48905,
+      "cache_creation": 15402,
+      "cost_usd": 0.0665655
+    }
+  ],
+  "permission_denials": []
+}
