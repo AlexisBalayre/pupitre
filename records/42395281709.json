@@ -1,0 +1,123 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-07T17:18:25.799Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42395281709",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42395281709",
+  "actor": "AlexisBalayre",
+  "commit_sha": "58d3e5f2bbfd7ce1088db8be89d03496866d66a4",
+  "source": "pr",
+  "pr_number": 242,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "context",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "context",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "spec"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "a0e20d80f8d130437bcc424e1739673556720902",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": ".github/workflows/pr-status.yml",
+      "line": "19-21",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": ".github/workflows/pr-status.yml",
+      "line": "15-21",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "Removing \"Label PRs\" from `workflow_run` also removes the only recompute for a base-branch change. Label PRs fires on `pull_request_target: edited`, and GitHub fires `edited` for a base-branch change as well as for title and body edits. A retarget can create or clear conflicts, so `pr/conflicts` or `pr/ready` now goes stale after one.",
+      "body": "**A base-branch change no longer recomputes the `pr/*` label**\n\nThe commit says \"A title edit cannot change the pr/* status\". But the `edited` event that triggers Label PRs (`labeler.yml` L10-11, `types: [opened, reopened, synchronize, edited]`) also fires when the PR's **base branch** changes. Until this delta, that was the path that recomputed the label after a retarget: the Label PRs `workflow_run` came with no linked PR and fell through to the recompute-all. This delta removes that path, and none of pr-status's remaining triggers cover a retarget:\n\n- its own `pull_request_target` types (L16) do not include `edited`;\n- `synchronize` needs a head push, and a retarget is not one;\n- Claude Code Review runs only on `opened, ready_for_review, synchronize` and `issue_comment`;\n- `push: [main]` fires only on a later, unrelated push to main, and never when the new base is some other branch.\n\nA retarget changes the merge base, so `mergeable_state` (L84, `if (pr.mergeable_state === \"dirty\") return \"pr/conflicts\";`) can change without a new head SHA. A PR moved onto a base it conflicts with keeps `pr/ready`, and a PR moved off a conflicting base keeps `pr/conflicts`. Stacked PRs hit this often: when the parent merges with branch auto-delete on, GitHub retargets the child to `main`.\n\n**Fix:** listen to `edited` directly on `pull_request_target`. That event carries `context.payload.pull_request`, so it recomputes only that one PR (L62) and joins its per-PR concurrency group (L38). It does not reopen the fork recompute-all route this delta closes. To skip title/body edits as well, you can add `&& (github.event.action != 'edited' || github.event.changes.base)` to the job `if`, and mention retargets in the L5 header comment.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/58d3e5f2bbfd7ce1088db8be89d03496866d66a4/.github/workflows/pr-status.yml#L15-L21\nhttps://github.com/AlexisBalayre/pupitre/blob/58d3e5f2bbfd7ce1088db8be89d03496866d66a4/.github/workflows/labeler.yml#L10-L11",
+      "suggestion": "    types: [opened, reopened, synchronize, edited, ready_for_review, converted_to_draft, closed]"
+    },
+    {
+      "file": ".github/workflows/pr-status.yml",
+      "line": "39-44",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "Dropping \"Label PRs\" closes only one way in. A fork author can still send the job down the recompute-all fallback (lines 63-69) through `workflow_run: workflows: [\"Claude Code Review\"]`. `workflow_run` matches the triggering workflow by `name:`. A `pull_request` run from a fork uses the workflow files from the fork's own head, so a fork PR can add or edit a workflow named `Claude Code Review` with a job that just runs (no owner-only `if`). That run completes with conclusion `success`, not `skipped`. For a fork head, `workflow_run.pull_requests` is empty, so `linked.length` is 0 and every open PR is recomputed on every push to the fork.",
+      "body": "**A fork can still trigger the recompute-all path through a run named `Claude Code Review`**\n\nRemoving `\"Label PRs\"` from `workflow_run.workflows` closes that route. The remaining entry has the same problem.\n\n- `workflow_run` matches the triggering workflow by `name:`.\n- `claude-code-review.yml` runs on `pull_request` (L16-22), and a fork PR's `pull_request` run uses the workflow files from the fork's head. A fork author can edit that file to drop the owner-only `if`, or add any workflow with `name: Claude Code Review`.\n- That run concludes `success`, which passes the only check here (`conclusion != 'skipped'`, L44).\n- A fork-head run has an empty `workflow_run.pull_requests`, so it falls through to the recompute-all at L63-69 on every push to the fork.\n\nThis is the same harm 58d3e5f set out to close (\"fork PRs included … recomputed all open PRs\"). A fork run held for first-time-contributor approval may also arrive as `action_required`, which passes the same check (medium confidence: platform behavior).\n\n**Fix:** gate the trigger on the run's head repository. This loses nothing legitimate. Same-repo `pull_request` reviews and `@claude review` runs on main both have the base repo as `head_repository`. Fork-head runs never get the review secret, so they are never a real owner review. Fork PRs are still relabelled by `pull_request_target` and by pushes to main.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/58d3e5f2bbfd7ce1088db8be89d03496866d66a4/.github/workflows/pr-status.yml#L39-L44\nhttps://github.com/AlexisBalayre/pupitre/blob/58d3e5f2bbfd7ce1088db8be89d03496866d66a4/.github/workflows/pr-status.yml#L61-L70\nhttps://github.com/AlexisBalayre/pupitre/blob/58d3e5f2bbfd7ce1088db8be89d03496866d66a4/.github/workflows/claude-code-review.yml#L16-L22",
+      "suggestion": "    # A fork's review event gets a read-only token and cannot label; its PR is still relabelled by\n    # pull_request_target and by pushes to main. A skipped workflow_run did no work (Claude Code\n    # Review fires on every issue comment, and its jobs skip unless the comment asks for a review).\n    # A workflow_run from a fork head is never the owner's review, and a fork's PR can name its own\n    # workflow \"Claude Code Review\": with no linked PR it would recompute every open PR.\n    if: >-\n      (github.event_name != 'pull_request_review' || github.event.pull_request.head.repo.full_name == github.repository)\n      && (github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion != 'skipped' && github.event.workflow_run.head_repository.full_name == github.repository))"
+    },
+    {
+      "file": ".github/workflows/pr-status.yml",
+      "line": "98-102, 111",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The filter `c.name !== \"label\"` hard-codes labeler.yml's job id. The check run is named after the job id only because that job has no `name:`. The comment above it (lines 98-102) explains the `context.job` exclusion but not the `\"label\"` one, and labeler.yml has no pointer back. If someone renames the job or adds a `name:` there, the filter stops matching with no error. A failed or in-progress Label PRs run would then count as `pr/ci-failing` or `pr/ci-pending`, and a labeler failure would block `pr/ready`. The bare literal also sits next to `context.job` with no sign that it belongs to a different workflow. Fix: add a short WHY comment that names `labeler.yml`'s `label` job, or exclude by workflow instead (for example `c.app?.slug` or the check suite's workflow run) so the filter doesn't depend on a job id.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".github/workflows/pr-status.yml",
+      "line": "8",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Line 8 still says \"The workflow names under `workflow_run` must match the `name:` of those workflows\", but `workflow_run.workflows` now holds only \"Claude Code Review\", so the plural is stale. Something like \"The name under `workflow_run` must match that workflow's `name:`\" fits.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "conventions",
+      "description": "The conventions reviewer read docs/conventions/general.md and labeler.yml, but it reported that it did not open claude-code-review.yml or docs/adr/. The ADR check was skipped this round."
+    }
+  ],
+  "comments_posted_actual": 2,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.8731528000000006,
+  "duration_ms": 219169,
+  "num_turns": 18,
+  "tokens": {
+    "input": 14,
+    "output": 14416,
+    "cache_read": 348849,
+    "cache_creation": 59056,
+    "total": 422335
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 54,
+      "output": 34331,
+      "cache_read": 666150,
+      "cache_creation": 145222,
+      "cost_usd": 1.7233440000000007
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 18,
+      "output": 4408,
+      "cache_read": 79103,
+      "cache_creation": 39113,
+      "cost_usd": 0.1498088
+    }
+  ],
+  "permission_denials": []
+}
