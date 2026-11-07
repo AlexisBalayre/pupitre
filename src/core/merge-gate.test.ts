@@ -6250,7 +6250,9 @@ describe('withMergeLock', () => {
   });
 });
 
-describe('waitForLoad (decision 88)', () => {
+describe('waitForLoad (decisions 88, 134)', () => {
+  /** Another gate or a worker holds a test slot, so the load may be pup's. */
+  const othersGoing = (): boolean => true;
   let errors: ReturnType<typeof vi.spyOn>;
   beforeEach(() => {
     vi.useFakeTimers();
@@ -6262,16 +6264,44 @@ describe('waitForLoad (decision 88)', () => {
   });
 
   it('returns at once, saying nothing, under the ceiling', async () => {
-    await waitForLoad(() => 3.9, 4);
+    await waitForLoad(() => 3.9, 4, othersGoing);
 
     expect(errors).not.toHaveBeenCalled();
   });
 
-  it('waits for the load to fall under the ceiling, saying so in one line', async () => {
+  // An idle load above the core count (a scanner, a sync daemon) is no test
+  // run of pup's, and waiting it out only delays tests that run anyway.
+  it('returns at once, saying nothing, above the ceiling while no other test run is going', async () => {
+    const othersTesting = vi.fn(() => false);
+
+    await waitForLoad(() => 20, 8, othersTesting);
+
+    expect(othersTesting).toHaveBeenCalledTimes(1);
+    expect(errors).not.toHaveBeenCalled();
+  });
+
+  it('stops waiting once the other test runs end, though the load stays above the ceiling', async () => {
+    const others = [true, true, false];
+    const othersTesting = vi.fn(() => others.shift() ?? false);
+    let done = false;
+    const waited = waitForLoad(() => 20, 8, othersTesting).then(() => {
+      done = true;
+    });
+
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(done).toBe(false);
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    await waited;
+    expect(othersTesting).toHaveBeenCalledTimes(3);
+    expect(errors).toHaveBeenCalledTimes(1);
+  });
+
+  it('waits, while another test run is going, for the load to fall under the ceiling, saying so in one line', async () => {
     const loads = [6, 5, 4, 2];
     const readLoad = vi.fn(() => loads.shift() ?? 0);
     let done = false;
-    const waited = waitForLoad(readLoad, 4).then(() => {
+    const waited = waitForLoad(readLoad, 4, othersGoing).then(() => {
       done = true;
     });
 
@@ -6283,8 +6313,9 @@ describe('waitForLoad (decision 88)', () => {
     expect(readLoad).toHaveBeenCalledTimes(4);
     expect(errors.mock.calls).toEqual([
       [
-        'The 1-minute load average is 6.0, not under 4; the gate waits up to ' +
-          `${formatDuration(GATE_SLOT_WAIT_MS)} for it to fall before its tests.`,
+        'The 1-minute load average is 6.0, not under 4, while other test runs are going; the ' +
+          `gate waits up to ${formatDuration(GATE_SLOT_WAIT_MS)} for it to fall or for them to ` +
+          'end before its tests.',
       ],
     ]);
   });
@@ -6293,7 +6324,7 @@ describe('waitForLoad (decision 88)', () => {
   // it itself, as a stage child's forwarded interrupt would.
   it('ends on an interrupt with GateInterruptedError, and stops listening', async () => {
     const before = process.listeners('SIGHUP');
-    const waited = waitForLoad(() => 9, 4);
+    const waited = waitForLoad(() => 9, 4, othersGoing);
     const interrupted = expect(waited).rejects.toThrow(GateInterruptedError);
 
     await vi.advanceTimersByTimeAsync(1_000);
@@ -6303,8 +6334,8 @@ describe('waitForLoad (decision 88)', () => {
     expect(process.listeners('SIGHUP')).toEqual(before);
   });
 
-  it('runs the tests anyway once the wait runs out, with a one-line note', async () => {
-    const waited = waitForLoad(() => 9, 4);
+  it('runs the tests anyway once a wait on other test runs runs out, with a one-line note', async () => {
+    const waited = waitForLoad(() => 9, 4, othersGoing);
 
     await vi.advanceTimersByTimeAsync(GATE_SLOT_WAIT_MS);
 
@@ -6314,5 +6345,44 @@ describe('waitForLoad (decision 88)', () => {
       `The load average is still 9.0 after ${formatDuration(GATE_SLOT_WAIT_MS)}; the gate ` +
         'runs its tests anyway.',
     ]);
+  });
+
+  // The default reads the slots under `HOME`, here a temp dir this test fills.
+  describe("with the machine's own test slots", () => {
+    let home: string;
+    beforeEach(() => {
+      home = tempDir('pup-load-home-');
+      vi.stubEnv('HOME', home);
+    });
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it('returns at once, saying nothing, above the ceiling while no slot is held', async () => {
+      await waitForLoad(() => 20, 8);
+
+      expect(errors).not.toHaveBeenCalled();
+    });
+
+    it('waits above the ceiling while another process holds a slot', async () => {
+      const slots = join(home, '.pupitre', 'slots');
+      mkdirSync(slots, { recursive: true });
+      writeFileSync(
+        join(slots, 'slot-0.lock'),
+        JSON.stringify({ kind: 'worker', label: 'other', pid: process.ppid, token: 'x' }),
+      );
+      let done = false;
+      const waited = waitForLoad(() => 20, 8).then(() => {
+        done = true;
+      });
+
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(done).toBe(false);
+      expect(errors).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(GATE_SLOT_WAIT_MS);
+
+      await waited;
+      expect(errors).toHaveBeenCalledTimes(2);
+    });
   });
 });

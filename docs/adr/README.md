@@ -153,6 +153,7 @@ for the cross-references the text states, then the decision itself.
 - [0130. Dead-export analysis resolves tsconfig `paths` from the measured checkout (2026-10-30)](0130-dead-export-analysis-resolves-tsconfig-paths-from-the.md) (accepted)
 - [0131. `pup land` takes a squash or rebase merge whose tree is exactly the pinned content merged onto its base (2026-11-04)](0131-pup-land-takes-a-squash-or-rebase-merge-whose-tree.md) (accepted)
 - [0132. `pup land --no-audit` lets several lands share one `pup audit` (2026-11-07)](0132-pup-land-no-audit-lets-several-lands-share-one.md) (accepted)
+- [0134. The gate waits for the load only while another test run is going (2026-11-06, amends 88)](0134-the-gate-waits-for-the-load-only-while-another.md) (accepted)
 <!-- adr-index:end -->
 
 ## Implementation notes

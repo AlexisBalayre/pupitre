@@ -120,6 +120,7 @@ import {
   describeSlotWait,
   GATE_SLOT_WAIT_MS,
   SlotWaitInterruptedError,
+  testRunsElsewhere,
   withTestSlot,
 } from './test-slot.service.js';
 import type { PullRequestRef } from './types/github.types.js';
@@ -2321,22 +2322,28 @@ function isRerunnable(error: unknown): boolean {
  * Before the gate's tests, wait until the machine's 1-minute load average is
  * under its available parallelism (decision 88): a suite started on a machine
  * its workers already saturate runs into its stage timeout, and the gate fails
- * on the machine rather than the branch. Bounded as the slot wait is, since it
- * holds the merge lock, and once that runs out the tests run anyway. One line
- * says the wait started and one that it ran out. An interrupt ends it as a
- * stage child's would: no child runs to forward one to, and the lock keeps
- * node alive through it. A platform with no load average reads zeros and never
- * waits. `readLoad` and `ceiling` are the machine's unless a test passes its own.
+ * on the machine rather than the branch. Only while another run holds a test
+ * slot or waits for one as a gate (decision 134, amending 88): with none, the
+ * load is none of pup's tests, which the wait cannot outlast, so the gate runs
+ * at once, and a wait ends as soon as the others do. Bounded as the slot wait
+ * is, since it holds the merge lock, and once that runs out the tests run
+ * anyway. One line says the wait started and one that it ran out. An interrupt
+ * ends it as a stage child's would: no child runs to forward one to, and the
+ * lock keeps node alive through it. A platform with no load average reads zeros
+ * and never waits. `readLoad`, `ceiling` and `othersTesting` are the machine's
+ * unless a test passes its own.
  */
 export async function waitForLoad(
   readLoad: () => number = () => loadavg()[0] ?? 0,
   ceiling = availableParallelism(),
+  othersTesting: () => boolean = () => testRunsElsewhere(),
 ): Promise<void> {
   let load = readLoad();
-  if (load < ceiling) return;
+  if (load < ceiling || !othersTesting()) return;
   console.error(
-    `The 1-minute load average is ${load.toFixed(1)}, not under ${ceiling}; the gate waits up to ` +
-      `${formatDuration(GATE_SLOT_WAIT_MS)} for it to fall before its tests.`,
+    `The 1-minute load average is ${load.toFixed(1)}, not under ${ceiling}, while other test ` +
+      `runs are going; the gate waits up to ${formatDuration(GATE_SLOT_WAIT_MS)} for it to fall ` +
+      'or for them to end before its tests.',
   );
   const deadline = Date.now() + GATE_SLOT_WAIT_MS;
   let interrupted: (typeof LOCK_SIGNALS)[number] | undefined;
@@ -2365,7 +2372,7 @@ export async function waitForLoad(
       });
       if (interrupted) throw new GateInterruptedError(interrupted);
       load = readLoad();
-      if (load < ceiling) return;
+      if (load < ceiling || !othersTesting()) return;
     }
   } finally {
     for (const signal of LOCK_SIGNALS) process.off(signal, onSignal);
