@@ -9,7 +9,7 @@ Instructions for AI coding agents, whatever the tool. Tool-specific layers build
 ## Design docs
 
 `docs/00`–`08` are the design; `docs/adr/` holds one file per resolved decision and **wins over
-00–08 where they conflict**. Read the ADRs your change touches, found through `docs/adr/README.md`.
+00–08 where they conflict**. Read the ADRs your change touches, found through `bash scripts/adr-index.sh`.
 
 ## Module boundaries
 
