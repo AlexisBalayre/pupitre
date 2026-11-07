@@ -1,9 +1,11 @@
 import { execFileSync } from 'node:child_process';
-import { scrubbedGitEnv } from './git-diff.client.js';
+import { pinnedGitEnv } from './git-diff.client.js';
 import type { NewPullRequest, PullRequestRef } from './types/github.types.js';
 
 // GitHub interaction goes through the operator's `gh` CLI and its normal
 // interactive login (the decision-12 rationale) — never tokens or keys.
+// Every gh runs under `pinnedGitEnv`: its cwd is the main checkout, whose
+// config a session can write, and gh runs git there (decision 89).
 
 /** Version probe is local; PR creation talks to GitHub and gets a network budget. */
 const GH_PROBE_TIMEOUT_MS = 10_000;
@@ -17,7 +19,11 @@ const REMOTE_URL = /^(?:[a-z+]+:\/\/)?(?:[^@/]+@)?([^/:]+)[/:]([^/]+\/[^/]+?)(?:
 /** Fail before any work starts, not partway through; `command` names the caller in the refusal. */
 export function assertGhAvailable(command: string): void {
   try {
-    execFileSync('gh', ['--version'], { stdio: 'ignore', timeout: GH_PROBE_TIMEOUT_MS });
+    execFileSync('gh', ['--version'], {
+      stdio: 'ignore',
+      timeout: GH_PROBE_TIMEOUT_MS,
+      env: pinnedGitEnv(),
+    });
   } catch {
     throw new Error(`${command} needs the \`gh\` CLI on PATH, logged in to GitHub.`);
   }
@@ -52,7 +58,7 @@ function ghJson(repoPath: string, args: string[], timeout = GH_COMMAND_TIMEOUT_M
     timeout,
     maxBuffer: GH_MAX_BUFFER,
     stdio: ['ignore', 'pipe', 'pipe'],
-    env: scrubbedGitEnv(),
+    env: pinnedGitEnv(),
   });
   try {
     return JSON.parse(output);
@@ -151,7 +157,7 @@ export function rewritePullRequest(repoPath: string, url: string, pr: NewPullReq
       input: pr.body,
       timeout: GH_COMMAND_TIMEOUT_MS,
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: scrubbedGitEnv(),
+      env: pinnedGitEnv(),
     },
   );
 }
@@ -180,7 +186,7 @@ export function createPullRequest(repoPath: string, pr: NewPullRequest): string 
       input: pr.body,
       timeout: GH_COMMAND_TIMEOUT_MS,
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: scrubbedGitEnv(),
+      env: pinnedGitEnv(),
     },
   ).trim();
 }
@@ -589,7 +595,7 @@ export function commentOnPullRequest(
     input: body,
     timeout: timeoutMs,
     stdio: ['pipe', 'pipe', 'pipe'],
-    env: scrubbedGitEnv(),
+    env: pinnedGitEnv(),
   });
 }
 

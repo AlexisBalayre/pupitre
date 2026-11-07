@@ -10,7 +10,7 @@ effort: high
 
 Review the specified files or recent changes for ways a **session** could get code past the
 gate, or reach something it should not. Ground every finding in the decisions under
-`docs/adr/` (found through `docs/adr/README.md`) — decisions 24–30 record the accepted
+`docs/adr/` (found through `bash scripts/adr-index.sh`) — decisions 24–30 record the accepted
 exposures and their reasoning, and a finding that re-reports a knowingly-accepted one is
 noise.
 
