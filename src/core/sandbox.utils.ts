@@ -200,7 +200,7 @@ const LIFELINE_SHELL = '/bin/sh';
 
 /**
  * What takes a gate child's group down when pup dies without stopping it
- * (decision 132). The group is in a session of its own (see `runGateChild`),
+ * (decision 136). The group is in a session of its own (see `runGateChild`),
  * so nothing a dying pup's own group receives reaches it, and pup's stop
  * escalates to SIGKILL only after a grace. A pup killed inside that grace, as
  * vitest kills a worker 500 ms after the SIGTERM pup forwards, left a

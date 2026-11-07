@@ -1,9 +1,9 @@
-# 0132. A gate child's group dies with pup, through a lifeline watcher in the group (2026-11-07)
+# 0136. A gate child's group dies with pup, through a lifeline watcher in the group (2026-11-07)
 
 - Status: accepted
 - Amends: [0095](0095-the-gate-pup-audit-and-pup-land-run.md), [0100](0100-every-temp-directory-a-test-makes-is-removed.md)
 
-132. **A gate child's group dies with pup, through a lifeline watcher in the group (2026-11-07).**
+136. **A gate child's group dies with pup, through a lifeline watcher in the group (2026-11-07).**
     Amends decisions 95 and 100. Decision 95 put every gate child in a process group of its own,
     in a session of its own, and decision 100 kills what is left in that group when the child
     settles. Both kills are pup's, so both need pup alive to run them. On 2026-11-07 a `sh` from
