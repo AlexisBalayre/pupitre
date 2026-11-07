@@ -116,6 +116,16 @@ describe('scripts/pre-commit', () => {
     expect(calls).toEqual(['exec biome check ./docs/notes.md']);
   });
 
+  it('runs the typecheck when the staged change only deletes a TypeScript file', () => {
+    const repo = makeRepo();
+    git(repo, 'rm', '-q', 'src/sum.ts');
+
+    const { status, calls } = runHook(repo, []);
+
+    expect(status).toBe(0);
+    expect(calls).toContain('typecheck');
+  });
+
   it('blocks the commit when a related test fails', () => {
     const repo = makeRepo();
     write(repo, 'src/sum.ts', 'export const sum = 2;\n');
