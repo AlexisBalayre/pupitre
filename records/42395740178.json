@@ -1,0 +1,108 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-07T17:23:34.623Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42395740178",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42395740178",
+  "actor": "AlexisBalayre",
+  "commit_sha": "a2ae9d79aec4243f92ee17633934b342604b17ad",
+  "source": "pr",
+  "pr_number": 242,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "context",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "context",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "spec"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "58d3e5f2bbfd7ce1088db8be89d03496866d66a4",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": ".github/workflows/pr-status.yml",
+      "line": "15-21",
+      "status": "resolved"
+    },
+    {
+      "file": ".github/workflows/pr-status.yml",
+      "line": "39-44",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": ".github/workflows/pr-status.yml",
+      "line": "46-48, 67-69",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "An `@claude review` retry no longer updates any PR's label. The retry runs on main via `issue_comment`, so its `workflow_run` links no PR. The new gate `github.event.workflow_run.pull_requests[0].number != null` skips it, and the script no longer has the recompute-all fallback the old code kept for this case (`// Empty for a run on main (an `@claude review` retry): recompute them all.`). Nothing else picks up the change: the poster writes its `claude-review` commit status and its `COMMENT` review with `github.token` (`post-review.script.ts` L142-148, L120-122), and events made with that token start no workflow. pr-status has no `status` trigger either. A PR whose review failed therefore keeps `pr/ci-failing` after a successful retry, until its next push, retarget, insider review, or push to main. The code at L100-102 that lets the status override the failed check run exists for exactly this retry, and it now only runs if some unrelated event happens later. The removal is also more than the security goal needs: on main only the default-branch workflow file runs, and its `claude-review` job is gated on `github.actor == github.repository_owner && github.triggering_actor == github.repository_owner`. So a non-skipped, same-repo run started by `issue_comment` is something only the owner can start.",
+      "body": "**An `@claude review` retry no longer relabels the PR it fixes**\n\nThe retry runs on main (`issue_comment`), so its `workflow_run.pull_requests` is empty. The new gate skips that run:\n\n```yaml\n      && (github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion != 'skipped'\n          && github.event.workflow_run.head_repository.full_name == github.repository\n          && github.event.workflow_run.pull_requests[0].number != null))\n```\n\nThe script also lost the recompute-all fallback that used to handle this case (`// Empty for a run on main (an \\`@claude review\\` retry): recompute them all.`):\n\n```js\n              if (context.payload.workflow_run) {\n                return context.payload.workflow_run.pull_requests.map((p) => p.number);\n              }\n```\n\nNo other trigger covers it:\n\n- The poster writes the `claude-review` status and its review with `github.token` (`claude-code-review.yml` L406, `post-review.script.ts` L118-148), and events made with that token start no workflow.\n- pr-status has no `status` trigger.\n\nSo after a failed review, a successful `@claude review` leaves the PR on `pr/ci-failing` until some unrelated push, retarget, insider review, or push to main. The \"status decides\" logic at L100-102 was written for exactly this retry, and it now runs only when some later event happens.\n\nThe security goal doesn't require dropping this path. `issue_comment` runs always use main's workflow file. In that file, `claude-review` requires `github.actor == github.repository_owner && github.triggering_actor == github.repository_owner`, and `persist-metrics` needs it. So a non-skipped, same-repo `issue_comment` run is one only the owner can start.\n\n**Fix:** accept that case in the gate and keep the `head_repository` check:\n\n```yaml\n          && (github.event.workflow_run.pull_requests[0].number != null\n              || (github.event.workflow_run.event == 'issue_comment'\n                  && github.event.workflow_run.triggering_actor.login == github.repository_owner))))\n```\n\nThen bring back the script fallback (`if (linked.length) return linked;`, otherwise fall through to listing open PRs). Also update the header (L5-8) and the job comment (L38-42), which currently say a run on main is ignored and only a push to main recomputes everything.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/a2ae9d79aec4243f92ee17633934b342604b17ad/.github/workflows/pr-status.yml#L46-L48\nhttps://github.com/AlexisBalayre/pupitre/blob/a2ae9d79aec4243f92ee17633934b342604b17ad/.github/workflows/pr-status.yml#L67-L69\nhttps://github.com/AlexisBalayre/pupitre/blob/a2ae9d79aec4243f92ee17633934b342604b17ad/.github/workflows/pr-status.yml#L100-L102",
+      "suggestion": null
+    },
+    {
+      "file": ".github/workflows/pr-status.yml",
+      "line": "36-37",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Concurrency groups are shared across every workflow in the repo, including `pull_request` runs of a fork PR's own workflow files. A fork can add a long-running job with `concurrency: group: pr-status-<N>` or `pr-status-main` and hold back (or, with cancel-in-progress, cancel) another PR's recompute, which leaves that PR's label stale. The only effect is a stale label: no write access and no code run with a write token. No group name is unforgeable, so accepting this is reasonable; `claude-review-<N>` in claude-code-review.yml has the same exposure.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "conventions",
+      "description": "The conventions reviewer's Glob of docs/adr/ was truncated (100 of 132 files shown). It judged the six ADRs that matched its grep irrelevant from their filenames alone and opened none of them. It also did not read labeler.yml or claude-code-review.yml."
+    }
+  ],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.8284770000000001,
+  "duration_ms": 192080,
+  "num_turns": 16,
+  "tokens": {
+    "input": 12,
+    "output": 11560,
+    "cache_read": 274750,
+    "cache_creation": 55136,
+    "total": 341458
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 42,
+      "output": 29256,
+      "cache_read": 509488,
+      "cache_creation": 145501,
+      "cost_usd": 1.5800985999999997
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 20,
+      "output": 6705,
+      "cache_read": 90784,
+      "cache_creation": 68884,
+      "cost_usd": 0.24837839999999997
+    }
+  ],
+  "permission_denials": []
+}
