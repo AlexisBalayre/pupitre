@@ -1,0 +1,144 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-07T15:16:01.302Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42385268202",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42385268202",
+  "actor": "AlexisBalayre",
+  "commit_sha": "a68fd99122ed24d00a78bc62ffd3721c285f98fc",
+  "source": "pr",
+  "pr_number": 243,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "maintainability",
+    "conventions",
+    "docs",
+    "context"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "maintainability",
+    "conventions",
+    "docs",
+    "context"
+  ],
+  "reviewers_skipped": [
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/overlap.service.ts",
+      "line": "16-21",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The `APPEND_ONLY_DIR` WHY comment still says docs/adr/ holds \"the index each new one adds a line to (decision 109)\". Since 0133 there is no committed index, so drop that clause. The append-only claim about landed decisions still holds.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "scripts/adr-index.sh",
+      "line": "14-28",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`--check` never compares the number in a decision's title with the 4-digit prefix of its filename. The duplicate error says \"renumber the newer file\", but a rename that leaves `# 0135. Foo` in `0136-foo.md` still passes and prints `[0135. Foo](0136-foo.md)`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1847-1848",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The rewritten `gateAndMerge` catch comment (\"a resolved stop would go on through rebase state…\") now explains why code that was deleted is absent. Under AGENTS.md §Comments it could simply be removed.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1617-1618",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "After the deletion, `mergeTargetInto`'s JSDoc ends in a short orphaned line (\"…(decision 50). Returns the failure\" / \"for the worker, …\"). Re-wrap it to the file's width.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/README.md",
+      "line": "8-23",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "README tension: the \"Reading and writing\" bullet still lets a later change \"append an amendment section\" to a landed decision, which is a second edit path into a landed file and runs against 0133's header-conflict rationale. The \"(older files also carry `- Amended by:`)\" aside in the format line repeats the bullet at lines 22-23.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "scripts/adr-index.sh",
+      "line": "13, 24",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The decision-file glob `\"$ADR_DIR\"/[0-9][0-9][0-9][0-9]-*.md` appears twice, once in `index()` and once in the duplicate check, so a change to the naming convention needs both edits.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "scripts/adr-index.test.sh",
+      "line": "1-36",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "pre-existing",
+      "description": "No package script, hook or workflow runs `scripts/adr-index.test.sh`, so the new duplicate-number and print-mode tests only run by hand. The base branch was the same.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.2554446999999995,
+  "duration_ms": 152379,
+  "num_turns": 13,
+  "tokens": {
+    "input": 10,
+    "output": 9945,
+    "cache_read": 211363,
+    "cache_creation": 52787,
+    "total": 274105
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 102,
+      "output": 30477,
+      "cache_read": 1235087,
+      "cache_creation": 169490,
+      "cost_usd": 1.8627764
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 56,
+      "output": 11651,
+      "cache_read": 416213,
+      "cache_creation": 93770,
+      "cost_usd": 0.3926683
+    }
+  ],
+  "permission_denials": []
+}
