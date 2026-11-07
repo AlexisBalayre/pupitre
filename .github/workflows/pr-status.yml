@@ -3,7 +3,7 @@
 #   pr/draft > pr/conflicts > pr/changes-requested > pr/ci-failing > pr/ci-pending > pr/ready
 #
 # Recomputed when the PR is opened, reopened, pushed to, marked ready or draft or closed, on a
-# review, when a Claude Code Review or Label PRs run ends, and on a push to main (which can
+# review, when a Claude Code Review run ends, and on a push to main (which can
 # introduce conflicts in other PRs). A closed PR loses its label.
 # The workflow names under `workflow_run` must match the `name:` of those workflows.
 #
@@ -17,7 +17,7 @@ on:
   pull_request_review:
     types: [submitted, dismissed]
   workflow_run:
-    workflows: ["Claude Code Review", "Label PRs"]
+    workflows: ["Claude Code Review"]
     types: [completed]
   push:
     branches: [main]
@@ -61,7 +61,7 @@ jobs:
             const numbers = await (async () => {
               if (context.payload.pull_request) return [context.payload.pull_request.number];
               if (context.payload.workflow_run) {
-                // Empty for a run on main (an `@claude review` retry, Label PRs): recompute them all.
+                // Empty for a run on main (an `@claude review` retry): recompute them all.
                 const linked = context.payload.workflow_run.pull_requests.map((p) => p.number);
                 if (linked.length) return linked;
               }
@@ -108,7 +108,7 @@ jobs:
                 await github.paginate(github.rest.checks.listForRef, {
                   owner, repo, ref: pr.head.sha, per_page: 100,
                 })
-              ).filter((c) => c.name !== context.job && !contexts.has(c.name));
+              ).filter((c) => c.name !== context.job && c.name !== "label" && !contexts.has(c.name));
               const bad = new Set(["failure", "timed_out", "cancelled", "action_required", "stale", "startup_failure"]);
               // Not combined.state: it is "pending" when a head has no status at all.
               if (
