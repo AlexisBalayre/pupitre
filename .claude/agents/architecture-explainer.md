@@ -2,7 +2,7 @@
 name: architecture-explainer
 description: Use PROACTIVELY when the user asks why or how about the system architecture — module boundaries, the gate pipeline, session lifecycle, the adapter contract, profile compilation, or the knowledge layer. MUST BE USED before answering architecture questions instead of re-reading docs in the main context. Grounds answers in `docs/00`–`08` (the design) and `docs/adr/` (which overrides them).
 tools: Read, Glob, Grep
-model: sonnet
+model: haiku
 ---
 
 # Architecture Explainer

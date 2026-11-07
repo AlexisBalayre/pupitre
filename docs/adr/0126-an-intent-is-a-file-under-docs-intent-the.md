@@ -9,7 +9,7 @@
     the work and kept with the code it is about.
     *The file.* `docs/intent/NNNN-<slug>.md` in the repo, tracked like the ADRs, so an intent is
     reviewed and versioned like them. It opens with `# NNNN. Title` and a `- Status:` line, which
-    is `draft`, `accepted` or `closed` (`IntentStatus` in `intent.enums.ts`). It has five sections:
+    is `draft`, `accepted` or `closed` (`IntentStatus` in `enums/intent.enums.ts`). It has five sections:
     Problem, Outcome, Constraints, Open questions, and What I must understand after review.
     pup reads meaning only from the status line and the last section. `pup intent new <title>`
     writes the template, numbered one past the highest id in the directory, with the first eight
@@ -66,12 +66,11 @@
     `listIntents`, `acceptIntent` and `intentTemplate`, each taking the repo path. It also exports
     `INTENT_DIR`; the heading and the question bounds stay private until a reader needs them.
     `Intent` carries the
-    id, title, status, path, stripped text and parsed questions (`intent.types.ts`). Every
+    id, title, status, path, stripped text and parsed questions (`types/intent.types.ts`). Every
     refusal is an `IntentRefusedError`. Closing an intent, and tying one to the tasks and the
     review it feeds, are part 2's.
-    *Layout.* The status set is a string enum in `intent.enums.ts`, as decision 116 asks. The
-    types and errors sit in `intent.types.ts` and `intent.errors.ts` beside the service rather than
-    in the `types/` and `errors/` subfolders, and the test is `src/core/intent-service.test.ts`
+    *Layout.* The status set is a string enum in `enums/intent.enums.ts`, as decision 116 asks. The
+    types and errors sit in `types/intent.types.ts` and `errors/intent.errors.ts`, and the test is `src/core/intent-service.test.ts`
     rather than under `test/unit/`. The task's scope was `src/core/intent*`, and the `@src`
     aliases decision 116 needs do not exist yet. For the same reason `CONTROL_CHARS`, `FENCE_OPEN`
     and `FENCE_CLOSE` are copies of `brief.service.ts`'s, marked as such; the conductor has planned

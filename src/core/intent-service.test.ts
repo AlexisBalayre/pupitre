@@ -9,8 +9,8 @@ import {
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { tempDir } from '../test/temp-dir.mock.js';
-import { IntentStatus } from './intent.enums.js';
-import { IntentRefusedError } from './intent.errors.js';
+import { IntentStatus } from './enums/intent.enums.js';
+import { IntentRefusedError } from './errors/intent.errors.js';
 import {
   acceptIntent,
   createIntent,
