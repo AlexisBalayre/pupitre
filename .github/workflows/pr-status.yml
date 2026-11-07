@@ -1,6 +1,7 @@
 # Keeps one `pr/*` status label on every open PR, so the list shows at a glance which are ready
 # to merge. First match wins:
-#   pr/draft > pr/conflicts > pr/changes-requested > pr/ci-failing > pr/ci-pending > pr/ready
+#   pr/draft > pr/conflicts > pr/changes-requested > pr/review-open > pr/ci-failing >
+#   pr/ci-pending > pr/ready
 #
 # Recomputed when the PR is opened, reopened, pushed to, retargeted, marked ready or draft or
 # closed, on a review, and when a Claude Code Review run for it ends. Two events recompute every
@@ -62,6 +63,7 @@ jobs:
               "pr/draft": ["ededed", "Still a draft"],
               "pr/conflicts": ["b60205", "Cannot merge: conflicts with the base branch"],
               "pr/changes-requested": ["d93f0b", "A reviewer asked for changes"],
+              "pr/review-open": ["e99695", "The CI review has important findings to address"],
               "pr/ci-failing": ["d73a4a", "A check failed"],
               "pr/ci-pending": ["fbca04", "Checks are still running"],
               "pr/ready": ["0e8a16", "Ready to merge"],
@@ -113,6 +115,13 @@ jobs:
               const { data: combined } = await github.rest.repos.getCombinedStatusForRef({
                 owner, repo, ref: pr.head.sha, per_page: 100,
               });
+              // The poster sets `success` on every run it posted, findings or not (`pup fix` relays
+              // a review's threads only behind a `success` status, decision 90), so the findings
+              // are read from the description. A crashed review is `failure` and stays ci-failing.
+              const review = combined.statuses.find((s) => s.context === "claude-review");
+              if (review?.state === "success" && /\d+ important finding/.test(review.description ?? "")) {
+                return "pr/review-open";
+              }
               const contexts = new Set(combined.statuses.map((s) => s.context));
               const runs = (
                 await github.paginate(github.rest.checks.listForRef, {
