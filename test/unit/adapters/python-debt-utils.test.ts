@@ -1,5 +1,5 @@
+import { parseVultureOutput } from '@src/adapters/python-debt.utils.js';
 import { describe, expect, it } from 'vitest';
-import { parseVultureOutput } from './python-debt.utils.js';
 
 describe('parseVultureOutput', () => {
   it('maps named vulture findings to dead exports', () => {

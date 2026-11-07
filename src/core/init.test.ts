@@ -1,10 +1,10 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import type { Database } from 'better-sqlite3';
 import { afterAll, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import type { Adapter } from '../adapters/types/adapter.types.js';
-import { tempDir } from '../test/temp-dir.mock.js';
 import { listBaselineHistory } from './baseline-history.repository.js';
 import { openStore } from './db.client.js';
 import { BrokenToolchainError, initProject, NoAdapterError } from './init.service.js';

@@ -99,6 +99,7 @@ vi.mock('./test-slot.service.js', async (importOriginal) => {
   };
 });
 
+import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import { formatDuration } from '../adapters/capability.utils.js';
 import type { Adapter, CapabilityContext, NestedPackage } from '../adapters/types/adapter.types.js';
 import { typescriptAdapter } from '../adapters/typescript.adapter.js';
@@ -108,7 +109,6 @@ import {
   steerPane,
 } from '../claude/session-runtime.service.js';
 import { runUtility } from '../claude/utility.service.js';
-import { tempDir } from '../test/temp-dir.mock.js';
 import { openStore } from './db.client.js';
 import { listDecisionRecords } from './decision-record.repository.js';
 import { ArmedGitDriverError, WorktreeRepointedError } from './git-diff.client.js';

@@ -13,6 +13,7 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   steerPane: vi.fn(),
 }));
 
+import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import {
   kickoff,
   killSession,
@@ -20,7 +21,6 @@ import {
   SessionPaneMissingError,
   steerPane,
 } from '../claude/session-runtime.service.js';
-import { tempDir } from '../test/temp-dir.mock.js';
 import { openStore } from './db.client.js';
 import { WorktreeRepointedError } from './git-diff.client.js';
 import { projectPaths } from './paths.utils.js';

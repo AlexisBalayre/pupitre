@@ -9,9 +9,9 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import type { Database } from 'better-sqlite3';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { tempDir } from '../test/temp-dir.mock.js';
 import { type CiWaitClock, waitForCiReview } from './ci-wait.service.js';
 import { openStore } from './db.client.js';
 import { projectId } from './paths.utils.js';

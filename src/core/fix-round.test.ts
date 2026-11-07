@@ -34,6 +34,7 @@ vi.mock('../claude/utility.service.js', () => ({
   runUtility: vi.fn(() => ({ ok: false, output: 'mocked out in tests' })),
 }));
 
+import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import type { Adapter } from '../adapters/types/adapter.types.js';
 import { LADDERS } from '../claude/model-ladder.constants.js';
 import {
@@ -43,7 +44,6 @@ import {
   SteerNotDeliveredError,
   steerPane,
 } from '../claude/session-runtime.service.js';
-import { tempDir } from '../test/temp-dir.mock.js';
 import { codegraphBinary } from './codegraph.client.js';
 import { openStore } from './db.client.js';
 import { DEFAULT_BASE_PROFILE } from './default-profile.constants.js';
