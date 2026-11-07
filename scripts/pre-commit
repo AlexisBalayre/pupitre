@@ -104,7 +104,10 @@ if [ -n "${LINT_CMD:-}" ] && [ -n "$STAGED" ]; then
   fi
 fi
 
-if [ -n "${TYPECHECK_CMD:-}" ]; then
+# Typecheck only what a type can break: source, or the config that shapes it (decision 135).
+STAGED_TYPED=$(printf '%s\n%s\n' "$STAGED_SOURCE" "$STAGED" | grep -E '\.(ts|tsx)$|^(package\.json|tsconfig[^/]*\.json)$' || true)
+
+if [ -n "${TYPECHECK_CMD:-}" ] && [ -n "$STAGED_TYPED" ]; then
   echo "Running TYPECHECK_CMD: $TYPECHECK_CMD"
   if ! bash -c "$TYPECHECK_CMD"; then
     echo ""
