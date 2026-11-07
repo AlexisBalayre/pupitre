@@ -1,0 +1,190 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-07T21:46:29.690Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42417071996",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42417071996",
+  "actor": "AlexisBalayre",
+  "commit_sha": "d370a72e58b9a2e6cd44edd7438943a21b91e085",
+  "source": "pr",
+  "pr_number": 258,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "context",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "context",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "tools/review/src/post-review.script.ts",
+      "line": "228-245",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The commit status and the comment reaction still count only this round's importants. A clean incremental round with an unresolved carried important therefore posts `success: no blocking issues` and a rocket reaction, while the body now says that important is still open.",
+      "body": "This PR stops a clean incremental round from reading as clean while a prior important is still open, but it only fixes the review body. `bodyLines` now lists `unresolvedPrior(summary)`. The other two outputs of the same round still count only the importants raised in this round:\n\n```ts\nconst importants = anchored.length + unanchored.length;\n...\nconst outcome = importants > 0 ? `${importants} important finding(s)` : \"no blocking issues\";\n...\nconst reaction = failure ? \"confused\" : importants > 0 ? \"-1\" : partial ? \"+1\" : \"rocket\";\n```\n\n`prepare()` fills `anchored`/`unanchored` only from `summary.findings`. Nothing here reads `summary.prior_importants`. Take a round whose delta is clean (or that spawned no reviewer) and whose `prior_importants` holds an `unresolved` entry. The body says \"1 important finding ... still open\". The `claude-review` status description says \"no blocking issues\" (state `success`, the same as every finished round). The `@claude review` comment gets the `rocket` reaction. REVIEW.md §2 says an important from rounds 1 to 3 \"is fixed before merge, carried or new\", and §3 requires zero open blocking importants. So the status and the reaction still give the false-clean signal this PR sets out to remove, and they now contradict the body.\n\nFix: count the carried entries where `importants` is computed. For example, add `unresolvedPrior(summary).length` (it is already exported from `./review-body.utils`) when there is a verdict. You could also give them their own wording, such as \"N carried important(s) open\".\n\n<https://github.com/AlexisBalayre/pupitre/blob/d370a72e58b9a2e6cd44edd7438943a21b91e085/tools/review/src/post-review.script.ts#L228-L245>",
+      "suggestion": null
+    },
+    {
+      "file": ".claude/skills/pr-ci-review/SKILL.md",
+      "line": "168",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The output contract in SKILL.md (line 168) still defines `prior_importants` as only the prior record's `important` findings. That contradicts the new §3 rule to also carry the prior record's own unresolved `prior_importants`, so an orchestrator following the schema section drops a carried important after one round and the body goes back to \"No issues found.\"",
+      "body": "The carry-forward only works if each round copies the prior record's unresolved `prior_importants` into its own record. §3 (line 61) now says those entries are owed. But the structured-output section the orchestrator fills the record from still says:\n\n> `prior_importants`: on an incremental run, the prior record's `important` findings, each `{file, line, description, status}` ...\n\nThe JSON schema the orchestrator receives through `--json-schema` says the same narrow thing. In `tools/review/src/review-metrics.schemas.ts`, around L110-114, the `.describe()` reads \"Incremental only: the prior record's important findings checked against the current head.\"\n\nFollow those definitions literally and the chain breaks after one clean round:\n\n1. Round 1 raises important X.\n2. Round 2 has a clean delta and records X as `unresolved` in `prior_importants`.\n3. Round 3 reads round 2's record. That record has no `important` *findings*, so round 3 emits `prior_importants: []`.\n4. `carriedLines` returns `[]`, and `bodyLines` prints `No issues found.` while X is still open.\n\nThat is the regression this PR targets, now one round later. Make §9 and the schema `.describe()` match §3. Also say where `description` comes from for a carried entry: the prior record's `prior_importants` entry, not its `findings`.\n\n<https://github.com/AlexisBalayre/pupitre/blob/d370a72e58b9a2e6cd44edd7438943a21b91e085/.claude/skills/pr-ci-review/SKILL.md#L168>",
+      "suggestion": "- `prior_importants`: on an incremental run, the prior record's `important` findings plus the `unresolved` entries of its own `prior_importants` (§3), each `{file, line, description, status}` (`description` copied from the prior record's finding or entry, so an unresolved one can be named in the body) with `status` `resolved` or `unresolved` against the current head (§3); empty on a full run."
+    },
+    {
+      "file": "tools/review/src/review-body.utils.ts",
+      "line": "128-132",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`carriedLines` labels every carried important `(correctness)` whatever reviewer raised it, because `priorImportantSchema` has no `area`. It also says each came \"from the review of <incremental_from_sha>\", which is wrong for one carried over from an earlier round.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "tools/review/src/review-body.utils.ts",
+      "line": "88-102",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The nit header counts every nit, but the held-back line mixes held-back nits with pre-existing issues. With 8 nits and 2 pre-existing, the body shows \"8 minor issues\" and \"5 more minor issues held back\", which reads as 13 total (the real total is 10), and the 2 pre-existing issues are never named.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/skills/pr-ci-review/SKILL.md",
+      "line": "61",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Records written before this change have `prior_importants` entries without a `description`, so §3's \"copy it from the prior record\" has nothing to copy for those carried entries. The required string gets made up or left empty, and an empty one renders as `- \\`file:line\\` (correctness): ` with no text; the skill should say where to find it, e.g. the record that first raised the important.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "tools/review/src/review-metrics.script.ts",
+      "line": "25-28",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`SCHEMA_VERSION` stays at 6, although `prior_importants` entries gain a `description` field and now include carried entries. The comment above the constant asks for a bump in exactly this case so the retro can split records by version, and `review-retro/SKILL.md` has no matching \"From schema 7\" note.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "tools/review/src/review-body.utils.ts",
+      "line": "121",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`unresolvedPrior` is exported with its own JSDoc block, but its only caller is `carriedLines` in the same file. general.md §Altitude / YAGNI says to inline a single-caller helper, so inline the filter or drop the `export`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/skills/pr-ci-review/SKILL.md",
+      "line": "61",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "In §3, \"their threads belong to the respond stage, and so are the `unresolved` entries\" does not parse (\"so are\" has no verb to match \"belong\"). It is unclear whether the carried entries belong to the respond stage or are also owed by this round, and the \"For each\" that follows inherits that ambiguity.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "tools/review/src/review-body.utils.ts",
+      "line": "158-190",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`carriedLines(summary)` is called in both the early-return branch and the main branch of `bodyLines`, and each call site adds its own blank-line separator. Computing it once before the branch would remove the two variants.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "tools/review/src/review-body.utils.ts",
+      "line": "12",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`MINOR_CAP` is exported but only used inside `review-body.utils.ts`, and the tests assert the literal 5. Drop the `export` until a second module needs it (general.md §Altitude / YAGNI).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "tools/review/README.md",
+      "line": "13-14",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The reflowed paragraph leaves one line (`refuted findings) in collapsed sections of one review body, plus a \\`claude-review\\` commit status on the head SHA. Splitting the writer out of`) far past the ~95-character wrap the rest of the paragraph uses; re-wrap it.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.8410814,
+  "duration_ms": 236728,
+  "num_turns": 14,
+  "tokens": {
+    "input": 12,
+    "output": 12730,
+    "cache_read": 256227,
+    "cache_creation": 52762,
+    "total": 321731
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 58,
+      "output": 28988,
+      "cache_read": 785988,
+      "cache_creation": 141021,
+      "cost_usd": 1.6005806
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 30,
+      "output": 6583,
+      "cache_read": 170208,
+      "cache_creation": 63036,
+      "cost_usd": 0.24050080000000001
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "git -C /home/runner/work/pupitre/pupitre diff 364363703fb10175c30bf7858074d994f5a8acd8..HEAD -- .claude/skills/pr-ci-review/SKILL.md"
+    },
+    {
+      "tool": "Bash",
+      "input": "git -C /home/runner/work/pupitre/pupitre show HEAD:.claude/skills/pr-ci-review/SKILL.md"
+    }
+  ]
+}
