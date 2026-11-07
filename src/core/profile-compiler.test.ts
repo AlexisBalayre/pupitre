@@ -24,6 +24,10 @@ import { ContextBudgetExceededError, InvalidProfileError } from './profile.error
 import * as ProfileCompiler from './profile-compiler.service.js';
 import type { CompileInput, SessionId, TaskId, TaskSpec } from './types/profile.types.js';
 
+// Many tests here spawn real git and sh; under load or coverage the 5 s default
+// times out a different one each run, which also stops `pup audit` measuring coverage.
+vi.setConfig({ testTimeout: 30_000 });
+
 const task: TaskSpec = {
   id: 'task-1' as TaskId,
   goal: 'Add retry logic to the fetch client',
