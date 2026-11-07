@@ -17,7 +17,7 @@ section it does not need. A body is a few lines per section, never a wall of tex
 | tooling, CI, dependencies (`chore`) | `templates/chore.md` | Why, Rollback |
 | tests only (`test`) | `templates/test.md` | Why, Before/After rate |
 | a speed-up (`perf`) | `templates/perf.md` | Measurement table, Trade-off |
-| a revert | `templates/revert.md` | Why, Next |
+| a revert | `templates/revert.md` (title type `chore`) | Why, Next |
 | a task from a `pup` session | `templates/session.md` | Task, Gate, Scope |
 
 No template fits: use the base body below.
@@ -63,7 +63,7 @@ One Mermaid diagram that shows the shape of the change, then at most two sentenc
 | entities and how they relate (a `SCHEMA` change) | `erDiagram` |
 | modules, types or responsibilities | `classDiagram`, or a `flowchart` of module boxes |
 
-Show what changed, not the whole system: draw only the nodes the reader needs, and mark the change with `classDef` (`added`, `removed`, `changed`) so the diff reads at a glance.
+Show what changed, not the whole system: draw only the nodes the reader needs. In a `flowchart`, `classDiagram` or `stateDiagram-v2`, mark the change with `classDef` (`added`, `removed`, `changed`) so the diff reads at a glance; `sequenceDiagram` has no `classDef` (and `erDiagram` support depends on the renderer's Mermaid version), so name the changed participant or entity in its label or a note instead. The three `classDef` lines below are the palette to paste.
 
 ```mermaid
 flowchart LR
@@ -74,7 +74,7 @@ flowchart LR
     classDef changed fill:#f8f0c8,stroke:#a82
 ```
 
-Define every class you use; an undefined one renders unstyled with no error. Skip the diagram when it adds nothing: a one-line config or docs-only change gets one sentence. Use a fenced `diff` block only for a change too small to draw, and never paste a file tree, a pseudocode block or a whole function.
+Define every class you use; an undefined one renders unstyled with no error. Skip the diagram when it adds nothing: a one-line config or docs-only change gets one sentence. Use a fenced `diff` block only for a change too small to draw, and keep the body to the one line that matters: link a file or quote a single changed line instead of pasting a file tree, a pseudocode block or a whole function.
 
 ### Evidence
 
@@ -126,7 +126,7 @@ After a review round, add one line per round to the body: `Round N (<sha>), disp
 Communicate *what changed and why* at a glance, specific enough that a reviewer can predict the diff. GitHub auto-appends ` (#NNNN)` on merge; do not write it yourself.
 
 ```
-<type>(<scope>): <summary> (PROJ-XXXX)
+<type>(<scope>): <summary>
 ```
 
 - **`<type>`**: dominant intent of the diff.
@@ -144,13 +144,13 @@ Communicate *what changed and why* at a glance, specific enough that a reviewer 
   Mixed diff: pick the user-visible win, mention the rest in the Summary.
 - **`<scope>`**: optional but usually present. Lowercase kebab, naming the component or area touched. Common scopes in this repo: `gate`, `cli`, `ui`, `conductor`, `watch`, `profile`, `init`, `store`, `adapters`, `claude`, `report`, `tooling`, `skills`, `deps`. Multi-scope `(gate,cli)` only when both are non-trivial. Drop the scope when the change is repo-wide.
 - **`<summary>`**: imperative present tense, lowercase first word, no trailing period. Proper nouns keep their case (`Biome`, `SQLite`, `Vitest`, `GitHub`); double quotes around identifiers are fine.
-- **`(PROJ-XXXX)`**: a tracker id; there is none here, so drop it. Follow-ups read `(follow-up to #NNNN)`.
+- **Follow-ups** end the summary with `(follow-up to #NNNN)`. There is no tracker id.
 
 **Lint:**
 
 - No em-dash (`—` / `–`). Hyphen, colon, or rephrase.
 - No trailing period; no capital after the colon (proper nouns excepted).
-- ≲ 80 chars including `(PROJ-XXXX)`; if over, trim adjectives, not specificity.
+- ≲ 80 chars; if over, trim adjectives, not specificity.
 - Reject generic verbs (`update`, `improve`, `change`, `various`). Strong fix-title names cause, surface, impact: `fix(api): race condition in cache invalidation that caused 502s under load`, not `fix bug`.
 
 **Worked examples:**

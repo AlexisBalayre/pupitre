@@ -12,4 +12,4 @@
 
 ## Merge Danger
 
-**Door:** two-way. **Blast Radius:** <one word>.
+**Door:** <one-way or two-way>. **Blast Radius:** <one word>.
