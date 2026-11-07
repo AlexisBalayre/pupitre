@@ -70,7 +70,7 @@ const UNANSWERABLE_TOOLS = ['AskUserQuestion', 'EnterPlanMode', 'ExitPlanMode'];
 
 /**
  * Tools a worker never calls, denied by bare name, which takes the definition
- * out of its context rather than refusing a call (decisions 107, 135). The
+ * out of its context rather than refusing a call (decisions 107, 149). The
  * conductor keeps them: it is the operator's window as much as pup's. A worker
  * keeps SendMessage and ListAgents to reach its peers (decision 99) and Agent to
  * delegate reading; plan mode is already among `UNANSWERABLE_TOOLS`.
@@ -1131,7 +1131,7 @@ export function compileProfile(input: SessionCompileInput): CompiledProfile {
         ]),
       ],
     },
-    // The operator's MEMORY.md is theirs, not the task's (decision 135).
+    // The operator's MEMORY.md is theirs, not the task's (decision 149).
     autoMemoryEnabled: false,
     env: { ...SLIM_CONTEXT_ENV, ...WORKER_SLIM_CONTEXT_ENV },
   };

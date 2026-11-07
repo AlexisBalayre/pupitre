@@ -29,7 +29,7 @@ export const SLIM_CONTEXT_ENV = {
 };
 
 /**
- * A worker's `env` beyond `SLIM_CONTEXT_ENV` (decision 135): the operator's
+ * A worker's `env` beyond `SLIM_CONTEXT_ENV` (decision 149): the operator's
  * claude.ai connectors and Claude in Chrome, whose tools and server
  * instructions a worker never uses. The conductor keeps both: it is the
  * operator's window.

@@ -32,7 +32,7 @@ vi.setConfig({ testTimeout: 30_000 });
 /**
  * A worker's denials on the default base profile, in order, each beside the
  * decision that took it out of the toolset: 74's tools open a screen pup cannot
- * answer, 107's and 135's are never called, and 107 drops the skill listing.
+ * answer, 107's and 149's are never called, and 107 drops the skill listing.
  */
 const WORKER_DENY_BY_DECISION: [tool: string, decision: number][] = [
   ['AskUserQuestion', 74],
@@ -41,18 +41,18 @@ const WORKER_DENY_BY_DECISION: [tool: string, decision: number][] = [
   ['SendFeedback', 107],
   ['ScheduleWakeup', 107],
   ['ReportFindings', 107],
-  ['CronCreate', 135],
-  ['CronDelete', 135],
-  ['CronList', 135],
-  ['DesignSync', 135],
-  ['EndConversation', 135],
-  ['EnterWorktree', 135],
-  ['ExitWorktree', 135],
-  ['NotebookEdit', 135],
-  ['PushNotification', 135],
-  ['RemoteTrigger', 135],
-  ['WebFetch', 135],
-  ['WebSearch', 135],
+  ['CronCreate', 149],
+  ['CronDelete', 149],
+  ['CronList', 149],
+  ['DesignSync', 149],
+  ['EndConversation', 149],
+  ['EnterWorktree', 149],
+  ['ExitWorktree', 149],
+  ['NotebookEdit', 149],
+  ['PushNotification', 149],
+  ['RemoteTrigger', 149],
+  ['WebFetch', 149],
+  ['WebSearch', 149],
   ['Skill', 107],
 ];
 const WORKER_DENY = WORKER_DENY_BY_DECISION.map(([tool]) => tool);
@@ -260,7 +260,7 @@ describe('compileProfile', () => {
       expect(settingsOf(makeInput()).env).toMatchObject(SLIM_ENV);
     });
 
-    // Decision 135: the operator's memory, connectors and browser are theirs.
+    // Decision 149: the operator's memory, connectors and browser are theirs.
     it('turns off auto-memory, the claude.ai connectors and Claude in Chrome', () => {
       const settings = settingsOf(makeInput());
 
@@ -1005,7 +1005,7 @@ describe('compileConductorProfile', () => {
   });
 
   // Decision 107: the conductor gets a worker's env block and keeps its tools.
-  // Decision 135: and keeps the operator's memory, connectors and browser.
+  // Decision 149: and keeps the operator's memory, connectors and browser.
   it('turns off the Artifact and Workflow tools and prompt suggestions, and nothing else', () => {
     const compiled = ProfileCompiler.compileConductorProfile(conductorInput);
 

@@ -1,9 +1,9 @@
-# 0135. A worker turns off auto-memory, the claude.ai connectors and Claude in Chrome, and denies the deferred tools it never calls (2026-11-07)
+# 0149. A worker turns off auto-memory, the claude.ai connectors and Claude in Chrome, and denies the deferred tools it never calls (2026-11-07)
 
 - Status: accepted
 - Amends: [0107](0107-every-compiled-settings-file-turns-off-the-artifact.md)
 
-135. **A worker turns off auto-memory, the claude.ai connectors and Claude in Chrome, and
+149. **A worker turns off auto-memory, the claude.ai connectors and Claude in Chrome, and
     denies the deferred tools it never calls (2026-11-07).** After decision 107 a worker's
     first request still carried what is the operator's, not the task's: their auto-memory
     `MEMORY.md` (~2.2k tokens; a worktree resolves to the main checkout's memory directory),
