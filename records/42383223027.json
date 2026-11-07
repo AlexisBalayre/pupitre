@@ -1,0 +1,192 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-07T14:53:59.405Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42383223027",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42383223027",
+  "actor": "AlexisBalayre",
+  "commit_sha": "89055ad1bb046cc64731fa7f8c61a36de2eaeba5",
+  "source": "pr",
+  "pr_number": 242,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "context",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "context",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": ".github/workflows/pr-status.yml",
+      "line": "77-83",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "Every run started by a PR or review event sees its own `status` check run as `in_progress` on the PR head, so it labels `pr/ci-pending`. Several of those events never get a later recompute, so the label sticks.",
+      "body": "**Every run started by a PR or review event labels the PR `pr/ci-pending`, and for several events nothing corrects it later.** ([pr-status.yml#L77-L83](https://github.com/AlexisBalayre/pupitre/blob/89055ad1bb046cc64731fa7f8c61a36de2eaeba5/.github/workflows/pr-status.yml#L77-L83))\n\nRuns started by `pull_request_target` and `pull_request_review` put their check run on the PR head commit. So `checks.listForRef({ ref: pr.head.sha })` returns this job's own `status` run while it is still `in_progress`, and\n\n```js\nif (data.check_runs.some((c) => c.status !== \"completed\")) return \"pr/ci-pending\";\n```\n\nreturns `pr/ci-pending` unless an earlier branch matched first. Only `workflow_run` of \"Claude Code Review\" and `push` to `main` put their check runs on the default-branch commit, so only those two can fix the label afterwards.\n\nIn these cases the label stays wrong until the next push to `main`:\n- **Approving or dismissing a review on a green PR.** Claude Code Review doesn't trigger on reviews. The poster's own review is submitted with `GITHUB_TOKEN`, which starts no workflows.\n- **`reopened`.** `claude-code-review.yml` listens only for `opened`, `ready_for_review` and `synchronize`.\n- **Fork PRs.** `workflow_run.pull_requests` is empty for runs from a fork, and the Claude job is skipped anyway because the actor isn't the owner.\n- **A Claude run that skips quickly** (non-owner pusher). It can finish before this run, which can spend about 12 s polling `mergeable`. Whichever run finishes last sets the label.\n\nSuggested fix: leave this job's own check run out of the pending test, for example by matching `context.runId` in `c.details_url` or skipping this job's check name. Also consider adding `\"Label PRs\"` and this workflow to `workflow_run.workflows`, or using a `check_suite: completed` trigger, so the label is recomputed once the sibling checks finish.",
+      "suggestion": null
+    },
+    {
+      "file": ".github/workflows/pr-status.yml",
+      "line": "80-92",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "If this job fails, it leaves a failed `status` check on the PR head. Every later recompute then counts that failure and labels the PR `pr/ci-failing`. Review events on fork PRs trigger this every time.",
+      "body": "**A failed run of this workflow labels the PR `pr/ci-failing` from then on.** ([pr-status.yml#L80-L92](https://github.com/AlexisBalayre/pupitre/blob/89055ad1bb046cc64731fa7f8c61a36de2eaeba5/.github/workflows/pr-status.yml#L80-L92))\n\n`listForRef` on the PR head SHA also returns this workflow's own `status` check run. When a run fails, the failed check stays on the head SHA. Every later recompute (push to main, `pull_request_target`) matches it with `bad.has(c.conclusion)` and labels the PR `pr/ci-failing`. Under the default `filter=latest`, the failed check is replaced only by a later `status` run *on the same SHA*. Only `reopened`, `ready_for_review` and `converted_to_draft` produce one.\n\nOn fork PRs this happens on every review. `pull_request_review` from a fork runs with a read-only `GITHUB_TOKEN`, whatever `permissions:` says. The first `createLabel` gets a 403, not a 422, and this guard rethrows it:\n\n```js\n} catch (e) {\n  if (e.status !== 422) throw e;\n}\n```\n\nSo the job fails red on each review. The next push to main then labels the PR `pr/ci-failing` until a new commit lands, and the next review does it again. Same-repo PRs get poisoned the same way by a `removeLabel` 404 when two runs overlap, or by any transient API error.\n\nSuggested fix:\n- Leave this workflow's own check runs out of the count.\n- Skip `pull_request_review` on fork PRs: a job `if:` such as `github.event_name != 'pull_request_review' || github.event.pull_request.head.repo.full_name == github.repository`, or an early return in the script. Fork PRs are still relabelled by `pull_request_target` and push-to-main.",
+      "suggestion": null
+    },
+    {
+      "file": ".github/workflows/pr-status.yml",
+      "line": "94-107",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "There is no concurrency control and the label update is read-modify-write. Two runs on the same PR can both remove the old label and each add their own, leaving two `pr/*` labels. Or one run's `removeLabel` gets a 404 and fails the job.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".github/workflows/pr-status.yml",
+      "line": "45-65",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The script never checks `pr.state`, and there is no `closed` trigger. A Claude review that finishes after a merge (`workflow_run.pull_requests`), or a review on a closed PR, still writes a `pr/*` label, and merged PRs keep their last `pr/ready` label forever.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".github/workflows/pr-status.yml",
+      "line": "77-83",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Only check runs are read, never the `claude-review` commit status the poster sets on the head. An `@claude review` retry runs on `main` (its check run is not on the PR head, and its `workflow_run.pull_requests` is empty), so a successful retry never clears `pr/ci-failing` left by the failed `synchronize` check, and a failed retry never moves the PR off `pr/ready`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".github/workflows/pr-status.yml",
+      "line": "71-74",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Any GitHub account can set `pr/changes-requested` on any open PR in this public repo by submitting a \"Request changes\" review, and the label stays until that same user approves. The loop counts every reviewer's latest state with no `author_association` filter. GitHub's own review decision only counts reviewers with write access. Restricting the count to `[\"OWNER\",\"MEMBER\",\"COLLABORATOR\"].includes(r.author_association)` closes it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".github/workflows/pr-status.yml",
+      "line": "77-79",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "A fork author controls which check runs exist on their head SHA, so on fork PRs `pr/ready` only means \"no check the PR's own workflows produced has failed\". `pull_request` runs the workflow files from the PR, so the author can rewrite or delete `claude-code-review.yml`. The call also reads only the first 100 check runs (no `github.paginate`), so a PR that adds more than 100 passing matrix jobs could push a real failure off the page. Consider paginating, and treat the label as a hint rather than a merge signal.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".github/workflows/pr-status.yml",
+      "line": "57",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The comment says `mergeable_state` is null until GitHub computes it, but the loop polls `mergeable` (`if (pr.mergeable !== null) break;`). The comment names the wrong field.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".github/workflows/pr-status.yml",
+      "line": "5-6",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The header says the label is \"Recomputed on every event that can change the answer: ... a finished workflow run\", but `workflow_run` is filtered to \"Claude Code Review\" only. Other checks finishing never trigger a recompute, so \"every event\" overclaims.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".github/workflows/pr-status.yml",
+      "line": "18",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The priority order is written twice: in the header comment and in the order of the `statusOf` branches (`LABELS` order mirrors it but drives nothing). The literal `workflows: [\"Claude Code Review\"]` must match the `name:` in `claude-code-review.yml`, and renaming that workflow would silently stop CI-driven recomputes.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".github/workflows/pr-status.yml",
+      "line": "94-107",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The loop that removes stale labels and then adds the wanted one nearly copies the one in `labeler.yml` (lines 42-49). That is two uses, so under AGENTS.md's \"no abstraction until third use\" rule it is fine to leave for now.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".github/workflows/pr-status.yml",
+      "line": "32",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `actions/github-script` step has no `name:`, but the steps in sibling workflows `labeler.yml` and `claude-code-review.yml` are all named (AGENTS.md core rule: match the patterns of similar files).",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 2,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.4247132,
+  "duration_ms": 356861,
+  "num_turns": 18,
+  "tokens": {
+    "input": 16,
+    "output": 15621,
+    "cache_read": 363137,
+    "cache_creation": 53296,
+    "total": 432070
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 62,
+      "output": 55825,
+      "cache_read": 712172,
+      "cache_creation": 164697,
+      "cost_usd": 2.2425554
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 24,
+      "output": 6565,
+      "cache_read": 124373,
+      "cache_creation": 41609,
+      "cost_usd": 0.1821578
+    }
+  ],
+  "permission_denials": []
+}
