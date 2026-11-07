@@ -6,7 +6,7 @@ import { LADDERS } from '../claude/model-ladder.constants.js';
 import { attachCommand, conductorName, transcriptDir } from '../claude/session-runtime.service.js';
 import { latestContextTokens } from '../claude/transcript.service.js';
 import { isConductorRunning } from './conductor.service.js';
-import { PR_URL } from './dashboard.constants.js';
+import { PR_URL } from './constants/dashboard.constants.js';
 import { eventDetail } from './dashboard-events.utils.js';
 import type { SessionState } from './db.client.js';
 import { runGit } from './git-diff.client.js';

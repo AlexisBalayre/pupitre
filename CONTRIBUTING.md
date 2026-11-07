@@ -60,7 +60,7 @@ The rules live in [`docs/conventions/`](docs/conventions/): `general.md` and `na
 
 ## Decisions
 
-A change that alters a rule, a boundary, a gate stage, a persisted noun, or anything hard to reverse gets a numbered file in [`docs/adr/`](docs/adr/README.md): what was decided, what it replaces, the alternatives rejected, and the ceilings it knowingly leaves. Number it as the next free number at the time it lands; `scripts/adr-index.sh` regenerates the index. Bug fixes and doc corrections do not need one.
+A change that alters a rule, a boundary, a gate stage, a persisted noun, or anything hard to reverse gets a numbered file in [`docs/adr/`](docs/adr/README.md): what was decided, what it replaces, the alternatives rejected, and the ceilings it knowingly leaves. Number it as the next free number at the time it lands; `bash scripts/adr-index.sh` prints the index. Bug fixes and doc corrections do not need one.
 
 ## Pull requests
 
