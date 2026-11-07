@@ -2,9 +2,12 @@ import type { Database } from 'better-sqlite3';
 import { sanitizeReason } from '../adapters/capability.utils.js';
 import { quotePath } from './debt.service.js';
 import { runGit } from './git-diff.client.js';
-import { newestMerge } from './merge-gate.service.js';
+import { newestMerge, timedSince } from './merge-gate.service.js';
 import { listSessions } from './session.repository.js';
 import { holdingStates } from './session-state.utils.js';
+import type { GateStageResult } from './types/merge-gate.types.js';
+
+export const ADR_NUMBER_STAGE = 'adr-number';
 
 const ADR_DIR = 'docs/adr/';
 /** A decision file, `docs/adr/NNNN-*.md`, its number captured. */
@@ -77,61 +80,104 @@ function competingBranches(db: Database, sessionId: string): string[] {
     .map((session) => `refs/heads/${session.branch}`);
 }
 
+/** The decision files in `sha`'s `docs/adr/`. */
+function decisionPaths(repoPath: string, sha: string): string[] {
+  return runGit(repoPath, ['ls-tree', '-z', '--name-only', sha, ADR_DIR])
+    .split('\0')
+    .filter((path) => decisionNumber(path) !== undefined);
+}
+
+function numbersOf(paths: string[]): Set<number> {
+  return new Set(paths.map((path) => decisionNumber(path) as number));
+}
+
+const pad = (number: number): string => String(number).padStart(4, '0');
+
 /**
- * Why the branch at `sha` may not take the decision numbers it adds (decision
- * 146): one line per added decision whose number is already on the target at
- * `targetSha`, or is added by another session branch that is live or holds an
- * open PR, each naming the lowest free number above the target's highest.
- * Parallel sessions pick the next number from the target, and two files that
- * share a number under different slugs merge without a conflict. Every read is
- * of a pinned sha through `runGit`, never of a worktree; the store only says
- * which listed refs count, so no store text reaches git as a revision.
+ * The gate's ADR-number stage (decision 146), run before any other stage
+ * measures the branch. It fails on each decision the branch at `sha` adds whose
+ * number the target at `targetSha` still holds at a path the branch keeps, that
+ * the branch adds twice, or that another session branch adds while its session
+ * is live or holds an open PR, each line naming the lowest free number above
+ * the target's highest. A number whose target file the branch removes is a
+ * rename of that decision, not a new one. Parallel sessions pick the next
+ * number from the target, and two files that share a number under different
+ * slugs merge without a conflict. A branch git cannot diff against the target
+ * (an orphan, say) is skipped and named rather than failing everyone's gate.
+ * Undefined, so no stage at all, when the branch adds no decision or every
+ * check passed with nothing to say. Every read is of a pinned sha through
+ * `runGit`, never of a worktree; the store only says which listed refs count,
+ * so no store text reaches git as a revision.
  */
-export function adrNumberRefusals(
+export function adrNumberStage(
   db: Database,
   repoPath: string,
   sessionId: string,
   targetSha: string,
   sha: string,
-): string[] {
+): GateStageResult | undefined {
+  const started = Date.now();
   const added = addedDecisions(repoPath, targetSha, sha);
-  if (added.size === 0) return [];
-  const onTarget = new Set(
-    runGit(repoPath, ['ls-tree', '-z', '--name-only', targetSha, ADR_DIR])
-      .split('\0')
-      .map(decisionNumber)
-      .filter((number) => number !== undefined),
-  );
+  if (added.size === 0) return undefined;
+  const targetPaths = decisionPaths(repoPath, targetSha);
+  const tipPaths = new Set(decisionPaths(repoPath, sha));
+  const kept = numbersOf(targetPaths.filter((path) => tipPaths.has(path)));
+  const renamed = numbersOf(targetPaths.filter((path) => !tipPaths.has(path)));
   const takenBy = new Map<number, string>();
+  const unread: string[] = [];
   const tips = sessionBranchTips(repoPath);
   for (const ref of competingBranches(db, sessionId)) {
     const tip = tips.get(ref);
     if (tip === undefined) continue;
-    for (const number of addedDecisions(repoPath, targetSha, tip).values()) {
-      if (!takenBy.has(number)) takenBy.set(number, ref.slice('refs/heads/'.length));
+    const branch = sanitizeReason(ref.slice('refs/heads/'.length));
+    let theirs: Map<string, number>;
+    try {
+      theirs = addedDecisions(repoPath, targetSha, tip);
+    } catch {
+      unread.push(branch);
+      continue;
     }
+    for (const number of theirs.values()) if (!takenBy.has(number)) takenBy.set(number, branch);
   }
-  const taken = new Set([...onTarget, ...takenBy.keys(), ...added.values()]);
-  let free = Math.max(0, ...onTarget);
+  const taken = new Set([...numbersOf(targetPaths), ...takenBy.keys(), ...added.values()]);
+  let free = Math.max(0, ...numbersOf(targetPaths));
   const nextFree = (): string => {
     do free += 1;
     while (taken.has(free));
     taken.add(free);
-    return String(free).padStart(4, '0');
+    return pad(free);
   };
+  const firstAdd = new Map<number, string>();
   const refusals: string[] = [];
   for (const [path, number] of added) {
+    const first = firstAdd.get(number);
+    if (first === undefined) firstAdd.set(number, path);
     const other = takenBy.get(number);
-    const where = onTarget.has(number)
+    const where = kept.has(number)
       ? 'is already on the target'
-      : other !== undefined
-        ? `is also added by ${sanitizeReason(other)}, a session branch that is live or has an open PR`
-        : undefined;
+      : first !== undefined
+        ? `is also added by ${quotePath(first)} on this branch`
+        : renamed.has(number)
+          ? undefined
+          : other !== undefined
+            ? `is also added by ${other}, a session branch that is live or has an open PR`
+            : undefined;
     if (where === undefined) continue;
     refusals.push(
-      `  ${quotePath(path)}: decision ${String(number).padStart(4, '0')} ${where}; ` +
+      `  ${quotePath(path)}: decision ${pad(number)} ${where}; ` +
         `renumber it ${nextFree()}, the lowest free number`,
     );
   }
-  return refusals.length === 0 ? [] : ['ADR numbers already taken:', ...refusals];
+  const lines = [
+    ...(refusals.length > 0 ? ['ADR numbers already taken:', ...refusals] : []),
+    ...unread.map(
+      (branch) => `not checked against ${branch}: git could not diff it against the target`,
+    ),
+  ];
+  if (lines.length === 0) return undefined;
+  return timedSince(started, {
+    stage: ADR_NUMBER_STAGE,
+    status: refusals.length > 0 ? 'fail' : 'pass',
+    detail: lines.join('\n'),
+  });
 }

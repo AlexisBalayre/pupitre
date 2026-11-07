@@ -424,7 +424,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
   });
 
   // Decision 146: two files sharing a decision number merge without a conflict.
-  it('hard-fails an ADR number another live session branch adds, beside the out-of-scope paths', async () => {
+  it('refuses an ADR number another live session branch adds before any stage runs, with no rejection', async () => {
     commitIn(repo, 'docs/adr/0001-first.md', '# 0001\n');
     const worktree = seedSession(db, repo, { scopeIn: ['src/**', 'docs/adr/**'] });
     insertTask(db, { id: 'task-s2', projectId: 'proj-1', spec: '{}' });
@@ -440,17 +440,25 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     transitionSession(db, 's2', 'running');
     commitIn(sibling, 'docs/adr/0002-theirs.md', '# 0002\n');
     commitIn(worktree, 'docs/adr/0002-mine.md', '# 0002\n');
-    commitIn(worktree, 'notes.txt', 'off-scope\n');
 
     const outcome = await merge();
 
-    expect(outcome.status).toBe('rejected');
-    expect(outcome.report.stages.at(-1)).toMatchObject({ stage: 'scope-audit', status: 'fail' });
-    expect(outcome.report.stages.at(-1)?.detail).toBe(
-      'Out-of-scope changes:\n  notes.txt (outside scope-in)\nADR numbers already taken:\n' +
+    expect(outcome).toMatchObject({ status: 'refused', rejectCount: 0 });
+    // Before build, test and lint, which never ran.
+    expect(untimed(outcome.report.stages).map((stage) => stage.stage)).toEqual([
+      'worktree-clean',
+      'fresh-base',
+      'adr-number',
+    ]);
+    expect(outcome.report.stages.at(-1)).toMatchObject({
+      status: 'fail',
+      detail:
+        'ADR numbers already taken:\n' +
         '  docs/adr/0002-mine.md: decision 0002 is also added by pup/s2, a session branch that ' +
         'is live or has an open PR; renumber it 0003, the lowest free number',
-    );
+    });
+    expect(getSession(db, SESSION_ID)).toMatchObject({ state: 'awaiting-review', reject_count: 0 });
+    expect(vi.mocked(steerPane)).not.toHaveBeenCalled();
   });
 
   it('merges an oversize diff with --accept-debt and writes a ledger entry', async () => {

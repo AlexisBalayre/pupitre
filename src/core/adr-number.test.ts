@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { tempDir } from '../test/temp-dir.mock.js';
-import { adrNumberRefusals } from './adr-number.service.js';
+import { ADR_NUMBER_STAGE, adrNumberStage } from './adr-number.service.js';
 import type { SessionState } from './db.client.js';
 import { openStore } from './db.client.js';
 import {
@@ -62,7 +62,8 @@ function seedSession(db: Database, id: string, state: SessionState): void {
   for (const to of PATHS[state]) transitionSession(db, id, to);
 }
 
-describe('adrNumberRefusals', () => {
+// Each test runs a dozen git commands, which a loaded host stretches past 5 s.
+describe('adrNumberStage', { timeout: 20_000 }, () => {
   let db: Database;
   let repo: string;
 
@@ -77,25 +78,72 @@ describe('adrNumberRefusals', () => {
     seedSession(db, 'me', 'awaiting-review');
   });
 
-  const refusals = (): string[] =>
-    adrNumberRefusals(
+  const stage = () =>
+    adrNumberStage(
       db,
       repo,
       'me',
       git(repo, 'rev-parse', 'refs/heads/main'),
       git(repo, 'rev-parse', 'refs/heads/pup/me'),
     );
+  /** The failed stage's lines, or none when the stage passed or was not run. */
+  const refusals = (): string[] => {
+    const result = stage();
+    return result?.status === 'fail' ? (result.detail ?? '').split('\n') : [];
+  };
 
-  it('passes a branch adding no ADR', () => {
+  it('adds no stage for a branch adding no ADR', () => {
     commitOn(repo, 'pup/me', 'src/app.ts');
-    expect(refusals()).toEqual([]);
+    expect(stage()).toBeUndefined();
   });
 
   it('passes a free number, and edits to a decision already on the target', () => {
     commitOn(repo, 'pup/me', 'docs/adr/0003-mine.md', 'docs/adr/0002-second.md');
     seedSession(db, 'other', 'running');
     commitOn(repo, 'pup/other', 'docs/adr/0004-theirs.md');
-    expect(refusals()).toEqual([]);
+    expect(stage()).toBeUndefined();
+  });
+
+  it('passes a slug-only rename of a decision on the target', () => {
+    seedSession(db, 'other', 'running');
+    commitOn(repo, 'pup/other', 'docs/adr/0003-theirs.md');
+    git(repo, 'checkout', '-q', '-b', 'pup/me', 'main');
+    git(repo, 'mv', 'docs/adr/0002-second.md', 'docs/adr/0002-renamed.md');
+    git(repo, 'commit', '-q', '-m', 'rename');
+    git(repo, 'checkout', '-q', 'main');
+    expect(stage()).toBeUndefined();
+  });
+
+  it('refuses a second file with the same number on the branch', () => {
+    commitOn(repo, 'pup/me', 'docs/adr/0003-a.md', 'docs/adr/0003-b.md');
+    expect(refusals()).toEqual([
+      'ADR numbers already taken:',
+      '  docs/adr/0003-b.md: decision 0003 is also added by docs/adr/0003-a.md on this branch; ' +
+        'renumber it 0004, the lowest free number',
+    ]);
+  });
+
+  it('skips a competing branch git cannot diff, naming it, and still checks the rest', () => {
+    seedSession(db, 'orphan', 'running');
+    // A parentless commit shares no merge base with the target.
+    const orphan = git(repo, 'commit-tree', '-m', 'orphan', 'main^{tree}');
+    git(repo, 'update-ref', 'refs/heads/pup/orphan', orphan);
+    seedSession(db, 'other', 'running');
+    commitOn(repo, 'pup/other', 'docs/adr/0004-theirs.md');
+    commitOn(repo, 'pup/me', 'docs/adr/0003-mine.md');
+    expect(stage()).toMatchObject({
+      stage: ADR_NUMBER_STAGE,
+      status: 'pass',
+      detail: 'not checked against pup/orphan: git could not diff it against the target',
+    });
+    commitOn(repo, 'pup/me', 'docs/adr/0004-mine.md');
+    expect(stage()).toMatchObject({ status: 'fail' });
+    expect(stage()?.detail).toBe(
+      'ADR numbers already taken:\n' +
+        '  docs/adr/0004-mine.md: decision 0004 is also added by pup/other, a session branch ' +
+        'that is live or has an open PR; renumber it 0005, the lowest free number\n' +
+        'not checked against pup/orphan: git could not diff it against the target',
+    );
   });
 
   it('refuses a number already on the target, naming the lowest free number', () => {
@@ -169,7 +217,7 @@ describe('adrNumberRefusals', () => {
       commitOn(repo, `pup/${branch}`, `docs/adr/0003-${branch}.md`);
     }
     commitOn(repo, 'pup/me', 'docs/adr/0003-mine.md');
-    expect(refusals()).toEqual([]);
+    expect(stage()).toBeUndefined();
   });
 
   it('suggests a distinct free number per clash, past every number taken', () => {
@@ -200,6 +248,6 @@ describe('adrNumberRefusals', () => {
     // A branch moved after the pin and an untracked file change nothing.
     commitOn(repo, 'pup/me', 'docs/adr/0001-later.md');
     writeFileSync(join(repo, 'docs/adr/0001-untracked.md'), '# x\n');
-    expect(adrNumberRefusals(db, repo, 'me', target, pinned)).toEqual([]);
+    expect(adrNumberStage(db, repo, 'me', target, pinned)).toBeUndefined();
   });
 });
