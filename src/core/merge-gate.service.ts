@@ -1074,7 +1074,7 @@ function planMerge(db: Database, req: MergeRequest): MergePlan {
       head: session.branch,
       base: target,
     };
-    // Everything GitHub can refuse is settled here, before ten minutes of gate
+    // Everything GitHub can refuse is settled here, before minutes of gate
     // stages and before --accept-debt writes ledger entries for a merge that
     // would then abort (decision 27).
     if (merged) regate = planRegate(req.repoPath, session.id, merged, ref, originUrl);
@@ -2092,7 +2092,8 @@ type FlaggedDebt = { description: string; files: string[] };
  * 143) fail at once. So does a stage that ran out `GATE_COMMAND_TIMEOUT_MS`,
  * which `runGateChild` marks with a `code` even when the runner traps the
  * SIGTERM and exits 1, and whose re-run would hold the merge lock twice as long
- * on a hung suite.
+ * on a hung suite. A test stage timed out under load never gets here: it
+ * refuses the merge first (`refuseTimeoutUnderLoad`).
  */
 function isRerunnable(error: unknown): boolean {
   const { status, signal, code } = error as {
@@ -2101,6 +2102,27 @@ function isRerunnable(error: unknown): boolean {
     code?: string;
   };
   return status === 1 && !signal && code === undefined;
+}
+
+/**
+ * Refuse the merge when a test run ran out `GATE_COMMAND_TIMEOUT_MS` while the
+ * machine's 1-minute load average is at or over its available parallelism, the
+ * same ceiling `waitForLoad` uses (decision 138, amending 7): at that load the
+ * suite runs longer than its cap whatever the branch holds, so the timeout says
+ * nothing about the code. It throws, so it climbs no rung of the reject cap and
+ * injects nothing into the session, and the gate stops before any merge or
+ * push. A timeout under the cores, and every failure that is not a timeout,
+ * returns, and the stage fails and rejects as before.
+ */
+function refuseTimeoutUnderLoad(error: unknown): void {
+  if ((error as { code?: string }).code !== 'ETIMEDOUT') return;
+  const load = loadavg()[0] ?? 0;
+  const cores = availableParallelism();
+  if (load < cores) return;
+  throw new Error(
+    `The test stage timed out under load ${load.toFixed(1)}, at or over the machine's ` +
+      `${cores} cores; nothing was merged; run pup merge again when the load falls.`,
+  );
 }
 
 /**
@@ -2214,7 +2236,8 @@ export async function measureBranch(
    * so a timing-sensitive test the host's load tipped over is no rejection
    * (decision 94). Build and lint are deterministic and never re-run, and
    * neither is a test run that ended other than by the runner's own failing
-   * exit (`isRerunnable`).
+   * exit (`isRerunnable`). A test run timed out under load throws instead of
+   * failing (`refuseTimeoutUnderLoad`, decision 138).
    */
   const commandStage = async (
     stage: string,
@@ -2225,6 +2248,7 @@ export async function measureBranch(
     const started = Date.now();
     const first = await runCommand(command, cwd);
     if (first === undefined) return timedSince(started, { stage, status: 'pass' });
+    if (command.stage === 'test') refuseTimeoutUnderLoad(first);
     if (command.stage !== 'test' || !isRerunnable(first)) {
       return timedSince(started, { stage, status: 'fail', detail: commandFailureDetail(first) });
     }
