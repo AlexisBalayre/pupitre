@@ -1,0 +1,102 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-07T15:52:36.541Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42388140170",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42388140170",
+  "actor": "AlexisBalayre",
+  "commit_sha": "e114a4eacc963544da054c33282429d5185e84aa",
+  "source": "pr",
+  "pr_number": 224,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs",
+    "context"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs",
+    "context"
+  ],
+  "reviewers_skipped": [
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "scripts/pre-commit",
+      "line": "116-119",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The comment \"The full suite is TEST_CMD's, which the merge gate's test stage runs\" says the gate runs TEST_CMD. ADR 0135 (lines 21-23) says the gate uses the adapter's test command, resolved from the trusted checkout's manifest, and never reads this hook or project.env. Drop the gate clause or reword it to match the ADR.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0135-the-pre-commit-hook-runs-only-the-tests-related-to.md",
+      "line": "9-10",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The citation in \"A commit inside a session also runs outside the machine's test slots (decision 96)\" doesn't back the claim. Decision 96 covers `pup session test` taking slots and the guard that refuses `pnpm test`. It says nothing about the pre-commit hook, so it supports the slot mechanism but not the claim that the hook runs outside it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/project.env",
+      "line": "18",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Still present from earlier rounds: .claude/project.env:18 (\"Run by scripts/pre-commit\") and the .claude/hooks/quality-checks.sh:5-6 header (\"scripts/pre-commit runs TEST_CMD\") still say the hook runs TEST_CMD. It now only checks whether TEST_CMD is non-empty and runs `vitest related` in its place. Both comments should say the key turns on the related-tests step.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.7299258,
+  "duration_ms": 219704,
+  "num_turns": 16,
+  "tokens": {
+    "input": 14,
+    "output": 9835,
+    "cache_read": 317134,
+    "cache_creation": 49068,
+    "total": 376051
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 42,
+      "output": 30751,
+      "cache_read": 549587,
+      "cache_creation": 112047,
+      "cost_usd": 1.4325444
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 42,
+      "output": 8960,
+      "cache_read": 228724,
+      "cache_creation": 73930,
+      "cost_usd": 0.2973814000000001
+    }
+  ],
+  "permission_denials": []
+}
