@@ -35,6 +35,7 @@ import {
   killSession as killTmux,
   SteerNotDeliveredError,
 } from '../claude/session-runtime.service.js';
+import { adrNumberRefusals } from './adr-number.service.js';
 import { patchCoverage } from './coverage.utils.js';
 import { judgeDebt, measureCoverage, measureStaticDebt, quotePath } from './debt.service.js';
 import { draftDecisionRecord } from './decision-record.service.js';
@@ -2654,15 +2655,14 @@ export async function measureBranch(
   let started = Date.now();
   const spec = readTaskSpec(db, session.task_id);
   const violations = auditScope(changedPaths, spec.scopeIn, spec.scopeOut);
-  if (violations.length > 0) {
+  const refusals = [
+    ...(violations.length > 0 ? ['Out-of-scope changes:'] : []),
+    ...violations.map((v) => `  ${quotePath(v.path)} (${v.reason})`),
+    ...adrNumberRefusals(db, req.repoPath, session.id, targetSha, sha),
+  ];
+  if (refusals.length > 0) {
     stages.push(
-      timedSince(started, {
-        stage: 'scope-audit',
-        status: 'fail',
-        detail: `Out-of-scope changes:\n${violations
-          .map((v) => `  ${quotePath(v.path)} (${v.reason})`)
-          .join('\n')}`,
-      }),
+      timedSince(started, { stage: 'scope-audit', status: 'fail', detail: refusals.join('\n') }),
     );
     return undefined;
   }

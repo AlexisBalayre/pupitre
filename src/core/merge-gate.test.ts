@@ -135,9 +135,12 @@ import {
   appendEvent,
   getProject,
   getSession,
+  insertSession,
+  insertTask,
   listEvents,
   saveProjectBaseline,
   saveProjectOriginUrl,
+  transitionSession,
 } from './session.repository.js';
 import { GATE_SLOT_WAIT_MS, HELD_SLOT_ENV } from './test-slot.service.js';
 import type { DebtBaseline, ProjectBaseline } from './types/init.types.js';
@@ -418,6 +421,36 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(outcome.status).toBe('rejected');
     expect(outcome.report.stages.at(-1)).toMatchObject({ stage: 'scope-audit', status: 'fail' });
     expect(outcome.report.stages.at(-1)?.detail).toContain('.pupitre/adapter.yml (protected path)');
+  });
+
+  // Decision 146: two files sharing a decision number merge without a conflict.
+  it('hard-fails an ADR number another live session branch adds, beside the out-of-scope paths', async () => {
+    commitIn(repo, 'docs/adr/0001-first.md', '# 0001\n');
+    const worktree = seedSession(db, repo, { scopeIn: ['src/**', 'docs/adr/**'] });
+    insertTask(db, { id: 'task-s2', projectId: 'proj-1', spec: '{}' });
+    const sibling = join(repo, '.worktrees', 's2');
+    sh(repo, 'git', 'worktree', 'add', '-b', 'pup/s2', sibling, 'HEAD');
+    insertSession(db, {
+      id: 's2',
+      taskId: 'task-s2',
+      worktreePath: sibling,
+      branch: 'pup/s2',
+      profileHash: 'hash',
+    });
+    transitionSession(db, 's2', 'running');
+    commitIn(sibling, 'docs/adr/0002-theirs.md', '# 0002\n');
+    commitIn(worktree, 'docs/adr/0002-mine.md', '# 0002\n');
+    commitIn(worktree, 'notes.txt', 'off-scope\n');
+
+    const outcome = await merge();
+
+    expect(outcome.status).toBe('rejected');
+    expect(outcome.report.stages.at(-1)).toMatchObject({ stage: 'scope-audit', status: 'fail' });
+    expect(outcome.report.stages.at(-1)?.detail).toBe(
+      'Out-of-scope changes:\n  notes.txt (outside scope-in)\nADR numbers already taken:\n' +
+        '  docs/adr/0002-mine.md: decision 0002 is also added by pup/s2, a session branch that ' +
+        'is live or has an open PR; renumber it 0003, the lowest free number',
+    );
   });
 
   it('merges an oversize diff with --accept-debt and writes a ledger entry', async () => {
