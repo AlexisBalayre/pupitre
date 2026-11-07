@@ -1,5 +1,6 @@
 import type { Database } from 'better-sqlite3';
 import { sanitizeReason } from '../adapters/capability.utils.js';
+import { killSession as killTmux } from '../claude/session-runtime.service.js';
 import { rethrowIfKilled, runGit } from './git-diff.client.js';
 import { assertGhAvailable, originRepoSlug, readPullRequestLanding } from './github.client.js';
 import { COMMIT_SHA } from './merge-gate.constants.js';
@@ -29,7 +30,7 @@ interface RetireRequest {
   wait?: boolean;
 }
 
-/** What `pup retire` did, for the CLI to print (decision 132). */
+/** What `pup retire` did, for the CLI to print (decision 141). */
 export interface RetireOutcome {
   prUrl: string;
   supersededBy: string;
@@ -39,7 +40,7 @@ export interface RetireOutcome {
 }
 
 /**
- * `pup retire <session> --superseded-by <pr>` (decision 132): the close-out of
+ * `pup retire <session> --superseded-by <pr>` (decision 141): the close-out of
  * a merged session whose PR was closed unmerged because another PR re-landed
  * its work. Every refusal comes before anything moves: the session must be
  * merged with a PR that GitHub says is CLOSED, and the PR the operator names
@@ -158,13 +159,19 @@ function supersedingUrl(supersededBy: string, repo: string): string {
  * pinned `sha`: the closed PR carried that sha, and a commit past it is work
  * nothing re-landed, kept for the operator. A worktree git cannot remove (a
  * session can lock its own) refuses the retire, with no event written, so a
- * re-run after the operator unlocks it finishes the job.
+ * re-run after the operator unlocks it finishes the job. The session's worker
+ * window is stopped first, so no live agent has its tree pulled out from under
+ * it.
  */
 function tearDown(
   repoPath: string,
   session: SessionRow,
   sha: string,
 ): { removedWorktree: boolean; keptBranch?: string } {
+  // By pane as well as name, as the gate stops it: a rename from inside the
+  // session would leave the name pointing at nothing while the window ran on
+  // (decision 46). A silent no-op when the window is already gone.
+  killTmux(session.id, session.tmux_target);
   runGit(repoPath, ['worktree', 'prune']);
   // Asked of git, not the filesystem, as `pup land` asks it (decision 84).
   const registered = runGit(repoPath, ['worktree', 'list', '--porcelain'])

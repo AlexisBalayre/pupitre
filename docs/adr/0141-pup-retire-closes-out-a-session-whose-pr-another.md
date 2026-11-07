@@ -1,9 +1,9 @@
-# 0132. `pup retire` closes out a session whose PR another PR re-landed (2026-11-07)
+# 0141. `pup retire` closes out a session whose PR another PR re-landed (2026-11-07)
 
 - Status: accepted
 - Amends: [0083](0083-pup-status-opens-with-a-needs-you-inbox.md), [0084](0084-pup-land-session-closes-the-github-half-of.md)
 
-132. **`pup retire <session> --superseded-by <pr>` closes out a session whose PR another PR
+141. **`pup retire <session> --superseded-by <pr>` closes out a session whose PR another PR
     re-landed (2026-11-07).**
     Amends decisions 83 and 84. Decision 84 gave a `--pr` merge one way out of the inbox: `pup
     land`, once GitHub says the PR is `MERGED`. A PR closed unmerged because another PR carried
@@ -20,7 +20,9 @@
     session's PR was for. The repo is pinned the way `pup land` pins it (decisions 56, 84), so
     neither url can make gh answer for another repo's PR.
     Then, under the merge lock, with the state re-checked as `pup land` does (a `pup fix` may
-    have taken the session out of `merged` meanwhile), the worktree is removed and the branch
+    have taken the session out of `merged` meanwhile), the session's worker window is stopped,
+    by pane and by name as the gate stops it (decision 46), so no live agent has its tree removed
+    under it. Then the worktree is removed and the branch
     deleted while it holds no commit past the sha the gate pinned. A branch past it carries work
     nothing re-landed and is kept, and the outcome names it. A worktree git cannot remove (a
     lock) refuses with no event written, so a re-run after the operator unlocks it finishes the
@@ -32,7 +34,8 @@
     The operator names the superseding PR. pup does not read it off PR comments or GitHub's
     "closed in favour of" links: that text is anyone's to write, and the command it would feed
     deletes a branch.
-    Tests: a retire removes the worktree and branch and records both PRs; `#9` and `9` read as
+    Tests: a retire removes the worktree and branch and records both PRs; it stops the window by
+    pane and name while the worktree still stands, and a refusal stops nothing; `#9` and `9` read as
     the session's repo's PR; a re-run after an earlier teardown finishes; a branch past the pin
     is kept; it refuses an unknown session, one not merged, one whose merge opened no PR, one
     landed or already retired, an open PR, a merged PR, a superseding PR that is open, closed or

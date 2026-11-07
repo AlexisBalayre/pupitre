@@ -2353,7 +2353,7 @@ export function buildProgram(): Command {
     .action(async (session: string, opts: { supersededBy?: string }) => {
       const { repoPath, db } = project();
       // Declaring work superseded is a judgement about what landed, and the
-      // command deletes a branch: the operator's call (decision 132).
+      // command deletes a branch: the operator's call (decision 141).
       if (callingSession(db) || callingConductor()) {
         return refuse('`pup retire` is operator-only; sessions and the conductor cannot run it.');
       }

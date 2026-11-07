@@ -2,7 +2,15 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+// No tmux here: the test asks only whether, and when, the window was stopped.
+vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../claude/session-runtime.service.js')>()),
+  killSession: vi.fn(),
+}));
+
+import { killSession } from '../claude/session-runtime.service.js';
 import { tempDir } from '../test/temp-dir.mock.js';
 import { openStore } from './db.client.js';
 import { projectId } from './paths.utils.js';
@@ -45,6 +53,7 @@ const BRANCH = `pup/${SESSION_ID}`;
 const ORIGIN_URL = 'git@github.com:owner/repo.git';
 const PR_URL = 'https://github.com/owner/repo/pull/7';
 const SUPERSEDING_URL = 'https://github.com/owner/repo/pull/9';
+const PANE = '%42';
 
 const closed = { state: 'CLOSED', baseRefName: 'main', headRefOid: 'a'.repeat(40) };
 const merged = {
@@ -82,9 +91,11 @@ describe('retireSession', { timeout: 20_000 }, () => {
       worktreePath: worktree,
       branch: BRANCH,
       profileHash: 'hash',
+      tmuxTarget: PANE,
     });
     transitionSession(db, SESSION_ID, 'running');
     transitionSession(db, SESSION_ID, 'awaiting-review');
+    vi.mocked(killSession).mockReset();
     ghLog = join(tempDir('pup-retire-gh-log-'), 'gh-calls');
     originalPath = process.env.PATH;
   });
@@ -128,7 +139,23 @@ describe('retireSession', { timeout: 20_000 }, () => {
     expect(existsSync(worktree)).toBe(true);
     expect(hasBranch()).toBe(true);
     expect(retiredEvents()).toEqual([]);
+    expect(killSession).not.toHaveBeenCalled();
   }
+
+  it("stops the session's window by pane and name while its worktree still stands", async () => {
+    seedPrMerge();
+    fakeGh(closed);
+    const worktreeAtKill: boolean[] = [];
+    vi.mocked(killSession).mockImplementation(() => {
+      worktreeAtKill.push(existsSync(worktree));
+    });
+
+    await retire();
+
+    expect(killSession).toHaveBeenCalledWith(SESSION_ID, PANE);
+    expect(worktreeAtKill).toEqual([true]);
+    expect(existsSync(worktree)).toBe(false);
+  });
 
   it('removes the worktree and the branch and records the superseding PR', async () => {
     seedPrMerge();

@@ -43,7 +43,7 @@ export interface EventPayloads {
   /**
    * `pup retire` saw the session's PR closed unmerged on GitHub and the PR the
    * operator named as its successor merged, and removed the session's worktree
-   * and branch (decision 132).
+   * and branch (decision 141).
    */
   retired: { prUrl: string; supersededBy: string };
   /**
