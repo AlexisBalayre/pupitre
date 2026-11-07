@@ -142,7 +142,7 @@ describe('retireSession', { timeout: 20_000 }, () => {
     expect(killSession).not.toHaveBeenCalled();
   }
 
-  it("stops the session's window by pane and name while its worktree still stands", async () => {
+  it("stops the session's window by its name while its worktree still stands", async () => {
     seedPrMerge();
     fakeGh(closed);
     const worktreeAtKill: boolean[] = [];
@@ -152,9 +152,21 @@ describe('retireSession', { timeout: 20_000 }, () => {
 
     await retire();
 
-    expect(killSession).toHaveBeenCalledWith(SESSION_ID, PANE);
+    expect(killSession).toHaveBeenCalledWith(SESSION_ID);
     expect(worktreeAtKill).toEqual([true]);
     expect(existsSync(worktree)).toBe(false);
+  });
+
+  // The row's %42 is the pane the session launched in; after a tmux server
+  // restart that id can be any other session's pane, the operator's included.
+  it('never kills by the stored pane id, which a restarted tmux may have reissued', async () => {
+    seedPrMerge();
+    fakeGh(closed);
+
+    await retire();
+
+    expect(vi.mocked(killSession).mock.calls).toEqual([[SESSION_ID]]);
+    expect(JSON.stringify(vi.mocked(killSession).mock.calls)).not.toContain(PANE);
   });
 
   it('removes the worktree and the branch and records the superseding PR', async () => {

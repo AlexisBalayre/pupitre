@@ -168,10 +168,13 @@ function tearDown(
   session: SessionRow,
   sha: string,
 ): { removedWorktree: boolean; keptBranch?: string } {
-  // By pane as well as name, as the gate stops it: a rename from inside the
-  // session would leave the name pointing at nothing while the window ran on
-  // (decision 46). A silent no-op when the window is already gone.
-  killTmux(session.id, session.tmux_target);
+  // By exact name only, never by the stored pane id the gate also kills by: a
+  // retired session is old, a tmux server restarted since reissues pane ids
+  // from %0, and `kill-session` on a reissued id would end whichever session
+  // now holds that pane, the operator's own included. A window renamed from
+  // inside is missed, the cost decision 46 names for a name-only kill. A
+  // silent no-op when the window is already gone.
+  killTmux(session.id);
   runGit(repoPath, ['worktree', 'prune']);
   // Asked of git, not the filesystem, as `pup land` asks it (decision 84).
   const registered = runGit(repoPath, ['worktree', 'list', '--porcelain'])

@@ -21,8 +21,11 @@
     neither url can make gh answer for another repo's PR.
     Then, under the merge lock, with the state re-checked as `pup land` does (a `pup fix` may
     have taken the session out of `merged` meanwhile), the session's worker window is stopped,
-    by pane and by name as the gate stops it (decision 46), so no live agent has its tree removed
-    under it. Then the worktree is removed and the branch
+    so no live agent has its tree removed under it. It is stopped by its exact name only, not
+    also by the stored pane id as the gate stops it (decision 46): a retired session is old, a
+    tmux server restarted since then reissues pane ids, and a kill aimed at a reissued id would
+    end whichever session now holds that pane, the operator's own included. A window renamed
+    from inside is then missed, the cost decision 46 names. Then the worktree is removed and the branch
     deleted while it holds no commit past the sha the gate pinned. A branch past it carries work
     nothing re-landed and is kept, and the outcome names it. A worktree git cannot remove (a
     lock) refuses with no event written, so a re-run after the operator unlocks it finishes the
@@ -35,7 +38,7 @@
     "closed in favour of" links: that text is anyone's to write, and the command it would feed
     deletes a branch.
     Tests: a retire removes the worktree and branch and records both PRs; it stops the window by
-    pane and name while the worktree still stands, and a refusal stops nothing; `#9` and `9` read as
+    name while the worktree still stands, never by the stored pane id, and a refusal stops nothing; `#9` and `9` read as
     the session's repo's PR; a re-run after an earlier teardown finishes; a branch past the pin
     is kept; it refuses an unknown session, one not merged, one whose merge opened no PR, one
     landed or already retired, an open PR, a merged PR, a superseding PR that is open, closed or
