@@ -1,0 +1,95 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-07T17:00:35.279Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42393962941",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42393962941",
+  "actor": "AlexisBalayre",
+  "commit_sha": "3aa3bafcdd200586e1331fc93e71e4e3aa1cc74b",
+  "source": "pr",
+  "pr_number": 246,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "maintainability",
+    "conventions"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "maintainability",
+    "conventions"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context",
+    "docs",
+    "spec"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "03b44c450cf266124b7f780723ddcaad08c91053",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "scripts/pre-commit",
+      "line": "108",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "scripts/pre-commit",
+      "line": "108",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Renaming a .ts file to a non-TypeScript path (e.g. `git mv src/sum.ts src/sum.js`) still skips typecheck. `git diff --cached --name-only` detects renames by default and lists only the new path, so the `\\.(ts|tsx)$` regex misses it while importers of the old path break. Adding `--no-renames` to line 108 lists the old .ts path too.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0135-the-pre-commit-hook-runs-only-the-tests-related-to.md",
+      "line": "40-41",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The amendment skips typecheck for a commit that 'stages no TypeScript and no package.json or tsconfig*.json', but since 3aa3baf a commit that only deletes such a file still typechecks. 'Stages' reads as additions and edits only; adding 'including a deletion' would match the script.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.6538336,
+  "duration_ms": 71259,
+  "num_turns": 11,
+  "tokens": {
+    "input": 10,
+    "output": 5202,
+    "cache_read": 194930,
+    "cache_creation": 36066,
+    "total": 236208
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 18,
+      "output": 8378,
+      "cache_read": 225785,
+      "cache_creation": 48997,
+      "cost_usd": 0.565972
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 14,
+      "output": 2088,
+      "cache_read": 66736,
+      "cache_creation": 24112,
+      "cost_usd": 0.08786160000000001
+    }
+  ],
+  "permission_denials": []
+}
