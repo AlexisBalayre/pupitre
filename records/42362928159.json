@@ -1,0 +1,142 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-07T10:14:16.016Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42362928159",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42362928159",
+  "actor": "AlexisBalayre",
+  "commit_sha": "9930614bd4b1b53e080b8c537d34b8502e6ff875",
+  "source": "pr",
+  "pr_number": 231,
+  "action": "review",
+  "reviewers_spawned": [
+    "conventions",
+    "docs",
+    "context"
+  ],
+  "reviewers_returned": [
+    "conventions",
+    "docs",
+    "context"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "maintainability",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": ".claude/skills/pr-ci-review/SKILL.md",
+      "line": "61",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The Prior importants bullet ends with 'A deferral counts only when the PR's author made it (see REVIEW.md), and an `important` is never deferred', but the bullet only marks prior importants resolved or unresolved. It has no deferral step, so the sentence reads as orphaned. REVIEW.md §2 and Deferrals already hold the rule.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/skills/pr-ci-review/SKILL.md",
+      "line": "124",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "§6 'Name each finding's rule' says to write `<doc §heading>: <slug>` so the retro can group findings, but the §8/§9 finding contract `{file, line, area, confidence, tag, description, body, suggestion}` and the review-metrics schema have no `rule` field to carry it, so the instruction has no destination.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/agents/review-correctness.md",
+      "line": "23",
+      "area": "context",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The test-adequacy check fires only when 'the brief says the change is a `fix:`', but no step in pr-ci-review/SKILL.md §3 or §5 tells the orchestrator to state the change type in the brief, so the trigger is never reliably supplied.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/skills/pr-ci-review/REVIEW.md",
+      "line": "9",
+      "area": "context",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The round rules count rounds (1 to 3, round 4 on), carried importants and 'the head the previous complete round reviewed', but the invocation's Mode line and the record schema carry no round number. Nothing in the review machinery supplies one, so the rules are only usable by an author who counts rounds by hand.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/skills/pr-ci-review/SKILL.md",
+      "line": "75",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "pre-existing",
+      "description": "The conventions row still names `docs/09-decisions.md`, which does not exist in the tree (Glob found nothing). AGENTS.md says 'docs/adr/ holds one file per resolved decision', so the pointer should be `docs/adr/`. The PR fixed this in architecture-explainer.md but left it here.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/skills/pr-description/SKILL.md",
+      "line": "195",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "pre-existing",
+      "description": "This file still points at the nonexistent `docs/09-decisions.md` (also at lines 34, 40 and 257). Decisions live under `docs/adr/` per AGENTS.md. The PR edited this file (new dispositions section at line 176) but left these pointers stale.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "platform",
+      "description": "Every Bash call failed with 'apply-seccomp: write /proc/self/setgroups (nested userns is capability-restricted; caller must provide CAP_SYS_ADMIN): Permission denied', including `git status`, `git rev-parse HEAD` and `gh pr view 231`. So gh pr diff, git diff and gh pr view could not run, and neither could the second freshness assertion (HEAD vs headRefOid). The PR title, body, closing issues and comment threads were never read, so spec sources and steering context are unknown and review-spec was not gated in."
+    },
+    {
+      "component": "orchestrator",
+      "description": "The changed-file list came from the session-start git status snapshot, which shows only the six config-restore paths that differ from base: .claude/agents/architecture-explainer.md, .claude/agents/review-correctness.md, the address-review-comments, pr-ci-review and pr-description SKILL.md files, and the new pr-ci-review/REVIEW.md. Reviewers rebuilt the diff by reading the .claude-pr/ copies next to the in-tree base copies. Any PR changes outside the config-restore set could not be listed and were not reviewed."
+    },
+    {
+      "component": "orchestrator",
+      "description": "No reviewer could see a diff. Correctness, security and maintainability were skipped because the visible change is agent and skill markdown with no code logic. Security might apply because agent definitions are executed config, and it was not run. docs and context each said they did not read every changed file line by line (docs skipped architecture-explainer.md and review-correctness.md)."
+    }
+  ],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.8631254,
+  "duration_ms": 103565,
+  "num_turns": 11,
+  "tokens": {
+    "input": 12,
+    "output": 7629,
+    "cache_read": 211353,
+    "cache_creation": 32797,
+    "total": 251791
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 12,
+      "output": 7629,
+      "cache_read": 211353,
+      "cache_creation": 32797,
+      "cost_usd": 0.45727460000000003
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 34,
+      "output": 9993,
+      "cache_read": 300953,
+      "cache_creation": 110303,
+      "cost_usd": 0.40585079999999996
+    }
+  ],
+  "permission_denials": []
+}
