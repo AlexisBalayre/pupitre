@@ -23,3 +23,14 @@ Boundaries:
 - A high-confidence "newly introduced" finding (duplication, a split guard, two-sources-of-truth params) must be verified against the diff's +/- prefixes: a construct sitting on an unprefixed context line pre-exists the change and is not yours to flag.
 - **Default the tag to `nit`.** This area's `important` findings have the worst adversarial-validation survival rate of any reviewer, and each over-tag costs a validator run and risks a public false positive. `important` claims a structural regression that should block the merge, and it must be verified end to end: you read the mechanism you name (the hook, guard, or helper itself, not just its name) and the harm is reachable. A premise you have not read (a compiler or build-config option, a sibling file's behavior) is not verification; check it before it decides a tag. When your own reasoning concedes the current behavior is equivalent, the trigger unreachable, or the consequence theoretical, tag `nit` no matter how displeasing the structure; a summary tag that contradicts its own prose is a false positive, not prudence. Negative confirmations ("checked X, it holds") are prose, never findings.
 - If a documented rule or ADR decides the question, it is the conventions reviewer's, not yours.
+
+## Do NOT flag
+
+Patterns that filled the minor notes of recent merged PRs without a defect behind them:
+
+- A two-use duplicate (two copies are no reason to extract; the repo waits for the third use), or a second place that merely names the same literal.
+- Style of an expression that works: an immediately-invoked arrow versus a named function, a magic number the line's own context explains, one long block that reads top to bottom.
+- A defensive branch or a swallowed error in a hook or script whose job is to never block (`2>/dev/null`, `exit 0`), unless the PR gives a way for it to hide a real failure.
+- A literal that also lives in another file when the PR did not introduce that second copy.
+- Missing test cases for boundaries the change did not alter, or for a branch the diff did not touch.
+- Anything an earlier round already raised on this PR, or an open thread already covers.

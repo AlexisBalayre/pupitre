@@ -10,8 +10,8 @@ the `.claude/agents/review-*.md` manifests (reviewers + validator); the wiring i
 **The model never writes to the PR.** It emits a structured record (schema generated from
 [`src/review-metrics.schemas.ts`](src/review-metrics.schemas.ts), the single source of truth),
 and the poster renders that record: `important` findings as inline comments anchored to the
-diff, everything else (nits, pre-existing, refuted findings) in collapsed sections of one
-review body, plus a `claude-review` commit status on the head SHA. Splitting the writer out of
+diff, everything else (nits and pre-existing issues, five at most with a held-back count, and
+refuted findings) in collapsed sections of one review body, plus a `claude-review` commit status on the head SHA. Splitting the writer out of
 the model buys three guarantees a model-posted review cannot make:
 
 - **A dead run is visible.** The poster runs on `always()`: a run that failed to start its
