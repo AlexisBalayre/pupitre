@@ -1,0 +1,247 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-07T14:39:02.787Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42381919402",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42381919402",
+  "actor": "AlexisBalayre",
+  "commit_sha": "a06b91187f4b114ac9c6362d7d2ef17cea31a109",
+  "source": "pr",
+  "pr_number": 201,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "maintainability",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/task-rescope.service.ts",
+      "line": "189-190",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The tier raise checks the whole widened scope-in rather than the added globs. So any rescope of a task the operator pinned with `--tier standard` over an already-critical scope overwrites that pin with critical and clears the session's rung.",
+      "body": "The raise is supposed to catch \"a standard task widened onto a critical area\" (ADR 0115 §The tier), and the test `keeps a standard task standard when the added globs are` describes the same intent. The code checks the whole widened scope-in instead, so the raise also fires when the old globs were already critical on their own:\n\n```ts\n      const raised =\n        tierForScope(widened.scopeIn) === 'critical' && raiseToCritical(db, taskId, sessionId);\n```\n\nHow this happens:\n1. `pup plan add|edit --tier standard` stores `standard` over the tier the scope implies. ADR 0092 allows this override, and `pup plan` marks it `standard*`.\n2. `launchTask` routes on `taskTier(row.tier, task.scopeIn)` (`session-lifecycle.service.ts:213-220`), so the session stores `standard` too.\n3. The operator later rescopes a non-critical glob, say `docs/notes.md`.\n4. `raiseToCritical` then rewrites both `tasks.tier` and `sessions.tier` to critical, and nulls `rung` and `rung_reason`.\n\nThe pin is gone for good. Once a session has claimed the task, `updateTaskSpec` refuses `pup plan edit --tier`, so there is no way to put it back. The climb history is wiped, and the next fix round runs the critical ladder even though nothing was widened onto a critical area.\n\nWithout a `--tier` pin, a stored standard tier always comes from a non-critical scope, so checking only `added` gives the same result in every case the current tests cover. Please also reword ADR 0115 §The tier to \"when the added globs imply critical\", and add a regression test: a pinned-standard task over a critical scope, rescoped with `docs/**`, stays standard.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/a06b91187f4b114ac9c6362d7d2ef17cea31a109/src/core/task-rescope.service.ts#L189-L190",
+      "suggestion": "      const raised = tierForScope(added) === 'critical' && raiseToCritical(db, taskId, sessionId);"
+    },
+    {
+      "file": "src/core/task-rescope.service.ts",
+      "line": "119-124",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The window probe checks every session on the task, killed and merged ones included, against its recorded `tmux_target`. Neither the gate's merge teardown nor a plain `pup kill` clears that id. After the default tmux server restarts and gives that pane id to an unrelated live pane, the rescope is refused for a window that no longer exists.",
+      "body": "The probe compares each session's recorded `tmux_target` with every pane id a default server lists. It does this for every row `listTaskSessions` returns, killed and merged ones included:\n\n```ts\nfunction listsWindow(panes: string, row: SessionRow): boolean {\n  return panes.split('\\n').some((line) => {\n    const [pane, name] = line.split(' ');\n    return pane === row.tmux_target || name === `pup-${row.id}`;\n  });\n}\n```\n\nhttps://github.com/AlexisBalayre/pupitre/blob/a06b91187f4b114ac9c6362d7d2ef17cea31a109/src/core/task-rescope.service.ts#L119-L124 (called at [L177-L186](https://github.com/AlexisBalayre/pupitre/blob/a06b91187f4b114ac9c6362d7d2ef17cea31a109/src/core/task-rescope.service.ts#L177-L186))\n\n`tmux_target` holds a `%N` pane id (`new-session -P -F '#{pane_id}'`), and that id stays set after the window is gone:\n- The gate's merge teardown calls `killTmux(session.id, session.tmux_target)` and leaves the column set (`merge-gate.service.ts:1579`).\n- A plain `pup kill` leaves it set too (`session-lifecycle.service.ts:859`). Only the fix-round branch nulls it.\n\nA new tmux server numbers its panes from `%0` again. The codebase already knows this: `fix-round.service.ts:906` says \"the pane id the gate recorded can be another window's once tmux has restarted\".\n\nThis hits the feature's main use case. A merged session is waiting on a CI fix round, and the gate's teardown closed the last window, so the default server exits. The probe then refuses because no server answers, and the ADR's advice is to start one. The new server's first pane can then carry the merged session's old id. Every `pup plan edit <task> --rescope` is refused with \"Session X's window may still be open\". `tmux ls` shows no `pup-X`, and nothing points the operator at the colliding pane, so the hand edit of `state.db` this ADR was written to replace is the only way out.\n\nPossible fixes:\n- Null `tmux_target` when the gate's teardown and `pup kill` take the window down, as the fix-round kill path already does.\n- Or match by name only for rows in a terminal state (merged, killed).\n\nPlease add a test where a merged row's recorded pane id shows up under another session's name.",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/task-rescope.service.ts",
+      "line": "1, 71-124",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "important",
+      "description": "`src/core/task-rescope.service.ts` runs `tmux` itself (`execFileSync('tmux', ['-S', socket, 'list-panes', ...])`). It is the first tmux shell-out outside `src/claude/`, which breaks AGENTS.md's rule that `src/claude/` is the ONLY module that touches tmux. It also duplicates helpers in `session-runtime.service.ts`, under a different PATH/env policy.",
+      "body": "AGENTS.md §Module boundaries: \"`src/claude/` is the ONLY module that touches Claude Code (tmux, hooks, `claude -p`).\" Until this PR, every non-test tmux spawn in `src/` was in `src/claude/session-runtime.service.ts`. Other `src/core` services that need tmux import from that module (`land.service.ts`, `project.service.ts`, `dashboard.service.ts`). This PR adds tmux logic of its own to core:\n\n- the `node:child_process` import (L1)\n- `TMUX_PATH`, `PROBE_TIMEOUT_MS`, `tmuxSockets()` and `listPanes()` (L71-113)\n- a hand-written `` `pup-${row.id}` `` name match (L122), which duplicates `tmuxName()`\n\nhttps://github.com/AlexisBalayre/pupitre/blob/a06b91187f4b114ac9c6362d7d2ef17cea31a109/src/core/task-rescope.service.ts#L71-L124\n\nThe policy has drifted as well. This probe uses a fixed PATH, no caller environment and `-S <socket>`. Launches go through `tmuxProbe`/`tmuxEnv()` with the caller's filtered environment and `-L`. So the two can run different tmux binaries, and if the launch name format changes, the rescope's name match will stop working without any error. ADR 0115 explains why the probe is hardened, but not why it lives in `src/core/`.\n\nPlease move the probe (`TMUX_PATH`, `PROBE_TIMEOUT_MS`, `tmuxSockets`, `listPanes`, `listsWindow`) into `src/claude/session-runtime.service.ts`, built on `tmuxName()`, behind one exported function such as `mayHaveOpenWindow(rows)`, and call it from `rescopeTask`. Keep the pinned PATH and the timeout. The unit tests can then mock that function instead of `node:child_process`.",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/task-rescope.service.ts",
+      "line": "88-92",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "ADR 0115 says the window probe runs \"with none of the caller's environment\", but it reads its socket directory from the caller's `TMUX_TMPDIR`. A worker posing as the operator can unset that variable so the server holding its own window is never asked. The ADR's ceiling should say so, and the claim should be corrected.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0115-pup-plan-edit-rescope-lets-the-operator-widen.md",
+      "line": "31-44",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The probe's documented ceiling leaves out two bypasses. On Homebrew macOS, `/opt/homebrew/bin` (first on the pinned `TMUX_PATH`) is writable by the user, so a worker can plant a fake tmux. And a worker can keep a detached process running after its pane closes. Both stay inside the OS-user boundary, but the ceiling paragraph and the `TMUX_PATH` comment should name them.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "1025, 1059-1100",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Only the `edit` branch reads `--rescope`. On `plan add`, `drop` or `list` it is silently ignored, so `pup plan add t-1 --rescope --scope docs/**` plans a new backlog task with goal `t-1` instead of refusing.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/task-rescope.service.ts",
+      "line": "155-158",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The \"No session has claimed\" refusal tells the operator to widen the task with plain `pup plan edit <id> --scope ...`. That command replaces scope-in wholesale, so following the advice with only the new globs drops the existing ones.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.test.ts",
+      "line": "2647-2661",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The CLI test's `toContain('session s1')` passes on the rescope command's own \"recorded on session s1\" line, whatever `pup log` prints. Only the `files: docs/**` assertion actually tests `pup log`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "skills/pup/LOOP.md",
+      "line": "62-64",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "LOOP.md (and ADR 0115's `pup log <module>` claim) overstate when a rescope works. Pup also refuses for `queued` and `rejected` sessions, and whenever a default tmux server doesn't answer, which is common after the gate kills the last window. And `pup log <file>` matches decision records by prefix, so it won't show a rescope whose globs cover that file.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session.repository.ts",
+      "line": "465-472",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`editTaskSpec`'s JSDoc still says it is \"The only `UPDATE tasks SET spec` there is\". The new `rescopeTaskSpec` is a second one, so plan-add validation of every spec write now depends on `rescopeTask` calling `assertPlannableSpec` itself.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/task-rescope.service.ts",
+      "line": "55-62",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`refusal()` is an identity wrapper around `new InvalidProfileError(message)`. It routes non-profile state refusals (\"No task …\", \"window may still be open\") through the profile error type, when `session-lifecycle.errors.ts` already has task/session error types such as `UnknownTaskError`. Its JSDoc is also hard to parse and describes the CLI's catch block rather than this function.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session.repository.ts",
+      "line": "322-350",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`RESCOPABLE_STATES` and `workingStates()` are state-table policy, but they sit in the repository rather than in `session-state.utils.ts` beside `claimedStates()` and `TERMINAL_STATES`. And `workingSession` copies `claimingSession`'s query with only the state list changed.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/task-rescope.service.ts",
+      "line": "126-131",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`routedTier` rebuilds `sessionWindowRoute`'s tier resolution (`asTier(session.tier) ?? taskTier(...)`) by hand, so the tier written to the rescope event can drift silently if routing changes.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "842",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`--rescope` refuses other flags through a hand-kept deny list (`[opts.goal, opts.scopeOut, opts.accept, opts.tier]`). If a `plan edit` option is added later and missed here, `--rescope` will accept it and silently ignore it. Commander's `.conflicts()` or an allow list would keep this in sync.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.test.ts",
+      "line": "tmuxLists helper",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The `tmuxLists` comment says the probe asks \"the default tmux server\". The final probe asks up to two servers (`/tmp`'s and `TMUX_TMPDIR`'s).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/task-rescope.service.ts",
+      "line": "rescopeTask JSDoc",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`rescopeTask`'s 15-line JSDoc narrates the transaction step by step and repeats the ADR's Atomicity/Record paragraphs. Its window-probe clause is muddled. The contract only needs: it appends only, it refuses for a working session or a possibly open window, and the transaction rolls back on refusal.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0115-pup-plan-edit-rescope-lets-the-operator-widen.md",
+      "line": "26-28, 85-98",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "In ADR 0115, the When paragraph reads as if `killed` were one of the rescopable states. The Tests paragraph has broken line wrapping from later splices, and it lists test cases one by one in a way that will go stale.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 3,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 6.772460300000002,
+  "duration_ms": 457836,
+  "num_turns": 17,
+  "tokens": {
+    "input": 12,
+    "output": 19214,
+    "cache_read": 285535,
+    "cache_creation": 64650,
+    "total": 369411
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 362,
+      "output": 119001,
+      "cache_read": 7264935,
+      "cache_creation": 474204,
+      "cost_usd": 6.399425000000002
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 34,
+      "output": 9852,
+      "cache_read": 350098,
+      "cache_creation": 95775,
+      "cost_usd": 0.3730353
+    }
+  ],
+  "permission_denials": []
+}
