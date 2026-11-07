@@ -107,9 +107,9 @@ jobs:
 
               // The review poster reports a commit status, which an `@claude review` retry on main
               // updates while the failed check run on the head stays: for a context that has a
-              // status, the status decides. This job's check run and labeler.yml's `label` job
-              // say nothing about the PR; a check run is named after its job id unless the job has
-              // a `name:`, so renaming either job means changing this filter.
+              // status, the status decides. This job's own check run says nothing about the PR; it
+              // is named after the job id unless the job has a `name:`, so giving this job a
+              // `name:` means changing this filter.
               const { data: combined } = await github.rest.repos.getCombinedStatusForRef({
                 owner, repo, ref: pr.head.sha, per_page: 100,
               });
@@ -118,7 +118,7 @@ jobs:
                 await github.paginate(github.rest.checks.listForRef, {
                   owner, repo, ref: pr.head.sha, per_page: 100,
                 })
-              ).filter((c) => c.name !== context.job && c.name !== "label" && !contexts.has(c.name));
+              ).filter((c) => c.name !== context.job && !contexts.has(c.name));
               const bad = new Set(["failure", "timed_out", "cancelled", "action_required", "stale", "startup_failure"]);
               // Not combined.state: it is "pending" when a head has no status at all.
               if (
