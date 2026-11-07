@@ -1,5 +1,6 @@
 import { execFileSync, spawn } from 'node:child_process';
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   readdirSync,
@@ -872,6 +873,40 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(steerPane).toHaveBeenCalled();
       expect(getSession(db, SESSION_ID)?.reject_count).toBe(1);
     });
+
+    // `testRunsElsewhere` counts an unreadable slots directory as a run, to
+    // keep its wait; the gate's own read counts it as none, since here it
+    // would spare a rejection (decision 138). Root reads any directory.
+    it.skipIf(process.getuid?.() === 0)(
+      'rejects a timeout under load once the slots directory cannot be listed',
+      async () => {
+        const worktree = seedSession(db, repo);
+        commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+        shortTimeout();
+        const slots = ownSlots('s-other');
+        const restore = (): void => chmodSync(slots, 0o755);
+        onTestFinished(restore);
+        const cores = availableParallelism();
+        // Listing refused, writes and unlinks by name still allowed, from the
+        // run's start: the gate still frees its slot by name.
+        let unlisted = false;
+        loadAt(() => {
+          if (!unlisted && runsOf('test-run') > 0) {
+            chmodSync(slots, 0o300);
+            unlisted = true;
+          }
+          return cores;
+        });
+
+        const outcome = await merge(adapterWith('test', timesOut));
+        restore();
+
+        expect(outcome.status).toBe('rejected');
+        expect(outcome.report.stages.at(-1)).toMatchObject({ stage: 'test', status: 'fail' });
+        expect(steerPane).toHaveBeenCalled();
+        expect(getSession(db, SESSION_ID)?.reject_count).toBe(1);
+      },
+    );
 
     it("counts another gate's wait, named as the slots module names one, as another test run", async () => {
       const worktree = seedSession(db, repo);

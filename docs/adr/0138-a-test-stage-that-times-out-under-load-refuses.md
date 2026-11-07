@@ -115,7 +115,8 @@
     - a wait file whose name carries another pid than its record.
 
     The first three sit in a slot the slots module does not read, so they reach the gate's
-    own read. A first run that fails by itself and a re-run that runs out its timeout under
+    own read. With another run holding a slot but the slots directory no longer listable
+    once the run has started, the timeout is rejected too. A first run that fails by itself and a re-run that runs out its timeout under
     load, with another run holding a slot, throws the refusal after both runs, steering and
     counting nothing; with no other run going, it is rejected. A runner's failing exit at four times the cores is re-run once, then rejected. No test
     pinned the 10 minutes: the timeout tests shorten the cap through a mock, and the wait tests

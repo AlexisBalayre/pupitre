@@ -2115,9 +2115,10 @@ function oneMinuteLoad(): number {
  * suite runs longer than its cap whatever the branch holds, so the timeout says
  * nothing about the code. Loaded means three things, at the ceiling
  * `waitForLoad` uses: the 1-minute load average was at or over the available
- * parallelism before the suites started (`loadBefore`, `undefined` when no
- * reading was taken, which is no evidence), it still is, and a test run other
- * than the gated session's own is going (`otherTestRunGoing`).
+ * parallelism before the suites started (`loadBefore`, 0 when no reading was
+ * taken, which is under any machine's cores and so no evidence), it still is,
+ * and a test run other than the gated session's own is going
+ * (`otherTestRunGoing`).
  * That last is the evidence a session's own tests cannot make: a suite that
  * fills the cores by itself until its cap is still rejected. It throws, so it
  * climbs no rung of the reject cap and injects nothing into the session, and
@@ -2125,21 +2126,11 @@ function oneMinuteLoad(): number {
  * failure that is not a timeout, returns, and the stage fails and rejects as
  * before. It judges a test stage's re-run as it judges the first run.
  */
-function refuseTimeoutUnderLoad(
-  error: unknown,
-  loadBefore: number | undefined,
-  sessionId: string,
-): void {
+function refuseTimeoutUnderLoad(error: unknown, loadBefore: number, sessionId: string): void {
   if ((error as { code?: string }).code !== 'ETIMEDOUT') return;
   const cores = availableParallelism();
   const load = oneMinuteLoad();
-  if (
-    loadBefore === undefined ||
-    loadBefore < cores ||
-    load < cores ||
-    !otherTestRunGoing(sessionId)
-  )
-    return;
+  if (Math.min(loadBefore, load) < cores || !otherTestRunGoing(sessionId)) return;
   throw new Error(
     `The test stage timed out under load ${load.toFixed(1)}, at or over the machine's ` +
       `${cores} cores, with other test runs going; nothing was merged; run pup merge again ` +
@@ -2163,36 +2154,53 @@ function refuseTimeoutUnderLoad(
 function otherTestRunGoing(sessionId: string): boolean {
   if (!testRunsElsewhere()) return false;
   const dir = join(homedir(), '.pupitre', 'slots');
-  let names: string[];
+  let names: string[] = [];
   try {
     names = readdirSync(dir);
   } catch {
+    // An unreadable slots directory names no run: no evidence.
+  }
+  return names.some((name) => isOtherTestRun(dir, name, sessionId));
+}
+
+/**
+ * Whether the slot or gate wait file `name` in `dir` holds evidence for
+ * `otherTestRunGoing`: a name the slots module gives one, a record that parses,
+ * a positive integer pid that is not this process, a label other than
+ * `sessionId`, for a wait file the pid its name carries and an age within
+ * `GATE_SLOT_WAIT_MS`, and a live holder. Each check runs only once those
+ * before it hold, and any that throws, a symlink, a read or a parse, is no
+ * evidence.
+ */
+function isOtherTestRun(dir: string, name: string, sessionId: string): boolean {
+  const named = /^(?:slot-\d+\.lock|gate-(\d+)-[0-9a-z]+\.wait)$/.exec(name);
+  if (!named) return false;
+  const path = join(dir, name);
+  const waiter = named[1];
+  try {
+    const { pid, label } = JSON.parse(readPlainFile(path, { followLinks: false })) as {
+      pid?: unknown;
+      label?: unknown;
+    };
+    const waitChecks =
+      waiter === undefined
+        ? []
+        : [
+            () => Number(waiter) === pid,
+            () => Date.now() - lstatSync(path).mtimeMs <= GATE_SLOT_WAIT_MS,
+          ];
+    return [
+      () => Number.isInteger(pid),
+      () => (pid as number) > 0,
+      () => pid !== process.pid,
+      () => label !== sessionId,
+      ...waitChecks,
+      // Throws for a dead pid and for another user's (EPERM), neither of which holds our slot.
+      () => process.kill(pid as number, 0),
+    ].every((holds) => holds());
+  } catch {
     return false;
   }
-  return names.some((name) => {
-    const waiter = /^gate-(\d+)-[0-9a-z]+\.wait$/.exec(name);
-    if (!waiter && !/^slot-\d+\.lock$/.test(name)) return false;
-    const path = join(dir, name);
-    try {
-      const { pid, label } = JSON.parse(readPlainFile(path, { followLinks: false })) as {
-        pid?: unknown;
-        label?: unknown;
-      };
-      if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0) return false;
-      if (pid === process.pid || label === sessionId) return false;
-      if (
-        waiter &&
-        (Number(waiter[1]) !== pid || Date.now() - lstatSync(path).mtimeMs > GATE_SLOT_WAIT_MS)
-      ) {
-        return false;
-      }
-      // Throws for a dead pid and for another user's (EPERM), neither of which holds our slot.
-      process.kill(pid, 0);
-      return true;
-    } catch {
-      return false;
-    }
-  });
 }
 
 /**
@@ -2302,10 +2310,10 @@ export async function measureBranch(
   /**
    * The 1-minute load read once before the suites (decision 138), set below
    * after the build and the load wait. Declared before `commandStage` reads
-   * it, so a test stage run before the reading finds `undefined`, which counts
-   * as no evidence, rather than a temporal dead zone.
+   * it, so a test stage run before the reading finds 0, which is under any
+   * machine's cores and so no evidence, rather than a temporal dead zone.
    */
-  let loadBeforeSuites: number | undefined;
+  let loadBeforeSuites = 0;
 
   /**
    * Runs one hard stage to its result. A failed test
