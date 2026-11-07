@@ -1,0 +1,110 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-07T21:48:58.252Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42417365263",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42417365263",
+  "actor": "AlexisBalayre",
+  "commit_sha": "986191ad745a8c39bfd57a0e72ad7a9b1c1ce1f3",
+  "source": "pr",
+  "pr_number": 259,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "context",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "context",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "maintainability",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": ".github/workflows/pr-status.yml",
+      "line": "118-124",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "`pr/review-open` only reads the `claude-review` status on the current head, but the poster's `N important finding(s)` counts only that round's new importants. So the next push drops the label whether or not the importants were fixed. An incremental review never re-raises earlier importants, and a comment-only push gets no review at all. Either way the PR goes back to `pr/ready` with the importants still unresolved.",
+      "body": "**The label disappears on the next push even if the importants are still open.**\n\nThe new check reads only the head's status description:\n\n```js\nconst review = combined.statuses.find((s) => s.context === \"claude-review\");\nif (review?.state === \"success\" && /\\d+ important finding/.test(review.description ?? \"\")) {\n  return \"pr/review-open\";\n}\n```\n\nThe count in that description covers only the findings the latest round raised. In `tools/review/src/post-review.script.ts`, `importants = anchored.length + unanchored.length` (line 228) is built from `summary.findings` filtered to `tag === \"important\"`, and the poster never reads `prior_importants`. Two common paths leave earlier importants open and still take the label off:\n\n1. **Incremental review after a code push.** `.claude/skills/pr-ci-review/SKILL.md` §3 marks each prior important `resolved` or `unresolved` in `prior_importants` and says to \"never re-post or re-raise one\". An unresolved prior important is therefore not in `findings`. The new head gets `success` / `no blocking issues`, and pr-status returns `pr/ready`. This happens on a push that fixes only one of two importants, and on an unrelated push.\n2. **Comment-only push.** `tools/review/src/review-preflight.script.ts:204` puts a `pending` status of `Not reviewed: only comments and prose changed since …` on the new head and skips the review. pr-status already skips a pending status starting with \"Not reviewed\" (lines 139-143), so the PR falls through to `pr/ready`.\n\nIn practice `pr/review-open` means \"the latest round found new importants\", not \"the review has open importants\". The pushes that should be checked against it are exactly the ones that clear it. `src/core/ci-wait.service.ts:235-264` covers both cases on purpose, using the open review threads and an `isOnHead` check.\n\nPossible fix: count the unresolved review threads the poster opened on the PR, using GraphQL `reviewThreads { isResolved ... }` (pr-status already has `pull-requests: write`). Keep the description check as a fallback for a round whose findings were all unanchored.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/986191ad745a8c39bfd57a0e72ad7a9b1c1ce1f3/.github/workflows/pr-status.yml#L118-L124",
+      "suggestion": null
+    },
+    {
+      "file": ".github/workflows/pr-status.yml",
+      "line": "118-120",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Optional: the WHY comment spends half its length on how `pup fix` uses the status, which this workflow doesn't touch. \"The poster sets `success` on every run it posted, findings or not, so the findings are read from the description\" carries the same reason.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".github/workflows/pr-status.yml",
+      "line": "139-147",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "A `success` status of `partial review: no blocking issues` still ends at `pr/ready`, but the poster says a quick or area-restricted pass is no merge signal (`post-review.script.ts:230-231`), and `ci-wait.service.ts:262` only treats the exact clean-review description as ready to merge.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "platform",
+      "description": "The validator's `gh pr view --json` call was refused by the CI command lock. It got the PR body from a bare `gh pr view 259` instead, so its verdict was not affected."
+    }
+  ],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.2491777,
+  "duration_ms": 162068,
+  "num_turns": 11,
+  "tokens": {
+    "input": 10,
+    "output": 7722,
+    "cache_read": 180269,
+    "cache_creation": 35478,
+    "total": 223479
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 50,
+      "output": 17498,
+      "cache_read": 645299,
+      "cache_creation": 101066,
+      "cost_usd": 1.0909838
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 24,
+      "output": 4892,
+      "cache_read": 134384,
+      "cache_creation": 38315,
+      "cost_usd": 0.15819389999999997
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "gh pr view 259 --repo AlexisBalayre/pupitre --json body"
+    }
+  ]
+}
