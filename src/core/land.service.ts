@@ -42,6 +42,8 @@ interface LandRequest {
   gateEnv?: string[];
   /** Wait for a merge lock a live run holds, as `pup land` does, rather than refuse (decision 88). */
   wait?: boolean;
+  /** `false` lands without the audit, so several lands share one `pup audit` (decision 132). */
+  audit?: boolean;
 }
 
 /**
@@ -86,7 +88,7 @@ export async function landSession(db: Database, req: LandRequest): Promise<LandO
   }
   // Store text about to be handed to git and printed: refused the gate's way.
   assertTargetName(req.repoPath, target);
-  if (req.adapters.length === 0) {
+  if (req.audit !== false && req.adapters.length === 0) {
     throw new Error(
       `No adapter for ${req.repoPath}; the audit after the land would measure nothing. ` +
         'Nothing was landed.',
@@ -227,6 +229,7 @@ export async function landSession(db: Database, req: LandRequest): Promise<LandO
   // The conductor may run this, so no human stands between an observed
   // regression and the bar: a regressed measurement is reported and left for
   // `pup audit`, which the operator runs (decision 84).
+  if (req.audit === false) return { prUrl, mergeCommit, target, ...outcome };
   const audit = await auditProject(db, req.repoPath, req.adapters, req.gateEnv, 'keep');
   return { prUrl, mergeCommit, target, ...outcome, audit };
 }
