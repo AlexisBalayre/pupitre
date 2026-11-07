@@ -1,0 +1,100 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-07T22:14:25.763Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42419429000",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42419429000",
+  "actor": "AlexisBalayre",
+  "commit_sha": "1a95e9273882769e204c9d82853d0afe2fbeea00",
+  "source": "pr",
+  "pr_number": 264,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "1319-1321",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The conductor kickoff says the cap counts sessions that are 'running, blocked or in a fix round'. assertRoomToLaunch also counts `queued` and `rejected` (every holding state except awaiting-review), and a fix round is just `running`. Saying 'working (not `awaiting-review`)' would stay true if states are added.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-lifecycle.service.ts",
+      "line": "148-149",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "In assertRoomToLaunch, `working` is a list of states, but SessionCapReachedError's `working` parameter is a session count. Renaming the list to `workingStates` would remove the clash.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-lifecycle.test.ts",
+      "line": "1790-1795",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new test 'refuses at a cap of 2 with two running sessions' repeats the existing refuse-at-cap test with a different cap, and the blocked-session test already covers refusal at cap 2.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.1270813,
+  "duration_ms": 124876,
+  "num_turns": 10,
+  "tokens": {
+    "input": 10,
+    "output": 4872,
+    "cache_read": 184525,
+    "cache_creation": 34621,
+    "total": 224028
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 54,
+      "output": 12118,
+      "cache_read": 816805,
+      "cache_creation": 74855,
+      "cost_usd": 0.884075
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 38,
+      "output": 6945,
+      "cache_read": 302403,
+      "cache_creation": 57296,
+      "cost_usd": 0.24300630000000004
+    }
+  ],
+  "permission_denials": []
+}
