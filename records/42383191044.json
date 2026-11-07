@@ -1,0 +1,181 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-07T14:50:17.770Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42383191044",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42383191044",
+  "actor": "AlexisBalayre",
+  "commit_sha": "0261d6487d96e369a6847d6a40f8582a7f5a72d7",
+  "source": "pr",
+  "pr_number": 234,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/test-slot.service.ts",
+      "line": "212-213",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`testRunsElsewhere` only checks that something exists at `~/.pupitre/slots`, then reads it and calls `waitingGates`. That function unlinks every `*.wait` entry it reads as dead (unparseable, a symlink, not a regular file, or a dead pid). The gate runs it unsandboxed, outside any session sandbox. Before this PR the gate never called `waitingGates`: `acquire` passes `[]` for a gate. So a session that swaps the slots directory for a link to another directory can now get the trusted gate to delete `*.wait` files there, plus `slot-N.lock` names via `reclaim`, which the gate's `acquire` already followed. ADR 0096 says sessions can write this path. Impact is minimal, since the reachable damage is limited to files with those exact names. Treating anything that is not a directory as \"a run is going\" (`if (!entry.isDirectory()) return true;` after the lstat) would also match ADR 0134's rule that anything it cannot treat as the slots directory counts as a run.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "2344-2346",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "When `testRunsElsewhere` returns true only because its catch fired (the slots path is a file, a dangling link, or unreadable), the wait line still says \"while other test runs are going\". It should say the slots could not be read.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/test-slot.service.ts",
+      "line": "205-206",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "\"as every reader of the slots does\" overstates. Only `acquire` and `testRunsElsewhere` call `liveHolders`. It also omits that a dead gate's wait file is removed (`waitingGates`). Suggestion: replace the last sentence with \"A dead holder's slot is reclaimed and a dead gate's wait file removed, as `acquire` does.\" The same overstatement is in docs/adr/0134-the-gate-waits-for-the-load-only-while-another.md line 27.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0134-the-gate-waits-for-the-load-only-while-another.md",
+      "line": "36",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Line 36 runs two sentences together and wraps well past the ~100-column wrap every other line of the ADR keeps ('...which already counts. Load from a worker's Claude session, which takes no slot, no longer holds a'). Re-wrap it, and the ragged Tests paragraph at lines 43-46, to match the neighbouring ADRs.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0134-the-gate-waits-for-the-load-only-while-another.md",
+      "line": "31",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "\"(security review of a4545ff)\" cites a bare commit hash. It will not resolve after a squash merge and gives a reader no context. Suggestion: describe the review finding in prose, or drop the citation.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "2326-2328",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "\"the load is none of pup's tests, which the wait cannot outlast\" has an unclear antecedent. \"Which\" could mean the load or the tests. Suggestion: \"with none, the load is not pup's tests' doing and waiting cannot clear it, so the gate runs at once\".",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.test.ts",
+      "line": "6254",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The `othersGoing` comment says \"holds a test slot\", but the stub stands for `testRunsElsewhere`, which also covers a live gate wait file. Suggestion: \"/** Stands for `testRunsElsewhere` answering true: the load may be pup's. */\"",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0134-the-gate-waits-for-the-load-only-while-another.md",
+      "line": "1",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The title says \"only while another test run is going\", but the rule also keeps the wait when the slots path is unreadable, so a wait can happen with no run going. The ADR body does state this, so the title is just loose.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/test-slot.service.ts",
+      "line": "207-217",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`testRunsElsewhere` is a read-only-sounding predicate that calls `liveHolders` (reclaims dead holders' slots) and `waitingGates` (deletes dead waiters' files), and builds a throwaway `randomBytes` token only to name the reclaim file; the JSDoc discloses the reclaim, but the side effect hides behind a predicate name and the token arguably belongs inside `liveHolders`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/test-slot.service.ts",
+      "line": "208",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `options: Pick<TestSlotOptions, 'dir' | 'slots'>` parameter is used only by the new tests in `test-slot.test.ts`; the production caller, `waitForLoad`, passes nothing. It mirrors the existing `withTestSlot` dir/slots seam, so it is borderline under AGENTS.md §Altitude.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.test.ts",
+      "line": "6349-6388",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new \"with the machine's own test slots\" cases for `waitForLoad`'s default path partly repeat the `testRunsElsewhere` unit tests in `test-slot.test.ts`, adding mostly wiring coverage of the default argument, and rely on `process.ppid` being alive as the foreign holder.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.6168855999999996,
+  "duration_ms": 168553,
+  "num_turns": 14,
+  "tokens": {
+    "input": 10,
+    "output": 10391,
+    "cache_read": 200845,
+    "cache_creation": 45469,
+    "total": 256715
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 46,
+      "output": 27727,
+      "cache_read": 573857,
+      "cache_creation": 121107,
+      "cost_usd": 1.4114373999999998
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 26,
+      "output": 5908,
+      "cache_read": 140987,
+      "cache_creation": 52887,
+      "cost_usd": 0.2054482
+    }
+  ],
+  "permission_denials": []
+}
