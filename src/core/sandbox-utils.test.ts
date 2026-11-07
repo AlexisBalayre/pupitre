@@ -218,22 +218,36 @@ describe('runGateChild', () => {
     );
   }
 
+  /** Only ESRCH is dead: EPERM means a process is there that may not be signalled. */
   function alive(pid: number): boolean {
     try {
       process.kill(pid, 0);
       return true;
-    } catch {
-      return false;
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code !== 'ESRCH';
     }
   }
 
-  /** So a test that fails on a group still running does not leave it running after it. */
-  function killGroup(leader: number): void {
-    try {
-      process.kill(-leader, 'SIGKILL');
-    } catch {
-      // Gone already, which is what the test asserted.
-    }
+  /**
+   * The group a stage child leads, named by the child's pid. Killed when the
+   * test ends only if the test never saw it go, so a failing test does not
+   * leave it running; once it is gone, its pgid may name someone else's group.
+   */
+  function stageGroup(leader: number): {
+    alive: () => boolean;
+    gone: (timeout?: number) => Promise<void>;
+  } {
+    let seenGone = false;
+    onTestFinished(() => {
+      if (!seenGone && alive(-leader)) process.kill(-leader, 'SIGKILL');
+    });
+    return {
+      alive: () => alive(-leader),
+      gone: async (timeout = 1_000) => {
+        await vi.waitFor(() => expect(alive(-leader)).toBe(false), { timeout });
+        seenGone = true;
+      },
+    };
   }
 
   /** Under pup's own gate, HOME is already denied — and then it already exists. */
@@ -318,18 +332,18 @@ describe('runGateChild', () => {
   it('kills a timed-out child that ignores SIGTERM, and its group, once the grace runs out', async () => {
     const cwd = fakeCheckout();
 
-    const failure = await runGateChild(
+    const run = runGateChild(
       'sh',
       ['-c', "trap '' TERM; echo $$ > sh.pid; while :; do sleep 0.1; done"],
       { cwd, repoPath: cwd, timeout: 1_000 },
     ).catch((error: unknown) => error);
+    // Read while the run is still in its timeout and grace, so the group is
+    // seen alive before it is seen gone.
+    const group = stageGroup(await pidIn(cwd, 'sh.pid'));
+    expect(group.alive()).toBe(true);
 
-    expect(failure).toMatchObject({ code: 'ETIMEDOUT', signal: 'SIGKILL' });
-    // The child leads its own group, so its pid names the group, and the
-    // negative pid asks whether anything in it is left.
-    const child = await pidIn(cwd, 'sh.pid');
-    onTestFinished(() => killGroup(child));
-    await vi.waitFor(() => expect(alive(-child)).toBe(false));
+    expect(await run).toMatchObject({ code: 'ETIMEDOUT', signal: 'SIGKILL' });
+    await group.gone();
   }, 15_000);
 
   // Decision 132. The case that ran for three days: vitest stops a worker with
@@ -359,14 +373,14 @@ describe('runGateChild', () => {
     onTestFinished(() => {
       pup.kill('SIGKILL');
     });
-    const child = await pidIn(cwd, 'sh.pid');
-    onTestFinished(() => killGroup(child));
+    const group = stageGroup(await pidIn(cwd, 'sh.pid'));
+    expect(group.alive()).toBe(true);
 
     pup.kill('SIGTERM');
     await new Promise((resolve) => setTimeout(resolve, 500));
     pup.kill('SIGKILL');
 
-    await vi.waitFor(() => expect(alive(-child)).toBe(false), { timeout: 5_000 });
+    await group.gone(5_000);
   });
 
   // A stage child is in a process group of its own, out of reach of the
