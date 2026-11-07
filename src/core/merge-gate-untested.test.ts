@@ -102,20 +102,22 @@ describe('the test stage on a change no test reads (decision 139)', { timeout: 2
   it('reports a missing test command as not measured, not as skipped for the change', async () => {
     const worktree = seedSession(db, repo, { scopeIn: ['**'] });
     commitIn(worktree, '.github/workflows/ci.yml', 'on: push\n');
+    const coverage = vi.fn(() => ({ files: {} }));
     const adapter = debtAdapter({
       gateCommands: () => [
         { stage: 'build', command: 'true', args: [] },
         { stage: 'lint', command: 'true', args: [] },
       ],
+      coverage,
     });
 
     const outcome = await merge(adapter);
 
-    expect(untimed(outcome.report.stages)).toContainEqual({
-      stage: 'test',
-      status: 'skipped',
-      detail: 'not measured — no command available',
-    });
+    const notMeasured = { status: 'skipped', detail: 'not measured — no command available' };
+    const stages = untimed(outcome.report.stages);
+    expect(stages).toContainEqual({ stage: 'test', ...notMeasured });
+    expect(stages).toContainEqual({ stage: 'coverage', ...notMeasured });
+    expect(coverage).not.toHaveBeenCalled();
   });
 
   it('runs the full test stage when one changed file is off the list', async () => {
@@ -248,7 +250,7 @@ describe('UNTESTED_PATH_GLOBS against what the suite reads (decision 139)', () =
     );
     expect(listed).toEqual(
       expect.arrayContaining([
-        '.github/workflows/labeler.yml',
+        '.github/workflows/claude-code-review.yml',
         'docs/adr/0139-the-gate-skips-the-test-stage-when-no-testable-file.md',
       ]),
     );

@@ -43,9 +43,9 @@
     ways. The first is to run that check from the build or lint script, which the gate still
     runs on every change. The second is to read a `skipped: no testable file changed` test
     stage in the gate report as untested, and run the suite by hand before `pup land`.
-    When the adapter declares no test command at all, the test stage keeps its usual
-    `not measured — no command available`, because a change of only listed files does not
-    explain the missing test stage.
+    When the adapter declares no test command at all, the test and coverage stages keep the
+    usual `not measured — no command available`, because a change of only listed files does
+    not explain the missing test stage.
     *The proof.* Before the list was written, src/ was searched for every test that names
     `docs/adr`, `SKILL.md`, `.github` or a root prose file. `decision-record.test.ts`,
     `overlap.test.ts`, `routing-utils.test.ts`, `pre-commit.test.ts` and the gate tests
@@ -65,7 +65,8 @@
     Tests: a change of only `.github/workflows/ci.yml` and an ADR merges under a test command
     that always fails. Its test and coverage stages are skipped with `no testable file changed
     (2 files)`, coverage is never measured, and build, lint, the scope audit and the diff size
-    pass. The same change under an adapter with no test command reports
-    `not measured — no command available`. The full test stage runs, and fails, in four cases: one source file is changed beside
-    a workflow, a source file is renamed into `docs/`, a Docusaurus config compiles the changed
+    pass. The same change under an adapter with no test command reports its test and
+    coverage stages as `not measured — no command available`, and coverage is never measured.
+    The full test stage runs, and fails, in four cases: one source file is changed beside a
+    workflow, a source file is renamed into `docs/`, a Docusaurus config compiles the changed
     Markdown, and a symlink reaches the changed path.

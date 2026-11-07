@@ -2512,10 +2512,14 @@ export async function measureBranch(
   // (decision 139).
   const untested =
     nestedPackages.length === 0 && changesOnlyUntested(req.repoPath, targetSha, sha, changedPaths);
+  // With no test command to skip, the test and coverage stages say so, as on
+  // any other change.
   const notTested = (stage: string): GateStageResult => ({
     stage,
     status: 'skipped',
-    detail: `no testable file changed (${changedPaths.length} files)`,
+    detail: commandFor('test')
+      ? `no testable file changed (${changedPaths.length} files)`
+      : 'not measured — no command available',
   });
   // One instrumented run answers for the test stage and for coverage when the
   // adapter whose test command it is measures coverage too (decision 95).
@@ -2646,11 +2650,7 @@ export async function measureBranch(
   // Reported in today's order, stopping where today's run stopped.
   const { results: suiteResults, folded } = await suites;
   for (const [stage, result] of [
-    // With no test command to skip, the stage says so, as on any other change.
-    [
-      'test',
-      suiteResults.get('test') ?? (untested && commandFor('test') ? notTested('test') : undefined),
-    ],
+    ['test', suiteResults.get('test') ?? (untested ? notTested('test') : undefined)],
     ['lint', await linted],
   ] as const) {
     const reported = result ?? notMeasured(stage);
