@@ -1,0 +1,200 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-07T21:39:40.767Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42416699075",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42416699075",
+  "actor": "AlexisBalayre",
+  "commit_sha": "cac0865c06eeeebc0f08ca650b8684eb7ec14a84",
+  "source": "pr",
+  "pr_number": 255,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "maintainability",
+    "conventions",
+    "docs",
+    "context"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "maintainability",
+    "conventions",
+    "docs",
+    "context"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "tools/review/src/review-body.utils.ts",
+      "line": "88-102",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The collapsed-section headers still show the uncapped totals (`8 minor issues`, `3 pre-existing issues`) while listing at most five items, and the held-back line then counts some of the same items again as 'more'; build the labels from `shownNits.length` / `shownPreExisting.length` so headers plus the held-back line add up (the '8 minor issues' test assertion would change to 5). When nits fill the cap, held-back pre-existing items also lose their 'predate this diff' label.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "tools/review/src/review-body.utils.ts",
+      "line": "84-85",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The five minors shown are just the first five in record order; `confidence` is ignored and SKILL.md sets no ordering, so a medium-confidence nit can take a slot from a high-confidence one that is then held back and never owed. Sort high-confidence first before slicing, or tell the record to order minors by importance.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/agents/review-maintainability.md",
+      "line": "36",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The PR's claim that a held-back minor is not re-listed in an incremental round has nothing behind it, and 'Anything an earlier round already raised on this PR' cannot be applied. Incremental briefs carry only the prior importants (SKILL.md §3), so reviewers never see earlier minors. A held-back minor can be raised again and become owed, or be suppressed even though it was never shown. Either pass prior minors into incremental briefs, or limit the rule to 'already shown on this PR'.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/skills/pr-ci-review/SKILL.md",
+      "line": "5",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The frontmatter description still says CI renders the verdict 'to the PR in full', but this PR caps the minors and holds the rest back, so 'in full' no longer holds.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/skills/pr-ci-review/SKILL.md",
+      "line": "27",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The bullet's title 'Record-all, rank by display' and its first clause 'captures every confirmed finding' read as if nothing is dropped, while the parenthetical says at most five minors are shown. Say that the record keeps all minors and only the rendering caps them, so reviewers know they should still return every minor.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "tools/review/README.md",
+      "line": "13-14",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The edited README sentence is not re-wrapped: the line that ends '...on the head SHA. Splitting the writer out of' runs far past the file's roughly 95-column wrapping, and the parenthetical makes the sentence hard to scan.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "tools/review/src/review-body.utils.ts",
+      "line": "4-9",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The module docstring says 'severity decides how loudly a finding is displayed' and then 'Only the minors are capped'. Refuted findings are also not capped, and the sentence does not say that. Also, 'Everything else the run confirmed ... renders in the body' just above it is now only partly true, so state once that the minors are capped and everything else is shown.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/agents/review-docs.md",
+      "line": "28-30",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new 'Do NOT flag' bullet 'a repeat of a rule the same file already states ... Flag a repeat only when the two copies now contradict' conflicts with the Flag section's 'Seam-duplicating comments' and 'duplicating information that lives elsewhere'. A reviewer agent can read it as permission to skip real duplicates. Narrow it to prose documents, or say it does not apply to code comments. The next bullet, 'A sibling document that still cites something the PR did not touch', could also suppress docs that this PR's change made stale, which is the case the Flag section exists for. Add 'unless the PR's change made the citation false'.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/agents/review-maintainability.md",
+      "line": "29",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The lead-in 'Patterns that filled the minor notes of recent merged PRs' ties the manifest to a point in history that will rot, and gives the agent no rule. The last bullet, 'Anything an earlier round already raised', is not a maintainability concern. It belongs in the shared brief and is not specific to this reviewer.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "tools/review/src/review-body.utils.ts",
+      "line": "12",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`MINOR_CAP` is an exported threshold declared in a `.utils.ts` file with no JSDoc line saying what it means or why it is 5; `general.md` §No hardcoded values: thresholds go in a named export with a JSDoc line saying what the number means and why, and §JSDoc says exported constants are almost always documented.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/agents/review-maintainability.md",
+      "line": "27-36",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new `## Do NOT flag` section (here and in `review-docs.md`) is phrased almost entirely as prohibitions; `writing-for-agents/SKILL.md` §Leading words (Negation): prompt the positive, and a prohibition earns its place only as a hard guardrail paired with the positive target.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/skills/pr-ci-review/SKILL.md",
+      "line": "27",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The five-minor cap (nits first, held-back count) is now restated in `SKILL.md`, `REVIEW.md` and `tools/review/README.md`; `writing-for-agents/SKILL.md` §Pruning: keep each meaning in a single source of truth.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "review-security was not spawned: the diff changes reviewer manifests, skill prose and a pure body-rendering function, and crosses no trust boundary (no auth, input handling, secrets or shell-outs)."
+    },
+    {
+      "component": "context",
+      "description": "The context reviewer did not check .github/workflows/claude-code-review.yml or the ci/review-metrics readers, and reported that a Grep with the node_modules exclusion glob returned only a partial scan of tools/review."
+    }
+  ],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.2023543999999997,
+  "duration_ms": 120986,
+  "num_turns": 12,
+  "tokens": {
+    "input": 12,
+    "output": 9373,
+    "cache_read": 240765,
+    "cache_creation": 43448,
+    "total": 293598
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 36,
+      "output": 15206,
+      "cache_read": 478918,
+      "cache_creation": 73415,
+      "cost_usd": 0.8974666000000001
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 42,
+      "output": 10764,
+      "cache_read": 282638,
+      "cache_creation": 67560,
+      "cost_usd": 0.30488780000000004
+    }
+  ],
+  "permission_denials": []
+}
