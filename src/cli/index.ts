@@ -58,11 +58,11 @@ import {
   updateDecisionRecordSummary,
 } from '../core/decision-record.repository.js';
 import { DEFAULT_BASE_PROFILE } from '../core/default-profile.constants.js';
+import { IntentRefusedError } from '../core/errors/intent.errors.js';
 import { ciReviewLookup, type FixRoundOutcome, startFixRound } from '../core/fix-round.service.js';
 import { fleetReading, readFleet } from '../core/fleet.service.js';
 import { parseGateEnv } from '../core/gate-env.utils.js';
 import { initProject } from '../core/init.service.js';
-import { IntentRefusedError } from '../core/intent.errors.js';
 import { acceptIntent, createIntent, listIntents, readIntent } from '../core/intent.service.js';
 import { landSession } from '../core/land.service.js';
 import { closeLedgerEntry, listLedgerEntries } from '../core/ledger.repository.js';

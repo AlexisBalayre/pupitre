@@ -1,8 +1,8 @@
-# 0132. The pre-commit hook runs only the tests related to the staged files (2026-11-05)
+# 0135. The pre-commit hook runs only the tests related to the staged files (2026-11-05)
 
 - Status: accepted
 
-132. **The pre-commit hook runs only the tests related to the staged files (2026-11-05).**
+135. **The pre-commit hook runs only the tests related to the staged files (2026-11-05).**
     `scripts/pre-commit` ran `TEST_CMD`, the full suite, on every commit. On a loaded machine
     the slow files (`fix-round.test.ts`, `land.test.ts`, `merge-gate.test.ts`) hit their 30-second
     per-test timeouts, so commits failed for reasons unrelated to the change, and workers

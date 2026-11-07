@@ -1,4 +1,4 @@
-import { PR_URL } from './dashboard.constants.js';
+import { PR_URL } from './constants/dashboard.constants.js';
 import type { DashboardBaseline } from './types/dashboard.types.js';
 
 /**
