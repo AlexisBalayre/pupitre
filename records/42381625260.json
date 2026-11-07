@@ -1,0 +1,79 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-07T14:28:28.628Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42381625260",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42381625260",
+  "actor": "AlexisBalayre",
+  "commit_sha": "3500d78411b6eef7a2bdf7109700e16a23fd0ea2",
+  "source": "pr",
+  "pr_number": 241,
+  "action": "review",
+  "reviewers_spawned": [
+    "context",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "context",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "maintainability",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": ".github/workflows/claude-code-review.yml",
+      "line": "470-471",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The comment on the persist-metrics pin says \"ubuntu-latest (26.04) breaks the reviewer sandbox\", but that job never runs the sandbox. It also repeats the WHY given at line 42. Say instead that it is pinned to match claude-review, e.g. `# Pinned to match claude-review above; this job does not run the sandbox itself.`",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.45167609999999997,
+  "duration_ms": 53578,
+  "num_turns": 9,
+  "tokens": {
+    "input": 12,
+    "output": 3950,
+    "cache_read": 214241,
+    "cache_creation": 28322,
+    "total": 246525
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 12,
+      "output": 3950,
+      "cache_read": 214241,
+      "cache_creation": 28322,
+      "cost_usd": 0.3484722
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 16,
+      "output": 2375,
+      "cache_read": 63744,
+      "cache_creation": 29219,
+      "cost_usd": 0.10320389999999999
+    }
+  ],
+  "permission_denials": []
+}
