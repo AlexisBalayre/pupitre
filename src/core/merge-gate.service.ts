@@ -62,6 +62,7 @@ import {
   originRepoSlug,
   rewritePullRequest,
 } from './github.client.js';
+import { globToRegExp } from './glob.utils.js';
 import { readOriginUrl } from './init.service.js';
 import {
   hasOpenLedgerEntry,
@@ -85,6 +86,7 @@ import {
   MAX_REJECTS_BEFORE_BLOCKED,
   MERGE_LOCK_DIRNAME,
   PR_TITLE_MAX_CHARS,
+  UNTESTED_PATH_GLOBS,
 } from './merge-gate.constants.js';
 import { MergeLockHeldError, SessionNotReviewableError } from './merge-gate.errors.js';
 import { SESSION_ID_PATTERN } from './paths.constants.js';
@@ -2326,6 +2328,34 @@ export async function waitForLoad(
 }
 
 /**
+ * Whether every file the branch changed is on `UNTESTED_PATH_GLOBS`, so no
+ * test can run or read it (decision 139). A rename's old path counts as
+ * changed, since `--name-only` names only the new one. Something other than
+ * the path itself can read each of these, so each counts as testable, as
+ * decision 110 counts it as source: a symlink, a path a symlink can reach, a
+ * name outside ASCII, and Markdown that a Docusaurus config compiles.
+ */
+function changesOnlyUntested(
+  repoPath: string,
+  target: string,
+  branch: string,
+  changedPaths: string[],
+): boolean {
+  const untested = UNTESTED_PATH_GLOBS.map(globToRegExp);
+  const listed = (path: string): boolean =>
+    !NON_ASCII.test(path) && untested.some((glob) => glob.test(path));
+  if (changedPaths.length === 0 || !changedPaths.every(listed)) return false;
+  for (const entry of rawDiffEntries(repoPath, target, branch).values()) {
+    if (entry.mode === '120000') return false;
+    if (entry.renamedFrom !== undefined && !listed(entry.renamedFrom)) return false;
+  }
+  const tree = readBranchTree(repoPath, branch);
+  return changedPaths.every(
+    (path) => !tree.linked(path) && !(tree.markdownIsCode && path.endsWith('.md')),
+  );
+}
+
+/**
  * The stages every gate run measures on the pinned sha, from the gate's
  * checkout (decision 81): build, test and lint, a touched nested package's own
  * scripts, the scope audit, the diff size and the debt deltas. Undefined once a
@@ -2477,9 +2507,19 @@ export async function measureBranch(
   stages.push(built);
   if (built.status === 'fail') return undefined;
 
+  // A change no test can run or read runs no suite, and so waits for no load
+  // and takes no slot; a nested package's change always runs its suite
+  // (decision 139).
+  const untested =
+    nestedPackages.length === 0 && changesOnlyUntested(req.repoPath, targetSha, sha, changedPaths);
+  const notTested = (stage: string): GateStageResult => ({
+    stage,
+    status: 'skipped',
+    detail: `no testable file changed (${changedPaths.length} files)`,
+  });
   // One instrumented run answers for the test stage and for coverage when the
   // adapter whose test command it is measures coverage too (decision 95).
-  const test = commandFor('test');
+  const test = untested ? undefined : commandFor('test');
   const hasSuite =
     test !== undefined ||
     nestedPackages.some((pkg) => pkg.commands.some((c) => c.stage === 'test'));
@@ -2606,7 +2646,7 @@ export async function measureBranch(
   // Reported in today's order, stopping where today's run stopped.
   const { results: suiteResults, folded } = await suites;
   for (const [stage, result] of [
-    ['test', suiteResults.get('test')],
+    ['test', suiteResults.get('test') ?? (untested ? notTested('test') : undefined)],
     ['lint', await linted],
   ] as const) {
     const reported = result ?? notMeasured(stage);
@@ -2753,12 +2793,10 @@ export async function measureBranch(
     ),
   );
 
-  const measurement = await measureCoverage(
-    await staticDebt,
-    req.adapters,
-    capabilityContext,
-    folded,
-  );
+  // Untested, coverage has no run to read, and measuring it would run the suite.
+  const measurement = untested
+    ? await staticDebt
+    : await measureCoverage(await staticDebt, req.adapters, capabilityContext, folded);
   const judged = judgeDebt(
     {
       ...measurement,
@@ -2794,6 +2832,10 @@ export async function measureBranch(
   // the merge carries --accept-debt, and the nested-package stages above go
   // through the same wrapper.
   for (const stage of judged.stages) {
+    if (untested && stage.stage === 'coverage') {
+      stages.push(notTested(stage.stage));
+      continue;
+    }
     stages.push(
       stage.status === 'flagged' ? { ...stage, detail: flagDetail(stage.detail ?? '') } : stage,
     );
