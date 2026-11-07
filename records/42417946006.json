@@ -1,0 +1,126 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-07T21:56:50.099Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42417946006",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42417946006",
+  "actor": "AlexisBalayre",
+  "commit_sha": "4992366cf65b25c8a918fddfec55d271a87a2a37",
+  "source": "pr",
+  "pr_number": 259,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "context",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "context",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "maintainability",
+    "spec"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "986191ad745a8c39bfd57a0e72ad7a9b1c1ce1f3",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": ".github/workflows/pr-status.yml",
+      "line": "118-124",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": ".github/workflows/pr-status.yml",
+      "line": "155-158",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The partial-review branch returns `pr/ci-pending` before the `pr/ci-failing` check runs. A quick or area-restricted `@claude review` that finds no importants therefore labels a PR with failing checks as pending, which breaks the documented `pr/ci-failing > pr/ci-pending` order.",
+      "body": "**A partial review now hides a failing check behind `pr/ci-pending`.**\n\nThe new partial-review branch comes before the failing-check scan, so it returns before that scan runs:\n\n```js\n// A quick or area-restricted pass is no merge signal.\nif (review?.state === \"success\" && review.description?.startsWith(\"partial review\")) {\n  return \"pr/ci-pending\";\n}\n```\n\nhttps://github.com/AlexisBalayre/pupitre/blob/4992366cf65b25c8a918fddfec55d271a87a2a37/.github/workflows/pr-status.yml#L155-L158\n\nWhen a partial round has no importants, the poster sets `success` / `partial review: no blocking issues` (`tools/review/src/post-review.script.ts:232-237`). Nothing in `claude-code-review.yml` waits for CI before it runs, so the owner can request a quick or area-restricted review on a head whose tests already failed. That PR then gets `pr/ci-pending` (\"Checks are still running\") instead of `pr/ci-failing`, because the scan at lines 165-172 never runs:\n\nhttps://github.com/AlexisBalayre/pupitre/blob/4992366cf65b25c8a918fddfec55d271a87a2a37/.github/workflows/pr-status.yml#L165-L172\n\nThis breaks the file header's own order (`pr/review-open > pr/ci-failing > pr/ci-pending > pr/ready`, lines 2-4), and it tells the author to wait when something needs fixing.\n\nThe goal, \"a partial review is no merge signal\", only requires that a partial review never reaches `pr/ready`. Delete lines 155-158 and move the condition into the pending check:\n\n```js\nconst running = combined.statuses.some(\n  (s) => s.state === \"pending\" && !s.description?.startsWith(\"Not reviewed\"),\n);\n// A quick or area-restricted pass is no merge signal.\nconst partial = review?.state === \"success\" && review.description?.startsWith(\"partial review\");\nif (runs.some((c) => c.status !== \"completed\") || running || partial) {\n  return \"pr/ci-pending\";\n}\n```",
+      "suggestion": null
+    },
+    {
+      "file": ".github/workflows/pr-status.yml",
+      "line": "86",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The `hasOpenBotThread` comment says it finds \"the newest bot-opened, unresolved review thread, as `ci-wait.service.ts` reads them\". The function returns true for any unresolved `github-actions` thread from any run. `ci-wait.service.ts` reads no threads. The reader that does, `github.client.ts` (~387-394), keeps only the newest run's threads. Reword it to \"any run's unresolved bot thread counts\", or delete it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".github/workflows/pr-status.yml",
+      "line": "149-154",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The PR body says \"A crashed review is `failure` and stays `pr/ci-failing`\". That holds only when no earlier round left an unresolved bot thread. Otherwise `hasOpenBotThread` returns `pr/review-open` even when the review status is `failure`. The behavior follows from the new ranking, but the body should say so.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".github/workflows/pr-status.yml",
+      "line": "146-148",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The last sentence of the review-open comment, \"The description covers the round just posted.\", only restates the left half of the `||`. Per AGENTS.md §Comments it can go. The rest of the comment is a real WHY.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".github/workflows/pr-status.yml",
+      "line": "68",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `pr/ci-pending` label description, \"Checks are still running\", now also covers a partial review where nothing is running. Consider \"Checks are still running or the review was only partial\".",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.3468818000000002,
+  "duration_ms": 185375,
+  "num_turns": 13,
+  "tokens": {
+    "input": 10,
+    "output": 8663,
+    "cache_read": 200428,
+    "cache_creation": 44693,
+    "total": 253794
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 46,
+      "output": 19814,
+      "cache_read": 548012,
+      "cache_creation": 98630,
+      "cost_usd": 1.1332954
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 30,
+      "output": 6833,
+      "cache_read": 195939,
+      "cache_creation": 50241,
+      "cost_usd": 0.21358639999999998
+    }
+  ],
+  "permission_denials": []
+}
