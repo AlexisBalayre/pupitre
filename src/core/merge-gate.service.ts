@@ -2144,9 +2144,10 @@ function refuseTimeoutUnderLoad(error: unknown, loadBefore: number, sessionId: s
  * labelled other than `sessionId`, since the gated session's pane can hold a
  * worker slot of its own. The slots module answers only whether a run is going,
  * not whose, so the records are read here, by its rules: a wait file counts
- * for `GATE_SLOT_WAIT_MS`. A directory or record that cannot be read is no
- * evidence, the opposite of decision 134's wait, because here it would spare a
- * rejection.
+ * for `GATE_SLOT_WAIT_MS`, and only under the name the slots module gives one,
+ * `gate-<pid>-<token>.wait`, with the record's pid the name's. A directory or
+ * record that cannot be read is no evidence, the opposite of decision 134's
+ * wait, because here it would spare a rejection.
  */
 function otherTestRunGoing(sessionId: string): boolean {
   if (!testRunsElsewhere()) return false;
@@ -2158,8 +2159,8 @@ function otherTestRunGoing(sessionId: string): boolean {
     return false;
   }
   return names.some((name) => {
-    const isWait = name.endsWith('.wait');
-    if (!isWait && !/^slot-\d+\.lock$/.test(name)) return false;
+    const waiter = /^gate-(\d+)-[0-9a-z]+\.wait$/.exec(name);
+    if (!waiter && !/^slot-\d+\.lock$/.test(name)) return false;
     const path = join(dir, name);
     try {
       const { pid, label } = JSON.parse(readPlainFile(path, { followLinks: false })) as {
@@ -2168,7 +2169,12 @@ function otherTestRunGoing(sessionId: string): boolean {
       };
       if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0) return false;
       if (pid === process.pid || label === sessionId) return false;
-      if (isWait && Date.now() - lstatSync(path).mtimeMs > GATE_SLOT_WAIT_MS) return false;
+      if (
+        waiter &&
+        (Number(waiter[1]) !== pid || Date.now() - lstatSync(path).mtimeMs > GATE_SLOT_WAIT_MS)
+      ) {
+        return false;
+      }
       // Throws for a dead pid and for another user's (EPERM), neither of which holds our slot.
       process.kill(pid, 0);
       return true;

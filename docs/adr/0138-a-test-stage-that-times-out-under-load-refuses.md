@@ -37,16 +37,20 @@
     `GATE_COMMAND_TIMEOUT_MS` counts as timed out under load only on evidence that the load is
     not the session's own. All three must hold, at the ceiling decision 88's wait uses,
     `availableParallelism()`. First, the 1-minute load average was at or over it before the
-    suites, after the build: it is read once, after the build stage and the load wait, and
-    before the slot and the stages that run alongside the suites. Second, it is still at or
-    over it when the timed-out run ends. Third, at that moment a test run other than the
-    gated session's own is going: another process holds a test slot or waits for one as a
-    gate (`testRunsElsewhere`, decision 134), and the gate finds one such slot or wait file,
-    live under the same rules, that is not labelled with the gated session's id. A worker's
-    `pup session test` labels its slot with its session's id, as the gate does its own. The
-    slots module answers only whether a run is going, so the gate reads the records itself, and
-    a slots directory or record it cannot read is no evidence. Decision 134 counts it as a run
-    to keep its wait, but here that would spare a rejection. Such a timeout refuses the merge with `The test stage
+    suites, after the build: it is read once, after the build stage and the load wait, if
+    any, and before the slot and the stages that run alongside the suites. Second, it is
+    still at or over it when the timed-out run ends. Third, at that moment a test run other
+    than the gated session's own is going: another process holds a test slot or waits for
+    one as a gate (`testRunsElsewhere`, decision 134), and the gate finds one such slot or
+    wait file, live under the same rules, that is not labelled with the gated session's id.
+    A worker's `pup session test` labels its slot with its session's id, as the gate does
+    its own. A wait file counts only under the name the slots module gives one,
+    `gate-<pid>-<token>.wait`, and only when the record's pid is the one its name carries.
+    The slots module answers only whether a run is going, so the gate reads the records
+    itself. A slots directory or record it cannot read is no evidence, and neither is a
+    malformed record, a symlink, a dead pid, a wait older than `GATE_SLOT_WAIT_MS` or the
+    gate's own pid. Decision 134 counts an unreadable one as a run to keep its wait, but here
+    that would spare a rejection. Such a timeout refuses the merge with `The test stage
     timed out under load N, at or over the machine's C cores, with other test runs going;
     nothing was merged; run pup merge again when the load falls.` The refusal is thrown, as
     the gate's other refusals under the lock are. It climbs no rung of the reject cap, injects
@@ -66,13 +70,14 @@
     never rejected and never blocked, holding the merge lock for its build and test caps each
     time. Such a suite is now rejected unless another run is testing and the machine was loaded
     before it. A session can still meet the first condition. It can load the machine from its
-    pane before the gate starts, and the reading comes after the build stage, which runs the
-    session's code. The third condition it cannot meet through pup alone. A `pup session test`
+    pane before the gate starts, and the reading comes after the build stage (and the load
+    wait, if any), and the build runs the session's code. The third condition it cannot meet through pup alone. A `pup session test`
     from its own pane holds a slot labelled with its own id, which the gate leaves out, so a
     timeout counts only while another session or gate is testing at the same moment. What a
-    session could still do, and pup does not stop, is write a slot record under another
-    label by hand into `~/.pupitre/slots`, naming a live process of its own. Closing that would
-    take slot records the session cannot write, which this decision does not attempt. A real
+    session could still do, and pup does not stop, is write a record under another label by
+    hand into `~/.pupitre/slots`, naming a live process of its own. As a wait file it must also
+    be named for that process's pid. Closing that would take slot records the session cannot
+    write, which this decision does not attempt. A real
     overload with no other pup test run going, such as
     decision 134's scanner, still rejects on a timeout. With the cap at 25 minutes and the suite
     at about 9.5, that should be rare. Nothing bounds how many times the operator can re-run a
@@ -93,6 +98,18 @@
     - loaded before and during the run, with the only other slot held under the gated
       session's own id.
 
-    A runner's failing exit at four times the cores is re-run once, then rejected. No test
+    Another gate's wait file, named as the slots module names one, counts as another run and
+    the timeout is refused. With the only other slot the gated session's own, each of these
+    planted records leaves the timeout a rejection:
+    - malformed JSON;
+    - a symlink;
+    - a dead pid;
+    - a wait older than `GATE_SLOT_WAIT_MS`;
+    - the gate's own pid;
+    - a wait file named otherwise than `gate-<pid>-<token>.wait`;
+    - a wait file whose name carries another pid than its record.
+
+    The first three sit in a slot the slots module does not read, so they reach the gate's
+    own read. A runner's failing exit at four times the cores is re-run once, then rejected. No test
     pinned the 10 minutes: the timeout tests shorten the cap through a mock, and the wait tests
     read `GATE_SLOT_WAIT_MS`.

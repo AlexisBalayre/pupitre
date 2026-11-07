@@ -6,9 +6,10 @@ import {
   readFileSync,
   rmSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs';
-import { loadavg } from 'node:os';
+import { availableParallelism, loadavg } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
@@ -127,7 +128,7 @@ import {
   saveProjectOriginUrl,
   transitionSession,
 } from './session.repository.js';
-import { HELD_SLOT_ENV, withTestSlot } from './test-slot.service.js';
+import { GATE_SLOT_WAIT_MS, HELD_SLOT_ENV, withTestSlot } from './test-slot.service.js';
 import type { DebtBaseline, ProjectBaseline } from './types/init.types.js';
 
 describe('runMergeGate', { timeout: 20_000 }, () => {
@@ -732,21 +733,265 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(outcome.report.stages.at(-1)).toMatchObject({ stage: 'test', status: 'fail' });
     });
 
-    it('never re-runs a test stage that ran out its timeout, even one that trapped the SIGTERM', async () => {
-      const worktree = seedSession(db, repo);
-      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+    /**
+     * Every load the gate reads during the test is `load`, or what `load`
+     * answers when it is read; the machine's after it.
+     */
+    const loadAt = (load: number | (() => number)): void => {
+      const realLoad = vi.mocked(loadavg).getMockImplementation();
+      vi.mocked(loadavg).mockImplementation(() => {
+        const now = typeof load === 'number' ? load : load();
+        return [now, now, now];
+      });
+      onTestFinished(() => {
+        vi.mocked(loadavg).mockImplementation(realLoad as never);
+      });
+    };
+
+    /** A slot or wait record as the slots module writes one. */
+    const slotRecord = (label: string, pid: number, kind = 'worker'): string =>
+      JSON.stringify({ kind, label, pid, token: 't0' });
+
+    /**
+     * The machine's test slots under a home of the test's own, so the gate
+     * takes a real one; with `holder`, slot 0 is held by a worker run so
+     * labelled, a live process that is not this one, leaving the other for the
+     * gate. Answers the slots directory.
+     */
+    const ownSlots = (holder?: string): string => {
+      const home = tempDir('pup-slot-home-');
+      vi.stubEnv('HOME', home);
+      vi.stubEnv(HELD_SLOT_ENV, '');
+      const slots = join(home, '.pupitre', 'slots');
+      mkdirSync(slots, { recursive: true });
+      if (holder !== undefined) {
+        writeFileSync(join(slots, 'slot-0.lock'), slotRecord(holder, process.ppid));
+      }
+      return slots;
+    };
+
+    /** The refusal a test run timed out under `load` throws (decision 138). */
+    const underLoad = (load: number): string =>
+      `The test stage timed out under load ${load.toFixed(1)}, at or over the machine's ` +
+      `${availableParallelism()} cores, with other test runs going; nothing was merged; run ` +
+      'pup merge again when the load falls.';
+
+    /** Loaded only once the gate has started the test run: the run's own load. */
+    const loadedByTheRun = (): number => (runsOf('test-run') > 0 ? availableParallelism() * 4 : 0);
+
+    /** A stage cap of 2 s, which `timesOut` runs past. */
+    const shortTimeout = (): void => {
       gateTimeout.ms = 2_000;
       onTestFinished(() => {
         gateTimeout.ms = undefined;
       });
+    };
+    // The runner traps the timeout's SIGTERM and exits 1 by itself: an
+    // ordinary status, told apart only by the code the timeout leaves.
+    const timesOut = "trap 'exit 1' TERM; sleep 10 & wait";
 
-      // The runner traps the timeout's SIGTERM and exits 1 by itself: an
-      // ordinary status, told apart only by the code the timeout leaves.
-      const outcome = await merge(adapterWith('test', "trap 'exit 1' TERM; sleep 10 & wait"));
+    /** A pid no live process has: past any kernel's pid range. */
+    const DEAD_PID = 2 ** 31 - 2;
+
+    it('never re-runs a test stage that ran out its timeout under the cores, even one that trapped the SIGTERM, and rejects it', async () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      shortTimeout();
+      loadAt(availableParallelism() - 0.5);
+
+      const outcome = await merge(adapterWith('test', timesOut));
 
       expect(outcome.status).toBe('rejected');
       expect(runsOf('test-run')).toBe(1);
       expect(outcome.report.stages.at(-1)).toMatchObject({ stage: 'test', status: 'fail' });
+      expect(steerPane).toHaveBeenCalled();
+      expect(getSession(db, SESSION_ID)?.reject_count).toBe(1);
+    });
+
+    // At that load the suite outruns its cap whatever the branch holds, so the
+    // timeout says nothing about the code (decision 138).
+    it('refuses a test stage that ran out its timeout on a machine loaded before it and by other test runs, climbing no rung and injecting nothing', async () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      const before = sh(repo, 'git', 'rev-parse', 'main').trim();
+      shortTimeout();
+      const slots = ownSlots('s-other');
+      const cores = availableParallelism();
+      loadAt(cores);
+
+      await expect(merge(adapterWith('test', timesOut))).rejects.toThrow(underLoad(cores));
+
+      expect(runsOf('test-run')).toBe(1);
+      expect(steerPane).not.toHaveBeenCalled();
+      const session = getSession(db, SESSION_ID);
+      expect(session?.state).toBe('awaiting-review');
+      expect(session?.reject_count).toBe(0);
+      expect(sh(repo, 'git', 'rev-parse', 'main').trim()).toBe(before);
+      expect(existsSync(worktree)).toBe(true);
+      // The gate's slot freed and no wait left behind; the other run's kept.
+      expect(readdirSync(slots)).toEqual(['slot-0.lock']);
+      // The merge lock released: the next run takes it and merges.
+      expect(existsSync(join(repo, '.git', 'pup-merge.lock'))).toBe(false);
+      gateTimeout.ms = undefined;
+      expect((await merge()).status).toBe('merged');
+    });
+
+    it("counts another gate's wait, named as the slots module names one, as another test run", async () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      shortTimeout();
+      const slots = ownSlots(SESSION_ID);
+      writeFileSync(
+        join(slots, `gate-${process.ppid}-k3x9q.wait`),
+        slotRecord('s-other', process.ppid, 'gate'),
+      );
+      const cores = availableParallelism();
+      loadAt(cores);
+
+      await expect(merge(adapterWith('test', timesOut))).rejects.toThrow(underLoad(cores));
+      expect(steerPane).not.toHaveBeenCalled();
+    });
+
+    it('with openPr pushes nothing and writes nothing to a PR when it refuses a timeout under load', async () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      const bare = addOrigin();
+      shortTimeout();
+      ownSlots('s-other');
+      const cores = availableParallelism();
+      loadAt(cores);
+
+      await expect(
+        withFakeGh(fakeGh([]), () =>
+          runMergeGate(db, {
+            repoPath: repo,
+            sessionId: SESSION_ID,
+            adapters: [adapterWith('test', timesOut)],
+            openPr: true,
+          }),
+        ),
+      ).rejects.toThrow(underLoad(cores));
+
+      expect(ghCalls().some((call) => /^pr (create|edit|comment)/.test(call))).toBe(false);
+      expect(sh(bare, 'git', 'branch', '--list', BRANCH).trim()).toBe('');
+      expect(steerPane).not.toHaveBeenCalled();
+      expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+    });
+
+    // A session's own tests can fill the cores until the cap; only load that
+    // was there before the run, with another session's or gate's test run
+    // going, is evidence the session cannot make alone (decision 138).
+    it.each([
+      ['quiet before its run and loaded only by it, with no other test run', loadedByTheRun],
+      [
+        'quiet before its run and loaded only during it, with another test run',
+        loadedByTheRun,
+        's-other',
+      ],
+      ['loaded before and during its run, with no other test run', availableParallelism],
+      [
+        'loaded before and during its run, with the only other slot held by the gated session itself',
+        availableParallelism,
+        SESSION_ID,
+      ],
+    ] as [string, () => number, string?][])(
+      'still rejects a test stage that ran out its timeout %s',
+      async (_case, load, holder) => {
+        const worktree = seedSession(db, repo);
+        commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+        shortTimeout();
+        ownSlots(holder);
+        loadAt(load);
+
+        const outcome = await merge(adapterWith('test', timesOut));
+
+        expect(outcome.status).toBe('rejected');
+        expect(runsOf('test-run')).toBe(1);
+        expect(outcome.report.stages.at(-1)).toMatchObject({ stage: 'test', status: 'fail' });
+        expect(steerPane).toHaveBeenCalled();
+        expect(getSession(db, SESSION_ID)?.reject_count).toBe(1);
+      },
+    );
+
+    // The gated session's own slot keeps `testRunsElsewhere` true, so only
+    // the planted record could make the evidence, and none may: each reads as
+    // no other test run, and the timeout stays a rejection (decision 138). The
+    // first three sit in a slot the slots module never reads, so its own
+    // reclaim cannot remove them before the gate's read does.
+    it.each([
+      ['malformed JSON', (slots: string) => writeFileSync(join(slots, 'slot-2.lock'), '{"pid":')],
+      [
+        'a symlinked record',
+        (slots: string) => {
+          const target = join(tempDir('pup-slot-target-'), 'record');
+          writeFileSync(target, slotRecord('s-other', process.ppid));
+          symlinkSync(target, join(slots, 'slot-2.lock'));
+        },
+      ],
+      [
+        'a dead pid',
+        (slots: string) =>
+          writeFileSync(join(slots, 'slot-2.lock'), slotRecord('s-other', DEAD_PID)),
+      ],
+      [
+        'a stale wait',
+        (slots: string) => {
+          const path = join(slots, `gate-${process.ppid}-k3x9q.wait`);
+          writeFileSync(path, slotRecord('s-other', process.ppid, 'gate'));
+          const past = (Date.now() - GATE_SLOT_WAIT_MS - 60_000) / 1000;
+          utimesSync(path, past, past);
+        },
+      ],
+      [
+        "the gate's own pid",
+        (slots: string) =>
+          writeFileSync(
+            join(slots, `gate-${process.pid}-k3x9q.wait`),
+            slotRecord('s-other', process.pid, 'gate'),
+          ),
+      ],
+      [
+        'a wait whose name is not the slots module’s',
+        (slots: string) =>
+          writeFileSync(join(slots, 'planted.wait'), slotRecord('s-other', process.ppid, 'gate')),
+      ],
+      [
+        'a wait whose name names another pid',
+        (slots: string) =>
+          writeFileSync(
+            join(slots, `gate-${DEAD_PID}-k3x9q.wait`),
+            slotRecord('s-other', process.ppid, 'gate'),
+          ),
+      ],
+    ])('rejects a timeout under load whose only other run is %s', async (_case, plant) => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      shortTimeout();
+      plant(ownSlots(SESSION_ID));
+      loadAt(availableParallelism());
+
+      const outcome = await merge(adapterWith('test', timesOut));
+
+      expect(outcome.status).toBe('rejected');
+      expect(outcome.report.stages.at(-1)).toMatchObject({ stage: 'test', status: 'fail' });
+      expect(steerPane).toHaveBeenCalled();
+      expect(getSession(db, SESSION_ID)?.reject_count).toBe(1);
+    });
+
+    it('still rejects a real test failure at a load over the cores', async () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      loadAt(availableParallelism() * 4);
+
+      const outcome = await merge(
+        adapterWith('test', failsOnce('printf "FAILED tests/b.py::test_other\\n"; exit 1')),
+      );
+
+      expect(outcome.status).toBe('rejected');
+      expect(runsOf('test-run')).toBe(2);
+      expect(outcome.report.stages.at(-1)).toMatchObject({ stage: 'test', status: 'fail' });
+      expect(steerPane).toHaveBeenCalled();
+      expect(getSession(db, SESSION_ID)?.reject_count).toBe(1);
     });
 
     it.each(['build', 'lint'] as const)('never re-runs a failed %s', async (stage) => {
