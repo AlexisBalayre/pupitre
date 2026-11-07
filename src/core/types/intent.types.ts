@@ -1,4 +1,4 @@
-import type { IntentStatus } from './intent.enums.js';
+import type { IntentStatus } from '../enums/intent.enums.js';
 
 /** One intent file as `readIntent` parsed it (decision 126). */
 export interface Intent {

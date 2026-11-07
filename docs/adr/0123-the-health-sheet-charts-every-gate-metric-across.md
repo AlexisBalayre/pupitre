@@ -26,7 +26,7 @@
      id prints as `(unminted session id)` outside the minted shape, and a PR url goes through
      `sanitizeReason`, `displayText` and `escapeHtml`, and is a link only in a pull request's shape,
      as on the Overview. That check, `PR_URL`, moves from `dashboard.service.ts` (decision 91) to
-     `dashboard.constants.ts`: the link it guards is now built in `web-dashboard-sheet.utils.ts`,
+     `constants/dashboard.constants.ts`: the link it guards is now built in `web-dashboard-sheet.utils.ts`,
      where both sheets reach it, and a util imports no service.
      *Charts.* `timeLineChart` in `chart.utils.ts` places each capture by when it was taken, not
      evenly, so merges can be marked between them: each is a dashed rule across the plot at its
