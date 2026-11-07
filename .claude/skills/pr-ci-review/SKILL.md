@@ -8,7 +8,7 @@ argument-hint: "[pr [<number>]] [--fix] [--spec <path | issue number or URL | ti
 
 # Code Review Protocol
 
-Provide a context-aware code review of local changes or a pull request, across seven reviewer areas, and emit a structured record of everything it considered. You orchestrate: you steer, gate, consolidate, and act. You do NOT review code yourself; the area subagents do.
+Provide a context-aware code review of local changes or a pull request, across ten reviewer areas, and emit a structured record of everything it considered. You orchestrate: you steer, gate, consolidate, and act. You do NOT review code yourself; the area subagents do.
 
 The governing rule is **spend only where it buys recall**. Deterministic tooling and the human in the loop are free, so lean on them first and spawn an agent only when judgment is the thing missing. Recall comes from the deterministic suite plus the correctness and security reviewers; almost everything else is a cut.
 
@@ -74,17 +74,20 @@ Spawn a reviewer (via the **Agent** tool, by its `subagent_type`) **only when it
 | `review-security` | opus | a trust boundary is touched (auth, routes, WS handlers, input handling, secrets, config) |
 | `review-context` | sonnet | spec/protocol/infra surfaces touched (CORS, HTTP, docker, CI, settings) |
 | `review-conventions` | sonnet | almost always: `docs/conventions/*`, `docs/09-decisions.md`, and `AGENTS.md` govern the rules |
-| `review-maintainability` | sonnet | only on a requested full review, `Depth: deep`, an `Areas:` line naming it, or a change over ~1,000 changed lines; off the default roster (measured below) |
+| `review-simplicity` | sonnet | the diff adds a file, helper, wrapper, option or branch; replaces maintainability on the default roster |
+| `review-guards` | sonnet | the diff adds or edits non-test source files a source-scanning guard test or ADR invariant could cover |
+| `review-workflow-safety` | sonnet | the diff touches `.github/workflows` |
+| `review-maintainability` | sonnet | only on `Depth: deep`, a requested full review, or an `Areas:` line naming it; off the default roster (measured below) |
 | `review-docs` | sonnet | the change adds or edits prose (docstrings, comments, markdown, copy) |
 | `review-spec` | sonnet | §3 found a spec source; under mode = incremental, only when the delta also changes real logic |
 
 If you skip a reviewer that might apply, note it in the final output so coverage is transparent.
 
-**Model dials (asymmetric by stakes).** `correctness` and `security` always run on opus, never downgraded: a miss there is expensive. `maintainability` runs on sonnet for a normal diff and on **opus** once the diff is large (override the model at spawn time). `conventions`, `docs` and `spec` run on sonnet.
+**Model dials (asymmetric by stakes).** `correctness` and `security` always run on opus, never downgraded: a miss there is expensive. `maintainability` runs on sonnet, and on **opus** once the diff is large (override the model at spawn time). `simplicity`, `guards`, `workflow-safety`, `conventions`, `docs` and `spec` run on sonnet.
 
 **Instance scaling.** Default every area to **one** instance. Scale only `correctness` / `security` / `maintainability`, and only past a size gate: **> ~400 changed lines OR > ~8 files spanning >= 2 top-level areas** -> 2 instances; a markedly larger diff -> 3; **hard cap 3**. Send each instance in a complementary direction (by subsystem, layer, or risk concentration), never overlapping. Other areas stay single-instance. This is parallel breadth, not repeated passes: review the changed surface well once, do not loop.
 
-**Round budget (§1's `Round: N`).** From round 4 on the author owes no minor (`REVIEW.md` §1), so a reviewer whose findings are mostly minors buys nothing: spawn only `review-correctness`, plus `review-security` when its gate holds, and `review-spec` when it applies. `conventions`, `docs`, `context` and `maintainability` skip, and an `Areas:` line naming one does not override this; say so in `process_issues`. Rounds 1 to 3 run the roster above.
+**Round budget (§1's `Round: N`).** From round 4 on the author owes no minor (`REVIEW.md` §1), so a reviewer whose findings are mostly minors buys nothing: spawn only `review-correctness`, plus `review-security` when its gate holds, and `review-spec` when it applies. `conventions`, `docs`, `context`, `simplicity`, `guards`, `workflow-safety` and `maintainability` skip, and an `Areas:` line naming one does not override this; say so in `process_issues`. Rounds 1 to 3 run the roster above.
 
 **Why these dials, from the 313 review records on `ci/review-metrics` (147 PRs).** Importants per run: `correctness` 0.36, `security` 0.25, `docs` 0.11, `conventions` 0.06, `context` 0.05, `maintainability` 0.00 (1 important in 292 runs, against 505 nits). Nits per run: `docs` 2.0, `maintainability` 1.7, `conventions` 0.9, `correctness` 1.0, `security` 0.3. Validation refuted under 2% of any area's findings, so the validator is not what keeps minors honest: the bar has to hold in the reviewer. The response baseline (`tools/review` `review-response`) shows rounds 1 and 2 acted on about 80% of the time and round 4 on never, with 89 of 202 minors landing in round 3 and later.
 
@@ -92,7 +95,7 @@ If you skip a reviewer that might apply, note it in the final output so coverage
 
 - **`Areas: <list>`**: spawn exactly the named areas, each whether or not its gate holds, and no other but `spec`, which is never named and follows its gate. The depth still sets their instances and models.
 - **`Depth: quick`**: one instance per area, no size-gated scaling, `maintainability` on sonnet. Without an area list the roster shrinks to `review-correctness` (always) and `review-security` (when its gate holds); `spec` does not run.
-- **`Depth: deep`**: every area spawns (or every named one), gate or not, except `review-spec` without a spec source, which has nothing to check against; instance scaling steps up once (1 -> 2, 2 -> 3, still capped at 3), and `maintainability` runs on opus whatever the diff size.
+- **`Depth: deep`**: every area spawns (or every named one), gate or not, except `review-spec` without a spec source and `review-workflow-safety` without a workflow change, which have nothing to check; instance scaling steps up once (1 -> 2, 2 -> 3, still capped at 3), and `maintainability` runs on opus whatever the diff size.
 
 Validation (§7) is the same at every depth: a quick review posts no `important` a standard one would not have validated. A quick or area-restricted review is **partial**: CI marks it from the `Depth:` and `Areas:` lines (you report nothing extra), and the next round's preflight never diffs from it, so that round covers what this one skipped.
 
@@ -130,7 +133,7 @@ You still own the rest of this section: it is the cross-area view the consolidat
 
 - **Deduplicate across areas, by root cause.** The same root issue often surfaces from several reviewers (a low-value comment trips `conventions`, `docs`, and `maintainability` at once), or from one reviewer at several paths. Merge into one finding, keeping the clearest description and the most severe tag, and every path in the merged finding's body.
 - **Name each finding's rule.** The rule is `<doc §heading>: <slug>` when a written doc governs it, else a bare slug, so the retro can group findings by rule.
-- **Assign one area, citation-first.** A finding that rests on a spec requirement is `spec`, a requirement built wrong included, so its validator gets the spec; a defect the code alone proves is `correctness` or `security`, even when a requirement also names it. Anything citing a written `CLAUDE.md` / `docs/conventions` / ADR rule is `conventions`. Remaining judgment calls are `docs` or `maintainability`.
+- **Assign one area, citation-first.** A finding that rests on a spec requirement is `spec`, a requirement built wrong included, so its validator gets the spec; a defect the code alone proves is `correctness` or `security`, even when a requirement also names it. Anything citing a written `CLAUDE.md` / `docs/conventions` / ADR rule is `conventions`. A tripped guard test is `guards`, an outsider path through a workflow is `workflow-safety`. Remaining judgment calls are `docs`, `simplicity` or `maintainability`.
 - **Respect declared scope.** Drop anything the author marked intentional or out-of-scope.
 - **Doubt resolves to keep, for an `important`.** An `important` whose mechanism is verified but whose trigger is not currently reachable stays as a `nit`. A `nit` or `pre-existing` finding with no concrete trigger or cost (the finding bar of §5) is dropped here, not recorded: minors past the cap are held back anyway, and an unprovable one only spends the author's round.
 - **The tag must match the body.** A finding whose own description concedes there is no reachable break ("no contract violation", "no practical consequence", a provably-equivalent behavior) consolidates as a `nit` regardless of the tag the reviewer chose. Do not forward a self-contradicting `important` to validation; the downgrade is yours to make.

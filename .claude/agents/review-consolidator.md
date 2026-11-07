@@ -20,7 +20,7 @@ Different defects at one line stay separate. When unsure, do not merge: a missed
 
 - Keep the clearest `description` of the group, byte for byte. Do not rewrite it.
 - Keep the most severe tag, then the higher confidence.
-- Credit the most specific area, citation-first: `spec`, `security`, `correctness`, `conventions`, `docs`, `context`, `maintainability`.
+- Credit the most specific area, citation-first: `spec`, `security`, `workflow-safety`, `correctness`, `guards`, `conventions`, `docs`, `context`, `simplicity`, `maintainability`.
 - List every path and line of the group in the survivor's `body`, and name which areas agreed.
 - Never merge an `important` into a lower tag.
 

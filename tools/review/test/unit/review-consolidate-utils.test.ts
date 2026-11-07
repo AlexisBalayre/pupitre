@@ -28,6 +28,11 @@ describe("consolidateFindings", () => {
     expect(result.findings[0]?.area).toBe("security");
   });
 
+  it("credits a tripped guard over the prose areas that also noticed it", () => {
+    const result = consolidateFindings([finding({ area: "simplicity" }), finding({ area: "guards" })]);
+    expect(result.findings[0]?.area).toBe("guards");
+  });
+
   it("keeps the most severe tag and its own description", () => {
     const nit = finding({ tag: "nit", body: null, description: "the retry loop never stops when the budget is zero!" });
     const result = consolidateFindings([nit, finding()]);
