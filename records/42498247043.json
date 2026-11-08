@@ -1,0 +1,76 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-08T16:08:45.090Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42498247043",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42498247043",
+  "actor": "AlexisBalayre",
+  "commit_sha": "339d7b0697b64d43814faa14ad231c332e3d133e",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 270,
+  "action": "review",
+  "reviewers_spawned": [
+    "conventions"
+  ],
+  "reviewers_returned": [
+    "conventions"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "context",
+    "maintainability",
+    "docs",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Gated roster to conventions only: the diff is 10 lines across 2 files that only remove the `export` keyword (no logic, no trust boundary, no prose, no spec source), so correctness, security, context, docs, spec and maintainability were skipped. Any breakage from un-exporting would surface in typecheck/build, which the author's gate passed."
+    },
+    {
+      "component": "conventions",
+      "description": "The conventions reviewer said it did not read src/core/usage-report.service.ts or search docs/adr/. It reviewed only the retro-signals.service.ts half of the diff and assumed the same for the three un-exported interfaces in usage-report.service.ts. Given how small the change is, the gap is minor."
+    }
+  ],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.3603738999999999,
+  "duration_ms": 43306,
+  "num_turns": 8,
+  "tokens": {
+    "input": 10,
+    "output": 2504,
+    "cache_read": 182191,
+    "cache_creation": 28289,
+    "total": 212994
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 10,
+      "output": 2504,
+      "cache_read": 182191,
+      "cache_creation": 28289,
+      "cost_usd": 0.31287019999999993
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 6,
+      "output": 1037,
+      "cache_read": 24117,
+      "cache_creation": 13884,
+      "cost_usd": 0.047503699999999996
+    }
+  ],
+  "permission_denials": []
+}
