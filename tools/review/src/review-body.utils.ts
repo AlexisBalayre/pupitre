@@ -11,6 +11,9 @@ import { type Finding, REVIEWER_AREAS, type RefutedFinding, type ReviewSummary }
 
 export const MINOR_CAP = 5;
 
+/** First line of every review body the poster writes, which tells its summary reviews from the empty ones GitHub wraps around standalone line comments. */
+export const REVIEW_HEADING = "## Claude code review";
+
 type Listed = Pick<Finding, "file" | "line" | "area" | "description"> & { body?: string | null };
 
 export function findingLine(finding: Listed): string {
