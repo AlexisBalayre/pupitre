@@ -14,6 +14,8 @@ export interface PriorRecord {
   /** Branch-relative path, e.g. `records/123.json`; what the model `git show`s. */
   path: string;
   commit_sha: string | null;
+  /** The base branch the review ran against; null on a record from before schema 7. */
+  base_ref: string | null;
   timestamp: string;
   is_error: boolean;
   /** A quick or area-restricted review, which left the rest of its head unreviewed. */
@@ -226,31 +228,36 @@ export function isCommentOnlyDelta(entries: RawDiffEntry[], readBlob: (sha: stri
 export type ModeDecision =
   | { kind: "skip-duplicate"; priorPath: string }
   | { kind: "skip-comment-only"; priorPath: string }
-  | { kind: "full" }
+  | { kind: "full"; priorPath?: string }
   | { kind: "incremental"; fromSha: string; priorPath: string };
 
 export function decideMode(args: {
   prior: PriorRecord | null;
   headSha: string;
+  baseRef: string;
   trigger: string;
   forceFull: boolean;
   isAncestor: boolean;
   hasMerges: boolean;
   isCommentOnly: boolean;
 }): ModeDecision {
-  const { prior, headSha, trigger, forceFull, isAncestor, hasMerges, isCommentOnly } = args;
+  const { prior, headSha, baseRef, trigger, forceFull, isAncestor, hasMerges, isCommentOnly } = args;
   if (prior === null || prior.commit_sha === null) return { kind: "full" };
+  // A retarget changes what the PR's diff is, so a delta from the prior head would skip the
+  // commits the new base brought in, and the base-change marker would clear on a review that
+  // never read them.
+  if (prior.base_ref !== null && prior.base_ref !== baseRef) return { kind: "full" };
   // An already-reviewed head re-reviews only on an explicit human request: a
   // synchronize or opened retrigger of the same SHA has nothing new to look at,
   // while a comment is a person asking again on purpose.
   if (prior.commit_sha === headSha) {
-    return trigger === "comment" ? { kind: "full" } : { kind: "skip-duplicate", priorPath: prior.path };
+    return trigger === "comment" ? { kind: "full", priorPath: prior.path } : { kind: "skip-duplicate", priorPath: prior.path };
   }
-  if (forceFull) return { kind: "full" };
+  if (forceFull) return { kind: "full", priorPath: prior.path };
   // A rebase or force-push breaks ancestry, and a merge from the base folds
   // upstream code into the delta; neither leaves a delta that is this PR's own
   // change to review.
-  if (!isAncestor || hasMerges) return { kind: "full" };
+  if (!isAncestor || hasMerges) return { kind: "full", priorPath: prior.path };
   // A delta of comments and prose alone waits for the next code push, whose
   // incremental review starts from the same prior head and so still reads it;
   // a person asking by comment gets the review now.

@@ -26,7 +26,7 @@ import {
 // Bump whenever the record's meaning changes (a field added or repurposed, a
 // pipeline change that alters what a field measures): the retro partitions
 // trends by schema_version, so a silent semantic change poisons its baselines.
-const SCHEMA_VERSION = 6;
+const SCHEMA_VERSION = 7;
 
 function warn(message: string): void {
   process.stdout.write(`::warning::${message}\n`);
@@ -265,6 +265,7 @@ function main(): void {
     run_url: repository && runId ? `https://github.com/${repository}/actions/runs/${runId}` : null,
     actor: env.GITHUB_ACTOR ?? null,
     commit_sha: commitSha,
+    base_ref: env.REVIEW_BASE_REF || null,
     source: "pr",
     pr_number: prNumber,
     action: "review",
