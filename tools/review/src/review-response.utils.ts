@@ -1,3 +1,5 @@
+import { REVIEW_HEADING } from "./review-body.utils";
+
 export type Outcome = "fixed" | "dismissed" | "ignored";
 
 /** One inline review thread opened by the review bot, as the GraphQL API returns it. */
@@ -10,7 +12,7 @@ export interface BotThread {
   humanReplies: number;
 }
 
-/** One review the bot posted. The poster posts one every round, thread or not, so the n-th review is round n. */
+/** One summary review the poster posted. It posts one every round, thread or not, so the n-th is round n. */
 export interface BotReview {
   pr: number;
   submittedAt: string;
@@ -39,6 +41,11 @@ export function classifyThread(t: Pick<BotThread, "isResolved" | "isOutdated" | 
   if (t.isOutdated) return "fixed";
   if (t.isResolved || t.humanReplies > 0) return "dismissed";
   return "ignored";
+}
+
+/** The poster's summary review, not the empty review GitHub wraps around each comment posted on its own when the batch fails. */
+export function isSummaryReview(reviewBody: string): boolean {
+  return reviewBody.startsWith(REVIEW_HEADING);
 }
 
 export function minorsIn(reviewBody: string): number {

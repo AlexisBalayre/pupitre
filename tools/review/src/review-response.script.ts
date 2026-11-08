@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { type BotReview, type BotThread, minorsIn, renderTable, summarize } from "./review-response.utils";
+import { type BotReview, type BotThread, isSummaryReview, minorsIn, renderTable, summarize } from "./review-response.utils";
 
 /**
  * Reports how authors respond to the CI review: per review round, how many important findings
@@ -76,7 +76,9 @@ function botReviews(owner: string, repo: string, pr: number): BotReview[] {
   const out = gh(["api", `repos/${owner}/${repo}/pulls/${pr}/reviews`, "--paginate"]);
   const pages = out.replaceAll("][", ",");
   const reviews = JSON.parse(pages) as { user: { type: string } | null; body: string; submitted_at: string }[];
-  return reviews.filter((r) => r.user?.type === "Bot").map((r) => ({ pr, submittedAt: r.submitted_at, minors: minorsIn(r.body) }));
+  return reviews
+    .filter((r) => r.user?.type === "Bot" && isSummaryReview(r.body))
+    .map((r) => ({ pr, submittedAt: r.submitted_at, minors: minorsIn(r.body) }));
 }
 
 function main(): void {

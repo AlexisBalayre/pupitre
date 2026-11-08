@@ -2,6 +2,7 @@ import {
   type BotReview,
   type BotThread,
   classifyThread,
+  isSummaryReview,
   minorsIn,
   renderTable,
   roundsOf,
@@ -37,6 +38,14 @@ describe("classifyThread", () => {
 
   it("counts an untouched thread as ignored", () => {
     expect(classifyThread({ isResolved: false, isOutdated: false, humanReplies: 0 })).toBe("ignored");
+  });
+});
+
+describe("isSummaryReview", () => {
+  it("accepts the poster's body and rejects the empty review wrapping a standalone comment", () => {
+    expect(isSummaryReview("## Claude code review\n\nNo blocking issues.")).toBe(true);
+    expect(isSummaryReview("")).toBe(false);
+    expect(isSummaryReview("Looks fine to me")).toBe(false);
   });
 });
 

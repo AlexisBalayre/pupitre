@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { appendFileSync, writeFileSync } from "node:fs";
 import { commentableLines, resolveAnchor, trueLine } from "./diff-anchor.utils";
-import { bodyLines, commentBody } from "./review-body.utils";
+import { bodyLines, commentBody, REVIEW_HEADING } from "./review-body.utils";
 import { noVerdictReason } from "./review-completeness.utils";
 import { type Finding, postedRecordSchema, type ReviewSummary, reviewSummarySchema } from "./review-metrics.schemas";
 
@@ -16,8 +16,6 @@ import { type Finding, postedRecordSchema, type ReviewSummary, reviewSummarySche
  * head SHA, so an unreviewed diff is visible on the PR's check list
  * rather than only in the Actions tab.
  */
-
-const REVIEW_HEADING = "## Claude code review";
 
 function warn(message: string): void {
   process.stdout.write(`::warning::${message}\n`);
