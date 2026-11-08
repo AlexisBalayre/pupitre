@@ -1935,9 +1935,8 @@ async function gateAndMerge(
 
   const measured = await measureBranch(db, req, session, stages, checkoutDir, targetSha, sha);
   if (!measured) {
-    return stages.at(-1)?.stage === ADR_NUMBER_STAGE
-      ? refuseGate(db, session, sandbox, stages)
-      : failed();
+    const adrNumber = stages.find((stage) => stage.stage === ADR_NUMBER_STAGE);
+    return adrNumber?.status === 'fail' ? refuseGate(db, session, sandbox, stages) : failed();
   }
   const { changedPaths, flaggedDebt, debtCandidates, spec, project, baseline } = measured;
 

@@ -2,11 +2,12 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { Database } from 'better-sqlite3';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { tempDir } from '../test/temp-dir.mock.js';
 import { ADR_NUMBER_STAGE, adrNumberStage } from './adr-number.service.js';
 import type { SessionState } from './db.client.js';
 import { openStore } from './db.client.js';
+import { runGit } from './git-diff.client.js';
 import {
   appendEvent,
   ensureProject,
@@ -14,6 +15,12 @@ import {
   insertTask,
   transitionSession,
 } from './session.repository.js';
+
+// The real git, which one test makes an interrupt kill on one branch's diff.
+vi.mock('./git-diff.client.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./git-diff.client.js')>();
+  return { ...actual, runGit: vi.fn(actual.runGit) };
+});
 
 // Test repos must not inherit the developer's global git config nor GIT_DIR & co.
 const GIT_ENV: NodeJS.ProcessEnv = {
@@ -112,6 +119,22 @@ describe('adrNumberStage', { timeout: 20_000 }, () => {
     git(repo, 'commit', '-q', '-m', 'rename');
     git(repo, 'checkout', '-q', 'main');
     expect(stage()).toBeUndefined();
+  });
+
+  it('refuses an unrelated decision added under the number of one the branch deletes', () => {
+    git(repo, 'checkout', '-q', '-b', 'pup/me', 'main');
+    git(repo, 'rm', '-q', 'docs/adr/0002-second.md');
+    writeFileSync(
+      join(repo, 'docs/adr/0002-other.md'),
+      '# 0002. Something else entirely\n\nA different decision, with\nnothing in common.\n',
+    );
+    git(repo, 'add', '.');
+    git(repo, 'commit', '-q', '-m', 'replace');
+    git(repo, 'checkout', '-q', 'main');
+    expect(refusals()).toEqual([
+      'ADR numbers already taken:',
+      '  docs/adr/0002-other.md: decision 0002 is already on the target; renumber it 0003, the lowest free number',
+    ]);
   });
 
   it('refuses a second file with the same number on the branch', () => {
@@ -218,6 +241,25 @@ describe('adrNumberStage', { timeout: 20_000 }, () => {
     }
     commitOn(repo, 'pup/me', 'docs/adr/0003-mine.md');
     expect(stage()).toBeUndefined();
+  });
+
+  it('lets an interrupt that kills a competing diff through, rather than skip the branch', async () => {
+    seedSession(db, 'other', 'running');
+    commitOn(repo, 'pup/other', 'docs/adr/0004-theirs.md');
+    commitOn(repo, 'pup/me', 'docs/adr/0003-mine.md');
+    const theirs = git(repo, 'rev-parse', 'refs/heads/pup/other');
+    const actual =
+      await vi.importActual<typeof import('./git-diff.client.js')>('./git-diff.client.js');
+    const interrupt = Object.assign(new Error('git killed'), { signal: 'SIGINT' });
+    vi.mocked(runGit).mockImplementation((cwd, args, opts) => {
+      if (args.some((arg) => arg.endsWith(`...${theirs}`))) throw interrupt;
+      return actual.runGit(cwd, args, opts);
+    });
+    try {
+      expect(() => stage()).toThrow(interrupt);
+    } finally {
+      vi.mocked(runGit).mockImplementation(actual.runGit);
+    }
   });
 
   it('suggests a distinct free number per clash, past every number taken', () => {

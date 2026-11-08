@@ -14,10 +14,12 @@
     runs first in `measureBranch`, before the gate's checkout is cut and before build, test and
     lint. It takes every `docs/adr/NNNN-*.md` the pinned branch adds over its merge base with the
     target, rename detection off so a renumbering `git mv` counts as the add of its new name. It
-    refuses a number the target's `docs/adr/` still holds at a path the branch keeps, a number
-    the branch adds in two files, and a number another session branch adds over its own merge
-    base with the target. A number whose target file the branch removes is a rename of that
-    decision, so a slug-only rename passes. The other branches count only when their session
+    refuses a number the target's `docs/adr/` holds, a number the branch adds in two files, and
+    a number another session branch adds over its own merge base with the target. A slug-only
+    rename passes: a file git pairs as the rename of a target decision keeping its number
+    (`--find-renames`, by content) is that decision under a new name. A branch that deletes a
+    target decision and adds an unrelated one under its number is no rename to git, so it is
+    refused like any other number on the target. The other branches count only when their session
     can still land: a state that holds its scope (queued, running, awaiting review, rejected,
     blocked; decision 41) or `merged` with an open PR that has not landed (decision 84). Each
     refused file is one line of the stage's failure. The line names the other branch, the other
@@ -31,7 +33,8 @@
     the same way, as every re-gate failure is.
     *Unreadable branches.* A competing branch git cannot diff against the target, an orphan
     commit with no merge base say, is skipped rather than failing the gate of every other
-    session. The stage names it, scrubbed, in a line of its detail: a pass stage when nothing
+    session. A diff an interrupt killed is not an unreadable branch: it is rethrown
+    (`rethrowIfKilled`), so Ctrl-C stops the gate. The stage names it, scrubbed, in a line of its detail: a pass stage when nothing
     else clashed, the failure's last line when something did. A branch that adds no decision,
     or only free numbers with every branch read, gets no stage at all, so its stage list is as
     before.
@@ -55,11 +58,12 @@
     states with its number on the target, where the next gate finds it.
     Tests: `adrNumberStage` adds no stage for a branch adding no decision, a free number, an
     edit to a decision already on the target or a slug-only rename of one. It refuses a number
-    on the target, a second file with one number, one a queued, running, awaiting-review,
+    on the target, an unrelated decision added under the number of one the branch deletes, a
+    second file with one number, one a queued, running, awaiting-review,
     rejected or blocked session's branch adds, one a merged session with an open PR adds, and a
     decision renamed onto a taken number. It ignores killed sessions, landed PRs, local merges
     and `pup/` branches no session holds, skips and names an orphan branch while still refusing
-    a clash with another, gives each clash a distinct free number, and reads the pinned shas
+    a clash with another, lets an interrupt that kills a competing diff through, gives each clash a distinct free number, and reads the pinned shas
     rather than a branch moved after the pin or an untracked file. The gate refuses a clash
     after fresh-base with no build, test or lint stage, `rejectCount` and `reject_count` at 0,
     the session still awaiting review and no steer sent.
