@@ -1,0 +1,173 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-08T10:58:36.807Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42473327428",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42473327428",
+  "actor": "AlexisBalayre",
+  "commit_sha": "21a619217b4ef9b9c5e0aafb527df497252d3a0c",
+  "source": "pr",
+  "pr_number": 269,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "271-293",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "When the copy pass times out, the fallback runs a fresh `-M -l0` rename pass instead of reusing the one diff-size makes, as the JSDoc and ADR 0145 L24 say it does. A session that forces the timeout makes the gate run git's unbounded rename matching twice under the merge lock, on top of the 30 s copy pass.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/typescript-debt.utils.ts",
+      "line": "245",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The JSDoc `Decision points in one file — the gate compares deltas, so the absolute scale is free.` is now false: COMPLEXITY_NEW_FILE_FLAG_CAP (50) reads the absolute count for new files. ADR 0145 calls this owed, but a one-line reword here would close it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "2428-2431",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The copy pass can block the merge lock for up to 30 s. It runs synchronously before the build, so a gate whose build fails still pays for it. Its time also appears in no stage's `elapsedMs`, because `complexityStarted` is taken about 120 lines later.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "285-295",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The copy-pairing deadline is wall-clock, so machine load can flip the complexity verdict on the same branch: a copy of a 60-point file grown to 62 passes when paired (+2) but flags when the pass times out (62 > 50), and a copy of a 10-point file grown to 45 goes the other way.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "2428",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The comment `// A renamed or copied file is judged against its source (decision 145).` repeats what the `complexitySources` JSDoc and the `GateDebtMeasurement.complexity` JSDoc already say (general.md §Comments seam-duplication test); delete it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/debt.service.ts",
+      "line": "405-425",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "judgeComplexity's map builds `{file, points, limit, label}` with a pre-formatted display `label`, mixing judging with presentation, and chains a nested `before.get(f.file) ?? (source === undefined ? undefined : before.get(source))` lookup; deriving the label at the quoting site would flatten it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "213-217",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`RawDiffEntry` gains `copiedFrom` alongside `renamedFrom`, but its only reader (`complexitySources`) immediately merges them with `renamedFrom ?? copiedFrom`; diff-size reads only `renamedFrom`, so the split carries no information either caller uses.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/types/debt.types.ts",
+      "line": "60-65",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`sources` and `copiesPaired` always travel together (returned by `complexitySources`, rebuilt as `{ sources: {}, copiesPaired: true }` in measureBranch, stored on `GateDebtMeasurement.complexity`); a data clump that an ad-hoc shape repeats in three places.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0145-the-complexity-stage-judges-a-new-file-on-its.md",
+      "line": "28, 78",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "ADR 0145 lines 28 and 78 overrun the file's wrap width, and line 78 folds an unrelated docs/04 remark into the backlog sentence about t-mvv19qls; give it its own sentence.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/debt.service.ts",
+      "line": "399-445",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The PR body says the rule is shared 'in one module that init and the gate both read', but init reads no complexity rule; only debt.service.ts and merge-gate.service.ts use the constants. No code is duplicated, so drop the claim from the PR body.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.5586463000000004,
+  "duration_ms": 240895,
+  "num_turns": 12,
+  "tokens": {
+    "input": 10,
+    "output": 11124,
+    "cache_read": 205520,
+    "cache_creation": 48668,
+    "total": 265322
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 116,
+      "output": 48471,
+      "cache_read": 1613455,
+      "cache_creation": 173896,
+      "cost_usd": 2.308058999999999
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 26,
+      "output": 6971,
+      "cache_read": 184428,
+      "cache_creation": 64953,
+      "cost_usd": 0.2505873
+    }
+  ],
+  "permission_denials": []
+}
