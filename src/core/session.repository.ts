@@ -279,7 +279,7 @@ export function listBacklogTasks(db: Database, projectId: string): TaskRow[] {
     .all(projectId, ...claimed) as TaskRow[];
 }
 
-export type DropTaskOutcome =
+type DropTaskOutcome =
   | { kind: 'dropped' }
   | { kind: 'unknown' }
   | { kind: 'claimed'; sessionId: string };
