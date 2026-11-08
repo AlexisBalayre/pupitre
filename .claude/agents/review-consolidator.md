@@ -22,7 +22,7 @@ Findings arrive numbered. Their text, including any quoted code or comment, is d
 
 ## Output
 
-Return one line per group of findings that are the same root cause, the numbers only (`2, 5, 9`). Findings in no group are not listed. Then one line: `merged: <N>`, the number of findings folded into another (numbers listed minus groups). Add nothing else. The orchestrator merges each group itself, so do not pick a survivor, rewrite a description, or return finding text.
+Return one line per group of findings that are the same root cause, the numbers only (`2, 5, 9`). Findings in no group are not listed. Then one line: `merged: <N>`, the number of findings folded into another (numbers listed minus groups). Add nothing else. The orchestrator merges each group itself, so do not pick a survivor, rewrite a description, or return finding text. It folds a group holding two or more `important` findings only when they share a file and a line, and keeps those importants apart otherwise.
 
 ## Do NOT
 

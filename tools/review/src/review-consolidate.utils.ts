@@ -25,7 +25,7 @@ const SPECIFICITY: readonly ReviewerArea[] = [
 const SEVERITY: Record<Finding["tag"], number> = { important: 0, nit: 1, "pre-existing": 2 };
 
 // Two reviewers rarely anchor the same concern on the same line; a few lines
-// apart is still the same spot.
+// apart is still the same spot for minors. Importants need the same line.
 const NEAR_LINES = 3;
 
 // Word overlap above which two descriptions of one spot are one concern. Below
@@ -40,6 +40,10 @@ function startLine(line: string | null): number | null {
 
 function words(text: string): Set<string> {
   return new Set(text.toLowerCase().match(/[a-z0-9_]{3,}/g) ?? []);
+}
+
+function normalized(text: string): string {
+  return text.toLowerCase().replace(/\s+/g, " ").trim();
 }
 
 function overlap(a: string, b: string): number {
@@ -60,14 +64,18 @@ function sameConcern(a: Finding, b: Finding): boolean {
   return nearby && overlap(a.description, b.description) >= SIMILARITY;
 }
 
-// Two descriptions one substituted word apart ("... when the request succeeds" / "... fails") clear
-// SIMILARITY, yet name different defects, and a confirmed important folded away is never commented.
-// So an important joins a cluster that already holds one only when the wording is the same.
+// A confirmed important folded away is never commented, so an important joins a cluster that
+// already holds one only on the very same spot with the very same text. Word overlap cannot say
+// that: it drops short tokens ("id" and "ip" look alike) and ignores order.
+function sameImportant(a: Finding, b: Finding): boolean {
+  return a.file === b.file && startLine(a.line) === startLine(b.line) && normalized(a.description) === normalized(b.description);
+}
+
 function joins(cluster: Finding[], finding: Finding): boolean {
   const [anchor] = cluster;
   if (!anchor || !sameConcern(anchor, finding)) return false;
   if (finding.tag !== "important") return true;
-  return cluster.every((member) => member.tag !== "important" || overlap(member.description, finding.description) === 1);
+  return cluster.every((member) => member.tag !== "important" || sameImportant(member, finding));
 }
 
 // Most severe tag first, then the more certain, then the more specific area:
