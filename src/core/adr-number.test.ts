@@ -383,35 +383,53 @@ describe('adrNumberStage', { timeout: 20_000 }, () => {
     ]);
   });
 
-  it('reads a decision under docs/ADR/ with an .MD suffix', () => {
+  it('refuses a decision under docs/ADR/ even with a free number, naming the lowercase path', () => {
     git(repo, 'checkout', '-q', '-b', 'pup/me', 'main');
     // Through the index: a case-insensitive checkout folds docs/ADR/ into docs/adr/.
     const blobFile = join(repo, '.git', 'blob.md');
-    writeFileSync(blobFile, '# 0002 again\n');
+    writeFileSync(blobFile, '# 0003 in upper case\n');
     const blob = git(repo, 'hash-object', '-w', blobFile);
-    git(repo, 'update-index', '--add', '--cacheinfo', `100644,${blob},docs/ADR/0002-x.MD`);
+    git(repo, 'update-index', '--add', '--cacheinfo', `100644,${blob},docs/ADR/0003-x.MD`);
     git(repo, 'commit', '-q', '-m', 'upper case');
     git(repo, 'checkout', '-q', '-f', 'main');
     expect(refusals()).toEqual([
-      'ADR numbers already taken:',
-      '  docs/ADR/0002-x.MD: decision 0002 is already on the target; renumber it 0003, the lowest free number',
+      'ADR files neither docs/adr/NNNN-<slug>.md nor docs/adr/README.md, in lowercase ' +
+        'docs/adr/ with four ASCII digits, a dash and .md:',
+      '  docs/ADR/0003-x.MD: write it as docs/adr/0003-x.md',
     ]);
   });
 
-  it('refuses a numbered file under docs/adr/ not named NNNN-<slug>.md, naming the form', () => {
+  it('refuses every added path under docs/adr/ but a decision or the README, naming the form', () => {
     commitOn(
       repo,
       'pup/me',
       'docs/adr/00146-x.md',
       'docs/adr/0146_x.md',
       'docs/adr/sub/0146-x.md',
+      'docs/adr/0146/x.md',
+      'docs/adr/0147-y.md/README.md',
+      'docs/adr/\u0660\u0661\u0664\u0666-x.md',
+      'docs/adr/ 0146-x.md',
+      'docs/adr/adr-0146-x.md',
+      'docs/adr/0148-z.MD',
+      'docs/adr/notes.txt',
       'docs/adr/README.md',
+      'docs/adr/0003-fine.md',
     );
+    // In git's byte order; the README and the well-formed decision pass.
     expect(refusals()).toEqual([
-      'ADR files not named docs/adr/NNNN-<slug>.md, four digits and a dash directly under docs/adr/:',
+      'ADR files neither docs/adr/NNNN-<slug>.md nor docs/adr/README.md, in lowercase ' +
+        'docs/adr/ with four ASCII digits, a dash and .md:',
+      '  docs/adr/ 0146-x.md',
       '  docs/adr/00146-x.md',
+      '  docs/adr/0146/x.md',
       '  docs/adr/0146_x.md',
+      '  docs/adr/0147-y.md/README.md',
+      '  docs/adr/0148-z.MD: write it as docs/adr/0148-z.md',
+      '  docs/adr/adr-0146-x.md',
+      '  docs/adr/notes.txt',
       '  docs/adr/sub/0146-x.md',
+      '  docs/adr/\u0660\u0661\u0664\u0666-x.md',
     ]);
   });
 

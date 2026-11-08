@@ -18,12 +18,14 @@ const ADR_DIR = 'docs/adr/';
  */
 const ADR_PATHSPEC = ':(top,literal,icase)docs/adr/';
 /**
- * A decision file, `docs/adr/NNNN-*.md`, its number captured. Case-insensitive,
- * for the same reason as `ADR_PATHSPEC`.
+ * A decision file, exactly `docs/adr/NNNN-<slug>.md`, its number captured: the
+ * lowercase directory the target's listings read, ASCII digits, a lowercase
+ * suffix. Any other spelling the case-blind diffs find is refused, so nothing
+ * lands that a later gate would not read as a decision.
  */
-const ADR_DECISION = /^docs\/adr\/([0-9]{4})-[^/]*\.md$/i;
-/** The last segment of a path, where a decision's number starts. */
-const baseName = (path: string): string => path.slice(path.lastIndexOf('/') + 1);
+const ADR_DECISION = /^docs\/adr\/([0-9]{4})-[^/]+\.md$/;
+/** The one file under `docs/adr/` that is not a decision. */
+const ADR_README = 'docs/adr/README.md';
 
 /** The highest number a decision file can carry: `ADR_DECISION` takes four digits. */
 const MAX_DECISION = 9999;
@@ -35,6 +37,15 @@ const MAX_DECISION = 9999;
 const MAX_PEER_DECISIONS = 3;
 /** How long one read of another session's branch may take under the merge lock. */
 const PEER_READ_TIMEOUT_MS = 10_000;
+
+/**
+ * The decision path a misspelt one was most likely meant as: its directory and
+ * suffix lowercased, when that is a decision path. Undefined otherwise.
+ */
+function meantAs(path: string): string | undefined {
+  const lowered = `${ADR_DIR}${path.slice(ADR_DIR.length)}`.replace(/\.md$/i, '.md');
+  return lowered !== path && ADR_DECISION.test(lowered) ? lowered : undefined;
+}
 
 /** A decision path's number, undefined for any other path. */
 function decisionNumber(path: string): number | undefined {
@@ -199,10 +210,11 @@ const pad = (number: number): string => String(number).padStart(4, '0');
  * slugs merge without a conflict. Another branch git cannot read against the
  * target (an orphan, a symbolic ref, a read past its time or buffer), or one
  * adding more than `MAX_PEER_DECISIONS`, is skipped and named rather than
- * failing or blocking everyone's gate. A new file under `docs/adr/` whose name
- * starts with a digit but is not `docs/adr/NNNN-*.md` (`00146-x.md`,
- * `0146_x.md`, `docs/adr/sub/0146-x.md`) is refused naming the expected form,
- * since the check would not read its number. Undefined, so no stage at all,
+ * failing or blocking everyone's gate. Any other new file under `docs/adr/`,
+ * in any case, that is neither exactly `docs/adr/NNNN-<slug>.md` nor
+ * `docs/adr/README.md` is refused naming the expected form: a later gate would
+ * not read its number, though a case-insensitive host shares its folder.
+ * Undefined, so no stage at all,
  * when the branch adds no decision or every check passed with nothing to say. Every read
  * is of a pinned sha or a resolved ref through `runGit`, never of a worktree;
  * only the branches of sessions the store counts are resolved, one at a time,
@@ -218,8 +230,8 @@ export function adrNumberStage(
   const started = Date.now();
   const addedPaths = addedAdrPaths(repoPath, targetSha, sha);
   const added = decisionsOf(addedPaths);
-  // Files that look numbered but that the check would not read as a decision.
-  const misnamed = addedPaths.filter((path) => !added.has(path) && /^[0-9]/.test(baseName(path)));
+  // Everything else the case-blind listing found, but the index.
+  const misnamed = addedPaths.filter((path) => !added.has(path) && path !== ADR_README);
   if (added.size === 0 && misnamed.length === 0) return undefined;
   const targetPaths = decisionPaths(repoPath, targetSha);
   const onTarget = numbersOf(targetPaths);
@@ -296,8 +308,12 @@ export function adrNumberStage(
     ...(refusals.length > 0 ? ['ADR numbers already taken:', ...refusals] : []),
     ...(misnamed.length > 0
       ? [
-          'ADR files not named docs/adr/NNNN-<slug>.md, four digits and a dash directly under docs/adr/:',
-          ...misnamed.map((path) => `  ${quotePath(path)}`),
+          'ADR files neither docs/adr/NNNN-<slug>.md nor docs/adr/README.md, in lowercase ' +
+            'docs/adr/ with four ASCII digits, a dash and .md:',
+          ...misnamed.map((path) => {
+            const meant = meantAs(path);
+            return `  ${quotePath(path)}${meant === undefined ? '' : `: write it as ${quotePath(meant)}`}`;
+          }),
         ]
       : []),
     ...unchecked,

@@ -63,14 +63,17 @@
     `--no-relative` and the pathspec `:(top,literal,icase)docs/adr/`, anchored at the root, glob
     free and case blind, and ls-tree runs with `--full-tree`. Replace refs need nothing here:
     `GIT_SAFE_CONFIG` already pins `core.useReplaceRefs=false`.
-    *Names.* A decision file is `docs/adr/NNNN-<slug>.md`, read case-insensitively in the
-    directory and the suffix, since a case-insensitive host lands `docs/ADR/0146-x.MD` in the
-    same folder. A new file under `docs/adr/` whose name starts with a digit but is not that
-    form (`00146-x.md`, `0146_x.md`, `docs/adr/sub/0146-x.md`) is refused under its own heading
-    naming the expected form, since the check would not read its number. ls-tree takes no
-    `icase` magic, so the target's and the branch's existing `docs/adr/` are read by case; the
-    branch's new files, which the diffs list, are read case-blind. The printed paths and branch names are scrubbed
-    (decision 68).
+    *Names.* A decision file is exactly `docs/adr/NNNN-<slug>.md`: lowercase `docs/adr/`, four
+    ASCII digits, a dash, a slug and a lowercase `.md`. The diffs list `docs/adr/` case-blind, and
+    every added path under it that is neither that form nor `docs/adr/README.md` (the one other
+    file on the target) is refused under its own heading naming the expected form. A case-only
+    misspelling such as `docs/ADR/0147-x.MD` or `docs/adr/0148-z.MD` is told the lowercase
+    path to write instead. The refusal is what keeps the target's listings sound: ls-tree takes
+    no `icase` magic and reads the exact-case `docs/adr/`, so a `docs/ADR/0147-x.MD` that landed
+    would be invisible to every later gate, and `docs/adr/0147-y.md` would pass beside it in
+    the one folder a case-insensitive host gives them. Nested paths (`docs/adr/0146/x.md`,
+    `docs/adr/0147-y.md/README.md`), non-ASCII digits, a leading space, `00146-x.md`,
+    `0146_x.md`, `adr-0146-x.md` and non-Markdown files are refused the same way.
     *Ceilings.* Two sessions that took one number each refuse the other until one renumbers:
     whoever gates first is not given the number. Numbers can be squatted: a live session that
     commits up to three decision files takes those numbers from every peer until it renumbers,
@@ -101,8 +104,9 @@
     clash a distinct free number, suggests no five-digit number when 9999 is on the target, and
     reads the pinned shas rather than a branch moved after the pin or an untracked file. The
     check still refuses both kinds of clash with `core.worktree` pointed at the repo's parent,
-    reads `docs/ADR/0002-x.MD` as decision 0002, and refuses `00146-x.md`, `0146_x.md` and
-    `sub/0146-x.md` naming the form while ignoring `README.md`. The gate refuses a clash after
+    refuses `docs/ADR/0003-x.MD` though 0003 is free, naming `docs/adr/0003-x.md`, and refuses
+    every other added path under `docs/adr/` (the ten spellings above, `.MD` with its lowercase
+    path named) while passing `README.md` and a well-formed decision beside them. The gate refuses a clash after
     fresh-base with no build, test or lint stage, `rejectCount` and
     `reject_count` at 0, the session still awaiting review and no steer sent. A pass with an
     unread-branch note followed by a failed scope audit is a rejection, not a refusal.
