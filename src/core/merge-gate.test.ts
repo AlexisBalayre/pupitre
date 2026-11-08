@@ -461,6 +461,35 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(vi.mocked(steerPane)).not.toHaveBeenCalled();
   });
 
+  it('rejects, not refuses, when a later stage fails after the ADR stage passed with a note', async () => {
+    commitIn(repo, 'docs/adr/0001-first.md', '# 0001\n');
+    const worktree = seedSession(db, repo, { scopeIn: ['src/**', 'docs/adr/**'] });
+    insertTask(db, { id: 'task-s2', projectId: 'proj-1', spec: '{}' });
+    insertSession(db, {
+      id: 's2',
+      taskId: 'task-s2',
+      worktreePath: join(repo, '.worktrees', 's2'),
+      branch: 'pup/s2',
+      profileHash: 'hash',
+    });
+    transitionSession(db, 's2', 'running');
+    // A parentless commit, which git cannot diff against the target.
+    const orphan = sh(repo, 'git', 'commit-tree', '-m', 'orphan', 'HEAD^{tree}').trim();
+    sh(repo, 'git', 'update-ref', 'refs/heads/pup/s2', orphan);
+    commitIn(worktree, 'docs/adr/0002-mine.md', '# 0002\n');
+    commitIn(worktree, 'notes.txt', 'off-scope\n');
+
+    const outcome = await merge();
+
+    expect(outcome).toMatchObject({ status: 'rejected', rejectCount: 1 });
+    expect(untimed(outcome.report.stages)).toContainEqual({
+      stage: 'adr-number',
+      status: 'pass',
+      detail: 'not checked against pup/s2: git could not diff it against the target',
+    });
+    expect(outcome.report.stages.at(-1)).toMatchObject({ stage: 'scope-audit', status: 'fail' });
+  });
+
   it('merges an oversize diff with --accept-debt and writes a ledger entry', async () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/big.ts', 'const line = 1;\n'.repeat(700));

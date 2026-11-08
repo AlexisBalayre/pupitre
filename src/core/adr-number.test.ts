@@ -121,7 +121,7 @@ describe('adrNumberStage', { timeout: 20_000 }, () => {
     expect(stage()).toBeUndefined();
   });
 
-  it('refuses an unrelated decision added under the number of one the branch deletes', () => {
+  it('refuses a file under the number of a decision the branch deletes, as a rename changed too much', () => {
     git(repo, 'checkout', '-q', '-b', 'pup/me', 'main');
     git(repo, 'rm', '-q', 'docs/adr/0002-second.md');
     writeFileSync(
@@ -133,7 +133,28 @@ describe('adrNumberStage', { timeout: 20_000 }, () => {
     git(repo, 'checkout', '-q', 'main');
     expect(refusals()).toEqual([
       'ADR numbers already taken:',
-      '  docs/adr/0002-other.md: decision 0002 is already on the target; renumber it 0003, the lowest free number',
+      '  docs/adr/0002-other.md: decision 0002 is already on the target as docs/adr/0002-second.md, ' +
+        'which the branch deletes: this looks like a slug rename that changed too much of the file ' +
+        "to be paired; keep the ADR's text closer to the original",
+    ]);
+  });
+
+  it('refuses a slug rename another session branch also makes of the same decision', () => {
+    seedSession(db, 'other', 'running');
+    for (const [branch, slug] of [
+      ['pup/other', 'b'],
+      ['pup/me', 'a'],
+    ] as const) {
+      git(repo, 'checkout', '-q', '-b', branch, 'main');
+      git(repo, 'mv', 'docs/adr/0002-second.md', `docs/adr/0002-${slug}.md`);
+      git(repo, 'commit', '-q', '-m', `rename to ${slug}`);
+      git(repo, 'checkout', '-q', 'main');
+    }
+    expect(refusals()).toEqual([
+      'ADR numbers already taken:',
+      '  docs/adr/0002-a.md: decision 0002 renames docs/adr/0002-second.md, which pup/other, a ' +
+        'session branch that is live or has an open PR, also renames or adds under that number; ' +
+        "settle one name with it or keep the target's",
     ]);
   });
 

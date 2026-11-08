@@ -51,9 +51,9 @@ function addedDecisions(repoPath: string, base: string, tip: string): Map<string
  * their number: a slug rename, the same decision under a new name. Git pairs
  * the two paths by content (`--find-renames`, its default 50% similarity), so
  * a branch that deletes a decision and adds an unrelated one under its number
- * is not a rename and stays refused.
+ * is not a rename and stays refused. Keyed by the new path, to the old one.
  */
-function slugRenames(repoPath: string, base: string, tip: string): Set<string> {
+function slugRenames(repoPath: string, base: string, tip: string): Map<string, string> {
   const fields = runGit(repoPath, [
     'diff',
     '--no-ext-diff',
@@ -66,12 +66,12 @@ function slugRenames(repoPath: string, base: string, tip: string): Set<string> {
     '--',
     ADR_DIR,
   ]).split('\0');
-  const renamed = new Set<string>();
+  const renamed = new Map<string, string>();
   // `R<score>\0<from>\0<to>` per rename.
   for (let i = 0; i + 2 < fields.length; i += 3) {
     const [from, to] = [fields[i + 1] as string, fields[i + 2] as string];
     const number = decisionNumber(from);
-    if (number !== undefined && number === decisionNumber(to)) renamed.add(to);
+    if (number !== undefined && number === decisionNumber(to)) renamed.set(to, from);
   }
   return renamed;
 }
@@ -130,7 +130,11 @@ const pad = (number: number): string => String(number).padStart(4, '0');
  * another session branch adds while its session is live or holds an open PR,
  * each line naming the lowest free number above the target's highest. A file
  * git pairs as a rename of a target decision under the same number is that
- * decision under a new slug, not a new one. Parallel sessions pick the next
+ * decision under a new slug, not a new one: it is checked against the other
+ * branches only, since two that rename one decision each still leave the
+ * target two files under its number. A file under the number of a target
+ * decision the branch deletes, unpaired, is refused as a rename that changed
+ * too much to be paired rather than told to renumber. Parallel sessions pick the next
  * number from the target, and two files that share a number under different
  * slugs merge without a conflict. A branch git cannot diff against the target
  * (an orphan, say) is skipped and named rather than failing everyone's gate.
@@ -149,8 +153,17 @@ export function adrNumberStage(
   const started = Date.now();
   const added = addedDecisions(repoPath, targetSha, sha);
   if (added.size === 0) return undefined;
-  const onTarget = numbersOf(decisionPaths(repoPath, targetSha));
+  const targetPaths = decisionPaths(repoPath, targetSha);
+  const onTarget = numbersOf(targetPaths);
   const renamed = slugRenames(repoPath, targetSha, sha);
+  const tipPaths = new Set(decisionPaths(repoPath, sha));
+  const paired = new Set(renamed.values());
+  // Target decisions the branch deletes that git paired with no new file.
+  const deleted = new Map(
+    targetPaths
+      .filter((path) => !tipPaths.has(path) && !paired.has(path))
+      .map((path) => [decisionNumber(path) as number, path]),
+  );
   const takenBy = new Map<number, string>();
   const unread: string[] = [];
   const tips = sessionBranchTips(repoPath);
@@ -182,20 +195,36 @@ export function adrNumberStage(
     const first = firstAdd.get(number);
     if (first === undefined) firstAdd.set(number, path);
     const other = takenBy.get(number);
-    const where = renamed.has(path)
-      ? undefined
-      : onTarget.has(number)
-        ? 'is already on the target'
-        : first !== undefined
-          ? `is also added by ${quotePath(first)} on this branch`
-          : other !== undefined
-            ? `is also added by ${other}, a session branch that is live or has an open PR`
-            : undefined;
+    const from = renamed.get(path);
+    const replaced = deleted.get(number);
+    const decision = `  ${quotePath(path)}: decision ${pad(number)}`;
+    if (from !== undefined) {
+      if (other !== undefined) {
+        refusals.push(
+          `${decision} renames ${quotePath(from)}, which ${other}, a session branch that is ` +
+            'live or has an open PR, also renames or adds under that number; settle one name ' +
+            "with it or keep the target's",
+        );
+      }
+      continue;
+    }
+    if (onTarget.has(number) && replaced !== undefined) {
+      refusals.push(
+        `${decision} is already on the target as ${quotePath(replaced)}, which the branch ` +
+          'deletes: this looks like a slug rename that changed too much of the file to be ' +
+          "paired; keep the ADR's text closer to the original",
+      );
+      continue;
+    }
+    const where = onTarget.has(number)
+      ? 'is already on the target'
+      : first !== undefined
+        ? `is also added by ${quotePath(first)} on this branch`
+        : other !== undefined
+          ? `is also added by ${other}, a session branch that is live or has an open PR`
+          : undefined;
     if (where === undefined) continue;
-    refusals.push(
-      `  ${quotePath(path)}: decision ${pad(number)} ${where}; ` +
-        `renumber it ${nextFree()}, the lowest free number`,
-    );
+    refusals.push(`${decision} ${where}; renumber it ${nextFree()}, the lowest free number`);
   }
   const lines = [
     ...(refusals.length > 0 ? ['ADR numbers already taken:', ...refusals] : []),

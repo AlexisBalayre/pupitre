@@ -16,10 +16,16 @@
     target, rename detection off so a renumbering `git mv` counts as the add of its new name. It
     refuses a number the target's `docs/adr/` holds, a number the branch adds in two files, and
     a number another session branch adds over its own merge base with the target. A slug-only
-    rename passes: a file git pairs as the rename of a target decision keeping its number
-    (`--find-renames`, by content) is that decision under a new name. A branch that deletes a
-    target decision and adds an unrelated one under its number is no rename to git, so it is
-    refused like any other number on the target. The other branches count only when their session
+    rename passes the target check: a file git pairs as the rename of a target decision keeping
+    its number (`--find-renames`, by content) is that decision under a new name. It is still
+    checked against the other branches, since two that each rename one decision, `0002-x` to
+    `0002-a` and to `0002-b`, would leave the target two files under 0002; the refusal names the
+    other branch and asks for one name, not a new number. A branch that deletes a target
+    decision and adds a file under its number that git does not pair with it is refused as on
+    the target. Since that is most likely a slug rename that changed too much of a short file to
+    pair, the line says so and asks for the ADR's text kept closer to the original rather than a
+    new number. Git pairs on the branch's whole diff against the target, so splitting the change
+    across commits does not help. The other branches count only when their session
     can still land: a state that holds its scope (queued, running, awaiting review, rejected,
     blocked; decision 41) or `merged` with an open PR that has not landed (decision 84). Each
     refused file is one line of the stage's failure. The line names the other branch, the other
@@ -58,12 +64,15 @@
     states with its number on the target, where the next gate finds it.
     Tests: `adrNumberStage` adds no stage for a branch adding no decision, a free number, an
     edit to a decision already on the target or a slug-only rename of one. It refuses a number
-    on the target, an unrelated decision added under the number of one the branch deletes, a
+    on the target, an unpaired file under the number of one the branch deletes (as a rename
+    changed too much), a
     second file with one number, one a queued, running, awaiting-review,
     rejected or blocked session's branch adds, one a merged session with an open PR adds, and a
     decision renamed onto a taken number. It ignores killed sessions, landed PRs, local merges
     and `pup/` branches no session holds, skips and names an orphan branch while still refusing
-    a clash with another, lets an interrupt that kills a competing diff through, gives each clash a distinct free number, and reads the pinned shas
+    a clash with another, lets an interrupt that kills a competing diff through, refuses a slug
+    rename another branch also makes of the same decision, gives each clash a distinct free number, and reads the pinned shas
     rather than a branch moved after the pin or an untracked file. The gate refuses a clash
     after fresh-base with no build, test or lint stage, `rejectCount` and `reject_count` at 0,
-    the session still awaiting review and no steer sent.
+    the session still awaiting review and no steer sent. A pass with an unread-branch note
+    followed by a failed scope audit is a rejection, not a refusal.
