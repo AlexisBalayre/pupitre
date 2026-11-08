@@ -9,8 +9,10 @@
     2026-11-08 five commits ran at once (29 vitest processes), the load stayed at 65 to 100 on 8
     cores, the hook timed out unrelated tests and the merge gate's test stage ran over an hour.
     *Inside a session* (`PUP_SESSION_ID` set) the hook runs `pup session test --related --
-    <staged source files>`. `--related`, the first argument, swaps the project's test command for
+    <staged source files>`. `--related`, among the options before the files, swaps the project's test command for
     the very `pnpm exec vitest related --run --passWithNoTests` the hook runs outside a session,
+    without `--related` or the `--` the CLI keeps after it (vitest files what follows a `--` under
+    `options['--']`, so `related` would see no file and pass having run nothing),
     so both paths test the same set: the tests that import a staged source file. The run holds a
     slot, says whom it waits for, and waits while a merge gate holds a slot or queues ahead.
     *Why not list first.* A listing by `vitest list --filesOnly --changed` was tried and dropped:
