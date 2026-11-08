@@ -105,8 +105,16 @@
     exists with the same walk and refuses, writing no profile, one that holds a `.git` at any
     depth or a directory the walk cannot read: the stage fails rather than grant a repo a free
     name.
-    Ceilings. A nested repo other than a worktree that appears while a child runs, a submodule
-    or vendored clone, is not pinned for that child; the next profile pins it. The walk has
+    Ceilings. A profile is not bounded by its stage. pup kills a stage's process group when
+    the stage ends and every group still live when the run ends, but a process that leaves the
+    group, through `setsid` as a daemon does, is out of reach. It outlives the stage and the
+    run, still under the profile its stage was written. The `.worktrees` deny holds for it: the
+    profile names `.worktrees` whether or not it existed, so a worktree pup adds after the stage
+    ended is out of its reach too. This record first said these ceilings held "while a child
+    runs"; the t-mvqxs5s2 security review found that a child outlives that. A nested repo other than a worktree, a submodule or vendored
+    clone, that appears after a child's profile was written is not pinned for that child, nor
+    for any process it started that is still running; the next profile pins it for the next
+    child only. The walk has
     no bound on the number of directories, so a child that makes millions
     of them slows every later child's profile, by minutes at worst. It cannot thereby hide
     one. A child can still move a repo it
@@ -128,7 +136,11 @@
     `.worktrees/s2` after its profile was written, then tries to move it into scratch, rewrite
     its pointer and move it back as `s3`: refused, the pointer unchanged. Children are refused a
     link at `.worktrees/s4` and at `.WORKTREES` in a checkout with none yet, while the same link
-    elsewhere in the checkout is made; without the `.worktrees` deny, the sixth fails. With the
+    elsewhere in the checkout is made. A seventh leaves a helper in a session of its own that
+    outlives the stage. Only once the stage has ended does the test add `.worktrees/s2`, in a
+    checkout that had no `.worktrees` when the profile was written. The helper's move is
+    refused with "Operation not permitted", and the pointer is unchanged. Without the
+    `.worktrees` deny, the sixth and seventh fail. With the
     pins emptied, the first two
     fail because the child's command succeeds. Without the walk's pins, the worktree test
     fails. Without the root pins, the swap test fails. With the unreadable directory pinned

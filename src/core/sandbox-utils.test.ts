@@ -884,6 +884,54 @@ describe('runGateChild', () => {
         expect(lstatSync(join(cwd, 'elsewhere')).isSymbolicLink()).toBe(true);
       });
 
+      it('cannot take a worktree pup adds after its stage ended, from a helper that left its group', {
+        timeout: 30_000,
+      }, async () => {
+        // A helper in a session of its own survives the kill of its stage's
+        // group, and still holds the profile written when `.worktrees` did not
+        // exist yet: no walk saw `s2`, and the deny is all that stops it.
+        const cwd = fakeCheckout();
+        const worktree = join(cwd, '.worktrees', 's2');
+        writeFileSync(
+          join(cwd, 'outlive.sh'),
+          [
+            'exec </dev/null >/dev/null 2>&1',
+            'echo $$ > helper.tmp && mv helper.tmp helper.pid',
+            'i=0; until [ -f .worktrees/s2/.git ] || [ $i -gt 400 ]; do i=$((i+1)); sleep 0.05; done',
+            'mv .worktrees/s2 "$TMPDIR/s2" 2>moved.err && printf "gitdir: /evil" > "$TMPDIR/s2/.git" && mv "$TMPDIR/s2" .worktrees/s3',
+            'echo $? > status.tmp && mv status.tmp status',
+          ].join('\n'),
+        );
+
+        await runGateChild(
+          'perl',
+          [
+            '-MPOSIX',
+            '-e',
+            `if (!fork) { setsid; exec 'sh', 'outlive.sh' } select(undef, undef, undef, 0.05) until -e 'helper.pid'`,
+          ],
+          { cwd, repoPath: cwd },
+        );
+        const helper = await pidIn(cwd, 'helper.pid');
+        onTestFinished(() => {
+          if (alive(helper)) process.kill(helper, 'SIGKILL');
+        });
+        expect(alive(helper)).toBe(true);
+        expect(existsSync(join(cwd, '.worktrees'))).toBe(false);
+        mkdirSync(worktree, { recursive: true });
+        writeFileSync(join(worktree, '.git'), 'gitdir: /repo/.git/worktrees/s2\n');
+
+        const status = await vi.waitFor(() => readFileSync(join(cwd, 'status'), 'utf8'), {
+          timeout: 25_000,
+        });
+        expect(status.trim()).not.toBe('0');
+        expect(readFileSync(join(cwd, 'moved.err'), 'utf8')).toMatch(/Operation not permitted/);
+        expect(readFileSync(join(worktree, '.git'), 'utf8')).toBe(
+          'gitdir: /repo/.git/worktrees/s2\n',
+        );
+        expect(existsSync(join(cwd, '.worktrees', 's3'))).toBe(false);
+      });
+
       it('cannot swap its checkout with a directory in its scratch, in either order', async () => {
         // `renamex_np` with RENAME_SWAP moves both names at once; each is
         // checked as a source, so neither side frees a pin. The swap is made
