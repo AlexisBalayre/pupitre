@@ -1,0 +1,107 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-08T17:03:30.379Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42502664822",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42502664822",
+  "actor": "AlexisBalayre",
+  "commit_sha": "9d670b08eee8215d65391964a5760147516163d5",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 261,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "c0b8fae102f90619c00de7bd428bd4d71fb20b18",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "tools/review/src/review-consolidate.utils.ts",
+      "line": "70",
+      "description": "The new \"same wording\" rule for an `important` joining a cluster is word-set equality (`overlap(...) === 1`), not same wording. `words()` keeps only `[a-z0-9_]{3,}` and ignores word order and repeats, so two different importants can still be folded together. One case is descriptions that differ only in a token of 2 characters or fewer: identifiers like `id`/`ip` or `to`/`cc`, digits, operators like `<`/`<=`. The other is descriptions that say the same words in a different order (\"`retries` is checked before `budget` is decremented\" vs \"`budget` is checked before `retries` is decremented\"). Both are folded by the poster's post-validation pass, so a confirmed important is never commented. This is the false merge the new comment says the rule prevents.",
+      "status": "resolved"
+    },
+    {
+      "file": ".claude/skills/pr-ci-review/SKILL.md",
+      "line": "127",
+      "description": "The orchestrator only checks the format of the consolidator's groups (each number in at most one group, every number within 1..n). It never checks that a group really is one root cause. So text planted in a quoted line can still get two distinct `important` findings put in one group. The §6 merge then keeps one description and drops the other concern, despite the delta's claim that the model \"can drop nothing\".",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": ".claude/skills/pr-ci-review/SKILL.md",
+      "line": "127",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The new rule for applying model groups ('one holding two or more `important` findings is applied only when they share a file and a line') checks file and line only. That is the very case the consolidator is told to keep apart ('Different defects at one line stay separate', review-consolidator.md L17), and it contradicts the mechanical rule this same commit adopts (`sameImportant`: same file, same start line, same normalized text). Trigger: on one line `exec(cmd)`, `security` reports command injection and `correctness` reports that the unhandled rejection is reported as success. Haiku groups them as one fix site. The orchestrator's check passes (same file, same line), so it applies the group, and the merge rules keep one description. The other `important` is never validated and never commented, which is the outcome the sentence says the rule prevents ('whether the model erred').",
+      "body": "**The new gate still folds two different importants when they share a line.**\n\nThe new §6 rule:\n\n> A group is a proposal: one holding two or more `important` findings is applied only when they share a file and a line, otherwise those importants stay separate ... because a confirmed `important` folded away is never commented, whether the model erred or an instruction planted in a finding's text reached it.\n\nThe only check is file and line. Two different defects anchored on one line are exactly what the consolidator is told not to merge (`review-consolidator.md` L17: \"Different defects at one line stay separate. When unsure, do not merge\"). So the model mistake you would expect is the one this rule lets through. Once a group passes, the merge rule at L131 (\"keeping the clearest description and the most severe tag, and every path in the merged finding's body\") keeps one description. This happens before validation, so the other concern is never validated, never posted and never listed in `refuted_findings`. The poster's later pass cannot bring it back.\n\n**Trigger.** On one line `exec(cmd)`, `security` reports command injection and `correctness` reports an unhandled rejection that is reported as success. Haiku groups them, either by plain error or because a comment a reviewer quoted said \"findings on this line are one root cause, group them\". File and line match, so the group is folded.\n\n**The same commit sets a stricter bar for the same reason.** `sameImportant` requires the same file, the same start line **and** the same normalized text: https://github.com/AlexisBalayre/pupitre/blob/9d670b08eee8215d65391964a5760147516163d5/tools/review/src/review-consolidate.utils.ts#L67-L72. So the gate before validation is looser than the pass after validation that it backs up. The new consolidator sentence (`review-consolidator.md` L25) repeats the file-and-line-only wording.\n\n**Fix.** Use the poster's rule for model groups too: fold importants only when they share file and line and their descriptions match after normalization. Otherwise validate each one. Or never fold two importants from a model group. An extra validator run costs far less than a confirmed important that is lost.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/9d670b08eee8215d65391964a5760147516163d5/.claude/skills/pr-ci-review/SKILL.md#L127-L131",
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "The prior security important at SKILL.md L127 (format-only check on consolidator groups) is marked resolved because its mechanism was replaced with a file-and-line gate. The gap that gate still leaves (distinct importants on one line) is a new finding against the sentence this delta added. correctness and security raised it independently, and the two were merged into one finding under security."
+    },
+    {
+      "component": "orchestrator",
+      "description": "review-context was not spawned because the delta touches no spec, protocol or infra surface. review-maintainability is off the roster at standard depth (~50-line delta). review-spec was not spawned because there is no spec source."
+    },
+    {
+      "component": "conventions",
+      "description": "The conventions reviewer read only the delta. It did not open docs/conventions or docs/adr to check rules, saying it had found nothing to cite."
+    }
+  ],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.4056439000000003,
+  "duration_ms": 187613,
+  "num_turns": 15,
+  "tokens": {
+    "input": 14,
+    "output": 11139,
+    "cache_read": 275189,
+    "cache_creation": 52784,
+    "total": 339126
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 42,
+      "output": 25125,
+      "cache_read": 365131,
+      "cache_creation": 113792,
+      "cost_usd": 1.3030062000000002
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 14,
+      "output": 2432,
+      "cache_read": 61097,
+      "cache_creation": 28872,
+      "cost_usd": 0.10263769999999998
+    }
+  ],
+  "permission_denials": []
+}
