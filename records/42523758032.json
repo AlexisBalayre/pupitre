@@ -1,0 +1,130 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-08T21:14:33.225Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42523758032",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42523758032",
+  "actor": "AlexisBalayre",
+  "commit_sha": "0fd3666c69e5a76cc896ba36082563b1e95b01b2",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 280,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "docs",
+    "context"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "docs",
+    "context"
+  ],
+  "reviewers_skipped": [
+    "maintainability",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/session-lifecycle.service.ts",
+      "line": "166-167",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The JSDoc on `assertUsageAllows` cites \"decision 152\", but this hold is decision 156 and no 0152 ADR exists, so a reader following the reference finds nothing. It also says only `pup launch` and `pup new` are held, yet the TUI `l` key (`launchSelected` → `launchTask`) and `pup audit --sweep` (through `createOrRefuse`) reach the hold too; say \"new launches\" and change 152 to 156.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/usage-limits.service.ts",
+      "line": "126-134",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`pup status` keeps printing a window's old share after its `resets_at` has passed (e.g. `5h 97% (resets <past time>)` on a file under 30 minutes old), while `assertUsageRoom` ignores that window and `pup launch` goes through. The operator reads it as a hold that isn't there. Show such a window as unknown, or append \"reset: holds nothing\", using the same `resetsAt * 1000 > now` check the gate uses.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "1018-1020",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "If Claude Code cancels an in-flight statusline run (it does when a new update fires) between `mktemp` and `mv`, the `usage.json.XXXXXX` temp file is never removed, and nothing sweeps these files, so they pile up in the store across a fleet's renders. Initialise `TMP=` empty and add `trap 'rm -f \"$TMP\"' EXIT HUP INT TERM` before the `mktemp`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "998",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "In the `buildStatusLineScript` JSDoc, the clause \"over anything but a regular file the temp file is removed instead. A JSON with neither window leaves the file as it was.\" sits on one overlong line in the middle of the wrapped block, where it is easy to miss. Re-wrap it, and consider trimming the mktemp/rename mechanics that the ADR and the in-script comment already state.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "consolidator",
+      "description": "The consolidator grouped the conventions and docs \"decision 152\" findings (4, 5) but missed that correctness finding 2 has the same root cause; the orchestrator folded all three inline into one finding, so merged_duplicates is 2 rather than the consolidator's 1."
+    }
+  ],
+  "duplicates_merged": 2,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.7797997000000008,
+  "duration_ms": 262902,
+  "num_turns": 15,
+  "tokens": {
+    "input": 16,
+    "output": 11785,
+    "cache_read": 332399,
+    "cache_creation": 48644,
+    "total": 392844
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 120,
+      "output": 49239,
+      "cache_read": 1604702,
+      "cache_creation": 194059,
+      "cost_usd": 2.4224274
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 38,
+      "output": 7226,
+      "cache_read": 389396,
+      "cache_creation": 98093,
+      "cost_usd": 0.3565081
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 527,
+      "cache_read": 0,
+      "cache_creation": 4804,
+      "cost_usd": 0.0008642000000000001
+    }
+  ],
+  "permission_denials": []
+}
