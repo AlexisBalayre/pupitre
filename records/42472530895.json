@@ -1,0 +1,203 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-08T10:48:19.350Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42472530895",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42472530895",
+  "actor": "AlexisBalayre",
+  "commit_sha": "d4f2499240886c0de22d2eb270bd2c9b9ecb2ebe",
+  "source": "pr",
+  "pr_number": 268,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/merge-gate-open-pr.test.ts",
+      "line": "958-962",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "No test has load at or over the cores before the suites but under them when the run timed out, so the 'still loaded now' half of `Math.min(loadBefore, load) < cores` is unpinned and a mutant dropping it passes the suite.",
+      "body": "**No test checks the \"still loaded now\" half of the load test.**\n\n`refuseTimeoutUnderLoad` refuses only when the load was at or over the cores before the suites **and still is** when the timed-out run ends (ADR 0138: \"still at or over it when the timed-out run ends\"):\n\n```ts\nif (Math.min(loadBefore, load) < cores || !otherTestRunGoing(sessionId)) return;\n```\n\nNo test covers the case of loaded before, under the cores at the timeout, with another run going:\n- Every refusing test (lines 814, 842, 911, 927) uses `loadAt(cores)`, so both readings are the same.\n- Every rejecting test is either low at both readings (line 797), reads 0 before the run (`loadedByTheRun`), or has no valid other run.\n\nSo the mutant `if (loadBefore < cores || !otherTestRunGoing(sessionId)) return;` passes the whole suite. That mutant would refuse a timeout on a machine whose load fell during the run, which the rule says must stay a rejection. The criterion-3 test at lines 797-810 can't catch it either: it plants no other test run, so it returns on `otherTestRunGoing` whether or not the load check is there.\n\nThe fix is one more row in this `it.each` table. Every row in the table expects a rejection, and `loadAt` calls the load function on every read. `loadBeforeSuites` is read before any `test-run` spawn, so this row gives `cores` before the run and `cores - 0.5` at the timeout.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/d4f2499240886c0de22d2eb270bd2c9b9ecb2ebe/src/core/merge-gate-open-pr.test.ts#L956-L969\nhttps://github.com/AlexisBalayre/pupitre/blob/d4f2499240886c0de22d2eb270bd2c9b9ecb2ebe/src/core/merge-gate.service.ts#L2133",
+      "suggestion": "      [\n        'quiet before its run and loaded only during it, with another test run',\n        loadedByTheRun,\n        's-other',\n      ],\n      [\n        'loaded before its run but under the cores when it timed out, with another test run',\n        () => (runsOf('test-run') > 0 ? availableParallelism() - 0.5 : availableParallelism()),\n        's-other',\n      ],"
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "2176-2203",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "otherTestRunGoing/isOtherTestRun rebuild the slots module's path, file naming, record parsing and wait-file freshness check outside test-slot.service.ts (whose slotsDir JSDoc says it is their only reader). The copy has already drifted: it accepts any slot-N index, not just 0..TEST_SLOTS-1, and drops waitingGates' `age >= -1000` lower bound, so a future-dated wait file counts forever. Consider moving it into the slots module, e.g. an `otherHolders(sessionId)` there.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate-open-pr.test.ts",
+      "line": "797-810",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The criterion-3 test (timeout under the cores) and the criterion-4 test (real failure under load, ~1053-1067) plant no other test run (`ownSlots('s-other')`), so each passes with its own guard removed and, on a regression, reads the real ~/.pupitre/slots.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "2185-2186",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "No planted-record case covers pid 0, a negative pid or a string pid, so removing the `pid > 0` or `Number.isInteger` check passes the suite, even though `process.kill(0, 0)` succeeds.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "2129-2138",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Two of the three refusal conditions are within the session's reach: its build runs just before `loadBeforeSuites` is read, and its own suite keeps the 1-minute load up at the timeout. So a hung suite is refused rather than rejected whenever any other worker happens to be testing. The ADR accepts this residual, but its claim that the evidence is something the session 'cannot make alone' overstates the protection.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "2342-2346",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Comments repeat what JSDoc already says (AGENTS.md §Comments). The call-site comment before the re-run's refuseTimeoutUnderLoad repeats the refuseTimeoutUnderLoad and commandStage JSDoc. The comment above `loadBeforeSuites = oneMinuteLoad()` (~2417-2420) repeats the loadBeforeSuites JSDoc; keep only its new point, that the build runs session code. The 'loadBefore is 0 → no evidence' and per-record check lists are also written twice across the JSDoc of refuseTimeoutUnderLoad/loadBeforeSuites and otherTestRunGoing/isOtherTestRun.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "2176-2203",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "isOtherTestRun builds an array of closures just to short-circuit with `.every()`, calls process.kill only for its throw, and casts `pid as number` twice; plain early returns would read more directly and need no casts.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "2310-2316",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`let loadBeforeSuites` is captured by commandStage but assigned ~100 lines later. If that order ever shifts, the 0 default silently turns the refusal off; passing the reading to the test stage would remove this hidden ordering dependency.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/typescript-debt.constants.ts",
+      "line": "4-5",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "COVERAGE_RUN_TIMEOUT_MS here, DEBT_COMMAND_TIMEOUT_MS (python-debt.constants.ts:1-2) and CUSTOM_COMMAND_TIMEOUT_MS (custom-adapter.constants.ts:4-5) are still documented as 'the gate-command budget', but they stay at 10 min while GATE_COMMAND_TIMEOUT_MS is now 25, so that parity claim is no longer true.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate-regate.test.ts",
+      "line": "1582",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The comment 'Ten minutes of stages and a debt entry...' is stale now that the cap is 25 minutes; the matching planMerge comment was already reworded to 'minutes of gate stages'.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate-open-pr.test.ts",
+      "line": "55",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The mock comment 'Shortened by the one test that runs a stage out of its timeout' is out of date: about ten tests now shorten the timeout through shortTimeout().",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.constants.ts",
+      "line": "90-95",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "In GATE_COMMAND_TIMEOUT_MS's JSDoc, 'ran into the 10 this was' is ambiguous and the list of derived waits is clumsy; e.g. 'ran into the previous 10-minute cap … GATE_SLOT_WAIT_MS (and with it the load wait) and MERGE_LOCK_WAIT_MS derive from it.'",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0138-a-test-stage-that-times-out-under-load-refuses.md",
+      "line": "91-123",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The ADR's ~30-line 'Tests:' paragraph narrates the test cases and will drift from the test file (lines 119-121 are also unwrapped); its Amends: line leaves out 0134 and 0088, whose 10-minute load/slot waits this change alters.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 3.7463896000000005,
+  "duration_ms": 333521,
+  "num_turns": 15,
+  "tokens": {
+    "input": 12,
+    "output": 13387,
+    "cache_read": 254175,
+    "cache_creation": 69079,
+    "total": 336653
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 124,
+      "output": 66929,
+      "cache_read": 2336988,
+      "cache_creation": 285887,
+      "cost_usd": 3.4431456000000003
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 24,
+      "output": 10715,
+      "cache_read": 125835,
+      "cache_creation": 73385,
+      "cost_usd": 0.303244
+    }
+  ],
+  "permission_denials": []
+}
