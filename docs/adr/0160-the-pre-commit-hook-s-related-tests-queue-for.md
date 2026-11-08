@@ -1,9 +1,9 @@
-# 0152. The pre-commit hook's related tests queue for a test slot inside a session (2026-11-08)
+# 0160. The pre-commit hook's related tests queue for a test slot inside a session (2026-11-08)
 
 - Status: accepted
 - Amends: [0096](0096-test-runs-queue-for-a-few-machine-wide.md)
 
-152. **The pre-commit hook's related tests queue for a test slot inside a session (2026-11-08).**
+160. **The pre-commit hook's related tests queue for a test slot inside a session (2026-11-08).**
     Amends decision 96, whose slots the hook bypassed: `scripts/pre-commit` ran `vitest related`
     directly, so every worker committing started its own vitest pool outside the 2 slots. On
     2026-11-08 five commits ran at once (29 vitest processes), the load stayed at 65 to 100 on 8

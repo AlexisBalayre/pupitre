@@ -123,7 +123,7 @@ fi
 #
 # Inside a pup session (PUP_SESSION_ID set) the run queues for one of the machine's
 # test slots through `pup session test`, and yields to a merge gate (decisions 96,
-# 152): the related files are listed first, which starts no test, and the slot runs them.
+# 160): the related files are listed first, which starts no test, and the slot runs them.
 RELATED_TEST_CMD="pnpm exec vitest related --run --passWithNoTests"
 if [ -n "${TEST_CMD:-}" ] && [ -n "$STAGED_SOURCE" ]; then
   if [ -n "${PUP_SESSION_ID:-}" ]; then
