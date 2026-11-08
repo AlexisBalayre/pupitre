@@ -98,6 +98,26 @@ describe('the plan usage hold (decision 156)', () => {
     expect(() => assertUsageRoom(REPO, NOW)).not.toThrow();
   });
 
+  it('reads a reset no Date can hold as an unknown window, crashing neither status nor launch', () => {
+    writeReading({
+      five_hour: { used_percentage: 99, resets_at: 1e13 },
+      seven_day: { used_percentage: 95, resets_at: IN_AN_HOUR },
+    });
+
+    expect(usageStatusLine(readUsage(REPO, NOW), NOW)).toBe(
+      'usage: 5h unknown, 7d 95% (resets 2026-11-08 13:00 UTC); read 0m ago',
+    );
+    // The 7-day window still holds, with a one-line refusal rather than a RangeError.
+    expect(() => assertUsageRoom(REPO, NOW)).toThrow(UsageLimitReachedError);
+    expect(() => assertUsageRoom(REPO, NOW)).toThrow(/The plan's 7-day usage is at 95%/);
+
+    writeReading({ five_hour: { used_percentage: 99, resets_at: 1e13 } }, 45 * 60_000);
+    expect(usageStatusLine(readUsage(REPO, NOW), NOW)).toBe(
+      'usage: 5h unknown, 7d unknown; read 45m ago, stale: holds nothing',
+    );
+    expect(() => assertUsageRoom(REPO, NOW)).not.toThrow();
+  });
+
   it('never follows a link nor opens a fifo planted as the usage file', () => {
     const elsewhere = join(dirname(usageFile()), 'elsewhere.json');
     writeFileSync(elsewhere, JSON.stringify(windows(100, 100)));

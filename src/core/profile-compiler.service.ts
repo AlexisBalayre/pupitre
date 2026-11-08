@@ -995,7 +995,7 @@ exit 2
  * JSON — each window's `used_percentage` and `resets_at` and nothing else — to
  * the project's usage file, through a temp file `mktemp` creates and a rename,
  * so a reader never sees half a file and a planted temp name is never written
- * through. A JSON with neither window leaves the file as it was. The reading's
+ * through; over anything but a regular file the temp file is removed instead. A JSON with neither window leaves the file as it was. The reading's
  * age is the file's mtime. The usage path is pup's own, under the store, and is
  * checked shell-safe like every path a hook quotes; nothing from the JSON
  * reaches the shell but as jq's input.
@@ -1013,8 +1013,11 @@ READING=$(printf '%s' "$INPUT" | jq -c '
   | {} + ({five_hour: ($limits.five_hour | window)} // {})
        + ({seven_day: ($limits.seven_day | window)} // {})
   | select(length > 0)' 2>/dev/null)
+# Only over a regular file or nothing: a rename onto a directory would move the
+# temp file into it, one per render; whatever does not land is removed.
 if [ -n "$READING" ] && TMP=$(mktemp "$USAGE.XXXXXX" 2>/dev/null); then
-  if printf '%s\\n' "$READING" > "$TMP"; then mv -f "$TMP" "$USAGE"; else rm -f "$TMP"; fi
+  if { [ ! -e "$USAGE" ] || [ -f "$USAGE" ]; } && printf '%s\\n' "$READING" > "$TMP" &&
+    mv -f "$TMP" "$USAGE"; then :; else rm -f "$TMP"; fi
 fi
 printf '%s' "$INPUT" | jq -r '
   def pct: if type == "object" and (.used_percentage | type) == "number"

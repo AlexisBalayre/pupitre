@@ -57,10 +57,16 @@ function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
 }
 
+/**
+ * A window the file states usably, else undefined, which reads as unknown. A
+ * reset must be a time a Date can hold: past about 8.64e12 seconds `toISOString`
+ * throws, and a forged reset would crash every reader that prints it.
+ */
 function asWindow(raw: unknown): UsageWindow | undefined {
   if (raw === null || typeof raw !== 'object') return undefined;
   const { used_percentage: used, resets_at: resets } = raw as Record<string, unknown>;
   if (!(isFiniteNumber(used) && isFiniteNumber(resets))) return undefined;
+  if (Number.isNaN(new Date(resets * 1000).getTime())) return undefined;
   return { usedPercentage: used, resetsAt: resets };
 }
 

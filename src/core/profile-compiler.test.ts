@@ -700,6 +700,17 @@ describe('the status line records the plan usage (decision 156)', () => {
     expect(existsSync('pwned')).toBe(false);
   });
 
+  it('leaves no temp file behind when a directory is planted as the usage file', () => {
+    mkdirSync(usageFile());
+
+    for (let render = 0; render < 3; render++) {
+      expect(runStatusLine(SAMPLE).stdout).toBe('ctx 12% | 5h 23% | 7d 41%\n');
+    }
+
+    expect(readdirSync(dirname(usageFile()))).toEqual(['usage.json']);
+    expect(readdirSync(usageFile())).toEqual([]);
+  });
+
   it('writes a window that is present without the one that is absent', () => {
     runStatusLine({ rate_limits: { seven_day: SAMPLE.rate_limits.seven_day } });
 
