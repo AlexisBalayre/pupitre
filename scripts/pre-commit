@@ -130,14 +130,18 @@ fi
 RELATED_TEST_CMD="pnpm exec vitest related --run --passWithNoTests"
 if [ -n "${TEST_CMD:-}" ] && [ -n "$STAGED_SOURCE" ]; then
   if [ -n "${PUP_SESSION_ID:-}" ]; then
-    # Fail closed: a session that cannot reach pup runs no tests, so it commits none.
-    if command -v pup >/dev/null 2>&1; then
+    # Fail closed: a session that cannot reach pupitre's pup runs no tests, so it commits
+    # none. PUP_BIN comes first; a `pup` on the PATH may be another tool (Homebrew ships an
+    # HTML parser of that name, which exits 0 on `session test`), so it must first answer
+    # `session --help` as pupitre does.
+    if [ -n "${PUP_BIN:-}" ] && [ -f "$PUP_BIN" ]; then
+      PUP_CMD=(node -- "$PUP_BIN")
+    elif command -v pup >/dev/null 2>&1 &&
+      pup session --help </dev/null 2>/dev/null | grep -q 'Session-internal protocol'; then
       PUP_CMD=(pup)
-    elif [ -n "${PUP_BIN:-}" ] && [ -f "$PUP_BIN" ]; then
-      PUP_CMD=(node "$PUP_BIN")
     else
       echo ""
-      echo "ERROR: pup is not on the PATH and PUP_BIN is not a file: the related tests cannot run through a test slot."
+      echo "ERROR: PUP_BIN is not a file and no pupitre pup is on the PATH: the related tests cannot run through a test slot."
       exit 1
     fi
     echo "Running related tests through a test slot (waits for a free one)"

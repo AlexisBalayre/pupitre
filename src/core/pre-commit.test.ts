@@ -36,8 +36,10 @@ case "$*" in *"$STUB_FAIL"*) [ -n "$STUB_FAIL" ] && exit 1 ;; esac
 exit 0
 `;
 
-// A pup that logs its call, and fails like the pnpm stub.
+// A pup that logs its call, and fails like the pnpm stub. It answers `session --help`
+// as pupitre does, which the hook asks to tell it from another tool named pup.
 const PUP_STUB = `#!/bin/sh
+case "$*" in "session --help") echo "Session-internal protocol commands"; exit 0 ;; esac
 printf 'pup %s\\n' "$*" >> "$STUB_LOG"
 case "$*" in *"$STUB_FAIL"*) [ -n "$STUB_FAIL" ] && exit 1 ;; esac
 echo "stub pup waits for a test slot"
@@ -266,6 +268,43 @@ describe('scripts/pre-commit', () => {
     });
 
     expect(status).not.toBe(0);
+  });
+
+  it('blocks the commit in a session when the pup on the PATH is not pupitre', () => {
+    const repo = makeRepo();
+    withoutPup(repo);
+    // An unrelated tool of that name: reads stdin, ignores its arguments, exits 0.
+    write(repo, 'stub-bin/pup', '#!/bin/sh\nexit 0\n');
+    chmodSync(join(repo, 'stub-bin', 'pup'), 0o755);
+    write(repo, 'src/sum.ts', 'export const sum = 2;\n');
+
+    const { status, stdout } = runHook(repo, ['src/sum.ts'], {
+      sessionId: 't-session',
+      path: '/usr/bin:/bin',
+    });
+
+    expect(status, stdout).toBe(1);
+    expect(stdout).toContain('no pupitre pup is on the PATH');
+  });
+
+  it('runs the tests through PUP_BIN when no pup is on the PATH', () => {
+    const repo = makeRepo();
+    withoutPup(repo);
+    write(
+      repo,
+      'fake-pup.js',
+      "require('node:fs').appendFileSync(process.env.STUB_LOG, 'pupbin ' + process.argv.slice(2).join(' ') + '\\n');\n",
+    );
+    write(repo, 'src/sum.ts', 'export const sum = 2;\n');
+
+    const { status, calls } = runHook(repo, ['src/sum.ts'], {
+      sessionId: 't-session',
+      path: '/usr/bin:/bin',
+      pupBin: join(repo, 'fake-pup.js'),
+    });
+
+    expect(status).toBe(0);
+    expect(calls.at(-1)).toBe('pupbin session test -- src/sum.test.ts');
   });
 
   it('lists the related tests with the real vitest, starting none of them', () => {

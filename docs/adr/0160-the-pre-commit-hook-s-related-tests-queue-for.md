@@ -14,8 +14,9 @@
     listing names the tests that import any file changed in the working tree, staged or not: a
     superset of the staged files' tests. The run says whom it waits for, and waits while a merge
     gate holds a slot or queues ahead.
-    *Fails closed.* The hook uses `pup` from the PATH, else `node "$PUP_BIN"` when that is an
-    existing file, else blocks the commit. A listing that exits non-zero blocks it too; only a
+    *Fails closed.* The hook uses `node -- "$PUP_BIN"` when that is an existing file, else the
+    `pup` on the PATH once `pup session --help` answers as pupitre does (Homebrew ships an
+    unrelated `pup`, an HTML parser, that exits 0 on `session test`), else blocks the commit. A listing that exits non-zero blocks it too; only a
     clean listing with no file runs nothing, as vitest reports no related test.
     *Outside a session* the hook runs `vitest related --run` directly, as before.
     *Ceiling.* The test files go to the project's test command as names, so a file whose path
