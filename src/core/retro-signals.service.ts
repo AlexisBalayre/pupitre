@@ -150,7 +150,7 @@ function classRows(scanned: ScannedTranscript[]): ClassRow[] {
 }
 
 /** Files one session read at least `REPEATED_READS` times, summed over sessions, with the tokens past the first read. */
-export function repeatedReads(
+function repeatedReads(
   scanned: ScannedTranscript[],
   repoPath: string,
 ): { rows: RepeatedRead[]; files: number } {
