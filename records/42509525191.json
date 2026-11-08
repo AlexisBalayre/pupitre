@@ -1,0 +1,141 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-08T18:26:30.498Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42509525191",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42509525191",
+  "actor": "AlexisBalayre",
+  "commit_sha": "b712e81784514ca88da9d86a5452e838c97b3224",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 263,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context",
+    "maintainability",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": ".claude/skills/pr-ci-review/SKILL.md",
+      "line": "90",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "From round 4 the budget skips `review-guards` and `review-workflow-safety`. Its stated reason is that their findings are \"mostly minors\", but both manifests tag their findings `important`, and REVIEW.md §2 still makes a delta's importants blocking at round 4. So on a round-4 or later fix commit that adds a non-test helper spawning git (the #252 incident), or that edits a workflow, the reviewer built to catch it never runs.",
+      "body": "**The round budget drops the two reviewers whose findings are importants by design**\n\nThe round-4 rule skips a reviewer because its findings are mostly minors:\n\n> From round 4 on the author owes no minor (`REVIEW.md` §1), so a reviewer whose findings are mostly minors buys nothing: spawn only `review-correctness`, plus `review-security` when its gate holds, and `review-spec` when it applies. `conventions`, `docs`, `context`, `simplicity`, `guards`, `workflow-safety` and `maintainability` skip, and an `Areas:` line naming one does not override this\n\nThe two new manifests say the opposite about their own output:\n- `review-guards.md:25`: \"A tripped guard is a failing build, so tag `important` once you have read both the guard and the line\"\n- `review-workflow-safety.md:26`: \"Tag `important` when you walked the path\"\n\n`REVIEW.md` §2 keeps importants that a later round raises on its delta blocking: \"An `important` that rounds 1 to 3 raised, or that a later round raised on its delta, is fixed before merge\".\n\n**How it breaks:** take a round-4 or later fix commit that adds a non-test helper spawning git directly. That is the #252 break, and eval case `pr253-direct-git-spawn-in-test-helper` plants it.\n- `review-guards` is never spawned.\n- Correctness can't stand in for it. `review-correctness.md` tells it never to report what `pnpm test` would flag.\n- Nothing deterministic catches it either. No workflow in `.github/workflows` runs the test suite, and `scripts/pre-commit` runs only related tests.\n\nSo the guard break reaches main again. Likewise, a round-4 delta that edits a workflow gets no workflow-safety pass. Security's broad \"config\" gate is the only coverage left.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/b712e81784514ca88da9d86a5452e838c97b3224/.claude/skills/pr-ci-review/SKILL.md#L90-L90",
+      "suggestion": "**Round budget (§1's `Round: N`).** From round 4 on the author owes no minor (`REVIEW.md` §1), so a reviewer whose findings are mostly minors buys nothing: spawn only `review-correctness`, plus `review-security`, `review-guards` and `review-workflow-safety` when their gates hold, and `review-spec` when it applies. `conventions`, `docs`, `context`, `simplicity` and `maintainability` skip, and an `Areas:` line naming one does not override this; say so in `process_issues`. Rounds 1 to 3 run the roster above."
+    },
+    {
+      "file": "tools/review/src/review-body.utils.ts",
+      "line": "172-175",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The skipped-areas line never names `workflow-safety`, even when the PR changes `.github/workflows` and the reviewer was not spawned (e.g. the round-4+ budget skip, or a `Depth: quick` run), so the posted coverage line hides the one skip that matters on that PR. Fix: exclude it only when no path under `.github/workflows` changed, or drop it from the filter.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "tools/review/src/review-body.utils.ts",
+      "line": "172-176",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "With maintainability off the default roster, every standard-depth review body now ends in \"Skipped maintainability.\", even clean bills, so every round reads as reduced coverage by design and the skips that matter get buried. The filter's own comment says gated-in areas are \"no gap to report\". Either exclude maintainability when the depth is not deep and no `Areas:` line named it, or update the comment to say the line is intended.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/skills/pr-ci-review/SKILL.md",
+      "line": "98",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`@claude review deep workflow-safety` spawns nobody on a PR without a workflow change: the deep exemption (\"except … `review-workflow-safety` without a workflow change\") overrides the named area, while at standard depth `Areas:` spawns it \"whether or not its gate holds\". That is the zero-spawn case `preflight.utils.ts:31-34` gives as its reason for excluding `spec` from the keywords. Fix: apply the exemption only when no `Areas:` line is given, or exclude `workflow-safety` in `parseReviewRequest` the way `spec` is.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/skills/pr-ci-review/SKILL.md",
+      "line": "80",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The maintainability gate's \"a requested full review\" trigger can't be evaluated. The preflight prints the same `Mode: full` on every first review, rebase and base merge as for an explicit `@claude review full`, so an orchestrator may spawn maintainability on every round 1. That contradicts the README's \"Deep reviews only\". Fix: drop the trigger, or have the preflight say when the comment asked for `full`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/skills/pr-ci-review/SKILL.md",
+      "line": "136",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "An outsider path through a workflow fits both \"a defect the code alone proves is `correctness` or `security`\" and \"an outsider path through a workflow is `workflow-safety`\". The label picks the validator tier (§7: opus for correctness/security, sonnet for the rest), so the same injection finding gets a weaker validator depending on its label. Fix: put `workflow-safety` (and `guards`) in §7's opus tier, or say which rule wins.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.4965217749999993,
+  "duration_ms": 306745,
+  "num_turns": 13,
+  "tokens": {
+    "input": 12,
+    "output": 12557,
+    "cache_read": 301852,
+    "cache_creation": 59182,
+    "total": 373603
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 104,
+      "output": 40947,
+      "cache_read": 1884391,
+      "cache_creation": 187676,
+      "cost_usd": 2.312160199999999
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 28,
+      "output": 4538,
+      "cache_read": 192720,
+      "cache_creation": 47548,
+      "cost_usd": 0.183578
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 322,
+      "cache_read": 0,
+      "cache_creation": 4979,
+      "cost_usd": 0.000783575
+    }
+  ],
+  "permission_denials": []
+}
