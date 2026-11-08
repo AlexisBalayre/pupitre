@@ -12,7 +12,13 @@
     --filesOnly --changed`, which runs no test, then runs them with `pup session test -- <files>`.
     `vitest related` has no list form (vitest 4 rejects `--listTests` and `--related`), so the
     listing names the tests that import any file changed in the working tree, staged or not: a
-    superset of the staged files' tests. The run says whom it waits for, and waits while a merge
+    superset of the staged files' tests. *Accepted:* vitest's default `forceRerunTriggers`
+    (`package.json`, `vitest.config.*`, `vite.config.*`) makes `--changed` list every test once
+    one of those files is modified in the working tree, staged, unstaged or untracked, so such a
+    commit runs the whole suite through one slot, where outside a session it runs the staged
+    files' tests only. That keeps the slot's queue and the gate's priority intact, and changing
+    `vitest.config.ts` to cut it is outside this decision; commit a dependency or script change
+    on its own, or revert the trigger file in the worktree, to avoid it. The run says whom it waits for, and waits while a merge
     gate holds a slot or queues ahead.
     *Fails closed.* The hook uses `node -- "$PUP_BIN"` when that is an existing file, else the
     `pup` on the PATH once `pup session --help` answers as pupitre does (Homebrew ships an
