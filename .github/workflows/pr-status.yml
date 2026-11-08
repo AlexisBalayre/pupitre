@@ -1,7 +1,7 @@
-# Keeps one `pr/*` status label on every open PR, so the list shows at a glance which are ready
+# Keeps one status label on every open PR, so the list shows at a glance which are ready
 # to merge. First match wins:
-#   pr/draft > pr/conflicts > pr/changes-requested > pr/review-open > pr/ci-failing >
-#   pr/ci-pending > pr/ready
+#   draft > conflicts > changes-requested > review-open > ci-failing >
+#   ci-pending > ready
 #
 # Recomputed when the PR is opened, reopened, pushed to, retargeted, marked ready or draft or
 # closed, on a review, and when a Claude Code Review run for it ends. Two events recompute every
@@ -55,18 +55,18 @@ jobs:
                   && github.event.workflow_run.triggering_actor.login == github.repository_owner))))
     runs-on: ubuntu-latest
     steps:
-      - name: Set the pr/* status label
+      - name: Set the status label
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const LABELS = {
-              "pr/draft": ["ededed", "Still a draft"],
-              "pr/conflicts": ["b60205", "Cannot merge: conflicts with the base branch"],
-              "pr/changes-requested": ["d93f0b", "A reviewer asked for changes"],
-              "pr/review-open": ["e99695", "The CI review has important findings to address"],
-              "pr/ci-failing": ["d73a4a", "A check failed"],
-              "pr/ci-pending": ["fbca04", "Checks are still running"],
-              "pr/ready": ["0e8a16", "Ready to merge"],
+              "draft": ["ededed", "Still a draft"],
+              "conflicts": ["b60205", "Cannot merge: conflicts with the base branch"],
+              "changes-requested": ["d93f0b", "A reviewer asked for changes"],
+              "review-open": ["e99695", "The CI review has important findings to address"],
+              "ci-failing": ["d73a4a", "A check failed"],
+              "ci-pending": ["fbca04", "Checks are still running"],
+              "ready": ["0e8a16", "Ready to merge"],
             };
             const { owner, repo } = context.repo;
 
@@ -118,8 +118,8 @@ jobs:
                 await sleep(3000);
               }
               if (pr.state !== "open") return undefined;
-              if (pr.draft) return "pr/draft";
-              if (pr.mergeable_state === "dirty") return "pr/conflicts";
+              if (pr.draft) return "draft";
+              if (pr.mergeable_state === "dirty") return "conflicts";
 
               const reviews = await github.paginate(github.rest.pulls.listReviews, {
                 owner, repo, pull_number: number,
@@ -131,7 +131,7 @@ jobs:
                 if (!["OWNER", "MEMBER", "COLLABORATOR"].includes(r.author_association)) continue;
                 latest.set(r.user.login, r.state);
               }
-              if ([...latest.values()].includes("CHANGES_REQUESTED")) return "pr/changes-requested";
+              if ([...latest.values()].includes("CHANGES_REQUESTED")) return "changes-requested";
 
               // The review poster reports a commit status, which an `@claude review` retry on main
               // updates while the failed check run on the head stays: for a context that has a
@@ -150,7 +150,7 @@ jobs:
                 (review?.state === "success" && /\d+ important finding/.test(review.description ?? "")) ||
                 (await hasOpenBotThread(number))
               ) {
-                return "pr/review-open";
+                return "review-open";
               }
               const contexts = new Set(combined.statuses.map((s) => s.context));
               const runs = (
@@ -164,12 +164,12 @@ jobs:
                 runs.some((c) => bad.has(c.conclusion)) ||
                 combined.statuses.some((s) => ["failure", "error"].includes(s.state))
               ) {
-                return "pr/ci-failing";
+                return "ci-failing";
               }
               // A quick or area-restricted pass is no merge signal. It comes after the failure scan
               // so a partial round cannot hide a failing check.
               if (review?.state === "success" && review.description?.startsWith("partial review")) {
-                return "pr/ci-pending";
+                return "ci-pending";
               }
               // The review preflight leaves a final "Not reviewed" pending status on a comment-only
               // push: nothing is running, so it does not count as pending.
@@ -177,9 +177,9 @@ jobs:
                 (s) => s.state === "pending" && !s.description?.startsWith("Not reviewed"),
               );
               if (runs.some((c) => c.status !== "completed") || running) {
-                return "pr/ci-pending";
+                return "ci-pending";
               }
-              return "pr/ready";
+              return "ready";
             }
 
             for (const [name, [color, description]] of Object.entries(LABELS)) {
@@ -196,6 +196,7 @@ jobs:
                 owner, repo, issue_number: number,
               });
               const have = current.map((l) => l.name);
+              // LABELS holds only the seven status names, so no other label (dependencies, GitHub's defaults) is ever removed here.
               for (const name of Object.keys(LABELS)) {
                 if (name !== want && have.includes(name)) {
                   try {
