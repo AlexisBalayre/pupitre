@@ -1,0 +1,124 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-08T18:30:26.554Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42509826680",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42509826680",
+  "actor": "AlexisBalayre",
+  "commit_sha": "f84766654c5de180ea761fcdf325d25eb9e16c9c",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 274,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "310-315",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "`targetHolds` calls `git ls-tree` without `--full-tree`, so a session that plants `core.worktree` in the shared `.git/config` narrows the listing to nothing; `targetHolds` returns `[]` and the gate falls back to the pre-157 fail-open, judging an existing file the before-measure omits against the cap of 50 instead of the +15 rise.",
+      "body": "**Concern.** Unless you pass `--full-tree`, `ls-tree` only lists entries under the cwd's prefix inside the work tree. `runGit` runs `git -C <repoPath>` with `GIT_SAFE_CONFIG` and `scrubbedGitEnv()`, and neither one pins the work tree. `GIT_SAFE_CONFIG` doesn't override `core.worktree`, and `ARMED_DRIVER_KEY` doesn't refuse it.\n\nThe shared config is session-writable (`SESSION_WRITABLE_SCOPES` in `git-diff.client.ts`; ADRs 0080, 0081, 0101). That is why `fastForward` and `cutGateCheckout` already pin the work tree, citing that \"`core.worktree` sits in the shared config\".\n\nSuppose `core.worktree = /`. Git then treats the discovered git dir as explicit, and the prefix becomes `<repoPath without leading slash>/`. No target-tree entry matches that prefix, so the listing comes back empty. `gitDiffPaths` is a tree-to-tree diff, so it still returns full paths. The intersection is therefore empty.\n\n```ts\nfunction targetHolds(repoPath: string, target: string, paths: string[]): string[] {\n  const held = new Set(\n    runGit(repoPath, ['ls-tree', '-r', '-z', '--name-only', target]).split('\\0'),\n  );\n  return paths.filter((path) => held.has(path));\n}\n```\nhttps://github.com/AlexisBalayre/pupitre/blob/f84766654c5de180ea761fcdf325d25eb9e16c9c/src/core/merge-gate.service.ts#L310-L315\n\n**Trigger.**\n1. The repo uses a custom adapter whose complexity command returns a partial list or `[]` at the target. This is the case decision 157 exists for.\n2. Before `pup session done`, the session runs `git config core.worktree /`.\n3. `src/kept.ts` grows from 10 to 50 decision points.\n\n**Wrong result.** `held` is empty, so `was` is `undefined` in `judgeComplexity`. The file is judged as new against `COMPLEXITY_NEW_FILE_FLAG_CAP` (50) and passes, when it should flag +40. The same plant also reopens the other routes ADR 0157 lists as closed: a file the session removed from the main checkout, and a `.txt` → `.ts` rename whose source the before-measure skips. None of the gate steps that run before this one breaks under the planted value: worktree-clean, the gate checkout and fast-forward all pin the work tree.\n\nAdding `--full-tree` removes the prefix dependence. At the repo top it changes nothing, since it only implies `--full-name`. Passing `--work-tree repoPath`, as `fastForward` does, would also work.\n\nConfidence is medium because the git prefix behaviour comes from reading git's setup code; it wasn't run.",
+      "suggestion": "    runGit(repoPath, ['ls-tree', '-r', '-z', '--full-tree', '--name-only', target]).split('\\0'),"
+    },
+    {
+      "file": "src/core/debt.service.ts",
+      "line": "410-417",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The target-tree fallback only matches when a custom adapter's `FileComplexity.file` uses git's repo-relative spelling. If a `.pupitre/adapter.yml` complexity command prints absolute paths, neither `before.get` nor `held.has` matches, so every touched existing file is still judged against the cap of 50. That leaves open the 'spell a path differently' half of 145's partial-command route, which ADR 0157 lists as closed.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "2441-2444",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The call-site comment above `measuresComplexity` repeats the `targetHolds` JSDoc in its clause \"only a file the target lacks, by its own path or its source's, is new (decision 157)\", which AGENTS.md §Comments says to delete. Keep the decision-145 half and drop or shorten the 157 clause.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "conventions",
+      "description": "`bash scripts/adr-index.sh` needed approval under the CI command lock, so the reviewer couldn't confirm that the generated ADR index passes `--check` or that 0157 is the next free number. The security reviewer hit the same block and found the ADRs by grepping `docs/adr/` instead."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.360370594999999,
+  "duration_ms": 334628,
+  "num_turns": 11,
+  "tokens": {
+    "input": 12,
+    "output": 8722,
+    "cache_read": 253059,
+    "cache_creation": 43387,
+    "total": 305180
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 118,
+      "output": 42868,
+      "cache_read": 1741403,
+      "cache_creation": 171786,
+      "cost_usd": 2.1952035999999993
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 18,
+      "output": 5398,
+      "cache_read": 151112,
+      "cache_creation": 38230,
+      "cost_usd": 0.1647022
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 179,
+      "cache_read": 1822,
+      "cache_creation": 2855,
+      "cost_usd": 0.000464795
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "bash scripts/adr-index.sh"
+    },
+    {
+      "tool": "Bash",
+      "input": "bash /home/runner/work/pupitre/pupitre/scripts/adr-index.sh"
+    }
+  ]
+}
