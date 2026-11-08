@@ -9,7 +9,9 @@ import type {
 } from '../adapters/types/adapter.types.js';
 import { repoCoverageRatio } from './coverage.utils.js';
 import {
+  COMPLEXITY_COPY_PAIRING_TIMEOUT_MS,
   COMPLEXITY_FILE_FLAG_DELTA,
+  COMPLEXITY_NEW_FILE_FLAG_CAP,
   COVERAGE_RATIO_EPSILON,
   DEBT_DETAIL_SAMPLES,
   DUPLICATION_RULE_ID,
@@ -397,20 +399,42 @@ function judgeComplexity(measured: GateDebtMeasurement, sessionId: string): Stag
   if (!measured.complexity) {
     return verdict(stage, 'skipped', 'not measured — adapter cannot measure complexity');
   }
+  const { sources, copiesPaired } = measured.complexity;
+  const unpaired = copiesPaired
+    ? ''
+    : `; copies not paired: git's copy detection ran past ${COMPLEXITY_COPY_PAIRING_TIMEOUT_MS / 1000} s`;
   const before = new Map(measured.complexity.before.map((f) => [f.file, f.complexity]));
   const risen = measured.complexity.after
-    .map((f) => ({ ...f, delta: f.complexity - (before.get(f.file) ?? 0) }))
-    .filter((f) => f.delta > COMPLEXITY_FILE_FLAG_DELTA);
+    .map((f) => {
+      const source = sources[f.file];
+      const was = before.get(f.file) ?? (source === undefined ? undefined : before.get(source));
+      return was === undefined
+        ? {
+            file: f.file,
+            points: f.complexity,
+            limit: COMPLEXITY_NEW_FILE_FLAG_CAP,
+            label: `new file, ${f.complexity} decision points`,
+          }
+        : {
+            file: f.file,
+            points: f.complexity - was,
+            limit: COMPLEXITY_FILE_FLAG_DELTA,
+            label: `+${f.complexity - was}`,
+          };
+    })
+    .filter((f) => f.points > f.limit);
   if (risen.length === 0) {
-    const detail = `no touched file rose by more than ${COMPLEXITY_FILE_FLAG_DELTA} decision points`;
+    const detail =
+      `no touched file rose by more than ${COMPLEXITY_FILE_FLAG_DELTA} decision points, ` +
+      `and no new file holds more than ${COMPLEXITY_NEW_FILE_FLAG_CAP}${unpaired}`;
     return verdict(stage, 'pass', detail);
   }
-  const quoted = samples(risen.map((f) => `${quotePath(f.file)} (+${f.delta})`));
-  const points = risen.reduce((sum, f) => sum + f.delta, 0);
+  const quoted = samples(risen.map((f) => `${quotePath(f.file)} (${f.label})`));
+  const points = risen.reduce((sum, f) => sum + f.points, 0);
   return verdict(
     stage,
     'flagged',
-    `complexity rose sharply in ${risen.length} touched file(s): ${quoted}`,
+    `complexity rose sharply in ${risen.length} touched file(s): ${quoted}${unpaired}`,
     {
       flag: {
         description: `Complexity rise (+${points} decision points) merged from session ${sessionId}`,
