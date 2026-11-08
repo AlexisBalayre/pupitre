@@ -1,8 +1,6 @@
-import { execFileSync } from 'node:child_process';
-import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import type { Tier } from '../claude/model-ladder.constants.js';
-import { windowLabel } from '../claude/session-runtime.service.js';
+import { mayHaveOpenWindow } from '../claude/session-runtime.service.js';
 import { insertDecisionRecord } from './decision-record.repository.js';
 import { InvalidProfileError } from './profile.errors.js';
 import { asTier, taskTier, tierForScope } from './routing.utils.js';
@@ -15,7 +13,6 @@ import {
   raiseToCritical,
   readTaskSpec,
   rescopeTaskSpec,
-  type SessionRow,
   workingSession,
 } from './session.repository.js';
 import { isTerminal } from './session-state.utils.js';
@@ -70,65 +67,6 @@ function assertRescopableGlob(glob: string): void {
   if (refused) throw refusal(`Rescope glob ${JSON.stringify(glob)} ${refused[1]}.`);
 }
 
-/**
- * Where tmux is looked up, in place of the caller's PATH: a worker cannot hand
- * the probe a fake tmux.
- */
-const TMUX_PATH = '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin';
-
-/**
- * Past this a probe counts as unanswered. It runs inside the store's write
- * lock, so a listener at the socket that never replies must not hold it.
- */
-const PROBE_TIMEOUT_MS = 2000;
-
-/**
- * The sockets a session's window can be on: the default server's at tmux's
- * built-in `/tmp`, and at the operator's `TMUX_TMPDIR` when set, which the
- * launch hands tmux (decision 47). An empty one is unset, as tmux reads it.
- */
-function tmuxSockets(): string[] {
-  const uid = process.getuid?.();
-  const dirs = ['/tmp', process.env.TMUX_TMPDIR || '/tmp'];
-  return [...new Set(dirs.map((dir) => join(dir, `tmux-${uid}`, 'default')))];
-}
-
-/**
- * Every pane on the server at `socket`, one `<pane id> <session name>` line
- * each; undefined when it did not answer in time, for any reason.
- */
-function listPanes(socket: string): string | undefined {
-  try {
-    return execFileSync(
-      'tmux',
-      ['-S', socket, 'list-panes', '-a', '-F', '#{pane_id} #{session_name}'],
-      {
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'pipe'],
-        env: { PATH: TMUX_PATH },
-        timeout: PROBE_TIMEOUT_MS,
-      },
-    );
-  } catch {
-    return undefined;
-  }
-}
-
-/**
- * Whether the server lists the session's window: a tmux session wearing the
- * name its launch gave it, or, while the session is not merged or killed, its
- * recorded pane. The gate's teardown and `pup kill` close a terminal session's
- * window but leave its pane id recorded, and a restarted server numbers its
- * panes from `%0` again, so that id can be another window's.
- */
-function listsWindow(panes: string, row: SessionRow): boolean {
-  const name = windowLabel({ sessionId: row.id });
-  return panes.split('\n').some((line) => {
-    const [pane, listed] = line.split(' ');
-    return listed === name || (!isTerminal(row.state) && pane === row.tmux_target);
-  });
-}
-
 /** The tier the session's next window routes on, as `sessionWindowRoute` reads it. */
 function routedTier(db: Database, taskId: string, sessionId: string, scopeIn: string[]): Tier {
   return (
@@ -180,13 +118,18 @@ export function rescopeTask(db: Database, taskId: string, globs: string[]): Resc
           `Session ${workingSession(db, taskId)} is at work on ${taskId}; rescope once it stops.`,
         );
       }
-      const servers = tmuxSockets().map(listPanes);
-      const open = listTaskSessions(db, taskId).find((row) =>
-        servers.some((panes) => panes === undefined || listsWindow(panes, row)),
+      // A merged or killed session is looked for by name only: the gate's
+      // teardown and `pup kill` close its window but leave its pane id
+      // recorded, and a restarted server numbers its panes from `%0` again.
+      const open = mayHaveOpenWindow(
+        listTaskSessions(db, taskId).map((row) => ({
+          sessionId: row.id,
+          paneId: isTerminal(row.state) ? null : row.tmux_target,
+        })),
       );
-      if (open) {
+      if (open !== undefined) {
         throw refusal(
-          `Session ${open.id}'s window may still be open (a default tmux server lists it, or ` +
+          `Session ${open}'s window may still be open (a default tmux server lists it, or ` +
             `did not answer), so its worker could keep editing ${taskId}; rescope once it is closed.`,
         );
       }

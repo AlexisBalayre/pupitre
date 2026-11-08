@@ -24,7 +24,7 @@
     `claimedStates()` is, so a state added later is refused until someone names it. Today
     that refuses `queued`, `running` and `rejected`, whose hooks hold the old scope. A
     window is open when a default tmux server lists a tmux session named `pup-<id>` (the
-    launch's own name, read from the runtime) or, for a session not merged or killed, its
+    launch's own name) or, for a session not merged or killed, its
     recorded pane. A terminal session is matched by name only: the gate's teardown and
     `pup kill` close its window but leave the `%N` pane id recorded, and a restarted server
     numbers its panes from `%0` again, so that id can be another window's. A launch hands tmux the operator's `TMUX_TMPDIR` (decision
@@ -36,7 +36,12 @@
     and each probe gets two seconds: it runs inside the store's write lock, and a listener
     at the socket that never replies must not hold every writer out. Either server listing
     the window refuses, and so does any probe failure, no server running, no tmux found and
-    a timeout included. That covers
+    a timeout included. The probe is the runtime's `mayHaveOpenWindow` in
+    `src/claude/session-runtime.service.ts`, the one module that touches tmux, so it reads
+    the launch's name from `tmuxName` rather than spelling it again; the rescope hands it
+    each session's id and, for one not merged or killed, its pane. Its PATH and its
+    environment differ from a launch's on purpose: the launch trusts the operator's shell,
+    the probe must not trust a worker's. That covers
     a worker that ran its own `pup session done` and so sits `awaiting-review` with its pane
     alive: without the probe it could rescope its own task and keep editing, and the
     re-gate would pass. The gate kills a merged session's window, so a merged session
@@ -82,14 +87,16 @@
     session names the task, the added globs and `by: 'operator'`, and a decision record on
     that session lists the added globs as its files, so `pup log` (and `pup log <module>`)
     shows the rescope beside the merges it changes.
-    *Tests.* In `task-rescope.test.ts`, a rescope on a merged, awaiting-review or blocked
-    session's task with its window closed appends and writes the event and the record. A
-    queued, running or rejected one writes nothing, nor does an awaiting-review or blocked
-    one whose pane is listed, whose name is listed, or whose probe fails (no server, no
-    tmux). A merged or killed session whose recorded pane id is another session's on the
-    server passes, and one whose name is listed is refused. The probe runs on the pinned PATH with a timeout whatever the caller's PATH,
-    asks only `/tmp`'s server when `TMUX_TMPDIR` is unset and both when it is set, and is
-    refused when only `TMUX_TMPDIR`'s lists the window or does not answer. Each refused glob is refused, each matcher-form bypass with it,
+    *Tests.* In `task-rescope.test.ts`, with the probe mocked, a rescope on a merged,
+    awaiting-review or blocked session's task with its window closed appends and writes the
+    event and the record. A queued, running or rejected one writes nothing, nor does one
+    whose window the probe reports open, and the probe is handed every session on the task,
+    a merged or killed one's without its pane. In `session-runtime.test.ts`,
+    `mayHaveOpenWindow` reports a window whose pane or name a server lists, or whose probe
+    fails (no server, no tmux), passes one listed nowhere and matches no pane id it was not
+    handed, runs on the pinned PATH with a timeout whatever the caller's PATH, asks only
+    `/tmp`'s server when `TMUX_TMPDIR` is unset and both when it is set, and reports the
+    window when only `TMUX_TMPDIR`'s lists it or does not answer. Each refused glob is refused, each matcher-form bypass with it,
     and globs the matcher reads as plain paths (`./docs/**`, `src/cli/`) pass. A re-gate's scope-audit then passes the added path and still fails a
     scope-out one. A standard task and session widened onto `src/core/merge-gate*` are
     raised to critical from the bottom rung; a standard glob leaves them standard, a task

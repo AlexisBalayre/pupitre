@@ -1,6 +1,6 @@
-import { execFileSync } from 'node:child_process';
 import type { Database } from 'better-sqlite3';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { mayHaveOpenWindow } from '../claude/session-runtime.service.js';
 import { openStore } from './db.client.js';
 import { listDecisionRecords } from './decision-record.repository.js';
 import { InvalidProfileError } from './profile.errors.js';
@@ -16,11 +16,11 @@ import {
 } from './session.repository.js';
 import { rescopeTask } from './task-rescope.service.js';
 
-// The tmux boundary: by default the default server answers and lists no
-// window of the task's, as the gate leaves a merged session's.
-vi.mock('node:child_process', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('node:child_process')>()),
-  execFileSync: vi.fn(),
+// The tmux boundary: by default no window of the task's is open, as the gate
+// leaves a merged session's.
+vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../claude/session-runtime.service.js')>()),
+  mayHaveOpenWindow: vi.fn(),
 }));
 
 const SPEC = {
@@ -46,15 +46,10 @@ describe('rescopeTask (decision 115)', () => {
   };
 
   beforeEach(() => {
-    vi.mocked(execFileSync).mockReset().mockReturnValue('%1 pup-other\n');
-    vi.stubEnv('TMUX_TMPDIR', '');
+    vi.mocked(mayHaveOpenWindow).mockReset().mockReturnValue(undefined);
     db = openStore(':memory:');
     ensureProject(db, 'proj-1', '/repo');
     insertTask(db, { id: 't-1', projectId: 'proj-1', spec: JSON.stringify(SPEC) });
-  });
-
-  afterEach(() => {
-    vi.unstubAllEnvs();
   });
 
   it.each(['merged', 'awaiting-review', 'blocked'])(
@@ -261,125 +256,39 @@ describe('rescopeTask (decision 115)', () => {
 
   // A worker that ran `pup session done` is awaiting review with its window
   // still up: rescoping then would let it keep editing into the wider scope.
-  it.each([
-    ['awaiting-review', 'its pane', '%3 renamed\n'],
-    ['blocked', 'its pane', '%3 renamed\n'],
-    ['awaiting-review', 'its name', '%9 pup-s1\n'],
-  ])('refuses while a %s session has %s on the server, writing nothing', (state, _what, panes) => {
-    launched('s1', state);
-    vi.mocked(execFileSync).mockReturnValue(panes);
-
-    expect(() => rescopeTask(db, 't-1', ['docs/**'])).toThrow(
-      "Session s1's window may still be open",
-    );
-    expect(readTaskSpec(db, 't-1').scopeIn).toEqual(['src/core/**']);
-    expect(listEvents(db, 's1')).toEqual([]);
-  });
-
-  // The gate's teardown and `pup kill` leave a closed window's pane id
-  // recorded, and a restarted server hands it to another window.
-  it.each(['merged', 'killed'])(
-    "passes when a %s session's recorded pane is another session's on a restarted server",
+  it.each(['awaiting-review', 'blocked', 'merged'])(
+    'refuses while a %s session may have its window open, writing nothing',
     (state) => {
-      launched('s1', 'merged');
-      launched('s2', 'killed');
-      db.prepare('UPDATE sessions SET tmux_target = NULL WHERE id <> ?').run(
-        state === 'merged' ? 's1' : 's2',
-      );
-      vi.mocked(execFileSync).mockReturnValue('%3 pup-s9\n');
-
-      expect(rescopeTask(db, 't-1', ['docs/**'])).toMatchObject({ added: ['docs/**'] });
-    },
-  );
-
-  it.each([
-    ['merged', 's1'],
-    ['killed', 's2'],
-  ])('refuses while a %s session has its name on the server', (_state, id) => {
-    launched('s1', 'merged');
-    launched('s2', 'killed');
-    vi.mocked(execFileSync).mockReturnValue(`%7 pup-${id}\n`);
-
-    expect(() => rescopeTask(db, 't-1', ['docs/**'])).toThrow(
-      `Session ${id}'s window may still be open`,
-    );
-  });
-
-  // A server that cannot be reached, a tmux that is not there: either way no
-  // window is shown closed.
-  it.each(['no server running on /tmp/tmux-501/default', 'spawnSync tmux ENOENT'])(
-    'counts a probe that fails (%s) as an open window',
-    (message) => {
-      launched('s1', 'merged');
-      vi.mocked(execFileSync).mockImplementation(() => {
-        throw new Error(message);
-      });
+      launched('s1', state);
+      vi.mocked(mayHaveOpenWindow).mockReturnValue('s1');
 
       expect(() => rescopeTask(db, 't-1', ['docs/**'])).toThrow(
         "Session s1's window may still be open",
       );
+      expect(readTaskSpec(db, 't-1').scopeIn).toEqual(['src/core/**']);
+      expect(listEvents(db, 's1')).toEqual([]);
+      expect(listDecisionRecords(db)).toEqual([]);
     },
   );
 
-  // A worker could put a fake tmux on PATH; a probe that hangs holds the
-  // store's write lock.
-  it("asks the default socket with a pinned PATH and a timeout, whatever the caller's PATH", () => {
-    launched('s1', 'merged');
-    vi.stubEnv('PATH', '/tmp/fake-bin');
+  // The gate's teardown and `pup kill` leave a closed window's pane id
+  // recorded, and a restarted server hands it to another window.
+  it("looks for every session's window, a merged or killed one's by name only", () => {
+    launched('s1', 'blocked');
+    launched('s2', 'killed');
+    launched('s3', 'merged');
 
     rescopeTask(db, 't-1', ['docs/**']);
 
-    expect(vi.mocked(execFileSync).mock.calls).toEqual([
+    expect(vi.mocked(mayHaveOpenWindow).mock.calls).toEqual([
       [
-        'tmux',
-        [
-          '-S',
-          `/tmp/tmux-${process.getuid?.()}/default`,
-          'list-panes',
-          '-a',
-          '-F',
-          '#{pane_id} #{session_name}',
-        ],
-        expect.objectContaining({
-          env: { PATH: '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin' },
-          timeout: 2000,
-        }),
+        expect.arrayContaining([
+          { sessionId: 's1', paneId: '%3' },
+          { sessionId: 's2', paneId: null },
+          { sessionId: 's3', paneId: null },
+        ]),
       ],
     ]);
-  });
-
-  // The launch hands tmux the operator's TMUX_TMPDIR, so the window may be on
-  // either default server; both are asked, and either one decides.
-  const sockets = () => vi.mocked(execFileSync).mock.calls.map(([, args]) => (args as string[])[1]);
-  const elsewhere = `/tmp/elsewhere/tmux-${process.getuid?.()}/default`;
-
-  it('asks the TMUX_TMPDIR server too when it is set, and passes when neither lists it', () => {
-    launched('s1', 'merged');
-    vi.stubEnv('TMUX_TMPDIR', '/tmp/elsewhere/');
-
-    rescopeTask(db, 't-1', ['docs/**']);
-
-    expect(sockets()).toEqual([`/tmp/tmux-${process.getuid?.()}/default`, elsewhere]);
-  });
-
-  it.each([
-    ['lists the window', () => '%9 pup-s1\n'],
-    [
-      'does not answer',
-      () => {
-        throw new Error('spawnSync tmux ETIMEDOUT');
-      },
-    ],
-  ])('refuses when only the TMUX_TMPDIR server %s', (_what, answer) => {
-    launched('s1', 'merged');
-    vi.stubEnv('TMUX_TMPDIR', '/tmp/elsewhere');
-    vi.mocked(execFileSync).mockImplementation(((_file: string, args: string[]) =>
-      args[1] === elsewhere ? answer() : '%1 pup-other\n') as typeof execFileSync);
-
-    expect(() => rescopeTask(db, 't-1', ['docs/**'])).toThrow(
-      "Session s1's window may still be open",
-    );
-    expect(readTaskSpec(db, 't-1').scopeIn).toEqual(['src/core/**']);
   });
 
   it.each([

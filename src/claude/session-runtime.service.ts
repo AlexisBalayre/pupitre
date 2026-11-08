@@ -971,6 +971,82 @@ export function hasSessionWindow(sessionId: string): boolean {
 }
 
 /**
+ * Where the open-window probe looks tmux up, in place of the caller's PATH: a
+ * worker cannot hand it a fake tmux (decision 115).
+ */
+const PROBE_TMUX_PATH = '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin';
+
+/**
+ * Past this a probe counts as unanswered. A rescope runs it inside the store's
+ * write lock, so a listener at the socket that never replies must not hold it.
+ */
+const PROBE_TIMEOUT_MS = 2000;
+
+/**
+ * The sockets a session's window can be on: the default server's at tmux's
+ * built-in `/tmp`, and at the operator's `TMUX_TMPDIR` when set, which the
+ * launch hands tmux (decision 47). An empty one is unset, as tmux reads it.
+ */
+function defaultSockets(): string[] {
+  const uid = process.getuid?.();
+  const dirs = ['/tmp', process.env.TMUX_TMPDIR || '/tmp'];
+  return [...new Set(dirs.map((dir) => join(dir, `tmux-${uid}`, 'default')))];
+}
+
+/**
+ * Every pane on the server at `socket`, one `<pane id> <session name>` line
+ * each; undefined when it did not answer in time, for any reason. Unlike
+ * `tmuxProbe` it hands tmux none of the caller's environment.
+ */
+function listPanes(socket: string): string | undefined {
+  try {
+    return execFileSync(
+      'tmux',
+      ['-S', socket, 'list-panes', '-a', '-F', '#{pane_id} #{session_name}'],
+      {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: { PATH: PROBE_TMUX_PATH },
+        timeout: PROBE_TIMEOUT_MS,
+      },
+    );
+  } catch {
+    return undefined;
+  }
+}
+
+/** A session whose window the probe looks for, by its name and, when trusted, its pane. */
+export interface ProbedWindow {
+  sessionId: string;
+  paneId: string | null;
+}
+
+/** Whether the server lists the window: a pane of its launch name, or its pane id. */
+function listsWindow(panes: string, window: ProbedWindow): boolean {
+  const name = tmuxName(window.sessionId);
+  return panes.split('\n').some((line) => {
+    const [pane, listed] = line.split(' ');
+    return listed === name || (window.paneId !== null && pane === window.paneId);
+  });
+}
+
+/**
+ * The first of `windows` that may still be open, or undefined when every
+ * default server answered and listed none of them (decision 115). Any server
+ * that does not answer, no server running, no tmux found and a timeout
+ * included, leaves every window possibly open. tmux runs on a fixed PATH with
+ * no caller environment and a timeout, so a worker can neither fake it nor
+ * hang the caller. A pane id is matched only when the caller passes one: a
+ * closed window's recorded id can be another window's on a restarted server.
+ */
+export function mayHaveOpenWindow(windows: readonly ProbedWindow[]): string | undefined {
+  const servers = defaultSockets().map(listPanes);
+  return windows.find((window) =>
+    servers.some((panes) => panes === undefined || listsWindow(panes, window)),
+  )?.sessionId;
+}
+
+/**
  * The pane the conductor's window runs in, or undefined when no conductor is
  * up. Nothing typed into it after its kickoff until the turn watchdog did, so
  * no pane id was ever recorded for it the way a session's launch records one;

@@ -49,6 +49,8 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   // `pup attach` hands the terminal to tmux; here it hands it to nothing.
   attachWindow: vi.fn(() => 0),
   hasSessionWindow: vi.fn(() => true),
+  // The rescope's window probe (decision 115), tested against tmux in its own suite.
+  mayHaveOpenWindow: vi.fn(),
   // The turn watchdog's reads: a conductor window to find, a pane to read for
   // a dead turn, a nudge to type (addendum to decision 35).
   conductorPane: vi.fn(),
@@ -171,6 +173,7 @@ import {
   deadTurnError,
   hasSessionWindow,
   launchWatcher,
+  mayHaveOpenWindow,
   readSessionEnv,
   SessionPaneMissingError,
   SteerNotDeliveredError,
@@ -2632,16 +2635,9 @@ describe('CLI commands', () => {
         buildProgram().parse(['plan', 'edit', 't-1', '--rescope', '--scope', 'docs/**', ...extra], {
           from: 'user',
         });
-      // The rescope's window probe asks the default tmux server for its panes;
-      // every other call, the fixtures' git included, runs for real.
-      const tmuxLists = (panes: string) => {
-        const real = vi.mocked(execFileSync).getMockImplementation() as typeof execFileSync;
-        vi.mocked(execFileSync).mockImplementation(((file: string, ...rest: never[]) =>
-          file === 'tmux' ? panes : real(file, ...rest)) as typeof execFileSync);
-      };
-
+      // By default no window of the task's is open, as the gate leaves a merged session's.
       beforeEach(() => {
-        tmuxLists('%1 pup-other\n');
+        vi.mocked(mayHaveOpenWindow).mockReturnValue(undefined);
       });
 
       it("appends to a merged task's scope-in, and pup log shows it", () => {
@@ -2723,7 +2719,7 @@ describe('CLI commands', () => {
         const repo = initRepo();
         useCwd(repo);
         const db = claimed(repo, 'awaiting-review');
-        tmuxLists('%9 pup-s1\n');
+        vi.mocked(mayHaveOpenWindow).mockReturnValue('s1');
 
         rescope();
 
