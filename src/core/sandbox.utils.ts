@@ -1,4 +1,5 @@
 import { type ChildProcess, execFileSync, spawn } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import {
   existsSync,
   lstatSync,
@@ -6,11 +7,10 @@ import {
   mkdtempSync,
   readdirSync,
   renameSync,
-  rmdirSync,
   rmSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, dirname, join } from 'node:path';
+import { dirname, join } from 'node:path';
 import type { Readable } from 'node:stream';
 import { CACHE_VAR_SUBDIRS, gateChildEnv } from './gate-env.utils.js';
 import { projectId } from './paths.utils.js';
@@ -536,8 +536,10 @@ function signalGroup(child: ChildProcess, signal: NodeJS.Signals): void {
  * between a directory and a link to `HOME` while the recursive delete walked
  * it, and the delete then went through the link. Grants name paths, so once
  * the directory has a name no grant covers, nothing a child does reaches what
- * is removed. Its parent must be one no child is granted (decision 155). A
- * delete that fails deletes nothing more, so what it left goes back to `path`.
+ * is removed. Its parent must be one no child is granted (decision 155). The
+ * move is a rename beside it, which needs no new directory, so a full volume,
+ * where `mkdir` fails but `unlink` does not, is still freed. A delete that
+ * fails deletes nothing more, so what it left goes back to `path`.
  */
 export function removeGateDir(path: string): void {
   let left = path;
@@ -546,7 +548,6 @@ export function removeGateDir(path: string): void {
     if (!moved) return;
     left = moved;
     rmSync(moved, { recursive: true, force: true, maxRetries: 3 });
-    rmdirSync(dirname(moved));
   } catch (error) {
     if (left !== path) left = movedBack(left, path);
     const reason = (error as NodeJS.ErrnoException).code ?? String(error);
@@ -556,17 +557,14 @@ export function removeGateDir(path: string): void {
 }
 
 /**
- * Where `path` now is, under the same name in a fresh directory beside it;
+ * Where `path` now is, under a random `pup-removing-*` name beside it;
  * undefined when there is no `path`, as a child granted it may have removed it.
  */
 function movedAside(path: string): string | undefined {
-  if (!lstatSync(path, { throwIfNoEntry: false })) return undefined;
-  const aside = mkdtempSync(join(dirname(path), 'pup-removing-'));
-  const moved = join(aside, basename(path));
+  const moved = join(dirname(path), `pup-removing-${randomBytes(8).toString('hex')}`);
   try {
     renameSync(path, moved);
   } catch (error) {
-    rmdirSync(aside);
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
     throw error;
   }
@@ -579,11 +577,6 @@ function movedBack(moved: string, path: string): string {
     renameSync(moved, path);
   } catch {
     return moved;
-  }
-  try {
-    rmdirSync(dirname(moved));
-  } catch {
-    // An empty directory no grant reaches: not worth a report of its own.
   }
   return path;
 }

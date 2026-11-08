@@ -9,7 +9,6 @@ import {
   readFileSync,
   realpathSync,
   renameSync,
-  rmdirSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -18,15 +17,17 @@ import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 
-// The real rmSync, renameSync and rmdirSync, wrapped so a test can make a
-// removal, or the moves around it, fail as a busy or locked directory does.
+// The real rmSync, renameSync, mkdirSync and mkdtempSync, wrapped so a test can
+// make a removal, or the moves around it, fail as a busy or locked directory or
+// a full volume does.
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();
   return {
     ...actual,
     rmSync: vi.fn(actual.rmSync),
     renameSync: vi.fn(actual.renameSync),
-    rmdirSync: vi.fn(actual.rmdirSync),
+    mkdirSync: vi.fn(actual.mkdirSync),
+    mkdtempSync: vi.fn(actual.mkdtempSync),
   };
 });
 
@@ -1146,7 +1147,7 @@ describe('removeGateDir', () => {
 
       const [aside = ''] = readdirSync(parent);
       expect(aside).toMatch(/^pup-removing-/);
-      const moved = join(parent, aside, 'run');
+      const moved = join(parent, aside);
       expect(warn).toHaveBeenCalledWith(
         `Could not remove ${dir} (ENOTEMPTY); it is left behind in ${moved}.`,
       );
@@ -1154,20 +1155,24 @@ describe('removeGateDir', () => {
       expect(readFileSync(join(moved, 'file'), 'utf8')).toBe('x');
     });
 
-    it('puts the residue back even when the empty aside cannot be removed', async () => {
-      const { parent, dir, warn } = await setup();
-      vi.mocked(rmSync).mockImplementationOnce(() => {
-        throw errno('ENOTEMPTY');
-      });
-      vi.mocked(rmdirSync).mockImplementationOnce(() => {
-        throw errno('EBUSY');
+    // A gate child filled the volume: no directory can be made, yet unlink and
+    // rmdir still free it, so the move aside must need no new directory.
+    it('still removes the directory on a full volume', async () => {
+      const { parent, dir, warn, actual } = await setup();
+      const full = () => {
+        throw errno('ENOSPC');
+      };
+      vi.mocked(mkdirSync).mockImplementation(full);
+      vi.mocked(mkdtempSync).mockImplementation(full);
+      onTestFinished(() => {
+        vi.mocked(mkdirSync).mockImplementation(actual.mkdirSync);
+        vi.mocked(mkdtempSync).mockImplementation(actual.mkdtempSync);
       });
 
       removeGateDir(dir);
 
-      expect(warn).toHaveBeenCalledWith(`Could not remove ${dir} (ENOTEMPTY); it is left behind.`);
-      expect(readFileSync(join(dir, 'file'), 'utf8')).toBe('x');
-      expect(readdirSync(parent).sort()).toEqual([expect.stringMatching(/^pup-removing-/), 'run']);
+      expect(warn).not.toHaveBeenCalled();
+      expect(readdirSync(parent)).toEqual([]);
     });
   });
 

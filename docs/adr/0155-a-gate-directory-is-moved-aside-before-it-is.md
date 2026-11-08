@@ -10,8 +10,10 @@
     one ending in `.`, `..` or a slash had a last name the resolve went through, which is the case
     decision 108 exists to prevent. `writeProfile` now throws unless the path is absolute,
     `normalize(path) === path`, and its last segment is a name, not empty, `.` or `..`.
-    *The removal.* `removeGateDir` first renames the directory into a fresh `pup-removing-*`
-    directory beside it, then deletes that whole. A child granted a path under the directory (the
+    *The removal.* `removeGateDir` first renames the directory to a random `pup-removing-*` name
+    beside it, then deletes that whole. The rename makes no new directory: on a volume a gate child
+    filled, `mkdir` fails for a regular user while `unlink` and `rmdir` still succeed, and a
+    removal that needed a fresh directory would free nothing there. A child granted a path under the directory (the
     coverage holder's `report`, the Python adapter's report directory, the run's scratch) could
     survive the group kill under `setsid` and swap an entry between a directory and a link to `HOME`
     while the recursive delete walked it. Grants name paths, so once the directory has a name no grant
