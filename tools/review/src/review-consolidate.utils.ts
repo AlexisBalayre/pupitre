@@ -28,7 +28,7 @@ const SPECIFICITY: readonly ReviewerArea[] = [
 const SEVERITY: Record<Finding["tag"], number> = { important: 0, nit: 1, "pre-existing": 2 };
 
 // Two reviewers rarely anchor the same concern on the same line; a few lines
-// apart is still the same spot.
+// apart is still the same spot for minors. Importants need the same line.
 const NEAR_LINES = 3;
 
 // Word overlap above which two descriptions of one spot are one concern. Below
@@ -45,21 +45,40 @@ function words(text: string): Set<string> {
   return new Set(text.toLowerCase().match(/[a-z0-9_]{3,}/g) ?? []);
 }
 
-function similar(a: string, b: string): boolean {
+function normalized(text: string): string {
+  return text.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+function overlap(a: string, b: string): number {
   const left = words(a);
   const right = words(b);
-  if (left.size === 0 || right.size === 0) return false;
+  if (left.size === 0 || right.size === 0) return 0;
   let shared = 0;
   for (const word of left) if (right.has(word)) shared++;
-  return shared / (left.size + right.size - shared) >= SIMILARITY;
+  return shared / (left.size + right.size - shared);
 }
 
 function sameConcern(a: Finding, b: Finding): boolean {
   if (a.file === null || a.file !== b.file) return false;
   const lineA = startLine(a.line);
   const lineB = startLine(b.line);
-  const nearby = lineA === null || lineB === null || Math.abs(lineA - lineB) <= NEAR_LINES;
-  return nearby && similar(a.description, b.description);
+  // A line-less finding is near only another line-less one: "near everything" chains clusters.
+  const nearby = lineA === null || lineB === null ? lineA === lineB : Math.abs(lineA - lineB) <= NEAR_LINES;
+  return nearby && overlap(a.description, b.description) >= SIMILARITY;
+}
+
+// A confirmed important folded away is never commented, so an important joins a cluster that
+// already holds one only on the very same spot with the very same text. Word overlap cannot say
+// that: it drops short tokens ("id" and "ip" look alike) and ignores order.
+function sameImportant(a: Finding, b: Finding): boolean {
+  return a.file === b.file && startLine(a.line) === startLine(b.line) && normalized(a.description) === normalized(b.description);
+}
+
+function joins(cluster: Finding[], finding: Finding): boolean {
+  const [anchor] = cluster;
+  if (!anchor || !sameConcern(anchor, finding)) return false;
+  if (finding.tag !== "important") return true;
+  return cluster.every((member) => member.tag !== "important" || sameImportant(member, finding));
 }
 
 // Most severe tag first, then the more certain, then the more specific area:
@@ -84,7 +103,7 @@ export interface Consolidated {
 export function consolidateFindings(findings: Finding[]): Consolidated {
   const clusters: Finding[][] = [];
   for (const finding of findings) {
-    const home = clusters.find((cluster) => cluster.some((member) => sameConcern(member, finding)));
+    const home = clusters.find((cluster) => joins(cluster, finding));
     if (home) home.push(finding);
     else clusters.push([finding]);
   }

@@ -17,10 +17,19 @@ function finding(overrides: Partial<Finding> = {}): Finding {
 }
 
 describe("consolidateFindings", () => {
-  it("merges the same concern raised twice on nearby lines", () => {
-    const result = consolidateFindings([finding(), finding({ line: "12", area: "context" })]);
+  it("merges the same important raised twice on one line", () => {
+    const result = consolidateFindings([finding(), finding({ area: "context" })]);
     expect(result.findings).toHaveLength(1);
     expect(result.merged).toBe(1);
+  });
+
+  it("merges the same minor raised twice on nearby lines", () => {
+    const nit = (line: string) => finding({ tag: "nit", line });
+    expect(consolidateFindings([nit("10"), nit("12")]).findings).toHaveLength(1);
+  });
+
+  it("keeps identical importants on different lines apart", () => {
+    expect(consolidateFindings([finding(), finding({ line: "12" })]).findings).toHaveLength(2);
   });
 
   it("credits the most specific area on the survivor", () => {
@@ -50,6 +59,41 @@ describe("consolidateFindings", () => {
   it("keeps different concerns on one line apart", () => {
     const other = finding({ description: "token is logged in plain text" });
     expect(consolidateFindings([finding(), other]).findings).toHaveLength(2);
+  });
+
+  it("keeps two importants one substituted word apart as two findings", () => {
+    const fails = finding({ description: "retries is never reset when the request fails" });
+    const succeeds = finding({ description: "retries is never reset when the request succeeds" });
+    expect(consolidateFindings([fails, succeeds]).findings).toHaveLength(2);
+  });
+
+  it("keeps two importants that differ only in a short token as two findings", () => {
+    const id = finding({ description: "id is not validated before the query" });
+    const ip = finding({ description: "ip is not validated before the query" });
+    expect(consolidateFindings([id, ip]).findings).toHaveLength(2);
+  });
+
+  it("keeps two importants with the same words in opposite order as two findings", () => {
+    const a = finding({ description: "retries is checked before budget is decremented" });
+    const b = finding({ description: "budget is checked before retries is decremented" });
+    expect(consolidateFindings([a, b]).findings).toHaveLength(2);
+  });
+
+  it("still folds a nit one word apart into the important", () => {
+    const nit = finding({ tag: "nit", description: "the retry loop never stops when the budget is zero today" });
+    expect(consolidateFindings([finding(), nit]).findings).toHaveLength(1);
+  });
+
+  it("does not chain a cluster past the line limit, whatever the input order", () => {
+    const at = (line: string) => finding({ tag: "nit", line });
+    expect(consolidateFindings([at("10"), at("13"), at("16")]).findings).toHaveLength(2);
+    expect(consolidateFindings([at("10"), at("16"), at("13")]).findings).toHaveLength(2);
+  });
+
+  it("treats a line-less finding as near only another line-less one", () => {
+    const nit = (line: string | null) => finding({ tag: "nit", line });
+    expect(consolidateFindings([nit(null), nit("300")]).findings).toHaveLength(2);
+    expect(consolidateFindings([nit(null), nit(null)]).findings).toHaveLength(1);
   });
 
   it("never merges findings with no file", () => {
