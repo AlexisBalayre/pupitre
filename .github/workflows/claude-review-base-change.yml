@@ -1,7 +1,7 @@
 # Marks the head's `claude-review` commit status pending when a PR is retargeted, so a verdict
 # earned against the old base cannot satisfy the gate. The preflight reviews in full when the
-# prior record's base differs, so the next review (a push, or the owner's `@claude review`) reads
-# the new diff and replaces the status. A title or body edit does not match `changes.base`.
+# prior record's base differs, so the next review (the owner's `@claude review`, since a push no
+# longer starts one) reads the new diff and replaces the status. A title or body edit does not match `changes.base`.
 #
 # pull_request_target because it needs a write token. Only the owner's same-repo PRs count: reviews
 # run for nobody else, and a status belongs to the SHA, so a fork carrying the owner's head commit

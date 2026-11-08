@@ -87,7 +87,13 @@ export const PROTECTED_PATH_GLOBS = ['.claude/**', '.pupitre/**'];
 /** Serializes merges per repo (decision 8); lives in .git so it never lands in a diff. */
 export const MERGE_LOCK_DIRNAME = 'pup-merge.lock';
 
-export const GATE_COMMAND_TIMEOUT_MS = 10 * 60 * 1000;
+/**
+ * The cap on one gate command, a test run included: 25 minutes, since pup's own
+ * full suite takes about 9.5 minutes at a load of 14 and ran into the 10 this was
+ * (decision 138). The slot wait, and so the load wait, and the merge lock wait
+ * are derived from it.
+ */
+export const GATE_COMMAND_TIMEOUT_MS = 25 * 60 * 1000;
 
 /** Tail of a failed command's output kept in the gate report / re-steer prompt. */
 export const GATE_OUTPUT_TAIL_CHARS = 2000;
@@ -95,7 +101,7 @@ export const GATE_OUTPUT_TAIL_CHARS = 2000;
 /** Gate failures beyond this park the session as blocked (decision 7). */
 export const MAX_REJECTS_BEFORE_BLOCKED = 2;
 
-/** PR titles built from a task goal are cut here — GitHub truncates around this anyway. */
+/** The longest PR title, the subject a squash merge writes on the target (decision 137). */
 export const PR_TITLE_MAX_CHARS = 72;
 
 /** A sha as the gate pins it, which can then never read as an option. */

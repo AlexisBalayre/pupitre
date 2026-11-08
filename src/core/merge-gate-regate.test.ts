@@ -1115,6 +1115,21 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(pushes[0]?.join(' ')).not.toMatch(/--force|\+[0-9a-f]{40}:/);
     });
 
+    it("titles the adopted PR with the session's commit, never the merge the gate wrote", async () => {
+      const worktree = seedSession(db, repo);
+      await pushedOnce(worktree);
+      commitIn(repo, 'README.md', '# moved on\n');
+
+      const outcome = await withFakeGh(fakeGh([openPrOnMain]), () => runMergeGate(db, request()));
+
+      expect(outcome.status).toBe('merged');
+      const edit = ghCalls()
+        .filter((call) => call.startsWith('pr edit'))
+        .at(-1);
+      expect(edit).toContain('--title edit src/feature.ts --body-file');
+      expect(edit).not.toContain('Merge main');
+    });
+
     it('re-steers the session when the merge conflicts, leaving the PR as it was', async () => {
       const worktree = seedSession(db, repo);
       const { bare, pushed } = await pushedOnce(worktree);
