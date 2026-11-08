@@ -2123,9 +2123,10 @@ describe('withMergeLock', () => {
       expect(errors.mock.calls.flat().join('\n')).not.toContain('was gone or replaced');
     });
 
-    // A session that owns `.git` can deny pup the moved-aside directory to
-    // hide that it swapped the lock: that stays a lost lock (decision 88).
-    it.each(['EACCES', 'EPERM'])(
+    // A session that owns `.git` can deny pup the moved-aside directory, or
+    // swap a component of its path, to hide that it swapped the lock: anything
+    // but a disk fault stays a lost lock (decision 88).
+    it.each(['EACCES', 'EPERM', 'ENOTDIR', 'ELOOP'])(
       'fails on the lost lock when %s keeps the moved-aside lock from being read',
       async (code) => {
         asideUnreadable(code);

@@ -95,10 +95,11 @@
       branch or the worktree while the lock was gone. Any other release error, on the take's own directory still in place, is printed (`Could not
       release …`) and the result returned: the lock left in place names this process, and a later
       run reclaims it once the process has exited. A rename aside that succeeds took the lock off
-      its path, so the lock is released even when a filesystem fault (EIO, say) keeps the
-      moved-aside directory from being read: that directory is left and named, and the result
-      returned, so a correct release never fails a valid merge. EACCES or EPERM on it still
-      reports the lock lost, since a session that owns `.git` can chmod it to hide a swapped
+      its path, so the lock is released even when a disk fault (EIO, the one error allowed)
+      keeps the moved-aside directory from being read: that directory is left and named, and
+      the result returned, so a correct release never fails a valid merge. Any other error on
+      it, EACCES, EPERM, ENOTDIR or ELOOP among them, still reports the lock lost, since a
+      session that owns `.git` can chmod the path or swap a component of it to hide a swapped
       lock. The land's audit now runs under the lock too,
       after the steer. It ran after the release, and the steer wakes the sessions most likely to
       be gated next: a gate could read `projects.baseline` before the audit stored its refresh,
@@ -178,8 +179,8 @@
     and carries its outcome on the error, and a re-run refuses it; `pup merge` and `pup land`
     print the merged or landed outcome, then the lost lock, and exit 1; a release whose rename
     aside succeeds but whose aside directory meets EIO on its read returns the result, names
-    the directory and reports no lost lock, and one meeting EACCES or EPERM there fails on the
-    lost lock; the chmod tests are skipped as root, which writes through
+    the directory and reports no lost lock, and one meeting EACCES, EPERM, ENOTDIR or ELOOP
+    there fails on the lost lock; the chmod tests are skipped as root, which writes through
     a read-only `.git`; a gate started during a
     land's audit runs once the audit has stored its refresh, judges against it and leaves it
     stored; a land without the audit still steers and leaves the baseline; under a fake clock the wait takes the lock once it is released and refuses at
