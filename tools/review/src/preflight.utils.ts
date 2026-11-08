@@ -213,7 +213,7 @@ export function isCommentOnlyDelta(entries: RawDiffEntry[], readBlob: (sha: stri
 export type ModeDecision =
   | { kind: "skip-duplicate"; priorPath: string }
   | { kind: "skip-comment-only"; priorPath: string }
-  | { kind: "full" }
+  | { kind: "full"; priorPath?: string }
   | { kind: "incremental"; fromSha: string; priorPath: string };
 
 export function decideMode(args: {
@@ -231,13 +231,13 @@ export function decideMode(args: {
   // synchronize or opened retrigger of the same SHA has nothing new to look at,
   // while a comment is a person asking again on purpose.
   if (prior.commit_sha === headSha) {
-    return trigger === "comment" ? { kind: "full" } : { kind: "skip-duplicate", priorPath: prior.path };
+    return trigger === "comment" ? { kind: "full", priorPath: prior.path } : { kind: "skip-duplicate", priorPath: prior.path };
   }
-  if (forceFull) return { kind: "full" };
+  if (forceFull) return { kind: "full", priorPath: prior.path };
   // A rebase or force-push breaks ancestry, and a merge from the base folds
   // upstream code into the delta; neither leaves a delta that is this PR's own
   // change to review.
-  if (!isAncestor || hasMerges) return { kind: "full" };
+  if (!isAncestor || hasMerges) return { kind: "full", priorPath: prior.path };
   // A delta of comments and prose alone waits for the next code push, whose
   // incremental review starts from the same prior head and so still reads it;
   // a person asking by comment gets the review now.

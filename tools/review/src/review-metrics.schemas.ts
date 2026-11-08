@@ -48,6 +48,9 @@ const reviewModeSchema = z.enum(["full", "incremental"]);
 const priorImportantSchema = z.object({
   file: z.string().nullable().describe("Repo-relative file path from the prior record."),
   line: z.string().nullable().describe("Line number or range from the prior record."),
+  description: z
+    .string()
+    .describe("The prior finding's one-line description, copied from the prior record, so an unresolved one can be named."),
   status: z.enum(["resolved", "unresolved"]).describe("Whether the current head resolves the prior finding."),
 });
 
@@ -107,7 +110,7 @@ export const reviewSummarySchema = z.object({
   prior_importants: z
     .array(priorImportantSchema)
     .describe(
-      "Incremental only: the prior record's important findings checked against the current head. Empty on full.",
+      "When the Mode line names a prior record: its important findings, plus the unresolved entries its own prior_importants carried forward, each checked against the current head. Copy every still-unresolved entry forward; empty only when no prior record is named.",
     ),
   findings: z.array(findingSchema).describe("The confirmed findings the run acted on."),
   refuted_findings: z

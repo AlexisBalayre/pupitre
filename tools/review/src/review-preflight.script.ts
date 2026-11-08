@@ -209,7 +209,9 @@ async function main(): Promise<void> {
     "mode_line",
     decision.kind === "incremental"
       ? `Mode: incremental from ${decision.fromSha} (prior record: ${decision.priorPath} on ${METRICS_REF})`
-      : "Mode: full",
+      : decision.priorPath
+        ? `Mode: full (prior record: ${decision.priorPath} on ${METRICS_REF})`
+        : "Mode: full",
   );
 }
 
