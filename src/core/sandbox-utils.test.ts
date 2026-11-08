@@ -844,19 +844,22 @@ describe('runGateChild', () => {
       it('cannot take a worktree pup adds after its profile was written, nor plant one', async () => {
         // `pup init` and `pup audit` run the child in the operator's repo while
         // pup adds worktrees there, which no walk at profile time can see: `s2`
-        // appears once the child runs, and the child moves it into scratch,
-        // rewrites its pointer and moves it back under a new name (decision 117).
+        // appears once the child runs, and moved into scratch it would have its
+        // pointer rewritten there (decision 117). The child renames it within
+        // the checkout, so the move is never mv's copy-then-delete across
+        // volumes, whose delete the `.git` deny refuses with the same error.
         const cwd = fakeCheckout();
         const worktree = join(cwd, '.worktrees', 's2');
         mkdirSync(join(cwd, '.worktrees'));
         const options = { cwd, repoPath: cwd };
 
-        // The profile is written before runGateChild returns.
+        // The profile is written before runGateChild returns: it builds the
+        // invocation, writeFileSync included, before its first await.
         const child = runGateChild(
           'sh',
           [
             '-c',
-            'i=0; until [ -f .worktrees/s2/.git ]; do i=$((i+1)); [ $i -gt 200 ] && exit 3; sleep 0.05; done; mv .worktrees/s2 "$TMPDIR/s2" && printf "gitdir: /evil" > "$TMPDIR/s2/.git" && mv "$TMPDIR/s2" .worktrees/s3',
+            'i=0; until [ -f .worktrees/s2/.git ]; do i=$((i+1)); [ $i -gt 200 ] && exit 3; sleep 0.05; done; mv .worktrees/s2 s2',
           ],
           options,
         );
@@ -864,9 +867,11 @@ describe('runGateChild', () => {
         writeFileSync(join(worktree, '.git'), 'gitdir: /repo/.git/worktrees/s2\n');
 
         await expect(child).rejects.toThrow(/Operation not permitted/);
+        // A sanity check: the refused rename is the proof.
         expect(readFileSync(join(worktree, '.git'), 'utf8')).toBe(
           'gitdir: /repo/.git/worktrees/s2\n',
         );
+        expect(existsSync(join(cwd, 's2'))).toBe(false);
         // A link at a name pup has yet to use, or at `.worktrees` itself before
         // pup makes it, in any case, would aim pup's next worktree at scratch.
         const fresh = fakeCheckout();
@@ -882,6 +887,58 @@ describe('runGateChild', () => {
         // The control: the same link anywhere else in the checkout is made.
         await runGateChild('sh', ['-c', 'ln -s "$TMPDIR" elsewhere'], options);
         expect(lstatSync(join(cwd, 'elsewhere')).isSymbolicLink()).toBe(true);
+      });
+
+      it('cannot take a worktree pup adds after its stage ended, from a helper that left its group', {
+        timeout: 30_000,
+      }, async () => {
+        // A helper in a session of its own survives the kill of its stage's
+        // group, and still holds the profile written when `.worktrees` did not
+        // exist yet: no walk saw `s2`, and the deny is all that stops it. The
+        // move stays inside the checkout, so it is a rename and never mv's
+        // copy-then-delete across volumes, whose delete the `.git` deny refuses
+        // with the same error: only a deny on `s2` itself refuses this one.
+        const cwd = fakeCheckout();
+        const worktree = join(cwd, '.worktrees', 's2');
+        writeFileSync(
+          join(cwd, 'outlive.sh'),
+          [
+            'exec </dev/null >/dev/null 2>&1',
+            'echo $$ > helper.tmp && mv helper.tmp helper.pid',
+            'i=0; until [ -f .worktrees/s2/.git ] || [ $i -gt 400 ]; do i=$((i+1)); sleep 0.05; done',
+            'mv .worktrees/s2 s2 2>moved.err',
+            'echo $? > status.tmp && mv status.tmp status',
+          ].join('\n'),
+        );
+
+        await runGateChild(
+          'perl',
+          [
+            '-MPOSIX',
+            '-e',
+            `if (!fork) { setsid; exec 'sh', 'outlive.sh' } select(undef, undef, undef, 0.05) until -e 'helper.pid'`,
+          ],
+          { cwd, repoPath: cwd },
+        );
+        const helper = await pidIn(cwd, 'helper.pid');
+        onTestFinished(() => {
+          if (alive(helper)) process.kill(helper, 'SIGKILL');
+        });
+        expect(alive(helper)).toBe(true);
+        expect(existsSync(join(cwd, '.worktrees'))).toBe(false);
+        mkdirSync(worktree, { recursive: true });
+        writeFileSync(join(worktree, '.git'), 'gitdir: /repo/.git/worktrees/s2\n');
+
+        const status = await vi.waitFor(() => readFileSync(join(cwd, 'status'), 'utf8'), {
+          timeout: 25_000,
+        });
+        expect(status.trim()).not.toBe('0');
+        expect(readFileSync(join(cwd, 'moved.err'), 'utf8')).toMatch(/Operation not permitted/);
+        // A sanity check: the refused rename is the proof.
+        expect(readFileSync(join(worktree, '.git'), 'utf8')).toBe(
+          'gitdir: /repo/.git/worktrees/s2\n',
+        );
+        expect(existsSync(join(cwd, 's2'))).toBe(false);
       });
 
       it('cannot swap its checkout with a directory in its scratch, in either order', async () => {
