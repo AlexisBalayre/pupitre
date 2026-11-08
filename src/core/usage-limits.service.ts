@@ -7,13 +7,13 @@ import { projectPaths } from './paths.utils.js';
  * Code's statusline JSON names them under `rate_limits`, with the share of
  * each at which `pup launch` and `pup new` stop starting windows.
  */
-export const USAGE_WINDOWS = [
+const USAGE_WINDOWS = [
   { key: 'five_hour', label: '5-hour', short: '5h', holdAt: 85 },
   { key: 'seven_day', label: '7-day', short: '7d', holdAt: 90 },
 ] as const;
 
 /** A reading older than this says nothing about now: it counts as unknown and never holds. */
-export const USAGE_FRESH_MS = 30 * 60_000;
+const USAGE_FRESH_MS = 30 * 60_000;
 
 /**
  * How far ahead of this machine's clock a reading's mtime may be. A window
@@ -25,13 +25,13 @@ const CLOCK_SKEW_MS = 60_000;
 type UsageWindowKey = (typeof USAGE_WINDOWS)[number]['key'];
 
 /** One window's share used, 0 to 100, and when it resets, in epoch seconds. */
-export interface UsageWindow {
+interface UsageWindow {
   usedPercentage: number;
   resetsAt: number;
 }
 
 /** The latest reading a window's status line wrote; `writtenAt` is the file's mtime, in epoch ms. */
-export interface UsageReading {
+interface UsageReading {
   writtenAt: number;
   windows: Partial<Record<UsageWindowKey, UsageWindow>>;
 }
