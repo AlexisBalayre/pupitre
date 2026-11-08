@@ -51,6 +51,23 @@ interface ListedPullRequest {
   autoMergeRequest?: unknown;
 }
 
+/** Run `gh` with `body` over stdin: argv is visible in `ps` and has length limits. */
+function ghWithBody(
+  repoPath: string,
+  args: string[],
+  body: string,
+  timeout = GH_COMMAND_TIMEOUT_MS,
+): string {
+  return execFileSync('gh', args, {
+    cwd: repoPath,
+    encoding: 'utf8',
+    input: body,
+    timeout,
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: pinnedGitEnv(),
+  });
+}
+
 function ghJson(repoPath: string, args: string[], timeout = GH_COMMAND_TIMEOUT_MS): unknown {
   const output = execFileSync('gh', args, {
     cwd: repoPath,
@@ -148,23 +165,16 @@ export function findOpenPullRequest(repoPath: string, ref: PullRequestRef): stri
  * actually produced (decision 27).
  */
 export function rewritePullRequest(repoPath: string, url: string, pr: NewPullRequest): void {
-  execFileSync(
-    'gh',
+  ghWithBody(
+    repoPath,
     ['pr', 'edit', url, '--repo', pr.repo, '--title', pr.title, '--body-file', '-'],
-    {
-      cwd: repoPath,
-      encoding: 'utf8',
-      input: pr.body,
-      timeout: GH_COMMAND_TIMEOUT_MS,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env: pinnedGitEnv(),
-    },
+    pr.body,
   );
 }
 
 export function createPullRequest(repoPath: string, pr: NewPullRequest): string {
-  return execFileSync(
-    'gh',
+  return ghWithBody(
+    repoPath,
     [
       'pr',
       'create',
@@ -179,15 +189,7 @@ export function createPullRequest(repoPath: string, pr: NewPullRequest): string 
       '--body-file',
       '-',
     ],
-    {
-      cwd: repoPath,
-      encoding: 'utf8',
-      // Body over stdin: argv is visible in `ps` and has length limits.
-      input: pr.body,
-      timeout: GH_COMMAND_TIMEOUT_MS,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env: pinnedGitEnv(),
-    },
+    pr.body,
   ).trim();
 }
 
@@ -589,14 +591,7 @@ export function commentOnPullRequest(
   body: string,
   timeoutMs = GH_COMMAND_TIMEOUT_MS,
 ): void {
-  execFileSync('gh', ['pr', 'comment', url, '--repo', repo, '--body-file', '-'], {
-    cwd: repoPath,
-    encoding: 'utf8',
-    input: body,
-    timeout: timeoutMs,
-    stdio: ['pipe', 'pipe', 'pipe'],
-    env: pinnedGitEnv(),
-  });
+  ghWithBody(repoPath, ['pr', 'comment', url, '--repo', repo, '--body-file', '-'], body, timeoutMs);
 }
 
 /**

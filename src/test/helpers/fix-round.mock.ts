@@ -1,30 +1,11 @@
-import { execFileSync } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
 import type { Adapter } from '../../adapters/types/adapter.types.js';
+import { commitAs } from './git.mock.js';
 
-// Test repos must not inherit the developer's global git config nor GIT_DIR &
-// co., which a pre-commit hook run would aim at the pupitre repo instead.
-export const GIT_ENV: NodeJS.ProcessEnv = {
-  ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_'))),
-  GIT_CONFIG_GLOBAL: '/dev/null',
-  GIT_CONFIG_SYSTEM: '/dev/null',
-};
-
-export function sh(cwd: string, ...args: string[]): string {
-  return execFileSync(args[0] as string, args.slice(1), {
-    cwd,
-    encoding: 'utf8',
-    env: GIT_ENV,
-  }).trim();
-}
+export { GIT_ENV, sh } from './git.mock.js';
+export { passingAdapter } from './merge-gate.mock.js';
 
 export function commitIn(dir: string, file: string, content: string): string {
-  mkdirSync(dirname(join(dir, file)), { recursive: true });
-  writeFileSync(join(dir, file), content);
-  sh(dir, 'git', 'add', '.');
-  sh(dir, 'git', '-c', 'user.email=f@test', '-c', 'user.name=fix', 'commit', '-q', '-m', file);
-  return sh(dir, 'git', 'rev-parse', 'HEAD');
+  return commitAs({ email: 'f@test', name: 'fix' }, dir, file, content);
 }
 
 export const SESSION_ID = 's1';
@@ -43,16 +24,6 @@ export const failingAdapter: Adapter = {
   id: 'fake',
   detect: () => true,
   gateCommands: () => [{ stage: 'test', command: 'false', args: [] }],
-};
-
-export const passingAdapter: Adapter = {
-  id: 'fake',
-  detect: () => true,
-  gateCommands: () => [
-    { stage: 'build', command: 'true', args: [] },
-    { stage: 'test', command: 'true', args: [] },
-    { stage: 'lint', command: 'true', args: [] },
-  ],
 };
 
 export interface ThreadSeed {
