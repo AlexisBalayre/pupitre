@@ -511,6 +511,47 @@ describe('gitDiffBinaryRecount', () => {
     });
   });
 
+  // zipimport, runpy and `java -jar` find a zip by the end record in its tail,
+  // whatever comes first, so a PNG with a zip appended is an importable module.
+  it('recounts a known binary with a zip end record in its last 64 KiB', () => {
+    const endRecord = `PK\x05\x06${'\0'.repeat(18)}`;
+    const repo = repoWith(
+      { 'base.ts': 'one\n' },
+      {
+        'zipped.png': png(`\n${endRecord}`),
+        'far.png': png(`${endRecord}\n${'x'.repeat(64 * 1024 + 22)}`),
+      },
+    );
+
+    expect(gitDiffBinaryRecount(repo, 'main', 'feature', 'zipped.png')).toEqual({
+      added: 4,
+      deleted: 0,
+    });
+    expect(gitDiffBinaryRecount(repo, 'main', 'feature', 'far.png')).toBeNull();
+  });
+
+  // Many files under the per-file cap would otherwise add up to an unread tree.
+  it('skips known binaries from one shared budget and recounts the one past it', () => {
+    const repo = repoWith(
+      { 'gone.png': png('old\n') },
+      { 'a.png': png('a\n'), 'b.png': png('b\n') },
+    );
+    sh(repo, 'git', 'rm', '-q', 'gone.png');
+    sh(repo, 'git', 'commit', '-q', '-m', 'drop');
+    const size = png('a\n').length;
+    const budget = { bytes: size + 1 };
+
+    expect(gitDiffBinaryRecount(repo, 'main', 'feature', 'gone.png', budget)).toBeNull();
+    expect(budget.bytes).toBe(size + 1);
+    expect(gitDiffBinaryRecount(repo, 'main', 'feature', 'a.png', budget)).toBeNull();
+    expect(budget.bytes).toBe(1);
+    // The signature's CR and LF make three lines; `b` ends the third.
+    expect(gitDiffBinaryRecount(repo, 'main', 'feature', 'b.png', budget)).toEqual({
+      added: 3,
+      deleted: 0,
+    });
+  });
+
   // An object read that fails was read as "this side does not exist", and a
   // known-format path then went uncounted; only an empty listing is absence.
   it('throws when the blob of a side cannot be read, rather than skip the file', () => {

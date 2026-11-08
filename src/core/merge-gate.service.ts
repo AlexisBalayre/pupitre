@@ -44,6 +44,7 @@ import {
   armedGitDrivers,
   assertNoArmedGitDrivers,
   BINARY_FREE_MAX_BYTES,
+  BINARY_FREE_TOTAL_MAX_BYTES,
   checkoutPinned,
   currentBranch,
   gitDiffAddedLines,
@@ -238,6 +239,8 @@ function rawDiffEntries(
       '--no-ext-diff',
       '--no-textconv',
       '--no-color',
+      // A session-written `diff.relative` would list only a prefix's paths (decision 154).
+      '--no-relative',
       '-z',
       '--raw',
       '-M',
@@ -368,7 +371,7 @@ function dependenciesNameDocusaurus(repoPath: string, branch: string): boolean {
       'docusaurus',
       branch,
       '--',
-      ...DIFF_SIZE_DEPENDENCY_FILES.map((name) => `:(glob,icase)**/${name}`),
+      ...DIFF_SIZE_DEPENDENCY_FILES.map((name) => `:(top,glob,icase)**/${name}`),
     ]);
     return true;
   } catch (error) {
@@ -392,6 +395,10 @@ function dependenciesNameDocusaurus(repoPath: string, branch: string): boolean {
  * path or target holds a character outside ASCII. A link named as a dependency
  * file may name Docusaurus where no grep reads it, and a file named outside
  * ASCII may be a config or dependency file no case-insensitive match finds.
+ * Every read here and in `filesNaming` is taken from the top of the tree
+ * (`--full-tree`, `--full-name`, `:(top)`): a session-written `core.worktree`
+ * naming a directory above the repo puts git under a prefix, and a read
+ * scoped to it lists nothing (decision 154).
  */
 function readBranchTree(repoPath: string, branch: string): BranchTree {
   const blobs = new Map<string, { oid: string; size: number }>();
@@ -399,7 +406,9 @@ function readBranchTree(repoPath: string, branch: string): BranchTree {
   const landings: string[] = [];
   let anywhere = false;
   let markdownIsCode = dependenciesNameDocusaurus(repoPath, branch);
-  for (const entry of runGit(repoPath, ['ls-tree', '-r', '-l', '-z', branch]).split('\0')) {
+  for (const entry of runGit(repoPath, ['ls-tree', '-r', '-l', '-z', '--full-tree', branch]).split(
+    '\0',
+  )) {
     if (!entry) continue;
     // "<mode> <type> <oid> <padded size>\t<path>": the path is everything after the first tab.
     const tab = entry.indexOf('\t');
@@ -542,6 +551,7 @@ function filesNaming(
       'color.grep=never',
       'grep',
       '--no-color',
+      '--full-name',
       '-l',
       '-z',
       '-i',
@@ -550,6 +560,7 @@ function filesNaming(
       ...[...byName.keys()].flatMap((name) => ['-e', name]),
       branch,
       '--',
+      ':(top)',
     ]);
   } catch (error) {
     rethrowIfKilled(error);
@@ -649,7 +660,9 @@ function reachableTestFiles(
  * split into source, test files and prose under `docs/` (decision 110). A null numstat is
  * a measurement, not a skip: a file git reports as binary whose content is
  * text is recounted from its patch and named in `forged`, because git was told
- * to call it binary by something no diff shows (decision 53).
+ * to call it binary by something no diff shows (decision 53). Known binaries
+ * skip from one budget of `BINARY_FREE_TOTAL_MAX_BYTES`, so the file that
+ * would go past it is recounted and flagged too (decision 154).
  */
 export function countChangedLines(
   repoPath: string,
@@ -658,6 +671,7 @@ export function countChangedLines(
 ): { source: number; test: number; docs: number; forged: string[] } {
   const counts = { source: 0, test: 0, docs: 0 };
   const forged: string[] = [];
+  const binaryBudget = { bytes: BINARY_FREE_TOTAL_MAX_BYTES };
   const raw = rawDiffEntries(repoPath, target, branch);
   const tree = readBranchTree(repoPath, branch);
   const kindOf = (path: string): DiffSizeKind => diffSizeKind(path, raw.get(path), tree);
@@ -675,7 +689,7 @@ export function countChangedLines(
       counts[kind] += stat.added + stat.deleted;
       continue;
     }
-    const recount = gitDiffBinaryRecount(repoPath, target, branch, stat.path);
+    const recount = gitDiffBinaryRecount(repoPath, target, branch, stat.path, binaryBudget);
     if (!recount) continue;
     counts[kind] += recount.added + recount.deleted;
     forged.push(stat.path);
@@ -2762,7 +2776,8 @@ export async function measureBranch(
     });
     sizeFindings.push(
       `counts ${forged.length} file(s) git reports as binary that are no known binary format ` +
-        `of at most ${BINARY_FREE_MAX_BYTES / 1024 / 1024} MiB, recounted from the patch: ` +
+        `within ${BINARY_FREE_MAX_BYTES / 1024 / 1024} MiB a file and ` +
+        `${BINARY_FREE_TOTAL_MAX_BYTES / 1024 / 1024} MiB a diff, recounted from the patch: ` +
         `${quoted}${ellipsis}`,
     );
   }

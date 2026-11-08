@@ -1667,6 +1667,55 @@ describe('countChangedLines', () => {
     });
   });
 
+  // A session-written `core.worktree` naming the repo's parent puts every git
+  // read under a `<repo>/` prefix: a tree listing, a grep and a per-file diff
+  // scoped to it found nothing, and `diff.relative` emptied the numstat too.
+  it('counts from the top of the tree under a core.worktree above the repo', () => {
+    const repo = initRepo();
+    sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
+    commitBlobs(repo, [
+      ['100644', 'src/other.test.ts', 'export const v = 1;\n'.repeat(3)],
+      ['120000', 'src/link.ts', 'other.test.ts'],
+      ['100644', 'src/big.test.ts', 'export const v = 1;\n'.repeat(5)],
+      ['100644', 'src/imp.ts', "export * from './big.test.js';\n"],
+      ['100644', 'src/nul.ts', '// \0\nexport const a = 1;\nexport const b = 2;\n'],
+      ['100644', 'website/package.json', '{ "dependencies": { "@docusaurus/core": "3" } }\n'],
+      ['100644', 'docs/page.md', 'export const v = 1;\n'.repeat(2)],
+    ]);
+    sh(repo, 'git', 'config', 'core.worktree', dirname(repo));
+    sh(repo, 'git', 'config', 'diff.relative', 'true');
+
+    expect(countChangedLines(repo, 'main', 'feature')).toEqual({
+      source: 16,
+      test: 0,
+      docs: 0,
+      forged: ['src/nul.ts'],
+    });
+  });
+
+  // Five known binaries at the 1 MiB file cap pass 4 MiB together, so the
+  // fifth is recounted and flagged rather than skipped.
+  it('recounts the known binary that takes a diff past the total cap', () => {
+    const repo = initRepo();
+    sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
+    const header = Buffer.from('\x89PNG\r\n\x1a\n\0\0\0\rIHDR', 'latin1');
+    for (const name of ['a', 'b', 'c', 'd', 'e']) {
+      writeFileSync(
+        join(repo, `${name}.png`),
+        Buffer.concat([header, Buffer.from(`\n${'x'.repeat(1024 * 1024 - header.length - 1)}`)]),
+      );
+    }
+    sh(repo, 'git', 'add', '.');
+    sh(repo, 'git', 'commit', '-q', '-m', 'images');
+
+    expect(countChangedLines(repo, 'main', 'feature')).toEqual({
+      source: 4,
+      test: 0,
+      docs: 0,
+      forged: ['e.png'],
+    });
+  });
+
   // `git grep -I` would skip a binary file, and with it a JavaScript
   // importer whose NUL sits in a comment.
   it('reaches a test from an importer with a NUL in a comment', () => {

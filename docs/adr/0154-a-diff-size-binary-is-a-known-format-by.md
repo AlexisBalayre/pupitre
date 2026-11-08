@@ -13,23 +13,32 @@
     5 000-line source file then counted as 0 lines and was not flagged.
     *The rule.* `gitDiffBinaryRecount` skips a file only when every side of the merge-base
     diff it exists on is a known binary (`blobIsKnownBinary`, `src/core/git-diff.client.ts`).
-    A side is one when four things hold. It is a blob of at most `BINARY_FREE_MAX_BYTES`
+    A side is one when five things hold. It is a blob of at most `BINARY_FREE_MAX_BYTES`
     (1 MiB). Its first 8000 bytes hold a NUL. Its bytes open with the magic number of a format
-    in `BINARY_FORMATS`. And its path ends with an extension that same format is committed
-    under, in any ASCII case. Every other file git reports as binary is recounted from its
+    in `BINARY_FORMATS`. Its path ends with an extension that same format is committed under,
+    in any ASCII case. And its last 64 KiB plus 22 bytes hold no zip end-of-central-directory
+    signature (`PK\x05\x06`). The skips one diff makes also share a budget of
+    `BINARY_FREE_TOTAL_MAX_BYTES` (4 MiB), spent in path order with the bytes each file's
+    branch side holds; a file the branch deleted spends nothing. The file that would go past
+    the budget is recounted and flagged, not skipped. Every other file git reports as binary is recounted from its
     `--text` patch and named in `forged`. That flags it at any size, as decision 53 flags a
     text file git was told to call binary. A path whose extension no format names is
     recounted without reading a blob. Extension and magic are both required because the
     session writes both: a `.js` file opening with a PNG signature is recounted, and so is a
     `.png` whose bytes are code. A known binary replaced by text is recounted too. The old
     rule skipped a file when either side was binary. The diff-size detail now names these
-    files as binary files that are no known format of at most 1 MiB. The ledger description
+    files as binary files that are no known format within 1 MiB a file and 4 MiB a diff. The ledger description
     keeps its `Text files git reports as binary` wording, so a re-gate still matches an
     entry filed before this decision.
     *Which magics.* Each magic in the table holds a byte that no source text can hold where
     it sits: a NUL, a control character, or a byte that cannot start UTF-8. That byte comes
-    before any byte that could open a comment or a string, so no JavaScript, TypeScript or
-    Python loader runs a file that opens with it. What is left: PNG, JPEG, ICO, TIFF,
+    before any byte that could open a comment or a string, so a JavaScript, TypeScript or
+    Python loader that reads a file from its first byte rejects one that opens with it. A
+    zip reader starts from the other end: Python's `zipimport` and `runpy` and `java -jar`
+    find a zip by the end record in its last 64 KiB plus 22 bytes, whatever the extension
+    or first bytes. A PNG with a zip appended is then a module path that one counted line
+    imports (`sys.path.insert(0, 'assets/x.png')`), with megabytes of source compressed
+    inside, which is why a tail holding that record is never a known binary. What is left: PNG, JPEG, ICO, TIFF,
     WebM/Matroska, MP3 frames and TrueType's `\0\x01\0\0`. Left out, because the magic is
     printable and the file can be written as `GIF89a=0//\0`: GIF, RIFF (WebP, WAV, AVI),
     BMP, PDF, WOFF, WOFF2, OTF, Ogg, FLAC, an MP3 `ID3` tag and TrueType's `true`. MP4 and
@@ -45,19 +54,34 @@
     a test, because the test split takes only the `.test.ts` suffix. And every path outside
     `docs/` counts as source (decision 110), so the rule would flag every image outside
     `docs/`. Reading "source path" as a directory such as `src/` or `lib/` is beaten by
-    moving the file. Tightening the magics stops the loader instead, and the cap bounds how
-    much a known format can carry wherever it sits.
-    *Ceilings.* A repo committing a format outside the table, or a known one over 1 MiB,
-    meets a forged flag to accept (decision 17). Its patch is then parsed as text, and a
+    moving the file. Tightening the magics and refusing a zip tail stop the loaders instead.
+    The 1 MiB file cap and the 4 MiB diff budget then bound how much known formats can carry
+    together, wherever they sit.
+    *Ceilings.* A repo committing a format outside the table, a known one over 1 MiB, or
+    known binaries adding more than 4 MiB in one diff meets a forged flag to accept
+    (decision 17). Which file goes past the budget follows path order, not size. Its patch is then parsed as text, and a
     patch larger than `GIT_MAX_BUFFER` (64 MiB) errors the gate. That costs a repo
     committing GIFs, WebP, PDFs, web fonts or videos one acceptance per merge that adds one.
     A loader that runs a file past bytes no source can hold still runs a known binary under
     the cap: PHP's `include` prints a PNG's bytes and runs a `<?php` block inside it, and a
     shell running a file line by line goes on past the lines it cannot run. Up to 1 MiB of
-    such content per file goes uncounted. Symlink blobs holding a NUL, which no checkout
+    such content per file, and 4 MiB per diff, goes uncounted. A zip reader that searches
+    further back than the end record's 64 KiB reach is not covered. Symlink blobs holding a NUL, which no checkout
     writes, are recounted and flagged. The recount still runs `merge-base` and one `diff`
     per `-\t-` file, so many NUL-carrying files still cost two processes each. Batching
     that means parsing one multi-file patch, and stays owed.
+    *Reads from the top of the tree.* The merge gate does not call `assertNoWorktreeConfig`,
+    and a session can write `core.worktree` into the shared config. One naming a directory
+    above the repo puts every git child under a `<repo>/` prefix (verified on Git 2.54).
+    Then `ls-tree`, `git grep` and a pathspec'd `git diff` scoped to it find nothing: links go
+    unseen, importers unlisted and a recount reads no hunks. A `diff.relative` beside it
+    empties the numstat too. So every diff-size read names the top. `ls-tree` takes
+    `--full-tree`. The importer grep takes `--full-name` and the pathspec `:(top)`, and the
+    Docusaurus grep `:(top,glob,icase)`. The per-file diff behind the recount and patch
+    coverage takes `:(top,literal)<path>` in place of `--literal-pathspecs`. And every diff
+    takes `--no-relative`, through `DIFF_SAFE_FLAGS` and in `rawDiffEntries`. The gate's
+    other git reads are not audited here for the prefix; refusing `core.worktree` at the
+    gate would close it for all of them, and stays owed.
     *Hole 2: one git process per blob.* The decision 110 reach checks ran `cat-file blob`
     once per symlink in the branch tree and once per file `git grep -l` listed. A tree of
     20 000 tiny files held the merge lock for minutes.
@@ -87,12 +111,18 @@
     and `%PDF-//\0` in a `.pdf`, `x=1;ftyp//\0` in an `.mp4`, a `.zip`, a `.wasm`, and a
     PNG one byte over the cap. A known-format path whose blob object is deleted throws
     instead of returning null. `readBlobs` returns each blob byte for byte (a NUL, an empty
-    blob, a repeat). It refuses a missing oid, a size one byte short (the buffer overflows)
+    blob, a repeat). A PNG with a zip end record appended recounts, and one whose record sits
+    past the 64 KiB reach stays null. With a shared budget, a deleted PNG spends nothing, a
+    PNG the budget covers is skipped and spends its size, and the next one is recounted.
+    `readBlobs` refuses a missing oid, a size one byte short (the buffer overflows)
     or long, and, before running git, sizes that add past 64 MiB. In `merge-gate.test.ts`, a
     5 000-line `.ts` with a NUL counts 5 001 source lines and is forged, beside a real PNG
     that counts nothing. An importer with a NUL in a comment still reaches its test. A tree
     with 40 links and 40 importers runs exactly as many git processes as a tree with 1 of
     each, with two `cat-file --batch` calls, each carrying the 30 s timeout, and no
-    `cat-file blob`. The symlink-NUL case expects both NUL-carrying links forged. In
+    `cat-file blob`. The symlink-NUL case expects both NUL-carrying links forged. Under a
+    `core.worktree` naming the repo's parent and `diff.relative`, a link, an importer, a
+    NUL-carrying file and a Docusaurus witness all still count. Five PNGs of exactly 1 MiB
+    skip four and recount and flag the fifth. In
     `merge-gate-open-pr.test.ts`, the real binary that stays free under a forged
     `* -diff` is an `.ico`.

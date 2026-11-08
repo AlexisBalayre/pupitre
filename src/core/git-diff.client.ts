@@ -470,9 +470,17 @@ export function pinnedGitEnv(): NodeJS.ProcessEnv {
  * so no line starts with `@@`, and `--text` a `* -diff` attribute or
  * `diff.<driver>.binary` that turns every file into "Binary files differ".
  * `--text` is safe for a real binary because `patchCoverage` only counts
- * files the coverage report instruments.
+ * files the coverage report instruments. `--no-relative` undoes a
+ * session-written `diff.relative`, which beside a `core.worktree` that puts
+ * the repo under a prefix would list only the paths under it (decision 154).
  */
-const DIFF_SAFE_FLAGS = ['--no-ext-diff', '--no-textconv', '--no-color', '--text'] as const;
+const DIFF_SAFE_FLAGS = [
+  '--no-ext-diff',
+  '--no-textconv',
+  '--no-color',
+  '--text',
+  '--no-relative',
+] as const;
 
 /**
  * Node's default is 1 MiB, which `--text` on a large committed binary would
@@ -627,7 +635,10 @@ const PATH_AS_GIVEN = ['-c', 'core.precomposeUnicode=false'];
  * each hunk's added lines start, and how many lines it adds and deletes. One
  * diff per file so hunk headers are the only thing parsed — file names never
  * need de-quoting. The path is a literal pathspec, or a file named
- * `:(top)foo` would be read as magic and return no hunks. The inter-hunk
+ * `:(top)foo` would be read as magic and return no hunks, and taken from the
+ * top of the tree, or a session-written `core.worktree` naming a directory
+ * above the repo would put it under a prefix that matches nothing
+ * (decision 154). The inter-hunk
  * context is pinned to 0 and the algorithm to myers, or a session-written
  * `diff.interHunkContext` would merge the hunks and a `diff.algorithm` of
  * patience or histogram could read an unchanged block as deleted and
@@ -644,7 +655,6 @@ function diffHunks(
 ): { start: number; added: number; deleted: number }[] {
   const patch = runGit(repoPath, [
     ...PATH_AS_GIVEN,
-    '--literal-pathspecs',
     'diff',
     ...DIFF_SAFE_FLAGS,
     '-U0',
@@ -652,7 +662,7 @@ function diffHunks(
     '--diff-algorithm=myers',
     `${target}...${branch}`,
     '--',
-    path,
+    `:(top,literal)${path}`,
   ]).trim();
   const hunks: { start: number; added: number; deleted: number }[] = [];
   for (const line of patch.split('\n')) {
@@ -761,6 +771,23 @@ const BINARY_FORMATS: { extensions: string[]; magic: string[] }[] = [
  */
 export const BINARY_FREE_MAX_BYTES = 1024 * 1024;
 
+/**
+ * The most bytes the known binaries one diff adds may skip together (decision
+ * 154): past it, the file that would go over is recounted and flagged, so
+ * many files under `BINARY_FREE_MAX_BYTES` cannot add up to an unread tree.
+ */
+export const BINARY_FREE_TOTAL_MAX_BYTES = 4 * 1024 * 1024;
+
+/**
+ * A zip's end-of-central-directory signature, and how far from a file's end
+ * it may sit: the 22-byte record plus a comment of up to 64 KiB. Python's
+ * `zipimport` and `runpy` and `java -jar` find a zip by this record whatever
+ * the file's extension or first bytes, so a PNG with a zip appended is a
+ * module path one counted line can import (decision 154).
+ */
+const ZIP_EOCD = Buffer.from('PK\x05\x06', 'latin1');
+const ZIP_EOCD_REACH = 64 * 1024 + 22;
+
 /** The formats `path`'s extension, in any ASCII case, names. */
 function formatsNamed(path: string): typeof BINARY_FORMATS {
   const name = basename(path).toLowerCase();
@@ -770,9 +797,10 @@ function formatsNamed(path: string): typeof BINARY_FORMATS {
 }
 
 /**
- * Whether `path` on `rev` is a binary to skip: a blob no larger than
- * `BINARY_FREE_MAX_BYTES`, binary by content, never by attribute, and opening
- * with the magic of a format its extension names. Only an empty `ls-tree`
+ * The size of `path` on `rev` when it is a binary to skip, false when it is
+ * not: a blob no larger than `BINARY_FREE_MAX_BYTES`, binary by content, never
+ * by attribute, opening with the magic of a format its extension names, and
+ * with no zip end record in its tail (`ZIP_EOCD`). Only an empty `ls-tree`
  * listing means the side does not exist and answers undefined; a git that
  * fails, times out or is killed throws, as reading a failed answer as absent
  * would skip the file uncounted. The entry is read by the oid `ls-tree`
@@ -783,7 +811,7 @@ function blobIsKnownBinary(
   rev: string,
   path: string,
   formats: typeof BINARY_FORMATS,
-): boolean | undefined {
+): number | false | undefined {
   const listing = runGit(
     repoPath,
     [
@@ -809,9 +837,11 @@ function blobIsKnownBinary(
   if (type !== 'blob' || Number(size) > BINARY_FREE_MAX_BYTES) return false;
   const [blob = Buffer.alloc(0)] = readBlobs(repoPath, [{ oid, size: Number(size) }]);
   if (!blob.subarray(0, BINARY_SNIFF_BYTES).includes(0)) return false;
-  return formats.some(({ magic }) =>
+  if (blob.subarray(-ZIP_EOCD_REACH).includes(ZIP_EOCD)) return false;
+  const known = formats.some(({ magic }) =>
     magic.some((bytes) => blob.subarray(0, bytes.length).equals(Buffer.from(bytes, 'latin1'))),
   );
+  return known && blob.length;
 }
 
 /**
@@ -829,13 +859,16 @@ function blobIsKnownBinary(
  * not the whole answer either: one in a source file's comment makes git call
  * it binary. So the file is skipped only when every side it exists on is a
  * known binary (`blobIsKnownBinary`), and a path no format names is recounted
- * unread (decision 154).
+ * unread (decision 154). A skip spends the branch side's bytes from `budget`,
+ * which one diff's calls share, and a file the budget cannot cover is
+ * recounted (`BINARY_FREE_TOTAL_MAX_BYTES`).
  */
 export function gitDiffBinaryRecount(
   repoPath: string,
   target: string,
   branch: string,
   path: string,
+  budget: { bytes: number } = { bytes: BINARY_FREE_TOTAL_MAX_BYTES },
 ): { added: number; deleted: number } | null {
   const base = runGit(repoPath, ['merge-base', target, branch]).trim();
   const formats = formatsNamed(path);
@@ -843,7 +876,13 @@ export function gitDiffBinaryRecount(
     formats.length === 0
       ? [false]
       : [base, branch].map((rev) => blobIsKnownBinary(repoPath, rev, path, formats));
-  if (sides.includes(true) && !sides.includes(false)) return null;
+  const known = sides.some((side) => typeof side === 'number') && !sides.includes(false);
+  // A side the branch deleted adds no bytes.
+  const spent = typeof sides[1] === 'number' ? sides[1] : 0;
+  if (known && spent <= budget.bytes) {
+    budget.bytes -= spent;
+    return null;
+  }
   let added = 0;
   let deleted = 0;
   for (const hunk of diffHunks(repoPath, target, branch, path)) {
