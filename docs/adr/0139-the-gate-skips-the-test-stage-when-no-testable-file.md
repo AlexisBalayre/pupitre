@@ -26,6 +26,10 @@
       the old one is read from the `--raw -M` entries);
     - a changed symlink, or a path a symlink on the branch can reach;
     - a name outside ASCII, which the gate's filesystem can fold onto another name;
+    - a path the branch's tree also holds in another ASCII case, itself or through one of
+      its directories. APFS folds case (decision 78), so a changed `docs/x.md` is the
+      off-list `docs/x.MD` or `Docs/x.md` a test may read, and on macOS the checkout
+      replaces it;
     - Markdown under `docs/` on a branch where a Docusaurus config or dependency compiles
       it.
 
@@ -53,18 +57,32 @@
     `docs/adr`, `SKILL.md`, `.github` or a root prose file. `decision-record.test.ts`,
     `overlap.test.ts`, `routing-utils.test.ts`, `pre-commit.test.ts` and the gate tests
     name them only as paths in temp repos or as globs, and none reads the checkout's copy.
-    `merge-gate-untested.test.ts` checks that against the code. It collects every path a
-    TypeScript file under `src/` reads from the real checkout, in three forms:
-    - `process.cwd()`, `import.meta.dirname` or `__dirname` joined with literal segments,
-      or used as the start of a template string;
-    - `new URL(…, import.meta.url)`;
-    - a relative literal passed to an fs call.
+    `merge-gate-untested.test.ts` checks that against the code, so a later test that reads
+    `CLAUDE.md`, a workflow or an ADR fails it. It scans every file the suite loads: the
+    TypeScript under `src/`, whatever the vitest config's `include` collects, and that config.
+    In each file it collects every path read from the real checkout, in these forms:
+    - a call holding `process.cwd()`, `import.meta.dirname`, `__dirname` or a name declared
+      as one: each literal in it, the path a `join` or `resolve` builds, and a spawn's
+      `cwd:`;
+    - a template string starting with one of those anchors;
+    - a literal starting with `./` or `../`, resolved from the file, which covers every
+      import, `?raw` import, dynamic `import()`, `require`, `vi.mock` and
+      `new URL(…, import.meta.url)`;
+    - `import.meta.glob` from the root;
+    - an fs, glob or path call whose first argument is a relative literal: the `read*`,
+      `access*`, `opendir*`, `stat*`, `exists*` and `open*` families, `fs.promises.*`,
+      `glob` and `globSync`, and an unanchored `resolve` or `join`;
+    - a spawn with no `cwd` and no `-C`, such as `git ls-files docs`, whose literals name
+      paths from the root.
 
-    It then asserts that no listed file in the checkout is one of those paths or lies under
-    one. The test also checks that its search is not empty: it must find the hook read
+    It then asserts that no listed file in the checkout is one of those paths, lies under
+    one, or matches one that is a glob. Each form has a row in a table test proving the
+    scan finds it, and another test proves the paths a temp repo spells are not counted.
+    The test also checks that the real search is not empty: it must find the hook read
     `scripts/pre-commit`, the walk of `src`, and `src/core/sandbox.utils.ts`, and the list
     must match files the checkout holds. A read whose path is only an anchor plus a variable
-    is not checked, because the variable's value comes from a read that is.
+    is not checked, because the variable's value comes from a read that is. The test file
+    leaves itself out: its table names listed files on purpose.
     Tests: a change of only `.github/workflows/ci.yml` and an ADR merges under a test command
     that always fails. Its test and coverage stages are skipped with `no testable file changed
     (2 files)`, coverage is never measured, and build, lint, the scope audit and the diff size
@@ -74,6 +92,8 @@
     coverage, the coverage stage says `no testable file changed (1 files)` and coverage is
     never measured. Without coverage, the stage says `not measured — adapter cannot measure
     coverage`.
-    The full test stage runs, and fails, in four cases: one source file is changed beside a
-    workflow, a source file is renamed into `docs/`, a Docusaurus config compiles the changed
-    Markdown, and a symlink reaches the changed path.
+    After an untested merge, the coverage baseline keeps its old ratio while the other debt
+    metrics ratchet. The full test stage runs, and fails, in six cases: one source file is
+    changed beside a workflow, a source file is renamed into `docs/`, a Docusaurus config
+    compiles the changed Markdown, a symlink reaches the changed path, the tree holds the
+    changed path in another case, and the tree holds one of its directories in another case.

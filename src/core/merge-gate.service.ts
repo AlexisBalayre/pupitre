@@ -2333,7 +2333,10 @@ export async function waitForLoad(
  * changed, since `--name-only` names only the new one. Something other than
  * the path itself can read each of these, so each counts as testable, as
  * decision 110 counts it as source: a symlink, a path a symlink can reach, a
- * name outside ASCII, and Markdown that a Docusaurus config compiles.
+ * name outside ASCII, and Markdown that a Docusaurus config compiles. So does
+ * a path the branch's tree also holds in another ASCII case, itself or through
+ * one of its directories: APFS folds case (decision 78), so `docs/x.md` is the
+ * off-list `docs/x.MD` or `Docs/x.md` a test may read.
  */
 function changesOnlyUntested(
   repoPath: string,
@@ -2350,8 +2353,25 @@ function changesOnlyUntested(
     if (entry.renamedFrom !== undefined && !listed(entry.renamedFrom)) return false;
   }
   const tree = readBranchTree(repoPath, branch);
+  // Every spelling of each path and directory in the branch's tree, by its folded form.
+  const spellings = new Map<string, Set<string>>();
+  const prefixes = (path: string): string[] =>
+    path.split('/').map((_, i, segments) => segments.slice(0, i + 1).join('/'));
+  for (const path of runGit(repoPath, ['ls-tree', '-r', '-z', '--name-only', branch]).split('\0')) {
+    for (const prefix of path ? prefixes(path) : []) {
+      const key = folded(prefix);
+      spellings.set(key, (spellings.get(key) ?? new Set()).add(prefix));
+    }
+  }
+  const foldsOntoAnother = (path: string): boolean =>
+    prefixes(path).some((prefix) =>
+      [...(spellings.get(folded(prefix)) ?? [])].some((spelling) => spelling !== prefix),
+    );
   return changedPaths.every(
-    (path) => !tree.linked(path) && !(tree.markdownIsCode && path.endsWith('.md')),
+    (path) =>
+      !tree.linked(path) &&
+      !(tree.markdownIsCode && path.endsWith('.md')) &&
+      !foldsOntoAnother(path),
   );
 }
 
