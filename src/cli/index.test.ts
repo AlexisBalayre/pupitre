@@ -428,6 +428,48 @@ describe('CLI commands', () => {
       expect(line).toContain('[2Js2');
       expect(line).not.toContain('\u001b');
     });
+
+    // Every session that records a decision appends to the index, so the pair
+    // is a line per pair of sessions and hides the real overlap (decision 109).
+    describe('append-only files', () => {
+      function seedTwoRunning(repo: string): void {
+        for (const id of ['s1', 's2']) {
+          seedSession(repo, id);
+          const { db } = resolveProject(repo);
+          transitionSession(db, id, 'running');
+          db.close();
+        }
+      }
+
+      it('names the index once and keeps the real file in the pair', () => {
+        const repo = initRepo();
+        useCwd(repo);
+        seedTwoRunning(repo);
+        vi.mocked(gitDiffPaths).mockReturnValue(['docs/adr/README.md', 'src/cli/index.test.ts']);
+
+        buildProgram().parse(['watch', '--once'], { from: 'user' });
+
+        const overlaps = logs.filter((l) => l.includes('OVERLAP'));
+        expect(overlaps).toHaveLength(1);
+        expect(overlaps[0]).toMatch(/OVERLAP {2}s1 <-> s2 {2}src\/cli\/index\.test\.ts$/);
+        expect(logs.filter((l) => l.includes('docs/adr/README.md'))).toEqual([
+          expect.stringMatching(/ {2}docs\/adr\/README\.md: 2 sessions append \(decision 109\)$/),
+        ]);
+      });
+
+      it('prints no pair when the index is all two sessions share', () => {
+        const repo = initRepo();
+        useCwd(repo);
+        seedTwoRunning(repo);
+        vi.mocked(gitDiffPaths).mockReturnValue(['docs/adr/README.md']);
+
+        buildProgram().parse(['watch', '--once'], { from: 'user' });
+
+        expect(logs.some((l) => l.includes('OVERLAP'))).toBe(false);
+        expect(logs.some((l) => l.includes('clear'))).toBe(false);
+        expect(logs.some((l) => l.includes('docs/adr/README.md: 2 sessions append'))).toBe(true);
+      });
+    });
   });
 
   describe('usage', () => {

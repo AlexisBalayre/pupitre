@@ -1,4 +1,5 @@
 import { Box, Text } from 'ink';
+import { appendOnlyLine, radarView } from '../../core/overlap.service.js';
 import type { DashboardSnapshot } from '../../core/types/dashboard.types.js';
 import { clip } from './viewport.utils.js';
 
@@ -8,7 +9,8 @@ import { clip } from './viewport.utils.js';
  * at the bottom — an overlap read off a dead radar is a claim about a scan that
  * may predate everything on the screen above it. Over a fleet each project's
  * radar is its own watcher's, so each is drawn apart under its project id
- * (decision 61).
+ * (decision 61). Files that only take appends (decision 109) are left out of
+ * the pairs and named once each, so they cannot bury a real overlap.
  */
 export function Radar({
   overlaps,
@@ -22,9 +24,13 @@ export function Radar({
   /** The rows this block may take, the `+N more` line and the stale line included. */
   maxLines?: number;
 }) {
-  if (overlaps.length === 0 && !radarStale) return null;
+  const view = radarView(overlaps);
+  if (view.pairs.length === 0 && view.appends.length === 0 && !radarStale) return null;
   const lead = project === undefined ? '' : `${project}  `;
-  const { shown, hidden } = clip(overlaps, Math.max(maxLines - (radarStale ? 1 : 0), 1));
+  const { shown, hidden } = clip(
+    view.pairs,
+    Math.max(maxLines - (radarStale ? 1 : 0) - view.appends.length, 1),
+  );
   return (
     <Box flexDirection="column">
       {shown.map((pair) => (
@@ -42,6 +48,11 @@ export function Radar({
       {hidden > 0 ? (
         <Text color="yellow" wrap="truncate-end">{`${lead}+${hidden} more overlaps`}</Text>
       ) : null}
+      {view.appends.map((note) => (
+        <Text key={note.file} dimColor wrap="truncate-end">
+          {`${lead}${appendOnlyLine(note)}`}
+        </Text>
+      ))}
       {radarStale ? (
         <Text dimColor wrap="truncate-end">
           {`${lead}conflict radar off — start it with \`pup watch --start\``}
