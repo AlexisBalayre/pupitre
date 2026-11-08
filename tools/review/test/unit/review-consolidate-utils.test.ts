@@ -47,6 +47,29 @@ describe("consolidateFindings", () => {
     expect(consolidateFindings([finding(), other]).findings).toHaveLength(2);
   });
 
+  it("keeps two importants one substituted word apart as two findings", () => {
+    const fails = finding({ description: "retries is never reset when the request fails" });
+    const succeeds = finding({ description: "retries is never reset when the request succeeds" });
+    expect(consolidateFindings([fails, succeeds]).findings).toHaveLength(2);
+  });
+
+  it("still folds a nit one word apart into the important", () => {
+    const nit = finding({ tag: "nit", description: "the retry loop never stops when the budget is zero today" });
+    expect(consolidateFindings([finding(), nit]).findings).toHaveLength(1);
+  });
+
+  it("does not chain a cluster past the line limit, whatever the input order", () => {
+    const at = (line: string) => finding({ tag: "nit", line });
+    expect(consolidateFindings([at("10"), at("13"), at("16")]).findings).toHaveLength(2);
+    expect(consolidateFindings([at("10"), at("16"), at("13")]).findings).toHaveLength(2);
+  });
+
+  it("treats a line-less finding as near only another line-less one", () => {
+    const nit = (line: string | null) => finding({ tag: "nit", line });
+    expect(consolidateFindings([nit(null), nit("300")]).findings).toHaveLength(2);
+    expect(consolidateFindings([nit(null), nit(null)]).findings).toHaveLength(1);
+  });
+
   it("never merges findings with no file", () => {
     const orphan = finding({ file: null, line: null });
     expect(consolidateFindings([orphan, orphan]).findings).toHaveLength(2);

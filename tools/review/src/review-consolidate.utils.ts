@@ -42,21 +42,32 @@ function words(text: string): Set<string> {
   return new Set(text.toLowerCase().match(/[a-z0-9_]{3,}/g) ?? []);
 }
 
-function similar(a: string, b: string): boolean {
+function overlap(a: string, b: string): number {
   const left = words(a);
   const right = words(b);
-  if (left.size === 0 || right.size === 0) return false;
+  if (left.size === 0 || right.size === 0) return 0;
   let shared = 0;
   for (const word of left) if (right.has(word)) shared++;
-  return shared / (left.size + right.size - shared) >= SIMILARITY;
+  return shared / (left.size + right.size - shared);
 }
 
 function sameConcern(a: Finding, b: Finding): boolean {
   if (a.file === null || a.file !== b.file) return false;
   const lineA = startLine(a.line);
   const lineB = startLine(b.line);
-  const nearby = lineA === null || lineB === null || Math.abs(lineA - lineB) <= NEAR_LINES;
-  return nearby && similar(a.description, b.description);
+  // A line-less finding is near only another line-less one: "near everything" chains clusters.
+  const nearby = lineA === null || lineB === null ? lineA === lineB : Math.abs(lineA - lineB) <= NEAR_LINES;
+  return nearby && overlap(a.description, b.description) >= SIMILARITY;
+}
+
+// Two descriptions one substituted word apart ("... when the request succeeds" / "... fails") clear
+// SIMILARITY, yet name different defects, and a confirmed important folded away is never commented.
+// So an important joins a cluster that already holds one only when the wording is the same.
+function joins(cluster: Finding[], finding: Finding): boolean {
+  const [anchor] = cluster;
+  if (!anchor || !sameConcern(anchor, finding)) return false;
+  if (finding.tag !== "important") return true;
+  return cluster.every((member) => member.tag !== "important" || overlap(member.description, finding.description) === 1);
 }
 
 // Most severe tag first, then the more certain, then the more specific area:
@@ -81,7 +92,7 @@ export interface Consolidated {
 export function consolidateFindings(findings: Finding[]): Consolidated {
   const clusters: Finding[][] = [];
   for (const finding of findings) {
-    const home = clusters.find((cluster) => cluster.some((member) => sameConcern(member, finding)));
+    const home = clusters.find((cluster) => joins(cluster, finding));
     if (home) home.push(finding);
     else clusters.push([finding]);
   }
