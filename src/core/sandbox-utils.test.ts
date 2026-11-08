@@ -8,6 +8,8 @@ import {
   readdirSync,
   readFileSync,
   realpathSync,
+  renameSync,
+  rmdirSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -16,11 +18,16 @@ import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 
-// The real rmSync, wrapped so one test can make a removal fail as a busy
-// directory does.
+// The real rmSync, renameSync and rmdirSync, wrapped so a test can make a
+// removal, or the moves around it, fail as a busy or locked directory does.
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();
-  return { ...actual, rmSync: vi.fn(actual.rmSync) };
+  return {
+    ...actual,
+    rmSync: vi.fn(actual.rmSync),
+    renameSync: vi.fn(actual.renameSync),
+    rmdirSync: vi.fn(actual.rmdirSync),
+  };
 });
 
 import { tempDir } from '../test/temp-dir.mock.js';
@@ -1071,6 +1078,97 @@ describe('removeGateDir', () => {
 
     expect(warn).not.toHaveBeenCalled();
     expect(readdirSync(parent)).toEqual([]);
+  });
+
+  describe('when a step fails', () => {
+    const errno = (code: string): Error => Object.assign(new Error(code), { code });
+    /** A directory with a file in it, the warning spy, and the real fs calls the mocks wrap. */
+    const setup = async () => {
+      const parent = tempDir('pup-remove-parent-');
+      const dir = join(parent, 'run');
+      mkdirSync(dir);
+      writeFileSync(join(dir, 'file'), 'x');
+      const warn = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      onTestFinished(() => {
+        warn.mockRestore();
+      });
+      const actual = await vi.importActual<typeof import('node:fs')>('node:fs');
+      return { parent, dir, warn, actual };
+    };
+
+    // Across devices, or in a parent pup cannot write: the delete is never
+    // tried in place, where a child could still swap what it walks.
+    it.each(['EXDEV', 'EACCES'])(
+      'reports a move aside that fails with %s, deleting nothing',
+      async (code) => {
+        const { parent, dir, warn } = await setup();
+        vi.mocked(renameSync).mockImplementationOnce(() => {
+          throw errno(code);
+        });
+        const removals = vi.mocked(rmSync).mock.calls.length;
+
+        removeGateDir(dir);
+
+        expect(warn).toHaveBeenCalledWith(`Could not remove ${dir} (${code}); it is left behind.`);
+        expect(vi.mocked(rmSync).mock.calls.length).toBe(removals);
+        expect(readdirSync(parent)).toEqual(['run']);
+        expect(readFileSync(join(dir, 'file'), 'utf8')).toBe('x');
+      },
+    );
+
+    // A child granted the directory itself, as an output is, removed it
+    // between the check and the move.
+    it('takes a directory gone by the time of the move as removed', async () => {
+      const { parent, dir, warn, actual } = await setup();
+      vi.mocked(renameSync).mockImplementationOnce(() => {
+        actual.rmSync(dir, { recursive: true });
+        throw errno('ENOENT');
+      });
+
+      removeGateDir(dir);
+
+      expect(warn).not.toHaveBeenCalled();
+      expect(readdirSync(parent)).toEqual([]);
+    });
+
+    it('says where the residue is when it cannot go back after a failed delete', async () => {
+      const { parent, dir, warn, actual } = await setup();
+      vi.mocked(rmSync).mockImplementationOnce(() => {
+        throw errno('ENOTEMPTY');
+      });
+      vi.mocked(renameSync)
+        .mockImplementationOnce(actual.renameSync)
+        .mockImplementationOnce(() => {
+          throw errno('EACCES');
+        });
+
+      removeGateDir(dir);
+
+      const [aside = ''] = readdirSync(parent);
+      expect(aside).toMatch(/^pup-removing-/);
+      const moved = join(parent, aside, 'run');
+      expect(warn).toHaveBeenCalledWith(
+        `Could not remove ${dir} (ENOTEMPTY); it is left behind in ${moved}.`,
+      );
+      expect(existsSync(dir)).toBe(false);
+      expect(readFileSync(join(moved, 'file'), 'utf8')).toBe('x');
+    });
+
+    it('puts the residue back even when the empty aside cannot be removed', async () => {
+      const { parent, dir, warn } = await setup();
+      vi.mocked(rmSync).mockImplementationOnce(() => {
+        throw errno('ENOTEMPTY');
+      });
+      vi.mocked(rmdirSync).mockImplementationOnce(() => {
+        throw errno('EBUSY');
+      });
+
+      removeGateDir(dir);
+
+      expect(warn).toHaveBeenCalledWith(`Could not remove ${dir} (ENOTEMPTY); it is left behind.`);
+      expect(readFileSync(join(dir, 'file'), 'utf8')).toBe('x');
+      expect(readdirSync(parent).sort()).toEqual([expect.stringMatching(/^pup-removing-/), 'run']);
+    });
   });
 
   // A child granted `report` that left its group before the kill swaps it
