@@ -23,8 +23,11 @@
     and the refused ones are every other claimed state, derived from the state table as
     `claimedStates()` is, so a state added later is refused until someone names it. Today
     that refuses `queued`, `running` and `rejected`, whose hooks hold the old scope. A
-    window is open when a default tmux server lists the session's recorded pane or a tmux
-    session named `pup-<id>`. A launch hands tmux the operator's `TMUX_TMPDIR` (decision
+    window is open when a default tmux server lists a tmux session named `pup-<id>` (the
+    launch's own name, read from the runtime) or, for a session not merged or killed, its
+    recorded pane. A terminal session is matched by name only: the gate's teardown and
+    `pup kill` close its window but leave the `%N` pane id recorded, and a restarted server
+    numbers its panes from `%0` again, so that id can be another window's. A launch hands tmux the operator's `TMUX_TMPDIR` (decision
     47), so its window may be on the server at `$TMUX_TMPDIR/tmux-<uid>/default` or, unset,
     at `/tmp/tmux-<uid>/default`; the probe asks both, `/tmp`'s always and
     `TMUX_TMPDIR`'s when it is set, each with one `tmux -S <socket> list-panes -a`. tmux is
@@ -61,10 +64,13 @@
     *The tier.* A fix round's or a respawn's window routes from the session's own stored
     tier (decision 92), fixed at launch, so a standard task widened onto a critical area
     would climb the standard ladder while `pup plan` already shows it critical. When the
-    widened scope-in implies critical, the same transaction raises each of the task's row
+    added globs imply critical, the same transaction raises each of the task's row
     and the claiming session's row that is stored as standard to critical, each settled
     from its own stored tier, since a relaunch routes from the task's and a fix round from
-    the session's, and never the other way. A null tier is left alone: it is derived from
+    the session's, and never the other way. Only the added globs count, not the old ones:
+    a task the operator pinned standard over a critical scope (`pup plan edit --tier`,
+    decision 92) keeps its pin, its rung and its reason, since the spec freeze leaves no
+    way to put the pin back once the rescope took it. A null tier is left alone: it is derived from
     the widened scope-in, which now implies critical. The session's rung and its
     reason are cleared, so its next window starts the critical ladder from the bottom, as
     a re-tiered task's does, rather than clamping a standard rung onto it. The tier the
@@ -80,12 +86,14 @@
     session's task with its window closed appends and writes the event and the record. A
     queued, running or rejected one writes nothing, nor does an awaiting-review or blocked
     one whose pane is listed, whose name is listed, or whose probe fails (no server, no
-    tmux). The probe runs on the pinned PATH with a timeout whatever the caller's PATH,
+    tmux). A merged or killed session whose recorded pane id is another session's on the
+    server passes, and one whose name is listed is refused. The probe runs on the pinned PATH with a timeout whatever the caller's PATH,
     asks only `/tmp`'s server when `TMUX_TMPDIR` is unset and both when it is set, and is
     refused when only `TMUX_TMPDIR`'s lists the window or does not answer. Each refused glob is refused, each matcher-form bypass with it,
     and globs the matcher reads as plain paths (`./docs/**`, `src/cli/`) pass. A re-gate's scope-audit then passes the added path and still fails a
     scope-out one. A standard task and session widened onto `src/core/merge-gate*` are
     raised to critical from the bottom rung; a standard glob leaves them standard, a task
+    pinned standard over a critical scope and widened with `docs/**` stays standard, a task
     stored standard under a session already critical is raised on its own, a pair of null
     rows reports the widened scope-in's critical, and a critical tier is never lowered. `session-repository.test.ts` holds the statement's
     guard to each state, and `index.test.ts` refuses a session, the conductor and an open

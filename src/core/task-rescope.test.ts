@@ -168,6 +168,30 @@ describe('rescopeTask (decision 115)', () => {
       expect(getSession(db, 's1')).toMatchObject({ tier: 'standard', rung: 2 });
     });
 
+    // `pup plan edit --tier standard` pinned it over a scope already critical:
+    // only what the rescope adds can raise it.
+    it('keeps a task pinned standard over a critical scope standard when the added globs are', () => {
+      db.prepare("UPDATE tasks SET spec = ?, tier = 'standard' WHERE id = ?").run(
+        JSON.stringify({ ...SPEC, scopeIn: ['src/core/merge-gate.service.ts'], scopeOut: [] }),
+        't-1',
+      );
+      launched('s1', 'merged');
+      db.prepare(
+        "UPDATE sessions SET tier = 'standard', rung = 2, rung_reason = 'ci-fix-round' WHERE id = ?",
+      ).run('s1');
+
+      expect(rescopeTask(db, 't-1', ['docs/**'])).toMatchObject({
+        tier: 'standard',
+        raised: false,
+      });
+      expect(getTask(db, 't-1')?.tier).toBe('standard');
+      expect(getSession(db, 's1')).toMatchObject({
+        tier: 'standard',
+        rung: 2,
+        rung_reason: 'ci-fix-round',
+      });
+    });
+
     // A relaunch after a kill routes from the task's row, so it is settled
     // from its own stored tier, not from the session's.
     it('raises a task stored standard under a session already critical', () => {
@@ -250,6 +274,35 @@ describe('rescopeTask (decision 115)', () => {
     );
     expect(readTaskSpec(db, 't-1').scopeIn).toEqual(['src/core/**']);
     expect(listEvents(db, 's1')).toEqual([]);
+  });
+
+  // The gate's teardown and `pup kill` leave a closed window's pane id
+  // recorded, and a restarted server hands it to another window.
+  it.each(['merged', 'killed'])(
+    "passes when a %s session's recorded pane is another session's on a restarted server",
+    (state) => {
+      launched('s1', 'merged');
+      launched('s2', 'killed');
+      db.prepare('UPDATE sessions SET tmux_target = NULL WHERE id <> ?').run(
+        state === 'merged' ? 's1' : 's2',
+      );
+      vi.mocked(execFileSync).mockReturnValue('%3 pup-s9\n');
+
+      expect(rescopeTask(db, 't-1', ['docs/**'])).toMatchObject({ added: ['docs/**'] });
+    },
+  );
+
+  it.each([
+    ['merged', 's1'],
+    ['killed', 's2'],
+  ])('refuses while a %s session has its name on the server', (_state, id) => {
+    launched('s1', 'merged');
+    launched('s2', 'killed');
+    vi.mocked(execFileSync).mockReturnValue(`%7 pup-${id}\n`);
+
+    expect(() => rescopeTask(db, 't-1', ['docs/**'])).toThrow(
+      `Session ${id}'s window may still be open`,
+    );
   });
 
   // A server that cannot be reached, a tmux that is not there: either way no

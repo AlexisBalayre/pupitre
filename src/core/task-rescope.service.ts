@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import type { Tier } from '../claude/model-ladder.constants.js';
+import { windowLabel } from '../claude/session-runtime.service.js';
 import { insertDecisionRecord } from './decision-record.repository.js';
 import { InvalidProfileError } from './profile.errors.js';
 import { asTier, taskTier, tierForScope } from './routing.utils.js';
@@ -17,6 +18,7 @@ import {
   type SessionRow,
   workingSession,
 } from './session.repository.js';
+import { isTerminal } from './session-state.utils.js';
 import { assertPlannableSpec } from './task-spec.utils.js';
 
 /** What a rescope did: the globs it appended, none when all were there, and the tier it leaves. */
@@ -113,13 +115,17 @@ function listPanes(socket: string): string | undefined {
 }
 
 /**
- * Whether the server lists the session's window: its recorded pane, or a
- * tmux session wearing the name its launch gave it (`pup-<id>`).
+ * Whether the server lists the session's window: a tmux session wearing the
+ * name its launch gave it, or, while the session is not merged or killed, its
+ * recorded pane. The gate's teardown and `pup kill` close a terminal session's
+ * window but leave its pane id recorded, and a restarted server numbers its
+ * panes from `%0` again, so that id can be another window's.
  */
 function listsWindow(panes: string, row: SessionRow): boolean {
+  const name = windowLabel({ sessionId: row.id });
   return panes.split('\n').some((line) => {
-    const [pane, name] = line.split(' ');
-    return pane === row.tmux_target || name === `pup-${row.id}`;
+    const [pane, listed] = line.split(' ');
+    return listed === name || (!isTerminal(row.state) && pane === row.tmux_target);
   });
 }
 
@@ -186,8 +192,9 @@ export function rescopeTask(db: Database, taskId: string, globs: string[]): Resc
       }
       // The task's row and the session's each from its own stored tier: a
       // relaunch routes from the task's, a fix round from the session's.
-      const raised =
-        tierForScope(widened.scopeIn) === 'critical' && raiseToCritical(db, taskId, sessionId);
+      // Raised on what the rescope adds, never on the old globs: a task the
+      // operator pinned standard over a critical scope (decision 92) stays so.
+      const raised = tierForScope(added) === 'critical' && raiseToCritical(db, taskId, sessionId);
       const tier = routedTier(db, taskId, sessionId, widened.scopeIn);
       appendEvent(db, sessionId, 'rescope', { task: taskId, added, by: 'operator', tier, raised });
       insertDecisionRecord(db, {
