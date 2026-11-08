@@ -549,6 +549,9 @@ describe('judgeDebt', () => {
     ]);
   });
 
+  const COMPLEXITY_PASS =
+    'no touched file rose by more than 15 decision points, and no new file holds more than 50';
+
   it.each<[string, StageCase]>([
     [
       'no adapter measures complexity',
@@ -568,13 +571,25 @@ describe('judgeDebt', () => {
           complexity: {
             before: [{ file: 'src/feature.ts', complexity: 2 }],
             after: [{ file: 'src/feature.ts', complexity: 9 }],
+            sources: {},
+            copiesPaired: true,
           },
         },
-        expected: {
-          stage: 'complexity',
-          status: 'pass',
-          detail: 'no touched file rose by more than 15 decision points',
+        expected: { stage: 'complexity', status: 'pass', detail: COMPLEXITY_PASS },
+      },
+    ],
+    [
+      'a file the before-measure holds rose by exactly the threshold',
+      {
+        measured: {
+          complexity: {
+            before: [{ file: 'src/feature.ts', complexity: 2 }],
+            after: [{ file: 'src/feature.ts', complexity: 17 }],
+            sources: {},
+            copiesPaired: true,
+          },
         },
+        expected: { stage: 'complexity', status: 'pass', detail: COMPLEXITY_PASS },
       },
     ],
     [
@@ -584,6 +599,8 @@ describe('judgeDebt', () => {
           complexity: {
             before: [{ file: 'src/feature.ts', complexity: 2 }],
             after: [{ file: 'src/feature.ts', complexity: 40 }],
+            sources: {},
+            copiesPaired: true,
           },
         },
         expected: {
@@ -594,20 +611,153 @@ describe('judgeDebt', () => {
       },
     ],
     [
-      'a file the branch added counts its whole complexity as the rise',
+      'a file the branch added is not read as a rise from zero',
       {
         measured: {
-          complexity: { before: [], after: [{ file: 'src/feature.ts', complexity: 20 }] },
+          complexity: {
+            before: [],
+            after: [{ file: 'src/feature.ts', complexity: 20 }],
+            sources: {},
+            copiesPaired: true,
+          },
+        },
+        expected: { stage: 'complexity', status: 'pass', detail: COMPLEXITY_PASS },
+      },
+    ],
+    [
+      'a file the branch added holds exactly the cap',
+      {
+        measured: {
+          complexity: {
+            before: [],
+            after: [{ file: 'src/feature.ts', complexity: 50 }],
+            sources: {},
+            copiesPaired: true,
+          },
+        },
+        expected: { stage: 'complexity', status: 'pass', detail: COMPLEXITY_PASS },
+      },
+    ],
+    [
+      'a file the branch added holds more than the cap',
+      {
+        measured: {
+          complexity: {
+            before: [],
+            after: [{ file: 'src/feature.ts', complexity: 51 }],
+            sources: {},
+            copiesPaired: true,
+          },
         },
         expected: {
           stage: 'complexity',
           status: 'flagged',
-          detail: 'complexity rose sharply in 1 touched file(s): src/feature.ts (+20)',
+          detail:
+            'complexity rose sharply in 1 touched file(s): src/feature.ts (new file, 51 decision points)',
+        },
+      },
+    ],
+    [
+      'a file the branch renamed is judged by its rise from the source',
+      {
+        measured: {
+          complexity: {
+            before: [{ file: 'src/legacy.ts', complexity: 10 }],
+            after: [{ file: 'src/feature.ts', complexity: 50 }],
+            sources: { 'src/feature.ts': 'src/legacy.ts' },
+            copiesPaired: true,
+          },
+        },
+        expected: {
+          stage: 'complexity',
+          status: 'flagged',
+          detail: 'complexity rose sharply in 1 touched file(s): src/feature.ts (+40)',
+        },
+      },
+    ],
+    [
+      'a file the branch copied is judged by its rise from the source',
+      {
+        measured: {
+          complexity: {
+            before: [{ file: 'src/legacy.ts', complexity: 10 }],
+            after: [
+              { file: 'src/legacy.ts', complexity: 10 },
+              { file: 'src/feature.ts', complexity: 50 },
+            ],
+            sources: { 'src/feature.ts': 'src/legacy.ts' },
+            copiesPaired: true,
+          },
+        },
+        expected: {
+          stage: 'complexity',
+          status: 'flagged',
+          detail: 'complexity rose sharply in 1 touched file(s): src/feature.ts (+40)',
+        },
+      },
+    ],
+    [
+      'a copy that stays within 15 of its source passes',
+      {
+        measured: {
+          complexity: {
+            before: [{ file: 'src/legacy.ts', complexity: 10 }],
+            after: [{ file: 'src/feature.ts', complexity: 25 }],
+            sources: { 'src/feature.ts': 'src/legacy.ts' },
+            copiesPaired: true,
+          },
+        },
+        expected: { stage: 'complexity', status: 'pass', detail: COMPLEXITY_PASS },
+      },
+    ],
+    [
+      'copy detection ran out of time',
+      {
+        measured: {
+          complexity: {
+            before: [],
+            after: [{ file: 'src/feature.ts', complexity: 20 }],
+            sources: {},
+            copiesPaired: false,
+          },
+        },
+        expected: {
+          stage: 'complexity',
+          status: 'pass',
+          detail: `${COMPLEXITY_PASS}; copies not paired: git's copy detection ran past 30 s`,
         },
       },
     ],
   ])('complexity: %s', (_label, { measured, baseline, expected }) => {
     expect(stageOf(judge(measured, baseline), 'complexity')).toEqual(expected);
+  });
+
+  it('flags a risen file and an oversized new one together, each by its own points', () => {
+    const verdict = judge(
+      {
+        complexity: {
+          before: [{ file: 'src/old.ts', complexity: 10 }],
+          after: [
+            { file: 'src/old.ts', complexity: 30 },
+            { file: 'src/new.ts', complexity: 60 },
+            { file: 'src/small.ts', complexity: 20 },
+          ],
+          sources: {},
+          copiesPaired: true,
+        },
+      },
+      undefined,
+      ['src/old.ts', 'src/new.ts', 'src/small.ts'],
+    );
+
+    expect(stageOf(verdict, 'complexity')?.detail).toBe(
+      'complexity rose sharply in 2 touched file(s): ' +
+        'src/old.ts (+20), src/new.ts (new file, 60 decision points)',
+    );
+    expect(verdict.flags).toContainEqual({
+      description: `Complexity rise (+80 decision points) merged from session ${SESSION}`,
+      files: ['src/old.ts', 'src/new.ts'],
+    });
   });
 
   const COVERAGE_BAR: DebtBaseline = { coverageRatio: 0.8 };
@@ -826,7 +976,7 @@ describe('judgeDebt', () => {
         debt: { deadExports: [], duplicatedLines: 5, coverageRatio: 1 },
         duplication: { duplicatedLines: 5, blocks: [] },
         coverage: { files: { 'src/app.ts': { covered: [1], instrumented: [1] } } },
-        complexity: { before: [], after: [] },
+        complexity: { before: [], after: [], sources: {}, copiesPaired: true },
         patch: { covered: 0, instrumented: 0, uncovered: [] },
         nestedNote: note,
       },

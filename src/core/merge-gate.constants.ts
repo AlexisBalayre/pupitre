@@ -56,8 +56,24 @@ export const DIFF_SIZE_DEPENDENCY_FILES = [
   ...LOCKFILE_NAMES,
 ];
 
-/** Per-file rise in decision points above which the complexity stage flags (docs/04 stage 4). */
+/**
+ * Per-file rise in decision points above which the complexity stage flags a file
+ * the before-measure holds (docs/04 stage 4).
+ */
 export const COMPLEXITY_FILE_FLAG_DELTA = 15;
+
+/**
+ * Decision points above which the complexity stage flags a file absent from the
+ * before-measure: it has nothing to rise from, so it is judged on its own count
+ * (decision 145).
+ */
+export const COMPLEXITY_NEW_FILE_FLAG_CAP = 50;
+
+/**
+ * How long the complexity stage's copy detection (`git diff -C -C`) may run
+ * under the merge lock before the stage judges without copy pairs (decision 145).
+ */
+export const COMPLEXITY_COPY_PAIRING_TIMEOUT_MS = 30_000;
 
 /** Findings/blocks quoted in a flagged debt stage's detail; the rest is elided. */
 export const DEBT_DETAIL_SAMPLES = 3;
@@ -87,7 +103,13 @@ export const PROTECTED_PATH_GLOBS = ['.claude/**', '.pupitre/**'];
 /** Serializes merges per repo (decision 8); lives in .git so it never lands in a diff. */
 export const MERGE_LOCK_DIRNAME = 'pup-merge.lock';
 
-export const GATE_COMMAND_TIMEOUT_MS = 10 * 60 * 1000;
+/**
+ * The cap on one gate command, a test run included: 25 minutes, since pup's own
+ * full suite takes about 9.5 minutes at a load of 14 and ran into the 10 this was
+ * (decision 138). The slot wait, and so the load wait, and the merge lock wait
+ * are derived from it.
+ */
+export const GATE_COMMAND_TIMEOUT_MS = 25 * 60 * 1000;
 
 /** Tail of a failed command's output kept in the gate report / re-steer prompt. */
 export const GATE_OUTPUT_TAIL_CHARS = 2000;
@@ -95,7 +117,7 @@ export const GATE_OUTPUT_TAIL_CHARS = 2000;
 /** Gate failures beyond this park the session as blocked (decision 7). */
 export const MAX_REJECTS_BEFORE_BLOCKED = 2;
 
-/** PR titles built from a task goal are cut here — GitHub truncates around this anyway. */
+/** The longest PR title, the subject a squash merge writes on the target (decision 137). */
 export const PR_TITLE_MAX_CHARS = 72;
 
 /** A sha as the gate pins it, which can then never read as an option. */

@@ -95,6 +95,7 @@ function priorRecords(prNumber: string): PriorRecord[] {
       records.push({
         path: hit.slice(hit.indexOf(":") + 1),
         commit_sha: typeof parsed.commit_sha === "string" ? parsed.commit_sha : null,
+        base_ref: typeof parsed.base_ref === "string" ? parsed.base_ref : null,
         timestamp: typeof parsed.timestamp === "string" ? parsed.timestamp : "",
         is_error: parsed.is_error === true,
         partial: isPartialReview(parsed.review_depth, parsed.review_areas),
@@ -136,6 +137,7 @@ async function main(): Promise<void> {
   const baseRef = (JSON.parse(gh("pr", "view", prNumber, "--json", "baseRefName")) as { baseRefName: string })
     .baseRefName;
   out("merge_base", git("merge-base", `origin/${baseRef}`, "HEAD"));
+  out("base_ref", baseRef);
 
   // The checkout's refs date from the start of the run; refresh so a record the
   // previous run persisted minutes ago is visible. Absence tolerated: no ref
@@ -184,6 +186,7 @@ async function main(): Promise<void> {
   const decision = decideMode({
     prior,
     headSha,
+    baseRef,
     trigger,
     forceFull: request.full,
     isAncestor,
@@ -211,7 +214,9 @@ async function main(): Promise<void> {
     "mode_line",
     decision.kind === "incremental"
       ? `Mode: incremental from ${decision.fromSha} (prior record: ${decision.priorPath} on ${METRICS_REF})`
-      : "Mode: full",
+      : decision.priorPath
+        ? `Mode: full (prior record: ${decision.priorPath} on ${METRICS_REF})`
+        : "Mode: full",
   );
 }
 
