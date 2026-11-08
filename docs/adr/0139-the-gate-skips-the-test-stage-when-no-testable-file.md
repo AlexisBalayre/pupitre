@@ -43,12 +43,12 @@
     ways. The first is to run that check from the build or lint script, which the gate still
     runs on every change. The second is to read a `skipped: no testable file changed` test
     stage in the gate report as untested, and run the suite by hand before `pup land`.
-    A stage that nothing could have measured keeps the usual `not measured — no command
-    available`, because a change of only listed files does not explain why it is missing. The
-    test stage is such a stage when the adapter declares no test command. The coverage stage
-    is one when there is neither a test command nor an adapter that measures coverage. An
-    adapter that measures coverage without a test command still gets `no testable file
-    changed` on its coverage stage.
+    A stage that nothing could have measured keeps the reason it gives on any other change,
+    because a change of only listed files does not explain why it is missing. With no test
+    command, the test stage says `not measured — no command available`. With no adapter that
+    measures coverage, the coverage stage keeps `not measured — adapter cannot measure
+    coverage`. An adapter that measures coverage gets `no testable file changed` on its
+    coverage stage, with or without a test command.
     *The proof.* Before the list was written, src/ was searched for every test that names
     `docs/adr`, `SKILL.md`, `.github` or a root prose file. `decision-record.test.ts`,
     `overlap.test.ts`, `routing-utils.test.ts`, `pre-commit.test.ts` and the gate tests
@@ -68,10 +68,12 @@
     Tests: a change of only `.github/workflows/ci.yml` and an ADR merges under a test command
     that always fails. Its test and coverage stages are skipped with `no testable file changed
     (2 files)`, coverage is never measured, and build, lint, the scope audit and the diff size
-    pass. With no test command, a single workflow change reports the test stage as `not
-    measured — no command available`. Its coverage stage says `no testable file changed (1
-    files)` when the adapter measures coverage, without measuring it, and `not measured` when
-    the adapter does not.
+    pass. A single workflow change is then gated under each other mix of a test command and
+    a coverage capability. With no test command, the test stage says `not measured — no
+    command available`; with one, it says `no testable file changed (1 files)`. With
+    coverage, the coverage stage says `no testable file changed (1 files)` and coverage is
+    never measured. Without coverage, the stage says `not measured — adapter cannot measure
+    coverage`.
     The full test stage runs, and fails, in four cases: one source file is changed beside a
     workflow, a source file is renamed into `docs/`, a Docusaurus config compiles the changed
     Markdown, and a symlink reaches the changed path.

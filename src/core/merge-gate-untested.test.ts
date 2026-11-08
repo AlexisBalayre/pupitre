@@ -127,7 +127,14 @@ describe('the test stage on a change no test reads (decision 139)', { timeout: 2
     expect(coverage).not.toHaveBeenCalled();
   });
 
-  it('reports coverage as not measured with neither a test command nor coverage', async () => {
+  /** The coverage stage judgeCoverage gives an adapter that cannot measure it, on any change. */
+  const cannotMeasureCoverage = {
+    stage: 'coverage',
+    status: 'skipped',
+    detail: 'not measured — adapter cannot measure coverage',
+  };
+
+  it('keeps the usual coverage reason with neither a test command nor coverage', async () => {
     const worktree = seedSession(db, repo, { scopeIn: ['**'] });
     commitIn(worktree, '.github/workflows/ci.yml', 'on: push\n');
 
@@ -135,7 +142,30 @@ describe('the test stage on a change no test reads (decision 139)', { timeout: 2
 
     const stages = untimed(outcome.report.stages);
     expect(stages).toContainEqual({ stage: 'test', ...notMeasured });
-    expect(stages).toContainEqual({ stage: 'coverage', ...notMeasured });
+    expect(stages).toContainEqual(cannotMeasureCoverage);
+  });
+
+  it('skips the test stage and keeps the usual coverage reason without coverage', async () => {
+    const worktree = seedSession(db, repo, { scopeIn: ['**'] });
+    commitIn(worktree, '.github/workflows/ci.yml', 'on: push\n');
+    const adapter = debtAdapter({
+      gateCommands: () => [
+        { stage: 'build', command: 'true', args: [] },
+        { stage: 'test', command: 'false', args: [] },
+        { stage: 'lint', command: 'true', args: [] },
+      ],
+    });
+
+    const outcome = await merge(adapter);
+
+    expect(outcome.status).toBe('merged');
+    const stages = untimed(outcome.report.stages);
+    expect(stages).toContainEqual({
+      stage: 'test',
+      status: 'skipped',
+      detail: 'no testable file changed (1 files)',
+    });
+    expect(stages).toContainEqual(cannotMeasureCoverage);
   });
 
   it('runs the full test stage when one changed file is off the list', async () => {

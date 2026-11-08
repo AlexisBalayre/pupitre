@@ -2513,8 +2513,7 @@ export async function measureBranch(
   const untested =
     nestedPackages.length === 0 && changesOnlyUntested(req.repoPath, targetSha, sha, changedPaths);
   // A stage nothing could have measured says so, as on any other change: the
-  // test stage without a test command, coverage without that or a coverage
-  // capability.
+  // test stage without a test command.
   const notTested = (stage: string, measurable: boolean): GateStageResult =>
     measurable
       ? {
@@ -2842,8 +2841,10 @@ export async function measureBranch(
   // the merge carries --accept-debt, and the nested-package stages above go
   // through the same wrapper.
   for (const stage of judged.stages) {
-    if (untested && stage.stage === 'coverage') {
-      stages.push(notTested(stage.stage, commandFor('test') !== undefined || !!coverageAdapter));
+    // With no coverage capability, the judged stage already says so, as on any
+    // other change.
+    if (untested && coverageAdapter && stage.stage === 'coverage') {
+      stages.push(notTested(stage.stage, true));
       continue;
     }
     stages.push(
