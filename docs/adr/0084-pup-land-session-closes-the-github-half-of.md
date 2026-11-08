@@ -1,7 +1,7 @@
 # 0084. `pup land <session>` closes the GitHub half of a `--pr` merge, and the conductor may run it (2026-10-14)
 
 - Status: accepted
-- Amended by: [0086](0086-pup-merge-session-pr-re-gates-a-merged.md), [0088](0088-the-merge-lock-records-its-holder-survives-every.md), [0090](0090-pup-fix-session-hands-the-ci-review-s.md)
+- Amended by: [0086](0086-pup-merge-session-pr-re-gates-a-merged.md), [0088](0088-the-merge-lock-records-its-holder-survives-every.md), [0090](0090-pup-fix-session-hands-the-ci-review-s.md), [0130](0130-pup-land-takes-a-squash-or-rebase-merge-whose-tree.md), [0132](0132-pup-land-no-audit-lets-several-lands-share-one.md)
 
 84. **`pup land <session>` closes the GitHub half of a `--pr` merge, and the conductor may run it
     (2026-10-14).**

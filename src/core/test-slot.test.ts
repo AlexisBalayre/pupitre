@@ -24,6 +24,7 @@ import {
   SlotWaitInterruptedError,
   sessionTestCommand,
   type TestSlotOptions,
+  testRunsElsewhere,
   vmStatAvailableBytes,
   withTestSlot,
 } from './test-slot.service.js';
@@ -256,6 +257,26 @@ describe('withTestSlot (decision 96)', () => {
     await Promise.all([first.settled, second.settled]);
   });
 
+  it('ends its wait on a hangup as on SIGINT, taking no slot and leaving none behind', async () => {
+    const log: string[] = [];
+    const first = run('worker', 's1', log);
+    const second = run('worker', 's2', log);
+    await tick();
+    const before = process.listeners('SIGHUP');
+    const worker = run('worker', 's3', log);
+    await tick();
+    const [listener] = process.listeners('SIGHUP').filter((fn) => !before.includes(fn));
+    (listener as NodeJS.SignalsListener)('SIGHUP');
+
+    await expect(worker.settled).rejects.toEqual(new SlotWaitInterruptedError('SIGHUP'));
+    expect(process.listeners('SIGHUP')).toEqual(before);
+    expect(log).toEqual(['s1', 's2']);
+    expect(readdirSync(dir).sort()).toEqual(['slot-0.lock', 'slot-1.lock']);
+    for (const held of [first, second]) held.end();
+    await Promise.all([first.settled, second.settled]);
+    expect(readdirSync(dir)).toEqual([]);
+  });
+
   it('names the gate a worker waits behind', async () => {
     const log: string[] = [];
     const gatesSeen: SlotHolder[][] = [];
@@ -486,6 +507,58 @@ describe('withTestSlot (decision 96)', () => {
       options,
     );
     expect(ran).toBe(true);
+  });
+});
+
+describe('testRunsElsewhere (decision 134)', () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = tempDir('pup-slots-');
+  });
+
+  const record = (kind: 'gate' | 'worker', pid: number): string =>
+    JSON.stringify({ kind, label: 'other', pid, token: 'x' });
+
+  it('answers false for slots no run holds, or not made yet', () => {
+    expect(testRunsElsewhere({ dir, slots: 2 })).toBe(false);
+    expect(testRunsElsewhere({ dir: join(dir, 'missing'), slots: 2 })).toBe(false);
+  });
+
+  it('answers true while another live process holds a slot', () => {
+    writeFileSync(join(dir, 'slot-1.lock'), record('worker', process.ppid));
+
+    expect(testRunsElsewhere({ dir, slots: 2 })).toBe(true);
+  });
+
+  it("answers true while another live process's gate waits for a slot", () => {
+    writeFileSync(join(dir, 'gate-1-x.wait'), record('gate', process.ppid));
+
+    expect(testRunsElsewhere({ dir, slots: 2 })).toBe(true);
+  });
+
+  it("leaves out this process's own slot and a dead holder's, reclaiming the dead one", () => {
+    writeFileSync(join(dir, 'slot-0.lock'), record('gate', process.pid));
+    writeFileSync(join(dir, 'slot-1.lock'), record('worker', deadPid()));
+    writeFileSync(join(dir, 'gate-1-x.wait'), record('gate', deadPid()));
+
+    expect(testRunsElsewhere({ dir, slots: 2 })).toBe(false);
+    expect(readdirSync(dir)).toEqual(['slot-0.lock']);
+  });
+
+  it('answers true when the slots cannot be read, so the gate keeps its wait', () => {
+    const planted = join(dir, 'slots');
+    writeFileSync(planted, '');
+
+    expect(testRunsElsewhere({ dir: planted, slots: 2 })).toBe(true);
+  });
+
+  // Reading through it fails with ENOENT, the error a missing directory gives.
+  it('answers true for a dangling link planted where the slots go, so the gate keeps its wait', () => {
+    const planted = join(dir, 'slots');
+    symlinkSync(join(dir, 'nowhere'), planted);
+
+    expect(testRunsElsewhere({ dir: planted, slots: 2 })).toBe(true);
   });
 });
 

@@ -1236,23 +1236,59 @@ describe('launchTask model routing (decision 92)', () => {
     });
   });
 
-  // A CI fix round is the climb decision 92 counts for `pup fix` (decision 90).
-  it('climbs a fix round one rung, and only the operator lifts the top rung', () => {
+  /** A fix round that opened its window and was gated again. */
+  const finishedRound = (sessionId: string) => {
+    appendEvent(db, sessionId, 'fix_round', {
+      prUrl: 'u',
+      head: 'h',
+      threads: ['T1'],
+      rejectBase: 0,
+    });
+    appendEvent(db, sessionId, 'respawn', { delivered: true });
+    appendEvent(db, sessionId, 'merge', { branch: 'pup/x', target: 'main', files: [] });
+  };
+
+  // A reviewer's finding is no failure: a first fix round keeps its rung, and
+  // only a round after one the gate merged again climbs (decision 92).
+  it('keeps a first fix round on its rung, and climbs a repeat one', () => {
     planTask(db, { repoPath: repo, task: spec(UI_SCOPE) });
     const sessionId = launch();
     const session = () => getSession(db, sessionId) as SessionRow;
-    const named = { model: 'claude-opus-5-5', effort: 'max' };
+    appendEvent(db, sessionId, 'merge', { branch: 'pup/x', target: 'main', files: [] });
+
+    expect(fixRoundRoute(db, session(), {}, 'conductor')).toEqual({
+      tier: 'standard',
+      rung: 0,
+      model: 'claude-sonnet-5-5',
+      effort: 'medium',
+      override: false,
+    });
+
+    finishedRound(sessionId);
 
     expect(fixRoundRoute(db, session(), {}, 'conductor')).toEqual({
       tier: 'standard',
       rung: 1,
       model: 'claude-sonnet-5-5',
       effort: 'high',
-      reason: 'ci-fix-round',
+      reason: 'repeat-fix-round',
       override: false,
     });
+  });
 
+  it('refuses a repeat fix round on the top rung, which only the operator lifts', () => {
+    planTask(db, { repoPath: repo, task: spec(UI_SCOPE) });
+    const sessionId = launch();
+    const session = () => getSession(db, sessionId) as SessionRow;
+    const named = { model: 'claude-opus-5-5', effort: 'max' };
     db.prepare('UPDATE sessions SET rung = 3 WHERE id = ?').run(sessionId);
+
+    expect(fixRoundRoute(db, session(), {}, 'operator')).toMatchObject({ rung: 3 });
+
+    finishedRound(sessionId);
+    // A re-gate after the head moved does not undo the repeat.
+    appendEvent(db, sessionId, 'merge', { branch: 'pup/x', target: 'main', files: [] });
+
     expect(() => fixRoundRoute(db, session(), {}, 'operator')).toThrow(TopRungReachedError);
     expect(() => fixRoundRoute(db, session(), named, 'conductor')).toThrow(TopRungReachedError);
     expect(fixRoundRoute(db, session(), named, 'operator')).toMatchObject({
@@ -1650,7 +1686,10 @@ describe('launch capacity (decision 96)', () => {
   });
 
   /** `count` sessions in `state`, each on a task of its own sharing no file with `t-1`. */
-  function seedSessions(count: number, state: 'running' | 'killed' = 'running'): void {
+  function seedSessions(
+    count: number,
+    state: 'running' | 'awaiting-review' | 'blocked' | 'killed' = 'running',
+  ): void {
     for (let index = 0; index < count; index++) {
       const id = `s-${state}-${index}`;
       insertTask(db, {
@@ -1666,8 +1705,15 @@ describe('launch capacity (decision 96)', () => {
         profileHash: 'hash',
       });
       transitionSession(db, id, 'running');
-      if (state === 'killed') transitionSession(db, id, 'killed');
+      if (state !== 'running') transitionSession(db, id, state);
     }
+  }
+
+  /** The cap `pup conductor start --max-sessions` stores. */
+  function setCap(cap: number): void {
+    const file = join(projectPaths(repo).root, 'conductor', 'max-sessions');
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, `${cap}\n`);
   }
 
   const launch = (by: 'operator' | 'conductor', overCap = false): string => {
@@ -1695,8 +1741,8 @@ describe('launch capacity (decision 96)', () => {
       seedSessions(4);
 
       expect(() => launch(by)).toThrow(
-        "4 sessions are live, at this project's cap of 4 (`pup conductor start --max-sessions` " +
-          'sets it); nothing was launched.',
+        "4 sessions are working, at this project's cap of 4 (`pup conductor start " +
+          '--max-sessions` sets it; sessions awaiting review do not count); nothing was launched.',
       );
       expect(launchSession).not.toHaveBeenCalled();
       expect(getSession(db, 't-1')).toBeUndefined();
@@ -1731,6 +1777,39 @@ describe('launch capacity (decision 96)', () => {
     seedSessions(2, 'killed');
 
     expect(launch('operator')).toBe('t-1');
+  });
+
+  it('does not count sessions awaiting review (decision 144)', () => {
+    setCap(2);
+    seedSessions(2, 'awaiting-review');
+    seedSessions(1);
+
+    expect(launch('conductor')).toBe('t-1');
+  });
+
+  it('refuses at a cap of 2 with two running sessions', () => {
+    setCap(2);
+    seedSessions(2);
+
+    expect(() => launch('conductor')).toThrow("2 sessions are working, at this project's cap of 2");
+  });
+
+  it('counts a blocked session, which a human sends back to running', () => {
+    setCap(2);
+    seedSessions(1);
+    seedSessions(1, 'blocked');
+    seedSessions(2, 'awaiting-review');
+
+    expect(() => launch('conductor')).toThrow(SessionCapReachedError);
+  });
+
+  it('keeps the memory floor with only sessions awaiting review', () => {
+    setCap(2);
+    seedSessions(2, 'awaiting-review');
+    vi.mocked(availableMemoryBytes).mockReturnValueOnce(1.2 * 1024 ** 3);
+
+    expect(() => launch('conductor')).toThrow(LowMemoryError);
+    expect(launchSession).not.toHaveBeenCalled();
   });
 
   it('refuses `pup new` at the cap before writing its task', () => {

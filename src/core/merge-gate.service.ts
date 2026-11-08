@@ -13,7 +13,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { availableParallelism, loadavg, tmpdir } from 'node:os';
+import { availableParallelism, homedir, loadavg, tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import {
@@ -70,8 +70,14 @@ import {
   listLedgerEntries,
 } from './ledger.repository.js';
 import {
+  COMPLEXITY_COPY_PAIRING_TIMEOUT_MS,
   DEBT_DETAIL_SAMPLES,
+  DIFF_SIZE_DEPENDENCY_FILES,
+  DIFF_SIZE_DOCS_DIR,
+  DIFF_SIZE_DOCS_EXTENSIONS,
+  DIFF_SIZE_DOCUSAURUS_CONFIG,
   DIFF_SIZE_FLAG_LINES,
+  DIFF_SIZE_TEST_SUFFIX,
   GATE_COMMAND_TIMEOUT_MS,
   GATE_ENVIRONMENT_DIR,
   GATE_OUTPUT_TAIL_CHARS,
@@ -111,6 +117,7 @@ import {
   describeSlotWait,
   GATE_SLOT_WAIT_MS,
   SlotWaitInterruptedError,
+  testRunsElsewhere,
   withTestSlot,
 } from './test-slot.service.js';
 import type { PullRequestRef } from './types/github.types.js';
@@ -201,32 +208,441 @@ function failingTestNames(error: unknown): string {
   return names.slice(0, FAILED_TEST_NAMES_MAX).join('; ') + (more > 0 ? ` (+${more} more)` : '');
 }
 
+/** A changed path's new mode, and the path it was renamed or copied from if git paired one. */
+interface RawDiffEntry {
+  mode: string;
+  renamedFrom?: string;
+  copiedFrom?: string;
+}
+
 /**
- * Adds + deletes across the branch diff, excluding lockfiles and binary files.
- * A null numstat is a measurement, not a skip: a file git reports as binary
- * whose content is text is recounted from its patch and named in `forged`,
- * because git was told to call it binary by something no diff shows
- * (decision 53).
+ * The branch diff's `--raw` entries by new path. `-M` and `-l0` are passed
+ * rather than left to `diff.renames` and `diff.renameLimit`, which sit in the
+ * shared config a session can write, so a rename onto a test name is paired
+ * whatever that config says: a limit of 1 skipped inexact pairing as soon as a
+ * second file was added. `copies` adds `-C -C`, which pairs a copy of any file
+ * the target holds, changed on the branch or not.
+ */
+function rawDiffEntries(
+  repoPath: string,
+  target: string,
+  branch: string,
+  { copies = false, timeout }: { copies?: boolean; timeout?: number } = {},
+): Map<string, RawDiffEntry> {
+  const fields = runGit(
+    repoPath,
+    [
+      'diff',
+      '--no-ext-diff',
+      '--no-textconv',
+      '--no-color',
+      '-z',
+      '--raw',
+      '-M',
+      ...(copies ? ['-C', '-C'] : []),
+      '-l0',
+      `${target}...${branch}`,
+    ],
+    { timeout },
+  ).split('\0');
+  const entries = new Map<string, RawDiffEntry>();
+  for (let i = 0; i < fields.length; i++) {
+    const header = fields[i];
+    if (!header?.startsWith(':')) continue;
+    // ":<old mode> <new mode> <old sha> <new sha> <status>", then one path, or
+    // the old and the new path for a rename or copy.
+    const [, mode = '', , , status = ''] = header.slice(1).split(' ');
+    if (/^[RC]/.test(status)) {
+      const from = fields[i + 1] ?? '';
+      const to = fields[i + 2] ?? '';
+      entries.set(
+        to,
+        status.startsWith('R') ? { mode, renamedFrom: from } : { mode, copiedFrom: from },
+      );
+      i += 2;
+    } else {
+      entries.set(fields[i + 1] ?? '', { mode });
+      i += 1;
+    }
+  }
+  return entries;
+}
+
+/**
+ * Each renamed or copied path's source, for the complexity stage (decision
+ * 145). `-C -C` compares every added file with every file the target holds,
+ * so a branch of thousands of generated files could hold the merge lock for
+ * as long as it likes: past `COMPLEXITY_COPY_PAIRING_TIMEOUT_MS` the pairs
+ * come from the rename-only pass diff-size already makes, and the stage says
+ * copies went unpaired.
+ */
+function complexitySources(
+  repoPath: string,
+  target: string,
+  branch: string,
+): { sources: Record<string, string>; copiesPaired: boolean } {
+  let entries: Map<string, RawDiffEntry>;
+  let copiesPaired = true;
+  try {
+    entries = rawDiffEntries(repoPath, target, branch, {
+      copies: true,
+      timeout: COMPLEXITY_COPY_PAIRING_TIMEOUT_MS,
+    });
+  } catch (error) {
+    if ((error as { code?: unknown }).code !== 'ETIMEDOUT') throw error;
+    entries = rawDiffEntries(repoPath, target, branch);
+    copiesPaired = false;
+  }
+  const sources: Record<string, string> = {};
+  for (const [path, entry] of entries) {
+    const from = entry.renamedFrom ?? entry.copiedFrom;
+    if (from !== undefined) sources[path] = from;
+  }
+  return { sources, copiesPaired };
+}
+
+type DiffSizeKind = 'source' | 'test' | 'docs';
+
+/**
+ * What the branch's tree tells the diff-size split beyond a path's own name
+ * (decision 110): whether a symlink can reach the path, and whether a
+ * Docusaurus config compiles the Markdown under `docs/`.
+ */
+interface BranchTree {
+  linked: (path: string) => boolean;
+  markdownIsCode: boolean;
+}
+
+/**
+ * A character outside ASCII. APFS, the macOS default and so the gate's
+ * filesystem (decision 78), folds some onto ASCII (`ſ` onto `s`, the Kelvin
+ * sign onto `k`) and others onto each other (`ς` onto `σ`) by its own tables,
+ * which no JavaScript case mapping or normalization reproduces. So a name
+ * holding one is never compared: a link holding one reaches every path, a
+ * changed path holding one is source, and a file named with one may be a
+ * Docusaurus witness (decision 110).
+ */
+const NON_ASCII = /[\u0080-\uffff]/;
+
+/**
+ * An ASCII path as the gate's filesystem looks it up: APFS opens a path in any
+ * case alike, so a link or specifier spelling one in another case still
+ * reaches it. Anything outside ASCII is settled by `NON_ASCII` first.
+ */
+const folded = (path: string): string => path.toLowerCase();
+
+/**
+ * Whether a dependency file on the branch (`DIFF_SIZE_DEPENDENCY_FILES`), in
+ * any ASCII case, names Docusaurus: its `@docusaurus/core` dependency or a
+ * `docusaurus` script.
+ */
+function dependenciesNameDocusaurus(repoPath: string, branch: string): boolean {
+  try {
+    runGit(repoPath, [
+      'grep',
+      '-q',
+      '-i',
+      '-F',
+      '--no-textconv',
+      '-e',
+      'docusaurus',
+      branch,
+      '--',
+      ...DIFF_SIZE_DEPENDENCY_FILES.map((name) => `:(glob,icase)**/${name}`),
+    ]);
+    return true;
+  } catch (error) {
+    rethrowIfKilled(error);
+    // Exit 1 is "nothing matched"; anything else is git failing to answer.
+    if ((error as { status?: number }).status !== 1) throw error;
+    return false;
+  }
+}
+
+/**
+ * The branch's tree as the split reads it. A symlink reaches the path it lands
+ * on and everything under it, read from its blob lexically from the link's
+ * directory and compared folded; `git grep` never reads a link's blob, so this
+ * is the one place a link is seen. The blob is read up to its first NUL, as
+ * checkout writes the link with `symlink()`, which takes a C string. One whose
+ * target is absolute, lands outside the repo, or has a `..` after a named
+ * segment, which climbs from wherever that segment resolves and no lexical
+ * reading knows, may land anywhere and reaches every path, as does one whose
+ * path or target holds a character outside ASCII. A link named as a dependency
+ * file may name Docusaurus where no grep reads it, and a file named outside
+ * ASCII may be a config or dependency file no case-insensitive match finds.
+ */
+function readBranchTree(repoPath: string, branch: string): BranchTree {
+  const landings: string[] = [];
+  let anywhere = false;
+  let markdownIsCode = dependenciesNameDocusaurus(repoPath, branch);
+  for (const entry of runGit(repoPath, ['ls-tree', '-r', '-z', branch]).split('\0')) {
+    if (!entry) continue;
+    // "<mode> <type> <oid>\t<path>": the path is everything after the first tab.
+    const tab = entry.indexOf('\t');
+    const [mode, , oid = ''] = entry.slice(0, tab).split(' ');
+    const path = entry.slice(tab + 1);
+    markdownIsCode ||= DIFF_SIZE_DOCUSAURUS_CONFIG.test(path) || NON_ASCII.test(basename(path));
+    if (mode !== '120000') continue;
+    markdownIsCode ||= DIFF_SIZE_DEPENDENCY_FILES.some(
+      (name) => folded(name) === folded(basename(path)),
+    );
+    const [target = ''] = runGit(repoPath, ['cat-file', 'blob', oid]).split('\0', 1);
+    const segments = target.split('/').filter((segment) => segment !== '' && segment !== '.');
+    const firstName = segments.findIndex((segment) => segment !== '..');
+    const lands = join(dirname(path), target).replace(/\/+$/, '');
+    anywhere ||=
+      NON_ASCII.test(path) ||
+      NON_ASCII.test(target) ||
+      target.startsWith('/') ||
+      (firstName !== -1 && segments.slice(firstName).includes('..')) ||
+      lands === '..' ||
+      lands.startsWith('../');
+    landings.push(folded(lands));
+  }
+  return {
+    linked: (path) => {
+      const key = folded(path);
+      return (
+        anywhere ||
+        landings.some((lands) => lands === '.' || key === lands || key.startsWith(`${lands}/`))
+      );
+    },
+    markdownIsCode,
+  };
+}
+
+/**
+ * A character no token (`NAME_TOKEN`) holds: anything but a letter, a digit
+ * or `_ . $ + @ -`, so a space, `#`, `=`, Next's `[id].test.ts` and a letter
+ * outside ASCII, whose other Unicode forms the gate's filesystem opens alike
+ * but no byte search finds. A test file named with one can be imported with no
+ * token naming it, so it counts as source.
+ */
+const UNSPELLABLE_NAME = /[^\w.$+@-]/;
+
+/**
+ * Which part of the diff-size split a path counts toward (decision 110). A
+ * symlink is source wherever it sits, and so is any path one can reach and any
+ * path holding a character outside ASCII, which a link spelled in ASCII may
+ * reach through the filesystem's folding. A test is only the trusted suffix
+ * under a name a token can spell, and never a file renamed onto it from a name
+ * that was not one, which would carry production code in under the test count.
+ * `.md` under `docs/` is code where a Docusaurus config compiles it.
+ */
+function diffSizeKind(
+  path: string,
+  entry: RawDiffEntry | undefined,
+  tree: BranchTree,
+): DiffSizeKind {
+  if (entry?.mode === '120000' || NON_ASCII.test(path) || tree.linked(path)) return 'source';
+  if (
+    path.startsWith(DIFF_SIZE_DOCS_DIR) &&
+    DIFF_SIZE_DOCS_EXTENSIONS.some((extension) => path.endsWith(extension)) &&
+    !(tree.markdownIsCode && path.endsWith('.md'))
+  ) {
+    return 'docs';
+  }
+  const isTest = (candidate: string): boolean =>
+    candidate.endsWith(DIFF_SIZE_TEST_SUFFIX) && !UNSPELLABLE_NAME.test(basename(candidate));
+  if (isTest(path) && (entry?.renamedFrom === undefined || isTest(entry.renamedFrom))) {
+    return 'test';
+  }
+  return 'source';
+}
+
+const testStem = (path: string): string => basename(path).slice(0, -'.ts'.length);
+
+/**
+ * A run of the characters a name may hold. Every other character ends one, so
+ * a name reads whole after a `/`, a quote or `=` and before a `?`, a `#`, a
+ * `>`, a script's `;`, `&&` or `)`, or a YAML list's `]`, with no list of
+ * delimiters to keep up. One class with nothing after it to backtrack into, so
+ * linear on any line: a pattern finding a name inside a token backtracked
+ * quadratically on one long unspaced line, and held the merge lock for minutes
+ * on a 1 MB file.
+ */
+const NAME_TOKEN = /[\w.$+@-]+/g;
+
+/**
+ * Per file on `branch` that names one of `targets`, the targets it names. A
+ * token names every target whose name, in any case, is the token or the token
+ * up to one of its dots, where an extension (`big.test.js`) or a serverless
+ * handler's export (`big.test.handler`) starts. Only dots within the longest
+ * name are tried, so a long token costs one scan. A relative specifier is not
+ * resolved: a decoy file at its literal path would take the resolution and
+ * hide the target, and matching by name only over-counts source, the safe
+ * direction. Every file `git grep` lists is read but those `skip` names,
+ * whatever its extension, since a Vue component, a Vite `index.html`, a
+ * `package.json` or a serverless config loads a module as well as code does.
+ * It is read with `core.precomposeUnicode` pinned off, as decision 114 pins
+ * the gate's other per-file reads: on macOS an NFD path read as its NFC
+ * sibling. A file costs one pass over its text and one lookup per distinct
+ * name it spells, however many tokens repeat a name or targets share it. Grep
+ * runs with colour pinned off: `color.grep=always` in the shared config would
+ * wrap each path in escapes, and a listing entry that does not start with the
+ * branch refuses rather than skips (decision 110). A path git listed in bytes
+ * that are not UTF-8 reads back with `U+FFFD` in their place, which names
+ * another file or none, so that importer names every target unread.
+ */
+function filesNaming(
+  repoPath: string,
+  branch: string,
+  targets: string[],
+  skip: (path: string) => boolean,
+): Map<string, Set<string>> {
+  const named = new Map<string, Set<string>>();
+  const byName = new Map<string, string[]>();
+  let longest = 0;
+  for (const target of targets) {
+    const name = folded(testStem(target));
+    byName.set(name, [...(byName.get(name) ?? []), target]);
+    longest = Math.max(longest, name.length);
+  }
+  let listing = '';
+  try {
+    listing = runGit(repoPath, [
+      '-c',
+      'color.ui=never',
+      '-c',
+      'color.grep=never',
+      'grep',
+      '--no-color',
+      '-l',
+      '-z',
+      '-i',
+      '-F',
+      '--no-textconv',
+      ...[...byName.keys()].flatMap((name) => ['-e', name]),
+      branch,
+      '--',
+    ]);
+  } catch (error) {
+    rethrowIfKilled(error);
+    // Exit 1 is "nothing matched"; anything else is git failing to answer.
+    if ((error as { status?: number }).status !== 1) throw error;
+  }
+  const prefix = `${branch}:`;
+  for (const entry of listing.split('\0')) {
+    if (!entry) continue;
+    if (!entry.startsWith(prefix)) {
+      throw new Error(`git grep listed ${JSON.stringify(entry)}, not a path under ${prefix}`);
+    }
+    const importer = entry.slice(prefix.length);
+    if (skip(importer)) continue;
+    if (importer.includes('\ufffd')) {
+      named.set(importer, new Set(targets.filter((target) => target !== importer)));
+      continue;
+    }
+    const text = runGit(repoPath, [
+      '-c',
+      'core.precomposeUnicode=false',
+      'cat-file',
+      'blob',
+      `${branch}:${importer}`,
+    ]);
+    const names = new Set<string>();
+    for (const [token] of folded(text).matchAll(NAME_TOKEN)) {
+      for (
+        let dot = token.indexOf('.', 1);
+        dot !== -1 && dot <= longest;
+        dot = token.indexOf('.', dot + 1)
+      ) {
+        if (byName.has(token.slice(0, dot))) names.add(token.slice(0, dot));
+      }
+      if (token.length <= longest && byName.has(token)) names.add(token);
+    }
+    const hits = new Set([...names].flatMap((name) => byName.get(name) ?? []));
+    hits.delete(importer);
+    if (hits.size > 0) named.set(importer, hits);
+  }
+  return named;
+}
+
+/**
+ * The `tests` other code on `branch` reaches: production code can import a
+ * `*.test.ts` that also holds one test, which vitest collects and passes, or
+ * reach it through another test file that re-exports it (decision 110). Each
+ * round asks which files name the tests found so far; a test file naming one
+ * is followed in turn, until no new test file turns up. `kindOf` says what a
+ * naming file is: prose under `docs/` loads nothing and is skipped, and a file
+ * neither docs nor a test is code.
+ */
+function reachableTestFiles(
+  repoPath: string,
+  branch: string,
+  tests: string[],
+  kindOf: (path: string) => DiffSizeKind,
+): Set<string> {
+  if (tests.length === 0) return new Set();
+  const reached = new Set<string>();
+  const importsOf = new Map<string, Set<string>>();
+  const seen = new Set(tests);
+  let round = tests;
+  while (round.length > 0) {
+    const next: string[] = [];
+    const naming = filesNaming(repoPath, branch, round, (path) => kindOf(path) === 'docs');
+    for (const [importer, named] of naming) {
+      if (kindOf(importer) !== 'test') {
+        for (const test of named) reached.add(test);
+        continue;
+      }
+      importsOf.set(importer, new Set([...(importsOf.get(importer) ?? []), ...named]));
+      if (!seen.has(importer)) {
+        seen.add(importer);
+        next.push(importer);
+      }
+    }
+    round = next;
+  }
+  const queue = [...reached];
+  for (let test = queue.pop(); test !== undefined; test = queue.pop()) {
+    for (const imported of importsOf.get(test) ?? []) {
+      if (reached.has(imported)) continue;
+      reached.add(imported);
+      queue.push(imported);
+    }
+  }
+  return new Set(tests.filter((test) => reached.has(test)));
+}
+
+/**
+ * Adds + deletes across the branch diff, excluding lockfiles and binary files,
+ * split into source, test files and prose under `docs/` (decision 110). A null numstat is
+ * a measurement, not a skip: a file git reports as binary whose content is
+ * text is recounted from its patch and named in `forged`, because git was told
+ * to call it binary by something no diff shows (decision 53).
  */
 export function countChangedLines(
   repoPath: string,
   target: string,
   branch: string,
-): { lines: number; forged: string[] } {
-  let lines = 0;
+): { source: number; test: number; docs: number; forged: string[] } {
+  const counts = { source: 0, test: 0, docs: 0 };
   const forged: string[] = [];
-  for (const stat of gitDiffNumstat(repoPath, target, branch)) {
-    if (LOCKFILE_NAMES.includes(stat.path)) continue;
+  const raw = rawDiffEntries(repoPath, target, branch);
+  const tree = readBranchTree(repoPath, branch);
+  const kindOf = (path: string): DiffSizeKind => diffSizeKind(path, raw.get(path), tree);
+  const stats = gitDiffNumstat(repoPath, target, branch).filter(
+    (stat) => !LOCKFILE_NAMES.includes(stat.path),
+  );
+  const kinds = new Map(stats.map((stat) => [stat.path, kindOf(stat.path)]));
+  const tests = [...kinds].filter(([, kind]) => kind === 'test').map(([path]) => path);
+  for (const path of reachableTestFiles(repoPath, branch, tests, kindOf)) {
+    kinds.set(path, 'source');
+  }
+  for (const stat of stats) {
+    const kind = kinds.get(stat.path) ?? 'source';
     if (stat.added !== null && stat.deleted !== null) {
-      lines += stat.added + stat.deleted;
+      counts[kind] += stat.added + stat.deleted;
       continue;
     }
     const recount = gitDiffBinaryRecount(repoPath, target, branch, stat.path);
     if (!recount) continue;
-    lines += recount.added + recount.deleted;
+    counts[kind] += recount.added + recount.deleted;
     forged.push(stat.path);
   }
-  return { lines, forged };
+  return { ...counts, forged };
 }
 
 /** Inside the merge lock's directory: the holder's pid, which a later run reads (decision 88). */
@@ -703,7 +1119,7 @@ function planMerge(db: Database, req: MergeRequest): MergePlan {
       head: session.branch,
       base: target,
     };
-    // Everything GitHub can refuse is settled here, before ten minutes of gate
+    // Everything GitHub can refuse is settled here, before minutes of gate
     // stages and before --accept-debt writes ledger entries for a merge that
     // would then abort (decision 27).
     if (merged) regate = planRegate(req.repoPath, session.id, merged, ref, originUrl);
@@ -749,7 +1165,8 @@ function sessionMark(db: Database, sessionId: string): string {
 function cutGateCheckout(repoPath: string, dir: string, sha: string): void {
   assertNoArmedGitDrivers(repoPath);
   runGit(repoPath, ['worktree', 'add', '--detach', '--no-checkout', dir, sha]);
-  refuseEscapingLinks(dir, sha, checkoutPinned(repoPath, dir, sha));
+  const git = checkoutPinned(repoPath, dir, sha);
+  refuseEscapingLinks(dir, sha, git);
 }
 
 /** True when `path` (which must exist) resolves outside the checkout rooted at `inside`. */
@@ -1242,17 +1659,18 @@ export function assertPullRequestOf(prUrl: string, repo: string, untouched: stri
  * again right before `merge-tree`, which runs a merge driver on a conflicted
  * file, and before the `read-tree`, which runs a smudge filter on every file it
  * writes, as they are before the fast-forward: the last check ran before the gh
- * calls and the lock (decision 50). Returns the failure for the worker, or
- * undefined once the branch holds the merge.
+ * calls and the lock (decision 50). Returns the failure
+ * for the worker, or undefined once the branch holds the merge.
  */
-function mergeTargetInto(
-  repoPath: string,
+async function mergeTargetInto(
+  req: MergeRequest,
   worktree: string,
   worktreeEnv: WorktreeGitEnv,
   branch: string,
   target: string,
   targetSha: string,
-): string | undefined {
+): Promise<string | undefined> {
+  const { repoPath } = req;
   const branchRef = `refs/heads/${branch}`;
   const shown = sanitizeReason(target);
   const piped = { stdio: ['ignore', 'pipe', 'pipe'] as ['ignore', 'pipe', 'pipe'] };
@@ -1441,8 +1859,8 @@ async function gateAndMerge(
       }),
     );
   } else if (isPrBranch) {
-    const refused = mergeTargetInto(
-      req.repoPath,
+    const refused = await mergeTargetInto(
+      req,
       worktree,
       worktreeEnv,
       session.branch,
@@ -1458,7 +1876,11 @@ async function gateAndMerge(
     );
   } else {
     try {
-      runGit(worktree, ['rebase', targetSha], pinned);
+      // The strategy named, not left to `pull.twohead`: git's sequencer takes
+      // the first value it reads, a session's local one before the `-c` pin,
+      // and runs any name but ort as `git merge-<name>`, a path into the
+      // worktree included (decision 120, amending 79).
+      runGit(worktree, ['rebase', '--strategy=ort', targetSha], pinned);
       stages.push(
         timedSince(started, {
           stage: 'fresh-base',
@@ -1467,6 +1889,8 @@ async function gateAndMerge(
         }),
       );
     } catch (error) {
+      // Every conflict goes back to the worker: a resolved stop would go on
+      // through rebase state the live session can write (decision 120).
       try {
         runGit(worktree, ['rebase', '--abort'], pinned);
       } catch {
@@ -1520,6 +1944,7 @@ async function gateAndMerge(
   // checkout, with the compare-and-swap as the backstop.
   if (!pullRequest) assertTargetAt(req.repoPath, target, targetSha);
   const commitSubjects = commitSubjectsBetween(req.repoPath, targetSha, sha);
+  const ownSubject = firstOwnSubject(req.repoPath, targetSha, sha);
   // What `--accept-debt` filed, for the refusals that must stay after it.
   const ledgerKept = fileAcceptedDebt(db, req, measured.projectId, flaggedDebt);
 
@@ -1529,7 +1954,7 @@ async function gateAndMerge(
   if (pullRequest) {
     const newPr = {
       ...pullRequest,
-      ...pullRequestText(spec, session.id, report, commitSubjects, sha),
+      ...pullRequestText(spec, session.id, report, commitSubjects, sha, ownSubject),
     };
     try {
       pushBranch(req.repoPath, pullRequest.originUrl, session.branch, sha, !pullRequest.adoptedUrl);
@@ -1712,7 +2137,8 @@ type FlaggedDebt = { description: string; files: string[] };
  * 143) fail at once. So does a stage that ran out `GATE_COMMAND_TIMEOUT_MS`,
  * which `runGateChild` marks with a `code` even when the runner traps the
  * SIGTERM and exits 1, and whose re-run would hold the merge lock twice as long
- * on a hung suite.
+ * on a hung suite. A test stage timed out under load never gets here: it
+ * refuses the merge first (`refuseTimeoutUnderLoad`), and so does a re-run.
  */
 function isRerunnable(error: unknown): boolean {
   const { status, signal, code } = error as {
@@ -1723,26 +2149,131 @@ function isRerunnable(error: unknown): boolean {
   return status === 1 && !signal && code === undefined;
 }
 
+/** The machine's 1-minute load average; a platform with none reads 0. */
+function oneMinuteLoad(): number {
+  return loadavg()[0] ?? 0;
+}
+
+/**
+ * Refuse the merge when a test run ran out `GATE_COMMAND_TIMEOUT_MS` on a
+ * machine other runs had loaded (decision 138, amending 7): at that load the
+ * suite runs longer than its cap whatever the branch holds, so the timeout says
+ * nothing about the code. Loaded means three things, at the ceiling
+ * `waitForLoad` uses: the 1-minute load average was at or over the available
+ * parallelism before the suites started (`loadBefore`, 0 when no reading was
+ * taken, which is under any machine's cores and so no evidence), it still is,
+ * and a test run other than the gated session's own is going
+ * (`otherTestRunGoing`).
+ * That last is the evidence a session's own tests cannot make: a suite that
+ * fills the cores by itself until its cap is still rejected. It throws, so it
+ * climbs no rung of the reject cap and injects nothing into the session, and
+ * the gate stops before any merge or push. Every other timeout, and every
+ * failure that is not a timeout, returns, and the stage fails and rejects as
+ * before. It judges a test stage's re-run as it judges the first run.
+ */
+function refuseTimeoutUnderLoad(error: unknown, loadBefore: number, sessionId: string): void {
+  if ((error as { code?: string }).code !== 'ETIMEDOUT') return;
+  const cores = availableParallelism();
+  const load = oneMinuteLoad();
+  if (Math.min(loadBefore, load) < cores || !otherTestRunGoing(sessionId)) return;
+  throw new Error(
+    `The test stage timed out under load ${load.toFixed(1)}, at or over the machine's ` +
+      `${cores} cores, with other test runs going; nothing was merged; run pup merge again ` +
+      'when the load falls.',
+  );
+}
+
+/**
+ * Whether a test run other than this gate's and `sessionId`'s own is going
+ * (decision 138): `testRunsElsewhere`, which reclaims dead holders as every
+ * reader of the slots does, and then one slot or gate wait file in the
+ * machine's slots whose holder is a live process of this user, not this one,
+ * labelled other than `sessionId`, since the gated session's pane can hold a
+ * worker slot of its own. The slots module answers only whether a run is going,
+ * not whose, so the records are read here, by its rules: a wait file counts
+ * for `GATE_SLOT_WAIT_MS`, and only under the name the slots module gives one,
+ * `gate-<pid>-<token>.wait`, with the record's pid the name's. A directory or
+ * record that cannot be read is no evidence, the opposite of decision 134's
+ * wait, because here it would spare a rejection.
+ */
+function otherTestRunGoing(sessionId: string): boolean {
+  if (!testRunsElsewhere()) return false;
+  const dir = join(homedir(), '.pupitre', 'slots');
+  let names: string[] = [];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    // An unreadable slots directory names no run: no evidence.
+  }
+  return names.some((name) => isOtherTestRun(dir, name, sessionId));
+}
+
+/**
+ * Whether the slot or gate wait file `name` in `dir` holds evidence for
+ * `otherTestRunGoing`: a name the slots module gives one, a record that parses,
+ * a positive integer pid that is not this process, a label other than
+ * `sessionId`, for a wait file the pid its name carries and an age within
+ * `GATE_SLOT_WAIT_MS`, and a live holder. Each check runs only once those
+ * before it hold, and any that throws, a symlink, a read or a parse, is no
+ * evidence.
+ */
+function isOtherTestRun(dir: string, name: string, sessionId: string): boolean {
+  const named = /^(?:slot-\d+\.lock|gate-(\d+)-[0-9a-z]+\.wait)$/.exec(name);
+  if (!named) return false;
+  const path = join(dir, name);
+  const waiter = named[1];
+  try {
+    const { pid, label } = JSON.parse(readPlainFile(path, { followLinks: false })) as {
+      pid?: unknown;
+      label?: unknown;
+    };
+    const waitChecks =
+      waiter === undefined
+        ? []
+        : [
+            () => Number(waiter) === pid,
+            () => Date.now() - lstatSync(path).mtimeMs <= GATE_SLOT_WAIT_MS,
+          ];
+    return [
+      () => Number.isInteger(pid),
+      () => (pid as number) > 0,
+      () => pid !== process.pid,
+      () => label !== sessionId,
+      ...waitChecks,
+      // Throws for a dead pid and for another user's (EPERM), neither of which holds our slot.
+      () => process.kill(pid as number, 0),
+    ].every((holds) => holds());
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Before the gate's tests, wait until the machine's 1-minute load average is
  * under its available parallelism (decision 88): a suite started on a machine
  * its workers already saturate runs into its stage timeout, and the gate fails
- * on the machine rather than the branch. Bounded as the slot wait is, since it
- * holds the merge lock, and once that runs out the tests run anyway. One line
- * says the wait started and one that it ran out. An interrupt ends it as a
- * stage child's would: no child runs to forward one to, and the lock keeps
- * node alive through it. A platform with no load average reads zeros and never
- * waits. `readLoad` and `ceiling` are the machine's unless a test passes its own.
+ * on the machine rather than the branch. Only while another run holds a test
+ * slot or waits for one as a gate (decision 134, amending 88): with none, the
+ * load is none of pup's tests, which the wait cannot outlast, so the gate runs
+ * at once, and a wait ends as soon as the others do. Bounded as the slot wait
+ * is, since it holds the merge lock, and once that runs out the tests run
+ * anyway. One line says the wait started and one that it ran out. An interrupt
+ * ends it as a stage child's would: no child runs to forward one to, and the
+ * lock keeps node alive through it. A platform with no load average reads zeros
+ * and never waits. `readLoad`, `ceiling` and `othersTesting` are the machine's
+ * unless a test passes its own.
  */
 export async function waitForLoad(
-  readLoad: () => number = () => loadavg()[0] ?? 0,
+  readLoad: () => number = oneMinuteLoad,
   ceiling = availableParallelism(),
+  othersTesting: () => boolean = () => testRunsElsewhere(),
 ): Promise<void> {
   let load = readLoad();
-  if (load < ceiling) return;
+  if (load < ceiling || !othersTesting()) return;
   console.error(
-    `The 1-minute load average is ${load.toFixed(1)}, not under ${ceiling}; the gate waits up to ` +
-      `${formatDuration(GATE_SLOT_WAIT_MS)} for it to fall before its tests.`,
+    `The 1-minute load average is ${load.toFixed(1)}, not under ${ceiling}, while other test ` +
+      `runs are going; the gate waits up to ${formatDuration(GATE_SLOT_WAIT_MS)} for it to fall ` +
+      'or for them to end before its tests.',
   );
   const deadline = Date.now() + GATE_SLOT_WAIT_MS;
   let interrupted: (typeof LOCK_SIGNALS)[number] | undefined;
@@ -1771,7 +2302,7 @@ export async function waitForLoad(
       });
       if (interrupted) throw new GateInterruptedError(interrupted);
       load = readLoad();
-      if (load < ceiling) return;
+      if (load < ceiling || !othersTesting()) return;
     }
   } finally {
     for (const signal of LOCK_SIGNALS) process.off(signal, onSignal);
@@ -1822,13 +2353,23 @@ export async function measureBranch(
   };
 
   /**
+   * The 1-minute load read once before the suites (decision 138), set below
+   * after the build and the load wait. Declared before `commandStage` reads
+   * it, so a test stage run before the reading finds 0, which is under any
+   * machine's cores and so no evidence, rather than a temporal dead zone.
+   */
+  let loadBeforeSuites = 0;
+
+  /**
    * Runs one hard stage to its result. A failed test
    * stage runs once more, still under the lock, before it counts: a suite that
    * passes on the re-run passes, named flaky with what failed the first time,
    * so a timing-sensitive test the host's load tipped over is no rejection
    * (decision 94). Build and lint are deterministic and never re-run, and
    * neither is a test run that ended other than by the runner's own failing
-   * exit (`isRerunnable`).
+   * exit (`isRerunnable`). A test run, the first or the re-run, timed out
+   * under load throws instead of failing (`refuseTimeoutUnderLoad`, decision
+   * 138).
    */
   const commandStage = async (
     stage: string,
@@ -1839,10 +2380,14 @@ export async function measureBranch(
     const started = Date.now();
     const first = await runCommand(command, cwd);
     if (first === undefined) return timedSince(started, { stage, status: 'pass' });
+    if (command.stage === 'test') refuseTimeoutUnderLoad(first, loadBeforeSuites, session.id);
     if (command.stage !== 'test' || !isRerunnable(first)) {
       return timedSince(started, { stage, status: 'fail', detail: commandFailureDetail(first) });
     }
     const rerun = await runCommand(command, cwd);
+    // A first run that failed on its own and a re-run the load ran out: the
+    // re-run's timeout says no more about the code than a first run's would.
+    if (rerun !== undefined) refuseTimeoutUnderLoad(rerun, loadBeforeSuites, session.id);
     if (rerun === undefined) {
       return timedSince(started, {
         stage,
@@ -1880,6 +2425,10 @@ export async function measureBranch(
     ...(req.gateEnv?.length ? { gateEnv: req.gateEnv } : {}),
   };
   const changedPaths = gitDiffPaths(req.repoPath, targetSha, sha);
+  // A renamed or copied file is judged against its source (decision 145).
+  const { sources, copiesPaired } = req.adapters.some((a) => a.complexity)
+    ? complexitySources(req.repoPath, targetSha, sha)
+    : { sources: {}, copiesPaired: true };
   const nestedPackages = primary?.touchedNestedPackages?.(capabilityContext, changedPaths) ?? [];
   // Every environment before any stage: a stage runs session code with the
   // checkout writable, so a link made after it could follow a swapped-in
@@ -1914,6 +2463,11 @@ export async function measureBranch(
   // Before the slot and before the stages that run alongside the suites, so
   // the load measured is the machine's and not this gate's own children.
   if (hasSuite && req.wait) await waitForLoad();
+  // Read here for the same reason, after the build and before the suites: a
+  // test run that times out counts as timed out under load only if the machine
+  // was loaded before it (decision 138). The build ran the session's code, so
+  // this reading is not one the session cannot touch; the other test run is.
+  loadBeforeSuites = oneMinuteLoad();
   const coverageAdapter = req.adapters.find((a) => a.coverage);
   const covered =
     test && coverageAdapter === primary ? primary?.coveredTest?.(capabilityContext) : undefined;
@@ -1986,12 +2540,15 @@ export async function measureBranch(
   }
   const staticDebt = measureStaticDebt(req.adapters, capabilityContext);
   const complexityAdapters = req.adapters.filter((a) => a.complexity);
-  const complexityOf = async (ctx: CapabilityContext): Promise<FileComplexity[]> => {
-    const files: FileComplexity[] = [];
+  const complexityOf = async (
+    ctx: CapabilityContext,
+    files: string[],
+  ): Promise<FileComplexity[]> => {
+    const measuredFiles: FileComplexity[] = [];
     for (const adapter of complexityAdapters) {
-      files.push(...((await adapter.complexity?.(ctx, changedPaths)) ?? []));
+      measuredFiles.push(...((await adapter.complexity?.(ctx, files)) ?? []));
     }
-    return files;
+    return measuredFiles;
   };
   const complexityStarted = Date.now();
   const complexity =
@@ -1999,8 +2556,10 @@ export async function measureBranch(
       ? {
           // "Before" reads the main checkout, which the merge lock holds at
           // the target branch — no historical checkout needed.
-          before: complexityOf(localContext(req.repoPath, req.gateEnv)),
-          after: complexityOf(capabilityContext),
+          before: complexityOf(localContext(req.repoPath, req.gateEnv), [
+            ...new Set([...changedPaths, ...Object.values(sources)]),
+          ]),
+          after: complexityOf(capabilityContext, changedPaths),
         }
       : undefined;
   // Once both sides have settled, however either did; it never rejects.
@@ -2134,13 +2693,16 @@ export async function measureBranch(
 
   started = Date.now();
   const changed = countChangedLines(req.repoPath, targetSha, sha);
+  const split = `${changed.source} source + ${changed.test} test + ${changed.docs} docs changed lines`;
   const sizeFindings: string[] = [];
-  if (changed.lines > DIFF_SIZE_FLAG_LINES) {
+  if (changed.source > DIFF_SIZE_FLAG_LINES) {
+    // The figure is the source count; the wording is kept so a re-gate still
+    // reads an entry filed before decision 110 as the same kind.
     flaggedDebt.push({
-      description: `Oversize diff (${changed.lines} lines) merged from session ${session.id}`,
+      description: `Oversize diff (${changed.source} lines) merged from session ${session.id}`,
       files: changedPaths,
     });
-    sizeFindings.push(`exceeds the ${DIFF_SIZE_FLAG_LINES}-line flag`);
+    sizeFindings.push(`source exceeds the ${DIFF_SIZE_FLAG_LINES}-line flag`);
   }
   // Flagged at any size: the count is honest again once recounted, but a text
   // file git was told to call binary is a write nobody reviewed (decision 53).
@@ -2164,9 +2726,9 @@ export async function measureBranch(
         ? {
             stage: 'diff-size',
             status: 'flagged',
-            detail: flagDetail(`${changed.lines} changed lines ${sizeFindings.join('; ')}`),
+            detail: flagDetail(`${split}: ${sizeFindings.join('; ')}`),
           }
-        : { stage: 'diff-size', status: 'pass', detail: `${changed.lines} changed lines` },
+        : { stage: 'diff-size', status: 'pass', detail: split },
     ),
   );
 
@@ -2181,7 +2743,12 @@ export async function measureBranch(
       ...measurement,
       ...(complexity
         ? {
-            complexity: { before: await complexity.before, after: await complexity.after },
+            complexity: {
+              before: await complexity.before,
+              after: await complexity.after,
+              sources,
+              copiesPaired,
+            },
             elapsedMs: { ...measurement.elapsedMs, complexity: await complexityElapsed },
           }
         : {}),
@@ -2241,10 +2808,51 @@ export function refuseGate(
  * leave entries filed with no kept note.
  */
 export function commitSubjectsBetween(repoPath: string, targetSha: string, sha: string): string[] {
-  return runGit(repoPath, ['log', '--reverse', '--format=%s', `${targetSha}..${sha}`])
+  return runGit(repoPath, [
+    ...SUBJECT_LOG_PINS,
+    'log',
+    '--reverse',
+    '--format=%s',
+    `${targetSha}..${sha}`,
+  ])
     .trim()
     .split('\n')
     .filter(Boolean);
+}
+
+/**
+ * What a subject read pins past `runGit`'s own, which already turn replace refs
+ * off: the commit graph is a cache in the object store a session can write, and
+ * a planted one can hand `log` other parents, so a merge would read as a commit
+ * of the session's and a commit as a merge (decision 137, as decision 131 pins
+ * it for `pup land`).
+ */
+const SUBJECT_LOG_PINS = ['-c', 'core.commitGraph=false'];
+
+/**
+ * The oldest gated commit's subject that is not a merge's, for the PR title: a
+ * `Merge main into …` the gate wrote (decision 105) or the session ran is never
+ * the change a squash lands. Merges are told by their parents, so a commit of
+ * the session's whose message reads like one is still its own. Undefined when
+ * every commit is a merge. Read before the ledger write, as
+ * `commitSubjectsBetween` is. Session-written: `prTitle` scrubs it.
+ */
+export function firstOwnSubject(
+  repoPath: string,
+  targetSha: string,
+  sha: string,
+): string | undefined {
+  return runGit(repoPath, [
+    ...SUBJECT_LOG_PINS,
+    'log',
+    '--reverse',
+    '--no-merges',
+    '--format=%s',
+    `${targetSha}..${sha}`,
+  ])
+    .split('\n')
+    .map((subject) => subject.trim())
+    .find(Boolean);
 }
 
 /**
@@ -2309,16 +2917,22 @@ export function recordMerge(
   });
 }
 
-/** The title and body pupitre writes on a PR it opens or adopts. */
+/**
+ * The title and body pupitre writes on a PR it opens or adopts. A squash merge
+ * makes the title the subject of the commit on the target (decision 137), so
+ * it is `ownSubject`, the session's first non-merge commit subject, when that
+ * fits, else the goal's first line.
+ */
 export function pullRequestText(
   spec: TaskSpec,
   sessionId: string,
   report: GateReport,
   commitSubjects: string[],
   sha: string,
+  ownSubject: string | undefined,
 ): { title: string; body: string } {
   return {
-    title: prTitle(spec.goal) || `pup session ${sessionId}`,
+    title: prTitle(spec.goal, ownSubject) || `pup session ${sessionId}`,
     body: prBody(spec, report, commitSubjects, sha),
   };
 }
@@ -2466,9 +3080,57 @@ export function withScratchGitDir<TResult>(
   }
 }
 
-function prTitle(goal: string): string {
-  const line = (goal.split('\n')[0] as string).trim();
-  return line.length <= PR_TITLE_MAX_CHARS ? line : `${line.slice(0, PR_TITLE_MAX_CHARS - 1)}…`;
+/**
+ * Characters that render as nothing or reorder what follows them: the soft
+ * hyphen, the combining grapheme joiner, the Hangul fillers, the Mongolian
+ * vowel separator, zero-width spaces and joiners, directional marks,
+ * embeddings, overrides and isolates, invisible operators, variation
+ * selectors, the byte-order mark, and the tag block, which spells out text
+ * no one sees and is how instructions get hidden from AI reviewers. Dropped,
+ * not spaced, so one cannot split a closing keyword past `CLOSING_REFERENCE`.
+ */
+const INVISIBLE_FORMAT_CHARS =
+  // biome-ignore lint/suspicious/noMisleadingCharacterClass: each is dropped alone, combining ones included
+  /[\u00ad\u034f\u061c\u115f\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\u3164\ufe00-\ufe0f\ufeff\u{e0000}-\u{e007f}\u{e0100}-\u{e01ef}]/gu;
+
+/** A terminal escape sequence (CSI, 7-bit or 8-bit), dropped whole so no `[31m` is left. */
+// biome-ignore lint/suspicious/noControlCharactersInRegex: matching them is the point
+const ANSI_ESCAPE = /(?:\u001b\[|\u009b)[0-?]*[ -/]*[@-~]/g;
+
+/**
+ * A GitHub closing keyword followed by an issue reference, `#n`,
+ * `owner/repo#n`, `GH-n` or an issue or pull URL: on the default branch's
+ * commit a squash writes, GitHub closes the issue it names.
+ */
+const CLOSING_REFERENCE =
+  /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b\s*:?\s*(?:(?:[\w.-]+\/[\w.-]+)?#\d+|GH-\d+|https?:\/\/\S+\/(?:issues|pull)\/\d+)/i;
+
+/**
+ * A line as a title can carry it: escape sequences and invisible format
+ * characters dropped, then `sanitizeReason`'s one line with C0/C1 controls
+ * spaced out.
+ */
+function scrubTitleText(text: string): string {
+  return sanitizeReason(text.replace(ANSI_ESCAPE, '').replace(INVISIBLE_FORMAT_CHARS, ''));
+}
+
+/**
+ * A title that reads as a commit subject: `ownSubject`, scrubbed, when it fits
+ * and names no issue to close (it is session-written, decision 137), else the
+ * goal's first line scrubbed the same way, cut at the last word boundary that
+ * fits with no ellipsis and no dangling separator. Empty when no boundary
+ * fits, never a cut word.
+ */
+function prTitle(goal: string, ownSubject: string | undefined): string {
+  const subject = scrubTitleText(ownSubject ?? '');
+  if (subject && subject.length <= PR_TITLE_MAX_CHARS && !CLOSING_REFERENCE.test(subject)) {
+    return subject;
+  }
+  const line = scrubTitleText(goal.split('\n')[0] as string);
+  if (line.length <= PR_TITLE_MAX_CHARS) return line;
+  // The last whitespace at or before the limit: what precedes it is whole words.
+  const cut = line.slice(0, PR_TITLE_MAX_CHARS + 1).search(/\s\S*$/);
+  return cut < 0 ? '' : line.slice(0, cut).replace(/[\s,;:–—-]+$/, '');
 }
 
 function prBody(spec: TaskSpec, report: GateReport, commitSubjects: string[], sha: string): string {

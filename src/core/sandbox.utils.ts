@@ -64,7 +64,7 @@ interface GateChildOptions {
    * same path as `cwd`, where the write grant is legitimate.
    */
   repoPath: string;
-  /** Further writable paths — a capability's report directory. */
+  /** Further writable paths — a capability's report directory, which the child may remove. */
   writablePaths?: string[];
   /**
    * Extra env names the operator allowed with `--gate-env`. Never read from
@@ -193,6 +193,36 @@ function sandboxMode(): SandboxMode {
 }
 
 /**
+ * By absolute path to a SIP-protected binary, for `PROBE_COMMAND`'s reason: a
+ * PATH-resolved shell is whoever controls `PATH`.
+ */
+const LIFELINE_SHELL = '/bin/sh';
+
+/**
+ * What takes a gate child's group down when pup dies without stopping it
+ * (decision 136). The group is in a session of its own (see `runGateChild`),
+ * so nothing a dying pup's own group receives reaches it, and pup's stop
+ * escalates to SIGKILL only after a grace. A pup killed inside that grace, as
+ * vitest kills a worker 500 ms after the SIGTERM pup forwards, left a
+ * TERM-ignoring child running under launchd for three days.
+ *
+ * A watcher in the group blocks on fd 3, whose other end only pup holds, and
+ * kills its own group when that end closes, which the kernel does however pup
+ * dies. It ignores the stop signals, so it is still there when a pup that sent
+ * one dies inside the grace, and ignores them from before it forks, so a stop
+ * arriving as it starts cannot take it first. The command itself is exec'd with
+ * fd 3 closed and the dispositions reset, so it is still the process pup
+ * spawned, its status and signal are its own, and nothing it starts holds the
+ * lifeline open.
+ */
+const LIFELINE_SCRIPT = [
+  "trap '' HUP INT TERM",
+  '(read -r _ <&3; kill -KILL 0) </dev/null >/dev/null 2>&1 &',
+  'trap - HUP INT TERM',
+  'exec "$@" 3<&-',
+].join('\n');
+
+/**
  * Run one gate child. On darwin it is wrapped in `sandbox-exec`; a sandbox that
  * cannot be set up throws rather than degrading to an unconfined run, so the
  * stage fails and the merge refuses. Elsewhere it runs bare only under the
@@ -216,7 +246,11 @@ export async function runGateChild(
   args: string[],
   options: GateChildOptions,
 ): Promise<string> {
-  const invocation = gateInvocation(command, args, options);
+  const invocation = gateInvocation(
+    LIFELINE_SHELL,
+    ['-c', LIFELINE_SCRIPT, 'pup-lifeline', command, ...args],
+    options,
+  );
   return new Promise((resolve, reject) => {
     const child = spawn(invocation.command, invocation.args, {
       cwd: options.cwd,
@@ -225,8 +259,21 @@ export async function runGateChild(
       // stage — the package manager, the runner it starts and the runner's
       // workers — and not only the process pup spawned.
       detached: true,
-      stdio: [options.input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
+      // The fourth is the lifeline (see LIFELINE_SCRIPT).
+      stdio: [options.input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe', 'pipe'],
     });
+    // Node's `'close'` waits for pup's end of the lifeline as well, and the
+    // watcher holds the other end until it dies, so pup lets go once the child
+    // has exited and its output pipes have closed: the watcher then kills the
+    // group, as `settle` does.
+    let holding = 3;
+    const letGo = (): void => {
+      holding -= 1;
+      if (holding === 0) child.stdio[3]?.destroy();
+    };
+    child.once('exit', letGo);
+    child.stdout?.once('close', letGo);
+    child.stderr?.once('close', letGo);
     const live: LiveChild = { child };
     track(live);
     let failure: 'ETIMEDOUT' | 'ENOBUFS' | undefined;
@@ -281,9 +328,10 @@ export async function runGateChild(
         resolve(out);
         return;
       }
+      // Named as the caller asked for it: the wrappers are pup's, not the stage's.
       const message = failure
-        ? `spawn ${invocation.command} ${failure}`
-        : `Command failed: ${[invocation.command, ...invocation.args].join(' ')}${err ? `\n${err}` : ''}`;
+        ? `spawn ${command} ${failure}`
+        : `Command failed: ${[command, ...args].join(' ')}${err ? `\n${err}` : ''}`;
       reject(
         Object.assign(new Error(message), {
           status,
@@ -349,16 +397,20 @@ function gateInvocation(
       // basis of decision 29 — session-writable during its own merge, and
       // reached every *sibling* worktree's `.git` pointer file, which is
       // one level deeper than the `.git` deny below.
-      // Caller-supplied grants land in the first, protected set — .git
-      // denied at any depth under each. Only the two directories this
-      // seam itself created for the child are exempt from that deny.
+      // Caller-supplied grants are protected as checkouts — .git denied at
+      // any depth under each. Only the two directories this seam itself
+      // created for the child are exempt from that deny. The checkout the
+      // child runs in and those two keep their names (decision 117); the
+      // caller's are outputs a tool may remove and make again, so
+      // writeProfile refuses one that holds a .git or cannot be read.
       writeProfile(
         // A profile of its own: children start together (decision 95), and a
         // shared file was rewritten for the next child before `sandbox-exec`
         // read this one's, so it ran under that child's grants.
         mkdtempSync(join(policyDir, 'child-')),
-        [options.cwd, ...(options.writablePaths ?? [])],
+        [options.cwd],
         [scratchDir, cacheDir],
+        options.writablePaths ?? [],
       ),
       command,
       ...args,

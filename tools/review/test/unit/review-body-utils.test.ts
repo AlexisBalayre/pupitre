@@ -1,4 +1,4 @@
-import { bodyLines, collapsedSections, commentBody, findingLine } from "@src/review-body.utils";
+import { bodyLines, collapsedSections, commentBody, findingLine, unresolvedPrior } from "@src/review-body.utils";
 import type { Finding, ReviewSummary } from "@src/review-metrics.schemas";
 import { describe, expect, it } from "vitest";
 
@@ -191,6 +191,47 @@ describe("collapsedSections", () => {
     );
     expect(rendered).toContain("2 minor issues (not blocking)");
   });
+
+  describe("the minors cap", () => {
+    const nits = (count: number) =>
+      Array.from({ length: count }, (_, index) => finding({ tag: "nit", description: `nit ${index + 1}` }));
+    const old = (count: number) =>
+      Array.from({ length: count }, (_, index) => finding({ tag: "pre-existing", description: `old ${index + 1}` }));
+
+    it("lists every minor up to the cap and holds none back", () => {
+      const rendered = collapsedSections(summary({ findings: [...nits(3), ...old(2)] })).join("\n");
+      expect(rendered).toContain("nit 3");
+      expect(rendered).toContain("old 2");
+      expect(rendered).not.toContain("held back");
+    });
+
+    it("lists the first five nits and counts the rest as held back", () => {
+      const rendered = collapsedSections(summary({ findings: nits(8) })).join("\n");
+      expect(rendered).toContain("<summary>8 minor issues (not blocking)</summary>");
+      expect(rendered).toContain("nit 5");
+      expect(rendered).not.toContain("nit 6");
+      expect(rendered).toContain("3 more minor issues held back (the review lists at most 5).");
+    });
+
+    it("fills the cap with nits before pre-existing issues", () => {
+      const rendered = collapsedSections(summary({ findings: [...old(3), ...nits(4)] })).join("\n");
+      expect(rendered).toContain("nit 4");
+      expect(rendered).toContain("old 1");
+      expect(rendered).not.toContain("old 2");
+      expect(rendered).toContain("2 more minor issues held back");
+    });
+
+    it("drops the pre-existing block when nits use the whole cap", () => {
+      const rendered = collapsedSections(summary({ findings: [...nits(5), ...old(2)] })).join("\n");
+      expect(rendered).not.toContain("pre-existing issue");
+      expect(rendered).toContain("2 more minor issues held back");
+    });
+
+    it("singularizes a single held-back minor", () => {
+      const rendered = collapsedSections(summary({ findings: nits(6) })).join("\n");
+      expect(rendered).toContain("1 more minor issue held back");
+    });
+  });
 });
 
 describe("bodyLines", () => {
@@ -279,5 +320,60 @@ describe("bodyLines", () => {
       0,
     ).join("\n");
     expect(rendered).toContain("Incremental review of the changes since abcdef0.");
+  });
+
+  describe("importants carried from the prior round", () => {
+    const owed = {
+      file: "src/a.ts",
+      line: "10",
+      description: "the guard misses deletions",
+      status: "unresolved" as const,
+    };
+    const incremental = { review_mode: "incremental" as const, incremental_from_sha: "abcdef0123456789" };
+
+    it("does not read a clean delta as a clean bill while a prior important is open", () => {
+      const rendered = bodyLines(summary({ ...incremental, prior_importants: [owed] }), null, [], 0).join("\n");
+      expect(rendered).not.toContain("No issues found");
+      expect(rendered).not.toContain("No blocking issues found");
+      expect(rendered).toContain("1 important finding from the review of abcdef0 still open (not raised again):");
+      expect(rendered).toContain("- `src/a.ts:10` (correctness): the guard misses deletions");
+    });
+
+    it("lists it after the new importants of the round", () => {
+      const rendered = bodyLines(summary({ ...incremental, prior_importants: [owed] }), null, [], 2).join("\n");
+      expect(rendered.indexOf("2 important findings on the diff below.")).toBeLessThan(
+        rendered.indexOf("still open (not raised again)"),
+      );
+    });
+
+    it("names it when no reviewer was spawned for the delta", () => {
+      const rendered = bodyLines(
+        summary({ ...incremental, reviewers_spawned: [], reviewers_returned: [], prior_importants: [owed] }),
+        null,
+        [],
+        0,
+      ).join("\n");
+      expect(rendered).toContain("No reviewer was spawned for the changes since abcdef0.");
+      expect(rendered).toContain("the guard misses deletions");
+    });
+
+    it("keeps listing it when the next round copies the unresolved entries forward", () => {
+      const round1 = summary({ ...incremental, prior_importants: [owed] });
+      const round2 = summary({ ...incremental, prior_importants: unresolvedPrior(round1) });
+      const rendered = bodyLines(round2, null, [], 0).join("\n");
+      expect(rendered).not.toContain("No issues found");
+      expect(rendered).toContain("the guard misses deletions");
+    });
+
+    it("says nothing about a prior important the head resolved", () => {
+      const rendered = bodyLines(
+        summary({ ...incremental, prior_importants: [{ ...owed, status: "resolved" }] }),
+        null,
+        [],
+        0,
+      ).join("\n");
+      expect(rendered).toContain("No issues found.");
+      expect(rendered).not.toContain("still open");
+    });
   });
 });

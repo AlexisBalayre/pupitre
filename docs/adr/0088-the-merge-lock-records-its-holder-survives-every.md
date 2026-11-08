@@ -2,6 +2,7 @@
 
 - Status: accepted
 - Amends: [0008](0008-fresh-base-gating.md), [0084](0084-pup-land-session-closes-the-github-half-of.md), [0095](0095-the-gate-pup-audit-and-pup-land-run.md), [0096](0096-test-runs-queue-for-a-few-machine-wide.md)
+- Amended by: [0134](0134-the-gate-waits-for-the-load-only-while-another.md)
 
 88. **The merge lock records its holder, survives every exit pup can catch, is reclaimed from a
     dead holder, and `pup merge` and `pup land` wait for a live one; the gate waits for the
@@ -85,11 +86,10 @@
       the load themselves, and forbid it to loop on the load average or to ask the operator to
       release the lock. A refusal on a held lock is reported to the operator as it stands, and
       the conductor never deletes the lock.
+    The slot wait (`acquire` in `test-slot.service.ts`) listens for SIGHUP as well as SIGINT and
+    SIGTERM, so closing the terminal during a gate's slot wait ends it instead of carrying on to
+    merge.
     Owed, from the security reviews of this change:
-    - `withTestSlot`'s wait (`test-slot.service.ts`, outside this task's scope) listens for
-      SIGINT and SIGTERM only. With the lock now holding node through a SIGHUP, closing the
-      terminal during a gate's slot wait is discarded and the gate carries on to merge. The slot
-      wait should listen for SIGHUP as well.
     - The holder is known by its pid alone. A pid reused by another process, or one a session
       plants (pid 1 reads as alive through EPERM), holds every waiting gate for the whole wait
       and then refuses, the same denial a pid-less lock already causes at once. Recording the
@@ -127,3 +127,5 @@
     `GateInterruptedError` and leaves no listener; a failing post-merge worktree remove (a fake
     git) still ratchets the baseline, keeps the worktree and its branch, and names it in the
     outcome; the conductor context forbids the load loops and the lock hand-offs.
+    *Amended by decision 134:* the load wait runs only while another process holds a test slot
+    or waits for one as a gate, and ends as soon as none does.

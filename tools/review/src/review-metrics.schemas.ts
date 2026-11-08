@@ -48,6 +48,9 @@ const reviewModeSchema = z.enum(["full", "incremental"]);
 const priorImportantSchema = z.object({
   file: z.string().nullable().describe("Repo-relative file path from the prior record."),
   line: z.string().nullable().describe("Line number or range from the prior record."),
+  description: z
+    .string()
+    .describe("The prior finding's one-line description, copied from the prior record, so an unresolved one can be named."),
   status: z.enum(["resolved", "unresolved"]).describe("Whether the current head resolves the prior finding."),
 });
 
@@ -107,7 +110,7 @@ export const reviewSummarySchema = z.object({
   prior_importants: z
     .array(priorImportantSchema)
     .describe(
-      "Incremental only: the prior record's important findings checked against the current head. Empty on full.",
+      "When the Mode line names a prior record: its important findings, plus the unresolved entries its own prior_importants carried forward, each checked against the current head. Copy every still-unresolved entry forward; empty only when no prior record is named.",
     ),
   findings: z.array(findingSchema).describe("The confirmed findings the run acted on."),
   refuted_findings: z
@@ -116,6 +119,11 @@ export const reviewSummarySchema = z.object({
   process_issues: z
     .array(processIssueSchema)
     .describe("Problems in the review process itself, not the code. Empty when it ran clean."),
+  merged_duplicates: z
+    .number()
+    .int()
+    .optional()
+    .describe("How many findings the consolidator merged into another before validation; omit when none."),
 });
 
 const tokensSchema = z.object({
@@ -148,6 +156,10 @@ export const metricsRecordSchema = z.object({
   run_url: z.string().nullable(),
   actor: z.string().nullable(),
   commit_sha: z.string().nullable(),
+  base_ref: z
+    .string()
+    .nullable()
+    .describe("The base branch the review ran against; a different one on the next round forces a full review."),
   source: z.literal("pr"),
   pr_number: z.number().int().nullable(),
   action: z.literal("review"),
@@ -168,6 +180,13 @@ export const metricsRecordSchema = z.object({
   findings: z.array(findingSchema).nullable(),
   refuted_findings: z.array(refutedFindingSchema).nullable(),
   process_issues: z.array(processIssueSchema).nullable(),
+  duplicates_merged: z
+    .number()
+    .int()
+    .nullable()
+    .describe(
+      "Findings merged away before the record was written: the consolidator's count plus the mechanical pass's. Null when the run left no summary.",
+    ),
   comments_posted_actual: z
     .number()
     .int()

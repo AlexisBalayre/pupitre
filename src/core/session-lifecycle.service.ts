@@ -38,16 +38,25 @@ import {
   writeCompiledProfile,
 } from './profile-compiler.service.js';
 import { asStringArray } from './report-data.utils.js';
-import { asTier, type ClimbReason, climbFrom, routeFor, taskTier } from './routing.utils.js';
+import {
+  asTier,
+  type ClimbReason,
+  climbFrom,
+  fixRoundFailure,
+  routeFor,
+  taskTier,
+} from './routing.utils.js';
 import {
   appendEvent,
   claimingSession,
   currentFixRound,
+  decodeEvent,
   ensureProject,
   getSession,
   getTask,
   insertSession,
   insertTask,
+  listEvents,
   listSessions,
   listTaskSessions,
   readTaskSpec,
@@ -91,13 +100,14 @@ interface CapOverride {
   overCap?: boolean;
 }
 
-/** A launch refused because the project already has as many live sessions as its cap. */
+/** A launch refused because the project already has as many working sessions as its cap. */
 export class SessionCapReachedError extends Error {
-  constructor(live: number, cap: number) {
+  constructor(working: number, cap: number) {
     super(
-      `${live} sessions are live, at this project's cap of ${cap} (\`pup conductor start ` +
-        '--max-sessions` sets it); nothing was launched. Wait for one to finish, or, as the ' +
-        'operator, pass --over-cap to `pup launch` or `pup new`.',
+      `${working} sessions are working, at this project's cap of ${cap} (\`pup conductor start ` +
+        '--max-sessions` sets it; sessions awaiting review do not count); nothing was ' +
+        'launched. Wait for one to finish, or, as the operator, pass --over-cap to ' +
+        '`pup launch` or `pup new`.',
     );
     this.name = 'SessionCapReachedError';
   }
@@ -122,9 +132,11 @@ function gigabytes(bytes: number): string {
 /**
  * Refuse a launch past the project's session cap or into a machine short of
  * memory (decision 96). Asked before anything is built, and before `pup new`
- * writes its task, so a refusal leaves nothing behind. `--over-cap` lifts the
- * cap for the operator alone and never the memory floor: memory is the
- * machine's limit, the cap only the operator's choice of one.
+ * writes its task, so a refusal leaves nothing behind. The cap counts the
+ * sessions whose windows run turns, not those awaiting review (decision 144):
+ * an idle window costs memory, which the floor still weighs, and no turns.
+ * `--over-cap` lifts the cap for the operator alone and never the memory
+ * floor: memory is the machine's limit, the cap only the operator's choice of one.
  */
 function assertRoomToLaunch(
   db: Database,
@@ -133,9 +145,10 @@ function assertRoomToLaunch(
 ): void {
   const byOperator = req.overlapVia !== 'conductor' && req.overrideVia !== 'conductor';
   if (!(req.overCap && byOperator)) {
-    const live = listSessions(db, holdingStates()).length;
+    const working = holdingStates().filter((state) => state !== 'awaiting-review');
+    const count = listSessions(db, working).length;
     const cap = maxSessions(repoPath);
-    if (live >= cap) throw new SessionCapReachedError(live, cap);
+    if (count >= cap) throw new SessionCapReachedError(count, cap);
   }
   const available = availableMemoryBytes();
   if (available < MIN_AVAILABLE_MEMORY_BYTES) throw new LowMemoryError(available);
@@ -396,11 +409,12 @@ export function respawnRoute(
 }
 
 /**
- * The route a CI fix round's window runs on (decision 90): one rung above the
- * window that finished the work the review left threads on, the climb decision
- * 92 counts a fix round for, with an override kept or named as on a respawn.
- * The conductor runs `pup fix` too, and an override it names never lifts a
- * top-rung refusal, as on its launches.
+ * The route a CI fix round's window runs on (decision 90): the rung of the
+ * window before it, since a reviewer's finding is no failure, and one higher
+ * for a repeat round or the retry of a killed one that failed, as
+ * `fixRoundFailure` reads them (decision 92), with an override kept or named as
+ * on a respawn. The conductor runs `pup fix` too, and an override it names
+ * never lifts a top-rung refusal, as on its launches.
  */
 export function fixRoundRoute(
   db: Database,
@@ -411,7 +425,7 @@ export function fixRoundRoute(
   return sessionWindowRoute(
     db,
     session,
-    () => 'ci-fix-round',
+    () => fixRoundFailure(listEvents(db, session.id).map(decodeEvent)),
     override,
     overrideVia === 'operator',
   );

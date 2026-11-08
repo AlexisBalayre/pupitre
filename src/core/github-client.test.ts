@@ -1,14 +1,43 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { tempDir } from '../test/temp-dir.mock.js';
 import {
+  commentOnPullRequest,
   isCutOffByNode,
   originRepoSlug,
   readPullRequestReview,
   replyToReviewThread,
 } from './github.client.js';
+
+// The file's temp dirs, its children's included, go to a TMPDIR of its own,
+// which must hold no pup-* entry once every test has removed its own
+// (decision 100).
+let sharedTmp: string | undefined;
+let fileTmp: string;
+beforeAll(() => {
+  sharedTmp = process.env.TMPDIR;
+  fileTmp = realpathSync(mkdtempSync(join(tmpdir(), 'pup-github-client-tmp-')));
+  process.env.TMPDIR = fileTmp;
+});
+afterAll(() => {
+  const left = readdirSync(fileTmp).filter((name) => name.startsWith('pup-'));
+  if (sharedTmp === undefined) delete process.env.TMPDIR;
+  else process.env.TMPDIR = sharedTmp;
+  rmSync(fileTmp, { recursive: true, force: true, maxRetries: 3 });
+  expect(left).toEqual([]);
+});
 
 describe('originRepoSlug', () => {
   it('parses scp-style ssh remotes', () => {
@@ -45,7 +74,7 @@ describe('readPullRequestReview', () => {
   const NEWEST = 'PRR_newest';
 
   beforeEach(() => {
-    ghDir = realpathSync(mkdtempSync(join(tmpdir(), 'pup-review-gh-')));
+    ghDir = tempDir('pup-review-gh-');
     originalPath = process.env.PATH;
     process.env.PATH = `${ghDir}:${originalPath}`;
   });
@@ -445,5 +474,62 @@ describe('replyToReviewThread', () => {
     expect(() => replyToReviewThread('/nowhere', '/owner/repo', 'PRRT_1', 'body')).toThrow(
       'Cannot read a GitHub host from /owner/repo.',
     );
+  });
+});
+
+// gh runs git with the main checkout as its cwd, and a session can write that
+// checkout's config: a `core.fsmonitor` there would run on gh's first index
+// read unless gh's git takes pup's pins (decision 89).
+describe('the git gh runs', () => {
+  let originalPath: string | undefined;
+  beforeEach(() => {
+    originalPath = process.env.PATH;
+  });
+  afterEach(() => {
+    process.env.PATH = originalPath;
+  });
+
+  const plainEnv: NodeJS.ProcessEnv = {
+    ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_'))),
+    GIT_CONFIG_GLOBAL: '/dev/null',
+    GIT_CONFIG_SYSTEM: '/dev/null',
+  };
+
+  /** A repo whose config arms a `core.fsmonitor` that logs to `fired`, and a gh that runs `git status` in it. */
+  function armedCheckout(): { repo: string; fired: string } {
+    const repo = tempDir('pup-gh-git-');
+    const git = (...args: string[]) =>
+      execFileSync('git', args, { cwd: repo, encoding: 'utf8', env: plainEnv });
+    git('init', '-q', '-b', 'main');
+    writeFileSync(join(repo, 'a.ts'), 'one\n');
+    git('add', '.');
+    git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'base');
+    const fired = join(repo, '.git', 'fired');
+    const monitor = join(repo, '.git', 'planted-fsmonitor');
+    writeFileSync(monitor, `#!/bin/sh\necho fsmonitor >> ${fired}\nexit 1\n`, { mode: 0o755 });
+    git('config', 'core.fsmonitor', monitor);
+    const ghDir = join(repo, '.git', 'fake-gh');
+    mkdirSync(ghDir);
+    writeFileSync(join(ghDir, 'gh'), '#!/bin/sh\ncat > /dev/null\ngit status > /dev/null\n', {
+      mode: 0o755,
+    });
+    process.env.PATH = `${ghDir}:${originalPath}`;
+    return { repo, fired };
+  }
+
+  // The control: the planted monitor is live for a git with the plain environment.
+  it('runs in a checkout where a plain git status fires the planted fsmonitor', () => {
+    const { repo, fired } = armedCheckout();
+    execFileSync('git', ['status'], { cwd: repo, env: plainEnv, stdio: 'ignore' });
+
+    expect(readFileSync(fired, 'utf8')).toContain('fsmonitor');
+  });
+
+  it("does not run the checkout's core.fsmonitor on gh's git", () => {
+    const { repo, fired } = armedCheckout();
+
+    commentOnPullRequest(repo, 'https://github.com/o/r/pull/1', 'github.com/o/r', 'body');
+
+    expect(existsSync(fired)).toBe(false);
   });
 });

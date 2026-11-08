@@ -320,7 +320,7 @@ export function useControls({
       run: (model) =>
         setPrompt({
           kind: 'input',
-          label: 'worker model the conductor launches sessions on (blank for the default)',
+          label: 'worker model (blank for the default)',
           value: '',
           run: (workerModel) =>
             runAfterFrame('Starting the conductor: waiting for its window …', () =>

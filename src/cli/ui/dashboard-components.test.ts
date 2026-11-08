@@ -14,7 +14,7 @@ import { Detail } from './detail.component.js';
 import { Footer } from './footer.component.js';
 import { Header } from './header.component.js';
 import { MergeLogPane } from './merge-log.component.js';
-import { Prompt } from './prompt.component.js';
+import { Prompt, promptLines } from './prompt.component.js';
 import { Radar } from './radar.component.js';
 import { Sessions } from './sessions.component.js';
 import type { DashboardReading } from './use-snapshot.hook.js';
@@ -375,6 +375,18 @@ describe('dashboard components', () => {
       expect(frame).toContain('3 open debt entries');
     });
 
+    it('still says overdue when held to two lines', () => {
+      const frame = frameOf(
+        createElement(Debt, {
+          overdueDebt: ['1', '2', '3'].map((id) => ({ id, description: 'd', reviewBy: 'r' })),
+          openDebtCount: 3,
+          maxLines: 2,
+        }),
+      );
+
+      expect(frame).toBe('+3 more overdue debt\n3 open debt entries');
+    });
+
     it('renders nothing when the ledger is clean', () => {
       expect(frameOf(createElement(Debt, { overdueDebt: [], openDebtCount: 0 }))).toBe('');
     });
@@ -391,6 +403,18 @@ describe('dashboard components', () => {
 
       expect(frame).toContain('OVERLAP  s-a-1 <-> s-b-1  src/a.ts (+1 more)  (stale)');
       expect(frame).toContain('conflict radar off');
+    });
+
+    it('still says overlaps when a stale radar is held to two lines', () => {
+      const frame = frameOf(
+        createElement(Radar, {
+          overlaps: ['a', 'b'].map((id) => ({ sessionA: `s-${id}`, sessionB: 's-z', files: [] })),
+          radarStale: true,
+          maxLines: 2,
+        }),
+      );
+
+      expect(frame.split('\n')[0]).toBe('+2 more overlaps');
     });
 
     it('renders nothing when the radar is live and finds no overlap', () => {
@@ -579,7 +603,10 @@ describe('dashboard components', () => {
   describe('prompt', () => {
     it('asks a confirmation with both answers on it', () => {
       const frame = frameOf(
-        createElement(Prompt, { prompt: { kind: 'confirm', question: 'Kill s-run-1?' } }),
+        createElement(Prompt, {
+          prompt: { kind: 'confirm', question: 'Kill s-run-1?' },
+          width: 80,
+        }),
       );
 
       expect(frame).toContain('Kill s-run-1?');
@@ -588,11 +615,27 @@ describe('dashboard components', () => {
 
     it('shows what has been typed into a field so far', () => {
       const frame = frameOf(
-        createElement(Prompt, { prompt: { kind: 'input', label: 'steer s-run-1', value: 'read' } }),
+        createElement(Prompt, {
+          prompt: { kind: 'input', label: 'steer s-run-1', value: 'read' },
+          width: 80,
+        }),
       );
 
       expect(frame).toContain('steer s-run-1: read');
       expect(frame).toContain('Enter sends');
+    });
+
+    it('wraps a long question whole, and draws as many rows as it counts', () => {
+      const question =
+        't-abc123 was blocked: steer not delivered — the session pane is gone and the ' +
+        're-steer could not reach it; its worktree is intact and it can be relaunched — unblock?';
+      const prompt = { kind: 'confirm' as const, question };
+      const frame = frameOf(createElement(Prompt, { prompt, width: 60 }));
+
+      expect(frame.replace(/\s+/g, ' ')).toContain(question);
+      expect(frame).toContain('(y/n, Esc cancels)');
+      expect(frame.split('\n')).toHaveLength(promptLines(prompt, 60));
+      expect(frame.split('\n').every((line) => line.length <= 60)).toBe(true);
     });
   });
 

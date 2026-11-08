@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import {
   existsSync,
   mkdirSync,
@@ -1281,5 +1281,201 @@ describe('assertNoWorktreeConfig', () => {
       /its \.git is not a directory\. pup pins a session to the repository at <repo>\/\.git/,
     );
     expect(() => assertNoWorktreeConfig(repo)).not.toThrow();
+  });
+});
+
+/** A sha in `repo`, read with plain git. */
+function revParse(repo: string, rev: string): string {
+  return execFileSync('git', ['rev-parse', rev], {
+    cwd: repo,
+    encoding: 'utf8',
+    env: GIT_ENV,
+  }).trim();
+}
+
+// Replace refs, `info/grafts` and the commit-graph all sit in the shared
+// `$GIT_COMMON_DIR`, untracked, and each changes what a sha reads as for every
+// git that consults it. The gate reads the pinned commit through `runGit`, so
+// each forgery must leave `runGit` reading the commits as they are (decision 89).
+describe('history a session can rewrite in the shared git dir (decision 89)', () => {
+  /**
+   * main: base, m; feature: base, x, y. Re-parenting `m` onto `x` moves the
+   * merge-base to `x`, so the branch diff would hide x.ts.
+   */
+  function forkedRepo(): { repo: string; mainTip: string; firstOnFeature: string } {
+    const repo = makeRepo();
+    writeFileSync(join(repo, 'base.ts'), 'base\n');
+    commitAll(repo, 'base');
+    sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
+    writeFileSync(join(repo, 'x.ts'), 'x\n');
+    commitAll(repo, 'x');
+    const firstOnFeature = revParse(repo, 'HEAD');
+    writeFileSync(join(repo, 'y.ts'), 'y\n');
+    commitAll(repo, 'y');
+    sh(repo, 'git', 'checkout', '-q', 'main');
+    writeFileSync(join(repo, 'm.ts'), 'm\n');
+    commitAll(repo, 'm');
+    return { repo, mainTip: revParse(repo, 'HEAD'), firstOnFeature };
+  }
+
+  /** The branch diff as a plain git reads it: the control that shows the forgery is live. */
+  function plainDiffPaths(repo: string): string[] {
+    return execFileSync('git', ['diff', '--name-only', 'main...feature'], {
+      cwd: repo,
+      encoding: 'utf8',
+      env: GIT_ENV,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+      .split('\n')
+      .filter(Boolean);
+  }
+
+  it('reads the commits a replace ref stands in for', () => {
+    const { repo, mainTip, firstOnFeature } = forkedRepo();
+    sh(repo, 'git', 'replace', '--graft', mainTip, firstOnFeature);
+
+    expect(plainDiffPaths(repo)).toEqual(['y.ts']);
+    expect(gitDiffPaths(repo, 'main', 'feature')).toEqual(['x.ts', 'y.ts']);
+    expect(runGit(repo, ['rev-parse', 'main']).trim()).toBe(mainTip);
+    expect(runGit(repo, ['log', '--format=%s', 'main']).split('\n').filter(Boolean)).toEqual([
+      'm',
+      'base',
+    ]);
+  });
+
+  it('reads the parents a graft rewrites', () => {
+    const { repo, mainTip, firstOnFeature } = forkedRepo();
+    writeFileSync(join(repo, '.git', 'info', 'grafts'), `${mainTip} ${firstOnFeature}\n`);
+
+    expect(plainDiffPaths(repo)).toEqual(['y.ts']);
+    expect(gitDiffPaths(repo, 'main', 'feature')).toEqual(['x.ts', 'y.ts']);
+  });
+
+  it('reads the tree a forged commit-graph names in place of the tip’s own', () => {
+    const { repo } = forkedRepo();
+    sh(repo, 'git', 'commit-graph', 'write', '--reachable');
+    const graph = join(repo, '.git', 'objects', 'info', 'commit-graph');
+    const tipTree = Buffer.from(revParse(repo, 'feature^{tree}'), 'hex');
+    const baseTree = Buffer.from(revParse(repo, 'main~1^{tree}'), 'hex');
+    const bytes = readFileSync(graph);
+    const at = bytes.indexOf(tipTree);
+    expect(at).toBeGreaterThan(-1);
+    baseTree.copy(bytes, at);
+    unlinkSync(graph);
+    writeFileSync(graph, bytes);
+
+    // A three-dot diff happens to load the tip from its object; a log or a
+    // two-dot diff from the merge-base takes the tree from the graph.
+    const plainTree = execFileSync('git', ['log', '-1', '--format=%T', 'feature'], {
+      cwd: repo,
+      encoding: 'utf8',
+      env: GIT_ENV,
+    }).trim();
+    expect(plainTree).toBe(baseTree.toString('hex'));
+    expect(runGit(repo, ['log', '-1', '--format=%T', 'feature']).trim()).toBe(
+      tipTree.toString('hex'),
+    );
+    expect(runGit(repo, ['diff', '--name-only', 'main~1', 'feature']).split('\n')).toEqual([
+      'x.ts',
+      'y.ts',
+      '',
+    ]);
+  });
+});
+
+// Each of these arms a driver no listing of the file as it stands would show,
+// or names one under a subsection the old pattern required to be non-empty.
+describe('armedGitDrivers: includes and empty driver names (decision 89)', () => {
+  function repoWithCommit(): string {
+    const repo = makeRepo();
+    writeFileSync(join(repo, 'a.ts'), 'one\n');
+    commitAll(repo, 'base');
+    return repo;
+  }
+
+  // The file is refused whatever it holds now: a session can fill it after the check.
+  it('names a local include.path, not reading the file it names', () => {
+    const repo = repoWithCommit();
+    const included = join(tempDir('pup-include-'), 'config');
+    writeFileSync(included, '[filter "pwn"]\n\tsmudge = /usr/bin/true\n');
+    sh(repo, 'git', 'config', 'include.path', included);
+
+    expect(armedGitDrivers(repo)).toEqual(['include.path']);
+    expect(() => assertNoArmedGitDrivers(repo)).toThrow(
+      /a config include could arm one.*include\.path/,
+    );
+  });
+
+  // False where the check runs, true on the branch the rebase checks out.
+  it('names an includeIf, whatever its condition reads here', () => {
+    const repo = repoWithCommit();
+    const included = join(tempDir('pup-include-'), 'config');
+    writeFileSync(included, '[merge "pwn"]\n\tdriver = /usr/bin/true %A %O %B\n');
+    sh(repo, 'git', 'config', 'includeIf.onbranch:feature.path', included);
+
+    expect(armedGitDrivers(repo)).toEqual(['includeif.onbranch:feature.path']);
+  });
+
+  it.each(['filter..smudge', 'filter..clean', 'filter..process', 'merge..driver'])(
+    'names %s, a driver whose name is empty',
+    (key) => {
+      const repo = repoWithCommit();
+      sh(repo, 'git', 'config', key, '/usr/bin/true');
+
+      expect(armedGitDrivers(repo)).toEqual([key]);
+    },
+  );
+});
+
+// The open-PR merge re-runs the check under the merge lock; a fifo read with a
+// plain open blocks node where no handled signal reaches it (decision 50, as
+// amended by 89).
+describe('armedGitDrivers: an info/attributes that is not a regular file', () => {
+  function attributesPath(): { repo: string; attributes: string } {
+    const repo = makeRepo();
+    writeFileSync(join(repo, 'a.ts'), 'one\n');
+    commitAll(repo, 'base');
+    return { repo, attributes: join(repo, '.git', 'info', 'attributes') };
+  }
+
+  const REFUSED = 'info/attributes (not a regular file of 1 MiB or less)';
+
+  it('refuses a fifo at once rather than block on it', () => {
+    const { repo, attributes } = attributesPath();
+    sh(repo, 'mkfifo', attributes);
+    // Opens the fifo for writing after a while, so a blocking read returns
+    // empty and fails this test rather than hang the run.
+    const writer = spawn('sh', ['-c', 'sleep 3; : > "$0"', attributes], { stdio: 'ignore' });
+    try {
+      const started = Date.now();
+      expect(armedGitDrivers(repo)).toEqual([REFUSED]);
+      expect(Date.now() - started).toBeLessThan(2000);
+    } finally {
+      writer.kill('SIGKILL');
+    }
+  });
+
+  it('refuses a symlink rather than follow it', () => {
+    const { repo, attributes } = attributesPath();
+    const target = join(tempDir('pup-attributes-'), 'attributes');
+    writeFileSync(target, '# inert where it points\n');
+    symlinkSync(target, attributes);
+
+    expect(armedGitDrivers(repo)).toEqual([REFUSED]);
+  });
+
+  it('refuses a directory', () => {
+    const { repo, attributes } = attributesPath();
+    mkdirSync(attributes);
+
+    expect(armedGitDrivers(repo)).toEqual([REFUSED]);
+  });
+
+  it('reads a regular file as before, and none at all as nothing armed', () => {
+    const { repo, attributes } = attributesPath();
+    expect(armedGitDrivers(repo)).toEqual([]);
+
+    writeFileSync(attributes, '# a comment\n*.ts diff\n');
+    expect(armedGitDrivers(repo)).toEqual(['info/attributes (*.ts diff)']);
   });
 });

@@ -1,10 +1,25 @@
 # Testing Conventions
 
-Rules for test files in `src/`. Auto-loaded via `.claude/rules/testing-conventions.md` when you
-touch a test. The runner is **Vitest**; `pnpm test` runs everything.
+Rules for test files under `test/`. Auto-loaded via `.claude/rules/testing-conventions.md` when
+you touch a test. The runner is **Vitest**; `pnpm test` runs everything.
 
-Tests sit next to the file they cover and are named for it — see the "Test files" section of
-[naming.md](naming.md) for how the filename is derived.
+## Layout
+
+| Folder              | Holds                                                                  |
+| :------------------ | :--------------------------------------------------------------------- |
+| `test/unit/`        | One test file per source file, at the path the source has under `src/` |
+| `test/integration/` | Scenarios that span several subjects, `<scenario>.integration.test.ts` |
+| `test/helpers/`     | Shared mocks, doubles and fixtures, `<name>.mock.ts`                   |
+
+**The mirror rule.** `src/core/bar.service.ts` is covered by `test/unit/core/bar-service.test.ts`:
+same folders, the subject's filename with the role's dot turned into a hyphen (see
+[naming.md](naming.md) §Test files). A new scenario that crosses subjects goes in
+`test/integration/`, not into a unit file. A mock used by more than one suite goes in
+`test/helpers/`; a double only one suite needs stays in that suite.
+
+**Aliases, tests only.** Tests import the unit under test through `@src/…` and helpers through
+`@test/…` (`import { bar } from '@src/core/bar.service.js'`). `src/` keeps relative imports; an
+alias never appears in a file under `src/`.
 
 ## Prefer the real dependency over a mock
 
@@ -68,13 +83,13 @@ real implementation at import time.
 
 ```ts
 // Without this, every merging test would spawn a real `claude -p` call.
-vi.mock('../claude/session-runtime.service.js', () => ({
+vi.mock('@src/claude/session-runtime.service.js', () => ({
   killSession: vi.fn(),
   steerSession: vi.fn(),
 }));
 
 // import AFTER the mock is declared
-import { runMergeGate } from './merge-gate.service.js';
+import { runMergeGate } from '@src/core/merge-gate.service.js';
 ```
 
 ## Structure

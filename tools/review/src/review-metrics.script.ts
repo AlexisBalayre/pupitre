@@ -1,5 +1,6 @@
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { parseReviewRequest } from "./preflight.utils";
+import { consolidateSummary } from "./review-consolidate.utils";
 import { noVerdictReason } from "./review-completeness.utils";
 import {
   type MetricsRecord,
@@ -25,7 +26,7 @@ import {
 // Bump whenever the record's meaning changes (a field added or repurposed, a
 // pipeline change that alters what a field measures): the retro partitions
 // trends by schema_version, so a silent semantic change poisons its baselines.
-const SCHEMA_VERSION = 6;
+const SCHEMA_VERSION = 7;
 
 function warn(message: string): void {
   process.stdout.write(`::warning::${message}\n`);
@@ -242,7 +243,9 @@ function main(): void {
 
   // Parsed whatever the step outcome, unlike the poster, which discards a failed
   // step's output: the record keeps what that step reported for the retro.
-  const summary = parseSummary(env.REVIEW_STRUCTURED_OUTPUT ?? "");
+  const parsed = parseSummary(env.REVIEW_STRUCTURED_OUTPUT ?? "");
+  const consolidated = parsed && consolidateSummary(parsed);
+  const summary = consolidated?.summary ?? null;
   const platform = platformMetrics(env.REVIEW_EXECUTION_FILE);
   const request = parseReviewRequest(env.REVIEW_COMMENT ?? "");
 
@@ -262,6 +265,7 @@ function main(): void {
     run_url: repository && runId ? `https://github.com/${repository}/actions/runs/${runId}` : null,
     actor: env.GITHUB_ACTOR ?? null,
     commit_sha: commitSha,
+    base_ref: env.REVIEW_BASE_REF || null,
     source: "pr",
     pr_number: prNumber,
     action: "review",
@@ -278,6 +282,7 @@ function main(): void {
     findings: summary?.findings ?? null,
     refuted_findings: summary?.refuted_findings ?? null,
     process_issues: summary?.process_issues ?? null,
+    duplicates_merged: consolidated?.merged ?? null,
     comments_posted_actual: postedCount(env.REVIEW_POSTED_INPUT),
     is_error: platform.is_error || incomplete !== null,
     incomplete_reason: incomplete,

@@ -11,7 +11,8 @@ export interface LandOutcome {
   fastForwarded: boolean;
   removedWorktree: boolean;
   /**
-   * Set when the local branch held commits main does not, and was kept. Never
+   * Set when the local branch held commits neither main nor the pinned sha
+   * does, and was kept. Never
    * set with `keptWorktree`, which keeps the branch too: read both.
    */
   keptBranch?: string;
@@ -22,5 +23,6 @@ export interface LandOutcome {
    * worktree on a branch that does not exist.
    */
   keptWorktree?: string;
-  audit: AuditOutcome;
+  /** Absent when the land skipped it (`--no-audit`, decision 132): `pup audit` is then the operator's. */
+  audit?: AuditOutcome;
 }

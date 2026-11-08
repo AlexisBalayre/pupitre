@@ -15,11 +15,11 @@ name: Claude Code Review
 
 on:
   pull_request:
-    # synchronize: without it, any push after the review merges unreviewed code
-    # unless a human remembers `@claude review`. The preflight resolves pushes
-    # to an incremental review of the delta, and its same-SHA dedupe plus the
-    # queue below bound how many runs a push burst costs.
-    types: [opened, ready_for_review, synchronize]
+    # No `synchronize`: a push is reviewed only when the owner asks with
+    # `@claude review` (`pup fix` asks after a gated fix round). The
+    # `claude-review` status on a pushed head reads "Not reviewed: push since
+    # last review" (claude-review-push-marker.yml) so it never reads as ready.
+    types: [opened, reopened, ready_for_review]
   issue_comment:
     types: [created]
 
@@ -39,14 +39,14 @@ jobs:
         (github.event_name == 'pull_request' && github.event.pull_request.draft == false) ||
         (github.event_name == 'issue_comment' && github.event.issue.pull_request && contains(github.event.comment.body, '@claude review'))
       )
-    runs-on: ubuntu-latest
+    # Not ubuntu-latest: it is 26.04 now, where the reviewer sandbox fails (apply-seccomp: nested userns is capability-restricted).
+    runs-on: ubuntu-24.04
     # Generous headroom: a run cancelled at the timeout is a fully billed review
     # discarded for want of a few minutes.
     timeout-minutes: 40
     # Queue, never cancel: with cancel-in-progress a second trigger discards a
-    # fully billed in-flight review, and without `synchronize` as a trigger a PR
-    # can merge green having never been reviewed. GitHub keeps one pending run
-    # per group: the running review always completes and posts, and a push burst
+    # fully billed in-flight review. GitHub keeps one pending run per group:
+    # the running review always completes and posts, and a burst of asks
     # collapses to a single queued follow-up on whatever the head is by then.
     # Job-level, not workflow-level: a comment without "@claude review" is
     # skipped by the `if` above before it can enter this group; workflow-level
@@ -103,7 +103,7 @@ jobs:
       - name: Set up pnpm
         # Pinned to a full SHA: this workflow carries secrets + a write token, so
         # third-party actions are pinned, not floated on a mutable tag.
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           # Pinned here, not read from a manifest: the tree at this step is the
           # merge ref, so any package.json's `packageManager` is the head's and
@@ -178,8 +178,8 @@ jobs:
       # base, and the full/incremental mode decision, all run as a plain step so
       # a failure is a red step the poster turns into a "not reviewed" verdict,
       # never a model stalled at a permission prompt. It also skips the run when
-      # the head SHA already has a non-errored, complete record (a synchronize
-      # retrigger with nothing new), or when only comments and repo-meta prose
+      # the head SHA already has a non-errored, complete record (an ask
+      # with nothing new), or when only comments and repo-meta prose
       # changed since that record (marked "Not reviewed" on the head), except on
       # an explicit `@claude review`, whose words it parses into the depth and
       # areas the model is handed.
@@ -340,7 +340,7 @@ jobs:
         if: steps.pr-head.outputs.skip != 'true' && steps.preflight.outputs.skip != 'true'
         id: claude-review
         # SHA-pinned (secrets + write token); the tag comment tracks the version.
-        uses: anthropics/claude-code-action@925afb53776cf1a2b738c6bdbed37b4d4000ef13 # v1.0.262
+        uses: anthropics/claude-code-action@4845bacbb38b3c4b15d948f035349786f678e068 # v1.0.267
         # The reviewer manifests keep their `opus` / `sonnet` aliases; these pin
         # the aliases to exact ids, so a Claude Code bump cannot move a tier
         # silently, while a local /pr-ci-review still follows the local defaults.
@@ -354,6 +354,7 @@ jobs:
 
             Pull request: #${{ github.event.pull_request.number || github.event.issue.number }} in ${{ github.repository }}
             ${{ steps.preflight.outputs.mode_line }}
+            Round: ${{ steps.preflight.outputs.round }}
             Merge base: ${{ steps.preflight.outputs.merge_base }}
             Depth: ${{ steps.preflight.outputs.depth }}
             Areas: ${{ steps.preflight.outputs.areas }}
@@ -442,6 +443,7 @@ jobs:
           REVIEW_STEP_OUTCOME: ${{ steps.claude-review.outcome }}
           REVIEW_PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
           REVIEW_COMMIT_SHA: ${{ steps.preflight.outputs.sha }}
+          REVIEW_BASE_REF: ${{ steps.preflight.outputs.base_ref }}
           REVIEW_POSTED_INPUT: ${{ runner.temp }}/posted.json
           REVIEW_COMMENT: ${{ github.event.comment.body }}
           REVIEW_METRICS_OUTPUT: ${{ runner.temp }}/review-metrics.json
@@ -466,7 +468,8 @@ jobs:
     # `result != 'skipped'` matters: issue_comment fires on every PR comment, and
     # without it `always()` would spin this job up for each one claude-review skips.
     if: always() && needs.claude-review.result != 'skipped' && needs.claude-review.outputs.skip != 'true'
-    runs-on: ubuntu-latest
+    # Pinned with claude-review above: ubuntu-latest (26.04) breaks the reviewer sandbox.
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: write

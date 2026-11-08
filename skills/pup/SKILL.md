@@ -35,7 +35,7 @@ the ones refused to sessions and conductors. Explain before you act on anything 
 | Onboard a repo (operator only) | `pup init` in the repo; `pup init --gate-env A,B` for gate env vars; `pup init --session-env A,B` for the config variables (`CLAUDE_CONFIG_DIR`, effort, subagent model, telemetry) every session window gets from the launching shell |
 | Record a task, no session | `pup plan add "<goal>" --scope <glob>... --accept "<criterion>"... [--tier critical|standard]` |
 | Backlog | `pup plan` (list, with each task's tier), `pup plan drop|edit <task>` |
-| Start a session for a task | `pup launch <task>`; `pup new "<goal>" --scope ...` plans and launches. Both refuse past the session cap or under 1.5 GB of available memory; `--over-cap` (operator-only) lifts the cap, never the memory floor |
+| Start a session for a task | `pup launch <task>`; `pup new "<goal>" --scope ...` plans and launches. Both refuse past the session cap (sessions awaiting review do not count) or under 1.5 GB of available memory; `--over-cap` (operator-only) lifts the cap, never the memory floor |
 | Who needs me | `pup status`, `pup ui` (live), `pup dashboard --open` (live page in the browser, read-only, operator-only), `pup watch` (conflict radar) |
 | Talk to a session | `pup steer <session> "<message>"`; `pup interrupt <session>` for a hung tool; `pup attach <session>` to enter its window (operator-only, Ctrl-b d detaches) |
 | Stop or restart one | `pup kill <session> [--respawn]`, `pup respawn <session>`, `pup unblock` |
@@ -46,6 +46,7 @@ the ones refused to sessions and conductors. Explain before you act on anything 
 | Delegate the whole loop | `pup conductor start` (Opus 5.5 high; `--model`, `--effort`, `--worker-model` override; `--max-sessions <n>` sets the session cap, default 4), `pup conductor stop` |
 | Project brief and registry | `pup brief show|edit`, `pup project list|dormant|wake <id>` |
 | Reports | `pup report --open`, `pup map [module] --open` |
+| Where the usage went | `pup usage [--since <date>] [--json]` (operator-only, read-only): cost share, cache hit rate and context per class, model and effort, re-caches after an idle hour, tool-output carry |
 
 A goal names files, mechanism and the decision number it records; acceptance criteria are
 checkable sentences. A criterion or goal starting with `--` is parsed as an option: reword it.
@@ -57,7 +58,9 @@ scope-in can touch the gate, git, tmux, the store, the sandbox, hooks or profile
 critical, anything else standard; `--tier` on `plan add|edit` overrides the rule and `pup plan`
 marks it `*`. Standard climbs Sonnet 5.5 medium → Sonnet 5.5 high → Opus 5.5 high → Opus 5.5
 xhigh, critical Opus 5.5 high → Opus 5.5 xhigh, one rung per relaunch or respawn after a gate
-rejection, a CI fix round, a dead turn or a stall; a blocked task never climbs. `pup status`,
+rejection, a dead turn or a stall; a blocked task never climbs. A CI fix round (`pup fix`) runs
+on the rung the session's last window ran on; every later round on the PR climbs one
+(`repeat-fix-round`). `pup status`,
 `pup ui` and the dashboard show each session's model, effort and rung. A failure on the top rung
 refuses the next launch or respawn and lists the task under Needs you as `top-rung`: re-plan it,
 or pass `--model` and `--effort` to `pup launch`, `pup respawn` or `pup kill --respawn`. An

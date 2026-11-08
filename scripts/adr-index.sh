@@ -1,39 +1,34 @@
 #!/bin/bash
-# Regenerate the one-line-per-decision index in docs/adr/README.md (number, title, status).
-#   bash scripts/adr-index.sh           rewrite the index between the markers
-#   bash scripts/adr-index.sh --check   exit 1 when the index is stale (run by `pnpm lint`)
-# Nobody edits the index by hand: add or change a decision file, then run this.
+# The one-line-per-decision index of docs/adr/ (number, title, status), computed from the files.
+#   bash scripts/adr-index.sh           print the index
+#   bash scripts/adr-index.sh --check   print nothing; exit 1 when a decision is malformed or
+#                                       two share a number (run by `pnpm lint`)
+# The index is not committed: a committed list is a line every decision PR adds at the same place.
 set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
-README=docs/adr/README.md
-BEGIN='<!-- adr-index:begin -->'
-END='<!-- adr-index:end -->'
+ADR_DIR=${ADR_DIR:-docs/adr}
 
 index() {
-  for f in docs/adr/[0-9][0-9][0-9][0-9]-*.md; do
+  for f in "$ADR_DIR"/[0-9][0-9][0-9][0-9]-*.md; do
     title=$(sed -n '1s/^# //p' "$f")
     status=$(sed -n 's/^- Status: //p' "$f" | head -n 1)
+    if [ -z "$title" ] || [ -z "$status" ]; then
+      echo "$f needs a '# ' title on line 1 and a '- Status:' line." >&2
+      return 1
+    fi
     printf -- '- [%s](%s) (%s)\n' "$title" "$(basename "$f")" "$status"
   done
 }
 
-# The sandboxed merge gate allows no temp files, so the index travels through the environment
-# and the check compares strings.
-render() {
-  IDX=$(index) awk -v begin="$BEGIN" -v end="$END" '
-    $0 == begin { print; print ENVIRON["IDX"]; skip = 1; next }
-    $0 == end { skip = 0 }
-    !skip { print }
-  ' "$README"
-}
+duplicates=$(for f in "$ADR_DIR"/[0-9][0-9][0-9][0-9]-*.md; do basename "$f" | cut -c1-4; done | sort | uniq -d)
+if [ -n "$duplicates" ]; then
+  echo "Decision number used twice: $(echo "$duplicates" | tr '\n' ' ')- renumber the newer file." >&2
+  exit 1
+fi
 
 if [ "${1:-}" = "--check" ]; then
-  if [ "$(render)" != "$(cat "$README")" ]; then
-    echo "docs/adr/README.md index is stale: run 'bash scripts/adr-index.sh'." >&2
-    exit 1
-  fi
+  index >/dev/null
 else
-  out=$(render)
-  printf '%s\n' "$out" > "$README"
+  index
 fi

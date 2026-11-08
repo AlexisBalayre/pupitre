@@ -144,6 +144,9 @@ interface ThreadAnswers {
   unanswered: number;
 }
 
+/** The one on-demand review a gated fix round asks for: CI reviews only on opening and on this comment. */
+const REVIEW_ASK = '@claude review';
+
 type ThreadVerdict = Exclude<keyof ThreadAnswers, 'prUrl' | 'sha'>;
 
 /** One thread's answer in the worker's `pup session done` summary. */
@@ -360,7 +363,7 @@ export function answerFixRoundThreads(
       `${answers.unverified} answered fixed that pup could not verify, ` +
       `${answers.declined} declined and ${answers.unanswered} unanswered` +
       (left > 0 ? ', left open for the operator.' : '.') +
-      `\n\n${marker}`;
+      `\n\n${REVIEW_ASK}\n\n${marker}`;
     withinBudget((timeoutMs) => commentOnPullRequest(repoPath, prUrl, repo, body, timeoutMs));
   }
   return answers;
@@ -681,7 +684,8 @@ function reviewVerdict(
 }
 
 /**
- * The fix round's route, climbed one rung (decision 92). A top-rung refusal is
+ * The fix round's route, on the rung before it unless it repeats a round or
+ * retries one that failed (decision 92). A top-rung refusal is
  * reworded for this command: the respawn the session's refusal names is for a
  * running window, and a merged session has none.
  */
@@ -692,8 +696,9 @@ function routeOrRefuse(db: Database, session: SessionRow, req: FixRoundRequest):
     if (!(error instanceof TopRungReachedError)) throw error;
     const id = sanitizeReason(session.id);
     throw new Error(
-      `Session ${id}'s worker ran on the top rung of its ladder, and a fix round climbs one, ` +
-        "so pup does not start one there. It is the operator's to decide: " +
+      `Session ${id}'s worker ran on the top rung of its ladder, and this round follows a ` +
+        'round the gate already merged, or retries one that failed, which climbs one, so pup ' +
+        "does not start it there. It is the operator's to decide: " +
         `\`pup fix ${id} --model <model> --effort <effort>\`, or fix the PR by hand. ` +
         NOT_STARTED,
     );
@@ -855,8 +860,8 @@ function takeFixRoundEdge(
  * (decision 92). A kickoff that never lands is undone the way `pup kill` ends
  * a round, back to `merged`, and its worktree is removed, so `pup fix` can be
  * re-run; the `fix_round` event stays as the trace of the round that was
- * tried. The route is stored only once the kickoff landed, so an undone round
- * climbs once on its retry.
+ * tried. The route is stored only once the kickoff landed, so an undone round's
+ * retry climbs no higher than the round would have.
  */
 function relaunchWorker(
   db: Database,

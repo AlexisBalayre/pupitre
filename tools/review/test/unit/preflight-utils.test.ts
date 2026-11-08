@@ -6,6 +6,7 @@ import {
   newestCleanRecord,
   parseRawDiff,
   parseReviewRequest,
+  reviewRound,
   type RawDiffEntry,
   sameCodeIgnoringComments,
   type PriorRecord,
@@ -17,6 +18,7 @@ function record(overrides: Partial<PriorRecord> = {}): PriorRecord {
   return {
     path: "records/1.json",
     commit_sha: "aaa",
+    base_ref: "main",
     timestamp: "2026-08-01T00:00:00.000Z",
     is_error: false,
     partial: false,
@@ -69,9 +71,30 @@ describe("newestCleanRecord", () => {
   });
 });
 
+describe("reviewRound", () => {
+  it("is 1 when the PR has no review yet", () => {
+    expect(reviewRound([])).toBe(1);
+  });
+
+  it("counts one round per reviewed head", () => {
+    const first = record({ path: "records/1.json", commit_sha: "aaa" });
+    const rerun = record({ path: "records/2.json", commit_sha: "aaa" });
+    const second = record({ path: "records/3.json", commit_sha: "bbb" });
+    expect(reviewRound([first, rerun, second])).toBe(3);
+  });
+
+  it("skips partial reviews, failed runs and records without a sha", () => {
+    const partial = record({ commit_sha: "aaa", partial: true });
+    const failed = record({ commit_sha: "bbb", is_error: true });
+    const shaless = record({ commit_sha: null });
+    expect(reviewRound([partial, failed, shaless])).toBe(1);
+  });
+});
+
 describe("decideMode", () => {
   const base = {
     headSha: "bbb",
+    baseRef: "main",
     trigger: "synchronize",
     forceFull: false,
     isAncestor: true,
@@ -91,7 +114,7 @@ describe("decideMode", () => {
   });
 
   it("re-reviews an already-reviewed head when a human asked by comment", () => {
-    expect(decideMode({ ...base, prior: record({ commit_sha: "bbb" }), trigger: "comment" })).toEqual({ kind: "full" });
+    expect(decideMode({ ...base, prior: record({ commit_sha: "bbb" }), trigger: "comment" })).toEqual({ kind: "full", priorPath: "records/1.json" });
   });
 
   it("resolves incremental from the prior head on a clean fast-forward", () => {
@@ -102,16 +125,34 @@ describe("decideMode", () => {
     });
   });
 
+  it("falls back to full when the PR was retargeted since the prior review", () => {
+    expect(decideMode({ ...base, prior: record({ base_ref: "feature/x" }) })).toEqual({ kind: "full" });
+  });
+
+  it("reviews an already-reviewed head in full when its base changed", () => {
+    expect(decideMode({ ...base, prior: record({ commit_sha: "bbb", base_ref: "feature/x" }) })).toEqual({
+      kind: "full",
+    });
+  });
+
+  it("does not read a record from before schema 7 as a base change", () => {
+    expect(decideMode({ ...base, prior: record({ base_ref: null }) })).toEqual({
+      kind: "incremental",
+      fromSha: "aaa",
+      priorPath: "records/1.json",
+    });
+  });
+
   it("honors an explicit full request over an eligible delta", () => {
-    expect(decideMode({ ...base, prior: record(), forceFull: true })).toEqual({ kind: "full" });
+    expect(decideMode({ ...base, prior: record(), forceFull: true })).toEqual({ kind: "full", priorPath: "records/1.json" });
   });
 
   it("falls back to full when a rebase broke ancestry", () => {
-    expect(decideMode({ ...base, prior: record(), isAncestor: false })).toEqual({ kind: "full" });
+    expect(decideMode({ ...base, prior: record(), isAncestor: false })).toEqual({ kind: "full", priorPath: "records/1.json" });
   });
 
   it("falls back to full when the delta contains a merge from the base", () => {
-    expect(decideMode({ ...base, prior: record(), hasMerges: true })).toEqual({ kind: "full" });
+    expect(decideMode({ ...base, prior: record(), hasMerges: true })).toEqual({ kind: "full", priorPath: "records/1.json" });
   });
 
   it("skips a delta of comments and Markdown alone", () => {
@@ -130,7 +171,7 @@ describe("decideMode", () => {
   });
 
   it("reviews in full a comment-only delta whose ancestry broke", () => {
-    expect(decideMode({ ...base, prior: record(), isCommentOnly: true, isAncestor: false })).toEqual({ kind: "full" });
+    expect(decideMode({ ...base, prior: record(), isCommentOnly: true, isAncestor: false })).toEqual({ kind: "full", priorPath: "records/1.json" });
   });
 });
 
