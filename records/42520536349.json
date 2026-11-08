@@ -1,0 +1,121 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-08T20:35:21.497Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42520536349",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42520536349",
+  "actor": "AlexisBalayre",
+  "commit_sha": "6021b30e1b814034f5c85f12a6b90e3915aafb9d",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 276,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "context"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "context"
+  ],
+  "reviewers_skipped": [
+    "maintainability",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "1119",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The compiled worker settings now always set CLAUDE_CODE_SUBAGENT_MODEL and CLAUDE_CODE_SUBAGENT_MODEL_FORCE. That overrides the values an operator pins for workers with `pup init --session-env`, a feature decision 106 added for exactly these two names. The override is silent, and ADR 0152 does not mention decision 106.",
+      "body": "**Concern.** Decision 106 (`docs/adr/0106-pup-init-session-env-a-b-names-the.md`, still accepted) added `pup init --session-env` so that a run could pin `CLAUDE_CODE_SUBAGENT_MODEL(_FORCE)` for its workers. Both names are still on the closed allowlist, `SESSION_ENV_ALLOWED` (`src/claude/session-runtime.service.ts:231-237`). The CLI help still offers them (`src/cli/index.ts:474-477`), and `sessionEnv()` forwards them to every window as `tmux -e`.\n\nThis PR hard-codes the same two variables, plus `CLAUDE_CODE_SUBAGENT_EFFORT`, in every worker's compiled `settings.json` `env`. The same window loads that file through `--settings` (`session-runtime.service.ts:689`):\n\n```ts\nenv: { ...SLIM_CONTEXT_ENV, ...WORKER_SUBAGENT_ENV },\n```\n\nNothing decides which of the two sources wins. Claude Code applies a settings file's `env` over the inherited process environment. That behaviour comes from pinned-version knowledge, not in-tree code, and ADR 0107 and this ADR both rely on it.\n\n**Trigger.** An operator runs `pup init --session-env CLAUDE_CODE_SUBAGENT_MODEL,CLAUDE_CODE_SUBAGENT_MODEL_FORCE` with `CLAUDE_CODE_SUBAGENT_MODEL=claude-sonnet-5-5` in the shell, then launches a worker.\n\n**Wrong result.** The worker's subagents run on `claude-haiku-5-5` at low effort, not on the model the operator pinned, and nothing warns. Any run or experiment that relies on decision 106's knob silently measures Haiku. The conductor is unaffected, so the same knob now behaves differently there than in workers.\n\nADR 0152 amends 0107 and 0129 but not 0106. Possible fixes:\n- skip the pin when the recorded session-env names include either variable;\n- or drop the two names from `SESSION_ENV_ALLOWED` and the help text, and record in ADR 0152 that the settings pin replaces them for workers;\n- or at minimum, state the precedence in ADR 0152 and in the `--session-env` help.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/6021b30e1b814034f5c85f12a6b90e3915aafb9d/src/core/profile-compiler.service.ts#L1119-L1119\nhttps://github.com/AlexisBalayre/pupitre/blob/6021b30e1b814034f5c85f12a6b90e3915aafb9d/src/core/profile.constants.ts#L33-L45",
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0152-a-worker-s-settings-pin-its-subagents-to-haiku-at-low.md",
+      "line": "4-5",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "ADR 0152 puts its two amended decisions on separate `- Amends:` lines. Every other ADR that amends several decisions (e.g. 0138, 0133) uses one comma-separated `- Amends:` line, which is the form `scripts/adr-index.sh` sees elsewhere.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler-context.test.ts",
+      "line": "224",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The comment `// Decision 152 adds the subagent pin to a worker's env.` narrates a change log over an assertion that already lists the pin variables. It gives no WHY and will go stale, so delete it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler-context.test.ts",
+      "line": "1675-1676",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The added sentence \"A worker's settings pin its model and effort, so its rule names neither (decision 152)\" repeats the SESSION_SEARCHING JSDoc and the matching comment in profile-compiler.test.ts. Drop it and keep the decision-41/101/118 line.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 1,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.1662842249999996,
+  "duration_ms": 196671,
+  "num_turns": 13,
+  "tokens": {
+    "input": 12,
+    "output": 10273,
+    "cache_read": 250735,
+    "cache_creation": 64927,
+    "total": 325947
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 92,
+      "output": 27848,
+      "cache_read": 1223722,
+      "cache_creation": 174473,
+      "cost_usd": 1.8692183999999998
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 34,
+      "output": 8238,
+      "cache_read": 271785,
+      "cache_creation": 74673,
+      "cost_usd": 0.29630900000000004
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 291,
+      "cache_read": 0,
+      "cache_creation": 4889,
+      "cost_usd": 0.000756825
+    }
+  ],
+  "permission_denials": []
+}
