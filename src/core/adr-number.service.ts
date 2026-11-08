@@ -47,13 +47,14 @@ function addedDecisions(repoPath: string, base: string, tip: string): Map<string
 }
 
 /**
- * The decision files `tip` renames over its merge base with `base` keeping
- * their number: a slug rename, the same decision under a new name. Git pairs
+ * The decision files `tip` renames over its merge base with `base`, keyed by
+ * the new path, to the old one, whatever number the new path has. One keeping
+ * its number is a slug rename, the same decision under a new name. Git pairs
  * the two paths by content (`--find-renames`, its default 50% similarity), so
  * a branch that deletes a decision and adds an unrelated one under its number
- * is not a rename and stays refused. Keyed by the new path, to the old one.
+ * is not a rename and stays refused.
  */
-function slugRenames(repoPath: string, base: string, tip: string): Map<string, string> {
+function decisionRenames(repoPath: string, base: string, tip: string): Map<string, string> {
   const fields = runGit(repoPath, [
     'diff',
     '--no-ext-diff',
@@ -70,8 +71,7 @@ function slugRenames(repoPath: string, base: string, tip: string): Map<string, s
   // `R<score>\0<from>\0<to>` per rename.
   for (let i = 0; i + 2 < fields.length; i += 3) {
     const [from, to] = [fields[i + 1] as string, fields[i + 2] as string];
-    const number = decisionNumber(from);
-    if (number !== undefined && number === decisionNumber(to)) renamed.set(to, from);
+    if (decisionNumber(from) !== undefined) renamed.set(to, from);
   }
   return renamed;
 }
@@ -155,10 +155,11 @@ export function adrNumberStage(
   if (added.size === 0) return undefined;
   const targetPaths = decisionPaths(repoPath, targetSha);
   const onTarget = numbersOf(targetPaths);
-  const renamed = slugRenames(repoPath, targetSha, sha);
+  const renamed = decisionRenames(repoPath, targetSha, sha);
   const tipPaths = new Set(decisionPaths(repoPath, sha));
+  // Every rename source, a renumbered one too: git paired it with a new file.
   const paired = new Set(renamed.values());
-  // Target decisions the branch deletes that git paired with no new file.
+  // Target decisions the branch deletes that git did not pair with a new file.
   const deleted = new Map(
     targetPaths
       .filter((path) => !tipPaths.has(path) && !paired.has(path))
@@ -195,7 +196,9 @@ export function adrNumberStage(
     const first = firstAdd.get(number);
     if (first === undefined) firstAdd.set(number, path);
     const other = takenBy.get(number);
-    const from = renamed.get(path);
+    const renamedFrom = renamed.get(path);
+    const from =
+      renamedFrom !== undefined && decisionNumber(renamedFrom) === number ? renamedFrom : undefined;
     const replaced = deleted.get(number);
     const decision = `  ${quotePath(path)}: decision ${pad(number)}`;
     if (from !== undefined) {

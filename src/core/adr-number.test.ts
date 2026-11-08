@@ -139,6 +139,22 @@ describe('adrNumberStage', { timeout: 20_000 }, () => {
     ]);
   });
 
+  it('tells an unrelated file to renumber when the target file under its number was renumbered away', () => {
+    git(repo, 'checkout', '-q', '-b', 'pup/me', 'main');
+    git(repo, 'mv', 'docs/adr/0002-second.md', 'docs/adr/0003-second.md');
+    writeFileSync(
+      join(repo, 'docs/adr/0002-x.md'),
+      '# 0002. Something else entirely\n\nA different decision, with\nnothing in common.\n',
+    );
+    git(repo, 'add', '.');
+    git(repo, 'commit', '-q', '-m', 'renumber and add');
+    git(repo, 'checkout', '-q', 'main');
+    expect(refusals()).toEqual([
+      'ADR numbers already taken:',
+      '  docs/adr/0002-x.md: decision 0002 is already on the target; renumber it 0004, the lowest free number',
+    ]);
+  });
+
   it('refuses a slug rename another session branch also makes of the same decision', () => {
     seedSession(db, 'other', 'running');
     for (const [branch, slug] of [

@@ -65,7 +65,7 @@
     Tests: `adrNumberStage` adds no stage for a branch adding no decision, a free number, an
     edit to a decision already on the target or a slug-only rename of one. It refuses a number
     on the target, an unpaired file under the number of one the branch deletes (as a rename
-    changed too much), a
+    changed too much, though not when git paired that file with a renumbered one), a
     second file with one number, one a queued, running, awaiting-review,
     rejected or blocked session's branch adds, one a merged session with an open PR adds, and a
     decision renamed onto a taken number. It ignores killed sessions, landed PRs, local merges
