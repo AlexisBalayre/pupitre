@@ -1,0 +1,137 @@
+{
+  "schema_version": 6,
+  "timestamp": "2026-11-08T11:00:26.079Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42473446049",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42473446049",
+  "actor": "AlexisBalayre",
+  "commit_sha": "645c3860317a42150ccc807f8a0292a8b1c40a73",
+  "source": "pr",
+  "pr_number": 254,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "context",
+    "conventions",
+    "maintainability",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "context",
+    "conventions",
+    "maintainability",
+    "maintainability",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "tools/review/src/preflight.utils.ts",
+      "line": "236",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The new base check runs from the merge base's copy of tools/review (claude-code-review.yml:167-170). So a PR whose merge base with its base branch predates this change still takes an incremental review after a retarget plus a push. The marker workflow and pr-status take effect when this merges, but the forced full review only arrives once the PR picks up this commit; worth noting in the PR body as a transition window.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0151-ci-review-runs-at-opening-and-on-demand-only.md",
+      "line": "12-13",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "ADR 0151 still says `pr-status.yml` treats only one \"Not reviewed\" description (the push marker) as awaiting a review, and `waitForCiReview`'s JSDoc list of \"finished\" states (src/core/ci-wait.service.ts L87-91) names neither the push marker nor the new base-change marker. AGENTS.md says the ADR wins on a conflict, so this stale ADR now contradicts the code.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/skills/review-retro/SKILL.md",
+      "line": "25",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new \"From schema 7, `base_ref` …\" sentence comes before \"From schema 6, `spec` …\", so the schema notes run 5, 7, 6. It also says \"a round on a different base is always a full review\", which holds only when the prior record has a non-null `base_ref`. Move it after the schema 6 sentence and add \"when the prior record has one\".",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".github/workflows/pr-status.yml",
+      "line": "179-183",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Each \"Not reviewed: …\" marker that blocks the gate has to be added in three places: a `startsWith` clause here, a constant in `ci-wait.service.ts`, and the literal in its own workflow. Nothing ties those copies together, so a reworded description would silently break either the gate or `pup ci wait`. Before a third marker arrives, give the blocking markers one shared prefix.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".github/workflows/claude-review-base-change.yml",
+      "line": "4",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Header line 4 (\"…replaces the status. A title or body edit does not match `changes.base`.\") runs well past the ~100-column wrap of the rest of the header and only implies its reason. Reflow it and say that `edited` also fires on title and body edits, while `changes.base` is present only on a retarget.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "conventions",
+      "description": "`git diff … -- .claude/skills/review-retro/SKILL.md` failed with a bwrap sandbox error (missing `.git/config.worktree.lock`), and the reviewer did not read `docs/conventions/*.md` or `docs/adr/`. Its convention check is therefore partial."
+    },
+    {
+      "component": "orchestrator",
+      "description": "Dropped an important from security instance A: pr-status can label a retargeted PR `ready` before the marker lands, and nothing recomputes the label afterwards. The PR body declares this race (\"the next event corrects it\"), so it is out of scope as declared and was not validated."
+    }
+  ],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 3.325504900000001,
+  "duration_ms": 256371,
+  "num_turns": 16,
+  "tokens": {
+    "input": 12,
+    "output": 17395,
+    "cache_read": 274664,
+    "cache_creation": 63588,
+    "total": 355659
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 114,
+      "output": 63292,
+      "cache_read": 1861696,
+      "cache_creation": 244678,
+      "cost_usd": 3.0527892000000003
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 42,
+      "output": 8650,
+      "cache_read": 240142,
+      "cache_creation": 64847,
+      "cost_usd": 0.2727157
+    }
+  ],
+  "permission_denials": []
+}
