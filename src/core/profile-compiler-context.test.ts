@@ -221,11 +221,15 @@ describe('compileProfile', () => {
     const settingsOf = (input: CompileInput) =>
       JSON.parse(ProfileCompiler.compileProfile(input).files['settings.json'] as string);
 
+    // Decision 152 adds the subagent pin to a worker's env.
     it('turns off the Artifact and Workflow tools and prompt suggestions', () => {
       expect(settingsOf(makeInput()).env).toEqual({
         CLAUDE_CODE_DISABLE_ARTIFACT: '1',
         CLAUDE_CODE_DISABLE_WORKFLOWS: '1',
         CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: 'false',
+        CLAUDE_CODE_SUBAGENT_MODEL: 'claude-haiku-5-5',
+        CLAUDE_CODE_SUBAGENT_MODEL_FORCE: '1',
+        CLAUDE_CODE_SUBAGENT_EFFORT: 'low',
       });
     });
 
@@ -1668,15 +1672,20 @@ describe('exploration goes to a subagent (decision 129)', () => {
     'when you will edit it or need its exact lines.';
 
   // The subagent gets none of the pinned git, and a bare git command runs what a
-  // session can arm in the shared config (decisions 41, 101, 118).
+  // session can arm in the shared config (decisions 41, 101, 118). A worker's
+  // settings pin its model and effort, so its rule names neither (decision 152).
   it('puts the delegation rule in a worker context, confined to its own worktree and no git', () => {
     const context = ProfileCompiler.compileProfile(makeInput()).contextMarkdown;
 
     expect(context).toContain(
-      '## Exploring code\n' +
-        `To learn the code (where something lives, how a module works), ${rule} ` +
-        "Tell it to read only this worktree, never another session's under `.worktrees/`. " +
-        'What your own diff changes you read yourself, with git in this worktree.',
+      '## Searching\n' +
+        'For any where-is-X or how-does-module-Y question, ask an Explore subagent with the ' +
+        'Agent tool (`subagent_type: "Explore"`) and keep only its summary; pup pins the model ' +
+        'and effort it runs on. Tell it to use only Read, Grep and Glob, to run no git and no ' +
+        "other shell command, and to read only this worktree, never another session's under " +
+        '`.worktrees/`. Read with the Read tool only the file you are about to edit, for the ' +
+        'lines the edit needs. What your own diff changes you read yourself, with git in this ' +
+        'worktree.',
     );
   });
 

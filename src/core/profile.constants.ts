@@ -1,3 +1,5 @@
+import { WORKER_SUBAGENT_ROUTE } from '../claude/model-ladder.constants.js';
+
 /** Default hard cap for a compiled context when no layer sets contextBudget (docs/03-profiles.md). */
 export const DEFAULT_CONTEXT_BUDGET_TOKENS = 6000;
 
@@ -26,4 +28,18 @@ export const SLIM_CONTEXT_ENV = {
   CLAUDE_CODE_DISABLE_ARTIFACT: '1',
   CLAUDE_CODE_DISABLE_WORKFLOWS: '1',
   CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: 'false',
+};
+
+/**
+ * Added to a worker's settings `env`, never the conductor's (decision 152). The
+ * built-in Explore agent inherits the window's model, which outranks
+ * `CLAUDE_CODE_SUBAGENT_MODEL`. Only `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` makes
+ * the pin win, and it also removes the Agent tool's `model` parameter. It pins
+ * every subagent a worker spawns. The conductor's security review needs Opus,
+ * so the conductor never gets it.
+ */
+export const WORKER_SUBAGENT_ENV = {
+  CLAUDE_CODE_SUBAGENT_MODEL: WORKER_SUBAGENT_ROUTE.model,
+  CLAUDE_CODE_SUBAGENT_MODEL_FORCE: '1',
+  CLAUDE_CODE_SUBAGENT_EFFORT: WORKER_SUBAGENT_ROUTE.effort,
 };

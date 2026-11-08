@@ -12,7 +12,8 @@ import { join } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { makeInput } from '../test/helpers/profile-compiler.mock.js';
 import { tempDir } from '../test/temp-dir.mock.js';
-import { HOOK_TIMEOUT_SECONDS } from './profile.constants.js';
+import { DEFAULT_BASE_PROFILE } from './default-profile.constants.js';
+import { HOOK_TIMEOUT_SECONDS, SLIM_CONTEXT_ENV } from './profile.constants.js';
 import * as ProfileCompiler from './profile-compiler.service.js';
 
 // Many tests here spawn real git and sh; under load or coverage the 5 s default
@@ -622,5 +623,62 @@ exec ${realWc.stdout.trim()} "$@"
     expect(entry?.hooks.map((h) => h.command)).toEqual([
       '/state/sessions/s-1/compiled/hooks/bash-recheck.sh',
     ]);
+  });
+});
+
+// Decision 152: a worker hands a broad read to the Explore subagent, pinned to a cheap model.
+describe('worker search delegation (decision 152)', () => {
+  const settingsOf = (compiled: { files: Record<string, string> }) =>
+    JSON.parse(compiled.files['settings.json'] as string);
+
+  it('keeps the Agent tool for a worker and pins its subagents to Haiku at low effort', () => {
+    const settings = settingsOf(ProfileCompiler.compileProfile(makeInput()));
+
+    expect(settings.permissions.deny).not.toContain('Agent');
+    expect(settings.env).toEqual({
+      ...SLIM_CONTEXT_ENV,
+      CLAUDE_CODE_SUBAGENT_MODEL: 'claude-haiku-5-5',
+      CLAUDE_CODE_SUBAGENT_MODEL_FORCE: '1',
+      CLAUDE_CODE_SUBAGENT_EFFORT: 'low',
+    });
+  });
+
+  it("leaves the conductor's deny list and env unpinned", () => {
+    const settings = settingsOf(
+      ProfileCompiler.compileConductorProfile({
+        base: { name: 'base' },
+        repoPath: '/repo',
+        projectId: 'proj-1',
+        conductorName: 'pup-conductor-proj-1',
+        userConfigHash: 'user-hash-a',
+        outDir: '/state/conductor/compiled',
+        checkoutPath: '/state/conductor/checkout',
+        maxSessions: 4,
+      }),
+    );
+
+    expect(settings.permissions.deny).toEqual(['AskUserQuestion', 'EnterPlanMode', 'ExitPlanMode']);
+    expect(settings.env).toEqual(SLIM_CONTEXT_ENV);
+  });
+
+  it('gives the worker kickoff a Searching section within the context budget', () => {
+    const compiled = ProfileCompiler.compileProfile(
+      makeInput({ base: DEFAULT_BASE_PROFILE, role: undefined }),
+    );
+
+    expect(compiled.contextMarkdown).toContain(
+      '## Searching\n' +
+        'For any where-is-X or how-does-module-Y question, ask an Explore subagent with the ' +
+        'Agent tool (`subagent_type: "Explore"`) and keep only its summary; pup pins the model ' +
+        'and effort it runs on. Tell it to use only Read, Grep and Glob, to run no git and no ' +
+        "other shell command, and to read only this worktree, never another session's under " +
+        '`.worktrees/`. Read with the Read tool only the file you are about to edit, for the ' +
+        'lines the edit needs. What your own diff changes you read yourself, with git in this ' +
+        'worktree.',
+    );
+    // The settings take the Agent tool's `model` parameter away, so naming one would mislead.
+    expect(compiled.contextMarkdown).not.toContain('## Exploring code');
+    expect(compiled.contextMarkdown).not.toContain('`model: "sonnet"`');
+    expect(compiled.tokenEstimate).toBeLessThanOrEqual(compiled.contextBudget);
   });
 });

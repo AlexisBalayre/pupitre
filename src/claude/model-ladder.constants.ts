@@ -50,5 +50,12 @@ export const CONDUCTOR_ROUTE: ModelRoute = opus('high');
 /** Gate-time drafting (`runUtility`): a fixed prompt in, text out. */
 export const UTILITY_ROUTE: ModelRoute = { model: HAIKU_MODEL, effort: 'low' };
 
+/**
+ * What a worker's subagents run on, pinned through its settings (decision 152).
+ * In the pilot, Haiku answered where-is and how-does questions as well as Sonnet
+ * did, at a tenth of the subagent's cost.
+ */
+export const WORKER_SUBAGENT_ROUTE: ModelRoute = { model: HAIKU_MODEL, effort: 'low' };
+
 /** The effort the conductor runs its security-review subagent at, over gate, git, tmux and store diffs. */
 export const SECURITY_REVIEW_EFFORT = 'high';
