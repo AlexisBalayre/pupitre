@@ -7,9 +7,14 @@ import { tempDir } from '../test/temp-dir.mock.js';
 const HOOK = join(import.meta.dirname, '..', '..', 'scripts', 'pre-commit');
 
 // Same scrub as git-diff-client.test: keep the developer's git config and any
-// surrounding hook's GIT_DIR away from the temp repo.
+// surrounding hook's GIT_DIR away from the temp repo, and the running session's id
+// (the hook tests outside a session unless a test sets one).
 const GIT_ENV: NodeJS.ProcessEnv = {
-  ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_'))),
+  ...Object.fromEntries(
+    Object.entries(process.env).filter(
+      ([key]) => !key.startsWith('GIT_') && key !== 'PUP_SESSION_ID',
+    ),
+  ),
   GIT_CONFIG_GLOBAL: '/dev/null',
   GIT_CONFIG_SYSTEM: '/dev/null',
 };
@@ -22,10 +27,19 @@ const PROJECT_ENV = [
 ].join('\n');
 
 // A pnpm that logs each call instead of running it, and fails the one whose
-// arguments contain $STUB_FAIL.
+// arguments contain $STUB_FAIL. Listing related tests prints $STUB_LISTED.
 const PNPM_STUB = `#!/bin/sh
 printf '%s\\n' "$*" >> "$STUB_LOG"
+case "$*" in *--listTests*) printf '%s\\n' "$STUB_LISTED" ;; esac
 case "$*" in *"$STUB_FAIL"*) [ -n "$STUB_FAIL" ] && exit 1 ;; esac
+exit 0
+`;
+
+// A pup that logs its call, and fails like the pnpm stub.
+const PUP_STUB = `#!/bin/sh
+printf 'pup %s\\n' "$*" >> "$STUB_LOG"
+case "$*" in *"$STUB_FAIL"*) [ -n "$STUB_FAIL" ] && exit 1 ;; esac
+echo "stub pup waits for a test slot"
 exit 0
 `;
 
@@ -53,6 +67,8 @@ function makeRepo(projectEnv = PROJECT_ENV): string {
   mkdirSync(join(repo, 'node_modules', '.bin'), { recursive: true });
   write(repo, 'stub-bin/pnpm', PNPM_STUB);
   chmodSync(join(repo, 'stub-bin', 'pnpm'), 0o755);
+  write(repo, 'stub-bin/pup', PUP_STUB);
+  chmodSync(join(repo, 'stub-bin', 'pup'), 0o755);
   return repo;
 }
 
@@ -61,7 +77,8 @@ function runHook(
   repo: string,
   paths: string[],
   fail = '',
-): { status: number | null; calls: string[] } {
+  sessionId = '',
+): { status: number | null; calls: string[]; stdout: string } {
   git(repo, 'add', '--', ...paths);
   const log = join(repo, 'stub.log');
   writeFileSync(log, '');
@@ -73,9 +90,15 @@ function runHook(
       PATH: `${join(repo, 'stub-bin')}:${process.env.PATH}`,
       STUB_LOG: log,
       STUB_FAIL: fail,
+      STUB_LISTED: '/repo/src/sum.test.ts',
+      ...(sessionId ? { PUP_SESSION_ID: sessionId } : {}),
     },
   });
-  return { status: result.status, calls: readFileSync(log, 'utf8').split('\n').filter(Boolean) };
+  return {
+    status: result.status,
+    calls: readFileSync(log, 'utf8').split('\n').filter(Boolean),
+    stdout: result.stdout,
+  };
 }
 
 describe('scripts/pre-commit', () => {
@@ -131,6 +154,31 @@ describe('scripts/pre-commit', () => {
     write(repo, 'src/sum.ts', 'export const sum = 2;\n');
 
     const { status } = runHook(repo, ['src/sum.ts'], 'vitest');
+
+    expect(status).not.toBe(0);
+  });
+
+  it('queues the related tests for a test slot inside a pup session', () => {
+    const repo = makeRepo();
+    write(repo, 'src/sum.ts', 'export const sum = 2;\n');
+
+    const { status, calls, stdout } = runHook(repo, ['src/sum.ts'], '', 't-session');
+
+    expect(status).toBe(0);
+    expect(calls).toEqual([
+      'exec biome check ./src/sum.ts',
+      'typecheck',
+      'exec vitest related --listTests ./src/sum.ts',
+      'pup session test /repo/src/sum.test.ts',
+    ]);
+    expect(stdout).toContain('through a test slot (waits for a free one)');
+  });
+
+  it('blocks the commit when the tests run through a slot fail', () => {
+    const repo = makeRepo();
+    write(repo, 'src/sum.ts', 'export const sum = 2;\n');
+
+    const { status } = runHook(repo, ['src/sum.ts'], 'session test', 't-session');
 
     expect(status).not.toBe(0);
   });

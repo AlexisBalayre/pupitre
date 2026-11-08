@@ -120,13 +120,34 @@ fi
 # others, and the staged test files themselves (decision 135). The full suite
 # is TEST_CMD's, which the merge gate's test stage runs; an empty TEST_CMD still
 # turns tests off here. A commit with no staged source runs no tests.
+#
+# Inside a pup session (PUP_SESSION_ID set) the run queues for one of the machine's
+# test slots through `pup session test`, and yields to a merge gate (decisions 96,
+# 152): the related files are listed first, which starts no test, and the slot runs them.
 RELATED_TEST_CMD="pnpm exec vitest related --run --passWithNoTests"
 if [ -n "${TEST_CMD:-}" ] && [ -n "$STAGED_SOURCE" ]; then
-  echo "Running related tests: $RELATED_TEST_CMD"
-  if ! run_on_paths "$STAGED_SOURCE" "$RELATED_TEST_CMD"; then
-    echo ""
-    echo "ERROR: Tests related to the staged files failed. Fix them before committing."
-    exit 1
+  if [ -n "${PUP_SESSION_ID:-}" ]; then
+    echo "Running related tests through a test slot (waits for a free one)"
+    if ! RELATED_FILES=$(run_on_paths "$STAGED_SOURCE" "pnpm exec vitest related --listTests"); then
+      echo ""
+      echo "ERROR: Listing the tests related to the staged files failed."
+      exit 1
+    fi
+    if [ -n "$RELATED_FILES" ]; then
+      if command -v pup >/dev/null 2>&1; then PUP_CMD=(pup); else PUP_CMD=(node "${PUP_BIN:-}"); fi
+      if ! printf '%s\n' "$RELATED_FILES" | tr '\n' '\0' | xargs -0 "${PUP_CMD[@]}" session test; then
+        echo ""
+        echo "ERROR: Tests related to the staged files failed. Fix them before committing."
+        exit 1
+      fi
+    fi
+  else
+    echo "Running related tests: $RELATED_TEST_CMD"
+    if ! run_on_paths "$STAGED_SOURCE" "$RELATED_TEST_CMD"; then
+      echo ""
+      echo "ERROR: Tests related to the staged files failed. Fix them before committing."
+      exit 1
+    fi
   fi
 fi
 
