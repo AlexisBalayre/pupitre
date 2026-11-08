@@ -37,42 +37,57 @@
     (`refuseGate`), the session keeps its state and its reject count, and nothing is steered.
     Run first, it also costs no suite. A re-gate of a merged session with an open PR is refused
     the same way, as every re-gate failure is.
-    *Unreadable branches.* A competing branch git cannot diff against the target, an orphan
-    commit with no merge base say, is skipped rather than failing the gate of every other
-    session. A diff an interrupt killed is not an unreadable branch: it is rethrown
-    (`rethrowIfKilled`), so Ctrl-C stops the gate. The stage names it, scrubbed, in a line of its detail: a pass stage when nothing
-    else clashed, the failure's last line when something did. A branch that adds no decision,
-    or only free numbers with every branch read, gets no stage at all, so its stage list is as
-    before.
-    *Reads.* Everything is read from pinned shas in the main checkout's repo through `runGit`
-    (decision 73): the target sha and branch sha the gate pinned, and each other branch's tip as
-    one `for-each-ref refs/heads/pup/` listing gives it. Nothing is read from a worktree, which
-    the live session can change (decisions 81, 101). The store decides only which listed refs
-    count, so no store text reaches git as a revision. A ref no countable session holds is
-    ignored. The diff turns off colour and external diff drivers, so a session-written config
-    cannot change what the listing prints. The printed paths and branch names are scrubbed
+    *Unreadable branches.* A competing branch git cannot read against the target is skipped
+    rather than failing the gate of every other session: an orphan commit with no merge base, a
+    symbolic ref, or a read past its 10 s timeout or git's output buffer. Node kills an overrun
+    child with SIGTERM, the signal `rethrowIfKilled` reads as an interrupt, so an overrun
+    (`ETIMEDOUT`, `ENOBUFS`) is told apart first; any other killed read is rethrown, so Ctrl-C
+    stops the gate. A competing branch that adds more than three decisions is skipped too,
+    unchecked: no session needs more in one task, and counting them would let one branch refuse
+    every peer. The stage names each skipped branch, scrubbed, in a line of its detail: a pass
+    stage when nothing else clashed, the failure's last lines when something did. A branch that
+    adds no decision, or only free numbers with every branch read, gets no stage at all, so its
+    stage list is as before.
+    *Reads.* Everything is read in the main checkout's repo through `runGit` (decision 73): the
+    target sha and branch sha the gate pinned, and the tip of each branch the store counts,
+    resolved one at a time with `resolveCommitIfPresent` inside the guarded path. Nothing lists
+    `refs/heads/pup/`, so no number of stray refs a session creates weighs on the gate, and a
+    ref no countable session holds is never read. The branch names come from the store, which
+    pup writes, and are resolved as `refs/heads/<branch>`, the way the gate resolves the
+    session's own. Nothing is read from a worktree, which the live session can change
+    (decisions 81, 101). The diffs turn off colour and external diff drivers, so a
+    session-written config cannot change what they print, and list only `docs/adr/`, so a
+    branch's other files are never buffered. The printed paths and branch names are scrubbed
     (decision 68).
     *Ceilings.* Two sessions that took one number each refuse the other until one renumbers:
     whoever gates first is not given the number. Numbers can be squatted: a live session that
-    commits a range of decision files takes those numbers from every peer until it renumbers,
-    lands or is killed, and nothing caps how many it holds. Every session's worktree shares the
-    one `.git`, so its `refs/heads/pup/*` are one ref store any session can write: a session can
-    move a peer's branch to add numbers in its name, or move it to hide what the peer added,
-    and the check reads whatever those refs hold at gate time. A sibling that has not committed
-    its decision yet cannot be seen, so the check narrows the race to the window between two
-    commits rather than closing it. A branch merged with no PR leaves the store's countable
-    states with its number on the target, where the next gate finds it.
+    commits up to three decision files takes those numbers from every peer until it renumbers,
+    lands or is killed. Every session's worktree shares the one `.git`, so its
+    `refs/heads/pup/*` are one ref store any session can write: a session can move a peer's
+    branch to add numbers in its name, or move it to hide what the peer added, and the check
+    reads whatever those refs hold at gate time. With the cap of three per branch, a squatter
+    holds at most three numbers per countable branch it can write, and since a clash is a
+    refusal that consumes no rejection, the block never escalates on its own: the refusal names
+    the branch, and the operator settles it, by killing the squatter if need be. The free
+    number is searched above the target's highest and only up to 9999: past that a refusal says
+    no four-digit number is free rather than suggest a five-digit name the check would not
+    recognise. A sibling that has not committed its decision yet cannot be seen, so the check
+    narrows the race to the window between two commits rather than closing it. A branch merged
+    with no PR leaves the store's countable states with its number on the target, where the next
+    gate finds it.
     Tests: `adrNumberStage` adds no stage for a branch adding no decision, a free number, an
     edit to a decision already on the target or a slug-only rename of one. It refuses a number
     on the target, an unpaired file under the number of one the branch deletes (as a rename
-    changed too much, though not when git paired that file with a renumbered one), a
-    second file with one number, one a queued, running, awaiting-review,
-    rejected or blocked session's branch adds, one a merged session with an open PR adds, and a
-    decision renamed onto a taken number. It ignores killed sessions, landed PRs, local merges
-    and `pup/` branches no session holds, skips and names an orphan branch while still refusing
-    a clash with another, lets an interrupt that kills a competing diff through, refuses a slug
-    rename another branch also makes of the same decision, gives each clash a distinct free number, and reads the pinned shas
-    rather than a branch moved after the pin or an untracked file. The gate refuses a clash
-    after fresh-base with no build, test or lint stage, `rejectCount` and `reject_count` at 0,
-    the session still awaiting review and no steer sent. A pass with an unread-branch note
-    followed by a failed scope audit is a rejection, not a refusal.
+    changed too much, though not when git paired that file with a renumbered one), a second
+    file with one number, one a queued, running, awaiting-review, rejected or blocked session's
+    branch adds, one a merged session with an open PR adds, and a decision renamed onto a taken
+    number. It ignores killed sessions, landed PRs, local merges and `pup/` branches no session
+    holds. It skips and names an orphan branch while still refusing a clash with another, a
+    symbolic ref, a read Node killed for its timeout or buffer (read with the 10 s timeout),
+    and a branch adding four decisions. It lets an interrupt that kills a competing diff
+    through, refuses a slug rename another branch also makes of the same decision, gives each
+    clash a distinct free number, suggests no five-digit number when 9999 is on the target, and
+    reads the pinned shas rather than a branch moved after the pin or an untracked file. The
+    gate refuses a clash after fresh-base with no build, test or lint stage, `rejectCount` and
+    `reject_count` at 0, the session still awaiting review and no steer sent. A pass with an
+    unread-branch note followed by a failed scope audit is a rejection, not a refusal.

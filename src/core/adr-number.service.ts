@@ -2,7 +2,7 @@ import type { Database } from 'better-sqlite3';
 import { sanitizeReason } from '../adapters/capability.utils.js';
 import { quotePath } from './debt.service.js';
 import { rethrowIfKilled, runGit } from './git-diff.client.js';
-import { newestMerge, timedSince } from './merge-gate.service.js';
+import { newestMerge, resolveCommitIfPresent, timedSince } from './merge-gate.service.js';
 import { listSessions } from './session.repository.js';
 import { holdingStates } from './session-state.utils.js';
 import type { GateStageResult } from './types/merge-gate.types.js';
@@ -13,7 +13,16 @@ const ADR_DIR = 'docs/adr/';
 /** A decision file, `docs/adr/NNNN-*.md`, its number captured. */
 const ADR_DECISION = /^docs\/adr\/([0-9]{4})-[^/]*\.md$/;
 
-const SESSION_BRANCHES = 'refs/heads/pup/';
+/** The highest number a decision file can carry: `ADR_DECISION` takes four digits. */
+const MAX_DECISION = 9999;
+/**
+ * The most decisions another session branch is checked for. One adding more is
+ * left unchecked with a note, so a branch squatting a range of numbers cannot
+ * refuse every peer's gate with it.
+ */
+const MAX_PEER_DECISIONS = 3;
+/** How long one read of another session's branch may take under the merge lock. */
+const PEER_READ_TIMEOUT_MS = 10_000;
 
 /** A decision path's number, undefined for any other path. */
 function decisionNumber(path: string): number | undefined {
@@ -25,20 +34,32 @@ function decisionNumber(path: string): number | undefined {
  * The decision files `tip` adds over its merge base with `base`, with their
  * numbers. Rename detection is off, so a decision renumbered with `git mv`
  * counts as the add of its new name; colour and external diffs are off, so a
- * session-written config cannot change what the listing prints.
+ * session-written config cannot change what the listing prints. Only
+ * `docs/adr/` is listed, so a branch's other files are never buffered.
  */
-function addedDecisions(repoPath: string, base: string, tip: string): Map<string, number> {
+function addedDecisions(
+  repoPath: string,
+  base: string,
+  tip: string,
+  timeout?: number,
+): Map<string, number> {
   const added = new Map<string, number>();
-  const paths = runGit(repoPath, [
-    'diff',
-    '--no-ext-diff',
-    '--no-color',
-    '--no-renames',
-    '--diff-filter=A',
-    '-z',
-    '--name-only',
-    `${base}...${tip}`,
-  ]).split('\0');
+  const paths = runGit(
+    repoPath,
+    [
+      'diff',
+      '--no-ext-diff',
+      '--no-color',
+      '--no-renames',
+      '--diff-filter=A',
+      '-z',
+      '--name-only',
+      `${base}...${tip}`,
+      '--',
+      ADR_DIR,
+    ],
+    timeout === undefined ? {} : { timeout },
+  ).split('\0');
   for (const path of paths) {
     const number = decisionNumber(path);
     if (number !== undefined) added.set(path, number);
@@ -77,21 +98,38 @@ function decisionRenames(repoPath: string, base: string, tip: string): Map<strin
 }
 
 /**
- * Every session branch's tip, by ref name, as `for-each-ref` lists it. A ref
- * name holds no control character (`check-ref-format`), so a line is one ref.
+ * Whether `error` is a git child Node killed for overrunning its timeout or its
+ * output buffer. Node kills it with SIGTERM, the signal `rethrowIfKilled` reads
+ * as an interrupt, so this is asked first: an overrun is the branch's doing,
+ * not the operator's Ctrl-C.
  */
-function sessionBranchTips(repoPath: string): Map<string, string> {
-  const tips = new Map<string, string>();
-  const listing = runGit(repoPath, [
-    'for-each-ref',
-    '--format=%(objectname) %(refname)',
-    SESSION_BRANCHES,
-  ]);
-  for (const line of listing.split('\n')) {
-    const space = line.indexOf(' ');
-    if (space > 0) tips.set(line.slice(space + 1), line.slice(0, space));
+function isOverrun(error: unknown): boolean {
+  const code = typeof error === 'object' && error !== null && 'code' in error ? error.code : '';
+  return code === 'ETIMEDOUT' || code === 'ENOBUFS';
+}
+
+/**
+ * The decisions another session's branch adds, or why it is not checked: git
+ * could not resolve or diff it (an orphan, a symbolic ref, an overrun), or it
+ * adds more than `MAX_PEER_DECISIONS`. Undefined when the branch does not
+ * exist. An interrupt that killed git is rethrown.
+ */
+function peerDecisions(
+  repoPath: string,
+  targetSha: string,
+  ref: string,
+): Map<string, number> | string | undefined {
+  try {
+    const tip = resolveCommitIfPresent(repoPath, ref);
+    if (tip === undefined) return undefined;
+    const theirs = addedDecisions(repoPath, targetSha, tip, PEER_READ_TIMEOUT_MS);
+    return theirs.size > MAX_PEER_DECISIONS
+      ? `it adds ${theirs.size} decisions, more than the ${MAX_PEER_DECISIONS} a session branch is checked for`
+      : theirs;
+  } catch (error) {
+    if (!isOverrun(error)) rethrowIfKilled(error);
+    return 'git could not read it against the target';
   }
-  return tips;
 }
 
 /**
@@ -136,12 +174,14 @@ const pad = (number: number): string => String(number).padStart(4, '0');
  * decision the branch deletes, unpaired, is refused as a rename that changed
  * too much to be paired rather than told to renumber. Parallel sessions pick the next
  * number from the target, and two files that share a number under different
- * slugs merge without a conflict. A branch git cannot diff against the target
- * (an orphan, say) is skipped and named rather than failing everyone's gate.
- * Undefined, so no stage at all, when the branch adds no decision or every
- * check passed with nothing to say. Every read is of a pinned sha through
- * `runGit`, never of a worktree; the store only says which listed refs count,
- * so no store text reaches git as a revision.
+ * slugs merge without a conflict. Another branch git cannot read against the
+ * target (an orphan, a symbolic ref, a read past its time or buffer), or one
+ * adding more than `MAX_PEER_DECISIONS`, is skipped and named rather than
+ * failing or blocking everyone's gate. Undefined, so no stage at all, when the
+ * branch adds no decision or every check passed with nothing to say. Every read
+ * is of a pinned sha or a resolved ref through `runGit`, never of a worktree;
+ * only the branches of sessions the store counts are resolved, one at a time,
+ * so no number of stray `pup/` refs weighs on the gate.
  */
 export function adrNumberStage(
   db: Database,
@@ -166,29 +206,24 @@ export function adrNumberStage(
       .map((path) => [decisionNumber(path) as number, path]),
   );
   const takenBy = new Map<number, string>();
-  const unread: string[] = [];
-  const tips = sessionBranchTips(repoPath);
+  const unchecked: string[] = [];
   for (const ref of competingBranches(db, sessionId)) {
-    const tip = tips.get(ref);
-    if (tip === undefined) continue;
     const branch = sanitizeReason(ref.slice('refs/heads/'.length));
-    let theirs: Map<string, number>;
-    try {
-      theirs = addedDecisions(repoPath, targetSha, tip);
-    } catch (error) {
-      rethrowIfKilled(error);
-      unread.push(branch);
-      continue;
-    }
+    const theirs = peerDecisions(repoPath, targetSha, ref);
+    if (typeof theirs === 'string') unchecked.push(`not checked against ${branch}: ${theirs}`);
+    if (typeof theirs !== 'object') continue;
     for (const number of theirs.values()) if (!takenBy.has(number)) takenBy.set(number, branch);
   }
   const taken = new Set([...onTarget, ...takenBy.keys(), ...added.values()]);
   let free = Math.max(0, ...onTarget);
-  const nextFree = (): string => {
+  // Bounded to four digits: a five-digit name is no decision file to the
+  // check, so suggesting one would be advice that escapes it.
+  const renumber = (): string => {
     do free += 1;
-    while (taken.has(free));
+    while (free <= MAX_DECISION && taken.has(free));
+    if (free > MAX_DECISION) return "no four-digit number above the target's highest is free";
     taken.add(free);
-    return pad(free);
+    return `renumber it ${pad(free)}, the lowest free number`;
   };
   const firstAdd = new Map<number, string>();
   const refusals: string[] = [];
@@ -227,13 +262,11 @@ export function adrNumberStage(
           ? `is also added by ${other}, a session branch that is live or has an open PR`
           : undefined;
     if (where === undefined) continue;
-    refusals.push(`${decision} ${where}; renumber it ${nextFree()}, the lowest free number`);
+    refusals.push(`${decision} ${where}; ${renumber()}`);
   }
   const lines = [
     ...(refusals.length > 0 ? ['ADR numbers already taken:', ...refusals] : []),
-    ...unread.map(
-      (branch) => `not checked against ${branch}: git could not diff it against the target`,
-    ),
+    ...unchecked,
   ];
   if (lines.length === 0) return undefined;
   return timedSince(started, {

@@ -194,7 +194,7 @@ describe('adrNumberStage', { timeout: 20_000 }, () => {
     expect(stage()).toMatchObject({
       stage: ADR_NUMBER_STAGE,
       status: 'pass',
-      detail: 'not checked against pup/orphan: git could not diff it against the target',
+      detail: 'not checked against pup/orphan: git could not read it against the target',
     });
     commitOn(repo, 'pup/me', 'docs/adr/0004-mine.md');
     expect(stage()).toMatchObject({ status: 'fail' });
@@ -202,7 +202,7 @@ describe('adrNumberStage', { timeout: 20_000 }, () => {
       'ADR numbers already taken:\n' +
         '  docs/adr/0004-mine.md: decision 0004 is also added by pup/other, a session branch ' +
         'that is live or has an open PR; renumber it 0005, the lowest free number\n' +
-        'not checked against pup/orphan: git could not diff it against the target',
+        'not checked against pup/orphan: git could not read it against the target',
     );
   });
 
@@ -297,6 +297,75 @@ describe('adrNumberStage', { timeout: 20_000 }, () => {
     } finally {
       vi.mocked(runGit).mockImplementation(actual.runGit);
     }
+  });
+
+  it.each(['ETIMEDOUT', 'ENOBUFS'])(
+    'skips a competing branch whose read Node killed with %s, not reading it as an interrupt',
+    async (code) => {
+      seedSession(db, 'other', 'running');
+      commitOn(repo, 'pup/other', 'docs/adr/0003-theirs.md');
+      commitOn(repo, 'pup/me', 'docs/adr/0003-mine.md');
+      const theirs = git(repo, 'rev-parse', 'refs/heads/pup/other');
+      const actual =
+        await vi.importActual<typeof import('./git-diff.client.js')>('./git-diff.client.js');
+      // What Node throws for an overrun: SIGTERM, with the code naming why.
+      const overrun = Object.assign(new Error('spawnSync git'), { signal: 'SIGTERM', code });
+      let peerRead: unknown;
+      vi.mocked(runGit).mockImplementation((cwd, args, opts) => {
+        if (args.some((arg) => arg.endsWith(`...${theirs}`))) {
+          peerRead = opts;
+          throw overrun;
+        }
+        return actual.runGit(cwd, args, opts);
+      });
+      try {
+        expect(stage()).toMatchObject({
+          status: 'pass',
+          detail: 'not checked against pup/other: git could not read it against the target',
+        });
+        expect(peerRead).toEqual({ timeout: 10_000 });
+      } finally {
+        vi.mocked(runGit).mockImplementation(actual.runGit);
+      }
+    },
+  );
+
+  it('skips a competing branch that is a symbolic ref, naming it', () => {
+    seedSession(db, 'other', 'running');
+    git(repo, 'symbolic-ref', 'refs/heads/pup/other', 'refs/heads/main');
+    commitOn(repo, 'pup/me', 'docs/adr/0003-mine.md');
+    expect(stage()).toMatchObject({
+      status: 'pass',
+      detail: 'not checked against pup/other: git could not read it against the target',
+    });
+  });
+
+  it('leaves a competing branch adding more than three decisions unchecked, with a note', () => {
+    seedSession(db, 'squatter', 'running');
+    commitOn(
+      repo,
+      'pup/squatter',
+      'docs/adr/0003-a.md',
+      'docs/adr/0004-b.md',
+      'docs/adr/0005-c.md',
+      'docs/adr/0006-d.md',
+    );
+    commitOn(repo, 'pup/me', 'docs/adr/0003-mine.md');
+    expect(stage()).toMatchObject({
+      status: 'pass',
+      detail:
+        'not checked against pup/squatter: it adds 4 decisions, more than the 3 a session ' +
+        'branch is checked for',
+    });
+  });
+
+  it('suggests no five-digit number when none above the target is free', () => {
+    commitOn(repo, 'main', 'docs/adr/9999-last.md');
+    commitOn(repo, 'pup/me', 'docs/adr/0002-mine.md');
+    expect(refusals()).toEqual([
+      'ADR numbers already taken:',
+      "  docs/adr/0002-mine.md: decision 0002 is already on the target; no four-digit number above the target's highest is free",
+    ]);
   });
 
   it('suggests a distinct free number per clash, past every number taken', () => {

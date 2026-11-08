@@ -485,7 +485,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(untimed(outcome.report.stages)).toContainEqual({
       stage: 'adr-number',
       status: 'pass',
-      detail: 'not checked against pup/s2: git could not diff it against the target',
+      detail: 'not checked against pup/s2: git could not read it against the target',
     });
     expect(outcome.report.stages.at(-1)).toMatchObject({ stage: 'scope-audit', status: 'fail' });
   });
