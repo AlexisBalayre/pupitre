@@ -128,9 +128,13 @@ jobs:
                 return "pr/ci-failing";
               }
               // The review preflight leaves a final "Not reviewed" pending status on a comment-only
-              // push: nothing is running, so it does not count as pending.
+              // push: nothing is running, so it does not count as pending. The push marker is the
+              // exception: the head still awaits the review the owner has yet to ask for.
               const running = combined.statuses.some(
-                (s) => s.state === "pending" && !s.description?.startsWith("Not reviewed"),
+                (s) =>
+                  s.state === "pending" &&
+                  (!s.description?.startsWith("Not reviewed") ||
+                    s.description.startsWith("Not reviewed: push since last review")),
               );
               if (runs.some((c) => c.status !== "completed") || running) {
                 return "pr/ci-pending";

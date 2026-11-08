@@ -532,7 +532,7 @@ describe('startFixRound', { timeout: 90_000 }, () => {
       expect(comments()).toEqual([
         `CI fix round gated at ${fixed}: 1 thread(s) addressed and resolved, 0 answered fixed ` +
           'that pup could not verify, 1 declined and 1 unanswered, left open for the ' +
-          `operator.\n\n${marker}`,
+          `operator.\n\n@claude review\n\n${marker}`,
       ]);
       expect(ghCalls()).toContain(
         `pr comment ${PR_URL} --repo github.com/owner/repo --body-file -`,

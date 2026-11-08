@@ -29,6 +29,8 @@ const READ_TIMEOUT_MS = 20_000;
 const CLEAN_REVIEW_STATUS = 'no blocking issues';
 /** What the preflight's PENDING status says on a push it skipped as comment-only. */
 const COMMENT_ONLY_STATUS = 'Not reviewed: only comments and prose changed';
+/** What claude-review-push-marker.yml says on a head pushed since the last review. */
+const PUSH_MARKER_STATUS = 'Not reviewed: push since last review';
 /**
  * Symbols a GitHub string could pass off as the digest's own `→`, so a forged
  * status could not name a next step of its own: every arrow and emoji, the
@@ -244,6 +246,14 @@ function reviewDigest(
         ? "comment `@claude review` on the PR to have the head reviewed (the operator's call)"
         : "read the PR: this head was not reviewed, and the earlier review's verdict is not " +
             "read here (the operator's call)",
+    );
+  }
+  if (status?.state === 'PENDING' && status.description.startsWith(PUSH_MARKER_STATUS)) {
+    return line(
+      'not asked, a push since the last review',
+      threads,
+      threads,
+      "comment `@claude review` on the PR to have the head reviewed (the operator's call)",
     );
   }
   if (status?.state === 'FAILURE') {
