@@ -853,7 +853,8 @@ describe('runGateChild', () => {
         mkdirSync(join(cwd, '.worktrees'));
         const options = { cwd, repoPath: cwd };
 
-        // The profile is written before runGateChild returns.
+        // The profile is written before runGateChild returns: it builds the
+        // invocation, writeFileSync included, before its first await.
         const child = runGateChild(
           'sh',
           [
@@ -866,6 +867,7 @@ describe('runGateChild', () => {
         writeFileSync(join(worktree, '.git'), 'gitdir: /repo/.git/worktrees/s2\n');
 
         await expect(child).rejects.toThrow(/Operation not permitted/);
+        // A sanity check: the refused rename is the proof.
         expect(readFileSync(join(worktree, '.git'), 'utf8')).toBe(
           'gitdir: /repo/.git/worktrees/s2\n',
         );
@@ -932,6 +934,7 @@ describe('runGateChild', () => {
         });
         expect(status.trim()).not.toBe('0');
         expect(readFileSync(join(cwd, 'moved.err'), 'utf8')).toMatch(/Operation not permitted/);
+        // A sanity check: the refused rename is the proof.
         expect(readFileSync(join(worktree, '.git'), 'utf8')).toBe(
           'gitdir: /repo/.git/worktrees/s2\n',
         );

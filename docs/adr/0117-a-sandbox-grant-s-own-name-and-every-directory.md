@@ -136,14 +136,15 @@
     the pointer file is unchanged. The third and fifth use a vendored repo, `vendor/s1`, as
     `.worktrees` is no longer writable at all. A sixth waits until the test adds
     `.worktrees/s2` after its profile was written, then tries to rename it within the
-    checkout: refused, the pointer unchanged. Children are refused a
+    checkout, and is refused. The refused rename is the proof: a worktree that cannot be
+    moved cannot have its pointer rewritten out of reach of the `.git` deny. Children are refused a
     link at `.worktrees/s4` and at `.WORKTREES` in a checkout with none yet, while the same link
     elsewhere in the checkout is made. A seventh leaves a helper in a session of its own that
     outlives the stage. Only once the stage has ended does the test add `.worktrees/s2`, in a
     checkout that had no `.worktrees` when the profile was written. The helper renames it
     within the checkout, so the move is never a copy-then-delete across volumes, whose
     delete the `.git` deny would refuse with the same error. The rename is refused with
-    "Operation not permitted", and the pointer is unchanged. Without the `.worktrees` deny,
+    "Operation not permitted", which is again the proof. Without the `.worktrees` deny,
     the sixth and seventh fail. Like every test run under pup's own applied profile, the seventh
     is skipped off macOS and inside the merge gate, where the sandbox is inherited; it
     runs only on a developer's Mac. With the
