@@ -844,8 +844,10 @@ describe('runGateChild', () => {
       it('cannot take a worktree pup adds after its profile was written, nor plant one', async () => {
         // `pup init` and `pup audit` run the child in the operator's repo while
         // pup adds worktrees there, which no walk at profile time can see: `s2`
-        // appears once the child runs, and the child moves it into scratch,
-        // rewrites its pointer and moves it back under a new name (decision 117).
+        // appears once the child runs, and moved into scratch it would have its
+        // pointer rewritten there (decision 117). The child renames it within
+        // the checkout, so the move is never mv's copy-then-delete across
+        // volumes, whose delete the `.git` deny refuses with the same error.
         const cwd = fakeCheckout();
         const worktree = join(cwd, '.worktrees', 's2');
         mkdirSync(join(cwd, '.worktrees'));
@@ -856,7 +858,7 @@ describe('runGateChild', () => {
           'sh',
           [
             '-c',
-            'i=0; until [ -f .worktrees/s2/.git ]; do i=$((i+1)); [ $i -gt 200 ] && exit 3; sleep 0.05; done; mv .worktrees/s2 "$TMPDIR/s2" && printf "gitdir: /evil" > "$TMPDIR/s2/.git" && mv "$TMPDIR/s2" .worktrees/s3',
+            'i=0; until [ -f .worktrees/s2/.git ]; do i=$((i+1)); [ $i -gt 200 ] && exit 3; sleep 0.05; done; mv .worktrees/s2 s2',
           ],
           options,
         );
@@ -867,6 +869,7 @@ describe('runGateChild', () => {
         expect(readFileSync(join(worktree, '.git'), 'utf8')).toBe(
           'gitdir: /repo/.git/worktrees/s2\n',
         );
+        expect(existsSync(join(cwd, 's2'))).toBe(false);
         // A link at a name pup has yet to use, or at `.worktrees` itself before
         // pup makes it, in any case, would aim pup's next worktree at scratch.
         const fresh = fakeCheckout();

@@ -135,8 +135,8 @@
     `vendor` unreadable. It restores the mode and tries the nested move, is refused, and
     the pointer file is unchanged. The third and fifth use a vendored repo, `vendor/s1`, as
     `.worktrees` is no longer writable at all. A sixth waits until the test adds
-    `.worktrees/s2` after its profile was written, then tries to move it into scratch, rewrite
-    its pointer and move it back as `s3`: refused, the pointer unchanged. Children are refused a
+    `.worktrees/s2` after its profile was written, then tries to rename it within the
+    checkout: refused, the pointer unchanged. Children are refused a
     link at `.worktrees/s4` and at `.WORKTREES` in a checkout with none yet, while the same link
     elsewhere in the checkout is made. A seventh leaves a helper in a session of its own that
     outlives the stage. Only once the stage has ended does the test add `.worktrees/s2`, in a
