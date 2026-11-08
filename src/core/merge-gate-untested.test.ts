@@ -99,25 +99,43 @@ describe('the test stage on a change no test reads (decision 139)', { timeout: 2
     expect(coverage).not.toHaveBeenCalled();
   });
 
-  it('reports a missing test command as not measured, not as skipped for the change', async () => {
-    const worktree = seedSession(db, repo, { scopeIn: ['**'] });
-    commitIn(worktree, '.github/workflows/ci.yml', 'on: push\n');
-    const coverage = vi.fn(() => ({ files: {} }));
-    const adapter = debtAdapter({
+  /** Build and lint only: no test command, and coverage only if `overrides` adds it. */
+  const untestedAdapter = (overrides: Partial<Adapter> = {}): Adapter =>
+    debtAdapter({
       gateCommands: () => [
         { stage: 'build', command: 'true', args: [] },
         { stage: 'lint', command: 'true', args: [] },
       ],
-      coverage,
+      ...overrides,
     });
+  const notMeasured = { status: 'skipped', detail: 'not measured — no command available' };
 
-    const outcome = await merge(adapter);
+  it('names each stage by what could have measured it when there is no test command', async () => {
+    const worktree = seedSession(db, repo, { scopeIn: ['**'] });
+    commitIn(worktree, '.github/workflows/ci.yml', 'on: push\n');
+    const coverage = vi.fn(() => ({ files: {} }));
 
-    const notMeasured = { status: 'skipped', detail: 'not measured — no command available' };
+    const outcome = await merge(untestedAdapter({ coverage }));
+
+    const stages = untimed(outcome.report.stages);
+    expect(stages).toContainEqual({ stage: 'test', ...notMeasured });
+    expect(stages).toContainEqual({
+      stage: 'coverage',
+      status: 'skipped',
+      detail: 'no testable file changed (1 files)',
+    });
+    expect(coverage).not.toHaveBeenCalled();
+  });
+
+  it('reports coverage as not measured with neither a test command nor coverage', async () => {
+    const worktree = seedSession(db, repo, { scopeIn: ['**'] });
+    commitIn(worktree, '.github/workflows/ci.yml', 'on: push\n');
+
+    const outcome = await merge(untestedAdapter());
+
     const stages = untimed(outcome.report.stages);
     expect(stages).toContainEqual({ stage: 'test', ...notMeasured });
     expect(stages).toContainEqual({ stage: 'coverage', ...notMeasured });
-    expect(coverage).not.toHaveBeenCalled();
   });
 
   it('runs the full test stage when one changed file is off the list', async () => {

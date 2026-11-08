@@ -2493,7 +2493,7 @@ export async function measureBranch(
   // session that deletes a script fails that stage instead of skipping it.
   const commands = primary?.gateCommands(req.repoPath) ?? [];
   const commandFor = (stage: GateStage) => commands.find((c) => c.stage === stage);
-  const notMeasured = (stage: GateStage): GateStageResult => ({
+  const notMeasured = (stage: string): GateStageResult => ({
     stage,
     status: 'skipped',
     detail: 'not measured — no command available',
@@ -2512,15 +2512,17 @@ export async function measureBranch(
   // (decision 139).
   const untested =
     nestedPackages.length === 0 && changesOnlyUntested(req.repoPath, targetSha, sha, changedPaths);
-  // With no test command to skip, the test and coverage stages say so, as on
-  // any other change.
-  const notTested = (stage: string): GateStageResult => ({
-    stage,
-    status: 'skipped',
-    detail: commandFor('test')
-      ? `no testable file changed (${changedPaths.length} files)`
-      : 'not measured — no command available',
-  });
+  // A stage nothing could have measured says so, as on any other change: the
+  // test stage without a test command, coverage without that or a coverage
+  // capability.
+  const notTested = (stage: string, measurable: boolean): GateStageResult =>
+    measurable
+      ? {
+          stage,
+          status: 'skipped',
+          detail: `no testable file changed (${changedPaths.length} files)`,
+        }
+      : notMeasured(stage);
   // One instrumented run answers for the test stage and for coverage when the
   // adapter whose test command it is measures coverage too (decision 95).
   const test = untested ? undefined : commandFor('test');
@@ -2650,7 +2652,11 @@ export async function measureBranch(
   // Reported in today's order, stopping where today's run stopped.
   const { results: suiteResults, folded } = await suites;
   for (const [stage, result] of [
-    ['test', suiteResults.get('test') ?? (untested ? notTested('test') : undefined)],
+    [
+      'test',
+      suiteResults.get('test') ??
+        (untested ? notTested('test', commandFor('test') !== undefined) : undefined),
+    ],
     ['lint', await linted],
   ] as const) {
     const reported = result ?? notMeasured(stage);
@@ -2837,7 +2843,7 @@ export async function measureBranch(
   // through the same wrapper.
   for (const stage of judged.stages) {
     if (untested && stage.stage === 'coverage') {
-      stages.push(notTested(stage.stage));
+      stages.push(notTested(stage.stage, commandFor('test') !== undefined || !!coverageAdapter));
       continue;
     }
     stages.push(
