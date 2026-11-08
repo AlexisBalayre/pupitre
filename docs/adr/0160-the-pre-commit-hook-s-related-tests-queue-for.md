@@ -8,22 +8,19 @@
     directly, so every worker committing started its own vitest pool outside the 2 slots. On
     2026-11-08 five commits ran at once (29 vitest processes), the load stayed at 65 to 100 on 8
     cores, the hook timed out unrelated tests and the merge gate's test stage ran over an hour.
-    *Inside a session* (`PUP_SESSION_ID` set) the hook lists the test files with `vitest list
-    --filesOnly --changed`, which runs no test, then runs them with `pup session test -- <files>`.
-    `vitest related` has no list form (vitest 4 rejects `--listTests` and `--related`), so the
-    listing names the tests that import any file changed in the working tree, staged or not: a
-    superset of the staged files' tests. *Accepted:* vitest's default `forceRerunTriggers`
-    (`package.json`, `vitest.config.*`, `vite.config.*`) makes `--changed` list every test once
-    one of those files is modified in the working tree, staged, unstaged or untracked, so such a
-    commit runs the whole suite through one slot, where outside a session it runs the staged
-    files' tests only. That keeps the slot's queue and the gate's priority intact, and changing
-    `vitest.config.ts` to cut it is outside this decision; commit a dependency or script change
-    on its own, or revert the trigger file in the worktree, to avoid it. The run says whom it waits for, and waits while a merge
-    gate holds a slot or queues ahead.
+    *Inside a session* (`PUP_SESSION_ID` set) the hook runs `pup session test --related --
+    <staged source files>`. `--related`, the first argument, swaps the project's test command for
+    the very `pnpm exec vitest related --run --passWithNoTests` the hook runs outside a session,
+    so both paths test the same set: the tests that import a staged source file. The run holds a
+    slot, says whom it waits for, and waits while a merge gate holds a slot or queues ahead.
+    *Why not list first.* A listing by `vitest list --filesOnly --changed` was tried and dropped:
+    vitest runs every test when a changed file matches its `forceRerunTriggers` (`package.json`,
+    the vitest and vite config), so a commit with an unstaged `package.json` ran the whole suite
+    in one slot, and vitest 4 has neither a `--forceRerunTriggers` nor a `--related` option for
+    `list`.
     *Fails closed.* The hook uses `node -- "$PUP_BIN"` when that is an existing file, else the
     `pup` on the PATH once `pup session --help` answers as pupitre does (Homebrew ships an
-    unrelated `pup`, an HTML parser, that exits 0 on `session test`), else blocks the commit. A listing that exits non-zero blocks it too; only a
-    clean listing with no file runs nothing, as vitest reports no related test.
+    unrelated `pup`, an HTML parser, that exits 0 on `session test`), else blocks the commit.
     *Outside a session* the hook runs `vitest related --run` directly, as before.
-    *Ceiling.* The test files go to the project's test command as names, so a file whose path
-    contains another's runs too.
+    *Ceiling.* `--related` is vitest's alone: it runs `pnpm exec vitest related`, whatever the
+    project's adapter declares as its test command.

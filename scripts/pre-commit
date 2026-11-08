@@ -123,10 +123,8 @@ fi
 #
 # Inside a pup session (PUP_SESSION_ID set) the run queues for one of the machine's
 # test slots through `pup session test`, and yields to a merge gate (decisions 96,
-# 160). The tests are listed first, which starts none: `vitest list --filesOnly
-# --changed` names those that import a file changed in the working tree, staged or
-# not, and `vitest related` has no list form. A failed listing blocks the commit; only
-# a clean listing with no file, vitest's own "no related tests", runs nothing.
+# 160). `pup session test --related` runs the same `vitest related` over the same staged
+# source files, while it holds a slot, so a session and a shell test the same set.
 RELATED_TEST_CMD="pnpm exec vitest related --run --passWithNoTests"
 if [ -n "${TEST_CMD:-}" ] && [ -n "$STAGED_SOURCE" ]; then
   if [ -n "${PUP_SESSION_ID:-}" ]; then
@@ -145,17 +143,10 @@ if [ -n "${TEST_CMD:-}" ] && [ -n "$STAGED_SOURCE" ]; then
       exit 1
     fi
     echo "Running related tests through a test slot (waits for a free one)"
-    if ! RELATED_FILES=$(pnpm exec vitest list --filesOnly --changed); then
+    if ! (set -o pipefail; printf '%s\n' "$STAGED_SOURCE" | sed 's|^|./|' | tr '\n' '\0' | xargs -0 "${PUP_CMD[@]}" session test --related --); then
       echo ""
-      echo "ERROR: Listing the tests related to the staged files failed."
+      echo "ERROR: Tests related to the staged files failed. Fix them before committing."
       exit 1
-    fi
-    if [ -n "$RELATED_FILES" ]; then
-      if ! (set -o pipefail; printf '%s\n' "$RELATED_FILES" | tr '\n' '\0' | xargs -0 "${PUP_CMD[@]}" session test --); then
-        echo ""
-        echo "ERROR: Tests related to the staged files failed. Fix them before committing."
-        exit 1
-      fi
     fi
   else
     echo "Running related tests: $RELATED_TEST_CMD"

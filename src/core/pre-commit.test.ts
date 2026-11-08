@@ -27,11 +27,9 @@ const PROJECT_ENV = [
 ].join('\n');
 
 // A pnpm that logs each call instead of running it, and fails the one whose
-// arguments contain $STUB_FAIL. Listing the tests prints $STUB_LISTED and fails
-// when $STUB_LIST_FAIL is set.
+// arguments contain $STUB_FAIL.
 const PNPM_STUB = `#!/bin/sh
 printf '%s\\n' "$*" >> "$STUB_LOG"
-case "$*" in *"list --filesOnly"*) printf '%s' "$STUB_LISTED"; [ -z "$STUB_LIST_FAIL" ] || exit 1 ;; esac
 case "$*" in *"$STUB_FAIL"*) [ -n "$STUB_FAIL" ] && exit 1 ;; esac
 exit 0
 `;
@@ -80,10 +78,6 @@ interface HookOptions {
   fail?: string;
   /** Run as a pup session with this id. */
   sessionId?: string;
-  /** What listing the related tests prints. */
-  listed?: string;
-  /** The listing exits 1. */
-  listFails?: boolean;
   /** The directories on PATH after the stubs; the machine's by default. */
   path?: string;
   /** Set PUP_BIN. */
@@ -102,7 +96,7 @@ function runHook(
   paths: string[],
   options: HookOptions = {},
 ): { status: number | null; calls: string[]; stdout: string } {
-  const { fail = '', sessionId = '', listed = 'src/sum.test.ts\n', listFails = false } = options;
+  const { fail = '', sessionId = '' } = options;
   git(repo, 'add', '--', ...paths);
   const log = join(repo, 'stub.log');
   writeFileSync(log, '');
@@ -114,8 +108,6 @@ function runHook(
       PATH: `${join(repo, 'stub-bin')}:${options.path ?? process.env.PATH}`,
       STUB_LOG: log,
       STUB_FAIL: fail,
-      STUB_LISTED: listed,
-      ...(listFails ? { STUB_LIST_FAIL: '1' } : {}),
       ...(sessionId ? { PUP_SESSION_ID: sessionId } : {}),
       ...(options.pupBin ? { PUP_BIN: options.pupBin } : {}),
     },
@@ -194,8 +186,7 @@ describe('scripts/pre-commit', () => {
     expect(calls).toEqual([
       'exec biome check ./src/sum.ts',
       'typecheck',
-      'exec vitest list --filesOnly --changed',
-      'pup session test -- src/sum.test.ts',
+      'pup session test --related -- ./src/sum.ts',
     ]);
     expect(stdout).toContain('through a test slot (waits for a free one)');
   });
@@ -210,36 +201,6 @@ describe('scripts/pre-commit', () => {
     });
 
     expect(status).not.toBe(0);
-  });
-
-  it('blocks the commit when the listing of related tests fails', () => {
-    const repo = makeRepo();
-    write(repo, 'src/sum.ts', 'export const sum = 2;\n');
-
-    const { status, calls } = runHook(repo, ['src/sum.ts'], {
-      sessionId: 't-session',
-      listFails: true,
-    });
-
-    expect(status).not.toBe(0);
-    expect(calls.some((call) => call.startsWith('pup '))).toBe(false);
-  });
-
-  it('runs no tests, and passes, when the listing finds no related test', () => {
-    const repo = makeRepo();
-    write(repo, 'src/sum.ts', 'export const sum = 2;\n');
-
-    const { status, calls } = runHook(repo, ['src/sum.ts'], {
-      sessionId: 't-session',
-      listed: '',
-    });
-
-    expect(status).toBe(0);
-    expect(calls).toEqual([
-      'exec biome check ./src/sum.ts',
-      'typecheck',
-      'exec vitest list --filesOnly --changed',
-    ]);
   });
 
   it('blocks the commit in a session when pup is not on the PATH and PUP_BIN is unset', () => {
@@ -304,32 +265,7 @@ describe('scripts/pre-commit', () => {
     });
 
     expect(status).toBe(0);
-    expect(calls.at(-1)).toBe('pupbin session test -- src/sum.test.ts');
-  });
-
-  it('lists the related tests with the real vitest, starting none of them', () => {
-    const repo = makeRepo();
-    const vitestBin = join(import.meta.dirname, '..', '..', 'node_modules', '.bin', 'vitest');
-    // The hook's own listing runs for real; every other pnpm call is only logged.
-    write(
-      repo,
-      'stub-bin/pnpm',
-      `#!/bin/sh
-printf '%s\\n' "$*" >> "$STUB_LOG"
-case "$*" in "exec vitest"*) shift 2; exec "${vitestBin}" "$@" ;; esac
-exit 0
-`,
-    );
-    write(repo, 'src/other.ts', 'export const other = 1;\n');
-    write(repo, 'src/other.test.ts', "import './other.js';\n");
-    git(repo, 'add', 'src');
-    git(repo, 'commit', '-m', 'other');
-    write(repo, 'src/sum.ts', 'export const sum = 2;\n');
-
-    const { status, calls } = runHook(repo, ['src/sum.ts'], { sessionId: 't-session' });
-
-    expect(status).toBe(0);
-    expect(calls.at(-1)).toBe('pup session test -- src/sum.test.ts');
+    expect(calls.at(-1)).toBe('pupbin session test --related -- ./src/sum.ts');
   });
 
   it('runs no tests when TEST_CMD is empty', () => {

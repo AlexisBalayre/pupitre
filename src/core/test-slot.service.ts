@@ -410,6 +410,21 @@ export function sessionTestCommand(repoPath: string): GateCommand | undefined {
     .find((command) => command.stage === 'test');
 }
 
+/** The first argument that turns `pup session test` into a run of the related tests. */
+export const RELATED_FLAG = '--related';
+
+/**
+ * What `pup session test --related -- <files>` runs instead of the project's test
+ * command: the tests that import the named source files, which is what the pre-commit
+ * hook runs outside a session (decisions 135, 160). Vitest alone, so no adapter's
+ * command is used. The CLI passes `--related` on as an argument, being unknown to it.
+ */
+const RELATED_TEST_COMMAND: GateCommand = {
+  stage: 'test',
+  command: 'pnpm',
+  args: ['exec', 'vitest', 'related', '--run', '--passWithNoTests'],
+};
+
 /**
  * `pup session test [args]`: the project's test command with `args` after it,
  * run in the session's worktree once it holds a test slot, its output on this
@@ -426,7 +441,9 @@ export async function runSessionTest(req: {
   sessionId: string;
   slots?: TestSlotOptions;
 }): Promise<number> {
-  const { command, args } = req;
+  const related = req.args[0] === RELATED_FLAG;
+  const command = related ? RELATED_TEST_COMMAND : req.command;
+  const args = related ? req.args.slice(1) : req.args;
   const shellScript = command.command === 'sh' && command.args[0] === '-c';
   const separator =
     args.length === 0 ? [] : command.command === 'npm' ? ['--'] : shellScript ? ['sh'] : [];

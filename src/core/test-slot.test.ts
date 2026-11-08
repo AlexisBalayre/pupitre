@@ -586,6 +586,35 @@ describe('runSessionTest (decision 96)', () => {
     expect(readFileSync(out, 'utf8')).toBe('a.test.ts\nb c.test.ts\n');
   });
 
+  it('runs only the tests related to the named files with --related, whatever else changed', async () => {
+    const dir = tempDir('pup-session-related-');
+    symlinkSync(join(import.meta.dirname, '..', '..', 'node_modules'), join(dir, 'node_modules'));
+    const marker = (name: string): string => join(dir, `ran-${name}`);
+    for (const name of ['sum', 'other']) {
+      writeFileSync(join(dir, `${name}.ts`), `export const ${name} = 1;\n`);
+      writeFileSync(
+        join(dir, `${name}.test.ts`),
+        `import { writeFileSync } from 'node:fs';\nimport { it } from 'vitest';\nimport './${name}.js';\nit('ran', () => writeFileSync('${marker(name)}', ''));\n`,
+      );
+    }
+    // The file a dependency or script change edits; a listing by changed files would take it
+    // for a trigger and run every test.
+    writeFileSync(join(dir, 'package.json'), '{"name":"x"}\n');
+
+    const status = await runSessionTest({
+      command: { stage: 'test', command: 'false', args: [] },
+      args: ['--related', './sum.ts'],
+      cwd: dir,
+      sessionId: 's1',
+      slots: { dir: join(dir, 'slots'), pollMs: 10 },
+    });
+
+    expect(status).toBe(0);
+    expect(existsSync(marker('sum'))).toBe(true);
+    expect(existsSync(marker('other'))).toBe(false);
+    expect(readdirSync(join(dir, 'slots'))).toEqual([]);
+  }, 60_000);
+
   it('passes a stop on to the run, answering the status of a run a signal ended', async () => {
     const dir = tempDir('pup-session-test-');
     const before = process.listeners('SIGTERM');
