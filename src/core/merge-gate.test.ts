@@ -586,9 +586,11 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
   });
 
-  // Decision 145: a renamed file, and a copy of a file the branch never
-  // changed, are judged by their rise from the source, not by the new-file cap.
-  it('judges a renamed and a copied file by their rise from the source', async () => {
+  /**
+   * A renamed file, and a copy of a file the branch never changed, each grown
+   * by 40 decision points; the adapter counts `if (` in what it reads.
+   */
+  const seedRenameAndCopy = (): Adapter => {
     const plain = (name: string) =>
       Array.from({ length: 60 }, (_, i) => `export const ${name}${i} = ${i};\n`).join('');
     const branches = (n: number) => 'if (a) b();\n'.repeat(n);
@@ -598,25 +600,65 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     sh(worktree, 'git', 'mv', 'src/legacy.ts', 'src/renamed.ts');
     commitIn(worktree, 'src/renamed.ts', plain('legacy') + branches(50));
     commitIn(worktree, 'src/copied.ts', plain('kept') + branches(50));
-    const ifLines = ({ measurePath }: CapabilityContext, files: string[]) =>
-      files
-        .filter((file) => existsSync(join(measurePath, file)))
-        .map((file) => ({
-          file,
-          complexity: readFileSync(join(measurePath, file), 'utf8').split('if (').length - 1,
-        }));
+    return debtAdapter({
+      complexity: ({ measurePath }: CapabilityContext, files: string[]) =>
+        files
+          .filter((file) => existsSync(join(measurePath, file)))
+          .map((file) => ({
+            file,
+            complexity: readFileSync(join(measurePath, file), 'utf8').split('if (').length - 1,
+          })),
+    });
+  };
 
-    const outcome = await merge(debtAdapter({ complexity: ifLines }));
+  const complexityDetail = (outcome: Awaited<ReturnType<typeof merge>>) =>
+    outcome.report.stages.find((s) => s.stage === 'complexity')?.detail;
 
-    expect(outcome.report.stages).toContainEqual(
-      expect.objectContaining({
-        stage: 'complexity',
-        status: 'flagged',
-        detail: expect.stringContaining(
-          'complexity rose sharply in 2 touched file(s): src/copied.ts (+40), src/renamed.ts (+40)',
-        ),
-      }),
+  // Decision 145: judged by their rise from the source, not by the new-file cap.
+  it('judges a renamed and a copied file by their rise from the source', async () => {
+    const outcome = await merge(seedRenameAndCopy());
+
+    expect(complexityDetail(outcome)).toContain(
+      'complexity rose sharply in 2 touched file(s): src/copied.ts (+40), src/renamed.ts (+40)',
     );
+  });
+
+  // Decision 145: `-C -C` compares every added file with every file the target
+  // holds, so it runs under a deadline rather than for as long as a branch of
+  // generated files makes it.
+  it('judges without copy pairs, and says so, when copy detection runs out of time', async () => {
+    const adapter = seedRenameAndCopy();
+    const { execFileSync: real } =
+      await vi.importActual<typeof import('node:child_process')>('node:child_process');
+    // `-C -C` side by side: every git call already carries `-C <cwd>`.
+    const copyPass = (args: unknown) =>
+      Array.isArray(args) && args.includes('--raw') && args.join('\0').includes('\0-C\0-C\0');
+    vi.mocked(execFileSync).mockImplementation(((
+      file: string,
+      args: readonly string[],
+      options: object,
+    ) => {
+      if (copyPass(args)) {
+        throw Object.assign(new Error('spawnSync git ETIMEDOUT'), {
+          code: 'ETIMEDOUT',
+          signal: 'SIGTERM',
+        });
+      }
+      return real(file, args, options);
+    }) as unknown as typeof execFileSync);
+    onTestFinished(() => {
+      vi.mocked(execFileSync).mockImplementation(real);
+    });
+
+    const outcome = await merge(adapter);
+
+    // The rename still pairs; the copy meets the cap, which 50 does not pass.
+    expect(complexityDetail(outcome)).toContain(
+      'complexity rose sharply in 1 touched file(s): src/renamed.ts (+40); ' +
+        "copies not paired: git's copy detection ran past 30 s",
+    );
+    const copyCall = vi.mocked(execFileSync).mock.calls.find(([, args]) => copyPass(args));
+    expect(copyCall?.[2]).toMatchObject({ timeout: 30_000 });
   });
 
   // Decision 72: `pup init` always measured every detected adapter while the

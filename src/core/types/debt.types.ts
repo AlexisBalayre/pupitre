@@ -54,12 +54,14 @@ export interface GateDebtMeasurement extends DebtMeasurement {
   /**
    * Complexity over the changed files, from the target branch and the worktree.
    * `sources` maps a renamed or copied file's path to the path git paired it
-   * with, which `before` also measures (decision 145).
+   * with, which `before` also measures (decision 145). `copiesPaired` is false
+   * when copy detection ran out of time and only renames were paired.
    */
   complexity?: {
     before: FileComplexity[];
     after: FileComplexity[];
     sources: Record<string, string>;
+    copiesPaired: boolean;
   };
   /** Changed files `coverageAdapter` expects to appear in its own report. */
   coverableFiles: string[];

@@ -69,6 +69,12 @@ export const COMPLEXITY_FILE_FLAG_DELTA = 15;
  */
 export const COMPLEXITY_NEW_FILE_FLAG_CAP = 50;
 
+/**
+ * How long the complexity stage's copy detection (`git diff -C -C`) may run
+ * under the merge lock before the stage judges without copy pairs (decision 145).
+ */
+export const COMPLEXITY_COPY_PAIRING_TIMEOUT_MS = 30_000;
+
 /** Findings/blocks quoted in a flagged debt stage's detail; the rest is elided. */
 export const DEBT_DETAIL_SAMPLES = 3;
 

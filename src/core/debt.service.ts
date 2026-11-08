@@ -9,6 +9,7 @@ import type {
 } from '../adapters/types/adapter.types.js';
 import { repoCoverageRatio } from './coverage.utils.js';
 import {
+  COMPLEXITY_COPY_PAIRING_TIMEOUT_MS,
   COMPLEXITY_FILE_FLAG_DELTA,
   COMPLEXITY_NEW_FILE_FLAG_CAP,
   COVERAGE_RATIO_EPSILON,
@@ -398,7 +399,10 @@ function judgeComplexity(measured: GateDebtMeasurement, sessionId: string): Stag
   if (!measured.complexity) {
     return verdict(stage, 'skipped', 'not measured — adapter cannot measure complexity');
   }
-  const { sources } = measured.complexity;
+  const { sources, copiesPaired } = measured.complexity;
+  const unpaired = copiesPaired
+    ? ''
+    : `; copies not paired: git's copy detection ran past ${COMPLEXITY_COPY_PAIRING_TIMEOUT_MS / 1000} s`;
   const before = new Map(measured.complexity.before.map((f) => [f.file, f.complexity]));
   const risen = measured.complexity.after
     .map((f) => {
@@ -422,7 +426,7 @@ function judgeComplexity(measured: GateDebtMeasurement, sessionId: string): Stag
   if (risen.length === 0) {
     const detail =
       `no touched file rose by more than ${COMPLEXITY_FILE_FLAG_DELTA} decision points, ` +
-      `and no new file holds more than ${COMPLEXITY_NEW_FILE_FLAG_CAP}`;
+      `and no new file holds more than ${COMPLEXITY_NEW_FILE_FLAG_CAP}${unpaired}`;
     return verdict(stage, 'pass', detail);
   }
   const quoted = samples(risen.map((f) => `${quotePath(f.file)} (${f.label})`));
@@ -430,7 +434,7 @@ function judgeComplexity(measured: GateDebtMeasurement, sessionId: string): Stag
   return verdict(
     stage,
     'flagged',
-    `complexity rose sharply in ${risen.length} touched file(s): ${quoted}`,
+    `complexity rose sharply in ${risen.length} touched file(s): ${quoted}${unpaired}`,
     {
       flag: {
         description: `Complexity rise (+${points} decision points) merged from session ${sessionId}`,

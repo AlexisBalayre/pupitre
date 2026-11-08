@@ -19,8 +19,13 @@
     `-C` pairs a copy of any file the target holds, even one the branch never changed. The
     before-measure then covers the changed paths plus every pair's source. The diff-size
     stage keeps its own `-M`-only call, so a copy still counts there as added lines (decision
-    113). Only a file that is absent from the before-measure and has no pair is judged on its
-    own count. It is flagged above `COMPLEXITY_NEW_FILE_FLAG_CAP` (50), which sits between
+    113). The copy pass compares every added file with every file the target holds, so it
+    runs under the merge lock with a deadline, `COMPLEXITY_COPY_PAIRING_TIMEOUT_MS` (30 s).
+    Past that deadline the pairs come from the rename-only pass diff-size already makes, and
+    the stage detail ends with `copies not paired: git's copy detection ran past 30 s`. A
+    finite `-l` was not taken: past its limit git drops inexact pairing with only a warning
+    on stderr, so the stage could not say what it skipped. Only a file that is absent from
+    the before-measure and has no pair is judged on its own count. It is flagged above `COMPLEXITY_NEW_FILE_FLAG_CAP` (50), which sits between
     the 75th and 90th percentiles above. Both bars live in `merge-gate.constants.ts`, and one place applies
     them: `judgeComplexity`, inside `judgeDebt` in `debt.service.ts`, the module the gate's
     debt verdict already shares (decision 72). `pup init` stores no complexity bar, so the
@@ -45,12 +50,14 @@
     now it gets the most lenient. A before-measure that fails errors the gate: a custom
     command that exits non-zero or prints no JSON array, or a read error. The TypeScript
     adapter, whose parser takes any content, leaves out only non-source files and files the
-    main checkout lacks. That leaves four ways for an existing file to drop out:
+    main checkout lacks. That leaves five ways for an existing file to drop out:
     - A rename or copy rewritten past git's pairing threshold. Git pairs two paths only
       when their contents are at least 50% similar, so a renamed or copied file whose content
       is mostly rewritten reads as a delete plus an add, and the new path meets the cap. A
       file of 10 points can therefore grow to 50 unflagged, as long as most of its text
       changes along the way.
+    - A copy pass that runs out of time. A new file copied from one the target holds then
+      meets the cap, and the stage detail says copies went unpaired.
     - A rename whose source the before-measure skips. A non-source file renamed to a source
       name, such as `.txt` to `.ts`, pairs with a source the TypeScript adapter never
       measures, so the new path meets the cap.
@@ -61,6 +68,11 @@
       that list.
     - A session writing the main checkout. The before-measure reads the main checkout, so a
       file a session removes there reads as absent.
+    Pairing also opens a route the other way, through a high source. A new file at least 50%
+    similar to a large existing file is paired with it, and judged against that file's count
+    plus 15, not against the cap. A file of 300 decision points copied, with 15 more added,
+    lands with no complexity flag. Only the duplication stage stands behind it, and only
+    while the copied text stays similar enough for duplication to count it.
     Deciding "new" from the target tree is owed as backlog task t-mvv19qls: a file gets the
     cap only when the target sha's tree, read with the gate's pinned git, lacks its path, and
     a file the target holds but the before-measure omits keeps the rise from zero. docs/04 still reads "complexity delta on touched files", which holds for every
@@ -71,4 +83,7 @@
     while a new file of 20 beside them stays out of the flag. A file of 10 renamed or copied
     and grown to 50 flags as +40, and a copy grown by 15 passes. In `merge-gate.test.ts`, a
     real-git gate run renames one file and copies another the branch never changed, grows
-    each by 40, and flags both as +40. With `-C -C` dropped, that test fails.
+    each by 40, and flags both as +40. With `-C -C` dropped, that test fails. A second run
+    makes the copy pass time out: the rename still flags as +40, the copy meets the cap, the
+    detail names the unpaired copies, and the copy pass carried the 30 s timeout.
+    `debt.test.ts` pins the unpaired note on a pass.

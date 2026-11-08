@@ -70,6 +70,7 @@ import {
   listLedgerEntries,
 } from './ledger.repository.js';
 import {
+  COMPLEXITY_COPY_PAIRING_TIMEOUT_MS,
   DEBT_DETAIL_SAMPLES,
   DIFF_SIZE_DEPENDENCY_FILES,
   DIFF_SIZE_DOCS_DIR,
@@ -226,20 +227,24 @@ function rawDiffEntries(
   repoPath: string,
   target: string,
   branch: string,
-  { copies = false }: { copies?: boolean } = {},
+  { copies = false, timeout }: { copies?: boolean; timeout?: number } = {},
 ): Map<string, RawDiffEntry> {
-  const fields = runGit(repoPath, [
-    'diff',
-    '--no-ext-diff',
-    '--no-textconv',
-    '--no-color',
-    '-z',
-    '--raw',
-    '-M',
-    ...(copies ? ['-C', '-C'] : []),
-    '-l0',
-    `${target}...${branch}`,
-  ]).split('\0');
+  const fields = runGit(
+    repoPath,
+    [
+      'diff',
+      '--no-ext-diff',
+      '--no-textconv',
+      '--no-color',
+      '-z',
+      '--raw',
+      '-M',
+      ...(copies ? ['-C', '-C'] : []),
+      '-l0',
+      `${target}...${branch}`,
+    ],
+    { timeout },
+  ).split('\0');
   const entries = new Map<string, RawDiffEntry>();
   for (let i = 0; i < fields.length; i++) {
     const header = fields[i];
@@ -261,6 +266,39 @@ function rawDiffEntries(
     }
   }
   return entries;
+}
+
+/**
+ * Each renamed or copied path's source, for the complexity stage (decision
+ * 145). `-C -C` compares every added file with every file the target holds,
+ * so a branch of thousands of generated files could hold the merge lock for
+ * as long as it likes: past `COMPLEXITY_COPY_PAIRING_TIMEOUT_MS` the pairs
+ * come from the rename-only pass diff-size already makes, and the stage says
+ * copies went unpaired.
+ */
+function complexitySources(
+  repoPath: string,
+  target: string,
+  branch: string,
+): { sources: Record<string, string>; copiesPaired: boolean } {
+  let entries: Map<string, RawDiffEntry>;
+  let copiesPaired = true;
+  try {
+    entries = rawDiffEntries(repoPath, target, branch, {
+      copies: true,
+      timeout: COMPLEXITY_COPY_PAIRING_TIMEOUT_MS,
+    });
+  } catch (error) {
+    if ((error as { code?: unknown }).code !== 'ETIMEDOUT') throw error;
+    entries = rawDiffEntries(repoPath, target, branch);
+    copiesPaired = false;
+  }
+  const sources: Record<string, string> = {};
+  for (const [path, entry] of entries) {
+    const from = entry.renamedFrom ?? entry.copiedFrom;
+    if (from !== undefined) sources[path] = from;
+  }
+  return { sources, copiesPaired };
 }
 
 type DiffSizeKind = 'source' | 'test' | 'docs';
@@ -2388,13 +2426,9 @@ export async function measureBranch(
   };
   const changedPaths = gitDiffPaths(req.repoPath, targetSha, sha);
   // A renamed or copied file is judged against its source (decision 145).
-  const sources: Record<string, string> = {};
-  if (req.adapters.some((a) => a.complexity)) {
-    for (const [path, entry] of rawDiffEntries(req.repoPath, targetSha, sha, { copies: true })) {
-      const from = entry.renamedFrom ?? entry.copiedFrom;
-      if (from !== undefined) sources[path] = from;
-    }
-  }
+  const { sources, copiesPaired } = req.adapters.some((a) => a.complexity)
+    ? complexitySources(req.repoPath, targetSha, sha)
+    : { sources: {}, copiesPaired: true };
   const nestedPackages = primary?.touchedNestedPackages?.(capabilityContext, changedPaths) ?? [];
   // Every environment before any stage: a stage runs session code with the
   // checkout writable, so a link made after it could follow a swapped-in
@@ -2713,6 +2747,7 @@ export async function measureBranch(
               before: await complexity.before,
               after: await complexity.after,
               sources,
+              copiesPaired,
             },
             elapsedMs: { ...measurement.elapsedMs, complexity: await complexityElapsed },
           }
