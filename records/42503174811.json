@@ -1,0 +1,80 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-08T17:07:15.431Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42503174811",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42503174811",
+  "actor": "AlexisBalayre",
+  "commit_sha": "5808d06e8f484e1845572d81b2fa83eda7ac26ab",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 271,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context",
+    "maintainability",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/test/helpers/fix-round.mock.ts",
+      "line": "4-5",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "general.md §Altitude / YAGNI says no backwards-compat re-exports. The PR adds them anyway: `export { GIT_ENV, sh }` and `export { passingAdapter }` here, `export { sh }` in land.mock.ts:3, and `export { GIT_ENV }` in merge-gate.mock.ts:20. They leave three import paths to the same helper, and nothing says which one is canonical. Fix: point the fix-round*/land*/merge-gate tests at git.mock.js (and at merge-gate.mock.js for passingAdapter), then delete the re-exports.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.6963384000000001,
+  "duration_ms": 68629,
+  "num_turns": 9,
+  "tokens": {
+    "input": 10,
+    "output": 4514,
+    "cache_read": 194749,
+    "cache_creation": 37051,
+    "total": 236324
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 20,
+      "output": 6841,
+      "cache_read": 248611,
+      "cache_creation": 54276,
+      "cost_usd": 0.5691552
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 16,
+      "output": 2925,
+      "cache_read": 104962,
+      "cache_creation": 34962,
+      "cost_usd": 0.1271832
+    }
+  ],
+  "permission_denials": []
+}
