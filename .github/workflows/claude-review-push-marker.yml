@@ -1,0 +1,43 @@
+# Marks a pushed head's `claude-review` commit status pending, "Not reviewed: push since last
+# review", because the review runs only at opening and on the owner's `@claude review`. Without it
+# a push after the review would carry no status of its own and read as unreviewed-yet-green.
+# `pup ci wait` and pr-status.yml read the marker as "ask for a review", not as a verdict.
+#
+# pull_request_target because it needs a write token. Only the owner's same-repo PRs count, as in
+# claude-review-base-change.yml. Nothing here checks out or runs the PR's code: it only calls the
+# statuses API with values from the event payload.
+name: Claude Review push marker
+
+on:
+  pull_request_target:
+    types: [synchronize]
+
+permissions:
+  contents: read
+  statuses: write
+
+jobs:
+  mark-pending:
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository
+      && github.event.pull_request.user.login == github.repository_owner
+      && github.event.pull_request.draft == false
+    # Same group as the review, so a push never races a review run that is posting its verdict.
+    concurrency:
+      group: claude-review-${{ github.event.pull_request.number }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mark the head not reviewed
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            await github.rest.repos.createCommitStatus({
+              owner,
+              repo,
+              sha: context.payload.pull_request.head.sha,
+              state: "pending",
+              context: "claude-review",
+              description: "Not reviewed: push since last review",
+              target_url: `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`,
+            });

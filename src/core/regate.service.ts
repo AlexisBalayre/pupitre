@@ -12,6 +12,7 @@ import {
   commitSubjectsBetween,
   debtKind,
   fileAcceptedDebt,
+  firstOwnSubject,
   isAncestor,
   measureBranch,
   newestMerge,
@@ -199,6 +200,7 @@ export async function regateMerged(
   const measured = await measureBranch(db, req, session, stages, checkoutDir, targetSha, sha);
   if (!measured || (measured.flaggedDebt.length > 0 && !req.acceptDebt)) return refused();
   const commitSubjects = commitSubjectsBetween(req.repoPath, targetSha, sha);
+  const ownSubject = firstOwnSubject(req.repoPath, targetSha, sha);
   // The stages measure the whole branch again, so the flags the first gate
   // filed come back with figures the fix round moved: a kind this session
   // already holds open is not filed twice.
@@ -213,7 +215,7 @@ export async function regateMerged(
   try {
     rewritePullRequest(req.repoPath, regate.prUrl, {
       ...pullRequest,
-      ...pullRequestText(measured.spec, session.id, report, commitSubjects, sha),
+      ...pullRequestText(measured.spec, session.id, report, commitSubjects, sha, ownSubject),
     });
     assertPullRequestHead(req.repoPath, regate.prUrl, pullRequest.repo, sha);
   } catch (error) {

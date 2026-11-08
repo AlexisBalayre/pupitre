@@ -13,7 +13,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { availableParallelism, loadavg, tmpdir } from 'node:os';
+import { availableParallelism, homedir, loadavg, tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import {
@@ -70,6 +70,7 @@ import {
   listLedgerEntries,
 } from './ledger.repository.js';
 import {
+  COMPLEXITY_COPY_PAIRING_TIMEOUT_MS,
   DEBT_DETAIL_SAMPLES,
   DIFF_SIZE_DEPENDENCY_FILES,
   DIFF_SIZE_DOCS_DIR,
@@ -207,10 +208,11 @@ function failingTestNames(error: unknown): string {
   return names.slice(0, FAILED_TEST_NAMES_MAX).join('; ') + (more > 0 ? ` (+${more} more)` : '');
 }
 
-/** A changed path's new mode, and the path it was renamed from if git paired one. */
+/** A changed path's new mode, and the path it was renamed or copied from if git paired one. */
 interface RawDiffEntry {
   mode: string;
   renamedFrom?: string;
+  copiedFrom?: string;
 }
 
 /**
@@ -218,24 +220,31 @@ interface RawDiffEntry {
  * rather than left to `diff.renames` and `diff.renameLimit`, which sit in the
  * shared config a session can write, so a rename onto a test name is paired
  * whatever that config says: a limit of 1 skipped inexact pairing as soon as a
- * second file was added.
+ * second file was added. `copies` adds `-C -C`, which pairs a copy of any file
+ * the target holds, changed on the branch or not.
  */
 function rawDiffEntries(
   repoPath: string,
   target: string,
   branch: string,
+  { copies = false, timeout }: { copies?: boolean; timeout?: number } = {},
 ): Map<string, RawDiffEntry> {
-  const fields = runGit(repoPath, [
-    'diff',
-    '--no-ext-diff',
-    '--no-textconv',
-    '--no-color',
-    '-z',
-    '--raw',
-    '-M',
-    '-l0',
-    `${target}...${branch}`,
-  ]).split('\0');
+  const fields = runGit(
+    repoPath,
+    [
+      'diff',
+      '--no-ext-diff',
+      '--no-textconv',
+      '--no-color',
+      '-z',
+      '--raw',
+      '-M',
+      ...(copies ? ['-C', '-C'] : []),
+      '-l0',
+      `${target}...${branch}`,
+    ],
+    { timeout },
+  ).split('\0');
   const entries = new Map<string, RawDiffEntry>();
   for (let i = 0; i < fields.length; i++) {
     const header = fields[i];
@@ -246,7 +255,10 @@ function rawDiffEntries(
     if (/^[RC]/.test(status)) {
       const from = fields[i + 1] ?? '';
       const to = fields[i + 2] ?? '';
-      entries.set(to, status.startsWith('R') ? { mode, renamedFrom: from } : { mode });
+      entries.set(
+        to,
+        status.startsWith('R') ? { mode, renamedFrom: from } : { mode, copiedFrom: from },
+      );
       i += 2;
     } else {
       entries.set(fields[i + 1] ?? '', { mode });
@@ -254,6 +266,39 @@ function rawDiffEntries(
     }
   }
   return entries;
+}
+
+/**
+ * Each renamed or copied path's source, for the complexity stage (decision
+ * 145). `-C -C` compares every added file with every file the target holds,
+ * so a branch of thousands of generated files could hold the merge lock for
+ * as long as it likes: past `COMPLEXITY_COPY_PAIRING_TIMEOUT_MS` the pairs
+ * come from the rename-only pass diff-size already makes, and the stage says
+ * copies went unpaired.
+ */
+function complexitySources(
+  repoPath: string,
+  target: string,
+  branch: string,
+): { sources: Record<string, string>; copiesPaired: boolean } {
+  let entries: Map<string, RawDiffEntry>;
+  let copiesPaired = true;
+  try {
+    entries = rawDiffEntries(repoPath, target, branch, {
+      copies: true,
+      timeout: COMPLEXITY_COPY_PAIRING_TIMEOUT_MS,
+    });
+  } catch (error) {
+    if ((error as { code?: unknown }).code !== 'ETIMEDOUT') throw error;
+    entries = rawDiffEntries(repoPath, target, branch);
+    copiesPaired = false;
+  }
+  const sources: Record<string, string> = {};
+  for (const [path, entry] of entries) {
+    const from = entry.renamedFrom ?? entry.copiedFrom;
+    if (from !== undefined) sources[path] = from;
+  }
+  return { sources, copiesPaired };
 }
 
 type DiffSizeKind = 'source' | 'test' | 'docs';
@@ -1074,7 +1119,7 @@ function planMerge(db: Database, req: MergeRequest): MergePlan {
       head: session.branch,
       base: target,
     };
-    // Everything GitHub can refuse is settled here, before ten minutes of gate
+    // Everything GitHub can refuse is settled here, before minutes of gate
     // stages and before --accept-debt writes ledger entries for a merge that
     // would then abort (decision 27).
     if (merged) regate = planRegate(req.repoPath, session.id, merged, ref, originUrl);
@@ -1899,6 +1944,7 @@ async function gateAndMerge(
   // checkout, with the compare-and-swap as the backstop.
   if (!pullRequest) assertTargetAt(req.repoPath, target, targetSha);
   const commitSubjects = commitSubjectsBetween(req.repoPath, targetSha, sha);
+  const ownSubject = firstOwnSubject(req.repoPath, targetSha, sha);
   // What `--accept-debt` filed, for the refusals that must stay after it.
   const ledgerKept = fileAcceptedDebt(db, req, measured.projectId, flaggedDebt);
 
@@ -1908,7 +1954,7 @@ async function gateAndMerge(
   if (pullRequest) {
     const newPr = {
       ...pullRequest,
-      ...pullRequestText(spec, session.id, report, commitSubjects, sha),
+      ...pullRequestText(spec, session.id, report, commitSubjects, sha, ownSubject),
     };
     try {
       pushBranch(req.repoPath, pullRequest.originUrl, session.branch, sha, !pullRequest.adoptedUrl);
@@ -2091,7 +2137,8 @@ type FlaggedDebt = { description: string; files: string[] };
  * 143) fail at once. So does a stage that ran out `GATE_COMMAND_TIMEOUT_MS`,
  * which `runGateChild` marks with a `code` even when the runner traps the
  * SIGTERM and exits 1, and whose re-run would hold the merge lock twice as long
- * on a hung suite.
+ * on a hung suite. A test stage timed out under load never gets here: it
+ * refuses the merge first (`refuseTimeoutUnderLoad`), and so does a re-run.
  */
 function isRerunnable(error: unknown): boolean {
   const { status, signal, code } = error as {
@@ -2100,6 +2147,105 @@ function isRerunnable(error: unknown): boolean {
     code?: string;
   };
   return status === 1 && !signal && code === undefined;
+}
+
+/** The machine's 1-minute load average; a platform with none reads 0. */
+function oneMinuteLoad(): number {
+  return loadavg()[0] ?? 0;
+}
+
+/**
+ * Refuse the merge when a test run ran out `GATE_COMMAND_TIMEOUT_MS` on a
+ * machine other runs had loaded (decision 138, amending 7): at that load the
+ * suite runs longer than its cap whatever the branch holds, so the timeout says
+ * nothing about the code. Loaded means three things, at the ceiling
+ * `waitForLoad` uses: the 1-minute load average was at or over the available
+ * parallelism before the suites started (`loadBefore`, 0 when no reading was
+ * taken, which is under any machine's cores and so no evidence), it still is,
+ * and a test run other than the gated session's own is going
+ * (`otherTestRunGoing`).
+ * That last is the evidence a session's own tests cannot make: a suite that
+ * fills the cores by itself until its cap is still rejected. It throws, so it
+ * climbs no rung of the reject cap and injects nothing into the session, and
+ * the gate stops before any merge or push. Every other timeout, and every
+ * failure that is not a timeout, returns, and the stage fails and rejects as
+ * before. It judges a test stage's re-run as it judges the first run.
+ */
+function refuseTimeoutUnderLoad(error: unknown, loadBefore: number, sessionId: string): void {
+  if ((error as { code?: string }).code !== 'ETIMEDOUT') return;
+  const cores = availableParallelism();
+  const load = oneMinuteLoad();
+  if (Math.min(loadBefore, load) < cores || !otherTestRunGoing(sessionId)) return;
+  throw new Error(
+    `The test stage timed out under load ${load.toFixed(1)}, at or over the machine's ` +
+      `${cores} cores, with other test runs going; nothing was merged; run pup merge again ` +
+      'when the load falls.',
+  );
+}
+
+/**
+ * Whether a test run other than this gate's and `sessionId`'s own is going
+ * (decision 138): `testRunsElsewhere`, which reclaims dead holders as every
+ * reader of the slots does, and then one slot or gate wait file in the
+ * machine's slots whose holder is a live process of this user, not this one,
+ * labelled other than `sessionId`, since the gated session's pane can hold a
+ * worker slot of its own. The slots module answers only whether a run is going,
+ * not whose, so the records are read here, by its rules: a wait file counts
+ * for `GATE_SLOT_WAIT_MS`, and only under the name the slots module gives one,
+ * `gate-<pid>-<token>.wait`, with the record's pid the name's. A directory or
+ * record that cannot be read is no evidence, the opposite of decision 134's
+ * wait, because here it would spare a rejection.
+ */
+function otherTestRunGoing(sessionId: string): boolean {
+  if (!testRunsElsewhere()) return false;
+  const dir = join(homedir(), '.pupitre', 'slots');
+  let names: string[] = [];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    // An unreadable slots directory names no run: no evidence.
+  }
+  return names.some((name) => isOtherTestRun(dir, name, sessionId));
+}
+
+/**
+ * Whether the slot or gate wait file `name` in `dir` holds evidence for
+ * `otherTestRunGoing`: a name the slots module gives one, a record that parses,
+ * a positive integer pid that is not this process, a label other than
+ * `sessionId`, for a wait file the pid its name carries and an age within
+ * `GATE_SLOT_WAIT_MS`, and a live holder. Each check runs only once those
+ * before it hold, and any that throws, a symlink, a read or a parse, is no
+ * evidence.
+ */
+function isOtherTestRun(dir: string, name: string, sessionId: string): boolean {
+  const named = /^(?:slot-\d+\.lock|gate-(\d+)-[0-9a-z]+\.wait)$/.exec(name);
+  if (!named) return false;
+  const path = join(dir, name);
+  const waiter = named[1];
+  try {
+    const { pid, label } = JSON.parse(readPlainFile(path, { followLinks: false })) as {
+      pid?: unknown;
+      label?: unknown;
+    };
+    const waitChecks =
+      waiter === undefined
+        ? []
+        : [
+            () => Number(waiter) === pid,
+            () => Date.now() - lstatSync(path).mtimeMs <= GATE_SLOT_WAIT_MS,
+          ];
+    return [
+      () => Number.isInteger(pid),
+      () => (pid as number) > 0,
+      () => pid !== process.pid,
+      () => label !== sessionId,
+      ...waitChecks,
+      // Throws for a dead pid and for another user's (EPERM), neither of which holds our slot.
+      () => process.kill(pid as number, 0),
+    ].every((holds) => holds());
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -2118,7 +2264,7 @@ function isRerunnable(error: unknown): boolean {
  * unless a test passes its own.
  */
 export async function waitForLoad(
-  readLoad: () => number = () => loadavg()[0] ?? 0,
+  readLoad: () => number = oneMinuteLoad,
   ceiling = availableParallelism(),
   othersTesting: () => boolean = () => testRunsElsewhere(),
 ): Promise<void> {
@@ -2207,13 +2353,23 @@ export async function measureBranch(
   };
 
   /**
+   * The 1-minute load read once before the suites (decision 138), set below
+   * after the build and the load wait. Declared before `commandStage` reads
+   * it, so a test stage run before the reading finds 0, which is under any
+   * machine's cores and so no evidence, rather than a temporal dead zone.
+   */
+  let loadBeforeSuites = 0;
+
+  /**
    * Runs one hard stage to its result. A failed test
    * stage runs once more, still under the lock, before it counts: a suite that
    * passes on the re-run passes, named flaky with what failed the first time,
    * so a timing-sensitive test the host's load tipped over is no rejection
    * (decision 94). Build and lint are deterministic and never re-run, and
    * neither is a test run that ended other than by the runner's own failing
-   * exit (`isRerunnable`).
+   * exit (`isRerunnable`). A test run, the first or the re-run, timed out
+   * under load throws instead of failing (`refuseTimeoutUnderLoad`, decision
+   * 138).
    */
   const commandStage = async (
     stage: string,
@@ -2224,10 +2380,14 @@ export async function measureBranch(
     const started = Date.now();
     const first = await runCommand(command, cwd);
     if (first === undefined) return timedSince(started, { stage, status: 'pass' });
+    if (command.stage === 'test') refuseTimeoutUnderLoad(first, loadBeforeSuites, session.id);
     if (command.stage !== 'test' || !isRerunnable(first)) {
       return timedSince(started, { stage, status: 'fail', detail: commandFailureDetail(first) });
     }
     const rerun = await runCommand(command, cwd);
+    // A first run that failed on its own and a re-run the load ran out: the
+    // re-run's timeout says no more about the code than a first run's would.
+    if (rerun !== undefined) refuseTimeoutUnderLoad(rerun, loadBeforeSuites, session.id);
     if (rerun === undefined) {
       return timedSince(started, {
         stage,
@@ -2265,6 +2425,10 @@ export async function measureBranch(
     ...(req.gateEnv?.length ? { gateEnv: req.gateEnv } : {}),
   };
   const changedPaths = gitDiffPaths(req.repoPath, targetSha, sha);
+  // A renamed or copied file is judged against its source (decision 145).
+  const { sources, copiesPaired } = req.adapters.some((a) => a.complexity)
+    ? complexitySources(req.repoPath, targetSha, sha)
+    : { sources: {}, copiesPaired: true };
   const nestedPackages = primary?.touchedNestedPackages?.(capabilityContext, changedPaths) ?? [];
   // Every environment before any stage: a stage runs session code with the
   // checkout writable, so a link made after it could follow a swapped-in
@@ -2299,6 +2463,11 @@ export async function measureBranch(
   // Before the slot and before the stages that run alongside the suites, so
   // the load measured is the machine's and not this gate's own children.
   if (hasSuite && req.wait) await waitForLoad();
+  // Read here for the same reason, after the build and before the suites: a
+  // test run that times out counts as timed out under load only if the machine
+  // was loaded before it (decision 138). The build ran the session's code, so
+  // this reading is not one the session cannot touch; the other test run is.
+  loadBeforeSuites = oneMinuteLoad();
   const coverageAdapter = req.adapters.find((a) => a.coverage);
   const covered =
     test && coverageAdapter === primary ? primary?.coveredTest?.(capabilityContext) : undefined;
@@ -2371,12 +2540,15 @@ export async function measureBranch(
   }
   const staticDebt = measureStaticDebt(req.adapters, capabilityContext);
   const complexityAdapters = req.adapters.filter((a) => a.complexity);
-  const complexityOf = async (ctx: CapabilityContext): Promise<FileComplexity[]> => {
-    const files: FileComplexity[] = [];
+  const complexityOf = async (
+    ctx: CapabilityContext,
+    files: string[],
+  ): Promise<FileComplexity[]> => {
+    const measuredFiles: FileComplexity[] = [];
     for (const adapter of complexityAdapters) {
-      files.push(...((await adapter.complexity?.(ctx, changedPaths)) ?? []));
+      measuredFiles.push(...((await adapter.complexity?.(ctx, files)) ?? []));
     }
-    return files;
+    return measuredFiles;
   };
   const complexityStarted = Date.now();
   const complexity =
@@ -2384,8 +2556,10 @@ export async function measureBranch(
       ? {
           // "Before" reads the main checkout, which the merge lock holds at
           // the target branch — no historical checkout needed.
-          before: complexityOf(localContext(req.repoPath, req.gateEnv)),
-          after: complexityOf(capabilityContext),
+          before: complexityOf(localContext(req.repoPath, req.gateEnv), [
+            ...new Set([...changedPaths, ...Object.values(sources)]),
+          ]),
+          after: complexityOf(capabilityContext, changedPaths),
         }
       : undefined;
   // Once both sides have settled, however either did; it never rejects.
@@ -2569,7 +2743,12 @@ export async function measureBranch(
       ...measurement,
       ...(complexity
         ? {
-            complexity: { before: await complexity.before, after: await complexity.after },
+            complexity: {
+              before: await complexity.before,
+              after: await complexity.after,
+              sources,
+              copiesPaired,
+            },
             elapsedMs: { ...measurement.elapsedMs, complexity: await complexityElapsed },
           }
         : {}),
@@ -2629,10 +2808,51 @@ export function refuseGate(
  * leave entries filed with no kept note.
  */
 export function commitSubjectsBetween(repoPath: string, targetSha: string, sha: string): string[] {
-  return runGit(repoPath, ['log', '--reverse', '--format=%s', `${targetSha}..${sha}`])
+  return runGit(repoPath, [
+    ...SUBJECT_LOG_PINS,
+    'log',
+    '--reverse',
+    '--format=%s',
+    `${targetSha}..${sha}`,
+  ])
     .trim()
     .split('\n')
     .filter(Boolean);
+}
+
+/**
+ * What a subject read pins past `runGit`'s own, which already turn replace refs
+ * off: the commit graph is a cache in the object store a session can write, and
+ * a planted one can hand `log` other parents, so a merge would read as a commit
+ * of the session's and a commit as a merge (decision 137, as decision 131 pins
+ * it for `pup land`).
+ */
+const SUBJECT_LOG_PINS = ['-c', 'core.commitGraph=false'];
+
+/**
+ * The oldest gated commit's subject that is not a merge's, for the PR title: a
+ * `Merge main into …` the gate wrote (decision 105) or the session ran is never
+ * the change a squash lands. Merges are told by their parents, so a commit of
+ * the session's whose message reads like one is still its own. Undefined when
+ * every commit is a merge. Read before the ledger write, as
+ * `commitSubjectsBetween` is. Session-written: `prTitle` scrubs it.
+ */
+export function firstOwnSubject(
+  repoPath: string,
+  targetSha: string,
+  sha: string,
+): string | undefined {
+  return runGit(repoPath, [
+    ...SUBJECT_LOG_PINS,
+    'log',
+    '--reverse',
+    '--no-merges',
+    '--format=%s',
+    `${targetSha}..${sha}`,
+  ])
+    .split('\n')
+    .map((subject) => subject.trim())
+    .find(Boolean);
 }
 
 /**
@@ -2697,16 +2917,22 @@ export function recordMerge(
   });
 }
 
-/** The title and body pupitre writes on a PR it opens or adopts. */
+/**
+ * The title and body pupitre writes on a PR it opens or adopts. A squash merge
+ * makes the title the subject of the commit on the target (decision 137), so
+ * it is `ownSubject`, the session's first non-merge commit subject, when that
+ * fits, else the goal's first line.
+ */
 export function pullRequestText(
   spec: TaskSpec,
   sessionId: string,
   report: GateReport,
   commitSubjects: string[],
   sha: string,
+  ownSubject: string | undefined,
 ): { title: string; body: string } {
   return {
-    title: prTitle(spec.goal) || `pup session ${sessionId}`,
+    title: prTitle(spec.goal, ownSubject) || `pup session ${sessionId}`,
     body: prBody(spec, report, commitSubjects, sha),
   };
 }
@@ -2854,9 +3080,57 @@ export function withScratchGitDir<TResult>(
   }
 }
 
-function prTitle(goal: string): string {
-  const line = (goal.split('\n')[0] as string).trim();
-  return line.length <= PR_TITLE_MAX_CHARS ? line : `${line.slice(0, PR_TITLE_MAX_CHARS - 1)}…`;
+/**
+ * Characters that render as nothing or reorder what follows them: the soft
+ * hyphen, the combining grapheme joiner, the Hangul fillers, the Mongolian
+ * vowel separator, zero-width spaces and joiners, directional marks,
+ * embeddings, overrides and isolates, invisible operators, variation
+ * selectors, the byte-order mark, and the tag block, which spells out text
+ * no one sees and is how instructions get hidden from AI reviewers. Dropped,
+ * not spaced, so one cannot split a closing keyword past `CLOSING_REFERENCE`.
+ */
+const INVISIBLE_FORMAT_CHARS =
+  // biome-ignore lint/suspicious/noMisleadingCharacterClass: each is dropped alone, combining ones included
+  /[\u00ad\u034f\u061c\u115f\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\u3164\ufe00-\ufe0f\ufeff\u{e0000}-\u{e007f}\u{e0100}-\u{e01ef}]/gu;
+
+/** A terminal escape sequence (CSI, 7-bit or 8-bit), dropped whole so no `[31m` is left. */
+// biome-ignore lint/suspicious/noControlCharactersInRegex: matching them is the point
+const ANSI_ESCAPE = /(?:\u001b\[|\u009b)[0-?]*[ -/]*[@-~]/g;
+
+/**
+ * A GitHub closing keyword followed by an issue reference, `#n`,
+ * `owner/repo#n`, `GH-n` or an issue or pull URL: on the default branch's
+ * commit a squash writes, GitHub closes the issue it names.
+ */
+const CLOSING_REFERENCE =
+  /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b\s*:?\s*(?:(?:[\w.-]+\/[\w.-]+)?#\d+|GH-\d+|https?:\/\/\S+\/(?:issues|pull)\/\d+)/i;
+
+/**
+ * A line as a title can carry it: escape sequences and invisible format
+ * characters dropped, then `sanitizeReason`'s one line with C0/C1 controls
+ * spaced out.
+ */
+function scrubTitleText(text: string): string {
+  return sanitizeReason(text.replace(ANSI_ESCAPE, '').replace(INVISIBLE_FORMAT_CHARS, ''));
+}
+
+/**
+ * A title that reads as a commit subject: `ownSubject`, scrubbed, when it fits
+ * and names no issue to close (it is session-written, decision 137), else the
+ * goal's first line scrubbed the same way, cut at the last word boundary that
+ * fits with no ellipsis and no dangling separator. Empty when no boundary
+ * fits, never a cut word.
+ */
+function prTitle(goal: string, ownSubject: string | undefined): string {
+  const subject = scrubTitleText(ownSubject ?? '');
+  if (subject && subject.length <= PR_TITLE_MAX_CHARS && !CLOSING_REFERENCE.test(subject)) {
+    return subject;
+  }
+  const line = scrubTitleText(goal.split('\n')[0] as string);
+  if (line.length <= PR_TITLE_MAX_CHARS) return line;
+  // The last whitespace at or before the limit: what precedes it is whole words.
+  const cut = line.slice(0, PR_TITLE_MAX_CHARS + 1).search(/\s\S*$/);
+  return cut < 0 ? '' : line.slice(0, cut).replace(/[\s,;:–—-]+$/, '');
 }
 
 function prBody(spec: TaskSpec, report: GateReport, commitSubjects: string[], sha: string): string {
