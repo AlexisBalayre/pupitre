@@ -368,6 +368,53 @@ describe('adrNumberStage', { timeout: 20_000 }, () => {
     ]);
   });
 
+  it('still refuses clashes after a session points core.worktree elsewhere', () => {
+    seedSession(db, 'other', 'running');
+    commitOn(repo, 'pup/other', 'docs/adr/0003-theirs.md');
+    commitOn(repo, 'pup/me', 'docs/adr/0002-mine.md', 'docs/adr/0003-mine.md');
+    // A cwd prefix of the repo's own name: a bare `docs/adr/` pathspec or
+    // ls-tree path would then match nothing, and the check would pass.
+    git(repo, 'config', 'core.worktree', dirname(repo));
+    expect(refusals()).toEqual([
+      'ADR numbers already taken:',
+      '  docs/adr/0002-mine.md: decision 0002 is already on the target; renumber it 0004, the lowest free number',
+      '  docs/adr/0003-mine.md: decision 0003 is also added by pup/other, a session branch that ' +
+        'is live or has an open PR; renumber it 0005, the lowest free number',
+    ]);
+  });
+
+  it('reads a decision under docs/ADR/ with an .MD suffix', () => {
+    git(repo, 'checkout', '-q', '-b', 'pup/me', 'main');
+    // Through the index: a case-insensitive checkout folds docs/ADR/ into docs/adr/.
+    const blobFile = join(repo, '.git', 'blob.md');
+    writeFileSync(blobFile, '# 0002 again\n');
+    const blob = git(repo, 'hash-object', '-w', blobFile);
+    git(repo, 'update-index', '--add', '--cacheinfo', `100644,${blob},docs/ADR/0002-x.MD`);
+    git(repo, 'commit', '-q', '-m', 'upper case');
+    git(repo, 'checkout', '-q', '-f', 'main');
+    expect(refusals()).toEqual([
+      'ADR numbers already taken:',
+      '  docs/ADR/0002-x.MD: decision 0002 is already on the target; renumber it 0003, the lowest free number',
+    ]);
+  });
+
+  it('refuses a numbered file under docs/adr/ not named NNNN-<slug>.md, naming the form', () => {
+    commitOn(
+      repo,
+      'pup/me',
+      'docs/adr/00146-x.md',
+      'docs/adr/0146_x.md',
+      'docs/adr/sub/0146-x.md',
+      'docs/adr/README.md',
+    );
+    expect(refusals()).toEqual([
+      'ADR files not named docs/adr/NNNN-<slug>.md, four digits and a dash directly under docs/adr/:',
+      '  docs/adr/00146-x.md',
+      '  docs/adr/0146_x.md',
+      '  docs/adr/sub/0146-x.md',
+    ]);
+  });
+
   it('suggests a distinct free number per clash, past every number taken', () => {
     seedSession(db, 'other', 'running');
     commitOn(repo, 'pup/other', 'docs/adr/0003-theirs.md', 'docs/adr/0004-theirs.md');

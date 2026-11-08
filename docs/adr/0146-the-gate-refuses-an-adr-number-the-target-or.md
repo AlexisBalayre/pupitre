@@ -57,7 +57,19 @@
     session's own. Nothing is read from a worktree, which the live session can change
     (decisions 81, 101). The diffs turn off colour and external diff drivers, so a
     session-written config cannot change what they print, and list only `docs/adr/`, so a
-    branch's other files are never buffered. The printed paths and branch names are scrubbed
+    branch's other files are never buffered. Every session shares the one `.git` config, so a
+    session can set `core.worktree` and give git a cwd prefix: a bare `docs/adr/` pathspec or
+    ls-tree path would then match nothing and the check would pass. The diffs pass
+    `--no-relative` and the pathspec `:(top,literal,icase)docs/adr/`, anchored at the root, glob
+    free and case blind, and ls-tree runs with `--full-tree`. Replace refs need nothing here:
+    `GIT_SAFE_CONFIG` already pins `core.useReplaceRefs=false`.
+    *Names.* A decision file is `docs/adr/NNNN-<slug>.md`, read case-insensitively in the
+    directory and the suffix, since a case-insensitive host lands `docs/ADR/0146-x.MD` in the
+    same folder. A new file under `docs/adr/` whose name starts with a digit but is not that
+    form (`00146-x.md`, `0146_x.md`, `docs/adr/sub/0146-x.md`) is refused under its own heading
+    naming the expected form, since the check would not read its number. ls-tree takes no
+    `icase` magic, so the target's and the branch's existing `docs/adr/` are read by case; the
+    branch's new files, which the diffs list, are read case-blind. The printed paths and branch names are scrubbed
     (decision 68).
     *Ceilings.* Two sessions that took one number each refuse the other until one renumbers:
     whoever gates first is not given the number. Numbers can be squatted: a live session that
@@ -88,6 +100,9 @@
     through, refuses a slug rename another branch also makes of the same decision, gives each
     clash a distinct free number, suggests no five-digit number when 9999 is on the target, and
     reads the pinned shas rather than a branch moved after the pin or an untracked file. The
-    gate refuses a clash after fresh-base with no build, test or lint stage, `rejectCount` and
+    check still refuses both kinds of clash with `core.worktree` pointed at the repo's parent,
+    reads `docs/ADR/0002-x.MD` as decision 0002, and refuses `00146-x.md`, `0146_x.md` and
+    `sub/0146-x.md` naming the form while ignoring `README.md`. The gate refuses a clash after
+    fresh-base with no build, test or lint stage, `rejectCount` and
     `reject_count` at 0, the session still awaiting review and no steer sent. A pass with an
     unread-branch note followed by a failed scope audit is a rejection, not a refusal.

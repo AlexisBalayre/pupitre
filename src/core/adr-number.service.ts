@@ -10,8 +10,20 @@ import type { GateStageResult } from './types/merge-gate.types.js';
 export const ADR_NUMBER_STAGE = 'adr-number';
 
 const ADR_DIR = 'docs/adr/';
-/** A decision file, `docs/adr/NNNN-*.md`, its number captured. */
-const ADR_DECISION = /^docs\/adr\/([0-9]{4})-[^/]*\.md$/;
+/**
+ * `docs/adr/` as a diff pathspec git cannot shift: `top` anchors it at the repo
+ * root whatever cwd prefix a session-set `core.worktree` gives git, `literal`
+ * keeps it free of globs, and `icase` takes `docs/ADR/` too, which a
+ * case-insensitive checkout lands in the same folder.
+ */
+const ADR_PATHSPEC = ':(top,literal,icase)docs/adr/';
+/**
+ * A decision file, `docs/adr/NNNN-*.md`, its number captured. Case-insensitive,
+ * for the same reason as `ADR_PATHSPEC`.
+ */
+const ADR_DECISION = /^docs\/adr\/([0-9]{4})-[^/]*\.md$/i;
+/** The last segment of a path, where a decision's number starts. */
+const baseName = (path: string): string => path.slice(path.lastIndexOf('/') + 1);
 
 /** The highest number a decision file can carry: `ADR_DECISION` takes four digits. */
 const MAX_DECISION = 9999;
@@ -31,40 +43,44 @@ function decisionNumber(path: string): number | undefined {
 }
 
 /**
- * The decision files `tip` adds over its merge base with `base`, with their
- * numbers. Rename detection is off, so a decision renumbered with `git mv`
- * counts as the add of its new name; colour and external diffs are off, so a
+ * The files `tip` adds under `docs/adr/` over its merge base with `base`.
+ * Rename detection is off, so a decision renumbered with `git mv` counts as
+ * the add of its new name; colour and external diffs are off, so a
  * session-written config cannot change what the listing prints. Only
- * `docs/adr/` is listed, so a branch's other files are never buffered.
+ * `docs/adr/` is listed, so a branch's other files are never buffered, and the
+ * names are the root's (`--no-relative`, `ADR_PATHSPEC`), so a session-set
+ * `core.worktree` or `diff.relative` cannot empty the listing.
  */
-function addedDecisions(
-  repoPath: string,
-  base: string,
-  tip: string,
-  timeout?: number,
-): Map<string, number> {
-  const added = new Map<string, number>();
-  const paths = runGit(
+function addedAdrPaths(repoPath: string, base: string, tip: string, timeout?: number): string[] {
+  return runGit(
     repoPath,
     [
       'diff',
       '--no-ext-diff',
       '--no-color',
+      '--no-relative',
       '--no-renames',
       '--diff-filter=A',
       '-z',
       '--name-only',
       `${base}...${tip}`,
       '--',
-      ADR_DIR,
+      ADR_PATHSPEC,
     ],
     timeout === undefined ? {} : { timeout },
-  ).split('\0');
+  )
+    .split('\0')
+    .filter(Boolean);
+}
+
+/** The decision files among `paths`, with their numbers. */
+function decisionsOf(paths: string[]): Map<string, number> {
+  const decisions = new Map<string, number>();
   for (const path of paths) {
     const number = decisionNumber(path);
-    if (number !== undefined) added.set(path, number);
+    if (number !== undefined) decisions.set(path, number);
   }
-  return added;
+  return decisions;
 }
 
 /**
@@ -80,13 +96,14 @@ function decisionRenames(repoPath: string, base: string, tip: string): Map<strin
     'diff',
     '--no-ext-diff',
     '--no-color',
+    '--no-relative',
     '--find-renames',
     '--diff-filter=R',
     '-z',
     '--name-status',
     `${base}...${tip}`,
     '--',
-    ADR_DIR,
+    ADR_PATHSPEC,
   ]).split('\0');
   const renamed = new Map<string, string>();
   // `R<score>\0<from>\0<to>` per rename.
@@ -122,7 +139,7 @@ function peerDecisions(
   try {
     const tip = resolveCommitIfPresent(repoPath, ref);
     if (tip === undefined) return undefined;
-    const theirs = addedDecisions(repoPath, targetSha, tip, PEER_READ_TIMEOUT_MS);
+    const theirs = decisionsOf(addedAdrPaths(repoPath, targetSha, tip, PEER_READ_TIMEOUT_MS));
     return theirs.size > MAX_PEER_DECISIONS
       ? `it adds ${theirs.size} decisions, more than the ${MAX_PEER_DECISIONS} a session branch is checked for`
       : theirs;
@@ -148,9 +165,14 @@ function competingBranches(db: Database, sessionId: string): string[] {
     .map((session) => `refs/heads/${session.branch}`);
 }
 
-/** The decision files in `sha`'s `docs/adr/`. */
+/**
+ * The decision files in `sha`'s `docs/adr/`. `--full-tree`, so the path is the
+ * root's whatever cwd prefix a session-set `core.worktree` gives git; ls-tree
+ * takes no `icase` magic, so this reads the `docs/adr/` the target and the
+ * branch already hold, which the diffs above check by case.
+ */
 function decisionPaths(repoPath: string, sha: string): string[] {
-  return runGit(repoPath, ['ls-tree', '-z', '--name-only', sha, ADR_DIR])
+  return runGit(repoPath, ['ls-tree', '--full-tree', '-z', '--name-only', sha, ADR_DIR])
     .split('\0')
     .filter((path) => decisionNumber(path) !== undefined);
 }
@@ -177,8 +199,11 @@ const pad = (number: number): string => String(number).padStart(4, '0');
  * slugs merge without a conflict. Another branch git cannot read against the
  * target (an orphan, a symbolic ref, a read past its time or buffer), or one
  * adding more than `MAX_PEER_DECISIONS`, is skipped and named rather than
- * failing or blocking everyone's gate. Undefined, so no stage at all, when the
- * branch adds no decision or every check passed with nothing to say. Every read
+ * failing or blocking everyone's gate. A new file under `docs/adr/` whose name
+ * starts with a digit but is not `docs/adr/NNNN-*.md` (`00146-x.md`,
+ * `0146_x.md`, `docs/adr/sub/0146-x.md`) is refused naming the expected form,
+ * since the check would not read its number. Undefined, so no stage at all,
+ * when the branch adds no decision or every check passed with nothing to say. Every read
  * is of a pinned sha or a resolved ref through `runGit`, never of a worktree;
  * only the branches of sessions the store counts are resolved, one at a time,
  * so no number of stray `pup/` refs weighs on the gate.
@@ -191,8 +216,11 @@ export function adrNumberStage(
   sha: string,
 ): GateStageResult | undefined {
   const started = Date.now();
-  const added = addedDecisions(repoPath, targetSha, sha);
-  if (added.size === 0) return undefined;
+  const addedPaths = addedAdrPaths(repoPath, targetSha, sha);
+  const added = decisionsOf(addedPaths);
+  // Files that look numbered but that the check would not read as a decision.
+  const misnamed = addedPaths.filter((path) => !added.has(path) && /^[0-9]/.test(baseName(path)));
+  if (added.size === 0 && misnamed.length === 0) return undefined;
   const targetPaths = decisionPaths(repoPath, targetSha);
   const onTarget = numbersOf(targetPaths);
   const renamed = decisionRenames(repoPath, targetSha, sha);
@@ -266,12 +294,18 @@ export function adrNumberStage(
   }
   const lines = [
     ...(refusals.length > 0 ? ['ADR numbers already taken:', ...refusals] : []),
+    ...(misnamed.length > 0
+      ? [
+          'ADR files not named docs/adr/NNNN-<slug>.md, four digits and a dash directly under docs/adr/:',
+          ...misnamed.map((path) => `  ${quotePath(path)}`),
+        ]
+      : []),
     ...unchecked,
   ];
   if (lines.length === 0) return undefined;
   return timedSince(started, {
     stage: ADR_NUMBER_STAGE,
-    status: refusals.length > 0 ? 'fail' : 'pass',
+    status: refusals.length > 0 || misnamed.length > 0 ? 'fail' : 'pass',
     detail: lines.join('\n'),
   });
 }
