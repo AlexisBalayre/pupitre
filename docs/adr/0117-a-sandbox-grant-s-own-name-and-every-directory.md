@@ -108,7 +108,9 @@
     Ceilings. A profile is not bounded by its stage. pup kills a stage's process group when
     the stage ends and every group still live when the run ends, but a process that leaves the
     group, through `setsid` as a daemon does, is out of reach. It outlives the stage and the
-    run, still under the profile its stage was written. The `.worktrees` deny holds for it: the
+    run, still under the profile its stage was written. Every grant in that profile goes on
+    holding for it: it can still write the operator's working tree outside `.git` and
+    `.worktrees`, and the toolchain cache. The `.worktrees` deny holds for it too: the
     profile names `.worktrees` whether or not it existed, so a worktree pup adds after the stage
     ended is out of its reach too. This record first said these ceilings held "while a child
     runs"; the t-mvqxs5s2 security review found that a child outlives that. A nested repo other than a worktree, a submodule or vendored
@@ -138,9 +140,13 @@
     link at `.worktrees/s4` and at `.WORKTREES` in a checkout with none yet, while the same link
     elsewhere in the checkout is made. A seventh leaves a helper in a session of its own that
     outlives the stage. Only once the stage has ended does the test add `.worktrees/s2`, in a
-    checkout that had no `.worktrees` when the profile was written. The helper's move is
-    refused with "Operation not permitted", and the pointer is unchanged. Without the
-    `.worktrees` deny, the sixth and seventh fail. With the
+    checkout that had no `.worktrees` when the profile was written. The helper renames it
+    within the checkout, so the move is never a copy-then-delete across volumes, whose
+    delete the `.git` deny would refuse with the same error. The rename is refused with
+    "Operation not permitted", and the pointer is unchanged. Without the `.worktrees` deny,
+    the sixth and seventh fail. Like every test run under pup's own applied profile, the seventh
+    is skipped off macOS and inside the merge gate, where the sandbox is inherited; it
+    runs only on a developer's Mac. With the
     pins emptied, the first two
     fail because the child's command succeeds. Without the walk's pins, the worktree test
     fails. Without the root pins, the swap test fails. With the unreadable directory pinned

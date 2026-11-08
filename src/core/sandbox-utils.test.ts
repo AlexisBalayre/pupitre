@@ -889,7 +889,10 @@ describe('runGateChild', () => {
       }, async () => {
         // A helper in a session of its own survives the kill of its stage's
         // group, and still holds the profile written when `.worktrees` did not
-        // exist yet: no walk saw `s2`, and the deny is all that stops it.
+        // exist yet: no walk saw `s2`, and the deny is all that stops it. The
+        // move stays inside the checkout, so it is a rename and never mv's
+        // copy-then-delete across volumes, whose delete the `.git` deny refuses
+        // with the same error: only a deny on `s2` itself refuses this one.
         const cwd = fakeCheckout();
         const worktree = join(cwd, '.worktrees', 's2');
         writeFileSync(
@@ -898,7 +901,7 @@ describe('runGateChild', () => {
             'exec </dev/null >/dev/null 2>&1',
             'echo $$ > helper.tmp && mv helper.tmp helper.pid',
             'i=0; until [ -f .worktrees/s2/.git ] || [ $i -gt 400 ]; do i=$((i+1)); sleep 0.05; done',
-            'mv .worktrees/s2 "$TMPDIR/s2" 2>moved.err && printf "gitdir: /evil" > "$TMPDIR/s2/.git" && mv "$TMPDIR/s2" .worktrees/s3',
+            'mv .worktrees/s2 s2 2>moved.err',
             'echo $? > status.tmp && mv status.tmp status',
           ].join('\n'),
         );
@@ -929,7 +932,7 @@ describe('runGateChild', () => {
         expect(readFileSync(join(worktree, '.git'), 'utf8')).toBe(
           'gitdir: /repo/.git/worktrees/s2\n',
         );
-        expect(existsSync(join(cwd, '.worktrees', 's3'))).toBe(false);
+        expect(existsSync(join(cwd, 's2'))).toBe(false);
       });
 
       it('cannot swap its checkout with a directory in its scratch, in either order', async () => {
