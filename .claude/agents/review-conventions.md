@@ -26,6 +26,7 @@ Tag by consequence, not by certainty: `important` means the violation should blo
 ## Do NOT flag
 
 - Rules explicitly silenced in the code (a lint-ignore, an inline waiver).
+- A departure from guidance-grade prose (prefer, default, should, consider) that the file's siblings do not follow either. Across 302 recent reviews this area raised 267 nits for 18 importants; a nit earns its place only when the siblings follow the rule and this change drifts from it, and you can name the sibling.
 - Genuinely ambiguous cases where no written rule decides the question.
 - Issues no written rule covers: if you cannot point to a documented rule or ADR decision, it belongs to another reviewer. Never invent a rule.
 - **Altitude/YAGNI extractions that clear a CI-enforced gate.** A single-caller helper, subcomponent, type, or interface a change extracts to satisfy a gate the PR exists for (e.g. a SonarQube S3776 cognitive-complexity refactor, read from the stated intent) has a real WHY. The binding keep-test is `AGENTS.md`'s "a second caller OR a real WHY"; do not read any carve-out list in `core.md` §Altitude as exhaustive. Flag such an extraction only when inlining it back would not re-trip the gate.

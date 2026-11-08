@@ -6,6 +6,7 @@ import {
   newestCleanRecord,
   parseRawDiff,
   parseReviewRequest,
+  reviewRound,
   type RawDiffEntry,
   sameCodeIgnoringComments,
   type PriorRecord,
@@ -67,6 +68,26 @@ describe("newestCleanRecord", () => {
   it("returns null when nothing usable exists", () => {
     expect(newestCleanRecord([record({ is_error: true })])).toBeNull();
     expect(newestCleanRecord([])).toBeNull();
+  });
+});
+
+describe("reviewRound", () => {
+  it("is 1 when the PR has no review yet", () => {
+    expect(reviewRound([])).toBe(1);
+  });
+
+  it("counts one round per reviewed head", () => {
+    const first = record({ path: "records/1.json", commit_sha: "aaa" });
+    const rerun = record({ path: "records/2.json", commit_sha: "aaa" });
+    const second = record({ path: "records/3.json", commit_sha: "bbb" });
+    expect(reviewRound([first, rerun, second])).toBe(3);
+  });
+
+  it("skips partial reviews, failed runs and records without a sha", () => {
+    const partial = record({ commit_sha: "aaa", partial: true });
+    const failed = record({ commit_sha: "bbb", is_error: true });
+    const shaless = record({ commit_sha: null });
+    expect(reviewRound([partial, failed, shaless])).toBe(1);
   });
 });
 

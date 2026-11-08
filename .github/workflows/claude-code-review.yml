@@ -354,6 +354,7 @@ jobs:
 
             Pull request: #${{ github.event.pull_request.number || github.event.issue.number }} in ${{ github.repository }}
             ${{ steps.preflight.outputs.mode_line }}
+            Round: ${{ steps.preflight.outputs.round }}
             Merge base: ${{ steps.preflight.outputs.merge_base }}
             Depth: ${{ steps.preflight.outputs.depth }}
             Areas: ${{ steps.preflight.outputs.areas }}

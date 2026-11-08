@@ -5,6 +5,7 @@ import {
   isCommentOnlyDelta,
   isPartialReview,
   newestCleanRecord,
+  reviewRound,
   parseRawDiff,
   type PriorRecord,
   parseReviewRequest,
@@ -208,6 +209,7 @@ async function main(): Promise<void> {
     out("skip", "true");
     return;
   }
+  out("round", String(reviewRound(records)));
   out(
     "mode_line",
     decision.kind === "incremental"
