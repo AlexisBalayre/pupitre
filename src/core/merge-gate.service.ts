@@ -49,6 +49,7 @@ import {
   gitDiffBinaryRecount,
   gitDiffNumstat,
   gitDiffPaths,
+  readBlobs,
   rethrowIfKilled,
   runGit,
   verifiedWorktreeGitEnv,
@@ -322,9 +323,11 @@ type DiffSizeKind = 'source' | 'test' | 'docs';
 /**
  * What the branch's tree tells the diff-size split beyond a path's own name
  * (decision 110): whether a symlink can reach the path, and whether a
- * Docusaurus config compiles the Markdown under `docs/`.
+ * Docusaurus config compiles the Markdown under `docs/`. And every blob's oid
+ * and size by path, so the reach checks read blobs in one batch (decision 154).
  */
 interface BranchTree {
+  blobs: Map<string, { oid: string; size: number }>;
   linked: (path: string) => boolean;
   markdownIsCode: boolean;
 }
@@ -379,7 +382,8 @@ function dependenciesNameDocusaurus(repoPath: string, branch: string): boolean {
  * The branch's tree as the split reads it. A symlink reaches the path it lands
  * on and everything under it, read from its blob lexically from the link's
  * directory and compared folded; `git grep` never reads a link's blob, so this
- * is the one place a link is seen. The blob is read up to its first NUL, as
+ * is the one place a link is seen, every link's blob read in one batch
+ * (decision 154). The blob is read up to its first NUL, as
  * checkout writes the link with `symlink()`, which takes a C string. One whose
  * target is absolute, lands outside the repo, or has a `..` after a named
  * segment, which climbs from wherever that segment resolves and no lexical
@@ -389,21 +393,29 @@ function dependenciesNameDocusaurus(repoPath: string, branch: string): boolean {
  * ASCII may be a config or dependency file no case-insensitive match finds.
  */
 function readBranchTree(repoPath: string, branch: string): BranchTree {
+  const blobs = new Map<string, { oid: string; size: number }>();
+  const links: { path: string; oid: string; size: number }[] = [];
   const landings: string[] = [];
   let anywhere = false;
   let markdownIsCode = dependenciesNameDocusaurus(repoPath, branch);
-  for (const entry of runGit(repoPath, ['ls-tree', '-r', '-z', branch]).split('\0')) {
+  for (const entry of runGit(repoPath, ['ls-tree', '-r', '-l', '-z', branch]).split('\0')) {
     if (!entry) continue;
-    // "<mode> <type> <oid>\t<path>": the path is everything after the first tab.
+    // "<mode> <type> <oid> <padded size>\t<path>": the path is everything after the first tab.
     const tab = entry.indexOf('\t');
-    const [mode, , oid = ''] = entry.slice(0, tab).split(' ');
+    const [mode, type, oid = '', size] = entry.slice(0, tab).split(/ +/);
     const path = entry.slice(tab + 1);
+    const blob = { oid, size: Number(size) };
+    if (type === 'blob') blobs.set(path, blob);
     markdownIsCode ||= DIFF_SIZE_DOCUSAURUS_CONFIG.test(path) || NON_ASCII.test(basename(path));
     if (mode !== '120000') continue;
     markdownIsCode ||= DIFF_SIZE_DEPENDENCY_FILES.some(
       (name) => folded(name) === folded(basename(path)),
     );
-    const [target = ''] = runGit(repoPath, ['cat-file', 'blob', oid]).split('\0', 1);
+    links.push({ path, ...blob });
+  }
+  const contents = readBlobs(repoPath, links);
+  for (const { path, oid } of links) {
+    const [target = ''] = String(contents.get(oid) ?? '').split('\0', 1);
     const segments = target.split('/').filter((segment) => segment !== '' && segment !== '.');
     const firstName = segments.findIndex((segment) => segment !== '..');
     const lands = join(dirname(path), target).replace(/\/+$/, '');
@@ -417,6 +429,7 @@ function readBranchTree(repoPath: string, branch: string): BranchTree {
     landings.push(folded(lands));
   }
   return {
+    blobs,
     linked: (path) => {
       const key = folded(path);
       return (
@@ -491,9 +504,12 @@ const NAME_TOKEN = /[\w.$+@-]+/g;
  * direction. Every file `git grep` lists is read but those `skip` names,
  * whatever its extension, since a Vue component, a Vite `index.html`, a
  * `package.json` or a serverless config loads a module as well as code does.
- * It is read with `core.precomposeUnicode` pinned off, as decision 114 pins
- * the gate's other per-file reads: on macOS an NFD path read as its NFC
- * sibling. A file costs one pass over its text and one lookup per distinct
+ * The listed files are read in one `cat-file --batch` by the oid `blobs`
+ * holds for each path (decision 154), never by `<rev>:<path>`, which on macOS
+ * `core.precomposeUnicode` rewrites from NFD to an NFC sibling (decision 114);
+ * a listed path the tree does not hold refuses. Grep keeps listing binary
+ * files: `-I` would skip a JavaScript importer with a NUL in a comment. A
+ * file costs one pass over its text and one lookup per distinct
  * name it spells, however many tokens repeat a name or targets share it. Grep
  * runs with colour pinned off: `color.grep=always` in the shared config would
  * wrap each path in escapes, and a listing entry that does not start with the
@@ -504,6 +520,7 @@ const NAME_TOKEN = /[\w.$+@-]+/g;
 function filesNaming(
   repoPath: string,
   branch: string,
+  blobs: BranchTree['blobs'],
   targets: string[],
   skip: (path: string) => boolean,
 ): Map<string, Set<string>> {
@@ -539,6 +556,7 @@ function filesNaming(
     if ((error as { status?: number }).status !== 1) throw error;
   }
   const prefix = `${branch}:`;
+  const importers: { path: string; oid: string; size: number }[] = [];
   for (const entry of listing.split('\0')) {
     if (!entry) continue;
     if (!entry.startsWith(prefix)) {
@@ -550,13 +568,15 @@ function filesNaming(
       named.set(importer, new Set(targets.filter((target) => target !== importer)));
       continue;
     }
-    const text = runGit(repoPath, [
-      '-c',
-      'core.precomposeUnicode=false',
-      'cat-file',
-      'blob',
-      `${branch}:${importer}`,
-    ]);
+    const blob = blobs.get(importer);
+    if (!blob) {
+      throw new Error(`git grep listed ${JSON.stringify(entry)}, which ls-tree does not hold`);
+    }
+    importers.push({ path: importer, ...blob });
+  }
+  const contents = readBlobs(repoPath, importers);
+  for (const { path: importer, oid } of importers) {
+    const text = String(contents.get(oid) ?? '');
     const names = new Set<string>();
     for (const [token] of folded(text).matchAll(NAME_TOKEN)) {
       for (
@@ -587,6 +607,7 @@ function filesNaming(
 function reachableTestFiles(
   repoPath: string,
   branch: string,
+  blobs: BranchTree['blobs'],
   tests: string[],
   kindOf: (path: string) => DiffSizeKind,
 ): Set<string> {
@@ -597,7 +618,7 @@ function reachableTestFiles(
   let round = tests;
   while (round.length > 0) {
     const next: string[] = [];
-    const naming = filesNaming(repoPath, branch, round, (path) => kindOf(path) === 'docs');
+    const naming = filesNaming(repoPath, branch, blobs, round, (path) => kindOf(path) === 'docs');
     for (const [importer, named] of naming) {
       if (kindOf(importer) !== 'test') {
         for (const test of named) reached.add(test);
@@ -644,7 +665,7 @@ export function countChangedLines(
   );
   const kinds = new Map(stats.map((stat) => [stat.path, kindOf(stat.path)]));
   const tests = [...kinds].filter(([, kind]) => kind === 'test').map(([path]) => path);
-  for (const path of reachableTestFiles(repoPath, branch, tests, kindOf)) {
+  for (const path of reachableTestFiles(repoPath, branch, tree.blobs, tests, kindOf)) {
     kinds.set(path, 'source');
   }
   for (const stat of stats) {

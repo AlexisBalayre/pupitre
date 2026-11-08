@@ -528,6 +528,43 @@ function spawnOptions(opts: RunGitOptions): ExecFileSyncOptions {
   };
 }
 
+/**
+ * The content of each blob in `blobs`, keyed by oid, read through one
+ * `git cat-file --batch` however many there are: a process per blob let a
+ * tree of 20 000 tiny files hold the merge lock for minutes (decision 154).
+ * Sizes are the ones `ls-tree -l` reported, so the output buffer holds
+ * exactly what git prints; an object git does not have refuses.
+ */
+export function readBlobs(
+  repoPath: string,
+  blobs: { oid: string; size: number }[],
+): Map<string, Buffer> {
+  const unique = new Map(blobs.map((blob) => [blob.oid, blob.size]));
+  const contents = new Map<string, Buffer>();
+  if (unique.size === 0) return contents;
+  // Each object prints as `<oid> <type> <size>\n<content>\n`.
+  let maxBuffer = 0;
+  for (const [oid, size] of unique) maxBuffer += size + oid.length + ` blob ${size}\n\n`.length;
+  const out = execFileSync('git', safeArgv(repoPath, ['cat-file', '--batch']), {
+    ...spawnOptions({}),
+    encoding: 'buffer',
+    // A Buffer: a string input is encoded with `encoding`, which `buffer` is not.
+    input: Buffer.from(`${[...unique.keys()].join('\n')}\n`),
+    maxBuffer,
+  });
+  for (let at = 0; at < out.length; ) {
+    const eol = out.indexOf('\n', at);
+    const header = out.subarray(at, eol === -1 ? out.length : eol).toString('utf8');
+    const [oid = '', type, size] = header.split(' ');
+    if (eol === -1 || type !== 'blob' || size === undefined) {
+      throw new Error(`git cat-file --batch answered ${JSON.stringify(header)}, not a blob`);
+    }
+    contents.set(oid, out.subarray(eol + 1, eol + 1 + Number(size)));
+    at = eol + 1 + Number(size) + 1;
+  }
+  return contents;
+}
+
 /** The branch checked out at `cwd`, empty on a detached HEAD. */
 export function currentBranch(cwd: string): string {
   return runGit(cwd, ['branch', '--show-current']).trim();
@@ -667,15 +704,74 @@ export function gitDiffNumstat(repoPath: string, target: string, branch: string)
  */
 const BINARY_SNIFF_BYTES = 8000;
 
-/** Whether `<rev>:<path>` exists and is binary by content, never by attribute. */
-function blobIsBinary(repoPath: string, rev: string, path: string): boolean {
+/**
+ * The binary formats a diff-size count may skip (decision 154): the
+ * extensions each is committed under and the bytes it opens with, at `offset`
+ * when that is not 0. A NUL is not enough, as one in a source file's comment
+ * makes git call it binary. A file outside this table is recounted from its
+ * patch and flagged, which a repo committing another format meets as a flag
+ * to accept.
+ */
+const BINARY_FORMATS: { extensions: string[]; magic: string[]; offset?: number }[] = [
+  { extensions: ['.png', '.apng'], magic: ['\x89PNG\r\n\x1a\n'] },
+  { extensions: ['.jpg', '.jpeg'], magic: ['\xff\xd8\xff'] },
+  { extensions: ['.gif'], magic: ['GIF87a', 'GIF89a'] },
+  { extensions: ['.webp', '.wav', '.avi'], magic: ['RIFF'] },
+  { extensions: ['.ico'], magic: ['\0\0\x01\0'] },
+  { extensions: ['.bmp'], magic: ['BM'] },
+  { extensions: ['.tif', '.tiff'], magic: ['II*\0', 'MM\0*'] },
+  {
+    extensions: ['.mp4', '.m4a', '.m4v', '.mov', '.avif', '.heic'],
+    magic: ['ftyp'],
+    offset: 4,
+  },
+  { extensions: ['.webm', '.mkv'], magic: ['\x1a\x45\xdf\xa3'] },
+  { extensions: ['.mp3'], magic: ['ID3', '\xff\xfb', '\xff\xf3', '\xff\xf2'] },
+  { extensions: ['.ogg', '.oga', '.ogv', '.opus'], magic: ['OggS'] },
+  { extensions: ['.flac'], magic: ['fLaC'] },
+  { extensions: ['.woff'], magic: ['wOFF'] },
+  { extensions: ['.woff2'], magic: ['wOF2'] },
+  { extensions: ['.ttf'], magic: ['\0\x01\0\0', 'true'] },
+  { extensions: ['.otf'], magic: ['OTTO'] },
+  { extensions: ['.pdf'], magic: ['%PDF-'] },
+  {
+    extensions: ['.zip', '.jar', '.war', '.apk', '.whl', '.epub', '.docx', '.xlsx', '.pptx'],
+    magic: ['PK\x03\x04', 'PK\x05\x06'],
+  },
+  { extensions: ['.gz', '.tgz'], magic: ['\x1f\x8b'] },
+  { extensions: ['.xz'], magic: ['\xfd7zXZ\0'] },
+  { extensions: ['.7z'], magic: ['7z\xbc\xaf\x27\x1c'] },
+  { extensions: ['.wasm'], magic: ['\0asm'] },
+  { extensions: ['.class'], magic: ['\xca\xfe\xba\xbe'] },
+  { extensions: ['.sqlite', '.sqlite3', '.db'], magic: ['SQLite format 3\0'] },
+];
+
+/** The formats `path`'s extension, in any ASCII case, names. */
+function formatsNamed(path: string): typeof BINARY_FORMATS {
+  const name = basename(path).toLowerCase();
+  return BINARY_FORMATS.filter((format) =>
+    format.extensions.some((extension) => name.endsWith(extension)),
+  );
+}
+
+/**
+ * Whether `<rev>:<path>` exists and is a binary to skip: binary by content,
+ * never by attribute, and opening with the magic of a format its extension
+ * names. A side that does not exist answers undefined.
+ */
+function blobIsKnownBinary(
+  repoPath: string,
+  rev: string,
+  path: string,
+  formats: typeof BINARY_FORMATS,
+): boolean | undefined {
   const spec = `${rev}:${path}`;
   try {
     runGit(repoPath, [...PATH_AS_GIVEN, 'cat-file', '-e', spec]);
   } catch {
-    return false;
+    return undefined;
   }
-  // `runGit`'s argv and env, read as bytes: a NUL is the whole question.
+  // `runGit`'s argv and env, read as bytes: a NUL and the magic are the question.
   const blob = execFileSync(
     'git',
     safeArgv(repoPath, [...PATH_AS_GIVEN, 'cat-file', 'blob', spec]),
@@ -684,7 +780,12 @@ function blobIsBinary(repoPath: string, rev: string, path: string): boolean {
       encoding: 'buffer',
     },
   );
-  return blob.subarray(0, BINARY_SNIFF_BYTES).includes(0);
+  if (!blob.subarray(0, BINARY_SNIFF_BYTES).includes(0)) return false;
+  return formats.some(({ magic, offset = 0 }) =>
+    magic.some((bytes) =>
+      blob.subarray(offset).subarray(0, bytes.length).equals(Buffer.from(bytes, 'latin1')),
+    ),
+  );
 }
 
 /**
@@ -698,7 +799,11 @@ function blobIsBinary(repoPath: string, rev: string, path: string): boolean {
  *
  * Content is the question, asked of both sides of the merge-base diff, because
  * the patch cannot answer it: `--text` parses hunks out of a real binary too,
- * so "binary but has hunks" would call every committed image forged.
+ * so "binary but has hunks" would call every committed image forged. A NUL is
+ * not the whole answer either: one in a source file's comment makes git call
+ * it binary. So the file is skipped only when every side it exists on is a
+ * known format (`BINARY_FORMATS`) by extension and magic, and a path no
+ * format names is recounted unread (decision 154).
  */
 export function gitDiffBinaryRecount(
   repoPath: string,
@@ -707,7 +812,12 @@ export function gitDiffBinaryRecount(
   path: string,
 ): { added: number; deleted: number } | null {
   const base = runGit(repoPath, ['merge-base', target, branch]).trim();
-  if (blobIsBinary(repoPath, base, path) || blobIsBinary(repoPath, branch, path)) return null;
+  const formats = formatsNamed(path);
+  const sides =
+    formats.length === 0
+      ? [false]
+      : [base, branch].map((rev) => blobIsKnownBinary(repoPath, rev, path, formats));
+  if (sides.every((side) => side !== false)) return null;
   let added = 0;
   let deleted = 0;
   for (const hunk of diffHunks(repoPath, target, branch, path)) {

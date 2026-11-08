@@ -1504,7 +1504,8 @@ describe('countChangedLines', () => {
 
   // Checkout writes a link with `symlink()`, which takes its target as a C
   // string, so a link blob `big.test.ts\0x` lands on `big.test.ts`. The link
-  // blobs themselves are binary for their NUL and count nothing.
+  // blobs are binary to git for their NUL but no known format, so each counts
+  // its one line and is flagged (decision 154).
   it('reads a link target up to its first NUL, as checkout writes it', () => {
     const repo = initRepo();
     sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
@@ -1516,10 +1517,10 @@ describe('countChangedLines', () => {
     ]);
 
     expect(countChangedLines(repo, 'main', 'feature')).toEqual({
-      source: 8,
+      source: 10,
       test: 0,
       docs: 0,
-      forged: [],
+      forged: ['src/impl.ts', 'src/pkg/impl.py'],
     });
   });
 
@@ -1645,6 +1646,89 @@ describe('countChangedLines', () => {
       docs: 0,
       forged: [],
     });
+  });
+
+  // One NUL in a comment made git call a 5 000-line source file binary, and
+  // the null was skipped as an image's is (decision 154).
+  it('counts and flags a source file with a NUL in its first 8000 bytes, not a real image', () => {
+    const repo = initRepo();
+    sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
+    commitBlobs(repo, [['100644', 'src/big.ts', `// \0\n${'export const v = 1;\n'.repeat(5000)}`]]);
+    const image = join(repo, 'logo.png');
+    writeFileSync(image, Buffer.from('\x89PNG\r\n\x1a\n\0\0\0\rIHDR', 'latin1'));
+    sh(repo, 'git', 'add', 'logo.png');
+    sh(repo, 'git', 'commit', '-q', '-m', 'image');
+
+    expect(countChangedLines(repo, 'main', 'feature')).toEqual({
+      source: 5001,
+      test: 0,
+      docs: 0,
+      forged: ['src/big.ts'],
+    });
+  });
+
+  // `git grep -I` would skip a binary file, and with it a JavaScript
+  // importer whose NUL sits in a comment.
+  it('reaches a test from an importer with a NUL in a comment', () => {
+    const repo = initRepo();
+    sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
+    commitBlobs(repo, [
+      ['100644', 'src/big.test.ts', 'export const v = 1;\n'.repeat(5)],
+      ['100644', 'src/impl.js', "// \0\nrequire('./big.test.js');\n"],
+    ]);
+
+    expect(countChangedLines(repo, 'main', 'feature')).toEqual({
+      source: 7,
+      test: 0,
+      docs: 0,
+      forged: ['src/impl.js'],
+    });
+  });
+
+  // A git process per link and per listed importer let 20 000 tiny files hold
+  // the merge lock for minutes; each set is now read in one batch.
+  it('runs as many git processes for 40 links and importers as for 1', { timeout: 30_000 }, () => {
+    const spawned = (files: number): string[][] => {
+      const repo = initRepo();
+      sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
+      const blob = (content: string): string =>
+        execFileSync('git', ['hash-object', '-w', '--stdin'], {
+          cwd: repo,
+          env: GIT_ENV,
+          input: content,
+          encoding: 'utf8',
+        }).trim();
+      const [test, importer, link] = [
+        blob('export const v = 1;\n'),
+        blob("export * from './big.test.js';\n"),
+        blob('imp0.ts'),
+      ];
+      // One index write for every entry: a git call per file timed out under load.
+      execFileSync('git', ['update-index', '--index-info'], {
+        cwd: repo,
+        env: GIT_ENV,
+        input: [
+          `100644 ${test}\tsrc/big.test.ts`,
+          ...Array.from({ length: files }, (_, i) => [
+            `100644 ${importer}\tsrc/imp${i}.ts`,
+            `120000 ${link}\tsrc/link${i}`,
+          ]).flat(),
+          '',
+        ].join('\n'),
+      });
+      sh(repo, 'git', 'commit', '-q', '-m', 'from the index');
+      vi.mocked(execFileSync).mockClear();
+      expect(countChangedLines(repo, 'main', 'feature').source).toBe(1 + 2 * files);
+      return vi.mocked(execFileSync).mock.calls.map(([, args]) => args as string[]);
+    };
+
+    const one = spawned(1);
+    const forty = spawned(40);
+
+    expect(forty).toHaveLength(one.length);
+    const batches = forty.filter((args) => args.includes('cat-file'));
+    expect(batches).toHaveLength(2);
+    for (const args of batches) expect(args).toContain('--batch');
   });
 });
 

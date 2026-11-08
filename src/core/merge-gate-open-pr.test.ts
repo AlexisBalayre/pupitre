@@ -1329,7 +1329,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
     it('still counts a real binary as free', async () => {
       const worktree = seedSession(db, repo);
-      commitIn(worktree, 'src/image.bin', 'x\0y\n'.repeat(700));
+      commitIn(worktree, 'src/image.gif', `GIF89a\0${'x\0y\n'.repeat(700)}`);
       forgeBinary();
 
       const outcome = await merge();

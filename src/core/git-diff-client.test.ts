@@ -22,6 +22,7 @@ import {
   gitDiffBinaryRecount,
   gitDiffNumstat,
   gitDiffPaths,
+  readBlobs,
   rethrowIfKilled,
   runGit,
   verifiedWorktreeGitEnv,
@@ -342,7 +343,10 @@ describe('gitDiffNumstat under a session-written diff.renames=copies', () => {
 // `* -diff` line every file reads `-\t-`, and a null skipped as a real binary
 // lets any diff count as zero changed lines (decision 53).
 describe('gitDiffBinaryRecount', () => {
-  function repoWith(base: Record<string, string>, feature: Record<string, string>): string {
+  function repoWith(
+    base: Record<string, string | Buffer>,
+    feature: Record<string, string | Buffer>,
+  ): string {
     const repo = makeRepo();
     for (const [file, content] of Object.entries(base)) writeFileSync(join(repo, file), content);
     commitAll(repo, 'base');
@@ -390,24 +394,84 @@ describe('gitDiffBinaryRecount', () => {
     });
   });
 
+  /** A PNG's signature and IHDR length, then `rest`: binary by NUL and by magic. */
+  const png = (rest: string): Buffer =>
+    Buffer.concat([Buffer.from('\x89PNG\r\n\x1a\n\0\0\0\rIHDR', 'latin1'), Buffer.from(rest)]);
+
   // `--text` parses hunks out of a real binary as well, so the patch cannot be
   // what tells the two apart.
-  it('answers null for a real binary, armed or not, on either side of the diff', () => {
+  it('answers null for a known binary, armed or not, on either side of the diff', () => {
     const repo = repoWith(
-      { 'image.bin': 'x\0y\nline\n', 'gone.bin': 'keep\n' },
-      { 'image.bin': 'x\0z\nline\nmore\n', 'gone.bin': 'now\0binary\n', 'new.bin': 'q\0\n' },
+      { 'image.png': png('y\nline\n'), 'gone.png': png('old\n'), 'font.WOFF2': 'wOF2\0a\n' },
+      { 'image.png': png('z\nline\nmore\n'), 'new.png': png('q\n'), 'font.WOFF2': 'wOF2\0b\n' },
     );
+    sh(repo, 'git', 'rm', '-q', 'gone.png');
+    sh(repo, 'git', 'commit', '-q', '-m', 'drop');
+    const paths = ['image.png', 'gone.png', 'new.png', 'font.WOFF2'];
 
-    expect(gitDiffAddedLines(repo, 'main', 'feature')['image.bin']).toEqual([1, 3]);
-    for (const path of ['image.bin', 'gone.bin', 'new.bin']) {
+    // The signature's CR and LF make its first three lines; the fourth is `line`.
+    expect(gitDiffAddedLines(repo, 'main', 'feature')['image.png']).toEqual([3, 5]);
+    for (const path of paths) {
       expect(gitDiffBinaryRecount(repo, 'main', 'feature', path)).toBeNull();
     }
 
     writeFileSync(join(repo, '.git', 'info', 'attributes'), '* -diff\n');
 
-    for (const path of ['image.bin', 'gone.bin', 'new.bin']) {
+    for (const path of paths) {
       expect(gitDiffBinaryRecount(repo, 'main', 'feature', path)).toBeNull();
     }
+  });
+
+  // One NUL in a comment makes git call a 5 000-line source file binary, and
+  // a null skipped for it counted the file as no lines at all (decision 154).
+  it('recounts a source file with a NUL in its first 8000 bytes', () => {
+    const source = `// \0\n${'export const v = 1;\n'.repeat(5000)}`;
+    const repo = repoWith({ 'a.ts': 'one\n' }, { 'a.ts': source, 'fresh.js': source });
+
+    expect(gitDiffNumstat(repo, 'main', 'feature')).toEqual([
+      { path: 'a.ts', added: null, deleted: null },
+      { path: 'fresh.js', added: null, deleted: null },
+    ]);
+    expect(gitDiffBinaryRecount(repo, 'main', 'feature', 'a.ts')).toEqual({
+      added: 5001,
+      deleted: 1,
+    });
+    expect(gitDiffBinaryRecount(repo, 'main', 'feature', 'fresh.js')).toEqual({
+      added: 5001,
+      deleted: 0,
+    });
+  });
+
+  // Extension and magic are both the session's to write, so either alone
+  // would let code with a NUL in it pass as an image.
+  it('recounts a binary whose extension and magic do not name one format', () => {
+    const repo = repoWith(
+      { 'swapped.png': png('a\n'), 'text.png': 'one\n' },
+      {
+        'swapped.png': 'two\nthree\n',
+        'text.png': 'one\0\ntwo\n',
+        'code.js': png('x\ny\n'),
+        'gif.png': 'GIF89a\0\nz\n',
+      },
+    );
+
+    // The signature splits into three lines at its CR and LF.
+    expect(gitDiffBinaryRecount(repo, 'main', 'feature', 'swapped.png')).toEqual({
+      added: 2,
+      deleted: 3,
+    });
+    expect(gitDiffBinaryRecount(repo, 'main', 'feature', 'text.png')).toEqual({
+      added: 2,
+      deleted: 1,
+    });
+    expect(gitDiffBinaryRecount(repo, 'main', 'feature', 'code.js')).toEqual({
+      added: 4,
+      deleted: 0,
+    });
+    expect(gitDiffBinaryRecount(repo, 'main', 'feature', 'gif.png')).toEqual({
+      added: 2,
+      deleted: 0,
+    });
   });
 
   // Git only sniffs the first 8000 bytes, so a NUL past them is text to git
@@ -421,6 +485,51 @@ describe('gitDiffBinaryRecount', () => {
     writeFileSync(join(repo, '.git', 'info', 'attributes'), '* -diff\n');
 
     expect(gitDiffBinaryRecount(repo, 'main', 'feature', 'a.ts')).toEqual({ added: 2, deleted: 0 });
+  });
+});
+
+describe('readBlobs', () => {
+  function blobsOf(repo: string): { oid: string; size: number }[] {
+    return execFileSync('git', ['ls-tree', '-r', '-l', '-z', 'HEAD'], {
+      cwd: repo,
+      env: GIT_ENV,
+      encoding: 'utf8',
+    })
+      .split('\0')
+      .filter(Boolean)
+      .map((entry) => {
+        const [, , oid = '', size] = entry.slice(0, entry.indexOf('\t')).split(/ +/);
+        return { oid, size: Number(size) };
+      });
+  }
+
+  it('reads every blob byte for byte, a NUL, an empty one and a repeat included', () => {
+    const repo = makeRepo();
+    const files: Record<string, Buffer> = {
+      'a.ts': Buffer.from('one\ntwo\n'),
+      'b.bin': Buffer.from([0, 0x89, 0x0a, 0xff]),
+      'empty.ts': Buffer.alloc(0),
+      'no-eol.ts': Buffer.from('last'),
+      'same.ts': Buffer.from('one\ntwo\n'),
+    };
+    for (const [file, content] of Object.entries(files)) writeFileSync(join(repo, file), content);
+    commitAll(repo, 'blobs');
+    const blobs = blobsOf(repo);
+
+    const contents = readBlobs(repo, blobs);
+
+    expect(contents.size).toBe(4);
+    expect(blobs.map(({ oid }) => contents.get(oid))).toEqual(Object.values(files));
+  });
+
+  it('refuses an oid git does not hold', () => {
+    const repo = makeRepo();
+    writeFileSync(join(repo, 'a.ts'), 'one\n');
+    commitAll(repo, 'base');
+
+    expect(() => readBlobs(repo, [...blobsOf(repo), { oid: 'f'.repeat(40), size: 0 }])).toThrow(
+      /missing/,
+    );
   });
 });
 
