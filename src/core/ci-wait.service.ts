@@ -31,6 +31,8 @@ const CLEAN_REVIEW_STATUS = 'no blocking issues';
 const COMMENT_ONLY_STATUS = 'Not reviewed: only comments and prose changed';
 /** What claude-review-push-marker.yml says on a head pushed since the last review. */
 const PUSH_MARKER_STATUS = 'Not reviewed: push since last review';
+/** What claude-review-base-change.yml says on a head whose PR was retargeted. */
+const BASE_CHANGE_STATUS = 'Not reviewed: base branch changed';
 /**
  * Symbols a GitHub string could pass off as the digest's own `→`, so a forged
  * status could not name a next step of its own: every arrow and emoji, the
@@ -246,6 +248,14 @@ function reviewDigest(
         ? "comment `@claude review` on the PR to have the head reviewed (the operator's call)"
         : "read the PR: this head was not reviewed, and the earlier review's verdict is not " +
             "read here (the operator's call)",
+    );
+  }
+  if (status?.state === 'PENDING' && status.description.startsWith(BASE_CHANGE_STATUS)) {
+    return line(
+      'not asked, the base branch changed since the last review',
+      threads,
+      threads,
+      "comment `@claude review` on the PR to have the head reviewed against the new base (the operator's call)",
     );
   }
   if (status?.state === 'PENDING' && status.description.startsWith(PUSH_MARKER_STATUS)) {

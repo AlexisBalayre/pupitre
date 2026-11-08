@@ -151,6 +151,10 @@ export const metricsRecordSchema = z.object({
   run_url: z.string().nullable(),
   actor: z.string().nullable(),
   commit_sha: z.string().nullable(),
+  base_ref: z
+    .string()
+    .nullable()
+    .describe("The base branch the review ran against; a different one on the next round forces a full review."),
   source: z.literal("pr"),
   pr_number: z.number().int().nullable(),
   action: z.literal("review"),

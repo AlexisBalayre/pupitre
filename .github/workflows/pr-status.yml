@@ -172,13 +172,15 @@ jobs:
                 return "ci-pending";
               }
               // The review preflight leaves a final "Not reviewed" pending status on a comment-only
-              // push: nothing is running, so it does not count as pending. The push marker is the
-              // exception: the head still awaits the review the owner has yet to ask for.
+              // push: nothing is running, so it does not count as pending. The push marker and a
+              // retarget (claude-review-base-change.yml) leave the same prefix but the head still
+              // awaits a review, so they count.
               const running = combined.statuses.some(
                 (s) =>
                   s.state === "pending" &&
                   (!s.description?.startsWith("Not reviewed") ||
-                    s.description.startsWith("Not reviewed: push since last review")),
+                    s.description.startsWith("Not reviewed: push since last review") ||
+                    s.description.startsWith("Not reviewed: base branch changed")),
               );
               if (runs.some((c) => c.status !== "completed") || running) {
                 return "ci-pending";
