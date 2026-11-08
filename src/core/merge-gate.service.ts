@@ -13,7 +13,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { availableParallelism, loadavg, tmpdir } from 'node:os';
+import { availableParallelism, homedir, loadavg, tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import {
@@ -1074,7 +1074,7 @@ function planMerge(db: Database, req: MergeRequest): MergePlan {
       head: session.branch,
       base: target,
     };
-    // Everything GitHub can refuse is settled here, before ten minutes of gate
+    // Everything GitHub can refuse is settled here, before minutes of gate
     // stages and before --accept-debt writes ledger entries for a merge that
     // would then abort (decision 27).
     if (merged) regate = planRegate(req.repoPath, session.id, merged, ref, originUrl);
@@ -2092,7 +2092,8 @@ type FlaggedDebt = { description: string; files: string[] };
  * 143) fail at once. So does a stage that ran out `GATE_COMMAND_TIMEOUT_MS`,
  * which `runGateChild` marks with a `code` even when the runner traps the
  * SIGTERM and exits 1, and whose re-run would hold the merge lock twice as long
- * on a hung suite.
+ * on a hung suite. A test stage timed out under load never gets here: it
+ * refuses the merge first (`refuseTimeoutUnderLoad`), and so does a re-run.
  */
 function isRerunnable(error: unknown): boolean {
   const { status, signal, code } = error as {
@@ -2101,6 +2102,105 @@ function isRerunnable(error: unknown): boolean {
     code?: string;
   };
   return status === 1 && !signal && code === undefined;
+}
+
+/** The machine's 1-minute load average; a platform with none reads 0. */
+function oneMinuteLoad(): number {
+  return loadavg()[0] ?? 0;
+}
+
+/**
+ * Refuse the merge when a test run ran out `GATE_COMMAND_TIMEOUT_MS` on a
+ * machine other runs had loaded (decision 138, amending 7): at that load the
+ * suite runs longer than its cap whatever the branch holds, so the timeout says
+ * nothing about the code. Loaded means three things, at the ceiling
+ * `waitForLoad` uses: the 1-minute load average was at or over the available
+ * parallelism before the suites started (`loadBefore`, 0 when no reading was
+ * taken, which is under any machine's cores and so no evidence), it still is,
+ * and a test run other than the gated session's own is going
+ * (`otherTestRunGoing`).
+ * That last is the evidence a session's own tests cannot make: a suite that
+ * fills the cores by itself until its cap is still rejected. It throws, so it
+ * climbs no rung of the reject cap and injects nothing into the session, and
+ * the gate stops before any merge or push. Every other timeout, and every
+ * failure that is not a timeout, returns, and the stage fails and rejects as
+ * before. It judges a test stage's re-run as it judges the first run.
+ */
+function refuseTimeoutUnderLoad(error: unknown, loadBefore: number, sessionId: string): void {
+  if ((error as { code?: string }).code !== 'ETIMEDOUT') return;
+  const cores = availableParallelism();
+  const load = oneMinuteLoad();
+  if (Math.min(loadBefore, load) < cores || !otherTestRunGoing(sessionId)) return;
+  throw new Error(
+    `The test stage timed out under load ${load.toFixed(1)}, at or over the machine's ` +
+      `${cores} cores, with other test runs going; nothing was merged; run pup merge again ` +
+      'when the load falls.',
+  );
+}
+
+/**
+ * Whether a test run other than this gate's and `sessionId`'s own is going
+ * (decision 138): `testRunsElsewhere`, which reclaims dead holders as every
+ * reader of the slots does, and then one slot or gate wait file in the
+ * machine's slots whose holder is a live process of this user, not this one,
+ * labelled other than `sessionId`, since the gated session's pane can hold a
+ * worker slot of its own. The slots module answers only whether a run is going,
+ * not whose, so the records are read here, by its rules: a wait file counts
+ * for `GATE_SLOT_WAIT_MS`, and only under the name the slots module gives one,
+ * `gate-<pid>-<token>.wait`, with the record's pid the name's. A directory or
+ * record that cannot be read is no evidence, the opposite of decision 134's
+ * wait, because here it would spare a rejection.
+ */
+function otherTestRunGoing(sessionId: string): boolean {
+  if (!testRunsElsewhere()) return false;
+  const dir = join(homedir(), '.pupitre', 'slots');
+  let names: string[] = [];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    // An unreadable slots directory names no run: no evidence.
+  }
+  return names.some((name) => isOtherTestRun(dir, name, sessionId));
+}
+
+/**
+ * Whether the slot or gate wait file `name` in `dir` holds evidence for
+ * `otherTestRunGoing`: a name the slots module gives one, a record that parses,
+ * a positive integer pid that is not this process, a label other than
+ * `sessionId`, for a wait file the pid its name carries and an age within
+ * `GATE_SLOT_WAIT_MS`, and a live holder. Each check runs only once those
+ * before it hold, and any that throws, a symlink, a read or a parse, is no
+ * evidence.
+ */
+function isOtherTestRun(dir: string, name: string, sessionId: string): boolean {
+  const named = /^(?:slot-\d+\.lock|gate-(\d+)-[0-9a-z]+\.wait)$/.exec(name);
+  if (!named) return false;
+  const path = join(dir, name);
+  const waiter = named[1];
+  try {
+    const { pid, label } = JSON.parse(readPlainFile(path, { followLinks: false })) as {
+      pid?: unknown;
+      label?: unknown;
+    };
+    const waitChecks =
+      waiter === undefined
+        ? []
+        : [
+            () => Number(waiter) === pid,
+            () => Date.now() - lstatSync(path).mtimeMs <= GATE_SLOT_WAIT_MS,
+          ];
+    return [
+      () => Number.isInteger(pid),
+      () => (pid as number) > 0,
+      () => pid !== process.pid,
+      () => label !== sessionId,
+      ...waitChecks,
+      // Throws for a dead pid and for another user's (EPERM), neither of which holds our slot.
+      () => process.kill(pid as number, 0),
+    ].every((holds) => holds());
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -2119,7 +2219,7 @@ function isRerunnable(error: unknown): boolean {
  * unless a test passes its own.
  */
 export async function waitForLoad(
-  readLoad: () => number = () => loadavg()[0] ?? 0,
+  readLoad: () => number = oneMinuteLoad,
   ceiling = availableParallelism(),
   othersTesting: () => boolean = () => testRunsElsewhere(),
 ): Promise<void> {
@@ -2208,13 +2308,23 @@ export async function measureBranch(
   };
 
   /**
+   * The 1-minute load read once before the suites (decision 138), set below
+   * after the build and the load wait. Declared before `commandStage` reads
+   * it, so a test stage run before the reading finds 0, which is under any
+   * machine's cores and so no evidence, rather than a temporal dead zone.
+   */
+  let loadBeforeSuites = 0;
+
+  /**
    * Runs one hard stage to its result. A failed test
    * stage runs once more, still under the lock, before it counts: a suite that
    * passes on the re-run passes, named flaky with what failed the first time,
    * so a timing-sensitive test the host's load tipped over is no rejection
    * (decision 94). Build and lint are deterministic and never re-run, and
    * neither is a test run that ended other than by the runner's own failing
-   * exit (`isRerunnable`).
+   * exit (`isRerunnable`). A test run, the first or the re-run, timed out
+   * under load throws instead of failing (`refuseTimeoutUnderLoad`, decision
+   * 138).
    */
   const commandStage = async (
     stage: string,
@@ -2225,10 +2335,14 @@ export async function measureBranch(
     const started = Date.now();
     const first = await runCommand(command, cwd);
     if (first === undefined) return timedSince(started, { stage, status: 'pass' });
+    if (command.stage === 'test') refuseTimeoutUnderLoad(first, loadBeforeSuites, session.id);
     if (command.stage !== 'test' || !isRerunnable(first)) {
       return timedSince(started, { stage, status: 'fail', detail: commandFailureDetail(first) });
     }
     const rerun = await runCommand(command, cwd);
+    // A first run that failed on its own and a re-run the load ran out: the
+    // re-run's timeout says no more about the code than a first run's would.
+    if (rerun !== undefined) refuseTimeoutUnderLoad(rerun, loadBeforeSuites, session.id);
     if (rerun === undefined) {
       return timedSince(started, {
         stage,
@@ -2300,6 +2414,11 @@ export async function measureBranch(
   // Before the slot and before the stages that run alongside the suites, so
   // the load measured is the machine's and not this gate's own children.
   if (hasSuite && req.wait) await waitForLoad();
+  // Read here for the same reason, after the build and before the suites: a
+  // test run that times out counts as timed out under load only if the machine
+  // was loaded before it (decision 138). The build ran the session's code, so
+  // this reading is not one the session cannot touch; the other test run is.
+  loadBeforeSuites = oneMinuteLoad();
   const coverageAdapter = req.adapters.find((a) => a.coverage);
   const covered =
     test && coverageAdapter === primary ? primary?.coveredTest?.(capabilityContext) : undefined;

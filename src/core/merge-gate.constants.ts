@@ -87,7 +87,13 @@ export const PROTECTED_PATH_GLOBS = ['.claude/**', '.pupitre/**'];
 /** Serializes merges per repo (decision 8); lives in .git so it never lands in a diff. */
 export const MERGE_LOCK_DIRNAME = 'pup-merge.lock';
 
-export const GATE_COMMAND_TIMEOUT_MS = 10 * 60 * 1000;
+/**
+ * The cap on one gate command, a test run included: 25 minutes, since pup's own
+ * full suite takes about 9.5 minutes at a load of 14 and ran into the 10 this was
+ * (decision 138). The slot wait, and so the load wait, and the merge lock wait
+ * are derived from it.
+ */
+export const GATE_COMMAND_TIMEOUT_MS = 25 * 60 * 1000;
 
 /** Tail of a failed command's output kept in the gate report / re-steer prompt. */
 export const GATE_OUTPUT_TAIL_CHARS = 2000;
