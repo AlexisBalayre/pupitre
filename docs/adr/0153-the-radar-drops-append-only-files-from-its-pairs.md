@@ -20,9 +20,13 @@
     full, and the view is taken where they are printed. So the merge gate, whose fresh-base stage
     meets the conflict, and the main-landed notice, which keeps the files (decision 104), still see
     the overlap.
-    *Ceiling.* `pup ui` sizes its radar block from the stored pair count, so it still reserves the
-    rows the dropped pairs would have taken and leaves some of them blank. The count is in
-    `app.component.tsx`, outside this change.
+    *Ceiling.* `pup ui` sizes its radar block in `app.component.tsx` from the stored pair count,
+    outside this change. That count over-reserves when whole pairs are dropped, and under-reserves
+    by one row per note when none is (two sessions sharing the index and a source file). The
+    `Radar` component holds itself to the rows it is given: the stale line comes first, then the
+    pairs, which keep at least one row (a `+N more overlaps` line), and the notes take what is
+    left, so a note can be left off a short block. Sizing the block from `radarView` is the
+    follow-up that closes the first gap.
     *Tests.* `overlap.test.ts` pins `radarView`: the index is dropped from a pair that also names a
     source file, a pair left empty is dropped whole and each session is counted once, and
     `docs/adrift.md` is kept. `index.test.ts` runs `pup watch --once` over two sessions sharing the

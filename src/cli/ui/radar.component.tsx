@@ -27,10 +27,15 @@ export function Radar({
   const view = radarView(overlaps);
   if (view.pairs.length === 0 && view.appends.length === 0 && !radarStale) return null;
   const lead = project === undefined ? '' : `${project}  `;
-  const { shown, hidden } = clip(
-    view.pairs,
-    Math.max(maxLines - (radarStale ? 1 : 0) - view.appends.length, 1),
+  // The notes are rows too. Pairs come first, so one row stays for them (a
+  // `+N more overlaps` line at the least) and the notes take what is left.
+  const room = Math.max(maxLines - (radarStale ? 1 : 0), 0);
+  const noteRows = Math.min(
+    view.appends.length,
+    Math.max(room - (view.pairs.length > 0 ? 1 : 0), 0),
   );
+  const notes = view.appends.slice(0, noteRows);
+  const { shown, hidden } = clip(view.pairs, room - noteRows);
   return (
     <Box flexDirection="column">
       {shown.map((pair) => (
@@ -48,7 +53,7 @@ export function Radar({
       {hidden > 0 ? (
         <Text color="yellow" wrap="truncate-end">{`${lead}+${hidden} more overlaps`}</Text>
       ) : null}
-      {view.appends.map((note) => (
+      {notes.map((note) => (
         <Text key={note.file} dimColor wrap="truncate-end">
           {`${lead}${appendOnlyLine(note)}`}
         </Text>
