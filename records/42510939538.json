@@ -1,0 +1,100 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-08T18:45:06.801Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42510939538",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42510939538",
+  "actor": "AlexisBalayre",
+  "commit_sha": "abef6dd2fd44add471a732ec2b451274f1e34df1",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 275,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "scripts/pre-commit",
+      "line": "148-154",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "In a session, a dirty `package.json` (staged, unstaged or untracked) now makes the pre-commit run the whole suite. `vitest list --changed` returns every test once a changed file matches `forceRerunTriggers`, and a single test slot is held for the full run.",
+      "body": "**A dirty `package.json` or `vitest.config.ts` makes a session's pre-commit run the whole suite while holding one test slot.**\n\nInside a session, the hook now builds its test list with `vitest list --filesOnly --changed` (L148). It then passes every listed file to `pup session test` (L154). `vitest.config.ts` sets no `forceRerunTriggers`, so vitest 4's default applies: `['**/package.json/**', '**/{vitest,vite}.config.*/**']`. With `--changed`, vitest returns **every** spec as soon as a changed file matches one of those triggers. It counts staged, unstaged and untracked files alike.\n\n```sh\nif ! RELATED_FILES=$(pnpm exec vitest list --filesOnly --changed); then\n...\n  if ! (set -o pipefail; printf '%s\\n' \"$RELATED_FILES\" | tr '\\n' '\\0' | xargs -0 \"${PUP_CMD[@]}\" session test --); then\n```\n\n**Trigger:** a session stages `src/foo.ts` while `package.json` is modified in the worktree. This is common when adding a dependency or a script, even if the change is unstaged. The guard at L131 only checks that some staged `.ts`/`.tsx` file exists. It does not keep `package.json` out of the listing. `RELATED_FILES` therefore names the entire suite, and every such commit runs it through one slot.\n\n**Why this is a regression:** before this PR, and still outside a session (L162), the hook ran `vitest related` on `$STAGED_SOURCE` only. That list is filtered to `SOURCE_EXTENSIONS=\"ts tsx\"`, so `package.json` never reached vitest.\n\n**Cost:**\n- The full suite belongs to `TEST_CMD` and the merge gate (decision 135).\n- Holding a slot for a full run on each such commit works against what ADR 0160 is for: cutting machine load.\n- Under load, the run can exceed the session's Bash timeout, so the commit is killed.\n- ADR 0160 calls the list a \"superset of the staged files' tests\" without saying that a dirty trigger file turns it into the whole suite.\n\nOne possible fix is to override `forceRerunTriggers` (for example, to `[]`) for the listing call only. Another is to state this behaviour in the ADR as accepted.\n\n<https://github.com/AlexisBalayre/pupitre/blob/abef6dd2fd44add471a732ec2b451274f1e34df1/scripts/pre-commit#L148-L154>\n\n_Confidence is medium: vitest's selection internals were judged from the pinned `^4.1.10` behaviour, not read in-tree._",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/pre-commit.test.ts",
+      "line": "262-275",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The 'blocks the commit in a session when PUP_BIN names no file' test removes `pup` from the PATH, so it still passes if the `[ -f \"$PUP_BIN\" ]` guard is deleted. Add a case with a missing PUP_BIN and the stub pup kept on the PATH, and assert the hook falls back to `pup session test -- …`.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.2401571249999996,
+  "duration_ms": 408239,
+  "num_turns": 13,
+  "tokens": {
+    "input": 14,
+    "output": 7730,
+    "cache_read": 300821,
+    "cache_creation": 40574,
+    "total": 349139
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 86,
+      "output": 47257,
+      "cache_read": 1337717,
+      "cache_creation": 150147,
+      "cost_usd": 2.0854844000000003
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 16,
+      "output": 3308,
+      "cache_read": 103524,
+      "cache_creation": 44228,
+      "cost_usd": 0.1540344
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 150,
+      "cache_read": 0,
+      "cache_creation": 4505,
+      "cost_usd": 0.000638325
+    }
+  ],
+  "permission_denials": []
+}
