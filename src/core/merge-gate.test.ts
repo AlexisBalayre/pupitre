@@ -661,6 +661,32 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(copyCall?.[2]).toMatchObject({ timeout: 30_000 });
   });
 
+  // Decision 157: a custom command that returns nothing at the target must not
+  // turn an existing file into a new one the cap lets through.
+  it('judges a file the target holds by its rise even when the before-measure omits it', async () => {
+    const branches = (n: number) => 'if (a) b();\n'.repeat(n);
+    commitIn(repo, 'src/kept.ts', 'export const kept = 1;\n');
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/kept.ts', branches(20));
+    commitIn(worktree, 'src/fresh.ts', branches(20));
+    const adapter = debtAdapter({
+      complexity: ({ measurePath }: CapabilityContext, files: string[]) =>
+        measurePath === repo
+          ? []
+          : files.map((file) => ({
+              file,
+              complexity: readFileSync(join(measurePath, file), 'utf8').split('if (').length - 1,
+            })),
+    });
+
+    const outcome = await merge(adapter);
+
+    // The new file's 20 stays under the cap; the existing file's 20 is a rise.
+    expect(complexityDetail(outcome)).toContain(
+      'complexity rose sharply in 1 touched file(s): src/kept.ts (+20).',
+    );
+  });
+
   // Decision 72: `pup init` always measured every detected adapter while the
   // gate measured only the first, so in a TypeScript+Python repo the second
   // stack's debt was never gated and the ratchet then overwrote the

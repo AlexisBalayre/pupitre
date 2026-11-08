@@ -399,15 +399,21 @@ function judgeComplexity(measured: GateDebtMeasurement, sessionId: string): Stag
   if (!measured.complexity) {
     return verdict(stage, 'skipped', 'not measured — adapter cannot measure complexity');
   }
-  const { sources, copiesPaired } = measured.complexity;
+  const { sources, copiesPaired, targetHolds } = measured.complexity;
   const unpaired = copiesPaired
     ? ''
     : `; copies not paired: git's copy detection ran past ${COMPLEXITY_COPY_PAIRING_TIMEOUT_MS / 1000} s`;
   const before = new Map(measured.complexity.before.map((f) => [f.file, f.complexity]));
+  const held = new Set(targetHolds);
   const risen = measured.complexity.after
     .map((f) => {
       const source = sources[f.file];
-      const was = before.get(f.file) ?? (source === undefined ? undefined : before.get(source));
+      // A file the target holds rises from zero when the before-measure
+      // omitted it; only one the target lacks is new (decision 157).
+      const was =
+        before.get(f.file) ??
+        (source === undefined ? undefined : before.get(source)) ??
+        (held.has(f.file) ? 0 : undefined);
       return was === undefined
         ? {
             file: f.file,
