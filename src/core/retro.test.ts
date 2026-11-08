@@ -252,6 +252,22 @@ describe('pup retro', () => {
     expect(retro().repeatedReads.map((r) => r.path)).toEqual(['src/big.ts']);
   });
 
+  it('keeps different outside files with one basename apart, but counts a real repeat', () => {
+    const read = (n: number, dir: string): string[] => [
+      call(`r${n}`, n * 10, {
+        id: `t${n}`,
+        name: 'Read',
+        input: { file_path: `/home/me/${dir}/SKILL.md` },
+      }),
+      result(`t${n}`, n * 10 + 1, 'y'.repeat(400)),
+    ];
+    transcript([...read(1, 'a'), ...read(2, 'b'), ...read(3, 'c')]);
+    expect(retro().filesReadRepeatedly).toBe(0);
+
+    transcript([...read(1, 'a'), ...read(2, 'a'), ...read(3, 'a')], 'b.jsonl');
+    expect(retro().repeatedReads.map((r) => r.path)).toEqual(['SKILL.md']);
+  });
+
   it('copies only the fields it names', () => {
     const report = { ...retro(), prompt: SECRET } as RetroReport;
     report.carry = [

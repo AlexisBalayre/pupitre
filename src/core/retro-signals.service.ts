@@ -159,9 +159,8 @@ export function repeatedReads(
   for (const { read } of scanned) {
     const perFile = new Map<string, { path: string; sizes: number[] }>();
     for (const { path, range, tokens } of read.reads) {
-      const shown = repoRelative(path, repoPath);
-      const key = `${shown}\u0000${range}`;
-      const entry = perFile.get(key) ?? { path: shown, sizes: [] };
+      const key = `${normalize(path)}\u0000${range}`;
+      const entry = perFile.get(key) ?? { path: repoRelative(path, repoPath), sizes: [] };
       entry.sizes.push(tokens);
       perFile.set(key, entry);
     }
