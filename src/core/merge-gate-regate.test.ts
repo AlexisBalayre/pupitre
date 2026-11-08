@@ -547,7 +547,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(outcome.report.stages.at(-1)).toMatchObject({ stage: 'build', status: 'fail' });
       expect(left).toHaveLength(1);
       expect(warn).toHaveBeenCalledWith(
-        `Could not remove ${left[0]} (ENOTEMPTY); it is left behind.`,
+        `Could not remove ${left[0]?.replace(/\/pup-removing-[^/]+(?=\/)/, '')} (ENOTEMPTY); it is left behind.`,
       );
     });
   });
