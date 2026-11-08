@@ -43,6 +43,7 @@ import {
   ArmedGitDriverError,
   armedGitDrivers,
   assertNoArmedGitDrivers,
+  BINARY_FREE_MAX_BYTES,
   checkoutPinned,
   currentBranch,
   gitDiffAddedLines,
@@ -414,8 +415,8 @@ function readBranchTree(repoPath: string, branch: string): BranchTree {
     links.push({ path, ...blob });
   }
   const contents = readBlobs(repoPath, links);
-  for (const { path, oid } of links) {
-    const [target = ''] = String(contents.get(oid) ?? '').split('\0', 1);
+  for (const [index, { path }] of links.entries()) {
+    const [target = ''] = String(contents[index]).split('\0', 1);
     const segments = target.split('/').filter((segment) => segment !== '' && segment !== '.');
     const firstName = segments.findIndex((segment) => segment !== '..');
     const lands = join(dirname(path), target).replace(/\/+$/, '');
@@ -575,8 +576,8 @@ function filesNaming(
     importers.push({ path: importer, ...blob });
   }
   const contents = readBlobs(repoPath, importers);
-  for (const { path: importer, oid } of importers) {
-    const text = String(contents.get(oid) ?? '');
+  for (const [index, { path: importer }] of importers.entries()) {
+    const text = String(contents[index]);
     const names = new Set<string>();
     for (const [token] of folded(text).matchAll(NAME_TOKEN)) {
       for (
@@ -2747,7 +2748,10 @@ export async function measureBranch(
     sizeFindings.push(`source exceeds the ${DIFF_SIZE_FLAG_LINES}-line flag`);
   }
   // Flagged at any size: the count is honest again once recounted, but a text
-  // file git was told to call binary is a write nobody reviewed (decision 53).
+  // file git was told to call binary is a write nobody reviewed (decision 53),
+  // and so is a binary no known format or size lets go uncounted (decision
+  // 154). The description keeps its wording, so a re-gate still reads an entry
+  // filed before decision 154 as the same kind.
   if (changed.forged.length > 0) {
     const forged = [...changed.forged].sort();
     const quoted = forged.slice(0, DEBT_DETAIL_SAMPLES).map(quotePath).join(', ');
@@ -2757,7 +2761,8 @@ export async function measureBranch(
       files: forged,
     });
     sizeFindings.push(
-      `counts ${forged.length} text file(s) git reports as binary, recounted from the patch: ` +
+      `counts ${forged.length} file(s) git reports as binary that are no known binary format ` +
+        `of at most ${BINARY_FREE_MAX_BYTES / 1024 / 1024} MiB, recounted from the patch: ` +
         `${quoted}${ellipsis}`,
     );
   }

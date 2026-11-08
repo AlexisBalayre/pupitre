@@ -17,6 +17,7 @@ import {
   armedGitDrivers,
   assertNoArmedGitDrivers,
   assertNoWorktreeConfig,
+  BINARY_FREE_MAX_BYTES,
   currentBranch,
   gitDiffAddedLines,
   gitDiffBinaryRecount,
@@ -402,12 +403,17 @@ describe('gitDiffBinaryRecount', () => {
   // what tells the two apart.
   it('answers null for a known binary, armed or not, on either side of the diff', () => {
     const repo = repoWith(
-      { 'image.png': png('y\nline\n'), 'gone.png': png('old\n'), 'font.WOFF2': 'wOF2\0a\n' },
-      { 'image.png': png('z\nline\nmore\n'), 'new.png': png('q\n'), 'font.WOFF2': 'wOF2\0b\n' },
+      { 'image.png': png('y\nline\n'), 'gone.png': png('old\n'), 'icon.ICO': '\0\0\x01\0a\n' },
+      {
+        'image.png': png('z\nline\nmore\n'),
+        'new.png': png('q\n'),
+        'icon.ICO': '\0\0\x01\0b\n',
+        'cap.png': png('x'.repeat(BINARY_FREE_MAX_BYTES - 16)),
+      },
     );
     sh(repo, 'git', 'rm', '-q', 'gone.png');
     sh(repo, 'git', 'commit', '-q', '-m', 'drop');
-    const paths = ['image.png', 'gone.png', 'new.png', 'font.WOFF2'];
+    const paths = ['image.png', 'gone.png', 'new.png', 'icon.ICO', 'cap.png'];
 
     // The signature's CR and LF make its first three lines; the fourth is `line`.
     expect(gitDiffAddedLines(repo, 'main', 'feature')['image.png']).toEqual([3, 5]);
@@ -474,6 +480,53 @@ describe('gitDiffBinaryRecount', () => {
     });
   });
 
+  // A printable magic is valid code ahead of a comment holding the NUL, a magic
+  // read past free leading bytes leaves those bytes to code, and an archive
+  // or compiled code is content a loader unpacks: none of them is skipped.
+  it('recounts a printable or offset magic, an archive, compiled code and a binary past the cap', () => {
+    const lines = 'module.exports = 1;\n'.repeat(3);
+    const repo = repoWith(
+      { 'base.ts': 'one\n' },
+      {
+        'anim.gif': `GIF89a=0//\0\n${lines}`,
+        'font.ttf': `true//\0\n${lines}`,
+        'doc.pdf': `%PDF-//\0\n${lines}`,
+        'clip.mp4': `x=1;ftyp//\0\n${lines}`,
+        'lib.zip': `PK\x03\x04\0\n${lines}`,
+        'mod.wasm': `\0asm\n${lines}`,
+        'big.png': png(`\n${'x'.repeat(BINARY_FREE_MAX_BYTES)}\n`),
+      },
+    );
+
+    for (const path of ['anim.gif', 'font.ttf', 'doc.pdf', 'clip.mp4', 'lib.zip', 'mod.wasm']) {
+      expect(gitDiffBinaryRecount(repo, 'main', 'feature', path)).toEqual({
+        added: 4,
+        deleted: 0,
+      });
+    }
+    // The signature's CR and LF make three lines, then the IHDR line and the filler.
+    expect(gitDiffBinaryRecount(repo, 'main', 'feature', 'big.png')).toEqual({
+      added: 4,
+      deleted: 0,
+    });
+  });
+
+  // An object read that fails was read as "this side does not exist", and a
+  // known-format path then went uncounted; only an empty listing is absence.
+  it('throws when the blob of a side cannot be read, rather than skip the file', () => {
+    const repo = repoWith({ 'base.ts': 'one\n' }, { 'image.png': png('q\n') });
+    const oid = execFileSync('git', ['rev-parse', 'feature:image.png'], {
+      cwd: repo,
+      env: GIT_ENV,
+      encoding: 'utf8',
+    }).trim();
+    unlinkSync(join(repo, '.git', 'objects', oid.slice(0, 2), oid.slice(2)));
+
+    expect(() => gitDiffBinaryRecount(repo, 'main', 'feature', 'image.png')).toThrow(
+      /no byte count for .*: its object cannot be read/,
+    );
+  });
+
   // Git only sniffs the first 8000 bytes, so a NUL past them is text to git
   // itself — reading the whole blob would let a session append one and pass.
   it('treats a NUL past the first 8000 bytes as text, the way git does', () => {
@@ -516,10 +569,7 @@ describe('readBlobs', () => {
     commitAll(repo, 'blobs');
     const blobs = blobsOf(repo);
 
-    const contents = readBlobs(repo, blobs);
-
-    expect(contents.size).toBe(4);
-    expect(blobs.map(({ oid }) => contents.get(oid))).toEqual(Object.values(files));
+    expect(readBlobs(repo, blobs)).toEqual(Object.values(files));
   });
 
   it('refuses an oid git does not hold', () => {
@@ -530,6 +580,33 @@ describe('readBlobs', () => {
     expect(() => readBlobs(repo, [...blobsOf(repo), { oid: 'f'.repeat(40), size: 0 }])).toThrow(
       /missing/,
     );
+  });
+
+  it('refuses an answer whose size is not the one listed', () => {
+    const repo = makeRepo();
+    writeFileSync(join(repo, 'a.ts'), 'one\n');
+    commitAll(repo, 'base');
+    const [{ oid = '' } = {}] = blobsOf(repo);
+
+    // One byte short overflows the buffer sized from the listing before any parse.
+    expect(() => readBlobs(repo, [{ oid, size: 3 }])).toThrow(/ENOBUFS/);
+    expect(() => readBlobs(repo, [{ oid, size: 5 }])).toThrow(/not a blob of 5 bytes/);
+  });
+
+  // Each read alone was capped at 64 MiB; the batch holds them all at once.
+  it('refuses, before running git, a batch whose sizes add past the cap', () => {
+    const repo = makeRepo();
+    writeFileSync(join(repo, 'a.ts'), 'one\n');
+    commitAll(repo, 'base');
+    const [{ oid = '' } = {}] = blobsOf(repo);
+    const half = 32 * 1024 * 1024;
+
+    expect(() =>
+      readBlobs(repo, [
+        { oid, size: half },
+        { oid, size: half + 1 },
+      ]),
+    ).toThrow(/past the 67108864-byte cap/);
   });
 });
 

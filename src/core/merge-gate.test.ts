@@ -1719,7 +1719,13 @@ describe('countChangedLines', () => {
       sh(repo, 'git', 'commit', '-q', '-m', 'from the index');
       vi.mocked(execFileSync).mockClear();
       expect(countChangedLines(repo, 'main', 'feature').source).toBe(1 + 2 * files);
-      return vi.mocked(execFileSync).mock.calls.map(([, args]) => args as string[]);
+      return vi.mocked(execFileSync).mock.calls.map(([, args, options]) => {
+        // A batch is the one read here that carries a timeout of its own.
+        if ((args as string[]).includes('--batch')) {
+          expect((options as { timeout?: number }).timeout).toBe(30_000);
+        }
+        return args as string[];
+      });
     };
 
     const one = spawned(1);

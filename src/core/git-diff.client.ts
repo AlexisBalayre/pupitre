@@ -529,38 +529,63 @@ function spawnOptions(opts: RunGitOptions): ExecFileSyncOptions {
 }
 
 /**
- * The content of each blob in `blobs`, keyed by oid, read through one
+ * How long a git read of the gate's diff-size count may take before it throws
+ * (decision 154): a batch of up to `GIT_MAX_BUFFER` or one tree entry, under
+ * the merge lock, which a stalled read would hold.
+ */
+const GIT_READ_TIMEOUT_MS = 30_000;
+
+/**
+ * The content of each blob in `blobs`, in order, read through one
  * `git cat-file --batch` however many there are: a process per blob let a
  * tree of 20 000 tiny files hold the merge lock for minutes (decision 154).
- * Sizes are the ones `ls-tree -l` reported, so the output buffer holds
- * exactly what git prints; an object git does not have refuses.
+ * Sizes are the ones `ls-tree -l` reported, and together they may not pass
+ * `GIT_MAX_BUFFER`, the cap each read had alone: past it, or past
+ * `GIT_READ_TIMEOUT_MS`, this throws and the gate fails closed. A size that
+ * is no byte count, which `ls-tree` lists for an object it cannot read, throws,
+ * and so does an answer that is not the oid asked for, a blob of the size listed.
  */
-export function readBlobs(
-  repoPath: string,
-  blobs: { oid: string; size: number }[],
-): Map<string, Buffer> {
-  const unique = new Map(blobs.map((blob) => [blob.oid, blob.size]));
-  const contents = new Map<string, Buffer>();
-  if (unique.size === 0) return contents;
-  // Each object prints as `<oid> <type> <size>\n<content>\n`.
+export function readBlobs(repoPath: string, blobs: { oid: string; size: number }[]): Buffer[] {
+  if (blobs.length === 0) return [];
+  let total = 0;
   let maxBuffer = 0;
-  for (const [oid, size] of unique) maxBuffer += size + oid.length + ` blob ${size}\n\n`.length;
+  for (const { oid, size } of blobs) {
+    // `ls-tree -l` lists `BAD` for an object it cannot read.
+    if (!Number.isSafeInteger(size) || size < 0) {
+      throw new Error(`git ls-tree listed no byte count for ${oid}: its object cannot be read`);
+    }
+    total += size;
+    // Each object prints as `<oid> blob <size>\n<content>\n`.
+    maxBuffer += size + oid.length + ` blob ${size}\n\n`.length;
+  }
+  if (total > GIT_MAX_BUFFER) {
+    throw new Error(
+      `git cat-file --batch would read ${total} bytes, past the ${GIT_MAX_BUFFER}-byte cap`,
+    );
+  }
   const out = execFileSync('git', safeArgv(repoPath, ['cat-file', '--batch']), {
-    ...spawnOptions({}),
+    ...spawnOptions({ timeout: GIT_READ_TIMEOUT_MS }),
     encoding: 'buffer',
     // A Buffer: a string input is encoded with `encoding`, which `buffer` is not.
-    input: Buffer.from(`${[...unique.keys()].join('\n')}\n`),
+    input: Buffer.from(`${blobs.map(({ oid }) => oid).join('\n')}\n`),
     maxBuffer,
   });
-  for (let at = 0; at < out.length; ) {
+  const contents: Buffer[] = [];
+  let at = 0;
+  for (const { oid, size } of blobs) {
     const eol = out.indexOf('\n', at);
     const header = out.subarray(at, eol === -1 ? out.length : eol).toString('utf8');
-    const [oid = '', type, size] = header.split(' ');
-    if (eol === -1 || type !== 'blob' || size === undefined) {
-      throw new Error(`git cat-file --batch answered ${JSON.stringify(header)}, not a blob`);
+    const end = eol + 1 + size;
+    if (eol === -1 || header !== `${oid} blob ${size}` || out[end] !== 0x0a) {
+      throw new Error(
+        `git cat-file --batch answered ${JSON.stringify(header)} for ${oid}, not a blob of ${size} bytes`,
+      );
     }
-    contents.set(oid, out.subarray(eol + 1, eol + 1 + Number(size)));
-    at = eol + 1 + Number(size) + 1;
+    contents.push(out.subarray(eol + 1, end));
+    at = end + 1;
+  }
+  if (at !== out.length) {
+    throw new Error(`git cat-file --batch answered ${out.length - at} bytes past the last blob`);
   }
   return contents;
 }
@@ -706,45 +731,35 @@ const BINARY_SNIFF_BYTES = 8000;
 
 /**
  * The binary formats a diff-size count may skip (decision 154): the
- * extensions each is committed under and the bytes it opens with, at `offset`
- * when that is not 0. A NUL is not enough, as one in a source file's comment
- * makes git call it binary. A file outside this table is recounted from its
- * patch and flagged, which a repo committing another format meets as a flag
- * to accept.
+ * extensions each is committed under and the bytes it opens with. A NUL is
+ * not enough, as one in a source file's comment makes git call it binary.
+ * Every magic holds a byte no source text can hold where it sits (a NUL, a
+ * control or a byte that does not start UTF-8) before any byte that could
+ * open a comment or a string, so no JavaScript, TypeScript or Python loader
+ * runs a file that opens with it. Formats whose magic is printable (GIF,
+ * RIFF, BMP, PDF, WOFF, Ogg, FLAC, an MP3 `ID3` tag, a TrueType `true`) or
+ * sits past free leading bytes (MP4's `ftyp`) are left out, as are archives
+ * and compiled code, whose content is files or code a loader unpacks. A file
+ * outside this table is recounted from its patch and flagged, which a repo
+ * committing another format meets as a flag to accept.
  */
-const BINARY_FORMATS: { extensions: string[]; magic: string[]; offset?: number }[] = [
+const BINARY_FORMATS: { extensions: string[]; magic: string[] }[] = [
   { extensions: ['.png', '.apng'], magic: ['\x89PNG\r\n\x1a\n'] },
   { extensions: ['.jpg', '.jpeg'], magic: ['\xff\xd8\xff'] },
-  { extensions: ['.gif'], magic: ['GIF87a', 'GIF89a'] },
-  { extensions: ['.webp', '.wav', '.avi'], magic: ['RIFF'] },
   { extensions: ['.ico'], magic: ['\0\0\x01\0'] },
-  { extensions: ['.bmp'], magic: ['BM'] },
   { extensions: ['.tif', '.tiff'], magic: ['II*\0', 'MM\0*'] },
-  {
-    extensions: ['.mp4', '.m4a', '.m4v', '.mov', '.avif', '.heic'],
-    magic: ['ftyp'],
-    offset: 4,
-  },
   { extensions: ['.webm', '.mkv'], magic: ['\x1a\x45\xdf\xa3'] },
-  { extensions: ['.mp3'], magic: ['ID3', '\xff\xfb', '\xff\xf3', '\xff\xf2'] },
-  { extensions: ['.ogg', '.oga', '.ogv', '.opus'], magic: ['OggS'] },
-  { extensions: ['.flac'], magic: ['fLaC'] },
-  { extensions: ['.woff'], magic: ['wOFF'] },
-  { extensions: ['.woff2'], magic: ['wOF2'] },
-  { extensions: ['.ttf'], magic: ['\0\x01\0\0', 'true'] },
-  { extensions: ['.otf'], magic: ['OTTO'] },
-  { extensions: ['.pdf'], magic: ['%PDF-'] },
-  {
-    extensions: ['.zip', '.jar', '.war', '.apk', '.whl', '.epub', '.docx', '.xlsx', '.pptx'],
-    magic: ['PK\x03\x04', 'PK\x05\x06'],
-  },
-  { extensions: ['.gz', '.tgz'], magic: ['\x1f\x8b'] },
-  { extensions: ['.xz'], magic: ['\xfd7zXZ\0'] },
-  { extensions: ['.7z'], magic: ['7z\xbc\xaf\x27\x1c'] },
-  { extensions: ['.wasm'], magic: ['\0asm'] },
-  { extensions: ['.class'], magic: ['\xca\xfe\xba\xbe'] },
-  { extensions: ['.sqlite', '.sqlite3', '.db'], magic: ['SQLite format 3\0'] },
+  { extensions: ['.mp3'], magic: ['\xff\xfb', '\xff\xf3', '\xff\xf2'] },
+  { extensions: ['.ttf'], magic: ['\0\x01\0\0'] },
 ];
+
+/**
+ * The largest known binary a diff-size count may skip (decision 154). One
+ * above it, on either side of the diff, is recounted and flagged: what a
+ * known format holds past its magic is unread, and the cap bounds how much
+ * of it goes uncounted.
+ */
+export const BINARY_FREE_MAX_BYTES = 1024 * 1024;
 
 /** The formats `path`'s extension, in any ASCII case, names. */
 function formatsNamed(path: string): typeof BINARY_FORMATS {
@@ -755,9 +770,13 @@ function formatsNamed(path: string): typeof BINARY_FORMATS {
 }
 
 /**
- * Whether `<rev>:<path>` exists and is a binary to skip: binary by content,
- * never by attribute, and opening with the magic of a format its extension
- * names. A side that does not exist answers undefined.
+ * Whether `path` on `rev` is a binary to skip: a blob no larger than
+ * `BINARY_FREE_MAX_BYTES`, binary by content, never by attribute, and opening
+ * with the magic of a format its extension names. Only an empty `ls-tree`
+ * listing means the side does not exist and answers undefined; a git that
+ * fails, times out or is killed throws, as reading a failed answer as absent
+ * would skip the file uncounted. The entry is read by the oid `ls-tree`
+ * gives, through `readBlobs`, so its size is checked against the listing.
  */
 function blobIsKnownBinary(
   repoPath: string,
@@ -765,26 +784,33 @@ function blobIsKnownBinary(
   path: string,
   formats: typeof BINARY_FORMATS,
 ): boolean | undefined {
-  const spec = `${rev}:${path}`;
-  try {
-    runGit(repoPath, [...PATH_AS_GIVEN, 'cat-file', '-e', spec]);
-  } catch {
-    return undefined;
-  }
-  // `runGit`'s argv and env, read as bytes: a NUL and the magic are the question.
-  const blob = execFileSync(
-    'git',
-    safeArgv(repoPath, [...PATH_AS_GIVEN, 'cat-file', 'blob', spec]),
-    {
-      ...spawnOptions({}),
-      encoding: 'buffer',
-    },
+  const listing = runGit(
+    repoPath,
+    [
+      ...PATH_AS_GIVEN,
+      '--literal-pathspecs',
+      'ls-tree',
+      '-z',
+      '-l',
+      '--full-tree',
+      rev,
+      '--',
+      path,
+    ],
+    { timeout: GIT_READ_TIMEOUT_MS },
   );
+  // "<mode> <type> <oid> <padded size>\t<path>": the path is everything after the first tab.
+  const entry = listing.split('\0').find((line) => {
+    const tab = line.indexOf('\t');
+    return tab !== -1 && line.slice(tab + 1) === path;
+  });
+  if (entry === undefined) return undefined;
+  const [, type, oid = '', size] = entry.slice(0, entry.indexOf('\t')).split(/ +/);
+  if (type !== 'blob' || Number(size) > BINARY_FREE_MAX_BYTES) return false;
+  const [blob = Buffer.alloc(0)] = readBlobs(repoPath, [{ oid, size: Number(size) }]);
   if (!blob.subarray(0, BINARY_SNIFF_BYTES).includes(0)) return false;
-  return formats.some(({ magic, offset = 0 }) =>
-    magic.some((bytes) =>
-      blob.subarray(offset).subarray(0, bytes.length).equals(Buffer.from(bytes, 'latin1')),
-    ),
+  return formats.some(({ magic }) =>
+    magic.some((bytes) => blob.subarray(0, bytes.length).equals(Buffer.from(bytes, 'latin1'))),
   );
 }
 
@@ -802,8 +828,8 @@ function blobIsKnownBinary(
  * so "binary but has hunks" would call every committed image forged. A NUL is
  * not the whole answer either: one in a source file's comment makes git call
  * it binary. So the file is skipped only when every side it exists on is a
- * known format (`BINARY_FORMATS`) by extension and magic, and a path no
- * format names is recounted unread (decision 154).
+ * known binary (`blobIsKnownBinary`), and a path no format names is recounted
+ * unread (decision 154).
  */
 export function gitDiffBinaryRecount(
   repoPath: string,
@@ -817,7 +843,7 @@ export function gitDiffBinaryRecount(
     formats.length === 0
       ? [false]
       : [base, branch].map((rev) => blobIsKnownBinary(repoPath, rev, path, formats));
-  if (sides.every((side) => side !== false)) return null;
+  if (sides.includes(true) && !sides.includes(false)) return null;
   let added = 0;
   let deleted = 0;
   for (const hunk of diffHunks(repoPath, target, branch, path)) {
