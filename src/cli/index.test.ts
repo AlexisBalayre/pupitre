@@ -2,6 +2,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
+import { isValidElement, type ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { tempDir } from '../test/temp-dir.mock.js';
 
@@ -211,6 +212,7 @@ import {
 } from '../test/helpers/cli-index.mock.js';
 import { buildProgram } from './index.js';
 import { ProjectResolutionError, resolveProject } from './project.utils.js';
+import { Radar } from './ui/radar.component.js';
 
 describe('CLI commands', () => {
   const originalExitCode = process.exitCode;
@@ -455,6 +457,19 @@ describe('CLI commands', () => {
         expect(logs.filter((l) => l.includes('docs/adr/README.md'))).toEqual([
           expect.stringMatching(/ {2}docs\/adr\/README\.md: 2 sessions append \(decision 109\)$/),
         ]);
+      });
+
+      it('says clear when live sessions share nothing', () => {
+        const repo = initRepo();
+        useCwd(repo);
+        seedTwoRunning(repo);
+        vi.mocked(gitDiffPaths).mockImplementation((_repo, _target, branch) => [
+          `src/${branch}.ts`,
+        ]);
+
+        buildProgram().parse(['watch', '--once'], { from: 'user' });
+
+        expect(logs).toEqual([expect.stringMatching(/ {2}clear — no overlaps$/)]);
       });
 
       it('prints no pair when the index is all two sessions share', () => {
@@ -2229,6 +2244,38 @@ describe('the raw-sink guard over the CLI source', () => {
       `index.ts:14: \${layer.name.padEnd(18)}`,
       `index.ts:14: \${(layer.extends ?? '-').padEnd(18)}`,
       `index.ts:14: \${layer.contextBudget ?? '-'}`,
+    ]);
+  });
+});
+
+// Called as a function, not rendered: this file replaces ink's `render`, so the
+// text is read off the element tree it returns.
+function textOf(node: ReactNode): string[] {
+  if (typeof node === 'string') return [node];
+  if (Array.isArray(node)) return node.flatMap(textOf);
+  if (isValidElement<{ children?: ReactNode }>(node)) return textOf(node.props.children);
+  return [];
+}
+
+describe('radar block', () => {
+  it('names the append-only index under the pairs, led by its project', () => {
+    const rows = textOf(
+      Radar({
+        overlaps: [
+          {
+            sessionA: 's1',
+            sessionB: 's2',
+            files: ['docs/adr/README.md', 'src/cli/index.test.ts'],
+          },
+        ],
+        radarStale: false,
+        project: 'p1',
+      }),
+    );
+
+    expect(rows).toEqual([
+      'p1  OVERLAP  s1 <-> s2  src/cli/index.test.ts',
+      'p1  docs/adr/README.md: 2 sessions append (decision 109)',
     ]);
   });
 });

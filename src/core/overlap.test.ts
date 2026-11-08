@@ -109,6 +109,22 @@ describe('radarView', () => {
     );
   });
 
+  it('names several append-only files in path order', () => {
+    const view = radarView([
+      {
+        sessionA: 's1',
+        sessionB: 's2',
+        files: ['docs/adr/README.md', 'docs/adr/0100-a.md', 'docs/adr/0099-b.md'],
+      },
+    ]);
+
+    expect(view.appends.map((note) => note.file)).toEqual([
+      'docs/adr/0099-b.md',
+      'docs/adr/0100-a.md',
+      'docs/adr/README.md',
+    ]);
+  });
+
   it('leaves pairs on other files, and docs/adrift.md, untouched', () => {
     const pairs = [{ sessionA: 's1', sessionB: 's2', files: ['docs/adrift.md', 'src/a.ts'] }];
 
