@@ -123,19 +123,31 @@ fi
 #
 # Inside a pup session (PUP_SESSION_ID set) the run queues for one of the machine's
 # test slots through `pup session test`, and yields to a merge gate (decisions 96,
-# 160): the related files are listed first, which starts no test, and the slot runs them.
+# 160). The tests are listed first, which starts none: `vitest list --filesOnly
+# --changed` names those that import a file changed in the working tree, staged or
+# not, and `vitest related` has no list form. A failed listing blocks the commit; only
+# a clean listing with no file, vitest's own "no related tests", runs nothing.
 RELATED_TEST_CMD="pnpm exec vitest related --run --passWithNoTests"
 if [ -n "${TEST_CMD:-}" ] && [ -n "$STAGED_SOURCE" ]; then
   if [ -n "${PUP_SESSION_ID:-}" ]; then
+    # Fail closed: a session that cannot reach pup runs no tests, so it commits none.
+    if command -v pup >/dev/null 2>&1; then
+      PUP_CMD=(pup)
+    elif [ -n "${PUP_BIN:-}" ] && [ -f "$PUP_BIN" ]; then
+      PUP_CMD=(node "$PUP_BIN")
+    else
+      echo ""
+      echo "ERROR: pup is not on the PATH and PUP_BIN is not a file: the related tests cannot run through a test slot."
+      exit 1
+    fi
     echo "Running related tests through a test slot (waits for a free one)"
-    if ! RELATED_FILES=$(run_on_paths "$STAGED_SOURCE" "pnpm exec vitest related --listTests"); then
+    if ! RELATED_FILES=$(pnpm exec vitest list --filesOnly --changed); then
       echo ""
       echo "ERROR: Listing the tests related to the staged files failed."
       exit 1
     fi
     if [ -n "$RELATED_FILES" ]; then
-      if command -v pup >/dev/null 2>&1; then PUP_CMD=(pup); else PUP_CMD=(node "${PUP_BIN:-}"); fi
-      if ! printf '%s\n' "$RELATED_FILES" | tr '\n' '\0' | xargs -0 "${PUP_CMD[@]}" session test; then
+      if ! (set -o pipefail; printf '%s\n' "$RELATED_FILES" | tr '\n' '\0' | xargs -0 "${PUP_CMD[@]}" session test --); then
         echo ""
         echo "ERROR: Tests related to the staged files failed. Fix them before committing."
         exit 1

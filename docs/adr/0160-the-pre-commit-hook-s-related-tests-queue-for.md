@@ -8,10 +8,15 @@
     directly, so every worker committing started its own vitest pool outside the 2 slots. On
     2026-11-08 five commits ran at once (29 vitest processes), the load stayed at 65 to 100 on 8
     cores, the hook timed out unrelated tests and the merge gate's test stage ran over an hour.
-    *Inside a session* (`PUP_SESSION_ID` set) the hook lists the related test files with `vitest
-    related --listTests`, which runs no test, then runs them with `pup session test <files>`
-    (`node "$PUP_BIN"` when `pup` is not on the path). The run says whom it waits for, and
-    waits while a merge gate holds a slot or queues ahead. No related test file means no run.
+    *Inside a session* (`PUP_SESSION_ID` set) the hook lists the test files with `vitest list
+    --filesOnly --changed`, which runs no test, then runs them with `pup session test -- <files>`.
+    `vitest related` has no list form (vitest 4 rejects `--listTests` and `--related`), so the
+    listing names the tests that import any file changed in the working tree, staged or not: a
+    superset of the staged files' tests. The run says whom it waits for, and waits while a merge
+    gate holds a slot or queues ahead.
+    *Fails closed.* The hook uses `pup` from the PATH, else `node "$PUP_BIN"` when that is an
+    existing file, else blocks the commit. A listing that exits non-zero blocks it too; only a
+    clean listing with no file runs nothing, as vitest reports no related test.
     *Outside a session* the hook runs `vitest related --run` directly, as before.
     *Ceiling.* The test files go to the project's test command as names, so a file whose path
     contains another's runs too.
