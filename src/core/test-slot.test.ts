@@ -6,6 +6,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   utimesSync,
@@ -15,6 +16,9 @@ import { freemem } from 'node:os';
 import { basename, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { tempDir } from '../test/temp-dir.mock.js';
+import { openStore } from './db.client.js';
+import { projectId, projectPaths } from './paths.utils.js';
+import { ensureProject, insertSession, insertTask } from './session.repository.js';
 import {
   availableMemoryBytes,
   GATE_SLOT_WAIT_MS,
@@ -655,6 +659,83 @@ describe('runSessionTest (decision 96)', () => {
     expect(process.listeners('SIGINT')).toEqual(before);
     expect(readdirSync(join(dir, 'slots'))).toEqual([]);
   });
+});
+
+describe('pup session test --related, through the real CLI and vitest', () => {
+  const cli = join(import.meta.dirname, '..', 'cli', 'index.ts');
+  const tsx = join(import.meta.dirname, '..', '..', 'node_modules', '.bin', 'tsx');
+
+  /** A session whose worktree is a repo of `sum` and `other`, each with a test; `failing` names those whose test fails. */
+  function sessionRepo(failing: string[]): {
+    repo: string;
+    run: (...args: string[]) => ReturnType<typeof spawnSync>;
+  } {
+    const home = realpathSync(tempDir('pup-related-home-'));
+    const repo = realpathSync(tempDir('pup-related-repo-'));
+    symlinkSync(join(import.meta.dirname, '..', '..', 'node_modules'), join(repo, 'node_modules'));
+    // Neither the git hook's GIT_DIR nor an outer vitest's variables reach the repo or the CLI.
+    const env = Object.fromEntries(
+      Object.entries(process.env).filter(
+        ([key]) => !key.startsWith('VITEST') && !key.startsWith('GIT_') && key !== HELD_SLOT_ENV,
+      ),
+    );
+    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repo, env });
+    // The CLI reads the project's test command before it knows the run is a related one; this
+    // one is never run. package.json is modified and uncommitted, as a dependency change leaves it.
+    mkdirSync(join(repo, '.pupitre'));
+    writeFileSync(join(repo, '.pupitre', 'adapter.yml'), 'test: "false"\n');
+    const { packageManager } = JSON.parse(
+      readFileSync(join(import.meta.dirname, '..', '..', 'package.json'), 'utf8'),
+    );
+    writeFileSync(join(repo, 'package.json'), JSON.stringify({ name: 'x', packageManager }));
+    for (const name of ['sum', 'other']) {
+      writeFileSync(join(repo, `${name}.ts`), `export const ${name} = 1;\n`);
+      writeFileSync(
+        join(repo, `${name}.test.ts`),
+        `import { writeFileSync } from 'node:fs';\nimport { expect, it } from 'vitest';\nimport './${name}.js';\nit('${name}', () => {\n  writeFileSync('${join(repo, `ran-${name}`)}', '');\n  expect(${failing.includes(name)}).toBe(false);\n});\n`,
+      );
+    }
+    const db = openStore(projectPaths(repo, join(home, '.pupitre')).dbFile);
+    const pid = projectId(repo);
+    ensureProject(db, pid, repo);
+    insertTask(db, { id: 'task-r1', projectId: pid, spec: '{}' });
+    insertSession(db, {
+      id: 's-related',
+      taskId: 'task-r1',
+      worktreePath: repo,
+      branch: 'pup/s-related',
+      profileHash: 'hash',
+    });
+    db.close();
+    return {
+      repo,
+      run: (...args) =>
+        spawnSync(tsx, [cli, 'session', 'test', ...args], {
+          cwd: repo,
+          encoding: 'utf8',
+          env: { ...env, HOME: home, PUP_SESSION_ID: 's-related' },
+        }),
+    };
+  }
+
+  it('fails when a related test fails, though `--` follows the option the CLI does not know', () => {
+    const { repo, run } = sessionRepo(['sum']);
+
+    const result = run('--related', '--', './sum.ts');
+
+    expect(result.status, `${result.stdout}${result.stderr}`).not.toBe(0);
+    expect(existsSync(join(repo, 'ran-sum'))).toBe(true);
+  }, 90_000);
+
+  it('runs only the tests related to the file, and passes when they do', () => {
+    const { repo, run } = sessionRepo(['other']);
+
+    const result = run('--related', '--', './sum.ts');
+
+    expect(result.status, `${result.stdout}${result.stderr}`).toBe(0);
+    expect(existsSync(join(repo, 'ran-sum'))).toBe(true);
+    expect(existsSync(join(repo, 'ran-other'))).toBe(false);
+  }, 90_000);
 });
 
 describe('sessionTestCommand (decision 96)', () => {

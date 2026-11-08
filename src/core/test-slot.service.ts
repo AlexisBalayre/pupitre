@@ -410,20 +410,45 @@ export function sessionTestCommand(repoPath: string): GateCommand | undefined {
     .find((command) => command.stage === 'test');
 }
 
-/** The first argument that turns `pup session test` into a run of the related tests. */
-export const RELATED_FLAG = '--related';
+/** The option, before the files, that turns `pup session test` into a run of the related tests. */
+const RELATED_FLAG = '--related';
 
 /**
  * What `pup session test --related -- <files>` runs instead of the project's test
  * command: the tests that import the named source files, which is what the pre-commit
  * hook runs outside a session (decisions 135, 160). Vitest alone, so no adapter's
- * command is used. The CLI passes `--related` on as an argument, being unknown to it.
+ * command is used. The CLI passes `--related`, unknown to it, on as an argument.
  */
 const RELATED_TEST_COMMAND: GateCommand = {
   stage: 'test',
   command: 'pnpm',
   args: ['exec', 'vitest', 'related', '--run', '--passWithNoTests'],
 };
+
+/** The leading options of `args`: the run's flags, `--` included, before its files. */
+function leadingOptions(args: string[]): string[] {
+  const end = args.findIndex((arg) => !arg.startsWith('-'));
+  return end === -1 ? args : args.slice(0, end);
+}
+
+/** Whether `--related` sits among the options before the files. */
+function relatedMode(args: string[]): boolean {
+  return leadingOptions(args).includes(RELATED_FLAG);
+}
+
+/**
+ * The related run's arguments: the files, and any other option before them. Neither
+ * `--related` nor the `--` that follows it is passed on: the CLI keeps that `--` after
+ * an option it does not know, and vitest's parser files everything after one under
+ * `options['--']`, so `related` would see no file and pass having run nothing.
+ */
+function relatedArgs(args: string[]): string[] {
+  const leading = leadingOptions(args);
+  return [
+    ...leading.filter((arg) => arg !== RELATED_FLAG && arg !== '--'),
+    ...args.slice(leading.length),
+  ];
+}
 
 /**
  * `pup session test [args]`: the project's test command with `args` after it,
@@ -441,9 +466,9 @@ export async function runSessionTest(req: {
   sessionId: string;
   slots?: TestSlotOptions;
 }): Promise<number> {
-  const related = req.args[0] === RELATED_FLAG;
-  const command = related ? RELATED_TEST_COMMAND : req.command;
-  const args = related ? req.args.slice(1) : req.args;
+  const { command, args } = relatedMode(req.args)
+    ? { command: RELATED_TEST_COMMAND, args: relatedArgs(req.args) }
+    : { command: req.command, args: req.args };
   const shellScript = command.command === 'sh' && command.args[0] === '-c';
   const separator =
     args.length === 0 ? [] : command.command === 'npm' ? ['--'] : shellScript ? ['sh'] : [];
