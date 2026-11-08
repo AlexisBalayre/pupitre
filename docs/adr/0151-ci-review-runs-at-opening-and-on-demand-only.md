@@ -11,7 +11,7 @@
     *The marker.* `claude-review-push-marker.yml` sets the pushed head's `claude-review` status to
     pending "Not reviewed: push since last review", for the owner's same-repo, non-draft PRs.
     `pr-status.yml` reads that one "Not reviewed" description as awaiting a review
-    (`pr/ci-pending`), where the preflight's comment-only skip stays final. `pup ci wait` ends
+    (`ci-pending`), where the preflight's comment-only skip stays final. `pup ci wait` ends
     on it at once with a digest naming the ask, as it does on the comment-only skip.
     *The ask.* After a gated fix round, the comment `pup` posts on the PR ends with `@claude
     review`, so a round pup gated gets its review. A push `pup` did not make gets none until the
