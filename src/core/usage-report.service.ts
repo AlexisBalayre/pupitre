@@ -1,4 +1,5 @@
 import { readdirSync, readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 
@@ -11,7 +12,7 @@ import { listSessions } from './session.repository.js';
 // than recalled. It writes nothing: the transcripts and the sessions table are
 // only read.
 
-enum UsageClass {
+export enum UsageClass {
   Worker = 'worker',
   Conductor = 'conductor',
   Console = 'console',
@@ -55,8 +56,10 @@ interface UsageRow {
   recachedTokens: number;
 }
 
-interface ToolCarry {
+export interface ToolCarry {
   tool: string;
+  /** Set when the carry is split by result size, as `pup retro` does. */
+  sizeBucket?: string;
   results: number;
   tokens: number;
   carriedTokens: number;
@@ -71,13 +74,18 @@ interface UsageReport {
   unpricedModels: string[];
 }
 
-interface UsageOptions {
+/** The dirs a window of the project may have written to: the project's own, then the operator shell's. */
+export function claudeDirsOf(userDir: string): string[] {
+  return [userDir, process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')];
+}
+
+export interface UsageOptions {
   since: Date;
   /** Every Claude config dir a window of the project may have written to. */
   claudeDirs: string[];
 }
 
-interface Call {
+export interface Call {
   at: number;
   model: string;
   effort: string;
@@ -88,7 +96,7 @@ interface Call {
   output: number;
 }
 
-interface Bucket {
+export interface Bucket {
   class: UsageClass;
   model: string;
   effort: string;
@@ -96,6 +104,7 @@ interface Bucket {
   floors: number[];
   recaches: number;
   recachedTokens: number;
+  recachedCost: number;
 }
 
 // A session writes its own transcript, so a field that is counted, coerced or
@@ -103,6 +112,7 @@ interface Bucket {
 interface TranscriptEntry {
   type?: string;
   timestamp?: unknown;
+  subtype?: unknown;
   requestId?: string;
   effort?: unknown;
   entrypoint?: string;
@@ -124,16 +134,17 @@ interface ContentBlock {
   type?: string;
   id?: string;
   name?: unknown;
+  input?: unknown;
   tool_use_id?: string;
   content?: unknown;
   text?: unknown;
 }
 
-function contextOf(call: Call): number {
+export function contextOf(call: Call): number {
   return call.input + call.read + call.write5m + call.write1h;
 }
 
-function priceOf(model: string): { input: number; output: number } | undefined {
+export function priceOf(model: string): { input: number; output: number } | undefined {
   return Object.entries(MODEL_PRICES).find(([prefix]) => model.startsWith(prefix))?.[1];
 }
 
@@ -162,7 +173,7 @@ function sum(parts: CostParts): number {
 }
 
 /** Nearest-rank percentile of an unsorted list; 0 for an empty one. */
-function percentile(values: number[], p: number): number {
+export function percentile(values: number[], p: number): number {
   if (values.length === 0) return 0;
   const sorted = [...values].sort((a, b) => a - b);
   return sorted[Math.max(0, Math.ceil(p * sorted.length) - 1)] as number;
@@ -217,12 +228,23 @@ interface ToolResult {
   callsBefore: number;
 }
 
-interface Transcript {
+export interface FileRead {
+  path: string;
+  /** The offset and limit asked for: reading a file in chunks is not reading it again. */
+  range: string;
+  tokens: number;
+}
+
+export interface Transcript {
   calls: Map<string, Call>;
   /** The last call before the window, when the transcript began before it. */
   before: Call | undefined;
   toolNames: Map<string, string>;
   toolResults: ToolResult[];
+  readPaths: Map<string, { path: string; range: string }>;
+  reads: FileRead[];
+  /** Compactions inside the window. */
+  compactions: number;
   conductor: boolean;
   headless: boolean;
   sawUser: boolean;
@@ -244,10 +266,20 @@ function noteOrigin(state: Transcript, entry: TranscriptEntry): void {
   state.conductor = textOf(entry.message?.content).includes('# Pupitre conductor ');
 }
 
+function readOf(input: unknown): { path: string; range: string } | undefined {
+  const { file_path: path, offset, limit } = (input ?? {}) as Record<string, unknown>;
+  if (typeof path !== 'string' || !path) return undefined;
+  const num = (v: unknown): number | '' => (typeof v === 'number' ? v : '');
+  return { path, range: `${num(offset)}:${num(limit)}` };
+}
+
 function noteAssistant(state: Transcript, entry: TranscriptEntry, at: number): void {
   for (const block of blocksOf(entry.message?.content)) {
-    if (block.type === 'tool_use' && block.id && typeof block.name === 'string')
+    if (block.type === 'tool_use' && block.id && typeof block.name === 'string') {
       state.toolNames.set(block.id, block.name);
+      const read = block.name === 'Read' ? readOf(block.input) : undefined;
+      if (read) state.readPaths.set(block.id, read);
+    }
   }
   const call = parseCall(entry, at);
   const key = entry.requestId ?? entry.message?.id;
@@ -257,11 +289,14 @@ function noteAssistant(state: Transcript, entry: TranscriptEntry, at: number): v
 function noteToolResults(state: Transcript, entry: TranscriptEntry): void {
   for (const block of blocksOf(entry.message?.content)) {
     if (block.type !== 'tool_result') continue;
+    const tokens = Math.ceil(textOf(block.content).length / CHARS_PER_TOKEN);
     state.toolResults.push({
       tool: state.toolNames.get(block.tool_use_id ?? '') ?? 'unknown',
-      tokens: Math.ceil(textOf(block.content).length / CHARS_PER_TOKEN),
+      tokens,
       callsBefore: state.calls.size,
     });
+    const read = state.readPaths.get(block.tool_use_id ?? '');
+    if (read) state.reads.push({ ...read, tokens });
   }
 }
 
@@ -277,6 +312,7 @@ function scanLine(state: Transcript, line: string, sinceMs: number): void {
   if (at < sinceMs) state.before = parseCall(entry, at) ?? state.before;
   else if (entry.type === 'assistant') noteAssistant(state, entry, at);
   else if (entry.type === 'user') noteToolResults(state, entry);
+  else if (entry.type === 'system' && entry.subtype === 'compact_boundary') state.compactions += 1;
 }
 
 /**
@@ -290,6 +326,9 @@ function readTranscript(file: string, sinceMs: number): Transcript {
     before: undefined,
     toolNames: new Map(),
     toolResults: [],
+    readPaths: new Map(),
+    reads: [],
+    compactions: 0,
     conductor: false,
     headless: false,
     sawUser: false,
@@ -373,6 +412,7 @@ function bucketFor(buckets: Map<string, Bucket>, klass: UsageClass, call: Call):
     floors: [],
     recaches: 0,
     recachedTokens: 0,
+    recachedCost: 0,
   };
   buckets.set(key, bucket);
   return bucket;
@@ -385,7 +425,7 @@ function recachedTokens(call: Call, previous: Call | undefined): number {
   return written > call.read ? written : 0;
 }
 
-function addCalls(buckets: Map<string, Bucket>, klass: UsageClass, read: Transcript): void {
+export function addCalls(buckets: Map<string, Bucket>, klass: UsageClass, read: Transcript): void {
   let previous = read.before;
   for (const call of [...read.calls.values()].sort((a, b) => a.at - b.at)) {
     const bucket = bucketFor(buckets, klass, call);
@@ -396,15 +436,23 @@ function addCalls(buckets: Map<string, Bucket>, klass: UsageClass, read: Transcr
     if (again > 0) {
       bucket.recaches += 1;
       bucket.recachedTokens += again;
+      bucket.recachedCost += costOf(call).write;
     }
     previous = call;
   }
 }
 
-function addToolCarry(carry: Map<string, ToolCarry>, read: Transcript): void {
+export function addToolCarry(
+  carry: Map<string, ToolCarry>,
+  read: Transcript,
+  bucketOf?: (tokens: number) => string,
+): void {
   for (const result of read.toolResults) {
-    const entry = carry.get(result.tool) ?? {
+    const sizeBucket = bucketOf?.(result.tokens);
+    const key = sizeBucket ? `${result.tool}\u0000${sizeBucket}` : result.tool;
+    const entry = carry.get(key) ?? {
       tool: result.tool,
+      ...(sizeBucket ? { sizeBucket } : {}),
       results: 0,
       tokens: 0,
       carriedTokens: 0,
@@ -412,7 +460,7 @@ function addToolCarry(carry: Map<string, ToolCarry>, read: Transcript): void {
     entry.results += 1;
     entry.tokens += result.tokens;
     entry.carriedTokens += result.tokens * (read.calls.size - result.callsBefore);
-    carry.set(result.tool, entry);
+    carry.set(key, entry);
   }
 }
 
@@ -467,15 +515,28 @@ function unpricedModelsOf(buckets: Bucket[]): string[] {
   return [...new Set(models.filter((m) => !priceOf(m)))].sort();
 }
 
-export function buildUsageReport(db: Database, repoPath: string, opts: UsageOptions): UsageReport {
+export interface ScannedTranscript {
+  class: UsageClass;
+  read: Transcript;
+}
+
+/** Every transcript of the project with a call inside the window, read once. */
+export function scanUsage(db: Database, repoPath: string, opts: UsageOptions): ScannedTranscript[] {
   const claudeDirs = [...new Set(opts.claudeDirs)];
   const sinceMs = opts.since.getTime();
-  const buckets = new Map<string, Bucket>();
-  const carry = new Map<string, ToolCarry>();
+  const scanned: ScannedTranscript[] = [];
   for (const source of sourcesOf(db, repoPath, claudeDirs)) {
     const read = readTranscript(source.file, sinceMs);
-    if (read.calls.size === 0) continue;
-    addCalls(buckets, classOf(source, read), read);
+    if (read.calls.size > 0) scanned.push({ class: classOf(source, read), read });
+  }
+  return scanned;
+}
+
+export function buildUsageReport(db: Database, repoPath: string, opts: UsageOptions): UsageReport {
+  const buckets = new Map<string, Bucket>();
+  const carry = new Map<string, ToolCarry>();
+  for (const { class: klass, read } of scanUsage(db, repoPath, opts)) {
+    addCalls(buckets, klass, read);
     addToolCarry(carry, read);
   }
   const all = [...buckets.values()];
