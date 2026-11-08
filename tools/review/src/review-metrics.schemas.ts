@@ -110,7 +110,7 @@ export const reviewSummarySchema = z.object({
   prior_importants: z
     .array(priorImportantSchema)
     .describe(
-      "Incremental only: the prior record's important findings, plus the unresolved entries its own prior_importants carried forward, each checked against the current head. Copy every still-unresolved entry forward; empty on full.",
+      "When the Mode line names a prior record: its important findings, plus the unresolved entries its own prior_importants carried forward, each checked against the current head. Copy every still-unresolved entry forward; empty only when no prior record is named.",
     ),
   findings: z.array(findingSchema).describe("The confirmed findings the run acted on."),
   refuted_findings: z

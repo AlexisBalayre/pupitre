@@ -91,7 +91,7 @@ describe("decideMode", () => {
   });
 
   it("re-reviews an already-reviewed head when a human asked by comment", () => {
-    expect(decideMode({ ...base, prior: record({ commit_sha: "bbb" }), trigger: "comment" })).toEqual({ kind: "full" });
+    expect(decideMode({ ...base, prior: record({ commit_sha: "bbb" }), trigger: "comment" })).toEqual({ kind: "full", priorPath: "records/1.json" });
   });
 
   it("resolves incremental from the prior head on a clean fast-forward", () => {
@@ -103,15 +103,15 @@ describe("decideMode", () => {
   });
 
   it("honors an explicit full request over an eligible delta", () => {
-    expect(decideMode({ ...base, prior: record(), forceFull: true })).toEqual({ kind: "full" });
+    expect(decideMode({ ...base, prior: record(), forceFull: true })).toEqual({ kind: "full", priorPath: "records/1.json" });
   });
 
   it("falls back to full when a rebase broke ancestry", () => {
-    expect(decideMode({ ...base, prior: record(), isAncestor: false })).toEqual({ kind: "full" });
+    expect(decideMode({ ...base, prior: record(), isAncestor: false })).toEqual({ kind: "full", priorPath: "records/1.json" });
   });
 
   it("falls back to full when the delta contains a merge from the base", () => {
-    expect(decideMode({ ...base, prior: record(), hasMerges: true })).toEqual({ kind: "full" });
+    expect(decideMode({ ...base, prior: record(), hasMerges: true })).toEqual({ kind: "full", priorPath: "records/1.json" });
   });
 
   it("skips a delta of comments and Markdown alone", () => {
@@ -130,7 +130,7 @@ describe("decideMode", () => {
   });
 
   it("reviews in full a comment-only delta whose ancestry broke", () => {
-    expect(decideMode({ ...base, prior: record(), isCommentOnly: true, isAncestor: false })).toEqual({ kind: "full" });
+    expect(decideMode({ ...base, prior: record(), isCommentOnly: true, isAncestor: false })).toEqual({ kind: "full", priorPath: "records/1.json" });
   });
 });
 
