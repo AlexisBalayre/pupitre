@@ -408,12 +408,13 @@ function judgeComplexity(measured: GateDebtMeasurement, sessionId: string): Stag
   const risen = measured.complexity.after
     .map((f) => {
       const source = sources[f.file];
-      // A file the target holds rises from zero when the before-measure
-      // omitted it; only one the target lacks is new (decision 157).
+      // A file the target holds, or whose source it holds, rises from zero
+      // when the before-measure omitted it; only one the target lacks by both
+      // is new (decision 157).
       const was =
         before.get(f.file) ??
         (source === undefined ? undefined : before.get(source)) ??
-        (held.has(f.file) ? 0 : undefined);
+        (held.has(f.file) || (source !== undefined && held.has(source)) ? 0 : undefined);
       return was === undefined
         ? {
             file: f.file,

@@ -10,29 +10,40 @@
     +15 rise. Take a custom command at the target that returns a partial list, or `[]`: a file
     of 10 decision points could then grow to 50 with no flag. That gap was a fail-open.
     *The rule.* The gate lists the target sha's tree with `git ls-tree -r -z --name-only`
-    through `runGit`, the same pinned git as every other gate read. It keeps the changed paths
-    that list holds and passes them to `judgeComplexity` as `complexity.targetHolds`. Each
-    touched file then gets the first of these that applies:
+    through `runGit`, the same pinned git as every other gate read. It keeps the paths that
+    list holds out of the changed paths plus every rename or copy pair's source, the same set
+    the before-measure covers, and passes them to `judgeComplexity` as
+    `complexity.targetHolds`. Each touched file then gets the first of these that applies:
     - The file is in the before-measure: it keeps the +15 rise from that count.
     - Git paired the file with a source the before-measure has: it rises from the source's count (decision 145).
-    - The target holds the file: it rises from zero. An existing file the before-measure
-      leaves out is read the harshest way again, as it was before decision 145.
-    - The target lacks the file: only then is it new, and judged against the cap.
+    - The target holds the file, or its paired source: it rises from zero. An existing file
+      the before-measure leaves out is read the harshest way again, as it was before decision
+      145, and so is a file renamed or copied from one.
+    - The target lacks both the file and any source: only then is it new, and judged against
+      the cap.
     The tree is listed only when an adapter measures complexity, as the pairing pass is.
-    *What it closes.* Two of 145's five ways for an existing file to drop out stop reaching the
-    cap. One is a partial custom command. The other is a session writing the main checkout,
-    since the tree is read from the target sha's objects, not from the files on disk. The
-    other three still do:
+    *What it closes.* The target sha's tree, not the before-measure, now decides whether a file
+    is new. Three of 145's five ways for an existing file to drop out no longer make it new:
+    - A partial custom command at the target.
+    - A rename or copy whose source the before-measure skips. The source is in the target's
+      tree, so the new path rises from zero. A non-source file renamed to a source name, such
+      as `.txt` to `.ts`, now counts its whole count as a rise.
+    - A session writing the main checkout. A file it removes there is still in the target
+      sha's objects.
+    The before-count still comes from the main checkout, though, so a session that writes there
+    can still inflate it and make a rise read smaller. This decision settles only which files
+    are new, not how high a file stood before.
+    Two ways remain, and in each the new path has no pair, so the target tree lacks it and it
+    is new by this rule too:
     - A rename or copy rewritten past git's 50% pairing threshold.
     - A copy pass that ran out of time.
-    - A rename whose source the before-measure skips.
-    In each of these the new path is absent from the target's tree, so it is new by this rule
-    too.
     *Not taken.* Passing the changed paths to `ls-tree` as pathspecs. Git reads a pathspec's
     magic and globs, so a path such as `src/[id].ts` could match more or less than itself.
     The full listing compared as strings has no such reading.
     *Tests.* In `debt.test.ts`, an empty before-list with a file the target holds flags at
     +16. A file the target lacks still passes at 40 under the cap, even when another path is
-    held. In `merge-gate.test.ts`, a real-git gate run uses a custom adapter that returns `[]`
-    at the target. The existing file grown by 20 flags as +20. A new file of 20 beside it
-    stays unflagged.
+    held. A rename, and a copy of an unchanged file, each at 50 with an omitted source the
+    target holds, flag at +50. In `merge-gate.test.ts`, real-git gate runs use a custom adapter
+    that returns `[]` at the target. The existing file grown by 20 flags as +20, and a new file
+    of 20 beside it stays unflagged. A renamed file and a copy of a file the branch never
+    changed, each at exactly the cap of 50, both flag at +50.

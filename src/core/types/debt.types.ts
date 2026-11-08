@@ -56,8 +56,9 @@ export interface GateDebtMeasurement extends DebtMeasurement {
    * `sources` maps a renamed or copied file's path to the path git paired it
    * with, which `before` also measures (decision 145). `copiesPaired` is false
    * when copy detection ran out of time and only renames were paired.
-   * `targetHolds` lists the changed paths the target sha's tree holds: only a
-   * file outside it is new (decision 157).
+   * `targetHolds` lists the changed paths and pair sources the target sha's
+   * tree holds: a file is new only when neither it nor its source is there
+   * (decision 157).
    */
   complexity?: {
     before: FileComplexity[];

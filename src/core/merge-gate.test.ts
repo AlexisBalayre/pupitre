@@ -588,9 +588,11 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
   /**
    * A renamed file, and a copy of a file the branch never changed, each grown
-   * by 40 decision points; the adapter counts `if (` in what it reads.
+   * by 40 decision points; the adapter counts `if (` in what it reads, and
+   * with `omitBefore` returns nothing at the target, as a partial custom
+   * command can.
    */
-  const seedRenameAndCopy = (): Adapter => {
+  const seedRenameAndCopy = ({ omitBefore = false } = {}): Adapter => {
     const plain = (name: string) =>
       Array.from({ length: 60 }, (_, i) => `export const ${name}${i} = ${i};\n`).join('');
     const branches = (n: number) => 'if (a) b();\n'.repeat(n);
@@ -602,12 +604,14 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     commitIn(worktree, 'src/copied.ts', plain('kept') + branches(50));
     return debtAdapter({
       complexity: ({ measurePath }: CapabilityContext, files: string[]) =>
-        files
-          .filter((file) => existsSync(join(measurePath, file)))
-          .map((file) => ({
-            file,
-            complexity: readFileSync(join(measurePath, file), 'utf8').split('if (').length - 1,
-          })),
+        omitBefore && measurePath === repo
+          ? []
+          : files
+              .filter((file) => existsSync(join(measurePath, file)))
+              .map((file) => ({
+                file,
+                complexity: readFileSync(join(measurePath, file), 'utf8').split('if (').length - 1,
+              })),
     });
   };
 
@@ -684,6 +688,17 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     // The new file's 20 stays under the cap; the existing file's 20 is a rise.
     expect(complexityDetail(outcome)).toContain(
       'complexity rose sharply in 1 touched file(s): src/kept.ts (+20).',
+    );
+  });
+
+  // Decision 157: a renamed or copied file whose source the target holds is not
+  // new either, though the before-measure omits the source and the new path is
+  // absent from the target. Both land at exactly the cap, which would pass.
+  it('judges a rename and a copy by their source in the target tree when the before-measure omits it', async () => {
+    const outcome = await merge(seedRenameAndCopy({ omitBefore: true }));
+
+    expect(complexityDetail(outcome)).toContain(
+      'complexity rose sharply in 2 touched file(s): src/copied.ts (+50), src/renamed.ts (+50).',
     );
   });
 

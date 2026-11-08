@@ -302,15 +302,16 @@ function complexitySources(
 }
 
 /**
- * The changed paths the target's tree holds, for the complexity stage: only a
- * file outside it is new (decision 157). Read from git rather than from the
+ * Which of `paths` (the changed paths and every pair's source) the target's
+ * tree holds, for the complexity stage: a file is new only when neither it
+ * nor its source is there (decision 157). Read from git rather than from the
  * before-measure, which a custom adapter can return partial.
  */
-function targetHolds(repoPath: string, target: string, changedPaths: string[]): string[] {
+function targetHolds(repoPath: string, target: string, paths: string[]): string[] {
   const held = new Set(
     runGit(repoPath, ['ls-tree', '-r', '-z', '--name-only', target]).split('\0'),
   );
-  return changedPaths.filter((path) => held.has(path));
+  return paths.filter((path) => held.has(path));
 }
 
 type DiffSizeKind = 'source' | 'test' | 'docs';
@@ -2438,12 +2439,16 @@ export async function measureBranch(
   };
   const changedPaths = gitDiffPaths(req.repoPath, targetSha, sha);
   // A renamed or copied file is judged against its source (decision 145), and
-  // only a file the target lacks is new (decision 157).
+  // only a file the target lacks, by its own path or its source's, is new
+  // (decision 157).
   const measuresComplexity = req.adapters.some((a) => a.complexity);
   const { sources, copiesPaired } = measuresComplexity
     ? complexitySources(req.repoPath, targetSha, sha)
     : { sources: {}, copiesPaired: true };
-  const targetHeld = measuresComplexity ? targetHolds(req.repoPath, targetSha, changedPaths) : [];
+  const complexityPaths = [...new Set([...changedPaths, ...Object.values(sources)])];
+  const targetHeld = measuresComplexity
+    ? targetHolds(req.repoPath, targetSha, complexityPaths)
+    : [];
   const nestedPackages = primary?.touchedNestedPackages?.(capabilityContext, changedPaths) ?? [];
   // Every environment before any stage: a stage runs session code with the
   // checkout writable, so a link made after it could follow a swapped-in
@@ -2571,9 +2576,7 @@ export async function measureBranch(
       ? {
           // "Before" reads the main checkout, which the merge lock holds at
           // the target branch — no historical checkout needed.
-          before: complexityOf(localContext(req.repoPath, req.gateEnv), [
-            ...new Set([...changedPaths, ...Object.values(sources)]),
-          ]),
+          before: complexityOf(localContext(req.repoPath, req.gateEnv), complexityPaths),
           after: complexityOf(capabilityContext, changedPaths),
         }
       : undefined;

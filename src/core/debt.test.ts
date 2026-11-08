@@ -699,6 +699,44 @@ describe('judgeDebt', () => {
       },
     ],
     [
+      'a rename whose source the target holds but the before-measure omits rises from zero',
+      {
+        measured: {
+          complexity: {
+            before: [],
+            after: [{ file: 'src/kept2.ts', complexity: 50 }],
+            sources: { 'src/kept2.ts': 'src/kept.ts' },
+            copiesPaired: true,
+            targetHolds: ['src/kept.ts'],
+          },
+        },
+        expected: {
+          stage: 'complexity',
+          status: 'flagged',
+          detail: 'complexity rose sharply in 1 touched file(s): src/kept2.ts (+50)',
+        },
+      },
+    ],
+    [
+      'a copy whose unchanged source the before-measure omits rises from zero',
+      {
+        measured: {
+          complexity: {
+            before: [],
+            after: [{ file: 'src/copied.ts', complexity: 50 }],
+            sources: { 'src/copied.ts': 'src/base.ts' },
+            copiesPaired: true,
+            targetHolds: ['src/base.ts'],
+          },
+        },
+        expected: {
+          stage: 'complexity',
+          status: 'flagged',
+          detail: 'complexity rose sharply in 1 touched file(s): src/copied.ts (+50)',
+        },
+      },
+    ],
+    [
       'a file the branch renamed is judged by its rise from the source',
       {
         measured: {
