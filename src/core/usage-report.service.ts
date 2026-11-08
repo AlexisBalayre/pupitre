@@ -85,7 +85,7 @@ export interface UsageOptions {
   claudeDirs: string[];
 }
 
-export interface Call {
+interface Call {
   at: number;
   model: string;
   effort: string;
@@ -228,14 +228,14 @@ interface ToolResult {
   callsBefore: number;
 }
 
-export interface FileRead {
+interface FileRead {
   path: string;
   /** The offset and limit asked for: reading a file in chunks is not reading it again. */
   range: string;
   tokens: number;
 }
 
-export interface Transcript {
+interface Transcript {
   calls: Map<string, Call>;
   /** The last call before the window, when the transcript began before it. */
   before: Call | undefined;

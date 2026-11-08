@@ -27,7 +27,7 @@ const REPEATED_READS = 3;
 const TOP_ROWS = 10;
 const CACHE_HIT_TARGET = 0.9;
 
-export interface CarryRow {
+interface CarryRow {
   tool: string;
   sizeBucket: string;
   results: number;
@@ -35,7 +35,7 @@ export interface CarryRow {
   carriedTokens: number;
 }
 
-export interface ClassRow {
+interface ClassRow {
   class: UsageClass;
   transcripts: number;
   calls: number;
@@ -49,14 +49,14 @@ export interface ClassRow {
   firstRequestFloor: number;
 }
 
-export interface RepeatedRead {
+interface RepeatedRead {
   path: string;
   sessions: number;
   reads: number;
   rereadTokens: number;
 }
 
-export interface RetroFinding {
+interface RetroFinding {
   signal: string;
   impactTokens: number;
   evidence: string;
@@ -103,7 +103,7 @@ export function repoRelative(raw: string, repoPath: string): string {
 
 const sum = (values: number[]): number => values.reduce((n, v) => n + v, 0);
 
-export function carryRows(scanned: ScannedTranscript[]): CarryRow[] {
+function carryRows(scanned: ScannedTranscript[]): CarryRow[] {
   const carry = new Map<string, ToolCarry>();
   for (const { read } of scanned) addToolCarry(carry, read, sizeBucket);
   return [...carry.values()]
@@ -117,7 +117,7 @@ export function carryRows(scanned: ScannedTranscript[]): CarryRow[] {
     .sort((a, b) => b.carriedTokens - a.carriedTokens);
 }
 
-export function classRows(scanned: ScannedTranscript[]): ClassRow[] {
+function classRows(scanned: ScannedTranscript[]): ClassRow[] {
   const buckets = new Map<string, Bucket>();
   const transcripts = new Map<UsageClass, ScannedTranscript[]>();
   for (const item of scanned) {
