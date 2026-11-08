@@ -305,11 +305,14 @@ function complexitySources(
  * Which of `paths` (the changed paths and every pair's source) the target's
  * tree holds, for the complexity stage: a file is new only when neither it
  * nor its source is there (decision 157). Read from git rather than from the
- * before-measure, which a custom adapter can return partial.
+ * before-measure, which a custom adapter can return partial. `--full-tree`
+ * because `core.worktree` sits in the shared config: aimed elsewhere, it
+ * gives the listing a cwd prefix no target path matches, and every file would
+ * count as new.
  */
 function targetHolds(repoPath: string, target: string, paths: string[]): string[] {
   const held = new Set(
-    runGit(repoPath, ['ls-tree', '-r', '-z', '--name-only', target]).split('\0'),
+    runGit(repoPath, ['ls-tree', '-r', '-z', '--full-tree', '--name-only', target]).split('\0'),
   );
   return paths.filter((path) => held.has(path));
 }

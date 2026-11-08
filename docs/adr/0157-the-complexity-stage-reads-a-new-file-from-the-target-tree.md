@@ -9,8 +9,11 @@
     before-measure left out was judged against `COMPLEXITY_NEW_FILE_FLAG_CAP` (50), not the
     +15 rise. Take a custom command at the target that returns a partial list, or `[]`: a file
     of 10 decision points could then grow to 50 with no flag. That gap was a fail-open.
-    *The rule.* The gate lists the target sha's tree with `git ls-tree -r -z --name-only`
-    through `runGit`, the same pinned git as every other gate read. It keeps the paths that
+    *The rule.* The gate lists the target sha's tree with
+    `git ls-tree -r -z --full-tree --name-only` through `runGit`, the same pinned git as every
+    other gate read. `--full-tree` matters because `core.worktree` sits in the shared config
+    a session can write. If it is aimed at `/`, the listing gets a cwd prefix that no target
+    path matches, and every file would count as new. It keeps the paths that
     list holds out of the changed paths plus every rename or copy pair's source, the same set
     the before-measure covers, and passes them to `judgeComplexity` as
     `complexity.targetHolds`. Each touched file then gets the first of these that applies:
