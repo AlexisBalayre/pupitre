@@ -61,10 +61,11 @@ interface LandRequest {
  * and branch go, a `landed` event drops the PR from the inbox, and the audit
  * re-stamps the baseline the PR mode left alone (decision 26). A re-run after a
  * failure under the lock is safe: each step skips what is already done. The
- * event is the lock's last write, so a second land that waited on the first
- * refuses under the lock (decision 88). The steer of overlapping sessions runs
- * before the audit, and an audit that fails after both is `pup audit`'s to
- * re-run.
+ * event is written under the lock, so a second land that waited on the first
+ * refuses under it (decision 88). The steer of overlapping sessions and then
+ * the audit run under the lock too, and an audit that fails after both is
+ * `pup audit`'s to re-run. A lock lost under the land throws
+ * `MergeLockLostError` carrying the outcome, steer and all.
  */
 export async function landSession(db: Database, req: LandRequest): Promise<LandOutcome> {
   const session = getSession(db, req.sessionId);
@@ -130,9 +131,12 @@ export async function landSession(db: Database, req: LandRequest): Promise<LandO
   }
   const mergeCommit = pr.mergeCommit;
 
-  const landed = await withMergeLock(
+  // Whole, so a `MergeLockLostError` carries the outcome the CLI prints.
+  return withMergeLock(
     req.repoPath,
-    () => {
+    async (): Promise<LandOutcome> => {
+      // `pup fix` takes the session out of merged under this lock, maybe while
+      // GitHub was being read above; landing then would tear down its live round.
       assertStillMerged(db, session.id, id, LAND_USE);
       if (newestMerge(db, session.id) === 'landed') {
         throw new Error(`Session ${id} has already landed.`);
@@ -190,29 +194,49 @@ export async function landSession(db: Database, req: LandRequest): Promise<LandO
       const targetSha = fastForwarded ? originTip : localSha;
       const tornDown = tearDown(req.repoPath, session, targetSha, sha);
       appendEvent(db, session.id, 'landed', { sha: mergeCommit, target, prUrl });
-      return { targetSha, fastForwarded, landedOn, ...tornDown };
+      // Right after the event, still under the lock, and before the audit,
+      // which can throw: once the event is written a re-run refuses, and
+      // nothing else steers (decision 88).
+      const unsteered = steerOverlappingSessions(
+        db,
+        req.repoPath,
+        session.id,
+        landedOn,
+        mergeCommit,
+        target,
+        targetSha,
+      );
+      // Said now, before the audit: a re-run refuses the landed session, and an
+      // audit that throws, or a kill or a timeout during it, would leave the
+      // outcome unreturned and these sessions named nowhere (decision 99).
+      const branch = sanitizeReason(target);
+      for (const { sessionId, reason } of unsteered) {
+        console.error(
+          `Could not tell ${sanitizeReason(sessionId)} that ${branch} moved: ` +
+            `${sanitizeReason(reason)}. Steer it to take ${branch} in.`,
+        );
+      }
+      const outcome: LandOutcome = {
+        prUrl,
+        mergeCommit,
+        target,
+        targetSha,
+        fastForwarded,
+        ...tornDown,
+        ...(unsteered.length > 0 ? { unsteered } : {}),
+      };
+      if (req.audit === false) return outcome;
+      // Under the lock too: the steer wakes the sessions whose gates come next,
+      // and a gate reads the baseline and ratchets it under this lock, so none
+      // measures against the baseline before the land or writes over this
+      // refresh (decision 88). The conductor may run this, so no human stands
+      // between an observed regression and the bar: a regressed measurement is
+      // reported and left for `pup audit`, which the operator runs (decision 84).
+      const audit = await auditProject(db, req.repoPath, req.adapters, req.gateEnv, 'keep');
+      return { ...outcome, audit };
     },
     req.wait ? MERGE_LOCK_WAIT_MS : 0,
   );
-  const { landedOn, ...outcome } = landed;
-
-  // Before the audit, which can throw: once the event is written a re-run
-  // refuses, and nothing else steers (decision 88).
-  steerOverlappingSessions(
-    db,
-    req.repoPath,
-    session.id,
-    landedOn,
-    mergeCommit,
-    target,
-    outcome.targetSha,
-  );
-  // The conductor may run this, so no human stands between an observed
-  // regression and the bar: a regressed measurement is reported and left for
-  // `pup audit`, which the operator runs (decision 84).
-  if (req.audit === false) return { prUrl, mergeCommit, target, ...outcome };
-  const audit = await auditProject(db, req.repoPath, req.adapters, req.gateEnv, 'keep');
-  return { prUrl, mergeCommit, target, ...outcome, audit };
 }
 
 /**
@@ -225,10 +249,11 @@ export async function landSession(db: Database, req: LandRequest): Promise<LandO
  * the target. After the `landed` event and best effort: the land is done
  * whatever a steer does. A session whose steer fails for any reason, a refused
  * paste, a stop, tmux or the store, is skipped and the rest are still steered,
- * and so is one whose branch git cannot read. A PR whose files git cannot list
- * steers no one, rather than report a land that happened as failed. Only an
- * interrupt stops it. A skipped session is not reported yet (decision 99). A
- * session in any other state is not woken for it: the gate's fresh-base stage
+ * and so is one whose branch git cannot read. Both are returned with the
+ * reason, for `pup land` to print, and recorded nowhere: a `steer` event would
+ * read as the answer to the session's open question (decision 99). A PR whose
+ * files git cannot list steers no one, rather than report a land that happened
+ * as failed. Only an interrupt stops it. A session in any other state is not woken for it: the gate's fresh-base stage
  * takes the target in for it when it is next gated (decision 104). The
  * decisions log counts here as any file: two entries appended at its end
  * always conflict, and one this notice resolves now costs the gate no
@@ -242,14 +267,15 @@ function steerOverlappingSessions(
   mergeCommit: string,
   target: string,
   targetSha: string,
-): void {
+): NonNullable<LandOutcome['unsteered']> {
   let landedFiles: Set<string>;
   try {
     landedFiles = new Set(gitDiffPaths(repoPath, landedOn, mergeCommit));
   } catch (error) {
     rethrowIfKilled(error);
-    return;
+    return [];
   }
+  const unsteered: NonNullable<LandOutcome['unsteered']> = [];
   const name = windowLabel({ sessionId: landedId });
   for (const peer of listSessions(db, ['running'])) {
     // Store text about to name a ref: only the branch a launch mints is read.
@@ -261,6 +287,10 @@ function steerOverlappingSessions(
       );
     } catch (error) {
       rethrowIfKilled(error);
+      unsteered.push({
+        sessionId: peer.id,
+        reason: `git could not read its branch: ${failureSummary(error)}`,
+      });
       continue;
     }
     if (files.length === 0) continue;
@@ -275,8 +305,10 @@ function steerOverlappingSessions(
       });
     } catch (error) {
       rethrowIfKilled(error);
+      unsteered.push({ sessionId: peer.id, reason: failureSummary(error) });
     }
   }
+  return unsteered;
 }
 
 /**

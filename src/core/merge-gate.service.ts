@@ -86,7 +86,11 @@ import {
   MERGE_LOCK_DIRNAME,
   PR_TITLE_MAX_CHARS,
 } from './merge-gate.constants.js';
-import { MergeLockHeldError, SessionNotReviewableError } from './merge-gate.errors.js';
+import {
+  MergeLockHeldError,
+  MergeLockLostError,
+  SessionNotReviewableError,
+} from './merge-gate.errors.js';
 import { SESSION_ID_PATTERN } from './paths.constants.js';
 import { mergeToRegate, planRegate, type RegatePlan, regateMerged } from './regate.service.js';
 import {
@@ -745,16 +749,33 @@ function directoryIdentity(path: string): LockIdentity | undefined {
  * `.git` a session can write, so anything else found there is left and named
  * rather than removed with it, and so is a directory that is no longer
  * `identity`, a link or another directory a session swapped in, whose pid
- * could be another lock's (decision 88).
+ * could be another lock's (decision 88). False for such a directory. One
+ * whose identity cannot be read is left and named too. Only EIO, a disk
+ * fault, counts it as the take's, so a correct release never fails the run it
+ * ends: the rename already took it off the lock path. Every other error does
+ * not: a session that owns `.git` can chmod the path (EACCES, EPERM) or swap a
+ * component of it (ENOTDIR, ELOOP) to hide a swapped lock.
  */
-function removeLockDir(dir: string, identity: LockIdentity): void {
-  const now = directoryIdentity(dir);
+function removeLockDir(dir: string, identity: LockIdentity): boolean {
+  let now: LockIdentity | undefined;
+  try {
+    now = directoryIdentity(dir);
+  } catch (error) {
+    const fault = (error as NodeJS.ErrnoException).code === 'EIO';
+    console.error(
+      `Could not read ${dir}: ${failureSummary(error)}, so it was left as it is. ` +
+        (fault
+          ? 'No run reads it; remove it from the trusted checkout.'
+          : 'Treat a session that kept pup from its lock as compromised.'),
+    );
+    return fault;
+  }
   if (now?.dev !== identity.dev || now.ino !== identity.ino) {
     console.error(
       `${dir} is no longer the lock directory pup made, so it was left as it is. Treat a ` +
         'session that replaced it as compromised.',
     );
-    return;
+    return false;
   }
   try {
     rmSync(join(dir, MERGE_LOCK_PID_FILE), { force: true });
@@ -765,21 +786,23 @@ function removeLockDir(dir: string, identity: LockIdentity): void {
         'trusted checkout.',
     );
   }
+  return true;
 }
 
 /**
  * Move the lock directory aside under a fresh name, then remove it there, so
  * no reader ever finds the lock without its pid. A removal that fails leaves
- * only the aside directory, which no reader looks at.
+ * only the aside directory, which no reader looks at. False when what was
+ * moved aside is not `identity`, the directory the take made.
  */
 function dropMergeLock(
   lockPath: string,
   why: 'released' | 'reclaimed',
   identity: LockIdentity,
-): void {
+): boolean {
   const aside = `${lockPath}.${why}-${randomBytes(8).toString('hex')}`;
   renameSync(lockPath, aside);
-  removeLockDir(aside, identity);
+  return removeLockDir(aside, identity);
 }
 
 /** Make `dir`; false when it already exists or cannot be made. */
@@ -904,7 +927,11 @@ function heldBy(lockPath: string, holder: number): MergeLockHeldError {
  * run, and one a live run holds is waited for up to `maxWaitMs`, printing one
  * line when the wait starts, and by default not at all (decision 88). `fn` is
  * told whether the take waited: anything read before the wait may have changed
- * under the run that held the lock meanwhile.
+ * under the run that held the lock meanwhile. A lock found gone or replaced at
+ * the release throws `MergeLockLostError` with `fn`'s result, or is printed
+ * beside `fn`'s error, whatever error the release met; only a lock still the
+ * take's own directory that cannot be moved is printed and the result
+ * returned. A release error never replaces what `fn` did.
  */
 export async function withMergeLock<TResult>(
   repoPath: string,
@@ -951,17 +978,46 @@ export async function withMergeLock<TResult>(
   }
   const stayAlive = (): void => undefined;
   for (const signal of LOCK_SIGNALS) process.on(signal, stayAlive);
-  try {
-    return await fn(waited);
-  } finally {
+  const taken = identity;
+  /** Release the lock; false when it was no longer the one this run took. */
+  const release = (): boolean => {
     // The lock goes first: a signal between the two would otherwise meet
     // node's default disposition with the lock still on disk.
     try {
-      dropMergeLock(lockPath, 'released', identity);
+      return dropMergeLock(lockPath, 'released', taken);
+    } catch (error) {
+      // Whatever failed, the lock counts as this run's only while the take's
+      // own directory is still at the path: one moved away, even with another
+      // run's lock now there, is lost, and so is one that cannot be read.
+      let now: LockIdentity | undefined;
+      try {
+        now = directoryIdentity(lockPath);
+      } catch {
+        now = undefined;
+      }
+      if (now?.dev !== taken.dev || now.ino !== taken.ino) return false;
+      // Printed, never thrown, since `fn` has done what it did, and the lock
+      // left in place names this pid, which a later run reclaims once this
+      // process has exited (decision 88).
+      console.error(
+        `Could not release ${lockPath}: ${failureSummary(error)}. A later run reclaims it once ` +
+          'this process has exited.',
+      );
+      return true;
     } finally {
       for (const signal of LOCK_SIGNALS) process.off(signal, stayAlive);
     }
+  };
+  let result: TResult;
+  try {
+    result = await fn(waited);
+  } catch (error) {
+    // The section's own error still wins; the lost lock is said beside it.
+    if (!release()) console.error(new MergeLockLostError(lockPath, undefined).message);
+    throw error;
   }
+  if (!release()) throw new MergeLockLostError(lockPath, result);
+  return result;
 }
 
 /** `result` with the wall time since `started`, which the report prints (decision 95). */

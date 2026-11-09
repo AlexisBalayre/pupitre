@@ -103,8 +103,8 @@ export interface DashboardRoute {
   override: boolean;
   /**
    * What the window ran into on the top rung, for a killed session that is the
-   * newest of a task back in the backlog: nothing is left to climb, so the
-   * task's relaunch is refused and waits on the operator.
+   * newest of a task back in the backlog (not dropped): nothing is left to
+   * climb, so the task's relaunch is refused and waits on the operator.
    */
   topReached?: string;
 }
