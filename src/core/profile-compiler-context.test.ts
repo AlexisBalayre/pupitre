@@ -115,17 +115,23 @@ describe('compileProfile', () => {
   });
 
   // Decision 94: a worker's full suite competes with the gate's for the CPU,
-  // and the gate runs the full suite anyway; decision 96 queues every run.
+  // and the gate runs the full suite anyway; decision 96 queues every run, and
+  // decision 140 holds a session's run while a gate runs its tests. Checked a
+  // sentence at a time on the compiled text, so the test does not restate the
+  // service's block line for line.
   it('tells the session to run related tests through `pup session test` only', () => {
-    const compiled = ProfileCompiler.compileProfile(makeInput());
+    const { contextMarkdown } = ProfileCompiler.compileProfile(makeInput());
 
-    expect(compiled.contextMarkdown).toContain(
-      '- Run tests only with `pup session test <test files>`: it runs the project’s test ' +
-        'command on the files you name once one of the machine’s test slots is free, and says ' +
-        'whom it is waiting for. Running the test runner directly is refused. Name only the ' +
-        'tests related to what you changed: the test files for the code you touched and for ' +
-        'the code that imports it. Leave the full suite to the merge gate, which runs it.',
-    );
+    for (const sentence of [
+      '- Run tests only with `pup session test <test files>`:',
+      'once one of the machine’s test slots is free and no merge gate is running its tests,',
+      'If it exits 75, the slots stayed busy and nothing ran: retry later, it is not a test failure.',
+      'Running the test runner directly is refused.',
+      'Name only the tests related to what you changed:',
+      'Leave the full suite to the merge gate, which runs it.\n',
+    ]) {
+      expect(contextMarkdown).toContain(sentence);
+    }
   });
 
   // Decision 103: a turn ended on a background pre-commit or suite read as
