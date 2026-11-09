@@ -1,0 +1,178 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-09T08:58:36.792Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42588770572",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42588770572",
+  "actor": "AlexisBalayre",
+  "commit_sha": "8ba98b19ebec4427d6f9478a1283de002cdcfb04",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 287,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "2351-2375",
+      "area": "security",
+      "confidence": "high",
+      "tag": "important",
+      "description": "A rename's old path only gets the `listed` check. The symlink check (`tree.linked`) and the case-fold check (`foldsOntoAnother`) run only over `changedPaths`, which `--name-only` fills with the new path alone. So renaming a listed file that a symlink reaches, or that masks an off-list case variant, skips the tests. Deleting the same file runs them.",
+      "body": "**A rename gets past the symlink and case-fold checks.**\n\nDecision 139 says a listed path still runs the tests in two cases:\n- a symlink on the branch can reach it;\n- the branch's tree also holds it in another ASCII case.\n\nBoth checks only look at `changedPaths`. `gitDiffPaths` runs `--name-only` without `--no-renames`, so git's default `diff.renames=true` applies and a rename appears only under its **new** path. The old path goes through `listed()` at L2353 and nothing else:\n\n```ts\nfor (const entry of rawDiffEntries(repoPath, target, branch).values()) {\n  if (entry.mode === '120000') return false;\n  if (entry.renamedFrom !== undefined && !listed(entry.renamedFrom)) return false;\n}\n...\nreturn changedPaths.every(\n  (path) =>\n    !tree.linked(path) &&\n    !(tree.markdownIsCode && path.endsWith('.md')) &&\n    !foldsOntoAnother(path),\n);\n```\n\n**Trigger.** This uses the same setup as the existing test \"runs the test stage when a symlink reaches the changed path\":\n- `main` holds `docs/notes.md` and a symlink `src/notes.md -> ../docs/notes.md`.\n- A test reads `src/notes.md`.\n- The session runs `git mv docs/notes.md docs/notes-old.md`.\n\nWhat the gate then sees:\n- `changedPaths` is `['docs/notes-old.md']`, which is on the list.\n- `renamedFrom` is `docs/notes.md`, which is also on the list.\n- `tree.linked('docs/notes-old.md')` is false, because the link lands on `docs/notes.md`.\n\nThe test and coverage stages are skipped. On `main`, `src/notes.md` now dangles and the test that reads it fails. Deleting `docs/notes.md` instead runs the tests, because the deleted path stays in `changedPaths` and `linked` catches it.\n\nThe case-fold version works the same way. The tree holds `docs/x.md` and an off-list `docs/x.MD` that a test reads, and on APFS `docs/x.md` masks the other file. Renaming `docs/x.md` to `docs/y.md` unmasks `docs/x.MD`, and the tests are still skipped.\n\n**Fix.** Send each rename's old path through the same per-path checks as `changedPaths`.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/8ba98b19ebec4427d6f9478a1283de002cdcfb04/src/core/merge-gate.service.ts#L2351-L2375",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "2360",
+      "area": "security",
+      "confidence": "high",
+      "tag": "important",
+      "description": "A session can plant `core.worktree` in the shared config, pointing at an ancestor of the main checkout. That makes every branch-tree read the skip depends on come back empty, which turns off the symlink, Docusaurus and case-fold defences all at once.",
+      "body": "**One config line turns off all three tree-based checks.**\n\nThe `targetHolds` comment in this same file (L310-313, decision 157) already describes this attack:\n\n> `--full-tree` because `core.worktree` sits in the shared config: aimed elsewhere, it gives the listing a cwd prefix no target path matches\n\n`changesOnlyUntested` decides the skip from three reads of the branch tree. All three run through `runGit` (`git -C repoPath`, with `GIT_WORK_TREE` scrubbed), and none of them is pinned to the top of the tree:\n- **L2360**: the new `ls-tree -r -z --name-only branch`, without `--full-tree`. It builds `spellings`, so `foldsOntoAnother` sees nothing.\n- **L397**: `readBranchTree`'s `ls-tree -r -z branch`, without `--full-tree`. It provides the symlink landings, so `linked` sees nothing.\n- **L359-370**: `dependenciesNameDocusaurus`'s `git grep` pathspecs `:(glob,icase)**/<name>`, which have no `top` magic. `markdownIsCode` comes out false.\n\n`gitDiffPaths` and `rawDiffEntries` print full-tree paths whatever the cwd, so `changedPaths` still lists the real files.\n\n**Trigger.**\n1. From its worktree, a session sets `core.worktree` in the shared `.git/config` to an ancestor of the main checkout. `src/core/merge-gate.test.ts:694-712` already plants `core.worktree /` this way, and the rest of the gate runs normally under it.\n2. The session then edits only `docs/notes.md`, while `src/notes.md -> ../docs/notes.md` sits on `main`.\n3. The test stage is skipped. The same happens to a Docusaurus repo's `docs/*.md` and to a case-colliding `docs/x.md`.\n\nDecision 139 says every one of these cases must run the suite.\n\n**Fix.**\n- Add `--full-tree` to both `ls-tree` calls (L2360 and L397), as `targetHolds` does.\n- Change the grep pathspecs to `:(top,glob,icase)**/${name}`.\n\nThe correctness reviewer raised this independently.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/8ba98b19ebec4427d6f9478a1283de002cdcfb04/src/core/merge-gate.service.ts#L2355-L2365\nhttps://github.com/AlexisBalayre/pupitre/blob/8ba98b19ebec4427d6f9478a1283de002cdcfb04/src/core/merge-gate.service.ts#L393-L397\nhttps://github.com/AlexisBalayre/pupitre/blob/8ba98b19ebec4427d6f9478a1283de002cdcfb04/src/core/merge-gate.service.ts#L357-L370\nhttps://github.com/AlexisBalayre/pupitre/blob/8ba98b19ebec4427d6f9478a1283de002cdcfb04/src/core/merge-gate.service.ts#L307-L318",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate-untested.test.ts",
+      "line": "447-458, 544-552",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The proof leaves itself out of the scan, yet it reads `.github/workflows/claude-code-review.yml` and `docs/adr/0139-…md` and asserts both exist. If a change deletes or renames either file, the gate skips the test stage, merges, and the next full run fails on `main`.",
+      "body": "**The proof test reads two listed files, and its own scan leaves it out.**\n\nAcceptance (c) says no path any test reads is on the list. This test file breaks that rule, and `checkoutReads` excludes it on purpose:\n\n```ts\nreturn suiteFiles(root)\n  .filter((file) => file !== self)\n```\n```ts\nexpect(listed).toEqual(\n  expect.arrayContaining([\n    '.github/workflows/claude-code-review.yml',\n    'docs/adr/0139-the-gate-skips-the-test-stage-when-no-testable-file.md',\n  ]),\n);\n```\n\n`listedFiles()` walks the real `docs/` and `.github/` directories, so this assertion holds only while those two listed files exist.\n\n**Trigger.** A session deletes or renames `.github/workflows/claude-code-review.yml`, an ordinary CI-config change:\n- The path matches `.github/workflows/*.yml`.\n- The deletion's new mode is `000000`, not `120000`, so the symlink check passes.\n- Nothing folds onto the path.\n\n`changesOnlyUntested` returns true, the test stage passes as `skipped`, and the change merges. The next full `pnpm test` on `main` then fails at L547. Renumbering or retitling ADR 0139 does the same.\n\n**Possible fix.** Make the non-vacuity check independent of any one listed file. For example, assert `listed.some((f) => f.startsWith('docs/'))`, or check each glob against the files it is expected to match without naming specific files.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/8ba98b19ebec4427d6f9478a1283de002cdcfb04/src/core/merge-gate-untested.test.ts#L447-L458\nhttps://github.com/AlexisBalayre/pupitre/blob/8ba98b19ebec4427d6f9478a1283de002cdcfb04/src/core/merge-gate-untested.test.ts#L544-L552",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate-untested.test.ts",
+      "line": "350-353",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "A directory read written with a trailing slash (`'docs/'`, `` `${process.cwd()}/docs/adr/${f}` ``, `git ls-files docs/`) is recorded as `docs/`. The match then looks for files starting with `docs//`, finds none, and the proof passes. No current test reads this way, but the next one would slip through: strip trailing slashes in `add`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate-untested.test.ts",
+      "line": "356-398",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The scanner only follows an alias declared exactly as `const x = ANCHOR` or `const x = join|resolve(ANCHOR, …)`, and the template pass ignores even those aliases. So `` readFileSync(`${root}/CLAUDE.md`) ``, a root from `fileURLToPath(new URL('../..', import.meta.url))`, or `const CI = '.github/…'; readFileSync(CI)` read listed files uncaught. No current test does this, but the proof would miss the next one.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0139-the-gate-skips-the-test-stage-when-no-testable-file.md",
+      "line": "19-26",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The ADR says `measureBranch` \"does three things\" but goes on to describe five. It also says the coverage stage is reported \"the same way\" with no condition, while lines 56–61 limit that to an adapter that measures coverage.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0139-the-gate-skips-the-test-stage-when-no-testable-file.md",
+      "line": "3-4",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "ADR 0139 changes decisions 88 (load wait), 95 (coverage) and 96 (test slot), but its header has no `- Amends:` lines, which `docs/adr/README.md` asks for (decision 138 is the precedent). Readers of those ADRs get no link to the new exception.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "2535-2536",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The comment above `notTested` (\"A stage nothing could have measured says so, as on any other change: the test stage without a test command.\") is cryptic. It could say that without a test command the test stage keeps its usual \"not measured\" reason.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "consolidator",
+      "description": "The consolidator returned no groups (merged: 0). It missed that finding 1 (correctness, core.worktree / ls-tree without --full-tree at merge-gate.service.ts:2359) and finding 6 (security, the same root cause at :2360) are one issue. Both importants were validated separately as the protocol requires, and the orchestrator merged them into the security finding after both were confirmed."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 3,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 5.954825524999997,
+  "duration_ms": 488644,
+  "num_turns": 17,
+  "tokens": {
+    "input": 14,
+    "output": 19204,
+    "cache_read": 361599,
+    "cache_creation": 65591,
+    "total": 446408
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 280,
+      "output": 119054,
+      "cache_read": 5095061,
+      "cache_creation": 422520,
+      "cost_usd": 5.710585199999997
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 30,
+      "output": 6359,
+      "cache_read": 317045,
+      "cache_creation": 59207,
+      "cost_usd": 0.24337200000000003
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 405,
+      "cache_read": 0,
+      "cache_creation": 5325,
+      "cost_usd": 0.000868325
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "bash scripts/adr-index.sh"
+    },
+    {
+      "tool": "Bash",
+      "input": "git -C /home/runner/work/pupitre/pupitre diff 4ef5f1206be8cad9319212a8c3724650afab6ac9 8ba98b19ebec4427d6f9478a1283de002cdcfb04 -- src/core/merge-gate.service.ts | grep -n \"renamedFrom\\|tree.linked\\|f"
+    }
+  ]
+}
