@@ -264,8 +264,9 @@ export function windowFailureOf(
 
 /**
  * What a killed session's window ran into on the top rung of its task's
- * ladder, when the session is the newest of a task still in the store: the
- * task's relaunch would be refused (decision 92), so it waits on the operator.
+ * ladder, when the session is the newest of a task still in the store and not
+ * dropped: the task's relaunch would be refused (decision 92), so it waits on
+ * the operator. A dropped task has no relaunch to refuse (decision 147).
  */
 function topRungFailure(
   db: Database,
@@ -274,7 +275,7 @@ function topRungFailure(
   task: TaskRow | undefined,
   now: number,
 ): ClimbReason | undefined {
-  if (row.state !== 'killed' || !task) return undefined;
+  if (row.state !== 'killed' || !task || task.dropped_at !== null) return undefined;
   const tier = taskTier(task.tier, asStringArray(taskSpecForDisplay(task).scopeIn));
   return climbFrom(tier, row, windowFailureOf(db, paths, row, now)).topReached;
 }

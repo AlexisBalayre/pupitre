@@ -30,6 +30,8 @@ import {
   RECHECK_HASH_MAX_BYTES,
   RECHECK_MAX_DIRTY_PATHS,
   SLIM_CONTEXT_ENV,
+  WORKER_SLIM_CONTEXT_ENV,
+  WORKER_SUBAGENT_ENV,
 } from './profile.constants.js';
 import { ContextBudgetExceededError, InvalidProfileError } from './profile.errors.js';
 import { CRITICAL_AREAS } from './routing.utils.js';
@@ -70,10 +72,28 @@ const UNANSWERABLE_TOOLS = ['AskUserQuestion', 'EnterPlanMode', 'ExitPlanMode'];
 
 /**
  * Tools a worker never calls, denied by bare name, which takes the definition
- * out of its context rather than refusing a call (decision 107). The conductor
- * keeps them: it is the operator's window as much as pup's.
+ * out of its context rather than refusing a call (decisions 107, 149). The
+ * conductor keeps them: it is the operator's window as much as pup's. A worker
+ * keeps SendMessage and ListAgents to reach its peers (decision 99) and Agent to
+ * delegate reading; plan mode is already among `UNANSWERABLE_TOOLS`.
  */
-const WORKER_UNUSED_TOOLS = ['SendFeedback', 'ScheduleWakeup', 'ReportFindings'];
+const WORKER_UNUSED_TOOLS = [
+  'SendFeedback',
+  'ScheduleWakeup',
+  'ReportFindings',
+  'CronCreate',
+  'CronDelete',
+  'CronList',
+  'DesignSync',
+  'EndConversation',
+  'EnterWorktree',
+  'ExitWorktree',
+  'NotebookEdit',
+  'PushNotification',
+  'RemoteTrigger',
+  'WebFetch',
+  'WebSearch',
+];
 
 /**
  * Claude Code sends the skill listing only while the Skill tool is in the
@@ -225,27 +245,30 @@ const BRIEF_FRAMING =
   'this document wins.';
 
 /**
- * Learning the code goes to a cheap subagent, whose reads stay out of the
- * window's context that every later call re-reads (decision 129). The subagent
- * gets none of the pinned git, and a bare `git grep`, `git log -p` or
- * `git diff` runs what a session can arm in the shared config, so it runs no
- * git or shell at all; each window also says where it may read.
+ * Searching goes to a cheap subagent, whose reads stay out of the window's
+ * context that every later call re-reads (decision 129). The subagent gets none
+ * of the pinned git, and a bare `git grep`, `git log -p` or `git diff` runs what
+ * a session can arm in the shared config, so it runs no git or shell at all.
+ * Each window also says where it may read. A worker's settings pin the
+ * subagent's model and effort and take the Agent tool's `model` parameter away
+ * (`WORKER_SUBAGENT_ENV`, decision 152), so its section names neither.
  */
-const EXPLORE_RULE =
-  'spawn an Explore subagent with the Agent tool (`subagent_type: "Explore"`, ' +
-  '`model: "sonnet"`, `effort: "low"`) and keep only its summary. Tell it to use only Read, ' +
-  'Grep and Glob, and to run no git and no other shell command. Read a file yourself only ' +
-  'when you will edit it or need its exact lines.';
-
-const SESSION_EXPLORE =
-  '## Exploring code\n' +
-  `To learn the code (where something lives, how a module works), ${EXPLORE_RULE} ` +
-  "Tell it to read only this worktree, never another session's under `.worktrees/`. What your " +
-  'own diff changes you read yourself, with git in this worktree.';
+const SESSION_SEARCHING =
+  '## Searching\n' +
+  'For any where-is-X or how-does-module-Y question, ask an Explore subagent with the Agent ' +
+  'tool (`subagent_type: "Explore"`) and keep only its summary; pup pins the model and effort ' +
+  'it runs on. Tell it to use only Read, Grep and Glob, to run no git and no other shell ' +
+  "command, and to read only this worktree, never another session's under `.worktrees/`. " +
+  'Read with the Read tool only the file you are about to edit, for the lines the edit needs. ' +
+  'What your own diff changes you read yourself, with git in this worktree.';
 
 const CONDUCTOR_EXPLORE =
   '## Exploring code\n' +
-  `To learn the merge target's code (where something lives, how a module works), ${EXPLORE_RULE} ` +
+  "To learn the merge target's code (where something lives, how a module works), spawn an " +
+  'Explore subagent with the Agent tool (`subagent_type: "Explore"`, `model: "sonnet"`, ' +
+  '`effort: "low"`) and keep only its summary. Tell it to use only Read, Grep and Glob, and to ' +
+  'run no git and no other shell command. Read a file yourself only when you will edit it or ' +
+  'need its exact lines. ' +
   'Tell it to read only the tracked files of the checkout you sit in, the code the graph ' +
   "snapshot holds, never anything under `.worktrees/`, where every session's worktree sits, " +
   'and to aim each Grep and Glob at a named source directory, never the checkout root. ' +
@@ -431,16 +454,18 @@ function buildContextMarkdown(
     `## Acceptance criteria\n${task.acceptance.map((a) => `- ${a}`).join('\n')}`,
     merged.conventions ? `## Conventions\n${merged.conventions}` : undefined,
     task.knowledgeSlice ? `## Codebase knowledge\n${task.knowledgeSlice}` : undefined,
-    SESSION_EXPLORE,
+    SESSION_SEARCHING,
     input.codegraphBinary ? codeGraphSection(SESSION_GRAPH) : undefined,
     peersSection(input.peers ?? []),
     '## Session protocol\n' +
       '- Work only inside this worktree, on the current branch. Never touch `.claude/`.\n' +
       '- Run tests only with `pup session test <test files>`: it runs the project’s test ' +
-      'command on the files you name once one of the machine’s test slots is free, and says ' +
-      'whom it is waiting for. Running the test runner directly is refused. Name only the ' +
-      'tests related to what you changed: the test files for the code you touched and for ' +
-      'the code that imports it. Leave the full suite to the merge gate, which runs it.\n' +
+      'command on the files you name once one of the machine’s test slots is free and no ' +
+      'merge gate is running its tests, and says whom it is waiting for. If it exits 75, the ' +
+      'slots stayed busy and nothing ran: retry later, it is not a test failure. Running the ' +
+      'test runner directly is refused. Name only the tests related to what you changed: the ' +
+      'test files for the code you touched and for the code that imports it. Leave the full ' +
+      'suite to the merge gate, which runs it.\n' +
       '- Run commits, the pre-commit hook they trigger and `pup session test` in the ' +
       'foreground, never with `run_in_background`, and give a long one a Bash `timeout` of up ' +
       'to 600000 ms so it is not moved to the background. Never end a turn while a ' +
@@ -1152,7 +1177,9 @@ export function compileProfile(input: SessionCompileInput): CompiledProfile {
         ]),
       ],
     },
-    env: SLIM_CONTEXT_ENV,
+    // The operator's MEMORY.md is theirs, not the task's (decision 149).
+    autoMemoryEnabled: false,
+    env: { ...SLIM_CONTEXT_ENV, ...WORKER_SLIM_CONTEXT_ENV, ...WORKER_SUBAGENT_ENV },
     statusLine: { type: 'command', command: hookPath('statusline.sh') },
   };
 
@@ -1342,8 +1369,8 @@ function buildConductorContext(
       '- A session signals completion with `pup session done`; `pup status` then lists it ' +
       '`awaiting-review`.\n' +
       '- Sessions run their tests through `pup session test`, which waits for one of the ' +
-      "machine's few test slots, the merge gate's run first. A session waiting there is not " +
-      'stalled.\n' +
+      "machine's few test slots, the merge gate's run first and alone but for the runs already " +
+      'going. A session waiting there is not stalled.\n' +
       '- Every session is told to commit and run its tests in the foreground and never to end ' +
       'a turn on a background job of its own; do not repeat that in a launch or a steer. ' +
       '`pup status` shows a session whose turn ended on its own background shell as ' +
