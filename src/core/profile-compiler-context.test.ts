@@ -961,6 +961,7 @@ describe('compileConductorProfile', () => {
       'context.md',
       'hooks/bash-guard.sh',
       'hooks/edit-block.sh',
+      'hooks/statusline.sh',
       'settings.json',
     ]);
   });
