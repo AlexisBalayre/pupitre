@@ -1,0 +1,204 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-09T15:11:18.772Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42641134857",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42641134857",
+  "actor": "AlexisBalayre",
+  "commit_sha": "1533a6045c1823b5a445e00d3fb296e95de43c3c",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 293,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/web-dashboard-module-map.service.ts",
+      "line": "172-179",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "`lstatSync(path, { throwIfNoEntry: false })` only suppresses ENOENT. A directory under `src/` that can be listed but not searched (mode `0644`/`0444`) makes `lstat` of each child throw EACCES. `readModuleMap` then throws, and the whole Decisions sheet, timeline included, returns 500 \"The store could not be read.\" on every request and poll.",
+      "body": "**One unsearchable directory under `src/` takes down the whole Decisions sheet.**\n\nThe walk lists a directory with `listDir`, which catches errors. It then `lstat`s each entry with no try/catch:\n\n```ts\nconst stat = lstatSync(path, { throwIfNoEntry: false });\n```\n\n`throwIfNoEntry: false` only turns ENOENT into `undefined`; any other errno still throws.\n\n- Listing a directory needs only its `r` bit, but `lstat` of an entry inside it needs the `x` (search) bit. So for a directory like `src/vendor` with mode `0644` (bad tarball modes, or a `chmod -R a-x` slip), `readdirSync` succeeds and the first child's `lstatSync` throws EACCES.\n- A full path past PATH_MAX does the same with ENAMETOOLONG.\n\nNothing in `readModuleMap` or `readDecisionsSheet` catches the error, so `render('decisions')` throws. The timeline never touches the checkout, but it goes down with the map:\n\n- **Page load:** the server answers `500 The store could not be read.`\n- **`/events`:** the stream closes as soon as it opens.\n- **Polls:** the sheet silently never updates.\n\nThis lasts until the permissions are fixed.\n\nADR 0167 says a directory that cannot be read is skipped. The existing test, \"counts a file or directory it may not read as unread or empty\", only covers mode `0o000`. In that case `readdirSync` itself fails and `listDir` catches it, so the test never reaches this path.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/1533a6045c1823b5a445e00d3fb296e95de43c3c/src/core/web-dashboard-module-map.service.ts#L172-L179",
+      "suggestion": "  const walk = (dir: string, relative: string): boolean =>\n    listDir(dir).every((name) => {\n      const path = join(dir, name);\n      const file = posix.join(relative, name);\n      let stat: Stats | undefined;\n      try {\n        stat = lstatSync(path, { throwIfNoEntry: false });\n      } catch {\n        // A directory listed but not searchable: its entries are skipped like an unlistable one's.\n        return true;\n      }\n      if (stat?.isDirectory()) return SKIPPED_DIRS.has(name) || walk(path, file);\n      return !stat?.isFile() || visit(path, file, stat);\n    });"
+    },
+    {
+      "file": "src/core/chart.utils.ts",
+      "line": "477",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The treemap legend says \"(darker: 1, 2–3, 4 or more)\", but in the dark theme --debt-0..--debt-3 run from dark to light, so dark-mode readers see the shading backwards.",
+      "body": "**The legend is backwards under `prefers-color-scheme: dark`.**\n\nThe legend tells the reader that darker cells mean more:\n\n```ts\n`<span class=\"tones\">${escapeHtml('(darker: 1, 2–3, 4 or more)')}</span>` +\n```\n\nThe cells take their fill from `CHART_CSS` (chart.utils.ts L39-41): `t*-1` uses `--debt-0`, `t*-2` uses `--debt-1`, and `t*-3` uses `--debt-3`. The dashboard inlines `PAGE_THEME_CSS` (`web-dashboard.service.ts:235`), and its two themes run the ramp in opposite directions:\n\n- **Light theme:** `--debt-0` is `#86b6ef` and `--debt-3` is `#0d366b`, so cells get darker as the count rises. The legend is right here.\n- **Dark theme** (`page-theme.constants.ts:21`): `--debt-0` is `#184f95` (the darkest) and `--debt-3` is `#6da7ec` (the lightest), so cells get lighter as the count rises.\n\nIn dark mode, then, a file with 4 or more open debt entries or merges is the *lightest* cell. A reader who follows the legend takes the least-touched files for the hot spots, on both tones.\n\nIn both themes the ramp moves away from the page background, toward stronger contrast, so wording based on contrast holds in both. The mind-map sidesteps the problem by labelling swatches with numbers (`mind-map.service.ts:123-126`).\n\nhttps://github.com/AlexisBalayre/pupitre/blob/1533a6045c1823b5a445e00d3fb296e95de43c3c/src/core/chart.utils.ts#L477-L477",
+      "suggestion": "    `<span class=\"tones\">${escapeHtml('(stronger contrast: 1, 2–3, 4 or more)')}</span>` +"
+    },
+    {
+      "file": "src/core/chart.test.ts",
+      "line": "246-264",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The treemap escaping test's group sums to Infinity (1e308 + 1e308), so squarify draws nothing; removing escapeHtml from the group-label <text> (chart.utils.ts:452) passes the whole suite.",
+      "body": "**The escaping test never draws its group, so the group-label escape is untested.**\n\nThe test's group value is `sumOf([drawable(Infinity)=0, 1e308, 1e308])`. That sum overflows to `Infinity`, and `squarify` drops anything non-finite, so `treemap` draws no group `<rect>`, no group-label `<text>` and no cells. `<b>mod</b>` appears only in the figure line, which `framed` escapes, so `not.toMatch(/<b>|<i>/)` passes trivially. The NaN/Infinity attribute check is just as empty, since there are no marks to check.\n\nThe cell `<title>` escape (L430) is still covered, by `web-dashboard-decisions.test.ts`'s planted `src/<img src=y>` file. The group-label escape is not covered by any test:\n\n- **Decisions test:** its group label is always `src`.\n- **`GROUPS` fixture:** its labels are plain text.\n- **This test:** the only label with markup is never drawn.\n\nDropping `escapeHtml` from `<text class=\"group-label\">` at L452 therefore passes the whole suite. That label is a directory name from the checkout, which may contain `<` on Linux, and escaping all such text is one of this PR's acceptance criteria.\n\nThe fix is to keep the group finite and give the markup to a group and a leaf that do get drawn. For example, use leaves `x.ts: Infinity`, `<i>y</i>.ts: 3` and `z.ts: 2` under `<b>mod</b>`, and assert both that two cells are drawn and that the escaped group label appears. The Infinity leaf still checks the no-area path.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/1533a6045c1823b5a445e00d3fb296e95de43c3c/src/core/chart.test.ts#L246-L264",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/chart.test.ts",
+      "line": "186-194",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The \"filling the box\" test checks areas and bounds but not overlap, so a layRow that never advances `rest` (cells all stacked at the origin) still passes it and every treemap test.",
+      "body": "**No test checks that treemap cells don't overlap, so the tiling itself is untested.**\n\n`lays out areas in proportion to the values, filling the box` checks three things: each cell's area, the sum of the areas, and that each cell sits inside the box. None of these fails when cells overlap.\n\nTake this mutant: change the last line of `layRow` (chart.utils.ts L355) to `return rest;`. Every row is then laid at the box origin.\n\n- `scale` comes from the original box, so each cell's area stays exact.\n- A row's thickness is `rowArea / shortSide`, which is at most the long side, and its cells stack to exactly the short side, so every cell stays in bounds.\n- The cells keep their order, so the class-order assertion still passes.\n\nThe other tests don't catch it either. The `cells()` helper and the module-map test match `x=\"…\" y=\"…\"` but discard the values, and nothing snapshots positions. So `src/cli` can be drawn on top of `src/core` with CI green.\n\nMoving rows across the box is the one job of the transpose-based `layRow`, and no test fails if it breaks. Since the areas already sum to the box and every cell is in bounds, adding a pairwise no-overlap check proves that the cells tile the box:\n\n```ts\nfor (const [i, a] of placed.entries()) {\n  for (const b of placed.slice(i + 1)) {\n    const overlapW = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);\n    const overlapH = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);\n    expect(Math.min(overlapW, overlapH)).toBeLessThanOrEqual(1e-9);\n  }\n}\n```\n\nhttps://github.com/AlexisBalayre/pupitre/blob/1533a6045c1823b5a445e00d3fb296e95de43c3c/src/core/chart.test.ts#L186-L194",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard-decisions.test.ts",
+      "line": "263-279",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The Decisions sheet escaping test never plants markup in a directory name: every planted path sits directly under src/, so module names are always 'src' and the module-name sinks (timeline <h3>, bar chart label and <title>, treemap group label) go unchecked. Planting e.g. `src/<img src=z>/b.ts` would cover them.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard-module-map.service.ts",
+      "line": "172-179",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The 5,000-file / 64 MiB caps count only plain files: directories and symlinks are readdir'd, sorted and lstat'd uncapped, synchronously on every 2 s poll, so a src/ made mostly of directories or links (a checked-out branch can carry one) is walked in full each tick and blocks every sheet.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard-module-map.service.ts",
+      "line": "41-45",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "moduleOf is a fourth copy of the \"directory or (root)\" helper (also in code-map.service.ts:16, mind-map.service.ts:50, typescript.adapter.ts:132), and its comment ties it to `pup map`'s naming; past the third use, one shared export would remove the drift risk.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard-module-map.service.ts",
+      "line": "ModuleMap.unread JSDoc; web-dashboard-decisions.service.ts hint",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The ModuleMap.unread JSDoc and the sheet hint list \"not a plain file\" as a reason a file is left out, but the walk skips anything lstat shows is not a plain file without counting it, so \"0 not read\" is shown even when links in src/ were skipped.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/chart.utils.ts",
+      "line": "397-403",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "treemap's `tones` option is an open-ended array, but CHART_CSS styles exactly two tones (nth-of-type(1)/(2), t0-*/t1-*), so a third tone would render unstyled; typing it as a fixed pair would say so and drop the `?? 0` fallback.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/chart.utils.ts",
+      "line": "340, 362",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The new layRow and squarify generics use a bare `T`, against docs/conventions/general.md: \"Generics are descriptive — TConfig, TResponse. Never bare T / U.\"",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0167-the-decisions-sheet-groups-records-by-module-beside-a.md",
+      "line": "17-20",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "ADR 0167's grouping paragraph names \"(no file named)\" but not \"(root)\", which moduleOf returns for a file with no directory, so a reader of the ADR won't expect that module.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 1,
+  "comments_posted_actual": 4,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 4.0966053,
+  "duration_ms": 284333,
+  "num_turns": 18,
+  "tokens": {
+    "input": 12,
+    "output": 20036,
+    "cache_read": 280474,
+    "cache_creation": 62119,
+    "total": 362641
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 176,
+      "output": 74036,
+      "cache_read": 2050689,
+      "cache_creation": 299219,
+      "cost_usd": 3.5740138
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 52,
+      "output": 12786,
+      "cache_read": 511013,
+      "cache_creation": 137058,
+      "cost_usd": 0.5217103000000002
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 466,
+      "cache_read": 0,
+      "cache_creation": 5184,
+      "cost_usd": 0.0008812000000000001
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "git -C /home/runner/work/pupitre/pupitre diff 83168a0938dbe3babbe0c041cf7dda84c42b419d..HEAD -- src/core/chart.utils.ts"
+    }
+  ]
+}
