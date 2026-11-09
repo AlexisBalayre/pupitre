@@ -17,6 +17,7 @@ import {
 } from '../../core/session-handoff.service.js';
 import { LaunchRolledBackError } from '../../core/session-lifecycle.errors.js';
 import {
+  answerSessionQuestion,
   interruptSession,
   killedFixRoundMessage,
   killSession,
@@ -123,6 +124,17 @@ export function steerSelected(deps: ActionDeps, sessionId: string, message: stri
   return attempt(() => {
     steerSession(deps.db, sessionId, message, { kind: 'manual' });
     return `Steered ${sessionId}.`;
+  });
+}
+
+/**
+ * `pup answer` with an option's number: the session's open question answered
+ * in its pane, prefixed by the question, and closed (decision 93).
+ */
+export function answerSelected(deps: ActionDeps, sessionId: string, option: string): ActionResult {
+  return attempt(() => {
+    const answer = answerSessionQuestion(deps.db, sessionId, option);
+    return `Answered ${sessionId}: ${answer.text}`;
   });
 }
 

@@ -17,7 +17,7 @@ import {
 } from '../claude/session-runtime.service.js';
 import { buildCodeMap, buildKnowledgeSlice } from './code-map.service.js';
 import { codegraphBinary, prepareGraph } from './codegraph.client.js';
-import { maxSessions } from './conductor.service.js';
+import { isConductorRunning, maxSessions, tellConductor } from './conductor.service.js';
 import { windowFailureOf } from './dashboard.service.js';
 import {
   assertNoArmedGitDrivers,
@@ -57,6 +57,8 @@ import {
   insertTask,
   listSessions,
   listTaskSessions,
+  openQuestion,
+  type QuestionEvent,
   readTaskSpec,
   type SessionRoute,
   type SessionRow,
@@ -82,6 +84,7 @@ import {
 } from './test-slot.service.js';
 import type { ScopeConflict } from './types/overlap.types.js';
 import type { CompiledProfile, SessionId, TaskSpec } from './types/profile.types.js';
+import type { EventPayloads } from './types/session-event.types.js';
 import type {
   LaunchTaskRequest,
   NewSessionRequest,
@@ -766,12 +769,99 @@ export function markSessionDone(db: Database, sessionId: string, summary: string
 
 /**
  * Record a question a session is blocked on (run by the agent via `pup session
- * ask`, decision 76). The session stays running: the agent ends its turn, and
- * the next steer is the answer — which is also what clears the question from
- * the dashboard.
+ * ask`, decision 76), with the options it offers and the one it recommends
+ * (decision 93). The session stays running: the agent ends its turn, and the
+ * next steer or `pup answer` is the answer — which is also what clears the
+ * question from the dashboard.
  */
-export function markSessionQuestion(db: Database, sessionId: string, text: string): void {
-  appendEvent(db, sessionId, 'question', { text });
+export function markSessionQuestion(
+  db: Database,
+  sessionId: string,
+  question: EventPayloads['question'],
+): void {
+  appendEvent(db, sessionId, 'question', question);
+}
+
+/** An answer refused before anything was typed: nothing reached the asker. */
+export class AnswerRefusedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'AnswerRefusedError';
+  }
+}
+
+/**
+ * What `pup answer` delivers for `reply` (decision 93): a bare number picks
+ * that option of a question that offers some, any other text is a free answer.
+ * A number past the options is refused rather than sent as words, since it is
+ * a slip, not an answer. Both texts are scrubbed: they are typed into a pane.
+ */
+function resolveAnswer(asked: QuestionEvent, reply: string): EventPayloads['answer'] {
+  const question = sanitizeReason(asked.text ?? '');
+  const words = reply.trim();
+  if (words === '')
+    throw new AnswerRefusedError('Nothing to answer with: give an option number or words.');
+  const count = asked.options.length;
+  if (count === 0 || !/^\d+$/.test(words)) return { question, text: sanitizeReason(words) };
+  const option = Number(words);
+  if (option < 1 || option > count) {
+    throw new AnswerRefusedError(
+      `The question offers ${count} option${count === 1 ? '' : 's'}; answer 1 to ${count}, ` +
+        'or in words. Nothing was sent.',
+    );
+  }
+  return { question, text: sanitizeReason(asked.options[option - 1] ?? ''), option };
+}
+
+/** The answer as the asker reads it: the question first, so a late answer is never a riddle. */
+function answerMessage(answer: EventPayloads['answer']): string {
+  const picked = answer.option === undefined ? '' : `option ${answer.option}, `;
+  return `Answer to your question "${answer.question}": ${picked}${answer.text}`;
+}
+
+/**
+ * Answer a session's open question (decision 93): steered into its pane like
+ * `pup steer`, its refusals the same, and recorded as an `answer` once the
+ * paste landed. Refused, with nothing typed, when nothing is open.
+ */
+export function answerSessionQuestion(
+  db: Database,
+  sessionId: string,
+  reply: string,
+): EventPayloads['answer'] {
+  requireLiveSession(db, sessionId, 'answer');
+  const asked = openQuestion(db, sessionId);
+  if (!asked) {
+    throw new AnswerRefusedError(
+      `Session ${sanitizeReason(sessionId)} has no open question; \`pup steer\` sends it words.`,
+    );
+  }
+  const answer = resolveAnswer(asked, reply);
+  steerSession(db, sessionId, answerMessage(answer), { kind: 'answer', by: 'operator' });
+  appendEvent(db, sessionId, 'answer', answer);
+  return answer;
+}
+
+/**
+ * Answer the running conductor's open question (decision 93) with a `pup
+ * conductor tell`, its refusals the same; recorded as an `answer` only when
+ * the message landed, so one that did not leaves the question open.
+ */
+export function answerConductorQuestion(
+  db: Database,
+  repoPath: string,
+  reply: string,
+): { answer: EventPayloads['answer']; landed: boolean } {
+  const asked = isConductorRunning(repoPath) ? openQuestion(db, null) : undefined;
+  if (!asked) {
+    throw new AnswerRefusedError(
+      'The conductor has no open question; `pup conductor tell` sends it words.',
+    );
+  }
+  const answer = resolveAnswer(asked, reply);
+  const landed = tellConductor(repoPath, answerMessage(answer));
+  if (landed) appendEvent(db, null, 'answer', answer);
+  return { answer, landed };
 }
 
 /**

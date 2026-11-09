@@ -598,6 +598,34 @@ export function currentFixRound(db: Database, sessionId: string): EventRow | und
   return newest?.type === 'fix_round' ? newest : undefined;
 }
 
+/** A `question` event still open, as `openQuestion` reads it: its options always a list. */
+export type QuestionEvent = Extract<SessionEvent, { type: 'question' }> & { options: string[] };
+
+/** The most options a question offers: one keystroke each, and the inbox stays a glance (decision 93). */
+export const MAX_QUESTION_OPTIONS = 4;
+
+/**
+ * The question a session asked with `pup session ask`, or the conductor with
+ * `pup conductor ask` (`sessionId` null), that is still open (decisions 76,
+ * 93): the newest of its `question`, `steer` and `answer` events, when that is
+ * a `question`. A steer answers a session's question whoever sent it; only an
+ * answer closes the conductor's, which no steer reaches. Its options are cut
+ * to `MAX_QUESTION_OPTIONS`.
+ */
+export function openQuestion(db: Database, sessionId: string | null): QuestionEvent | undefined {
+  const newest = db
+    .prepare(
+      `SELECT type, payload FROM events WHERE session_id IS ?
+         AND type IN ('question', 'steer', 'answer') ORDER BY id DESC LIMIT 1`,
+    )
+    .get(sessionId) as Pick<EventRow, 'type' | 'payload'> | undefined;
+  const event = newest && decodeEvent(newest);
+  if (event?.type !== 'question') return undefined;
+  // The payload is session-writable: past the cap is never an option, so the
+  // inbox's numbers and `pup answer`'s cannot disagree.
+  return { ...event, options: (event.options ?? []).slice(0, MAX_QUESTION_OPTIONS) };
+}
+
 /**
  * Read one stored event back as the shape its type was written with — the one
  * place a payload is parsed. A payload is session-writable: one that is not
@@ -639,7 +667,14 @@ export function decodeEvent(row: Pick<EventRow, 'type' | 'payload'>): SessionEve
     case 'session_done':
       return { type: 'session_done', summary: text('summary') };
     case 'question':
-      return { type: 'question', text: text('text') };
+      return {
+        type: 'question',
+        text: text('text'),
+        options: Array.isArray(fields.options) ? asStringArray(fields.options) : undefined,
+        recommended: Number.isSafeInteger(fields.recommended)
+          ? (fields.recommended as number)
+          : undefined,
+      };
     case 'turn_died':
       // Keys in the order the watchdog writes them: the dossier prints this
       // event as the JSON it was stored as.

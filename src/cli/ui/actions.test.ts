@@ -16,6 +16,7 @@ vi.mock('node:child_process', async (importOriginal) => ({
   spawnSync: vi.fn(() => ({ status: 0 })),
 }));
 vi.mock('../../core/session-lifecycle.service.js', () => ({
+  answerSessionQuestion: vi.fn(() => ({ question: 'which?', text: 'merge', option: 2 })),
   interruptSession: vi.fn(),
   killSession: vi.fn(),
   launchTask: vi.fn(() => 's-launched-1'),
@@ -51,6 +52,7 @@ import {
 } from '../../core/session-handoff.service.js';
 import { LaunchRolledBackError } from '../../core/session-lifecycle.errors.js';
 import {
+  answerSessionQuestion,
   interruptSession,
   killSession,
   launchTask,
@@ -59,6 +61,7 @@ import {
 import type { DashboardSnapshot } from '../../core/types/dashboard.types.js';
 import {
   type ActionDeps,
+  answerSelected,
   attachTo,
   conductorAttachTarget,
   interruptSelected,
@@ -174,6 +177,25 @@ describe('dashboard actions', () => {
       kind: 'manual',
     });
     expect(result.message).toContain(SESSION);
+  });
+
+  // Decision 93: the number key and `pup answer` answer through one function,
+  // so they cannot drift over what an answer types or records.
+  it('answers through `answerSessionQuestion`, as `pup answer` does', () => {
+    expect(answerSelected(deps, SESSION, '2')).toEqual({ message: `Answered ${SESSION}: merge` });
+
+    expect(answerSessionQuestion).toHaveBeenCalledWith(db, SESSION, '2');
+  });
+
+  it('reports a refused answer as a line', () => {
+    vi.mocked(answerSessionQuestion).mockImplementationOnce(() => {
+      throw new Error('The question offers 2 options; answer 1 to 2, or in words.');
+    });
+
+    expect(answerSelected(deps, SESSION, '3')).toEqual({
+      message: 'The question offers 2 options; answer 1 to 2, or in words.',
+      failed: true,
+    });
   });
 
   it('interrupts through `interruptSession`, with no message behind it', () => {

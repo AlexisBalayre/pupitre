@@ -43,7 +43,9 @@ import {
   conductorCheckoutDir,
   DEFAULT_MAX_SESSIONS,
   isConductorRunning,
+  markConductorQuestion,
   maxSessions,
+  OPERATOR_QUESTIONS,
   startConductor,
   stopConductor,
   TELL_MAX_CHARS,
@@ -54,6 +56,7 @@ import { DEFAULT_BASE_PROFILE } from './default-profile.constants.js';
 import { recordWatcherBeat } from './overlap.repository.js';
 import { WATCH_STALE_AFTER_MS } from './overlap.service.js';
 import { projectId, projectPaths } from './paths.utils.js';
+import { openQuestion } from './session.repository.js';
 import { LaunchRolledBackError } from './session-lifecycle.errors.js';
 
 const REPO = '/repo';
@@ -166,7 +169,9 @@ describe('startConductor', () => {
       paneId: '%3',
       socket: `pup-conductor-${projectId(REPO)}`,
     });
-    expect(prompt).toBe(`${readFileSync(join(outDir, 'context.md'), 'utf8')}\n\n${CI_REVIEW_LOOP}`);
+    expect(prompt).toBe(
+      `${readFileSync(join(outDir, 'context.md'), 'utf8')}\n\n${CI_REVIEW_LOOP}\n\n${OPERATOR_QUESTIONS}`,
+    );
     expect(prompt).toContain('pup launch <task> --model opus');
   });
 
@@ -183,6 +188,20 @@ describe('startConductor', () => {
     expect(prompt).toContain('Never merge on GitHub');
     expect(prompt).toContain('`pup session ask`');
     expect(prompt).toContain('needs-you inbox');
+  });
+
+  // Decision 93: every operator decision is a question in the inbox, answered
+  // with one key, never prose in a pane nobody reads until they attach.
+  it('orders every operator decision through pup conductor ask, then the end of its turn', () => {
+    start();
+
+    const [, prompt] = vi.mocked(kickoff).mock.calls[0] ?? [];
+    expect(prompt).toContain('## Questions for the operator');
+    expect(prompt).toContain('goes through `pup conductor ask`, never as prose in your pane');
+    expect(prompt).toMatch(/gate flag.*steer past your budget.*scope/s);
+    expect(prompt).toContain('--option "<answer>"');
+    expect(prompt).toContain('--recommend <n>');
+    expect(prompt).toContain('Then end your turn');
   });
 
   // Named in the argv even when the operator named neither, so the user
@@ -885,5 +904,22 @@ describe('tellConductor', () => {
 
     expect(pasteIntoPane).not.toHaveBeenCalled();
     expect(submitPane).not.toHaveBeenCalled();
+  });
+});
+
+// Decision 93: the conductor's question is held against no session, as asked;
+// each reader scrubs it (dashboard.test.ts).
+describe('markConductorQuestion', () => {
+  it('records the question, its options and its recommendation against no session', () => {
+    const db = openStore(':memory:');
+    markConductorQuestion(db, { text: 'accept the debt?', options: ['yes', 'no'], recommended: 2 });
+
+    expect(openQuestion(db, null)).toEqual({
+      type: 'question',
+      text: 'accept the debt?',
+      options: ['yes', 'no'],
+      recommended: 2,
+    });
+    db.close();
   });
 });

@@ -74,9 +74,12 @@ vi.mock('ink', async (importOriginal) => ({
   ...(await importOriginal<typeof import('ink')>()),
   render: vi.fn(),
 }));
-vi.mock('../core/conductor.service.js', () => ({
+vi.mock('../core/conductor.service.js', async (importOriginal) => ({
   ConductorTellRefusedError: class ConductorTellRefusedError extends Error {},
   DEFAULT_MAX_SESSIONS: 4,
+  // The store write, not a boundary: what it records is what `pup status` reads.
+  markConductorQuestion: (await importOriginal<typeof import('../core/conductor.service.js')>())
+    .markConductorQuestion,
   NO_CONDUCTOR_RUNNING:
     'No conductor is running for this project; start one with `pup conductor start`.',
   isConductorRunning: vi.fn(() => false),
@@ -116,6 +119,17 @@ vi.mock('node:child_process', async (importOriginal) => {
   return { ...actual, execFileSync: vi.fn(actual.execFileSync), spawn: vi.fn(actual.spawn) };
 });
 vi.mock('../core/session-lifecycle.service.js', async (importOriginal) => ({
+  // The real ask and answer: the store writes they make are what `pup status`
+  // reads back, and the pane they type into is `steerPane`, faked above.
+  AnswerRefusedError: (
+    await importOriginal<typeof import('../core/session-lifecycle.service.js')>()
+  ).AnswerRefusedError,
+  answerConductorQuestion: (
+    await importOriginal<typeof import('../core/session-lifecycle.service.js')>()
+  ).answerConductorQuestion,
+  answerSessionQuestion: (
+    await importOriginal<typeof import('../core/session-lifecycle.service.js')>()
+  ).answerSessionQuestion,
   createSession: vi.fn(),
   interruptSession: vi.fn(),
   killSession: vi.fn(),
@@ -123,7 +137,9 @@ vi.mock('../core/session-lifecycle.service.js', async (importOriginal) => ({
     .LowMemoryError,
   launchTask: vi.fn(),
   markSessionDone: vi.fn(),
-  markSessionQuestion: vi.fn(),
+  markSessionQuestion: (
+    await importOriginal<typeof import('../core/session-lifecycle.service.js')>()
+  ).markSessionQuestion,
   planTask: vi.fn(),
   recordSteerMessage: vi.fn(),
   SessionCapReachedError: (
@@ -178,6 +194,7 @@ import {
   SessionPaneMissingError,
   SteerNotDeliveredError,
   saveSessionEnv,
+  steerPane,
   transcriptDir,
 } from '../claude/session-runtime.service.js';
 import { waitForCiReview } from '../core/ci-wait.service.js';
@@ -195,7 +212,12 @@ import { intentTemplate } from '../core/intent.service.js';
 import { runMergeGate } from '../core/merge-gate.service.js';
 import { projectId, projectPaths } from '../core/paths.utils.js';
 import { InvalidProfileError } from '../core/profile.errors.js';
-import { getSession, listEvents, transitionSession } from '../core/session.repository.js';
+import {
+  appendEvent,
+  getSession,
+  listEvents,
+  transitionSession,
+} from '../core/session.repository.js';
 import { STALLED_AFTER_MS } from '../core/session-activity.constants.js';
 import {
   hardRespawnSession,
@@ -1157,6 +1179,314 @@ describe('CLI commands', () => {
         ]);
         expect(process.exitCode).toBe(1);
       });
+    });
+
+    // Decision 93: the conductor raises an operator decision as a question in
+    // the inbox, never as prose in its pane; only the conductor asks this way.
+    describe('ask', () => {
+      const ASK = ['conductor', 'ask', 'accept the debt?', '--option', 'yes', '--option', 'no'];
+
+      it('records the conductor question, which then leads the needs-you inbox', () => {
+        const repo = initRepo();
+        useCwd(repo);
+        seedBlockedSession(repo, 's-blocked', 'lint keeps failing');
+        vi.stubEnv('PUP_CONDUCTOR', projectId(repo));
+
+        buildProgram().parse([...ASK, '--recommend', '2'], { from: 'user' });
+
+        expect(logs).toEqual([
+          'The conductor asked: accept the debt?',
+          '  1. yes',
+          '  2. no  (recommended)',
+        ]);
+        expect(process.exitCode).toBeUndefined();
+
+        vi.stubEnv('PUP_CONDUCTOR', '');
+        vi.mocked(isConductorRunning).mockReturnValue(true);
+        logs.length = 0;
+        buildProgram().parse(['status'], { from: 'user' });
+
+        expect(logs.slice(0, 5)).toEqual([
+          'Needs you',
+          '  conductor  question: accept the debt?  → pup answer conductor <n>, or pup answer conductor "..."',
+          '      1. yes',
+          '      2. no  (recommended)',
+          '  s-blocked  blocked (3 rejections)  → pup unblock s-blocked',
+        ]);
+      });
+
+      it.each([
+        ['the operator', undefined, undefined],
+        ['a session', 'PUP_SESSION_ID', 's1'],
+        ["another project's conductor", 'PUP_CONDUCTOR', 'p1'],
+      ])('refuses %s', (_who, variable, value) => {
+        const repo = initRepo();
+        useCwd(repo);
+        seedSession(repo, 's1');
+        if (variable && value) vi.stubEnv(variable, value);
+
+        buildProgram().parse(ASK, { from: 'user' });
+
+        expect(errors).toEqual(['`pup conductor ask` is for the conductor only.']);
+        expect(process.exitCode).toBe(1);
+        vi.stubEnv('PUP_SESSION_ID', '');
+        vi.stubEnv('PUP_CONDUCTOR', '');
+        vi.mocked(isConductorRunning).mockReturnValue(true);
+        logs.length = 0;
+        buildProgram().parse(['status'], { from: 'user' });
+        expect(logs.join('\n')).not.toContain('accept the debt?');
+      });
+
+      it('refuses --option on any other action', () => {
+        useCwd(initRepo());
+
+        buildProgram().parse(['conductor', 'stop', '--option', 'yes'], { from: 'user' });
+
+        expect(stopConductor).not.toHaveBeenCalled();
+        expect(errors).toEqual(['Only `pup conductor ask` takes --option and --recommend.']);
+      });
+    });
+  });
+
+  // Decision 93: a worker's question carries its options and the one it would
+  // pick, so the operator answers with one keystroke.
+  describe('session ask with options', () => {
+    /** A running session s1, its own worktree's cwd, asking as itself. */
+    function seedAsking(): { repo: string; worktree: string } {
+      const repo = initRepo();
+      seedSession(repo, 's1');
+      const { db } = resolveProject(repo);
+      transitionSession(db, 's1', 'running');
+      db.close();
+      vi.stubEnv('PUP_SESSION_ID', 's1');
+      return { repo, worktree: worktreeOf(repo, 's1') };
+    }
+
+    /** `pup status` as the operator, from the repo `useCwd` already points at. */
+    function operatorStatus(): string[] {
+      vi.stubEnv('PUP_SESSION_ID', '');
+      logs.length = 0;
+      buildProgram().parse(['status'], { from: 'user' });
+      return logs;
+    }
+
+    it('stores the options and the recommended one, and pup status numbers and marks them', () => {
+      const { repo, worktree } = seedAsking();
+      useCwd(worktree);
+
+      buildProgram().parse(
+        [
+          'session',
+          'ask',
+          'rebase or merge?',
+          '--option',
+          'rebase onto main',
+          '--option',
+          'merge main in',
+          '--recommend',
+          '1',
+        ],
+        { from: 'user' },
+      );
+
+      expect(logs).toEqual([
+        'Session s1 asked: rebase or merge?',
+        '  1. rebase onto main  (recommended)',
+        '  2. merge main in',
+      ]);
+      const { db } = resolveProject(repo);
+      expect(listEvents(db, 's1').map((event) => JSON.parse(event.payload))).toContainEqual({
+        text: 'rebase or merge?',
+        options: ['rebase onto main', 'merge main in'],
+        recommended: 1,
+      });
+      db.close();
+
+      useCwd(repo);
+      expect(operatorStatus().slice(0, 4)).toEqual([
+        'Needs you',
+        '  s1  question: rebase or merge?  → pup answer s1 <n>, or pup answer s1 "..."',
+        '      1. rebase onto main  (recommended)',
+        '      2. merge main in',
+      ]);
+    });
+
+    // A session's words reach the operator's terminal: control characters go,
+    // and shell syntax stays text that nothing runs (decision 29).
+    it('scrubs control characters out of the question and its options', () => {
+      const { repo, worktree } = seedAsking();
+      useCwd(worktree);
+
+      buildProgram().parse(
+        [
+          'session',
+          'ask',
+          '\u001b[2Jwhich?\u0007',
+          '--option',
+          '\u001b]0;pwned\u0007yes; $(whoami)',
+          '--option',
+          '`id` no',
+        ],
+        { from: 'user' },
+      );
+      const asked = logs.join('\n');
+      useCwd(repo);
+      const status = operatorStatus().join('\n');
+
+      for (const printed of [asked, status]) {
+        // biome-ignore lint/suspicious/noControlCharactersInRegex: asserting their absence
+        expect(printed).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/);
+        expect(printed).toContain('yes; $(whoami)');
+        expect(printed).toContain('`id` no');
+      }
+    });
+
+    it.each([
+      [['--option', 'a', 'b', 'c', 'd', 'e'], 'A question offers at most 4 options'],
+      [['--option', 'a', 'b', '--recommend', '3'], '--recommend takes the number of one of the 2'],
+      [['--option', 'a', 'b', '--recommend', 'first'], '--recommend takes the number'],
+      [['--recommend', '1'], '--recommend takes the number of one of the 0'],
+      [['--option', ' '], 'Every --option needs its text.'],
+    ])('refuses %j and records nothing', (flags, refusal) => {
+      const { repo, worktree } = seedAsking();
+      useCwd(worktree);
+
+      buildProgram().parse(['session', 'ask', 'which?', ...flags], { from: 'user' });
+
+      expect(errors.join('\n')).toContain(refusal);
+      expect(process.exitCode).toBe(1);
+      const { db } = resolveProject(repo);
+      expect(listEvents(db, 's1').map((event) => event.type)).not.toContain('question');
+      db.close();
+    });
+  });
+
+  // Decision 93: the operator's one-keystroke answer, typed into the asker's
+  // pane with the question in front of it.
+  describe('answer', () => {
+    /** A running session s1 on pane %7 with an open two-option question. */
+    function seedAsked(): string {
+      const repo = initRepo();
+      seedSession(repo, 's1');
+      const { db } = resolveProject(repo);
+      transitionSession(db, 's1', 'running');
+      db.prepare("UPDATE sessions SET tmux_target = '%7' WHERE id = 's1'").run();
+      appendEvent(db, 's1', 'question', {
+        text: 'rebase or merge?',
+        options: ['rebase onto main', 'merge main in'],
+        recommended: 1,
+      });
+      db.close();
+      return repo;
+    }
+
+    it("steers the worker with the second option's text, prefixed by the question, and closes it", () => {
+      const repo = seedAsked();
+      useCwd(repo);
+
+      buildProgram().parse(['answer', 's1', '2'], { from: 'user' });
+
+      expect(steerPane).toHaveBeenCalledWith(
+        { sessionId: 's1', paneId: '%7' },
+        'Answer to your question "rebase or merge?": option 2, merge main in',
+      );
+      expect(logs).toEqual(['Answered session s1: merge main in']);
+      const { db } = resolveProject(repo);
+      expect(listEvents(db, 's1').map((event) => event.type)).toContain('answer');
+      db.close();
+
+      logs.length = 0;
+      buildProgram().parse(['status'], { from: 'user' });
+      expect(logs.join('\n')).not.toContain('question');
+    });
+
+    it('sends any other text as a free answer', () => {
+      useCwd(seedAsked());
+
+      buildProgram().parse(['answer', 's1', 'neither, wait'], { from: 'user' });
+
+      expect(steerPane).toHaveBeenCalledWith(
+        { sessionId: 's1', paneId: '%7' },
+        'Answer to your question "rebase or merge?": neither, wait',
+      );
+    });
+
+    it('refuses a number past the options and types nothing', () => {
+      useCwd(seedAsked());
+
+      buildProgram().parse(['answer', 's1', '3'], { from: 'user' });
+
+      expect(steerPane).not.toHaveBeenCalled();
+      expect(errors).toEqual([
+        'The question offers 2 options; answer 1 to 2, or in words. Nothing was sent.',
+      ]);
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('refuses a session with no open question', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedSession(repo, 's2');
+      const { db } = resolveProject(repo);
+      transitionSession(db, 's2', 'running');
+      db.close();
+
+      buildProgram().parse(['answer', 's2', '1'], { from: 'user' });
+
+      expect(errors).toEqual(['Session s2 has no open question; `pup steer` sends it words.']);
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('tells the conductor its answer, prefixed by its question', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      vi.mocked(isConductorRunning).mockReturnValue(true);
+      vi.mocked(tellConductor).mockReturnValue(true);
+      const { db } = resolveProject(repo);
+      appendEvent(db, null, 'question', { text: 'accept the debt?', options: ['yes', 'no'] });
+      db.close();
+
+      buildProgram().parse(['answer', 'conductor', 'no, steer it to fix the lint'], {
+        from: 'user',
+      });
+
+      expect(tellConductor).toHaveBeenCalledWith(
+        repo,
+        'Answer to your question "accept the debt?": no, steer it to fix the lint',
+      );
+      expect(logs).toEqual(['Answered the conductor: no, steer it to fix the lint']);
+      logs.length = 0;
+      buildProgram().parse(['status'], { from: 'user' });
+      expect(logs.join('\n')).not.toContain('accept the debt?');
+    });
+
+    it('says so, and leaves the question open, when the answer did not land', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      vi.mocked(isConductorRunning).mockReturnValue(true);
+      vi.mocked(tellConductor).mockReturnValue(false);
+      const { db } = resolveProject(repo);
+      appendEvent(db, null, 'question', { text: 'accept the debt?' });
+      db.close();
+
+      buildProgram().parse(['answer', 'conductor', 'yes'], { from: 'user' });
+
+      expect(errors.join('\n')).toContain('the question stays open');
+      expect(process.exitCode).toBe(1);
+    });
+
+    it.each([
+      ['a session', 'PUP_SESSION_ID', 's1'],
+      ['the conductor', 'PUP_CONDUCTOR', 'p1'],
+    ])('refuses %s', (_who, variable, value) => {
+      useCwd(seedAsked());
+      vi.stubEnv(variable, value);
+
+      buildProgram().parse(['answer', 's1', '1'], { from: 'user' });
+
+      expect(steerPane).not.toHaveBeenCalled();
+      expect(errors).toEqual(['`pup answer` is operator-only.']);
+      expect(process.exitCode).toBe(1);
     });
   });
 

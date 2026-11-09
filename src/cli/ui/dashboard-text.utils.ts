@@ -136,6 +136,21 @@ export function needLine(need: DashboardNeed): string {
 }
 
 /**
+ * An inbox entry as both text surfaces print it: its line, then a question's
+ * options, numbered as `pup answer` reads the number and the recommended one
+ * marked (decision 93), indented under it.
+ */
+export function needLines(need: DashboardNeed): string[] {
+  return [
+    needLine(need),
+    ...(need.options ?? []).map(
+      (option, index) =>
+        `    ${index + 1}. ${sanitizeReason(option)}${need.recommended === index + 1 ? '  (recommended)' : ''}`,
+    ),
+  ];
+}
+
+/**
  * One session row of the single-project table. An id outside the minted shape
  * prints as a placeholder and gets no command built around it, as in the
  * inbox (decision 83).
@@ -184,7 +199,7 @@ function fleetBlockLines(block: Exclude<FleetBlock, { reason: string }>): string
     ),
     // The inbox's own lines, reason and answer, not the bare session row: a
     // merged session listed for its PR says nothing by its state alone.
-    ...summary.needsYou.map((need) => `  ${needLine(need)}`),
+    ...summary.needsYou.flatMap(needLines).map((line) => `  ${line}`),
     `  ${summary.running} running, ${summary.planned} planned, ${summary.merged} merged`,
   ];
 }

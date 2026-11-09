@@ -56,7 +56,18 @@ export interface EventPayloads {
   steer: { kind: string; by?: string; delivered?: boolean };
   interrupt: { steered: boolean };
   session_done: { summary: string };
-  question: { text: string };
+  /**
+   * `options` are the answers the asker offers, at most four, and `recommended`
+   * the 1-based one it would pick (decision 93). Both are absent on a
+   * question asked in words alone.
+   */
+  question: { text: string; options?: string[]; recommended?: number };
+  /**
+   * `pup answer` delivered an answer to the open question (decision 93): the
+   * question it answers, the text delivered, and the 1-based option the
+   * operator picked when they picked one.
+   */
+  answer: { question: string; text: string; option?: number };
   handoff_ready: { hash: string };
   respawn: { delivered: boolean; handoffBytes?: number; hard?: boolean };
   scope_overlap: { via: string; accepted: { session: string; files: string[] }[] };
@@ -107,7 +118,7 @@ export type SessionEvent =
     }
   | { type: 'steer'; kind?: string; by?: string }
   | { type: 'session_done'; summary?: string }
-  | { type: 'question'; text?: string }
+  | { type: 'question'; text?: string; options?: string[]; recommended?: number }
   | { type: 'turn_died'; reason?: string; stalledAt?: string; refusal?: string }
   | { type: 'handoff_ready'; hash?: string }
   | { type: 'other'; eventType: string; fields: Record<string, unknown> };

@@ -38,6 +38,7 @@ the ones refused to sessions and conductors. Explain before you act on anything 
 | Start a session for a task | `pup launch <task>`; `pup new "<goal>" --scope ...` plans and launches. Both refuse past the session cap (sessions awaiting review do not count) or under 1.5 GB of available memory; `--over-cap` (operator-only) lifts the cap, never the memory floor. Both also hold while a fresh usage reading (under 30 min) has the plan's 5-hour window at 85% or its 7-day at 90%; `--over-limit` (operator-only) lifts that; `pup status` shows the reading |
 | Who needs me | `pup status`, `pup ui` (live), `pup dashboard --open` (live page in the browser, read-only, operator-only), `pup watch` (conflict radar) |
 | Talk to a session | `pup steer <session> "<message>"`; `pup interrupt <session>` for a hung tool; `pup attach <session>` to enter its window (operator-only, Ctrl-b d detaches) |
+| Answer a question | `pup answer <session> <n>` picks option n of the question Needs you lists (numbered, the recommended one marked); `pup answer <session> "<words>"` answers freely; `pup answer conductor …` answers the conductor's (operator-only; `pup ui`'s number keys do the same) |
 | Stop or restart one | `pup kill <session> [--respawn]`, `pup respawn <session>`, `pup unblock` |
 | Review a branch | `pup review` (risk-ordered queue), `pup review <session>` |
 | Gate and open the PR | `pup merge <session> --pr`; add `--accept-debt "<reason>" --review-by "<condition>"` for flagged stages. Always `--pr`: without it the gate fast-forwards local main |

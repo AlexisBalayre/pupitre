@@ -234,6 +234,10 @@ describe('buildDashboardSnapshot', () => {
   });
 
   describe('conductor', () => {
+    afterEach(() => {
+      vi.mocked(hasConductorWindow).mockReturnValue(false);
+    });
+
     // The socket, the pin and the quoting are all the runtime's: this reads
     // the line back whole, as the operator pastes it (decisions 46, 47).
     it('reports the window and the socket-pinned command that attaches to it', () => {
@@ -253,6 +257,33 @@ describe('buildDashboardSnapshot', () => {
       const { conductor } = buildDashboardSnapshot(db, repo, NOW);
 
       expect(conductor).toMatchObject({ running: false, name: `pup-conductor-${projectId(repo)}` });
+    });
+
+    // Decision 93: the conductor's question, held against no session, scrubbed
+    // like a session's, and only while the conductor runs to be answered.
+    it("carries the running conductor's open question, scrubbed", () => {
+      vi.mocked(hasConductorWindow).mockReturnValue(true);
+      appendEvent(db, null, 'question', {
+        text: '\u001b[2Jaccept the debt?',
+        options: ['yes\u0007', 'no'],
+        recommended: 2,
+      });
+
+      expect(buildDashboardSnapshot(db, repo, NOW).conductor.question).toEqual({
+        text: '[2Jaccept the debt?',
+        options: ['yes', 'no'],
+        recommended: 2,
+      });
+    });
+
+    it('carries no question once answered, or while the conductor is down', () => {
+      appendEvent(db, null, 'question', { text: 'accept the debt?' });
+      vi.mocked(hasConductorWindow).mockReturnValue(false);
+      expect(buildDashboardSnapshot(db, repo, NOW).conductor.question).toBeUndefined();
+
+      vi.mocked(hasConductorWindow).mockReturnValue(true);
+      appendEvent(db, null, 'answer', { question: 'accept the debt?', text: 'no' });
+      expect(buildDashboardSnapshot(db, repo, NOW).conductor.question).toBeUndefined();
     });
   });
 
@@ -600,7 +631,61 @@ describe('buildDashboardSnapshot', () => {
         appendEvent(db, 's1', 'question', { text: 'rebase or merge?' });
         appendEvent(db, 's1', 'tool_call', {});
 
-        expect(questionOf()).toBe('rebase or merge?');
+        expect(questionOf()).toEqual({ text: 'rebase or merge?', options: [] });
+      });
+
+      // Decision 93: an open question idles the worker until the operator acts.
+      it('needs a human while it is open', () => {
+        appendEvent(db, 's1', 'question', { text: 'rebase or merge?' });
+
+        expect(buildDashboardSnapshot(db, repo, NOW).sessions[0]?.needsHuman).toBe(true);
+      });
+
+      it('carries its options and the one recommended', () => {
+        appendEvent(db, 's1', 'question', {
+          text: 'rebase or merge?',
+          options: ['rebase', 'merge'],
+          recommended: 2,
+        });
+
+        expect(questionOf()).toEqual({
+          text: 'rebase or merge?',
+          options: ['rebase', 'merge'],
+          recommended: 2,
+        });
+      });
+
+      // The payload is session-writable: past four is never an option, and a
+      // recommendation that names none marks nothing.
+      it('keeps four options and drops a recommendation past them', () => {
+        appendEvent(db, 's1', 'question', {
+          text: 'which?',
+          options: ['a', 'b', 'c', 'd', 'e'],
+          recommended: 5,
+        });
+
+        expect(questionOf()).toEqual({ text: 'which?', options: ['a', 'b', 'c', 'd'] });
+      });
+
+      it('scrubs control characters out of each option', () => {
+        appendEvent(db, 's1', 'question', {
+          text: 'which?',
+          options: ['\u001b]0;pwned\u0007rebase', 'merge;\u001b[31m $(whoami)'],
+        });
+
+        const options = questionOf()?.options ?? [];
+        for (const option of options) {
+          // biome-ignore lint/suspicious/noControlCharactersInRegex: asserting their absence
+          expect(option).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+        }
+        expect(options[1]).toBe('merge; [31m $(whoami)');
+      });
+
+      it('clears once an answer comes after it', () => {
+        appendEvent(db, 's1', 'question', { text: 'rebase or merge?', options: ['a', 'b'] });
+        appendEvent(db, 's1', 'answer', { question: 'rebase or merge?', text: 'b', option: 2 });
+
+        expect(questionOf()).toBeUndefined();
       });
 
       it('clears once a steer comes after it', () => {
@@ -615,7 +700,7 @@ describe('buildDashboardSnapshot', () => {
         appendEvent(db, 's1', 'steer', { kind: 'message' });
         appendEvent(db, 's1', 'question', { text: 'and now?' });
 
-        expect(questionOf()).toBe('and now?');
+        expect(questionOf()?.text).toBe('and now?');
       });
 
       it('is absent on a session that never asked', () => {
@@ -641,7 +726,7 @@ describe('buildDashboardSnapshot', () => {
       it('scrubs and cuts the text', () => {
         appendEvent(db, 's1', 'question', { text: `\u001b[2Jwhich\n${'x'.repeat(400)}` });
 
-        const question = questionOf() ?? '';
+        const question = questionOf()?.text ?? '';
         expect(question).not.toContain('\u001b');
         expect(question.startsWith('[2Jwhich x')).toBe(true);
         expect(question).toHaveLength(300);
@@ -888,17 +973,18 @@ describe('buildDashboardSnapshot', () => {
       expect(buildDashboardSnapshot(db, repo, NOW).sessions[0]?.needsHuman).toBe(true);
     });
 
-    it('sorts blocked and stalled sessions first, then oldest first', () => {
-      for (const id of ['s-first', 's-second', 's-stalled', 's-blocked']) {
+    it('sorts open questions first, then blocked and stalled sessions, then oldest first', () => {
+      for (const id of ['s-first', 's-second', 's-stalled', 's-blocked', 's-asking']) {
         seedSession(db, repo, id);
         transitionSession(db, id, 'running');
       }
       transitionSession(db, 's-blocked', 'blocked');
       seedEventsFile(repo, 's-stalled', { hook_event_name: 'Stop' }, STALLED_AFTER_MS + 1000);
+      appendEvent(db, 's-asking', 'question', { text: 'which way?' });
 
       const ids = buildDashboardSnapshot(db, repo, NOW).sessions.map((s) => s.id);
 
-      expect(ids).toEqual(['s-stalled', 's-blocked', 's-first', 's-second']);
+      expect(ids).toEqual(['s-asking', 's-stalled', 's-blocked', 's-first', 's-second']);
     });
   });
 
@@ -1264,7 +1350,7 @@ describe('needsYou', () => {
         sessionId: 's-asking',
         label: 's-asking',
         reason: 'question: rebase or merge?',
-        answer: 'pup steer s-asking "..."',
+        answer: 'pup answer s-asking "..."',
       },
       {
         kind: 'blocked',
@@ -1313,6 +1399,55 @@ describe('needsYou', () => {
     expect(inbox()[0]?.reason).toMatch(
       /^TURN DIED \(API error\) — resume refused at \d{2}:\d{2}, needs a human$/,
     );
+  });
+
+  // Decision 93: the inbox numbers a question's options for `pup answer`, and
+  // the conductor's own question leads them all.
+  describe('questions', () => {
+    afterEach(() => {
+      vi.mocked(hasConductorWindow).mockReturnValue(false);
+    });
+
+    it('carries the options, the recommended one, and the answer command', () => {
+      seedIn('s1', ['running']);
+      appendEvent(db, 's1', 'question', {
+        text: 'rebase \u2192 or merge?',
+        options: ['rebase \u2705', 'merge'],
+        recommended: 1,
+      });
+
+      expect(inbox()).toEqual([
+        {
+          kind: 'question',
+          sessionId: 's1',
+          label: 's1',
+          reason: 'question: rebase - or merge?',
+          answer: 'pup answer s1 <n>, or pup answer s1 "..."',
+          options: ['rebase -', 'merge'],
+          recommended: 1,
+        },
+      ]);
+    });
+
+    it("lists the running conductor's question first", () => {
+      vi.mocked(hasConductorWindow).mockReturnValue(true);
+      seedIn('s1', ['running', 'blocked']);
+      seedIn('s2', ['running']);
+      appendEvent(db, 's2', 'question', { text: 'which way?' });
+      appendEvent(db, null, 'question', { text: 'accept the debt?', options: ['yes', 'no'] });
+
+      const needs = inbox();
+
+      expect(needs.map((need) => need.label)).toEqual(['conductor', 's2', 's1']);
+      expect(needs[0]).toEqual({
+        kind: 'question',
+        sessionId: 'conductor',
+        label: 'conductor',
+        reason: 'question: accept the debt?',
+        answer: 'pup answer conductor <n>, or pup answer conductor "..."',
+        options: ['yes', 'no'],
+      });
+    });
   });
 
   // A question is the first reason a running session has, so a stalled one

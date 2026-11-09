@@ -20,6 +20,17 @@ export interface DashboardBaseline {
   deadExports?: number;
 }
 
+/**
+ * A question still open, as both readers print it (decisions 76, 93): its
+ * text, the answers the asker offered (at most four, numbered from 1 by
+ * position) and the 1-based one it recommends, when that names an option.
+ */
+export interface DashboardQuestion {
+  text: string;
+  options: string[];
+  recommended?: number;
+}
+
 interface DashboardConductor {
   running: boolean;
   /** The conductor window's tmux name, up or not. */
@@ -32,6 +43,8 @@ interface DashboardConductor {
    * call, not the model's.
    */
   attachCommand: string;
+  /** The question the running conductor asked with `pup conductor ask` and nobody has answered. */
+  question?: DashboardQuestion;
 }
 
 /** The newest steer a session received, whoever sent it. */
@@ -147,10 +160,10 @@ export interface DashboardSession {
   contextTokens?: number;
   lastSteer?: DashboardSteer;
   /**
-   * The question the session asked with `pup session ask` that no steer has
-   * answered yet, scrubbed and cut (decision 76).
+   * The question the session asked with `pup session ask` that no steer or
+   * answer has closed yet, scrubbed and cut (decisions 76, 93).
    */
-  question?: string;
+  question?: DashboardQuestion;
   /**
    * The PR the gate opened for a merged session, while the target branch of
    * this checkout does not yet hold the commit it pinned and no `landed` event
@@ -171,8 +184,8 @@ export interface DashboardSession {
   /** The newest few stored events, oldest of them first — the order they happened in. */
   recentEvents: DashboardEvent[];
   /**
-   * Nothing moves here until a person acts: blocked, stalled, or waiting on an
-   * answer. Wider than what sorts first — an awaiting-input session is a
+   * Nothing moves here until a person acts: an open question, blocked,
+   * stalled, or waiting on an answer. Wider than what sorts first — an awaiting-input session is a
    * five-second permission ask as often as a wedge, so it is flagged without
    * being hoisted above the sessions that have stopped for good.
    */
@@ -186,11 +199,15 @@ export interface DashboardSession {
 export interface DashboardNeed {
   /** The inbox's own order: question, blocked, top-rung, stalled, awaiting-review, pr-open. */
   kind: 'question' | 'blocked' | 'top-rung' | 'stalled' | 'awaiting-review' | 'pr-open';
+  /** The session, or `conductor` for the conductor's own question. */
   sessionId: string;
   /** What prints for the session: its id, or a placeholder for one outside the minted shape. */
   label: string;
   reason: string;
   answer: string;
+  /** A question's numbered options and the 1-based one recommended (decision 93). */
+  options?: string[];
+  recommended?: number;
 }
 
 interface DashboardBacklogTask {
@@ -224,7 +241,7 @@ export interface DashboardSnapshot {
   /** Absent until `pup init` has captured one. */
   baseline?: DashboardBaseline;
   conductor: DashboardConductor;
-  /** Blocked and stalled sessions first, then oldest first. */
+  /** Open questions first, then blocked and stalled sessions, then oldest first. */
   sessions: DashboardSession[];
   /** Unclaimed tasks, oldest first — the queue order `pup plan` lists them in. */
   backlog: DashboardBacklogTask[];

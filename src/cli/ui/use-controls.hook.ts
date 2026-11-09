@@ -7,6 +7,7 @@ import {
   type ActionDeps,
   type ActionResult,
   type AttachTarget,
+  answerSelected,
   attachTo,
   conductorAttachTarget,
   failure,
@@ -226,6 +227,27 @@ export function useControls({
     });
   }
 
+  /**
+   * A number key: that option of the selected session's open question, typed
+   * in as `pup answer <id> <n>` would (decision 93). A question asked in words
+   * alone takes words, which `s` sends.
+   */
+  function answerOption(option: string): void {
+    const asking = sessionRow?.session;
+    if (!sessionRow || !asking) {
+      say('Nothing to answer: the cursor is not on a session.', true);
+    } else if (asking.question === undefined) {
+      say(`${asking.id} has no open question.`, true);
+    } else if (asking.question.options.length === 0) {
+      say(`${asking.id}'s question offers no options; s answers it in words.`, true);
+    } else {
+      const { deps } = sessionRow.project;
+      runAfterFrame(`Answering ${asking.id}: waiting for the paste to land …`, () =>
+        answerSelected(deps, asking.id, option),
+      );
+    }
+  }
+
   /** The respawn's wait, and the merge's, both run past this handler's return. */
   function startRespawn(sessionId: string, deps: ActionDeps): void {
     setBusy(true);
@@ -442,6 +464,7 @@ export function useControls({
         });
       }
       default:
+        if (/^[1-9]$/.test(input)) return answerOption(input);
         return;
     }
   });

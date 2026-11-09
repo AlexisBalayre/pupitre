@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // that the key reaches the right one with the row under the cursor. Splitting
 // them is what keeps a rebind from passing because the action still works.
 vi.mock('./actions.service.js', () => ({
+  answerSelected: vi.fn(() => ({ message: 'Answered.' })),
   attachTo: vi.fn(() => ({ message: 'Detached from pup-s-run-1.' })),
   conductorAttachTarget: vi.fn(() => ({
     label: 'conductor-window',
@@ -36,6 +37,7 @@ vi.mock('./actions.service.js', () => ({
 import type { DashboardSession, DashboardSnapshot } from '../../core/types/dashboard.types.js';
 import {
   type ActionDeps,
+  answerSelected,
   attachTo,
   conductorAttachTarget,
   interruptSelected,
@@ -178,6 +180,39 @@ describe('dashboard controls', () => {
 
       expect(steerSelected).toHaveBeenCalledWith(DEPS, 's-run-1', 'ac');
       instance.unmount();
+    });
+
+    // Decision 93: one keystroke answers the selected session's open question.
+    it("answers the selected session's open question with the option a number picks", async () => {
+      const asking = sessionFixture({
+        question: { text: 'which?', options: ['rebase', 'merge'], recommended: 1 },
+      });
+      const instance = mount(snapshotFixture({ sessions: [asking] }));
+
+      await press(instance, '2');
+
+      expect(answerSelected).toHaveBeenCalledWith(DEPS, 's-run-1', '2');
+      expect(instance.lastFrame()).toContain('Answered.');
+      instance.unmount();
+    });
+
+    it('answers nothing on a number key when no question with options is open', async () => {
+      const instance = mount();
+
+      await press(instance, '1');
+      expect(instance.lastFrame()).toContain('s-run-1 has no open question.');
+
+      instance.unmount();
+      const words = mount(
+        snapshotFixture({
+          sessions: [sessionFixture({ question: { text: 'why?', options: [] } })],
+        }),
+      );
+      await press(words, '1');
+
+      expect(words.lastFrame()).toContain('offers no options');
+      expect(answerSelected).not.toHaveBeenCalled();
+      words.unmount();
     });
 
     it('interrupts the selected session on `i`, with nothing to confirm', async () => {
