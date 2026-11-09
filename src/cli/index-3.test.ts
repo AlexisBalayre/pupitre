@@ -183,6 +183,7 @@ import type { SessionState } from '../core/db.client.js';
 import { insertDecisionRecord } from '../core/decision-record.repository.js';
 import { DEFAULT_BASE_PROFILE } from '../core/default-profile.constants.js';
 import { insertLedgerEntry } from '../core/ledger.repository.js';
+import { MergeLockLostError } from '../core/merge-gate.errors.js';
 import { runMergeGate } from '../core/merge-gate.service.js';
 import { replaceOverlaps } from '../core/overlap.repository.js';
 import { projectId } from '../core/paths.utils.js';
@@ -2884,6 +2885,25 @@ describe('CLI commands', () => {
         expect(fatalExitCode(escaped)).toBe(code);
         expect(errors).toEqual([expect.stringContaining(`Interrupted by ${signal}`)]);
       });
+    });
+
+    // A lock moved away while the gate ran let another run in alongside it: the
+    // merge it made is reported, then the lost lock, and the run fails (decision 88).
+    it('reports a merge made under a lock that was lost, and fails on it', async () => {
+      useCwd(initRepoWithAdapter());
+      vi.mocked(runMergeGate).mockRejectedValue(
+        new MergeLockLostError('/repo/.git/pup-merge.lock', mergedOutcome()),
+      );
+
+      await buildProgram().parseAsync(['merge', 's1'], { from: 'user' });
+
+      expect(logs).toContain('Merged s1; worktree and branch cleaned up.');
+      expect(errors).toEqual([
+        expect.stringMatching(
+          /^The merge lock at \/repo\/\.git\/pup-merge\.lock was gone or replaced/,
+        ),
+      ]);
+      expect(process.exitCode).toBe(1);
     });
 
     // The gate refuses before running a child (decision 78); the command turns

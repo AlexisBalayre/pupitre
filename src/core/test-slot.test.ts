@@ -21,9 +21,13 @@ import { projectId, projectPaths } from './paths.utils.js';
 import { ensureProject, insertSession, insertTask } from './session.repository.js';
 import {
   availableMemoryBytes,
+  COMMIT_TEST_ENV,
+  describeSlotWait,
   GATE_SLOT_WAIT_MS,
   HELD_SLOT_ENV,
   runSessionTest,
+  SESSION_SLOT_WAIT_MS,
+  SLOTS_BUSY_STATUS,
   type SlotHolder,
   SlotWaitInterruptedError,
   sessionTestCommand,
@@ -234,13 +238,141 @@ describe('withTestSlot (decision 96)', () => {
 
     second.end();
     await second.settled;
+    gate.end();
+    await gate.settled;
     await tick();
-    expect(log).toHaveLength(4);
-    expect(log.slice(3)[0]).toMatch(/^s[34]$/);
-    for (const held of [gate, worker, lateWorker]) held.end();
-    await Promise.all([gate.settled, worker.settled, lateWorker.settled]);
-    expect(log).toHaveLength(5);
+    expect(log.slice(3).sort()).toEqual(['s3', 's4']);
+    for (const held of [worker, lateWorker]) held.end();
+    await Promise.all([worker.settled, lateWorker.settled]);
     expect(readdirSync(dir)).toEqual([]);
+  });
+
+  describe('a gate holding a slot (decision 140)', () => {
+    it("keeps a worker from the free slot until the gate's run ends", async () => {
+      const log: string[] = [];
+      const gate = run('gate', 'gate s9', log);
+      const worker = run('worker', 's1', log);
+      await tick();
+      expect(log).toEqual(['gate s9']);
+      expect(readdirSync(dir)).toEqual(['slot-0.lock']);
+
+      gate.end();
+      await gate.settled;
+      await tick();
+      expect(log).toEqual(['gate s9', 's1']);
+      worker.end();
+      await worker.settled;
+    });
+
+    it('names the gate a worker waits for, and keeps it waiting once the other slot frees', async () => {
+      const log: string[] = [];
+      const waits: string[] = [];
+      const first = run('worker', 's1', log);
+      const gate = run('gate', 'gate s9', log);
+      const worker = run('worker', 's2', log, {
+        onWait: (holders, gatesAhead) => waits.push(describeSlotWait(holders, gatesAhead)),
+      });
+      await tick();
+      first.end();
+      await first.settled;
+      await tick();
+
+      expect(log).toEqual(['s1', 'gate s9']);
+      expect(waits).toEqual([
+        `Waiting for the merge gate for gate s9 (pid ${process.pid}) to end its test run, beside session s1 (pid ${process.pid}).`,
+      ]);
+      gate.end();
+      await gate.settled;
+      await tick();
+      expect(log).toEqual(['s1', 'gate s9', 's2']);
+      worker.end();
+      await worker.settled;
+    });
+
+    /** Slot 0 a gate's whose pid is `gatePid`, slot 1 a live session's in another process. */
+    function gateBesideSession(gatePid: number): void {
+      writeFileSync(
+        join(dir, 'slot-0.lock'),
+        JSON.stringify({ kind: 'gate', label: 't-9', pid: gatePid, token: 'x' }),
+      );
+      writeFileSync(
+        join(dir, 'slot-1.lock'),
+        JSON.stringify({ kind: 'worker', label: 'other', pid: process.ppid, token: 'y' }),
+      );
+    }
+
+    it("holds no worker back with a dead gate's slot, reclaiming it", async () => {
+      gateBesideSession(deadPid());
+      const log: string[] = [];
+      const held = run('worker', 's1', log);
+      await tick();
+
+      expect(log).toEqual(['s1']);
+      expect(JSON.parse(readFileSync(join(dir, 'slot-0.lock'), 'utf8'))).toMatchObject({
+        kind: 'worker',
+        label: 's1',
+      });
+      held.end();
+      await held.settled;
+    });
+
+    it("keeps a worker waiting on a live gate's slot, the control for the dead one", async () => {
+      gateBesideSession(process.ppid);
+      const log: string[] = [];
+      const held = run('worker', 's1', log);
+      await tick();
+
+      expect(log).toEqual([]);
+      expect(JSON.parse(readFileSync(join(dir, 'slot-0.lock'), 'utf8'))).toMatchObject({
+        kind: 'gate',
+        label: 't-9',
+      });
+      rmSync(join(dir, 'slot-0.lock'));
+      await tick();
+      expect(log).toEqual(['s1']);
+      held.end();
+      await held.settled;
+    });
+
+    it('takes a free slot beside a worker already running', async () => {
+      const log: string[] = [];
+      const worker = run('worker', 's1', log);
+      const gate = run('gate', 'gate s9', log);
+      await tick();
+      expect(log).toEqual(['s1', 'gate s9']);
+      for (const held of [worker, gate]) held.end();
+      await Promise.all([worker.settled, gate.settled]);
+    });
+
+    it('tells a worker that began waiting on sessions again once a gate queues ahead, and keeps it out of the run', async () => {
+      const log: string[] = [];
+      const waits: string[] = [];
+      const first = run('worker', 's1', log);
+      const second = run('worker', 's2', log);
+      const worker = run('worker', 's3', log, {
+        onWait: (holders, gatesAhead) => waits.push(describeSlotWait(holders, gatesAhead)),
+      });
+      await tick();
+      const gate = run('gate', 'gate s9', log);
+      await tick();
+      first.end();
+      await first.settled;
+      second.end();
+      await second.settled;
+      await tick();
+
+      expect(log).toEqual(['s1', 's2', 'gate s9']);
+      expect(waits).toEqual([
+        `Waiting for a test slot, held by session s1 (pid ${process.pid}) and session s2 (pid ${process.pid}).`,
+        `Waiting for a test slot, held by session s1 (pid ${process.pid}) and session s2 (pid ${process.pid}); the merge gate for gate s9 (pid ${process.pid}) waits first.`,
+      ]);
+      gate.end();
+      await gate.settled;
+      await tick();
+      expect(log).toEqual(['s1', 's2', 'gate s9', 's3']);
+      worker.end();
+      await worker.settled;
+    });
   });
 
   it('ends its wait on an interrupt, running nothing and leaving no wait file', async () => {
@@ -641,6 +773,109 @@ describe('runSessionTest (decision 96)', () => {
     expect(await status).toBe(143);
     expect(process.listeners('SIGTERM')).toEqual(before);
     expect(readdirSync(join(dir, 'slots'))).toEqual([]);
+  });
+
+  it('runs nothing and asks for a retry once its wait outlasts its bound (decision 140)', async () => {
+    const dir = tempDir('pup-session-test-');
+    const slots = join(dir, 'slots');
+    mkdirSync(slots);
+    // Held by a live gate in another process, the other slot free.
+    writeFileSync(
+      join(slots, 'slot-0.lock'),
+      JSON.stringify({ kind: 'gate', label: 't-9', pid: process.ppid, token: 'x' }),
+    );
+    const ran = join(dir, 'ran');
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    onTestFinished(() => errors.mockRestore());
+    const status = await runSessionTest({
+      command: { stage: 'test', command: 'touch', args: [ran] },
+      args: [],
+      cwd: dir,
+      sessionId: 's1',
+      slots: { dir: slots, pollMs: 10, maxWaitMs: 50 },
+    });
+
+    expect(status).toBe(SLOTS_BUSY_STATUS);
+    expect(existsSync(ran)).toBe(false);
+    expect(errors).toHaveBeenCalledWith(
+      "No test slot came free in 0.1s: the test slots are busy with merge gates or other sessions' " +
+        'runs. Nothing ran; retry `pup session test`.',
+    );
+    expect(readdirSync(slots)).toEqual(['slot-0.lock']);
+  });
+
+  it('asks for a retry at `SESSION_SLOT_WAIT_MS` when no bound is named', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
+    const dir = tempDir('pup-session-test-');
+    const slots = join(dir, 'slots');
+    mkdirSync(slots);
+    writeFileSync(
+      join(slots, 'slot-0.lock'),
+      JSON.stringify({ kind: 'gate', label: 't-9', pid: process.ppid, token: 'x' }),
+    );
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    onTestFinished(() => errors.mockRestore());
+    let status: number | undefined;
+    void runSessionTest({
+      command: { stage: 'test', command: 'touch', args: [join(dir, 'ran')] },
+      args: [],
+      cwd: dir,
+      sessionId: 's1',
+      slots: { dir: slots },
+    }).then((answered) => {
+      status = answered;
+    });
+
+    await vi.advanceTimersByTimeAsync(SESSION_SLOT_WAIT_MS - 1000);
+    expect(status).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(status).toBe(SLOTS_BUSY_STATUS);
+    expect(errors).toHaveBeenCalledWith(
+      expect.stringMatching(/^No test slot came free in 480\.0s: /),
+    );
+    expect(existsSync(join(dir, 'ran'))).toBe(false);
+  });
+
+  it('waits past `SESSION_SLOT_WAIT_MS` for a commit, then runs when a slot frees', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
+    vi.stubEnv(COMMIT_TEST_ENV, '1');
+    const dir = tempDir('pup-session-test-');
+    const slots = join(dir, 'slots');
+    mkdirSync(slots);
+    const lock = join(slots, 'slot-0.lock');
+    writeFileSync(
+      lock,
+      JSON.stringify({ kind: 'gate', label: 't-9', pid: process.ppid, token: 'x' }),
+    );
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    onTestFinished(() => errors.mockRestore());
+    let status: number | undefined;
+    void runSessionTest({
+      command: { stage: 'test', command: 'true', args: [] },
+      args: [],
+      cwd: dir,
+      sessionId: 's1',
+      slots: { dir: slots },
+    }).then((answered) => {
+      status = answered;
+    });
+
+    await vi.advanceTimersByTimeAsync(SESSION_SLOT_WAIT_MS + 60_000);
+    expect(status).toBeUndefined();
+    rmSync(lock);
+    await vi.advanceTimersByTimeAsync(2000);
+    await vi.waitFor(() => expect(status).toBe(0));
+    expect(errors).not.toHaveBeenCalledWith(expect.stringMatching(/^No test slot came free/));
+  });
+
+  it('bounds its wait under the 600 s a worker gives a Bash call', () => {
+    expect(SESSION_SLOT_WAIT_MS).toBeLessThan(600_000);
   });
 
   it('fails with the error of a command that cannot start, freeing its slot', async () => {

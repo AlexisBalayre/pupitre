@@ -1,13 +1,25 @@
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { loadavg } from 'node:os';
 import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
-import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { endSandboxRun, GateInterruptedError } from './sandbox.utils.js';
 
 vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../claude/session-runtime.service.js')>()),
+  killSession: vi.fn(),
   steerPane: vi.fn(),
 }));
+// A gate that merges drafts a decision record, which would spawn `claude -p`.
+vi.mock('../claude/utility.service.js', () => ({
+  runUtility: vi.fn(() => ({ ok: false, output: 'mocked out in tests' })),
+}));
+// The real loadavg, wrapped so a gate asked to wait never waits on this
+// machine's load (decision 88).
+vi.mock('node:os', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:os')>();
+  return { ...actual, loadavg: vi.fn(actual.loadavg) };
+});
 // The real diff, so a test can fail one call of it and no other.
 vi.mock('./git-diff.client.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./git-diff.client.js')>();
@@ -31,7 +43,10 @@ import { SteerNotDeliveredError, steerPane } from '../claude/session-runtime.ser
 import { auditProject } from './audit.service.js';
 import { openStore } from './db.client.js';
 import { gitDiffPaths } from './git-diff.client.js';
+import { initProject } from './init.service.js';
 import { landSession } from './land.service.js';
+import { MergeLockLostError } from './merge-gate.errors.js';
+import { runMergeGate } from './merge-gate.service.js';
 import { projectId } from './paths.utils.js';
 import {
   appendEvent,
@@ -44,6 +59,8 @@ import {
   transitionSession,
 } from './session.repository.js';
 import { TerminalSessionError } from './session-lifecycle.errors.js';
+import { HELD_SLOT_ENV } from './test-slot.service.js';
+import type { ProjectBaseline } from './types/init.types.js';
 import type { LandOutcome } from './types/land.types.js';
 
 // Real git repos, a bare origin and a sandboxed audit per test.
@@ -283,11 +300,14 @@ describe('landSession', { timeout: 20_000 }, () => {
       seedPeer('s3', 'src/feature.ts', { inGit: false });
       seedPeer('s2', 'src/feature.ts');
 
-      await landMerged();
+      const outcome = await landMerged();
 
       expect(steersTo('s3')).toEqual([]);
       expect(steerEvents('s3')).toEqual([]);
       expect(steerEvents('s2')).toEqual([{ kind: 'main-landed', by: SESSION_ID }]);
+      expect(outcome.unsteered).toEqual([
+        { sessionId: 's3', reason: expect.stringMatching(/^git could not read its branch: /) },
+      ]);
     });
 
     it('steers past a peer with no window and one that has just stopped', async () => {
@@ -298,11 +318,12 @@ describe('landSession', { timeout: 20_000 }, () => {
         if (pane.paneId === '%s4') throw new TerminalSessionError('s4', 'killed', 'steer');
       });
 
-      await landMerged();
+      const outcome = await landMerged();
 
       expect(steerEvents('s3')).toEqual([]);
       expect(steerEvents('s4')).toEqual([]);
       expect(steerEvents('s2')).toEqual([{ kind: 'main-landed', by: SESSION_ID }]);
+      expect(outcome.unsteered?.map((entry) => entry.sessionId)).toEqual(['s3', 's4']);
     });
 
     it('lands with its audit whatever else a steer throws, and still steers the rest', async () => {
@@ -317,8 +338,149 @@ describe('landSession', { timeout: 20_000 }, () => {
       expect(landedEvents()).toHaveLength(1);
       expect(outcome.audit?.heldOnRegression).toBe(false);
       expect(getProject(db, pid)?.baseline).not.toBeNull();
+      // Reported, never recorded: a steer event would answer s3's open question.
+      expect(outcome.unsteered).toEqual([
+        { sessionId: 's3', reason: 'tmux: server exited unexpectedly' },
+      ]);
       expect(steerEvents('s3')).toEqual([]);
       expect(steerEvents('s2')).toEqual([{ kind: 'main-landed', by: SESSION_ID }]);
+    });
+
+    // A failed steer is not recorded, and a kill during the audit would lose the
+    // outcome: the line is printed, scrubbed, before the audit starts (decision 99).
+    it('prints each peer it could not steer on one scrubbed line before its audit, and lands', async () => {
+      seedPeer('s2', 'src/feature.ts');
+      vi.mocked(steerPane).mockImplementationOnce(() => {
+        throw new Error('tmux: server\n\u001b[2J exited');
+      });
+      const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      const actual =
+        await vi.importActual<typeof import('./audit.service.js')>('./audit.service.js');
+      let printedBeforeAudit: unknown[] = [];
+      vi.mocked(auditProject).mockImplementationOnce((...args) => {
+        printedBeforeAudit = errors.mock.calls.flat();
+        return actual.auditProject(...args);
+      });
+
+      try {
+        const outcome = await landMerged();
+
+        expect(printedBeforeAudit).toEqual([
+          'Could not tell s2 that main moved: tmux: server [2J exited. Steer it to take main in.',
+        ]);
+        expect(outcome.unsteered).toEqual([{ sessionId: 's2', reason: 'tmux: server [2J exited' }]);
+        expect(outcome.audit?.heldOnRegression).toBe(false);
+      } finally {
+        errors.mockRestore();
+      }
+      expect(steerEvents('s2')).toEqual([]);
+    });
+
+    it('reports no unsteered session when every overlapping one was steered', async () => {
+      seedPeer('s2', 'src/feature.ts');
+
+      const outcome = await landMerged();
+
+      expect(outcome.unsteered).toBeUndefined();
+    });
+
+    // A session can rename the lock away under a land: the release then finds
+    // it gone after the event, so the land happened but unprotected. A re-run
+    // refuses, so the steer and the outcome must survive it (decision 88).
+    it('steers once and carries the land on the error a lock moved away under it raises', async () => {
+      seedPeer('s2', 'src/feature.ts');
+      const lock = join(repo, '.git', 'pup-merge.lock');
+      const actual =
+        await vi.importActual<typeof import('./audit.service.js')>('./audit.service.js');
+      vi.mocked(auditProject).mockImplementationOnce((...args) => {
+        renameSync(lock, `${lock}.moved`);
+        return actual.auditProject(...args);
+      });
+
+      const error = await landMerged().then(
+        () => undefined,
+        (thrown: unknown) => thrown,
+      );
+
+      expect(error).toBeInstanceOf(MergeLockLostError);
+      expect((error as MergeLockLostError<LandOutcome>).result).toMatchObject({
+        prUrl: PR_URL,
+        target: 'main',
+        fastForwarded: true,
+        removedWorktree: true,
+        audit: { heldOnRegression: false },
+      });
+      expect(landedEvents()).toHaveLength(1);
+      expect(steersTo('s2')).toHaveLength(1);
+      await expect(land()).rejects.toThrow('has already landed');
+      expect(steerEvents('s2')).toEqual([{ kind: 'main-landed', by: SESSION_ID }]);
+    });
+
+    // The steer wakes the sessions gated next. A gate reading the baseline
+    // before the audit stores it would judge against the target before the
+    // land, and its ratchet would write over the refresh (decision 88).
+    it('holds a gate started during its audit until the refresh is stored', {
+      timeout: 60_000,
+    }, async () => {
+      // As inside a slot already held, so the gate never queues behind the
+      // machine's real test runs (decision 96).
+      vi.stubEnv(HELD_SLOT_ENV, 'land.test');
+      vi.mocked(loadavg).mockReturnValue([0, 0, 0]);
+      onTestFinished(() => {
+        vi.mocked(loadavg).mockReset();
+      });
+      const measuring = (lines: number): Adapter => ({
+        ...passingAdapter,
+        duplication: () => ({ duplicatedLines: lines, blocks: [] }),
+      });
+      await initProject(db, repo, [measuring(40)]);
+      seedPeer('s2', 'src/other.ts');
+      db.prepare('UPDATE tasks SET spec = ? WHERE id = ?').run(
+        JSON.stringify({ id: 'task-s2', goal: 'g', scopeIn: ['src/**'], acceptance: ['a'] }),
+        'task-s2',
+      );
+      transitionSession(db, 's2', 'awaiting-review');
+      seedPrMerge();
+      const merge = mergeOnGitHub();
+      fakeGh({
+        state: 'MERGED',
+        baseRefName: 'main',
+        headRefOid: pinned,
+        mergeCommit: { oid: merge },
+      });
+      const actual =
+        await vi.importActual<typeof import('./audit.service.js')>('./audit.service.js');
+      let gate: ReturnType<typeof runMergeGate> | undefined;
+      vi.mocked(auditProject).mockImplementationOnce((...args) => {
+        gate = runMergeGate(db, {
+          repoPath: repo,
+          sessionId: 's2',
+          adapters: [measuring(10)],
+          wait: true,
+        });
+        return actual.auditProject(...args);
+      });
+      const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+      try {
+        const outcome = await landSession(db, {
+          repoPath: repo,
+          sessionId: SESSION_ID,
+          adapters: [measuring(10)],
+        });
+        const gated = await gate;
+
+        expect(outcome.audit?.baseline.debt?.duplicatedLines).toBe(10);
+        expect(gated?.status).toBe('merged');
+        expect(gated?.report.stages.find((s) => s.stage === 'duplication')?.detail).toContain(
+          '(baseline 10)',
+        );
+        const stored = JSON.parse(getProject(db, pid)?.baseline ?? 'null') as ProjectBaseline;
+        expect(stored.capturedAt).toBe(outcome.audit?.baseline.capturedAt);
+        expect(stored.debt?.duplicatedLines).toBe(10);
+      } finally {
+        errors.mockRestore();
+      }
     });
 
     it('stops on an interrupt during a steer, with the land already recorded', async () => {
@@ -329,6 +491,31 @@ describe('landSession', { timeout: 20_000 }, () => {
 
       await expect(landMerged()).rejects.toThrow('tmux interrupted');
       expect(landedEvents()).toHaveLength(1);
+    });
+
+    // No outcome reaches the CLI and a re-run refuses: the line is said now or
+    // never, and still no steer is recorded for it (decision 99).
+    it('names a peer it could not steer when the audit after it throws', async () => {
+      seedPeer('s2', 'src/feature.ts');
+      vi.mocked(steerPane).mockImplementationOnce(() => {
+        throw new SteerNotDeliveredError('s2', 10, 'box-absent');
+      });
+      vi.mocked(auditProject).mockRejectedValueOnce(new Error('sandbox refused'));
+      const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+      try {
+        await expect(landMerged()).rejects.toThrow('sandbox refused');
+
+        expect(errors.mock.calls.flat()).toContainEqual(
+          expect.stringMatching(
+            /^Could not tell s2 that main moved: Steer to session s2 did not land: .*\. Steer it to take main in\.$/,
+          ),
+        );
+      } finally {
+        errors.mockRestore();
+      }
+      expect(landedEvents()).toHaveLength(1);
+      expect(steerEvents('s2')).toEqual([]);
     });
 
     // Once the event is written a re-run refuses, so a steer left for after a
@@ -428,10 +615,40 @@ describe('landSession', { timeout: 20_000 }, () => {
         throw new SteerNotDeliveredError('s2', 10, 'box-absent');
       });
 
-      await landMerged();
+      const outcome = await landMerged();
 
       expect(landedEvents()).toHaveLength(1);
       expect(steerEvents('s2')).toEqual([]);
+      expect(outcome.unsteered).toEqual([
+        { sessionId: 's2', reason: expect.stringContaining('its input box is not on screen') },
+      ]);
+    });
+
+    // Decision 132's batch: the steer still runs under the lock, and the
+    // baseline is left for `pup audit`.
+    it('steers an overlapping peer when it lands without the audit', async () => {
+      seedPeer('s2', 'src/feature.ts');
+      seedPrMerge();
+      const merge = mergeOnGitHub();
+      fakeGh({
+        state: 'MERGED',
+        baseRefName: 'main',
+        headRefOid: pinned,
+        mergeCommit: { oid: merge },
+      });
+      vi.mocked(auditProject).mockClear();
+
+      const outcome = await landSession(db, {
+        repoPath: repo,
+        sessionId: SESSION_ID,
+        adapters: [passingAdapter],
+        audit: false,
+      });
+
+      expect(outcome.audit).toBeUndefined();
+      expect(auditProject).not.toHaveBeenCalled();
+      expect(getProject(db, pid)?.baseline).toBeNull();
+      expect(steerEvents('s2')).toEqual([{ kind: 'main-landed', by: SESSION_ID }]);
     });
   });
 

@@ -115,17 +115,23 @@ describe('compileProfile', () => {
   });
 
   // Decision 94: a worker's full suite competes with the gate's for the CPU,
-  // and the gate runs the full suite anyway; decision 96 queues every run.
+  // and the gate runs the full suite anyway; decision 96 queues every run, and
+  // decision 140 holds a session's run while a gate runs its tests. Checked a
+  // sentence at a time on the compiled text, so the test does not restate the
+  // service's block line for line.
   it('tells the session to run related tests through `pup session test` only', () => {
-    const compiled = ProfileCompiler.compileProfile(makeInput());
+    const { contextMarkdown } = ProfileCompiler.compileProfile(makeInput());
 
-    expect(compiled.contextMarkdown).toContain(
-      '- Run tests only with `pup session test <test files>`: it runs the project’s test ' +
-        'command on the files you name once one of the machine’s test slots is free, and says ' +
-        'whom it is waiting for. Running the test runner directly is refused. Name only the ' +
-        'tests related to what you changed: the test files for the code you touched and for ' +
-        'the code that imports it. Leave the full suite to the merge gate, which runs it.',
-    );
+    for (const sentence of [
+      '- Run tests only with `pup session test <test files>`:',
+      'once one of the machine’s test slots is free and no merge gate is running its tests,',
+      'If it exits 75, the slots stayed busy and nothing ran: retry later, it is not a test failure.',
+      'Running the test runner directly is refused.',
+      'Name only the tests related to what you changed:',
+      'Leave the full suite to the merge gate, which runs it.\n',
+    ]) {
+      expect(contextMarkdown).toContain(sentence);
+    }
   });
 
   // Decision 103: a turn ended on a background pre-commit or suite read as
@@ -265,10 +271,18 @@ describe('compileProfile', () => {
       const settings = settingsOf(makeInput());
 
       expect(settings.autoMemoryEnabled).toBe(false);
-      expect(settings.env).toEqual({
-        ...SLIM_ENV,
+      expect(settings.env).toMatchObject({
         ENABLE_CLAUDEAI_MCP_SERVERS: 'false',
         CLAUDE_CODE_ENABLE_CFC: 'false',
+      });
+    });
+
+    // Decision 152: the subagent pin is a worker's, never the conductor's.
+    it('pins every subagent a worker spawns to the cheap route', () => {
+      expect(settingsOf(makeInput()).env).toMatchObject({
+        CLAUDE_CODE_SUBAGENT_MODEL: 'claude-haiku-5-5',
+        CLAUDE_CODE_SUBAGENT_MODEL_FORCE: '1',
+        CLAUDE_CODE_SUBAGENT_EFFORT: 'low',
       });
     });
 
@@ -1700,15 +1714,20 @@ describe('exploration goes to a subagent (decision 129)', () => {
     'when you will edit it or need its exact lines.';
 
   // The subagent gets none of the pinned git, and a bare git command runs what a
-  // session can arm in the shared config (decisions 41, 101, 118).
+  // session can arm in the shared config (decisions 41, 101, 118). A worker's
+  // settings pin its model and effort, so its rule names neither (decision 152).
   it('puts the delegation rule in a worker context, confined to its own worktree and no git', () => {
     const context = ProfileCompiler.compileProfile(makeInput()).contextMarkdown;
 
     expect(context).toContain(
-      '## Exploring code\n' +
-        `To learn the code (where something lives, how a module works), ${rule} ` +
-        "Tell it to read only this worktree, never another session's under `.worktrees/`. " +
-        'What your own diff changes you read yourself, with git in this worktree.',
+      '## Searching\n' +
+        'For any where-is-X or how-does-module-Y question, ask an Explore subagent with the ' +
+        'Agent tool (`subagent_type: "Explore"`) and keep only its summary; pup pins the model ' +
+        'and effort it runs on. Tell it to use only Read, Grep and Glob, to run no git and no ' +
+        "other shell command, and to read only this worktree, never another session's under " +
+        '`.worktrees/`. Read with the Read tool only the file you are about to edit, for the ' +
+        'lines the edit needs. What your own diff changes you read yourself, with git in this ' +
+        'worktree.',
     );
   });
 

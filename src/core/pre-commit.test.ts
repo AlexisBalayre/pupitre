@@ -188,7 +188,7 @@ describe('scripts/pre-commit', () => {
       'typecheck',
       'pup session test --related -- ./src/sum.ts',
     ]);
-    expect(stdout).toContain('through a test slot (waits for a free one)');
+    expect(stdout).toContain('through a test slot (waits for a free one, however long)');
   });
 
   it('blocks the commit when the tests run through a slot fail', () => {

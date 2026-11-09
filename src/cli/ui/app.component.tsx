@@ -1,4 +1,5 @@
 import { Box, Text } from 'ink';
+import { radarView } from '../../core/overlap.service.js';
 import { isTerminal } from '../../core/session-state.utils.js';
 import { Backlog } from './backlog.component.js';
 import { Debt } from './debt.component.js';
@@ -102,8 +103,14 @@ export function App({ read, showAttach, readOnlyReason }: AppProps) {
     ),
     debtShare,
   );
+  // Counted from what the radar draws, not from the stored pairs: a pair that
+  // also touches decision files is drawn once and its files named in a line
+  // each (decision 109), so the stored count can fall short of the rows.
   const radarUsed = usedLines(
-    projects.map(({ snapshot }) => snapshot.overlaps.length + (snapshot.radarStale ? 1 : 0)),
+    projects.map(({ snapshot }) => {
+      const view = radarView(snapshot.overlaps);
+      return view.pairs.length + view.appends.length + (snapshot.radarStale ? 1 : 0);
+    }),
     radarShare,
   );
   const tableLines = Math.max(body - debtUsed - radarUsed, 2);
