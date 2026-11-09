@@ -19,6 +19,7 @@ import {
   conductorName,
   hasSessionWindow,
   killWatcher,
+  launchedAncestor,
   launchWatcher,
   refusedSessionEnv,
   SessionPaneMissingError,
@@ -862,13 +863,30 @@ interface PlanOptions {
 /**
  * `pup plan edit <task> --rescope --scope <glob...>` (decision 115). The
  * caller already refused a session; the conductor is refused here, because a
- * scope a gate-failing agent widens for itself is no scope at all. Only
- * `--scope` rides along: a rescope appends globs and changes nothing else.
+ * scope a gate-failing agent widens for itself is no scope at all. Both are
+ * refused again by the process tree, which a caller that unset its markers
+ * and left its worktree still runs under. Only `--scope` rides along: a
+ * rescope appends globs and changes nothing else.
  */
 function rescopeOrRefuse(db: Database, target: string, opts: PlanOptions): void {
   if (callingConductor()) {
     refuse(
       '`pup plan edit --rescope` is operator-only; the conductor cannot widen a claimed task.',
+    );
+    return;
+  }
+  const ancestor = launchedAncestor();
+  if (ancestor?.kind === 'launched') {
+    refuse(
+      `\`pup plan edit --rescope\` is operator-only, and this runs under ${sanitizeReason(ancestor.name)}, ` +
+        'a Claude Code pup launched, whatever its environment says; run it from your own shell.',
+    );
+    return;
+  }
+  if (ancestor?.kind === 'unreadable') {
+    refuse(
+      '`pup plan edit --rescope` could not read the process tree (`ps` failed), so it cannot ' +
+        'tell this caller from a session or the conductor; nothing changed.',
     );
     return;
   }

@@ -356,6 +356,11 @@ describe('rescopeTask (decision 115)', () => {
     ['.github/**', 'reaches `.github`'],
     ['.github/workflows/ci.yml', 'reaches `.github`'],
     ['./.GitHub', 'reaches `.github`'],
+    // The gate's protected paths, which its scope-audit matches in any case.
+    ['.claude/**', 'reaches a path the gate protects whatever the scope'],
+    ['.claude/hooks/scope-guard.sh', 'reaches a path the gate protects whatever the scope'],
+    ['./.CLAUDE', 'reaches a path the gate protects whatever the scope'],
+    ['.pupitre/adapter.yml', 'reaches a path the gate protects whatever the scope'],
     ['  ', 'is empty'],
     ['./', 'is empty'],
     ['src/\u0007x', 'contains a control character'],
@@ -390,8 +395,10 @@ describe('rescopeTask (decision 115)', () => {
   it('takes a glob the matcher reads as a plain path', () => {
     launched('s1', 'merged');
 
-    expect(rescopeTask(db, 't-1', ['./docs/**', 'src/cli/'], CALLER)).toMatchObject({
-      added: ['./docs/**', 'src/cli/'],
+    expect(
+      rescopeTask(db, 't-1', ['./docs/**', 'src/cli/', '.claudeignore', 'docs/.claude/x'], CALLER),
+    ).toMatchObject({
+      added: ['./docs/**', 'src/cli/', '.claudeignore', 'docs/.claude/x'],
     });
   });
 

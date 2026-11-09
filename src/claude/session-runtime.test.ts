@@ -76,6 +76,7 @@ import {
   killSession,
   launchArgs,
   launchConductor,
+  launchedAncestor,
   launchSession,
   launchWatcher,
   mayHaveOpenWindow,
@@ -1187,6 +1188,99 @@ describe('mayHaveOpenWindow (decision 115)', () => {
 
     expect(mayHaveOpenWindow(NO_RECORD, ['s1'])).toBeUndefined();
     expect(sockets()).toEqual([tmpSocket]);
+  });
+});
+
+describe('launchedAncestor (decision 115)', () => {
+  let original: unknown;
+  // `ps -A -o pid= -o ppid= -o args=` over the processes from the caller's parent up.
+  const tree = (...rows: (readonly [number, number, string])[]) => {
+    const listed = rows
+      .map(
+        ([pid, ppid, args]) => `${String(pid).padStart(6)} ${String(ppid).padStart(6)} ${args}\n`,
+      )
+      .join('');
+    vi.mocked(execFileSync).mockImplementation((() => listed) as unknown as typeof execFileSync);
+  };
+  const CLAUDE = '/Users/me/.local/bin/claude --model m --effort e';
+
+  beforeEach(() => {
+    original = vi.mocked(execFileSync).getMockImplementation();
+  });
+
+  afterEach(() => {
+    vi.mocked(execFileSync).mockImplementation(original as never);
+    vi.unstubAllEnvs();
+  });
+
+  it.each([
+    ['the conductor', 'pup-conductor-p1'],
+    ['a session', 'pup-t-abc'],
+  ])("finds %s's Claude Code up the tree, whatever the caller's environment", (_who, name) => {
+    vi.stubEnv('PUP_CONDUCTOR', '');
+    vi.stubEnv('PUP_SESSION_ID', '');
+    tree(
+      [process.ppid, 700, '/bin/zsh -c env -u PUP_CONDUCTOR pup plan edit t-1 --rescope'],
+      [700, 600, `${CLAUDE} --name ${name} --dangerously-skip-permissions`],
+      [600, 1, `tmux -S /tmp/tmux-1/x new-session -d -s ${name} -- ${CLAUDE} --name ${name}`],
+    );
+
+    expect(launchedAncestor()).toEqual({ kind: 'launched', name });
+  });
+
+  // A server lists the command that started it, which is a launch's when a
+  // launch started it; the operator's own panes run under that server.
+  it.each([
+    `tmux new-session -d -P -F #{pane_id} -s pup-t-abc -- ${CLAUDE} --name pup-t-abc`,
+    '/opt/homebrew/bin/tmux -S /tmp/tmux-1/default new-session --name pup-t-abc',
+    'tmux: server (/tmp/tmux-1/default)',
+  ])('passes over a tmux process up the tree: %s', (server) => {
+    tree([process.ppid, 600, '-zsh'], [600, 1, server]);
+
+    expect(launchedAncestor()).toBeUndefined();
+  });
+
+  it.each([
+    ["the operator's own Claude Code", `${CLAUDE} --name notes`],
+    ['a process with no --name', CLAUDE],
+    ['a trailing --name', `${CLAUDE} --name`],
+  ])('passes a caller under %s', (_what, args) => {
+    tree([process.ppid, 600, '/bin/zsh'], [600, 1, args]);
+
+    expect(launchedAncestor()).toBeUndefined();
+  });
+
+  it('stops at a loop in the table rather than hanging', () => {
+    tree([process.ppid, 700, '/bin/zsh'], [700, process.ppid, '/bin/sh']);
+
+    expect(launchedAncestor()).toBeUndefined();
+  });
+
+  // A worker could put a fake ps on PATH.
+  it("runs ps on the pinned PATH with a timeout, whatever the caller's PATH", () => {
+    tree();
+    vi.stubEnv('PATH', '/tmp/fake-bin');
+
+    launchedAncestor();
+
+    expect(vi.mocked(execFileSync).mock.calls).toEqual([
+      [
+        'ps',
+        ['-ww', '-A', '-o', 'pid=', '-o', 'ppid=', '-o', 'args='],
+        expect.objectContaining({
+          env: { PATH: expect.stringMatching(/^\/opt\/homebrew\/bin:\/usr\/local\/bin:/) },
+          timeout: 2000,
+        }),
+      ],
+    ]);
+  });
+
+  it('is unreadable when ps fails, which a rescope refuses', () => {
+    vi.mocked(execFileSync).mockImplementation(() => {
+      throw new Error('spawnSync ps ENOENT');
+    });
+
+    expect(launchedAncestor()).toEqual({ kind: 'unreadable' });
   });
 });
 

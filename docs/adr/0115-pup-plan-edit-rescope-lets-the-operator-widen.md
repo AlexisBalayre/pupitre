@@ -12,21 +12,45 @@
     *The command.* `pup plan edit <task> --rescope --scope <glob...>` appends the globs not
     already there to the task's scope-in. It never removes one and takes no other field, so
     it can only let a session commit more, never less, and the goal and acceptance the
-    session was told stay as they were. The widened spec passes `assertPlannableSpec`, as
+    session was told at launch stay as they were. Nothing messages the session when a
+    rescope lands, since none of its windows is open then (see *When*): the next `pup fix`
+    round recompiles its profile, the context it reads and the hooks it runs under, from
+    the widened spec, and that round's brief carries only the review threads, so the
+    session learns of the wider scope from its profile, not from a message. The widened spec passes `assertPlannableSpec`, as
     every stored spec does; no glob the refusals below take can fail it today, so the call
     guards against the two drifting apart, and its test stubs the check to prove a refusal
     there writes nothing.
     *Who.* Meant for the operator only. A session is refused by `pup plan`'s existing rule
     (decision 40), and the conductor here too: the conductor runs the fix rounds that hit
     the scope failure, and a scope the gate-failing side widens for itself is no scope at
-    all. This is not enforced, only inferred. The refusals read what a worker controls:
-    its cwd, which it can leave, and `PUP_SESSION_ID` and `PUP_CONDUCTOR`, which it can
-    unset (decisions 27, 44). The window probe below is the one check a worker does not
-    pass by shedding its environment, and it stops only a worker whose window is still
-    up. A process a worker detached before its window closed (`nohup`, `setsid`, a
-    double fork) outlives the window, carries no marker, and can rescope its own task.
-    Like the socket ceiling below, this is a limit of the design, not a bug to close
-    here. What the rescope records says the same thing (see *The record*).
+    all. This is not enforced, only inferred. The first refusals read what a worker
+    controls: its cwd, which it can leave, and `PUP_SESSION_ID` and `PUP_CONDUCTOR`, which
+    it can unset (decisions 27, 44). Two checks do not rest on either. The first is the
+    process tree: the CLI walks from its parent up, with one `ps -ww -A -o pid= -o ppid=
+    -o args=` on the probe's pinned PATH (see *When*), and refuses when a process there
+    carries the `--name pup-<...>` pair a launch passed Claude Code (`launchArgs`), a
+    session's window or a conductor's, of any project. So `env -u PUP_CONDUCTOR pup plan
+    edit ... --rescope` from the conductor's own Bash is refused, as is a worker that
+    shed its markers and left its worktree, whatever its tmux socket record says. A tmux
+    process on the way up is passed over: a server lists the command that started it,
+    which is a launch's when a launch started the server, and the operator's own panes
+    run under it. A `ps` that fails refuses too, as unreadable. The suggested check on the
+    caller's tmux pane or terminal would not hold: `TMUX_PANE` is a variable the caller
+    unsets, and Claude Code's Bash runs a command with no terminal at all. The second
+    check is the window probe below, which stops a worker whose window is still up.
+    Neither reaches a process that left the tree: one a worker or the conductor detached
+    (`nohup` with `&`, `setsid`, a double fork) or had something outside the tree start
+    (`tmux new-session` on any server, launchd, cron, `at`). Such a process carries no
+    marker and no launch ancestor, and once the task's windows are closed it can rescope.
+    So can a process the conductor starts that way while its own window is up, since the
+    probe looks only for the task's sessions. Refusing a caller with no terminal would
+    stop the plainest of these, but `script` hands any process a terminal, and the refusal
+    would also stop the operator's own `! pup ...` from Claude Code and any script, so it
+    is not done; the record keeps the terminal as evidence instead (see *The record*).
+    A worker can also skip the command and write `tasks.spec` in `state.db` with
+    `sqlite3`, as the operator did on #161: no hook pup compiles stops a session's Bash
+    writing the store. These are limits of the design, like the socket ceiling below, not bugs to
+    close here, and what the rescope records says the same thing.
     *When.* Allowed only while every session on the task is in a state listed as
     rescopable, `awaiting-review`, `blocked` or `merged`, or `killed`, which claims nothing,
     and no session on it has a window open. The list names the states that allow a rescope,
@@ -91,7 +115,10 @@
     those sockets, so a worker that removes a socket and starts a fresh, empty server at
     its path hides the windows of the old one, which keeps running unlisted. A worker that
     rewrites its own `tmux-socket` record does the same for a window on the operator's
-    socket, when the caller's environment does not name that socket too. A task no
+    socket, when the caller's environment does not name that socket too. Either works only
+    for a caller outside the process tree, since one under the window is refused by the
+    tree check (see *Who*). Checking the record against a copy pup keeps would need a copy
+    the session cannot write, and the store is not one (see *Who*), so no copy is kept. A task no
     session claims is refused too: plain `pup plan edit --scope` edits it.
     *The globs.* Stricter than a plan's: a rescope widens a scope the gate already
     audited, so it names paths. Each glob is checked in the form the matcher reads it,
@@ -99,7 +126,17 @@
     on the raw string. Refused are an empty glob, an absolute one, one with a wildcard
     (`*` or `?`) anywhere in its first segment, which could match every top-level directory,
     one with a `..` segment, one under `.github` (in any case), whose workflows a same-repo
-    PR runs with the repo's secrets, and any with a C0 control, DEL or C1 control. `[`,
+    PR runs with the repo's secrets, one under a path the gate protects from every session
+    whatever its scope (`PROTECTED_PATH_GLOBS`: `.claude/**`, the hooks and settings, and
+    `.pupitre/**`, the gate's own config), matched in any case as scope-audit matches them,
+    and any with a C0 control, DEL or C1 control. The protected check reads the constant
+    scope-audit reads, so the two cannot drift, and it tests a path in the glob's first
+    segment, which the wildcard refusal leaves literal. The gate would fail such a path
+    anyway, but the edit hooks a rescope recompiles would let a session write under
+    `.pupitre`, so the rescope refuses rather than open what the gate then refuses.
+    Nothing else is held back: `package.json`, git hook directories and the gate's own
+    source are code an operator may mean a task to change, which the PR review sees, and
+    a glob onto `src/core/merge-gate*` raises the task to critical (see *The tier*). `[`,
     `]`, `{`, `}` and `\` are no bypass: the matcher escapes them, so `[.]github/**`,
     `{docs,.github}/**` and `\.github/**` are literal paths that match nothing under
     `.github`, and the rescope takes them as such.
@@ -154,9 +191,14 @@
     window when only `TMUX_TMPDIR`'s lists it or does not answer. A launch records the
     socket under the launching shell's `TMUX_TMPDIR`. A window on that socket is reported
     even when the caller's environment lacks `TMUX_TMPDIR`. A record that is relative,
-    names another socket or holds a control character reads as none. Each refused glob is
-    refused, each matcher-form bypass with it, and globs the matcher reads as plain paths
-    (`./docs/**`, `src/cli/`) pass, as do `[.]github/**`, `{docs,.github}/**` and
+    names another socket or holds a control character reads as none. `launchedAncestor`
+    finds a conductor's or a session's Claude Code up the tree whatever the caller's
+    environment says, passes over a tmux process whose arguments are a launch's, passes the
+    operator's own Claude Code and a process with no `--name pup-` pair, stops at a loop in
+    the table, runs `ps` on the pinned PATH with a timeout, and is unreadable when `ps`
+    fails. Each refused glob is refused, each matcher-form bypass with it, `.claude` and
+    `.pupitre` paths in any case among them, and globs the matcher reads as plain paths
+    (`./docs/**`, `src/cli/`, `.claudeignore`, `docs/.claude/x`) pass, as do `[.]github/**`, `{docs,.github}/**` and
     `\.github/**`, none of which matches `.github/x`. A stub of `assertPlannableSpec`
     shows the widened spec goes through it, and a refusal there writes nothing. The event
     records the caller as an inferred operator, with its tty and tmux pane. A re-gate's scope-audit then passes the added path and still fails a
@@ -166,4 +208,6 @@
     stored standard under a session already critical is raised on its own, a pair of null
     rows reports the widened scope-in's critical, and a critical tier is never lowered. `session-repository.test.ts` holds the statement's
     guard to each state, and `index.test.ts` refuses a session, the conductor and an open
-    window, and records the tty and `TMUX_PANE` it saw, dropping a pane that is not one.
+    window, refuses a conductor or a session the process tree finds with its markers unset
+    and a process tree it cannot read, writing nothing, and records the tty and
+    `TMUX_PANE` it saw, dropping a pane that is not one.

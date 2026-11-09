@@ -2,6 +2,8 @@ import type { Database } from 'better-sqlite3';
 import type { Tier } from '../claude/model-ladder.constants.js';
 import { mayHaveOpenWindow } from '../claude/session-runtime.service.js';
 import { insertDecisionRecord } from './decision-record.repository.js';
+import { globToRegExpSource } from './glob.utils.js';
+import { PROTECTED_PATH_GLOBS } from './merge-gate.constants.js';
 import { InvalidProfileError } from './profile.errors.js';
 import { asTier, taskTier, tierForScope } from './routing.utils.js';
 import {
@@ -31,15 +33,20 @@ interface Rescoped {
 // biome-ignore lint/suspicious/noControlCharactersInRegex: matching them is the point
 const CONTROL_CHAR = /[\u0000-\u001f\u007f-\u009f]/;
 
+/** The gate's protected paths, as its scope-audit matches them: case-insensitively. */
+const PROTECTED = PROTECTED_PATH_GLOBS.map((glob) => new RegExp(globToRegExpSource(glob), 'i'));
+
 /**
  * The globs a rescope refuses, stricter than a plan's (decision 115): a
  * rescope widens a scope the gate already audited, so it names paths, never
  * the whole tree, never a path outside the repo, never the workflows a
- * same-repo PR runs with the repo's secrets. Each check but the first reads
- * the glob as the matcher does, `globToRegExpSource`'s trim and one leading
- * `./` stripped, so a glob cannot dress past a check in what the matcher
- * drops. A wildcard anywhere in the first segment can match every top-level
- * directory, `.github` among them.
+ * same-repo PR runs with the repo's secrets, never a path the gate protects
+ * from every session. Each check but the first reads the glob as the matcher
+ * does, `globToRegExpSource`'s trim and one leading `./` stripped, so a glob
+ * cannot dress past a check in what the matcher drops. A wildcard anywhere in
+ * the first segment can match every top-level directory, `.github` among
+ * them; past that check the first segment is literal, so a path in it stands
+ * for every path the glob can reach there.
  */
 const GLOB_REFUSALS: readonly (readonly [(raw: string, form: string) => boolean, string])[] = [
   [(raw) => CONTROL_CHAR.test(raw), 'contains a control character'],
@@ -50,6 +57,10 @@ const GLOB_REFUSALS: readonly (readonly [(raw: string, form: string) => boolean,
   [
     (_raw, form) => /^\.github(\/|$)/i.test(form),
     "reaches `.github`, whose workflows run with the repo's secrets",
+  ],
+  [
+    (_raw, form) => PROTECTED.some((re) => re.test(`${form.split('/')[0]}/x`)),
+    `reaches a path the gate protects whatever the scope (${PROTECTED_PATH_GLOBS.join(', ')})`,
   ],
 ];
 

@@ -17,7 +17,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, isAbsolute, join } from 'node:path';
+import { basename, dirname, isAbsolute, join } from 'node:path';
 
 import { runGit, verifiedWorktreeGitEnv, type WorktreeGitEnv } from '../core/git-diff.client.js';
 import { projectPaths } from '../core/paths.utils.js';
@@ -985,13 +985,14 @@ export function hasSessionWindow(sessionId: string): boolean {
 }
 
 /**
- * Where the open-window probe looks tmux up, in place of the caller's PATH: a
- * worker cannot name a fake tmux through its environment (decision 115). The
- * package managers' fixed prefixes come after the system's, so each is reached
- * only where none before it holds a tmux: MacPorts, NixOS, multi-user Nix and
- * Linuxbrew. Nothing under a home directory, which a worker can write.
+ * Where a rescope's probes look tmux and `ps` up, in place of the caller's
+ * PATH: a worker cannot name a fake one through its environment (decision
+ * 115). The package managers' fixed prefixes come after the system's, so each
+ * is reached only where none before it holds the tool: MacPorts, NixOS,
+ * multi-user Nix and Linuxbrew. Nothing under a home directory, which a worker
+ * can write.
  */
-const PROBE_TMUX_PATH = [
+const PROBE_PATH = [
   '/opt/homebrew/bin',
   '/usr/local/bin',
   '/usr/bin',
@@ -1093,7 +1094,7 @@ function listPanes(socket: string): string[] | ProbeFailure {
     return execFileSync('tmux', ['-S', socket, 'list-panes', '-a', '-F', PANE_FORMAT], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { PATH: PROBE_TMUX_PATH },
+      env: { PATH: PROBE_PATH },
       timeout: PROBE_TIMEOUT_MS,
     }).split('\n');
   } catch (error) {
@@ -1151,7 +1152,7 @@ export function mayHaveOpenWindow(
   for (const { socket, panes } of servers) {
     if (Array.isArray(panes)) continue;
     return panes.noTmux
-      ? { kind: 'no-tmux', path: PROBE_TMUX_PATH }
+      ? { kind: 'no-tmux', path: PROBE_PATH }
       : { kind: 'unanswered', socket, detail: panes.detail };
   }
   for (const sessionId of sessionIds) {
@@ -1159,6 +1160,69 @@ export function mayHaveOpenWindow(
       const pane = Array.isArray(panes) ? listedPane(panes, sessionId) : undefined;
       if (pane !== undefined) return { kind: 'listed', sessionId, socket, pane };
     }
+  }
+  return undefined;
+}
+
+/** Far past `ps` over every process on a busy machine: Node's default 1 MiB is not. */
+const PROCESS_TABLE_MAX_BYTES = 64 * 1024 * 1024;
+
+/** Each process's parent pid and arguments, from one `ps` over every process. */
+function processTable(): Map<number, { parent: number; args: string }> | undefined {
+  let listed: string;
+  try {
+    listed = execFileSync('ps', ['-ww', '-A', '-o', 'pid=', '-o', 'ppid=', '-o', 'args='], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { PATH: PROBE_PATH },
+      timeout: PROBE_TIMEOUT_MS,
+      maxBuffer: PROCESS_TABLE_MAX_BYTES,
+    });
+  } catch {
+    return undefined;
+  }
+  const table = new Map<number, { parent: number; args: string }>();
+  for (const line of listed.split('\n')) {
+    const row = /^\s*(\d+)\s+(\d+)\s?(.*)$/.exec(line);
+    if (row) table.set(Number(row[1]), { parent: Number(row[2]), args: row[3] ?? '' });
+  }
+  return table;
+}
+
+/** The tmux name a pup launch passed as `--name` (`launchArgs`), if `args` carries one. */
+function launchedName(args: string): string | undefined {
+  const words = args.split(' ');
+  const at = words.indexOf('--name');
+  const name = at === -1 ? undefined : words[at + 1];
+  return name?.startsWith('pup-') ? name : undefined;
+}
+
+/** The Claude Code pup launched that a process runs under, or why that could not be read. */
+type LaunchedAncestor = { kind: 'launched'; name: string } | { kind: 'unreadable' };
+
+/**
+ * Whether this process runs under a Claude Code pup launched, a session's
+ * window or a conductor's, read from the process tree rather than from an
+ * environment or a cwd the caller sets (decision 115): each process from this
+ * one's parent up is looked for the `--name pup-<...>` its launch passed.
+ * A tmux process is passed over: a server lists the command that started it,
+ * which can be a launch's, and the operator's own panes run under it. `ps`
+ * runs on the probe's PATH with no caller environment and a timeout; one that
+ * fails is `unreadable`, which a rescope refuses. A process that left the tree
+ * (a double fork, `setsid`, a job a tmux server or launchd started) is under
+ * none, the ceiling decision 115 names.
+ */
+export function launchedAncestor(): LaunchedAncestor | undefined {
+  const table = processTable();
+  if (table === undefined) return { kind: 'unreadable' };
+  const seen = new Set<number>();
+  for (let pid = process.ppid; pid > 1 && !seen.has(pid); pid = table.get(pid)?.parent ?? 0) {
+    seen.add(pid);
+    const args = table.get(pid)?.args ?? '';
+    const name = basename(args.split(' ')[0] ?? '').startsWith('tmux')
+      ? undefined
+      : launchedName(args);
+    if (name !== undefined) return { kind: 'launched', name };
   }
   return undefined;
 }

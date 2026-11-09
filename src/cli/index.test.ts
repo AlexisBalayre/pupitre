@@ -36,8 +36,10 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   // `pup attach` hands the terminal to tmux; here it hands it to nothing.
   attachWindow: vi.fn(() => 0),
   hasSessionWindow: vi.fn(() => true),
-  // The rescope's window probe (decision 115), tested against tmux in its own suite.
+  // The rescope's window probe and process-tree check (decision 115), tested
+  // against tmux and ps in their own suite.
   mayHaveOpenWindow: vi.fn(),
+  launchedAncestor: vi.fn(),
   // The turn watchdog's reads: a conductor window to find, a pane to read for
   // a dead turn, a nudge to type (addendum to decision 35).
   conductorPane: vi.fn(),
@@ -156,6 +158,7 @@ vi.mock('../core/session-handoff.service.js', () => ({
 
 import {
   deadTurnError,
+  launchedAncestor,
   launchWatcher,
   mayHaveOpenWindow,
   SessionPaneMissingError,
@@ -868,9 +871,11 @@ describe('CLI commands', () => {
       buildProgram().parse(['plan', 'edit', 't-1', '--rescope', '--scope', 'docs/**', ...extra], {
         from: 'user',
       });
-    // By default no window of the task's is open, as the gate leaves a merged session's.
+    // By default no window of the task's is open, as the gate leaves a merged
+    // session's, and the caller runs under no Claude Code pup launched.
     beforeEach(() => {
       vi.mocked(mayHaveOpenWindow).mockReturnValue(undefined);
+      vi.mocked(launchedAncestor).mockReturnValue(undefined);
     });
 
     it("appends to a merged task's scope-in, and pup log shows it", () => {
@@ -1018,6 +1023,38 @@ describe('CLI commands', () => {
       rescope();
 
       expect(errors.join('\n')).toContain('operator-only');
+      expect(JSON.parse(getTask(db, 't-1')?.spec ?? '{}').scopeIn).toEqual(['src/**']);
+      expect(process.exitCode).toBe(1);
+    });
+
+    // `env -u PUP_CONDUCTOR pup plan edit ...` from the conductor's own Bash
+    // sheds the marker, not the process tree it runs in.
+    it.each([
+      ['the conductor', 'pup-conductor-p1'],
+      ['a session', 'pup-s9'],
+    ])('refuses %s by its process tree when its markers are unset', (_who, name) => {
+      const repo = initRepo();
+      useCwd(repo);
+      const db = claimed(repo, 'merged');
+      vi.mocked(launchedAncestor).mockReturnValue({ kind: 'launched', name });
+
+      rescope();
+
+      expect(errors.join('\n')).toContain(`operator-only, and this runs under ${name}`);
+      expect(JSON.parse(getTask(db, 't-1')?.spec ?? '{}').scopeIn).toEqual(['src/**']);
+      expect(listEvents(db, 's1')).toEqual([]);
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('refuses when the process tree cannot be read', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      const db = claimed(repo, 'merged');
+      vi.mocked(launchedAncestor).mockReturnValue({ kind: 'unreadable' });
+
+      rescope();
+
+      expect(errors.join('\n')).toContain('could not read the process tree');
       expect(JSON.parse(getTask(db, 't-1')?.spec ?? '{}').scopeIn).toEqual(['src/**']);
       expect(process.exitCode).toBe(1);
     });
