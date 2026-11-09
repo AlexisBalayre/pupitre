@@ -1721,9 +1721,9 @@ describe('countChangedLines', () => {
     }
     sh(repo, 'git', 'commit', '-q', '-m', 'hidden');
 
-    // Its hunks, read by the decoded path, are the decoy's three lines.
+    // Recounted from its own blob: the signature's three lines, two more, the record's.
     expect(countChangedLines(repo, 'main', 'feature')).toEqual({
-      source: 3,
+      source: 6,
       test: 0,
       docs: 0,
       forged: ['assets/�.png'],

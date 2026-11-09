@@ -55,14 +55,28 @@ export const BINARY_FREE_TOTAL_MAX_BYTES = 4 * 1024 * 1024;
 const REGULAR_FILE_MODES = ['100644', '100755'];
 
 /**
- * A zip's end-of-central-directory signature. Python's `zipimport` and
- * `runpy` and `java -jar` find a zip by this record whatever the file's
- * extension or first bytes, so a PNG with a zip appended is a module path one
- * counted line can import. How far back a reader searches for it varies (a
- * Zip64-aware `zipimport` goes past the classic 64 KiB plus 22 bytes), so the
- * whole blob, already capped and read, is searched (decision 154).
+ * A zip's end-of-central-directory and local file header signatures. Python's
+ * `zipimport` and `runpy` and `java -jar` find a zip by its end record
+ * whatever the file's extension or first bytes, so a PNG with a zip appended
+ * is a module path one counted line can import, and a streaming reader walks
+ * the local headers instead. How far back a reader searches for the end
+ * record varies (a Zip64-aware `zipimport` goes past the classic 64 KiB plus
+ * 22 bytes), so the whole blob, already capped and read, is searched for
+ * either (decision 154).
  */
-const ZIP_EOCD = Buffer.from('PK\x05\x06', 'latin1');
+const ZIP_SIGNATURES = [Buffer.from('PK\x05\x06', 'latin1'), Buffer.from('PK\x03\x04', 'latin1')];
+
+/**
+ * A tar header's size, and where its checksum field sits in it. PHP opens a
+ * file as a tar phar when its first 512 bytes pass the header checksum: no
+ * stub, no `__HALT_COMPILER`, no zip record. A PNG's name field can open with
+ * the PNG magic and an ancillary chunk can fill the rest to match, so
+ * `include 'phar://assets/x.png/a.php'` runs the entry that follows
+ * (decision 154).
+ */
+const TAR_HEADER_BYTES = 512;
+const TAR_CHECKSUM_AT = 148;
+const TAR_CHECKSUM_BYTES = 8;
 
 /**
  * The token that ends a PHP phar's stub, which PHP reads in any case. The
@@ -99,9 +113,33 @@ function holdsNul(blob: Buffer): boolean {
   return blob.subarray(0, BINARY_SNIFF_BYTES).includes(0);
 }
 
-/** Whether `blob` holds a zip end record anywhere (`ZIP_EOCD`). */
-function holdsZipEndRecord(blob: Buffer): boolean {
-  return blob.includes(ZIP_EOCD);
+/** Whether `blob` holds a zip end record or local file header anywhere (`ZIP_SIGNATURES`). */
+function holdsZipRecord(blob: Buffer): boolean {
+  return ZIP_SIGNATURES.some((signature) => blob.includes(signature));
+}
+
+/**
+ * Whether `blob` opens with a tar header whose checksum holds: the octal
+ * number in its checksum field, after any spaces or NULs, equals the sum of
+ * the header's 512 bytes with that field read as spaces, summed as unsigned
+ * bytes as PHP and POSIX do, or as signed bytes as old tars did and GNU tar
+ * still accepts.
+ */
+function opensWithTarHeader(blob: Buffer): boolean {
+  if (blob.length < TAR_HEADER_BYTES) return false;
+  const field = blob.subarray(TAR_CHECKSUM_AT, TAR_CHECKSUM_AT + TAR_CHECKSUM_BYTES);
+  const digits = /^[ \0]*([0-7]+)/.exec(field.toString('latin1'))?.[1];
+  if (digits === undefined) return false;
+  let unsigned = 0;
+  let signed = 0;
+  for (let at = 0; at < TAR_HEADER_BYTES; at++) {
+    const inField = at >= TAR_CHECKSUM_AT && at < TAR_CHECKSUM_AT + TAR_CHECKSUM_BYTES;
+    const byte = inField ? 0x20 : (blob[at] ?? 0);
+    unsigned += byte;
+    signed += byte > 0x7f ? byte - 0x100 : byte;
+  }
+  const checksum = Number.parseInt(digits, 8);
+  return checksum === unsigned || checksum === signed;
 }
 
 /** Whether `blob` holds a phar stub's end (`PHAR_STUB_END`), in any ASCII case. */
@@ -119,11 +157,11 @@ function opensWithMagic(blob: Buffer, formats: BinaryFormat[]): boolean {
 /**
  * The size of `blob` when it is a known binary of one of `formats`, false
  * when it is not: binary by content, opening with a format's magic, and
- * holding no zip end record and no phar stub.
+ * holding no zip record, no phar stub and no tar header.
  */
 export function knownBinarySize(blob: Buffer, formats: BinaryFormat[]): number | false {
   if (!holdsNul(blob)) return false;
-  if (holdsZipEndRecord(blob) || holdsPharStub(blob)) return false;
+  if (holdsZipRecord(blob) || holdsPharStub(blob) || opensWithTarHeader(blob)) return false;
   return opensWithMagic(blob, formats) && blob.length;
 }
 

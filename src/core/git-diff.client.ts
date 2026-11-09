@@ -638,12 +638,11 @@ export function gitDiffPaths(repoPath: string, target: string, branch: string): 
 const PATH_AS_GIVEN = ['-c', 'core.precomposeUnicode=false'];
 
 /**
- * The `-U0` hunk headers of one file's branch diff (merge-base diff): where
- * each hunk's added lines start, and how many lines it adds and deletes. One
- * diff per file so hunk headers are the only thing parsed — file names never
- * need de-quoting; a rename's recount passes both its paths, so git sees the
- * old path and does not read the new one as a pure add (decision 154). Each
- * path is a literal pathspec, or a file named
+ * The `-U0` hunk headers of one file's diff: where each hunk's added lines
+ * start, and how many lines it adds and deletes. `diffArgs` name the file: the
+ * branch diff (merge-base diff) and a pathspec, or two blob oids. One diff per
+ * file so hunk headers are the only thing parsed — file names never need
+ * de-quoting. A pathspec must be literal, or a file named
  * `:(top)foo` would be read as magic and return no hunks, and taken from the
  * top of the tree, or a session-written `core.worktree` naming a directory
  * above the repo would put it under a prefix that matches nothing
@@ -658,9 +657,7 @@ const PATH_AS_GIVEN = ['-c', 'core.precomposeUnicode=false'];
  */
 function diffHunks(
   repoPath: string,
-  target: string,
-  branch: string,
-  paths: string[],
+  diffArgs: string[],
 ): { start: number; added: number; deleted: number }[] {
   const patch = runGit(repoPath, [
     ...PATH_AS_GIVEN,
@@ -669,9 +666,7 @@ function diffHunks(
     '-U0',
     '--inter-hunk-context=0',
     '--diff-algorithm=myers',
-    `${target}...${branch}`,
-    '--',
-    ...paths.map((path) => `:(top,literal)${path}`),
+    ...diffArgs,
   ]).trim();
   const hunks: { start: number; added: number; deleted: number }[] = [];
   for (const line of patch.split('\n')) {
@@ -699,7 +694,11 @@ export function gitDiffAddedLines(
   const added: Record<string, number[]> = {};
   for (const path of gitDiffPaths(repoPath, target, branch)) {
     const lines: number[] = [];
-    for (const hunk of diffHunks(repoPath, target, branch, [path])) {
+    for (const hunk of diffHunks(repoPath, [
+      `${target}...${branch}`,
+      '--',
+      `:(top,literal)${path}`,
+    ])) {
       for (let at = hunk.start; at < hunk.start + hunk.added; at++) lines.push(at);
     }
     if (lines.length > 0) added[path] = lines;
@@ -803,7 +802,7 @@ export { BINARY_FREE_MAX_BYTES, BINARY_FREE_TOTAL_MAX_BYTES } from './known-bina
  * a regular file (mode 100644 or 100755, never a 120000 symlink) no larger
  * than `BINARY_FREE_MAX_BYTES`, binary by content, never by attribute,
  * opening with the magic of a format its extension names, and holding no zip
- * end record or phar stub anywhere (`mayBeKnownBinary`, then
+ * record, phar stub or tar header (`mayBeKnownBinary`, then
  * `knownBinarySize`). A side `--raw` lists as absent answers undefined. The
  * blob is read by the oid `--raw` gave, its size from `cat-file -s`, through
  * `readBlobs`, so its size is checked against that answer; a git that fails,
@@ -815,12 +814,22 @@ function blobIsKnownBinary(
   formats: BinaryFormat[],
 ): number | false | undefined {
   if (side === undefined) return undefined;
-  const size = Number(
-    runGit(repoPath, ['cat-file', '-s', side.oid], { timeout: GIT_READ_TIMEOUT_MS }).trim(),
-  );
+  const size = blobSize(repoPath, side.oid);
   if (!mayBeKnownBinary(side.mode, size)) return false;
   const [blob = Buffer.alloc(0)] = readBlobs(repoPath, [{ oid: side.oid, size }]);
   return knownBinarySize(blob, formats);
+}
+
+/** The byte size of blob `oid`, from `cat-file -s`; a git that fails or times out throws. */
+function blobSize(repoPath: string, oid: string): number {
+  return Number(runGit(repoPath, ['cat-file', '-s', oid], { timeout: GIT_READ_TIMEOUT_MS }).trim());
+}
+
+/** The lines a whole-file add or delete of `blob` counts, a last line without a newline included. */
+function lineCount(blob: Buffer): number {
+  let lines = 0;
+  for (let at = blob.indexOf(0x0a); at !== -1; at = blob.indexOf(0x0a, at + 1)) lines++;
+  return blob.length > 0 && blob[blob.length - 1] !== 0x0a ? lines + 1 : lines;
 }
 
 /**
@@ -842,11 +851,13 @@ function blobIsKnownBinary(
  * ones `gitDiffNumstat` paired with the entry from the same run's `--raw`
  * records, read by oid, never looked up again by path: a path that is not
  * UTF-8 decodes to U+FFFD, and an `ls-tree` of that string found nothing,
- * which read as absent and skipped, or found a decoy committed under it. An
- * entry without sides is recounted. A renamed file's merge-base side is the
- * blob it was `renamedFrom`, named by that path's extension, and its recount
- * reads both paths: a source file renamed into a `.png` would otherwise have
- * no base side, skip, and drop every line it deleted. A skip spends the
+ * which read as absent and skipped, or found a decoy committed under it. The
+ * recount reads the same oids: the hunks of `git diff <base> <branch>`, or
+ * the lines of the one blob a file added or deleted holds, so a decoded path
+ * never picks whose lines are counted. An entry without sides throws. A
+ * renamed file's merge-base side is the blob it was `renamedFrom`, named by
+ * that path's extension: a source file renamed into a `.png` would otherwise
+ * have no base side, skip, and drop every line it deleted. A skip spends the
  * branch side's bytes from `budget` (`spendKnownBinarySkip`), which every call
  * for one diff must share (start it at `BINARY_FREE_TOTAL_MAX_BYTES`), and a
  * file the budget cannot cover is recounted. It has no default: a fresh budget
@@ -854,25 +865,31 @@ function blobIsKnownBinary(
  */
 export function gitDiffBinaryRecount(
   repoPath: string,
-  target: string,
-  branch: string,
   entry: Pick<DiffNumstatEntry, 'path' | 'renamedFrom' | 'sides'>,
   budget: { bytes: number },
 ): { added: number; deleted: number } | null {
   const { path, renamedFrom } = entry;
+  if (entry.sides === undefined) {
+    throw new Error(`git diff listed no --raw sides to recount ${path} from`);
+  }
+  const [baseBlob, branchBlob] = entry.sides;
   const sideOf = (side: DiffSide | undefined, sidePath: string): number | false | undefined => {
     const formats = formatsNamed(sidePath);
     return formats.length === 0 ? false : blobIsKnownBinary(repoPath, side, formats);
   };
-  const [baseBlob, branchBlob] = entry.sides ?? [];
-  const branchSide = entry.sides === undefined ? false : sideOf(branchBlob, path);
+  const branchSide = sideOf(branchBlob, path);
   const sides =
     branchSide === false ? [branchSide] : [sideOf(baseBlob, renamedFrom ?? path), branchSide];
   if (spendKnownBinarySkip(sides, budget)) return null;
-  const paths = renamedFrom === undefined ? [path] : [renamedFrom, path];
+  if (baseBlob === undefined || branchBlob === undefined) {
+    const { oid } = branchBlob ?? baseBlob ?? { oid: '' };
+    const [blob = Buffer.alloc(0)] = readBlobs(repoPath, [{ oid, size: blobSize(repoPath, oid) }]);
+    const lines = lineCount(blob);
+    return branchBlob === undefined ? { added: 0, deleted: lines } : { added: lines, deleted: 0 };
+  }
   let added = 0;
   let deleted = 0;
-  for (const hunk of diffHunks(repoPath, target, branch, paths)) {
+  for (const hunk of diffHunks(repoPath, [baseBlob.oid, branchBlob.oid])) {
     added += hunk.added;
     deleted += hunk.deleted;
   }

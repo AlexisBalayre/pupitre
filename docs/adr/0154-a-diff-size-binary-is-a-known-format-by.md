@@ -20,8 +20,9 @@
     in `BINARY_FORMATS`. Its path ends with an extension that same format is committed under,
     in any ASCII case, and only ASCII is folded: `toLowerCase` would read `.mKv` written with
     the Kelvin sign U+212A as `.mkv`. And no byte of it starts a zip end-of-central-directory
-    signature (`PK\x05\x06`), and no byte of it starts a PHP phar stub's end
-    (`__HALT_COMPILER`, in any ASCII case). The skips one diff makes also share a budget of
+    signature (`PK\x05\x06`) or local file header (`PK\x03\x04`), no byte of it starts a
+    PHP phar stub's end (`__HALT_COMPILER`, in any ASCII case), and its first 512 bytes are
+    no tar header whose checksum holds. The skips one diff makes also share a budget of
     `BINARY_FREE_TOTAL_MAX_BYTES` (4 MiB), spent in path order with the bytes each file's
     branch side holds; a file the branch deleted spends nothing. The file that would go past
     the budget is recounted and flagged, not skipped. Every other file git reports as binary is recounted from its
@@ -56,7 +57,15 @@
     wrapper finds an archive by its stub's `__HALT_COMPILER();` after whatever bytes come
     first, and its entries may be compressed: a PNG holding one is a module
     `include 'phar://assets/x.png/a.php'` runs. So a blob holding that token anywhere, in
-    any case as PHP reads it, is never a known binary either.
+    any case as PHP reads it, is never a known binary either. PHP also opens a file as a
+    tar phar, with no stub at all, when its first 512 bytes pass the tar header checksum:
+    the octal number at offset 148 equals the sum of those bytes with the checksum's eight
+    read as spaces. A PNG's signature and IHDR fit in a tar name field, and an ancillary
+    chunk can fill the header to match, so the plain-text entry after it runs. A blob
+    whose first 512 bytes pass that check, the number read after any spaces or NULs and
+    the sum taken over unsigned bytes, as PHP and POSIX do, or signed, as GNU tar still
+    accepts, is never a known binary. And a streaming zip reader walks the local file
+    headers rather than the end record, so `PK\x03\x04` anywhere refuses too.
     *Sides come from the diff, by oid.* `gitDiffNumstat` runs `--raw --no-abbrev` beside
     `--numstat` in one `git diff`, which lists every raw record first, in the order of the
     numstat records, and gives each `-\t-` entry its `sides`: the base and branch mode and
@@ -73,9 +82,11 @@
     PNG committed under the U+FFFD spelling answered the lookup for the hidden file. A git
     that fails, times out or is killed throws, and so does a blob `cat-file -s` cannot
     size. Treating a failed read as absence would skip the file uncounted, the open
-    direction. The recount's hunks are still read by path, so a recounted file whose name
-    is not UTF-8 reads the hunks of whatever its decoded name matches, or none, and is
-    flagged whatever the count.
+    direction. The recount reads the same oids: the `-U0` hunks of `git diff <base oid>
+    <branch oid>`, or, for a file only one side holds, that blob's lines, read through
+    `readBlobs`. Read by its decoded path, a recounted file whose name is not UTF-8 counted
+    the hunks of whatever that name matched, or none: a 5 000-line source file with a NUL
+    counted 0 lines. An entry without sides throws.
     *Not taken.* Flagging a known binary under a source or test path. A binary can never be
     a test, because the test split takes only the `.test.ts` suffix. And every path outside
     `docs/` counts as source (decision 110), so the rule would flag every image outside
@@ -95,8 +106,10 @@
     decodes the magic as text it accepts, such as Latin-1. A real image whose compressed data
     happens to hold `PK\x05\x06` is flagged, about one 1 MiB file in 4 096. Symlink blobs,
     which hold a NUL only when no checkout wrote them, are recounted and flagged by mode,
-    whatever their bytes. The recount still runs a `cat-file -s` per side and one `diff`
-    per `-\t-` file, so many NUL-carrying files still cost a few processes each. Batching
+    whatever their bytes. The recount still runs a `cat-file -s` per side and a `diff` or
+    a blob read per `-\t-` file, so many NUL-carrying files still cost a few processes
+    each. A real image whose first 512 bytes pass the tar checksum, which needs octal
+    digits at offset 148 matching the sum, or which holds `PK\x03\x04`, is flagged. Batching
     that means parsing one multi-file patch, and stays owed.
     *Reads from the top of the tree.* The merge gate does not call `assertNoWorktreeConfig`,
     and a session can write `core.worktree` into the shared config. One naming a directory
@@ -138,12 +151,16 @@
     recount. So do polyglots written as `GIF89a=0//\0` in a `.gif`, `true//\0` in a `.ttf`
     and `%PDF-//\0` in a `.pdf`, `x=1;ftyp//\0` in an `.mp4`, a `.zip`, a `.wasm`, and a
     PNG one byte over the cap. A known-format path whose blob object is deleted throws
-    instead of returning null. A `.ts` renamed into a `.png` holding its bytes recounts,
+    instead of returning null. A `:(top)foo` file and an NFD file beside a binary NFC
+    sibling recount their own lines under `* -diff`. A `.ts` renamed into a `.png` holding its bytes recounts,
     with the rename source and both oids in its numstat entry, and a PNG renamed into a
     PNG skips. A target PNG renamed to a name that is not UTF-8 with a zip end record
-    appended recounts, and so does a PNG over the cap under such a name beside a decoy PNG
-    committed under its U+FFFD spelling, which skips. A PNG holding `__HALT_COMPILER` or
-    `__halt_Compiler` is no known binary. `readBlobs` returns each blob byte for byte (a NUL, an empty
+    appended recounts its 6 added lines, and so does a PNG over the cap under such a name
+    beside a decoy PNG committed under its U+FFFD spelling, which skips: 10 lines, its
+    own. A `.ts` with a NUL under a name that is not UTF-8 recounts 5 001 lines. A PNG
+    holding `__HALT_COMPILER` or `__halt_Compiler`, or `PK\x03\x04`, is no known binary,
+    and neither is one whose first 512 bytes pass the tar checksum by unsigned or by signed
+    sum; one whose checksum field is off by one stays known. `readBlobs` returns each blob byte for byte (a NUL, an empty
     blob, a repeat). A PNG with a zip end record appended recounts, and so does one whose
     record sits more than 64 KiB plus 22 bytes before its end. A symlink blob opening with
     the PNG signature and a NUL, a `.mKv` spelled with the Kelvin sign and a `.png` with the
@@ -154,7 +171,7 @@
     or long, and, before running git, sizes that add past 64 MiB. In `merge-gate.test.ts`, a
     5 000-line `.ts` with a NUL counts 5 001 source lines and is forged, beside a real PNG
     that counts nothing. A `.ts` renamed into a PNG is forged, and so is the hidden file
-    beside a decoy under the U+FFFD spelling of its name. An importer with a NUL in a comment still reaches its test. A tree
+    beside a decoy under the U+FFFD spelling of its name, counting its own 6 lines. An importer with a NUL in a comment still reaches its test. A tree
     with 40 links and 40 importers runs exactly as many git processes as a tree with 1 of
     each, with two `cat-file --batch` calls, each carrying the 30 s timeout, and no
     `cat-file blob`. The symlink-NUL case expects both NUL-carrying links forged. Under a

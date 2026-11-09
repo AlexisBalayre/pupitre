@@ -112,6 +112,8 @@ describe('a changed path that reads as pathspec magic', () => {
     commitAll(repo, 'magic');
 
     expect(gitDiffAddedLines(repo, 'main', 'feature')).toEqual({ ':(top)foo': [1, 2] });
+    // `-diff` makes numstat withhold its counts, so the recount runs.
+    writeFileSync(join(repo, '.git', 'info', 'attributes'), '* -diff\n');
     expect(recount(repo, ':(top)foo')).toEqual({
       added: 2,
       deleted: 0,
@@ -159,6 +161,8 @@ describe('a changed NFD path with an NFC sibling under core.precomposeUnicode', 
 
   it('recounts the NFD file when its NFC sibling is binary', () => {
     const repo = siblingRepo('x\0y\n');
+    // `-diff` makes numstat withhold the NFD file's counts, so the recount runs.
+    writeFileSync(join(repo, '.git', 'info', 'attributes'), '* -diff\n');
 
     expect(recount(repo, nfd)).toEqual({
       added: 3,
@@ -372,7 +376,7 @@ function recount(
 ): { added: number; deleted: number } | null {
   const entry = gitDiffNumstat(repo, 'main', 'feature').find((stat) => stat.path === path);
   if (entry === undefined) throw new Error(`numstat lists no ${path}`);
-  return gitDiffBinaryRecount(repo, 'main', 'feature', entry, budget);
+  return gitDiffBinaryRecount(repo, entry, budget);
 }
 
 // `--text` restores the `-U0` patch above but not `--numstat`: under the same
@@ -538,7 +542,7 @@ describe('gitDiffBinaryRecount', () => {
     stageBytes(
       repo,
       Buffer.from([0xff, ...Buffer.from('.png')]),
-      Buffer.concat([image, ZIP_END_RECORD]),
+      Buffer.concat([image, Buffer.from('export const v = 1;\n'.repeat(5)), ZIP_END_RECORD]),
     );
     sh(repo, 'git', 'commit', '-q', '-m', 'rename');
 
@@ -546,9 +550,18 @@ describe('gitDiffBinaryRecount', () => {
       { path: 'other.ts', added: 1, deleted: 0 },
       { path: '\ufffd.png', added: null, deleted: null, renamedFrom: 'logo.png' },
     ]);
-    // Recounted, so flagged; the hunks are read by path, and only logo.png's
-    // 202 lines (the signature's CR and LF split the first) are found.
-    expect(recount(repo, '\ufffd.png')).toEqual({ added: 0, deleted: 202 });
+    // Recounted from the two blobs: the five appended lines and the record's.
+    expect(recount(repo, '\ufffd.png')).toEqual({ added: 6, deleted: 0 });
+  });
+
+  // Read by its decoded path, such a file's recount found no hunks at all.
+  it('recounts a source file with a NUL whose name is not UTF-8 from its blob', () => {
+    const repo = repoWith({ 'keep.ts': 'x\n' }, { 'other.ts': 'y\n' });
+    const source = `// \0\n${'export const v = 1;\n'.repeat(5000)}`;
+    stageBytes(repo, Buffer.from([0xff, ...Buffer.from('.ts')]), Buffer.from(source));
+    sh(repo, 'git', 'commit', '-q', '-m', 'source');
+
+    expect(recount(repo, '\ufffd.ts')).toEqual({ added: 5001, deleted: 0 });
   });
 
   // A decoy committed under the U+FFFD spelling answered the lookup for the
@@ -558,17 +571,18 @@ describe('gitDiffBinaryRecount', () => {
     stageBytes(
       repo,
       Buffer.from([0xff, ...Buffer.from('.png')]),
-      png('x'.repeat(BINARY_FREE_MAX_BYTES)),
+      png(`${'export const v = 1;\n'.repeat(7)}${'x'.repeat(BINARY_FREE_MAX_BYTES)}`),
     );
     sh(repo, 'git', 'commit', '-q', '-m', 'hidden');
 
     const entries = gitDiffNumstat(repo, 'main', 'feature');
     expect(entries.map((entry) => entry.path)).toEqual(['\ufffd.png', '\ufffd.png']);
-    // The decoy skips; the hidden file is over the cap, so it is recounted,
-    // and flagged, though its hunks by path are the decoy's three lines.
-    expect(
-      entries.map((entry) => gitDiffBinaryRecount(repo, 'main', 'feature', entry, fullBudget())),
-    ).toEqual([null, { added: 3, deleted: 0 }]);
+    // The decoy skips; the hidden file is over the cap, so it is recounted
+    // from its own blob: the signature's three lines, six more, the x run.
+    expect(entries.map((entry) => gitDiffBinaryRecount(repo, entry, fullBudget()))).toEqual([
+      null,
+      { added: 10, deleted: 0 },
+    ]);
   });
 
   it('skips a known binary renamed from a known binary', () => {
@@ -778,9 +792,9 @@ describe('gitDiffBinaryRecount', () => {
     unlinkSync(join(repo, '.git', 'objects', oid.slice(0, 2), oid.slice(2)));
 
     expect(entry?.sides?.[1]?.oid).toBe(oid);
-    expect(() =>
-      gitDiffBinaryRecount(repo, 'main', 'feature', entry ?? { path: '' }, fullBudget()),
-    ).toThrow(/cat-file -s/);
+    expect(() => gitDiffBinaryRecount(repo, entry ?? { path: '' }, fullBudget())).toThrow(
+      /cat-file -s/,
+    );
   });
 
   // Git only sniffs the first 8000 bytes, so a NUL past them is text to git
@@ -2010,6 +2024,36 @@ describe('known-binary.utils', () => {
       expect(knownBinarySize(png('__HALT_COMPILE\n'), pngFormats)).toBe(
         png('__HALT_COMPILE\n').length,
       );
+    });
+
+    // A streaming zip reader walks local headers, not the end record.
+    it('answers false for a zip local file header anywhere in the blob', () => {
+      expect(knownBinarySize(png(`${'x'.repeat(4096)}PK\x03\x04\n`), pngFormats)).toBe(false);
+    });
+
+    /**
+     * A PNG whose first 512 bytes are a tar header: the signature and IHDR,
+     * then a chunk's worth of filler with high bytes, so signed and unsigned
+     * sums differ, and the checksum field holding the sum plus `off`.
+     */
+    function tarPolyglot(signed: boolean, off = 0): Buffer {
+      const header = Buffer.alloc(512, 'A');
+      png('').copy(header, 0);
+      header.fill(0xc8, 200, 260);
+      header.fill(' ', 148, 156);
+      let sum = 0;
+      for (const byte of header) sum += signed && byte > 0x7f ? byte - 0x100 : byte;
+      Buffer.from(`${(sum + off).toString(8).padStart(6, '0')}\0 `, 'latin1').copy(header, 148);
+      return Buffer.concat([header, Buffer.from('<?php echo 1;\n')]);
+    }
+
+    // PHP opens a file whose first 512 bytes pass the checksum as a tar phar,
+    // with no stub and no zip record to find.
+    it('answers false for a blob opening with a tar header, by unsigned or signed sum', () => {
+      expect(knownBinarySize(tarPolyglot(false), pngFormats)).toBe(false);
+      expect(knownBinarySize(tarPolyglot(true), pngFormats)).toBe(false);
+      const missed = tarPolyglot(false, 1);
+      expect(knownBinarySize(missed, pngFormats)).toBe(missed.length);
     });
   });
 
