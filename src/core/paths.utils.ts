@@ -27,6 +27,8 @@ export interface ProjectPaths {
   conductorCompiledDir: string;
   /** The operator's free-Markdown brief for this project (decision 57). */
   briefFile: string;
+  /** The plan's latest usage reading, which every window's status line writes (decision 156). */
+  usageFile: string;
 }
 
 /**
@@ -62,5 +64,6 @@ export function projectPaths(repoPath: string, base = join(homedir(), '.pupitre'
     handoffFile: (sessionId) => join(sessionDir(sessionId), 'handoff.md'),
     conductorCompiledDir: join(root, 'conductor', 'compiled'),
     briefFile: join(root, 'brief.md'),
+    usageFile: join(root, 'usage.json'),
   };
 }

@@ -3,17 +3,19 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   unlinkSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { saveSessionEnv } from '../claude/session-runtime.service.js';
 import { makeInput } from '../test/helpers/profile-compiler.mock.js';
 import { tempDir } from '../test/temp-dir.mock.js';
 import { DEFAULT_BASE_PROFILE } from './default-profile.constants.js';
+import { projectPaths } from './paths.utils.js';
 import {
   HOOK_TIMEOUT_SECONDS,
   SLIM_CONTEXT_ENV,
@@ -697,5 +699,136 @@ describe('worker search delegation (decision 152)', () => {
     expect(compiled.contextMarkdown).not.toContain('## Exploring code');
     expect(compiled.contextMarkdown).not.toContain('`model: "sonnet"`');
     expect(compiled.tokenEstimate).toBeLessThanOrEqual(compiled.contextBudget);
+  });
+});
+
+describe('the status line records the plan usage (decision 156)', () => {
+  const SAMPLE = {
+    model: { display_name: 'Opus' },
+    context_window: { used_percentage: 12.7 },
+    rate_limits: {
+      five_hour: { used_percentage: 23.5, resets_at: 1738425600, extra: 'dropped' },
+      seven_day: { used_percentage: 41.2, resets_at: 1738857600 },
+      spend_limit: { used_percentage: 62.8, resets_at: 1740787200, used_usd: 314.12 },
+    },
+  };
+  let home: string;
+  let outDir: string;
+
+  beforeEach(() => {
+    home = tempDir('pup-usage-home-');
+    vi.stubEnv('HOME', home);
+    outDir = tempDir('pup-statusline-');
+    mkdirSync(join(home, '.pupitre'), { recursive: true });
+    const compiled = ProfileCompiler.compileProfile(makeInput({ outDir }));
+    ProfileCompiler.writeCompiledProfile(compiled, outDir);
+    mkdirSync(dirname(usageFile()), { recursive: true });
+    return () => vi.unstubAllEnvs();
+  });
+
+  const usageFile = (): string => projectPaths('/repo').usageFile;
+
+  function runStatusLine(payload: object): { status: number | null; stdout: string } {
+    const result = spawnSync('/bin/sh', [join(outDir, 'hooks/statusline.sh')], {
+      input: JSON.stringify(payload),
+      encoding: 'utf8',
+    });
+    return { status: result.status, stdout: result.stdout };
+  }
+
+  it('is the command of the window settings, a compiled path and nothing else', () => {
+    const compiled = ProfileCompiler.compileProfile(makeInput({ outDir }));
+
+    expect((compiled.settings as { statusLine?: unknown }).statusLine).toEqual({
+      type: 'command',
+      command: join(outDir, 'hooks/statusline.sh'),
+    });
+  });
+
+  it('writes only the two windows used share and reset, and prints one line', () => {
+    const { status, stdout } = runStatusLine(SAMPLE);
+
+    expect(status).toBe(0);
+    expect(stdout).toBe('ctx 12% | 5h 23% | 7d 41%\n');
+    expect(JSON.parse(readFileSync(usageFile(), 'utf8'))).toEqual({
+      five_hour: { used_percentage: 23.5, resets_at: 1738425600 },
+      seven_day: { used_percentage: 41.2, resets_at: 1738857600 },
+    });
+    // Through a temp file and a rename: nothing is left beside the reading.
+    expect(readdirSync(dirname(usageFile()))).toEqual(['usage.json']);
+  });
+
+  it('leaves the last reading as it was when the JSON has no usable window', () => {
+    writeFileSync(usageFile(), '{"five_hour":{"used_percentage":50,"resets_at":1}}\n');
+
+    const { status, stdout } = runStatusLine({
+      context_window: { used_percentage: null },
+      rate_limits: { five_hour: { used_percentage: '$(touch pwned)', resets_at: 1 } },
+    });
+
+    expect(status).toBe(0);
+    expect(stdout).toBe('ctx ? | 5h ? | 7d ?\n');
+    expect(readFileSync(usageFile(), 'utf8')).toBe(
+      '{"five_hour":{"used_percentage":50,"resets_at":1}}\n',
+    );
+    expect(existsSync(join(outDir, 'pwned'))).toBe(false);
+    expect(existsSync('pwned')).toBe(false);
+  });
+
+  it('leaves no temp file behind when a directory is planted as the usage file', () => {
+    mkdirSync(usageFile());
+
+    for (let render = 0; render < 3; render++) {
+      expect(runStatusLine(SAMPLE).stdout).toBe('ctx 12% | 5h 23% | 7d 41%\n');
+    }
+
+    expect(readdirSync(dirname(usageFile()))).toEqual(['usage.json']);
+    expect(readdirSync(usageFile())).toEqual([]);
+  });
+
+  it('writes a window that is present without the one that is absent', () => {
+    runStatusLine({ rate_limits: { seven_day: SAMPLE.rate_limits.seven_day } });
+
+    expect(JSON.parse(readFileSync(usageFile(), 'utf8'))).toEqual({
+      seven_day: { used_percentage: 41.2, resets_at: 1738857600 },
+    });
+  });
+
+  it('prints a line and writes nothing from input that is not JSON', () => {
+    const result = spawnSync('/bin/sh', [join(outDir, 'hooks/statusline.sh')], {
+      input: "'; touch pwned; '",
+      encoding: 'utf8',
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe('ctx ? | 5h ? | 7d ?\n');
+    expect(existsSync(usageFile())).toBe(false);
+  });
+
+  it('refuses a usage path the script could not quote safely', () => {
+    vi.stubEnv('HOME', "/tmp/it's");
+
+    expect(() => ProfileCompiler.compileProfile(makeInput({ outDir }))).toThrow(
+      'the usage file contains characters unsafe for a generated hook',
+    );
+  });
+
+  it('is the conductor window status line too', () => {
+    const compiled = ProfileCompiler.compileConductorProfile({
+      base: { name: 'base' },
+      repoPath: '/repo',
+      projectId: 'proj-1',
+      conductorName: 'pup-conductor-proj-1',
+      userConfigHash: 'user-hash-a',
+      outDir,
+      checkoutPath: '/state/conductor/checkout',
+      maxSessions: 4,
+    });
+
+    expect((compiled.settings as { statusLine?: unknown }).statusLine).toEqual({
+      type: 'command',
+      command: join(outDir, 'hooks/statusline.sh'),
+    });
+    expect(compiled.files['hooks/statusline.sh']).toContain(`USAGE='${usageFile()}'`);
   });
 });

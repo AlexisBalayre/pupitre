@@ -149,6 +149,11 @@ import type { GateReport, MergeOutcome } from '../core/types/merge-gate.types.js
 import type { TaskId, TaskSpec } from '../core/types/profile.types.js';
 import type { StoredGateStage } from '../core/types/session-event.types.js';
 import type { NewSessionRequest, RouteOverride } from '../core/types/session-lifecycle.types.js';
+import {
+  readUsage,
+  UsageLimitReachedError,
+  usageStatusLine,
+} from '../core/usage-limits.service.js';
 import { buildUsageReport, claudeDirsOf, formatUsageReport } from '../core/usage-report.service.js';
 import { startWebDashboard } from '../core/web-dashboard.service.js';
 import { runOrReportNoAdapter } from './no-adapter-guard.utils.js';
@@ -489,14 +494,31 @@ function noteAllowOverlap(passed: boolean | undefined): void {
 
 // Decision 96: the cap is the operator's to set, and so to exceed.
 const OVER_CAP_DESCRIPTION = 'launch past the session cap (operator only)';
+const OVER_LIMIT_DESCRIPTION = "launch while the plan's usage holds launches (operator only)";
 
 /** The launch errors that say the machine or the project has no room: refused, not crashed. */
-const NO_ROOM_ERRORS = [SessionCapReachedError, LowMemoryError];
+const NO_ROOM_ERRORS = [SessionCapReachedError, LowMemoryError, UsageLimitReachedError];
 
-/** Refuses `--over-cap` from the conductor, which never lifts its own cap; true when refused. */
-function refusedOverCap(passed: boolean | undefined, command: string): boolean {
-  if (!(passed && callingConductor())) return false;
-  refuse(`\`pup ${command} --over-cap\` is operator-only; the conductor launches within the cap.`);
+/** What the conductor launches within, for each override it may not pass. */
+const CONDUCTOR_LAUNCHES_WITHIN = {
+  '--over-cap': 'the cap',
+  '--over-limit': "the plan's usage limits",
+} as const;
+
+/**
+ * Refuses `--over-cap` or `--over-limit` from the conductor, which never lifts
+ * its own hold (decisions 96, 156); true when one was refused.
+ */
+function refusedOverride(
+  opts: { overCap?: unknown; overLimit?: unknown },
+  command: string,
+): boolean {
+  if (!callingConductor()) return false;
+  const passed = opts.overCap ? '--over-cap' : opts.overLimit ? '--over-limit' : undefined;
+  if (passed === undefined) return false;
+  refuse(
+    `\`pup ${command} ${passed}\` is operator-only; the conductor launches within ${CONDUCTOR_LAUNCHES_WITHIN[passed]}.`,
+  );
   return true;
 }
 
@@ -688,6 +710,7 @@ function createOrRefuse(
   task: TaskSpec,
   fields: Pick<NewSessionRequest, 'model' | 'effort' | 'origin' | 'overlapVia'> & {
     overCap?: boolean;
+    overLimit?: boolean;
   },
 ): string | undefined {
   const userDir = configDirOrRefuse(repoPath);
@@ -947,6 +970,7 @@ export function buildProgram(): Command {
     .option('--effort <effort>', EFFORT_OVERRIDE_DESCRIPTION)
     .option('--allow-overlap', ALLOW_OVERLAP_DESCRIPTION)
     .option('--over-cap', OVER_CAP_DESCRIPTION)
+    .option('--over-limit', OVER_LIMIT_DESCRIPTION)
     .action((goal: string, opts: Record<string, string[] | string | boolean | undefined>) => {
       const { repoPath, db } = project();
       // `pup new` is `pup plan add` plus a launch, so it carries the same rule:
@@ -963,12 +987,13 @@ export function buildProgram(): Command {
         scopeOut: opts.scopeOut as string[] | undefined,
         acceptance: (opts.accept as string[] | undefined) ?? ['goal met and committed'],
       };
-      if (refusedOverCap(opts.overCap === true, 'new')) return;
+      if (refusedOverride(opts, 'new')) return;
       noteAllowOverlap(opts.allowOverlap === true);
       const sessionId = createOrRefuse(db, repoPath, task, {
         model: opts.model as string | undefined,
         effort: opts.effort as string | undefined,
         overCap: opts.overCap === true,
+        overLimit: opts.overLimit === true,
         ...conductorAttribution(),
       });
       if (sessionId === undefined) return;
@@ -1092,8 +1117,12 @@ export function buildProgram(): Command {
     .option('--effort <effort>', EFFORT_OVERRIDE_DESCRIPTION)
     .option('--allow-overlap', ALLOW_OVERLAP_DESCRIPTION)
     .option('--over-cap', OVER_CAP_DESCRIPTION)
+    .option('--over-limit', OVER_LIMIT_DESCRIPTION)
     .action(
-      (taskId: string, opts: RouteOverride & { allowOverlap?: boolean; overCap?: boolean }) => {
+      (
+        taskId: string,
+        opts: RouteOverride & { allowOverlap?: boolean; overCap?: boolean; overLimit?: boolean },
+      ) => {
         const { repoPath, db } = project();
         // Admitting work belongs to the operator and the conductor: a session
         // launching one would mint itself a fresh session past decision 7's
@@ -1102,7 +1131,7 @@ export function buildProgram(): Command {
         if (callingSession(db)) {
           return refuse('`pup launch` is operator-only; sessions cannot launch sessions.');
         }
-        if (refusedOverCap(opts.overCap, 'launch')) return;
+        if (refusedOverride(opts, 'launch')) return;
         const userDir = configDirOrRefuse(repoPath);
         if (userDir === undefined) return;
         noteAllowOverlap(opts.allowOverlap);
@@ -1132,6 +1161,7 @@ export function buildProgram(): Command {
               overlapVia: conductorAttribution().overlapVia,
               overrideVia: callingConductor() ? 'conductor' : 'operator',
               overCap: opts.overCap === true,
+              overLimit: opts.overLimit === true,
             }),
         );
         if (sessionId === undefined) return;
@@ -1480,6 +1510,7 @@ export function buildProgram(): Command {
       if (own && !opts.all) {
         printDashboard(
           own.db,
+          own.repoPath,
           buildDashboardSnapshot(own.db, own.repoPath, Date.now()),
           shouldShowHistory,
           ciReviewLookup(own.db, own.repoPath),
@@ -1494,6 +1525,7 @@ export function buildProgram(): Command {
       const { repoPath, db } = project();
       printDashboard(
         db,
+        repoPath,
         buildDashboardSnapshot(db, repoPath, Date.now()),
         shouldShowHistory,
         ciReviewLookup(db, repoPath),
@@ -1522,7 +1554,7 @@ export function buildProgram(): Command {
       if (!process.stdout.isTTY) {
         if (!isSingleProject) return printFleet(opts.dormant === true);
         const { repoPath, db } = own ?? project();
-        printDashboard(db, buildDashboardSnapshot(db, repoPath, Date.now()), false);
+        printDashboard(db, repoPath, buildDashboardSnapshot(db, repoPath, Date.now()), false);
         return;
       }
       let props: AppProps;
@@ -1627,6 +1659,7 @@ export function buildProgram(): Command {
    */
   function printDashboard(
     db: Database,
+    repoPath: string,
     snapshot: DashboardSnapshot,
     shouldShowHistory: boolean,
     ciReview?: CiReviewLookup,
@@ -1652,6 +1685,9 @@ export function buildProgram(): Command {
           : 'conductor running',
       );
     }
+    // The plan's usage, which holds launches near a window's limit (decision 156).
+    const usage = usageStatusLine(readUsage(repoPath, Date.now()), Date.now());
+    if (usage) console.log(usage);
     const sessions = shouldShowHistory
       ? snapshot.sessions
       : snapshot.sessions.filter((s) => s.state !== 'merged' && s.state !== 'killed');

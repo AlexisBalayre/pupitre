@@ -1,6 +1,6 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { tempDir } from '../test/temp-dir.mock.js';
@@ -172,7 +172,7 @@ import { startFixRound } from '../core/fix-round.service.js';
 import { gitDiffPaths } from '../core/git-diff.client.js';
 import { intentTemplate } from '../core/intent.service.js';
 import { runMergeGate } from '../core/merge-gate.service.js';
-import { projectId } from '../core/paths.utils.js';
+import { projectId, projectPaths } from '../core/paths.utils.js';
 import { InvalidProfileError } from '../core/profile.errors.js';
 import { getSession, listEvents, transitionSession } from '../core/session.repository.js';
 import { STALLED_AFTER_MS } from '../core/session-activity.constants.js';
@@ -191,6 +191,7 @@ import {
   steerSession,
 } from '../core/session-lifecycle.service.js';
 import { RESUME_MESSAGE } from '../core/turn-watchdog.service.js';
+import { UsageLimitReachedError } from '../core/usage-limits.service.js';
 import {
   firstCall,
   GIT_ENV,
@@ -1874,6 +1875,70 @@ describe('CLI commands', () => {
       buildProgram().parse(['--project', id, 'profile', 'list'], { from: 'user' });
 
       expect(logs.some((l) => l.startsWith(DEFAULT_BASE_PROFILE.name))).toBe(true);
+    });
+  });
+
+  describe('usage hold (decision 156)', () => {
+    it('hands the operator --over-limit to the launch', () => {
+      useCwd(initRepo());
+      vi.mocked(launchTask).mockReturnValue('t-abc-0');
+
+      buildProgram().parse(['launch', 't-abc', '--over-limit'], { from: 'user' });
+
+      expect(firstCall(launchTask)[1]).toMatchObject({ overLimit: true, overrideVia: 'operator' });
+    });
+
+    it.each([
+      ['launch', ['launch', 't-abc', '--over-limit']],
+      ['new', ['new', 'a goal', '--scope', 'src/**', '--over-limit']],
+    ])('refuses the conductor `pup %s --over-limit`, launching nothing', (command, argv) => {
+      useCwd(initRepo());
+      vi.stubEnv('PUP_CONDUCTOR', 'p1');
+
+      buildProgram().parse(argv, { from: 'user' });
+
+      expect(errors).toEqual([
+        `\`pup ${command} --over-limit\` is operator-only; the conductor launches within the plan's usage limits.`,
+      ]);
+      expect(process.exitCode).toBe(1);
+      expect(launchTask).not.toHaveBeenCalled();
+      expect(createSession).not.toHaveBeenCalled();
+    });
+
+    it('refuses a held launch in one line naming the window and its reset', () => {
+      useCwd(initRepo());
+      vi.mocked(launchTask).mockImplementation(() => {
+        throw new UsageLimitReachedError('5-hour', 91, 85, Date.UTC(2026, 10, 8, 13) / 1000);
+      });
+
+      buildProgram().parse(['launch', 't-abc'], { from: 'user' });
+
+      expect(errors.join('\n')).toContain(
+        "The plan's 5-hour usage is at 91%, at or over the 85% that holds launches; nothing " +
+          'was launched. It resets at 2026-11-08 13:00 UTC.',
+      );
+      expect(process.exitCode).toBe(1);
+    });
+
+    it("prints the latest reading's shares and age in `pup status`", () => {
+      const repo = initRepo();
+      useCwd(repo);
+      const file = projectPaths(repo).usageFile;
+      mkdirSync(dirname(file), { recursive: true });
+      const resetsAt = Math.floor(Date.now() / 1000) + 3600;
+      writeFileSync(
+        file,
+        JSON.stringify({
+          five_hour: { used_percentage: 23.5, resets_at: resetsAt },
+          seven_day: { used_percentage: 41.2, resets_at: resetsAt },
+        }),
+      );
+
+      buildProgram().parse(['status'], { from: 'user' });
+
+      expect(logs.find((line) => line.startsWith('usage: '))).toMatch(
+        /^usage: 5h 23% \(resets .+ UTC\), 7d 41% \(resets .+ UTC\); read 0m ago$/,
+      );
     });
   });
 
