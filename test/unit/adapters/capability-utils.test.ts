@@ -1,8 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, fstatSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { describe, expect, it, vi } from 'vitest';
-import { tempDir } from '../test/temp-dir.mock.js';
 import {
   brokenPackageManagerInstall,
   failureSummary,
@@ -10,7 +8,9 @@ import {
   localContext,
   readPlainFile,
   sanitizeReason,
-} from './capability.utils.js';
+} from '@src/adapters/capability.utils.js';
+import { tempDir } from '@test/helpers/temp-dir.mock.js';
+import { describe, expect, it, vi } from 'vitest';
 
 // Real unless a test makes a file report a size it does not hold.
 vi.mock('node:fs', async (importOriginal) => {

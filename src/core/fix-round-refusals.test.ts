@@ -34,13 +34,6 @@ vi.mock('../claude/utility.service.js', () => ({
 }));
 
 import {
-  kickoff,
-  killSession,
-  launchSession,
-  SteerNotDeliveredError,
-  steerPane,
-} from '../claude/session-runtime.service.js';
-import {
   BOT,
   BRANCH,
   commitIn,
@@ -51,8 +44,15 @@ import {
   SESSION_ID,
   sh,
   type ThreadSeed,
-} from '../test/helpers/fix-round.mock.js';
-import { tempDir } from '../test/temp-dir.mock.js';
+} from '@test/helpers/fix-round.mock.js';
+import { tempDir } from '@test/helpers/temp-dir.mock.js';
+import {
+  kickoff,
+  killSession,
+  launchSession,
+  SteerNotDeliveredError,
+  steerPane,
+} from '../claude/session-runtime.service.js';
 import { codegraphBinary } from './codegraph.client.js';
 import { openStore } from './db.client.js';
 import { DEFAULT_BASE_PROFILE } from './default-profile.constants.js';

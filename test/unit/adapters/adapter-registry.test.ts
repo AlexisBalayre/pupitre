@@ -1,8 +1,8 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { detectAdapters } from '@src/adapters/adapter.registry.js';
+import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import { describe, expect, it } from 'vitest';
-import { tempDir } from '../test/temp-dir.mock.js';
-import { detectAdapters } from './adapter.registry.js';
 
 function makeRepo(files: Record<string, string>): string {
   const dir = tempDir('pup-registry-');
