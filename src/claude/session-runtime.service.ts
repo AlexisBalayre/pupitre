@@ -1079,7 +1079,7 @@ function listPanes(socket: string): string | undefined {
 }
 
 /** A session whose window the probe looks for, by its name and, when trusted, its pane. */
-export interface ProbedWindow {
+interface ProbedWindow {
   sessionId: string;
   paneId: string | null;
 }
