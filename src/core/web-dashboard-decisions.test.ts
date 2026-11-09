@@ -1,9 +1,9 @@
 import { execFileSync } from 'node:child_process';
 import { chmodSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import type { Database } from 'better-sqlite3';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { tempDir } from '../test/temp-dir.mock.js';
 import { openStore } from './db.client.js';
 import { insertDecisionRecord } from './decision-record.repository.js';
 import { closeLedgerEntry, insertLedgerEntry } from './ledger.repository.js';
