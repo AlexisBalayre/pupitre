@@ -48,6 +48,7 @@ vi.mock('./git-diff.client.js', async (importOriginal) => {
   };
 });
 
+import { nestedPackageDirs } from '../adapters/git-tree.client.js';
 import type { Adapter, CapabilityContext } from '../adapters/types/adapter.types.js';
 import {
   BRANCH,
@@ -433,6 +434,31 @@ describe('the merge gate under a shared-config core.worktree and diff.relative',
     const outcome = await merge(adapter);
 
     expect(stage(outcome, 'test')?.status).toBe('fail');
+  });
+
+  // The trusted listing of nested packages fails while the session holds
+  // `.git/config` broken, which it mends before the gate's last check: an empty
+  // trusted set would run no nested package's own stages, so the gate refuses.
+  it('refuses when the trusted listing of nested packages fails, running no stage', async () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+    const config = join(repo, '.git', 'config');
+    const adapter = debtAdapter({
+      touchedNestedPackages: (ctx: CapabilityContext) => {
+        const kept = readFileSync(config, 'utf8');
+        writeFileSync(config, '[core\n');
+        try {
+          nestedPackageDirs(ctx);
+          return [];
+        } finally {
+          writeFileSync(config, kept);
+        }
+      },
+    });
+
+    await expect(merge(adapter)).rejects.toThrow();
+    expect(vi.mocked(spawn)).not.toHaveBeenCalled();
+    expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
   });
 
   /** A stage that sets the key while it runs, after every check before the stages. */

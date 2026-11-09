@@ -13,6 +13,7 @@ import {
 import { basename, join, resolve } from 'node:path';
 
 import { sanitizeReason } from '../adapters/capability.utils.js';
+import { GATE_COMMAND_TIMEOUT_MS } from './merge-gate.constants.js';
 import type { DiffFileStat } from './types/git-diff.types.js';
 
 export type { DiffFileStat };
@@ -343,14 +344,16 @@ export class SharedWorktreeKeyError extends Error {
  * besides (`--no-relative`, `--full-tree`, `:(top)`), for a key a live session
  * sets after the check. Read from `/`, so an empty key cannot stop the read.
  * Exit 1 is git's "no such key"; any other failure is a file git cannot read,
- * which every later call would trip on too, so it refuses as well.
+ * which every later call would trip on too, so it refuses as well. Timed out
+ * like a gate child, since the gate asks under the merge lock and a session can
+ * swap the file for a FIFO no read returns from.
  */
 export function assertNoSharedWorktreeKey(repoPath: string): void {
   try {
     runGit(
       '/',
       ['config', '--file', join(repoPath, '.git', 'config'), '--get-all', 'core.worktree'],
-      { stdio: ['ignore', 'pipe', 'ignore'] },
+      { stdio: ['ignore', 'pipe', 'ignore'], timeout: GATE_COMMAND_TIMEOUT_MS },
     );
   } catch (error) {
     rethrowIfKilled(error);
@@ -383,7 +386,11 @@ function worktreeConfigState(
         '--get',
         'extensions.worktreeConfig',
       ],
-      { env: env ? { ...env } : undefined, stdio: ['ignore', 'pipe', 'ignore'] },
+      {
+        env: env ? { ...env } : undefined,
+        stdio: ['ignore', 'pipe', 'ignore'],
+        timeout: GATE_COMMAND_TIMEOUT_MS,
+      },
     );
     return value.trim() === 'false' ? 'off' : 'on';
   } catch (error) {

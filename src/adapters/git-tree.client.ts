@@ -1,4 +1,6 @@
-import { runGit } from '../core/git-diff.client.js';
+import { lstatSync } from 'node:fs';
+import { join } from 'node:path';
+import { rethrowIfKilled, runGit } from '../core/git-diff.client.js';
 import { GATE_COMMAND_TIMEOUT_MS } from '../core/merge-gate.constants.js';
 import type { CapabilityContext } from './types/adapter.types.js';
 
@@ -22,7 +24,13 @@ const MANIFEST = 'package.json';
  * exemption in the session's own gate with nothing merged. Reading `HEAD`'s
  * tree also settles what a marker *is*: a symlink, a directory or an empty
  * file is whatever git committed, and there is no filesystem type to check.
- * A checkout git cannot list contributes no markers, so nothing is exempt.
+ * Outside the gate, a directory that is no repository and a repository with
+ * no commit yet, as `pup init` meets, commit no markers, so nothing is
+ * exempt. Any other listing that fails throws, and at the gate, `measureSha`
+ * given, every one does, so the gate refuses: an empty trusted set would run
+ * no nested package's own stages, and a session can fail that listing alone,
+ * by an empty `core.worktree` or a `.git/config` git cannot parse, and mend it
+ * before the gate's last check (decision 161).
  * The gate's checkout is listed at the sha it was cut at, from the trusted
  * repo's object store, never through the checkout: its HEAD and `commondir`
  * sit in an admin dir under `<common>/worktrees/` a session can rewrite after
@@ -39,16 +47,17 @@ export function nestedPackageDirs({
   configPath,
   measureSha,
 }: CapabilityContext): Set<string> {
+  const gate = measureSha !== undefined;
   const measured =
     measureSha === undefined
-      ? committedPackageDirs(measurePath, 'HEAD')
-      : committedPackageDirs(configPath, measureSha);
+      ? committedPackageDirs(measurePath, 'HEAD', gate)
+      : committedPackageDirs(configPath, measureSha, gate);
   if (configPath === measurePath) return measured;
-  const trusted = committedPackageDirs(configPath, 'HEAD');
+  const trusted = committedPackageDirs(configPath, 'HEAD', gate);
   return new Set([...measured].filter((dir) => trusted.has(dir)));
 }
 
-function committedPackageDirs(checkout: string, rev: string): Set<string> {
+function committedPackageDirs(checkout: string, rev: string, gate: boolean): Set<string> {
   let listing: string;
   try {
     // Timed out like every other child pup runs: git reads config a session
@@ -61,7 +70,10 @@ function committedPackageDirs(checkout: string, rev: string): Set<string> {
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: GATE_COMMAND_TIMEOUT_MS,
     });
-  } catch {
+  } catch (error) {
+    rethrowIfKilled(error);
+    const repo = lstatSync(join(checkout, '.git'), { throwIfNoEntry: false }) !== undefined;
+    if (gate || (repo && !unbornHead(checkout, rev))) throw error;
     return new Set();
   }
   const dirs = new Set<string>();
@@ -69,4 +81,23 @@ function committedPackageDirs(checkout: string, rev: string): Set<string> {
     if (path.endsWith(`/${MANIFEST}`)) dirs.add(path.slice(0, -MANIFEST.length - 1));
   }
   return dirs;
+}
+
+/**
+ * Whether `rev` is the `HEAD` of a repository with no commit yet. Exit 1 is
+ * `--verify --quiet`'s "no such ref"; a repository git cannot open, its config
+ * unparsable or its `core.worktree` empty, exits 128 and is not unborn.
+ */
+function unbornHead(checkout: string, rev: string): boolean {
+  if (rev !== 'HEAD') return false;
+  try {
+    runGit(checkout, ['rev-parse', '--verify', '--quiet', 'HEAD'], {
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: GATE_COMMAND_TIMEOUT_MS,
+    });
+    return false;
+  } catch (error) {
+    rethrowIfKilled(error);
+    return typeof error === 'object' && error !== null && 'status' in error && error.status === 1;
+  }
 }
