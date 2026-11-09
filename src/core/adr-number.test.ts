@@ -275,24 +275,41 @@ describe('adrNumberStage', { timeout: 20_000 }, () => {
   });
 
   it.each([
-    ['records no sha', undefined, 'its open PR has no gated commit on record'],
+    ['records no sha', undefined, 'its merge recorded no gated commit sha'],
     [
       'names a commit the repo lacks',
       'f'.repeat(40),
-      "its open PR's gated commit is not in this repo",
+      `its gated commit ${'f'.repeat(40)} is not in this repo; fetch the PR's head here`,
     ],
-    [
-      'records a sha that is no commit sha',
-      '--output=x',
-      'its open PR has no gated commit on record',
-    ],
-  ])('names a merged peer with an open PR unchecked when its merge %s', (_, sha, why) => {
+    ['records a sha that is no commit sha', '--output=x', 'its merge recorded no gated commit sha'],
+  ])("refuses, naming the peer and its PR, when an open PR peer's merge %s", (_, sha, why) => {
     openPrPeer(sha);
     commitOn(repo, 'pup/me', 'docs/adr/0003-mine.md');
-    expect(stage()).toMatchObject({
-      status: 'pass',
-      detail: `not checked against pup/other: ${why}`,
+    expect(refusals()).toEqual([
+      'Open PRs whose gated commit cannot be read, so no number this branch adds can be ' +
+        'cleared against them:',
+      `  pup/other (https://github.com/o/r/pull/1): ${why}`,
+    ]);
+  });
+
+  it("withholds an open PR peer's url that is not a pull request's", () => {
+    seedSession(db, 'other', 'merged');
+    appendEvent(db, 'other', 'merge', {
+      branch: 'pup/other',
+      target: 'main',
+      files: [],
+      prUrl: 'https://evil.example/$(touch x)',
     });
+    commitOn(repo, 'pup/me', 'docs/adr/0003-mine.md');
+    expect(refusals()).toContain(
+      '  pup/other (a pull request url pup withholds): its merge recorded no gated commit sha',
+    );
+  });
+
+  it('adds no stage for a branch adding no ADR beside an unreadable open PR peer', () => {
+    openPrPeer();
+    commitOn(repo, 'pup/me', 'src/app.ts');
+    expect(stage()).toBeUndefined();
   });
 
   it('ignores killed sessions, landed PRs, local merges and pup branches no session holds', () => {

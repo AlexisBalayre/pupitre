@@ -30,10 +30,16 @@
     blocked; decision 41) or `merged` with an open PR that has not landed (decision 84). A live
     session is read at its branch. A merged one is read at the sha its newest merge event
     pinned: a passing gate deletes the session's local branch in both modes, and only the
-    operator's `pup fix` restores it, so in PR mode that sha is all the repo keeps of the PR's
-    head locally. A re-gate records a new merge event, so the newest one is the PR's current
-    head. A merge event with no sha, or one whose commit the repo lacks, leaves that peer
-    unchecked and named, like an unreadable branch. Each
+    operator's `pup fix` restores it. The sha is read rather than the remote-tracking ref the
+    push wrote, because pup recorded the sha and any session can move that ref. A re-gate records a new merge event, so the newest one is the PR's current
+    head. A merge event with no sha, one whose sha is not a full commit sha (`COMMIT_SHA`:
+    anchored, exactly 40 lowercase hex digits or 64), or one whose commit the repo lacks fails
+    the stage closed, under its own heading. Nothing else in the repo holds what that PR adds,
+    so passing would let a clash through unseen. The line names the branch and the PR, whose url
+    is withheld unless it has a pull request's shape (decisions 29, 83), and for a missing
+    commit says to fetch the PR's head into the repo. A branch that adds no decision never
+    reaches this check, so such a peer blocks only ADR-adding gates, until its PR lands or its
+    head is fetched. Each
     refused file is one line of the stage's failure. The line names the other branch, the other
     file, or says the number is on the target, and gives the lowest free number above the
     target's highest: one that neither the target, any of those branches, nor the branch's own
@@ -96,15 +102,24 @@
     recognise. A sibling that has not committed its decision yet cannot be seen, so the check
     narrows the race to the window between two commits rather than closing it. A branch merged
     with no PR leaves the store's countable states with its number on the target, where the next
-    gate finds it.
+    gate finds it. An open PR's gated commit is kept reachable only by the remote-tracking ref
+    the gate's push writes, `refs/remotes/origin/<branch>`, once it has deleted the local branch
+    and the worktree with its reflog. That ref is not pup's alone. A `git fetch --prune` after
+    the remote branch is deleted removes it, any session sharing the `.git` can move it, and
+    `git gc` may then prune the commit once it is older than the prune window. Pinning the
+    commit under a ref of pup's own, written when the gate opens the PR, would need `pup land`
+    and the session teardown to delete that ref, and those are outside this decision. Until a
+    decision adds that pin, a pruned commit refuses every ADR-adding gate, as above, rather
+    than being read as having added nothing.
     Tests: `adrNumberStage` adds no stage for a branch adding no decision, a free number, an
     edit to a decision already on the target or a slug-only rename of one. It refuses a number
     on the target, an unpaired file under the number of one the branch deletes (as a rename
     changed too much, though not when git paired that file with a renumbered one), a second
     file with one number, one a queued, running, awaiting-review, rejected or blocked session's
     branch adds, one a merged session with an open PR adds (read at its recorded sha after the
-    gate deleted its branch, and named unchecked when that merge recorded no sha or its commit
-    is gone), and a decision renamed onto a taken
+    gate deleted its branch, and refused, naming the branch and the PR, when that merge recorded
+    no sha, a malformed one or a commit the repo lacks, with a url that is not a pull request's
+    withheld), and a decision renamed onto a taken
     number. It ignores killed sessions, landed PRs, local merges and `pup/` branches no session
     holds. It skips and names an orphan branch while still refusing a clash with another, a
     symbolic ref, a read Node killed for its timeout or buffer (read with the 10 s timeout),

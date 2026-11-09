@@ -1,5 +1,6 @@
 import type { Database } from 'better-sqlite3';
 import { sanitizeReason } from '../adapters/capability.utils.js';
+import { PR_URL } from './constants/dashboard.constants.js';
 import { quotePath } from './debt.service.js';
 import { rethrowIfKilled, runGit } from './git-diff.client.js';
 import { COMMIT_SHA } from './merge-gate.constants.js';
@@ -170,8 +171,11 @@ interface Competitor {
    * gate pinned, undefined when its merge recorded none.
    */
   rev: string | undefined;
-  /** A pinned commit: one git cannot find leaves the peer unchecked, not absent. */
-  pinned: boolean;
+  /**
+   * The open PR's url, set on a pinned peer: one whose commit git cannot find
+   * refuses the gate, naming the PR, rather than read as absent.
+   */
+  prUrl?: string;
 }
 
 /**
@@ -179,7 +183,8 @@ interface Competitor {
  * (decision 41's live states), read at its branch, or a merged one whose PR is
  * open, not landed, read at the sha its newest merge pinned. That gate deleted
  * the local branch in both modes, and only the operator's `pup fix` brings it
- * back, so the store's sha is what is left of the PR's head (decision 84).
+ * back; the sha is pup's record of the PR's head, where the remote-tracking ref
+ * the push wrote is one any session can move (decision 84).
  */
 function competingBranches(db: Database, sessionId: string): Competitor[] {
   const holding = holdingStates();
@@ -187,17 +192,13 @@ function competingBranches(db: Database, sessionId: string): Competitor[] {
   for (const session of listSessions(db)) {
     if (session.id === sessionId) continue;
     if (holding.includes(session.state)) {
-      competitors.push({
-        branch: session.branch,
-        rev: `refs/heads/${session.branch}`,
-        pinned: false,
-      });
+      competitors.push({ branch: session.branch, rev: `refs/heads/${session.branch}` });
       continue;
     }
     const merge = session.state === 'merged' ? newestMerge(db, session.id) : undefined;
     if (typeof merge !== 'object' || merge.prUrl === undefined) continue;
     const sha = merge.sha !== undefined && COMMIT_SHA.test(merge.sha) ? merge.sha : undefined;
-    competitors.push({ branch: session.branch, rev: sha, pinned: true });
+    competitors.push({ branch: session.branch, rev: sha, prUrl: merge.prUrl });
   }
   return competitors;
 }
@@ -237,7 +238,10 @@ const pad = (number: number): string => String(number).padStart(4, '0');
  * slugs merge without a conflict. Another branch git cannot read against the
  * target (an orphan, a symbolic ref, a read past its time or buffer), or one
  * adding more than `MAX_PEER_DECISIONS`, is skipped and named rather than
- * failing or blocking everyone's gate. Any other new file under `docs/adr/`,
+ * failing or blocking everyone's gate. An open PR whose merge recorded no
+ * commit sha, or whose commit the repo lacks, fails the stage instead, naming
+ * the branch and the PR: nothing else holds what it adds, so passing would let
+ * a clash through unseen. Any other new file under `docs/adr/`,
  * in any case, that is neither exactly `docs/adr/NNNN-<slug>.md` nor
  * `docs/adr/README.md` is refused naming the expected form: a later gate would
  * not read its number, though a case-insensitive host shares its folder.
@@ -274,14 +278,24 @@ export function adrNumberStage(
   );
   const takenBy = new Map<number, string>();
   const unchecked: string[] = [];
+  const unreadPrs: string[] = [];
   for (const peer of competingBranches(db, sessionId)) {
     const branch = sanitizeReason(peer.branch);
-    let theirs =
-      peer.rev === undefined
-        ? 'its open PR has no gated commit on record'
-        : peerDecisions(repoPath, targetSha, peer.rev);
-    if (theirs === undefined && peer.pinned)
-      theirs = "its open PR's gated commit is not in this repo";
+    const theirs =
+      peer.rev === undefined ? undefined : peerDecisions(repoPath, targetSha, peer.rev);
+    if (theirs === undefined && peer.prUrl !== undefined) {
+      // Store text printed as the thing to open: a url that is not a pull
+      // request's is withheld, not scrubbed (decisions 29, 83).
+      const url = sanitizeReason(peer.prUrl);
+      const pr = PR_URL.test(url) ? url : 'a pull request url pup withholds';
+      unreadPrs.push(
+        `  ${branch} (${pr}): ${
+          peer.rev === undefined
+            ? 'its merge recorded no gated commit sha'
+            : `its gated commit ${peer.rev} is not in this repo; fetch the PR's head here`
+        }`,
+      );
+    }
     if (typeof theirs === 'string') unchecked.push(`not checked against ${branch}: ${theirs}`);
     if (typeof theirs !== 'object') continue;
     for (const number of theirs.values()) if (!takenBy.has(number)) takenBy.set(number, branch);
@@ -338,6 +352,13 @@ export function adrNumberStage(
   }
   const lines = [
     ...(refusals.length > 0 ? ['ADR numbers already taken:', ...refusals] : []),
+    ...(unreadPrs.length > 0
+      ? [
+          'Open PRs whose gated commit cannot be read, so no number this branch adds can be ' +
+            'cleared against them:',
+          ...unreadPrs,
+        ]
+      : []),
     ...(misnamed.length > 0
       ? [
           'ADR files neither docs/adr/NNNN-<slug>.md nor docs/adr/README.md, in lowercase ' +
@@ -353,7 +374,7 @@ export function adrNumberStage(
   if (lines.length === 0) return undefined;
   return timedSince(started, {
     stage: ADR_NUMBER_STAGE,
-    status: refusals.length > 0 || misnamed.length > 0 ? 'fail' : 'pass',
+    status: refusals.length + unreadPrs.length + misnamed.length > 0 ? 'fail' : 'pass',
     detail: lines.join('\n'),
   });
 }
