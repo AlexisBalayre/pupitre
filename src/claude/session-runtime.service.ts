@@ -673,7 +673,9 @@ function mainRepoRoot(worktreePath: string): string[] {
  * load it. The compiled `--settings` file still applies (separate source).
  * The display name is the tmux name: it is what a peer session sees in
  * ListAgents and addresses with SendMessage, so the conductor reaches a
- * session by the same `pup-<id>` the operator attaches to (decision 47).
+ * session by the same `pup-<id>` the operator attaches to (decision 47). The
+ * rescope's window probe finds a renamed window by the `--name <tmux name>`
+ * pair in its pane's start command (decision 115), so the pair stays adjacent.
  *
  * `--mcp-config` adds the code graph without `--strict-mcp-config`: strict mode
  * would drop the operator's own MCP servers, and sessions inherit user config
@@ -984,9 +986,21 @@ export function hasSessionWindow(sessionId: string): boolean {
 
 /**
  * Where the open-window probe looks tmux up, in place of the caller's PATH: a
- * worker cannot hand it a fake tmux (decision 115).
+ * worker cannot name a fake tmux through its environment (decision 115). The
+ * package managers' fixed prefixes come after the system's, so each is reached
+ * only where none before it holds a tmux: MacPorts, NixOS, multi-user Nix and
+ * Linuxbrew. Nothing under a home directory, which a worker can write.
  */
-const PROBE_TMUX_PATH = '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin';
+const PROBE_TMUX_PATH = [
+  '/opt/homebrew/bin',
+  '/usr/local/bin',
+  '/usr/bin',
+  '/bin',
+  '/opt/local/bin',
+  '/run/current-system/sw/bin',
+  '/nix/var/nix/profiles/default/bin',
+  '/home/linuxbrew/.linuxbrew/bin',
+].join(':');
 
 /**
  * Past this a probe counts as unanswered. A rescope runs it inside the store's
@@ -1049,68 +1063,104 @@ function recordedSocket(repoPath: string, sessionId: string): string | undefined
  * launch recorded. The caller's alone would miss a window on the operator's
  * socket whenever the caller unset `TMUX_TMPDIR`.
  */
-function probedSockets(repoPath: string, windows: readonly ProbedWindow[]): string[] {
-  const recorded = windows.flatMap((window) => recordedSocket(repoPath, window.sessionId) ?? []);
+function probedSockets(repoPath: string, sessionIds: readonly string[]): string[] {
+  const recorded = sessionIds.flatMap((sessionId) => recordedSocket(repoPath, sessionId) ?? []);
   return [
     ...new Set([defaultSocketIn('/tmp'), defaultSocketIn(process.env.TMUX_TMPDIR), ...recorded]),
   ];
 }
 
 /**
- * Every pane on the server at `socket`, one `<pane id> <session name>` line
- * each; undefined when it did not answer in time, for any reason. Unlike
- * `tmuxProbe` it hands tmux none of the caller's environment.
+ * One line per pane. The session name is last because it is the one field a
+ * worker can set: a tab or a newline in it (tmux before 3.3 prints them raw)
+ * can add lines, never move the start command out of its own.
  */
-function listPanes(socket: string): string | undefined {
+const PANE_FORMAT = '#{pane_id}\t#{pane_start_command}\t#{session_name}';
+
+/** Far past any line tmux writes for why it failed; the refusal quotes this much. */
+const PROBE_FAILURE_MAX_CHARS = 200;
+
+/** Why a server's panes could not be listed: no tmux on the pinned PATH, or what tmux said. */
+type ProbeFailure = { noTmux: true } | { noTmux: false; detail: string };
+
+/**
+ * Every pane on the server at `socket`, as `PANE_FORMAT` lines, or why there
+ * are none to read. Unlike `tmuxProbe` it hands tmux none of the caller's
+ * environment.
+ */
+function listPanes(socket: string): string[] | ProbeFailure {
   try {
-    return execFileSync(
-      'tmux',
-      ['-S', socket, 'list-panes', '-a', '-F', '#{pane_id} #{session_name}'],
-      {
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'pipe'],
-        env: { PATH: PROBE_TMUX_PATH },
-        timeout: PROBE_TIMEOUT_MS,
-      },
-    );
-  } catch {
-    return undefined;
+    return execFileSync('tmux', ['-S', socket, 'list-panes', '-a', '-F', PANE_FORMAT], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { PATH: PROBE_TMUX_PATH },
+      timeout: PROBE_TIMEOUT_MS,
+    }).split('\n');
+  } catch (error) {
+    const { code, stderr } = error as { code?: unknown; stderr?: unknown };
+    if (code === 'ENOENT') return { noTmux: true };
+    const said = typeof stderr === 'string' ? stderr.trim().split('\n')[0] : '';
+    const detail =
+      code === 'ETIMEDOUT' ? `no answer in ${PROBE_TIMEOUT_MS} ms` : said || 'tmux failed';
+    return { noTmux: false, detail: detail.slice(0, PROBE_FAILURE_MAX_CHARS) };
   }
 }
 
-/** A session whose window the probe looks for, by its name and, when trusted, its pane. */
-interface ProbedWindow {
-  sessionId: string;
-  paneId: string | null;
+/**
+ * The pane a server lists for the session, if any: one in the tmux session of
+ * its launch name, or one whose start command carries the launch's
+ * `--name <tmux name>` (`launchArgs`). tmux fixes a pane's start command when
+ * it starts it, so a worker that renames its session or moves its pane still
+ * matches, and a pane id is never matched: a `%N` means a pane only on the
+ * server that minted it, and a restarted or another server reuses it.
+ */
+function listedPane(lines: readonly string[], sessionId: string): string | undefined {
+  const name = tmuxName(sessionId);
+  return lines
+    .map((line) => line.split('\t'))
+    .find(
+      ([, started = '', ...listed]) =>
+        listed.join('\t') === name || ` ${started} `.includes(` --name ${name} `),
+    )?.[0];
 }
 
-/** Whether the server lists the window: a pane of its launch name, or its pane id. */
-function listsWindow(panes: string, window: ProbedWindow): boolean {
-  const name = tmuxName(window.sessionId);
-  return panes.split('\n').some((line) => {
-    const [pane, listed] = line.split(' ');
-    return listed === name || (window.paneId !== null && pane === window.paneId);
-  });
-}
+/** Why a rescope cannot rule out an open window: what the refusal names. */
+type OpenWindow =
+  | { kind: 'listed'; sessionId: string; socket: string; pane: string }
+  | { kind: 'unanswered'; socket: string; detail: string }
+  | { kind: 'no-tmux'; path: string };
 
 /**
- * The first of `windows`, sessions of the project at `repoPath`, that may
+ * Why a window of `sessionIds`, sessions of the project at `repoPath`, may
  * still be open, or undefined when every server asked answered and listed
- * none of them (decision 115). Any server that does not answer, no server
- * running, no tmux found and a timeout included, leaves every window possibly
- * open. tmux runs on a fixed PATH with
- * no caller environment and a timeout, so a worker can neither fake it nor
- * hang the caller. A pane id is matched only when the caller passes one: a
- * closed window's recorded id can be another window's on a restarted server.
+ * none of them (decision 115). A server that did not answer, no server
+ * running and a timeout included, leaves every window possibly open, and so
+ * does a tmux the fixed PATH does not hold; each is named apart, since neither
+ * is fixed by closing a window. tmux runs on that PATH with no caller
+ * environment and a timeout, so a worker can neither name a fake one nor hang
+ * the caller.
  */
 export function mayHaveOpenWindow(
   repoPath: string,
-  windows: readonly ProbedWindow[],
-): string | undefined {
-  const servers = probedSockets(repoPath, windows).map(listPanes);
-  return windows.find((window) =>
-    servers.some((panes) => panes === undefined || listsWindow(panes, window)),
-  )?.sessionId;
+  sessionIds: readonly string[],
+): OpenWindow | undefined {
+  const servers = probedSockets(repoPath, sessionIds).map((socket) => ({
+    socket,
+    panes: listPanes(socket),
+  }));
+  for (const { socket, panes } of servers) {
+    if (Array.isArray(panes)) continue;
+    return panes.noTmux
+      ? { kind: 'no-tmux', path: PROBE_TMUX_PATH }
+      : { kind: 'unanswered', socket, detail: panes.detail };
+  }
+  for (const sessionId of sessionIds) {
+    for (const { socket, panes } of servers) {
+      const pane = Array.isArray(panes) ? listedPane(panes, sessionId) : undefined;
+      if (pane !== undefined) return { kind: 'listed', sessionId, socket, pane };
+    }
+  }
+  return undefined;
 }
 
 /**

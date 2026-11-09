@@ -286,13 +286,18 @@ describe('rescopeTask (decision 115)', () => {
   // A worker that ran `pup session done` is awaiting review with its window
   // still up: rescoping then would let it keep editing into the wider scope.
   it.each(['awaiting-review', 'blocked', 'merged'])(
-    'refuses while a %s session may have its window open, writing nothing',
+    'refuses while a %s session has its window open, writing nothing',
     (state) => {
       launched('s1', state);
-      vi.mocked(mayHaveOpenWindow).mockReturnValue('s1');
+      vi.mocked(mayHaveOpenWindow).mockReturnValue({
+        kind: 'listed',
+        sessionId: 's1',
+        socket: '/tmp/tmux-1/default',
+        pane: '%3',
+      });
 
       expect(() => rescopeTask(db, 't-1', ['docs/**'], CALLER)).toThrow(
-        "Session s1's window may still be open",
+        "Session s1's window is open: the tmux server at /tmp/tmux-1/default lists it as pane %3",
       );
       expect(readTaskSpec(db, 't-1').scopeIn).toEqual(['src/core/**']);
       expect(listEvents(db, 's1')).toEqual([]);
@@ -300,9 +305,26 @@ describe('rescopeTask (decision 115)', () => {
     },
   );
 
-  // The gate's teardown and `pup kill` leave a closed window's pane id
-  // recorded, and a restarted server hands it to another window.
-  it("looks for every session's window, a merged or killed one's by name only", () => {
+  // Neither is fixed by closing a window, so each refusal names its own cause.
+  it.each([
+    [
+      { kind: 'unanswered', socket: '/tmp/tmux-1/default', detail: 'no server running' } as const,
+      'The tmux server at /tmp/tmux-1/default did not answer (no server running)',
+    ],
+    [
+      { kind: 'no-tmux', path: '/usr/bin:/bin' } as const,
+      "No tmux on the window probe's fixed PATH (/usr/bin:/bin)",
+    ],
+  ])('refuses when the probe cannot see the windows (%o), writing nothing', (probe, says) => {
+    launched('s1', 'blocked');
+    vi.mocked(mayHaveOpenWindow).mockReturnValue(probe);
+
+    expect(() => rescopeTask(db, 't-1', ['docs/**'], CALLER)).toThrow(says);
+    expect(readTaskSpec(db, 't-1').scopeIn).toEqual(['src/core/**']);
+    expect(listEvents(db, 's1')).toEqual([]);
+  });
+
+  it("looks for every session's window, a merged or killed one's too", () => {
     launched('s1', 'blocked');
     launched('s2', 'killed');
     launched('s3', 'merged');
@@ -310,14 +332,7 @@ describe('rescopeTask (decision 115)', () => {
     rescopeTask(db, 't-1', ['docs/**'], CALLER);
 
     expect(vi.mocked(mayHaveOpenWindow).mock.calls).toEqual([
-      [
-        '/repo',
-        expect.arrayContaining([
-          { sessionId: 's1', paneId: '%3' },
-          { sessionId: 's2', paneId: null },
-          { sessionId: 's3', paneId: null },
-        ]),
-      ],
+      ['/repo', expect.arrayContaining(['s1', 's2', 's3'])],
     ]);
   });
 

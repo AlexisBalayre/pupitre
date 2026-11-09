@@ -992,11 +992,16 @@ describe('CLI commands', () => {
       const repo = initRepo();
       useCwd(repo);
       const db = claimed(repo, 'awaiting-review');
-      vi.mocked(mayHaveOpenWindow).mockReturnValue('s1');
+      vi.mocked(mayHaveOpenWindow).mockReturnValue({
+        kind: 'listed',
+        sessionId: 's1',
+        socket: '/tmp/tmux-1/default',
+        pane: '%3',
+      });
 
       rescope();
 
-      expect(errors.join('\n')).toContain("Session s1's window may still be open");
+      expect(errors.join('\n')).toContain("Session s1's window is open");
       expect(JSON.parse(getTask(db, 't-1')?.spec ?? '{}').scopeIn).toEqual(['src/**']);
       expect(process.exitCode).toBe(1);
     });

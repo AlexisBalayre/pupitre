@@ -1018,7 +1018,19 @@ describe('mayHaveOpenWindow (decision 115)', () => {
   const uid = process.getuid?.();
   const tmpSocket = `/tmp/tmux-${uid}/default`;
   const elsewhere = `/tmp/elsewhere/tmux-${uid}/default`;
-  const S1 = { sessionId: 's1', paneId: '%3' };
+  const PROBE_PATH = [
+    '/opt/homebrew/bin',
+    '/usr/local/bin',
+    '/usr/bin',
+    '/bin',
+    '/opt/local/bin',
+    '/run/current-system/sw/bin',
+    '/nix/var/nix/profiles/default/bin',
+    '/home/linuxbrew/.linuxbrew/bin',
+  ].join(':');
+  // A launch's pane, as `list-panes -F '#{pane_id}\t#{pane_start_command}\t#{session_name}'` prints it.
+  const pane = (id: string, name: string, session = name) =>
+    `${id}\t/bin/claude --name ${name} --settings /s.json\t${session}\n`;
   // A project none of whose sessions recorded a socket.
   const NO_RECORD = '/repo/no-record';
   let original: unknown;
@@ -1030,6 +1042,9 @@ describe('mayHaveOpenWindow (decision 115)', () => {
       .mockImplementation(((_file: string, args: string[]) =>
         answer(args[1] as string)) as typeof execFileSync);
   const sockets = () => vi.mocked(execFileSync).mock.calls.map(([, args]) => (args as string[])[1]);
+  const failing = (fields: { code?: string; stderr?: string }) => () => {
+    throw Object.assign(new Error('tmux'), fields);
+  };
 
   beforeEach(() => {
     original = vi.mocked(execFileSync).getMockImplementation();
@@ -1044,32 +1059,63 @@ describe('mayHaveOpenWindow (decision 115)', () => {
   });
 
   it.each([
-    ['its pane', '%3 renamed\n'],
-    ['its name', '%9 pup-s1\n'],
-  ])('reports a window whose %s a server lists', (_what, panes) => {
+    ['its launch name', '%9\t\tpup-s1\n', '%9'],
+    // A rename leaves the start command tmux fixed when the pane started.
+    ['the start command of its launch, renamed', pane('%3', 'pup-s1', 'renamed'), '%3'],
+  ])('reports a window a server lists by %s, and where', (_what, panes, id) => {
     servers(() => panes);
 
-    expect(mayHaveOpenWindow(NO_RECORD, [{ sessionId: 's0', paneId: null }, S1])).toBe('s1');
+    expect(mayHaveOpenWindow(NO_RECORD, ['s0', 's1'])).toEqual({
+      kind: 'listed',
+      sessionId: 's1',
+      socket: tmpSocket,
+      pane: id,
+    });
   });
 
-  it('passes a window listed nowhere, and matches no pane id the caller did not pass', () => {
-    servers(() => '%1 pup-other\n%3 pup-s9\n');
+  // A `%N` names a pane only on the server that minted it: a restarted or
+  // another server reuses the session's recorded id for a pane of its own.
+  it("passes a window listed nowhere, whatever pane ids and other sessions' names it lists", () => {
+    servers(() => `%3\t\tpup-other\n%4\t-zsh\tmine\n${pane('%5', 'pup-s1-1')}`);
 
-    expect(mayHaveOpenWindow(NO_RECORD, [{ sessionId: 's1', paneId: null }])).toBeUndefined();
+    expect(mayHaveOpenWindow(NO_RECORD, ['s1'])).toBeUndefined();
   });
 
-  // A server that cannot be reached, a tmux that is not there: either way no
-  // window is shown closed.
-  it.each(['no server running on /tmp/tmux-501/default', 'spawnSync tmux ENOENT'])(
-    'counts a probe that fails (%s) as an open window',
-    (message) => {
-      servers(() => {
-        throw new Error(message);
+  // A tab or newline in a session name (raw before tmux 3.3) adds a line; the
+  // start command stays in its own.
+  it('matches the start command though the session name holds a tab or a newline', () => {
+    servers(() => pane('%3', 'pup-s1', 'x\tpup-other\n%8\t\t'));
+
+    expect(mayHaveOpenWindow(NO_RECORD, ['s1'])).toMatchObject({ kind: 'listed', pane: '%3' });
+  });
+
+  it.each([
+    [
+      'what tmux said',
+      failing({ stderr: 'no server running on /tmp/tmux-501/default\nmore\n' }),
+      'no server running on /tmp/tmux-501/default',
+    ],
+    ['a timeout', failing({ code: 'ETIMEDOUT', stderr: '' }), 'no answer in 2000 ms'],
+    ['nothing, when tmux said nothing', failing({ stderr: '' }), 'tmux failed'],
+  ])(
+    'counts a server that did not answer as an open window, naming %s',
+    (_what, answer, detail) => {
+      servers(answer);
+
+      expect(mayHaveOpenWindow(NO_RECORD, ['s1'])).toEqual({
+        kind: 'unanswered',
+        socket: tmpSocket,
+        detail,
       });
-
-      expect(mayHaveOpenWindow(NO_RECORD, [S1])).toBe('s1');
     },
   );
+
+  // Closing a window or starting a server cannot fix this one, so it is named apart.
+  it('reports no tmux on the pinned PATH as such, naming the PATH', () => {
+    servers(failing({ code: 'ENOENT' }));
+
+    expect(mayHaveOpenWindow(NO_RECORD, ['s1'])).toEqual({ kind: 'no-tmux', path: PROBE_PATH });
+  });
 
   // A worker could put a fake tmux on PATH; a probe that hangs holds the
   // caller's write lock.
@@ -1077,16 +1123,20 @@ describe('mayHaveOpenWindow (decision 115)', () => {
     servers(() => '');
     vi.stubEnv('PATH', '/tmp/fake-bin');
 
-    mayHaveOpenWindow(NO_RECORD, [S1]);
+    mayHaveOpenWindow(NO_RECORD, ['s1']);
 
     expect(vi.mocked(execFileSync).mock.calls).toEqual([
       [
         'tmux',
-        ['-S', tmpSocket, 'list-panes', '-a', '-F', '#{pane_id} #{session_name}'],
-        expect.objectContaining({
-          env: { PATH: '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin' },
-          timeout: 2000,
-        }),
+        [
+          '-S',
+          tmpSocket,
+          'list-panes',
+          '-a',
+          '-F',
+          '#{pane_id}\t#{pane_start_command}\t#{session_name}',
+        ],
+        expect.objectContaining({ env: { PATH: PROBE_PATH }, timeout: 2000 }),
       ],
     ]);
   });
@@ -1097,23 +1147,18 @@ describe('mayHaveOpenWindow (decision 115)', () => {
     servers(() => '');
     vi.stubEnv('TMUX_TMPDIR', '/tmp/elsewhere/');
 
-    expect(mayHaveOpenWindow(NO_RECORD, [S1])).toBeUndefined();
+    expect(mayHaveOpenWindow(NO_RECORD, ['s1'])).toBeUndefined();
     expect(sockets()).toEqual([tmpSocket, elsewhere]);
   });
 
   it.each([
-    ['lists the window', () => '%9 pup-s1\n'],
-    [
-      'does not answer',
-      () => {
-        throw new Error('spawnSync tmux ETIMEDOUT');
-      },
-    ],
-  ])('reports the window when only the TMUX_TMPDIR server %s', (_what, answer) => {
+    ['lists the window', () => '%9\t\tpup-s1\n', 'listed'],
+    ['does not answer', failing({ code: 'ETIMEDOUT' }), 'unanswered'],
+  ])('reports the window when only the TMUX_TMPDIR server %s', (_what, answer, kind) => {
     vi.stubEnv('TMUX_TMPDIR', '/tmp/elsewhere');
-    servers((socket) => (socket === elsewhere ? answer() : '%1 pup-other\n'));
+    servers((socket) => (socket === elsewhere ? answer() : '%1\t\tpup-other\n'));
 
-    expect(mayHaveOpenWindow(NO_RECORD, [S1])).toBe('s1');
+    expect(mayHaveOpenWindow(NO_RECORD, ['s1'])).toMatchObject({ kind, socket: elsewhere });
   });
 
   // A caller can unset TMUX_TMPDIR; the launch recorded the operator's.
@@ -1122,11 +1167,11 @@ describe('mayHaveOpenWindow (decision 115)', () => {
     vi.stubEnv('TMUX_TMPDIR', '/tmp/elsewhere');
     launchSession({ ...OPTS, repoPath: repo, worktreePath: worktree });
     vi.stubEnv('TMUX_TMPDIR', undefined);
-    servers((socket) => (socket === elsewhere ? '%9 pup-s-1\n' : '%1 pup-other\n'));
+    servers((socket) => (socket === elsewhere ? '%9\t\tpup-s-1\n' : '%1\t\tpup-other\n'));
     // Only the probe's calls: the fixture's git and the launch made their own.
     vi.mocked(execFileSync).mockClear();
 
-    expect(mayHaveOpenWindow(repo, [{ sessionId: 's-1', paneId: null }])).toBe('s-1');
+    expect(mayHaveOpenWindow(repo, ['s-1'])).toMatchObject({ sessionId: 's-1', socket: elsewhere });
     expect(sockets()).toEqual([tmpSocket, elsewhere]);
   });
 
@@ -1140,7 +1185,7 @@ describe('mayHaveOpenWindow (decision 115)', () => {
     writeFileSync(join(dir, 'tmux-socket'), record);
     servers(() => '');
 
-    expect(mayHaveOpenWindow(NO_RECORD, [S1])).toBeUndefined();
+    expect(mayHaveOpenWindow(NO_RECORD, ['s1'])).toBeUndefined();
     expect(sockets()).toEqual([tmpSocket]);
   });
 });

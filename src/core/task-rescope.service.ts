@@ -16,7 +16,6 @@ import {
   rescopeTaskSpec,
   workingSession,
 } from './session.repository.js';
-import { isTerminal } from './session-state.utils.js';
 import { assertPlannableSpec } from './task-spec.utils.js';
 import type { RescopeCaller } from './types/session-event.types.js';
 
@@ -67,6 +66,35 @@ function assertRescopableGlob(glob: string): void {
   const form = glob.trim().replace(/^\.\//, '');
   const refused = GLOB_REFUSALS.find(([test]) => test(glob, form));
   if (refused) throw refusal(`Rescope glob ${JSON.stringify(glob)} ${refused[1]}.`);
+}
+
+/**
+ * The refusal for a window the probe cannot rule closed, naming what it saw,
+ * so the operator knows whether to close a window, start a server or install
+ * tmux where the probe looks.
+ */
+function openWindowRefusal(
+  taskId: string,
+  open: NonNullable<ReturnType<typeof mayHaveOpenWindow>>,
+): InvalidProfileError {
+  switch (open.kind) {
+    case 'listed':
+      return refusal(
+        `Session ${open.sessionId}'s window is open: the tmux server at ${open.socket} lists ` +
+          `it as pane ${open.pane}, so its worker could keep editing ${taskId}; rescope once ` +
+          'it is closed.',
+      );
+    case 'unanswered':
+      return refusal(
+        `The tmux server at ${open.socket} did not answer (${open.detail}), so a window of ` +
+          `${taskId}'s sessions may be open on it; rescope once a server answers there.`,
+      );
+    case 'no-tmux':
+      return refusal(
+        `No tmux on the window probe's fixed PATH (${open.path}), so a rescope cannot check ` +
+          `that no window of ${taskId}'s sessions is open; link tmux into one of those directories.`,
+      );
+  }
 }
 
 /** The tier the session's next window routes on, as `sessionWindowRoute` reads it. */
@@ -126,22 +154,11 @@ export function rescopeTask(
           `Session ${workingSession(db, taskId)} is at work on ${taskId}; rescope once it stops.`,
         );
       }
-      // A merged or killed session is looked for by name only: the gate's
-      // teardown and `pup kill` close its window but leave its pane id
-      // recorded, and a restarted server numbers its panes from `%0` again.
       const open = mayHaveOpenWindow(
         getProject(db, task.project_id)?.repo_path ?? '',
-        listTaskSessions(db, taskId).map((row) => ({
-          sessionId: row.id,
-          paneId: isTerminal(row.state) ? null : row.tmux_target,
-        })),
+        listTaskSessions(db, taskId).map((row) => row.id),
       );
-      if (open !== undefined) {
-        throw refusal(
-          `Session ${open}'s window may still be open (a default tmux server lists it, or ` +
-            `did not answer), so its worker could keep editing ${taskId}; rescope once it is closed.`,
-        );
-      }
+      if (open !== undefined) throw openWindowRefusal(taskId, open);
       // The task's row and the session's each from its own stored tier: a
       // relaunch routes from the task's, a fix round from the session's.
       // Raised on what the rescope adds, never on the old globs: a task the

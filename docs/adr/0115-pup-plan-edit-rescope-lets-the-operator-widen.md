@@ -33,11 +33,17 @@
     and the refused ones are every other claimed state, derived from the state table as
     `claimedStates()` is, so a state added later is refused until someone names it. Today
     that refuses `queued`, `running` and `rejected`, whose hooks hold the old scope. A
-    window is open when a default tmux server lists a tmux session named `pup-<id>` (the
-    launch's own name) or, for a session not merged or killed, its
-    recorded pane. A terminal session is matched by name only: the gate's teardown and
-    `pup kill` close its window but leave the `%N` pane id recorded, and a restarted server
-    numbers its panes from `%0` again, so that id can be another window's. A launch hands
+    window is open when a default tmux server lists a pane in a tmux session named
+    `pup-<id>` (the launch's own name), or a pane whose start command carries the launch's
+    `--name pup-<id>` pair. tmux fixes a pane's start command when it starts the pane, so a
+    worker that renames its tmux session or moves its pane to another still matches, and
+    only respawning the pane, which ends the worker in it, changes it. A recorded pane id
+    is never matched: a `%N` names a pane only on the server that minted it, a restarted
+    server numbers its panes from `%0` again, and another server numbers its own, so a
+    recorded id can be one of the operator's panes. Each pane is listed as its id, its
+    start command, then its session name, the one field a worker sets: a tab or a newline
+    in a name, which tmux before 3.3 prints raw, can add lines but cannot move the start
+    command out of its own. A launch hands
     tmux the launching shell's `TMUX_TMPDIR` (decision 47), so its window may be on the
     server at `$TMUX_TMPDIR/tmux-<uid>/default` or, unset, at `/tmp/tmux-<uid>/default`.
     The caller's own `TMUX_TMPDIR` cannot say which: a caller that unset it would probe
@@ -51,15 +57,28 @@
     absolute path ending `tmux-<uid>/default` with no control character counts. A missing
     or malformed record (a launch from before it, a removed session dir) records nothing,
     and the default sockets are probed, failing closed as before. tmux is
-    looked up on a fixed PATH (`/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin`, `/bin`)
-    with none of the caller's environment, so a worker cannot hand the probe a fake tmux,
-    and each probe gets two seconds: it runs inside the store's write lock, and a listener
-    at the socket that never replies must not hold every writer out. Either server listing
-    the window refuses, and so does any probe failure, no server running, no tmux found and
-    a timeout included. The probe is the runtime's `mayHaveOpenWindow` in
+    looked up on a fixed PATH with none of the caller's environment: `/opt/homebrew/bin`,
+    `/usr/local/bin`, `/usr/bin` and `/bin`, then the fixed prefixes of MacPorts
+    (`/opt/local/bin`), NixOS (`/run/current-system/sw/bin`), multi-user Nix
+    (`/nix/var/nix/profiles/default/bin`) and Linuxbrew (`/home/linuxbrew/.linuxbrew/bin`),
+    each reached only when none before it holds a tmux. So a worker cannot name a fake tmux
+    through its environment. One that can write one of those directories can still replace
+    the tmux there, as an operator-owned Homebrew or Linuxbrew prefix or a single-user Nix
+    store lets it; that is a ceiling like the socket one. No directory under a home is on
+    the PATH, since a worker writes there, so a tmux only in `~/.nix-profile/bin`,
+    `/etc/profiles/per-user/<user>/bin` or another per-user prefix is not found, and the
+    operator links it into one of the directories above. Each probe gets two seconds: it
+    runs inside the store's write lock, and a listener at the socket that never replies
+    must not hold every writer out. Either server listing the window refuses, and so does
+    any probe failure, no server running, no tmux found and a timeout included. The
+    refusal names what the probe saw, since each has its own way out: the server and pane
+    that list a window, which the operator closes; a server that did not answer, with the
+    first line tmux printed or the timeout, where the operator starts one (a version
+    mismatch between the probe's tmux and the server's shows here too); or no tmux on the
+    fixed PATH, which it names. The probe is the runtime's `mayHaveOpenWindow` in
     `src/claude/session-runtime.service.ts`, the one module that touches tmux, so it reads
     the launch's name from `tmuxName` rather than spelling it again; the rescope hands it
-    each session's id and, for one not merged or killed, its pane. Its PATH and its
+    each session's id, a merged or killed one's included. Its PATH and its
     environment differ from a launch's on purpose: the launch trusts the operator's shell,
     the probe must not trust a worker's. That covers
     a worker that ran its own `pup session done` and so sits `awaiting-review` with its pane
@@ -67,7 +86,8 @@
     re-gate would pass. The gate kills a merged session's window, so a merged session
     passes. The cost of failing closed: the operator is refused until every server asked
     answers, so one with no tmux server running at `/tmp`, or none at `TMUX_TMPDIR` when it
-    is set, starts one first. The ceiling: the probe trusts whatever server answers at
+    is set, starts one first, and one whose tmux is only on a per-user prefix links it onto
+    the fixed PATH. The ceiling: the probe trusts whatever server answers at
     those sockets, so a worker that removes a socket and starts a fresh, empty server at
     its path hides the windows of the old one, which keeps running unlisted. A worker that
     rewrites its own `tmux-socket` record does the same for a window on the operator's
@@ -121,11 +141,15 @@
     *Tests.* In `task-rescope.test.ts`, with the probe mocked, a rescope on a merged,
     awaiting-review or blocked session's task with its window closed appends and writes the
     event and the record. A queued, running or rejected one writes nothing, nor does one
-    whose window the probe reports open, and the probe is handed every session on the task,
-    a merged or killed one's without its pane. In `session-runtime.test.ts`,
-    `mayHaveOpenWindow` reports a window whose pane or name a server lists, or whose probe
-    fails (no server, no tmux), passes one listed nowhere and matches no pane id it was not
-    handed, runs on the pinned PATH with a timeout whatever the caller's PATH, asks only
+    whose window the probe reports open, nor one where a server did not answer or no tmux
+    was found, each refused with its own message, and the probe is handed every session on
+    the task, merged and killed ones included. In `session-runtime.test.ts`,
+    `mayHaveOpenWindow` reports a window a server lists by its launch name or, renamed, by
+    its start command, naming the server and the pane, and a tab or a newline in a session
+    name does not hide it. It passes one listed nowhere, whatever pane ids and prefix-pair
+    names the server lists. It reports a server that did not answer with what tmux said or
+    the timeout, and no tmux on the pinned PATH as such. It runs on the pinned PATH with a
+    timeout whatever the caller's PATH, asks only
     `/tmp`'s server when `TMUX_TMPDIR` is unset and both when it is set, and reports the
     window when only `TMUX_TMPDIR`'s lists it or does not answer. A launch records the
     socket under the launching shell's `TMUX_TMPDIR`. A window on that socket is reported
