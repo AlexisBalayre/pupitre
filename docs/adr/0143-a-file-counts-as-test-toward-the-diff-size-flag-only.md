@@ -25,10 +25,12 @@
     measured one is what the stage's run actually reads, so a branch that narrows its own
     `include` or adds an `exclude` leaves a file the run never collects, which then fails
     nothing however little test it holds. The trusted side alone is not enough, for the
-    reason decision 31 gives.
+    reason decision 31 gives. The trusted checkout is the operator's checkout (`configPath`,
+    the gate's `repoPath`), read as it stands on disk, not the tree at `targetSha`.
     **TypeScript** answers from vitest. The `test` script must be plain `vitest` or `vitest
-    run` in both checkouts (the `coveredTest` rule of decision 95): `vitest run src/core` or
-    another runner collects something else, and then nothing counts as test. The config is the
+    run` in both checkouts, with no `pretest` or `posttest` beside it (the `coveredTest` rule
+    of decision 95): `vitest run src/core`, another runner or a script around the run collects
+    or does something else, and then nothing counts as test. The config is the
     first of `vitest.config.{ts,mts,cts,js,mjs,cjs}` then `vite.config.*` present, vitest's own
     order, read as a plain file without following a link and parsed with the TypeScript
     compiler, never run. It is read statically: a default export that is an object literal,
@@ -37,8 +39,16 @@
     and unknown collects nothing, the safe direction: a function config, `mergeConfig`, an
     identifier, CommonJS, a spread or computed key in the config or its `test`, a non-literal
     `include` or `exclude` (so `[...configDefaults.exclude, 'e2e/**']` too), a `root` at either
-    level, `test.dir`, `test.projects` or `test.workspace`, or a `vitest.workspace.*` beside it.
-    No config collects vitest's default `**/*.{test,spec}.?(c|m)[jt]s?(x)`. Vitest 3's
+    level, `test.dir`, `test.projects`, `test.workspace` or `test.typecheck` (whose `only`
+    runs type tests alone, so no test-named file runs), or a `vitest.workspace.*` beside it.
+    The measured config is the branch's, and vitest runs it, so a static read of it can be
+    wrong: a branch can define its own `defineConfig` that pushes an `exclude` at run time, or
+    add a plugin whose `config` hook does. So it is read only where running it can do no more
+    than the read sees. Every statement but the default export must be an import from
+    `vitest/config` or `vite`, the callee must be the `defineConfig` imported there, and the
+    exported object must hold no call, `new`, tagged template, function, class, `await` or
+    `yield`. Otherwise the answer is unknown. The trusted config is the operator's, and is
+    read as written. No config collects vitest's default `**/*.{test,spec}.?(c|m)[jt]s?(x)`. Vitest 3's
     default `exclude` (a `node_modules`, `dist`, `cypress`, `.idea`, `.git`, `.cache`,
     `.output` or `.temp` directory, a tool's `*.config.*`), a superset of vitest 4's, applies
     whatever the config declares, since excluding more only counts more as source. A declared
@@ -65,19 +75,34 @@
     collects can hold production code and pass the test stage. Counting it as test would
     loosen decision 110, not close its item.
     Ceilings, stated. A vitest config that is a link collects nothing, and one named by
-    `--config` is never read, as the script rule refuses the flag.
+    `--config` is never read, as the script rule refuses the flag. In a repo whose `include`
+    is wider than this one's, or which has no config and so takes vitest's default, more
+    spellings than `.test.ts` count as test: `.spec.*`, `.tsx`, `.mts` and the rest the
+    `include` names. Each still fails the run if it holds no test. Code loaded by convention or
+    by a glob rather than by a specifier that spells its name escapes the reach check, so a
+    collected test it loads still counts as test: a Next.js `pages/` or `app/` route, a
+    `import.meta.glob('./**/*.spec.ts')`. That is the module-graph item decision 110 still
+    owes.
     The gate's own branch is measured
     by the main checkout's adapter (the metric-scope lesson of decision 39), so this change
     first applies to the merge after it lands. Tests: in the TypeScript adapter, an `include`
     of `src/**` collects `src/a.test.ts` and not `scripts/x.test.ts`, no config collects the
     default spellings past the default exclude, `vitest.config` wins over `vite.config`, an
     exclude drops a file, a directory and what `**/fixtures/**` names, an include pattern with
-    two stars in a segment or two inner `**` collects nothing, a
-    narrowing script, another runner, a function config, a run-time include, a spread exclude,
-    a braced exclude, a spread `test`, `projects`, `dir`, `root` and a workspace file each
-    collect nothing, and a branch narrowing its include or excluding a file drops it; in the
-    gate, `scripts/x.test.ts` outside the trusted include counts as source while
-    `src/a.test.ts` counts as test, with a second adapter claiming every file not asked, a
+    two stars in a segment or two inner `**` collects nothing. In the trusted checkout, beside
+    a measured one that collects the file, each of these collects nothing: a narrowing script,
+    another runner, a `pretest` or `posttest`, a function config, a run-time include, a spread
+    exclude, a braced exclude, an exclude with a `!`, over 64 patterns, a `..` or an absolute
+    path, a spread `test`, a shorthand, getter or twice-named include, `projects`,
+    `test.workspace`, `dir`, `test.root`, `typecheck` and a top-level `root`. A workspace file
+    and a config that is a symlink collect nothing either. The trusted checkout's own
+    `defineConfig` wrapper is read as written, while in the measured checkout that wrapper, a
+    `defineConfig` imported from elsewhere, another import aliased to the name, a plugin hook
+    and a plugin built by `eval` each collect nothing. A nested package's test is not a root
+    test, and a branch narrowing its include or excluding a file drops it. In the gate,
+    `scripts/x.test.ts` outside the trusted include counts as source while `src/a.test.ts`
+    counts as test, with a second adapter claiming every file not asked, every file counts as
+    source where only the branch's config imports its `defineConfig` from elsewhere, a
     collected `big.spec.tsx` production code imports by `./big.spec.js` counts as source while
     an uncollected `a.test.ts` does too, a file renamed and rewritten onto a collected name
     from one not collected counts as source, and a deleted collected test counts as test.

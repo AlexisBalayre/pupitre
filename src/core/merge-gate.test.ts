@@ -568,6 +568,31 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
   // Decision 143: where the test stage's adapter says what its runner
   // collects, that is what counts as test, and no other adapter is asked.
+  it('counts every file as source where only the branch config cannot be read', async () => {
+    commitIn(repo, 'package.json', JSON.stringify({ scripts: { test: 'vitest run' } }));
+    commitIn(
+      repo,
+      'vitest.config.ts',
+      "export default { test: { include: ['src/**/*.test.ts'] } };\n",
+    );
+    const worktree = seedSession(db, repo, { scopeIn: ['src/**', 'vitest.config.ts'] });
+    commitIn(
+      worktree,
+      'vitest.config.ts',
+      "import { defineConfig } from './shared.js';\n" +
+        "export default defineConfig({ test: { include: ['src/**/*.test.ts'] } });\n",
+    );
+    commitIn(worktree, 'src/a.test.ts', 'x\n'.repeat(3));
+
+    const outcome = await merge({ ...passingAdapter, testFiles: typescriptAdapter.testFiles });
+
+    expect(untimed(outcome.report.stages)).toContainEqual({
+      stage: 'diff-size',
+      status: 'pass',
+      detail: '6 source + 0 test + 0 docs changed lines',
+    });
+  });
+
   it('counts a .test.ts outside the trusted vitest include as source', async () => {
     commitIn(repo, 'package.json', JSON.stringify({ scripts: { test: 'vitest run' } }));
     commitIn(
