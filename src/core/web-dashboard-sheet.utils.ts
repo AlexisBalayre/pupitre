@@ -1,4 +1,6 @@
+import { sanitizeReason } from '../adapters/capability.utils.js';
 import { PR_URL } from './constants/dashboard.constants.js';
+import { displayText } from './report-data.utils.js';
 import type { DashboardBaseline } from './types/dashboard.types.js';
 
 /**
@@ -13,6 +15,15 @@ export function escapeHtml(text: string): string {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+/**
+ * A store or file-name string on one line with no control character (decision
+ * 29) and no direction mark: a U+202E in a path would show the operator a file
+ * name other than the one the store holds.
+ */
+export function oneLine(text: string): string {
+  return displayText(sanitizeReason(text));
 }
 
 export function section(title: string, body: string): string {

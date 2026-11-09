@@ -233,8 +233,8 @@ describe('chart.utils', () => {
       const svg = treemap(GROUPS, { title: 'Map', tones: TONES });
 
       expect(cells(svg).map(({ className }) => className)).toEqual([
-        'cell t1-1',
-        'cell t0-3',
+        'cell t0-0 t1-1',
+        'cell t0-3 t1-0',
         'cell t0-2 t1-2',
       ]);
       expect(svg).toMatch(

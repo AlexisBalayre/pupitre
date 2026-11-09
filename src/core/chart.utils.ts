@@ -325,71 +325,78 @@ export function sparkline(data: ChartDatum[], options: ChartOptions): string {
 }
 
 /** A rectangle in the SVG's user units. */
-export interface Box {
+interface Box {
   x: number;
   y: number;
   w: number;
   h: number;
 }
 
+/** The same box with its axes swapped: its own inverse. */
+const transpose = ({ x, y, w, h }: Box): Box => ({ x: y, y: x, w: h, h: w });
+const sumOf = (values: number[]): number => values.reduce((sum, v) => sum + v, 0);
+
+/**
+ * Lays a row of cells as a column against the left edge of what is left, and
+ * returns what is left after it; a box taller than wide is laid transposed,
+ * so the row always runs along the shorter side.
+ */
+function layRow<T extends { value: number }>(
+  row: T[],
+  rest: Box,
+  scale: number,
+  placed: (Box & { item: T })[],
+): Box {
+  const orient = rest.w < rest.h ? transpose : (box: Box): Box => box;
+  const box = orient(rest);
+  const thickness = (sumOf(row.map((item) => item.value)) * scale) / box.h;
+  let y = box.y;
+  for (const item of row) {
+    const h = (item.value * scale) / thickness;
+    placed.push({ item, ...orient({ x: box.x, y, w: thickness, h }) });
+    y += h;
+  }
+  return orient({ x: box.x + thickness, y: box.y, w: box.w - thickness, h: box.h });
+}
+
 /**
  * Lays items out as rectangles filling `box`, each with an area in proportion
- * to its value (the squarified treemap: rows are grown while that keeps their
+ * to its value (the squarified treemap: a row grows while that keeps its
  * cells closer to square). Largest first, a tie keeping the given order; a
  * value that is not a finite positive number has no area and no rectangle.
  * The areas sum to the box's.
  */
 export function squarify<T extends { value: number }>(items: T[], box: Box): (Box & { item: T })[] {
-  const queue = items
-    .filter((item) => Number.isFinite(item.value) && item.value > 0)
-    .sort((a, b) => b.value - a.value);
-  const total = queue.reduce((sum, item) => sum + item.value, 0);
-  if (!Number.isFinite(total) || total === 0 || box.w <= 0 || box.h <= 0) return [];
-  const scale = (box.w * box.h) / total;
+  const queue = items.filter((item) => drawable(item.value) > 0).sort((a, b) => b.value - a.value);
+  // Infinite for nothing to place, zero for an empty box or a total that overflows.
+  const scale = (box.w * box.h) / sumOf(queue.map((item) => item.value));
+  if (!(Number.isFinite(scale) && scale > 0)) return [];
   // How far from square a row's least square cell is, laid along `side`.
   const worst = (row: T[], side: number): number => {
     const areas = row.map((item) => item.value * scale);
-    const sum = areas.reduce((s, a) => s + a, 0);
-    const max = areas.reduce((m, a) => Math.max(m, a), 0);
-    const min = areas.reduce((m, a) => Math.min(m, a), Number.POSITIVE_INFINITY);
-    return Math.max((side * side * max) / (sum * sum), (sum * sum) / (side * side * min));
+    const sum = sumOf(areas);
+    return Math.max(
+      (side * side * Math.max(...areas)) / (sum * sum),
+      (sum * sum) / (side * side * Math.min(...areas)),
+    );
   };
   const placed: (Box & { item: T })[] = [];
-  // Lays a row along the shorter side of what is left, and returns what is left after it.
-  const lay = (row: T[], rest: Box): Box => {
-    const area = row.reduce((sum, item) => sum + item.value * scale, 0);
-    const across = rest.w >= rest.h;
-    const thickness = area / (across ? rest.h : rest.w);
-    let offset = across ? rest.y : rest.x;
-    for (const item of row) {
-      const length = (item.value * scale) / thickness;
-      placed.push(
-        across
-          ? { item, x: rest.x, y: offset, w: thickness, h: length }
-          : { item, x: offset, y: rest.y, w: length, h: thickness },
-      );
-      offset += length;
-    }
-    return across
-      ? { x: rest.x + thickness, y: rest.y, w: rest.w - thickness, h: rest.h }
-      : { x: rest.x, y: rest.y + thickness, w: rest.w, h: rest.h - thickness };
-  };
   let rest = box;
-  let row: T[] = [];
-  for (const item of queue) {
+  let row = queue.slice(0, 1);
+  for (const item of queue.slice(1)) {
     const side = Math.min(rest.w, rest.h);
-    if (row.length > 0 && worst([...row, item], side) > worst(row, side)) {
-      rest = lay(row, rest);
+    if (worst([...row, item], side) > worst(row, side)) {
+      rest = layRow(row, rest, scale, placed);
       row = [];
     }
     row.push(item);
   }
-  if (row.length > 0) lay(row, rest);
+  layRow(row, rest, scale, placed);
   return placed;
 }
 
 /** One cell of a treemap: a file, sized by `value`, with one count per tone. */
-export interface TreemapLeaf {
+interface TreemapLeaf {
   label: string;
   value: number;
   /** In the tones' order. */
@@ -403,7 +410,7 @@ export interface TreemapGroup {
 }
 
 /** One way to colour the cells, chosen by a toggle; `CHART_CSS` styles two. */
-export interface TreemapTone {
+interface TreemapTone {
   /** The toggle's text, and how the figure line counts the cells it colours: `with open debt`. */
   label: string;
   /** How a cell's count reads in its hover: `2 open debt entries`. */
@@ -412,11 +419,32 @@ export interface TreemapTone {
 
 const TREEMAP_WIDTH = 720;
 const TREEMAP_HEIGHT = 360;
-const GROUP_LABEL_MIN = { w: 60, h: 18 };
+/** The room a group needs for its name: its width and height past these. */
+const GROUP_LABEL_ROOM = { w: 60, h: 18 };
+/** The counts each shade starts at: one, two, four. */
+const TONE_STEPS = [1, 2, 4];
 
-/** A count's shade: none, one, two or three, four or more. */
-function toneLevel(n: number): number {
-  return n <= 0 || !Number.isFinite(n) ? 0 : n === 1 ? 1 : n <= 3 ? 2 : 3;
+/** A count's shade, 0 for none; a count that is not a number has none. */
+const toneLevel = (n: number | undefined): number =>
+  TONE_STEPS.filter((step) => Number(n) >= step).length;
+
+/** A group's cells, laid out inside its box and shaded per tone. */
+function groupCells(
+  group: TreemapGroup,
+  box: Box,
+  tones: TreemapTone[],
+  format: (value: number) => string,
+): string {
+  return squarify(group.leaves, box)
+    .map(({ item: leaf, x, y, w, h }) => {
+      const shades = leaf.counts.map((n, tone) => ` t${tone}-${toneLevel(n)}`).join('');
+      const tip = [
+        `${leaf.label}: ${format(leaf.value)}`,
+        ...tones.map((tone, i) => tone.count(leaf.counts[i] ?? 0)),
+      ].join(', ');
+      return `<g><title>${escapeHtml(tip)}</title><rect class="cell${shades}" x="${at(x)}" y="${at(y)}" width="${at(w)}" height="${at(h)}"/></g>`;
+    })
+    .join('');
 }
 
 /**
@@ -434,53 +462,41 @@ export function treemap(
   options: ChartOptions & { tones: TreemapTone[] },
 ): string {
   const format = options.format ?? plain;
-  const sized = groups.map((group) => ({
-    group,
-    value: group.leaves.reduce((sum, leaf) => sum + drawable(leaf.value), 0),
-  }));
-  const total = sized.reduce((sum, { value }) => sum + value, 0);
+  const sized = groups
+    .map((group) => ({ group, value: sumOf(group.leaves.map((leaf) => drawable(leaf.value))) }))
+    .sort((a, b) => b.value - a.value);
   const marks = squarify(sized, { x: 0, y: 0, w: TREEMAP_WIDTH, h: TREEMAP_HEIGHT }).map(
     ({ item: { group }, ...box }) => {
-      const cells = squarify(group.leaves, box).map(({ item: leaf, x, y, w, h }) => {
-        const shades = leaf.counts
-          .map((n, tone) => (toneLevel(n) > 0 ? ` t${tone}-${toneLevel(n)}` : ''))
-          .join('');
-        const tip = [
-          `${leaf.label}: ${format(leaf.value)}`,
-          ...options.tones.map((tone, i) => tone.count(leaf.counts[i] ?? 0)),
-        ].join(', ');
-        return `<g><title>${escapeHtml(tip)}</title><rect class="cell${shades}" x="${at(x)}" y="${at(y)}" width="${at(w)}" height="${at(h)}"/></g>`;
-      });
-      const outline = `<rect class="group" x="${at(box.x)}" y="${at(box.y)}" width="${at(box.w)}" height="${at(box.h)}"/>`;
-      const name =
-        box.w >= GROUP_LABEL_MIN.w && box.h >= GROUP_LABEL_MIN.h
-          ? `<text class="group-label" x="${at(box.x + 4)}" y="${at(box.y + 13)}">${escapeHtml(fitLabel(group.label, Math.floor((box.w - 8) / (AXIS_FONT_PX * 0.6))))}</text>`
-          : '';
-      return `<g>${cells.join('')}${outline}${name}</g>`;
+      const room = Math.min(box.w - GROUP_LABEL_ROOM.w, box.h - GROUP_LABEL_ROOM.h) >= 0;
+      const name = `<text class="group-label" x="${at(box.x + 4)}" y="${at(box.y + 13)}">${escapeHtml(fitLabel(group.label, Math.floor((box.w - 8) / (AXIS_FONT_PX * 0.6))))}</text>`;
+      return (
+        `<g>${groupCells(group, box, options.tones, format)}` +
+        `<rect class="group" x="${at(box.x)}" y="${at(box.y)}" width="${at(box.w)}" height="${at(box.h)}"/>` +
+        `${room ? name : ''}</g>`
+      );
     },
   );
-  const figures = [...sized]
-    .sort((a, b) => b.value - a.value)
-    .map(({ group, value }) =>
-      [
-        `${group.label} ${format(value)} in ${group.leaves.length} ${group.leaves.length === 1 ? 'file' : 'files'}`,
-        ...options.tones.map(
-          (tone, i) =>
-            `${group.leaves.filter((leaf) => toneLevel(leaf.counts[i] ?? 0) > 0).length} ${tone.label}`,
-        ),
-      ].join(', '),
-    );
+  const figures = sized.map(({ group, value }) =>
+    [
+      `${group.label} ${format(value)} in ${group.leaves.length} ${group.leaves.length === 1 ? 'file' : 'files'}`,
+      ...options.tones.map(
+        (tone, i) =>
+          `${group.leaves.filter((leaf) => toneLevel(leaf.counts[i]) > 0).length} ${tone.label}`,
+      ),
+    ].join(', '),
+  );
   const toggles = options.tones.map(
     (tone, i) =>
       `<input type="radio" name="treemap-tone" id="treemap-tone-${i}"${i === 0 ? ' checked' : ''}>` +
       `<label for="treemap-tone-${i}">${escapeHtml(tone.label)}</label> `,
   );
+  const total = format(sumOf(sized.map(({ value }) => value)));
   return (
     `<div class="treemap"><span class="tones">Shade files </span>${toggles.join('')}` +
     `<span class="tones">${escapeHtml('(darker: 1, 2–3, 4 or more)')}</span>` +
     framed(
       'chart',
-      `${options.title}: ${format(total)} in total · ${figures.join(' · ')}`,
+      `${options.title}: ${total} in total · ${figures.join(' · ')}`,
       TREEMAP_HEIGHT,
       TREEMAP_WIDTH,
       marks.join(''),

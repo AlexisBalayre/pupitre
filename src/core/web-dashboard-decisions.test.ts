@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -10,6 +10,7 @@ import { closeLedgerEntry, insertLedgerEntry } from './ledger.repository.js';
 import { projectId } from './paths.utils.js';
 import { appendEvent, ensureProject, insertSession, insertTask } from './session.repository.js';
 import { readDecisionsSheet, renderDecisionsSheet } from './web-dashboard-decisions.service.js';
+import { readModuleMap } from './web-dashboard-module-map.service.js';
 
 // biome-ignore lint/suspicious/noControlCharactersInRegex: their absence is what is asserted
 const CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/;
@@ -98,6 +99,9 @@ describe('the Decisions sheet', () => {
 
   it('shows each module newest first with its summary and alternatives, and charts the count', () => {
     decide('s-1', 'first core', ['src/core/a.ts'], 'keep it\nor drop it');
+    db.prepare(
+      "UPDATE decision_records SET created_at = '2026-11-02 09:15:00' WHERE session_id = 's-1'",
+    ).run();
     decide('s-2', 'a cli change', ['src/cli/a.ts']);
     decide('s-3', 'second core', ['src/core/b.ts']);
 
@@ -112,6 +116,9 @@ describe('the Decisions sheet', () => {
     expect(page).toContain(
       '<div class="fact">alternatives: keep it</div><div class="fact">or drop it</div>',
     );
+    expect(page).toContain('#1</span> s-1, 2026-11-02 09:15 UTC</div>');
+    db.prepare("UPDATE decision_records SET created_at = 'torn' WHERE session_id = 's-1'").run();
+    expect(sheet()).toContain('#1</span> s-1</div>');
   });
 
   it('reads src/ only, skipping links, node_modules, .worktrees and anything but a plain file', () => {
@@ -147,7 +154,40 @@ describe('the Decisions sheet', () => {
     write('src/a.ts', '1\n2\n3\n4\n5\n');
     expect(lines()).toEqual([5]);
     expect(readDecisionsSheet(db, repo, Date.now()).map.unread).toBe(1);
-    expect(sheet()).toContain('1 file not read (not a plain file, or over 1 MiB).');
+    expect(sheet()).toContain('1 file not read (not a plain file, unreadable, or over 1 MiB).');
+  });
+
+  it('counts a file or directory it may not read as unread or empty, not as an error', () => {
+    write('src/a.ts', 'a\n');
+    write('src/locked.ts', 'b\n');
+    write('src/closed/c.ts', 'c\n');
+    chmodSync(join(repo, 'src/locked.ts'), 0o000);
+    chmodSync(join(repo, 'src/closed'), 0o000);
+
+    const { map } = readDecisionsSheet(db, repo, Date.now());
+    // Before any expectation, so the temp dir can be removed whatever they find.
+    chmodSync(join(repo, 'src/closed'), 0o755);
+
+    expect(map.files.map(({ file }) => file)).toEqual(['src/a.ts']);
+    expect(map.unread).toBe(1);
+  });
+
+  it('stops the walk at its file or byte cap, in path order, and says so', () => {
+    write('src/a.ts', 'a\n');
+    write('src/b.ts', 'bb\n');
+    write('src/c.ts', 'c\n');
+    const mapped = (limits: { files: number; bytes: number }) => {
+      const map = readModuleMap(db, repo, Date.now(), limits);
+      return [map.files.map(({ file }) => file), map.capped];
+    };
+
+    expect(mapped({ files: 2, bytes: 1 << 20 })).toEqual([['src/a.ts', 'src/b.ts'], true]);
+    expect(mapped({ files: 10, bytes: 5 })).toEqual([['src/a.ts', 'src/b.ts'], true]);
+    expect(mapped({ files: 10, bytes: 1 << 20 })).toEqual([
+      ['src/a.ts', 'src/b.ts', 'src/c.ts'],
+      false,
+    ]);
+    expect(sheet()).not.toContain('The walk stopped at its cap');
   });
 
   it('maps nothing when src/ is itself a link out of the project', () => {
