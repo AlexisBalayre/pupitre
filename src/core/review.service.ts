@@ -1,6 +1,7 @@
 import type { Database } from 'better-sqlite3';
 import { currentBranch, gitDiffNumstat, gitDiffPaths } from './git-diff.client.js';
 import { countChangedLines } from './merge-gate.service.js';
+import { filesWorthANotice } from './overlap.service.js';
 import {
   RISK_WEIGHT_OVERLAP,
   RISK_WEIGHT_PER_100_LINES,
@@ -46,7 +47,7 @@ function overlapCount(
   let overlaps = 0;
   for (const [otherId, otherPaths] of liveDiffs) {
     if (otherId === session.id) continue;
-    if (paths.some((p) => otherPaths.has(p))) overlaps += 1;
+    if (filesWorthANotice(paths).some((p) => otherPaths.has(p))) overlaps += 1;
   }
   return overlaps;
 }

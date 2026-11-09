@@ -69,7 +69,12 @@ import { closeLedgerEntry, listLedgerEntries } from '../core/ledger.repository.j
 import { MAX_REJECTS_BEFORE_BLOCKED } from '../core/merge-gate.constants.js';
 import { MergeLockLostError, runMergeGate } from '../core/merge-gate.service.js';
 import { renderMindMapHtml } from '../core/mind-map.service.js';
-import { scanOverlaps, WATCH_INTERVAL_MS } from '../core/overlap.service.js';
+import {
+  appendOnlyLine,
+  radarView,
+  scanOverlaps,
+  WATCH_INTERVAL_MS,
+} from '../core/overlap.service.js';
 import { projectId, projectPaths } from '../core/paths.utils.js';
 import { InvalidProfileError } from '../core/profile.errors.js';
 import { UnknownProfileError } from '../core/profile-store.errors.js';
@@ -1746,12 +1751,14 @@ export function buildProgram(): Command {
     const live = snapshot.sessions.filter(
       (s) => s.state === 'running' || s.state === 'awaiting-review',
     );
-    for (const pair of snapshot.overlaps) {
+    const view = radarView(snapshot.overlaps);
+    for (const pair of view.pairs) {
       const extra = pair.files.length > 1 ? ` (+${pair.files.length - 1} more)` : '';
       console.log(
         `OVERLAP  ${sanitizeReason(pair.sessionA)} <-> ${sanitizeReason(pair.sessionB)}  ${sanitizeReason(pair.files[0] ?? '')}${extra}${snapshot.radarStale ? '  (stale)' : ''}`,
       );
     }
+    for (const note of view.appends) console.log(sanitizeReason(appendOnlyLine(note)));
     if (live.length >= 2 && snapshot.radarStale) {
       console.log('conflict radar off — start it with `pup watch --start`');
     }
@@ -1816,21 +1823,27 @@ export function buildProgram(): Command {
         const stalled = findStalledSessions(db, repoPath, Date.now());
         // ageMs ticks up every sweep, so it's excluded from the dedup key —
         // only a session newly going stalled (or un-stalling) is a change.
+        const view = pairs && radarView(pairs);
         const snapshot = JSON.stringify({
-          pairs: pairs ?? 'paused',
+          pairs: view ?? 'paused',
           stalledIds: stalled.map((s) => s.id).sort(),
         });
         if (snapshot !== previous) {
           const stamp = new Date().toISOString();
-          if (pairs === undefined) {
+          if (!view) {
             console.log(`${stamp}  radar paused — main checkout is detached`);
-          } else if (pairs.length === 0 && stalled.length === 0) {
-            console.log(`${stamp}  clear — no overlaps`);
-          }
-          for (const pair of pairs ?? []) {
-            console.log(
-              `${stamp}  OVERLAP  ${sanitizeReason(pair.sessionA)} <-> ${sanitizeReason(pair.sessionB)}  ${sanitizeReason(pair.files.join(', '))}`,
-            );
+          } else {
+            if (view.pairs.length === 0 && view.appends.length === 0 && stalled.length === 0) {
+              console.log(`${stamp}  clear — no overlaps`);
+            }
+            for (const pair of view.pairs) {
+              console.log(
+                `${stamp}  OVERLAP  ${sanitizeReason(pair.sessionA)} <-> ${sanitizeReason(pair.sessionB)}  ${sanitizeReason(pair.files.join(', '))}`,
+              );
+            }
+            for (const note of view.appends) {
+              console.log(`${stamp}  ${sanitizeReason(appendOnlyLine(note))}`);
+            }
           }
           for (const s of stalled) {
             console.log(`${stamp}  STALLED  ${sanitizeReason(s.id)}  ${formatStaleAge(s.ageMs)}`);
