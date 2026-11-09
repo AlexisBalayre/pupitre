@@ -349,7 +349,7 @@ describe('startFixRound', { timeout: 90_000 }, () => {
       overrideVia,
       pathsBase: stateBase,
       base: DEFAULT_BASE_PROFILE,
-      claudeUserDir,
+      windowEnv: { vars: {}, configDir: claudeUserDir },
     });
   const _payloads = (type: string) =>
     listEvents(db, SESSION_ID)

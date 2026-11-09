@@ -23,6 +23,13 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   transcriptDir: vi.fn(() => '/transcripts'),
 }));
 
+// Passed through, and watched: which dir a launch hashes for decision 9's
+// drift check is the contract decision 106 adds.
+vi.mock('./profile-compiler.service.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./profile-compiler.service.js')>();
+  return { ...actual, snapshotUserConfigHash: vi.fn(actual.snapshotUserConfigHash) };
+});
+
 // The machine's memory reading only: a launch test must not depend on how
 // much the machine running it has free (decision 96).
 vi.mock('./test-slot.service.js', async (importOriginal) => ({
@@ -39,6 +46,7 @@ import {
   SessionPaneMissingError,
   SteerNotDeliveredError,
   steerPane,
+  transcriptDir,
 } from '../claude/session-runtime.service.js';
 import { briefPath } from './brief.service.js';
 import { openStore } from './db.client.js';
@@ -50,6 +58,7 @@ import {
 } from './git-diff.client.js';
 import { projectId, projectPaths } from './paths.utils.js';
 import { InvalidProfileError } from './profile.errors.js';
+import { snapshotUserConfigHash } from './profile-compiler.service.js';
 import {
   appendEvent,
   editTaskSpec,
@@ -160,7 +169,7 @@ describe('launchTask', () => {
         repoPath: REPO,
         base: DEFAULT_BASE_PROFILE,
         taskId: 't-nope',
-        claudeUserDir: '/home/.claude',
+        windowEnv: { vars: {}, configDir: '/home/.claude' },
       }),
     ).toThrow(UnknownTaskError);
   });
@@ -173,7 +182,7 @@ describe('launchTask', () => {
         repoPath: REPO,
         base: DEFAULT_BASE_PROFILE,
         taskId: 't-nope',
-        claudeUserDir: '/home/.claude',
+        windowEnv: { vars: {}, configDir: '/home/.claude' },
       }),
     ).toThrow(UnknownTaskError);
     expect(listBacklogTasks(db, projectId(REPO)).map((t) => t.id)).toEqual(['t-1']);
@@ -226,7 +235,7 @@ describe('launchTask claim guard', () => {
       repoPath: REPO,
       base: DEFAULT_BASE_PROFILE,
       taskId: 't-1',
-      claudeUserDir: '/home/.claude',
+      windowEnv: { vars: {}, configDir: '/home/.claude' },
     });
 
   // Relaunching a claimed task mints a second session with a fresh
@@ -308,7 +317,7 @@ describe('launchTask scope overlap (decision 99)', () => {
       repoPath: repo,
       base: DEFAULT_BASE_PROFILE,
       taskId: 't-1',
-      claudeUserDir: join(repo, '.claude'),
+      windowEnv: { vars: {}, configDir: join(repo, '.claude') },
       overlapVia,
     });
 
@@ -485,7 +494,11 @@ describe('launchTask scope overlap (decision 99)', () => {
 
     const { compiled, conflicts } = recompileSessionProfile(
       db,
-      { repoPath: repo, base: DEFAULT_BASE_PROFILE, claudeUserDir: join(repo, '.claude') },
+      {
+        repoPath: repo,
+        base: DEFAULT_BASE_PROFILE,
+        windowEnv: { vars: {}, configDir: join(repo, '.claude') },
+      },
       getSession(db, 't-1') as SessionRow,
       projectPaths(repo),
     );
@@ -534,7 +547,7 @@ describe('launchTask scope overlap (decision 99)', () => {
       repoPath: repo,
       base: DEFAULT_BASE_PROFILE,
       task: spec(),
-      claudeUserDir: join(repo, '.claude'),
+      windowEnv: { vars: {}, configDir: join(repo, '.claude') },
     });
 
     expect(getTask(db, 't-1')).toBeDefined();
@@ -621,7 +634,7 @@ describe('launchTask armed-driver guard', () => {
       repoPath: repo,
       base: DEFAULT_BASE_PROFILE,
       taskId: 't-1',
-      claudeUserDir: join(repo, '.claude'),
+      windowEnv: { vars: {}, configDir: join(repo, '.claude') },
     });
 
   it('refuses, and the smudge script never runs', () => {
@@ -736,7 +749,7 @@ describe('launchTask armed-driver guard', () => {
         repoPath: repo,
         base: DEFAULT_BASE_PROFILE,
         task: spec(),
-        claudeUserDir: join(repo, '.claude'),
+        windowEnv: { vars: {}, configDir: join(repo, '.claude') },
       }),
     ).toThrow(ArmedGitDriverError);
     expect(getTask(db, 't-1')).toBeUndefined();
@@ -782,7 +795,7 @@ describe('launchTask worktree-config guard', () => {
       repoPath: repo,
       base: DEFAULT_BASE_PROFILE,
       taskId: 't-1',
-      claudeUserDir: join(repo, '.claude'),
+      windowEnv: { vars: {}, configDir: join(repo, '.claude') },
     });
 
   it('refuses before any row, worktree or branch, and a retry once cleared launches', () => {
@@ -832,7 +845,7 @@ describe('launchTask worktree-config guard', () => {
         repoPath: gitfileRepo,
         base: DEFAULT_BASE_PROFILE,
         taskId: 't-1',
-        claudeUserDir: join(gitfileRepo, '.claude'),
+        windowEnv: { vars: {}, configDir: join(gitfileRepo, '.claude') },
       }),
     ).toThrow(/its \.git is not a directory\. pup pins a session to the repository/);
     expect(db.prepare("SELECT COUNT(*) AS n FROM sessions WHERE task_id = 't-1'").get()).toEqual({
@@ -848,7 +861,7 @@ describe('launchTask worktree-config guard', () => {
         repoPath: repo,
         base: DEFAULT_BASE_PROFILE,
         task: spec(),
-        claudeUserDir: join(repo, '.claude'),
+        windowEnv: { vars: {}, configDir: join(repo, '.claude') },
       }),
     ).toThrow(WorktreeConfigError);
     expect(getTask(db, 't-1')).toBeUndefined();
@@ -912,7 +925,7 @@ describe('launchTask rollback', () => {
       repoPath: repo,
       base: DEFAULT_BASE_PROFILE,
       taskId: 't-1',
-      claudeUserDir: join(repo, '.claude'),
+      windowEnv: { vars: {}, configDir: join(repo, '.claude') },
     });
 
   // Both ways a kickoff is refused with nothing typed: the paste never landed
@@ -1013,6 +1026,49 @@ describe('launchTask rollback', () => {
   });
 });
 
+// The launching command resolves `--session-env` once and hands it down: the
+// hash, the transcript the row is stamped with and the window all take the
+// dir it named, and nothing past the command reads the list again (decision 106).
+describe('launchTask on the window env it is handed (decision 106)', () => {
+  let db: Database;
+  let repo: string;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    db = openStore(':memory:');
+    vi.stubEnv('HOME', tempDir('pup-env-home-'));
+    vi.stubEnv('PATH', NO_CODEGRAPH_PATH);
+    repo = tempDir('pup-env-');
+    gitIn(repo, 'init', '-b', 'main');
+    gitIn(repo, 'config', 'user.email', 't@t');
+    gitIn(repo, 'config', 'user.name', 't');
+    commitIn(repo, 'src/core/github.client.ts', 'export const gh = 1;\n');
+    ensureProject(db, projectId(repo), repo);
+    planTask(db, { repoPath: repo, task: spec() });
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("hashes the named dir, stamps its transcript dir, and hands the window the command's env", () => {
+    const dir = tempDir('pup-env-config-');
+    const named = { vars: { CLAUDE_CONFIG_DIR: dir }, configDir: dir };
+
+    const sessionId = launchTask(db, {
+      repoPath: repo,
+      base: DEFAULT_BASE_PROFILE,
+      taskId: 't-1',
+      windowEnv: named,
+    });
+
+    const worktree = join(repo, '.worktrees', sessionId);
+    expect(vi.mocked(launchSession).mock.calls.at(-1)?.[0].env).toBe(named);
+    expect(transcriptDir).toHaveBeenLastCalledWith(worktree, dir);
+    expect(vi.mocked(snapshotUserConfigHash).mock.calls).toEqual([[dir]]);
+  });
+});
+
 describe('launchTask model routing (decision 92)', () => {
   let db: Database;
   let repo: string;
@@ -1041,7 +1097,7 @@ describe('launchTask model routing (decision 92)', () => {
       repoPath: repo,
       base: DEFAULT_BASE_PROFILE,
       taskId: 't-1',
-      claudeUserDir: join(repo, '.claude'),
+      windowEnv: { vars: {}, configDir: join(repo, '.claude') },
       ...override,
     });
   const launchedRoute = () => vi.mocked(launchSession).mock.calls.at(-1)?.[0].route;
@@ -1522,7 +1578,7 @@ describe('launchTask code graph', () => {
       repoPath: repo,
       base: DEFAULT_BASE_PROFILE,
       taskId: 't-1',
-      claudeUserDir: join(repo, '.claude'),
+      windowEnv: { vars: {}, configDir: join(repo, '.claude') },
     });
 
   // The module mocks are file-wide and never cleared, so every assertion below
@@ -1615,7 +1671,7 @@ describe('launchTask and the project brief', () => {
       repoPath: repo,
       base: DEFAULT_BASE_PROFILE,
       taskId: 't-1',
-      claudeUserDir: join(repo, '.claude'),
+      windowEnv: { vars: {}, configDir: join(repo, '.claude') },
     });
 
   function writeBrief(text: string): void {
@@ -1723,7 +1779,7 @@ describe('launch capacity (decision 96)', () => {
       repoPath: repo,
       base: DEFAULT_BASE_PROFILE,
       taskId: 't-1',
-      claudeUserDir: join(repo, '.claude'),
+      windowEnv: { vars: {}, configDir: join(repo, '.claude') },
       overlapVia: by,
       overrideVia: by,
       overCap,
@@ -1766,7 +1822,7 @@ describe('launch capacity (decision 96)', () => {
         repoPath: repo,
         base: DEFAULT_BASE_PROFILE,
         taskId: 't-1',
-        claudeUserDir: join(repo, '.claude'),
+        windowEnv: { vars: {}, configDir: join(repo, '.claude') },
         overlapVia: 'conductor',
         overCap: true,
       }),
@@ -1821,7 +1877,7 @@ describe('launch capacity (decision 96)', () => {
         repoPath: repo,
         base: DEFAULT_BASE_PROFILE,
         task: spec(),
-        claudeUserDir: join(repo, '.claude'),
+        windowEnv: { vars: {}, configDir: join(repo, '.claude') },
       }),
     ).toThrow(SessionCapReachedError);
     expect(getTask(db, 't-1')).toBeUndefined();
@@ -1866,7 +1922,11 @@ describe('launch capacity (decision 96)', () => {
     const recompile = (session: SessionRow) =>
       recompileSessionProfile(
         db,
-        { repoPath: repo, base: DEFAULT_BASE_PROFILE, claudeUserDir: join(repo, '.claude') },
+        {
+          repoPath: repo,
+          base: DEFAULT_BASE_PROFILE,
+          windowEnv: { vars: {}, configDir: join(repo, '.claude') },
+        },
         session,
         projectPaths(repo),
       );
@@ -1937,7 +1997,7 @@ describe('launch usage hold (decision 156)', () => {
       repoPath: repo,
       base: DEFAULT_BASE_PROFILE,
       taskId: 't-1',
-      claudeUserDir: join(repo, '.claude'),
+      windowEnv: { vars: {}, configDir: join(repo, '.claude') },
       overlapVia: by,
       overrideVia: by,
       overLimit,
@@ -1972,7 +2032,7 @@ describe('launch usage hold (decision 156)', () => {
         repoPath: repo,
         base: DEFAULT_BASE_PROFILE,
         taskId: 't-1',
-        claudeUserDir: join(repo, '.claude'),
+        windowEnv: { vars: {}, configDir: join(repo, '.claude') },
         overLimit: true,
       }),
     ).toBe('t-1');
@@ -1992,7 +2052,7 @@ describe('launch usage hold (decision 156)', () => {
         repoPath: repo,
         base: DEFAULT_BASE_PROFILE,
         task: spec(),
-        claudeUserDir: join(repo, '.claude'),
+        windowEnv: { vars: {}, configDir: join(repo, '.claude') },
       }),
     ).toThrow(UsageLimitReachedError);
     expect(getTask(db, 't-1')).toBeUndefined();

@@ -50,6 +50,8 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   // The real rule and the real file, under the throwaway HOME: which names
   // `pup init --session-env` refuses and keeps, and the config dir a launch
   // hashes from them, are the contract (decision 106).
+  resolveWindowEnv: (await importOriginal<typeof import('../claude/session-runtime.service.js')>())
+    .resolveWindowEnv,
   claudeUserDir: (await importOriginal<typeof import('../claude/session-runtime.service.js')>())
     .claudeUserDir,
   ConfigDirRefusedError: (
@@ -1883,7 +1885,7 @@ describe('CLI commands', () => {
         override: { model: 'claude-opus-5-5', effort: 'xhigh' },
         overrideVia: 'operator',
         base: DEFAULT_BASE_PROFILE,
-        claudeUserDir: join(home, '.claude'),
+        windowEnv: { vars: {}, configDir: join(home, '.claude') },
       });
       expect(logs).toEqual([
         `Fix round started for s1: the 2 open threads the CI review left on ${PR} at ${HEAD} went to a fresh window.`,
