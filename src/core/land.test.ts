@@ -45,7 +45,8 @@ import { openStore } from './db.client.js';
 import { gitDiffPaths } from './git-diff.client.js';
 import { initProject } from './init.service.js';
 import { landSession } from './land.service.js';
-import { MergeLockLostError, runMergeGate } from './merge-gate.service.js';
+import { MergeLockLostError } from './merge-gate.errors.js';
+import { runMergeGate } from './merge-gate.service.js';
 import { projectId } from './paths.utils.js';
 import {
   appendEvent,

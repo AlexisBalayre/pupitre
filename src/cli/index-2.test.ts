@@ -89,10 +89,7 @@ vi.mock('../core/git-diff.client.js', async (importOriginal) => ({
   gitDiffPaths: vi.fn(() => []),
   gitDiffNumstat: vi.fn(() => []),
 }));
-vi.mock('../core/merge-gate.service.js', async (importOriginal) => ({
-  // The real class, which the commands tell apart from every other refusal.
-  MergeLockLostError: (await importOriginal<typeof import('../core/merge-gate.service.js')>())
-    .MergeLockLostError,
+vi.mock('../core/merge-gate.service.js', () => ({
   runMergeGate: vi.fn(),
   // The review queue scores each branch with it. The seeded sessions' branches
   // are rows in a store and not real branches, so there is nothing to count.
@@ -167,7 +164,7 @@ import { insertDecisionRecord } from '../core/decision-record.repository.js';
 import { DEFAULT_BASE_PROFILE } from '../core/default-profile.constants.js';
 import { ciReviewLookup, startFixRound } from '../core/fix-round.service.js';
 import { landSession } from '../core/land.service.js';
-import { MergeLockLostError } from '../core/merge-gate.service.js';
+import { MergeLockLostError } from '../core/merge-gate.errors.js';
 import { projectId, projectPaths } from '../core/paths.utils.js';
 import { InvalidProfileError } from '../core/profile.errors.js';
 import {

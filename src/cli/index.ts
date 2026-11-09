@@ -67,7 +67,8 @@ import { acceptIntent, createIntent, listIntents, readIntent } from '../core/int
 import { landSession } from '../core/land.service.js';
 import { closeLedgerEntry, listLedgerEntries } from '../core/ledger.repository.js';
 import { MAX_REJECTS_BEFORE_BLOCKED } from '../core/merge-gate.constants.js';
-import { MergeLockLostError, runMergeGate } from '../core/merge-gate.service.js';
+import { MergeLockLostError } from '../core/merge-gate.errors.js';
+import { runMergeGate } from '../core/merge-gate.service.js';
 import { renderMindMapHtml } from '../core/mind-map.service.js';
 import {
   appendOnlyLine,

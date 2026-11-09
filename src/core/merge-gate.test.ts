@@ -124,11 +124,14 @@ import { listDecisionRecords } from './decision-record.repository.js';
 import { initProject } from './init.service.js';
 import { insertLedgerEntry, listLedgerEntries } from './ledger.repository.js';
 import { DUPLICATION_RULE_ID } from './merge-gate.constants.js';
-import { MergeLockHeldError, SessionNotReviewableError } from './merge-gate.errors.js';
+import {
+  MergeLockHeldError,
+  MergeLockLostError,
+  SessionNotReviewableError,
+} from './merge-gate.errors.js';
 import {
   countChangedLines,
   firstOwnSubject,
-  MergeLockLostError,
   pullRequestText,
   runMergeGate as runGate,
   waitForLoad,

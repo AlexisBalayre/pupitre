@@ -86,7 +86,11 @@ import {
   MERGE_LOCK_DIRNAME,
   PR_TITLE_MAX_CHARS,
 } from './merge-gate.constants.js';
-import { MergeLockHeldError, SessionNotReviewableError } from './merge-gate.errors.js';
+import {
+  MergeLockHeldError,
+  MergeLockLostError,
+  SessionNotReviewableError,
+} from './merge-gate.errors.js';
 import { SESSION_ID_PATTERN } from './paths.constants.js';
 import { mergeToRegate, planRegate, type RegatePlan, regateMerged } from './regate.service.js';
 import {
@@ -906,27 +910,6 @@ function heldBy(lockPath: string, holder: number): MergeLockHeldError {
     : `pid ${holder}, which held the lock at ${lockPath}, is gone, and another run is ` +
       `reclaiming it (${lockPath}.reclaim). Do not remove either; retry in a moment.`;
   return error;
-}
-
-/**
- * The merge lock was gone, or was another directory, when the run that took it
- * released it: a session moved it while the section ran, and another merge or
- * land could have taken a fresh one and run alongside. Carries what the
- * section returned, which happened all the same, for the caller to report
- * before it fails (decision 88).
- */
-export class MergeLockLostError<TResult = unknown> extends Error {
-  readonly result: TResult;
-
-  constructor(lockPath: string, result: TResult) {
-    super(
-      `The merge lock at ${lockPath} was gone or replaced when this run released it, so another ` +
-        'merge or land may have run at the same time. Check the target branch and `pup status` ' +
-        'before the next merge, and treat a session that moved the lock as compromised.',
-    );
-    this.name = 'MergeLockLostError';
-    this.result = result;
-  }
 }
 
 /**
