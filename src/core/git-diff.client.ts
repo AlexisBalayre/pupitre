@@ -641,7 +641,9 @@ const PATH_AS_GIVEN = ['-c', 'core.precomposeUnicode=false'];
  * The `-U0` hunk headers of one file's branch diff (merge-base diff): where
  * each hunk's added lines start, and how many lines it adds and deletes. One
  * diff per file so hunk headers are the only thing parsed — file names never
- * need de-quoting. The path is a literal pathspec, or a file named
+ * need de-quoting; a rename's recount passes both its paths, so git sees the
+ * old path and does not read the new one as a pure add (decision 154). Each
+ * path is a literal pathspec, or a file named
  * `:(top)foo` would be read as magic and return no hunks, and taken from the
  * top of the tree, or a session-written `core.worktree` naming a directory
  * above the repo would put it under a prefix that matches nothing
@@ -658,7 +660,7 @@ function diffHunks(
   repoPath: string,
   target: string,
   branch: string,
-  path: string,
+  paths: string[],
 ): { start: number; added: number; deleted: number }[] {
   const patch = runGit(repoPath, [
     ...PATH_AS_GIVEN,
@@ -669,7 +671,7 @@ function diffHunks(
     '--diff-algorithm=myers',
     `${target}...${branch}`,
     '--',
-    `:(top,literal)${path}`,
+    ...paths.map((path) => `:(top,literal)${path}`),
   ]).trim();
   const hunks: { start: number; added: number; deleted: number }[] = [];
   for (const line of patch.split('\n')) {
@@ -697,7 +699,7 @@ export function gitDiffAddedLines(
   const added: Record<string, number[]> = {};
   for (const path of gitDiffPaths(repoPath, target, branch)) {
     const lines: number[] = [];
-    for (const hunk of diffHunks(repoPath, target, branch, path)) {
+    for (const hunk of diffHunks(repoPath, target, branch, [path])) {
       for (let at = hunk.start; at < hunk.start + hunk.added; at++) lines.push(at);
     }
     if (lines.length > 0) added[path] = lines;
@@ -705,8 +707,16 @@ export function gitDiffAddedLines(
   return added;
 }
 
-/** Per-file add/delete counts for the branch diff (merge-base diff), rename-aware. */
-export function gitDiffNumstat(repoPath: string, target: string, branch: string): DiffFileStat[] {
+/**
+ * Per-file add/delete counts for the branch diff (merge-base diff),
+ * rename-aware: a renamed file is listed under its new path, with the path it
+ * was renamed from, which `gitDiffBinaryRecount` reads as its merge-base side.
+ */
+export function gitDiffNumstat(
+  repoPath: string,
+  target: string,
+  branch: string,
+): (DiffFileStat & { renamedFrom?: string })[] {
   // With -z, a renamed entry is "added\tdeleted\t" followed by the old and new
   // paths as two separate NUL fields. An inline path is never quoted, so a tab
   // in it is the path's own and everything after the second tab is the path.
@@ -722,12 +732,13 @@ export function gitDiffNumstat(repoPath: string, target: string, branch: string)
     '--numstat',
     `${target}...${branch}`,
   ]).split('\0');
-  const stats: DiffFileStat[] = [];
+  const stats: (DiffFileStat & { renamedFrom?: string })[] = [];
   for (let i = 0; i < fields.length; i++) {
     const field = fields[i];
     if (!field) continue;
     const [added, deleted, ...rest] = field.split('\t');
     const inlinePath = rest.join('\t');
+    const renamedFrom = inlinePath ? undefined : fields[i + 1];
     const path = inlinePath || fields[i + 2];
     if (!inlinePath) i += 2;
     if (!path) continue;
@@ -735,6 +746,7 @@ export function gitDiffNumstat(repoPath: string, target: string, branch: string)
       path,
       added: added === '-' ? null : Number(added),
       deleted: deleted === '-' ? null : Number(deleted),
+      ...(renamedFrom ? { renamedFrom } : {}),
     });
   }
   return stats;
@@ -802,7 +814,11 @@ function blobIsKnownBinary(
  * not the whole answer either: one in a source file's comment makes git call
  * it binary. So the file is skipped only when every side it exists on is a
  * known binary (`blobIsKnownBinary`, `src/core/known-binary.utils.ts`), and a
- * path no format names is recounted unread (decision 154). A skip spends the
+ * path no format names is recounted unread (decision 154). A renamed file's
+ * merge-base side is the path it was `renamedFrom`, which numstat reports and
+ * the caller must pass on, and its recount reads both paths: a source file
+ * renamed into a `.png` would otherwise have no base side, skip, and drop
+ * every line it deleted. A skip spends the
  * branch side's bytes from `budget` (`spendKnownBinarySkip`), which every call
  * for one diff must share (start it at `BINARY_FREE_TOTAL_MAX_BYTES`), and a
  * file the budget cannot cover is recounted. It has no default: a fresh budget
@@ -814,17 +830,25 @@ export function gitDiffBinaryRecount(
   branch: string,
   path: string,
   budget: { bytes: number },
+  renamedFrom: string | undefined,
 ): { added: number; deleted: number } | null {
-  const base = runGit(repoPath, ['merge-base', target, branch]).trim();
-  const formats = formatsNamed(path);
-  const sides: (number | false | undefined)[] =
-    formats.length === 0
-      ? [false]
-      : [base, branch].map((rev) => blobIsKnownBinary(repoPath, rev, path, formats));
+  const sideOf = (rev: string, sidePath: string): number | false | undefined => {
+    const formats = formatsNamed(sidePath);
+    return formats.length === 0 ? false : blobIsKnownBinary(repoPath, rev, sidePath, formats);
+  };
+  const branchSide = sideOf(branch, path);
+  const sides =
+    branchSide === false
+      ? [branchSide]
+      : [
+          sideOf(runGit(repoPath, ['merge-base', target, branch]).trim(), renamedFrom ?? path),
+          branchSide,
+        ];
   if (spendKnownBinarySkip(sides, budget)) return null;
+  const paths = renamedFrom === undefined ? [path] : [renamedFrom, path];
   let added = 0;
   let deleted = 0;
-  for (const hunk of diffHunks(repoPath, target, branch, path)) {
+  for (const hunk of diffHunks(repoPath, target, branch, paths)) {
     added += hunk.added;
     deleted += hunk.deleted;
   }

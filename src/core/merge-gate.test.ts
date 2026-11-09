@@ -1667,6 +1667,32 @@ describe('countChangedLines', () => {
     });
   });
 
+  // Numstat lists a rename under its new path only: a source file renamed
+  // into a PNG had no merge-base side and skipped, uncounted and unflagged.
+  it('counts and flags a source file renamed into a known binary', () => {
+    const repo = initRepo();
+    const source = Array.from({ length: 40 }, (_, at) => `export const v${at} = ${at};\n`).join('');
+    commitBlobs(repo, [['100644', 'src/auth.ts', source]]);
+    sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
+    sh(repo, 'git', 'rm', '-q', 'src/auth.ts');
+    mkdirSync(join(repo, 'assets'));
+    writeFileSync(
+      join(repo, 'assets', 'a.png'),
+      Buffer.concat([Buffer.from('\x89PNG\r\n\x1a\n\0\0\0\rIHDR', 'latin1'), Buffer.from(source)]),
+    );
+    sh(repo, 'git', 'add', 'assets/a.png');
+    sh(repo, 'git', 'commit', '-q', '-m', 'rename');
+
+    // Recounted as the rename git pairs: the signature's CR and LF split
+    // auth.ts's first line into three, and the file is flagged.
+    expect(countChangedLines(repo, 'main', 'feature')).toEqual({
+      source: 4,
+      test: 0,
+      docs: 0,
+      forged: ['assets/a.png'],
+    });
+  });
+
   // A session-written `core.worktree` naming the repo's parent puts every git
   // read under a `<repo>/` prefix: a tree listing, a grep and a per-file diff
   // scoped to it found nothing, and `diff.relative` emptied the numstat too.
@@ -1676,6 +1702,9 @@ describe('countChangedLines', () => {
     commitBlobs(repo, [
       ['100644', 'src/other.test.ts', 'export const v = 1;\n'.repeat(3)],
       ['120000', 'src/link.ts', 'other.test.ts'],
+      // A symlink is source only by its mode from the `--raw` listing, which
+      // `diff.relative` emptied unless `--no-relative` is passed.
+      ['120000', 'src/alias.test.ts', 'imp.ts'],
       ['100644', 'src/big.test.ts', 'export const v = 1;\n'.repeat(5)],
       ['100644', 'src/imp.ts', "export * from './big.test.js';\n"],
       ['100644', 'src/nul.ts', '// \0\nexport const a = 1;\nexport const b = 2;\n'],
@@ -1686,7 +1715,7 @@ describe('countChangedLines', () => {
     sh(repo, 'git', 'config', 'diff.relative', 'true');
 
     expect(countChangedLines(repo, 'main', 'feature')).toEqual({
-      source: 16,
+      source: 17,
       test: 0,
       docs: 0,
       forged: ['src/nul.ts'],
