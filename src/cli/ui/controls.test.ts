@@ -745,12 +745,20 @@ describe('dashboard controls', () => {
       instance.unmount();
     });
 
-    it.each([['s'], ['i'], ['k'], ['u'], ['R'], ['a'], ['A'], ['c'], ['m'], ['l']])(
+    it.each([['s'], ['i'], ['k'], ['u'], ['R'], ['a'], ['A'], ['c'], ['m'], ['l'], ['1'], ['2']])(
       'does nothing on `%s`',
       async (key) => {
         // With the conductor up, so `A` is refused for the tier rather than
-        // for having no window to attach to.
-        const running = snapshotFixture();
+        // for having no window to attach to; and the session asking with
+        // options, so a number key would have something to answer in the
+        // operator's name (decision 93).
+        const running = snapshotFixture({
+          sessions: [
+            sessionFixture({
+              question: { text: 'which?', options: ['rebase', 'merge'], recommended: 1 },
+            }),
+          ],
+        });
         running.conductor.running = true;
         const instance = mount(running, REASON);
 
@@ -766,6 +774,7 @@ describe('dashboard controls', () => {
           toggleConductor,
           runMerge,
           launchSelected,
+          answerSelected,
         ]) {
           expect(action).not.toHaveBeenCalled();
         }

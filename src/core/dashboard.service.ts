@@ -791,7 +791,9 @@ function dashboardSession(
     // not always the caller's own: all three print as stored, and no CHECK
     // constraint holds `state` to its type, so it is scrubbed like the others.
     id: sanitizeReason(row.id),
-    isMintedId: SESSION_ID_PATTERN.test(row.id),
+    // `conductor` is `pup answer`'s name for the conductor's question (decision
+    // 93): a row by that name would print a command that answers the conductor.
+    isMintedId: SESSION_ID_PATTERN.test(row.id) && row.id !== CONDUCTOR_TARGET,
     state: sanitizeReason(row.state) as SessionState,
     branch: sanitizeReason(row.branch),
     taskId: row.task_id,
