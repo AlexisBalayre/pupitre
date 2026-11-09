@@ -192,6 +192,14 @@ describe('chart.utils', () => {
         expect(x + w).toBeLessThanOrEqual(100 + 1e-9);
         expect(y + h).toBeLessThanOrEqual(total / 100 + 1e-9);
       }
+      // With the areas summing to the box and every cell inside it, no overlap means they tile it.
+      for (const [i, a] of placed.entries()) {
+        for (const b of placed.slice(i + 1)) {
+          const overlapW = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
+          const overlapH = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
+          expect(Math.min(overlapW, overlapH)).toBeLessThanOrEqual(1e-9);
+        }
+      }
     });
 
     it('gives no area to a zero, negative or non-finite value', () => {
@@ -249,17 +257,38 @@ describe('chart.utils', () => {
           {
             label: '<b>mod</b>',
             leaves: [
-              { label: '<i>x</i>.ts', value: Number.POSITIVE_INFINITY, counts: [Number.NaN, 0] },
-              { label: 'y.ts', value: 1e308, counts: [0, 0] },
-              { label: 'z.ts', value: 1e308, counts: [0, 0] },
+              { label: 'x.ts', value: Number.POSITIVE_INFINITY, counts: [Number.NaN, 0] },
+              { label: '<i>y</i>.ts', value: 3, counts: [Number.NaN, 0] },
+              { label: 'z.ts', value: 2, counts: [0, 0] },
             ],
           },
         ],
         { title: 'A & "B"', tones: TONES },
       );
 
+      expect(cells(svg)).toHaveLength(2);
+      expect(svg).toContain('&lt;b&gt;mod&lt;/b&gt;</text>');
+      expect(svg).toContain('<title>&lt;i&gt;y&lt;/i&gt;.ts: 3,');
       expect(svg).not.toMatch(/<b>|<i>/);
       expect(svg).toContain('A &amp; &quot;B&quot;');
+      expect(svg).not.toMatch(/="[^"]*(NaN|Infinity)/);
+    });
+
+    it('draws nothing for a group whose total overflows', () => {
+      const svg = treemap(
+        [
+          {
+            label: 'mod',
+            leaves: [
+              { label: 'y.ts', value: 1e308, counts: [0, 0] },
+              { label: 'z.ts', value: 1e308, counts: [0, 0] },
+            ],
+          },
+        ],
+        { title: 'Map', tones: TONES },
+      );
+
+      expect(cells(svg)).toEqual([]);
       expect(svg).not.toMatch(/="[^"]*(NaN|Infinity)/);
     });
   });

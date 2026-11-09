@@ -474,7 +474,7 @@ export function treemap(
   const total = format(sumOf(sized.map(({ value }) => value)));
   return (
     `<div class="treemap"><span class="tones">Shade files </span>${toggles.join('')}` +
-    `<span class="tones">${escapeHtml('(darker: 1, 2–3, 4 or more)')}</span>` +
+    `<span class="tones">${escapeHtml('(stronger contrast: 1, 2–3, 4 or more)')}</span>` +
     framed(
       'chart',
       `${options.title}: ${total} in total · ${figures.join(' · ')}`,
