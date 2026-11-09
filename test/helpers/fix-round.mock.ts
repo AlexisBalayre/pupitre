@@ -1,4 +1,4 @@
-import type { Adapter } from '../../adapters/types/adapter.types.js';
+import type { Adapter } from '@src/adapters/types/adapter.types.js';
 import { commitAs } from './git.mock.js';
 
 export { GIT_ENV, sh } from './git.mock.js';

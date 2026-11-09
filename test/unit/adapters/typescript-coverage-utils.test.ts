@@ -1,6 +1,6 @@
+import { istanbulToCoverageReport } from '@src/adapters/typescript-coverage.utils.js';
+import { patchCoverage } from '@src/core/coverage.utils.js';
 import { describe, expect, it } from 'vitest';
-import { patchCoverage } from '../core/coverage.utils.js';
-import { istanbulToCoverageReport } from './typescript-coverage.utils.js';
 
 describe('istanbulToCoverageReport', () => {
   it('maps statement hits to per-line covered/instrumented sets with repo-relative keys', () => {

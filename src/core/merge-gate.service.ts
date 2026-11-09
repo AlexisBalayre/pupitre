@@ -119,6 +119,7 @@ import {
   transitionSession,
 } from './session.repository.js';
 import { steerSession } from './session-lifecycle.service.js';
+import { shellWord } from './shell-quote.utils.js';
 import {
   describeSlotWait,
   GATE_SLOT_WAIT_MS,
@@ -1462,11 +1463,6 @@ export function deleteBranchAt(repoPath: string, branchRef: string, sha: string)
     rethrowIfKilled(error);
     return false;
   }
-}
-
-/** One shell word, for a command the operator is asked to paste. */
-function shellWord(word: string): string {
-  return `'${word.replaceAll("'", `'\\''`)}'`;
 }
 
 /**

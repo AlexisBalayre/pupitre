@@ -1,5 +1,9 @@
+import {
+  isInNestedPackage,
+  parsePathAliases,
+  resolveImport,
+} from '@src/adapters/typescript-source.utils.js';
 import { describe, expect, it } from 'vitest';
-import { isInNestedPackage, parsePathAliases, resolveImport } from './typescript-source.utils.js';
 
 describe('isInNestedPackage', () => {
   it('matches a file at any depth inside a nested package and nothing beside it', () => {

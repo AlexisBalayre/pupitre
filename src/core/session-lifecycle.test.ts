@@ -37,6 +37,7 @@ vi.mock('./test-slot.service.js', async (importOriginal) => ({
   availableMemoryBytes: vi.fn(() => 64 * 1024 ** 3),
 }));
 
+import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import {
   interruptPane,
   kickoff,
@@ -47,7 +48,6 @@ import {
   steerPane,
   transcriptDir,
 } from '../claude/session-runtime.service.js';
-import { tempDir } from '../test/temp-dir.mock.js';
 import { briefPath } from './brief.service.js';
 import { openStore } from './db.client.js';
 import { DEFAULT_BASE_PROFILE } from './default-profile.constants.js';

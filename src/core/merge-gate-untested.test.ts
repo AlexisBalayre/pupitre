@@ -21,7 +21,6 @@ vi.mock('../claude/utility.service.js', () => ({
   runUtility: vi.fn(() => ({ ok: false, output: 'mocked out in tests' })),
 }));
 
-import type { Adapter } from '../adapters/types/adapter.types.js';
 import {
   commitIn,
   debtAdapter,
@@ -30,7 +29,8 @@ import {
   seedSession,
   sh,
   untimed,
-} from '../test/helpers/merge-gate.mock.js';
+} from '@test/helpers/merge-gate.mock.js';
+import type { Adapter } from '../adapters/types/adapter.types.js';
 import { openStore } from './db.client.js';
 import { globToRegExp } from './glob.utils.js';
 import { DUPLICATION_RULE_ID, UNTESTED_PATH_GLOBS } from './merge-gate.constants.js';

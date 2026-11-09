@@ -1,10 +1,10 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import Database from 'better-sqlite3';
 import { isValidElement, type ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { tempDir } from '../test/temp-dir.mock.js';
 
 // Side-effecting boundaries only (tmux/git spawns, `claude -p` sessions, and the
 // multi-stage merge-gate orchestration) — everything else (sqlite repositories,
@@ -155,6 +155,24 @@ vi.mock('../core/session-handoff.service.js', () => ({
 }));
 
 import {
+  firstCall,
+  GIT_ENV,
+  initRepo,
+  initRepoWithAdapter,
+  markDormant,
+  registerProject,
+  rolledBackLaunch,
+  seedBacklogTask,
+  seedBlockedSession,
+  seedEventsFile,
+  seedKilledSession,
+  seedLedgerEntry,
+  seedSession,
+  seedStalledSession,
+  stubCodegraph,
+  worktreeOf,
+} from '@test/helpers/cli-index.mock.js';
+import {
   deadTurnError,
   launchWatcher,
   SessionPaneMissingError,
@@ -195,24 +213,6 @@ import {
 } from '../core/session-lifecycle.service.js';
 import { RESUME_MESSAGE } from '../core/turn-watchdog.service.js';
 import { UsageLimitReachedError } from '../core/usage-limits.service.js';
-import {
-  firstCall,
-  GIT_ENV,
-  initRepo,
-  initRepoWithAdapter,
-  markDormant,
-  registerProject,
-  rolledBackLaunch,
-  seedBacklogTask,
-  seedBlockedSession,
-  seedEventsFile,
-  seedKilledSession,
-  seedLedgerEntry,
-  seedSession,
-  seedStalledSession,
-  stubCodegraph,
-  worktreeOf,
-} from '../test/helpers/cli-index.mock.js';
 import { buildProgram } from './index.js';
 import { ProjectResolutionError, resolveProject } from './project.utils.js';
 import { Radar } from './ui/radar.component.js';

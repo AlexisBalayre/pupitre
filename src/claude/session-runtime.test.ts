@@ -55,9 +55,9 @@ vi.mock('node:fs', async (importOriginal) => {
   return { ...actual, existsSync: fakeExistsSync, writeFileSync: fakeWriteFileSync };
 });
 
+import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import { verifiedWorktreeGitEnv, WorktreeRepointedError } from '../core/git-diff.client.js';
 import { projectId } from '../core/paths.utils.js';
-import { tempDir } from '../test/temp-dir.mock.js';
 import { CONDUCTOR_ROUTE, LADDERS, type ModelRoute } from './model-ladder.constants.js';
 import {
   attachArgs,

@@ -17,13 +17,13 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => {
   };
 });
 
+import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import {
   claudeUserDir,
   hasConductorWindow,
   saveSessionEnv,
   transcriptDir,
 } from '../claude/session-runtime.service.js';
-import { tempDir } from '../test/temp-dir.mock.js';
 import {
   blockedReason,
   buildDashboardSnapshot,

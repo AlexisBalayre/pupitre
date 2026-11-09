@@ -33,6 +33,7 @@ vi.mock('../../core/conductor.service.js', () => ({
 }));
 
 import { spawnSync } from 'node:child_process';
+import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import { SteerNotDeliveredError, saveSessionEnv } from '../../claude/session-runtime.service.js';
 import { startConductor, stopConductor } from '../../core/conductor.service.js';
 import { openStore } from '../../core/db.client.js';
@@ -56,7 +57,6 @@ import {
   steerSession,
 } from '../../core/session-lifecycle.service.js';
 import type { DashboardSnapshot } from '../../core/types/dashboard.types.js';
-import { tempDir } from '../../test/temp-dir.mock.js';
 import {
   type ActionDeps,
   attachTo,
