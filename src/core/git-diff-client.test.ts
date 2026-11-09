@@ -1199,7 +1199,7 @@ describe('assertNoWorktreeConfig', () => {
     setExtension(repo, 'maybe');
     const [unset, disable] = hintCommands(repo);
     expect(unset).toBe(
-      `git -C / config --file '${join(repo, '.git/config')}' --unset-all extensions.worktreeConfig`,
+      `git -C / config --file ${join(repo, '.git/config')} --unset-all extensions.worktreeConfig`,
     );
     expect(disable).toBe('git sparse-checkout disable');
     expect(() => paste(repo, disable as string)).toThrow(/bad boolean config value/);

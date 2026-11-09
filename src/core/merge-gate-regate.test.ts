@@ -1165,7 +1165,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         /^CONFLICT \(add\/add\): Merge conflict in src\/feature\.ts$/m,
       );
       const steer = vi.mocked(steerPane).mock.calls[0]?.[1];
-      expect(steer).toContain("`git merge 'refs/heads/main'`");
+      expect(steer).toContain('`git merge refs/heads/main`');
       expect(steer).not.toContain('rebase');
       // Aborted: the worktree is back on the pushed commit, with no merge in progress.
       expect(sh(worktree, 'git', 'rev-parse', 'HEAD').trim()).toBe(pushed);
