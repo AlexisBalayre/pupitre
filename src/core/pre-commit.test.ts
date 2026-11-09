@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { tempDir } from '../test/temp-dir.mock.js';
@@ -7,9 +7,14 @@ import { tempDir } from '../test/temp-dir.mock.js';
 const HOOK = join(import.meta.dirname, '..', '..', 'scripts', 'pre-commit');
 
 // Same scrub as git-diff-client.test: keep the developer's git config and any
-// surrounding hook's GIT_DIR away from the temp repo.
+// surrounding hook's GIT_DIR away from the temp repo, and the running session's id
+// (the hook tests outside a session unless a test sets one).
 const GIT_ENV: NodeJS.ProcessEnv = {
-  ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_'))),
+  ...Object.fromEntries(
+    Object.entries(process.env).filter(
+      ([key]) => !key.startsWith('GIT_') && key !== 'PUP_SESSION_ID' && key !== 'PUP_BIN',
+    ),
+  ),
   GIT_CONFIG_GLOBAL: '/dev/null',
   GIT_CONFIG_SYSTEM: '/dev/null',
 };
@@ -26,6 +31,16 @@ const PROJECT_ENV = [
 const PNPM_STUB = `#!/bin/sh
 printf '%s\\n' "$*" >> "$STUB_LOG"
 case "$*" in *"$STUB_FAIL"*) [ -n "$STUB_FAIL" ] && exit 1 ;; esac
+exit 0
+`;
+
+// A pup that logs its call, and fails like the pnpm stub. It answers `session --help`
+// as pupitre does, which the hook asks to tell it from another tool named pup.
+const PUP_STUB = `#!/bin/sh
+case "$*" in "session --help") echo "Session-internal protocol commands"; exit 0 ;; esac
+printf 'pup %s\\n' "$*" >> "$STUB_LOG"
+case "$*" in *"$STUB_FAIL"*) [ -n "$STUB_FAIL" ] && exit 1 ;; esac
+echo "stub pup waits for a test slot"
 exit 0
 `;
 
@@ -53,15 +68,35 @@ function makeRepo(projectEnv = PROJECT_ENV): string {
   mkdirSync(join(repo, 'node_modules', '.bin'), { recursive: true });
   write(repo, 'stub-bin/pnpm', PNPM_STUB);
   chmodSync(join(repo, 'stub-bin', 'pnpm'), 0o755);
+  write(repo, 'stub-bin/pup', PUP_STUB);
+  chmodSync(join(repo, 'stub-bin', 'pup'), 0o755);
   return repo;
+}
+
+interface HookOptions {
+  /** A call whose arguments contain this fails. */
+  fail?: string;
+  /** Run as a pup session with this id. */
+  sessionId?: string;
+  /** The directories on PATH after the stubs; the machine's by default. */
+  path?: string;
+  /** Set PUP_BIN. */
+  pupBin?: string;
+}
+
+/** Take pup off the hook's PATH; node stays, which the hook needs to pick its Node version. */
+function withoutPup(repo: string): void {
+  rmSync(join(repo, 'stub-bin', 'pup'));
+  symlinkSync(process.execPath, join(repo, 'stub-bin', 'node'));
 }
 
 /** Stage `paths` (already written) and run the hook; the pnpm calls it made. */
 function runHook(
   repo: string,
   paths: string[],
-  fail = '',
-): { status: number | null; calls: string[] } {
+  options: HookOptions = {},
+): { status: number | null; calls: string[]; stdout: string } {
+  const { fail = '', sessionId = '' } = options;
   git(repo, 'add', '--', ...paths);
   const log = join(repo, 'stub.log');
   writeFileSync(log, '');
@@ -70,12 +105,18 @@ function runHook(
     encoding: 'utf8',
     env: {
       ...GIT_ENV,
-      PATH: `${join(repo, 'stub-bin')}:${process.env.PATH}`,
+      PATH: `${join(repo, 'stub-bin')}:${options.path ?? process.env.PATH}`,
       STUB_LOG: log,
       STUB_FAIL: fail,
+      ...(sessionId ? { PUP_SESSION_ID: sessionId } : {}),
+      ...(options.pupBin ? { PUP_BIN: options.pupBin } : {}),
     },
   });
-  return { status: result.status, calls: readFileSync(log, 'utf8').split('\n').filter(Boolean) };
+  return {
+    status: result.status,
+    calls: readFileSync(log, 'utf8').split('\n').filter(Boolean),
+    stdout: result.stdout,
+  };
 }
 
 describe('scripts/pre-commit', () => {
@@ -130,9 +171,101 @@ describe('scripts/pre-commit', () => {
     const repo = makeRepo();
     write(repo, 'src/sum.ts', 'export const sum = 2;\n');
 
-    const { status } = runHook(repo, ['src/sum.ts'], 'vitest');
+    const { status } = runHook(repo, ['src/sum.ts'], { fail: 'vitest' });
 
     expect(status).not.toBe(0);
+  });
+
+  it('queues the related tests for a test slot inside a pup session', () => {
+    const repo = makeRepo();
+    write(repo, 'src/sum.ts', 'export const sum = 2;\n');
+
+    const { status, calls, stdout } = runHook(repo, ['src/sum.ts'], { sessionId: 't-session' });
+
+    expect(status).toBe(0);
+    expect(calls).toEqual([
+      'exec biome check ./src/sum.ts',
+      'typecheck',
+      'pup session test --related -- ./src/sum.ts',
+    ]);
+    expect(stdout).toContain('through a test slot (waits for a free one)');
+  });
+
+  it('blocks the commit when the tests run through a slot fail', () => {
+    const repo = makeRepo();
+    write(repo, 'src/sum.ts', 'export const sum = 2;\n');
+
+    const { status } = runHook(repo, ['src/sum.ts'], {
+      fail: 'session test',
+      sessionId: 't-session',
+    });
+
+    expect(status).not.toBe(0);
+  });
+
+  it('blocks the commit in a session when pup is not on the PATH and PUP_BIN is unset', () => {
+    const repo = makeRepo();
+    withoutPup(repo);
+    write(repo, 'src/sum.ts', 'export const sum = 2;\n');
+
+    const { status, stdout } = runHook(repo, ['src/sum.ts'], {
+      sessionId: 't-session',
+      path: '/usr/bin:/bin',
+    });
+
+    expect(status, stdout).toBe(1);
+    expect(stdout).toContain('PUP_BIN is not a file');
+  });
+
+  it('blocks the commit in a session when PUP_BIN names no file', () => {
+    const repo = makeRepo();
+    withoutPup(repo);
+    write(repo, 'src/sum.ts', 'export const sum = 2;\n');
+
+    const { status } = runHook(repo, ['src/sum.ts'], {
+      sessionId: 't-session',
+      path: '/usr/bin:/bin',
+      pupBin: join(repo, 'no-such-pup.js'),
+    });
+
+    expect(status).not.toBe(0);
+  });
+
+  it('blocks the commit in a session when the pup on the PATH is not pupitre', () => {
+    const repo = makeRepo();
+    withoutPup(repo);
+    // An unrelated tool of that name: reads stdin, ignores its arguments, exits 0.
+    write(repo, 'stub-bin/pup', '#!/bin/sh\nexit 0\n');
+    chmodSync(join(repo, 'stub-bin', 'pup'), 0o755);
+    write(repo, 'src/sum.ts', 'export const sum = 2;\n');
+
+    const { status, stdout } = runHook(repo, ['src/sum.ts'], {
+      sessionId: 't-session',
+      path: '/usr/bin:/bin',
+    });
+
+    expect(status, stdout).toBe(1);
+    expect(stdout).toContain('no pupitre pup is on the PATH');
+  });
+
+  it('runs the tests through PUP_BIN when no pup is on the PATH', () => {
+    const repo = makeRepo();
+    withoutPup(repo);
+    write(
+      repo,
+      'fake-pup.js',
+      "require('node:fs').appendFileSync(process.env.STUB_LOG, 'pupbin ' + process.argv.slice(2).join(' ') + '\\n');\n",
+    );
+    write(repo, 'src/sum.ts', 'export const sum = 2;\n');
+
+    const { status, calls } = runHook(repo, ['src/sum.ts'], {
+      sessionId: 't-session',
+      path: '/usr/bin:/bin',
+      pupBin: join(repo, 'fake-pup.js'),
+    });
+
+    expect(status).toBe(0);
+    expect(calls.at(-1)).toBe('pupbin session test --related -- ./src/sum.ts');
   });
 
   it('runs no tests when TEST_CMD is empty', () => {
