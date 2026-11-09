@@ -1,0 +1,115 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-09T19:07:41.630Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42679456737",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42679456737",
+  "actor": "AlexisBalayre",
+  "commit_sha": "97386ff14bab264c6c98a827a595010b5f38a40e",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 299,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "simplicity",
+    "guards"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "simplicity",
+    "guards"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/conductor.service.ts",
+      "line": "473-479",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "When a conductor is stopped or dies, nothing drops `conductor/blocked-since`, so the next conductor inherits the old time. Its first look that isn't an empty box then gets reported as `conductor blocked` with an age of hours, skipping the ten-minute grace.",
+      "body": "**A stopped conductor's blocked clock carries over to the next conductor, which skips the ten-minute grace**\n\nDecision 168 says \"Any look that finds the box empty, or no conductor, drops it.\" The no-conductor drop lives in `conductorBlock`:\n\n```ts\nconst pane = conductorPane(projectId(repoPath));\nif (!pane) {\n  // The next conductor starts its own clock.\n  dropBlockedSince(repoPath);\n  return undefined;\n}\n```\n\nBut `conductorBlock` has one caller, and that caller only runs it while a conductor is up ([`dashboard.service.ts:99-100`](https://github.com/AlexisBalayre/pupitre/blob/97386ff14bab264c6c98a827a595010b5f38a40e/src/core/dashboard.service.ts#L99-L100)):\n\n```ts\nconst running = isConductorRunning(repoPath);\nconst blocked = running ? conductorBlock(repoPath, now) : undefined;\n```\n\nSo the `!pane` branch only fires if the window disappears between those two checks. Nothing else deletes the file either:\n- `tellConductor` throws `NO_CONDUCTOR_RUNNING` before it calls `noteConductorBox`.\n- `stopConductor` only calls `killConductor`.\n- `startConductor` and `launchConductor` never touch `blocked-since`.\n- `kickoff` waits on `READY_MARKER` through `capturePane` and never calls `noteConductorBox`.\n\n**Trigger:**\n1. The conductor holds a draft or an overlay, and a `pup status` or a bounced notice writes `blocked-since = T0`.\n2. The operator runs `pup conductor stop` (a likely reaction to the new line), or the conductor crashes. Later they run `pup conductor start`.\n3. `isConductorRunning` is true as soon as the window exists. While Claude Code boots (up to `READY_TIMEOUT_MS` = 45s), `inputBoxState` returns `'absent'`. After that the kickoff paste sits in the box as `'holds'`.\n4. `noteConductorBox` reads T0, which still passes `since <= now`, and returns it.\n\n**Result:**\n- `pup ui` refreshes every 2s, so it almost always catches this window. It shows `conductor  blocked: not on main input (900m)` under Needs-you, as do `pup status` and `pup dashboard`.\n- Without the race, the new conductor's first draft or overlay is reported as blocked immediately, with no ten-minute grace.\n- The unit test that covers \"drops the clock when no conductor runs\" mocks `conductorPane` to `undefined` while calling `conductorBlock` directly. That combination cannot happen through the real caller.\n\n**Fix:** drop the clock where a conductor's life begins, e.g. `dropBlockedSince(req.repoPath)` in `startConductor` before `launchConductor`. That one change covers stop, crash and reboot. The other option is to let the snapshot drop the clock when `running` is false.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/97386ff14bab264c6c98a827a595010b5f38a40e/src/core/conductor.service.ts#L473-L479",
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "security",
+      "description": "Running scripts/adr-index.sh needed approval, so the reviewer found the ADRs with Grep instead."
+    },
+    {
+      "component": "conventions",
+      "description": "The conventions reviewer did not read the test files, so test conventions (docs/conventions/testing.md) went unchecked."
+    },
+    {
+      "component": "consolidator",
+      "description": "The consolidator put the two important findings (the same stale blocked-since clock, reported at conductor.service.ts:473-479 and dashboard.service.ts:99-100) in one group. Following protocol, each was validated separately; both were CONFIRMED. The orchestrator then merged them into one finding by root cause so the PR does not show the same concern twice."
+    }
+  ],
+  "duplicates_merged": 1,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 3.6357923,
+  "duration_ms": 273718,
+  "num_turns": 17,
+  "tokens": {
+    "input": 12,
+    "output": 14022,
+    "cache_read": 281375,
+    "cache_creation": 57119,
+    "total": 352528
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 160,
+      "output": 56102,
+      "cache_read": 2622904,
+      "cache_creation": 283297,
+      "cost_usd": 3.2351027999999986
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 56,
+      "output": 10337,
+      "cache_read": 487458,
+      "cache_creation": 99146,
+      "cost_usd": 0.4000927999999999
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 60,
+      "cache_read": 0,
+      "cache_creation": 4532,
+      "cost_usd": 0.0005966999999999999
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "bash /home/runner/work/pupitre/pupitre/scripts/adr-index.sh"
+    }
+  ]
+}
