@@ -15,10 +15,13 @@ import type { Finding, ReviewerArea, ReviewSummary } from "./review-metrics.sche
 const SPECIFICITY: readonly ReviewerArea[] = [
   "spec",
   "security",
+  "workflow-safety",
   "correctness",
+  "guards",
   "conventions",
   "docs",
   "context",
+  "simplicity",
   "maintainability",
 ];
 

@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   role TEXT,
   origin TEXT NOT NULL DEFAULT 'human' CHECK (origin IN ('human', 'audit', 'rejection', 'conductor')),
   tier TEXT,
+  dropped_at TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -157,6 +158,15 @@ const MIGRATIONS: { table: string; column: string; kind: 'add' | 'drop'; ddl: st
     column: 'tier',
     kind: 'add',
     ddl: 'ALTER TABLE tasks ADD COLUMN tier TEXT',
+  },
+  {
+    // When `pup plan drop` retired a task some session once ran for, or null
+    // while it is live: the backlog passes over it, its session history stays
+    // (decision 147).
+    table: 'tasks',
+    column: 'dropped_at',
+    kind: 'add',
+    ddl: 'ALTER TABLE tasks ADD COLUMN dropped_at TEXT',
   },
   // What a session's window runs on and how it got there (decision 92): its
   // task's tier at launch, the rung of that tier's ladder, the model and
