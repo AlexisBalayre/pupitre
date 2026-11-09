@@ -1643,6 +1643,83 @@ describe("a main checkout's .git a session rewrote (decision 172)", () => {
   });
 
   /**
+   * A minimal git dir at `dotGit`: HEAD on main, empty `refs/`, the objects at
+   * `objects` borrowed, and a packed-refs naming `main` at `own`. Every check
+   * but the identity passes it.
+   */
+  function plantDecoyGitDir(dotGit: string, objects: string, own: string): void {
+    mkdirSync(join(dotGit, 'refs', 'heads'), { recursive: true });
+    mkdirSync(join(dotGit, 'objects', 'info'), { recursive: true });
+    writeFileSync(join(dotGit, 'HEAD'), 'ref: refs/heads/main\n');
+    writeFileSync(join(dotGit, 'objects', 'info', 'alternates'), `${objects}\n`);
+    writeFileSync(join(dotGit, 'packed-refs'), `${own} refs/heads/main\n`);
+  }
+
+  it('refuses a .git swapped for a decoy directory, at a main checkout it passed', () => {
+    const { repo, decoy, realMain } = repoAndDecoy();
+    const own = revParse(decoy, 'refs/heads/main');
+    expect(runGit(repo, ['rev-parse', 'refs/heads/main']).trim()).toBe(realMain);
+    assertMainCheckout(repo);
+    const aside = join(tempDir('pup-aside-'), 'git');
+    renameSync(join(repo, '.git'), aside);
+    plantDecoyGitDir(join(repo, '.git'), join(aside, 'objects'), own);
+    // The control: plain git, and a check that knows no identity, take the decoy.
+    expect(revParse(repo, 'refs/heads/main')).toBe(own);
+    const elsewhere = join(tempDir('pup-copy-'), 'repo');
+    mkdirSync(elsewhere);
+    plantDecoyGitDir(join(elsewhere, '.git'), join(aside, 'objects'), own);
+    expect(runGit(elsewhere, ['rev-parse', 'refs/heads/main']).trim()).toBe(own);
+
+    expect(() => runGit(repo, ['rev-parse', 'refs/heads/main'])).toThrow(
+      /\.git or its objects\/ is not the directory pup found there first.*decision 172/s,
+    );
+    expect(() => assertMainCheckout(repo)).toThrow(RewrittenGitDirError);
+  });
+
+  it('refuses a .git whose objects/ was swapped for another, at a main checkout it passed', () => {
+    const { repo } = repoAndDecoy();
+    assertMainCheckout(repo);
+    const objects = join(repo, '.git', 'objects');
+    const aside = join(tempDir('pup-aside-'), 'objects');
+    renameSync(objects, aside);
+    mkdirSync(join(objects, 'info'), { recursive: true });
+    writeFileSync(join(objects, 'info', 'alternates'), `${aside}\n`);
+
+    expect(() => runGit(repo, ['rev-parse', 'HEAD'])).toThrow(
+      /is not the directory pup found there first/,
+    );
+    // Put back: the identity is the real directory's, so git runs again.
+    rmSync(objects, { recursive: true });
+    renameSync(aside, objects);
+    expect(() => runGit(repo, ['rev-parse', 'HEAD'])).not.toThrow();
+  });
+
+  it("keeps a pinned worktree's GIT_DIR, and refuses its .git turned into a directory", () => {
+    const { repo, decoy } = repoAndDecoy();
+    const own = revParse(decoy, 'refs/heads/main');
+    const worktree = join(tempDir('pup-wt-'), 'wt');
+    sh(repo, 'git', 'worktree', 'add', '-q', '--detach', worktree);
+    const env = { ...verifiedWorktreeGitEnv(realpathSync(repo), realpathSync(worktree)) };
+    // Pinned, git reads the admin dir pup verified, not one pup named over it.
+    expect(runGit(worktree, ['rev-parse', '--git-dir'], { env }).trim()).toBe(env.GIT_DIR);
+
+    rmSync(join(worktree, '.git'));
+    plantDecoyGitDir(join(worktree, '.git'), join(repo, '.git', 'objects'), own);
+    // The control: a --git-dir naming the new directory outranks the pinned GIT_DIR.
+    const named = join(worktree, '.git');
+    expect(
+      execFileSync('git', ['-C', worktree, `--git-dir=${named}`, 'rev-parse', '--git-dir'], {
+        encoding: 'utf8',
+        env: { ...GIT_ENV, ...env },
+      }).trim(),
+    ).toBe(named);
+
+    expect(() => runGit(worktree, ['rev-parse', '--git-dir'], { env })).toThrow(
+      /\.git is a directory other than the GIT_DIR this git is pinned to.*decision 172/s,
+    );
+  });
+
+  /**
    * The checkout's own root made a bare repo whose main names a commit of the
    * session's, borrowing the real objects: git's discovery falls back to it
    * once `.git` is not a repo it would use. Returns the decoy commit.
@@ -1761,7 +1838,7 @@ describe('the .git check on every git spawn (decision 172)', () => {
 
     expect(childProcessUses(source).length).toBeGreaterThan(0);
     expect(childProcessUses(source).every((builder) => builder === 'safeArgv')).toBe(true);
-    expect(safeArgv).toMatch(/^\s*const gitDir = assertGitDirUnplanted\(cwd\);/);
+    expect(safeArgv).toMatch(/^\s*const gitDir = assertGitDirUnplanted\(cwd, env\.GIT_DIR\);/);
   });
 
   it('flags any child_process use whose argv safeArgv does not build, whatever the binary', () => {

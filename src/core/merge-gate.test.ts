@@ -1720,9 +1720,13 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         },
       };
 
-      // Whatever the gate reports last: the merge lock lives in the swapped-out
-      // .git, so its release fails after the refusal and that error wins.
-      await expect(merge(swappingAdapter)).rejects.toThrow();
+      // The merge lock lives in the swapped-out .git, so its release fails too:
+      // the refusal still wins, and the lost lock is only printed beside it.
+      const error = await merge(swappingAdapter).then(
+        () => undefined,
+        (thrown: unknown) => thrown,
+      );
+      expect(error).toBeInstanceOf(RewrittenGitDirError);
 
       // Git ran on the main checkout before the swap, and none ran once its
       // .git was a gitfile.
@@ -1731,6 +1735,53 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(gitSpawns().slice(0, spawnsBeforeSwap).some(onMain)).toBe(true);
       expect(gitSpawns().slice(spawnsBeforeSwap).filter(onMain)).toEqual([]);
       restore?.();
+      expect(sh(repo, 'git', 'rev-parse', 'refs/heads/main').trim()).toBe(realMain);
+      expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+    });
+
+    it('refuses a .git swapped for a decoy directory while the stages run, merging nothing', async () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      const realMain = sh(repo, 'git', 'rev-parse', 'refs/heads/main').trim();
+      const realBranch = sh(repo, 'git', 'rev-parse', `refs/heads/${BRANCH}`).trim();
+      const dotGit = join(repo, '.git');
+      const aside = join(tempDir('pup-aside-'), 'git');
+      let spawnsBeforeSwap = 0;
+      // A sound repo by every check but its identity: HEAD on main, refs/ and
+      // objects/ searchable, the real objects borrowed, and main on the
+      // session's tip through packed-refs.
+      const swappingAdapter: Adapter = {
+        ...passingAdapter,
+        gateCommands: (repoPath) => {
+          spawnsBeforeSwap = gitSpawns().length;
+          renameSync(dotGit, aside);
+          mkdirSync(join(dotGit, 'refs', 'heads'), { recursive: true });
+          mkdirSync(join(dotGit, 'objects', 'info'), { recursive: true });
+          writeFileSync(join(dotGit, 'HEAD'), 'ref: refs/heads/main\n');
+          writeFileSync(
+            join(dotGit, 'objects', 'info', 'alternates'),
+            `${join(aside, 'objects')}\n`,
+          );
+          writeFileSync(join(dotGit, 'packed-refs'), `${realBranch} refs/heads/main\n`);
+          // The control: plain git now reads the decoy's main.
+          expect(sh(repo, 'git', 'rev-parse', 'refs/heads/main').trim()).toBe(realBranch);
+          return passingAdapter.gateCommands(repoPath);
+        },
+      };
+
+      const error = await merge(swappingAdapter).then(
+        () => undefined,
+        (thrown: unknown) => thrown,
+      );
+
+      expect(error).toBeInstanceOf(RewrittenGitDirError);
+      expect(String(error)).toMatch(/is not the directory pup found there first/);
+      const onMain = ([, argv]: unknown[]): boolean =>
+        (argv as string[]).join('\0').includes(`-C\0${repo}\0`);
+      expect(gitSpawns().slice(0, spawnsBeforeSwap).some(onMain)).toBe(true);
+      expect(gitSpawns().slice(spawnsBeforeSwap).filter(onMain)).toEqual([]);
+      rmSync(dotGit, { recursive: true });
+      renameSync(aside, dotGit);
       expect(sh(repo, 'git', 'rev-parse', 'refs/heads/main').trim()).toBe(realMain);
       expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
     });

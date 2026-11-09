@@ -10,9 +10,11 @@
     conductor's review of the first fix, at 059be44, found the gitfile and symlink gaps. Its
     re-review at 4a4a18a found the bare-checkout fallback, reproduced on Git 2.54. Its
     re-review at 91f2fd3 found that `chmod a-x <repo>/.git/refs` passed the check, and that
-    the gate's catches then read git's refusal as an absent ref.
+    the gate's catches then read git's refusal as an absent ref. Its re-review at e7a992b
+    found a `.git` swapped for a complete decoy directory, and the explicit `--git-dir`
+    overriding a pinned worktree's `GIT_DIR`.
     *The hole.* A session can write `<repo>/.git`: the shared config, `info/attributes`, tags.
-    Through that it can point the main checkout at a decoy repo in four ways:
+    Through that it can point the main checkout at a decoy repo in five ways:
     - It plants `<repo>/.git/commondir`. A main checkout's git dir never holds that file.
       With the file there, git takes the repo it names as the common dir, so every ref, the
       shared config and `info/` come from that repo. Git does this under `-C <repo>`, under
@@ -27,6 +29,10 @@
       `all`. Here `.git` is still a real directory with no commondir. HEAD can stay valid
       while `refs/` or `objects/` loses its search bit (`chmod a-x`), with the same result.
       With a non-bare root, git walks up to a parent repo instead.
+    - It moves `<repo>/.git` aside and puts a decoy directory in its place: HEAD on
+      `refs/heads/main`, an empty `refs/`, an `objects/info/alternates` naming the moved
+      objects, and a `packed-refs` naming any commits. No symlink, no commondir, a valid
+      HEAD and searchable dirs: only its identity tells it from the real one.
     The decoy is a bare repo that borrows the real objects through `objects/info/alternates`.
     It can name any commit as `refs/heads/<target>` and `refs/heads/pup/<id>`, and the gate's
     `resolveCommit`, every other ref read in `merge-gate.service.ts`, the conductor's tip read
@@ -46,6 +52,13 @@
       the bare fallback or a parent repo.
     - `.git` is a gitfile, or is missing, at a path `assertMainCheckout` has passed in this
       process. Missing is refused too, because git would then discover a parent repo.
+    - At such a path, `.git` or `.git/objects` has another device and inode than
+      `assertMainCheckout` recorded for it on its first pass in this process. Re-creating
+      the repo by hand trips this too, and the message says to restart pup then.
+    - The spawn's env pins `GIT_DIR`, as a worktree's does under decision 101, and `.git` is
+      a directory other than the pinned one. A pup worktree's `.git` is a gitfile naming the
+      admin dir decision 101 verified, so a directory there is one a session made. A pin on
+      `<cwd>/.git` itself, which tests of a plain repo use, still runs.
     - An lstat fails with anything but ENOENT or ENOTDIR.
     Otherwise a gitfile passes. That is how a session worktree or a gate checkout runs git,
     pinned or not. The CLI resolves its project from a session worktree unpinned, so a
@@ -53,7 +66,9 @@
     *No discovery.* When `<cwd>/.git` is a directory that passed the check, `safeArgv` names
     it to git outright: `--git-dir=<cwd>/.git --work-tree=<cwd>`. Git then discovers
     nothing, so a `.git` broken between the check and the spawn makes git die "not a git
-    repository" rather than fall back to the root or a parent. A gitfile is left to git.
+    repository" rather than fall back to the root or a parent. A gitfile is left to git. So
+    is a spawn whose env pins `GIT_DIR`: git's `--git-dir` sets `GIT_DIR` over the env's, and
+    would replace the admin dir decision 101 verified with whatever the argv names.
     *The pin.* `GIT_SAFE_CONFIG` now carries `safe.bareRepository=explicit`, so no pinned
     git, gh's included through `pinnedGitEnv`, takes a directory it discovered for a bare
     repo ("cannot use bare repository"). A repo named by `--git-dir` or `GIT_DIR` still opens:
@@ -89,10 +104,15 @@
     `rethrowIfNoUsableRepo` first. It lets a `RewrittenGitDirError` through, and turns git's
     own "cannot use bare repository" or "not a git repository" into one, so a rewritten
     `.git` the check missed or that changed after it never reads as an absent branch.
+    `withMergeLock` keeps that refusal when releasing the lock fails after it, as it does
+    when the lock's `.git` was swapped out: the lost lock is printed beside it, never
+    thrown over it.
     *What remains.* The window between an lstat and git's own read, which no pre-spawn check
     closes. A process whose first main-checkout spawn comes before any `assertMainCheckout`,
     for example a CLI read outside the gate: there, only the symlink and commondir cases are
-    refused. A git run from a subdirectory of the checkout, which no pup call makes. And
+    refused. Likewise the identity is the one the first `assertMainCheckout` in the process
+    saw, so a `.git` swapped before it passes; recording it at `pup init` is a follow-up. A
+    git run from a subdirectory of the checkout, which no pup call makes. And
     `gh`, which runs git in the main checkout under `pinnedGitEnv` and takes no argv from pup.
     Within a gate it runs after the explicit checks, but nothing checks before each of its
     spawns. Closing that means `github.client.ts` checking its cwd, which was outside this
@@ -107,7 +127,7 @@
     subdirectory, and a ceiling would break those.
     *Tests.* In `merge-gate.test.ts`, a decoy repo borrows the real objects and holds a `main`
     and a `pup/s1` that differ from the real ones, and plain git is shown reading them. The
-    gate throws before any git spawn, and the session stays awaiting-review, in five cases:
+    gate throws before any git spawn, and the session stays awaiting-review, in six cases:
     - The commondir is planted as a file.
     - The commondir is a symlink to a file.
     - `.git` is swapped for a gitfile naming the decoy.
@@ -115,8 +135,10 @@
     - `.git/HEAD` is junk and the checkout root holds a bare decoy.
     - `.git/refs` loses its search bit and the checkout root holds a bare decoy.
     Mid-gate, a commondir planted by the adapter's `gateCommands` is refused, and `main` does
-    not move. A `.git` swapped there for a gitfile stops every later spawn on the main
-    checkout. `resolveCommitIfPresent` throws the refusal rather than answering undefined,
+    not move. A `.git` swapped there for a gitfile, or for a decoy directory whose
+    `packed-refs` puts `main` on the session's tip, stops every later spawn on the main
+    checkout, and the gate throws the `RewrittenGitDirError` despite the failed lock
+    release. `resolveCommitIfPresent` throws the refusal rather than answering undefined,
     and so does it when git itself dies "cannot use bare repository" or "not a git
     repository", on the rev-parse or on the symbolic-ref probe behind it.
     In `git-diff-client.test.ts`:
@@ -128,6 +150,11 @@
     - A linked worktree runs git as before but is never taken for a main checkout.
     - A checkout passed as `repo/` or through a symlink is held under its real path.
     - A `.git` directory is named to git outright, and a worktree's gitfile is left to git.
+    - At a checkout `assertMainCheckout` passed, a `.git` swapped for a decoy directory, and
+      an `objects/` swapped for another, are refused. Plain git, and the same decoy at a
+      path never passed, read the decoy's `main`.
+    - A pinned worktree call keeps its `GIT_DIR`, and refuses once the worktree's `.git`
+      becomes a directory, which an explicit `--git-dir` is shown to put over the pin.
     - The bare-checkout decoy is refused on every spawn and as a main checkout when
       `.git/HEAD` is junk, missing or unreadable, when `refs/` is gone, and when `refs/`
       cannot be searched. Plain git is shown reading the decoy each time. Git with only

@@ -508,7 +508,10 @@ interface RunGitOptions {
  * must reach its parser whole — so a caller reading one value trims it.
  */
 export function runGit(cwd: string, args: string[], opts: RunGitOptions = {}): string {
-  return execFileSync('git', safeArgv(cwd, args), { ...spawnOptions(opts), encoding: 'utf8' });
+  return execFileSync('git', safeArgv(cwd, args, opts.env), {
+    ...spawnOptions(opts),
+    encoding: 'utf8',
+  });
 }
 
 /**
@@ -530,9 +533,20 @@ export function rethrowIfKilled(error: unknown): void {
  * path, so no other spelling of one (`repo/`, a symlink to it, another case on
  * a case-folding volume) escapes it. A path keeps the role for the life of the
  * process, so a `.git` swapped out after that check is refused at the next
- * spawn rather than followed.
+ * spawn rather than followed. Each holds the identity its `.git` had then,
+ * from `gitDirIdentity`: a decoy directory moved into its place is a sound
+ * repo by every other check.
  */
-const mainCheckouts = new Set<string>();
+const mainCheckouts = new Map<string, string>();
+
+/**
+ * The device and inode of `<cwd>/.git`, whose lstat is `dotGit`, and of its
+ * `objects/`. A directory swapped in for either, however complete, has others.
+ */
+function gitDirIdentity(cwd: string, dotGit: Stats): string {
+  const objects = lstatIfThere(cwd, join(cwd, '.git', 'objects'));
+  return `${dotGit.dev}:${dotGit.ino} ${objects ? `${objects.dev}:${objects.ino}` : 'none'}`;
+}
 
 /** `path` as the filesystem names it, or resolved when it does not exist. */
 function realPath(path: string): string {
@@ -608,22 +622,42 @@ function searchableDir(cwd: string, path: string): boolean {
  * files a session can write, or walks up to a parent repo.
  * `safe.bareRepository=explicit` refuses the first; this names the cause
  * before git runs.
+ * At a main checkout, a `.git` directory or `objects/` other than the one
+ * `assertMainCheckout` first found is refused: a session can move the real one
+ * aside and put a decoy directory there that passes everything else.
+ * A spawn whose env pins `GIT_DIR`, `pinnedGitDir`, refuses a `.git`
+ * directory other than that one: a worktree pup pins has a gitfile naming its
+ * admin dir, and one turned into a directory is not the worktree decision 101
+ * verified.
  * Checked on every spawn, because a check made once would leave a file
  * planted after it unseen. Returns the `.git` directory when there is one, for
  * `safeArgv` to name to git so that git discovers nothing.
  */
-function assertGitDirUnplanted(cwd: string): string | undefined {
+function assertGitDirUnplanted(cwd: string, pinnedGitDir?: string): string | undefined {
   const dotGit = join(cwd, '.git');
   const stat = lstatIfThere(cwd, dotGit);
   const shown = sanitizeReason(dotGit);
   if (stat?.isSymbolicLink()) refuseGitDir(cwd, `${shown} is a symlink`);
+  const held = mainCheckouts.get(realPath(cwd));
   if (stat === undefined || stat.isFile()) {
-    if (mainCheckouts.has(realPath(cwd))) {
-      refuseGitDir(cwd, `${shown} is no longer a directory`);
-    }
+    if (held !== undefined) refuseGitDir(cwd, `${shown} is no longer a directory`);
     return undefined;
   }
   if (!stat.isDirectory()) refuseGitDir(cwd, `${shown} is neither a directory nor a gitfile`);
+  if (pinnedGitDir !== undefined && realPath(pinnedGitDir) !== realPath(dotGit)) {
+    refuseGitDir(
+      cwd,
+      `${shown} is a directory other than the GIT_DIR this git is pinned to, where a ` +
+        'worktree pup pins has a gitfile naming the admin dir pup verified (decision 101)',
+    );
+  }
+  if (held !== undefined && gitDirIdentity(cwd, stat) !== held) {
+    refuseGitDir(
+      cwd,
+      `${shown} or its objects/ is not the directory pup found there first, in this ` +
+        'process. If you re-created the repo yourself, restart pup',
+    );
+  }
   const commondir = join(dotGit, 'commondir');
   if (lstatIfThere(cwd, commondir)) {
     refuseGitDir(cwd, `${sanitizeReason(commondir)} exists, and a main checkout has none`);
@@ -669,8 +703,10 @@ export function rethrowIfNoUsableRepo(repoPath: string, error: unknown): void {
  * Refuse unless `repoPath` is a main checkout whose `.git` is a directory of
  * its own, not a gitfile or a symlink, that git would take as a repo and that
  * holds no commondir. Called wherever
- * pup knows it is about to read the main repo's refs. From then on the path is
- * one `safeArgv` holds to the same rule on every spawn (decision 172).
+ * pup knows it is about to read the main repo's refs. The first call records
+ * the identity of its `.git` and `objects/`, and from then on the path is one
+ * `safeArgv` holds to the same rule, and to that identity, on every spawn
+ * (decision 172).
  */
 export function assertMainCheckout(repoPath: string): void {
   const dotGit = join(repoPath, '.git');
@@ -682,7 +718,8 @@ export function assertMainCheckout(repoPath: string): void {
         'a symlink there names a repo of its own',
     );
   }
-  mainCheckouts.add(realPath(repoPath));
+  const key = realPath(repoPath);
+  if (!mainCheckouts.has(key)) mainCheckouts.set(key, gitDirIdentity(repoPath, stat));
   assertGitDirUnplanted(repoPath);
 }
 
@@ -694,10 +731,15 @@ export function assertMainCheckout(repoPath: string): void {
  * `rethrowIfNoUsableRepo` reads as the refusal it is. Otherwise discovery would
  * fall back to a bare repo planted in the checkout, or a parent repo. A
  * gitfile, a worktree's, is left to git to read, pinned or not (decision 172).
+ * A spawn whose `env` pins `GIT_DIR` names nothing: git's `--git-dir` would
+ * override the pin, which is the admin dir decision 101 verified.
  */
-function safeArgv(cwd: string, args: string[]): string[] {
-  const gitDir = assertGitDirUnplanted(cwd);
-  const named = gitDir ? [`--git-dir=${gitDir}`, `--work-tree=${resolve(cwd)}`] : [];
+function safeArgv(cwd: string, args: string[], env: NodeJS.ProcessEnv = {}): string[] {
+  const gitDir = assertGitDirUnplanted(cwd, env.GIT_DIR);
+  const named =
+    gitDir && env.GIT_DIR === undefined
+      ? [`--git-dir=${gitDir}`, `--work-tree=${resolve(cwd)}`]
+      : [];
   return [...GIT_SAFE_CONFIG, '-C', cwd, ...named, ...args];
 }
 
