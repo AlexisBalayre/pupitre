@@ -17,12 +17,14 @@
     *Refused.* `planMerge` calls `assertNoSharedWorktreeKey` before any git runs in the main
     checkout: an empty value stops every git in the repo, the driver check's included. It then
     calls `assertNoWorktreeConfig`, since per-worktree config can carry the key and a live
-    session can turn it on after its launch was asked. `cutGateCheckout` asks about the key
-    again under the lock, right before the stage listings, as it does for the drivers. The key
-    is read with `git -C / config --file <repo>/.git/config`, so an empty value cannot stop
-    the read. Any failure other than "no such key" refuses too. After the last stage the gate
-    asks once more, right before the fast-forward or the PR push, so a key a session set while
-    the stages ran is refused, not merged.
+    session can turn it on after its launch was asked. `cutGateCheckout` asks both again under
+    the lock, right before the stage listings, as it does for the drivers. The key is read
+    with `git -C / config --file <repo>/.git/config`, so an empty value cannot stop the read.
+    Any failure other than "no such key" refuses too. After the last stage the gate asks both
+    once more, right before the fast-forward or the PR push, so a key a session set while the
+    stages ran is refused, not merged. Every later check asks both because the key check reads
+    `.git/config` alone: a session that turns the extension on and sets the key in
+    `config.worktree` passes it, and git honours the key from there (verified on Git 2.54).
     *Narrower than before.* `assertNoWorktreeConfig` already ran before the session's own
     commit check; at `planMerge` it now stops a gate in a main checkout with
     `extensions.worktreeConfig` on (as `git sparse-checkout` turns on) or whose `.git` is a

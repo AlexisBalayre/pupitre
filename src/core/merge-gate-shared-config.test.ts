@@ -28,19 +28,23 @@ vi.mock('node:child_process', async (importOriginal) => {
 });
 
 // Set by the tests of a session racing the gate: it clears the key right
-// before each of the gate's checks and sets it again right after, so every git
-// call after the first check finds it armed.
+// before each of the gate's checks (of the shared config's key and of
+// per-worktree config) and sets it again right after, so every git call after
+// the first check finds it armed.
 const keyRace = vi.hoisted(() => ({
-  around: undefined as ((check: () => void) => void) | undefined,
+  around: undefined as (<T>(name: string, check: () => T) => T) | undefined,
 }));
 vi.mock('./git-diff.client.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./git-diff.client.js')>();
+  const raced =
+    <A extends unknown[], T>(name: string, check: (...args: A) => T) =>
+    (...args: A): T =>
+      keyRace.around ? keyRace.around(name, () => check(...args)) : check(...args);
   return {
     ...actual,
-    assertNoSharedWorktreeKey: (repoPath: string) => {
-      const check = () => actual.assertNoSharedWorktreeKey(repoPath);
-      keyRace.around ? keyRace.around(check) : check();
-    },
+    assertNoSharedWorktreeKey: raced('key', actual.assertNoSharedWorktreeKey),
+    assertNoWorktreeConfig: raced('per-worktree', actual.assertNoWorktreeConfig),
+    verifiedWorktreeGitEnv: raced('session-worktree', actual.verifiedWorktreeGitEnv),
   };
 });
 
@@ -115,24 +119,51 @@ describe('the merge gate under a shared-config core.worktree and diff.relative',
     sh(repo, 'git', 'config', 'diff.relative', 'true');
   };
 
-  // Written from outside the repo: once armed, git run inside it is shifted.
+  /**
+   * The same keys through per-worktree config the session turns on, which
+   * `.git/config` holds no `core.worktree` for. Written from outside the repo:
+   * once armed, git run inside it is shifted.
+   */
+  const armPerWorktree = () => {
+    const config = join(repo, '.git', 'config');
+    const perWorktree = join(repo, '.git', 'config.worktree');
+    sh('/', 'git', 'config', '--file', config, 'extensions.worktreeConfig', 'true');
+    sh('/', 'git', 'config', '--file', perWorktree, 'core.worktree', dirname(repo));
+    sh('/', 'git', 'config', '--file', perWorktree, 'diff.relative', 'true');
+  };
+
   const disarm = () => {
     const config = join(repo, '.git', 'config');
-    for (const key of ['core.worktree', 'diff.relative']) {
+    for (const key of ['core.worktree', 'diff.relative', 'extensions.worktreeConfig']) {
       try {
         sh('/', 'git', 'config', '--file', config, '--unset-all', key);
       } catch {
         // not set
       }
     }
+    rmSync(join(repo, '.git', 'config.worktree'), { force: true });
   };
 
-  /** The session racing every check: clear before it, set again after it. */
-  const raceTheChecks = () => {
-    keyRace.around = (check) => {
+  /**
+   * The session racing the checks `races` picks, by name and by how many of
+   * that name ran before: clear before each, set again after it. A check it
+   * does not pick finds the keys set.
+   */
+  const raceTheChecks = (
+    armWith = arm,
+    races: (name: string, nth: number) => boolean = () => true,
+  ) => {
+    const seen = new Map<string, number>();
+    keyRace.around = <T>(name: string, check: () => T): T => {
+      const nth = seen.get(name) ?? 0;
+      seen.set(name, nth + 1);
+      if (!races(name, nth)) return check();
       disarm();
-      check();
-      arm();
+      try {
+        return check();
+      } finally {
+        armWith();
+      }
     };
   };
 
@@ -204,6 +235,18 @@ describe('the merge gate under a shared-config core.worktree and diff.relative',
   it('refuses per-worktree config before any stage runs', async () => {
     seedSession(db, repo);
     sh(repo, 'git', 'config', 'extensions.worktreeConfig', 'true');
+
+    await expect(merge()).rejects.toThrow(WorktreeConfigError);
+    expect(vi.mocked(spawn)).not.toHaveBeenCalled();
+  });
+
+  // Turned on after `planMerge`'s checks, per-worktree config carries the key
+  // past a check of `.git/config` alone: the cut under the lock asks both,
+  // before it adds the gate's checkout.
+  it('refuses per-worktree config turned on after the plan, before any stage runs', async () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+    raceTheChecks(armPerWorktree, (name, nth) => name !== 'per-worktree' || nth === 0);
 
     await expect(merge()).rejects.toThrow(WorktreeConfigError);
     expect(vi.mocked(spawn)).not.toHaveBeenCalled();
@@ -366,68 +409,85 @@ describe('the merge gate under a shared-config core.worktree and diff.relative',
   });
 
   /** A stage that sets the key while it runs, after every check before the stages. */
-  const armingAdapter = (): Adapter =>
+  const armingAdapter = (armWith: () => void): Adapter =>
     debtAdapter({
       deadCode: () => {
-        arm();
+        armWith();
         return [];
       },
     });
 
-  it('refuses the fast-forward when a stage set the key, merging nothing', async () => {
-    const worktree = seedSession(db, repo);
-    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
-    seedDebtBaseline({ deadExports: [], duplicatedLines: 0 });
-    const mainTip = sh(repo, 'git', 'rev-parse', 'main');
+  // The key in `.git/config`, or through per-worktree config the session turns
+  // on, which `.git/config` holds no `core.worktree` for.
+  const ROUTES = [
+    { route: 'the shared config', armWith: () => arm(), refusal: SharedWorktreeKeyError },
+    {
+      route: 'per-worktree config',
+      armWith: () => armPerWorktree(),
+      refusal: WorktreeConfigError,
+    },
+  ];
 
-    await expect(merge(armingAdapter())).rejects.toThrow(SharedWorktreeKeyError);
+  it.each(ROUTES)(
+    'refuses the fast-forward when a stage set the key in $route, merging nothing',
+    async ({ armWith, refusal }) => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      seedDebtBaseline({ deadExports: [], duplicatedLines: 0 });
+      const mainTip = sh(repo, 'git', 'rev-parse', 'main');
 
-    expect(sh(repo, 'git', 'rev-parse', 'main')).toBe(mainTip);
-    expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
-  });
+      await expect(merge(armingAdapter(armWith))).rejects.toThrow(refusal);
 
-  it('refuses the PR push when a stage set the key, pushing nothing', async () => {
-    const worktree = seedSession(db, repo);
-    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
-    seedDebtBaseline({ deadExports: [], duplicatedLines: 0 });
-    // Origin is GitHub-shaped so the --repo pin can be derived, and rewritten
-    // by the operator's global config onto a local bare repo (decision 56).
-    const host = tempDir('pup-origin-');
-    const bare = join(host, 'owner', 'repo.git');
-    mkdirSync(bare, { recursive: true });
-    sh(bare, 'git', 'init', '--bare', '-b', 'main');
-    const originUrl = 'git@github.com:owner/repo.git';
-    sh(repo, 'git', 'remote', 'add', 'origin', originUrl);
-    saveProjectOriginUrl(db, 'proj-1', originUrl);
-    const globalConfig = join(host, 'gitconfig');
-    writeFileSync(globalConfig, `[url "${host}/"]\n\tinsteadOf = git@github.com:\n`);
-    vi.stubEnv('GIT_CONFIG_GLOBAL', globalConfig);
-    // A gh that knows no open PR and answers nothing else.
-    const ghDir = tempDir('pup-gh-');
-    writeFileSync(
-      join(ghDir, 'gh'),
-      [
-        '#!/bin/sh',
-        '[ "$1" = "--version" ] && exit 0',
-        `if [ "$2" = "list" ]; then echo '[]'; exit 0; fi`,
-        'echo "gh $* was not expected" >&2; exit 1',
-      ].join('\n'),
-      { mode: 0o755 },
-    );
-    vi.stubEnv('PATH', `${ghDir}:${process.env.PATH}`);
+      expect(sh(repo, 'git', 'rev-parse', 'main')).toBe(mainTip);
+      expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+    },
+  );
 
-    await expect(
-      runMergeGate(db, {
-        repoPath: repo,
-        sessionId: SESSION_ID,
-        adapters: [armingAdapter()],
-        openPr: true,
-      }),
-    ).rejects.toThrow(SharedWorktreeKeyError);
+  it.each(ROUTES)(
+    'refuses the PR push when a stage set the key in $route, pushing nothing',
+    async ({ armWith, refusal }) => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      seedDebtBaseline({ deadExports: [], duplicatedLines: 0 });
+      // Origin is GitHub-shaped so the --repo pin can be derived, and rewritten
+      // by the operator's global config onto a local bare repo (decision 56).
+      const host = tempDir('pup-origin-');
+      const bare = join(host, 'owner', 'repo.git');
+      mkdirSync(bare, { recursive: true });
+      sh(bare, 'git', 'init', '--bare', '-b', 'main');
+      const originUrl = 'git@github.com:owner/repo.git';
+      sh(repo, 'git', 'remote', 'add', 'origin', originUrl);
+      saveProjectOriginUrl(db, 'proj-1', originUrl);
+      const globalConfig = join(host, 'gitconfig');
+      writeFileSync(globalConfig, `[url "${host}/"]\n\tinsteadOf = git@github.com:\n`);
+      vi.stubEnv('GIT_CONFIG_GLOBAL', globalConfig);
+      // A gh that knows no open PR and answers nothing else.
+      const ghDir = tempDir('pup-gh-');
+      writeFileSync(
+        join(ghDir, 'gh'),
+        [
+          '#!/bin/sh',
+          '[ "$1" = "--version" ] && exit 0',
+          `if [ "$2" = "list" ]; then echo '[]'; exit 0; fi`,
+          'echo "gh $* was not expected" >&2; exit 1',
+        ].join('\n'),
+        { mode: 0o755 },
+      );
+      vi.stubEnv('PATH', `${ghDir}:${process.env.PATH}`);
 
-    expect(sh(bare, 'git', 'for-each-ref', `refs/heads/${BRANCH}`)).toBe('');
-    expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
-  });
+      await expect(
+        runMergeGate(db, {
+          repoPath: repo,
+          sessionId: SESSION_ID,
+          adapters: [armingAdapter(armWith)],
+          openPr: true,
+        }),
+      ).rejects.toThrow(refusal);
+
+      expect(sh(bare, 'git', 'for-each-ref', `refs/heads/${BRANCH}`)).toBe('');
+      expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+    },
+  );
 
   // Under git's default rename detection `--name-only` lists a rename's new
   // path alone, and the deletion of an out-of-scope file passed the audit.

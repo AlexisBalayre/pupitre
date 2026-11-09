@@ -1249,8 +1249,9 @@ function sessionMark(db: Database, sessionId: string): string {
  * leave out committed files no stage would then see. The checkout runs a
  * smudge filter on every file it writes, so the drivers are checked again
  * right before it, as they are before the fast-forward, and so is a
- * shared-config `core.worktree`, since the stage listings read next run in the
- * main checkout and a live session can set the key during the rebase.
+ * shared-config `core.worktree`, or per-worktree config that could carry one,
+ * since the stage listings read next run in the main checkout and a live
+ * session can set the key during the rebase.
  *
  * Its git after the add runs pinned to the dirs pup trusts, checked first
  * (decision 101): the admin dir sits under `<common>/worktrees/` beside the
@@ -1262,6 +1263,7 @@ function sessionMark(db: Database, sessionId: string): string {
  */
 function cutGateCheckout(repoPath: string, dir: string, sha: string): void {
   assertNoSharedWorktreeKey(repoPath);
+  assertNoWorktreeConfig(repoPath);
   assertNoArmedGitDrivers(repoPath);
   runGit(repoPath, ['worktree', 'add', '--detach', '--no-checkout', dir, sha]);
   const git = checkoutPinned(repoPath, dir, sha);
@@ -2056,8 +2058,10 @@ async function gateAndMerge(
       ...pullRequestText(spec, session.id, report, commitSubjects, sha, ownSubject),
     };
     try {
-      // After the last stage: a live session can set the key while they run.
+      // After the last stage: a live session can set the key while they run,
+      // in the shared config or through per-worktree config it turned on.
       assertNoSharedWorktreeKey(req.repoPath);
+      assertNoWorktreeConfig(req.repoPath);
       pushBranch(req.repoPath, pullRequest.originUrl, session.branch, sha, !pullRequest.adoptedUrl);
       if (pullRequest.adoptedUrl) {
         rewritePullRequest(req.repoPath, pullRequest.adoptedUrl, newPr);
@@ -2081,8 +2085,10 @@ async function gateAndMerge(
       // Both stay last, after the ledger write, because they guard the checkout.
       // So does a shared-config `core.worktree` a session set during the stages:
       // `fastForward` pins `--work-tree`, but a run the key shifted is refused,
-      // not merged (decision 161). It goes first: an empty key stops every git.
+      // not merged (decision 161), and so is per-worktree config turned on to
+      // carry it. Both go first: an empty key stops every git.
       assertNoSharedWorktreeKey(req.repoPath);
+      assertNoWorktreeConfig(req.repoPath);
       const checkedOut = currentBranch(req.repoPath);
       if (checkedOut !== target) {
         throw new Error(
