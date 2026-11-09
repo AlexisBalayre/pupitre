@@ -1,7 +1,7 @@
 import { join } from 'node:path';
+import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import type { Database } from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { tempDir } from '../test/temp-dir.mock.js';
 
 // The tmux boundary only: whether a conductor window is up.
 vi.mock('./conductor.service.js', () => ({ isConductorRunning: vi.fn(() => false) }));

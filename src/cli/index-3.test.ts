@@ -2,11 +2,11 @@ import { type ChildProcess, spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { chmodSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import Database from 'better-sqlite3';
 import { CommanderError } from 'commander';
 import type { ReactElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
-import { tempDir } from '../test/temp-dir.mock.js';
 
 // Side-effecting boundaries only (tmux/git spawns, `claude -p` sessions, and the
 // multi-stage merge-gate orchestration) — everything else (sqlite repositories,
@@ -53,6 +53,8 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   // The real rule and the real file, under the throwaway HOME: which names
   // `pup init --session-env` refuses and keeps, and the config dir a launch
   // hashes from them, are the contract (decision 106).
+  resolveWindowEnv: (await importOriginal<typeof import('../claude/session-runtime.service.js')>())
+    .resolveWindowEnv,
   claudeUserDir: (await importOriginal<typeof import('../claude/session-runtime.service.js')>())
     .claudeUserDir,
   ConfigDirRefusedError: (
@@ -154,6 +156,25 @@ vi.mock('../core/session-handoff.service.js', () => ({
   respawnSession: vi.fn(),
 }));
 
+import {
+  firstCall,
+  HANDOFF_WAIT_DEFAULT_MS,
+  initRepo,
+  initRepoWithAdapter,
+  markDormant,
+  registerProject,
+  rolledBackLaunch,
+  seedBacklogTask,
+  seedBlockedSession,
+  seedDeadTurn,
+  seedEventsFile,
+  seedKilledSession,
+  seedLedgerEntry,
+  seedSession,
+  seedStalledSession,
+  unreadableEventsFile,
+  worktreeOf,
+} from '@test/helpers/cli-index.mock.js';
 import { render } from 'ink';
 import {
   SessionPaneMissingError,
@@ -214,25 +235,6 @@ import {
 } from '../core/test-slot.service.js';
 import type { MergeOutcome } from '../core/types/merge-gate.types.js';
 import { startWebDashboard } from '../core/web-dashboard.service.js';
-import {
-  firstCall,
-  HANDOFF_WAIT_DEFAULT_MS,
-  initRepo,
-  initRepoWithAdapter,
-  markDormant,
-  registerProject,
-  rolledBackLaunch,
-  seedBacklogTask,
-  seedBlockedSession,
-  seedDeadTurn,
-  seedEventsFile,
-  seedKilledSession,
-  seedLedgerEntry,
-  seedSession,
-  seedStalledSession,
-  unreadableEventsFile,
-  worktreeOf,
-} from '../test/helpers/cli-index.mock.js';
 import { buildProgram, fatalExitCode } from './index.js';
 import { ProjectResolutionError, resolveProject } from './project.utils.js';
 import type { DashboardReading, ProjectReading } from './ui/use-snapshot.hook.js';
@@ -2127,7 +2129,7 @@ describe('CLI commands', () => {
 
       buildProgram().parse(['respawn', 's1', '--effort', 'xhigh'], { from: 'user' });
 
-      expect(firstCall(respawnSession)[4]).toEqual({ model: undefined, effort: 'xhigh' });
+      expect(firstCall(respawnSession)[5]).toEqual({ model: undefined, effort: 'xhigh' });
     });
 
     // Refused before the old window is touched, so the handoff waits on disk

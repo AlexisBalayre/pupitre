@@ -1,5 +1,8 @@
 import type { ChildProcess } from 'node:child_process';
 import { EventEmitter } from 'node:events';
+import { chmodSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import type { Database } from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -30,7 +33,8 @@ vi.mock('../../core/conductor.service.js', () => ({
 }));
 
 import { spawnSync } from 'node:child_process';
-import { SteerNotDeliveredError } from '../../claude/session-runtime.service.js';
+import { tempDir } from '@test/helpers/temp-dir.mock.js';
+import { SteerNotDeliveredError, saveSessionEnv } from '../../claude/session-runtime.service.js';
 import { startConductor, stopConductor } from '../../core/conductor.service.js';
 import { openStore } from '../../core/db.client.js';
 import {
@@ -78,6 +82,9 @@ describe('dashboard actions', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // `--session-env` is read from the store under HOME: a throwaway one, so
+    // no run reads, or writes, the developer's own.
+    vi.stubEnv('HOME', tempDir('pup-actions-home-'));
     db = openStore(':memory:');
     ensureProject(db, 'pid', REPO);
     insertTask(db, { id: 't-live', projectId: 'pid', spec: '{}' });
@@ -92,7 +99,13 @@ describe('dashboard actions', () => {
     deps = { db, repoPath: REPO, pupBin: '/abs/path/to/pup.js' };
   });
 
-  afterEach(() => db.close());
+  afterEach(() => {
+    db.close();
+    vi.unstubAllEnvs();
+  });
+
+  /** What a command resolves when `--session-env` names nothing. */
+  const homeEnv = () => ({ vars: {}, configDir: join(homedir(), '.claude') });
 
   describe('launch', () => {
     it('claims the selected task through `launchTask` and names the window', () => {
@@ -254,7 +267,7 @@ describe('dashboard actions', () => {
       const result = await respawnSelected(deps, SESSION, 1_000, 1, () => {});
 
       expect(requestHandoff).not.toHaveBeenCalled();
-      expect(respawnSession).toHaveBeenCalledWith(db, REPO, SESSION);
+      expect(respawnSession).toHaveBeenCalledWith(db, REPO, SESSION, homeEnv());
       expect(result.message).toContain('fresh context window');
     });
 
@@ -270,7 +283,7 @@ describe('dashboard actions', () => {
 
       expect(requestHandoff).toHaveBeenCalledWith(db, REPO, SESSION);
       expect(waits.length).toBeGreaterThan(0);
-      expect(respawnSession).toHaveBeenCalledWith(db, REPO, SESSION);
+      expect(respawnSession).toHaveBeenCalledWith(db, REPO, SESSION, homeEnv());
       expect(result.failed).toBeUndefined();
     });
 
@@ -282,6 +295,62 @@ describe('dashboard actions', () => {
       expect(respawnSession).not.toHaveBeenCalled();
       expect(result.failed).toBe(true);
       expect(result.message).toContain('Press R again');
+    });
+  });
+
+  // `pup ui` resolves the dir `--session-env` names as the CLI does, before
+  // `launchTask` cuts a worktree and inserts a row, before a handoff is asked
+  // for and a window killed, and before a conductor is started (decision 106).
+  describe('a config dir --session-env names', () => {
+    beforeEach(() => {
+      saveSessionEnv(REPO, ['CLAUDE_CONFIG_DIR']);
+      vi.mocked(isHandoffReady).mockReturnValue(true);
+    });
+
+    /** Others can write it: a dir another user could plant hooks in. */
+    function openDir(): string {
+      const dir = tempDir('pup-actions-open-');
+      chmodSync(dir, 0o777);
+      return dir;
+    }
+
+    for (const [label, value] of [
+      ['a relative', () => 'relative/config'],
+      ['an others-writable', openDir],
+    ] as const) {
+      it(`refuses ${label} one before anything is launched, asked or started`, async () => {
+        vi.stubEnv('CLAUDE_CONFIG_DIR', value());
+        vi.mocked(isHandoffReady).mockReturnValue(false);
+
+        const results = [
+          launchSelected(deps, 't-planned', ''),
+          await respawnSelected(deps, SESSION, 1_000, 1, () => {}),
+          toggleConductor(deps, false, { model: '', workerModel: '' }),
+        ];
+
+        for (const result of results) {
+          expect(result.failed).toBe(true);
+          expect(result.message).toContain('CLAUDE_CONFIG_DIR');
+        }
+        expect(launchTask).not.toHaveBeenCalled();
+        expect(requestHandoff).not.toHaveBeenCalled();
+        expect(respawnSession).not.toHaveBeenCalled();
+        expect(startConductor).not.toHaveBeenCalled();
+      });
+    }
+
+    it('hands the launch, the respawn and the conductor the named dir, to hash and run on', async () => {
+      const dir = tempDir('pup-actions-config-');
+      vi.stubEnv('CLAUDE_CONFIG_DIR', dir);
+      const named = { vars: { CLAUDE_CONFIG_DIR: dir }, configDir: dir };
+
+      launchSelected(deps, 't-planned', '');
+      await respawnSelected(deps, SESSION, 1_000, 1, () => {});
+      toggleConductor(deps, false, { model: '', workerModel: '' });
+
+      expect(vi.mocked(launchTask).mock.calls[0]?.[1].windowEnv).toEqual(named);
+      expect(respawnSession).toHaveBeenCalledWith(db, REPO, SESSION, named);
+      expect(vi.mocked(startConductor).mock.calls[0]?.[0].windowEnv).toEqual(named);
     });
   });
 

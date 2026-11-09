@@ -6,8 +6,8 @@ vi.mock('../claude/utility.service.js', () => ({
   runUtility: vi.fn(),
 }));
 
+import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import { runUtility } from '../claude/utility.service.js';
-import { tempDir } from '../test/temp-dir.mock.js';
 import { openStore } from './db.client.js';
 import {
   deleteDecisionRecord,

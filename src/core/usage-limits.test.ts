@@ -1,8 +1,8 @@
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { tempDir } from '../test/temp-dir.mock.js';
 import { projectPaths } from './paths.utils.js';
 import {
   assertUsageRoom,
