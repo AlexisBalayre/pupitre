@@ -10,10 +10,10 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { makeInput } from '@test/helpers/profile-compiler.mock.js';
+import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { saveSessionEnv } from '../claude/session-runtime.service.js';
-import { makeInput } from '../test/helpers/profile-compiler.mock.js';
-import { tempDir } from '../test/temp-dir.mock.js';
 import { DEFAULT_BASE_PROFILE } from './default-profile.constants.js';
 import { projectPaths } from './paths.utils.js';
 import {

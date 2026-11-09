@@ -23,6 +23,7 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   submitPane: vi.fn(),
 }));
 
+import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import {
   conductorPane,
   hasConductorWindow,
@@ -36,7 +37,6 @@ import {
   SteerNotDeliveredError,
   submitPane,
 } from '../claude/session-runtime.service.js';
-import { tempDir } from '../test/temp-dir.mock.js';
 import {
   CI_REVIEW_LOOP,
   ConductorTellRefusedError,

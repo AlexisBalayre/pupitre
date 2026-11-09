@@ -1,9 +1,9 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
-import { tempDir } from '../test/temp-dir.mock.js';
 
 // Side-effecting boundaries only (tmux/git spawns, `claude -p` sessions, and the
 // multi-stage merge-gate orchestration) — everything else (sqlite repositories,
@@ -152,6 +152,18 @@ vi.mock('../core/session-handoff.service.js', () => ({
 }));
 
 import {
+  firstCall,
+  GIT_ENV,
+  initRepo,
+  initRepoWithAdapter,
+  rolledBackLaunch,
+  seedBlockedSession,
+  seedKilledSession,
+  seedSession,
+  seedStalledSession,
+  stubCodegraph,
+} from '@test/helpers/cli-index.mock.js';
+import {
   attachWindow,
   hasSessionWindow,
   readSessionEnv,
@@ -185,18 +197,6 @@ import {
   steerSession,
 } from '../core/session-lifecycle.service.js';
 import type { LandOutcome } from '../core/types/land.types.js';
-import {
-  firstCall,
-  GIT_ENV,
-  initRepo,
-  initRepoWithAdapter,
-  rolledBackLaunch,
-  seedBlockedSession,
-  seedKilledSession,
-  seedSession,
-  seedStalledSession,
-  stubCodegraph,
-} from '../test/helpers/cli-index.mock.js';
 import { buildProgram } from './index.js';
 import { resolveProject } from './project.utils.js';
 

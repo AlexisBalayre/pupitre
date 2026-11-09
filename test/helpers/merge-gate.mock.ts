@@ -2,20 +2,20 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import type { Database } from 'better-sqlite3';
-import { onTestFinished } from 'vitest';
-import type { Adapter } from '../../adapters/types/adapter.types.js';
+import type { Adapter } from '@src/adapters/types/adapter.types.js';
 import {
   ensureProject,
   insertSession,
   insertTask,
   listEvents,
   transitionSession,
-} from '../../core/session.repository.js';
-import type { GateStageResult } from '../../core/types/merge-gate.types.js';
-import type { TaskId, TaskSpec } from '../../core/types/profile.types.js';
-import { tempDir } from '../temp-dir.mock.js';
+} from '@src/core/session.repository.js';
+import type { GateStageResult } from '@src/core/types/merge-gate.types.js';
+import type { TaskId, TaskSpec } from '@src/core/types/profile.types.js';
+import type { Database } from 'better-sqlite3';
+import { onTestFinished } from 'vitest';
 import { GIT_ENV } from './git.mock.js';
+import { tempDir } from './temp-dir.mock.js';
 
 export { GIT_ENV } from './git.mock.js';
 

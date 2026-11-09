@@ -21,6 +21,7 @@ import { dirname, isAbsolute, join } from 'node:path';
 
 import { runGit, verifiedWorktreeGitEnv, type WorktreeGitEnv } from '../core/git-diff.client.js';
 import { projectPaths } from '../core/paths.utils.js';
+import { shellWord } from '../core/shell-quote.utils.js';
 import type { ModelRoute } from './model-ladder.constants.js';
 import {
   hasUnsubmittedInput,
@@ -915,11 +916,6 @@ export function attachWindow(target: WindowTarget): number | null {
   });
   if (result.error) throw result.error;
   return result.status;
-}
-
-/** A word a shell takes literally, single-quoted when it would not. */
-export function shellWord(word: string): string {
-  return /^[\w.,:/@-]+$/.test(word) ? word : `'${word.replace(/'/g, "'\\''")}'`;
 }
 
 /**
