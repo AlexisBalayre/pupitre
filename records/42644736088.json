@@ -1,0 +1,198 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-09T15:33:49.059Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42644736088",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42644736088",
+  "actor": "AlexisBalayre",
+  "commit_sha": "6f0d161f823aab76bfb38ecacc60fd8fb645a22f",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 294,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "2448-2458",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "`changesOnlyUntested` still runs an unanchored `ls-tree`, so the case-fold check can be emptied and the test stage skipped.",
+      "body": "**`changesOnlyUntested` still runs a listing that is not anchored at the root.** A session can use it to empty the case-fold check and skip the test stage.\n\nADR 0161 says that, for a key a live session sets after the last check, \"each listing a stage reads is anchored at the root\". This PR added `--full-tree` to `readBranchTree` (L410), and `targetHolds` already has it. The listing a few lines below, in the same function, was missed:\n\n```ts\nfor (const path of runGit(repoPath, ['ls-tree', '-r', '-z', '--name-only', branch]).split('\\0')) {\n```\n\nhttps://github.com/AlexisBalayre/pupitre/blob/6f0d161f823aab76bfb38ecacc60fd8fb645a22f/src/core/merge-gate.service.ts#L2448-L2458\n\nThis listing builds the case-fold `spellings` map. It runs in the main checkout (`req.repoPath`, called at L2627, after the build stage). Nothing pins the work tree for it, so a `core.worktree` aimed at the checkout's parent runs it from a subdirectory. The new suite shows what happens then: `merge-gate-shared-config.test.ts` asserts that `ls-tree -r --name-only pup/s1` returns `''` once the key is set.\n\n**Trigger:**\n1. The branch changes only paths on `UNTESTED_PATH_GLOBS`, such as `docs/x.md`. The tree also holds `docs/x.MD`, which a test reads (decision 78/139).\n2. After `cutGateCheckout`'s check, while the build stage runs, a live session sets `core.worktree` to the checkout's parent.\n3. `spellings` comes back empty, so `foldsOntoAnother` is false for every path. `rawDiffEntries` and `readBranchTree` are anchored, so nothing else in the function fails.\n4. `untested` is true, `test` is `undefined` (L2640), and the hard test stage reports \"no testable file changed\".\n5. The session clears the key before the post-stage `assertNoSharedWorktreeKey`. In `regateMerged` (`src/core/regate.service.ts` ~L200-220) the session does not even need to clear it, because that path has no post-stage check.\n\nThe ADR has the same gap. Its \"anchored\" list and its open-gap list (`docs/adr/0161-…md` L33-54) both leave this call out, so a reader would think every gate listing is covered. Either anchor the call, or name it in the ADR.\n\nThree reviewers (correctness ×2, security) raised this separately, and the docs reviewer raised the ADR side.",
+      "suggestion": "  for (const path of runGit(repoPath, ['ls-tree', '--full-tree', '-r', '-z', '--name-only', branch]).split('\\0')) {"
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "661-671",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "`diffHunks` swapped `--literal-pathspecs` for `:(top,literal)<path>`; an inherited `GIT_LITERAL_PATHSPECS=1`, which `scrubbedGitEnv` keeps, makes git read the whole string as a literal file name, so every file has no hunks and patch coverage passes.",
+      "body": "**An inherited `GIT_LITERAL_PATHSPECS` now switches off the new pathspec magic, and coverage passes without checking anything.**\n\nBefore this PR, `diffHunks` passed `--literal-pathspecs` and a plain path. It now passes `` `:(top,literal)${path}` `` and drops the flag:\n\nhttps://github.com/AlexisBalayre/pupitre/blob/6f0d161f823aab76bfb38ecacc60fd8fb645a22f/src/core/git-diff.client.ts#L661-L671\n\nWhen `GIT_LITERAL_PATHSPECS` is set, git treats every pathspec literally and parses no magic. In `pathspec.c`, `parse_element_magic` returns the element as it is when `get_literal_global()` is true. `scrubbedGitEnv` starts from all of `process.env` and removes only `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_COMMON_DIR`, `GIT_PREFIX` and the `GIT_CONFIG_*` keys (https://github.com/AlexisBalayre/pupitre/blob/6f0d161f823aab76bfb38ecacc60fd8fb645a22f/src/core/git-diff.client.ts#L29-L36). `GIT_HISTORY_ENV` does not override the variable either.\n\n**How the variable gets set.** `git --literal-pathspecs` exports it to every child, and Magit runs git that way. A git alias or hook that runs `pup` from there passes it on, and an operator can also export it. Before this PR the variable did the same as the argv flag already passed, so it changed nothing.\n\n**What breaks.** Git looks for a file literally named `:(top,literal)src/a.ts`, so every `diffHunks` call returns `[]`:\n- `gitDiffAddedLines` returns `{}`, so patch coverage finds nothing to check and passes.\n- `gitDiffBinaryRecount` returns `{0, 0}`, so a text file a `-diff` attribute forged into `-\\t-` counts as zero lines (decision 53).\n\nThe new `':(top)'` in `filesNaming` (merge-gate.service.ts L555) has the same problem: grep looks for a file named `:(top)`, finds no importer, and the stage treats that as \"nothing matched\". `GIT_ICASE_PATHSPECS` used to fail loudly against `--literal-pathspecs`, but now it quietly adds `icase`.\n\n**Fix.** Remove the four global pathspec variables in `scrubbedGitEnv` (`GIT_LITERAL_PATHSPECS`, `GIT_GLOB_PATHSPECS`, `GIT_NOGLOB_PATHSPECS`, `GIT_ICASE_PATHSPECS`), so every pathspec pup passes is parsed as written. This claim rests on git's pathspec internals and was not run under CI, so confidence is medium.",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/regate.service.ts",
+      "line": "200-220",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The re-gate path never does the post-stage `core.worktree` check. `gateAndMerge` re-asks `assertNoSharedWorktreeKey` and `assertNoWorktreeConfig` after its last stage (merge-gate.service.ts L2061-2064, L2086-2091). The ADR says that check exists so \"a key a session set while the stages ran is refused, not merged\". `regateMerged` runs the same stages through `measureBranch`, but its only check is in `cutGateCheckout`. It then goes straight to `rewritePullRequest` and `assertPullRequestHead`, which publish a pass on the PR, with no further check.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0161-the-gate-refuses-a-shared-config-core-worktree-and-reads.md",
+      "line": "53-54",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "ADR 0161 says \"The ADR-number stage (decision 146) anchors its own reads\", but no `docs/adr/0146*` exists and no ADR-number stage is in `src/`, so a reader can't verify the claim or find that stage.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate-checkout.test.ts",
+      "line": "943-962",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The test is still titled \"refuses a driver set in the session worktree's own config\", and its old comment still explains the driver check. It now asserts `WorktreeConfigError`, thrown before the driver check runs, so the title and comment describe a path the test no longer reaches. Retitle it, or merge the old and new comments.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1181, 1265, 2063, 2090",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The pair `assertNoSharedWorktreeKey(repo); assertNoWorktreeConfig(repo);` now appears at four sites, past AGENTS.md's \"third use\" bar. One private helper in merge-gate.service.ts would hold both calls and their order (key first, because an empty key stops every git), and each site would keep its own WHY comment.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": null,
+      "area": "guards",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "No guard test enforces ADR 0161's rule that every gate listing is anchored at the root (`--no-relative`, `--full-tree`, `:(top)`). A future gate `ls-tree`, `grep` or `diff` without those flags would silently list one subdirectory, and the case-fold `ls-tree` in `changesOnlyUntested` already slipped through this way. Only the per-site behavioural tests catch it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "231-234",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The new `rawDiffEntries` sentence (\"`--no-relative`, so a shared-config `core.worktree` running git from a subdirectory cannot narrow the listing...\") repeats the `DIFF_SAFE_FLAGS` JSDoc in `git-diff.client.ts`. Replace it with a pointer such as \"`--no-relative`: see `DIFF_SAFE_FLAGS`\", or drop it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "2086-2091",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The final-site comment says \"Both go first: an empty key stops every git.\" That fact is already in the `assertNoSharedWorktreeKey` JSDoc (\"empty, it stops every git in the repo\"). The part about `fastForward` pinning `--work-tree` is specific to this site and worth keeping; only the empty-key clause is a duplicate.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": null,
+      "line": null,
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The PR description promises things the diff doesn't contain: ADR-number lookalikes under Unicode case folding, pinning `core.worktree=` in GIT_SAFE_CONFIG (ADR 0161 explains why that is impossible), and `GIT_GRAFT_FILE=/dev/null` (the existing pin is `/dev/null/no-grafts`). Update the body so it matches what ships.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "The consolidator put three importants in one group (correctness ×2 and security, all on the unanchored ls-tree at merge-gate.service.ts:2453). I sent the clearest of the three (correctness, high) to validation as the representative, not all three. A separate docs important (the ADR leaves out the same listing) was validated on its own and confirmed. Since all of them describe one confirmed root cause, I folded them into a single posted important after validation; merged_duplicates=3."
+    },
+    {
+      "component": "orchestrator",
+      "description": "Skipped areas: context (no spec, protocol or infra surface touched), workflow-safety (no .github/workflows change), spec (no closing issue or --spec source; the PR body is the only intent), and maintainability (not on the default roster)."
+    }
+  ],
+  "duplicates_merged": 3,
+  "comments_posted_actual": 2,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 5.452385624999998,
+  "duration_ms": 371320,
+  "num_turns": 19,
+  "tokens": {
+    "input": 14,
+    "output": 23756,
+    "cache_read": 400950,
+    "cache_creation": 75942,
+    "total": 500662
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 202,
+      "output": 96903,
+      "cache_read": 3949049,
+      "cache_creation": 379210,
+      "cost_usd": 4.852553799999998
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 88,
+      "output": 18690,
+      "cache_read": 824550,
+      "cache_creation": 131692,
+      "cost_usd": 0.598761
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 824,
+      "cache_read": 0,
+      "cache_creation": 5269,
+      "cost_usd": 0.001070825
+    }
+  ],
+  "permission_denials": []
+}
