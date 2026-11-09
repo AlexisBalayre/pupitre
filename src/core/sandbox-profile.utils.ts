@@ -7,7 +7,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, dirname, join } from 'node:path';
+import { dirname, isAbsolute, join, normalize, sep } from 'node:path';
 
 /**
  * The SBPL policy pup generates for gate children — what may be read, what may
@@ -337,9 +337,19 @@ function ancestors(path: string): string[] {
  * even to tell a directory from a link: a child that outlived its run can
  * swap the two between a check and the resolve. Its parent is resolved, so a
  * grant's parent must be one no child is granted.
+ *
+ * Only a path that is its own last name can be resolved that way. An empty or
+ * relative one resolved against pup's own cwd, and one ending in `.`, `..` or
+ * a slash had a last name the resolve went through, so each is refused.
  */
 function grantPath(path: string): string {
-  return join(resolvePath(dirname(path)), basename(path));
+  const name = path.split(sep).at(-1);
+  if (!isAbsolute(path) || normalize(path) !== path || !name || name === '.' || name === '..') {
+    throw new Error(
+      `Refusing to grant ${JSON.stringify(path)}: a grant is an absolute, normalised path ending in a name.`,
+    );
+  }
+  return join(resolvePath(dirname(path)), name);
 }
 
 /**

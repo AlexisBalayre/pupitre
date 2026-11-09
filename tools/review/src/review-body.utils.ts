@@ -169,8 +169,10 @@ export function bodyLines(
   }
 
   const spawned = [...new Set(summary.reviewers_spawned)];
-  // spec runs only when the PR closes an issue, so its absence is no gap to report.
-  const skipped = REVIEWER_AREAS.filter((area) => !spawned.includes(area) && area !== "spec");
+  // spec and workflow-safety run only when the PR gives them something to read, so their absence is no gap to report.
+  const skipped = REVIEWER_AREAS.filter(
+    (area) => !spawned.includes(area) && area !== "spec" && area !== "workflow-safety",
+  );
   const coverage = `Checked ${spawned.join(", ")}.${skipped.length ? ` Skipped ${skipped.join(", ")}.` : ""}`;
   const scope =
     summary.review_mode === "incremental" && summary.incremental_from_sha

@@ -573,6 +573,7 @@ describe('judgeDebt', () => {
             after: [{ file: 'src/feature.ts', complexity: 9 }],
             sources: {},
             copiesPaired: true,
+            targetHolds: ['src/feature.ts'],
           },
         },
         expected: { stage: 'complexity', status: 'pass', detail: COMPLEXITY_PASS },
@@ -587,6 +588,7 @@ describe('judgeDebt', () => {
             after: [{ file: 'src/feature.ts', complexity: 17 }],
             sources: {},
             copiesPaired: true,
+            targetHolds: ['src/feature.ts'],
           },
         },
         expected: { stage: 'complexity', status: 'pass', detail: COMPLEXITY_PASS },
@@ -601,6 +603,7 @@ describe('judgeDebt', () => {
             after: [{ file: 'src/feature.ts', complexity: 40 }],
             sources: {},
             copiesPaired: true,
+            targetHolds: ['src/feature.ts'],
           },
         },
         expected: {
@@ -619,6 +622,7 @@ describe('judgeDebt', () => {
             after: [{ file: 'src/feature.ts', complexity: 20 }],
             sources: {},
             copiesPaired: true,
+            targetHolds: [],
           },
         },
         expected: { stage: 'complexity', status: 'pass', detail: COMPLEXITY_PASS },
@@ -633,6 +637,7 @@ describe('judgeDebt', () => {
             after: [{ file: 'src/feature.ts', complexity: 50 }],
             sources: {},
             copiesPaired: true,
+            targetHolds: [],
           },
         },
         expected: { stage: 'complexity', status: 'pass', detail: COMPLEXITY_PASS },
@@ -647,6 +652,7 @@ describe('judgeDebt', () => {
             after: [{ file: 'src/feature.ts', complexity: 51 }],
             sources: {},
             copiesPaired: true,
+            targetHolds: [],
           },
         },
         expected: {
@@ -654,6 +660,79 @@ describe('judgeDebt', () => {
           status: 'flagged',
           detail:
             'complexity rose sharply in 1 touched file(s): src/feature.ts (new file, 51 decision points)',
+        },
+      },
+    ],
+    [
+      // Decision 157: "new" is read from the target tree, not the before-list.
+      'a file the target holds but the before-measure omits rises from zero',
+      {
+        measured: {
+          complexity: {
+            before: [],
+            after: [{ file: 'src/feature.ts', complexity: 16 }],
+            sources: {},
+            copiesPaired: true,
+            targetHolds: ['src/feature.ts'],
+          },
+        },
+        expected: {
+          stage: 'complexity',
+          status: 'flagged',
+          detail: 'complexity rose sharply in 1 touched file(s): src/feature.ts (+16)',
+        },
+      },
+    ],
+    [
+      'a file the target lacks is judged against the cap even when another is held',
+      {
+        measured: {
+          complexity: {
+            before: [],
+            after: [{ file: 'src/feature.ts', complexity: 40 }],
+            sources: {},
+            copiesPaired: true,
+            targetHolds: ['src/other.ts'],
+          },
+        },
+        expected: { stage: 'complexity', status: 'pass', detail: COMPLEXITY_PASS },
+      },
+    ],
+    [
+      'a rename whose source the target holds but the before-measure omits rises from zero',
+      {
+        measured: {
+          complexity: {
+            before: [],
+            after: [{ file: 'src/kept2.ts', complexity: 50 }],
+            sources: { 'src/kept2.ts': 'src/kept.ts' },
+            copiesPaired: true,
+            targetHolds: ['src/kept.ts'],
+          },
+        },
+        expected: {
+          stage: 'complexity',
+          status: 'flagged',
+          detail: 'complexity rose sharply in 1 touched file(s): src/kept2.ts (+50)',
+        },
+      },
+    ],
+    [
+      'a copy whose unchanged source the before-measure omits rises from zero',
+      {
+        measured: {
+          complexity: {
+            before: [],
+            after: [{ file: 'src/copied.ts', complexity: 50 }],
+            sources: { 'src/copied.ts': 'src/base.ts' },
+            copiesPaired: true,
+            targetHolds: ['src/base.ts'],
+          },
+        },
+        expected: {
+          stage: 'complexity',
+          status: 'flagged',
+          detail: 'complexity rose sharply in 1 touched file(s): src/copied.ts (+50)',
         },
       },
     ],
@@ -666,6 +745,7 @@ describe('judgeDebt', () => {
             after: [{ file: 'src/feature.ts', complexity: 50 }],
             sources: { 'src/feature.ts': 'src/legacy.ts' },
             copiesPaired: true,
+            targetHolds: ['src/legacy.ts'],
           },
         },
         expected: {
@@ -687,6 +767,7 @@ describe('judgeDebt', () => {
             ],
             sources: { 'src/feature.ts': 'src/legacy.ts' },
             copiesPaired: true,
+            targetHolds: ['src/legacy.ts'],
           },
         },
         expected: {
@@ -705,6 +786,7 @@ describe('judgeDebt', () => {
             after: [{ file: 'src/feature.ts', complexity: 25 }],
             sources: { 'src/feature.ts': 'src/legacy.ts' },
             copiesPaired: true,
+            targetHolds: [],
           },
         },
         expected: { stage: 'complexity', status: 'pass', detail: COMPLEXITY_PASS },
@@ -719,6 +801,7 @@ describe('judgeDebt', () => {
             after: [{ file: 'src/feature.ts', complexity: 20 }],
             sources: {},
             copiesPaired: false,
+            targetHolds: [],
           },
         },
         expected: {
@@ -744,6 +827,7 @@ describe('judgeDebt', () => {
           ],
           sources: {},
           copiesPaired: true,
+          targetHolds: ['src/old.ts'],
         },
       },
       undefined,
@@ -976,7 +1060,7 @@ describe('judgeDebt', () => {
         debt: { deadExports: [], duplicatedLines: 5, coverageRatio: 1 },
         duplication: { duplicatedLines: 5, blocks: [] },
         coverage: { files: { 'src/app.ts': { covered: [1], instrumented: [1] } } },
-        complexity: { before: [], after: [], sources: {}, copiesPaired: true },
+        complexity: { before: [], after: [], sources: {}, copiesPaired: true, targetHolds: [] },
         patch: { covered: 0, instrumented: 0, uncovered: [] },
         nestedNote: note,
       },
