@@ -182,8 +182,8 @@ interface StoredPullRequest {
  * before anything is written: the session must be merged, its newest merge
  * must have opened a PR of origin's recorded repo with no landing after it,
  * and GitHub must report that PR OPEN with its head at the pinned sha, the
- * review bot's newest review run and final status on that head, and a thread
- * that run opened still unresolved. Then the profile is compiled afresh, the
+ * review bot's newest review and final status on that head, and a thread of
+ * the bot's still unresolved and not outdated (decision 163). Then the profile is compiled afresh, the
  * worktree comes back on its branch at that head, one transaction records the
  * round and takes the edge out of `merged`, and a fresh window is kicked off
  * with the task's context and the threads, framed as reviewer data. A kickoff
@@ -585,12 +585,12 @@ function orNotStarted<T>(run: () => T): T {
  * What the CI review leaves to a fix round, or why there is no round to run:
  * the PR must be OPEN with its head at the pin, since a round starts from a
  * commit the gate measured and a moved head is re-gated first (decision 86),
- * and the review bot's newest review run must be on that head, so its threads
- * are about the code the worker will be handed. The threads are the ones that
- * run opened: an earlier round's, left unresolved, are about code since
- * changed, and that run raised again whatever it still found. They are relayed
- * only under the bot's SUCCESS status on the head, the one the poster sets on
- * every run it posted, findings or not. A finding
+ * and the review bot's newest review must be on that head. The threads are
+ * every unresolved one of the bot's that no push outdated, whichever run
+ * opened it, so they are about the code the worker will be handed: a newer
+ * run's clean status does not close an earlier one's (decision 163). They are
+ * relayed only under the bot's SUCCESS status on the head, the one the poster
+ * sets on every run it posted, findings or not. A finding
  * someone else edited, or one hidden on GitHub, is refused, not relayed. With
  * none, the head is clean only when the bot's status says so: a review that
  * reached no verdict, a partial one, or one whose findings had no line to

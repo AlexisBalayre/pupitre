@@ -64,7 +64,10 @@ interface ReviewSeed {
   status?: { state: string; description: string } | null;
   /** When the bot set `status`. */
   statusAt?: string;
+  /** Unresolved threads the bot opened, whichever of its reviews opened them. */
   threads?: number;
+  /** Unresolved threads of the bot's that a later push outdated. */
+  outdated?: number;
   /** The PR's comments, each `{ body, createdAt, authorAssociation }`. */
   comments?: unknown[];
 }
@@ -77,6 +80,7 @@ function reviewAnswer({
   status = { state: 'SUCCESS', description: 'no blocking issues' },
   statusAt = '2026-10-26T10:00:00Z',
   threads = 0,
+  outdated = 0,
   comments = [],
 }: ReviewSeed = {}): unknown {
   return {
@@ -105,16 +109,16 @@ function reviewAnswer({
           },
           reviewThreads: {
             pageInfo: { hasPreviousPage: false },
-            nodes: Array.from({ length: threads }, (_, index) => ({
+            nodes: Array.from({ length: threads + outdated }, (_, index) => ({
               id: `PRRT_${index}`,
               isResolved: false,
+              isOutdated: index >= threads,
               path: 'src/a.ts',
               line: 1,
               comments: {
                 nodes: [
                   {
                     author: BOT,
-                    pullRequestReview: { id: 'PRR_1' },
                     body: 'finding',
                     isMinimized: false,
                   },
@@ -236,12 +240,25 @@ describe('waitForCiReview', { timeout: 20_000 }, () => {
     );
   });
 
+  // On #284, a run's clean status hid a thread an earlier run left open on the
+  // same head: every open thread counts, whatever the newest status says.
+  it('names pup fix for a thread left open under a clean status, but not for an outdated one', async () => {
+    githubAnswers({ threads: 1, outdated: 2 });
+
+    expect(await wait()).toEqual({
+      finished: true,
+      line:
+        `${PR_URL} at ${HEAD}: review no blocking issues; 1 open thread(s), 0 important → ` +
+        `pup fix ${SESSION_ID}`,
+    });
+  });
+
   it('ignores a review on an older head and waits for the current one', async () => {
     githubAnswers(
-      // The newest review and its threads are on an earlier push.
-      { reviewedOn: OLDER, threads: 1, status: { state: 'PENDING', description: 'reviewing' } },
+      // The newest review and its threads are on an earlier push, which outdated them.
+      { reviewedOn: OLDER, outdated: 1, status: { state: 'PENDING', description: 'reviewing' } },
       // A SUCCESS on the head, with the newest review still on the earlier push.
-      { reviewedOn: OLDER, threads: 1 },
+      { reviewedOn: OLDER, outdated: 1 },
       {},
     );
 

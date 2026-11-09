@@ -213,11 +213,10 @@ describe('startFixRound', { timeout: 90_000 }, () => {
       state: string;
       description: string;
     } | null,
-    threads = [] as ThreadSeed[],
-    /** Threads the newest review opened that are older than the page read. */
+    threads = [] as (ThreadSeed & { isOutdated?: boolean })[],
+    /** Threads older than the page read. */
     unread = 0,
   } = {}): void {
-    const opened = threads.filter((thread) => !thread.earlier).length + unread;
     const answer = {
       data: {
         repository: {
@@ -241,12 +240,7 @@ describe('startFixRound', { timeout: 90_000 }, () => {
                   ? []
                   : [
                       { id: 'PRR_earlier', author: BOT, commit: { oid: OTHER_SHA } },
-                      {
-                        id: 'PRR_newest',
-                        author: BOT,
-                        commit: { oid: reviewedOn },
-                        comments: { totalCount: opened },
-                      },
+                      { id: 'PRR_newest', author: BOT, commit: { oid: reviewedOn } },
                     ]),
               ],
             },
@@ -255,6 +249,7 @@ describe('startFixRound', { timeout: 90_000 }, () => {
               nodes: threads.map((thread) => ({
                 id: thread.id,
                 isResolved: thread.isResolved ?? false,
+                isOutdated: thread.isOutdated ?? false,
                 path: thread.path === undefined ? 'src/feature.ts' : thread.path,
                 line: thread.line === undefined ? 1 : thread.line,
                 originalLine: thread.originalLine ?? 1,
@@ -262,7 +257,6 @@ describe('startFixRound', { timeout: 90_000 }, () => {
                   nodes: [
                     {
                       author: thread.author ?? BOT,
-                      pullRequestReview: { id: thread.earlier ? 'PRR_earlier' : 'PRR_newest' },
                       body: thread.body,
                       lastEditedAt: thread.editor === undefined ? null : '2026-10-18T09:00:00Z',
                       editor: thread.editor ?? null,
@@ -440,7 +434,7 @@ describe('startFixRound', { timeout: 90_000 }, () => {
         },
         { id: 'PRRT_resolved', body: 'Already answered.', isResolved: true },
         { id: 'PRRT_human', body: 'A human note.', author: { __typename: 'User', login: 'a' } },
-        { id: 'PRRT_stale', body: 'From an earlier round.', earlier: true },
+        { id: 'PRRT_stale', body: 'A line a later push changed.', isOutdated: true },
       ],
     });
     vi.mocked(killSession).mockClear();
@@ -498,6 +492,27 @@ describe('startFixRound', { timeout: 90_000 }, () => {
     const log = ghCalls().join('\n');
     expect(log).toContain('api graphql --hostname github.com -f query=query(');
     expect(log).toMatch(/\} -f owner=owner -f name=repo -F number=7$/m);
+  });
+
+  // On #284, a run's clean status hid a thread an earlier run left open on the
+  // same head: every unresolved, non-outdated thread is handed to the round.
+  it('hands a thread left open on the head to a round even under a clean status', async () => {
+    await gateWithPr();
+    recordSessionRoute(db, SESSION_ID, routeAt(0));
+    reviewOnGitHub({
+      status: { state: 'SUCCESS', description: 'no blocking issues' },
+      threads: [
+        { id: 'PRRT_left', body: 'Still open from an earlier run.' },
+        { id: 'PRRT_moved', body: 'A line a later push changed.', isOutdated: true },
+      ],
+    });
+
+    expect(await fix()).toEqual({ prUrl: PR_URL, head: pinned, threads: 1 });
+    expect(payloads('fix_round')).toEqual([
+      { prUrl: PR_URL, head: pinned, threads: ['PRRT_left'], rejectBase: 0 },
+    ]);
+    expect(prompt()).toContain('### Thread 1 of 1: PRRT_left, at src/feature.ts:1');
+    expect(prompt()).not.toContain('PRRT_moved');
   });
 
   it.each<[string, Parameters<typeof reviewOnGitHub>[0], RegExp]>([
@@ -587,12 +602,12 @@ describe('startFixRound', { timeout: 90_000 }, () => {
       /Thread PRRT_ghost .* was edited after the review bot posted it/,
     ],
     [
-      'no open thread, only resolved and earlier rounds’',
+      'no open thread, only resolved and outdated ones',
       {
         status: { state: 'FAILURE', description: 'the review could not be posted' },
         threads: [
           { id: 'PRRT_done', body: 'fixed', isResolved: true },
-          { id: 'PRRT_old', body: 'old', earlier: true },
+          { id: 'PRRT_old', body: 'old', isOutdated: true },
         ],
       },
       /opened no thread on .*set its status to FAILURE \(the review could not be posted\), not a clean review/,
