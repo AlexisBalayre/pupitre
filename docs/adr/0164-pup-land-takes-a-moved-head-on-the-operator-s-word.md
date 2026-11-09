@@ -17,7 +17,9 @@
     - The ref is at the accepted head. The local branch is not read, since a session can move it.
     - The pin is an ancestor of the accepted head. A head that rewrote the gated commits, such as
       a fix round's rebase, is not "the gate's content plus commits the operator read", and is
-      refused.
+      refused. This is asked from the scratch git dir with `core.commitGraph=false`, as
+      `mergedOnto` asks its questions. The commit graph is a cache in the object store a session
+      can write, and a forged one could answer yes.
     - The merge commit has the tree that merging the accepted head gives, where decision 131 asked
       for the pin's tree. Merge, squash and rebase merges are all taken that way.
     The teardown deletes the branch when main or the accepted head holds it. The `landed` event
@@ -25,7 +27,14 @@
     *Who may pass it.* Only the operator. The flag vouches for commits no gate measured, and
     that is the merge's power, which the conductor does not hold (decision 47). The conductor
     can still run a plain `pup land`. Without the flag, the refusal still names the re-gate.
-    It also gives the fetch and `git log -p <pin>..<head>` to read, and the exact command to run.
+    It also gives GitHub's compare view of `<pin>...<head>` to read, and the exact command to run.
+    The pin is an ancestor of the head, so the view shows exactly the commits past it.
+    *Where the operator reads.* Their read is all that vouches for those commits, so it is never
+    pointed at git in the shared repo. A session can write that repo's replace refs, attributes
+    (a diff textconv), pager, fsmonitor and remote URLs. With those, `git log -p` would show
+    harmless content or run commands the session chose. GitHub renders the real commits by sha.
+    One limit is left: a `.gitattributes` in the PR can mark a file generated, and GitHub then
+    collapses its diff. The file is still listed, and the operator expands it.
     *Not taken.* Gating the moved head inside `pup land`. That means a gate checkout, a sandbox
     run and the stages under the land's lock, all of which `runMergeGate` owns. Then the
     land would also have to decide what a failed stage does to a PR GitHub has already merged.

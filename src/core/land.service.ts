@@ -133,12 +133,16 @@ export async function landSession(db: Database, req: LandRequest): Promise<LandO
   }
   const pullRef = `refs/pull/${prUrl.slice(prUrl.lastIndexOf('/') + 1)}/head`;
   if (head !== sha && req.acceptHead === undefined) {
+    // The operator's read is all that vouches for these commits, so it is
+    // pointed at GitHub, not at git in the repo, whose replace refs, attributes,
+    // pager, fsmonitor and remotes a session can write (decision 164).
+    const compare = `${prUrl.slice(0, prUrl.lastIndexOf('/pull/'))}/compare/${sha}...${head}`;
     throw new Error(
       `${prUrl} merged with its head at ${head}, not ${sha}, the commit the gate pinned; it ` +
         'lands commits the gate never measured. A PR whose head moved is re-gated with ' +
         `\`pup merge ${id} --pr\` before it is merged. Once merged, read the commits past the ` +
-        `pin (\`git fetch origin ${pullRef}\`, then \`git log -p ${sha}..${head}\`) and, if ` +
-        `you vouch for them, run \`pup land ${id} --accept-head ${head}\`. Nothing was landed.`,
+        `pin on GitHub (${compare}) and, if you vouch for them, run ` +
+        `\`pup land ${id} --accept-head ${head}\`. Nothing was landed.`,
     );
   }
   // Merged into another base, the content never came through the gated one.
@@ -189,7 +193,7 @@ export async function landSession(db: Database, req: LandRequest): Promise<LandO
               `${prUrl} merged at. Nothing was landed.`,
           );
         }
-        if (!isAncestor(req.repoPath, sha, head)) {
+        if (!descendsFrom(req.repoPath, head, sha)) {
           throw new Error(
             `${head}, the head ${prUrl} merged at, does not descend from ${sha}, the commit the ` +
               'gate pinned: its commits rewrote what the gate measured, so --accept-head cannot ' +
@@ -404,6 +408,36 @@ function fetchTarget(
   } catch (error) {
     throw new Error(
       `Fetching ${fetched} from ${sanitizeReason(originUrl)} failed. Nothing was landed.\n` +
+        failureSummary(error),
+    );
+  }
+}
+
+/**
+ * Whether `head` descends from `pin`, asked from the scratch git dir with the
+ * repo's commit graph off, for `mergedOnto`'s reason: that cache is in the
+ * object store a session can write, and a forged one could answer yes
+ * (decision 164). Exit 1 is no; any other failure is git failing outright.
+ */
+function descendsFrom(repoPath: string, head: string, pin: string): boolean {
+  const piped = { stdio: ['ignore', 'pipe', 'pipe'] as ['ignore', 'pipe', 'pipe'] };
+  try {
+    return withScratchGitDir(repoPath, 'pup-land-', (git) => {
+      try {
+        git(['-c', 'core.commitGraph=false', 'merge-base', '--is-ancestor', pin, head], {
+          ...piped,
+          timeout: GATE_COMMAND_TIMEOUT_MS,
+        });
+        return true;
+      } catch (error) {
+        if ((error as { status?: unknown }).status !== 1) throw error;
+        return false;
+      }
+    });
+  } catch (error) {
+    rethrowIfKilled(error);
+    throw new Error(
+      `Reading whether ${head} descends from ${pin} failed. Nothing was landed.\n` +
         failureSummary(error),
     );
   }

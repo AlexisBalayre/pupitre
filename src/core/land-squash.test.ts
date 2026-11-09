@@ -381,7 +381,14 @@ describe('landSession', { timeout: 20_000 }, () => {
     await expect(land()).rejects.toThrow(
       /merged with its head at .* not .* the commit the gate pinned; .* re-gated with `pup merge s1 --pr`/,
     );
-    await expect(land()).rejects.toThrow(`\`pup land s1 --accept-head ${later}\``);
+    // Decision 164: the commits past the pin are read on GitHub, never with git
+    // in the repo a session can write.
+    const refusal = await land().catch((error: Error) => error.message);
+    expect(refusal).toContain(
+      `https://github.com/owner/repo/compare/${pinned}...${later}) and, if you vouch for ` +
+        `them, run \`pup land s1 --accept-head ${later}\``,
+    );
+    expect(refusal).not.toMatch(/`git /);
 
     expectNothingChanged(mainBefore);
     expect(hasTrackingRef()).toBe(false);
