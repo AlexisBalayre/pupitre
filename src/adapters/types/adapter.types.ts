@@ -177,6 +177,13 @@ export interface Adapter {
    */
   testFiles?(ctx: CapabilityContext, files: string[]): string[];
   /**
+   * Whether the measured checkout's disk still holds what `testFiles` reads of
+   * the pinned commit: the test stage's run read the disk, which the branch's
+   * own build and stages ran in. Asked after the build and again before the
+   * split; a `false` either time counts no file as test (decision 143).
+   */
+  testInputsIntact?(ctx: CapabilityContext): boolean;
+  /**
    * The nested packages `files` touch, which every capability above leaves
    * out: the gate runs their own scripts and names what was dropped
    * (decisions 29, 59). An adapter without it has no nested packages.

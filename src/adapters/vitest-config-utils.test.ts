@@ -1,8 +1,10 @@
+import { execFileSync } from 'node:child_process';
 import { symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { GIT_ENV } from '@test/helpers/git.mock.js';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import { describe, expect, it } from 'vitest';
-import { vitestCollection } from './vitest-config.utils.js';
+import { diskRoot, treeRoot, vitestCollection } from './vitest-config.utils.js';
 
 function repoWith(files: Record<string, string>): string {
   const dir = tempDir('pup-vitest-config-');
@@ -13,13 +15,30 @@ function repoWith(files: Record<string, string>): string {
 const configWith = (test: string): string =>
   `import { defineConfig } from 'vitest/config';\n\nexport default defineConfig({\n  test: ${test},\n});\n`;
 
+/**
+ * A repo whose object store holds a tree of `entries`, each a name and its
+ * mode and content, built by plumbing so two names a case-insensitive disk
+ * cannot hold apart can be committed side by side. Returns the repo and tree.
+ */
+function treeWith(entries: [string, string, string][]): { repo: string; tree: string } {
+  const repo = tempDir('pup-vitest-tree-');
+  const git = (args: string[], input?: string): string =>
+    execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8', input, env: GIT_ENV }).trim();
+  git(['init', '-q']);
+  const lines = entries.map(([name, mode, content]) => {
+    const oid = git(['hash-object', '-w', '--stdin'], content);
+    return `${mode} blob ${oid}\t${name}\n`;
+  });
+  return { repo, tree: git(['mktree'], lines.join('')) };
+}
+
 /** What the run at a checkout of `files` collects of `paths`, or undefined where it is unknown. */
 function collected(
   files: Record<string, string>,
   paths: string[],
   measured: boolean,
 ): string[] | undefined {
-  const collects = vitestCollection(repoWith(files), measured);
+  const collects = vitestCollection(diskRoot(repoWith(files)), measured);
   return collects && paths.filter(collects);
 }
 
@@ -86,7 +105,7 @@ describe('vitestCollection', () => {
   it('collects nothing by an include pattern it does not read', () => {
     const files = {
       'vitest.config.ts': configWith(
-        "{ include: ['src/*a*b.test.ts', '**/x/**/c.test.ts', 'src/{e,f}.test.ts', 'src/**/d.test.ts'] }",
+        "{ include: ['src/*a*b.test.ts', '**/x/**/c.test.ts', 'src/{e,f}.test.ts', './src/g.test.ts', 'src/**/d.test.ts'] }",
       ),
     };
 
@@ -98,6 +117,7 @@ describe('vitestCollection', () => {
           'w/x/y/c.test.ts',
           'src/e.test.ts',
           'src/{e,f}.test.ts',
+          'src/g.test.ts',
           'src/d.test.ts',
         ],
         false,
@@ -136,6 +156,20 @@ describe('vitestCollection', () => {
     ['an exclude over 64 patterns', configWith(`{ exclude: ${patterns(65)} }`)],
     ['an exclude climbing with ..', configWith("{ exclude: ['../src/a.test.ts'] }")],
     ['an absolute exclude', configWith("{ exclude: ['/abs/a.test.ts'] }")],
+    // Spellings vitest's globber reads otherwise than the pattern says (M3).
+    ['an exclude starting ./', configWith("{ exclude: ['./src/prod'] }")],
+    ['an exclude ending /', configWith("{ exclude: ['src/prod/'] }")],
+    ['an exclude with a . segment', configWith("{ exclude: ['src/./prod'] }")],
+    ['an exclude with an empty segment', configWith("{ exclude: ['src//prod'] }")],
+    ['an exclude with a ?', configWith("{ exclude: ['src/pro?'] }")],
+    ['an exclude with a backslash', configWith("{ exclude: ['src/\\\\prod'] }")],
+    ['an exclude with whitespace', configWith("{ exclude: [' src/prod'] }")],
+    ['an exclude with an @', configWith("{ exclude: ['src/@prod'] }")],
+    ['an empty exclude pattern', configWith("{ exclude: [''] }")],
+    [
+      'a config that does not parse',
+      "import { defineConfig } from 'vitest/config';\nexport default defineConfig({ test: {} };\n",
+    ],
     ['a spread into test', configWith('{ ...shared }')],
     ['a shorthand include', configWith('{ include }')],
     ['a getter include', configWith("{ get include() { return ['src/**']; } }")],
@@ -149,7 +183,9 @@ describe('vitestCollection', () => {
     ['a root', "export default { root: 'src', test: {} };\n"],
     ['a prototype', "export default { __proto__: { test: { exclude: ['src/**'] } } };\n"],
   ])('collects nothing under %s', (_, config) => {
-    expect(vitestCollection(repoWith({ 'vitest.config.ts': config }), false)).toBeUndefined();
+    expect(
+      vitestCollection(diskRoot(repoWith({ 'vitest.config.ts': config })), false),
+    ).toBeUndefined();
   });
 
   it('reads a measured config of data, imported names and spreads included', () => {
@@ -163,18 +199,58 @@ describe('vitestCollection', () => {
     expect(collected(files, ['src/a.test.ts', 'b.test.ts'], true)).toEqual(['src/a.test.ts']);
   });
 
-  it('collects nothing beside a workspace file', () => {
-    expect(
-      vitestCollection(repoWith({ 'vitest.workspace.ts': 'export default [];\n' }), false),
-    ).toBeUndefined();
-  });
+  it.each(['vitest.workspace.ts', 'Vitest.Workspace.ts', 'VITEST.WORKSPACE.JSON'])(
+    'collects nothing beside a workspace file named %s',
+    (name) => {
+      expect(
+        vitestCollection(diskRoot(repoWith({ [name]: 'export default [];\n' })), false),
+      ).toBeUndefined();
+    },
+  );
 
   it('refuses to read a config that is a symlink', () => {
     const repo = repoWith({ 'real.config.ts': configWith("{ include: ['src/**/*.test.ts'] }") });
     symlinkSync('real.config.ts', join(repo, 'vitest.config.ts'));
 
-    expect(() => vitestCollection(repo, false)).toThrow();
+    expect(() => vitestCollection(diskRoot(repo), false)).toThrow();
   });
+
+  // A case-insensitive disk opens it for vitest.config.ts; a case-sensitive one does not.
+  it('refuses to read a config named in another case', () => {
+    const repo = repoWith({ 'Vitest.config.ts': configWith("{ include: ['src/**/*.test.ts'] }") });
+
+    expect(() => vitestCollection(diskRoot(repo), false)).toThrow();
+  });
+
+  it("reads a commit's config from the object store, whatever the disk holds", () => {
+    const { repo, tree } = treeWith([
+      ['vitest.config.ts', '100644', configWith("{ include: ['src/**/*.test.ts'] }")],
+    ]);
+    writeFileSync(join(repo, 'vitest.config.ts'), configWith("{ include: ['**/*.test.ts'] }"));
+    const collects = vitestCollection(treeRoot(repo, tree), true);
+
+    expect(['src/a.test.ts', 'b.test.ts'].filter((path) => collects?.(path))).toEqual([
+      'src/a.test.ts',
+    ]);
+  });
+
+  it.each([
+    ['a link', [['vitest.config.ts', '120000', 'real.config.ts']]],
+    [
+      'two names that fold to one',
+      [
+        ['vitest.config.ts', '100644', configWith("{ include: ['src/**/*.test.ts'] }")],
+        ['VITEST.config.ts', '100644', configWith("{ include: ['**/*.test.ts'] }")],
+      ],
+    ],
+  ] as [string, [string, string, string][]][])(
+    "refuses to read a commit's config that is %s",
+    (_, entries) => {
+      const { repo, tree } = treeWith(entries);
+
+      expect(() => vitestCollection(treeRoot(repo, tree), true)).toThrow();
+    },
+  );
 
   // Vitest runs the branch's config, so the measured one is read only where
   // running it builds the object read and nothing else: each row is read in

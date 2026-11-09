@@ -34,7 +34,7 @@ import {
   resolveImport,
   SOURCE_EXTENSIONS,
 } from './typescript-source.utils.js';
-import { vitestCollection } from './vitest-config.utils.js';
+import { diskRoot, type RootFiles, treeRoot, vitestCollection } from './vitest-config.utils.js';
 
 interface PackageManifest {
   scripts?: Record<string, string>;
@@ -189,13 +189,38 @@ const PLAIN_VITEST_SCRIPT = /^vitest(?: run)?$/;
  * diff-size split reads the collection of (decision 143). Throws on a manifest
  * that cannot be read.
  */
-function runsPlainVitest(repoPath: string): boolean {
-  const scripts = readManifest(repoPath)?.scripts ?? {};
+function runsPlainVitest(root: RootFiles): boolean {
+  const manifest = root.get('package.json');
+  const scripts = (manifest && (JSON.parse(manifest()) as PackageManifest).scripts) ?? {};
   return (
     PLAIN_VITEST_SCRIPT.test(scripts.test?.trim() ?? '') &&
     scripts.pretest === undefined &&
     scripts.posttest === undefined
   );
+}
+
+/**
+ * The root files, by lower-cased name, that decide what a vitest run collects:
+ * the manifest whose script starts it, the npm config that can change how that
+ * script runs, and every config and workspace file vitest or vite reads.
+ */
+const VITEST_RUN_INPUT = /^(?:package\.json|\.npmrc|vite(?:st)?\.(?:config|workspace)\.[^/]*)$/;
+
+/**
+ * A checkout's root as the diff-size split reads it: the gate's checkout from
+ * the commit it was cut at, since the branch's build and tests ran in it and
+ * may have rewritten it (decision 143), and any other from disk.
+ */
+function checkoutRoot(ctx: CapabilityContext, path: string): RootFiles {
+  return path === ctx.measurePath && ctx.measureSha !== undefined
+    ? treeRoot(ctx.configPath, ctx.measureSha)
+    : diskRoot(path);
+}
+
+/** The run inputs a root holds, by name, each read, as one string. Throws where one cannot be read. */
+function runInputs(root: RootFiles): string {
+  const inputs = [...root].filter(([name]) => VITEST_RUN_INPUT.test(name));
+  return JSON.stringify(inputs.map(([name, read]) => [name, read()]).sort());
 }
 
 /** The config files vitest reads at a package root. */
@@ -394,7 +419,8 @@ export const typescriptAdapter: Adapter = {
     // is its own runner's (decision 58). Unknown on either side collects nothing.
     const sides = [...new Set([ctx.configPath, ctx.measurePath])].map((path) => {
       try {
-        return runsPlainVitest(path) ? vitestCollection(path, path === ctx.measurePath) : undefined;
+        const root = checkoutRoot(ctx, path);
+        return runsPlainVitest(root) ? vitestCollection(root, path === ctx.measurePath) : undefined;
       } catch {
         return undefined;
       }
@@ -404,6 +430,21 @@ export const typescriptAdapter: Adapter = {
     return files.filter(
       (file) => !isInNestedPackage(file, nested) && sides.every((collects) => collects?.(file)),
     );
+  },
+
+  testInputsIntact(ctx: CapabilityContext): boolean {
+    // The test stage ran vitest over the checkout's disk, which the branch's
+    // build had run in, while `testFiles` reads the commit: they answer for the
+    // same run only where the disk still holds the commit's inputs, compared
+    // by every name that folds to one (decision 143).
+    if (ctx.measureSha === undefined) return true;
+    try {
+      return (
+        runInputs(diskRoot(ctx.measurePath)) === runInputs(treeRoot(ctx.configPath, ctx.measureSha))
+      );
+    } catch {
+      return false;
+    }
   },
 
   touchedNestedPackages(ctx: CapabilityContext, files: string[]): NestedPackage[] {
@@ -475,7 +516,7 @@ export const typescriptAdapter: Adapter = {
     // session that edits its own scripts or config keeps the two runs.
     for (const path of new Set([ctx.configPath, ctx.measurePath])) {
       try {
-        if (!runsPlainVitest(path) || declaresCoverageThresholds(path)) return undefined;
+        if (!runsPlainVitest(diskRoot(path)) || declaresCoverageThresholds(path)) return undefined;
       } catch {
         return undefined;
       }

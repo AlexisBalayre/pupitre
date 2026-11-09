@@ -26,18 +26,33 @@
     `include` or adds an `exclude` leaves a file the run never collects, which then fails
     nothing however little test it holds. The trusted side alone is not enough, for the
     reason decision 31 gives. The trusted checkout is the operator's checkout (`configPath`,
-    the gate's `repoPath`), read as it stands on disk, not the tree at `targetSha`.
+    the gate's `repoPath`), read as it stands on disk, not the tree at `targetSha`. The
+    measured one is read from the pinned sha's tree in that repo's object store, never from
+    the gate checkout's disk: the branch's build and test stages ran code there before the
+    split reads it, and could narrow the config the run read, then restore the committed one.
+    The run itself read that disk, so the adapter's optional `testInputsIntact` compares the
+    checkout's root files that decide the run (`package.json`, `.npmrc`, every
+    `vite.config.*`, `vitest.config.*` and `vitest.workspace.*`, names folded to lower case)
+    with the sha's blobs, once after the build and before any suite and once before the
+    split. One changed, added, removed, a link or named in another case at either check
+    counts no file as test.
     **TypeScript** answers from vitest. The `test` script must be plain `vitest` or `vitest
     run` in both checkouts, with no `pretest` or `posttest` beside it (the `coveredTest` rule
     of decision 95): `vitest run src/core`, another runner or a script around the run collects
     or does something else, and then nothing counts as test. The config is the
     first of `vitest.config.{ts,mts,cts,js,mjs,cjs}` then `vite.config.*` present, vitest's own
-    order, read as a plain file without following a link and parsed with the TypeScript
-    compiler, never run, by `src/adapters/vitest-config.utils.ts`. It is read statically: a
+    order, read without following a link (a plain file on the trusted disk, a regular file's
+    blob in the measured tree) and parsed with the TypeScript compiler, never run, by
+    `src/adapters/vitest-config.utils.ts`. Root names are matched folded to lower case: a
+    case-insensitive disk opens `Vitest.config.ts` for `vitest.config.ts` and a
+    case-sensitive one does not, so a config or manifest named in another case, or two names
+    that fold to one, leaves the answer unknown, and `Vitest.Workspace.ts` is a workspace
+    file. It is read statically: a
     default export that is an object literal, bare or through the `defineConfig` imported from
     `vitest/config` or `vite`, whose `test` holds `include` and `exclude` as arrays of at most
     64 string literals. Anything else that decides what one run collects leaves the answer
-    unknown, and unknown collects nothing, the safe direction: a function config,
+    unknown, and unknown collects nothing, the safe direction: a config with a syntax error
+    the parser reports, a function config,
     `mergeConfig`, any other callee (a `defineConfig` of the config's own or imported from
     elsewhere included), an identifier, CommonJS, a spread or computed key in the config or its
     `test`, a non-literal `include` or `exclude` (so `[...configDefaults.exclude, 'e2e/**']`
@@ -58,9 +73,13 @@
     `.output` or `.temp` directory, a tool's `*.config.*`), a superset of vitest 4's, applies
     whatever the config declares, since excluding more only counts more as source. A declared
     `exclude` pattern drops a path it matches or any directory above it, as an ignore names a
-    directory. Patterns are matched by `globToRegExp`, which escapes braces, classes and
-    extglobs rather than honouring them, so an `include` using one collects nothing by it, and
-    an `exclude` using one, or a `!`, leaves the answer unknown. They come from config a
+    directory. A pattern is read in one spelling only: segments of ASCII letters, digits, `_`,
+    `-`, `.` and `*` joined by single `/`s, none of them `.` or `..`. Vitest's globber reads
+    `./src/prod`, `src/prod/`, `src/./prod` and `src//prod` all as `src/prod`, and takes `?`,
+    `\`, braces, classes, extglobs and `!` as glob syntax, which `globToRegExp` escapes, so
+    a pattern spelled any other way, or holding whitespace or `@`, may name what the read does
+    not: an `include` one collects nothing by it, and an `exclude` one leaves the answer
+    unknown. Patterns come from config a
     session writes, or one merge earlier wrote, and are matched against every path on the
     branch inside the merge lock, so a pattern is read only when it runs in time linear in a
     path: each segment `**` or holding at most one `*`, at most one `**` before the last
@@ -79,7 +98,9 @@
     refused. Vitest fails a collected file with no test in it, so collection proves a file is
     test code. Pytest collects a module with no test and passes it, so a `test_*.py` it
     collects can hold production code and pass the test stage. Counting it as test would
-    loosen decision 110, not close its item.
+    loosen decision 110, not close its item. A repo whose primary adapter is Python's keeps
+    the `*.test.ts` spelling for the TypeScript in it, since the Python adapter has no
+    `testFiles`.
     Ceilings, stated. A vitest config that is a link collects nothing, and one named by
     `--config` is never read, as the script rule refuses the flag. In a repo whose `include`
     is wider than this one's, or which has no config and so takes vitest's default, more
@@ -91,21 +112,29 @@
     owes. A measured config that runs code, as this repo's does (`availableParallelism()` from
     `node:os` sets `maxWorkers`), is unknown on every branch, so there every test file counts
     as source, the `.test.ts` files decision 110 counted as test included. Such a repo gets
-    the split back by making its config data.
+    the split back by making its config data. Lint and a nested package's checks run beside
+    the suites in the same writable checkout, so one that rewrites the config while vitest
+    loads it and restores it before the last check is not seen.
     The gate's own branch is measured
     by the main checkout's adapter (the metric-scope lesson of decision 39), so this change
     first applies to the merge after it lands. Tests: in the config reader, an `include` of
     `src/**` collects `src/a.test.ts` and not `scripts/x.test.ts`, no config collects the
     default spellings past the default exclude, `vitest.config` wins over `vite.config`, an
     exclude drops a file, a directory and what `**/fixtures/**` names, and an include pattern
-    with two stars in a segment, two inner `**` or braces collects nothing by it. Read as the
+    with two stars in a segment, two inner `**`, braces or a leading `./` collects nothing by
+    it. Read as the
     trusted checkout's, the laxer side, each of these is unknown: a function config, the
     config's own `defineConfig` wrapper, one imported from elsewhere, another import aliased to
     the name, a run-time include, an include or exclude over 64 patterns, a spread exclude, a
-    braced exclude, an exclude with a `!`, a `..` or an absolute path, a spread `test`, a
+    braced exclude, an exclude with a `!`, a `..` or an absolute path, an exclude spelled
+    `./src/prod`, `src/prod/`, `src/./prod`, `src//prod`, with a `?`, a backslash, whitespace
+    or an `@`, an empty exclude pattern, a config that does not parse, a spread `test`, a
     shorthand, getter or twice-named include, `projects`, `test.workspace`, `dir`,
     `test.root`, `typecheck`, a `__proto__` under `test` or at the top, and a top-level
-    `root`. A workspace file is unknown too, and a config that is a symlink is not read. Another
+    `root`. A workspace file is unknown too, named in any case, and a config that is a
+    symlink or named in another case is not read. Read from a commit, the config is the
+    tree's whatever the disk holds, and one committed as a link or beside a name that folds
+    to it is not read. Another
     import, a call or an assignment in a value, a plugin hook and a plugin built by `eval` are
     each read in the trusted checkout and unknown in the measured one, while a measured config
     of data, with an imported name, a spread and a property read, is read. In the adapter, a
@@ -118,4 +147,5 @@
     source where only the branch's config imports its `defineConfig` from elsewhere, a
     collected `big.spec.tsx` production code imports by `./big.spec.js` counts as source while
     an uncollected `a.test.ts` does too, a file renamed and rewritten onto a collected name
-    from one not collected counts as source, and a deleted collected test counts as test.
+    from one not collected counts as source, a deleted collected test counts as test, and every file counts as source where the build
+    narrows the config and the test stage restores it, or the build adds an `.npmrc`.

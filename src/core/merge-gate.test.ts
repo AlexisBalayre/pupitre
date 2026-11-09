@@ -606,7 +606,11 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     const claimsEverything: Adapter = { ...passingAdapter, testFiles: (_, files) => files };
 
     const outcome = await merge([
-      { ...passingAdapter, testFiles: typescriptAdapter.testFiles },
+      {
+        ...passingAdapter,
+        testFiles: typescriptAdapter.testFiles,
+        testInputsIntact: typescriptAdapter.testInputsIntact,
+      },
       claimsEverything,
     ]);
 
@@ -614,6 +618,42 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       stage: 'diff-size',
       status: 'pass',
       detail: '5 source + 3 test + 0 docs changed lines',
+    });
+  });
+
+  // The test run reads the checkout's disk after the branch's build ran there;
+  // the split reads the pinned sha. Where they part, no file counts as test.
+  it.each([
+    [
+      'the build narrows the config and the test stage restores it',
+      "cp vitest.config.ts saved.txt && printf '// narrowed\\n' >> vitest.config.ts",
+      'mv saved.txt vitest.config.ts',
+    ],
+    ['the build adds an .npmrc', "printf 'script-shell=/bin/sh\\n' > .npmrc", 'true'],
+  ])('counts every file as source where %s', async (_, build, test) => {
+    commitIn(repo, 'package.json', JSON.stringify({ scripts: { test: 'vitest run' } }));
+    commitIn(
+      repo,
+      'vitest.config.ts',
+      "export default { test: { include: ['src/**/*.test.ts'] } };\n",
+    );
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/a.test.ts', 'x\n'.repeat(3));
+
+    const outcome = await merge({
+      ...passingAdapter,
+      gateCommands: () => [
+        { stage: 'build', command: 'sh', args: ['-c', build] },
+        { stage: 'test', command: 'sh', args: ['-c', test] },
+      ],
+      testFiles: typescriptAdapter.testFiles,
+      testInputsIntact: typescriptAdapter.testInputsIntact,
+    });
+
+    expect(untimed(outcome.report.stages)).toContainEqual({
+      stage: 'diff-size',
+      status: 'pass',
+      detail: '3 source + 0 test + 0 docs changed lines',
     });
   });
 

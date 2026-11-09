@@ -2615,6 +2615,11 @@ export async function measureBranch(
   const built = build ? await commandStage('build', build, checkoutDir) : notMeasured('build');
   stages.push(built);
   if (built.status === 'fail') return undefined;
+  // The build ran the branch's code in the checkout, and the test run reads
+  // what it left there, so the runner's inputs are checked against the pinned
+  // sha now, before any suite, and again before the split (decision 143).
+  const testInputsIntact = () => primary?.testInputsIntact?.(capabilityContext) ?? true;
+  const intactBeforeSuites = testInputsIntact();
 
   // A change no test can run or read runs no suite, and so waits for no load
   // and takes no slot; a nested package's change always runs its suite
@@ -2872,13 +2877,15 @@ export async function measureBranch(
 
   started = Date.now();
   // The primary adapter's runner is the one the test stage ran, so it alone
-  // says which changed files are tests (decision 143).
+  // says which changed files are tests, and none where the checkout's runner
+  // inputs left the pinned sha's at either check (decision 143).
   const collects = primary?.testFiles;
+  const intact = intactBeforeSuites && testInputsIntact();
   const changed = countChangedLines(
     req.repoPath,
     targetSha,
     sha,
-    collects && ((files) => collects(capabilityContext, files)),
+    collects && ((files) => (intact ? collects(capabilityContext, files) : [])),
   );
   const split = `${changed.source} source + ${changed.test} test + ${changed.docs} docs changed lines`;
   const sizeFindings: string[] = [];

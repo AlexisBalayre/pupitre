@@ -1,8 +1,28 @@
-import { existsSync, readdirSync } from 'node:fs';
+import { readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import ts from 'typescript';
+import { runGit } from '../core/git-diff.client.js';
 import { globToRegExp } from '../core/glob.utils.js';
+import { GATE_COMMAND_TIMEOUT_MS } from '../core/merge-gate.constants.js';
 import { readPlainFile } from './capability.utils.js';
+
+/**
+ * The entries at a checkout's root, by lower-cased name, each read when asked.
+ * A case-insensitive disk opens `Vitest.config.ts` for `vitest.config.ts` and
+ * a case-sensitive one does not, so which file a tool opens there depends on
+ * the disk: a name not in lower case, or two that fold to one, is not read and
+ * throws when asked.
+ */
+export type RootFiles = Map<string, () => string>;
+
+/** Timed like every other child pup runs: git reads config a session can write. */
+const GIT_READ: Parameters<typeof runGit>[2] = {
+  stdio: ['ignore', 'pipe', 'pipe'],
+  timeout: GATE_COMMAND_TIMEOUT_MS,
+};
+
+/** The tree modes of a regular file; a link, a submodule or a directory is none. */
+const PLAIN_BLOB_MODE = /^100(?:644|755)$/;
 
 /** The root configs vitest looks for, in its own order: the first one present is the one it loads. */
 const VITEST_CONFIG_FILES = ['vitest', 'vite'].flatMap((stem) =>
@@ -13,7 +33,7 @@ const VITEST_CONFIG_FILES = ['vitest', 'vite'].flatMap((stem) =>
 const VITEST_NO_CONFIG = 'export default {};\n';
 
 /** A workspace file, which turns one run into several projects this does not read. */
-const VITEST_WORKSPACE_FILE = /^vitest\.workspace\.[cm]?[jt]s$|^vitest\.workspace\.json$/;
+const VITEST_WORKSPACE_FILE = /^vitest\.workspace\.(?:[cm]?[jt]s|json)$/i;
 
 /** What vitest collects when its config declares no `include` (vitest 3 and 4). */
 const VITEST_DEFAULT_INCLUDE = /(?:^|\/)[^/]*\.(?:test|spec)\.[cm]?[jt]sx?$/;
@@ -37,14 +57,17 @@ const VITEST_MAX_PATTERNS = 64;
 const VITEST_PATTERN_MAX_INNER_GLOBSTARS = 1;
 
 /**
- * A pattern this does not read: an absolute path, a control character, or glob
- * syntax `globToRegExp` escapes rather than honours (braces, classes, extglobs,
- * negation).
+ * The one spelling of a pattern this reads: segments of ASCII letters, digits,
+ * `_`, `-`, `.` and `*` joined by single `/`s, none of them `.` or `..`. Vitest's
+ * globber reads `./src/a`, `src/a/`, `src/./a` and `src//a` all as `src/a`,
+ * takes `?`, `\\`, braces, classes, extglobs and `!` as glob syntax, which
+ * `globToRegExp` escapes, and reads whitespace as part of a name; any other
+ * spelling may name what the read does not.
  */
-const UNREAD_GLOB = /^\/|[\0\r\n{}[\]()!+@]/;
+const READ_GLOB = /^(?!\.\.?(?:\/|$))[\w.*-]+(?:\/(?!\.\.?(?:\/|$))[\w.*-]+)*$/;
 
-/** A segment that climbs out, or holds two `*` without being a bare `**`, which is not linear. */
-const UNREAD_SEGMENT = /^\.\.$|^(?!\*\*$)(?:[^*]*\*){2}/;
+/** A segment holding two `*` without being a bare `**`, which is not linear. */
+const UNREAD_SEGMENT = /^(?!\*\*$)(?:[^*]*\*){2}/;
 
 /** Top-level keys that move what one run collects; `__proto__` hands the config inherited keys. */
 const VITEST_UNREAD_KEYS = ['root', '__proto__'];
@@ -96,10 +119,10 @@ const DATA_NODES = new Set([
  * the merge lock.
  */
 function vitestGlob(pattern: string): RegExp | undefined {
-  const segments = pattern.trim().replace(/^\.\//, '').split('/');
+  const segments = pattern.split('/');
   const innerGlobstars = segments.slice(0, -1).filter((segment) => segment === '**').length;
   if (
-    UNREAD_GLOB.test(pattern) ||
+    !READ_GLOB.test(pattern) ||
     innerGlobstars > VITEST_PATTERN_MAX_INNER_GLOBSTARS ||
     segments.some((segment) => UNREAD_SEGMENT.test(segment))
   ) {
@@ -198,8 +221,11 @@ function exportedConfig(text: string, measured: boolean): ts.Expression | undefi
       ts.isExportAssignment(statement) && !statement.isExportEquals,
   );
   const imports = source.statements.filter(importsVitestConfig);
+  // A config with a syntax error: the parser recovers into a tree vitest never loads.
+  const parseErrors = (source as unknown as { parseDiagnostics: unknown[] }).parseDiagnostics;
   if (
     exported.length !== 1 ||
+    parseErrors.length > 0 ||
     (measured && imports.length + exported.length !== source.statements.length)
   ) {
     return undefined;
@@ -257,23 +283,70 @@ function configGlobs(
   };
 }
 
+function unreadable(name: string): () => string {
+  return () => {
+    throw new Error(`${name} is not read: a name not in lower case, or not a plain file`);
+  };
+}
+
+/** Higher for a name not in lower case, which sorts after one that is. */
+const notLowerCase = ([name]: [string, unknown]): number => Number(name !== name.toLowerCase());
+
+function rootFiles(entries: [string, () => string][]): RootFiles {
+  const root: RootFiles = new Map();
+  // Lower-case names first, so one that folds onto another replaces its read.
+  for (const [name, read] of entries.sort((a, b) => notLowerCase(a) - notLowerCase(b))) {
+    const key = name.toLowerCase();
+    root.set(key, name === key ? read : unreadable(name));
+  }
+  return root;
+}
+
+/** A checkout's root as it stands on disk, each file read without following a link. */
+export function diskRoot(checkout: string): RootFiles {
+  return rootFiles(
+    readdirSync(checkout).map((name) => [
+      name,
+      () => readPlainFile(join(checkout, name), { followLinks: false }),
+    ]),
+  );
+}
+
 /**
- * Which paths a plain vitest run at `repoPath` collects, or undefined where
- * that cannot be read: a workspace file, or a config `configGlobs` does not
- * read. The config is the first of vitest's own list present, read as a plain
- * file without following a link and parsed, never run; `measured` says it is
- * the branch's (`exportedConfig`). Throws where the checkout cannot be read.
+ * A commit's root, listed and read from `repoPath`'s object store, never from a
+ * checkout a session's code has run in (decision 143). Only a regular file's
+ * blob is read, so a link is not followed.
+ */
+export function treeRoot(repoPath: string, sha: string): RootFiles {
+  return rootFiles(
+    runGit(repoPath, ['ls-tree', '-z', sha], GIT_READ)
+      .split('\0')
+      .filter((entry) => entry !== '')
+      .map((entry) => {
+        // "<mode> <type> <oid>\t<name>": the name is everything after the first tab.
+        const tab = entry.indexOf('\t');
+        const [mode = '', , oid = ''] = entry.slice(0, tab).split(' ');
+        const name = entry.slice(tab + 1);
+        const read = () => runGit(repoPath, ['cat-file', 'blob', oid], GIT_READ);
+        return [name, PLAIN_BLOB_MODE.test(mode) ? read : unreadable(name)];
+      }),
+  );
+}
+
+/**
+ * Which paths a plain vitest run over `root` collects, or undefined where that
+ * cannot be read: a workspace file, or a config `configGlobs` does not read.
+ * The config is the first of vitest's own list present, parsed, never run;
+ * `measured` says it is the branch's (`exportedConfig`). Throws where the root
+ * cannot be read.
  */
 export function vitestCollection(
-  repoPath: string,
+  root: RootFiles,
   measured: boolean,
 ): ((path: string) => boolean) | undefined {
-  if (readdirSync(repoPath).some((name) => VITEST_WORKSPACE_FILE.test(name))) return undefined;
-  const file = VITEST_CONFIG_FILES.find((name) => existsSync(join(repoPath, name)));
-  const text =
-    file === undefined
-      ? VITEST_NO_CONFIG
-      : readPlainFile(join(repoPath, file), { followLinks: false });
+  if ([...root.keys()].some((name) => VITEST_WORKSPACE_FILE.test(name))) return undefined;
+  const file = VITEST_CONFIG_FILES.find((name) => root.has(name));
+  const text = file === undefined ? VITEST_NO_CONFIG : (root.get(file) as () => string)();
   const globs = configGlobs(text, measured);
   return (
     globs &&
