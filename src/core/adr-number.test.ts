@@ -241,20 +241,58 @@ describe('adrNumberStage', { timeout: 20_000 }, () => {
     },
   );
 
-  it('refuses a number a merged session branch with an open PR adds', () => {
+  /** Seed `other` as merged with an open PR whose merge event records `sha`. */
+  const openPrPeer = (sha?: string): void => {
     seedSession(db, 'other', 'merged');
     appendEvent(db, 'other', 'merge', {
       branch: 'pup/other',
+      ...(sha === undefined ? {} : { sha }),
       target: 'main',
       files: [],
       prUrl: 'https://github.com/o/r/pull/1',
     });
+  };
+
+  it('refuses a number a merged session with an open PR adds, read at its gated sha once the gate deleted its branch', () => {
     commitOn(repo, 'pup/other', 'docs/adr/0003-theirs.md');
+    openPrPeer(git(repo, 'rev-parse', 'refs/heads/pup/other'));
+    // A passing gate deletes the branch in both modes; a PR keeps only its head.
+    git(repo, 'branch', '-q', '-D', 'pup/other');
     commitOn(repo, 'pup/me', 'docs/adr/0003-mine.md');
     expect(refusals()).toEqual([
       'ADR numbers already taken:',
-      expect.stringContaining('decision 0003 is also added by pup/other'),
+      '  docs/adr/0003-mine.md: decision 0003 is also added by pup/other, a session branch that ' +
+        'is live or has an open PR; renumber it 0004, the lowest free number',
     ]);
+  });
+
+  it('reads a merged peer with an open PR at its gated sha, not a branch moved after it', () => {
+    commitOn(repo, 'pup/other', 'docs/adr/0004-theirs.md');
+    openPrPeer(git(repo, 'rev-parse', 'refs/heads/pup/other'));
+    commitOn(repo, 'pup/other', 'docs/adr/0003-later.md');
+    commitOn(repo, 'pup/me', 'docs/adr/0003-mine.md');
+    expect(stage()).toBeUndefined();
+  });
+
+  it.each([
+    ['records no sha', undefined, 'its open PR has no gated commit on record'],
+    [
+      'names a commit the repo lacks',
+      'f'.repeat(40),
+      "its open PR's gated commit is not in this repo",
+    ],
+    [
+      'records a sha that is no commit sha',
+      '--output=x',
+      'its open PR has no gated commit on record',
+    ],
+  ])('names a merged peer with an open PR unchecked when its merge %s', (_, sha, why) => {
+    openPrPeer(sha);
+    commitOn(repo, 'pup/me', 'docs/adr/0003-mine.md');
+    expect(stage()).toMatchObject({
+      status: 'pass',
+      detail: `not checked against pup/other: ${why}`,
+    });
   });
 
   it('ignores killed sessions, landed PRs, local merges and pup branches no session holds', () => {

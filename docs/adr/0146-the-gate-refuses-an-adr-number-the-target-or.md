@@ -27,7 +27,13 @@
     new number. Git pairs on the branch's whole diff against the target, so splitting the change
     across commits does not help. The other branches count only when their session
     can still land: a state that holds its scope (queued, running, awaiting review, rejected,
-    blocked; decision 41) or `merged` with an open PR that has not landed (decision 84). Each
+    blocked; decision 41) or `merged` with an open PR that has not landed (decision 84). A live
+    session is read at its branch. A merged one is read at the sha its newest merge event
+    pinned: a passing gate deletes the session's local branch in both modes, and only the
+    operator's `pup fix` restores it, so in PR mode that sha is all the repo keeps of the PR's
+    head locally. A re-gate records a new merge event, so the newest one is the PR's current
+    head. A merge event with no sha, or one whose commit the repo lacks, leaves that peer
+    unchecked and named, like an unreadable branch. Each
     refused file is one line of the stage's failure. The line names the other branch, the other
     file, or says the number is on the target, and gives the lowest free number above the
     target's highest: one that neither the target, any of those branches, nor the branch's own
@@ -49,8 +55,9 @@
     adds no decision, or only free numbers with every branch read, gets no stage at all, so its
     stage list is as before.
     *Reads.* Everything is read in the main checkout's repo through `runGit` (decision 73): the
-    target sha and branch sha the gate pinned, and the tip of each branch the store counts,
-    resolved one at a time with `resolveCommitIfPresent` inside the guarded path. Nothing lists
+    target sha and branch sha the gate pinned, the tip of each live branch the store counts,
+    and each open PR's recorded sha (checked against `COMMIT_SHA`), resolved one at a time with
+    `resolveCommitIfPresent` inside the guarded path. Nothing lists
     `refs/heads/pup/`, so no number of stray refs a session creates weighs on the gate, and a
     ref no countable session holds is never read. The branch names come from the store, which
     pup writes, and are resolved as `refs/heads/<branch>`, the way the gate resolves the
@@ -95,7 +102,9 @@
     on the target, an unpaired file under the number of one the branch deletes (as a rename
     changed too much, though not when git paired that file with a renumbered one), a second
     file with one number, one a queued, running, awaiting-review, rejected or blocked session's
-    branch adds, one a merged session with an open PR adds, and a decision renamed onto a taken
+    branch adds, one a merged session with an open PR adds (read at its recorded sha after the
+    gate deleted its branch, and named unchecked when that merge recorded no sha or its commit
+    is gone), and a decision renamed onto a taken
     number. It ignores killed sessions, landed PRs, local merges and `pup/` branches no session
     holds. It skips and names an orphan branch while still refusing a clash with another, a
     symbolic ref, a read Node killed for its timeout or buffer (read with the 10 s timeout),

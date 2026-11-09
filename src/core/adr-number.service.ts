@@ -2,6 +2,7 @@ import type { Database } from 'better-sqlite3';
 import { sanitizeReason } from '../adapters/capability.utils.js';
 import { quotePath } from './debt.service.js';
 import { rethrowIfKilled, runGit } from './git-diff.client.js';
+import { COMMIT_SHA } from './merge-gate.constants.js';
 import { newestMerge, resolveCommitIfPresent, timedSince } from './merge-gate.service.js';
 import { listSessions } from './session.repository.js';
 import { holdingStates } from './session-state.utils.js';
@@ -137,18 +138,18 @@ function isOverrun(error: unknown): boolean {
 }
 
 /**
- * The decisions another session's branch adds, or why it is not checked: git
- * could not resolve or diff it (an orphan, a symbolic ref, an overrun), or it
- * adds more than `MAX_PEER_DECISIONS`. Undefined when the branch does not
- * exist. An interrupt that killed git is rethrown.
+ * The decisions another session's branch, read at `rev`, adds, or why it is
+ * not checked: git could not resolve or diff it (an orphan, a symbolic ref, an
+ * overrun), or it adds more than `MAX_PEER_DECISIONS`. Undefined when `rev`
+ * names no commit. An interrupt that killed git is rethrown.
  */
 function peerDecisions(
   repoPath: string,
   targetSha: string,
-  ref: string,
+  rev: string,
 ): Map<string, number> | string | undefined {
   try {
-    const tip = resolveCommitIfPresent(repoPath, ref);
+    const tip = resolveCommitIfPresent(repoPath, rev);
     if (tip === undefined) return undefined;
     const theirs = decisionsOf(addedAdrPaths(repoPath, targetSha, tip, PEER_READ_TIMEOUT_MS));
     return theirs.size > MAX_PEER_DECISIONS
@@ -160,20 +161,45 @@ function peerDecisions(
   }
 }
 
+/** Another session's branch that can still land, as the check reads it. */
+interface Competitor {
+  /** The session's branch, which a refusal names. */
+  branch: string;
+  /**
+   * What holds its decisions: the live branch's ref, or the commit an open PR's
+   * gate pinned, undefined when its merge recorded none.
+   */
+  rev: string | undefined;
+  /** A pinned commit: one git cannot find leaves the peer unchecked, not absent. */
+  pinned: boolean;
+}
+
 /**
  * The other sessions whose branch can still land: one holding its scope
- * (decision 41's live states) or a merged one whose PR is open, not landed.
+ * (decision 41's live states), read at its branch, or a merged one whose PR is
+ * open, not landed, read at the sha its newest merge pinned. That gate deleted
+ * the local branch in both modes, and only the operator's `pup fix` brings it
+ * back, so the store's sha is what is left of the PR's head (decision 84).
  */
-function competingBranches(db: Database, sessionId: string): string[] {
+function competingBranches(db: Database, sessionId: string): Competitor[] {
   const holding = holdingStates();
-  return listSessions(db)
-    .filter((session) => session.id !== sessionId)
-    .filter((session) => {
-      if (holding.includes(session.state)) return true;
-      const merge = session.state === 'merged' ? newestMerge(db, session.id) : undefined;
-      return typeof merge === 'object' && merge.prUrl !== undefined;
-    })
-    .map((session) => `refs/heads/${session.branch}`);
+  const competitors: Competitor[] = [];
+  for (const session of listSessions(db)) {
+    if (session.id === sessionId) continue;
+    if (holding.includes(session.state)) {
+      competitors.push({
+        branch: session.branch,
+        rev: `refs/heads/${session.branch}`,
+        pinned: false,
+      });
+      continue;
+    }
+    const merge = session.state === 'merged' ? newestMerge(db, session.id) : undefined;
+    if (typeof merge !== 'object' || merge.prUrl === undefined) continue;
+    const sha = merge.sha !== undefined && COMMIT_SHA.test(merge.sha) ? merge.sha : undefined;
+    competitors.push({ branch: session.branch, rev: sha, pinned: true });
+  }
+  return competitors;
 }
 
 /**
@@ -198,7 +224,8 @@ const pad = (number: number): string => String(number).padStart(4, '0');
  * The gate's ADR-number stage (decision 146), run before any other stage
  * measures the branch. It fails on each decision the branch at `sha` adds whose
  * number the target at `targetSha` holds, that the branch adds twice, or that
- * another session branch adds while its session is live or holds an open PR,
+ * another session branch adds while its session is live or holds an open PR
+ * (that one read at the sha its gate pinned, since the gate deleted the branch),
  * each line naming the lowest free number above the target's highest. A file
  * git pairs as a rename of a target decision under the same number is that
  * decision under a new slug, not a new one: it is checked against the other
@@ -247,9 +274,14 @@ export function adrNumberStage(
   );
   const takenBy = new Map<number, string>();
   const unchecked: string[] = [];
-  for (const ref of competingBranches(db, sessionId)) {
-    const branch = sanitizeReason(ref.slice('refs/heads/'.length));
-    const theirs = peerDecisions(repoPath, targetSha, ref);
+  for (const peer of competingBranches(db, sessionId)) {
+    const branch = sanitizeReason(peer.branch);
+    let theirs =
+      peer.rev === undefined
+        ? 'its open PR has no gated commit on record'
+        : peerDecisions(repoPath, targetSha, peer.rev);
+    if (theirs === undefined && peer.pinned)
+      theirs = "its open PR's gated commit is not in this repo";
     if (typeof theirs === 'string') unchecked.push(`not checked against ${branch}: ${theirs}`);
     if (typeof theirs !== 'object') continue;
     for (const number of theirs.values()) if (!takenBy.has(number)) takenBy.set(number, branch);
