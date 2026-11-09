@@ -17,19 +17,27 @@
     session must be `merged`, its newest merge must have opened a PR, it must not have landed
     or been retired, GitHub must say its PR is `CLOSED` (an `OPEN` PR is closed or landed first,
     a `MERGED` one is `pup land`'s), and the named PR must be `MERGED` into the target the
-    session's PR was for. The repo is pinned the way `pup land` pins it (decisions 56, 84), so
-    neither url can make gh answer for another repo's PR.
-    Then, under the merge lock, with the state re-checked as `pup land` does (a `pup fix` may
-    have taken the session out of `merged` meanwhile), the session's worker window is stopped,
-    so no live agent has its tree removed under it. It is stopped by its exact name only, not
+    session's PR was for. Any PR merged into that target counts as superseding: pup checks its
+    state and base only, not that its content carries the closed PR's work; that judgement is
+    the operator's. The repo is pinned the way `pup land` pins it (decisions 56, 84), so
+    neither url can make gh answer for another repo's PR. A gh that fails, or answers a state
+    pup cannot read, refuses.
+    Then, under the merge lock, the state is re-checked as `pup land` does (a `pup fix` may
+    have taken the session out of `merged` meanwhile), and so is the newest of its merge, fix
+    round, landed and retired events: it must be the very row read before the lock. A fix
+    round's re-gate, which opens a new PR and leaves the session `merged` again, or a land
+    while retire waited, refuses, so a retire never closes out a PR that no longer stands for
+    the session. A worktree git holds locked refuses next, before anything moves. Then the
+    session's worker window is stopped, so no live agent has its tree removed under it. It is stopped by its exact name only, not
     also by the stored pane id as the gate stops it (decision 46): a retired session is old, a
     tmux server restarted since then reissues pane ids, and a kill aimed at a reissued id would
     end whichever session now holds that pane, the operator's own included. A window renamed
-    from inside is then missed, the cost decision 46 names. Then the worktree is removed and the branch
-    deleted while it holds no commit past the sha the gate pinned. A branch past it carries work
-    nothing re-landed and is kept, and the outcome names it. A worktree git cannot remove (a
-    lock) refuses with no event written, so a re-run after the operator unlocks it finishes the
-    job. Last under the lock, a `retired` event records the closed PR and the superseding one
+    from inside is then missed, the cost decision 46 names. Then the worktree is removed with
+    `git worktree remove --force`, which discards its uncommitted files, as `pup land` does,
+    and the branch deleted while it holds no commit past the sha the gate pinned. A branch past
+    it carries work nothing re-landed and is kept, and the outcome names it. A locked worktree
+    refuses with the window untouched and no event written, so a re-run after the operator
+    unlocks it finishes the job. Last under the lock, a `retired` event records the closed PR and the superseding one
     (`{ prUrl, supersededBy }`). The inbox is to treat `retired` as it treats `landed`, so the
     session leaves Needs you; that reader change, `openPullRequest` stopping at a `retired`
     event, is task t-mw6a2pfo, which follows this one, and until it lands the line stays. The
@@ -40,8 +48,12 @@
     Tests: a retire removes the worktree and branch and records both PRs; it stops the window by
     name while the worktree still stands, never by the stored pane id, and a refusal stops nothing; `#9` and `9` read as
     the session's repo's PR; a re-run after an earlier teardown finishes; a branch past the pin
-    is kept; it refuses an unknown session, one not merged, one whose merge opened no PR, one
-    landed or already retired, an open PR, a merged PR, a superseding PR that is open, closed or
-    merged into another branch, and one of another repo, each with nothing moved. The CLI
+    is kept; it refuses an unknown session, one not merged, one whose merge opened no PR or
+    names no pinned sha or target, a row whose branch or worktree is not the minted one, a
+    stored PR url of another repo, one landed or already retired, an open PR, a merged PR, a
+    superseding PR that is open, closed, merged into another branch or of another repo, a gh
+    that fails or answers an unreadable state, a fix round, a re-gate's merge or a land
+    recorded while it waited for the lock, and a locked worktree, each with nothing moved and
+    the window not stopped. The CLI
     refuses a session, the conductor and a missing `--superseded-by`, and prints what it
     removed and kept.

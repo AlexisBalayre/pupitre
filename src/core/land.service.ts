@@ -16,7 +16,6 @@ import {
   assertMintedRow,
   assertPullRequestOf,
   assertTargetName,
-  deleteBranchAt,
   fastForward,
   isAncestor,
   MERGE_LOCK_WAIT_MS,
@@ -31,6 +30,12 @@ import { SESSION_ID_PATTERN } from './paths.constants.js';
 import { mainLandedMessage } from './profile-compiler.service.js';
 import { appendEvent, getSession, listSessions } from './session.repository.js';
 import { steerSession } from './session-lifecycle.service.js';
+import {
+  assertStillMerged,
+  deleteBranchIfHeld,
+  isRegisteredWorktree,
+  pinnedPullRequest,
+} from './session-teardown.utils.js';
 import type { LandOutcome } from './types/land.types.js';
 
 const LAND_USE: OriginUse = { command: '`pup land`', untouched: 'Nothing was landed.' };
@@ -71,21 +76,7 @@ export async function landSession(db: Database, req: LandRequest): Promise<LandO
         '`--pr` can land. Nothing was landed.',
     );
   }
-  const merge = newestMerge(db, session.id);
-  if (merge === 'landed') throw new Error(`Session ${id} has already landed.`);
-  if (merge?.prUrl === undefined) {
-    throw new Error(
-      `Session ${id} opened no pull request: its merge was a local fast-forward, already on ` +
-        'the target. Nothing was landed.',
-    );
-  }
-  const { prUrl, sha, target } = merge;
-  if (sha === undefined || !COMMIT_SHA.test(sha) || target === undefined) {
-    throw new Error(
-      `Session ${id}'s merge event names no pinned sha and target, so there is nothing to ` +
-        'check origin against. Nothing was landed.',
-    );
-  }
+  const { prUrl, sha, target } = pinnedPullRequest(db, session.id, id, LAND_USE.untouched);
   // Store text about to be handed to git and printed: refused the gate's way.
   assertTargetName(req.repoPath, target);
   if (req.audit !== false && req.adapters.length === 0) {
@@ -142,17 +133,7 @@ export async function landSession(db: Database, req: LandRequest): Promise<LandO
   const landed = await withMergeLock(
     req.repoPath,
     () => {
-      // `pup fix` takes the session out of merged under this lock, maybe while
-      // GitHub was being read above; landing then would tear down its live round.
-      const now = getSession(db, session.id)?.state;
-      if (now !== 'merged') {
-        throw new Error(
-          (now === undefined
-            ? `Session ${id} was removed from the store`
-            : `Session ${id} became ${now}`) +
-            ' while `pup land` waited for the merge lock. Nothing was landed.',
-        );
-      }
+      assertStillMerged(db, session.id, id, LAND_USE);
       if (newestMerge(db, session.id) === 'landed') {
         throw new Error(`Session ${id} has already landed.`);
       }
@@ -415,15 +396,8 @@ function tearDown(
   targetSha: string,
   sha: string,
 ): { removedWorktree: boolean; keptBranch?: string; keptWorktree?: string } {
-  runGit(repoPath, ['worktree', 'prune']);
-  // Asked of git, not the filesystem: a directory git no longer registers,
-  // left by a teardown that failed part-way, cannot be removed through git and
-  // would refuse every re-run.
-  const registered = runGit(repoPath, ['worktree', 'list', '--porcelain'])
-    .split('\n')
-    .includes(`worktree ${session.worktree_path}`);
   let removedWorktree = false;
-  if (registered) {
+  if (isRegisteredWorktree(repoPath, session.worktree_path)) {
     // A session can lock its own worktree, which one `--force` refuses. The
     // land goes on, but the branch stays with it: `update-ref -d` would delete
     // the branch a surviving worktree has checked out.
@@ -435,20 +409,6 @@ function tearDown(
       return { removedWorktree, keptWorktree: session.worktree_path };
     }
   }
-  const branchRef = `refs/heads/${session.branch}`;
-  let branchSha: string;
-  try {
-    branchSha = resolveCommit(repoPath, branchRef);
-  } catch (error) {
-    rethrowIfKilled(error);
-    // already gone, or a symref the gate refuses to follow
-    return { removedWorktree };
-  }
-  if (
-    (isAncestor(repoPath, branchSha, targetSha) || isAncestor(repoPath, branchSha, sha)) &&
-    deleteBranchAt(repoPath, branchRef, branchSha)
-  ) {
-    return { removedWorktree };
-  }
-  return { removedWorktree, keptBranch: session.branch };
+  const keptBranch = deleteBranchIfHeld(repoPath, session.branch, [targetSha, sha]);
+  return keptBranch === undefined ? { removedWorktree } : { removedWorktree, keptBranch };
 }

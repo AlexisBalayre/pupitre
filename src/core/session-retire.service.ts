@@ -1,25 +1,34 @@
 import type { Database } from 'better-sqlite3';
 import { sanitizeReason } from '../adapters/capability.utils.js';
 import { killSession as killTmux } from '../claude/session-runtime.service.js';
-import { rethrowIfKilled, runGit } from './git-diff.client.js';
+import { runGit } from './git-diff.client.js';
 import { assertGhAvailable, originRepoSlug, readPullRequestLanding } from './github.client.js';
-import { COMMIT_SHA } from './merge-gate.constants.js';
 import {
   assertMintedRow,
   assertPullRequestOf,
-  deleteBranchAt,
-  isAncestor,
   MERGE_LOCK_WAIT_MS,
-  newestMerge,
   type OriginUse,
   pushTarget,
-  resolveCommit,
   withMergeLock,
 } from './merge-gate.service.js';
-import { appendEvent, getSession, listEvents, type SessionRow } from './session.repository.js';
+import {
+  appendEvent,
+  type EventRow,
+  getSession,
+  listEvents,
+  type SessionRow,
+} from './session.repository.js';
+import {
+  assertStillMerged,
+  assertUnlockedWorktree,
+  deleteBranchIfHeld,
+  pinnedPullRequest,
+} from './session-teardown.utils.js';
 
 const UNTOUCHED = 'Nothing was retired.';
 const RETIRE_USE: OriginUse = { command: '`pup retire`', untouched: UNTOUCHED };
+/** The events that start or close out what a merge stands for. */
+const STANDING_EVENTS: readonly string[] = ['merge', 'fix_round', 'landed', 'retired'];
 
 interface RetireRequest {
   repoPath: string;
@@ -61,22 +70,8 @@ export async function retireSession(db: Database, req: RetireRequest): Promise<R
         `was closed unmerged can be retired. ${UNTOUCHED}`,
     );
   }
-  assertStanding(db, session.id, id);
-  const merge = newestMerge(db, session.id);
-  if (merge === 'landed') throw new Error(`Session ${id} has landed; there is nothing to retire.`);
-  if (merge?.prUrl === undefined) {
-    throw new Error(
-      `Session ${id} opened no pull request: its merge was a local fast-forward, already on ` +
-        `the target. ${UNTOUCHED}`,
-    );
-  }
-  const { prUrl, sha, target } = merge;
-  if (sha === undefined || !COMMIT_SHA.test(sha) || target === undefined) {
-    throw new Error(
-      `Session ${id}'s merge event names no pinned sha and target, so there is nothing to ` +
-        `tell its branch's own commits by. ${UNTOUCHED}`,
-    );
-  }
+  const checked = newestStanding(db, session.id, id);
+  const { prUrl, sha, target } = pinnedPullRequest(db, session.id, id, UNTOUCHED);
   assertMintedRow(req.repoPath, session, UNTOUCHED);
   const repo = originRepoSlug(pushTarget(db, session, req.repoPath, RETIRE_USE));
   // Store text: a pull request of another repo would answer for this one.
@@ -114,18 +109,17 @@ export async function retireSession(db: Database, req: RetireRequest): Promise<R
   return withMergeLock(
     req.repoPath,
     () => {
-      // `pup fix` takes the session out of merged under this lock, maybe while
-      // GitHub was being read above; retiring then would tear down its live round.
-      const now = getSession(db, session.id)?.state;
-      if (now !== 'merged') {
+      assertStillMerged(db, session.id, id, RETIRE_USE);
+      // A re-gate (a fix round's, which opens a new PR) or a land while this
+      // waited leaves the state merged but the PR checked above no longer the
+      // session's: retiring then would close out the wrong one.
+      const now = newestStanding(db, session.id, id);
+      if (now?.id !== checked?.id) {
         throw new Error(
-          (now === undefined
-            ? `Session ${id} was removed from the store`
-            : `Session ${id} became ${sanitizeReason(now)}`) +
-            ` while \`pup retire\` waited for the merge lock. ${UNTOUCHED}`,
+          `Session ${id} recorded a ${now?.type} event while \`pup retire\` waited for the ` +
+            `merge lock, so the PR checked is no longer the one its merge stands for. ${UNTOUCHED}`,
         );
       }
-      assertStanding(db, session.id, id);
       const tornDown = tearDown(req.repoPath, session, sha);
       appendEvent(db, session.id, 'retired', { prUrl, supersededBy });
       return { prUrl, supersededBy, ...tornDown };
@@ -134,12 +128,17 @@ export async function retireSession(db: Database, req: RetireRequest): Promise<R
   );
 }
 
-/** Refuse a session already closed out: the newest `landed` or `retired` event comes after its merge. */
-function assertStanding(db: Database, sessionId: string, id: string): void {
+/**
+ * The newest of the session's merge, fix round, landed and retired events,
+ * refusing a session already retired. Read before the lock and again under
+ * it: any other row then means the merge checked no longer stands.
+ */
+function newestStanding(db: Database, sessionId: string, id: string): EventRow | undefined {
   const newest = listEvents(db, sessionId)
     .reverse()
-    .find((row) => ['merge', 'landed', 'retired'].includes(row.type));
+    .find((row) => STANDING_EVENTS.includes(row.type));
   if (newest?.type === 'retired') throw new Error(`Session ${id} has already been retired.`);
+  return newest;
 }
 
 /**
@@ -157,17 +156,19 @@ function supersedingUrl(supersededBy: string, repo: string): string {
 /**
  * The session's worktree, and its branch while it holds no commit past the
  * pinned `sha`: the closed PR carried that sha, and a commit past it is work
- * nothing re-landed, kept for the operator. A worktree git cannot remove (a
- * session can lock its own) refuses the retire, with no event written, so a
- * re-run after the operator unlocks it finishes the job. The session's worker
- * window is stopped first, so no live agent has its tree pulled out from under
- * it.
+ * nothing re-landed, kept for the operator. A worktree git holds locked (a
+ * session can lock its own) refuses the retire before the window is stopped,
+ * with no event written, so a re-run after the operator unlocks it finishes
+ * the job. The session's worker window is stopped before the removal, so no
+ * live agent has its tree pulled out from under it. `--force` discards the
+ * worktree's uncommitted files, as `pup land` does (decision 84).
  */
 function tearDown(
   repoPath: string,
   session: SessionRow,
   sha: string,
 ): { removedWorktree: boolean; keptBranch?: string } {
+  const registered = assertUnlockedWorktree(repoPath, session.worktree_path, RETIRE_USE);
   // By exact name only, never by the stored pane id the gate also kills by: a
   // retired session is old, a tmux server restarted since reissues pane ids
   // from %0, and `kill-session` on a reissued id would end whichever session
@@ -175,35 +176,13 @@ function tearDown(
   // inside is missed, the cost decision 46 names for a name-only kill. A
   // silent no-op when the window is already gone.
   killTmux(session.id);
-  runGit(repoPath, ['worktree', 'prune']);
-  // Asked of git, not the filesystem, as `pup land` asks it (decision 84).
-  const registered = runGit(repoPath, ['worktree', 'list', '--porcelain'])
-    .split('\n')
-    .includes(`worktree ${session.worktree_path}`);
   if (registered) {
-    try {
-      runGit(repoPath, ['worktree', 'remove', '--force', session.worktree_path], {
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-    } catch (error) {
-      rethrowIfKilled(error);
-      throw new Error(
-        `git could not remove the worktree at ${sanitizeReason(session.worktree_path)} (a lock, ` +
-          `most likely); unlock it and re-run \`pup retire\`. ${UNTOUCHED}`,
-      );
-    }
+    runGit(repoPath, ['worktree', 'remove', '--force', session.worktree_path], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
   }
-  const branchRef = `refs/heads/${session.branch}`;
-  let branchSha: string;
-  try {
-    branchSha = resolveCommit(repoPath, branchRef);
-  } catch (error) {
-    rethrowIfKilled(error);
-    // already gone, or a symref the gate refuses to follow
-    return { removedWorktree: registered };
-  }
-  if (isAncestor(repoPath, branchSha, sha) && deleteBranchAt(repoPath, branchRef, branchSha)) {
-    return { removedWorktree: registered };
-  }
-  return { removedWorktree: registered, keptBranch: session.branch };
+  const keptBranch = deleteBranchIfHeld(repoPath, session.branch, [sha]);
+  return keptBranch === undefined
+    ? { removedWorktree: registered }
+    : { removedWorktree: registered, keptBranch };
 }
