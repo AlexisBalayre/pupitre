@@ -38,14 +38,15 @@
     - `:(top,glob,icase)` for the Docusaurus grep, and `:(top)` with `--full-name` for the
       grep of a test file's importers;
     - `--full-tree` on `readBranchTree`'s `ls-tree`, and on the target-tree listing the
-      complexity stage reads (decision 157), whose test now sets the key after the checks.
+      complexity stage reads (decision 157), whose test now sets the key after the checks;
+    - `--full-tree` on the nested-package `ls-tree` in `src/adapters/git-tree.client.ts`,
+      which reads the trusted checkout at the measured sha and at `HEAD`.
     *Renames.* `gitDiffPaths` passes `--no-renames`: under rename detection `--name-only` lists
     a rename's new path alone, so a file moved from outside scope-in into it passed the audit.
     *`GIT_GRAFT_FILE`* stays `/dev/null/no-grafts`, laid over every `runGit` caller's env
     (decision 89). `/dev/null` itself opens as an empty file, and git prints its graft
     deprecation hint on every call.
-    *Open gap.* The nested-package `ls-tree` in `src/adapters/git-tree.client.ts` is not
-    anchored: it lies outside this change's scope. It relies on the refusals alone, so a key set
-    after `cutGateCheckout`'s check and cleared before the pre-merge one drops nested packages
-    from the run; a follow-up passes it `--full-tree`. The ADR-number stage (decision 146)
+    *Open gap.* `ls-files` in `overlap.service.ts` (the conflict radar) and
+    `profile-compiler.service.ts` (the launch profile) run unanchored in the main checkout.
+    Neither is a gate stage; a follow-up anchors them. The ADR-number stage (decision 146)
     anchors its own reads.

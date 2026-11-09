@@ -63,6 +63,28 @@ describe('nestedPackageDirs', () => {
     expect(nestedPackageDirs(localContext(repo))).toEqual(new Set());
   });
 
+  // A session can write the trusted checkout's `.git/config`, and a
+  // `core.worktree` aimed at its parent runs git there from `repo/`: a plain
+  // `ls-tree` lists nothing, and no nested package runs its own stages
+  // (decision 161).
+  it('names every nested package with the shared config aiming core.worktree at a parent', () => {
+    const repo = join(tempDir('pup-host-'), 'repo');
+    mkdirSync(repo);
+    git(repo, 'init', '-q');
+    writeFiles(repo, ['package.json', 'tools/review/package.json']);
+    git(repo, 'add', '-A');
+    git(repo, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'init');
+    const sha = git(repo, 'rev-parse', 'HEAD').toString().trim();
+    git(repo, 'config', 'core.worktree', dirname(repo));
+    // The control: armed, a plain listing of the commit holds nothing.
+    expect(git(repo, 'ls-tree', '-r', '--name-only', sha).toString()).toBe('');
+
+    expect(nestedPackageDirs(localContext(repo))).toEqual(new Set(['tools/review']));
+    expect(nestedPackageDirs({ measurePath: repo, configPath: repo, measureSha: sha })).toEqual(
+      new Set(['tools/review']),
+    );
+  });
+
   it('names nothing in a checkout git cannot list', () => {
     const plain = tempDir('pup-source-');
     writeFiles(plain, ['tools/review/package.json']);

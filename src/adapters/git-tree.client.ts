@@ -53,7 +53,11 @@ function committedPackageDirs(checkout: string, rev: string): Set<string> {
   try {
     // Timed out like every other child pup runs: git reads config a session
     // can write, and an untimed read would hang the gate inside the lock.
-    listing = runGit(checkout, ['ls-tree', '-r', '-z', '--name-only', rev], {
+    // `--full-tree`: a `core.worktree` a session sets in the trusted checkout's
+    // shared config after the gate's check runs git there from a subdirectory,
+    // and a plain `ls-tree` lists that prefix alone, no nested package among
+    // it (decision 161).
+    listing = runGit(checkout, ['ls-tree', '--full-tree', '-r', '-z', '--name-only', rev], {
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: GATE_COMMAND_TIMEOUT_MS,
     });
