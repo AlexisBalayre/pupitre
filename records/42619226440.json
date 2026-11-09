@@ -1,0 +1,199 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-09T12:51:50.607Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42619226440",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42619226440",
+  "actor": "AlexisBalayre",
+  "commit_sha": "35168083e9a643db281ef06b8aebba81b6989412",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 289,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "819-824",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The 'every side is a known binary' rule only reads `path` at the merge-base and at the branch. For a rename, `gitDiffNumstat` reports only the new path, so the rename's source file is never checked or counted. Renaming a source file into a `.png` therefore drops all its deleted lines, with no forged flag.",
+      "body": "**Renaming a source file into a known binary drops its deleted lines from the diff-size count**\n\nThe new rule skips a `-\\t-` file only when every side it exists on is a known binary. For a rename, though, only the new path is ever checked. `gitDiffNumstat` pins `diff.renames=true` and keeps only the new path of a rename record:\n\nhttps://github.com/AlexisBalayre/pupitre/blob/35168083e9a643db281ef06b8aebba81b6989412/src/core/git-diff.client.ts#L729-L733\n\n`gitDiffBinaryRecount` then runs `ls-tree` for that new path at the merge base. Nothing is listed, so the base side is `undefined`, and `spendKnownBinarySkip([undefined, n])` skips the file:\n\nhttps://github.com/AlexisBalayre/pupitre/blob/35168083e9a643db281ef06b8aebba81b6989412/src/core/git-diff.client.ts#L818-L824\n\n**How to reach it:** a branch deletes `src/auth.ts` and adds `assets/a.png`. The PNG holds the PNG signature, a NUL, and at least half of `auth.ts`'s bytes. It is 1 MiB or less and contains no `PK\\x05\\x06`. git's rename detection does not exclude binary blobs, so it pairs the two files at 50% or more similarity, and numstat reports `-\\t-` under `assets/a.png` only. Every line of `auth.ts` is deleted without being counted, and no forged flag is raised. The same deletion without the rename shows as `0\\tN\\tsrc/auth.ts` in numstat, and all N lines are counted.\n\nIf the budget is already spent, the file is recounted, but the recount loses the deletions too. `diffHunks` limits the diff to `:(top,literal)<new path>`, so git never sees the old path and reports a pure add.\n\nThe old rule (\"either side binary\") had the same hole, so this is not a regression. But this PR sets out to recount a text file that a known binary replaces (ADR 0154: \"every side of the merge-base diff it exists on\"), and a rename gets around that rule. The ADR's ceilings cover content inside a capped known binary. They do not cover a source file's deletions.\n\n**Possible fixes:**\n- Treat a rename source as a merge-base side. Carry the old path from numstat into `DiffFileStat`, run `blobIsKnownBinary(base, oldPath, …)` on it, and recount with both paths in the pathspec.\n- Or run the numstat with `--no-renames`, so the deletion appears as its own entry and is counted.\n\nA test would pin it: delete a multi-line `.ts` file and add a `.png` (signature + NUL + most of the `.ts` bytes), then assert that the diff-size count includes the deleted lines, or that the file is flagged.",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "242-243",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "Test adequacy: no test fails if the new `--no-relative` in rawDiffEntries is removed. The new core.worktree + diff.relative test has no rename and no symlink with a test name, so an empty raw map changes no count.",
+      "body": "**Test adequacy: nothing pins `--no-relative` in `rawDiffEntries`**\n\nhttps://github.com/AlexisBalayre/pupitre/blob/35168083e9a643db281ef06b8aebba81b6989412/src/core/merge-gate.service.ts#L242-L243\n\n```ts\n      // A session-written `diff.relative` would list only a prefix's paths (decision 154).\n      '--no-relative',\n```\n\n`diffSizeKind` gets a path's symlink mode (`entry?.mode === '120000'`) and its rename source (`entry?.renamedFrom`) only from the `--raw` listing. Suppose a session writes a `core.worktree` naming the repo's parent plus `diff.relative=true`. Without this flag, git then works under a `<repo>/` prefix that no tree path matches, and the raw map comes back empty.\n\nThe new test [`counts from the top of the tree under a core.worktree above the repo`](https://github.com/AlexisBalayre/pupitre/blob/35168083e9a643db281ef06b8aebba81b6989412/src/core/merge-gate.test.ts#L1673-L1694) still passes with line 243 deleted, because every fixture path gets the same kind without the raw map:\n- `src/link.ts` is source by name.\n- `src/other.test.ts` is source via `tree.linked`.\n- `src/big.test.ts` is source via the grep reach.\n- Every path is an addition, so there is no rename.\n\nThe test's `diff.relative` assertion only covers the numstat's `--no-relative`, which comes from `DIFF_SAFE_FLAGS`.\n\n**Mutant that survives:** under that config, a committed symlink `src/alias.test.ts` (mode `120000`) counts as test instead of source. So does a rename `src/impl.ts` → `src/impl.test.ts`. Either way, source lines move out of the source count and can stay under the diff-size flag.\n\n**Fix:** add `['120000', 'src/alias.test.ts', 'imp.ts']` to that test's `commitBlobs` and expect `source: 17`. Without the flag it would count 16 source lines and 1 test line.",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "566-587",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "readBlobs sets maxBuffer to the exact stdout size it expects, and leaves stderr piped into the same limit. So any git warning on stderr (for example a stale `.git/objects/info/alternates` entry) kills `cat-file --batch` with ENOBUFS, and every known-binary check and batched reach read then fails closed with an error that hides the cause. Add slack to maxBuffer or set stdio to ['pipe','pipe','ignore'].",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "757-788",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The blobIsKnownBinary docstring says only an empty ls-tree listing answers undefined, but the code also answers undefined when the listing is non-empty and no record's path matches exactly. Nothing reaches this today under --full-tree -z. Either make the docstring true or return false/throw on a non-matching listing.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0154-a-diff-size-binary-is-a-known-format-by.md",
+      "line": "79-81",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The ADR says the recount runs `merge-base` and one `diff` per `-\\t-` file (two processes each). A known-extension file now also costs up to two `ls-tree` calls and a `cat-file --batch` read, so the stated per-file cost is too low for anyone sizing the batching follow-up.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "743-744",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The re-export of BINARY_FREE_MAX_BYTES/BINARY_FREE_TOTAL_MAX_BYTES from git-diff.client.ts exists only so merge-gate.service.ts can import the caps through the client. Importing them from ./known-binary.utils.js directly removes the re-export and its doc comment.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/known-binary.utils.ts",
+      "line": null,
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "docs/conventions/testing.md §Layout asks for one test file per source file, but the new known-binary.utils.ts helpers are tested inside git-diff-client.test.ts. Sibling *.utils.ts modules each have their own *-utils.test.ts.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": null,
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "In readBlobs, the inline comment about `ls-tree -l` listing `BAD` repeats the JSDoc sentence just above it (and mayBeKnownBinary's JSDoc says it a third time). AGENTS.md §Comments says to delete the call-site copy.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/known-binary.utils.ts",
+      "line": "10, 67-77",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The BinaryFormat type passes through gitDiffBinaryRecount, blobIsKnownBinary and knownBinarySize only so its magic can be tested. formatsNamed could return a flat string[] of magics, which removes the exported type and the destructuring in opensWithMagic.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": null,
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The blobIsKnownBinary and gitDiffBinaryRecount JSDoc re-list the full skip criteria (and name internal helpers) that known-binary.utils.ts and ADR 0154 already state, so a change to the criteria must be made in three places. Keep the contract and point to knownBinarySize.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "664-673",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "Swapping the global --literal-pathspecs for `:(top,literal)` magic means an inherited GIT_LITERAL_PATHSPECS=1 (which scrubbedGitEnv does not strip) makes diffHunks match nothing and recount a forged file as 0 lines. Only the operator's environment can set it. Consider adding the GIT_*_PATHSPECS variables to the scrubbed list.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 1,
+  "comments_posted_actual": 2,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 5.168623200000002,
+  "duration_ms": 517405,
+  "num_turns": 18,
+  "tokens": {
+    "input": 14,
+    "output": 21327,
+    "cache_read": 346741,
+    "cache_creation": 81557,
+    "total": 449639
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 144,
+      "output": 114949,
+      "cache_read": 2116413,
+      "cache_creation": 366264,
+      "cost_usd": 4.798829600000001
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 36,
+      "output": 10268,
+      "cache_read": 252659,
+      "cache_creation": 96378,
+      "cost_usd": 0.36896290000000004
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 348,
+      "cache_read": 0,
+      "cache_creation": 5252,
+      "cost_usd": 0.0008307
+    }
+  ],
+  "permission_denials": []
+}
