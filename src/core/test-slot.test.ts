@@ -21,6 +21,7 @@ import { projectId, projectPaths } from './paths.utils.js';
 import { ensureProject, insertSession, insertTask } from './session.repository.js';
 import {
   availableMemoryBytes,
+  COMMIT_TEST_ENV,
   describeSlotWait,
   GATE_SLOT_WAIT_MS,
   HELD_SLOT_ENV,
@@ -836,6 +837,41 @@ describe('runSessionTest (decision 96)', () => {
       expect.stringMatching(/^No test slot came free in 480\.0s: /),
     );
     expect(existsSync(join(dir, 'ran'))).toBe(false);
+  });
+
+  it('waits past `SESSION_SLOT_WAIT_MS` for a commit, then runs when a slot frees', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
+    vi.stubEnv(COMMIT_TEST_ENV, '1');
+    const dir = tempDir('pup-session-test-');
+    const slots = join(dir, 'slots');
+    mkdirSync(slots);
+    const lock = join(slots, 'slot-0.lock');
+    writeFileSync(
+      lock,
+      JSON.stringify({ kind: 'gate', label: 't-9', pid: process.ppid, token: 'x' }),
+    );
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    onTestFinished(() => errors.mockRestore());
+    let status: number | undefined;
+    void runSessionTest({
+      command: { stage: 'test', command: 'true', args: [] },
+      args: [],
+      cwd: dir,
+      sessionId: 's1',
+      slots: { dir: slots },
+    }).then((answered) => {
+      status = answered;
+    });
+
+    await vi.advanceTimersByTimeAsync(SESSION_SLOT_WAIT_MS + 60_000);
+    expect(status).toBeUndefined();
+    rmSync(lock);
+    await vi.advanceTimersByTimeAsync(2000);
+    await vi.waitFor(() => expect(status).toBe(0));
+    expect(errors).not.toHaveBeenCalledWith(expect.stringMatching(/^No test slot came free/));
   });
 
   it('bounds its wait under the 600 s a worker gives a Bash call', () => {

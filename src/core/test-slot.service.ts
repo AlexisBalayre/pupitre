@@ -57,6 +57,12 @@ export const GATE_SLOT_WAIT_MS = GATE_COMMAND_TIMEOUT_MS;
  */
 export const SESSION_SLOT_WAIT_MS = 8 * 60 * 1000;
 
+/**
+ * Set by `scripts/pre-commit` for the `pup session test` it runs: a commit waits
+ * for a slot without bound, since failing it for load would block the worker.
+ */
+export const COMMIT_TEST_ENV = 'PUP_COMMIT_TEST';
+
 /** `pup session test`'s status when no slot came free in time: sysexits' EX_TEMPFAIL, retry. */
 export const SLOTS_BUSY_STATUS = 75;
 
@@ -493,7 +499,7 @@ function relatedArgs(args: string[]): string[] {
  * name there and the files as `"$@"`, its text untouched. Answers the
  * run's exit status; an interrupt or a stop of pup's own reaches the run too,
  * so the slot is never freed under a suite that is still going. A wait that
- * outlasts `SESSION_SLOT_WAIT_MS`, unless `slots` names another bound, runs
+ * outlasts `SESSION_SLOT_WAIT_MS`, unless `slots` names another bound or the run is a commit's (`COMMIT_TEST_ENV`, never bound), runs
  * nothing, says to retry and answers `SLOTS_BUSY_STATUS` (decision 140).
  */
 export async function runSessionTest(req: {
@@ -509,7 +515,9 @@ export async function runSessionTest(req: {
   const shellScript = command.command === 'sh' && command.args[0] === '-c';
   const separator =
     args.length === 0 ? [] : command.command === 'npm' ? ['--'] : shellScript ? ['sh'] : [];
-  const maxWaitMs = req.slots?.maxWaitMs ?? SESSION_SLOT_WAIT_MS;
+  const maxWaitMs =
+    req.slots?.maxWaitMs ??
+    (process.env[COMMIT_TEST_ENV] ? Number.POSITIVE_INFINITY : SESSION_SLOT_WAIT_MS);
   try {
     return await withTestSlot(
       { kind: 'worker', label: req.sessionId },
