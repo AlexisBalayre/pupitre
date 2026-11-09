@@ -1,0 +1,105 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-09T16:27:30.465Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42654452517",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42654452517",
+  "actor": "AlexisBalayre",
+  "commit_sha": "a2fd0c45e89c803df73d33fe78082158c2188f29",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 297,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/shell-quote-utils.test.ts",
+      "line": "10-35",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`readByFish` is a hand-written model of fish's quoting. Wherever fish is installed it checks nothing the real `fish -c` round-trip doesn't already check, and nothing verifies the model itself. Running the real-shell loop and skipping it when fish is missing would drop about 25 lines.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/shell-quote-utils.test.ts",
+      "line": "87-95",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The standalone backslash-quote regression test repeats a word that is already in AWKWARD_WORDS, and part of it asserts against the test's own fish model. One row in the exact-output `it.each` table would cover the same case.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.5303868250000001,
+  "duration_ms": 129363,
+  "num_turns": 14,
+  "tokens": {
+    "input": 12,
+    "output": 8502,
+    "cache_read": 249921,
+    "cache_creation": 44807,
+    "total": 303242
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 54,
+      "output": 25113,
+      "cache_read": 609222,
+      "cache_creation": 104243,
+      "cost_usd": 1.2799563999999997
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 42,
+      "output": 7770,
+      "cache_read": 211021,
+      "cache_creation": 60319,
+      "cost_usd": 0.24968359999999998
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 360,
+      "cache_read": 0,
+      "cache_creation": 4533,
+      "cost_usd": 0.000746825
+    }
+  ],
+  "permission_denials": []
+}
