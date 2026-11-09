@@ -1,0 +1,129 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-09T13:19:06.764Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42623820895",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42623820895",
+  "actor": "AlexisBalayre",
+  "commit_sha": "55c11b97f79c82d6af38fb9a0395ed270d4f8a4d",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 290,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "guards"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "guards"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "simplicity",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/github.client.ts",
+      "line": "413-417",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "A thread an earlier fix round already answered (and the gate deliberately left open \"for the operator\") now counts as open, so `pup ci wait` names `pup fix` again and `pup fix` hands the same finding back as a repeat round, each repeat climbing the model ladder.",
+      "body": "**A thread a fix round already answered now comes back as a new round.**\n\n`openThreads` now keeps every unresolved, non-outdated bot thread, whichever run opened it:\n\n```ts\nopenThreads: nodesOf(threads).flatMap((thread): ReviewThread[] => {\n  const [finding] = nodesOf(thread.comments);\n  if (thread.isResolved !== false || typeof thread.id !== 'string') return [];\n  // Only a plain `true` outdates it, so a field outside its shape stays open.\n  if (thread.isOutdated === true) return [];\n```\nhttps://github.com/AlexisBalayre/pupitre/blob/55c11b97f79c82d6af38fb9a0395ed270d4f8a4d/src/core/github.client.ts#L413-L417\n\nThat set includes threads pupitre has already replied to. `answerFixRoundThreads` replies to every relayed thread but resolves one only when the verdict is `addressed` (src/core/fix-round.service.ts:354). `threadVerdict` returns `addressed` only when the worker answered \"fixed\" *and* the round changed that file. Any other thread (declined, unanswered, or fixed but unverifiable) gets a reply and stays open \"for the operator\" (L365).\n\n**Trigger.**\n1. Round 1 relays `PRRT_x`, and the worker declines it as a false positive.\n2. The round's push doesn't touch that line, so GitHub keeps `isOutdated` false.\n3. The bot re-reviews the new head (the round's summary carries `REVIEW_ASK`) and sets SUCCESS \"no blocking issues\".\n\n**Result.**\n- `reviewDigest` (src/core/ci-wait.service.ts:277-286) prints `1 open thread(s) → pup fix <id>` instead of the merge click.\n- `reviewVerdict` (src/core/fix-round.service.ts:666-674) returns the thread, so `pup fix` relays the same finding again. The kickoff carries only its first comment, so the worker has no sign it already declined it.\n- `fixRoundFailure` (src/core/routing.utils.ts:221-222) counts each such round as `repeat-fix-round`, so it climbs the ladder.\n- This repeats until the operator resolves the thread by hand.\n\n**Why it's new.** Before this change, the newest-run filter dropped the thread once the bot reviewed the new head. ADR 0163 covers an earlier *bot run's* unanswered thread (#284). It doesn't cover threads pupitre itself already answered.\n\nThe rationale at routing.utils.ts:191-192 (\"the review mints fresh thread ids on every head a round pushes\") is now also inaccurate.\n\n**Possible fixes.**\n- Skip threads whose ids an earlier `fix_round` already relayed and answered.\n- Or read whether the thread's last comment is pupitre's reply.",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/github.client.ts",
+      "line": "400-405",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`pup ci wait` treats the now-unconditional page-cap refusal as a transient failed read: on any PR with more than 100 review threads (even all resolved) it polls until the full timeout, then tells the user to re-run `pup ci wait`, which refuses again.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/test/helpers/fix-round.mock.ts",
+      "line": "37-38",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`ThreadSeed.earlier` is now dead (no reader or caller after this PR), while fix-round-kickoff.test.ts extends `ThreadSeed` inline with `isOutdated`; delete `earlier` and put `isOutdated?: boolean` on the shared `ThreadSeed` (general.md: \"Delete old code when you replace it\").",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/ci-wait.service.ts",
+      "line": "277-286",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "pre-existing",
+      "description": "In the #284 scenario this PR targets, the digest reads `1 open thread(s), 0 important`: the important count comes from the newest status text (\"no blocking issues\"), though every anchored thread is an important finding.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 1,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.9945604999999997,
+  "duration_ms": 197099,
+  "num_turns": 12,
+  "tokens": {
+    "input": 12,
+    "output": 9158,
+    "cache_read": 261826,
+    "cache_creation": 46561,
+    "total": 317557
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 72,
+      "output": 27095,
+      "cache_read": 858028,
+      "cache_creation": 143644,
+      "cost_usd": 1.5716965999999999
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 54,
+      "output": 10480,
+      "cache_read": 587532,
+      "cache_creation": 103384,
+      "cost_usd": 0.4221212
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 278,
+      "cache_read": 0,
+      "cache_creation": 4828,
+      "cost_usd": 0.0007427
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "gh pr diff 290 -- docs/adr src/core/github.client.ts src/core/fix-round.service.ts"
+    }
+  ]
+}
