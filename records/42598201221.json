@@ -1,0 +1,205 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-09T10:13:19.681Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42598201221",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42598201221",
+  "actor": "AlexisBalayre",
+  "commit_sha": "5911e0474fc6809435c12da0a6dab20d04d86f74",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 201,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/task-rescope.service.ts",
+      "line": "189-190",
+      "description": "The tier raise checks the whole widened scope-in rather than the added globs. So any rescope of a task the operator pinned with `--tier standard` over an already-critical scope overwrites that pin with critical and clears the session's rung.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/task-rescope.service.ts",
+      "line": "119-124",
+      "description": "The window probe checks every session on the task, killed and merged ones included, against its recorded `tmux_target`. Neither the gate's merge teardown nor a plain `pup kill` clears that id. After the default tmux server restarts and gives that pane id to an unrelated live pane, the rescope is refused for a window that no longer exists.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/task-rescope.service.ts",
+      "line": "1, 71-124",
+      "description": "`src/core/task-rescope.service.ts` runs `tmux` itself (`execFileSync('tmux', ['-S', socket, 'list-panes', ...])`). It is the first tmux shell-out outside `src/claude/`, which breaks AGENTS.md's rule that `src/claude/` is the ONLY module that touches tmux. It also duplicates helpers in `session-runtime.service.ts`, under a different PATH/env policy.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "1088-1093",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "For an `awaiting-review` or `blocked` session, the recorded `tmux_target` is matched against every probed server, whatever its lifetime. tmux pane ids belong to one server instance and restart at `%0`. So a closed window's id often matches an unrelated pane, the rescope is refused, and the operator can't get out of it.",
+      "body": "Round 1's fix made the probe match terminal sessions (merged, killed) by name only. The same pane-id collision still affects the two non-terminal states a rescope accepts, `awaiting-review` and `blocked`:\n\n```ts\npaneId: isTerminal(row.state) ? null : row.tmux_target,\n```\n```ts\nreturn listed === name || (window.paneId !== null && pane === window.paneId);\n```\n\nA `%N` pane id only means something on the server instance that created it. The JSDoc above `mayHaveOpenWindow` and `fix-round.service.ts:911-912` both say so. Nothing clears `tmux_target` when an `awaiting-review` or `blocked` session's window dies outside pup (reboot, server crash, the operator closing it). `listsWindow` also matches the id against every probed server, not just the socket the session recorded.\n\nHow it goes wrong:\n1. **Restarted server.** A `blocked` session sits overnight and the machine reboots. The probe fails closed until a server answers at `/tmp`, so the operator starts one, as ADR 0115 advises. That server numbers its panes from `%0` again, so a low recorded id matches one of the operator's own panes. The rescope is then refused, even though the session's window is gone.\n2. **Another server's numbering.** With `TMUX_TMPDIR` set, the probe also asks `/tmp`'s server, whose pane ids are numbered on their own. Any live pane there with the same `%N` as the session's recorded id causes a refusal, with no restart needed.\n\nThe refusal says \"a default tmux server lists it\", but `tmux ls` shows no `pup-X`, and nothing points to the colliding pane. The only ways out are destructive or obscure: `pup kill` the session (which unclaims the task and throws away its fix-round state), or find and kill the pane that happens to share the id. ADR 0115 does not list this cost.\n\nPossible fixes:\n- Match a recorded pane id only on the socket that session recorded, and fall back to matching by name when no socket is recorded. This fixes case 2.\n- For case 1, also tie the id to the server instance: record `#{pid}` or `#{start_time}` at launch and compare it, or require a marker the worker can't rename away, such as `#{pane_start_command}` containing the session's settings path.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/5911e0474fc6809435c12da0a6dab20d04d86f74/src/claude/session-runtime.service.ts#L1088-L1093\nhttps://github.com/AlexisBalayre/pupitre/blob/5911e0474fc6809435c12da0a6dab20d04d86f74/src/core/task-rescope.service.ts#L132-L138",
+      "suggestion": null
+    },
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "985-989, 1063-1079",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The probe looks tmux up only on `/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin`, while launches use the operator's PATH. Operators whose tmux is installed elsewhere can never rescope, and the refusal message blames an open window.",
+      "body": "`listPanes` runs tmux with `env: { PATH: PROBE_TMUX_PATH }`, and any failure, ENOENT included, returns `undefined`. `mayHaveOpenWindow` then treats every window as possibly open:\n\n```ts\nconst PROBE_TMUX_PATH = '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin';\n```\n\nLaunch, has-session and kill all find tmux through `tmuxEnv()`, which keeps the operator's PATH. So when tmux lives only in MacPorts (`/opt/local/bin`), a Nix profile (`/run/current-system/sw/bin`, `~/.nix-profile/bin`) or Linuxbrew (`/home/linuxbrew/.linuxbrew/bin`), sessions launch normally but every probe fails with ENOENT. Every `pup plan edit --rescope` is then refused, every time.\n\nThe refusal reads \"Session X's window may still be open (a default tmux server lists it, or did not answer) … rescope once it is closed\". Closing windows or starting a server won't help, and nothing says tmux wasn't found. The only workaround is to symlink tmux into one of the four directories.\n\nIt can also fail with two tmux binaries installed (medium confidence): an older `/usr/bin/tmux` client against a server started by a newer tmux earlier on PATH may fail on protocol mismatch.\n\nADR 0115 pins the PATH on purpose (the probe must not trust a worker's environment), and it lists \"no tmux found\" as a refusal. But the only cost it accepts is \"no server running, start one\". It doesn't accept a permanent lockout for these install layouts.\n\nPossible fixes:\n- Add the common fixed prefixes to the pinned PATH (`/opt/local/bin`, `/run/current-system/sw/bin`, `/nix/var/nix/profiles/default/bin`, `/home/linuxbrew/.linuxbrew/bin`).\n- Give a probe that cannot run tmux its own refusal message that names the cause.\n- Note the remaining layouts in the ADR.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/5911e0474fc6809435c12da0a6dab20d04d86f74/src/claude/session-runtime.service.ts#L985-L989\nhttps://github.com/AlexisBalayre/pupitre/blob/5911e0474fc6809435c12da0a6dab20d04d86f74/src/claude/session-runtime.service.ts#L1063-L1079",
+      "suggestion": null
+    },
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "1066-1074",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`execFileSync`'s `timeout` sends only SIGTERM. On Linux, a same-user worker can bind a listener with a full backlog at a probed socket. A tmux client blocked in `connect` that catches SIGTERM can then hang the probe inside the `.immediate()` transaction, which keeps every state.db writer out despite the ADR's \"must not hold every writer out\". Adding `killSignal: 'SIGKILL'` closes it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0115-pup-plan-edit-rescope-lets-the-operator-widen.md",
+      "line": "58, 68-70",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "ADR 0115 is out of date on recorded sockets. It says \"Either server listing the window refuses\", but `probedSockets` asks `/tmp`, `TMUX_TMPDIR` and every socket a session on the task recorded. Its fail-closed remedy (\"starts one first\") also names only `/tmp` and `TMUX_TMPDIR`, so an operator whose session's recorded socket has no server stays refused after following it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "895-930",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The caller-identity logic (`rescopeCaller`/`callerTty`: `TMUX_PANE` and tty-name validation, plus a `/usr/bin/tty` shell-out) is about 40 lines in the CLI. AGENTS.md §Module boundaries says `src/cli/` stays thin and logic lives in `src/core/`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "913",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`callerTty` inlines `timeout: 2000` and the `/usr/bin/tty` path. general.md §No hardcoded values puts timeouts and path fragments in a named constant with a JSDoc line, as this PR already does for `PROBE_TIMEOUT_MS`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/task-rescope.service.ts",
+      "line": "33",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `CONTROL_CHAR` regex and its biome-ignore appear twice, here and in `session-runtime.service.ts` (~L1043), with slightly different ranges. Defining the C1-inclusive one once and importing it removes one regex and one lint suppression.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/task-rescope.service.ts",
+      "line": "45-55",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Every `GLOB_REFUSALS` row takes `(raw, form)`, but only the control-character row reads `raw`. Running that check in `assertRescopableGlob` before computing `form` lets the other five rows take `(form)`, dropping the `_raw` placeholders and the two-parameter tuple type.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "893-930",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`rescopedLine` has one call site, in `rescopeOrRefuse`, and `ReturnType<typeof rescopeTask>` stands in for exporting `Rescoped`. Inlining the line and exporting the type removes a function and a type-level indirection.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "The record schema's area enum lacks `simplicity`, `guards` and `workflow-safety`, which the skill's roster now includes. The `review-simplicity` instance is recorded as `maintainability`, and its three nits carry area `maintainability`. The `review-guards` instance, which returned no findings, is recorded as `conventions`. Add the new areas to `tools/review`'s schema so the metrics attribute them correctly."
+    },
+    {
+      "component": "orchestrator",
+      "description": "Skipped: `context` (no spec/protocol/infra surface touched), `spec` (no closing issues or spec source), `workflow-safety` (no `.github/workflows` change), and `maintainability` as its own area (off the default roster at standard depth)."
+    }
+  ],
+  "duplicates_merged": 2,
+  "comments_posted_actual": 2,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 5.8445752,
+  "duration_ms": 469873,
+  "num_turns": 22,
+  "tokens": {
+    "input": 20,
+    "output": 23917,
+    "cache_read": 534747,
+    "cache_creation": 78517,
+    "total": 637201
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 244,
+      "output": 116284,
+      "cache_read": 4986138,
+      "cache_creation": 382349,
+      "cost_usd": 5.471179599999999
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 36,
+      "output": 8887,
+      "cache_read": 283894,
+      "cache_creation": 102054,
+      "cost_usd": 0.3724664
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 510,
+      "cache_read": 0,
+      "cache_creation": 5392,
+      "cost_usd": 0.0009292
+    }
+  ],
+  "permission_denials": []
+}
