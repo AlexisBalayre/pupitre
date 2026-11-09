@@ -420,6 +420,42 @@ describe('dashboard components', () => {
     it('renders nothing when the radar is live and finds no overlap', () => {
       expect(frameOf(createElement(Radar, { overlaps: [], radarStale: false }))).toBe('');
     });
+
+    // Decision 109 draws a pair once and each decision file it shares on a line
+    // of its own, so one stored pair here takes four rows. Sized from the one
+    // stored pair, the block would push the frame past the terminal (decision 121).
+    it('takes the rows it draws in the app, not one per stored pair', async () => {
+      const rows = 30;
+      const snapshot = snapshotFixture({
+        backlog: Array.from({ length: 40 }, (_, index) => ({
+          id: `t-plan${index}`,
+          goal: `planned goal ${index}`,
+          scope: ['src/**'],
+          acceptance: [],
+          origin: 'human' as const,
+        })),
+        overlaps: [
+          {
+            sessionA: 's-a-1',
+            sessionB: 's-b-1',
+            files: ['docs/adr/0107-a.md', 'docs/adr/0108-b.md', 'docs/adr/README.md', 'src/a.ts'],
+          },
+        ],
+      });
+      const instance = render(
+        createElement(App, { read: () => readingOf(snapshot), showAttach: true }),
+      );
+      // The test stream's `columns` is a getter on its prototype, so it is shadowed, not assigned.
+      Object.defineProperty(instance.stdout, 'columns', { value: 100, configurable: true });
+      (instance.stdout as unknown as { rows: number }).rows = rows;
+      instance.stdout.emit('resize');
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const frame = instance.lastFrame() ?? '';
+
+      expect(frame).toContain('docs/adr/README.md: 2 sessions append');
+      expect(frame.split('\n').length).toBeLessThan(rows);
+      instance.unmount();
+    });
   });
 
   describe('footer', () => {
