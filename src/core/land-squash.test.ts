@@ -493,6 +493,90 @@ describe('landSession', { timeout: 20_000 }, () => {
     expect(hasTrackingRef()).toBe(false);
   });
 
+  // The operator vouched for the commits past the pin, not for a change the merge adds.
+  it('refuses a merge commit with a change beyond the accepted head, changing nothing', async () => {
+    seedPrMerge();
+    const later = commitIn(worktree, 'src/late.ts', 'export const late = 1;\n');
+    sh(repo, 'git', 'push', '-q', origin, BRANCH);
+    setPullHead(later);
+    const clone = cloneOrigin();
+    sh(clone, 'git', 'merge', '--no-ff', '--no-commit', '-q', `origin/${BRANCH}`);
+    const merge = commitIn(clone, 'src/extra.ts', 'x;\n');
+    sh(clone, 'git', 'push', '-q', 'origin', 'HEAD:main');
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: later,
+      mergeCommit: { oid: merge },
+    });
+    const before = mainSha();
+
+    await expect(landAccepting(later)).rejects.toThrow(
+      `${merge}, the commit GitHub says merged ${PR_URL}, does not have the tree git gives ` +
+        `merging ${later}, the head you accepted`,
+    );
+    expectNothingChanged(before);
+    expect(hasTrackingRef()).toBe(false);
+  });
+
+  // gh text: a head outside a sha's shape is neither the pin nor one to accept.
+  it.each([
+    ['no head', {}],
+    ['a head that is not a sha', { headRefOid: 'HEAD~1' }],
+  ])('refuses a MERGED answer with %s, changing nothing', async (_, head) => {
+    seedPrMerge();
+    const merge = mergeOnGitHub();
+    fakeGh({ state: 'MERGED', baseRefName: 'main', ...head, mergeCommit: { oid: merge } });
+    const before = mainSha();
+
+    await expect(land()).rejects.toThrow(
+      `GitHub reports ${PR_URL} merged with an unreadable head. Nothing was landed.`,
+    );
+    expectNothingChanged(before);
+    expect(hasTrackingRef()).toBe(false);
+  });
+
+  // A merge-base that fails other than by "no" (status 1) is git failing, not
+  // an answer: refused as such, as `mergedOnto`'s reads are.
+  it('refuses, landing nothing, when the ancestry check of an accepted head fails', async () => {
+    seedPrMerge();
+    const later = commitIn(worktree, 'src/late.ts', 'export const late = 1;\n');
+    sh(repo, 'git', 'push', '-q', origin, BRANCH);
+    setPullHead(later);
+    const merge = mergeOnGitHub(later);
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: later,
+      mergeCommit: { oid: merge },
+    });
+    const failure = Object.assign(new Error('fatal: bad object'), { status: 128 });
+    const real = vi.mocked(withScratchGitDir).getMockImplementation();
+    vi.mocked(withScratchGitDir).mockImplementation((repoPath, prefix, fn) =>
+      (real as typeof withScratchGitDir)(repoPath, prefix, (git) =>
+        fn((args, opts) => {
+          if (args.includes('merge-base')) throw failure;
+          return git(args, opts);
+        }),
+      ),
+    );
+    const before = mainSha();
+
+    try {
+      await expect(landAccepting(later)).rejects.toThrow(
+        new RegExp(
+          `^Reading whether ${later} descends from ${pinned} failed\\. Nothing was ` +
+            'landed\\.\\n.*bad object',
+          's',
+        ),
+      );
+    } finally {
+      vi.mocked(withScratchGitDir).mockReset();
+    }
+    expectNothingChanged(before);
+    expect(hasTrackingRef()).toBe(false);
+  });
+
   it("refuses a row whose branch is not the session's own, asking gh nothing", async () => {
     seedPrMerge();
     db.prepare('UPDATE sessions SET branch = ? WHERE id = ?').run('main', SESSION_ID);
