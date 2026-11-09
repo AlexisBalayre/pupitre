@@ -39,20 +39,26 @@ const MAX_DECISION = 9999;
 const MAX_PEER_DECISIONS = 3;
 /** How long one read of another session's branch may take under the merge lock. */
 const PEER_READ_TIMEOUT_MS = 10_000;
+/** The codes Node gives a child it killed for its timeout or its output buffer. */
+const OVERRUN_CODES = new Set<unknown>(['ETIMEDOUT', 'ENOBUFS']);
 
 /**
  * The decision path a misspelt one was most likely meant as: its directory and
- * suffix lowercased, when that is a decision path. Undefined otherwise.
+ * suffix lowercased, when that is a decision path. Undefined otherwise; never
+ * the path itself, which is not a decision path. Only ASCII is folded: the
+ * directory is replaced whole, and `/i` without the `u` flag lets no non-ASCII
+ * letter match an ASCII one, so a lookalike such as the Kelvin sign is never
+ * read as `k`.
  */
 function meantAs(path: string): string | undefined {
   const lowered = `${ADR_DIR}${path.slice(ADR_DIR.length)}`.replace(/\.md$/i, '.md');
-  return lowered !== path && ADR_DECISION.test(lowered) ? lowered : undefined;
+  return ADR_DECISION.test(lowered) ? lowered : undefined;
 }
 
-/** A decision path's number, undefined for any other path. */
-function decisionNumber(path: string): number | undefined {
-  const number = ADR_DECISION.exec(path)?.[1];
-  return number === undefined ? undefined : Number(number);
+/** A decision path's number, undefined for any other path or none. */
+function decisionNumber(path: string | undefined): number | undefined {
+  const match = ADR_DECISION.exec(String(path));
+  return match ? Number(match[1]) : undefined;
 }
 
 /**
@@ -134,8 +140,7 @@ function decisionRenames(repoPath: string, base: string, tip: string): Map<strin
  * not the operator's Ctrl-C.
  */
 function isOverrun(error: unknown): boolean {
-  const code = typeof error === 'object' && error !== null && 'code' in error ? error.code : '';
-  return code === 'ETIMEDOUT' || code === 'ENOBUFS';
+  return OVERRUN_CODES.has((Object(error) as { code?: unknown }).code);
 }
 
 /**
@@ -199,8 +204,8 @@ function competingBranches(db: Database, sessionId: string): Competitor[] {
     }
     const merge = session.state === 'merged' ? newestMerge(db, session.id) : undefined;
     if (typeof merge !== 'object' || merge.prUrl === undefined) continue;
-    const sha = merge.sha !== undefined && COMMIT_SHA.test(merge.sha) ? merge.sha : undefined;
-    competitors.push({ branch: session.branch, rev: sha, prUrl: merge.prUrl });
+    const rev = COMMIT_SHA.test(String(merge.sha)) ? merge.sha : undefined;
+    competitors.push({ branch: session.branch, rev, prUrl: merge.prUrl });
   }
   return competitors;
 }
@@ -301,7 +306,7 @@ export function adrNumberStage(
     }
     if (typeof theirs === 'string') unchecked.push(`not checked against ${branch}: ${theirs}`);
     if (typeof theirs !== 'object') continue;
-    for (const number of theirs.values()) if (!takenBy.has(number)) takenBy.set(number, branch);
+    for (const number of theirs.values()) takenBy.set(number, branch);
   }
   const taken = new Set([...onTarget, ...takenBy.keys(), ...added.values()]);
   let free = Math.max(0, ...onTarget);
@@ -320,22 +325,22 @@ export function adrNumberStage(
     const first = firstAdd.get(number);
     if (first === undefined) firstAdd.set(number, path);
     const other = takenBy.get(number);
-    const renamedFrom = renamed.get(path);
-    const from =
-      renamedFrom !== undefined && decisionNumber(renamedFrom) === number ? renamedFrom : undefined;
+    const from = renamed.get(path);
     const replaced = deleted.get(number);
     const decision = `  ${quotePath(path)}: decision ${pad(number)}`;
-    if (from !== undefined) {
+    // A slug rename: the same number under a new name.
+    if (decisionNumber(from) === number) {
       if (other !== undefined) {
         refusals.push(
-          `${decision} renames ${quotePath(from)}, which ${other}, a session branch that is ` +
+          `${decision} renames ${quotePath(from as string)}, which ${other}, a session branch that is ` +
             'live or has an open PR, also renames or adds under that number; settle one name ' +
             "with it or keep the target's",
         );
       }
       continue;
     }
-    if (onTarget.has(number) && replaced !== undefined) {
+    // Its keys are the target's numbers.
+    if (replaced !== undefined) {
       refusals.push(
         `${decision} is already on the target as ${quotePath(replaced)}, which the branch ` +
           'deletes: this looks like a slug rename that changed too much of the file to be ' +
@@ -353,25 +358,23 @@ export function adrNumberStage(
     if (where === undefined) continue;
     refusals.push(`${decision} ${where}; ${renumber()}`);
   }
+  const section = (heading: string, items: string[]): string[] =>
+    items.length > 0 ? [heading, ...items] : [];
   const lines = [
-    ...(refusals.length > 0 ? ['ADR numbers already taken:', ...refusals] : []),
-    ...(unreadPrs.length > 0
-      ? [
-          'Open PRs whose gated commit cannot be read, so no number this branch adds can be ' +
-            'cleared against them:',
-          ...unreadPrs,
-        ]
-      : []),
-    ...(misnamed.length > 0
-      ? [
-          'ADR files neither docs/adr/NNNN-<slug>.md nor docs/adr/README.md, in lowercase ' +
-            'docs/adr/ with four ASCII digits, a dash and .md:',
-          ...misnamed.map((path) => {
-            const meant = meantAs(path);
-            return `  ${quotePath(path)}${meant === undefined ? '' : `: write it as ${quotePath(meant)}`}`;
-          }),
-        ]
-      : []),
+    ...section('ADR numbers already taken:', refusals),
+    ...section(
+      'Open PRs whose gated commit cannot be read, so no number this branch adds can be ' +
+        'cleared against them:',
+      unreadPrs,
+    ),
+    ...section(
+      'ADR files neither docs/adr/NNNN-<slug>.md nor docs/adr/README.md, in lowercase ' +
+        'docs/adr/ with four ASCII digits, a dash and .md:',
+      misnamed.map((path) => {
+        const meant = meantAs(path);
+        return `  ${quotePath(path)}${meant === undefined ? '' : `: write it as ${quotePath(meant)}`}`;
+      }),
+    ),
     ...unchecked,
   ];
   if (lines.length === 0) return undefined;

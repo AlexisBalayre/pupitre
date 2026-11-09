@@ -454,6 +454,20 @@ describe('adrNumberStage', { timeout: 20_000 }, () => {
     ]);
   });
 
+  it('folds only ASCII when it names the path a misspelt decision was meant as', () => {
+    // U+212A KELVIN SIGN lowercases to an ASCII 'k' under a Unicode fold, and
+    // U+217F SMALL ROMAN NUMERAL ONE THOUSAND looks like an 'm'.
+    commitOn(repo, 'pup/me', 'docs/adr/0003-\u212A.MD', 'docs/adr/0004-x.\u217Fd');
+    expect(refusals()).toEqual([
+      'ADR files neither docs/adr/NNNN-<slug>.md nor docs/adr/README.md, in lowercase ' +
+        'docs/adr/ with four ASCII digits, a dash and .md:',
+      // The slug keeps its Kelvin sign; only the ASCII suffix is lowercased.
+      '  docs/adr/0003-\u212A.MD: write it as docs/adr/0003-\u212A.md',
+      // No fold turns the lookalike into '.md', so no path is suggested.
+      '  docs/adr/0004-x.\u217Fd',
+    ]);
+  });
+
   it('refuses every added path under docs/adr/ but a decision or the README, naming the form', () => {
     commitOn(
       repo,
