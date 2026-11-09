@@ -1543,6 +1543,19 @@ describe('CLI commands', () => {
       expect(getTask(db, taskId)?.dropped_at).toBeNull();
     });
 
+    it('prints a claimed-drop refusal without the control characters of the session id', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedSession(repo, 's\u001b[31m1');
+      const { db } = resolveProject(repo);
+      transitionSession(db, 's\u001b[31m1', 'running');
+
+      buildProgram().parse(['plan', 'drop', 't-s\u001b[31m1'], { from: 'user' });
+
+      expect(errors.join('\n')).not.toContain('\u001b');
+      expect(process.exitCode).toBe(1);
+    });
+
     it('edits only the fields it is given', () => {
       const repo = initRepo();
       useCwd(repo);
