@@ -32,6 +32,12 @@ import {
   WorktreeRepointedError,
   worktreeGitEnv,
 } from './git-diff.client.js';
+import {
+  formatsNamed,
+  knownBinarySize,
+  mayBeKnownBinary,
+  spendKnownBinarySkip,
+} from './known-binary.utils.js';
 import { LOCKFILE_NAMES } from './merge-gate.constants.js';
 
 // Same scrub as merge-gate.test: keep the developer's git config and any
@@ -1802,5 +1808,115 @@ describe('armedGitDrivers: an info/attributes that is not a regular file', () =>
 
     writeFileSync(attributes, '# a comment\n*.ts diff\n');
     expect(armedGitDrivers(repo)).toEqual(['info/attributes (*.ts diff)']);
+  });
+});
+
+// The known-binary decision behind `gitDiffBinaryRecount`, without git
+// (known-binary.utils.ts, decision 154).
+describe('known-binary.utils', () => {
+  /** A PNG's signature and IHDR length, then `rest`: binary by NUL and by magic. */
+  const png = (rest: string): Buffer =>
+    Buffer.concat([Buffer.from('\x89PNG\r\n\x1a\n\0\0\0\rIHDR', 'latin1'), Buffer.from(rest)]);
+  const pngFormats = formatsNamed('image.png');
+
+  describe('formatsNamed', () => {
+    it('names a format by its extension in any ASCII case', () => {
+      expect(formatsNamed('a/image.png')).toHaveLength(1);
+      expect(formatsNamed('icon.ICO')).toHaveLength(1);
+      expect(formatsNamed('photo.JpEg')).toEqual(formatsNamed('photo.jpg'));
+    });
+
+    // `toLowerCase` folds the Kelvin sign U+212A to `k`.
+    it('names nothing for an extension spelled with a non-ASCII case fold', () => {
+      expect(formatsNamed('clip.mkv')).toHaveLength(1);
+      expect(formatsNamed('clip.mKv')).toEqual([]);
+    });
+
+    it('names nothing for a path no format is committed under', () => {
+      expect(formatsNamed('a.ts')).toEqual([]);
+      expect(formatsNamed('anim.gif')).toEqual([]);
+      expect(formatsNamed('png')).toEqual([]);
+    });
+  });
+
+  describe('mayBeKnownBinary', () => {
+    it('admits a regular file up to the cap', () => {
+      expect(mayBeKnownBinary('100644', BINARY_FREE_MAX_BYTES)).toBe(true);
+      expect(mayBeKnownBinary('100755', 0)).toBe(true);
+    });
+
+    it('refuses a symlink, a gitlink, no mode and a file past the cap', () => {
+      expect(mayBeKnownBinary('120000', 10)).toBe(false);
+      expect(mayBeKnownBinary('160000', 10)).toBe(false);
+      expect(mayBeKnownBinary('', 10)).toBe(false);
+      expect(mayBeKnownBinary('100644', BINARY_FREE_MAX_BYTES + 1)).toBe(false);
+    });
+
+    // `ls-tree` lists `BAD` for an object it cannot read; the read must go
+    // ahead so `readBlobs` throws, not answer "not binary" and recount quietly.
+    it('admits a size that is no number, so the read refuses it', () => {
+      expect(mayBeKnownBinary('100644', Number('BAD'))).toBe(true);
+    });
+  });
+
+  describe('knownBinarySize', () => {
+    it('answers the size of a blob opening with a named magic and holding a NUL', () => {
+      const blob = png('q\n');
+      expect(knownBinarySize(blob, pngFormats)).toBe(blob.length);
+    });
+
+    it('answers false without a NUL in the first 8000 bytes', () => {
+      const magic = Buffer.from('\x89PNG\r\n\x1a\n', 'latin1');
+      expect(knownBinarySize(Buffer.concat([magic, Buffer.from('x\n')]), pngFormats)).toBe(false);
+      const late = Buffer.concat([magic, Buffer.from(`${'a'.repeat(8000)}\0`)]);
+      expect(knownBinarySize(late, pngFormats)).toBe(false);
+    });
+
+    it('answers false for a magic the formats do not name', () => {
+      expect(knownBinarySize(png('q\n'), formatsNamed('photo.jpg'))).toBe(false);
+      expect(knownBinarySize(Buffer.from('GIF89a\0\n'), pngFormats)).toBe(false);
+      expect(knownBinarySize(png('q\n'), [])).toBe(false);
+    });
+
+    // A Zip64-aware zipimport searches past the classic 64 KiB plus 22 bytes.
+    it('answers false for a zip end record anywhere in the blob', () => {
+      const endRecord = `PK\x05\x06${'\0'.repeat(18)}`;
+      expect(knownBinarySize(png(`\n${endRecord}`), pngFormats)).toBe(false);
+      const far = png(`${endRecord}${'x'.repeat(256 * 1024)}`);
+      expect(knownBinarySize(far, pngFormats)).toBe(false);
+    });
+  });
+
+  describe('spendKnownBinarySkip', () => {
+    it('skips when every side that exists is known, spending the branch side', () => {
+      const budget = { bytes: 100 };
+      expect(spendKnownBinarySkip([40, 30], budget)).toBe(true);
+      expect(budget.bytes).toBe(70);
+      expect(spendKnownBinarySkip([undefined, 70], budget)).toBe(true);
+      expect(budget.bytes).toBe(0);
+    });
+
+    it('spends nothing for a side the branch deleted', () => {
+      const budget = { bytes: 0 };
+      expect(spendKnownBinarySkip([40, undefined], budget)).toBe(true);
+      expect(budget.bytes).toBe(0);
+    });
+
+    it('does not skip when a side is not known or no side exists', () => {
+      const budget = { bytes: 100 };
+      expect(spendKnownBinarySkip([false, 10], budget)).toBe(false);
+      expect(spendKnownBinarySkip([10, false], budget)).toBe(false);
+      expect(spendKnownBinarySkip([false], budget)).toBe(false);
+      expect(spendKnownBinarySkip([undefined, undefined], budget)).toBe(false);
+      expect(budget.bytes).toBe(100);
+    });
+
+    it('does not skip, or spend, past the budget', () => {
+      const budget = { bytes: 10 };
+      expect(spendKnownBinarySkip([undefined, 11], budget)).toBe(false);
+      expect(budget.bytes).toBe(10);
+      expect(spendKnownBinarySkip([undefined, 10], budget)).toBe(true);
+      expect(budget.bytes).toBe(0);
+    });
   });
 });

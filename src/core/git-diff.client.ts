@@ -13,6 +13,13 @@ import {
 import { basename, join, resolve } from 'node:path';
 
 import { sanitizeReason } from '../adapters/capability.utils.js';
+import {
+  type BinaryFormat,
+  formatsNamed,
+  knownBinarySize,
+  mayBeKnownBinary,
+  spendKnownBinarySkip,
+} from './known-binary.utils.js';
 import type { DiffFileStat } from './types/git-diff.types.js';
 
 export type { DiffFileStat };
@@ -733,83 +740,16 @@ export function gitDiffNumstat(repoPath: string, target: string, branch: string)
   return stats;
 }
 
-/**
- * Git's own content rule for a binary file: a NUL in the first 8000 bytes
- * (`buffer_is_binary`). Everything else git calls binary, it was told to.
- */
-const BINARY_SNIFF_BYTES = 8000;
-
-/**
- * The binary formats a diff-size count may skip (decision 154): the
- * extensions each is committed under and the bytes it opens with. A NUL is
- * not enough, as one in a source file's comment makes git call it binary.
- * Every magic holds a NUL, a control or a non-ASCII byte before any byte
- * that could open a comment or a string, which keeps a loader reading UTF-8
- * from its first byte from running the file. That does not hold for every
- * loader: decoded as Latin-1, a JPEG opens with `ÿØÿ`, a valid JavaScript
- * identifier. So the caps (`BINARY_FREE_MAX_BYTES`,
- * `BINARY_FREE_TOTAL_MAX_BYTES`) bound what a known binary can carry
- * uncounted. Formats whose magic is printable (GIF,
- * RIFF, BMP, PDF, WOFF, Ogg, FLAC, an MP3 `ID3` tag, a TrueType `true`) or
- * sits past free leading bytes (MP4's `ftyp`) are left out, as are archives
- * and compiled code, whose content is files or code a loader unpacks. A file
- * outside this table is recounted from its patch and flagged, which a repo
- * committing another format meets as a flag to accept.
- */
-const BINARY_FORMATS: { extensions: string[]; magic: string[] }[] = [
-  { extensions: ['.png', '.apng'], magic: ['\x89PNG\r\n\x1a\n'] },
-  { extensions: ['.jpg', '.jpeg'], magic: ['\xff\xd8\xff'] },
-  { extensions: ['.ico'], magic: ['\0\0\x01\0'] },
-  { extensions: ['.tif', '.tiff'], magic: ['II*\0', 'MM\0*'] },
-  { extensions: ['.webm', '.mkv'], magic: ['\x1a\x45\xdf\xa3'] },
-  { extensions: ['.mp3'], magic: ['\xff\xfb', '\xff\xf3', '\xff\xf2'] },
-  { extensions: ['.ttf'], magic: ['\0\x01\0\0'] },
-];
-
-/**
- * The largest known binary a diff-size count may skip (decision 154). One
- * above it, on either side of the diff, is recounted and flagged: what a
- * known format holds past its magic is unread, and the cap bounds how much
- * of it goes uncounted.
- */
-export const BINARY_FREE_MAX_BYTES = 1024 * 1024;
-
-/**
- * The most bytes the known binaries one diff adds may skip together (decision
- * 154): past it, the file that would go over is recounted and flagged, so
- * many files under `BINARY_FREE_MAX_BYTES` cannot add up to an unread tree.
- */
-export const BINARY_FREE_TOTAL_MAX_BYTES = 4 * 1024 * 1024;
-
-/**
- * A zip's end-of-central-directory signature. Python's `zipimport` and
- * `runpy` and `java -jar` find a zip by this record whatever the file's
- * extension or first bytes, so a PNG with a zip appended is a module path one
- * counted line can import. How far back a reader searches for it varies (a
- * Zip64-aware `zipimport` goes past the classic 64 KiB plus 22 bytes), so the
- * whole blob, already capped and read, is searched (decision 154).
- */
-const ZIP_EOCD = Buffer.from('PK\x05\x06', 'latin1');
-
-/**
- * The formats `path`'s extension names, in any ASCII case. Only ASCII is
- * folded: `toLowerCase` folds the Kelvin sign U+212A to `k`, and `.mKv`
- * written with it names no format a reader opens as one.
- */
-function formatsNamed(path: string): typeof BINARY_FORMATS {
-  const name = basename(path).replace(/[A-Z]/g, (letter) => letter.toLowerCase());
-  return BINARY_FORMATS.filter((format) =>
-    format.extensions.some((extension) => name.endsWith(extension)),
-  );
-}
+/** The known-binary caps, which the merge gate's diff-size detail names. */
+export { BINARY_FREE_MAX_BYTES, BINARY_FREE_TOTAL_MAX_BYTES } from './known-binary.utils.js';
 
 /**
  * The size of `path` on `rev` when it is a binary to skip, false when it is
  * not: a regular file (mode 100644 or 100755, never a 120000 symlink) no
  * larger than `BINARY_FREE_MAX_BYTES`, binary by content, never by attribute,
  * opening with the magic of a format its extension names, and holding no zip
- * end record anywhere (`ZIP_EOCD`). Only an empty `ls-tree`
- * listing means the side does not exist and answers undefined; a git that
+ * end record anywhere (`mayBeKnownBinary`, then `knownBinarySize`). Only an
+ * empty `ls-tree` listing means the side does not exist and answers undefined; a git that
  * fails, times out or is killed throws, as reading a failed answer as absent
  * would skip the file uncounted. The entry is read by the oid `ls-tree`
  * gives, through `readBlobs`, so its size is checked against the listing.
@@ -818,7 +758,7 @@ function blobIsKnownBinary(
   repoPath: string,
   rev: string,
   path: string,
-  formats: typeof BINARY_FORMATS,
+  formats: BinaryFormat[],
 ): number | false | undefined {
   const listing = runGit(
     repoPath,
@@ -841,16 +781,10 @@ function blobIsKnownBinary(
     return tab !== -1 && line.slice(tab + 1) === path;
   });
   if (entry === undefined) return undefined;
-  const [mode, , oid = '', size] = entry.slice(0, entry.indexOf('\t')).split(/ +/);
-  if (mode !== '100644' && mode !== '100755') return false;
-  if (Number(size) > BINARY_FREE_MAX_BYTES) return false;
+  const [mode = '', , oid = '', size] = entry.slice(0, entry.indexOf('\t')).split(/ +/);
+  if (!mayBeKnownBinary(mode, Number(size))) return false;
   const [blob = Buffer.alloc(0)] = readBlobs(repoPath, [{ oid, size: Number(size) }]);
-  if (!blob.subarray(0, BINARY_SNIFF_BYTES).includes(0)) return false;
-  if (blob.includes(ZIP_EOCD)) return false;
-  const known = formats.some(({ magic }) =>
-    magic.some((bytes) => blob.subarray(0, bytes.length).equals(Buffer.from(bytes, 'latin1'))),
-  );
-  return known && blob.length;
+  return knownBinarySize(blob, formats);
 }
 
 /**
@@ -867,11 +801,12 @@ function blobIsKnownBinary(
  * so "binary but has hunks" would call every committed image forged. A NUL is
  * not the whole answer either: one in a source file's comment makes git call
  * it binary. So the file is skipped only when every side it exists on is a
- * known binary (`blobIsKnownBinary`), and a path no format names is recounted
- * unread (decision 154). A skip spends the branch side's bytes from `budget`,
- * which every call for one diff must share (start it at
- * `BINARY_FREE_TOTAL_MAX_BYTES`), and a file the budget cannot cover is
- * recounted. It has no default: a fresh budget per call would cap nothing.
+ * known binary (`blobIsKnownBinary`, `src/core/known-binary.utils.ts`), and a
+ * path no format names is recounted unread (decision 154). A skip spends the
+ * branch side's bytes from `budget` (`spendKnownBinarySkip`), which every call
+ * for one diff must share (start it at `BINARY_FREE_TOTAL_MAX_BYTES`), and a
+ * file the budget cannot cover is recounted. It has no default: a fresh budget
+ * per call would cap nothing.
  */
 export function gitDiffBinaryRecount(
   repoPath: string,
@@ -882,17 +817,11 @@ export function gitDiffBinaryRecount(
 ): { added: number; deleted: number } | null {
   const base = runGit(repoPath, ['merge-base', target, branch]).trim();
   const formats = formatsNamed(path);
-  const sides =
+  const sides: (number | false | undefined)[] =
     formats.length === 0
       ? [false]
       : [base, branch].map((rev) => blobIsKnownBinary(repoPath, rev, path, formats));
-  const known = sides.some((side) => typeof side === 'number') && !sides.includes(false);
-  // A side the branch deleted adds no bytes.
-  const spent = typeof sides[1] === 'number' ? sides[1] : 0;
-  if (known && spent <= budget.bytes) {
-    budget.bytes -= spent;
-    return null;
-  }
+  if (spendKnownBinarySkip(sides, budget)) return null;
   let added = 0;
   let deleted = 0;
   for (const hunk of diffHunks(repoPath, target, branch, path)) {

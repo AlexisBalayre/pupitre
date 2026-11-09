@@ -12,7 +12,8 @@
     bytes. One NUL in a comment, such as `// \0` in a `.ts` file, meets that rule. A
     5 000-line source file then counted as 0 lines and was not flagged.
     *The rule.* `gitDiffBinaryRecount` skips a file only when every side of the merge-base
-    diff it exists on is a known binary (`blobIsKnownBinary`, `src/core/git-diff.client.ts`).
+    diff it exists on is a known binary (`blobIsKnownBinary` in `src/core/git-diff.client.ts`,
+    which reads the entry and leaves the decision to `src/core/known-binary.utils.ts`).
     A side is one when five things hold. It is a regular file (mode 100644 or 100755, never
     a 120000 symlink) of at most `BINARY_FREE_MAX_BYTES` (1 MiB). Its first 8000 bytes hold
     a NUL. Its bytes open with the magic number of a format
