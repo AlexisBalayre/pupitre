@@ -16,4 +16,3 @@ src/core/profile.errors.ts
 src/core/review.constants.ts
 src/core/session-activity.constants.ts
 src/core/session-lifecycle.errors.ts
-src/test/temp-dir.mock.ts
