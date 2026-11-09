@@ -74,5 +74,5 @@ export const GATE_METRICS: {
 export const DAY_MS = 86_400_000;
 
 /** The sheets the dashboard serves, in the order its bar lists them (decision 98). */
-export const SHEETS = ['overview', 'health', 'debt', 'tasks'] as const;
+export const SHEETS = ['overview', 'health', 'debt', 'tasks', 'decisions'] as const;
 export type SheetName = (typeof SHEETS)[number];

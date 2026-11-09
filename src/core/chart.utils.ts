@@ -30,7 +30,15 @@ export const CHART_CSS = `  figure.chart { margin: 4px 0 0; }
   figure.chart .axis { fill: var(--muted); font: 11px system-ui, -apple-system, sans-serif; }
   figure.chart .value { fill: var(--ink-2); font: 11px system-ui, -apple-system, sans-serif; }
   figure.chart figcaption { color: var(--ink-2); font-size: 12px; margin-top: 4px; }
-  figure.spark svg { max-width: 120px; }`;
+  figure.spark svg { max-width: 120px; }
+  .treemap figure.chart svg { max-width: 720px; }
+  .treemap .cell { fill: var(--grid); stroke: var(--surface); stroke-width: 0.5; }
+  .treemap .group { fill: none; stroke: var(--surface); stroke-width: 2; }
+  .treemap .group-label { fill: var(--ink); font: 600 11px system-ui, -apple-system, sans-serif; paint-order: stroke; stroke: var(--surface); stroke-width: 3; }
+  .treemap .tones { font-size: 12px; color: var(--ink-2); }
+  .treemap input:nth-of-type(1):checked ~ figure .t0-1, .treemap input:nth-of-type(2):checked ~ figure .t1-1 { fill: var(--debt-0); }
+  .treemap input:nth-of-type(1):checked ~ figure .t0-2, .treemap input:nth-of-type(2):checked ~ figure .t1-2 { fill: var(--debt-1); }
+  .treemap input:nth-of-type(1):checked ~ figure .t0-3, .treemap input:nth-of-type(2):checked ~ figure .t1-3 { fill: var(--debt-3); }`;
 
 const WIDTH = 560;
 /** The columns' and the line's height, and where their baseline sits, above the axis labels. */
@@ -64,10 +72,21 @@ function figure(
   marks: string,
 ): string {
   const figures = data.map((d) => `${d.label} ${format(d.value)}`).join(' · ');
+  return framed(className, `${title}: ${figures}`, height, width, marks);
+}
+
+/** The figure around an SVG, its title and its figure line one text. */
+function framed(
+  className: string,
+  caption: string,
+  height: number,
+  width: number,
+  marks: string,
+): string {
   return (
     `<figure class="${className}"><svg viewBox="0 0 ${width} ${height}" role="img">` +
-    `<title>${escapeHtml(`${title}: ${figures}`)}</title>${marks}</svg>` +
-    `<figcaption>${escapeHtml(`${title}: ${figures}`)}</figcaption></figure>`
+    `<title>${escapeHtml(caption)}</title>${marks}</svg>` +
+    `<figcaption>${escapeHtml(caption)}</figcaption></figure>`
   );
 }
 
@@ -303,4 +322,169 @@ export function sparkline(data: ChartDatum[], options: ChartOptions): string {
   const last = coords.at(-1);
   const dot = last ? `<circle class="dot" cx="${at(last[0])}" cy="${at(last[1])}" r="3"/>` : '';
   return figure('chart spark', options, data, height, width, `${polyline(coords)}${dot}`);
+}
+
+/** A rectangle in the SVG's user units. */
+export interface Box {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/**
+ * Lays items out as rectangles filling `box`, each with an area in proportion
+ * to its value (the squarified treemap: rows are grown while that keeps their
+ * cells closer to square). Largest first, a tie keeping the given order; a
+ * value that is not a finite positive number has no area and no rectangle.
+ * The areas sum to the box's.
+ */
+export function squarify<T extends { value: number }>(items: T[], box: Box): (Box & { item: T })[] {
+  const queue = items
+    .filter((item) => Number.isFinite(item.value) && item.value > 0)
+    .sort((a, b) => b.value - a.value);
+  const total = queue.reduce((sum, item) => sum + item.value, 0);
+  if (!Number.isFinite(total) || total === 0 || box.w <= 0 || box.h <= 0) return [];
+  const scale = (box.w * box.h) / total;
+  // How far from square a row's least square cell is, laid along `side`.
+  const worst = (row: T[], side: number): number => {
+    const areas = row.map((item) => item.value * scale);
+    const sum = areas.reduce((s, a) => s + a, 0);
+    const max = areas.reduce((m, a) => Math.max(m, a), 0);
+    const min = areas.reduce((m, a) => Math.min(m, a), Number.POSITIVE_INFINITY);
+    return Math.max((side * side * max) / (sum * sum), (sum * sum) / (side * side * min));
+  };
+  const placed: (Box & { item: T })[] = [];
+  // Lays a row along the shorter side of what is left, and returns what is left after it.
+  const lay = (row: T[], rest: Box): Box => {
+    const area = row.reduce((sum, item) => sum + item.value * scale, 0);
+    const across = rest.w >= rest.h;
+    const thickness = area / (across ? rest.h : rest.w);
+    let offset = across ? rest.y : rest.x;
+    for (const item of row) {
+      const length = (item.value * scale) / thickness;
+      placed.push(
+        across
+          ? { item, x: rest.x, y: offset, w: thickness, h: length }
+          : { item, x: offset, y: rest.y, w: length, h: thickness },
+      );
+      offset += length;
+    }
+    return across
+      ? { x: rest.x + thickness, y: rest.y, w: rest.w - thickness, h: rest.h }
+      : { x: rest.x, y: rest.y + thickness, w: rest.w, h: rest.h - thickness };
+  };
+  let rest = box;
+  let row: T[] = [];
+  for (const item of queue) {
+    const side = Math.min(rest.w, rest.h);
+    if (row.length > 0 && worst([...row, item], side) > worst(row, side)) {
+      rest = lay(row, rest);
+      row = [];
+    }
+    row.push(item);
+  }
+  if (row.length > 0) lay(row, rest);
+  return placed;
+}
+
+/** One cell of a treemap: a file, sized by `value`, with one count per tone. */
+export interface TreemapLeaf {
+  label: string;
+  value: number;
+  /** In the tones' order. */
+  counts: number[];
+}
+
+/** The cells of one region, outlined and named together: a module. */
+export interface TreemapGroup {
+  label: string;
+  leaves: TreemapLeaf[];
+}
+
+/** One way to colour the cells, chosen by a toggle; `CHART_CSS` styles two. */
+export interface TreemapTone {
+  /** The toggle's text, and how the figure line counts the cells it colours: `with open debt`. */
+  label: string;
+  /** How a cell's count reads in its hover: `2 open debt entries`. */
+  count: (n: number) => string;
+}
+
+const TREEMAP_WIDTH = 720;
+const TREEMAP_HEIGHT = 360;
+const GROUP_LABEL_MIN = { w: 60, h: 18 };
+
+/** A count's shade: none, one, two or three, four or more. */
+function toneLevel(n: number): number {
+  return n <= 0 || !Number.isFinite(n) ? 0 : n === 1 ? 1 : n <= 3 ? 2 : 3;
+}
+
+/**
+ * A treemap of groups of cells, each cell's area its value's share of the
+ * whole, so the cells' areas sum to the plot's. Groups are laid out by their
+ * total, then their cells inside them; a group is outlined and, when it has
+ * room, named over its cells, so no cell gives up area to a heading. A cell is
+ * shaded by its count under the tone the toggle selects: radio inputs ahead of
+ * the figure and `CHART_CSS`'s sibling rules, so it switches with the script
+ * off. Every cell carries its own `<title>`; the figure line gives each
+ * group's total and how many of its cells each tone colours.
+ */
+export function treemap(
+  groups: TreemapGroup[],
+  options: ChartOptions & { tones: TreemapTone[] },
+): string {
+  const format = options.format ?? plain;
+  const sized = groups.map((group) => ({
+    group,
+    value: group.leaves.reduce((sum, leaf) => sum + drawable(leaf.value), 0),
+  }));
+  const total = sized.reduce((sum, { value }) => sum + value, 0);
+  const marks = squarify(sized, { x: 0, y: 0, w: TREEMAP_WIDTH, h: TREEMAP_HEIGHT }).map(
+    ({ item: { group }, ...box }) => {
+      const cells = squarify(group.leaves, box).map(({ item: leaf, x, y, w, h }) => {
+        const shades = leaf.counts
+          .map((n, tone) => (toneLevel(n) > 0 ? ` t${tone}-${toneLevel(n)}` : ''))
+          .join('');
+        const tip = [
+          `${leaf.label}: ${format(leaf.value)}`,
+          ...options.tones.map((tone, i) => tone.count(leaf.counts[i] ?? 0)),
+        ].join(', ');
+        return `<g><title>${escapeHtml(tip)}</title><rect class="cell${shades}" x="${at(x)}" y="${at(y)}" width="${at(w)}" height="${at(h)}"/></g>`;
+      });
+      const outline = `<rect class="group" x="${at(box.x)}" y="${at(box.y)}" width="${at(box.w)}" height="${at(box.h)}"/>`;
+      const name =
+        box.w >= GROUP_LABEL_MIN.w && box.h >= GROUP_LABEL_MIN.h
+          ? `<text class="group-label" x="${at(box.x + 4)}" y="${at(box.y + 13)}">${escapeHtml(fitLabel(group.label, Math.floor((box.w - 8) / (AXIS_FONT_PX * 0.6))))}</text>`
+          : '';
+      return `<g>${cells.join('')}${outline}${name}</g>`;
+    },
+  );
+  const figures = [...sized]
+    .sort((a, b) => b.value - a.value)
+    .map(({ group, value }) =>
+      [
+        `${group.label} ${format(value)} in ${group.leaves.length} ${group.leaves.length === 1 ? 'file' : 'files'}`,
+        ...options.tones.map(
+          (tone, i) =>
+            `${group.leaves.filter((leaf) => toneLevel(leaf.counts[i] ?? 0) > 0).length} ${tone.label}`,
+        ),
+      ].join(', '),
+    );
+  const toggles = options.tones.map(
+    (tone, i) =>
+      `<input type="radio" name="treemap-tone" id="treemap-tone-${i}"${i === 0 ? ' checked' : ''}>` +
+      `<label for="treemap-tone-${i}">${escapeHtml(tone.label)}</label> `,
+  );
+  return (
+    `<div class="treemap"><span class="tones">Shade files </span>${toggles.join('')}` +
+    `<span class="tones">${escapeHtml('(darker: 1, 2–3, 4 or more)')}</span>` +
+    framed(
+      'chart',
+      `${options.title}: ${format(total)} in total · ${figures.join(' · ')}`,
+      TREEMAP_HEIGHT,
+      TREEMAP_WIDTH,
+      marks.join(''),
+    ) +
+    '</div>'
+  );
 }
