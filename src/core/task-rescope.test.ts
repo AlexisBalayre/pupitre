@@ -1,6 +1,11 @@
 import type { Database } from 'better-sqlite3';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { mayHaveOpenWindow } from '../claude/session-runtime.service.js';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  listPanes,
+  listProcesses,
+  PROBE_PATH,
+  windowSockets,
+} from '../claude/session-runtime.service.js';
 import { openStore } from './db.client.js';
 import { listDecisionRecords } from './decision-record.repository.js';
 import { globToRegExp } from './glob.utils.js';
@@ -15,15 +20,16 @@ import {
   listEvents,
   readTaskSpec,
 } from './session.repository.js';
-import { rescopeTask } from './task-rescope.service.js';
+import { launchedAncestor, rescopeTask } from './task-rescope.service.js';
 import { assertPlannableSpec } from './task-spec.utils.js';
 import type { RescopeCaller } from './types/session-event.types.js';
 
-// The tmux boundary: by default no window of the task's is open, as the gate
-// leaves a merged session's.
+// The tmux and ps boundary, tested against both in the runtime's own suite.
 vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../claude/session-runtime.service.js')>()),
-  mayHaveOpenWindow: vi.fn(),
+  windowSockets: vi.fn(),
+  listPanes: vi.fn(),
+  listProcesses: vi.fn(),
 }));
 
 // The plan's own check, real unless a test stubs it.
@@ -34,6 +40,12 @@ vi.mock('./task-spec.utils.js', async (importOriginal) => {
 
 // What the CLI hands over of a caller it took for the operator.
 const CALLER: RescopeCaller = { by: 'inferred-operator', tty: '/dev/ttys003', tmuxPane: '%4' };
+
+const SOCKET = '/tmp/tmux-1/default';
+
+// A launch's pane, as `listPanes` lines it: id, start command, session name.
+const pane = (id: string, name: string, session = name) =>
+  `${id}\t/bin/claude --name ${name} --settings /s.json\t${session}`;
 
 const SPEC = {
   id: 't-1',
@@ -57,8 +69,11 @@ describe('rescopeTask (decision 115)', () => {
     db.prepare('UPDATE sessions SET state = ? WHERE id = ?').run(state, id);
   };
 
+  // By default the one server asked lists no window of the task's, as the
+  // gate leaves a merged session's.
   beforeEach(() => {
-    vi.mocked(mayHaveOpenWindow).mockReset().mockReturnValue(undefined);
+    vi.mocked(windowSockets).mockReset().mockReturnValue([SOCKET]);
+    vi.mocked(listPanes).mockReset().mockReturnValue([]);
     vi.mocked(assertPlannableSpec).mockReset();
     db = openStore(':memory:');
     ensureProject(db, 'proj-1', '/repo');
@@ -289,15 +304,10 @@ describe('rescopeTask (decision 115)', () => {
     'refuses while a %s session has its window open, writing nothing',
     (state) => {
       launched('s1', state);
-      vi.mocked(mayHaveOpenWindow).mockReturnValue({
-        kind: 'listed',
-        sessionId: 's1',
-        socket: '/tmp/tmux-1/default',
-        pane: '%3',
-      });
+      vi.mocked(listPanes).mockReturnValue([pane('%3', 'pup-s1'), '']);
 
       expect(() => rescopeTask(db, 't-1', ['docs/**'], CALLER)).toThrow(
-        "Session s1's window is open: the tmux server at /tmp/tmux-1/default lists it as pane %3",
+        `Session s1's window is open: the tmux server at ${SOCKET} lists it as pane %3`,
       );
       expect(readTaskSpec(db, 't-1').scopeIn).toEqual(['src/core/**']);
       expect(listEvents(db, 's1')).toEqual([]);
@@ -305,23 +315,66 @@ describe('rescopeTask (decision 115)', () => {
     },
   );
 
+  it.each([
+    ['its launch name', '%9\t\tpup-s1'],
+    // A rename leaves the start command tmux fixed when the pane started.
+    ['the start command of its launch, renamed', pane('%9', 'pup-s1', 'renamed')],
+    // A tab or a newline in a session name (raw before tmux 3.3) adds a field
+    // or a line; the start command stays in its own.
+    [
+      'the start command, its session name holding a tab and a newline',
+      pane('%9', 'pup-s1', 'x\tpup-other\n%8\t\tpup-other'),
+    ],
+  ])('finds the window a server lists by %s', (_what, listed) => {
+    launched('s1', 'blocked');
+    // Split as `listPanes` splits tmux's output.
+    vi.mocked(listPanes).mockReturnValue(`%1\t\tmine\n${listed}\n`.split('\n'));
+
+    expect(() => rescopeTask(db, 't-1', ['docs/**'], CALLER)).toThrow('lists it as pane %9');
+  });
+
+  // A `%N` names a pane only on the server that minted it: a restarted or
+  // another server reuses the session's recorded id for a pane of its own.
+  it("passes a window listed nowhere, whatever pane ids and other sessions' names it lists", () => {
+    launched('s1', 'blocked');
+    vi.mocked(listPanes).mockReturnValue([
+      '%3\t\tpup-other',
+      '%4\t-zsh\tmine',
+      pane('%5', 'pup-s1-1'),
+    ]);
+
+    expect(rescopeTask(db, 't-1', ['docs/**'], CALLER)).toMatchObject({ added: ['docs/**'] });
+  });
+
   // Neither is fixed by closing a window, so each refusal names its own cause.
   it.each([
     [
-      { kind: 'unanswered', socket: '/tmp/tmux-1/default', detail: 'no server running' } as const,
-      'The tmux server at /tmp/tmux-1/default did not answer (no server running)',
+      { noTmux: false, detail: 'no server running' } as const,
+      `The tmux server at ${SOCKET} did not answer (no server running)`,
     ],
-    [
-      { kind: 'no-tmux', path: '/usr/bin:/bin' } as const,
-      "No tmux on the window probe's fixed PATH (/usr/bin:/bin)",
-    ],
-  ])('refuses when the probe cannot see the windows (%o), writing nothing', (probe, says) => {
+    [{ noTmux: true } as const, `No tmux on the window probe's fixed PATH (${PROBE_PATH})`],
+  ])('refuses when the probe cannot see the windows (%o), writing nothing', (failure, says) => {
     launched('s1', 'blocked');
-    vi.mocked(mayHaveOpenWindow).mockReturnValue(probe);
+    vi.mocked(listPanes).mockReturnValue(failure);
 
     expect(() => rescopeTask(db, 't-1', ['docs/**'], CALLER)).toThrow(says);
     expect(readTaskSpec(db, 't-1').scopeIn).toEqual(['src/core/**']);
     expect(listEvents(db, 's1')).toEqual([]);
+  });
+
+  // The window may be on any of the sockets, so each one decides alone, and a
+  // server that did not answer is named before a window another lists.
+  const OTHER = '/tmp/e/tmux-1/default';
+  it.each([
+    ['%1\t\tpup-other', ['%9\t\tpup-s1'], `${OTHER} lists it as pane %9`],
+    ['%1\t\tpup-other', { noTmux: false as const, detail: 'x' }, `${OTHER} did not answer`],
+    ['%1\t\tpup-s1', { noTmux: false as const, detail: 'x' }, `${OTHER} did not answer`],
+  ])('asks every socket: the first listing %j, the second answering %o', (first, second, says) => {
+    launched('s1', 'blocked');
+    vi.mocked(windowSockets).mockReturnValue([SOCKET, OTHER]);
+    vi.mocked(listPanes).mockImplementation((socket) => (socket === SOCKET ? [first] : second));
+
+    expect(() => rescopeTask(db, 't-1', ['docs/**'], CALLER)).toThrow(says);
   });
 
   it("looks for every session's window, a merged or killed one's too", () => {
@@ -331,9 +384,10 @@ describe('rescopeTask (decision 115)', () => {
 
     rescopeTask(db, 't-1', ['docs/**'], CALLER);
 
-    expect(vi.mocked(mayHaveOpenWindow).mock.calls).toEqual([
+    expect(vi.mocked(windowSockets).mock.calls).toEqual([
       ['/repo', expect.arrayContaining(['s1', 's2', 's3'])],
     ]);
+    expect(vi.mocked(listPanes).mock.calls).toEqual([[SOCKET]]);
   });
 
   it.each([
@@ -415,5 +469,67 @@ describe('rescopeTask (decision 115)', () => {
     rescopeTask(db, 't-1', ['src/cli/index.ts'], CALLER);
 
     expect(audit()).toEqual(['src/core/secret.ts']);
+  });
+});
+
+describe('launchedAncestor (decision 115)', () => {
+  // The process table from the caller's parent up, as `listProcesses` reads it.
+  const tree = (...rows: (readonly [number, number, string])[]) =>
+    vi
+      .mocked(listProcesses)
+      .mockReturnValue(new Map(rows.map(([pid, parent, args]) => [pid, { parent, args }])));
+  const CLAUDE = '/Users/me/.local/bin/claude --model m --effort e';
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it.each([
+    ['the conductor', 'pup-conductor-p1'],
+    ['a session', 'pup-t-abc'],
+  ])("finds %s's Claude Code up the tree, whatever the caller's environment", (_who, name) => {
+    vi.stubEnv('PUP_CONDUCTOR', '');
+    vi.stubEnv('PUP_SESSION_ID', '');
+    tree(
+      [process.ppid, 700, '/bin/zsh -c env -u PUP_CONDUCTOR pup plan edit t-1 --rescope'],
+      [700, 600, `${CLAUDE} --name ${name} --dangerously-skip-permissions`],
+      [600, 1, `tmux -S /tmp/tmux-1/x new-session -d -s ${name} -- ${CLAUDE} --name ${name}`],
+    );
+
+    expect(launchedAncestor()).toEqual({ kind: 'launched', name });
+  });
+
+  // A server lists the command that started it, which is a launch's when a
+  // launch started it; the operator's own panes run under that server.
+  it.each([
+    `tmux new-session -d -P -F #{pane_id} -s pup-t-abc -- ${CLAUDE} --name pup-t-abc`,
+    '/opt/homebrew/bin/tmux -S /tmp/tmux-1/default new-session --name pup-t-abc',
+    'tmux: server (/tmp/tmux-1/default)',
+  ])('passes over a tmux process up the tree: %s', (server) => {
+    tree([process.ppid, 600, '-zsh'], [600, 1, server]);
+
+    expect(launchedAncestor()).toBeUndefined();
+  });
+
+  it.each([
+    ["the operator's own Claude Code", `${CLAUDE} --name notes`],
+    ['a process with no --name', CLAUDE],
+    ['a trailing --name', `${CLAUDE} --name`],
+  ])('passes a caller under %s', (_what, args) => {
+    tree([process.ppid, 600, '/bin/zsh'], [600, 1, args]);
+
+    expect(launchedAncestor()).toBeUndefined();
+  });
+
+  it('stops at a loop in the table rather than hanging', () => {
+    tree([process.ppid, 700, '/bin/zsh'], [700, process.ppid, '/bin/sh']);
+
+    expect(launchedAncestor()).toBeUndefined();
+  });
+
+  it('is unreadable when ps failed, which a rescope refuses', () => {
+    vi.mocked(listProcesses).mockReturnValue(undefined);
+
+    expect(launchedAncestor()).toEqual({ kind: 'unreadable' });
   });
 });

@@ -36,10 +36,11 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   // `pup attach` hands the terminal to tmux; here it hands it to nothing.
   attachWindow: vi.fn(() => 0),
   hasSessionWindow: vi.fn(() => true),
-  // The rescope's window probe and process-tree check (decision 115), tested
-  // against tmux and ps in their own suite.
-  mayHaveOpenWindow: vi.fn(),
-  launchedAncestor: vi.fn(),
+  // The rescope's tmux and ps reads (decision 115), tested against both in
+  // their own suite.
+  windowSockets: vi.fn(),
+  listPanes: vi.fn(),
+  listProcesses: vi.fn(),
   // The turn watchdog's reads: a conductor window to find, a pane to read for
   // a dead turn, a nudge to type (addendum to decision 35).
   conductorPane: vi.fn(),
@@ -158,13 +159,14 @@ vi.mock('../core/session-handoff.service.js', () => ({
 
 import {
   deadTurnError,
-  launchedAncestor,
   launchWatcher,
-  mayHaveOpenWindow,
+  listPanes,
+  listProcesses,
   SessionPaneMissingError,
   SteerNotDeliveredError,
   saveSessionEnv,
   transcriptDir,
+  windowSockets,
 } from '../claude/session-runtime.service.js';
 import { waitForCiReview } from '../core/ci-wait.service.js';
 import {
@@ -874,8 +876,9 @@ describe('CLI commands', () => {
     // By default no window of the task's is open, as the gate leaves a merged
     // session's, and the caller runs under no Claude Code pup launched.
     beforeEach(() => {
-      vi.mocked(mayHaveOpenWindow).mockReturnValue(undefined);
-      vi.mocked(launchedAncestor).mockReturnValue(undefined);
+      vi.mocked(windowSockets).mockReturnValue(['/tmp/tmux-1/default']);
+      vi.mocked(listPanes).mockReturnValue([]);
+      vi.mocked(listProcesses).mockReturnValue(new Map());
     });
 
     it("appends to a merged task's scope-in, and pup log shows it", () => {
@@ -997,12 +1000,7 @@ describe('CLI commands', () => {
       const repo = initRepo();
       useCwd(repo);
       const db = claimed(repo, 'awaiting-review');
-      vi.mocked(mayHaveOpenWindow).mockReturnValue({
-        kind: 'listed',
-        sessionId: 's1',
-        socket: '/tmp/tmux-1/default',
-        pane: '%3',
-      });
+      vi.mocked(listPanes).mockReturnValue(['%3\t\tpup-s1']);
 
       rescope();
 
@@ -1036,7 +1034,9 @@ describe('CLI commands', () => {
       const repo = initRepo();
       useCwd(repo);
       const db = claimed(repo, 'merged');
-      vi.mocked(launchedAncestor).mockReturnValue({ kind: 'launched', name });
+      vi.mocked(listProcesses).mockReturnValue(
+        new Map([[process.ppid, { parent: 1, args: `claude --name ${name}` }]]),
+      );
 
       rescope();
 
@@ -1050,7 +1050,7 @@ describe('CLI commands', () => {
       const repo = initRepo();
       useCwd(repo);
       const db = claimed(repo, 'merged');
-      vi.mocked(launchedAncestor).mockReturnValue({ kind: 'unreadable' });
+      vi.mocked(listProcesses).mockReturnValue(undefined);
 
       rescope();
 

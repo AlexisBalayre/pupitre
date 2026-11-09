@@ -17,7 +17,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, dirname, isAbsolute, join } from 'node:path';
+import { dirname, isAbsolute, join } from 'node:path';
 
 import { runGit, verifiedWorktreeGitEnv, type WorktreeGitEnv } from '../core/git-diff.client.js';
 import { projectPaths } from '../core/paths.utils.js';
@@ -992,7 +992,7 @@ export function hasSessionWindow(sessionId: string): boolean {
  * multi-user Nix and Linuxbrew. Nothing under a home directory, which a worker
  * can write.
  */
-const PROBE_PATH = [
+export const PROBE_PATH = [
   '/opt/homebrew/bin',
   '/usr/local/bin',
   '/usr/bin',
@@ -1035,9 +1035,13 @@ function recordWindowSocket(repoPath: string, sessionId: string): void {
   renameSync(staged, file);
 }
 
-/** Any C0 control or DEL: none belongs in a socket path a launch wrote. */
-// biome-ignore lint/suspicious/noControlCharactersInRegex: matching them is the point
-const CONTROL_CHAR = /[\u0000-\u001f\u007f]/;
+/**
+ * A default server's socket path as a launch writes one: absolute, each
+ * directory free of C0 controls and DEL, ending in this user's `tmux-<uid>`.
+ */
+const LAUNCH_SOCKET = new RegExp(
+  `^(?:/[^/\\u0000-\\u001f\\u007f]*)*/tmux-${process.getuid?.()}/default$`,
+);
 
 /** Far past any socket path tmux can bind: a Unix socket path is at most 104 bytes. */
 const SOCKET_RECORD_MAX_BYTES = 1024;
@@ -1045,26 +1049,21 @@ const SOCKET_RECORD_MAX_BYTES = 1024;
 /**
  * The socket the session's launch recorded, or undefined when there is none
  * to read: a launch from before the record, a removed session dir, or a file
- * that is not a default-server socket path as a launch writes one. The
- * session can write the file, so it is read as one it wrote.
+ * that is not a socket path as a launch writes one. The session can write
+ * the file, so it is read as one it wrote.
  */
 function recordedSocket(repoPath: string, sessionId: string): string | undefined {
   const text = readSessionWritable(socketRecordFile(repoPath, sessionId), SOCKET_RECORD_MAX_BYTES);
-  const launchWrote =
-    text !== undefined &&
-    isAbsolute(text) &&
-    !CONTROL_CHAR.test(text) &&
-    text.endsWith(`/tmux-${process.getuid?.()}/default`);
-  return launchWrote ? text : undefined;
+  return LAUNCH_SOCKET.exec(text ?? '')?.[0];
 }
 
 /**
- * The sockets the windows can be on: the default server's at tmux's built-in
- * `/tmp` and under the caller's `TMUX_TMPDIR`, and each socket a window's
- * launch recorded. The caller's alone would miss a window on the operator's
- * socket whenever the caller unset `TMUX_TMPDIR`.
+ * The sockets the windows of `sessionIds` can be on: the default server's at
+ * tmux's built-in `/tmp` and under the caller's `TMUX_TMPDIR`, and each socket
+ * a window's launch recorded. The caller's alone would miss a window on the
+ * operator's socket whenever the caller unset `TMUX_TMPDIR`.
  */
-function probedSockets(repoPath: string, sessionIds: readonly string[]): string[] {
+export function windowSockets(repoPath: string, sessionIds: readonly string[]): string[] {
   const recorded = sessionIds.flatMap((sessionId) => recordedSocket(repoPath, sessionId) ?? []);
   return [
     ...new Set([defaultSocketIn('/tmp'), defaultSocketIn(process.env.TMUX_TMPDIR), ...recorded]),
@@ -1081,15 +1080,16 @@ const PANE_FORMAT = '#{pane_id}\t#{pane_start_command}\t#{session_name}';
 /** Far past any line tmux writes for why it failed; the refusal quotes this much. */
 const PROBE_FAILURE_MAX_CHARS = 200;
 
-/** Why a server's panes could not be listed: no tmux on the pinned PATH, or what tmux said. */
+/** Why a server's panes could not be listed: no tmux on `PROBE_PATH`, or what tmux said. */
 type ProbeFailure = { noTmux: true } | { noTmux: false; detail: string };
 
 /**
  * Every pane on the server at `socket`, as `PANE_FORMAT` lines, or why there
- * are none to read. Unlike `tmuxProbe` it hands tmux none of the caller's
- * environment.
+ * are none to read: a server that is not running or did not answer in time
+ * included. Unlike `tmuxProbe` it hands tmux none of the caller's environment,
+ * so a worker can neither name a fake tmux nor hang the caller.
  */
-function listPanes(socket: string): string[] | ProbeFailure {
+export function listPanes(socket: string): string[] | ProbeFailure {
   try {
     return execFileSync('tmux', ['-S', socket, 'list-panes', '-a', '-F', PANE_FORMAT], {
       encoding: 'utf8',
@@ -1107,68 +1107,15 @@ function listPanes(socket: string): string[] | ProbeFailure {
   }
 }
 
-/**
- * The pane a server lists for the session, if any: one in the tmux session of
- * its launch name, or one whose start command carries the launch's
- * `--name <tmux name>` (`launchArgs`). tmux fixes a pane's start command when
- * it starts it, so a worker that renames its session or moves its pane still
- * matches, and a pane id is never matched: a `%N` means a pane only on the
- * server that minted it, and a restarted or another server reuses it.
- */
-function listedPane(lines: readonly string[], sessionId: string): string | undefined {
-  const name = tmuxName(sessionId);
-  return lines
-    .map((line) => line.split('\t'))
-    .find(
-      ([, started = '', ...listed]) =>
-        listed.join('\t') === name || ` ${started} `.includes(` --name ${name} `),
-    )?.[0];
-}
-
-/** Why a rescope cannot rule out an open window: what the refusal names. */
-type OpenWindow =
-  | { kind: 'listed'; sessionId: string; socket: string; pane: string }
-  | { kind: 'unanswered'; socket: string; detail: string }
-  | { kind: 'no-tmux'; path: string };
-
-/**
- * Why a window of `sessionIds`, sessions of the project at `repoPath`, may
- * still be open, or undefined when every server asked answered and listed
- * none of them (decision 115). A server that did not answer, no server
- * running and a timeout included, leaves every window possibly open, and so
- * does a tmux the fixed PATH does not hold; each is named apart, since neither
- * is fixed by closing a window. tmux runs on that PATH with no caller
- * environment and a timeout, so a worker can neither name a fake one nor hang
- * the caller.
- */
-export function mayHaveOpenWindow(
-  repoPath: string,
-  sessionIds: readonly string[],
-): OpenWindow | undefined {
-  const servers = probedSockets(repoPath, sessionIds).map((socket) => ({
-    socket,
-    panes: listPanes(socket),
-  }));
-  for (const { socket, panes } of servers) {
-    if (Array.isArray(panes)) continue;
-    return panes.noTmux
-      ? { kind: 'no-tmux', path: PROBE_PATH }
-      : { kind: 'unanswered', socket, detail: panes.detail };
-  }
-  for (const sessionId of sessionIds) {
-    for (const { socket, panes } of servers) {
-      const pane = Array.isArray(panes) ? listedPane(panes, sessionId) : undefined;
-      if (pane !== undefined) return { kind: 'listed', sessionId, socket, pane };
-    }
-  }
-  return undefined;
-}
-
 /** Far past `ps` over every process on a busy machine: Node's default 1 MiB is not. */
 const PROCESS_TABLE_MAX_BYTES = 64 * 1024 * 1024;
 
-/** Each process's parent pid and arguments, from one `ps` over every process. */
-function processTable(): Map<number, { parent: number; args: string }> | undefined {
+/**
+ * Each process's parent pid and arguments, from one `ps` over every process,
+ * or undefined when `ps` failed. Run like `listPanes`: on `PROBE_PATH`, with
+ * none of the caller's environment and a timeout.
+ */
+export function listProcesses(): Map<number, { parent: number; args: string }> | undefined {
   let listed: string;
   try {
     listed = execFileSync('ps', ['-ww', '-A', '-o', 'pid=', '-o', 'ppid=', '-o', 'args='], {
@@ -1182,49 +1129,10 @@ function processTable(): Map<number, { parent: number; args: string }> | undefin
     return undefined;
   }
   const table = new Map<number, { parent: number; args: string }>();
-  for (const line of listed.split('\n')) {
-    const row = /^\s*(\d+)\s+(\d+)\s?(.*)$/.exec(line);
-    if (row) table.set(Number(row[1]), { parent: Number(row[2]), args: row[3] ?? '' });
+  for (const [, pid, parent, args = ''] of listed.matchAll(/^[ \t]*(\d+)[ \t]+(\d+) ?(.*)$/gm)) {
+    table.set(Number(pid), { parent: Number(parent), args });
   }
   return table;
-}
-
-/** The tmux name a pup launch passed as `--name` (`launchArgs`), if `args` carries one. */
-function launchedName(args: string): string | undefined {
-  const words = args.split(' ');
-  const at = words.indexOf('--name');
-  const name = at === -1 ? undefined : words[at + 1];
-  return name?.startsWith('pup-') ? name : undefined;
-}
-
-/** The Claude Code pup launched that a process runs under, or why that could not be read. */
-type LaunchedAncestor = { kind: 'launched'; name: string } | { kind: 'unreadable' };
-
-/**
- * Whether this process runs under a Claude Code pup launched, a session's
- * window or a conductor's, read from the process tree rather than from an
- * environment or a cwd the caller sets (decision 115): each process from this
- * one's parent up is looked for the `--name pup-<...>` its launch passed.
- * A tmux process is passed over: a server lists the command that started it,
- * which can be a launch's, and the operator's own panes run under it. `ps`
- * runs on the probe's PATH with no caller environment and a timeout; one that
- * fails is `unreadable`, which a rescope refuses. A process that left the tree
- * (a double fork, `setsid`, a job a tmux server or launchd started) is under
- * none, the ceiling decision 115 names.
- */
-export function launchedAncestor(): LaunchedAncestor | undefined {
-  const table = processTable();
-  if (table === undefined) return { kind: 'unreadable' };
-  const seen = new Set<number>();
-  for (let pid = process.ppid; pid > 1 && !seen.has(pid); pid = table.get(pid)?.parent ?? 0) {
-    seen.add(pid);
-    const args = table.get(pid)?.args ?? '';
-    const name = basename(args.split(' ')[0] ?? '').startsWith('tmux')
-      ? undefined
-      : launchedName(args);
-    if (name !== undefined) return { kind: 'launched', name };
-  }
-  return undefined;
 }
 
 /**

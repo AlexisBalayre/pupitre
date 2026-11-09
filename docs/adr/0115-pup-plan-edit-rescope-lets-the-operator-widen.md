@@ -99,10 +99,12 @@
     that list a window, which the operator closes; a server that did not answer, with the
     first line tmux printed or the timeout, where the operator starts one (a version
     mismatch between the probe's tmux and the server's shows here too); or no tmux on the
-    fixed PATH, which it names. The probe is the runtime's `mayHaveOpenWindow` in
-    `src/claude/session-runtime.service.ts`, the one module that touches tmux, so it reads
-    the launch's name from `tmuxName` rather than spelling it again; the rescope hands it
-    each session's id, a merged or killed one's included. Its PATH and its
+    fixed PATH, which it names. The probe's reads are the runtime's `windowSockets` and
+    `listPanes` in `src/claude/session-runtime.service.ts`, the one module that runs tmux,
+    beside the launch that records the socket; the rescope hands them each session's id, a
+    merged or killed one's included, and matches the lines against the launch's name, read
+    from `windowLabel` rather than spelled again. The process tree's `ps` is that module's
+    `listProcesses`, and the walk up it the rescope's `launchedAncestor`. Its PATH and its
     environment differ from a launch's on purpose: the launch trusts the operator's shell,
     the probe must not trust a worker's. That covers
     a worker that ran its own `pup session done` and so sits `awaiting-review` with its pane
@@ -175,28 +177,28 @@
     on that session lists the added globs as its files and says the caller was taken for
     the operator, so `pup log` (and `pup log <module>`) shows the rescope beside the merges
     it changes.
-    *Tests.* In `task-rescope.test.ts`, with the probe mocked, a rescope on a merged,
-    awaiting-review or blocked session's task with its window closed appends and writes the
-    event and the record. A queued, running or rejected one writes nothing, nor does one
-    whose window the probe reports open, nor one where a server did not answer or no tmux
-    was found, each refused with its own message, and the probe is handed every session on
-    the task, merged and killed ones included. In `session-runtime.test.ts`,
-    `mayHaveOpenWindow` reports a window a server lists by its launch name or, renamed, by
-    its start command, naming the server and the pane, and a tab or a newline in a session
-    name does not hide it. It passes one listed nowhere, whatever pane ids and prefix-pair
-    names the server lists. It reports a server that did not answer with what tmux said or
-    the timeout, and no tmux on the pinned PATH as such. It runs on the pinned PATH with a
-    timeout whatever the caller's PATH, asks only
-    `/tmp`'s server when `TMUX_TMPDIR` is unset and both when it is set, and reports the
-    window when only `TMUX_TMPDIR`'s lists it or does not answer. A launch records the
-    socket under the launching shell's `TMUX_TMPDIR`. A window on that socket is reported
-    even when the caller's environment lacks `TMUX_TMPDIR`. A record that is relative,
-    names another socket or holds a control character reads as none. `launchedAncestor`
-    finds a conductor's or a session's Claude Code up the tree whatever the caller's
-    environment says, passes over a tmux process whose arguments are a launch's, passes the
-    operator's own Claude Code and a process with no `--name pup-` pair, stops at a loop in
-    the table, runs `ps` on the pinned PATH with a timeout, and is unreadable when `ps`
-    fails. Each refused glob is refused, each matcher-form bypass with it, `.claude` and
+    *Tests.* In `task-rescope.test.ts`, with the tmux and `ps` reads mocked, a rescope on
+    a merged, awaiting-review or blocked session's task with its window closed appends and
+    writes the event and the record. A queued, running or rejected one writes nothing, nor
+    does one whose window a server lists, nor one where a server did not answer or no tmux
+    was found, each refused with its own message, and the sockets of every session on the
+    task, merged and killed ones included, are asked. A window is found by its launch name
+    or, renamed, by its start command, naming the server and the pane, and a tab or a
+    newline in a session name does not hide it; one listed nowhere passes, whatever pane ids
+    and prefix-pair names the server lists. Each socket decides alone, and a server that did
+    not answer is named before a window another lists. `launchedAncestor` finds a
+    conductor's or a session's Claude Code up the tree whatever the caller's environment
+    says, passes over a tmux process whose arguments are a launch's, passes the operator's
+    own Claude Code and a process with no `--name pup-` pair, stops at a loop in the table,
+    and is unreadable when `ps` failed. In `session-runtime.test.ts`, `listPanes` runs on the
+    pinned PATH with a timeout whatever the caller's PATH, and reports a server that did not
+    answer with what tmux said or the timeout, and no tmux on the pinned PATH as such.
+    `windowSockets` names `/tmp`'s server alone when `TMUX_TMPDIR` is unset and both when it
+    is set. A launch records the socket under the launching shell's `TMUX_TMPDIR`, which
+    `windowSockets` names even when the caller's environment lacks `TMUX_TMPDIR`; a record
+    that is relative, names another socket or holds a control character reads as none.
+    `listProcesses` reads each process's parent and arguments, an empty one included, runs
+    `ps` on the pinned PATH with a timeout, and is undefined when `ps` fails. Each refused glob is refused, each matcher-form bypass with it, `.claude` and
     `.pupitre` paths in any case among them, and globs the matcher reads as plain paths
     (`./docs/**`, `src/cli/`, `.claudeignore`, `docs/.claude/x`) pass, as do `[.]github/**`, `{docs,.github}/**` and
     `\.github/**`, none of which matches `.github/x`. A stub of `assertPlannableSpec`

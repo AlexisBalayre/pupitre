@@ -19,7 +19,6 @@ import {
   conductorName,
   hasSessionWindow,
   killWatcher,
-  launchedAncestor,
   launchWatcher,
   refusedSessionEnv,
   SessionPaneMissingError,
@@ -140,7 +139,7 @@ import {
   SessionCapReachedError,
   steerSession,
 } from '../core/session-lifecycle.service.js';
-import { rescopeTask } from '../core/task-rescope.service.js';
+import { launchedAncestor, rescopeTask } from '../core/task-rescope.service.js';
 import {
   describeSlotWait,
   runSessionTest,
