@@ -381,7 +381,107 @@ describe('landSession', { timeout: 20_000 }, () => {
     await expect(land()).rejects.toThrow(
       /merged with its head at .* not .* the commit the gate pinned; .* re-gated with `pup merge s1 --pr`/,
     );
+    await expect(land()).rejects.toThrow(`\`pup land s1 --accept-head ${later}\``);
 
+    expectNothingChanged(mainBefore);
+    expect(hasTrackingRef()).toBe(false);
+  });
+
+  /** The PR's head ref GitHub keeps on origin, as `refs/pull/7/head`. */
+  const setPullHead = (head: string) => sh(origin, 'git', 'update-ref', 'refs/pull/7/head', head);
+  const landAccepting = (acceptHead: string) =>
+    landSession(db, {
+      repoPath: repo,
+      sessionId: SESSION_ID,
+      adapters: [passingAdapter],
+      acceptHead,
+    });
+
+  // Decision 161: the operator's word for the commits past the pin.
+  it('lands a merge commit over a moved head the operator accepted', async () => {
+    seedPrMerge();
+    const later = commitIn(worktree, 'src/late.ts', 'export const late = 1;\n');
+    sh(repo, 'git', 'push', '-q', origin, BRANCH);
+    setPullHead(later);
+    const merge = mergeOnGitHub(later);
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: later,
+      mergeCommit: { oid: merge },
+    });
+
+    const outcome = await landAccepting(later);
+
+    expect(outcome).toMatchObject({ mergeCommit: merge, targetSha: merge, fastForwarded: true });
+    expect(mainSha()).toBe(merge);
+    expect(existsSync(worktree)).toBe(false);
+    // The branch at the accepted head is all on main now.
+    expect(sh(repo, 'git', 'branch', '--list', BRANCH)).toBe('');
+    expect(landedEvents()).toHaveLength(1);
+  });
+
+  it('refuses an accepted head that is not the one the PR merged at, changing nothing', async () => {
+    seedPrMerge();
+    const later = commitIn(worktree, 'src/late.ts', 'export const late = 1;\n');
+    sh(repo, 'git', 'push', '-q', origin, BRANCH);
+    setPullHead(later);
+    const merge = mergeOnGitHub(later);
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: later,
+      mergeCommit: { oid: merge },
+    });
+    const mainBefore = mainSha();
+
+    await expect(landAccepting(pinned)).rejects.toThrow(
+      `--accept-head names ${pinned}, but ${PR_URL} merged with its head at ${later}`,
+    );
+    expectNothingChanged(mainBefore);
+    expect(hasTrackingRef()).toBe(false);
+  });
+
+  it('refuses an accepted head that does not descend from the pin, changing nothing', async () => {
+    seedPrMerge();
+    // A fix round that rebased: the same change rewritten onto main, plus one more.
+    const clone = cloneOrigin();
+    commitIn(clone, 'src/feature.ts', 'export const feature = 2;\n');
+    const rebased = commitIn(clone, 'src/late.ts', 'export const late = 1;\n');
+    sh(clone, 'git', 'push', '-q', 'origin', 'HEAD:refs/pull/7/head');
+    const merge = mergeOnGitHub(rebased);
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: rebased,
+      mergeCommit: { oid: merge },
+    });
+    const mainBefore = mainSha();
+
+    await expect(landAccepting(rebased)).rejects.toThrow(
+      `${rebased}, the head ${PR_URL} merged at, does not descend from ${pinned}`,
+    );
+    expectNothingChanged(mainBefore);
+    expect(hasTrackingRef()).toBe(false);
+  });
+
+  it("refuses an accepted head origin's PR ref does not hold, changing nothing", async () => {
+    seedPrMerge();
+    const later = commitIn(worktree, 'src/late.ts', 'export const late = 1;\n');
+    sh(repo, 'git', 'push', '-q', origin, BRANCH);
+    setPullHead(pinned);
+    const merge = mergeOnGitHub(later);
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: later,
+      mergeCommit: { oid: merge },
+    });
+    const mainBefore = mainSha();
+
+    await expect(landAccepting(later)).rejects.toThrow(
+      `origin's refs/pull/7/head is at ${pinned}, not ${later}`,
+    );
     expectNothingChanged(mainBefore);
     expect(hasTrackingRef()).toBe(false);
   });
