@@ -2,6 +2,7 @@
 
 - Status: accepted
 - Amends: [0008](0008-fresh-base-gating.md), [0084](0084-pup-land-session-closes-the-github-half-of.md), [0095](0095-the-gate-pup-audit-and-pup-land-run.md), [0096](0096-test-runs-queue-for-a-few-machine-wide.md)
+- Amended by: [0134](0134-the-gate-waits-for-the-load-only-while-another.md)
 
 88. **The merge lock records its holder, survives every exit pup can catch, is reclaimed from a
     dead holder, and `pup merge` and `pup land` wait for a live one; the gate waits for the
@@ -126,3 +127,5 @@
     `GateInterruptedError` and leaves no listener; a failing post-merge worktree remove (a fake
     git) still ratchets the baseline, keeps the worktree and its branch, and names it in the
     outcome; the conductor context forbids the load loops and the lock hand-offs.
+    *Amended by decision 134:* the load wait runs only while another process holds a test slot
+    or waits for one as a gate, and ends as soon as none does.

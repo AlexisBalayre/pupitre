@@ -84,6 +84,7 @@ A rule fires on the first Read, Edit, or Write of a matching path (not on MCP re
     ├── protect-generated.sh       # PreToolUse(Edit|Write): block generated files
     ├── validate-file-naming.sh    # PreToolUse(Write): enforce the project's file naming
     ├── post-compact-state.sh      # SessionStart(compact): re-inject live git/PR state
+    ├── tool-result-size.sh        # PostToolUse(Failure): warn when one tool result is huge
     └── lib/project-env.sh         # reads project.env without executing it
 ```
 
@@ -169,6 +170,7 @@ Shell scripts that run outside the LLM loop on lifecycle events. Zero context co
 | `git-safety.sh` | PreToolUse(Bash) | Block `rm -rf`, `git reset --hard`, force push, `checkout -b` on main, push to main |
 | `protect-generated.sh` | PreToolUse(Edit\|Write) | Block edits to paths matching `GENERATED_PATHS_REGEX` |
 | `validate-file-naming.sh` | PreToolUse(Write) | Enforce `FILE_NAMING_REGEX` on new files under this checkout |
+| `tool-result-size.sh` | PostToolUse, PostToolUseFailure | Warn (never block) when one tool result is large: 10k characters for a test, typecheck, build or gate log, 20k otherwise |
 | `post-compact-state.sh` | SessionStart(compact) | Re-inject branch, worktrees, open PRs and their CI-review state after compaction |
 
 **Exit codes:**

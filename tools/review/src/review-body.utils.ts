@@ -4,9 +4,15 @@ import { type Finding, REVIEWER_AREAS, type RefutedFinding, type ReviewSummary }
  * Renders what the poster submits: the review body, and the line comment for
  * each important anchored inline on the diff. Everything else the run
  * confirmed, and everything validation refuted, renders in the body in
- * collapsed sections, so severity decides how loudly a finding is displayed,
- * never whether it is displayed at all.
+ * collapsed sections, so severity decides how loudly a finding is displayed.
+ * Only the minors are capped (`MINOR_CAP`), and the body says how many it held
+ * back, so a long tail of nits cannot keep a PR in review.
  */
+
+export const MINOR_CAP = 5;
+
+/** First line of every review body the poster writes, which tells its summary reviews from the empty ones GitHub wraps around standalone line comments. */
+export const REVIEW_HEADING = "## Claude code review";
 
 type Listed = Pick<Finding, "file" | "line" | "area" | "description"> & { body?: string | null };
 
@@ -77,18 +83,25 @@ function plural(count: number, noun: string): string {
 export function collapsedSections(summary: ReviewSummary): string[] {
   const nits = summary.findings.filter((finding) => finding.tag === "nit");
   const preExisting = summary.findings.filter((finding) => finding.tag === "pre-existing");
+  // Nits fill the cap first: they are what this diff introduced, pre-existing issues are not.
+  const shownNits = nits.slice(0, MINOR_CAP);
+  const shownPreExisting = preExisting.slice(0, MINOR_CAP - shownNits.length);
+  const heldBack = nits.length + preExisting.length - shownNits.length - shownPreExisting.length;
   const sections: string[] = [];
   if (nits.length > 0) {
     // description, not body: sub-important findings carry no body by contract.
-    sections.push(...detailsBlock(`${plural(nits.length, "minor issue")} (not blocking)`, nits.map(findingLine)));
+    sections.push(...detailsBlock(`${plural(nits.length, "minor issue")} (not blocking)`, shownNits.map(findingLine)));
   }
-  if (preExisting.length > 0) {
+  if (shownPreExisting.length > 0) {
     sections.push(
       ...detailsBlock(
         `${plural(preExisting.length, "pre-existing issue")} (predate this diff)`,
-        preExisting.map(findingLine),
+        shownPreExisting.map(findingLine),
       ),
     );
+  }
+  if (heldBack > 0) {
+    sections.push("", `${plural(heldBack, "more minor issue")} held back (the review lists at most ${MINOR_CAP}).`);
   }
   if (summary.refuted_findings.length > 0) {
     // Displayed so a validator that over-killed a real finding is catchable by
@@ -101,6 +114,26 @@ export function collapsedSections(summary: ReviewSummary): string[] {
     );
   }
   return sections;
+}
+
+/**
+ * The prior round's importants this head still has open. A round's delta can be
+ * clean while one of them is still owed, so the body names them: otherwise a clean
+ * incremental round reads as "nothing left to fix".
+ */
+export function unresolvedPrior(summary: ReviewSummary): ReviewSummary["prior_importants"] {
+  return summary.prior_importants.filter((prior) => prior.status === "unresolved");
+}
+
+function carriedLines(summary: ReviewSummary): string[] {
+  const open = unresolvedPrior(summary);
+  if (open.length === 0) return [];
+  const sha = summary.incremental_from_sha?.slice(0, 7);
+  return [
+    `${plural(open.length, "important finding")} from ${sha ? `the review of ${sha}` : "the prior review"} still open (not raised again):`,
+    "",
+    ...open.map((prior) => findingLine({ ...prior, area: "correctness", body: null })),
+  ];
 }
 
 function issueLines(summary: ReviewSummary | null): string[] {
@@ -127,7 +160,12 @@ export function bodyLines(
   if (summary.reviewers_spawned.length === 0) {
     const notes = issueLines(summary);
     const since = summary.incremental_from_sha?.slice(0, 7) ?? "the prior review";
-    return [`No reviewer was spawned for the changes since ${since}.`, ...(notes.length ? ["", ...notes] : [])];
+    const carried = carriedLines(summary);
+    return [
+      `No reviewer was spawned for the changes since ${since}.`,
+      ...(carried.length ? ["", ...carried] : []),
+      ...(notes.length ? ["", ...notes] : []),
+    ];
   }
 
   const spawned = [...new Set(summary.reviewers_spawned)];
@@ -140,7 +178,8 @@ export function bodyLines(
       : "";
 
   const sections = collapsedSections(summary);
-  if (anchoredCount === 0 && unanchored.length === 0 && sections.length === 0) {
+  const carried = carriedLines(summary);
+  if (anchoredCount === 0 && unanchored.length === 0 && sections.length === 0 && carried.length === 0) {
     return [`No issues found. ${scope}${coverage}`];
   }
 
@@ -155,6 +194,10 @@ export function bodyLines(
       "",
       ...unanchored.map(findingLine),
     );
+  }
+  if (carried.length > 0) {
+    if (lines.length > 0) lines.push("");
+    lines.push(...carried);
   }
   if (lines.length === 0) lines.push("No blocking issues found.");
   return [...lines, ...sections, "", `${scope}${coverage}`];

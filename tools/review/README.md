@@ -10,8 +10,8 @@ the `.claude/agents/review-*.md` manifests (reviewers + validator); the wiring i
 **The model never writes to the PR.** It emits a structured record (schema generated from
 [`src/review-metrics.schemas.ts`](src/review-metrics.schemas.ts), the single source of truth),
 and the poster renders that record: `important` findings as inline comments anchored to the
-diff, everything else (nits, pre-existing, refuted findings) in collapsed sections of one
-review body, plus a `claude-review` commit status on the head SHA. Splitting the writer out of
+diff, everything else (nits and pre-existing issues, five at most with a held-back count, and
+refuted findings) in collapsed sections of one review body, plus a `claude-review` commit status on the head SHA. Splitting the writer out of
 the model buys three guarantees a model-posted review cannot make:
 
 - **A dead run is visible.** The poster runs on `always()`: a run that failed to start its
@@ -32,6 +32,7 @@ the model buys three guarantees a model-posted review cannot make:
 | `print-schema.script.ts` | before the model | Emits the structured-output contract as JSON Schema for `--json-schema`, generated from the zod source so the contract cannot drift. |
 | `post-review.script.ts` | after the model, `always()` | The review's only writer: posts one review with anchored inline comments (falling back to per-comment posting if the batch 422s), and pins the `claude-review` commit status. On a `@claude review` comment, it also picks the reaction the workflow leaves there. |
 | `review-metrics.script.ts` | after the poster, `always()` | Builds the normalized run record (findings, refutations, mode, requested depth and areas, reviewers returned, cost and its split by model, the orchestrator's tokens, the tool calls its permission rules refused, `is_error` with its `incomplete_reason`) from the model output + execution log + poster hand-off; the workflow's second job appends it to the `ci/review-metrics` orphan branch for `/review-retro`. |
+| `review-response.script.ts` | by hand | Reports how authors respond to the review: per round, the important findings posted and how many were fixed (the commented line changed), dismissed (resolved or answered without a change) or left open at merge, plus the minors posted. Read-only, through `gh api`. `pnpm exec tsx src/review-response.script.ts --last 30` (or `--since 2026-11-01`) from `tools/review`. |
 
 **Comment-only skip.** A push skips when every file it changes is a regular file modified in place and either root `README.md`, `CONTRIBUTING.md` or `CHANGELOG.md`, or a script whose two versions parse, print identically through the TypeScript printer with comments removed, and keep every pragma (coverage ignores, `@ts-`, lint suppressions) before the same code. The skip writes no record, so the next code push reviews from the same prior head, and posts a pending `claude-review` status saying the head was not reviewed.
 

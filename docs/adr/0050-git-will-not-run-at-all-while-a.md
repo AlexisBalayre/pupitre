@@ -1,6 +1,7 @@
 # 0050. Git will not run at all while a filter or merge driver is armed (2026-09-13)
 
 - Status: accepted
+- Amended by: [0089](0089-pup-s-git-reads-history-without-replace-refs.md)
 
 50. **Git will not run at all while a filter or merge driver is armed (2026-09-13).**
     Decision 41 stated this as a ceiling and said what its honest fix was: "a smudge filter
@@ -66,3 +67,7 @@
     a session that can write the shared git dir can write a great deal else, and what is closed
     here is the specific path from that write to code running with the operator's environment
     on pup's own git calls.
+    *Amended by decision 89:* a local `include.path` or `includeIf.<condition>.path` and a
+    driver under an empty name (`filter..smudge`) are refused too, and an `info/attributes`
+    that is not a regular file of at most 1 MiB, a fifo or a symlink included, is refused
+    without blocking on it or following it.

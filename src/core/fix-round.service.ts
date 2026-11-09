@@ -144,6 +144,9 @@ interface ThreadAnswers {
   unanswered: number;
 }
 
+/** The one on-demand review a gated fix round asks for: CI reviews only on opening and on this comment. */
+const REVIEW_ASK = '@claude review';
+
 type ThreadVerdict = Exclude<keyof ThreadAnswers, 'prUrl' | 'sha'>;
 
 /** One thread's answer in the worker's `pup session done` summary. */
@@ -360,7 +363,7 @@ export function answerFixRoundThreads(
       `${answers.unverified} answered fixed that pup could not verify, ` +
       `${answers.declined} declined and ${answers.unanswered} unanswered` +
       (left > 0 ? ', left open for the operator.' : '.') +
-      `\n\n${marker}`;
+      `\n\n${REVIEW_ASK}\n\n${marker}`;
     withinBudget((timeoutMs) => commentOnPullRequest(repoPath, prUrl, repo, body, timeoutMs));
   }
   return answers;

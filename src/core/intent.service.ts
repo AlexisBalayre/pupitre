@@ -1,9 +1,9 @@
 import { lstatSync, mkdirSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { readPlainFile } from '../adapters/capability.utils.js';
-import { IntentStatus } from './intent.enums.js';
-import { IntentRefusedError } from './intent.errors.js';
-import type { Intent, IntentListEntry } from './intent.types.js';
+import { IntentStatus } from './enums/intent.enums.js';
+import { IntentRefusedError } from './errors/intent.errors.js';
+import type { Intent, IntentListEntry } from './types/intent.types.js';
 
 /**
  * Intents: what the operator wants, written down before any work starts, one

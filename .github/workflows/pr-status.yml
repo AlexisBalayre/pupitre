@@ -1,0 +1,218 @@
+# Keeps one status label on every open PR, so the list shows at a glance which are ready
+# to merge. First match wins:
+#   draft > conflicts > changes-requested > review-open > ci-failing >
+#   ci-pending > ready
+#
+# Recomputed when the PR is opened, reopened, pushed to, retargeted, marked ready or draft or
+# closed, on a review, and when a Claude Code Review run for it ends. Two events recompute every
+# open PR: a push to main (it can introduce conflicts anywhere) and the owner's `@claude review`
+# retry, which runs on main and links no PR. No event an outsider can start does. A closed PR
+# loses its label.
+# The name under `workflow_run` must match that workflow's `name:`.
+#
+# pull_request_target and workflow_run run with write access, so nothing here checks out or runs
+# PR code: it only reads PR metadata through the API.
+name: PR status
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, edited, ready_for_review, converted_to_draft, closed]
+  pull_request_review:
+    types: [submitted, dismissed]
+  workflow_run:
+    workflows: ["Claude Code Review"]
+    types: [completed]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+  checks: read
+  statuses: read
+
+jobs:
+  pr-status:
+    # Per PR, so one PR's event cannot cancel another's pending recompute; the events that
+    # recompute them all share the `main` group. The group is on the job so a skipped run never
+    # joins.
+    concurrency:
+      group: pr-status-${{ github.event.pull_request.number || github.event.workflow_run.pull_requests[0].number || 'main' }}
+    # A fork's review event gets a read-only token and cannot label; its PR is still relabelled by
+    # pull_request_target and by pushes to main. A workflow_run counts only when it is a real
+    # review of this repo's own PR: a fork can name a workflow "Claude Code Review" too, and every
+    # issue comment starts a run that skips. A run on main that links no PR counts only when the
+    # owner started it: only the owner's comment makes that workflow's review job run, so no
+    # outsider can start a recompute-all. A title or body edit cannot change the label; a new base
+    # branch can (conflicts).
+    if: >-
+      (github.event_name != 'pull_request_target' || github.event.action != 'edited' || github.event.changes.base)
+      && (github.event_name != 'pull_request_review' || github.event.pull_request.head.repo.full_name == github.repository)
+      && (github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion != 'skipped'
+          && github.event.workflow_run.head_repository.full_name == github.repository
+          && (github.event.workflow_run.pull_requests[0].number != null
+              || (github.event.workflow_run.event == 'issue_comment'
+                  && github.event.workflow_run.triggering_actor.login == github.repository_owner))))
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set the status label
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const LABELS = {
+              "draft": ["ededed", "Still a draft"],
+              "conflicts": ["b60205", "Cannot merge: conflicts with the base branch"],
+              "changes-requested": ["d93f0b", "A reviewer asked for changes"],
+              "review-open": ["e99695", "The CI review has important findings to address"],
+              "ci-failing": ["d73a4a", "A check failed"],
+              "ci-pending": ["fbca04", "Checks are still running"],
+              "ready": ["0e8a16", "Ready to merge"],
+            };
+            const { owner, repo } = context.repo;
+
+            const numbers = await (async () => {
+              if (context.payload.pull_request) return [context.payload.pull_request.number];
+              if (context.payload.workflow_run) {
+                // Empty for the owner's `@claude review` retry, which runs on main.
+                const linked = context.payload.workflow_run.pull_requests.map((p) => p.number);
+                if (linked.length) return linked;
+              }
+              const open = await github.paginate(github.rest.pulls.list, { owner, repo, state: "open" });
+              return open.map((p) => p.number);
+            })();
+
+            const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+            // The newest bot-opened, unresolved review thread, as `ci-wait.service.ts` reads them.
+            async function hasOpenBotThread(number) {
+              let after = null;
+              do {
+                const { repository } = await github.graphql(
+                  `query($owner: String!, $repo: String!, $number: Int!, $after: String) {
+                    repository(owner: $owner, name: $repo) {
+                      pullRequest(number: $number) {
+                        reviewThreads(first: 100, after: $after) {
+                          pageInfo { hasNextPage endCursor }
+                          nodes { isResolved comments(first: 1) { nodes { author { login } } } }
+                        }
+                      }
+                    }
+                  }`,
+                  { owner, repo, number, after },
+                );
+                const threads = repository.pullRequest.reviewThreads;
+                if (threads.nodes.some((t) => !t.isResolved && t.comments.nodes[0]?.author?.login === "github-actions")) {
+                  return true;
+                }
+                after = threads.pageInfo.hasNextPage ? threads.pageInfo.endCursor : null;
+              } while (after);
+              return false;
+            }
+
+            async function statusOf(number) {
+              // `mergeable` is computed lazily: null until GitHub has worked it out.
+              let pr;
+              for (let i = 0; i < 5; i++) {
+                ({ data: pr } = await github.rest.pulls.get({ owner, repo, pull_number: number }));
+                if (pr.mergeable !== null || pr.state !== "open" || pr.draft) break;
+                await sleep(3000);
+              }
+              if (pr.state !== "open") return undefined;
+              if (pr.draft) return "draft";
+              if (pr.mergeable_state === "dirty") return "conflicts";
+
+              const reviews = await github.paginate(github.rest.pulls.listReviews, {
+                owner, repo, pull_number: number,
+              });
+              const latest = new Map();
+              for (const r of reviews) {
+                if (r.state === "COMMENTED" || !r.user) continue;
+                // Anyone can submit a review on a public repo; only repo insiders count.
+                if (!["OWNER", "MEMBER", "COLLABORATOR"].includes(r.author_association)) continue;
+                latest.set(r.user.login, r.state);
+              }
+              if ([...latest.values()].includes("CHANGES_REQUESTED")) return "changes-requested";
+
+              // The review poster reports a commit status, which an `@claude review` retry on main
+              // updates while the failed check run on the head stays: for a context that has a
+              // status, the status decides. This job's own check run says nothing about the PR; it
+              // is named after the job id unless the job has a `name:`, so giving this job a
+              // `name:` means changing this filter.
+              const { data: combined } = await github.rest.repos.getCombinedStatusForRef({
+                owner, repo, ref: pr.head.sha, per_page: 100,
+              });
+              // The poster sets `success` on every run it posted, findings or not (decision 90).
+              const review = combined.statuses.find((s) => s.context === "claude-review");
+              // An unresolved bot thread is an important the review raised and nobody closed: it
+              // outlives the pushes that clear the status description (an incremental round never
+              // re-raises a prior important). The description covers the round just posted.
+              if (
+                (review?.state === "success" && /\d+ important finding/.test(review.description ?? "")) ||
+                (await hasOpenBotThread(number))
+              ) {
+                return "review-open";
+              }
+              const contexts = new Set(combined.statuses.map((s) => s.context));
+              const runs = (
+                await github.paginate(github.rest.checks.listForRef, {
+                  owner, repo, ref: pr.head.sha, per_page: 100,
+                })
+              ).filter((c) => c.name !== context.job && !contexts.has(c.name));
+              const bad = new Set(["failure", "timed_out", "cancelled", "action_required", "stale", "startup_failure"]);
+              // Not combined.state: it is "pending" when a head has no status at all.
+              if (
+                runs.some((c) => bad.has(c.conclusion)) ||
+                combined.statuses.some((s) => ["failure", "error"].includes(s.state))
+              ) {
+                return "ci-failing";
+              }
+              // A quick or area-restricted pass is no merge signal. It comes after the failure scan
+              // so a partial round cannot hide a failing check.
+              if (review?.state === "success" && review.description?.startsWith("partial review")) {
+                return "ci-pending";
+              }
+              // The review preflight leaves a final "Not reviewed" pending status on a comment-only
+              // push: nothing is running, so it does not count as pending. The push marker and a
+              // retarget (claude-review-base-change.yml) leave the same prefix but the head still
+              // awaits a review, so they count.
+              const running = combined.statuses.some(
+                (s) =>
+                  s.state === "pending" &&
+                  (!s.description?.startsWith("Not reviewed") ||
+                    s.description.startsWith("Not reviewed: push since last review") ||
+                    s.description.startsWith("Not reviewed: base branch changed")),
+              );
+              if (runs.some((c) => c.status !== "completed") || running) {
+                return "ci-pending";
+              }
+              return "ready";
+            }
+
+            for (const [name, [color, description]] of Object.entries(LABELS)) {
+              try {
+                await github.rest.issues.createLabel({ owner, repo, name, color, description });
+              } catch (e) {
+                if (e.status !== 422) throw e;
+              }
+            }
+
+            for (const number of numbers) {
+              const want = await statusOf(number);
+              const { data: current } = await github.rest.issues.listLabelsOnIssue({
+                owner, repo, issue_number: number,
+              });
+              const have = current.map((l) => l.name);
+              // LABELS holds only the seven status names, so no other label (dependencies, GitHub's defaults) is ever removed here.
+              for (const name of Object.keys(LABELS)) {
+                if (name !== want && have.includes(name)) {
+                  try {
+                    await github.rest.issues.removeLabel({ owner, repo, issue_number: number, name });
+                  } catch (e) {
+                    if (e.status !== 404) throw e;
+                  }
+                }
+              }
+              if (want && !have.includes(want)) {
+                await github.rest.issues.addLabels({ owner, repo, issue_number: number, labels: [want] });
+              }
+            }

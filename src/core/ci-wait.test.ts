@@ -270,6 +270,33 @@ describe('waitForCiReview', { timeout: 20_000 }, () => {
     expect(clock.slept).toEqual([30_000, 30_000, 30_000, 30_000]);
   });
 
+  it('ends on the push marker, naming the ask a push needs', async () => {
+    githubAnswers({
+      reviewedOn: OLDER,
+      status: { state: 'PENDING', description: 'Not reviewed: push since last review' },
+    });
+
+    expect((await wait()).line).toBe(
+      `${PR_URL} at ${HEAD}: review not asked, a push since the last review; 0 open thread(s), 0 ` +
+        "important → comment `@claude review` on the PR to have the head reviewed (the operator's call)",
+    );
+    expect(clock.slept).toEqual([]);
+  });
+
+  it('ends on the base-change marker, naming the ask a retarget needs', async () => {
+    githubAnswers({
+      reviewedOn: OLDER,
+      status: { state: 'PENDING', description: 'Not reviewed: base branch changed; re-run' },
+    });
+
+    expect((await wait()).line).toBe(
+      `${PR_URL} at ${HEAD}: review not asked, the base branch changed since the last review; 0 open ` +
+        'thread(s), 0 important → comment `@claude review` on the PR to have the head reviewed ' +
+        "against the new base (the operator's call)",
+    );
+    expect(clock.slept).toEqual([]);
+  });
+
   it('ends on a comment-only skip, a review with no verdict and a PR merged on GitHub', async () => {
     githubAnswers({
       reviewedOn: OLDER,

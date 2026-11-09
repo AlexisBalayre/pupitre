@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, readSync, realpathSync, writeFileSync } from 'node:fs';
-import { homedir, constants as osConstants, tmpdir } from 'node:os';
+import { constants as osConstants, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { Database } from 'better-sqlite3';
@@ -58,11 +58,11 @@ import {
   updateDecisionRecordSummary,
 } from '../core/decision-record.repository.js';
 import { DEFAULT_BASE_PROFILE } from '../core/default-profile.constants.js';
+import { IntentRefusedError } from '../core/errors/intent.errors.js';
 import { ciReviewLookup, type FixRoundOutcome, startFixRound } from '../core/fix-round.service.js';
 import { fleetReading, readFleet } from '../core/fleet.service.js';
 import { parseGateEnv } from '../core/gate-env.utils.js';
 import { initProject } from '../core/init.service.js';
-import { IntentRefusedError } from '../core/intent.errors.js';
 import { acceptIntent, createIntent, listIntents, readIntent } from '../core/intent.service.js';
 import { landSession } from '../core/land.service.js';
 import { closeLedgerEntry, listLedgerEntries } from '../core/ledger.repository.js';
@@ -76,6 +76,8 @@ import { UnknownProfileError } from '../core/profile-store.errors.js';
 import { getProfileLayer, listProfileLayers } from '../core/profile-store.service.js';
 import { listProjects, putProjectToSleep, wakeProject } from '../core/project.service.js';
 import { renderReportHtml } from '../core/report.service.js';
+import { buildRetro, retroWindowStart, writeRetro } from '../core/retro.service.js';
+import { formatRetro, serializeRetro } from '../core/retro-signals.service.js';
 import { buildReviewQueue, buildSessionReview } from '../core/review.service.js';
 import { asTier, taskTier } from '../core/routing.utils.js';
 import {
@@ -147,7 +149,7 @@ import type { GateReport, MergeOutcome } from '../core/types/merge-gate.types.js
 import type { TaskId, TaskSpec } from '../core/types/profile.types.js';
 import type { StoredGateStage } from '../core/types/session-event.types.js';
 import type { NewSessionRequest, RouteOverride } from '../core/types/session-lifecycle.types.js';
-import { buildUsageReport, formatUsageReport } from '../core/usage-report.service.js';
+import { buildUsageReport, claudeDirsOf, formatUsageReport } from '../core/usage-report.service.js';
 import { startWebDashboard } from '../core/web-dashboard.service.js';
 import { runOrReportNoAdapter } from './no-adapter-guard.utils.js';
 import {
@@ -2259,7 +2261,8 @@ export function buildProgram(): Command {
       'After the PR merged on GitHub: fast-forward main, clean up the session and run the audit',
     )
     .option('--gate-env <names>', GATE_ENV_DESCRIPTION)
-    .action(async (session: string, opts: { gateEnv?: string }) => {
+    .option('--no-audit', 'Land without the audit; run `pup audit` once after the last land')
+    .action(async (session: string, opts: { gateEnv?: string; audit: boolean }) => {
       const { repoPath, db } = project();
       // The human merged the PR on GitHub already; what is left moves main to
       // what origin holds and re-stamps the baseline, so the conductor may run
@@ -2276,6 +2279,7 @@ export function buildProgram(): Command {
           adapters: detectAdapters(repoPath),
           gateEnv: parseGateEnv(opts.gateEnv),
           wait: true,
+          audit: opts.audit,
         });
       } catch (error) {
         if (error instanceof GateInterruptedError) throw error;
@@ -2300,7 +2304,8 @@ export function buildProgram(): Command {
           `Kept ${sanitizeReason(outcome.keptBranch)}: it holds commits ${target} does not.`,
         );
       }
-      printAuditOutcome(db, outcome.audit, repoPath);
+      if (outcome.audit) printAuditOutcome(db, outcome.audit, repoPath);
+      else console.log('Audit skipped: run `pup audit` once after the last land.');
     });
   program
     .command('fix <session>')
@@ -2595,8 +2600,7 @@ export function buildProgram(): Command {
       // on; the console under the operator shell's own.
       const userDir = configDirOrRefuse(repoPath);
       if (userDir === undefined) return;
-      const claudeDirs = [userDir, process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')];
-      const report = buildUsageReport(db, repoPath, { since, claudeDirs });
+      const report = buildUsageReport(db, repoPath, { since, claudeDirs: claudeDirsOf(userDir) });
       // JSON.stringify leaves DEL and C1 raw, and a terminal can read U+009B
       // as CSI; outside a string literal JSON has no such character, so the
       // `\uXXXX` form parses back to the same value (decision 68).
@@ -2607,6 +2611,35 @@ export function buildProgram(): Command {
               (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`,
             )
           : formatUsageReport(report),
+      );
+    });
+
+  program
+    .command('retro')
+    .description('Report where tokens go and what to change, from the project transcripts')
+    .option('--since <days>', 'window in days (default: 7)', '7')
+    .option('--out <dir>', 'folder for the dated report (default: the project store)')
+    .option('--json', 'print the JSON report instead of the Markdown one')
+    .action((opts: { since: string; out?: string; json?: boolean }) => {
+      const { repoPath, db } = project();
+      // Same reason as `pup usage`: the transcripts hold every session's prompts and tool output.
+      if (callingSession(db) || callingConductor()) {
+        return refuse('`pup retro` is operator-only; sessions and the conductor cannot run it.');
+      }
+      const now = new Date();
+      const since = retroWindowStart(opts.since, now);
+      if (!since) {
+        return refuse(
+          `--since needs a number of days such as 7, not "${sanitizeReason(opts.since)}".`,
+        );
+      }
+      const userDir = configDirOrRefuse(repoPath);
+      if (userDir === undefined) return;
+      const report = buildRetro(db, repoPath, { since, claudeDirs: claudeDirsOf(userDir) });
+      const files = writeRetro(report, repoPath, opts.out, now);
+      console.log(opts.json ? serializeRetro(report) : formatRetro(report));
+      console.error(
+        `Written to ${sanitizeReason(files.markdown)} and ${sanitizeReason(files.json)}`,
       );
     });
 
