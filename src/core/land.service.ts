@@ -51,7 +51,7 @@ interface LandRequest {
   audit?: boolean;
   /**
    * The operator's word for a head the PR merged at past the pin (decision
-   * 161): the full sha GitHub reports, after reading the commits between them.
+   * 164): the full sha GitHub reports, after reading the commits between them.
    */
   acceptHead?: string;
 }
@@ -63,7 +63,7 @@ interface LandRequest {
  * must hold the sha the gate pinned, or a squash or rebase merge of exactly its
  * content (decision 131). A PR merged at a head past the pin lands only on the
  * operator's `acceptHead`, a descendant of the pin read from origin, and the
- * check is then against that head (decision 161). Then, under the merge lock, the local
+ * check is then against that head (decision 164). Then, under the merge lock, the local
  * target is fast-forwarded with the gate's plumbing, the session's worktree
  * and branch go, a `landed` event drops the PR from the inbox, and the audit
  * re-stamps the baseline the PR mode left alone (decision 26). A re-run after a
@@ -120,7 +120,7 @@ export async function landSession(db: Database, req: LandRequest): Promise<LandO
   // 82). GitHub's own "Update branch" moves the head too. A re-gate before the
   // merge vouches for a moved head (decision 86); after the merge only the
   // operator's `--accept-head` naming that very head does, and only for
-  // commits past the pin, checked under the lock (decision 161).
+  // commits past the pin, checked under the lock (decision 164).
   if (pr.head === undefined || !COMMIT_SHA.test(pr.head)) {
     throw new Error(`GitHub reports ${prUrl} merged with an unreadable head. Nothing was landed.`);
   }
@@ -367,7 +367,7 @@ function steerOverlappingSessions(
  * the local tip is lent as a ref so only what it lacks crosses. No ref of the
  * repo moves here; the caller records the tracking ref once the tip passes.
  * With `pullRef`, the PR's head ref GitHub keeps, fetched in the same call,
- * so an accepted head is read from origin (decision 161).
+ * so an accepted head is read from origin (decision 164).
  */
 function fetchTarget(
   repoPath: string,
@@ -475,7 +475,7 @@ function mergedOnto(repoPath: string, sha: string, mergeCommit: string): string 
 /**
  * What the gate's own teardown may have left (it is best effort): the
  * session's worktree, and its branch while main holds every commit of it, or
- * of `head`, the pinned sha or the accepted head (decision 161), whose content
+ * of `head`, the pinned sha or the accepted head (decision 164), whose content
  * a squash or rebase merge landed. A branch
  * with commits past both is kept for the operator, as the gate keeps one that
  * moved past the pin.

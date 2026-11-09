@@ -2351,7 +2351,7 @@ export function buildProgram(): Command {
         return refuse('`pup land` is refused to sessions; the operator or the conductor runs it.');
       }
       // Vouching for commits no gate measured is the merge's power, which the
-      // conductor does not hold (decisions 47, 161).
+      // conductor does not hold (decisions 47, 164).
       if (opts.acceptHead !== undefined && callingConductor()) {
         return refuse('`pup land --accept-head` is operator-only.');
       }

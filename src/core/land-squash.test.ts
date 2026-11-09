@@ -397,7 +397,7 @@ describe('landSession', { timeout: 20_000 }, () => {
       acceptHead,
     });
 
-  // Decision 161: the operator's word for the commits past the pin.
+  // Decision 164: the operator's word for the commits past the pin.
   it('lands a merge commit over a moved head the operator accepted', async () => {
     seedPrMerge();
     const later = commitIn(worktree, 'src/late.ts', 'export const late = 1;\n');

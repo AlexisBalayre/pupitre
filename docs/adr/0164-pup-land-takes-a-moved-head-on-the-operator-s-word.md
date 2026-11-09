@@ -1,9 +1,9 @@
-# 0161. `pup land` takes a moved head on the operator's word (2026-11-09)
+# 0164. `pup land` takes a moved head on the operator's word (2026-11-09)
 
 - Status: accepted
 - Amends: [0084](0084-pup-land-session-closes-the-github-half-of.md), [0086](0086-pup-merge-session-pr-re-gates-a-merged.md), [0131](0131-pup-land-takes-a-squash-or-rebase-merge-whose-tree.md)
 
-161. **`pup land` takes a moved head on the operator's word (2026-11-09).**
+164. **`pup land` takes a moved head on the operator's word (2026-11-09).**
     Decision 86 lets a re-gate vouch for a PR head that moved past the pin, but only while the
     PR is open. Once GitHub has merged it at the moved head, nothing can vouch for it. `pup
     merge --pr` refuses a MERGED PR, and `pup land` refuses a head other than the pin. The
