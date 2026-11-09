@@ -12,8 +12,11 @@ import {
   replaceOverlaps,
 } from './overlap.repository.js';
 import {
+  type AppendOnlyNote,
+  appendOnlyLine,
   filesWorthANotice,
   intersectSessionFiles,
+  radarView,
   scanOverlaps,
   scopeConflicts,
 } from './overlap.service.js';
@@ -74,6 +77,57 @@ describe('filesWorthANotice', () => {
         'src/core/overlap.service.ts',
       ]),
     ).toEqual(['docs/adrift.md', 'docs/01-architecture.md', 'src/core/overlap.service.ts']);
+  });
+});
+
+// The radar prints the same rule (decision 109, amending 104): the stored
+// pairs stay whole, and the view drops append-only files and names them once.
+describe('radarView', () => {
+  it('drops the index from a pair and keeps the real file', () => {
+    const pairs = [
+      { sessionA: 's1', sessionB: 's2', files: ['docs/adr/README.md', 'src/cli/index.test.ts'] },
+    ];
+
+    expect(radarView(pairs)).toEqual({
+      pairs: [{ sessionA: 's1', sessionB: 's2', files: ['src/cli/index.test.ts'] }],
+      appends: [{ file: 'docs/adr/README.md', sessions: 2 }],
+    });
+  });
+
+  it('drops a pair left with no file and counts each session once', () => {
+    const view = radarView([
+      { sessionA: 's1', sessionB: 's2', files: ['docs/adr/README.md'] },
+      { sessionA: 's1', sessionB: 's3', files: ['docs/adr/README.md'] },
+      { sessionA: 's2', sessionB: 's3', files: ['docs/adr/README.md'] },
+    ]);
+
+    expect(view.pairs).toEqual([]);
+    expect(view.appends).toEqual([{ file: 'docs/adr/README.md', sessions: 3 }]);
+    expect(appendOnlyLine(view.appends[0] as AppendOnlyNote)).toBe(
+      'docs/adr/README.md: 3 sessions append (decision 109)',
+    );
+  });
+
+  it('names several append-only files in path order', () => {
+    const view = radarView([
+      {
+        sessionA: 's1',
+        sessionB: 's2',
+        files: ['docs/adr/README.md', 'docs/adr/0100-a.md', 'docs/adr/0099-b.md'],
+      },
+    ]);
+
+    expect(view.appends.map((note) => note.file)).toEqual([
+      'docs/adr/0099-b.md',
+      'docs/adr/0100-a.md',
+      'docs/adr/README.md',
+    ]);
+  });
+
+  it('leaves pairs on other files, and docs/adrift.md, untouched', () => {
+    const pairs = [{ sessionA: 's1', sessionB: 's2', files: ['docs/adrift.md', 'src/a.ts'] }];
+
+    expect(radarView(pairs)).toEqual({ pairs, appends: [] });
   });
 });
 

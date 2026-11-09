@@ -1,3 +1,4 @@
+import { passingAdapter } from '@test/helpers/merge-gate.mock.js';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import type { Database } from 'better-sqlite3';
 import { afterAll, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
@@ -13,16 +14,7 @@ import type { ProjectBaseline } from './types/init.types.js';
 import type { TaskId } from './types/profile.types.js';
 
 function makeAdapter(overrides: Partial<Adapter> = {}): Adapter {
-  return {
-    id: 'fake',
-    detect: () => true,
-    gateCommands: () => [
-      { stage: 'build', command: 'true', args: [] },
-      { stage: 'test', command: 'true', args: [] },
-      { stage: 'lint', command: 'true', args: [] },
-    ],
-    ...overrides,
-  };
+  return { ...passingAdapter, ...overrides };
 }
 
 function coverageReport(covered: number, instrumented: number): CoverageReport {

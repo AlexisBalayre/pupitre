@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { passingAdapter } from '@test/helpers/merge-gate.mock.js';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import type { Database } from 'better-sqlite3';
 import { afterAll, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
@@ -41,16 +42,7 @@ function addOrigin(repo: string, url = ORIGIN_URL): void {
 }
 
 function makeAdapter(overrides: Partial<Adapter> = {}): Adapter {
-  return {
-    id: 'fake',
-    detect: () => true,
-    gateCommands: () => [
-      { stage: 'build', command: 'true', args: [] },
-      { stage: 'test', command: 'true', args: [] },
-      { stage: 'lint', command: 'true', args: [] },
-    ],
-    ...overrides,
-  };
+  return { ...passingAdapter, ...overrides };
 }
 
 /** A pre-upgrade store: projects.baseline holds a capture no history row records. */

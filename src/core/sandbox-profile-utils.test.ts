@@ -198,6 +198,33 @@ describe('writeProfile', () => {
     );
   });
 
+  // A grant is resolved up to its last name and never through it (decision
+  // 108), so a path whose last name is not its own is refused (decision 155).
+  it.each([
+    ['empty, which named pup’s own cwd', ''],
+    ['relative, which resolved against pup’s cwd', 'x/checkout'],
+    ['not normalised', '/x//checkout'],
+    ['not normalised in a parent', '/x/../y/checkout'],
+    ['ending in a slash', '/x/checkout/'],
+    ['ending in .', '/x/checkout/.'],
+    ['ending in ..', '/x/checkout/..'],
+    ['the root', '/'],
+  ])('refuses a grant that is %s', (_, path) => {
+    const policyDir = tempDir('pup-profile-');
+
+    // As a checkout, as scratch and as an output: every grant goes through it.
+    for (const grant of [
+      () => writeProfile(policyDir, [path]),
+      () => writeProfile(policyDir, [], [path]),
+      () => writeProfile(policyDir, [], [], [path]),
+    ]) {
+      expect(grant).toThrow(
+        `Refusing to grant ${JSON.stringify(path)}: a grant is an absolute, normalised path ending in a name.`,
+      );
+    }
+    expect(existsSync(join(policyDir, 'gate-child.sb'))).toBe(false);
+  });
+
   // A failing vitest run removes its empty report directory and the re-run
   // makes it again (decision 108), so an output keeps its own name free; what
   // holds it does not (decision 117).

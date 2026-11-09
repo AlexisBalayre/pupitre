@@ -1507,6 +1507,55 @@ describe('CLI commands', () => {
       expect(process.exitCode).toBe(1);
     });
 
+    // Decision 147: a killed session returns its task to the backlog, and the
+    // drop retires it there while its session history stays.
+    it('drops a task whose only session was killed, keeping the session', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedSession(repo, 's1');
+      const { db, repoPath } = resolveProject(repo);
+      transitionSession(db, 's1', 'killed');
+      const taskId = 't-s1';
+      expect(listBacklogTasks(db, projectId(repoPath)).map((t) => t.id)).toEqual([taskId]);
+
+      buildProgram().parse(['plan', 'drop', taskId], { from: 'user' });
+
+      expect(errors).toEqual([]);
+      expect(logs).toContain(`Dropped ${taskId}.`);
+      expect(listBacklogTasks(db, projectId(repoPath))).toEqual([]);
+      expect(getSession(db, 's1')?.state).toBe('killed');
+      buildProgram().parse(['plan'], { from: 'user' });
+      expect(logs.some((line) => line.startsWith(taskId))).toBe(false);
+    });
+
+    it('refuses to drop a task a live session claims, naming the session', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedSession(repo, 's1');
+      const { db } = resolveProject(repo);
+      transitionSession(db, 's1', 'running');
+      const taskId = 't-s1';
+
+      buildProgram().parse(['plan', 'drop', taskId], { from: 'user' });
+
+      expect(errors.join('\n')).toContain(`Task ${taskId} is claimed by session s1`);
+      expect(process.exitCode).toBe(1);
+      expect(getTask(db, taskId)?.dropped_at).toBeNull();
+    });
+
+    it('prints a claimed-drop refusal without the control characters of the session id', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedSession(repo, 's\u001b[31m1');
+      const { db } = resolveProject(repo);
+      transitionSession(db, 's\u001b[31m1', 'running');
+
+      buildProgram().parse(['plan', 'drop', 't-s\u001b[31m1'], { from: 'user' });
+
+      expect(errors.join('\n')).not.toContain('\u001b');
+      expect(process.exitCode).toBe(1);
+    });
+
     it('edits only the fields it is given', () => {
       const repo = initRepo();
       useCwd(repo);

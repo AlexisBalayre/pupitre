@@ -1,8 +1,9 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import Database from 'better-sqlite3';
+import { isValidElement, type ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Side-effecting boundaries only (tmux/git spawns, `claude -p` sessions, and the
@@ -190,7 +191,7 @@ import { startFixRound } from '../core/fix-round.service.js';
 import { gitDiffPaths } from '../core/git-diff.client.js';
 import { intentTemplate } from '../core/intent.service.js';
 import { runMergeGate } from '../core/merge-gate.service.js';
-import { projectId } from '../core/paths.utils.js';
+import { projectId, projectPaths } from '../core/paths.utils.js';
 import { InvalidProfileError } from '../core/profile.errors.js';
 import { getSession, listEvents, transitionSession } from '../core/session.repository.js';
 import { STALLED_AFTER_MS } from '../core/session-activity.constants.js';
@@ -209,8 +210,10 @@ import {
   steerSession,
 } from '../core/session-lifecycle.service.js';
 import { RESUME_MESSAGE } from '../core/turn-watchdog.service.js';
+import { UsageLimitReachedError } from '../core/usage-limits.service.js';
 import { buildProgram } from './index.js';
 import { ProjectResolutionError, resolveProject } from './project.utils.js';
+import { Radar } from './ui/radar.component.js';
 
 describe('CLI commands', () => {
   const originalExitCode = process.exitCode;
@@ -427,6 +430,61 @@ describe('CLI commands', () => {
       expect(line).toContain('[2Js1');
       expect(line).toContain('[2Js2');
       expect(line).not.toContain('\u001b');
+    });
+
+    // Every session that records a decision appends to the index, so the pair
+    // is a line per pair of sessions and hides the real overlap (decision 109).
+    describe('append-only files', () => {
+      function seedTwoRunning(repo: string): void {
+        for (const id of ['s1', 's2']) {
+          seedSession(repo, id);
+          const { db } = resolveProject(repo);
+          transitionSession(db, id, 'running');
+          db.close();
+        }
+      }
+
+      it('names the index once and keeps the real file in the pair', () => {
+        const repo = initRepo();
+        useCwd(repo);
+        seedTwoRunning(repo);
+        vi.mocked(gitDiffPaths).mockReturnValue(['docs/adr/README.md', 'src/cli/index.test.ts']);
+
+        buildProgram().parse(['watch', '--once'], { from: 'user' });
+
+        const overlaps = logs.filter((l) => l.includes('OVERLAP'));
+        expect(overlaps).toHaveLength(1);
+        expect(overlaps[0]).toMatch(/OVERLAP {2}s1 <-> s2 {2}src\/cli\/index\.test\.ts$/);
+        expect(logs.filter((l) => l.includes('docs/adr/README.md'))).toEqual([
+          expect.stringMatching(/ {2}docs\/adr\/README\.md: 2 sessions append \(decision 109\)$/),
+        ]);
+      });
+
+      it('says clear when live sessions share nothing', () => {
+        const repo = initRepo();
+        useCwd(repo);
+        seedTwoRunning(repo);
+        vi.mocked(gitDiffPaths).mockImplementation((_repo, _target, branch) => [
+          `src/${branch}.ts`,
+        ]);
+
+        buildProgram().parse(['watch', '--once'], { from: 'user' });
+
+        expect(logs).toEqual([expect.stringMatching(/ {2}clear — no overlaps$/)]);
+      });
+
+      it('prints no pair when the index is all two sessions share', () => {
+        const repo = initRepo();
+        useCwd(repo);
+        seedTwoRunning(repo);
+        vi.mocked(gitDiffPaths).mockReturnValue(['docs/adr/README.md']);
+
+        buildProgram().parse(['watch', '--once'], { from: 'user' });
+
+        expect(logs.some((l) => l.includes('OVERLAP'))).toBe(false);
+        expect(logs.some((l) => l.includes('clear'))).toBe(false);
+        expect(logs.some((l) => l.includes('docs/adr/README.md: 2 sessions append'))).toBe(true);
+      });
     });
   });
 
@@ -1877,6 +1935,70 @@ describe('CLI commands', () => {
     });
   });
 
+  describe('usage hold (decision 156)', () => {
+    it('hands the operator --over-limit to the launch', () => {
+      useCwd(initRepo());
+      vi.mocked(launchTask).mockReturnValue('t-abc-0');
+
+      buildProgram().parse(['launch', 't-abc', '--over-limit'], { from: 'user' });
+
+      expect(firstCall(launchTask)[1]).toMatchObject({ overLimit: true, overrideVia: 'operator' });
+    });
+
+    it.each([
+      ['launch', ['launch', 't-abc', '--over-limit']],
+      ['new', ['new', 'a goal', '--scope', 'src/**', '--over-limit']],
+    ])('refuses the conductor `pup %s --over-limit`, launching nothing', (command, argv) => {
+      useCwd(initRepo());
+      vi.stubEnv('PUP_CONDUCTOR', 'p1');
+
+      buildProgram().parse(argv, { from: 'user' });
+
+      expect(errors).toEqual([
+        `\`pup ${command} --over-limit\` is operator-only; the conductor launches within the plan's usage limits.`,
+      ]);
+      expect(process.exitCode).toBe(1);
+      expect(launchTask).not.toHaveBeenCalled();
+      expect(createSession).not.toHaveBeenCalled();
+    });
+
+    it('refuses a held launch in one line naming the window and its reset', () => {
+      useCwd(initRepo());
+      vi.mocked(launchTask).mockImplementation(() => {
+        throw new UsageLimitReachedError('5-hour', 91, 85, Date.UTC(2026, 10, 8, 13) / 1000);
+      });
+
+      buildProgram().parse(['launch', 't-abc'], { from: 'user' });
+
+      expect(errors.join('\n')).toContain(
+        "The plan's 5-hour usage is at 91%, at or over the 85% that holds launches; nothing " +
+          'was launched. It resets at 2026-11-08 13:00 UTC.',
+      );
+      expect(process.exitCode).toBe(1);
+    });
+
+    it("prints the latest reading's shares and age in `pup status`", () => {
+      const repo = initRepo();
+      useCwd(repo);
+      const file = projectPaths(repo).usageFile;
+      mkdirSync(dirname(file), { recursive: true });
+      const resetsAt = Math.floor(Date.now() / 1000) + 3600;
+      writeFileSync(
+        file,
+        JSON.stringify({
+          five_hour: { used_percentage: 23.5, resets_at: resetsAt },
+          seven_day: { used_percentage: 41.2, resets_at: resetsAt },
+        }),
+      );
+
+      buildProgram().parse(['status'], { from: 'user' });
+
+      expect(logs.find((line) => line.startsWith('usage: '))).toMatch(
+        /^usage: 5h 23% \(resets .+ UTC\), 7d 41% \(resets .+ UTC\); read 0m ago$/,
+      );
+    });
+  });
+
   describe('ci wait', () => {
     it('prints the one digest line, with the timeout in minutes', async () => {
       const repo = initRepo();
@@ -2187,6 +2309,38 @@ describe('the raw-sink guard over the CLI source', () => {
       `index.ts:14: \${layer.name.padEnd(18)}`,
       `index.ts:14: \${(layer.extends ?? '-').padEnd(18)}`,
       `index.ts:14: \${layer.contextBudget ?? '-'}`,
+    ]);
+  });
+});
+
+// Called as a function, not rendered: this file replaces ink's `render`, so the
+// text is read off the element tree it returns.
+function textOf(node: ReactNode): string[] {
+  if (typeof node === 'string') return [node];
+  if (Array.isArray(node)) return node.flatMap(textOf);
+  if (isValidElement<{ children?: ReactNode }>(node)) return textOf(node.props.children);
+  return [];
+}
+
+describe('radar block', () => {
+  it('names the append-only index under the pairs, led by its project', () => {
+    const rows = textOf(
+      Radar({
+        overlaps: [
+          {
+            sessionA: 's1',
+            sessionB: 's2',
+            files: ['docs/adr/README.md', 'src/cli/index.test.ts'],
+          },
+        ],
+        radarStale: false,
+        project: 'p1',
+      }),
+    );
+
+    expect(rows).toEqual([
+      'p1  OVERLAP  s1 <-> s2  src/cli/index.test.ts',
+      'p1  docs/adr/README.md: 2 sessions append (decision 109)',
     ]);
   });
 });

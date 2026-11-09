@@ -88,6 +88,7 @@ import {
 } from './session-lifecycle.service.js';
 import { availableMemoryBytes } from './test-slot.service.js';
 import type { TaskId, TaskSpec } from './types/profile.types.js';
+import { UsageLimitReachedError } from './usage-limits.service.js';
 
 // Test repos must not inherit the developer's global git config nor GIT_DIR & co.
 // — when this suite runs inside a git hook (pre-commit), those would redirect
@@ -1890,5 +1891,110 @@ describe('launch capacity (decision 96)', () => {
 
       expect(() => recompile(session)).toThrow(LowMemoryError);
     });
+  });
+});
+
+describe('launch usage hold (decision 156)', () => {
+  let db: Database;
+  let repo: string;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    db = openStore(':memory:');
+    vi.stubEnv('HOME', tempDir('pup-usage-home-'));
+    vi.stubEnv('PATH', NO_CODEGRAPH_PATH);
+    repo = tempDir('pup-usage-');
+    gitIn(repo, 'init', '-b', 'main');
+    gitIn(repo, 'config', 'user.email', 't@t');
+    gitIn(repo, 'config', 'user.name', 't');
+    commitIn(repo, 'src/core/github.client.ts', 'export const gh = 1;\n');
+    ensureProject(db, projectId(repo), repo);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  /** A reading the status line wrote, `fiveHour` percent used, resetting in an hour. */
+  function writeReading(fiveHour: number, ageMs = 0): void {
+    const file = projectPaths(repo).usageFile;
+    mkdirSync(dirname(file), { recursive: true });
+    const resetsAt = Math.floor(Date.now() / 1000) + 3600;
+    writeFileSync(
+      file,
+      JSON.stringify({
+        five_hour: { used_percentage: fiveHour, resets_at: resetsAt },
+        seven_day: { used_percentage: 10, resets_at: resetsAt + 86_400 },
+      }),
+    );
+    const at = (Date.now() - ageMs) / 1000;
+    utimesSync(file, at, at);
+  }
+
+  const launch = (by: 'operator' | 'conductor', overLimit = false): string => {
+    planTask(db, { repoPath: repo, task: spec() });
+    return launchTask(db, {
+      repoPath: repo,
+      base: DEFAULT_BASE_PROFILE,
+      taskId: 't-1',
+      claudeUserDir: join(repo, '.claude'),
+      overlapVia: by,
+      overrideVia: by,
+      overLimit,
+    });
+  };
+
+  it.each(['operator', 'conductor'] as const)(
+    'refuses the %s at 85%% of the 5-hour window, naming it and its reset',
+    (by) => {
+      writeReading(85);
+
+      expect(() => launch(by)).toThrow(
+        /The plan's 5-hour usage is at 85%, at or over the 85% that holds launches; nothing was launched\. It resets at \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC\./,
+      );
+      expect(launchSession).not.toHaveBeenCalled();
+      expect(getSession(db, 't-1')).toBeUndefined();
+    },
+  );
+
+  it('launches under the hold line', () => {
+    writeReading(84.9);
+
+    expect(launch('operator')).toBe('t-1');
+  });
+
+  it('lets the operator past the hold with --over-limit, never the conductor', () => {
+    writeReading(99);
+
+    expect(() => launch('conductor', true)).toThrow(UsageLimitReachedError);
+    expect(
+      launchTask(db, {
+        repoPath: repo,
+        base: DEFAULT_BASE_PROFILE,
+        taskId: 't-1',
+        claudeUserDir: join(repo, '.claude'),
+        overLimit: true,
+      }),
+    ).toBe('t-1');
+  });
+
+  it('never holds on a reading older than 30 minutes', () => {
+    writeReading(99, 31 * 60_000);
+
+    expect(launch('operator')).toBe('t-1');
+  });
+
+  it('holds `pup new` before its task is written', () => {
+    writeReading(90);
+
+    expect(() =>
+      createSession(db, {
+        repoPath: repo,
+        base: DEFAULT_BASE_PROFILE,
+        task: spec(),
+        claudeUserDir: join(repo, '.claude'),
+      }),
+    ).toThrow(UsageLimitReachedError);
+    expect(getTask(db, 't-1')).toBeUndefined();
   });
 });

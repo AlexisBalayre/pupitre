@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { appendFileSync, writeFileSync } from "node:fs";
 import { commentableLines, resolveAnchor, trueLine } from "./diff-anchor.utils";
 import { bodyLines, commentBody, REVIEW_HEADING } from "./review-body.utils";
+import { consolidateSummary } from "./review-consolidate.utils";
 import { noVerdictReason } from "./review-completeness.utils";
 import { type Finding, postedRecordSchema, type ReviewSummary, reviewSummarySchema } from "./review-metrics.schemas";
 
@@ -187,8 +188,9 @@ function main(): void {
   // also produce a stale or partial one; either way the run did not finish, so
   // its output is not a verdict to post.
   const stepOutcome = env.REVIEW_STEP_OUTCOME ?? "";
-  const summary =
+  const parsed =
     stepOutcome === "" || stepOutcome === "success" ? parseSummary(env.REVIEW_STRUCTURED_OUTPUT ?? "") : null;
+  const summary = parsed && consolidateSummary(parsed).summary;
   const noVerdict = noVerdictReason(summary, stepOutcome);
   // A round with no verdict asks for a re-run, which raises any findings it
   // carries again, so anchoring them now would put each one on the diff twice.

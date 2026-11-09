@@ -14,16 +14,10 @@ import type { GateStageResult } from '@src/core/types/merge-gate.types.js';
 import type { TaskId, TaskSpec } from '@src/core/types/profile.types.js';
 import type { Database } from 'better-sqlite3';
 import { onTestFinished } from 'vitest';
+import { GIT_ENV } from './git.mock.js';
 import { tempDir } from './temp-dir.mock.js';
 
-// Test repos must not inherit the developer's global git config (hooks, signing)
-// nor GIT_DIR & co. — when this suite runs inside a git hook (pre-commit), those
-// would redirect every git call at the pupitre repo instead of the temp repo.
-export const GIT_ENV: NodeJS.ProcessEnv = {
-  ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_'))),
-  GIT_CONFIG_GLOBAL: '/dev/null',
-  GIT_CONFIG_SYSTEM: '/dev/null',
-};
+export { GIT_ENV } from './git.mock.js';
 
 export function sh(cwd: string, ...args: string[]): string {
   return execFileSync(args[0] as string, args.slice(1), { cwd, encoding: 'utf8', env: GIT_ENV });
@@ -92,14 +86,12 @@ export function blockedReason(db: Database): string | undefined {
   return rows.filter((payload) => payload.to === 'blocked').at(-1)?.reason;
 }
 
+/** Every gate stage, each passing. */
 export const passingAdapter: Adapter = {
   id: 'fake',
   detect: () => true,
-  gateCommands: () => [
-    { stage: 'build', command: 'true', args: [] },
-    { stage: 'test', command: 'true', args: [] },
-    { stage: 'lint', command: 'true', args: [] },
-  ],
+  gateCommands: () =>
+    (['build', 'test', 'lint'] as const).map((stage) => ({ stage, command: 'true', args: [] })),
 };
 
 export const failingBuildAdapter: Adapter = {

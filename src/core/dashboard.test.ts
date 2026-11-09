@@ -33,6 +33,7 @@ import { WATCH_STALE_AFTER_MS } from './overlap.service.js';
 import { projectId, projectPaths } from './paths.utils.js';
 import {
   appendEvent,
+  dropTask,
   ensureProject,
   incrementRejectCount,
   insertSession,
@@ -1134,6 +1135,15 @@ describe('needsYou', () => {
       transitionSession(db, 's-new', 'running');
 
       expect(inbox().map((need) => need.sessionId)).toEqual([]);
+    });
+
+    it('leaves out a top-rung failure of a task the operator then dropped', () => {
+      seedTopRungKill('s-gone');
+      expect(inbox()).toHaveLength(1);
+
+      expect(dropTask(db, 't-s-gone')).toEqual({ kind: 'dropped' });
+
+      expect(inbox()).toEqual([]);
     });
 
     it('counts a stall the window was in when it was killed', () => {

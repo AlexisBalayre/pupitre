@@ -3,6 +3,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  renameSync,
   rmSync,
   symlinkSync,
   utimesSync,
@@ -31,13 +32,15 @@ vi.mock('node:child_process', async (importOriginal) => {
   return { ...actual, execFileSync: vi.fn(actual.execFileSync), spawn: vi.fn(actual.spawn) };
 });
 
-// The real rmSync, wrapped so a test can make the gate checkout's removal fail,
-// and the real writeFileSync, so one can fail the merge lock's pid write.
+// The real rmSync and renameSync, wrapped so a test can follow the gate
+// checkout to the name it is removed under and fail that removal, and the real
+// writeFileSync, so one can fail the merge lock's pid write.
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();
   return {
     ...actual,
     rmSync: vi.fn(actual.rmSync),
+    renameSync: vi.fn(actual.renameSync),
     writeFileSync: vi.fn(actual.writeFileSync),
   };
 });
@@ -525,11 +528,20 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     it('reports a gate checkout it could not remove and still returns the stage results', async () => {
       const worktree = seedSession(db, repo);
       commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
-      const { rmSync: removeForReal } = await vi.importActual<typeof import('node:fs')>('node:fs');
+      const { rmSync: removeForReal, renameSync: renameForReal } =
+        await vi.importActual<typeof import('node:fs')>('node:fs');
+      // The checkout is removed under the name it was moved aside to (decision 155).
+      const checkouts = new Map<string, string>();
+      vi.mocked(renameSync).mockImplementation((from, to) => {
+        if (/\/pup-gate-checkout-[^/]+$/.test(String(from)))
+          checkouts.set(String(to), String(from));
+        renameForReal(from, to);
+      });
       const left: string[] = [];
       vi.mocked(rmSync).mockImplementation((path, options) => {
-        if (!/\/pup-gate-checkout-[^/]+$/.test(String(path))) return removeForReal(path, options);
-        left.push(String(path));
+        const checkout = checkouts.get(String(path));
+        if (!checkout) return removeForReal(path, options);
+        left.push(checkout);
         throw Object.assign(new Error('ENOTEMPTY: directory not empty, rmdir'), {
           code: 'ENOTEMPTY',
         });
@@ -537,6 +549,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       const warn = vi.spyOn(console, 'error').mockImplementation(() => undefined);
       onTestFinished(() => {
         vi.mocked(rmSync).mockImplementation(removeForReal);
+        vi.mocked(renameSync).mockImplementation(renameForReal);
         warn.mockRestore();
         for (const path of left) removeForReal(path, { recursive: true, force: true });
       });

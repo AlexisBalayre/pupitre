@@ -105,8 +105,18 @@
     exists with the same walk and refuses, writing no profile, one that holds a `.git` at any
     depth or a directory the walk cannot read: the stage fails rather than grant a repo a free
     name.
-    Ceilings. A nested repo other than a worktree that appears while a child runs, a submodule
-    or vendored clone, is not pinned for that child; the next profile pins it. The walk has
+    Ceilings. A profile is not bounded by its stage. pup kills a stage's process group when
+    the stage ends and every group still live when the run ends, but a process that leaves the
+    group, through `setsid` as a daemon does, is out of reach. It outlives the stage and the
+    run, still under the profile its stage was written. Every grant in that profile goes on
+    holding for it: it can still write the operator's working tree outside `.git` and
+    `.worktrees`, and the toolchain cache. The `.worktrees` deny holds for it too: the
+    profile names `.worktrees` whether or not it existed, so a worktree pup adds after the stage
+    ended is out of its reach too. This record first said these ceilings held "while a child
+    runs"; the t-mvqxs5s2 security review found that a child outlives that. A nested repo other than a worktree, a submodule or vendored
+    clone, that appears after a child's profile was written is not pinned for that child, nor
+    for any process it started that is still running; the next profile pins it for the next
+    child only. The walk has
     no bound on the number of directories, so a child that makes millions
     of them slows every later child's profile, by minutes at worst. It cannot thereby hide
     one. A child can still move a repo it
@@ -125,10 +135,19 @@
     `vendor` unreadable. It restores the mode and tries the nested move, is refused, and
     the pointer file is unchanged. The third and fifth use a vendored repo, `vendor/s1`, as
     `.worktrees` is no longer writable at all. A sixth waits until the test adds
-    `.worktrees/s2` after its profile was written, then tries to move it into scratch, rewrite
-    its pointer and move it back as `s3`: refused, the pointer unchanged. Children are refused a
+    `.worktrees/s2` after its profile was written, then tries to rename it within the
+    checkout, and is refused. The refused rename is the proof: a worktree that cannot be
+    moved cannot have its pointer rewritten out of reach of the `.git` deny. Children are refused a
     link at `.worktrees/s4` and at `.WORKTREES` in a checkout with none yet, while the same link
-    elsewhere in the checkout is made; without the `.worktrees` deny, the sixth fails. With the
+    elsewhere in the checkout is made. A seventh leaves a helper in a session of its own that
+    outlives the stage. Only once the stage has ended does the test add `.worktrees/s2`, in a
+    checkout that had no `.worktrees` when the profile was written. The helper renames it
+    within the checkout, so the move is never a copy-then-delete across volumes, whose
+    delete the `.git` deny would refuse with the same error. The rename is refused with
+    "Operation not permitted", which is again the proof. Without the `.worktrees` deny,
+    the sixth and seventh fail. Like every test run under pup's own applied profile, the seventh
+    is skipped off macOS and inside the merge gate, where the sandbox is inherited; it
+    runs only on a developer's Mac. With the
     pins emptied, the first two
     fail because the child's command succeeds. Without the walk's pins, the worktree test
     fails. Without the root pins, the swap test fails. With the unreadable directory pinned

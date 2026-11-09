@@ -20,6 +20,9 @@ export const REVIEWER_AREAS = [
   "maintainability",
   "docs",
   "spec",
+  "simplicity",
+  "guards",
+  "workflow-safety",
 ] as const;
 
 export const reviewerAreaSchema = z.enum(REVIEWER_AREAS);
@@ -37,6 +40,9 @@ const processComponentSchema = z.enum([
   "maintainability",
   "docs",
   "spec",
+  "simplicity",
+  "guards",
+  "workflow-safety",
   "consolidator",
   "validator",
   "orchestrator",
@@ -119,6 +125,11 @@ export const reviewSummarySchema = z.object({
   process_issues: z
     .array(processIssueSchema)
     .describe("Problems in the review process itself, not the code. Empty when it ran clean."),
+  merged_duplicates: z
+    .number()
+    .int()
+    .optional()
+    .describe("How many findings the consolidator merged into another before validation; omit when none."),
 });
 
 const tokensSchema = z.object({
@@ -175,6 +186,13 @@ export const metricsRecordSchema = z.object({
   findings: z.array(findingSchema).nullable(),
   refuted_findings: z.array(refutedFindingSchema).nullable(),
   process_issues: z.array(processIssueSchema).nullable(),
+  duplicates_merged: z
+    .number()
+    .int()
+    .nullable()
+    .describe(
+      "Findings merged away before the record was written: the consolidator's count plus the mechanical pass's. Null when the run left no summary.",
+    ),
   comments_posted_actual: z
     .number()
     .int()

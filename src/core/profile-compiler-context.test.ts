@@ -29,6 +29,41 @@ import type { CompileInput, TaskSpec } from './types/profile.types.js';
 // times out a different one each run, which also stops `pup audit` measuring coverage.
 vi.setConfig({ testTimeout: 30_000 });
 
+/**
+ * A worker's denials on the default base profile, in order, each beside the
+ * decision that took it out of the toolset: 74's tools open a screen pup cannot
+ * answer, 107's and 149's are never called, and 107 drops the skill listing.
+ */
+const WORKER_DENY_BY_DECISION: [tool: string, decision: number][] = [
+  ['AskUserQuestion', 74],
+  ['EnterPlanMode', 74],
+  ['ExitPlanMode', 74],
+  ['SendFeedback', 107],
+  ['ScheduleWakeup', 107],
+  ['ReportFindings', 107],
+  ['CronCreate', 149],
+  ['CronDelete', 149],
+  ['CronList', 149],
+  ['DesignSync', 149],
+  ['EndConversation', 149],
+  ['EnterWorktree', 149],
+  ['ExitWorktree', 149],
+  ['NotebookEdit', 149],
+  ['PushNotification', 149],
+  ['RemoteTrigger', 149],
+  ['WebFetch', 149],
+  ['WebSearch', 149],
+  ['Skill', 107],
+];
+const WORKER_DENY = WORKER_DENY_BY_DECISION.map(([tool]) => tool);
+
+/** Every compiled settings file's env, the conductor's too (decision 107). */
+const SLIM_ENV = {
+  CLAUDE_CODE_DISABLE_ARTIFACT: '1',
+  CLAUDE_CODE_DISABLE_WORKFLOWS: '1',
+  CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: 'false',
+};
+
 describe('compileProfile', () => {
   it('merges base and role layers (union, base first)', () => {
     const compiled = ProfileCompiler.compileProfile(makeInput());
@@ -222,25 +257,34 @@ describe('compileProfile', () => {
       JSON.parse(ProfileCompiler.compileProfile(input).files['settings.json'] as string);
 
     it('turns off the Artifact and Workflow tools and prompt suggestions', () => {
-      expect(settingsOf(makeInput()).env).toEqual({
-        CLAUDE_CODE_DISABLE_ARTIFACT: '1',
-        CLAUDE_CODE_DISABLE_WORKFLOWS: '1',
-        CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: 'false',
+      expect(settingsOf(makeInput()).env).toMatchObject(SLIM_ENV);
+    });
+
+    // Decision 149: the operator's memory, connectors and browser are theirs.
+    it('turns off auto-memory, the claude.ai connectors and Claude in Chrome', () => {
+      const settings = settingsOf(makeInput());
+
+      expect(settings.autoMemoryEnabled).toBe(false);
+      expect(settings.env).toEqual({
+        ...SLIM_ENV,
+        ENABLE_CLAUDEAI_MCP_SERVERS: 'false',
+        CLAUDE_CODE_ENABLE_CFC: 'false',
       });
+    });
+
+    it('keeps the tools a worker reaches peers and delegates reading with', () => {
+      const deny = settingsOf(makeInput({ base: DEFAULT_BASE_PROFILE, role: undefined }))
+        .permissions.deny;
+
+      for (const tool of ['SendMessage', 'ListAgents', 'Agent']) {
+        expect(deny).not.toContain(tool);
+      }
     });
 
     it('denies by bare name the tools a worker never calls, and the Skill tool', () => {
       const input = makeInput({ base: DEFAULT_BASE_PROFILE, role: undefined });
 
-      expect(settingsOf(input).permissions.deny).toEqual([
-        'AskUserQuestion',
-        'EnterPlanMode',
-        'ExitPlanMode',
-        'SendFeedback',
-        'ScheduleWakeup',
-        'ReportFindings',
-        'Skill',
-      ]);
+      expect(settingsOf(input).permissions.deny).toEqual(WORKER_DENY);
     });
 
     it('keeps the Skill tool, and so its listing, when a layer names a skill', () => {
@@ -251,14 +295,9 @@ describe('compileProfile', () => {
       });
 
       for (const input of [roleNames, baseNames]) {
-        expect(settingsOf(input).permissions.deny).toEqual([
-          'AskUserQuestion',
-          'EnterPlanMode',
-          'ExitPlanMode',
-          'SendFeedback',
-          'ScheduleWakeup',
-          'ReportFindings',
-        ]);
+        expect(settingsOf(input).permissions.deny).toEqual(
+          WORKER_DENY.filter((tool) => tool !== 'Skill'),
+        );
       }
     });
   });
@@ -268,15 +307,6 @@ describe('compileProfile', () => {
     const denyOf = (input: CompileInput) =>
       JSON.parse(ProfileCompiler.compileProfile(input).files['settings.json'] as string).permissions
         .deny;
-    const WORKER_DENY = [
-      'AskUserQuestion',
-      'EnterPlanMode',
-      'ExitPlanMode',
-      'SendFeedback',
-      'ScheduleWakeup',
-      'ReportFindings',
-      'Skill',
-    ];
 
     it('appends a parsed layer deny after the unanswerable tools', () => {
       const role = ProfileCompiler.parseProfileLayer('name: copiste\ndeny: [Agent]\n');
@@ -287,10 +317,10 @@ describe('compileProfile', () => {
     it("unions a child layer's deny with its parent's", () => {
       const input = makeInput({
         base: { name: 'base', deny: ['Agent'] },
-        role: { name: 'copiste', deny: ['WebFetch', 'Agent'] },
+        role: { name: 'copiste', deny: ['Monitor', 'Agent'] },
       });
 
-      expect(denyOf(input)).toEqual([...WORKER_DENY, 'Agent', 'WebFetch']);
+      expect(denyOf(input)).toEqual([...WORKER_DENY, 'Agent', 'Monitor']);
     });
 
     it('keeps a base-only deny when no role is given', () => {
@@ -961,6 +991,7 @@ describe('compileConductorProfile', () => {
       'context.md',
       'hooks/bash-guard.sh',
       'hooks/edit-block.sh',
+      'hooks/statusline.sh',
       'settings.json',
     ]);
   });
@@ -969,18 +1000,19 @@ describe('compileConductorProfile', () => {
     const compiled = ProfileCompiler.compileConductorProfile(conductorInput);
 
     const settings = JSON.parse(compiled.files['settings.json'] as string);
-    expect(settings.permissions.deny).toEqual(['AskUserQuestion', 'EnterPlanMode', 'ExitPlanMode']);
+    expect(settings.permissions.deny).toEqual(
+      WORKER_DENY_BY_DECISION.filter(([, decision]) => decision === 74).map(([tool]) => tool),
+    );
   });
 
   // Decision 107: the conductor gets a worker's env block and keeps its tools.
-  it('turns off the Artifact and Workflow tools and prompt suggestions', () => {
+  // Decision 149: and keeps the operator's memory, connectors and browser.
+  it('turns off the Artifact and Workflow tools and prompt suggestions, and nothing else', () => {
     const compiled = ProfileCompiler.compileConductorProfile(conductorInput);
 
-    expect(JSON.parse(compiled.files['settings.json'] as string).env).toEqual({
-      CLAUDE_CODE_DISABLE_ARTIFACT: '1',
-      CLAUDE_CODE_DISABLE_WORKFLOWS: '1',
-      CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: 'false',
-    });
+    const settings = JSON.parse(compiled.files['settings.json'] as string);
+    expect(settings.env).toEqual(SLIM_ENV);
+    expect(Object.keys(settings).sort()).toEqual(['env', 'hooks', 'permissions', 'statusLine']);
   });
 
   // The conductor's graph is main's, pinned the way a session's is pinned to

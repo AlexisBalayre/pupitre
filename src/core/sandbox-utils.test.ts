@@ -8,18 +8,27 @@ import {
   readdirSync,
   readFileSync,
   realpathSync,
+  renameSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 
-// The real rmSync, wrapped so one test can make a removal fail as a busy
-// directory does.
+// The real rmSync, renameSync, mkdirSync and mkdtempSync, wrapped so a test can
+// make a removal, or the moves around it, fail as a busy or locked directory or
+// a full volume does.
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();
-  return { ...actual, rmSync: vi.fn(actual.rmSync) };
+  return {
+    ...actual,
+    rmSync: vi.fn(actual.rmSync),
+    renameSync: vi.fn(actual.renameSync),
+    mkdirSync: vi.fn(actual.mkdirSync),
+    mkdtempSync: vi.fn(actual.mkdtempSync),
+  };
 });
 
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
@@ -844,19 +853,22 @@ describe('runGateChild', () => {
       it('cannot take a worktree pup adds after its profile was written, nor plant one', async () => {
         // `pup init` and `pup audit` run the child in the operator's repo while
         // pup adds worktrees there, which no walk at profile time can see: `s2`
-        // appears once the child runs, and the child moves it into scratch,
-        // rewrites its pointer and moves it back under a new name (decision 117).
+        // appears once the child runs, and moved into scratch it would have its
+        // pointer rewritten there (decision 117). The child renames it within
+        // the checkout, so the move is never mv's copy-then-delete across
+        // volumes, whose delete the `.git` deny refuses with the same error.
         const cwd = fakeCheckout();
         const worktree = join(cwd, '.worktrees', 's2');
         mkdirSync(join(cwd, '.worktrees'));
         const options = { cwd, repoPath: cwd };
 
-        // The profile is written before runGateChild returns.
+        // The profile is written before runGateChild returns: it builds the
+        // invocation, writeFileSync included, before its first await.
         const child = runGateChild(
           'sh',
           [
             '-c',
-            'i=0; until [ -f .worktrees/s2/.git ]; do i=$((i+1)); [ $i -gt 200 ] && exit 3; sleep 0.05; done; mv .worktrees/s2 "$TMPDIR/s2" && printf "gitdir: /evil" > "$TMPDIR/s2/.git" && mv "$TMPDIR/s2" .worktrees/s3',
+            'i=0; until [ -f .worktrees/s2/.git ]; do i=$((i+1)); [ $i -gt 200 ] && exit 3; sleep 0.05; done; mv .worktrees/s2 s2',
           ],
           options,
         );
@@ -864,9 +876,11 @@ describe('runGateChild', () => {
         writeFileSync(join(worktree, '.git'), 'gitdir: /repo/.git/worktrees/s2\n');
 
         await expect(child).rejects.toThrow(/Operation not permitted/);
+        // A sanity check: the refused rename is the proof.
         expect(readFileSync(join(worktree, '.git'), 'utf8')).toBe(
           'gitdir: /repo/.git/worktrees/s2\n',
         );
+        expect(existsSync(join(cwd, 's2'))).toBe(false);
         // A link at a name pup has yet to use, or at `.worktrees` itself before
         // pup makes it, in any case, would aim pup's next worktree at scratch.
         const fresh = fakeCheckout();
@@ -882,6 +896,58 @@ describe('runGateChild', () => {
         // The control: the same link anywhere else in the checkout is made.
         await runGateChild('sh', ['-c', 'ln -s "$TMPDIR" elsewhere'], options);
         expect(lstatSync(join(cwd, 'elsewhere')).isSymbolicLink()).toBe(true);
+      });
+
+      it('cannot take a worktree pup adds after its stage ended, from a helper that left its group', {
+        timeout: 30_000,
+      }, async () => {
+        // A helper in a session of its own survives the kill of its stage's
+        // group, and still holds the profile written when `.worktrees` did not
+        // exist yet: no walk saw `s2`, and the deny is all that stops it. The
+        // move stays inside the checkout, so it is a rename and never mv's
+        // copy-then-delete across volumes, whose delete the `.git` deny refuses
+        // with the same error: only a deny on `s2` itself refuses this one.
+        const cwd = fakeCheckout();
+        const worktree = join(cwd, '.worktrees', 's2');
+        writeFileSync(
+          join(cwd, 'outlive.sh'),
+          [
+            'exec </dev/null >/dev/null 2>&1',
+            'echo $$ > helper.tmp && mv helper.tmp helper.pid',
+            'i=0; until [ -f .worktrees/s2/.git ] || [ $i -gt 400 ]; do i=$((i+1)); sleep 0.05; done',
+            'mv .worktrees/s2 s2 2>moved.err',
+            'echo $? > status.tmp && mv status.tmp status',
+          ].join('\n'),
+        );
+
+        await runGateChild(
+          'perl',
+          [
+            '-MPOSIX',
+            '-e',
+            `if (!fork) { setsid; exec 'sh', 'outlive.sh' } select(undef, undef, undef, 0.05) until -e 'helper.pid'`,
+          ],
+          { cwd, repoPath: cwd },
+        );
+        const helper = await pidIn(cwd, 'helper.pid');
+        onTestFinished(() => {
+          if (alive(helper)) process.kill(helper, 'SIGKILL');
+        });
+        expect(alive(helper)).toBe(true);
+        expect(existsSync(join(cwd, '.worktrees'))).toBe(false);
+        mkdirSync(worktree, { recursive: true });
+        writeFileSync(join(worktree, '.git'), 'gitdir: /repo/.git/worktrees/s2\n');
+
+        const status = await vi.waitFor(() => readFileSync(join(cwd, 'status'), 'utf8'), {
+          timeout: 25_000,
+        });
+        expect(status.trim()).not.toBe('0');
+        expect(readFileSync(join(cwd, 'moved.err'), 'utf8')).toMatch(/Operation not permitted/);
+        // A sanity check: the refused rename is the proof.
+        expect(readFileSync(join(worktree, '.git'), 'utf8')).toBe(
+          'gitdir: /repo/.git/worktrees/s2\n',
+        );
+        expect(existsSync(join(cwd, 's2'))).toBe(false);
       });
 
       it('cannot swap its checkout with a directory in its scratch, in either order', async () => {
@@ -972,8 +1038,10 @@ describe('runGateChild', () => {
 // The crash an interrupted gate ended on: a worker still writing into the
 // scratch dir made the exit handler's removal throw ENOTEMPTY (decision 95).
 describe('removeGateDir', () => {
-  it('reports a directory it could not remove instead of throwing', () => {
-    const dir = tempDir('pup-remove-test-');
+  it('reports a directory it could not remove instead of throwing, and leaves it where it was', () => {
+    const parent = tempDir('pup-remove-parent-');
+    const dir = join(parent, 'run');
+    mkdirSync(dir);
     vi.mocked(rmSync).mockImplementationOnce(() => {
       throw Object.assign(new Error('ENOTEMPTY: directory not empty, rmdir'), {
         code: 'ENOTEMPTY',
@@ -986,16 +1054,152 @@ describe('removeGateDir', () => {
 
     expect(() => removeGateDir(dir)).not.toThrow();
     expect(warn).toHaveBeenCalledWith(`Could not remove ${dir} (ENOTEMPTY); it is left behind.`);
-    expect(existsSync(dir)).toBe(true);
+    expect(readdirSync(parent)).toEqual(['run']);
   });
 
-  it('removes a directory and everything in it', () => {
-    const dir = tempDir('pup-remove-test-');
-    mkdirSync(join(dir, 'nested'));
+  it('removes a directory and everything in it, leaving nothing beside it', () => {
+    const parent = tempDir('pup-remove-parent-');
+    const dir = join(parent, 'run');
+    mkdirSync(join(dir, 'nested'), { recursive: true });
     writeFileSync(join(dir, 'nested', 'file'), 'x');
 
     removeGateDir(dir);
 
-    expect(existsSync(dir)).toBe(false);
+    expect(readdirSync(parent)).toEqual([]);
+  });
+
+  it('takes a directory that is gone already as removed', () => {
+    const parent = tempDir('pup-remove-parent-');
+    const warn = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    onTestFinished(() => {
+      warn.mockRestore();
+    });
+
+    removeGateDir(join(parent, 'gone'));
+
+    expect(warn).not.toHaveBeenCalled();
+    expect(readdirSync(parent)).toEqual([]);
+  });
+
+  describe('when a step fails', () => {
+    const errno = (code: string): Error => Object.assign(new Error(code), { code });
+    /** A directory with a file in it, the warning spy, and the real fs calls the mocks wrap. */
+    const setup = async () => {
+      const parent = tempDir('pup-remove-parent-');
+      const dir = join(parent, 'run');
+      mkdirSync(dir);
+      writeFileSync(join(dir, 'file'), 'x');
+      const warn = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      onTestFinished(() => {
+        warn.mockRestore();
+      });
+      const actual = await vi.importActual<typeof import('node:fs')>('node:fs');
+      return { parent, dir, warn, actual };
+    };
+
+    // Across devices, or in a parent pup cannot write: the delete is never
+    // tried in place, where a child could still swap what it walks.
+    it.each(['EXDEV', 'EACCES'])(
+      'reports a move aside that fails with %s, deleting nothing',
+      async (code) => {
+        const { parent, dir, warn } = await setup();
+        vi.mocked(renameSync).mockImplementationOnce(() => {
+          throw errno(code);
+        });
+        const removals = vi.mocked(rmSync).mock.calls.length;
+
+        removeGateDir(dir);
+
+        expect(warn).toHaveBeenCalledWith(`Could not remove ${dir} (${code}); it is left behind.`);
+        expect(vi.mocked(rmSync).mock.calls.length).toBe(removals);
+        expect(readdirSync(parent)).toEqual(['run']);
+        expect(readFileSync(join(dir, 'file'), 'utf8')).toBe('x');
+      },
+    );
+
+    // A child granted the directory itself, as an output is, removed it
+    // between the check and the move.
+    it('takes a directory gone by the time of the move as removed', async () => {
+      const { parent, dir, warn, actual } = await setup();
+      vi.mocked(renameSync).mockImplementationOnce(() => {
+        actual.rmSync(dir, { recursive: true });
+        throw errno('ENOENT');
+      });
+
+      removeGateDir(dir);
+
+      expect(warn).not.toHaveBeenCalled();
+      expect(readdirSync(parent)).toEqual([]);
+    });
+
+    it('says where the residue is when it cannot go back after a failed delete', async () => {
+      const { parent, dir, warn, actual } = await setup();
+      vi.mocked(rmSync).mockImplementationOnce(() => {
+        throw errno('ENOTEMPTY');
+      });
+      vi.mocked(renameSync)
+        .mockImplementationOnce(actual.renameSync)
+        .mockImplementationOnce(() => {
+          throw errno('EACCES');
+        });
+
+      removeGateDir(dir);
+
+      const [aside = ''] = readdirSync(parent);
+      expect(aside).toMatch(/^pup-removing-/);
+      const moved = join(parent, aside);
+      expect(warn).toHaveBeenCalledWith(
+        `Could not remove ${dir} (ENOTEMPTY); it is left behind in ${moved}.`,
+      );
+      expect(existsSync(dir)).toBe(false);
+      expect(readFileSync(join(moved, 'file'), 'utf8')).toBe('x');
+    });
+
+    // A gate child filled the volume: no directory can be made, yet unlink and
+    // rmdir still free it, so the move aside must need no new directory.
+    it('still removes the directory on a full volume', async () => {
+      const { parent, dir, warn, actual } = await setup();
+      const full = () => {
+        throw errno('ENOSPC');
+      };
+      vi.mocked(mkdirSync).mockImplementation(full);
+      vi.mocked(mkdtempSync).mockImplementation(full);
+      onTestFinished(() => {
+        vi.mocked(mkdirSync).mockImplementation(actual.mkdirSync);
+        vi.mocked(mkdtempSync).mockImplementation(actual.mkdtempSync);
+      });
+
+      removeGateDir(dir);
+
+      expect(warn).not.toHaveBeenCalled();
+      expect(readdirSync(parent)).toEqual([]);
+    });
+  });
+
+  // A child granted `report` that left its group before the kill swaps it
+  // for a link to HOME while the delete walks the tree (decision 155).
+  it('removes under a name the child no longer reaches, so a link it plants is never followed', () => {
+    const holder = tempDir('pup-remove-test-');
+    const report = join(holder, 'report');
+    mkdirSync(report);
+    writeFileSync(join(report, 'coverage-final.json'), '{}');
+    const target = tempDir('pup-link-target-');
+    writeFileSync(join(target, 'keep'), 'x');
+    let planted = true;
+    vi.mocked(rmSync).mockImplementationOnce((path, options) => {
+      try {
+        rmSync(report, { recursive: true, force: true });
+        symlinkSync(target, report);
+      } catch {
+        planted = false;
+      }
+      rmSync(path, options);
+    });
+
+    removeGateDir(holder);
+
+    expect(planted).toBe(false);
+    expect(existsSync(holder)).toBe(false);
+    expect(readFileSync(join(target, 'keep'), 'utf8')).toBe('x');
   });
 });

@@ -1,6 +1,7 @@
 import { lstatSync, mkdirSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { readPlainFile } from '../adapters/capability.utils.js';
+import { CONTROL_CHARS, FENCE_CLOSE, FENCE_OPEN } from './brief.service.js';
 import { IntentStatus } from './enums/intent.enums.js';
 import { IntentRefusedError } from './errors/intent.errors.js';
 import type { Intent, IntentListEntry } from './types/intent.types.js';
@@ -39,16 +40,6 @@ const INTENT_FILE = /^([0-9]{4})-[a-z0-9]+(?:-[a-z0-9]+)*\.md$/;
 /** As many words of the title as an ADR file name carries. */
 const SLUG_WORDS = 8;
 
-// CONTROL_CHARS, FENCE_OPEN and FENCE_CLOSE are copies of brief.service.ts's, until a task shares them.
-
-/**
- * C0 and C1 control characters, keeping newline and tab, as the brief strips
- * them (decision 57): `pup intent show` prints the file to the operator's
- * terminal, and a session may have written it.
- */
-// biome-ignore lint/suspicious/noControlCharactersInRegex: stripping them is the point
-const CONTROL_CHARS = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g;
-
 /**
  * A title is one line of text: any control character, newline and tab
  * included, is refused, and so are U+2028 and U+2029, which end a line for
@@ -62,10 +53,6 @@ const TITLE_LINE = /^# ([0-9]{4})\. (.+)$/;
 const STATUS_LINE = /^- Status: (.*)$/;
 const SECTION_HEADING = /^ {0,3}## (.*)$/;
 const LIST_ITEM = /^ {0,3}(?:[-*+]|[0-9]{1,9}[.)])[ \t]+(.*)$/;
-
-/** Code fences, as the brief reads them: a heading or a list item inside one is text. */
-const FENCE_OPEN = /^ {0,3}(`{3,}|~{3,})/;
-const FENCE_CLOSE = /^ {0,3}(`{3,}|~{3,})[ \t]*$/;
 
 /** An HTML comment block opens on a line starting `<!--` and runs to the first line holding `-->`. */
 const COMMENT_OPEN = /^ {0,3}<!--/;
