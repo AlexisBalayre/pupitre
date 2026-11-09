@@ -15,16 +15,17 @@ import {
   attachCommand,
   attachWindow,
   ConfigDirRefusedError,
-  claudeUserDir,
   conductorName,
   hasSessionWindow,
   killWatcher,
   launchWatcher,
   refusedSessionEnv,
+  resolveWindowEnv,
   SessionPaneMissingError,
   SteerNotDeliveredError,
   saveSessionEnv,
   sessionEnvAllowed,
+  type WindowEnv,
   windowLabel,
 } from '../claude/session-runtime.service.js';
 import { ADR_NUMBER_STAGE } from '../core/adr-number.service.js';
@@ -688,15 +689,16 @@ function launchOrRefuse(
 }
 
 /**
- * The config dir a launch hashes and runs its window on, or a refusal printed
- * before anything is planned, killed or opened: a `CLAUDE_CONFIG_DIR` that
- * `--session-env` passes and a window may not run on — relative, or one others
- * can write — is the operator's to fix, not a crash (decision 106). Scrubbed,
- * since the message quotes the launching shell's value.
+ * What a command hands its windows, read once here and passed down to each —
+ * the named variables and the config dir it hashes and runs them on — or a
+ * refusal printed before anything is planned, killed or opened: a
+ * `CLAUDE_CONFIG_DIR` that `--session-env` passes and a window may not run on
+ * — relative, or one others can write — is the operator's to fix, not a crash
+ * (decision 106). Scrubbed, since the message quotes the launching shell's value.
  */
-function configDirOrRefuse(repoPath: string): string | undefined {
+function windowEnvOrRefuse(repoPath: string): WindowEnv | undefined {
   try {
-    return claudeUserDir(repoPath);
+    return resolveWindowEnv(repoPath);
   } catch (error) {
     if (!(error instanceof ConfigDirRefusedError)) throw error;
     refuseScrubbed(error);
@@ -720,14 +722,14 @@ function createOrRefuse(
     overLimit?: boolean;
   },
 ): string | undefined {
-  const userDir = configDirOrRefuse(repoPath);
-  if (userDir === undefined) return undefined;
+  const windowEnv = windowEnvOrRefuse(repoPath);
+  if (windowEnv === undefined) return undefined;
   return launchOrRefuse(task.id, [InvalidProfileError, ...NO_ROOM_ERRORS], () =>
     createSession(db, {
       repoPath,
       base: DEFAULT_BASE_PROFILE,
       task,
-      claudeUserDir: userDir,
+      windowEnv,
       ...fields,
     }),
   );
@@ -1145,8 +1147,8 @@ export function buildProgram(): Command {
           return refuse('`pup launch` is operator-only; sessions cannot launch sessions.');
         }
         if (refusedOverride(opts, 'launch')) return;
-        const userDir = configDirOrRefuse(repoPath);
-        if (userDir === undefined) return;
+        const windowEnv = windowEnvOrRefuse(repoPath);
+        if (windowEnv === undefined) return;
         noteAllowOverlap(opts.allowOverlap);
         const planned = getTask(db, taskId);
         if (planned) {
@@ -1168,7 +1170,7 @@ export function buildProgram(): Command {
               repoPath,
               base: DEFAULT_BASE_PROFILE,
               taskId,
-              claudeUserDir: userDir,
+              windowEnv,
               model: opts.model,
               effort: opts.effort,
               overlapVia: conductorAttribution().overlapVia,
@@ -1224,15 +1226,15 @@ export function buildProgram(): Command {
       if (!Number.isInteger(maxSessions) || maxSessions < 1) {
         return refuse('--max-sessions takes a whole number of at least 1.');
       }
-      const userDir = configDirOrRefuse(repoPath);
-      if (userDir === undefined) return;
+      const windowEnv = windowEnvOrRefuse(repoPath);
+      if (windowEnv === undefined) return;
       let handle: ConductorHandle;
       try {
         handle = startConductor({
           db,
           repoPath,
           base: DEFAULT_BASE_PROFILE,
-          claudeUserDir: userDir,
+          windowEnv,
           model: opts.model,
           effort: opts.effort,
           workerModel: opts.workerModel,
@@ -1938,9 +1940,10 @@ export function buildProgram(): Command {
       }
       if (opts.respawn) {
         // Before the kill: a refused config dir would leave the session no window.
-        if (configDirOrRefuse(repoPath) === undefined) return;
+        const windowEnv = windowEnvOrRefuse(repoPath);
+        if (windowEnv === undefined) return;
         try {
-          hardRespawnSession(db, repoPath, session, undefined, {
+          hardRespawnSession(db, repoPath, session, windowEnv, undefined, {
             model: opts.model,
             effort: opts.effort,
           });
@@ -2037,7 +2040,8 @@ export function buildProgram(): Command {
       }
       // Before the handoff is asked for and the window killed: a refused config
       // dir would leave the session no window.
-      if (configDirOrRefuse(repoPath) === undefined) return;
+      const windowEnv = windowEnvOrRefuse(repoPath);
+      if (windowEnv === undefined) return;
       // Both the handoff request and the relaunch kickoff are steers, and
       // either can be refused as never having landed whole.
       try {
@@ -2051,7 +2055,7 @@ export function buildProgram(): Command {
             );
           }
         }
-        respawnSession(db, repoPath, session, undefined, {
+        respawnSession(db, repoPath, session, windowEnv, undefined, {
           model: opts.model,
           effort: opts.effort,
         });
@@ -2409,7 +2413,7 @@ export function buildProgram(): Command {
         outcome = await startFixRound(db, {
           repoPath,
           base: DEFAULT_BASE_PROFILE,
-          claudeUserDir: claudeUserDir(repoPath),
+          windowEnv: resolveWindowEnv(repoPath),
           sessionId: session,
           override: { model: opts.model, effort: opts.effort },
           overrideVia: callingConductor() ? 'conductor' : 'operator',
@@ -2682,9 +2686,12 @@ export function buildProgram(): Command {
       }
       // Workers and the conductor write under the dir the project's windows run
       // on; the console under the operator shell's own.
-      const userDir = configDirOrRefuse(repoPath);
-      if (userDir === undefined) return;
-      const report = buildUsageReport(db, repoPath, { since, claudeDirs: claudeDirsOf(userDir) });
+      const windowEnv = windowEnvOrRefuse(repoPath);
+      if (windowEnv === undefined) return;
+      const report = buildUsageReport(db, repoPath, {
+        since,
+        claudeDirs: claudeDirsOf(windowEnv.configDir),
+      });
       // JSON.stringify leaves DEL and C1 raw, and a terminal can read U+009B
       // as CSI; outside a string literal JSON has no such character, so the
       // `\uXXXX` form parses back to the same value (decision 68).
@@ -2717,9 +2724,12 @@ export function buildProgram(): Command {
           `--since needs a number of days such as 7, not "${sanitizeReason(opts.since)}".`,
         );
       }
-      const userDir = configDirOrRefuse(repoPath);
-      if (userDir === undefined) return;
-      const report = buildRetro(db, repoPath, { since, claudeDirs: claudeDirsOf(userDir) });
+      const windowEnv = windowEnvOrRefuse(repoPath);
+      if (windowEnv === undefined) return;
+      const report = buildRetro(db, repoPath, {
+        since,
+        claudeDirs: claudeDirsOf(windowEnv.configDir),
+      });
       const files = writeRetro(report, repoPath, opts.out, now);
       console.log(opts.json ? serializeRetro(report) : formatRetro(report));
       console.error(

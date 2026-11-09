@@ -3,7 +3,13 @@ import type { Database } from 'better-sqlite3';
 
 import { sanitizeReason } from '../adapters/capability.utils.js';
 import { LADDERS } from '../claude/model-ladder.constants.js';
-import { attachCommand, conductorName, transcriptDir } from '../claude/session-runtime.service.js';
+import {
+  attachCommand,
+  ConfigDirRefusedError,
+  claudeUserDir,
+  conductorName,
+  transcriptDir,
+} from '../claude/session-runtime.service.js';
 import { latestContextTokens } from '../claude/transcript.service.js';
 import { isConductorRunning } from './conductor.service.js';
 import { PR_URL } from './constants/dashboard.constants.js';
@@ -70,6 +76,7 @@ export function buildDashboardSnapshot(
   const tasks = new Map(listTasks(db, pid).map((task) => [task.id, task]));
   const stalls = new Map(findStalledSessions(db, repoPath, now).map((stall) => [stall.id, stall]));
   const isLanded = landedShaLookup(repoPath);
+  const claudeDir = windowsClaudeDir(repoPath);
   const rows = listSessions(db);
   // Oldest first, so each task maps to its newest session: the one a relaunch climbs from.
   const newestOfTask = new Map(rows.map((row) => [row.task_id, row.id]));
@@ -84,6 +91,7 @@ export function buildDashboardSnapshot(
       stalls.get(row.id),
       isLanded,
       newest ? topRungFailure(db, paths, row, task, now) : undefined,
+      claudeDir,
     );
   });
   const beat = getWatcherBeat(db, pid);
@@ -181,9 +189,25 @@ function eventsFileOf(paths: ProjectPaths, sessionId: string): string | undefine
 }
 
 /**
+ * The config dir this project's windows write their transcripts under
+ * (decision 106), or nothing when the one `--session-env` names is refused:
+ * no window can have opened on it, and a dir another user could swap is not
+ * one to read from either.
+ */
+function windowsClaudeDir(repoPath: string): string | undefined {
+  try {
+    return claudeUserDir(repoPath);
+  } catch (error) {
+    if (error instanceof ConfigDirRefusedError) return undefined;
+    throw error;
+  }
+}
+
+/**
  * The transcript directory a session row names, or nothing when it is not pup's own.
  *
- * `sessions.transcript_path` is stamped at launch as `transcriptDir(worktree)`,
+ * `sessions.transcript_path` is stamped at launch as `transcriptDir(worktree,
+ * claudeDir)`,
  * but it is read back out of a store the sessions write and every registered
  * store is swept here, so the column is checked against the derivation rather
  * than followed: a row that does not match reads as one with no transcript —
@@ -191,13 +215,17 @@ function eventsFileOf(paths: ProjectPaths, sessionId: string): string | undefine
  * column is null already does. `worktree_path` is session-writable too, so this
  * is only a guard because `transcriptDir` munges every non-alphanumeric
  * character away: whatever the column holds, the derivation is one segment
- * directly under `~/.claude/projects` — except for the empty string, which
+ * directly under `<claudeDir>/projects` — except for the empty string, which
  * `join` drops, leaving the projects root itself, so it is refused before the
  * derivation is taken (decision 67).
  */
-function transcriptDirOf(worktreePath: string, transcriptPath: string | null): string | undefined {
-  if (!worktreePath) return undefined;
-  const expected = transcriptDir(worktreePath);
+function transcriptDirOf(
+  worktreePath: string,
+  transcriptPath: string | null,
+  claudeDir: string | undefined,
+): string | undefined {
+  if (!worktreePath || claudeDir === undefined) return undefined;
+  const expected = transcriptDir(worktreePath, claudeDir);
   return transcriptPath === expected ? expected : undefined;
 }
 
@@ -639,6 +667,7 @@ function dashboardSession(
   stall: StalledSession | undefined,
   isLanded: (target: string | undefined, sha: string | undefined) => boolean,
   topReached: string | undefined,
+  claudeDir: string | undefined,
 ): DashboardSession {
   const spec = taskSpecForDisplay(task);
   // Decision 2: hook events, never pane contents. Nothing to classify for a
@@ -650,7 +679,7 @@ function dashboardSession(
   const stalledAgeMs = stall?.ageMs;
   // Only a running session has a context window to fill; a merged one's last
   // transcript is history, and reading it is I/O per row for nothing.
-  const transcripts = transcriptDirOf(row.worktree_path, row.transcript_path);
+  const transcripts = transcriptDirOf(row.worktree_path, row.transcript_path, claudeDir);
   const contextTokens =
     row.state === 'running' && transcripts ? latestContextTokens(transcripts) : undefined;
   // Newest first, so `find` returns the latest matching event.

@@ -1,10 +1,10 @@
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import type { Database } from 'better-sqlite3';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { typescriptAdapter } from '../adapters/typescript.adapter.js';
-import { tempDir } from '../test/temp-dir.mock.js';
 import { buildCodeMap, buildKnowledgeSlice, renderCodeMap } from './code-map.service.js';
 import { openStore } from './db.client.js';
 import { insertLedgerEntry } from './ledger.repository.js';

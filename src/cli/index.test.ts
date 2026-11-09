@@ -1,10 +1,10 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import Database from 'better-sqlite3';
 import { isValidElement, type ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { tempDir } from '../test/temp-dir.mock.js';
 
 // Side-effecting boundaries only (tmux/git spawns, `claude -p` sessions, and the
 // multi-stage merge-gate orchestration) — everything else (sqlite repositories,
@@ -51,6 +51,8 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   // The real rule and the real file, under the throwaway HOME: which names
   // `pup init --session-env` refuses and keeps, and the config dir a launch
   // hashes from them, are the contract (decision 106).
+  resolveWindowEnv: (await importOriginal<typeof import('../claude/session-runtime.service.js')>())
+    .resolveWindowEnv,
   claudeUserDir: (await importOriginal<typeof import('../claude/session-runtime.service.js')>())
     .claudeUserDir,
   ConfigDirRefusedError: (
@@ -153,6 +155,24 @@ vi.mock('../core/session-handoff.service.js', () => ({
 }));
 
 import {
+  firstCall,
+  GIT_ENV,
+  initRepo,
+  initRepoWithAdapter,
+  markDormant,
+  registerProject,
+  rolledBackLaunch,
+  seedBacklogTask,
+  seedBlockedSession,
+  seedEventsFile,
+  seedKilledSession,
+  seedLedgerEntry,
+  seedSession,
+  seedStalledSession,
+  stubCodegraph,
+  worktreeOf,
+} from '@test/helpers/cli-index.mock.js';
+import {
   deadTurnError,
   launchWatcher,
   SessionPaneMissingError,
@@ -193,24 +213,6 @@ import {
 } from '../core/session-lifecycle.service.js';
 import { RESUME_MESSAGE } from '../core/turn-watchdog.service.js';
 import { UsageLimitReachedError } from '../core/usage-limits.service.js';
-import {
-  firstCall,
-  GIT_ENV,
-  initRepo,
-  initRepoWithAdapter,
-  markDormant,
-  registerProject,
-  rolledBackLaunch,
-  seedBacklogTask,
-  seedBlockedSession,
-  seedEventsFile,
-  seedKilledSession,
-  seedLedgerEntry,
-  seedSession,
-  seedStalledSession,
-  stubCodegraph,
-  worktreeOf,
-} from '../test/helpers/cli-index.mock.js';
 import { buildProgram } from './index.js';
 import { ProjectResolutionError, resolveProject } from './project.utils.js';
 import { Radar } from './ui/radar.component.js';
@@ -598,6 +600,50 @@ describe('CLI commands', () => {
 
       expect(process.exitCode).toBe(1);
       expect(errors).toEqual([expect.stringContaining('--since needs a date')]);
+    });
+  });
+
+  describe('retro', () => {
+    it('reads the transcripts of the config dir --session-env names', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      const configDir = tempDir('pup-cli-retro-config-');
+      saveSessionEnv(repo, ['CLAUDE_CONFIG_DIR']);
+      vi.stubEnv('CLAUDE_CONFIG_DIR', configDir);
+      vi.stubEnv('HOME', tempDir('pup-cli-retro-home-'));
+      const dir = transcriptDir(join(repo, '.worktrees', 's1'), configDir);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(
+        join(dir, 'a.jsonl'),
+        `${JSON.stringify({
+          type: 'assistant',
+          requestId: 'r1',
+          timestamp: new Date().toISOString(),
+          message: { model: 'claude-opus-5-5', usage: { input_tokens: 5 } },
+        })}\n`,
+      );
+
+      buildProgram().parse(['retro', '--json', '--out', tempDir('pup-cli-retro-out-')], {
+        from: 'user',
+      });
+
+      expect(JSON.parse(logs[0] as string)).toMatchObject({ transcripts: 1 });
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it('refuses a relative CLAUDE_CONFIG_DIR that --session-env passes, and writes nothing', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      saveSessionEnv(repo, ['CLAUDE_CONFIG_DIR']);
+      vi.stubEnv('CLAUDE_CONFIG_DIR', '~/w4b');
+      const out = tempDir('pup-cli-retro-out-');
+
+      buildProgram().parse(['retro', '--out', out], { from: 'user' });
+
+      expect(process.exitCode).toBe(1);
+      expect(errors).toEqual([expect.stringContaining('it must be an absolute path')]);
+      expect(logs).toEqual([]);
+      expect(readdirSync(out)).toEqual([]);
     });
   });
 
@@ -1719,7 +1765,7 @@ describe('CLI commands', () => {
         { from: 'user' },
       );
 
-      expect(firstCall(hardRespawnSession)[4]).toEqual({
+      expect(firstCall(hardRespawnSession)[5]).toEqual({
         model: 'claude-opus-5-5',
         effort: 'xhigh',
       });

@@ -99,10 +99,6 @@ vi.mock('./test-slot.service.js', async (importOriginal) => {
   };
 });
 
-import { formatDuration } from '../adapters/capability.utils.js';
-import type { Adapter, CapabilityContext } from '../adapters/types/adapter.types.js';
-import { killSession, steerPane } from '../claude/session-runtime.service.js';
-import { runUtility } from '../claude/utility.service.js';
 import {
   BRANCH,
   commitIn,
@@ -117,8 +113,12 @@ import {
   seedSession,
   sh,
   untimed,
-} from '../test/helpers/merge-gate.mock.js';
-import { tempDir } from '../test/temp-dir.mock.js';
+} from '@test/helpers/merge-gate.mock.js';
+import { tempDir } from '@test/helpers/temp-dir.mock.js';
+import { formatDuration } from '../adapters/capability.utils.js';
+import type { Adapter, CapabilityContext } from '../adapters/types/adapter.types.js';
+import { killSession, steerPane } from '../claude/session-runtime.service.js';
+import { runUtility } from '../claude/utility.service.js';
 import { openStore } from './db.client.js';
 import { listDecisionRecords } from './decision-record.repository.js';
 import { initProject } from './init.service.js';

@@ -8,7 +8,7 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   hasConductorWindow: vi.fn(() => false),
 }));
 
-import { tempDir } from '../test/temp-dir.mock.js';
+import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import { openStore } from './db.client.js';
 import { fleetReading, readFleet } from './fleet.service.js';
 import { projectId } from './paths.utils.js';

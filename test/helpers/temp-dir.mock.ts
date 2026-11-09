@@ -1,9 +1,9 @@
 import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { projectId } from '@src/core/paths.utils.js';
+import { TOOLCHAIN_CACHE_DIRNAME } from '@src/core/sandbox.utils.js';
 import { onTestFinished } from 'vitest';
-import { projectId } from '../core/paths.utils.js';
-import { TOOLCHAIN_CACHE_DIRNAME } from '../core/sandbox.utils.js';
 
 /**
  * A fresh directory under the OS temp dir, removed when the test that made it
