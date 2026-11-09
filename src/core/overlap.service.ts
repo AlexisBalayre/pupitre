@@ -26,6 +26,47 @@ export function filesWorthANotice(files: string[]): string[] {
   return files.filter((file) => !file.startsWith(APPEND_ONLY_DIR));
 }
 
+/** Sessions appending to one decision file at once, which the radar names in a line. */
+export interface AppendOnlyNote {
+  file: string;
+  sessions: number;
+}
+
+/**
+ * What the radar prints (decision 109, amending 104): the pairs with the
+ * append-only files dropped and a pair left with no file dropped whole, plus
+ * one note per dropped file naming how many sessions append to it. Six
+ * sessions each recording a decision share the index pairwise, 15 lines that
+ * hid a real overlap behind `(+1 more)`. The stored pairs stay whole.
+ */
+export function radarView(pairs: OverlapPair[]): {
+  pairs: OverlapPair[];
+  appends: AppendOnlyNote[];
+} {
+  const appenders = new Map<string, Set<string>>();
+  const kept: OverlapPair[] = [];
+  for (const pair of pairs) {
+    const files = filesWorthANotice(pair.files);
+    const dropped = pair.files.filter((f) => !files.includes(f));
+    for (const file of dropped) {
+      const sessions = appenders.get(file) ?? new Set<string>();
+      sessions.add(pair.sessionA).add(pair.sessionB);
+      appenders.set(file, sessions);
+    }
+    // Emptied by the filter, not by the caller: only that pair is the index's alone.
+    if (files.length > 0 || dropped.length === 0) kept.push({ ...pair, files });
+  }
+  const appends = [...appenders]
+    .map(([file, sessions]) => ({ file, sessions: sessions.size }))
+    .sort((a, b) => a.file.localeCompare(b.file));
+  return { pairs: kept, appends };
+}
+
+/** The one line that stands for the append-only pairs. */
+export function appendOnlyLine(note: AppendOnlyNote): string {
+  return `${note.file}: ${note.sessions} sessions append (decision 109)`;
+}
+
 /** Pairwise same-file intersections, session ids in insertion order, files sorted. */
 export function intersectSessionFiles(filesBySession: Record<string, string[]>): OverlapPair[] {
   const entries = Object.entries(filesBySession).map(

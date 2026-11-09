@@ -1,13 +1,13 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 
-// The real mkdirSync, wrapped so one test can make the report directory's
-// creation fail.
+// The real mkdirSync and rmSync, wrapped so one test can make the report
+// directory's creation fail and another can act midway through a removal.
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();
-  return { ...actual, mkdirSync: vi.fn(actual.mkdirSync) };
+  return { ...actual, mkdirSync: vi.fn(actual.mkdirSync), rmSync: vi.fn(actual.rmSync) };
 });
 
 import { endSandboxRun, runGateChild, sandboxLabel } from '../core/sandbox.utils.js';
@@ -209,7 +209,7 @@ describe('typescriptAdapter.coveredTest', () => {
           repoPath: repo,
           writablePaths: run.writablePaths,
         });
-      return { reports, child };
+      return { run, reports, child };
     };
 
     // A failing first run removes its empty report directory (vitest's
@@ -245,6 +245,35 @@ describe('typescriptAdapter.coveredTest', () => {
         /Operation not permitted/,
       );
       expect(existsSync(dirname(reports))).toBe(true);
+    });
+
+    // A stage's helper that left its group survives the kill, still under the
+    // profile that granted `report`, and swaps it for a link to HOME while
+    // dispose deletes the holder (decision 155).
+    it('deletes the holder where a helper still holding the report grant plants no link', async () => {
+      const { run, reports, child } = foldedRun();
+      const target = tempDir('pup-link-target-');
+      writeFileSync(join(target, 'keep'), 'x');
+      const scratch = await child('printf %s "$TMPDIR"');
+      const helper = child(
+        'while [ ! -e "$TMPDIR/go" ]; do sleep 0.05; done; rm -r -f "$1"; mkdir -p "$(dirname "$1")"; ln -s "$2" "$1" && printf planted > "$TMPDIR/done" || printf refused > "$TMPDIR/done"',
+        target,
+      );
+      vi.mocked(rmSync).mockImplementationOnce((path, options) => {
+        writeFileSync(join(scratch, 'go'), '');
+        const tick = new Int32Array(new SharedArrayBuffer(4));
+        for (let waited = 0; !existsSync(join(scratch, 'done')) && waited < 10_000; waited += 50) {
+          Atomics.wait(tick, 0, 0, 50);
+        }
+        rmSync(path, options);
+      });
+
+      run.dispose();
+      await helper;
+
+      expect(readFileSync(join(scratch, 'done'), 'utf8')).toBe('refused');
+      expect(existsSync(dirname(reports))).toBe(false);
+      expect(readFileSync(join(target, 'keep'), 'utf8')).toBe('x');
     });
   });
 });
