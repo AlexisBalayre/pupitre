@@ -326,6 +326,25 @@ describe('the merge gate under a shared-config core.worktree and diff.relative',
     );
   });
 
+  // A file the target holds is judged by its rise, not as new (decision 157):
+  // an unanchored `ls-tree` of the target would list nothing under `repo/`.
+  it('reads the target tree whole, judging an existing file by its rise', async () => {
+    commitIn(repo, 'src/kept.ts', 'export const kept = 1;\n');
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/kept.ts', 'if (a) b();\n'.repeat(20));
+    raceTheChecks();
+    const adapter = debtAdapter({
+      complexity: ({ measurePath }: CapabilityContext, files: string[]) =>
+        measurePath === repo ? [] : files.map((file) => ({ file, complexity: 20 })),
+    });
+
+    const outcome = await merge(adapter);
+
+    expect(stage(outcome, 'complexity')?.detail).toContain(
+      'complexity rose sharply in 1 touched file(s): src/kept.ts (+20).',
+    );
+  });
+
   // Patch coverage reads each changed file's hunks by a pathspec, which the
   // key would look up under `repo/` and find none: "no instrumentable lines".
   it('measures patch coverage over the hunks of every changed path', async () => {

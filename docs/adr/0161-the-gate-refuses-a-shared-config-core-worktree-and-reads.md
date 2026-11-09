@@ -37,7 +37,8 @@
       found none, so patch coverage read "no instrumentable changed lines";
     - `:(top,glob,icase)` for the Docusaurus grep, and `:(top)` with `--full-name` for the
       grep of a test file's importers;
-    - `--full-tree` on `readBranchTree`'s `ls-tree`.
+    - `--full-tree` on `readBranchTree`'s `ls-tree`, and on the target-tree listing the
+      complexity stage reads (decision 157), whose test now sets the key after the checks.
     *Renames.* `gitDiffPaths` passes `--no-renames`: under rename detection `--name-only` lists
     a rename's new path alone, so a file moved from outside scope-in into it passed the audit.
     *`GIT_GRAFT_FILE`* stays `/dev/null/no-grafts`, laid over every `runGit` caller's env

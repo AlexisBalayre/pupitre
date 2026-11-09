@@ -726,26 +726,6 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     );
   });
 
-  // A session can write the shared config, and a `core.worktree` aimed at `/`
-  // gives an unpinned `ls-tree` a cwd prefix no target path matches: the
-  // target would hold nothing and the existing file would pass as new.
-  it('reads the target tree whole when the shared config aims core.worktree elsewhere', async () => {
-    commitIn(repo, 'src/kept.ts', 'export const kept = 1;\n');
-    const worktree = seedSession(db, repo);
-    commitIn(worktree, 'src/kept.ts', 'if (a) b();\n'.repeat(20));
-    sh(worktree, 'git', 'config', 'core.worktree', '/');
-    const adapter = debtAdapter({
-      complexity: ({ measurePath }: CapabilityContext, files: string[]) =>
-        measurePath === repo ? [] : files.map((file) => ({ file, complexity: 20 })),
-    });
-
-    const outcome = await merge(adapter);
-
-    expect(complexityDetail(outcome)).toContain(
-      'complexity rose sharply in 1 touched file(s): src/kept.ts (+20).',
-    );
-  });
-
   // Decision 157: a renamed or copied file whose source the target holds is not
   // new either, though the before-measure omits the source and the new path is
   // absent from the target. Both land at exactly the cap, which would pass.
