@@ -1,0 +1,150 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-09T08:17:53.588Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42584355978",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42584355978",
+  "actor": "AlexisBalayre",
+  "commit_sha": "6d90d6430e9c07edf6722afd8a3b62501f00b13d",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 284,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context",
+    "maintainability",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "docs/adr/0140-a-merge-gate-s-test-run-takes-the-machine-no.md",
+      "line": "34-43",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "important",
+      "description": "ADR 0140 says the worker pre-commit hook runs TEST_CMD (`pnpm test`, the full suite), but `scripts/pre-commit` runs only `vitest related` on staged source files (decision 135) and never TEST_CMD.",
+      "body": "**This paragraph describes the commit-time suite as it was before decision 135.**\n\nThe ADR says the `pre-commit` hook \"runs `TEST_CMD` from the main checkout's `.claude/project.env`, `pnpm test`, the full Vitest suite\", so \"every worker commit runs the full suite unqueued, beside the gate's\". It also lists \"narrowing a session's commit-time suite to what the gate does not already run\" as a follow-up.\n\n`scripts/pre-commit` at this head does something else:\n\n- Line 8: `# hook runs only the vitest files related to the staged ones, never TEST_CMD.`\n- Lines 123-126: `RELATED_TEST_CMD=\"pnpm exec vitest related --run --passWithNoTests\"`, run only `if [ -n \"${TEST_CMD:-}\" ] && [ -n \"$STAGED_SOURCE\" ]`. `TEST_CMD` is only an on/off switch here.\n\nADR 0135 (2026-11-05) already made that narrowing. A reader of 0140 would therefore:\n\n- blame the load of 30 to 50 partly on full-suite commits that no longer happen;\n- plan follow-up work that is already done.\n\nThe acceptance criterion \"The ADR states whether the pre-commit hook's suite goes through the slots\" still holds: it does not go through them. Only the description of what the hook runs is wrong. Suggested rewrite: the hook runs only `vitest related` on the staged source files (decision 135), outside the slots and unqueued, which is a smaller load beside the gate's run. Drop the \"full suite\" claim and the narrowing follow-up.\n\n<https://github.com/AlexisBalayre/pupitre/blob/6d90d6430e9c07edf6722afd8a3b62501f00b13d/docs/adr/0140-a-merge-gate-s-test-run-takes-the-machine-no.md#L34-L43>\n<https://github.com/AlexisBalayre/pupitre/blob/6d90d6430e9c07edf6722afd8a3b62501f00b13d/scripts/pre-commit#L119-L126>",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/test-slot.test.ts",
+      "line": "234-239",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The edited \"serves a waiting gate before every waiting worker\" test never checks the log between `second.end()` and `gate.end()`, so it still passes with the `gatesRunning` check reverted, yet ADR 0140 cites it as proving the gate keeps both workers out; add `await tick(); expect(log).toEqual(['s1', 's2', 'gate s9']);` before `gate.end()`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/test-slot.service.ts",
+      "line": "425-431",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "describeSlotWait's new gate branch also feeds a waiting gate's onWait (merge-gate.service.ts:2506). There it prints \"Waiting for the merge gate for G1 to end its test run\", but gates are never held back by gates, and before this change the line read \"Waiting for a test slot, held by …\".",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/test-slot.service.ts",
+      "line": "382-383",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "A gate whose 10-minute slot wait runs out (onWaitExpired) or whose slots are unusable runs its suite with no slot file and no wait file. A waiting worker then takes a freed slot beside that gate's run, the overlap decision 140 is meant to prevent, and it does so under exactly the high-load conditions the ADR describes.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/test-slot.service.ts",
+      "line": "388-395",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The re-notify key can hold the same gate token twice while a gate has taken its slot but not yet removed its wait file (`\"G G\"` vs `\"G\"`), so a worker prints two spurious extra wait lines; dedupe with `[...new Set(...)]` before joining.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/test-slot.service.ts",
+      "line": "183",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "liveHolders judges a slot holder alive by pid alone. Suppose a SIGKILLed gate leaves a stale `kind:\"gate\"` lock and its pid is later reused. Under decision 96 that blocked one slot of two; through the new gatesRunning check it makes every `pup session test` wait 8 minutes and exit 75 until the lock is removed by hand.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "validator",
+      "description": "The validator for the docs important (ADR 0140 lines 34-43) returned the label REFUTED, but its own reasoning confirmed the finding: scripts/pre-commit runs only `vitest related` and never TEST_CMD, ADR 0135 already did the narrowing, and lines 34-43 'should instead say' that. The orchestrator checked scripts/pre-commit lines 8 and 121-126 directly and recorded the finding as confirmed."
+    },
+    {
+      "component": "orchestrator",
+      "description": "Skipped review-security: the change alters slot-acquisition logic and the compiled profile's prose only. No new shell-out, input handling or hook generation; the spawn call is unchanged. Skipped review-context: no spec, protocol or infra surface touched. Skipped review-spec: there is no spec source (no closing keywords or linked issues). Skipped review-maintainability: not on the default roster at about 465 changed lines. Dropped a docs nit (double backticks in the ADR's quoted retry message) as having negligible cost."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.8763286750000006,
+  "duration_ms": 231089,
+  "num_turns": 15,
+  "tokens": {
+    "input": 16,
+    "output": 11007,
+    "cache_read": 398734,
+    "cache_creation": 51189,
+    "total": 460946
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 62,
+      "output": 31500,
+      "cache_read": 895170,
+      "cache_creation": 134448,
+      "cost_usd": 1.635089
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 30,
+      "output": 6400,
+      "cache_read": 213856,
+      "cache_creation": 62011,
+      "cost_usd": 0.24047309999999994
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 294,
+      "cache_read": 0,
+      "cache_creation": 4955,
+      "cost_usd": 0.000766575
+    }
+  ],
+  "permission_denials": []
+}
