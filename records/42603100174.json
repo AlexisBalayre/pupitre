@@ -1,0 +1,157 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-09T10:47:13.907Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42603100174",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42603100174",
+  "actor": "AlexisBalayre",
+  "commit_sha": "94295aa43373b373ef3a44708a26ae7da53b29c9",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 276,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "simplicity",
+    "guards"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "simplicity",
+    "guards"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "1119",
+      "description": "The compiled worker settings now always set CLAUDE_CODE_SUBAGENT_MODEL and CLAUDE_CODE_SUBAGENT_MODEL_FORCE. That overrides the values an operator pins for workers with `pup init --session-env`, a feature decision 106 added for exactly these two names. The override is silent, and ADR 0152 does not mention decision 106.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/profile-compiler.test.ts",
+      "line": "652-662",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The test 'keeps the pin when --session-env names its variables' cannot fail on the regression it names. Nothing in src/core reads the recorded session-env names, and the test never puts different CLAUDE_CODE_SUBAGENT_MODEL / _FORCE values in process.env. A change that let the shell win would still pass in CI and in a pup worker. Add `vi.stubEnv('CLAUDE_CODE_SUBAGENT_MODEL', 'claude-sonnet-5-5'); vi.stubEnv('CLAUDE_CODE_SUBAGENT_MODEL_FORCE', '0');` before compiling.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "256-263",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "A worker launched with a code graph now gets two rules for the same question. `## Searching` says to ask Explore for any where-is or how-does question. The `## Code graph` section after it says to use codegraph_explore before reading files. The Explore subagent is limited to Read, Grep and Glob, so it never uses the graph. One sentence on which comes first would settle it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler-context.test.ts",
+      "line": "1711-1712",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The added sentence \"A worker's settings pin its model and effort, so its rule names neither (decision 152)\" repeats the SESSION_SEARCHING JSDoc. It also sits in the decision 41/101/118 git-confinement comment, which it has nothing to do with. Drop it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0152-a-worker-s-settings-pin-its-subagents-to-haiku-at-low.md",
+      "line": "78",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The ADR's Tests paragraph says a worker's `env` \"is `SLIM_CONTEXT_ENV` plus the three pin variables\". No test asserts that exact set: the worker env assertions now use toMatchObject, so an extra key would pass. Either say \"contains the three pin variables\" or restore an exact toEqual.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.test.ts",
+      "line": "682-700",
+      "area": "simplicity",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The full `## Searching` kickoff literal is asserted word for word here and in profile-compiler-context.test.ts:1715, so every wording change has to be made in both. Keep the full text in the context test only. Here, check `## Searching\\n` plus the no-`## Exploring code`, no-`model: \"sonnet\"` and budget assertions.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler-context.test.ts",
+      "line": "274-281",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The worker pin's three literals (claude-haiku-5-5, '1', 'low') are asserted here and again in the new describe block in profile-compiler.test.ts:638-647, so changing WORKER_SUBAGENT_ROUTE means editing both. Keep the pin test in one place.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.9252881499999999,
+  "duration_ms": 166812,
+  "num_turns": 15,
+  "tokens": {
+    "input": 12,
+    "output": 9691,
+    "cache_read": 304635,
+    "cache_creation": 57471,
+    "total": 371809
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 72,
+      "output": 26756,
+      "cache_read": 1122150,
+      "cache_creation": 135023,
+      "cost_usd": 1.607366
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 42,
+      "output": 8898,
+      "cache_read": 285782,
+      "cache_creation": 79817,
+      "cost_usd": 0.3171847
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 261,
+      "cache_read": 0,
+      "cache_creation": 4854,
+      "cost_usd": 0.00073745
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "git ls-files docs/adr --others --exclude-standard -- docs/adr/0151* docs/adr/0152*"
+    }
+  ]
+}
