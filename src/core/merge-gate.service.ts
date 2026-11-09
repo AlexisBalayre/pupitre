@@ -43,6 +43,8 @@ import {
   ArmedGitDriverError,
   armedGitDrivers,
   assertNoArmedGitDrivers,
+  assertNoSharedWorktreeKey,
+  assertNoWorktreeConfig,
   checkoutPinned,
   currentBranch,
   gitDiffAddedLines,
@@ -227,7 +229,9 @@ interface RawDiffEntry {
  * shared config a session can write, so a rename onto a test name is paired
  * whatever that config says: a limit of 1 skipped inexact pairing as soon as a
  * second file was added. `copies` adds `-C -C`, which pairs a copy of any file
- * the target holds, changed on the branch or not.
+ * the target holds, changed on the branch or not. `--no-relative`, so a
+ * shared-config `core.worktree` running git from a subdirectory cannot narrow
+ * the listing to it under a `diff.relative`.
  */
 function rawDiffEntries(
   repoPath: string,
@@ -242,6 +246,7 @@ function rawDiffEntries(
       '--no-ext-diff',
       '--no-textconv',
       '--no-color',
+      '--no-relative',
       '-z',
       '--raw',
       '-M',
@@ -356,7 +361,9 @@ const folded = (path: string): string => path.toLowerCase();
 /**
  * Whether a dependency file on the branch (`DIFF_SIZE_DEPENDENCY_FILES`), in
  * any ASCII case, names Docusaurus: its `@docusaurus/core` dependency or a
- * `docusaurus` script.
+ * `docusaurus` script. The pathspecs are anchored at the root (`top`), or a
+ * shared-config `core.worktree` running git from a subdirectory would search
+ * under it alone.
  */
 function dependenciesNameDocusaurus(repoPath: string, branch: string): boolean {
   try {
@@ -370,7 +377,7 @@ function dependenciesNameDocusaurus(repoPath: string, branch: string): boolean {
       'docusaurus',
       branch,
       '--',
-      ...DIFF_SIZE_DEPENDENCY_FILES.map((name) => `:(glob,icase)**/${name}`),
+      ...DIFF_SIZE_DEPENDENCY_FILES.map((name) => `:(top,glob,icase)**/${name}`),
     ]);
     return true;
   } catch (error) {
@@ -393,12 +400,16 @@ function dependenciesNameDocusaurus(repoPath: string, branch: string): boolean {
  * path or target holds a character outside ASCII. A link named as a dependency
  * file may name Docusaurus where no grep reads it, and a file named outside
  * ASCII may be a config or dependency file no case-insensitive match finds.
+ * `--full-tree`, so the listing is the whole tree by root paths whatever
+ * subdirectory a shared-config `core.worktree` runs git from.
  */
 function readBranchTree(repoPath: string, branch: string): BranchTree {
   const landings: string[] = [];
   let anywhere = false;
   let markdownIsCode = dependenciesNameDocusaurus(repoPath, branch);
-  for (const entry of runGit(repoPath, ['ls-tree', '-r', '-z', branch]).split('\0')) {
+  for (const entry of runGit(repoPath, ['ls-tree', '--full-tree', '-r', '-z', branch]).split(
+    '\0',
+  )) {
     if (!entry) continue;
     // "<mode> <type> <oid>\t<path>": the path is everything after the first tab.
     const tab = entry.indexOf('\t');
@@ -503,9 +514,11 @@ const NAME_TOKEN = /[\w.$+@-]+/g;
  * name it spells, however many tokens repeat a name or targets share it. Grep
  * runs with colour pinned off: `color.grep=always` in the shared config would
  * wrap each path in escapes, and a listing entry that does not start with the
- * branch refuses rather than skips (decision 110). A path git listed in bytes
- * that are not UTF-8 reads back with `U+FFFD` in their place, which names
- * another file or none, so that importer names every target unread.
+ * branch refuses rather than skips (decision 110). The search is the whole
+ * tree (`:(top)`) by root paths (`--full-name`), not the subdirectory and its
+ * `../` names a shared-config `core.worktree` would run git from. A path git
+ * listed in bytes that are not UTF-8 reads back with `U+FFFD` in their place,
+ * which names another file or none, so that importer names every target unread.
  */
 function filesNaming(
   repoPath: string,
@@ -530,6 +543,7 @@ function filesNaming(
       'color.grep=never',
       'grep',
       '--no-color',
+      '--full-name',
       '-l',
       '-z',
       '-i',
@@ -538,6 +552,7 @@ function filesNaming(
       ...[...byName.keys()].flatMap((name) => ['-e', name]),
       branch,
       '--',
+      ':(top)',
     ]);
   } catch (error) {
     rethrowIfKilled(error);
@@ -1158,6 +1173,13 @@ function planMerge(db: Database, req: MergeRequest): MergePlan {
         '.pupitre/adapter.yml).',
     );
   }
+  // Before any git runs in the main checkout, which an empty or misplaced
+  // `core.worktree` would stop or shift, the drivers' check included: every
+  // listing a stage reads would describe another directory. Per-worktree config
+  // too, which can carry the key, and which a live session can turn on long
+  // after its launch was asked.
+  assertNoSharedWorktreeKey(req.repoPath);
+  assertNoWorktreeConfig(req.repoPath);
   // Before the auto-rebase or merge, which runs a smudge filter on every file it
   // checks out and a merge driver on every conflict, with the operator's environment
   // and ahead of the sandbox that confines the stages. Both paths, because the
@@ -1226,7 +1248,9 @@ function sessionMark(db: Database, sessionId: string): string {
  * gives: `--no-sparse-checkout`, because a planted `core.sparseCheckout` would
  * leave out committed files no stage would then see. The checkout runs a
  * smudge filter on every file it writes, so the drivers are checked again
- * right before it, as they are before the fast-forward.
+ * right before it, as they are before the fast-forward, and so is a
+ * shared-config `core.worktree`, since the stage listings read next run in the
+ * main checkout and a live session can set the key during the rebase.
  *
  * Its git after the add runs pinned to the dirs pup trusts, checked first
  * (decision 101): the admin dir sits under `<common>/worktrees/` beside the
@@ -1237,6 +1261,7 @@ function sessionMark(db: Database, sessionId: string): string {
  * elsewhere.
  */
 function cutGateCheckout(repoPath: string, dir: string, sha: string): void {
+  assertNoSharedWorktreeKey(repoPath);
   assertNoArmedGitDrivers(repoPath);
   runGit(repoPath, ['worktree', 'add', '--detach', '--no-checkout', dir, sha]);
   const git = checkoutPinned(repoPath, dir, sha);

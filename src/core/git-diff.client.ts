@@ -144,6 +144,24 @@ function shellWord(word: string): string {
   return `'${word.replaceAll("'", `'\\''`)}'`;
 }
 
+/**
+ * The command that unsets every copy of `key` in the repo's `.git/config`, for
+ * a refusal to ask the operator to paste. Pasted, the line must name the very
+ * file: sanitizeReason folds runs of whitespace, blanks control chars and
+ * truncates, so a path it changes is left for the operator to type rather than
+ * printed as another file. `-C /`, because git opens the repo for nothing else
+ * while the file holds a value it cannot read or a `core.worktree` it cannot
+ * enter.
+ */
+function unsetCommand(repoPath: string, key: string): string {
+  const raw = join(repoPath, '.git', 'config');
+  return sanitizeReason(raw) === raw
+    ? `\`git -C / config --file ${shellWord(raw)} --unset-all ${key}\``
+    : `\`git -C / config --file <repo>/.git/config --unset-all ${key}\` ` +
+        "with <repo> typed by hand, as the repo's path holds characters this message cannot " +
+        'show as they are';
+}
+
 /** What turned per-worktree config on: the file, the extension, or a value git cannot read. */
 type WorktreeConfigCause = 'file' | 'on' | 'unreadable';
 
@@ -157,16 +175,7 @@ export class WorktreeConfigError extends Error {
         : cause === 'on'
           ? `extensions.worktreeConfig is on in ${config}`
           : `extensions.worktreeConfig is on, or holds a value git cannot read, in ${config}`;
-    // Pasted, the line must name the very file: sanitizeReason folds runs of
-    // whitespace, blanks control chars and truncates, so a path it changes is
-    // left for the operator to type rather than printed as another file.
-    const raw = join(dotGit, 'config');
-    const unset =
-      config === raw
-        ? `\`git -C / config --file ${shellWord(raw)} --unset-all extensions.worktreeConfig\``
-        : '`git -C / config --file <repo>/.git/config --unset-all extensions.worktreeConfig` ' +
-          "with <repo> typed by hand, as the repo's path holds characters this message cannot " +
-          'show as they are';
+    const unset = unsetCommand(repoPath, 'extensions.worktreeConfig');
     // `disable` turns the extension back on, so the unset comes after it, and
     // again after it when git needed the unset first to open the repo at all.
     const steps =
@@ -293,6 +302,52 @@ export function assertNoWorktreeConfig(repoPath: string): void {
   }
 }
 
+export class SharedWorktreeKeyError extends Error {
+  constructor(repoPath: string) {
+    const config = sanitizeReason(join(repoPath, '.git', 'config'));
+    super(
+      `Refusing to run the merge gate in ${sanitizeReason(repoPath)}: core.worktree is set in ` +
+        `${config}, or git cannot read that file. Git takes the key from there alone, before ` +
+        "any of pup's pins applies, and it moves the work tree every git run in the main " +
+        'checkout reads, so the paths the gate lists would be those of another directory. ' +
+        'A session can write the file from inside its sandbox and no diff shows it: inspect ' +
+        'it, treat a session that set the key as compromised, then run ' +
+        `${unsetCommand(repoPath, 'core.worktree')} and retry.`,
+    );
+    this.name = 'SharedWorktreeKeyError';
+  }
+}
+
+/**
+ * Refuse while the main checkout's `.git/config` sets `core.worktree`, which
+ * no `GIT_SAFE_CONFIG` entry can pin: git reads the key from that one file
+ * while it finds the repository, before any `-c` applies, and takes it from no
+ * include, no global config and no `GIT_CONFIG_*` (verified on Git 2.54).
+ * Aimed at a parent of the checkout, it has git run there from a subdirectory,
+ * so a plain `ls-tree` or pathspec reads that prefix alone and `diff.relative`
+ * empties every listing; empty, it stops every git in the repo. The gate asks
+ * this before any stage runs, and its listings are anchored at the root
+ * besides (`--no-relative`, `--full-tree`, `:(top)`), for a key a live session
+ * sets after the check. Read from `/`, so an empty key cannot stop the read.
+ * Exit 1 is git's "no such key"; any other failure is a file git cannot read,
+ * which every later call would trip on too, so it refuses as well.
+ */
+export function assertNoSharedWorktreeKey(repoPath: string): void {
+  try {
+    runGit(
+      '/',
+      ['config', '--file', join(repoPath, '.git', 'config'), '--get-all', 'core.worktree'],
+      { stdio: ['ignore', 'pipe', 'ignore'] },
+    );
+  } catch (error) {
+    rethrowIfKilled(error);
+    if (typeof error === 'object' && error !== null && 'status' in error && error.status === 1) {
+      return;
+    }
+  }
+  throw new SharedWorktreeKeyError(repoPath);
+}
+
 /**
  * Whether the common dir's own config turns `extensions.worktreeConfig` on, as
  * git reads it for the repository format: that file alone, no includes. A
@@ -379,6 +434,13 @@ function worktreeConfigState(
  * Pup checks out LFS pointers, never their content (decision 82).
  * `diff.external` and `textconv` are disarmed per diff call instead — see
  * `DIFF_SAFE_FLAGS` below — because an empty `diff.external` makes every diff die.
+ * `diff.relative` is pinned off: with git run from a subdirectory, which a
+ * shared-config `core.worktree` makes of the main checkout, it would list that
+ * subdirectory's changes alone, by names relative to it, and the scope audit
+ * would pass every other file. Each gate diff repeats it as `--no-relative`.
+ * `core.worktree` itself has no entry here: git reads it before any `-c`
+ * applies, and `-c core.worktree=` leaves it in force, so the gate refuses it
+ * instead; see `assertNoSharedWorktreeKey`.
  *
  * A smudge filter or merge driver armed through the untracked `info/attributes`
  * has no `-c` disarm at all — its driver name is chosen by whoever wrote it —
@@ -411,6 +473,8 @@ export const GIT_SAFE_CONFIG = [
   'worktree.useRelativePaths=false',
   '-c',
   'core.bigFileThreshold=512m',
+  '-c',
+  'diff.relative=false',
   '-c',
   'filter.lfs.required=false',
   '-c',
@@ -470,9 +534,17 @@ export function pinnedGitEnv(): NodeJS.ProcessEnv {
  * so no line starts with `@@`, and `--text` a `* -diff` attribute or
  * `diff.<driver>.binary` that turns every file into "Binary files differ".
  * `--text` is safe for a real binary because `patchCoverage` only counts
- * files the coverage report instruments.
+ * files the coverage report instruments. `--no-relative` keeps every listing
+ * the root's, whatever subdirectory a shared-config `core.worktree` runs git
+ * from, as `diff.relative=false` in `GIT_SAFE_CONFIG` does for a call without it.
  */
-const DIFF_SAFE_FLAGS = ['--no-ext-diff', '--no-textconv', '--no-color', '--text'] as const;
+const DIFF_SAFE_FLAGS = [
+  '--no-ext-diff',
+  '--no-textconv',
+  '--no-color',
+  '--text',
+  '--no-relative',
+] as const;
 
 /**
  * Node's default is 1 MiB, which `--text` on a large committed binary would
@@ -565,7 +637,9 @@ const PATH_AS_GIVEN = ['-c', 'core.precomposeUnicode=false'];
  * each hunk's added lines start, and how many lines it adds and deletes. One
  * diff per file so hunk headers are the only thing parsed — file names never
  * need de-quoting. The path is a literal pathspec, or a file named
- * `:(top)foo` would be read as magic and return no hunks. The inter-hunk
+ * `:(top)foo` would be read as magic and return no hunks, and anchored at the
+ * root (`top`), or a shared-config `core.worktree` running git from a
+ * subdirectory would look the path up under it and find no hunks. The inter-hunk
  * context is pinned to 0 and the algorithm to myers, or a session-written
  * `diff.interHunkContext` would merge the hunks and a `diff.algorithm` of
  * patience or histogram could read an unchanged block as deleted and
@@ -582,7 +656,6 @@ function diffHunks(
 ): { start: number; added: number; deleted: number }[] {
   const patch = runGit(repoPath, [
     ...PATH_AS_GIVEN,
-    '--literal-pathspecs',
     'diff',
     ...DIFF_SAFE_FLAGS,
     '-U0',
@@ -590,7 +663,7 @@ function diffHunks(
     '--diff-algorithm=myers',
     `${target}...${branch}`,
     '--',
-    path,
+    `:(top,literal)${path}`,
   ]).trim();
   const hunks: { start: number; added: number; deleted: number }[] = [];
   for (const line of patch.split('\n')) {

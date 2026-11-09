@@ -105,7 +105,7 @@ import {
 } from '../test/helpers/merge-gate.mock.js';
 import { tempDir } from '../test/temp-dir.mock.js';
 import { openStore } from './db.client.js';
-import { ArmedGitDriverError } from './git-diff.client.js';
+import { ArmedGitDriverError, WorktreeConfigError } from './git-diff.client.js';
 import { listLedgerEntries } from './ledger.repository.js';
 import { DUPLICATION_RULE_ID } from './merge-gate.constants.js';
 import { runMergeGate as runGate } from './merge-gate.service.js';
@@ -943,6 +943,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     // turn it on and then write a driver into its own worktree's config, which
     // a read of the main checkout alone would never see — and the rebase runs
     // in that worktree.
+    // Per-worktree config is refused before the driver check reads it.
     it("refuses a driver set in the session worktree's own config", async () => {
       const worktree = seedSession(db, repo);
       commitIn(repo, 'README.md', '# hello\n');
@@ -958,7 +959,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         `sh -c 'echo pwned >> ${fired}; cat'`,
       );
 
-      await expect(merge()).rejects.toThrow(ArmedGitDriverError);
+      await expect(merge()).rejects.toThrow(WorktreeConfigError);
       expect(existsSync(fired)).toBe(false);
     });
 
