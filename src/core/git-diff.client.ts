@@ -13,6 +13,7 @@ import {
 import { basename, join, resolve } from 'node:path';
 
 import { sanitizeReason } from '../adapters/capability.utils.js';
+import { shellWord } from './shell-quote.utils.js';
 import type { DiffFileStat } from './types/git-diff.types.js';
 
 export type { DiffFileStat };
@@ -137,11 +138,6 @@ export class WorktreeRepointedError extends Error {
     );
     this.name = 'WorktreeRepointedError';
   }
-}
-
-/** One shell word, for a command the operator is asked to paste. */
-function shellWord(word: string): string {
-  return `'${word.replaceAll("'", `'\\''`)}'`;
 }
 
 /** What turned per-worktree config on: the file, the extension, or a value git cannot read. */

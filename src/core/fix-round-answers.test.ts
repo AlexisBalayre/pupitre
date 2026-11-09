@@ -33,7 +33,6 @@ vi.mock('../claude/utility.service.js', () => ({
   runUtility: vi.fn(() => ({ ok: false, output: 'mocked out in tests' })),
 }));
 
-import { kickoff, killSession, launchSession } from '../claude/session-runtime.service.js';
 import {
   BOT,
   BRANCH,
@@ -45,8 +44,9 @@ import {
   SESSION_ID,
   sh,
   type ThreadSeed,
-} from '../test/helpers/fix-round.mock.js';
-import { tempDir } from '../test/temp-dir.mock.js';
+} from '@test/helpers/fix-round.mock.js';
+import { tempDir } from '@test/helpers/temp-dir.mock.js';
+import { kickoff, killSession, launchSession } from '../claude/session-runtime.service.js';
 import { openStore } from './db.client.js';
 import { DEFAULT_BASE_PROFILE } from './default-profile.constants.js';
 import { startFixRound } from './fix-round.service.js';
@@ -344,7 +344,7 @@ describe('startFixRound', { timeout: 90_000 }, () => {
       overrideVia,
       pathsBase: stateBase,
       base: DEFAULT_BASE_PROFILE,
-      claudeUserDir,
+      windowEnv: { vars: {}, configDir: claudeUserDir },
     });
   const payloads = (type: string) =>
     listEvents(db, SESSION_ID)
@@ -502,7 +502,9 @@ describe('startFixRound', { timeout: 90_000 }, () => {
     const refusal = /in a CI fix round.*`pup kill s1` \(back to merged\), then `pup fix s1`/;
 
     expect(() => requestHandoff(db, repo, SESSION_ID, stateBase)).toThrow(refusal);
-    expect(() => hardRespawnSession(db, repo, SESSION_ID, stateBase)).toThrow(refusal);
+    expect(() =>
+      hardRespawnSession(db, repo, SESSION_ID, { vars: {}, configDir: claudeUserDir }, stateBase),
+    ).toThrow(refusal);
   });
 
   // It would fast-forward the round's commits locally and leave the PR behind.

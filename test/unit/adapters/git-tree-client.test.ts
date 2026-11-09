@@ -1,11 +1,11 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { localContext } from '@src/adapters/capability.utils.js';
+import { nestedPackageDirs } from '@src/adapters/git-tree.client.js';
+import { checkoutPinned } from '@src/core/git-diff.client.js';
+import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import { describe, expect, it } from 'vitest';
-import { checkoutPinned } from '../core/git-diff.client.js';
-import { tempDir } from '../test/temp-dir.mock.js';
-import { localContext } from './capability.utils.js';
-import { nestedPackageDirs } from './git-tree.client.js';
 
 const GIT_ENV: NodeJS.ProcessEnv = {
   ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_'))),
