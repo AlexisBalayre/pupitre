@@ -10,10 +10,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../claude/session-runtime.service.js')>()),
   hasConductorWindow: vi.fn(() => false),
+  conductorPane: vi.fn(() => undefined),
+  readInputBox: vi.fn(() => 'empty'),
 }));
 
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
-import { hasConductorWindow } from '../claude/session-runtime.service.js';
+import {
+  conductorPane,
+  hasConductorWindow,
+  readInputBox,
+} from '../claude/session-runtime.service.js';
 import { formatDebtTransition } from './audit.service.js';
 import { appendBaselineHistory } from './baseline-history.repository.js';
 import { briefPath } from './brief.service.js';
@@ -118,6 +124,8 @@ describe('startWebDashboard', () => {
     db.close();
     vi.unstubAllEnvs();
     vi.mocked(hasConductorWindow).mockReset();
+    vi.mocked(conductorPane).mockReturnValue(undefined);
+    vi.mocked(readInputBox).mockReturnValue('empty');
   });
 
   function seedSession(
@@ -333,6 +341,25 @@ describe('startWebDashboard', () => {
       const page = (await get(dashboard.url)).body;
 
       expect(page).toContain(escapeHtml('pup review s-review then pup merge s-review --pr'));
+    });
+
+    // Decision 168: the look `pup conductor tell` refuses on, held past ten minutes.
+    it('lists a conductor nothing reaches under Needs you, with the attach line', async () => {
+      vi.mocked(hasConductorWindow).mockReturnValue(true);
+      vi.mocked(conductorPane).mockReturnValue({ sessionId: 'c', paneId: '%3', socket: 'sock' });
+      vi.mocked(readInputBox).mockReturnValue('holds');
+      // The first look starts the clock; the page's own look, a quarter-hour on, finds it held.
+      buildDashboardSnapshot(db, repo, Date.now() - 15 * 60_000);
+
+      const page = (await get(dashboard.url)).body;
+      const snapshot = buildDashboardSnapshot(db, repo, Date.now());
+
+      const line = page.slice(page.indexOf('need-conductor'));
+      expect(page.indexOf('need-conductor')).toBeGreaterThan(page.indexOf('Needs you'));
+      expect(line.slice(0, line.indexOf('</li>'))).toContain(
+        escapeHtml(snapshot.conductor.attachCommand),
+      );
+      expect(line).toContain('blocked: unsent draft (15m)');
     });
 
     it('escapes a goal and a question holding markup and control characters', async () => {

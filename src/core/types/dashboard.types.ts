@@ -20,6 +20,12 @@ export interface DashboardBaseline {
   deadExports?: number;
 }
 
+/** A conductor no tell reaches, and how long it has been that way (decision 168). */
+export interface ConductorBlocked {
+  reason: 'unsent draft' | 'not on main input';
+  ageMs: number;
+}
+
 interface DashboardConductor {
   running: boolean;
   /** The conductor window's tmux name, up or not. */
@@ -32,6 +38,12 @@ interface DashboardConductor {
    * call, not the model's.
    */
   attachCommand: string;
+  /**
+   * Present once no tell has been able to reach a running conductor for over
+   * ten minutes: an unsent draft in its box, or its pane off its main input
+   * (decision 168).
+   */
+  blocked?: ConductorBlocked;
 }
 
 /** The newest steer a session received, whoever sent it. */
@@ -184,8 +196,20 @@ export interface DashboardSession {
  * the operator, and the one command — or the PR url — that answers it.
  */
 export interface DashboardNeed {
-  /** The inbox's own order: question, blocked, top-rung, stalled, awaiting-review, pr-open. */
-  kind: 'question' | 'blocked' | 'top-rung' | 'stalled' | 'awaiting-review' | 'pr-open';
+  /**
+   * The inbox's own order: question, conductor, blocked, top-rung, stalled,
+   * awaiting-review, pr-open. `conductor` is the conductor out of reach, not a
+   * session (decision 168).
+   */
+  kind:
+    | 'question'
+    | 'conductor'
+    | 'blocked'
+    | 'top-rung'
+    | 'stalled'
+    | 'awaiting-review'
+    | 'pr-open';
+  /** The session, or the conductor's window name on a `conductor` line. */
   sessionId: string;
   /** What prints for the session: its id, or a placeholder for one outside the minted shape. */
   label: string;
@@ -216,7 +240,8 @@ interface DashboardDebt {
  * One reading of a project, taken from one store at one instant: what `pup
  * status` prints and what `pup ui` will draw, so the two cannot disagree about
  * what is running. Everything here is answered by the store and the events
- * files — nothing spawns git or tmux beyond the conductor's window check.
+ * files — nothing spawns git or tmux beyond the conductor's window check and,
+ * while it runs, one capture of its pane (decision 168).
  */
 export interface DashboardSnapshot {
   projectId: string;

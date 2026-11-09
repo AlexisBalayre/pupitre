@@ -11,7 +11,7 @@ import {
   transcriptDir,
 } from '../claude/session-runtime.service.js';
 import { latestContextTokens } from '../claude/transcript.service.js';
-import { isConductorRunning } from './conductor.service.js';
+import { conductorBlock, isConductorRunning } from './conductor.service.js';
 import { PR_URL } from './constants/dashboard.constants.js';
 import { eventDetail } from './dashboard-events.utils.js';
 import type { SessionState } from './db.client.js';
@@ -96,14 +96,17 @@ export function buildDashboardSnapshot(
   });
   const beat = getWatcherBeat(db, pid);
   const baseline = baselineOf(db, pid);
+  const running = isConductorRunning(repoPath);
+  const blocked = running ? conductorBlock(repoPath, now) : undefined;
   return {
     projectId: pid,
     repoPath,
     ...(baseline ? { baseline } : {}),
     conductor: {
-      running: isConductorRunning(repoPath),
+      running,
       name: conductorName(pid),
       attachCommand: attachCommand({ conductorOf: pid }),
+      ...(blocked ? { blocked } : {}),
     },
     // `listSessions` returns oldest first and `sort` is stable, so the tie
     // between two sessions that both need a human stays in creation order.
@@ -371,10 +374,13 @@ function sortsFirst(session: DashboardSession): boolean {
  * The inbox's order (decision 83): what only the operator can answer, by what
  * leaving it costs — a question idles a worker that has said why, a block or a
  * stall one that has stopped, a review and an open PR only hold finished work
- * back.
+ * back. A conductor out of reach comes right after the questions: while it
+ * sits there no worker's notice lands, so every finished session waits on it
+ * (decision 168).
  */
 const NEED_ORDER: DashboardNeed['kind'][] = [
   'question',
+  'conductor',
   'blocked',
   'top-rung',
   'stalled',
@@ -413,8 +419,31 @@ export type CiReviewLookup = (session: Pick<DashboardSession, 'id'>) => CiReview
  */
 export function needsYou(snapshot: DashboardSnapshot, ciReview?: CiReviewLookup): DashboardNeed[] {
   const gating = snapshot.conductor.running;
-  const needs = snapshot.sessions.flatMap((session) => needOf(session, gating, ciReview) ?? []);
+  const needs = [
+    ...conductorNeed(snapshot.conductor),
+    ...snapshot.sessions.flatMap((session) => needOf(session, gating, ciReview) ?? []),
+  ];
   return NEED_ORDER.flatMap((kind) => needs.filter((need) => need.kind === kind));
+}
+
+/**
+ * The conductor no tell reaches (decision 168), answered with the attach line:
+ * the draft may be the operator's own and the overlay takes keys as choices,
+ * so pup sends nothing and only the operator, attached, can clear either.
+ */
+function conductorNeed(conductor: DashboardSnapshot['conductor']): DashboardNeed[] {
+  const { blocked } = conductor;
+  if (!blocked) return [];
+  const fix = blocked.reason === 'unsent draft' ? 'send or clear it' : 'return it to its prompt';
+  return [
+    {
+      kind: 'conductor',
+      sessionId: conductor.name,
+      label: 'conductor',
+      reason: `blocked: ${blocked.reason} (${formatStaleAge(blocked.ageMs)}), no notice reaches it; ${fix}`,
+      answer: conductor.attachCommand,
+    },
+  ];
 }
 
 /**
