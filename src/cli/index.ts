@@ -91,7 +91,7 @@ import {
   UndeclaredSandboxError,
 } from '../core/sandbox.utils.js';
 import {
-  deleteTask,
+  dropTask,
   editTaskSpec,
   findSessionByWorktree,
   getProject,
@@ -1077,10 +1077,16 @@ export function buildProgram(): Command {
           if (!target) {
             return refuse('Usage: pup plan drop <task>');
           }
-          if (!deleteTask(db, target)) {
-            return refuse(`No planned task ${target} (a session may already have claimed it).`);
+          const outcome = dropTask(db, target);
+          if (outcome.kind === 'unknown') {
+            return refuse(`No planned task ${sanitizeReason(target)}.`);
           }
-          console.log(`Dropped ${target}.`);
+          if (outcome.kind === 'claimed') {
+            return refuse(
+              `Task ${sanitizeReason(target)} is claimed by session ${sanitizeReason(outcome.sessionId)}, so it cannot be dropped.`,
+            );
+          }
+          console.log(`Dropped ${sanitizeReason(target)}.`);
           return;
         }
         case 'edit': {
