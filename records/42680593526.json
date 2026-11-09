@@ -1,0 +1,192 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-09T19:13:02.003Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42680593526",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42680593526",
+  "actor": "AlexisBalayre",
+  "commit_sha": "39c7785c326b1085a976dbbb10ddf5a26d09ee2c",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 293,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/web-dashboard-module-map.service.ts",
+      "line": "172-179",
+      "description": "`lstatSync(path, { throwIfNoEntry: false })` only suppresses ENOENT. A directory under `src/` that can be listed but not searched (mode `0644`/`0444`) makes `lstat` of each child throw EACCES. `readModuleMap` then throws, and the whole Decisions sheet, timeline included, returns 500 \"The store could not be read.\" on every request and poll.",
+      "status": "unresolved"
+    },
+    {
+      "file": "src/core/chart.utils.ts",
+      "line": "477",
+      "description": "The treemap legend says \"(darker: 1, 2–3, 4 or more)\", but in the dark theme --debt-0..--debt-3 run from dark to light, so dark-mode readers see the shading backwards.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/chart.test.ts",
+      "line": "246-264",
+      "description": "The treemap escaping test's group sums to Infinity (1e308 + 1e308), so squarify draws nothing; removing escapeHtml from the group-label <text> (chart.utils.ts:452) passes the whole suite.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/chart.test.ts",
+      "line": "186-194",
+      "description": "The \"filling the box\" test checks areas and bounds but not overlap, so a layRow that never advances `rest` (cells all stacked at the origin) still passes it and every treemap test.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/chart.test.ts",
+      "line": "177-226",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The treemap tests check each cell's width and height but never its position. A mutant that lays every group's cells from (0,0) still passes the whole suite, for example `squarify(group.leaves, { ...box, x: 0, y: 0 })` at chart.utils.ts:423. Under it, files are drawn outside their group's outline. A squarify case with a box away from the origin would catch it, or a check that each cell sits inside its group's rect.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard-decisions.test.ts",
+      "line": "100-115",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The test for module order by newest record can't fail on the wrong order. In its fixture, src/core holds both the newest record and the most records, so a mutant that orders modules by record count still passes. A fixture where the newest record sits in the smaller module would separate the two.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard-decisions.service.ts",
+      "line": "16",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The DecisionSheetRecord JSDoc says \"every string through `oneLine`\", but `session` and `when` never go through it. `session` is checked against SESSION_ID_PATTERN and `when` is built from an ISO date, so a reader could credit oneLine for making those two fields safe.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard-module-map.service.ts",
+      "line": "148",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The comment above `visit` says it \"says why it was not\" counted, but it records no reason: it only increments `map.unread`. Suggested wording: \"Counts one plain file, or tallies it as unread; false once a cap is reached.\"",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard-module-map.service.ts",
+      "line": "155",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The comment `// A file over the cap is never opened.` only restates the `stat.size > MAX_FILE_BYTES ? undefined : …` ternary below it. general.md §Comments says inline comments explain why, not what.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard-decisions.service.ts",
+      "line": "37",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`NO_FILE = '(no file named)'` copies the same constant in web-dashboard-debt.service.ts:35, so the label can drift between the Debt and Decisions sheets. It could move to web-dashboard-sheet.utils.ts beside `oneLine`.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "conventions",
+      "description": "The conventions reviewer did not read docs/conventions/testing.md. It also did not read chart.utils.ts or the test files line by line, so testing-convention compliance and most of chart.utils.ts went unchecked."
+    },
+    {
+      "component": "simplicity",
+      "description": "The simplicity reviewer read only the two new service files. It did not review the chart.utils.ts hunks (framed, squarify, layRow, groupCells, toneLevel) or web-dashboard.service.ts for oversized structure."
+    },
+    {
+      "component": "guards",
+      "description": "The guards reviewer could not list main's ADRs under the CI sandbox, so it confirmed ADR number 0167 is unique only in the checkout. scripts/adr-index.sh was not run."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.946902225000001,
+  "duration_ms": 186031,
+  "num_turns": 18,
+  "tokens": {
+    "input": 14,
+    "output": 12755,
+    "cache_read": 400390,
+    "cache_creation": 69010,
+    "total": 482169
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 124,
+      "output": 46084,
+      "cache_read": 1861329,
+      "cache_creation": 219825,
+      "cost_usd": 2.600596800000001
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 40,
+      "output": 10817,
+      "cache_read": 261286,
+      "cache_creation": 84495,
+      "cost_usd": 0.3456161
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 202,
+      "cache_read": 0,
+      "cache_creation": 4705,
+      "cost_usd": 0.000689325
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "bash scripts/adr-index.sh"
+    }
+  ]
+}
