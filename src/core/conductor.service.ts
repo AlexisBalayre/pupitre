@@ -260,7 +260,7 @@ export function startConductor(
     projectId: pid,
     conductorName: name,
     workerModel: req.workerModel,
-    userConfigHash: snapshotUserConfigHash(req.claudeUserDir),
+    userConfigHash: snapshotUserConfigHash(req.windowEnv.configDir),
     outDir,
     codegraphBinary: binary,
     checkoutPath: checkoutDir,
@@ -277,6 +277,7 @@ export function startConductor(
   const pane = launchConductor({
     projectId: pid,
     repoPath: req.repoPath,
+    env: req.windowEnv,
     settingsPath: join(outDir, 'settings.json'),
     // Both named even when the operator named neither: the user settings the
     // window inherits must not decide the conductor's model or effort (decision 92).

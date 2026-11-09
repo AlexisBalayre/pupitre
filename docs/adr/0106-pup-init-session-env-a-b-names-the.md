@@ -66,53 +66,66 @@
     `ConfigDirRefusedError`. `pup new`, `pup audit --sweep`, `pup launch`,
     `pup conductor start`, `pup respawn` and `pup kill --respawn` resolve the dir before
     anything is planned, steered, killed or opened, and refuse in one scrubbed line. `pup fix`
-    refuses through its own scrubbed catch, before its round starts. A window reads the list
-    once, so its `-e` and the `.claude.json` its trust is seeded in agree on the dir. Those
-    commands hash that dir for the drift check instead of `~/.claude`. `transcriptDir` takes
-    the dir.
-    *Owed, outside this change's scope.* `session-lifecycle.service.ts` stamps a session's
-    `transcript_path` as `transcriptDir(worktree)` and `dashboard.service.ts` checks the
-    stored column against the same call, both on `~/.claude`. A session on a named config dir
-    writes its transcript where neither looks, so the dashboard shows none for it until both
-    pass `claudeUserDir(repoPath)`. `pup ui` (`actions.service.ts`) launches, starts the
-    conductor and respawns on `~/.claude`. A UI launch on a named dir records the hash of
-    `~/.claude`. A refused dir throws from inside `launchSession`, after the worktree is cut
-    and the row inserted, and a UI respawn throws after the kill. The hash and the window
-    still read the list separately, the launching command once and the window once, so a
-    session that rewrites the file between the two can split them across dirs. Closing that
-    means resolving the list once where the command starts and passing it down through
-    `session-lifecycle`, `session-handoff`, `fix-round` and `conductor` to the window. The
-    `claude -p` utilities (`utility.service.ts`) that the conductor's `pup merge --pr` starts
-    inherit the conductor's environment, named variables included. A named
-    `CLAUDE_CONFIG_DIR` puts them on that dir's settings and login too.
-    *Ceilings.* The values travel in tmux's argv, as every `-e` does, and `ps` shows them to
-    the operator's own user. They are also readable per session by any other client of the
-    same server, with `tmux show-environment -t =<session>` (verified on tmux 3.7b). Every
-    session's window is on the default server, so every session can read every other
-    session's values. The conductor's window is on its own socket, so its values are not
-    readable from there. The list is closed to names that are configuration, not
-    credentials, which is what makes that acceptable. The conductor may run `pup init`
-    (decision 48), so it can widen the list, though only within the five. What Claude Code
-    makes of a named `CLAUDE_CODE_EFFORT_LEVEL` beside the `--effort` decision 92 passes is the
-    operator's call, and pup does not check it.
-    *Tests.* In `session-runtime.test.ts`, every name off the list is refused and named: the
-    peer channel, the credentials, the nested-session marker and session ids, the loaders,
-    git's redirects, `HOME`, `PATH`, `__proto__` and the empty name. The five are taken. A
-    saved list reads back, leaves no staged copy, and a name off the list written in by hand
-    is dropped. A file that does not parse, is no list, is past the cap, is a symlink, a fifo
-    or a directory reads as no names, without blocking. `claudeUserDir` is `~/.claude` until
-    the list names `CLAUDE_CONFIG_DIR` and the shell has it, and refuses a `~`, a relative
-    or an empty value. It refuses a dir root owns, a link to one, a group- or others-writable
-    dir and a file, and makes a missing one, and its parents, `0700`. A launch hands the
-    window each named variable with the shell's value, sets none for an unset name, gives
-    tmux's client environment none of them, and seeds trust in the named dir's `.claude.json`.
-    An unnamed `CLAUDE*` variable stays stripped from both. The launch's own argv and client
-    environment, run against the installed tmux, set the variables on the window, values
-    ending in `;` and `\;` included, and leave every `CLAUDE*` name out of
-    `show-environment -g`. The conductor's window is
-    handed the variable and seeded in the same dir. `transcriptDir` derives its segment under
-    a named dir. In `index.test.ts`, `init --session-env` refuses each family, naming it and
+    refuses through its own scrubbed catch, before its round starts. `pup ui`'s launch,
+    respawn and conductor start resolve it first too, and put the refusal on the status line.
+    Those commands hash that dir for the drift check instead of `~/.claude`. `transcriptDir`
+    takes the dir.
+    *Read once, where the command starts (2026-11-09; was owed).* The list used to be read
+    twice, once by the launching command for the hash and once by the window. A session that
+    rewrote the file between the two reads could split them across dirs. `pup ui` launched,
+    respawned and started the conductor on `~/.claude`, so a refused dir threw from inside
+    `launchSession`, after the worktree was cut and the row inserted, or after a respawn's
+    kill. The dashboard looked for transcripts under `~/.claude` only. Now `resolveWindowEnv`
+    reads the list and checks the dir once, and returns a `WindowEnv`: the named variables
+    with the shell's values, and the dir. Each command calls it where it starts: the CLI
+    commands above through `windowEnvOrRefuse`, `pup fix` inside its catch, and `pup ui`'s
+    three actions inside theirs. The env travels down to the window as a value, through
+    `launchTask`/`createSession`'s `windowEnv`, `respawnSession` and `hardRespawnSession`'s
+    `env`, the fix round's request and `startConductor`'s request. The launch hashes its dir,
+    seeds trust in it and hands the window its `-e`, and nothing past the command reads the
+    file again. A session's `transcript_path` is stamped as `transcriptDir(worktree, dir)`.
+    The dashboard resolves `claudeUserDir(repoPath)` once per snapshot and checks the stored
+    column against the same derivation. A refused dir reads as no transcript and does not
+    stop the snapshot, since no window opens on one and a dir another user could swap is no
+    place to read from. The dashboard asks the shell it runs in. A `pup ui` or `pup status`
+    started from a shell that names another dir, or none, finds no transcript for a session
+    launched on the named one, and shows its context as unknown.
+    *Ceilings.* The `claude -p` utilities (`utility.service.ts`) that the conductor's `pup merge
+    --pr` starts inherit the conductor's environment, named variables included. A named
+    `CLAUDE_CONFIG_DIR` puts them on that dir's settings and login too. The values travel in
+    tmux's argv, as every `-e` does, and `ps` shows them to the operator's own user. They are
+    also readable per session by any other client of the same server, with `tmux
+    show-environment -t =<session>` (verified on tmux 3.7b). Every session's window is on the
+    default server, so every session can read every other session's values. The conductor's
+    window is on its own socket, so its values are not readable from there. The list is closed
+    to names that are configuration, not credentials, which is what makes that acceptable. The
+    conductor may run `pup init` (decision 48), so it can widen the list, though only within the
+    five. What Claude Code makes of a named `CLAUDE_CODE_EFFORT_LEVEL` beside the `--effort`
+    decision 92 passes is the operator's call, and pup does not check it.
+    *Tests.* In `session-runtime.test.ts`, every name off the list is refused and named: the peer
+    channel, the credentials, the nested-session marker and session ids, the loaders, git's
+    redirects, `HOME`, `PATH`, `__proto__` and the empty name. The five are taken. A saved list
+    reads back, leaves no staged copy, and a name off the list written in by hand is dropped. A
+    file that does not parse, is no list, is past the cap, is a symlink, a fifo or a directory
+    reads as no names, without blocking. `claudeUserDir` is `~/.claude` until the list names
+    `CLAUDE_CONFIG_DIR` and the shell has it, and refuses a `~`, a relative or an empty value.
+    It refuses a dir root owns, a link to one, a group- or others-writable dir and a file, and
+    makes a missing one, and its parents, `0700`. A launch hands the window each named variable
+    with the shell's value, sets none for an unset name, gives tmux's client environment none of
+    them, and seeds trust in the named dir's `.claude.json`. An unnamed `CLAUDE*` variable stays
+    stripped from both. The launch's own argv and client environment, run against the installed
+    tmux, set the variables on the window, values ending in `;` and `\;` included, and leave
+    every `CLAUDE*` name out of `show-environment -g`. The conductor's window is handed the
+    variable and seeded in the same dir. `transcriptDir` derives its segment under a named dir.
+    A launch handed a resolved env opens the window on it after the list is rewritten. In
+    `session-lifecycle.test.ts`, a launch hashes the dir it is handed, stamps its transcript dir
+    and hands the window that env. In `conductor.test.ts`, the start hashes the dir it is handed
+    and passes the window the same env. In `actions.test.ts`, `pup ui`'s launch, respawn and
+    conductor start refuse a relative and an others-writable dir before `launchTask`, the
+    handoff request or `startConductor`, and hand all three the named dir otherwise. In
+    `dashboard.test.ts`, a session on a named dir has its transcript read, and a refused dir
+    reads as none. In `index.test.ts`, `init --session-env` refuses each family, naming it and
     the five, and stores neither the list nor the origin. It records a list, keeps it over a
-    plain `init`, and clears it on `""`. `pup new`, `pup launch`, `pup conductor start`,
-    `pup fix`, `pup respawn` and `pup kill --respawn` refuse a relative value in one scrubbed
-    line. None of them plans, steers, kills or opens anything.
+    plain `init`, and clears it on `""`. `pup new`, `pup launch`, `pup conductor start`, `pup
+    fix`, `pup respawn` and `pup kill --respawn` refuse a relative value in one scrubbed line.
+    None of them plans, steers, kills or opens anything.

@@ -1,4 +1,5 @@
 import type { Tier } from '../../claude/model-ladder.constants.js';
+import type { WindowEnv } from '../../claude/session-runtime.service.js';
 import type { ProfileLayer, TaskSpec } from './profile.types.js';
 
 export interface PlanTaskRequest {
@@ -25,7 +26,11 @@ export interface LaunchTaskRequest {
   base: ProfileLayer;
   role?: ProfileLayer;
   taskId: string;
-  claudeUserDir: string;
+  /**
+   * `--session-env` as the command resolved it, once, where it started: the
+   * window's variables and the config dir it hashes and runs on (decision 106).
+   */
+  windowEnv: WindowEnv;
   model?: string;
   effort?: string;
   /** Who launched it, named in the `scope_overlap` record; the operator when unset. */
@@ -36,7 +41,11 @@ export interface LaunchTaskRequest {
 
 export interface NewSessionRequest extends PlanTaskRequest {
   base: ProfileLayer;
-  claudeUserDir: string;
+  /**
+   * `--session-env` as the command resolved it, once, where it started: the
+   * window's variables and the config dir it hashes and runs on (decision 106).
+   */
+  windowEnv: WindowEnv;
   model?: string;
   effort?: string;
   /** Who launched it, named in the `scope_overlap` record; the operator when unset. */

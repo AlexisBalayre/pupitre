@@ -13,6 +13,7 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   steerPane: vi.fn(),
 }));
 
+import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import {
   conductorPane,
   deadTurnError,
@@ -20,7 +21,6 @@ import {
   SteerNotDeliveredError,
   steerPane,
 } from '../claude/session-runtime.service.js';
-import { tempDir } from '../test/temp-dir.mock.js';
 import { openStore } from './db.client.js';
 import { projectId, projectPaths } from './paths.utils.js';
 import {

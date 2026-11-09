@@ -490,7 +490,7 @@ function sessionWindowRoute(
  * and the user config. A role is the launch caller's to pass, and only an API
  * caller does: the task row keeps its name alone, which nothing resolves back.
  */
-export type ProfileSource = Pick<LaunchTaskRequest, 'repoPath' | 'base' | 'claudeUserDir'>;
+export type ProfileSource = Pick<LaunchTaskRequest, 'repoPath' | 'base' | 'windowEnv'>;
 
 /** A compiled profile and the codegraph binary it was compiled for, if any. */
 export interface SessionCompile {
@@ -510,7 +510,7 @@ function compileSessionProfile(
   peers: SessionPeer[],
 ): SessionCompile {
   const compiledDir = paths.compiledDir(session.id);
-  const userConfigHash = snapshotUserConfigHash(source.claudeUserDir);
+  const userConfigHash = snapshotUserConfigHash(source.windowEnv.configDir);
   mkdirSync(compiledDir, { recursive: true });
   // Before the compile, because the answer shapes the compiled files and the
   // hash is recorded over them: which binary serves the graph is part of the
@@ -692,7 +692,7 @@ function startSession(
     worktreePath,
     branch,
     profileHash: compiled.hash,
-    transcriptPath: transcriptDir(worktreePath),
+    transcriptPath: transcriptDir(worktreePath, req.windowEnv.configDir),
     route,
   });
 
@@ -700,6 +700,7 @@ function startSession(
     sessionId,
     repoPath: req.repoPath,
     worktreePath,
+    env: req.windowEnv,
     settingsPath,
     route: routeFor(route.tier, route.rung, route),
     mcpConfigPath,

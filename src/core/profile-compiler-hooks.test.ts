@@ -8,9 +8,9 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { makeInput } from '@test/helpers/profile-compiler.mock.js';
+import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { makeInput } from '../test/helpers/profile-compiler.mock.js';
-import { tempDir } from '../test/temp-dir.mock.js';
 import { HOOK_TIMEOUT_SECONDS } from './profile.constants.js';
 import * as ProfileCompiler from './profile-compiler.service.js';
 
