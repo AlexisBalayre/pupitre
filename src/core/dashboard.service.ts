@@ -17,14 +17,7 @@ import { WATCH_STALE_AFTER_MS } from './overlap.service.js';
 import { SESSION_ID_PATTERN } from './paths.constants.js';
 import { type ProjectPaths, projectId, projectPaths } from './paths.utils.js';
 import { asStringArray, displayStages, parseJsonOr, toIsoUtc } from './report-data.utils.js';
-import {
-  asTier,
-  type ClimbReason,
-  climbFrom,
-  fixRoundFailure,
-  taskTier,
-  windowFailure,
-} from './routing.utils.js';
+import { asTier, type ClimbReason, climbFrom, taskTier, windowFailure } from './routing.utils.js';
 import {
   decodeEvent,
   type EventRow,
@@ -233,33 +226,23 @@ export function findStalledSessions(db: Database, repoPath: string, now: number)
  * window opened, or a stall when its events file had been quiet past the stall
  * bar (decision 35) by the time the window ended, at its kill or, for one still
  * up, `now`. Like the stall rule, only a window that was running then can have
- * stalled; one killed while awaiting review had only finished.
+ * stalled; one killed while awaiting review had only finished. A CI fix
+ * round's retry reads its events with `fixRoundFailure` as `read`: that kill is
+ * a `running` -> `merged` edge, not a `killed` session, and stalls the same.
  */
 export function windowFailureOf(
   db: Database,
   paths: ProjectPaths,
   session: SessionRow,
   now: number,
+  read: (
+    events: SessionEvent[],
+    stalledAtEnd: boolean,
+  ) => ClimbReason | 'blocked' | undefined = windowFailure,
 ): ClimbReason | 'blocked' | undefined {
   const rows = listEvents(db, session.id);
   const events = rows.map(decodeEvent);
-  return windowFailure(events, windowStalled(paths, session, rows, events, now));
-}
-
-/**
- * What a merged session's CI fix round ran into, for the retry of a round
- * killed mid-window: `fixRoundFailure` with the stall `windowFailureOf` reads,
- * since that kill is a `running` -> `merged` edge, not a `killed` session.
- */
-export function fixRoundFailureOf(
-  db: Database,
-  paths: ProjectPaths,
-  session: SessionRow,
-  now: number,
-): ClimbReason | 'blocked' | undefined {
-  const rows = listEvents(db, session.id);
-  const events = rows.map(decodeEvent);
-  return fixRoundFailure(events, windowStalled(paths, session, rows, events, now));
+  return read(events, windowStalled(paths, session, rows, events, now));
 }
 
 /**

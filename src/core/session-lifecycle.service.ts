@@ -18,7 +18,7 @@ import {
 import { buildCodeMap, buildKnowledgeSlice } from './code-map.service.js';
 import { codegraphBinary, prepareGraph } from './codegraph.client.js';
 import { maxSessions } from './conductor.service.js';
-import { fixRoundFailureOf, windowFailureOf } from './dashboard.service.js';
+import { windowFailureOf } from './dashboard.service.js';
 import {
   assertNoArmedGitDrivers,
   assertNoWorktreeConfig,
@@ -38,7 +38,14 @@ import {
   writeCompiledProfile,
 } from './profile-compiler.service.js';
 import { asStringArray } from './report-data.utils.js';
-import { asTier, type ClimbReason, climbFrom, routeFor, taskTier } from './routing.utils.js';
+import {
+  asTier,
+  type ClimbReason,
+  climbFrom,
+  fixRoundFailure,
+  routeFor,
+  taskTier,
+} from './routing.utils.js';
 import {
   appendEvent,
   claimingSession,
@@ -440,7 +447,7 @@ export function fixRoundRoute(
   return sessionWindowRoute(
     db,
     session,
-    () => fixRoundFailureOf(db, paths, session, Date.now()),
+    () => windowFailureOf(db, paths, session, Date.now(), fixRoundFailure),
     override,
     overrideVia === 'operator',
   );
