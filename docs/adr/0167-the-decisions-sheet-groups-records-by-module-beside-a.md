@@ -1,9 +1,9 @@
-# 0161. The Decisions sheet groups the decision records by module beside a treemap of `src/` shaded by debt or recent merges (2026-11-09)
+# 0167. The Decisions sheet groups the decision records by module beside a treemap of `src/` shaded by debt or recent merges (2026-11-09)
 
 - Status: accepted
 - Amends: [0098](0098-pup-dashboard-is-a-set-of-sheets-figures.md)
 
-161. **The Decisions sheet groups the decision records by module beside a treemap of `src/`
+167. **The Decisions sheet groups the decision records by module beside a treemap of `src/`
      shaded by debt or recent merges (2026-11-09).**
      Amends decision 98, which left Decisions to its own task. The bar now reads Overview, Health,
      Debt, Decisions, and `?sheet=decisions` is served under everything decision 98 kept from

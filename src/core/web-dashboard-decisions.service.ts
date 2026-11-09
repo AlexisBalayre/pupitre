@@ -108,7 +108,7 @@ function topModule(files: string[]): string {
 }
 
 /**
- * The Decisions sheet's reading (decision 161): every decision record, newest
+ * The Decisions sheet's reading (decision 167): every decision record, newest
  * first like `pup log`, and the module map of the checkout's `src/`, each file
  * with its open debt entries and the sessions merged into it in the last 30
  * days. The store is the project's own, so its records are this project's.
