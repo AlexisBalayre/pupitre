@@ -1,9 +1,9 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
-import { tempDir } from '../test/temp-dir.mock.js';
 
 // Side-effecting boundaries only (tmux/git spawns, `claude -p` sessions, and the
 // multi-stage merge-gate orchestration) — everything else (sqlite repositories,
@@ -50,6 +50,8 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   // The real rule and the real file, under the throwaway HOME: which names
   // `pup init --session-env` refuses and keeps, and the config dir a launch
   // hashes from them, are the contract (decision 106).
+  resolveWindowEnv: (await importOriginal<typeof import('../claude/session-runtime.service.js')>())
+    .resolveWindowEnv,
   claudeUserDir: (await importOriginal<typeof import('../claude/session-runtime.service.js')>())
     .claudeUserDir,
   ConfigDirRefusedError: (
@@ -154,6 +156,18 @@ vi.mock('../core/session-handoff.service.js', () => ({
 }));
 
 import {
+  firstCall,
+  GIT_ENV,
+  initRepo,
+  initRepoWithAdapter,
+  rolledBackLaunch,
+  seedBlockedSession,
+  seedKilledSession,
+  seedSession,
+  seedStalledSession,
+  stubCodegraph,
+} from '@test/helpers/cli-index.mock.js';
+import {
   attachWindow,
   hasSessionWindow,
   readSessionEnv,
@@ -188,18 +202,6 @@ import {
 } from '../core/session-lifecycle.service.js';
 import { retireSession } from '../core/session-retire.service.js';
 import type { LandOutcome } from '../core/types/land.types.js';
-import {
-  firstCall,
-  GIT_ENV,
-  initRepo,
-  initRepoWithAdapter,
-  rolledBackLaunch,
-  seedBlockedSession,
-  seedKilledSession,
-  seedSession,
-  seedStalledSession,
-  stubCodegraph,
-} from '../test/helpers/cli-index.mock.js';
 import { buildProgram } from './index.js';
 import { resolveProject } from './project.utils.js';
 
@@ -1971,7 +1973,7 @@ describe('CLI commands', () => {
         override: { model: 'claude-opus-5-5', effort: 'xhigh' },
         overrideVia: 'operator',
         base: DEFAULT_BASE_PROFILE,
-        claudeUserDir: join(home, '.claude'),
+        windowEnv: { vars: {}, configDir: join(home, '.claude') },
       });
       expect(logs).toEqual([
         `Fix round started for s1: the 2 open threads the CI review left on ${PR} at ${HEAD} went to a fresh window.`,

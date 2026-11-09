@@ -1,4 +1,5 @@
 import type { Database } from 'better-sqlite3';
+import type { WindowEnv } from '../../claude/session-runtime.service.js';
 import type { ProfileLayer } from './profile.types.js';
 
 export interface StartConductorRequest {
@@ -6,7 +7,11 @@ export interface StartConductorRequest {
   db: Database;
   repoPath: string;
   base: ProfileLayer;
-  claudeUserDir: string;
+  /**
+   * `--session-env` as the command resolved it, once, where it started: the
+   * window's variables and the config dir it hashes and runs on (decision 106).
+   */
+  windowEnv: WindowEnv;
   /** The conductor's own model; `CONDUCTOR_ROUTE`'s when unset (decision 92). */
   model?: string;
   /** The conductor's own effort; `CONDUCTOR_ROUTE`'s when unset. */
@@ -25,7 +30,7 @@ export interface ConductorCompileInput {
   /** The peer name the conductor's window carries, quoted in its context so it knows itself. */
   conductorName: string;
   workerModel?: string;
-  /** Hash of the user's ~/.claude snapshot at launch (decision 9: drift detection). */
+  /** Hash of the window's config dir at launch (decisions 9, 106: drift detection). */
   userConfigHash: string;
   /** Absolute directory the compiled files will live in (hook paths embed it). */
   outDir: string;

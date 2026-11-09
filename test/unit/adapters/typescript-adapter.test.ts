@@ -10,12 +10,12 @@ vi.mock('node:fs', async (importOriginal) => {
   return { ...actual, mkdirSync: vi.fn(actual.mkdirSync), rmSync: vi.fn(actual.rmSync) };
 });
 
-import { endSandboxRun, runGateChild, sandboxLabel } from '../core/sandbox.utils.js';
-import { tempDir } from '../test/temp-dir.mock.js';
-import { localContext } from './capability.utils.js';
-import type { DeadExport, DuplicationReport } from './types/adapter.types.js';
-import type { IstanbulCoverageMap } from './types/istanbul.types.js';
-import { rootCoverageReport, typescriptAdapter } from './typescript.adapter.js';
+import { localContext } from '@src/adapters/capability.utils.js';
+import type { DeadExport, DuplicationReport } from '@src/adapters/types/adapter.types.js';
+import type { IstanbulCoverageMap } from '@src/adapters/types/istanbul.types.js';
+import { rootCoverageReport, typescriptAdapter } from '@src/adapters/typescript.adapter.js';
+import { endSandboxRun, runGateChild, sandboxLabel } from '@src/core/sandbox.utils.js';
+import { tempDir } from '@test/helpers/temp-dir.mock.js';
 
 function makeRepo(files: Record<string, string>): string {
   const dir = tempDir('pup-adapter-');

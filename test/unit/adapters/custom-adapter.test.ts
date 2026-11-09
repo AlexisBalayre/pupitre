@@ -1,11 +1,14 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { localContext } from '@src/adapters/capability.utils.js';
+import { loadCustomAdapter } from '@src/adapters/custom.adapter.js';
+import {
+  CustomAdapterCommandError,
+  CustomAdapterConfigError,
+} from '@src/adapters/custom-adapter.errors.js';
+import { endSandboxRun, UndeclaredSandboxError } from '@src/core/sandbox.utils.js';
+import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import { afterAll, describe, expect, it, onTestFinished, vi } from 'vitest';
-import { endSandboxRun, UndeclaredSandboxError } from '../core/sandbox.utils.js';
-import { tempDir } from '../test/temp-dir.mock.js';
-import { localContext } from './capability.utils.js';
-import { loadCustomAdapter } from './custom.adapter.js';
-import { CustomAdapterCommandError, CustomAdapterConfigError } from './custom-adapter.errors.js';
 
 function makeRepo(adapterYml?: string): string {
   const dir = tempDir('pup-custom-');
