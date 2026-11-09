@@ -359,7 +359,8 @@ const folded = (path: string): string => path.toLowerCase();
 /**
  * Whether a dependency file on the branch (`DIFF_SIZE_DEPENDENCY_FILES`), in
  * any ASCII case, names Docusaurus: its `@docusaurus/core` dependency or a
- * `docusaurus` script.
+ * `docusaurus` script. The pathspecs are `top`, for the reason `targetHolds`
+ * lists `--full-tree`.
  */
 function dependenciesNameDocusaurus(repoPath: string, branch: string): boolean {
   try {
@@ -373,7 +374,7 @@ function dependenciesNameDocusaurus(repoPath: string, branch: string): boolean {
       'docusaurus',
       branch,
       '--',
-      ...DIFF_SIZE_DEPENDENCY_FILES.map((name) => `:(glob,icase)**/${name}`),
+      ...DIFF_SIZE_DEPENDENCY_FILES.map((name) => `:(top,glob,icase)**/${name}`),
     ]);
     return true;
   } catch (error) {
@@ -396,12 +397,15 @@ function dependenciesNameDocusaurus(repoPath: string, branch: string): boolean {
  * path or target holds a character outside ASCII. A link named as a dependency
  * file may name Docusaurus where no grep reads it, and a file named outside
  * ASCII may be a config or dependency file no case-insensitive match finds.
+ * Listed `--full-tree`, for the reason `targetHolds` is.
  */
 function readBranchTree(repoPath: string, branch: string): BranchTree {
   const landings: string[] = [];
   let anywhere = false;
   let markdownIsCode = dependenciesNameDocusaurus(repoPath, branch);
-  for (const entry of runGit(repoPath, ['ls-tree', '-r', '-z', branch]).split('\0')) {
+  for (const entry of runGit(repoPath, ['ls-tree', '-r', '-z', '--full-tree', branch]).split(
+    '\0',
+  )) {
     if (!entry) continue;
     // "<mode> <type> <oid>\t<path>": the path is everything after the first tab.
     const tab = entry.indexOf('\t');
@@ -2409,7 +2413,10 @@ export async function waitForLoad(
 /**
  * Whether every file the branch changed is on `UNTESTED_PATH_GLOBS`, so no
  * test can run or read it (decision 139). A rename's old path counts as
- * changed, since `--name-only` names only the new one. Something other than
+ * changed and goes through every check below, since `--name-only` names only
+ * the new one and the old path is what a link or another case reached on the
+ * target. The tree is listed `--full-tree`, as `targetHolds` lists it, so a
+ * `core.worktree` aimed elsewhere hides no link or spelling. Something other than
  * the path itself can read each of these, so each counts as testable, as
  * decision 110 counts it as source: a symlink, a path a symlink can reach, a
  * name outside ASCII, and Markdown that a Docusaurus config compiles. So does
@@ -2427,16 +2434,19 @@ function changesOnlyUntested(
   const listed = (path: string): boolean =>
     !NON_ASCII.test(path) && untested.some((glob) => glob.test(path));
   if (changedPaths.length === 0 || !changedPaths.every(listed)) return false;
+  const checked = [...changedPaths];
   for (const entry of rawDiffEntries(repoPath, target, branch).values()) {
     if (entry.mode === '120000') return false;
-    if (entry.renamedFrom !== undefined && !listed(entry.renamedFrom)) return false;
+    if (entry.renamedFrom !== undefined) checked.push(entry.renamedFrom);
   }
+  if (!checked.every(listed)) return false;
   const tree = readBranchTree(repoPath, branch);
   // Every spelling of each path and directory in the branch's tree, by its folded form.
   const spellings = new Map<string, Set<string>>();
   const prefixes = (path: string): string[] =>
     path.split('/').map((_, i, segments) => segments.slice(0, i + 1).join('/'));
-  for (const path of runGit(repoPath, ['ls-tree', '-r', '-z', '--name-only', branch]).split('\0')) {
+  const names = runGit(repoPath, ['ls-tree', '-r', '-z', '--full-tree', '--name-only', branch]);
+  for (const path of names.split('\0')) {
     for (const prefix of path ? prefixes(path) : []) {
       const key = folded(prefix);
       spellings.set(key, (spellings.get(key) ?? new Set()).add(prefix));
@@ -2446,7 +2456,7 @@ function changesOnlyUntested(
     prefixes(path).some((prefix) =>
       [...(spellings.get(folded(prefix)) ?? [])].some((spelling) => spelling !== prefix),
     );
-  return changedPaths.every(
+  return checked.every(
     (path) =>
       !tree.linked(path) &&
       !(tree.markdownIsCode && path.endsWith('.md')) &&

@@ -276,6 +276,83 @@ describe('the test stage on a change no test reads (decision 139)', { timeout: 2
 
     expect(testStage(outcome.report.stages)?.status).toBe('fail');
   });
+
+  /** Moves `from` to `to` in the index only, so a case-folding filesystem keeps every spelling. */
+  const renameSpelled = (dir: string, from: string, to: string) => {
+    writeFileSync(join(dir, to), readFileSync(join(dir, from)));
+    sh(dir, 'git', 'update-index', '--force-remove', '--', from);
+    sh(dir, 'git', 'update-index', '--add', '--', to);
+    sh(dir, 'git', 'commit', '-m', `move ${from}`);
+  };
+
+  // `--name-only` names a rename by its new path, but the old one is what a
+  // link or another case reached on the target.
+  it('runs the test stage when a symlink reaches a renamed path', async () => {
+    commitIn(repo, 'docs/notes.md', '# notes\n');
+    symlinkSync('../docs/notes.md', join(repo, 'src/notes.md'));
+    sh(repo, 'git', 'add', '.');
+    sh(repo, 'git', 'commit', '-m', 'link');
+    const worktree = seedSession(db, repo, { scopeIn: ['**'] });
+    sh(worktree, 'git', 'mv', 'docs/notes.md', 'docs/notes-old.md');
+    sh(worktree, 'git', 'commit', '-m', 'move');
+
+    const outcome = await merge(failingSuite().adapter);
+
+    expect(testStage(outcome.report.stages)?.status).toBe('fail');
+  });
+
+  it('runs the test stage when a renamed path folds onto another in the tree', async () => {
+    commitIn(repo, 'docs/x.MD', '# x\n');
+    commitSpelled(repo, 'docs/x.md', '# x\n');
+    const worktree = seedSession(db, repo, { scopeIn: ['**'] });
+    renameSpelled(worktree, 'docs/x.md', 'docs/y.md');
+
+    const outcome = await merge(failingSuite().adapter);
+
+    expect(testStage(outcome.report.stages)?.status).toBe('fail');
+  });
+
+  // A session can write the shared config, and a `core.worktree` aimed at `/`
+  // gives an unpinned tree read a cwd prefix no branch path matches.
+  describe('when the shared config aims core.worktree elsewhere', () => {
+    const aimedAway = (worktree: string) => sh(worktree, 'git', 'config', 'core.worktree', '/');
+
+    it('still sees a symlink reach the changed path', async () => {
+      commitIn(repo, 'docs/notes.md', '# notes\n');
+      symlinkSync('../docs/notes.md', join(repo, 'src/notes.md'));
+      sh(repo, 'git', 'add', '.');
+      sh(repo, 'git', 'commit', '-m', 'link');
+      const worktree = seedSession(db, repo, { scopeIn: ['**'] });
+      commitIn(worktree, 'docs/notes.md', '# notes, edited\n');
+      aimedAway(worktree);
+
+      const outcome = await merge(failingSuite().adapter);
+
+      expect(testStage(outcome.report.stages)?.status).toBe('fail');
+    });
+
+    it('still sees the tree hold the changed path in another case', async () => {
+      commitIn(repo, 'docs/x.MD', '# x\n');
+      const worktree = seedSession(db, repo, { scopeIn: ['**'] });
+      commitSpelled(worktree, 'docs/x.md', '# x\n');
+      aimedAway(worktree);
+
+      const outcome = await merge(failingSuite().adapter);
+
+      expect(testStage(outcome.report.stages)?.status).toBe('fail');
+    });
+
+    it('still sees a dependency file name Docusaurus', async () => {
+      commitIn(repo, 'package.json', '{ "dependencies": { "@docusaurus/core": "3.0.0" } }\n');
+      const worktree = seedSession(db, repo, { scopeIn: ['**'] });
+      commitIn(worktree, 'docs/guide.md', '# guide\n');
+      aimedAway(worktree);
+
+      const outcome = await merge(failingSuite().adapter);
+
+      expect(testStage(outcome.report.stages)?.status).toBe('fail');
+    });
+  });
 });
 
 const ANCHOR = String.raw`process\.cwd\(\)|import\.meta\.dirname|__dirname`;
@@ -446,8 +523,9 @@ function suiteFiles(root: string): string[] {
 
 /**
  * Every path the suite reads from the checkout, by `readsIn`. This file is
- * left out: its table of read forms names listed files on purpose, and its
- * own walks read only `src/`, the vitest config and the roots the list names.
+ * left out: its table of read forms names listed files on purpose, its own
+ * walks read only `src/`, the vitest config and the roots the list names, and
+ * no assertion names a listed file.
  */
 function checkoutReads(): string[] {
   const root = process.cwd();
@@ -540,16 +618,13 @@ describe('UNTESTED_PATH_GLOBS against what the suite reads (decision 139)', () =
     const reads = checkoutReads();
     const listed = listedFiles();
     // Neither side is vacuous: the suite's real reads are seen, and the list
-    // matches files this checkout holds.
+    // matches files this checkout holds. No listed file is named, so a change
+    // that deletes or renames one, which the gate lets skip this test, cannot
+    // break it.
     expect(reads).toEqual(
       expect.arrayContaining(['scripts/pre-commit', 'src', 'src/core/sandbox.utils.ts']),
     );
-    expect(listed).toEqual(
-      expect.arrayContaining([
-        '.github/workflows/claude-code-review.yml',
-        'docs/adr/0139-the-gate-skips-the-test-stage-when-no-testable-file.md',
-      ]),
-    );
+    expect(listed.length).toBeGreaterThan(0);
     const readListed = reads.flatMap((path) => {
       const glob = /[*?]/.test(path) ? globToRegExp(path) : undefined;
       return listed
