@@ -1,0 +1,174 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-09T13:26:46.976Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42624950999",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42624950999",
+  "actor": "AlexisBalayre",
+  "commit_sha": "df1512d3e6ae8ddf97aee2f823ebe4824c641da3",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 291,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/web-dashboard-tasks.service.ts",
+      "line": "161,178-179",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "A session that took a `pup fix` round (decision 90) has that round's gate runs counted as Re-gates and its `respawn {delivered}` marker counted as a Respawn. Neither a decision-86 re-gate nor a crash respawn happened, so ADR 0166's claim that decision 86 is the only source of post-merge gate runs does not hold. Either say so in the ADR, or count a re-gate only on merged→merged/refusal outside an open fix round.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard-tasks.service.ts",
+      "line": "97-106,120",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`firstSentence` runs after `sanitizeReason` has already turned newlines into spaces and cut the goal at 300 chars. So `\"Tasks sheet\\nRead the backlog. Chart gates.\"` shows as \"Tasks sheet Read the backlog.\", and a long first sentence is cut mid-word with no marker. Split on sentence end or newline on the raw goal, then scrub.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard-tasks.service.ts",
+      "line": "339",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "A backlog task with no scope-in globs (e.g. a torn spec that ADR 166 degrades to \"no scope\") prints a bare `scope: ` with nothing after it, while the goal line on the same card falls back to `(no goal recorded)`. A parallel `(none recorded)` fallback would match.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard-tasks.service.ts",
+      "line": "27",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`const WEEK_MS = 7 * DAY_MS` duplicates the identical constant in web-dashboard-overview.service.ts:39, and both sheets bucket weeks with it. Moving it beside `DAY_MS` in web-dashboard-sheet.utils.ts keeps the two from drifting (general.md §No hardcoded values).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0166-the-tasks-sheet-reads-the-backlog-and-each-pr-s-path.md",
+      "line": "44-46",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The Hardening paragraph lists each render's work as one events query, one backlog query and one listing. It omits the live-sessions query that `backlogOverlaps` (web-dashboard-tasks.service.ts:249-264) also runs, so a reader counting per-poll queries comes up one short.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard-tasks.service.ts",
+      "line": "156",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The comment \"A bare transition, or a block after a rejection, is not a gate run.\" restates what the `PrSession.gates` JSDoc and ADR 0166's Gate runs paragraph already say (AGENTS.md §Comments: delete WHY duplicates of the seam's docs).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard-tasks.service.ts",
+      "line": "38",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `BacklogTask` JSDoc (\"every string through `sanitizeReason` and `displayText`\") repeats the mechanics `storeText` already documents at line 92 instead of stating the interface's contract.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard-tasks.service.ts",
+      "line": "299-303",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `renderTasksSheet` JSDoc re-lists the sheet's three sections, which `readTasksSheet`'s JSDoc (lines 108-113) and ADR 0166 already list. Only the \"(decision 166)\" pointer adds anything.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.855893424999999,
+  "duration_ms": 188732,
+  "num_turns": 16,
+  "tokens": {
+    "input": 12,
+    "output": 13696,
+    "cache_read": 272788,
+    "cache_creation": 50616,
+    "total": 337112
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 114,
+      "output": 42296,
+      "cache_read": 1822065,
+      "cache_creation": 219717,
+      "cost_usd": 2.4612219999999994
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 46,
+      "output": 11754,
+      "cache_read": 345031,
+      "cache_creation": 96711,
+      "cost_usd": 0.39391259999999995
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 246,
+      "cache_read": 0,
+      "cache_creation": 5085,
+      "cost_usd": 0.0007588250000000001
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Grep",
+      "input": "{\"pattern\":\"readdirSync|globSync|glob\\\\(|productionSources|walk\\\\(\",\"path\":\"/home/runner/work/pupitre\",\"glob\":\"**/*.{test,spec}.ts\",\"output_mode\":\"content\",\"head_limit\":40}"
+    }
+  ]
+}
