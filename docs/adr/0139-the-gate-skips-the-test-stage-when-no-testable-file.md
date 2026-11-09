@@ -22,10 +22,11 @@
     *What stays testable.* A path on the list still runs the tests when something else
     reads it, using the same branch tree reading that decision 110 uses for the diff-size
     split:
-    - a rename whose old path is off the list (`--name-only` names only the new path, so
-      the old one is read from the `--raw -M` entries). An old path on the list goes
-      through every check below, since it is what a link or another case reached on the
-      target;
+    - a file the `--raw -M -l0` entries name off the list, by either of a rename's paths.
+      `--name-only` pairs renames as the shared config says and names only the new path,
+      so the files checked are both readings together. A rename's old path on the list
+      goes through every check below, since it is what a link or another case reached on
+      the target;
     - a changed symlink, or a path a symlink on the branch can reach;
     - a name outside ASCII, which the gate's filesystem can fold onto another name;
     - a path the branch's tree also holds in another ASCII case, itself or through one of
@@ -85,8 +86,10 @@
     one, or matches one that is a glob. Each form has a row in a table test proving the
     scan finds it, and another test proves the paths a temp repo spells are not counted.
     The test also checks that the real search is not empty: it must find the hook read
-    `scripts/pre-commit`, the walk of `src`, and `src/core/sandbox.utils.ts`, and the list
-    must match files the checkout holds. A read whose path is only an anchor plus a variable
+    `scripts/pre-commit`, the walk of `src`, and `src/core/sandbox.utils.ts`. The walk that
+    finds listed files is proven on a temp tree of concrete files, listed and not, rather
+    than on the checkout's own: a change the gate lets skip this test could delete any
+    listed file the test named. A read whose path is only an anchor plus a variable
     is not checked, because the variable's value comes from a read that is. The test file
     leaves itself out: its table names listed files on purpose.
     Tests: a change of only `.github/workflows/ci.yml` and an ADR merges under a test command
@@ -99,7 +102,13 @@
     never measured. Without coverage, the stage says `not measured — adapter cannot measure
     coverage`.
     After an untested merge, the coverage baseline keeps its old ratio while the other debt
-    metrics ratchet. The full test stage runs, and fails, in six cases: one source file is
+    metrics ratchet. The full test stage runs, and fails, in nine cases: one source file is
     changed beside a workflow, a source file is renamed into `docs/`, a Docusaurus config
     compiles the changed Markdown, a symlink reaches the changed path, the tree holds the
     changed path in another case, and the tree holds one of its directories in another case.
+    So do a rename whose old path a symlink reaches, a rename whose old path the tree holds
+    in another case, and a deleted source file the raw entries name while `--name-only`
+    leaves it out. The last stands in for the two readings disagreeing, by narrowing
+    `gitDiffPaths`, because no config git reads makes `--name-only` pair a rename `-M -l0`
+    does not. With `core.worktree` aimed at `/` in the shared config, the symlink, other
+    case and Docusaurus dependency cases still run the full test stage.

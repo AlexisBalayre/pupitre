@@ -1,11 +1,13 @@
 import {
   mkdirSync,
+  mkdtempSync,
   readdirSync,
   readFileSync,
   statSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join, posix } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -15,6 +17,13 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   killSession: vi.fn(),
   steerPane: vi.fn(),
 }));
+
+// The real reading, which one test narrows to stand for a `--name-only` that
+// paired a rename the `--raw -M` entries left as a deletion.
+vi.mock('./git-diff.client.js', async (importOriginal) => {
+  const real = await importOriginal<typeof import('./git-diff.client.js')>();
+  return { ...real, gitDiffPaths: vi.fn(real.gitDiffPaths) };
+});
 
 // Without this, every merging test would spawn a real `claude -p` call.
 vi.mock('../claude/utility.service.js', () => ({
@@ -32,6 +41,7 @@ import {
 } from '@test/helpers/merge-gate.mock.js';
 import type { Adapter } from '../adapters/types/adapter.types.js';
 import { openStore } from './db.client.js';
+import { gitDiffPaths } from './git-diff.client.js';
 import { globToRegExp } from './glob.utils.js';
 import { DUPLICATION_RULE_ID, UNTESTED_PATH_GLOBS } from './merge-gate.constants.js';
 import { runMergeGate } from './merge-gate.service.js';
@@ -51,8 +61,11 @@ describe('the test stage on a change no test reads (decision 139)', { timeout: 2
     vi.stubEnv(HELD_SLOT_ENV, 'merge-gate-untested.test');
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     vi.unstubAllEnvs();
+    const real =
+      await vi.importActual<typeof import('./git-diff.client.js')>('./git-diff.client.js');
+    vi.mocked(gitDiffPaths).mockImplementation(real.gitDiffPaths);
   });
 
   /** A suite that always fails and a coverage run that counts, so a skip is the only pass. */
@@ -271,6 +284,24 @@ describe('the test stage on a change no test reads (decision 139)', { timeout: 2
     commitIn(repo, 'Docs/guide.md', '# guide\n');
     const worktree = seedSession(db, repo, { scopeIn: ['**'] });
     commitSpelled(worktree, 'docs/adr/0001-a.md', '# 0001. A\n');
+
+    const outcome = await merge(failingSuite().adapter);
+
+    expect(testStage(outcome.report.stages)?.status).toBe('fail');
+  });
+
+  // `--name-only` pairs renames as the shared config says and `--raw -M -l0`
+  // pairs every one, so the two can name different files. Here `--name-only`
+  // leaves out a deleted source file the raw entries still name.
+  it('runs the test stage when the raw entries name a file --name-only does not', async () => {
+    const worktree = seedSession(db, repo, { scopeIn: ['**'] });
+    sh(worktree, 'git', 'rm', '-q', 'src/app.ts');
+    sh(worktree, 'git', 'commit', '-m', 'drop app');
+    commitIn(worktree, 'docs/notes.md', '# notes\n');
+    const real = vi.mocked(gitDiffPaths).getMockImplementation() as typeof gitDiffPaths;
+    vi.mocked(gitDiffPaths).mockImplementation((...args) =>
+      real(...args).filter((path) => path !== 'src/app.ts'),
+    );
 
     const outcome = await merge(failingSuite().adapter);
 
@@ -525,7 +556,7 @@ function suiteFiles(root: string): string[] {
  * Every path the suite reads from the checkout, by `readsIn`. This file is
  * left out: its table of read forms names listed files on purpose, its own
  * walks read only `src/`, the vitest config and the roots the list names, and
- * no assertion names a listed file.
+ * no assertion names a file of this checkout's on the list.
  */
 function checkoutReads(): string[] {
   const root = process.cwd();
@@ -535,9 +566,8 @@ function checkoutReads(): string[] {
     .flatMap((file) => readsIn(file, readFileSync(join(root, file), 'utf8')));
 }
 
-/** Every file in this checkout on `UNTESTED_PATH_GLOBS`, found under the roots the globs name. */
-function listedFiles(): string[] {
-  const root = process.cwd();
+/** Every file under `root` on `UNTESTED_PATH_GLOBS`, found under the roots the globs name. */
+function listedFiles(root: string): string[] {
   const untested = UNTESTED_PATH_GLOBS.map(globToRegExp);
   const tops = [...new Set(UNTESTED_PATH_GLOBS.map((glob) => glob.split('/')[0] as string))];
   const files: string[] = [];
@@ -616,15 +646,13 @@ describe('UNTESTED_PATH_GLOBS against what the suite reads (decision 139)', () =
 
   it('holds no file and no directory any file the suite loads reads from the checkout', () => {
     const reads = checkoutReads();
-    const listed = listedFiles();
-    // Neither side is vacuous: the suite's real reads are seen, and the list
-    // matches files this checkout holds. No listed file is named, so a change
-    // that deletes or renames one, which the gate lets skip this test, cannot
-    // break it.
+    const listed = listedFiles(process.cwd());
+    // The suite's real reads are seen, so that side is not vacuous; the walk
+    // that finds listed files is proven on concrete files below, not on this
+    // checkout's, which a change the gate lets skip this test could delete.
     expect(reads).toEqual(
       expect.arrayContaining(['scripts/pre-commit', 'src', 'src/core/sandbox.utils.ts']),
     );
-    expect(listed.length).toBeGreaterThan(0);
     const readListed = reads.flatMap((path) => {
       const glob = /[*?]/.test(path) ? globToRegExp(path) : undefined;
       return listed
@@ -632,5 +660,32 @@ describe('UNTESTED_PATH_GLOBS against what the suite reads (decision 139)', () =
         .map((file) => ({ path, file }));
     });
     expect(readListed).toEqual([]);
+  });
+
+  it('finds the listed files a tree holds, and only those', () => {
+    const root = mkdtempSync(join(tmpdir(), 'pup-untested-'));
+    const tree = [
+      '.github/CODEOWNERS',
+      '.github/workflows/ci.yml',
+      '.github/actions/setup/action.yml',
+      'docs/adr/0001-a.md',
+      'docs/adr/0001-a.ts',
+      'src/a.ts',
+      'CLAUDE.md',
+      'LICENSE',
+      'README.md',
+    ];
+    for (const path of tree) {
+      mkdirSync(dirname(join(root, path)), { recursive: true });
+      writeFileSync(join(root, path), '');
+    }
+
+    expect(listedFiles(root).sort()).toEqual([
+      '.github/CODEOWNERS',
+      '.github/workflows/ci.yml',
+      'CLAUDE.md',
+      'LICENSE',
+      'docs/adr/0001-a.md',
+    ]);
   });
 });

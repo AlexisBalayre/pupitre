@@ -2412,10 +2412,12 @@ export async function waitForLoad(
 
 /**
  * Whether every file the branch changed is on `UNTESTED_PATH_GLOBS`, so no
- * test can run or read it (decision 139). A rename's old path counts as
- * changed and goes through every check below, since `--name-only` names only
- * the new one and the old path is what a link or another case reached on the
- * target. The tree is listed `--full-tree`, as `targetHolds` lists it, so a
+ * test can run or read it (decision 139). The files are those `--name-only`
+ * names and both paths of every `--raw -M` entry: `--name-only` pairs renames
+ * as the shared config says, so the skip holds only if both readings are
+ * listed, and a rename's old path, which `--name-only` never names, is what a
+ * link or another case reached on the target. Each goes through every check
+ * below. The tree is listed `--full-tree`, as `targetHolds` lists it, so a
  * `core.worktree` aimed elsewhere hides no link or spelling. Something other than
  * the path itself can read each of these, so each counts as testable, as
  * decision 110 counts it as source: a symlink, a path a symlink can reach, a
@@ -2434,11 +2436,12 @@ function changesOnlyUntested(
   const listed = (path: string): boolean =>
     !NON_ASCII.test(path) && untested.some((glob) => glob.test(path));
   if (changedPaths.length === 0 || !changedPaths.every(listed)) return false;
-  const checked = [...changedPaths];
-  for (const entry of rawDiffEntries(repoPath, target, branch).values()) {
+  const paths = [...changedPaths];
+  for (const [path, entry] of rawDiffEntries(repoPath, target, branch)) {
     if (entry.mode === '120000') return false;
-    if (entry.renamedFrom !== undefined) checked.push(entry.renamedFrom);
+    paths.push(path, ...(entry.renamedFrom === undefined ? [] : [entry.renamedFrom]));
   }
+  const checked = [...new Set(paths)];
   if (!checked.every(listed)) return false;
   const tree = readBranchTree(repoPath, branch);
   // Every spelling of each path and directory in the branch's tree, by its folded form.
