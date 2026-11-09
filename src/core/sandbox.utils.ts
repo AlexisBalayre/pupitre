@@ -1,4 +1,5 @@
 import { type ChildProcess, execFileSync, spawn } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import {
   existsSync,
   lstatSync,
@@ -9,7 +10,7 @@ import {
   rmSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import type { Readable } from 'node:stream';
 import { CACHE_VAR_SUBDIRS, gateChildEnv } from './gate-env.utils.js';
 import { projectId } from './paths.utils.js';
@@ -529,14 +530,55 @@ function signalGroup(child: ChildProcess, signal: NodeJS.Signals): void {
  * cannot be removed: a cleanup failure must never replace the stage results
  * or the error the run ended on (decision 95). A process still writing into it
  * — a runner's worker outliving the stage — is what left `ENOTEMPTY` behind.
+ *
+ * The directory is moved aside before anything is removed. A child granted a
+ * path under it that survived the group kill could otherwise swap an entry
+ * between a directory and a link to `HOME` while the recursive delete walked
+ * it, and the delete then went through the link. Grants name paths, so once
+ * the directory has a name no grant covers, nothing a child does reaches what
+ * is removed. Its parent must be one no child is granted (decision 155). The
+ * move is a rename beside it, which needs no new directory, so a full volume,
+ * where `mkdir` fails but `unlink` does not, is still freed. A delete that
+ * fails deletes nothing more, so what it left goes back to `path`.
  */
 export function removeGateDir(path: string): void {
+  let left = path;
   try {
-    rmSync(path, { recursive: true, force: true, maxRetries: 3 });
+    const moved = movedAside(path);
+    if (!moved) return;
+    left = moved;
+    rmSync(moved, { recursive: true, force: true, maxRetries: 3 });
   } catch (error) {
+    if (left !== path) left = movedBack(left, path);
     const reason = (error as NodeJS.ErrnoException).code ?? String(error);
-    console.error(`Could not remove ${path} (${reason}); it is left behind.`);
+    const where = left === path ? '' : ` in ${left}`;
+    console.error(`Could not remove ${path} (${reason}); it is left behind${where}.`);
   }
+}
+
+/**
+ * Where `path` now is, under a random `pup-removing-*` name beside it;
+ * undefined when there is no `path`, as a child granted it may have removed it.
+ */
+function movedAside(path: string): string | undefined {
+  const moved = join(dirname(path), `pup-removing-${randomBytes(8).toString('hex')}`);
+  try {
+    renameSync(path, moved);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    throw error;
+  }
+  return moved;
+}
+
+/** Where what a failed delete left now is: back at `path`, or still at `moved`. */
+function movedBack(moved: string, path: string): string {
+  try {
+    renameSync(moved, path);
+  } catch {
+    return moved;
+  }
+  return path;
 }
 
 /** Cache reused across runs; a run's scratch and profile go with the run. */
