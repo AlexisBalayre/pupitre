@@ -1,9 +1,9 @@
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import type { Database } from 'better-sqlite3';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { tempDir } from '../test/temp-dir.mock.js';
 import { ADR_NUMBER_STAGE, adrNumberStage } from './adr-number.service.js';
 import type { SessionState } from './db.client.js';
 import { openStore } from './db.client.js';
