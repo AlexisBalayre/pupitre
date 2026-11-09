@@ -121,6 +121,7 @@ import { killSession, steerPane } from '../claude/session-runtime.service.js';
 import { runUtility } from '../claude/utility.service.js';
 import { openStore } from './db.client.js';
 import { listDecisionRecords } from './decision-record.repository.js';
+import { RewrittenGitDirError } from './git-diff.client.js';
 import { initProject } from './init.service.js';
 import { insertLedgerEntry, listLedgerEntries } from './ledger.repository.js';
 import { DUPLICATION_RULE_ID } from './merge-gate.constants.js';
@@ -133,6 +134,7 @@ import {
   countChangedLines,
   firstOwnSubject,
   pullRequestText,
+  resolveCommitIfPresent,
   runMergeGate as runGate,
   waitForLoad,
   withMergeLock,
@@ -1497,10 +1499,11 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     });
   });
 
-  // git follows `<repo>/.git/commondir` under `-C`, so a session that plants one
-  // naming a decoy repo that borrows the real objects picks every ref the gate
-  // reads (decision 172).
-  describe('a commondir planted in the main git dir (decision 172)', () => {
+  // A session can write the main checkout's `.git`. git follows a `commondir`
+  // planted in it under `-C`, and a `.git` swapped for a gitfile or a symlink
+  // names another repo outright, so a decoy that borrows the real objects
+  // picks every ref the gate reads (decision 172).
+  describe("a main checkout's .git a session rewrote (decision 172)", () => {
     /**
      * A bare decoy that reads the real objects through an alternate, its main
      * on the session's tip and its branch on a commit of its own, so both refs
@@ -1588,6 +1591,87 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(sh(repo, 'git', 'rev-parse', 'refs/heads/main').trim()).toBe(realMain);
       expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
       expect(existsSync(worktree)).toBe(true);
+    });
+
+    /**
+     * Moves the real git dir aside, points the decoy's alternates at its
+     * objects, and puts `as` in its place naming the decoy. Returns the undo.
+     */
+    const swapGitDir = (decoy: string, as: 'gitfile' | 'symlink'): (() => void) => {
+      const dotGit = join(repo, '.git');
+      const aside = join(tempDir('pup-aside-'), 'git');
+      renameSync(dotGit, aside);
+      writeFileSync(join(decoy, 'objects', 'info', 'alternates'), `${join(aside, 'objects')}\n`);
+      if (as === 'gitfile') writeFileSync(dotGit, `gitdir: ${decoy}\n`);
+      else symlinkSync(decoy, dotGit);
+      return () => {
+        rmSync(dotGit);
+        renameSync(aside, dotGit);
+      };
+    };
+
+    it('lets the refusal through the reads that take a failed git as no such ref', () => {
+      seedSession(db, repo);
+      plant(decoyRepo(sh(repo, 'git', 'rev-parse', `refs/heads/${BRANCH}`).trim()), 'file');
+
+      expect(() => resolveCommitIfPresent(repo, `refs/heads/${BRANCH}`)).toThrow(
+        RewrittenGitDirError,
+      );
+      expect(() => resolveCommitIfPresent(repo, 'refs/heads/no-such-branch')).toThrow(
+        RewrittenGitDirError,
+      );
+    });
+
+    it.each(['gitfile', 'symlink'] as const)(
+      'refuses a .git swapped for a %s naming a decoy before any git runs',
+      async (as) => {
+        const worktree = seedSession(db, repo);
+        commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+        const realMain = sh(repo, 'git', 'rev-parse', 'refs/heads/main').trim();
+        const realBranch = sh(repo, 'git', 'rev-parse', `refs/heads/${BRANCH}`).trim();
+        const restore = swapGitDir(decoyRepo(realBranch), as);
+        // The control: plain git now reads the decoy's refs, not the real ones.
+        expect(sh(repo, 'git', 'rev-parse', 'refs/heads/main').trim()).toBe(realBranch);
+        vi.mocked(execFileSync).mockClear();
+
+        await expect(merge()).rejects.toThrow(/\.git is not a directory.*decision 172/s);
+
+        expect(gitSpawns()).toEqual([]);
+        restore();
+        expect(sh(repo, 'git', 'rev-parse', 'refs/heads/main').trim()).toBe(realMain);
+        expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+      },
+    );
+
+    it('refuses a .git swapped for a gitfile while the stages run, merging nothing', async () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      const realMain = sh(repo, 'git', 'rev-parse', 'refs/heads/main').trim();
+      const decoy = decoyRepo(sh(repo, 'git', 'rev-parse', `refs/heads/${BRANCH}`).trim());
+      let restore: (() => void) | undefined;
+      let spawnsBeforeSwap = 0;
+      const swappingAdapter: Adapter = {
+        ...passingAdapter,
+        gateCommands: (repoPath) => {
+          spawnsBeforeSwap = gitSpawns().length;
+          restore = swapGitDir(decoy, 'gitfile');
+          return passingAdapter.gateCommands(repoPath);
+        },
+      };
+
+      // Whatever the gate reports last: the merge lock lives in the swapped-out
+      // .git, so its release fails after the refusal and that error wins.
+      await expect(merge(swappingAdapter)).rejects.toThrow();
+
+      // Git ran on the main checkout before the swap, and none ran once its
+      // .git was a gitfile.
+      const onMain = ([, argv]: unknown[]): boolean =>
+        (argv as string[]).join('\0').includes(`-C\0${repo}\0`);
+      expect(gitSpawns().slice(0, spawnsBeforeSwap).some(onMain)).toBe(true);
+      expect(gitSpawns().slice(spawnsBeforeSwap).filter(onMain)).toEqual([]);
+      restore?.();
+      expect(sh(repo, 'git', 'rev-parse', 'refs/heads/main').trim()).toBe(realMain);
+      expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
     });
   });
 });

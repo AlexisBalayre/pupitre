@@ -8,7 +8,7 @@ import {
   openSync,
   readSync,
   realpathSync,
-  statSync,
+  type Stats,
 } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 
@@ -272,12 +272,14 @@ export function assertNoWorktreeConfig(repoPath: string): void {
   // Every path pup trusts is built as `<repo>/.git/...`, the pins included.
   // Under a gitfile those name nothing: this check would read no config, and
   // the pointer check would refuse only once the row and the worktree exist.
-  if (!statSync(dotGit, { throwIfNoEntry: false })?.isDirectory()) {
+  // lstat: a symlinked `.git` is refused too, as the gate refuses it (decision 172).
+  if (!lstatSync(dotGit, { throwIfNoEntry: false })?.isDirectory()) {
     throw new Error(
       `Refusing to launch a session in ${sanitizeReason(repoPath)}: its .git is not a ` +
         'directory. pup pins a session to the repository at <repo>/.git (decision 101), so it ' +
         'launches from a main checkout only, never from a linked worktree, a submodule or a ' +
-        '`--separate-git-dir` clone, whose .git is a gitfile. Run it from the main checkout.',
+        '`--separate-git-dir` clone, whose .git is a gitfile, nor from one whose .git is a ' +
+        'symlink. Run it from the main checkout.',
     );
   }
   // The extension first: `git sparse-checkout` writes the file too, and while
@@ -512,37 +514,94 @@ export function rethrowIfKilled(error: unknown): void {
 }
 
 /**
- * Refuse while `<cwd>/.git/commondir` exists, as any kind of file, a symlink
- * included, dangling or not (decision 172). A main checkout's git dir has no
- * such file. A session can write one there, and git then reads every ref, the
- * shared config and `info/` from the repo the file names, under `-C`,
- * `--git-dir` and `GIT_COMMON_DIR` alike (reproduced on Git 2.39.5 and
- * 2.54). So a decoy repo that borrows the real objects could hand the gate a
- * target and a branch of its choosing. The check is an lstat that does not
- * follow the file, made on every spawn: one check made once would leave a
- * file planted after it unseen. A session worktree's `.git` is a gitfile, so
- * the lstat finds nothing there, and its pinned git never reads the main
- * dir's commondir anyway.
+ * The main checkouts `assertMainCheckout` has passed in this process. A path
+ * keeps the role for the life of the process, so a `.git` swapped out after
+ * that check is refused at the next spawn rather than followed.
  */
-export function assertNoPlantedCommondir(cwd: string): void {
-  const commondir = join(cwd, '.git', 'commondir');
+const mainCheckouts = new Set<string>();
+
+/**
+ * A `.git` git would follow to a repo a session chose (decision 172). Its own
+ * class, so a catch that reads a failed git as "no such ref" can let it through.
+ */
+export class RewrittenGitDirError extends Error {
+  constructor(cwd: string, problem: string) {
+    super(
+      `Refusing to run git in ${sanitizeReason(cwd)}: ${problem}. With it there, git reads ` +
+        'every ref and the shared config from a repo the session chose, and a session can ' +
+        "write the main checkout's .git from inside its sandbox (decision 172). Inspect it, " +
+        'restore it, and treat the session that wrote it as compromised.',
+    );
+    this.name = 'RewrittenGitDirError';
+  }
+}
+
+function refuseGitDir(cwd: string, problem: string): never {
+  throw new RewrittenGitDirError(cwd, problem);
+}
+
+/** What is at `path`, without following a symlink; undefined when nothing is. */
+function lstatIfThere(cwd: string, path: string): Stats | undefined {
   try {
-    lstatSync(commondir);
+    return lstatSync(path);
   } catch (error) {
     const code = typeof error === 'object' && error !== null && 'code' in error ? error.code : '';
-    if (code === 'ENOENT' || code === 'ENOTDIR') return;
+    if (code === 'ENOENT' || code === 'ENOTDIR') return undefined;
+    return refuseGitDir(cwd, `${sanitizeReason(path)} cannot be checked`);
   }
-  throw new Error(
-    `Refusing to run git in ${sanitizeReason(cwd)}: ${sanitizeReason(commondir)} exists, or ` +
-      'cannot be checked. A main checkout has no such file. With it there, git reads ' +
-      'every ref and the shared config from the repo it names, which a session can write ' +
-      'from inside its sandbox (decision 172). Inspect it, remove it, and treat the session ' +
-      'that wrote it as compromised.',
-  );
+}
+
+/**
+ * The check `safeArgv` makes before every git spawn (decision 172), with lstats
+ * that never follow a link. Git follows `<cwd>/.git/commondir` under `-C`,
+ * `--git-dir` and `GIT_COMMON_DIR` alike (reproduced on Git 2.39.5 and 2.54),
+ * and a main checkout's git dir has no such file. So a planted one, naming a
+ * decoy repo that borrows the real objects, could hand the gate a target and a
+ * branch of the session's choosing. A `.git` that is a symlink does the same
+ * with no commondir at all, and neither pup's worktrees nor a main checkout
+ * has one. A gitfile is what a worktree has, and it passes here, except at a
+ * path `assertMainCheckout` has passed: only a decoy would put one there.
+ * Checked on every spawn, because a check made once would leave a file
+ * planted after it unseen.
+ */
+function assertGitDirUnplanted(cwd: string): void {
+  const dotGit = join(cwd, '.git');
+  const stat = lstatIfThere(cwd, dotGit);
+  const shown = sanitizeReason(dotGit);
+  if (stat?.isSymbolicLink()) refuseGitDir(cwd, `${shown} is a symlink`);
+  if (stat === undefined || stat.isFile()) {
+    if (mainCheckouts.has(cwd)) refuseGitDir(cwd, `${shown} is no longer a directory`);
+    return;
+  }
+  if (!stat.isDirectory()) refuseGitDir(cwd, `${shown} is neither a directory nor a gitfile`);
+  const commondir = join(dotGit, 'commondir');
+  if (lstatIfThere(cwd, commondir)) {
+    refuseGitDir(cwd, `${sanitizeReason(commondir)} exists, and a main checkout has none`);
+  }
+}
+
+/**
+ * Refuse unless `repoPath` is a main checkout whose `.git` is a directory of
+ * its own, not a gitfile or a symlink, and holds no commondir. Called wherever
+ * pup knows it is about to read the main repo's refs. From then on the path is
+ * one `safeArgv` holds to the same rule on every spawn (decision 172).
+ */
+export function assertMainCheckout(repoPath: string): void {
+  const dotGit = join(repoPath, '.git');
+  const stat = lstatIfThere(repoPath, dotGit);
+  if (!stat?.isDirectory()) {
+    refuseGitDir(
+      repoPath,
+      `${sanitizeReason(dotGit)} is not a directory. A main checkout's is, and a gitfile or ` +
+        'a symlink there names a repo of its own',
+    );
+  }
+  mainCheckouts.add(repoPath);
+  assertGitDirUnplanted(repoPath);
 }
 
 function safeArgv(cwd: string, args: string[]): string[] {
-  assertNoPlantedCommondir(cwd);
+  assertGitDirUnplanted(cwd);
   return [...GIT_SAFE_CONFIG, '-C', cwd, ...args];
 }
 

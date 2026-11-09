@@ -42,14 +42,15 @@ import { answerFixRoundThreads } from './fix-round.service.js';
 import {
   ArmedGitDriverError,
   armedGitDrivers,
+  assertMainCheckout,
   assertNoArmedGitDrivers,
-  assertNoPlantedCommondir,
   checkoutPinned,
   currentBranch,
   gitDiffAddedLines,
   gitDiffBinaryRecount,
   gitDiffNumstat,
   gitDiffPaths,
+  RewrittenGitDirError,
   rethrowIfKilled,
   runGit,
   verifiedWorktreeGitEnv,
@@ -1066,17 +1067,17 @@ function formatGateReport(report: GateReport): string {
  * again on that head with `--pr` (decision 86).
  */
 export async function runMergeGate(db: Database, req: MergeRequest): Promise<MergeOutcome> {
-  // Before anything reads a ref, and again under the lock. `runGit` checks on
-  // every spawn too, but some catches here read a refusal as "no such ref",
-  // and a gate run should refuse outright rather than run on in the dark
-  // (decision 172).
-  assertNoPlantedCommondir(req.repoPath);
+  // Before anything reads a ref, and again under the lock: the main checkout's
+  // .git is a directory of its own with no commondir. From here `runGit` holds
+  // the path to that on every spawn, but some catches below read a refusal as
+  // "no such ref", so the run refuses outright first (decision 172).
+  assertMainCheckout(req.repoPath);
   const planned = planMerge(db, req);
   // The operator's and the conductor's runs wait for a live holder (decision 88).
   return withMergeLock(
     req.repoPath,
     async (waited) => {
-      assertNoPlantedCommondir(req.repoPath);
+      assertMainCheckout(req.repoPath);
       // A run that held the lock before this one, a live one waited for or a
       // dead one reclaimed or one released during the gh calls, may have
       // merged, rejected or re-gated this session, or opened its fix round, and
@@ -1389,8 +1390,11 @@ export function assertTargetName(repoPath: string, target: string): void {
  * bare name: a lightweight tag named like a branch wins a bare lookup. A
  * symbolic ref is refused: its sha is another branch's, so a gate that pinned
  * it would measure an empty diff and then move or delete that branch through it.
+ * Every resolve asks first that `repoPath` is a main checkout (decision 172), so
+ * a caller outside the gate, `land` or `regate`, never resolves through a decoy.
  */
 export function resolveCommit(repoPath: string, ref: string): string {
+  assertMainCheckout(repoPath);
   const piped = { stdio: ['ignore', 'pipe', 'pipe'] as ['ignore', 'pipe', 'pipe'] };
   const symbolic = (() => {
     try {
@@ -1410,14 +1414,16 @@ export function resolveCommit(repoPath: string, ref: string): string {
 }
 
 /**
- * `resolveCommit`, undefined when `ref` names no commit. A symbolic ref keeps
- * its own refusal, which names the compromise, and a killed git its signal.
+ * `resolveCommit`, undefined when `ref` names no commit. A symbolic ref and a
+ * rewritten main `.git` (decision 172) keep their own refusals, which name the
+ * compromise, and a killed git its signal.
  */
 export function resolveCommitIfPresent(repoPath: string, ref: string): string | undefined {
   try {
     return resolveCommit(repoPath, ref);
   } catch (error) {
     rethrowIfKilled(error);
+    if (error instanceof RewrittenGitDirError) throw error;
     if (error instanceof Error && error.message.includes('symbolic ref')) throw error;
     return undefined;
   }
@@ -1441,13 +1447,15 @@ function assertTargetAt(repoPath: string, target: string, targetSha: string): vo
 /**
  * How many commits `branchRef` gained after the gate pinned `sha`: none when it
  * still names the pin, and none when it is gone or turned into a symref, which
- * hold no commit of the session's own.
+ * hold no commit of the session's own. A rewritten main `.git` is no answer
+ * at all, so its refusal goes on (decision 172).
  */
 function commitsPastPin(repoPath: string, branchRef: string, sha: string): number {
   let now: string;
   try {
     now = resolveCommit(repoPath, branchRef);
-  } catch {
+  } catch (error) {
+    if (error instanceof RewrittenGitDirError) throw error;
     return 0;
   }
   if (now === sha) return 0;

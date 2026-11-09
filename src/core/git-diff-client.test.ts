@@ -4,6 +4,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  renameSync,
   rmSync,
   symlinkSync,
   unlinkSync,
@@ -16,8 +17,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   ArmedGitDriverError,
   armedGitDrivers,
+  assertMainCheckout,
   assertNoArmedGitDrivers,
-  assertNoPlantedCommondir,
   assertNoWorktreeConfig,
   currentBranch,
   gitDiffAddedLines,
@@ -1482,12 +1483,17 @@ describe('armedGitDrivers: an info/attributes that is not a regular file', () =>
   });
 });
 
-// git follows `<repo>/.git/commondir` under `-C`, `--git-dir` and
-// `GIT_COMMON_DIR`, so one planted there hands every ref read to the repo it
-// names (decision 172).
-describe('a commondir planted in the main git dir (decision 172)', () => {
-  /** `repo` with a commit on main, and a bare decoy whose main names another commit. */
-  function repoAndDecoy(): { repo: string; decoy: string; realMain: string } {
+// A session can write the main checkout's `.git`. git follows a `commondir`
+// planted in it under `-C`, `--git-dir` and `GIT_COMMON_DIR`, and a `.git`
+// swapped for a gitfile or a symlink names another repo outright, so each hands
+// every ref read to a decoy (decision 172).
+describe("a main checkout's .git a session rewrote (decision 172)", () => {
+  /**
+   * `repo` with a commit on main, and a bare decoy that borrows its objects and
+   * whose main names another commit. `objects` is where the real objects are,
+   * so a test that moves the real git dir aside points the decoy there.
+   */
+  function repoAndDecoy(objects?: string): { repo: string; decoy: string; realMain: string } {
     const repo = makeRepo();
     writeFileSync(join(repo, 'a.ts'), 'a\n');
     commitAll(repo, 'a');
@@ -1496,7 +1502,7 @@ describe('a commondir planted in the main git dir (decision 172)', () => {
     sh(dirname(decoy), 'git', 'init', '-q', '--bare', '-b', 'main', decoy);
     writeFileSync(
       join(decoy, 'objects', 'info', 'alternates'),
-      `${join(repo, '.git', 'objects')}\n`,
+      `${objects ?? join(repo, '.git', 'objects')}\n`,
     );
     const own = execFileSync(
       'git',
@@ -1516,6 +1522,13 @@ describe('a commondir planted in the main git dir (decision 172)', () => {
     return { repo, decoy, realMain };
   }
 
+  /** Moves the real git dir aside and points the decoy's alternates at its objects. */
+  function swapGitDir(repo: string, decoy: string): void {
+    const aside = join(tempDir('pup-aside-'), 'git');
+    renameSync(join(repo, '.git'), aside);
+    writeFileSync(join(decoy, 'objects', 'info', 'alternates'), `${join(aside, 'objects')}\n`);
+  }
+
   const plants: Record<string, (commondir: string, decoy: string) => void> = {
     'a file': (commondir, decoy) => writeFileSync(commondir, `${decoy}\n`),
     'a symlink': (commondir, decoy) => {
@@ -1527,7 +1540,7 @@ describe('a commondir planted in the main git dir (decision 172)', () => {
     'a directory': (commondir) => mkdirSync(commondir),
   };
 
-  it.each(Object.keys(plants))('refuses every git call while it is %s', (kind) => {
+  it.each(Object.keys(plants))('refuses every git call while its commondir is %s', (kind) => {
     const { repo, decoy, realMain } = repoAndDecoy();
     const commondir = join(repo, '.git', 'commondir');
     plants[kind]?.(commondir, decoy);
@@ -1537,6 +1550,7 @@ describe('a commondir planted in the main git dir (decision 172)', () => {
     );
     expect(() => gitDiffPaths(repo, 'main', 'main')).toThrow(/\.git\/commondir exists/);
     expect(() => currentBranch(repo)).toThrow(/\.git\/commondir exists/);
+    expect(() => assertMainCheckout(repo)).toThrow(/\.git\/commondir exists/);
 
     rmSync(commondir, { recursive: true });
     expect(runGit(repo, ['rev-parse', 'refs/heads/main']).trim()).toBe(realMain);
@@ -1550,23 +1564,88 @@ describe('a commondir planted in the main git dir (decision 172)', () => {
     expect(revParse(repo, 'refs/heads/main')).toBe(revParse(decoy, 'refs/heads/main'));
   });
 
-  it('runs git in a linked worktree, whose .git is a gitfile, and in a repo with none planted', () => {
+  it('refuses a .git swapped for a gitfile naming a decoy, at a main checkout it passed', () => {
+    const { repo, decoy, realMain } = repoAndDecoy();
+    assertMainCheckout(repo);
+    swapGitDir(repo, decoy);
+    writeFileSync(join(repo, '.git'), `gitdir: ${decoy}\n`);
+    // The control: plain git now reads the decoy's main.
+    expect(revParse(repo, 'refs/heads/main')).not.toBe(realMain);
+
+    expect(() => runGit(repo, ['rev-parse', 'refs/heads/main'])).toThrow(
+      /\.git is no longer a directory.*decision 172/s,
+    );
+    expect(() => currentBranch(repo)).toThrow(/\.git is no longer a directory/);
+    expect(() => assertMainCheckout(repo)).toThrow(/\.git is not a directory/);
+  });
+
+  it('refuses a .git swapped for a symlink to a decoy, on every spawn and as a main checkout', () => {
+    const { repo, decoy, realMain } = repoAndDecoy();
+    swapGitDir(repo, decoy);
+    symlinkSync(decoy, join(repo, '.git'));
+    // The decoy has no commondir: only the link itself gives it away.
+    expect(revParse(repo, 'refs/heads/main')).not.toBe(realMain);
+
+    expect(() => runGit(repo, ['rev-parse', 'refs/heads/main'])).toThrow(
+      /\.git is a symlink.*decision 172/s,
+    );
+    expect(() => gitDiffPaths(repo, 'main', 'main')).toThrow(/\.git is a symlink/);
+    expect(() => assertMainCheckout(repo)).toThrow(/\.git is not a directory/);
+  });
+
+  it('runs git in a linked worktree, whose .git is a gitfile, but never takes it for a main checkout', () => {
     const { repo, realMain } = repoAndDecoy();
     const worktree = join(tempDir('pup-wt-'), 'wt');
     sh(repo, 'git', 'worktree', 'add', '-q', '--detach', worktree);
 
     expect(runGit(worktree, ['rev-parse', 'HEAD']).trim()).toBe(realMain);
-    expect(() => assertNoPlantedCommondir(repo)).not.toThrow();
+    expect(() => assertMainCheckout(repo)).not.toThrow();
+    expect(() => assertMainCheckout(worktree)).toThrow(/\.git is not a directory/);
+    expect(runGit(worktree, ['rev-parse', 'HEAD']).trim()).toBe(realMain);
   });
+});
 
+/**
+ * Every `child_process` call in git-diff.client.ts that spawns git, by any
+ * entry point, with the function that builds its argv: `undefined` where it
+ * has none, as a shell string or a literal array.
+ */
+function gitSpawnBuilders(source: string): (string | undefined)[] {
+  const spawn =
+    /\b(?:execFileSync|execFile|spawnSync|spawn|execSync|exec)\(\s*(['"`])git(?:\1\s*,\s*(\w+)\(|\1|\s)/g;
+  return [...source.matchAll(spawn)].map((match) => match[2]);
+}
+
+describe('the commondir check on every git spawn (decision 172)', () => {
   it('is what every git spawn in git-diff.client.ts builds its argv through', () => {
     const source = readFileSync(join(process.cwd(), 'src', 'core', 'git-diff.client.ts'), 'utf8');
-    const spawns = [...source.matchAll(/execFileSync\(\s*'git',\s*(\w+)\(/g)].map((m) => m[1]);
     const safeArgv = /function safeArgv\([^)]*\)[^{]*\{([^}]*)\}/.exec(source)?.[1] ?? '';
 
-    expect(spawns.length).toBeGreaterThan(0);
-    expect(spawns.every((builder) => builder === 'safeArgv')).toBe(true);
-    expect(source.match(/execFileSync\(\s*'git'/g)).toHaveLength(spawns.length);
-    expect(safeArgv).toMatch(/^\s*assertNoPlantedCommondir\(cwd\);/);
+    expect(gitSpawnBuilders(source).length).toBeGreaterThan(0);
+    expect(gitSpawnBuilders(source).every((builder) => builder === 'safeArgv')).toBe(true);
+    expect(safeArgv).toMatch(/^\s*assertGitDirUnplanted\(cwd\);/);
+  });
+
+  it('flags a git spawn through any entry point that skips safeArgv', () => {
+    const source = [
+      `execFileSync('git', safeArgv(cwd, args), {});`,
+      `spawn('git', safeArgv(cwd, args));`,
+      `spawn('git', ['rev-parse', 'HEAD']);`,
+      `spawnSync("git", otherArgv(cwd));`,
+      `execFile(\`git\`, args);`,
+      `execSync('git rev-parse HEAD');`,
+      `exec('git status');`,
+      `execFileSync('gitleaks', ['detect']);`,
+    ].join('\n');
+
+    expect(gitSpawnBuilders(source)).toEqual([
+      'safeArgv',
+      'safeArgv',
+      undefined,
+      'otherArgv',
+      undefined,
+      undefined,
+      undefined,
+    ]);
   });
 });
