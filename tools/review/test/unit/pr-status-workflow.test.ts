@@ -10,15 +10,17 @@ import { describe, expect, it } from "vitest";
  */
 const workflow = readFileSync(new URL("../../../../.github/workflows/pr-status.yml", import.meta.url), "utf8");
 
-function inlineParser(): (body: string) => number {
-  const start = workflow.search(/^ *function unthreadedImportants\(body\) \{$/m);
-  if (start === -1) throw new Error("pr-status.yml has no inline unthreadedImportants");
+function inline<T>(name: string): T {
+  const start = workflow.search(new RegExp(`^ *function ${name}\\(.*\\) \\{$`, "m"));
+  if (start === -1) throw new Error(`pr-status.yml has no inline ${name}`);
   const indent = /^ */.exec(workflow.slice(start))?.[0] ?? "";
   const end = workflow.indexOf(`\n${indent}}\n`, start);
-  return new Function(`${workflow.slice(start, end + indent.length + 2)}\nreturn unthreadedImportants;`)();
+  return new Function(`${workflow.slice(start, end + indent.length + 2)}\nreturn ${name};`)();
 }
 
-const unthreadedImportants = inlineParser();
+const counted = inline<(body: string, threaded: Set<string>) => number>("unthreadedImportants");
+const unthreadedImportants = (body: string, threaded: string[] = []) => counted(body, new Set(threaded));
+const isVerdict = inline<(body: string) => boolean>("isVerdict");
 
 function finding(overrides: Partial<Finding> = {}): Finding {
   return {
@@ -92,6 +94,42 @@ describe("unthreadedImportants", () => {
   it("does not count a finding whose text quotes a count line", () => {
     const quoting = finding({ body: "1 important finding with no line in this diff to anchor to:" });
     expect(unthreadedImportants(posted(summary(), null, [quoting], 0))).toBe(1);
+  });
+
+  it("leaves a carried important with a bot thread at its line to that thread, resolved or not", () => {
+    const anchored = { ...owed, file: "src/c.ts", line: "7-9" };
+    const body = posted(summary({ prior_importants: [owed, anchored] }), null, [], 0);
+    expect(unthreadedImportants(body, ["src/c.ts:7"])).toBe(1);
+    expect(unthreadedImportants(body, ["src/c.ts:7", "src/b.ts:4"])).toBe(0);
+  });
+
+  it("counts a carried important whose thread is at another line or file", () => {
+    const body = posted(summary({ prior_importants: [owed] }), null, [], 0);
+    expect(unthreadedImportants(body, ["src/b.ts:5", "src/a.ts:4"])).toBe(1);
+  });
+
+  it("counts a carried important with no line, whatever threads exist", () => {
+    const body = posted(summary({ prior_importants: [{ ...owed, line: null }, { ...owed, file: null }] }), null, [], 0);
+    expect(unthreadedImportants(body, ["src/b.ts:4", "src/b.ts:null"])).toBe(2);
+  });
+
+  it("never lets a thread release a round's important with no line to anchor to", () => {
+    expect(unthreadedImportants(posted(summary(), null, [finding()], 0), ["src/a.ts:10"])).toBe(1);
+  });
+});
+
+describe("isVerdict", () => {
+  it("is false for a round that reached no verdict", () => {
+    expect(isVerdict(posted(null, "Not reviewed: the run failed", [], 0))).toBe(false);
+    expect(isVerdict(posted(summary(), "Incomplete: correctness did not return", [], 0).replace(/\n/g, "\r\n"))).toBe(
+      false,
+    );
+  });
+
+  it("is true for a round with a verdict, even when a finding quotes the no-verdict line", () => {
+    const quoting = finding({ body: "**Not reviewed.** Nothing in this round is a verdict on the diff." });
+    expect(isVerdict(posted(summary(), null, [], 0))).toBe(true);
+    expect(isVerdict(posted(summary(), null, [quoting], 0))).toBe(true);
   });
 });
 
