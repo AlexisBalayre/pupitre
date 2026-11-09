@@ -127,14 +127,18 @@ function reviewAnswer({
                   },
                 ],
               },
-              lastComment: {
+              trail: {
                 nodes: [
-                  index < answered
-                    ? {
-                        body: `Declined.\n\n<!-- pup fix-round ${OLDER} -->`,
-                        viewerDidAuthor: true,
-                      }
-                    : { body: 'finding', viewerDidAuthor: false },
+                  { author: BOT, body: 'finding' },
+                  ...(index < answered
+                    ? [
+                        {
+                          body: `Declined.\n\n<!-- pup fix-round ${OLDER} -->`,
+                          viewerDidAuthor: true,
+                          authorAssociation: 'OWNER',
+                        },
+                      ]
+                    : []),
                 ],
               },
             })),
@@ -287,6 +291,31 @@ describe('waitForCiReview', { timeout: 20_000 }, () => {
       line:
         `${PR_URL} at ${HEAD}: review no blocking issues; 2 open thread(s), 0 important → ` +
         `pup fix ${SESSION_ID}`,
+    });
+  });
+
+  // A push that outdates a thread's line answers nothing: a worker could
+  // outdate one it declined with a cosmetic edit, and the next run may not
+  // raise it again (#284).
+  it('names the operator, never the merge click, while an outdated thread stands unresolved', async () => {
+    githubAnswers({ outdated: 2 });
+
+    expect(await wait()).toEqual({
+      finished: true,
+      line:
+        `${PR_URL} at ${HEAD}: review no blocking issues; 0 open thread(s), 0 important → ` +
+        "resolve the 2 unresolved thread(s) a push outdated, once each fix holds (the operator's call)",
+    });
+
+    githubAnswers({ threads: 1, answered: 1, outdated: 1 });
+
+    expect(await wait()).toEqual({
+      finished: true,
+      line:
+        `${PR_URL} at ${HEAD}: review no blocking issues; 1 open thread(s), 0 important → ` +
+        'answer the 1 thread(s) a fix round left open: resolve each, or reply for the next ' +
+        'round to take it again; resolve the 1 unresolved thread(s) a push outdated, once ' +
+        "each fix holds (the operator's call)",
     });
   });
 

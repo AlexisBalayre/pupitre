@@ -590,9 +590,11 @@ function orNotStarted<T>(run: () => T): T {
  * and the review bot's newest review must be on that head. The threads are
  * every unresolved one of the bot's that no push outdated, whichever run
  * opened it, so they are about the code the worker will be handed: a newer
- * run's clean status does not close an earlier one's (decision 163). One whose
- * last comment is a fix round's own reply is left to the operator, not relayed
- * again, and with only those left there is no round to run. They are
+ * run's clean status does not close an earlier one's (decision 163). One a
+ * fix round already answered, its reply still the last word, is left to the
+ * operator, not relayed again, and so is an unresolved one a push outdated:
+ * with only those left under a SUCCESS status, there is no round to run and
+ * the head is not clean either. They are
  * relayed only under the bot's SUCCESS status on the head, the one the poster
  * sets on every run it posted, findings or not. A finding
  * someone else edited, or one hidden on GitHub, is refused, not relayed. With
@@ -680,12 +682,20 @@ function reviewVerdict(
     }
     return { head, threads };
   }
-  if (answered > 0) {
+  // What stands unresolved but is no round's keeps a clean status from reading
+  // clean: the operator resolves it.
+  const outdated = review.outdatedThreads;
+  if (status?.state === 'SUCCESS' && answered + outdated > 0) {
+    const left = [
+      answered > 0 &&
+        `${answered} a fix round answered and left open (resolve each once its answer holds, ` +
+          'or reply on it to have the next round take it again)',
+      outdated > 0 &&
+        `${outdated} a push outdated that nobody resolved (no round takes one, as the code it ` +
+          'quotes moved: resolve each once the fix holds)',
+    ].filter((part): part is string => part !== false);
     return {
-      refusal:
-        `The CI review's ${answered} open thread(s) on ${prUrl} were each answered by a fix ` +
-        'round and left open for the operator: resolve one once its answer holds, or reply on ' +
-        'it to have the next round take it again.',
+      refusal: `The CI review's unresolved threads on ${prUrl} are the operator's: ${left.join(' and ')}.`,
     };
   }
   if (status?.state === 'SUCCESS' && status.description === CLEAN_REVIEW_STATUS) {

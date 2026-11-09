@@ -183,6 +183,7 @@ describe('readPullRequestReview', () => {
       reviewedHead: HEAD,
       headStatus: { state: 'SUCCESS', description: '2 important finding(s)' },
       isRereviewAsked: false,
+      outdatedThreads: 1,
       openThreads: [
         {
           id: 'PRRT_open',
@@ -257,10 +258,20 @@ describe('readPullRequestReview', () => {
   });
 
   // A fix round replies on each thread it relays and leaves the ones it does not
-  // resolve open: only its own marked reply, still the last word, answers one.
-  it("tells a thread whose last comment is a fix round's own reply", () => {
+  // resolve open: its own marked reply answers one until the bot, pup's own
+  // account or someone with write access says more. An outsider cannot reopen it.
+  it("tells a thread whose last word is a fix round's own reply", () => {
     const MARKED = `Declined: a false positive.\n\n<!-- pup fix-round ${'d'.repeat(40)} -->`;
-    const last = (comment: unknown) => ({ nodes: [comment] });
+    const finding = { author: BOT, body: 'finding', authorAssociation: 'NONE' };
+    const reply = { body: MARKED, viewerDidAuthor: true, authorAssociation: 'OWNER' };
+    const by = (authorAssociation: unknown, body = 'Please fix it.') => ({
+      author: { __typename: 'User', login: 'someone' },
+      body,
+      viewerDidAuthor: false,
+      authorAssociation,
+    });
+    const trail = (id: string, ...comments: unknown[]) =>
+      thread({ id, trail: { nodes: [finding, ...comments] } });
     ghAnswers({
       state: 'OPEN',
       headRefOid: HEAD,
@@ -268,33 +279,63 @@ describe('readPullRequestReview', () => {
       reviewThreads: {
         pageInfo: { hasPreviousPage: false },
         nodes: [
-          thread({
-            id: 'PRRT_answered',
-            lastComment: last({ body: MARKED, viewerDidAuthor: true }),
-          }),
+          trail('PRRT_answered', reply),
+          trail('PRRT_outsider', reply, by('NONE'), by('CONTRIBUTOR'), by(undefined)),
+          trail('PRRT_owner', reply, by('OWNER')),
+          trail('PRRT_member', reply, by('MEMBER')),
+          trail('PRRT_collaborator', reply, by('COLLABORATOR')),
+          trail('PRRT_bot', reply, finding),
+          // pup's own account, by hand: unmarked, so the operator's word.
+          trail('PRRT_own', reply, { body: 'Looking again.', viewerDidAuthor: true }),
           // Someone else quoting the marker answers nothing.
-          thread({
-            id: 'PRRT_quoted',
-            lastComment: last({ body: MARKED, viewerDidAuthor: false }),
-          }),
-          // pup's own hand reply, unmarked, is not a round's.
-          thread({
-            id: 'PRRT_own',
-            lastComment: last({ body: 'Looking.', viewerDidAuthor: true }),
-          }),
-          thread({ id: 'PRRT_unread', lastComment: last({ body: MARKED }) }),
+          trail('PRRT_quoted', by('NONE', MARKED)),
+          trail('PRRT_quoted_member', by('MEMBER', MARKED)),
+          trail('PRRT_unread', { body: MARKED }),
           thread({ id: 'PRRT_bare' }),
         ],
       },
     });
 
-    expect(read().openThreads.map((open) => open.isAnswered)).toEqual([
-      true,
-      false,
-      false,
-      false,
-      false,
-    ]);
+    expect(
+      Object.fromEntries(read().openThreads.map((open) => [open.id, open.isAnswered])),
+    ).toEqual({
+      PRRT_answered: true,
+      PRRT_outsider: true,
+      PRRT_owner: false,
+      PRRT_member: false,
+      PRRT_collaborator: false,
+      PRRT_bot: false,
+      PRRT_own: false,
+      PRRT_quoted: false,
+      PRRT_quoted_member: false,
+      PRRT_unread: false,
+      PRRT_bare: false,
+    });
+  });
+
+  // A push that outdates a thread's line answers nothing: a worker could
+  // outdate one it declined with a cosmetic edit.
+  it("counts the bot's unresolved threads a push outdated, and only those", () => {
+    ghAnswers({
+      state: 'OPEN',
+      headRefOid: HEAD,
+      reviews: { nodes: [review()] },
+      reviewThreads: {
+        pageInfo: { hasPreviousPage: false },
+        nodes: [
+          thread({ id: 'PRRT_outdated', isOutdated: true }),
+          thread({ id: 'PRRT_outdated_too', isOutdated: true, line: null }),
+          thread({ id: 'PRRT_resolved', isOutdated: true, isResolved: true }),
+          thread({ id: 'PRRT_unreadable', isOutdated: true, isResolved: undefined }),
+          thread({ id: 'PRRT_human', isOutdated: true }, { author: { __typename: 'User' } }),
+          thread({ id: 'PRRT_open' }),
+        ],
+      },
+    });
+
+    const answer = read();
+    expect(answer.outdatedThreads).toBe(2);
+    expect(answer.openThreads.map((open) => open.id)).toEqual(['PRRT_open']);
   });
 
   it('reads no status set by another creator, or on a commit that is not the head', () => {
@@ -321,6 +362,7 @@ describe('readPullRequestReview', () => {
       reviewedHead: undefined,
       headStatus: undefined,
       isRereviewAsked: false,
+      outdatedThreads: 0,
       openThreads: [],
     });
   });

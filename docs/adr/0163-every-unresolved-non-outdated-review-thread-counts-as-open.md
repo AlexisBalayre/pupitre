@@ -22,19 +22,35 @@
     status, `pup fix` hands every one of them to the round, and that includes the clean
     `no blocking issues`. The edited-or-hidden refusal now covers all of them, not only the
     newest run's.
+    *An outdated thread still blocks ready.* An outdated thread is not relayed, because the
+    code it quotes has moved. A push alone does not answer it, though. A fix-round worker
+    could outdate a finding it declined with a cosmetic edit to that hunk. The gate pushes the
+    edit, and if the bot's next run does not raise the finding again (as on #284), the thread
+    would drop out of view. `readPullRequestReview` therefore also returns `outdatedThreads`,
+    the count of the bot's unresolved threads that a push outdated. Under the bot's `SUCCESS`
+    status, a head never reads ready while that count is above zero. `pup ci wait` names the
+    operator ("resolve the N unresolved thread(s) a push outdated"), and `pup fix` refuses with
+    the same count when nothing is left to relay. While an unanswered, non-outdated thread
+    remains, `pup fix` still relays it, and the outdated ones are left to the operator.
     *A thread a round answered.* A fix round replies on every thread it relays, but resolves
     only the ones it addressed. A declined, unanswered or unverified thread stays open for the
     operator, and the round's push usually leaves its line alone, so it is not outdated either.
     Relaying it again would hand the worker a finding it already declined, with no sign that it
-    did, and would count as a `repeat-fix-round`. Each thread therefore carries `isAnswered`,
-    read from `lastComment: comments(last: 1)`: its last comment is pup's own
-    (`viewerDidAuthor`) and carries the `<!-- pup fix-round ` marker that `fixRoundMarker`
-    builds. Such a thread still counts as open, so the PR does not read ready. `pup ci wait`
-    names the operator, not `pup fix`, when the answered ones are all that remain. `pup fix`
-    relays only unanswered threads and refuses when nothing else is left. Any comment after
-    pup's reply, whether the operator's or the bot's, makes the thread live again, and the next
-    round takes it. The answer is read from GitHub, not from the `fix_round` events, so the
-    reply itself is what marks it.
+    did, and would count as a `repeat-fix-round`. Each thread therefore carries `isAnswered`.
+    It is read from `trail: comments(last: 100)`, with each comment's `viewerDidAuthor`,
+    `authorAssociation` and author. Only some comments count: the bot's, those from pup's own
+    account (`viewerDidAuthor`), and those whose `authorAssociation` is `OWNER`, `MEMBER` or
+    `COLLABORATOR`. A thread is answered when the last comment that counts is pup's own and
+    carries the `<!-- pup fix-round ` marker that `fixRoundMarker` builds. Such a thread still
+    counts as open, so the PR does not read ready. `pup ci wait` names the operator, not
+    `pup fix`, when the answered and outdated threads are all that remain. `pup fix` relays
+    only unanswered threads and refuses when nothing else is left. A later comment that counts,
+    from the operator, a collaborator or the bot, makes the thread live again, and the next
+    round takes it. An outsider's comment cannot reopen it, so a passer-by cannot trigger
+    another round. The answer is read from GitHub, not from the `fix_round` events, so the
+    reply itself is what marks it. A thread with more than 100 comments has its oldest ones
+    unread. If pup's reply is among those, the thread reads as unanswered and is relayed
+    again, which costs a round but hides nothing.
     *What is gone.* The newest-run grouping goes. That was the bodiless reviews the poster's
     one-finding-at-a-time fallback leaves, matched through each thread's
     `pullRequestReview.id`. The newest bot review's commit is still `reviewedHead`. The
@@ -55,7 +71,12 @@
     refused even when the thread on the page is resolved. In `ci-wait.test.ts`, a clean status
     with one open thread and two outdated ones names `pup fix`. In `fix-round-kickoff.test.ts`,
     a clean status with an open thread and an outdated one starts a round on the open one only.
-    `isAnswered` is read only for a marked last comment of pup's own. When a round's answered
-    threads are all that remain, `ci wait` names the operator and `pup fix` refuses, but an
-    answered thread beside an unanswered one leaves the round to relay only the unanswered
-    one.
+    In `github-client.test.ts`, `isAnswered` is true only when the last comment that counts
+    is pup's own marked reply. Comments after it from an outsider (`NONE`, `CONTRIBUTOR`,
+    unreadable) leave it answered. One from an `OWNER`, a `MEMBER`, a `COLLABORATOR`, the bot
+    or pup's own account by hand reopens it. `outdatedThreads` counts only the bot's
+    unresolved outdated threads. In `ci-wait.test.ts`, a clean status names the operator
+    rather than the merge click when only outdated threads remain, and also when answered and
+    outdated ones remain together. In `fix-round-kickoff.test.ts`, `pup fix` refuses when only
+    answered and outdated threads remain under a clean status, and an answered thread beside an
+    unanswered one leaves the round to relay only the unanswered one.

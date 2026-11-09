@@ -265,14 +265,18 @@ describe('startFixRound', { timeout: 90_000 }, () => {
                     },
                   ],
                 },
-                lastComment: {
+                trail: {
                   nodes: [
-                    thread.isAnswered
-                      ? {
-                          body: `Declined.\n\n<!-- pup fix-round ${OTHER_SHA} -->`,
-                          viewerDidAuthor: true,
-                        }
-                      : { body: thread.body, viewerDidAuthor: false },
+                    { author: thread.author ?? BOT, body: thread.body },
+                    ...(thread.isAnswered
+                      ? [
+                          {
+                            body: `Declined.\n\n<!-- pup fix-round ${OTHER_SHA} -->`,
+                            viewerDidAuthor: true,
+                            authorAssociation: 'OWNER',
+                          },
+                        ]
+                      : []),
                   ],
                 },
               })),
@@ -632,7 +636,20 @@ describe('startFixRound', { timeout: 90_000 }, () => {
         status: { state: 'SUCCESS', description: 'no blocking issues' },
         threads: [{ id: 'PRRT_declined', body: 'A false positive.', isAnswered: true }],
       },
-      /The CI review's 1 open thread\(s\) on .* were each answered by a fix round and left open for the operator: resolve one once its answer holds, or reply on it to have the next round take it again\. No fix round was started\./,
+      /The CI review's unresolved threads on .* are the operator's: 1 a fix round answered and left open \(resolve each once its answer holds, or reply on it to have the next round take it again\)\. No fix round was started\./,
+    ],
+    // A push that outdates a thread answers nothing (decision 163): a clean
+    // status with one standing is not clean.
+    [
+      'only an answered thread and one a push outdated that nobody resolved, under a clean status',
+      {
+        status: { state: 'SUCCESS', description: 'no blocking issues' },
+        threads: [
+          { id: 'PRRT_moved', body: 'A line a later push changed.', isOutdated: true },
+          { id: 'PRRT_declined', body: 'A false positive.', isAnswered: true },
+        ],
+      },
+      /The CI review's unresolved threads on .* are the operator's: 1 a fix round answered and left open \(.*\) and 1 a push outdated that nobody resolved \(no round takes one, as the code it quotes moved: resolve each once the fix holds\)\. No fix round was started\./,
     ],
     [
       'no open thread and findings with no line to anchor to',

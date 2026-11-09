@@ -307,7 +307,9 @@ const PULL_REQUEST_REVIEW_QUERY = `query($owner: String!, $name: String!, $numbe
               editor { __typename login }
             }
           }
-          lastComment: comments(last: 1) { nodes { body viewerDidAuthor } }
+          trail: comments(last: ${REVIEW_PAGE}) {
+            nodes { body viewerDidAuthor authorAssociation author { __typename login } }
+          }
         }
       }
       comments(last: ${REVIEW_PAGE}) {
@@ -341,10 +343,15 @@ export interface ReviewThread {
   isMinimized: boolean;
   /**
    * A fix round already replied on it and left it open for the operator, and
-   * nobody commented since: its last comment is pup's own reply, marked.
+   * nobody who may reopen it commented since: of its newest comments, the last
+   * one by the bot, by pup's own account or by the repo's owner, a member or a
+   * collaborator is pup's reply, marked. Anyone else's comment is skipped.
    */
   isAnswered: boolean;
 }
+
+/** Who may make a thread a fix round answered live again, besides the bot and pup's own account. */
+const REOPENING_ASSOCIATIONS = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
 
 /** What every reply and comment a fix round posts ends on, before the round's sha. */
 const FIX_ROUND_MARKER = '<!-- pup fix-round';
@@ -372,6 +379,12 @@ export interface PullRequestReview {
    * opened it, in GitHub's order, those a fix round answered included.
    */
   openThreads: ReviewThread[];
+  /**
+   * The bot's unresolved threads a push outdated. They are not relayed, since
+   * their line moved, but a push alone does not answer one, so the operator
+   * resolves each before the PR reads ready.
+   */
+  outdatedThreads: number;
 }
 
 function isReviewBot(author: unknown): boolean {
@@ -387,8 +400,9 @@ function nodesOf(connection: unknown): Record<string, unknown>[] {
 /**
  * What the CI review said on the PR at `url` (decision 90): its state and
  * head, the commit the review bot last reviewed, the status it pinned to the
- * head, whether the owner asked for a review since that status, and every
- * thread the bot opened that nobody resolved and the head did not outdate. One
+ * head, whether the owner asked for a review since that status, every thread
+ * the bot opened that nobody resolved and the head did not outdate, and how
+ * many unresolved ones a push did outdate. One
  * GraphQL read, so all of it describes the same moment, pinned to `repo`'s
  * host and name like every other call here. Every string in it is GitHub's
  * copy of text a session's code shaped — a path, a finding quoting that code —
@@ -408,8 +422,9 @@ export function readPullRequestReview(
   const reviewedHead = objectFields(newest?.commit).oid;
   const head = typeof pr.headRefOid === 'string' ? pr.headRefOid : undefined;
   // A thread an earlier run opened, on this head or one before it, stays open
-  // on the head until someone resolves it or a push outdates its line: a
-  // newer run's clean status does not close it.
+  // until someone resolves it: a newer run's clean status does not close it,
+  // and neither does a push that outdates its line, which only stops it being
+  // relayed, as the code it quotes is gone.
   const threads = objectFields(pr.reviewThreads);
   if (objectFields(threads.pageInfo).hasPreviousPage === true) {
     throw new Error(
@@ -418,24 +433,38 @@ export function readPullRequestReview(
     );
   }
   const status = reviewStatusOn(pr.commits, head);
+  const unresolved = nodesOf(threads).filter(
+    (thread) =>
+      thread.isResolved === false &&
+      typeof thread.id === 'string' &&
+      isReviewBot(nodesOf(thread.comments)[0]?.author),
+  );
+  // Only a plain `true` outdates it, so a field outside its shape stays open.
+  const isOutdated = (thread: Record<string, unknown>) => thread.isOutdated === true;
   return {
     state: typeof pr.state === 'string' ? pr.state : undefined,
     head,
     reviewedHead: typeof reviewedHead === 'string' ? reviewedHead : undefined,
     headStatus: status && { state: status.state, description: status.description },
     isRereviewAsked: status !== undefined && isReviewAskedSince(pr.comments, status.setAt),
-    openThreads: nodesOf(threads).flatMap((thread): ReviewThread[] => {
+    outdatedThreads: unresolved.filter(isOutdated).length,
+    openThreads: unresolved.flatMap((thread): ReviewThread[] => {
       const [finding] = nodesOf(thread.comments);
-      if (thread.isResolved !== false || typeof thread.id !== 'string') return [];
-      // Only a plain `true` outdates it, so a field outside its shape stays open.
-      if (thread.isOutdated === true) return [];
-      if (!finding || !isReviewBot(finding.author)) return [];
+      if (!finding || typeof thread.id !== 'string' || isOutdated(thread)) return [];
       const line = [thread.line, thread.originalLine].find(Number.isSafeInteger);
       // An edit names its editor; one gone from GitHub reads as nobody, so as not the bot.
       const isEdited = [finding.lastEditedAt, finding.editor].some(
         (field) => field !== undefined && field !== null,
       );
-      const [last] = nodesOf(thread.lastComment);
+      // An outsider's comment neither answers a thread nor reopens one.
+      const last = nodesOf(thread.trail)
+        .filter(
+          (comment) =>
+            isReviewBot(comment.author) ||
+            comment.viewerDidAuthor === true ||
+            REOPENING_ASSOCIATIONS.has(String(comment.authorAssociation)),
+        )
+        .at(-1);
       return [
         {
           id: thread.id,
