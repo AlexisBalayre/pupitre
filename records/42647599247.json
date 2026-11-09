@@ -1,0 +1,104 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-09T15:48:25.026Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42647599247",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42647599247",
+  "actor": "AlexisBalayre",
+  "commit_sha": "868db5ca4759ed34864b55ca42d28df262b25981",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 295,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "262-276",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "For a merged session, windowStalled measures from the newest `respawn` of any kind (delivered or not) to the newest gate_result `to: merged`. fixRoundFailure, though, applies stalledAtEnd to the newest *delivered* round window it saw open. A retry round rolled back by startFixRound's undoRound still ends in a running->merged kill, and that kill is what gets measured, not the opened window's. If the retry failed before its `respawn` was appended (writeSessionProfile/launchSession throw, or a `pup kill` while the window opens), the measured span runs from round 1's last hook to the rollback. It includes the idle time while the session sat merged, so the next `pup fix` falsely climbs with reason `stall`. If the retry's kickoff was undelivered, the span is the kickoff wait of about 45s, so a real stall of round 1 is dropped.",
+      "body": "**The stall bound and the window `fixRoundFailure` scores can be different windows**\n\nIn `windowStalled`, a merged session's stall is measured from `respawnAt` (the newest `respawn` of any kind) to `at` (the newest gate_result `to: merged`):\n\nhttps://github.com/AlexisBalayre/pupitre/blob/868db5ca4759ed34864b55ca42d28df262b25981/src/core/dashboard.service.ts#L262-L276\n\n`fixRoundFailure` applies that boolean to a different window: the last round whose `respawn` was **delivered**. It skips an undelivered `respawn`, and a later `fix_round` with no `respawn` does not reset `opened`, so the earlier round's window stays the scored one:\n\nhttps://github.com/AlexisBalayre/pupitre/blob/868db5ca4759ed34864b55ca42d28df262b25981/src/core/routing.utils.ts#L206-L223\n\nA retry round that `relaunchWorker` rolls back still writes a `running -> merged` edge (`undoRound` -> `killSession`, kind `fix-round-killed`), and that edge is the `at` measured here. Two reachable cases:\n\n1. **False climb.** Round 1 opens and is killed while busy (no stall, rung 0). Some time later (10+ minutes), `pup fix` #2 takes the edge, then `writeSessionProfile`/`launchSession` throws, or a `pup kill` lands while the window opens (`hasRowMoved`). No `respawn` is appended, and the round is undone with a `running -> merged` kill. On `pup fix` #3, `respawnAt` is still round 1's, `at` is the rollback, and `inWindow` and `from === 'running'` both hold. `endedAt - max(mtime, windowStart)` covers the gap from round 1's last hook to the rollback, which is at least `STALLED_AFTER_MS`. `fixRoundFailure` still has `opened` from round 1, so it returns `'stall'` and the retry climbs a rung that was never earned. That contradicts the `relaunchWorker` doc: \"an undone round's retry climbs no higher than the round would have\".\n2. **Lost climb.** Round 1 is killed while stalled. `pup fix` #2 routes to rung 1 (`stall`), but its kickoff never becomes ready. That writes `respawn {delivered:false}` and then the rollback kill straight after, and the route is not stored. On `pup fix` #3, `respawnAt` is the undelivered `respawn`, so the measured span is close to zero and reads not stalled. `fixRoundFailure` ignores that `respawn` and still scores round 1's window, now without its stall, so the retry stays on rung 0.\n\nRoot cause: the window bounds (the opening `respawn` and the ending kill) are worked out twice, in `windowStalled` and in `fixRoundFailure`, and the two disagree. One fix is to have the fix-round reader report which window it opened (the index of its delivered `respawn`), then measure the stall at the first `running -> merged` edge after that index, and only when no later `fix_round` comes before it. Neither path is covered by a test: both new tests open exactly one round.",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/routing.utils.ts",
+      "line": "200",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`stalledAtEnd = false` on fixRoundFailure is a default no production caller relies on: the only one (the `read` callback in windowFailureOf) always passes both arguments. Only routing-utils.test.ts uses the default; making it required and passing `false` there removes an implicit \"stall not measured\" path.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.6366877449999997,
+  "duration_ms": 219715,
+  "num_turns": 12,
+  "tokens": {
+    "input": 12,
+    "output": 9572,
+    "cache_read": 256520,
+    "cache_creation": 44634,
+    "total": 310738
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 64,
+      "output": 26576,
+      "cache_read": 870119,
+      "cache_creation": 114026,
+      "cost_usd": 1.4098318
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 34,
+      "output": 5941,
+      "cache_read": 170699,
+      "cache_creation": 59959,
+      "cost_usd": 0.22644539999999996
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 103,
+      "cache_read": 1822,
+      "cache_creation": 2725,
+      "cost_usd": 0.000410545
+    }
+  ],
+  "permission_denials": []
+}
