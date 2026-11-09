@@ -11,7 +11,8 @@
 # The name under `workflow_run` must match that workflow's `name:`.
 #
 # pull_request_target and workflow_run run with write access, so nothing here checks out or runs
-# PR code: it only reads PR metadata through the API.
+# PR code: it reads PR metadata through the API, and runs one file of the default branch's own
+# review tooling (decision 165).
 name: PR status
 
 on:
@@ -55,10 +56,21 @@ jobs:
                   && github.event.workflow_run.triggering_actor.login == github.repository_owner))))
     runs-on: ubuntu-latest
     steps:
+      # The review-body parser, which its unit test covers. The ref is named, not left to the
+      # event: a pull_request_review run's own ref is the PR's merge ref, which holds PR code.
+      - name: Check out the review-body parser
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: tools/review/src/review-status.utils.ts
+          sparse-checkout-cone-mode: false
       - name: Set the status label
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
+            // Node strips the types itself; the file imports nothing, so it needs no install.
+            const { REVIEW_HEADING, unthreadedImportants } = require("./tools/review/src/review-status.utils.ts");
             const LABELS = {
               "draft": ["ededed", "Still a draft"],
               "conflicts": ["b60205", "Cannot merge: conflicts with the base branch"],
@@ -145,9 +157,16 @@ jobs:
               const review = combined.statuses.find((s) => s.context === "claude-review");
               // An unresolved bot thread is an important the review raised and nobody closed: it
               // outlives the pushes that clear the status description (an incremental round never
-              // re-raises a prior important). The description covers the round just posted.
+              // re-raises a prior important). The description covers the round just posted. An
+              // important with no line to anchor to gets no thread, and one carried from the prior
+              // round gets none either: the newest summary review lists both until a round finds
+              // them fixed, and it too outlives a push.
+              const summary = reviews
+                .filter((r) => r.user?.login === "github-actions[bot]" && r.body?.startsWith(REVIEW_HEADING))
+                .at(-1);
               if (
                 (review?.state === "success" && /\d+ important finding/.test(review.description ?? "")) ||
+                unthreadedImportants(summary?.body ?? "") > 0 ||
                 (await hasOpenBotThread(number))
               ) {
                 return "review-open";
