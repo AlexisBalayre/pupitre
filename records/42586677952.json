@@ -1,0 +1,133 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-09T08:37:09.314Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42586677952",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42586677952",
+  "actor": "AlexisBalayre",
+  "commit_sha": "2b7d642056d2ef42b9bb5862deec993fd46c5edb",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 285,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "911-930",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "important",
+      "description": "MergeLockLostError is an Error subclass declared inline in merge-gate.service.ts, next to withMergeLock which throws it, instead of in merge-gate.errors.ts beside MergeLockHeldError (general.md §Code layout: no inline error classes).",
+      "body": "**Rule: `docs/conventions/general.md` §Code layout, no inline error classes.** The rule reads: *\"No inline error classes. An `Error` subclass is declared in the area's `errors/` folder, never beside the code that throws it.\"*\n\nThis PR adds `MergeLockLostError` to `merge-gate.service.ts`, right next to `withMergeLock`, which throws it:\n\nhttps://github.com/AlexisBalayre/pupitre/blob/2b7d642056d2ef42b9bb5862deec993fd46c5edb/src/core/merge-gate.service.ts#L911-L930\n\nThe merge-gate area already keeps its errors separate. `src/core/merge-gate.errors.ts` holds `MergeLockHeldError` and `SessionNotReviewableError`, and the service imports both from it. Because the new lock error lives in a different place, `src/cli/index.ts` now imports `MergeLockLostError` from the service module and `MergeLockHeldError` from the errors file.\n\n**Fix:** move the class and its JSDoc into `src/core/merge-gate.errors.ts`. That file imports only a type from `db.client.js`, so the move creates no import cycle. Then update the imports in `merge-gate.service.ts`, `src/cli/index.ts` and the tests.",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land.service.ts",
+      "line": "314-326",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "steerSession pastes the message before it writes the steer event, so if the store write then fails (SQLITE_BUSY after the 5 s busy timeout, or a full disk), a peer that did get the message is listed as unsteered and the operator is told to steer it again, which sends the message twice.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0132-pup-land-no-audit-lets-several-lands-share-one.md",
+      "line": "12",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "ADR 0132 still says the `landed` event is \"the lock's last write\". This PR moves the steer and the audit under the lock after that event, as amended 0088 now says, so reword it, e.g. \"The `landed` event is written before the steer and the audit, so…\".",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "794-802",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "pre-existing",
+      "description": "The release renames whatever is at the lock path before checking that it is the take's own directory. If a session moves run A's lock and run B takes a fresh one, A's release (now reported as a lost lock) also moves B's live lock aside, so a third run can take the lock while B is still running. Checking directoryIdentity(lockPath) against `taken` before the rename would close this.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Skipped review-maintainability: the diff is about 842 changed lines, under the 1,000-line gate, at the default depth. Skipped review-context: no spec, protocol or infra surface was touched. Skipped review-spec: the change names no closing issue or --spec. The PR body states its acceptance criteria inline, and the correctness reviewers checked those."
+    },
+    {
+      "component": "conventions",
+      "description": "Conventions reviewer reported that gh pr diff output was truncated by size, so it used per-path git diff. It did not review the test files or the ADR edits, and did not read naming.md or testing.md."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 3.3430625249999983,
+  "duration_ms": 239932,
+  "num_turns": 14,
+  "tokens": {
+    "input": 14,
+    "output": 11197,
+    "cache_read": 358054,
+    "cache_creation": 55435,
+    "total": 424700
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 150,
+      "output": 55836,
+      "cache_read": 2533981,
+      "cache_creation": 258237,
+      "cost_usd": 3.081606199999998
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 30,
+      "output": 6927,
+      "cache_read": 215070,
+      "cache_creation": 67981,
+      "cost_usd": 0.26078949999999995
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 159,
+      "cache_read": 0,
+      "cache_creation": 4697,
+      "cost_usd": 0.000666825
+    }
+  ],
+  "permission_denials": []
+}
