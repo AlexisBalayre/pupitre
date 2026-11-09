@@ -446,6 +446,16 @@ function needOf(
       command(`pup steer ${id} "..."`),
     );
   }
+  // A stage that failed refused the gate before any debt was weighed, such as
+  // a taken ADR number (decision 146): only the session's fix gets it through.
+  const failedStage = session.gateRefused ? session.lastGate?.failedStage : undefined;
+  if (session.state === 'awaiting-review' && failedStage !== undefined) {
+    return need(
+      'awaiting-review',
+      `gate refused: ${failedStage} failed`,
+      command(`pup steer ${id} "..."`),
+    );
+  }
   if (session.state === 'awaiting-review' && session.gateRefused) {
     return need(
       'awaiting-review',

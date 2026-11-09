@@ -27,6 +27,7 @@ import {
   sessionEnvAllowed,
   windowLabel,
 } from '../claude/session-runtime.service.js';
+import { ADR_NUMBER_STAGE } from '../core/adr-number.service.js';
 import { auditProject, buildSweepTask, formatDebtTransition } from '../core/audit.service.js';
 import { briefPath, ensureBrief, readBrief } from '../core/brief.service.js';
 import { waitForCiReview } from '../core/ci-wait.service.js';
@@ -2275,6 +2276,17 @@ export function buildProgram(): Command {
             if (outcome.regated && failedStage) {
               console.log(
                 `Re-gate refused: ${sanitizeReason(failedStage.stage)} failed on the new head, and the PR still vouches for the earlier pin only. Fix it on the branch, push, then re-run \`pup merge ${session} --pr\`.`,
+              );
+              break;
+            }
+            // Refused before any debt was measured (decision 146): accepting
+            // debt cannot get it through, only the session's own fix can.
+            if (failedStage) {
+              console.log(
+                `Merge refused: ${sanitizeReason(failedStage.stage)} failed, which --accept-debt does not cover. ` +
+                  (failedStage.stage === ADR_NUMBER_STAGE
+                    ? `Steer the session to renumber its ADR as the report says: \`pup steer ${session} "..."\`.`
+                    : `Steer the session to fix it: \`pup steer ${session} "..."\`.`),
               );
               break;
             }
