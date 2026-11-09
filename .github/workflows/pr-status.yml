@@ -11,8 +11,8 @@
 # The name under `workflow_run` must match that workflow's `name:`.
 #
 # pull_request_target and workflow_run run with write access, so nothing here checks out or runs
-# PR code: it reads PR metadata through the API, and runs one file of the default branch's own
-# review tooling (decision 165).
+# PR code: it only reads PR metadata through the API. Nor does it run any file outside this one:
+# the token is in its environment (decision 165).
 name: PR status
 
 on:
@@ -56,21 +56,10 @@ jobs:
                   && github.event.workflow_run.triggering_actor.login == github.repository_owner))))
     runs-on: ubuntu-latest
     steps:
-      # The review-body parser, which its unit test covers. The ref is named, not left to the
-      # event: a pull_request_review run's own ref is the PR's merge ref, which holds PR code.
-      - name: Check out the review-body parser
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event.repository.default_branch }}
-          persist-credentials: false
-          sparse-checkout: tools/review/src/review-status.utils.ts
-          sparse-checkout-cone-mode: false
       - name: Set the status label
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
-            // Node strips the types itself; the file imports nothing, so it needs no install.
-            const { REVIEW_HEADING, unthreadedImportants } = require("./tools/review/src/review-status.utils.ts");
             const LABELS = {
               "draft": ["ededed", "Still a draft"],
               "conflicts": ["b60205", "Cannot merge: conflicts with the base branch"],
@@ -94,6 +83,19 @@ jobs:
             })();
 
             const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+            // `REVIEW_HEADING` and the count lines of `bodyLines` (tools/review/src/review-body.utils.ts).
+            // tools/review/test/unit/pr-status-workflow.test.ts runs this copy on bodies that
+            // renderer writes, so a reworded line fails a test, not a label.
+            const REVIEW_HEADING = "## Claude code review";
+
+            // The importants a summary review lists with no inline thread to resolve: the round's
+            // findings with no line in the diff to anchor to, and the prior round's still open. A
+            // finding's text that passed for a count line could only hold a PR in review.
+            function unthreadedImportants(body) {
+              const counted = /^(\d+) important findings? (?:with no line in this diff to anchor to|from .+ still open \(not raised again\)):$/;
+              return body.split(/\r?\n/).reduce((sum, line) => sum + Number(counted.exec(line)?.[1] ?? 0), 0);
+            }
 
             // The newest bot-opened, unresolved review thread, as `ci-wait.service.ts` reads them.
             async function hasOpenBotThread(number) {

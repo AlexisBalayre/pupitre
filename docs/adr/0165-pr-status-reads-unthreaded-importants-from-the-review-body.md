@@ -10,14 +10,17 @@
     a push replaces the status description. So #278 and #281 read `ready` with an important open.
     *The rule.* The workflow takes the newest review by `github-actions[bot]` whose body starts
     with `REVIEW_HEADING` and counts the importants its count lines name. Any count above zero is
-    `review-open`. The parser is `unthreadedImportants` in `tools/review/src/review-status.utils.ts`,
-    which also holds `REVIEW_HEADING`. Its unit test reads bodies `bodyLines` renders, so a reworded
-    count line fails the test rather than clearing a PR.
-    *How the workflow runs it.* A sparse checkout of that one file, from the default branch named
-    explicitly: a `pull_request_review` run's own ref is the PR's merge ref, which is PR code. The
-    job's github-script `require`s the `.ts` file and Node 24 strips its types. So the file imports
-    nothing and uses only erasable syntax, and no install runs in a job that holds a write token.
-    *Not taken.* Keeping the parser inline in the workflow script: no test could reach it short of
-    cutting the function out of the YAML. Having the poster count carried importants in the status
+    `review-open`.
+    *Where the parser lives.* Inline in the workflow's github-script step, as
+    `unthreadedImportants`. That job holds a write token, readable in its environment as
+    `INPUT_GITHUB-TOKEN`, so every line it runs stays in `.github/workflows/`, where a change is
+    reviewed as a workflow change. `tools/review/test/unit/pr-status-workflow.test.ts` cuts the
+    function out of the YAML and runs it on bodies `bodyLines` renders. It also checks the inline
+    `REVIEW_HEADING` against the poster's. A reworded count line then fails the test rather than
+    clearing a PR.
+    *Not taken.* A parser module in `tools/review/src` that the job loads from a checkout of the
+    default branch. It is easier to test, but any later edit to that ordinary file would run with
+    the write token while being reviewed as tooling. A file the job `require`s could also throw on
+    the runner and freeze every label. Having the poster count carried importants in the status
     description: a push replaces that description with the push marker, so the label would read
     `ready` from the push until the next review, the gap this closes.

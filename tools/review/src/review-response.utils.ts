@@ -1,4 +1,4 @@
-import { REVIEW_HEADING } from "./review-status.utils";
+import { REVIEW_HEADING } from "./review-body.utils";
 
 export type Outcome = "fixed" | "dismissed" | "ignored";
 

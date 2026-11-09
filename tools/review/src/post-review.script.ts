@@ -1,11 +1,10 @@
 import { execFileSync } from "node:child_process";
 import { appendFileSync, writeFileSync } from "node:fs";
 import { commentableLines, resolveAnchor, trueLine } from "./diff-anchor.utils";
-import { bodyLines, commentBody } from "./review-body.utils";
+import { bodyLines, commentBody, REVIEW_HEADING } from "./review-body.utils";
 import { consolidateSummary } from "./review-consolidate.utils";
 import { noVerdictReason } from "./review-completeness.utils";
 import { type Finding, postedRecordSchema, type ReviewSummary, reviewSummarySchema } from "./review-metrics.schemas";
-import { REVIEW_HEADING } from "./review-status.utils";
 
 /**
  * Writes the round's verdict to the pull request. By design this is the

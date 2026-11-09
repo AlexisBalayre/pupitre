@@ -1,7 +1,24 @@
-import { bodyLines } from "@src/review-body.utils";
+import { readFileSync } from "node:fs";
+import { bodyLines, REVIEW_HEADING } from "@src/review-body.utils";
 import type { Finding, ReviewSummary } from "@src/review-metrics.schemas";
-import { REVIEW_HEADING, unthreadedImportants } from "@src/review-status.utils";
 import { describe, expect, it } from "vitest";
+
+/**
+ * pr-status.yml's job holds a write token, so its parser stays inline in the
+ * workflow rather than in a file the job would load (decision 165). This test
+ * runs that inline copy, cut out of the YAML.
+ */
+const workflow = readFileSync(new URL("../../../../.github/workflows/pr-status.yml", import.meta.url), "utf8");
+
+function inlineParser(): (body: string) => number {
+  const start = workflow.search(/^ *function unthreadedImportants\(body\) \{$/m);
+  if (start === -1) throw new Error("pr-status.yml has no inline unthreadedImportants");
+  const indent = /^ */.exec(workflow.slice(start))?.[0] ?? "";
+  const end = workflow.indexOf(`\n${indent}}\n`, start);
+  return new Function(`${workflow.slice(start, end + indent.length + 2)}\nreturn unthreadedImportants;`)();
+}
+
+const unthreadedImportants = inlineParser();
 
 function finding(overrides: Partial<Finding> = {}): Finding {
   return {
@@ -75,5 +92,11 @@ describe("unthreadedImportants", () => {
   it("does not count a finding whose text quotes a count line", () => {
     const quoting = finding({ body: "1 important finding with no line in this diff to anchor to:" });
     expect(unthreadedImportants(posted(summary(), null, [quoting], 0))).toBe(1);
+  });
+});
+
+describe("pr-status.yml's summary review", () => {
+  it("is the one whose body opens with the poster's heading", () => {
+    expect(workflow).toContain(`const REVIEW_HEADING = ${JSON.stringify(REVIEW_HEADING)};`);
   });
 });
