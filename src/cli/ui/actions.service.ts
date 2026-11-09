@@ -115,14 +115,14 @@ export function launchSelected(deps: ActionDeps, taskId: string, model: string):
 }
 
 /**
- * `pup steer`: type a correction into the session's launch pane, and record it.
- * No sender rides with it, where `pup steer` names one: this screen has no
- * reading of who is at it, and a record naming the operator on a guess would
- * be worse than one naming nobody.
+ * `pup steer`: type a correction into the session's launch pane, and record it
+ * as the operator's. `pup ui` is read-only to a session and to the conductor,
+ * the same reading `pup steer` names its sender by, so a steer from here is the
+ * operator's, and like theirs it answers an open question (decision 93).
  */
 export function steerSelected(deps: ActionDeps, sessionId: string, message: string): ActionResult {
   return attempt(() => {
-    steerSession(deps.db, sessionId, message, { kind: 'manual' });
+    steerSession(deps.db, sessionId, message, { kind: 'manual', by: 'operator' });
     return `Steered ${sessionId}.`;
   });
 }

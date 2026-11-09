@@ -615,7 +615,7 @@ describe('buildDashboardSnapshot', () => {
       expect(buildDashboardSnapshot(db, repo, NOW).sessions[0]?.contextTokens).toBeUndefined();
     });
 
-    // Decision 76: a question stands until a steer answers it, and the
+    // Decisions 76, 93: a question stands until the operator answers it, and the
     // session's own words are scrubbed and cut like every derived line.
     describe('question', () => {
       const questionOf = () => buildDashboardSnapshot(db, repo, NOW).sessions[0]?.question;
@@ -688,16 +688,31 @@ describe('buildDashboardSnapshot', () => {
         expect(questionOf()).toBeUndefined();
       });
 
-      it('clears once a steer comes after it', () => {
+      it("clears once the operator's steer comes after it", () => {
         appendEvent(db, 's1', 'question', { text: 'rebase or merge?' });
         appendEvent(db, 's1', 'steer', { kind: 'message', by: 'operator' });
 
         expect(questionOf()).toBeUndefined();
       });
 
+      // The question is the operator's: a conductor steer worded as an answer
+      // must not clear it from the inbox before they have seen it.
+      it.each([
+        ['the conductor', { kind: 'message', by: 'conductor' }],
+        ['a peer', { kind: 'peer-joined', by: 's2' }],
+        ['the watchdog', { kind: 'resume', by: 'watch' }],
+        ['nobody named', { kind: 'message' }],
+      ])('stays open past a steer from %s', (_, steer) => {
+        appendEvent(db, 's1', 'question', { text: 'rebase or merge?' });
+        appendEvent(db, 's1', 'steer', steer);
+
+        expect(questionOf()?.text).toBe('rebase or merge?');
+        expect(buildDashboardSnapshot(db, repo, NOW).sessions[0]?.needsHuman).toBe(true);
+      });
+
       it('carries a question asked after the last steer', () => {
         appendEvent(db, 's1', 'question', { text: 'answered?' });
-        appendEvent(db, 's1', 'steer', { kind: 'message' });
+        appendEvent(db, 's1', 'steer', { kind: 'message', by: 'operator' });
         appendEvent(db, 's1', 'question', { text: 'and now?' });
 
         expect(questionOf()?.text).toBe('and now?');

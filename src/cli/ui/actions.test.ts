@@ -170,11 +170,14 @@ describe('dashboard actions', () => {
   // The record is `steerSession`'s own (src/core/session-lifecycle.test.ts),
   // so this key and `pup steer` cannot drift apart over what a steer leaves
   // behind, or over which sessions refuse one.
+  // The screen is read-only to a session and the conductor, so the steer is
+  // the operator's, and answers an open question as theirs does (decision 93).
   it('steers through `steerSession`, as `pup steer` does', () => {
     const result = steerSelected(deps, SESSION, 'read docs/05 first');
 
     expect(steerSession).toHaveBeenCalledWith(db, SESSION, 'read docs/05 first', {
       kind: 'manual',
+      by: 'operator',
     });
     expect(result.message).toContain(SESSION);
   });

@@ -607,19 +607,24 @@ export const MAX_QUESTION_OPTIONS = 4;
 /**
  * The question a session asked with `pup session ask`, or the conductor with
  * `pup conductor ask` (`sessionId` null), that is still open (decisions 76,
- * 93): the newest of its `question`, `steer` and `answer` events, when that is
- * a `question`. A steer answers a session's question whoever sent it; only an
- * answer closes the conductor's, which no steer reaches. Its options are cut
- * to `MAX_QUESTION_OPTIONS`.
+ * 93): the newest `question` with no `answer` after it and no steer the
+ * operator sent. The question is the operator's to answer: a steer from the
+ * conductor, a peer or the watchdog types into the pane but leaves it open, so
+ * nothing else can clear the inbox entry before the operator sees it. Its
+ * options are cut to `MAX_QUESTION_OPTIONS`.
  */
 export function openQuestion(db: Database, sessionId: string | null): QuestionEvent | undefined {
-  const newest = db
+  const rows = db
     .prepare(
       `SELECT type, payload FROM events WHERE session_id IS ?
-         AND type IN ('question', 'steer', 'answer') ORDER BY id DESC LIMIT 1`,
+         AND type IN ('question', 'steer', 'answer') ORDER BY id DESC`,
     )
-    .get(sessionId) as Pick<EventRow, 'type' | 'payload'> | undefined;
-  const event = newest && decodeEvent(newest);
+    .iterate(sessionId) as IterableIterator<Pick<EventRow, 'type' | 'payload'>>;
+  let event: SessionEvent | undefined;
+  for (const row of rows) {
+    event = decodeEvent(row);
+    if (event.type !== 'steer' || event.by === 'operator') break;
+  }
   if (event?.type !== 'question') return undefined;
   // The payload is session-writable: past the cap is never an option, so the
   // inbox's numbers and `pup answer`'s cannot disagree.

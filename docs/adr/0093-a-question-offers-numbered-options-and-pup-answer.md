@@ -38,10 +38,14 @@
     paste landed. A tell that did not land leaves the question open and says so.
 
     *Open questions are read in one place.* `openQuestion(db, sessionId | null)` in the session
-    repository is the newest of a row's `question`, `steer` and `answer` events, when that is a
-    `question`, with its options cut to four. A session's question still closes on any steer
-    (decision 76) and now on an answer too. The conductor's closes only on an answer, since no
-    steer reaches it. The dashboard, `pup answer` and the TUI all read through it, so the inbox's
+    repository is the newest `question` with no `answer` after it and no steer whose `by` is
+    `operator`, with its options cut to four. This narrows decision 76, where any steer closed it:
+    the question is the operator's, so a steer from the conductor (which `pup answer` refuses, but
+    which can still `pup steer` words that read as an answer), a peer, the watchdog or an unnamed
+    sender types into the pane but leaves the inbox entry standing until the operator has seen it.
+    `pup steer` from the operator and `pup ui`'s `s`, which is read-only to a session and the
+    conductor and so records its steer as the operator's, still close it. The conductor's question
+    closes only on an answer, since no steer reaches it. The dashboard, `pup answer` and the TUI all read through it, so the inbox's
     numbers and the answer's cannot disagree. The payload is session-writable, so the dashboard
     scrubs the text and every option with `sanitizeReason` (decision 29) and drops a recommendation
     that names no option. The inbox also swaps arrows and emoji for `-`, as it already did for the
