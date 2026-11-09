@@ -54,8 +54,10 @@ export interface RetireOutcome {
  * its work. Every refusal comes before anything moves: the session must be
  * merged with a PR that GitHub says is CLOSED, and the PR the operator names
  * must be MERGED into the same target. Then, under the merge lock, the
- * session's worktree and branch go and a `retired` event naming both PRs drops
- * the session from the inbox. The operator names the superseding PR; nothing
+ * session's worktree and branch go and a `retired` event naming both PRs is
+ * recorded. The inbox does not read that event yet: until task t-mw6a2pfo
+ * makes `openPullRequest` stop at it, the session keeps its `PR opened, not
+ * landed` line in Needs you. The operator names the superseding PR; nothing
  * reads it off PR comments. A re-run after a failure under the lock is safe:
  * the teardown skips what is already gone, and the event is the lock's last
  * write.
