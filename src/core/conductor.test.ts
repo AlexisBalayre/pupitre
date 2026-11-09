@@ -172,6 +172,24 @@ describe('startConductor', () => {
     expect(prompt).toContain('pup launch <task> --model opus');
   });
 
+  // A conductor stopped or crashed while unreachable leaves its clock; the
+  // next one starts its own, with its ten minutes' grace (decision 168).
+  it("drops a stopped conductor's blocked clock before the new window opens", () => {
+    const dir = join(projectPaths(REPO).root, 'conductor');
+    const file = join(dir, 'blocked-since');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(file, `${Date.now() - 900 * 60_000}\n`);
+    let clockAtLaunch: boolean | undefined;
+    vi.mocked(launchConductor).mockImplementationOnce((opts) => {
+      clockAtLaunch = existsSync(file);
+      return { sessionId: `conductor-${opts.projectId}`, paneId: '%3', socket: 'sock' };
+    });
+
+    start();
+
+    expect(clockAtLaunch).toBe(false);
+  });
+
   // The conductor owns the CI wait, so the operator's console no longer
   // polls it (decision 90); these are the rules the kickoff must carry.
   it('orders the CI review loop through pup ci wait and pup fix, and never a GitHub merge', () => {
@@ -975,14 +993,12 @@ describe('conductorBlock', () => {
     expect(readInputBox).toHaveBeenCalledWith(PANE);
   });
 
-  it('says nothing, and drops the clock, when no conductor runs', () => {
+  it('says nothing when no conductor runs', () => {
     looks('holds');
     conductorBlock(REPO, T0);
     vi.mocked(conductorPane).mockReturnValueOnce(undefined);
 
     expect(conductorBlock(REPO, LATER)).toBeUndefined();
-    looks('holds');
-    expect(conductorBlock(REPO, LATER + 1)).toBeUndefined();
   });
 
   it('says nothing when the pane cannot be captured', () => {

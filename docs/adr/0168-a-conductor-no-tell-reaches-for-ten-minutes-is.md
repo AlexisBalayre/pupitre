@@ -24,7 +24,10 @@
     Ten minutes, so an operator typing into the conductor, or glancing at a subagent's view, never
     shows up. The clock is the time of the first look that found the box not empty, kept in
     `conductor/blocked-since` beside the session cap, because `pup status` is one-shot and has no
-    earlier reading to compare with. Any look that finds the box empty, or no conductor, drops it.
+    earlier reading to compare with. Any look that finds the box empty drops it, and so does every
+    `pup conductor start` before its window opens: a conductor stopped or crashed while unreachable
+    leaves its clock behind, and the next one, booting or holding its kickoff, would otherwise be
+    named blocked at once.
     Holding a draft and then an overlay keeps one clock, since a tell reaches neither. A tell that
     bounces off the box also starts the clock. So the first worker notice refused, not the
     operator's next `pup status`, is when the ten minutes begin. A file that holds no time, a time

@@ -276,6 +276,10 @@ export function startConductor(
   // Cut and indexed before the launch, so the window opens on a graph that is
   // already there.
   const mcpConfigPath = graphForConductor(binary, req.repoPath, checkoutDir, outDir);
+  // A new conductor starts its own blocked clock: one left by a conductor
+  // stopped or crashed while unreachable would name this one blocked while it
+  // boots, or skip its ten minutes' grace (decision 168).
+  dropBlockedSince(req.repoPath);
   const pane = launchConductor({
     projectId: pid,
     repoPath: req.repoPath,
@@ -472,11 +476,7 @@ function noteConductorBox(repoPath: string, box: InputBoxState, now: number): nu
  */
 export function conductorBlock(repoPath: string, now: number): ConductorBlocked | undefined {
   const pane = conductorPane(projectId(repoPath));
-  if (!pane) {
-    // The next conductor starts its own clock.
-    dropBlockedSince(repoPath);
-    return undefined;
-  }
+  if (!pane) return undefined;
   let box: InputBoxState;
   try {
     box = readInputBox(pane);
