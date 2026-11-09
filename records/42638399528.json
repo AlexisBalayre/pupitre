@@ -1,0 +1,127 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-09T14:54:39.079Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42638399528",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42638399528",
+  "actor": "AlexisBalayre",
+  "commit_sha": "400718224c1ed806b57bf6391a990319a76de6ca",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 292,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "workflow-safety",
+    "conventions",
+    "docs",
+    "context",
+    "simplicity",
+    "guards"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "workflow-safety",
+    "conventions",
+    "docs",
+    "context",
+    "simplicity",
+    "guards"
+  ],
+  "reviewers_skipped": [
+    "maintainability",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": ".github/workflows/pr-status.yml",
+      "line": "92-98",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The carried-importants line also counts importants that were anchored in an earlier round and still have a thread. Resolving that thread used to release the PR. Now the PR stays `review-open` until a later round finds the code changed, so a declined or dismissed important holds it indefinitely.",
+      "body": "**Some carried importants do have a thread, so resolving that thread no longer releases the PR.**\n\n`unthreadedImportants` counts every `N important finding(s) from … still open (not raised again):` line. `carriedLines` (`tools/review/src/review-body.utils.ts:128-137`) writes that line for **every** unresolved `prior_importants` entry. Per the review skill (§3, §9) and `review-metrics.schemas.ts:116-119`, `prior_importants` holds all of the prior record's importants, including the ones anchored inline in their original round. Those still have their original bot thread. So the premise in the comment at L163-165 and in ADR 0165 (\"one carried from the prior round gets none\") holds only for the incremental round's own post.\n\n**Trigger.**\n1. Round 1 anchors important X and opens a thread.\n2. A fix round declines X. `src/core/fix-round.service.ts:355-365` leaves the thread open for the operator.\n3. An incremental round finds X's code unchanged and lists it as still open.\n4. The operator resolves the thread to accept the decline. REVIEW.md §2 allows a PR to merge with an important the user rules wrong.\n\nBefore this PR, `hasOpenBotThread` then went false and the PR read `ready`. Now `unthreadedImportants(summary.body)` returns 1 on every recompute. The status comes only from the code at head, the model can't see thread resolution under CI, and an important is never deferred. So the label stays `review-open` until someone changes code that was judged correct.\n\n```js\nconst counted = /^(\\d+) important findings? (?:with no line in this diff to anchor to|from .+ still open \\(not raised again\\)):$/;\n```\n\nPossible fixes:\n- Count a carried entry only when no bot thread, resolved or not, exists at its location. That needs the listed entries, not just the count line.\n- Or have the poster mark which carried entries were anchored, and count only the others.\n\n<https://github.com/AlexisBalayre/pupitre/blob/400718224c1ed806b57bf6391a990319a76de6ca/.github/workflows/pr-status.yml#L92-L98>",
+      "suggestion": null
+    },
+    {
+      "file": ".github/workflows/pr-status.yml",
+      "line": "166-168",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "`.at(-1)` also selects a no-verdict round's summary (\"**Not reviewed.** Nothing in this round is a verdict…\"), which has no count lines. A failed round therefore cancels the importants still open from the last complete review. If the head then moves without a new review, the PR reads `ready`.",
+      "body": "**A no-verdict or incomplete round's summary replaces the last real one.**\n\n`post-review.script.ts:201-214` writes `REVIEW_HEADING` + `bodyLines(...)` on every round, before it checks the verdict. On a no-verdict path, and on an incomplete one (`review-completeness.utils.ts:21,30,52`), `bodyLines` returns only `**<reason>.** Nothing in this round is a verdict on the diff.` and the re-run prompt (`review-body.utils.ts:150-157`). It writes no count line. The selector below takes the newest such body, so the count drops to 0. The preflight, by contrast, skips these records as priors (`newestCleanRecord`, `preflight.utils.ts:87-94`), so the importants are still owed.\n\n```js\nconst summary = reviews\n  .filter((r) => r.user?.login === \"github-actions[bot]\" && r.body?.startsWith(REVIEW_HEADING))\n  .at(-1);\n```\n\n**A reachable path to `ready`:**\n1. Round 1 on head A posts an unanchored important.\n2. The owner comments `@claude review` on A, and that run ends with no verdict. A gets a `failure` status, and its summary is now the newest.\n3. The PR goes to draft and a comment-only commit C is pushed. The push marker skips drafts.\n4. The PR is marked ready for review. The preflight skips C as comment-only, with the pending \"Not reviewed: only comments…\" status that pr-status does not count as running.\n\nOn C there is then no failure status (A's sits on another SHA), no thread, and a count of 0, so the PR reads `ready` with the important still open. A PR the owner didn't open has no push marker and reaches the same state on any push.\n\nThe suggestion skips bodies whose verdict line is the no-verdict line, anchored so that finding text quoting it can't match. It's worth adding a test case that renders `bodyLines(null, \"Not reviewed: …\", [], 0)`.\n\n<https://github.com/AlexisBalayre/pupitre/blob/400718224c1ed806b57bf6391a990319a76de6ca/.github/workflows/pr-status.yml#L166-L168>",
+      "suggestion": "              const summary = reviews\n                .filter(\n                  (r) =>\n                    r.user?.login === \"github-actions[bot]\" &&\n                    r.body?.startsWith(REVIEW_HEADING) &&\n                    !/^\\*\\*.+\\.\\*\\* Nothing in this round is a verdict on the diff\\.\\r?$/m.test(r.body),\n                )\n                .at(-1);"
+    },
+    {
+      "file": "tools/review/test/unit/pr-status-workflow.test.ts",
+      "line": "23",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "finding() and summary() fixture builders are copied into a new file. review-body-utils.test.ts already holds the same finding()/summary() pair, so this PR adds the 3rd (summary) and 4th (finding) copies.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "correctness",
+      "description": "The reviewer's trigger for the no-verdict-summary finding (a push after a no-verdict round, then a comment-only skip) is unreachable as written. Since ADR 0151 a push doesn't start a review, and the push marker covers owner PRs. The validator confirmed the finding through a draft-cycle path instead, and the posted body uses that path."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 2,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.859805125,
+  "duration_ms": 284889,
+  "num_turns": 20,
+  "tokens": {
+    "input": 20,
+    "output": 14375,
+    "cache_read": 487488,
+    "cache_creation": 72700,
+    "total": 574583
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 122,
+      "output": 41915,
+      "cache_read": 1849812,
+      "cache_creation": 220762,
+      "cost_usd": 2.5306603999999995
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 48,
+      "output": 9409,
+      "cache_read": 258569,
+      "cache_creation": 83349,
+      "cost_usd": 0.3284153999999999
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 274,
+      "cache_read": 0,
+      "cache_creation": 4737,
+      "cost_usd": 0.000729325
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "scripts/adr-index.sh"
+    }
+  ]
+}
