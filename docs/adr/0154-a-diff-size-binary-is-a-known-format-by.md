@@ -13,10 +13,12 @@
     5 000-line source file then counted as 0 lines and was not flagged.
     *The rule.* `gitDiffBinaryRecount` skips a file only when every side of the merge-base
     diff it exists on is a known binary (`blobIsKnownBinary`, `src/core/git-diff.client.ts`).
-    A side is one when five things hold. It is a blob of at most `BINARY_FREE_MAX_BYTES`
-    (1 MiB). Its first 8000 bytes hold a NUL. Its bytes open with the magic number of a format
+    A side is one when five things hold. It is a regular file (mode 100644 or 100755, never
+    a 120000 symlink) of at most `BINARY_FREE_MAX_BYTES` (1 MiB). Its first 8000 bytes hold
+    a NUL. Its bytes open with the magic number of a format
     in `BINARY_FORMATS`. Its path ends with an extension that same format is committed under,
-    in any ASCII case. And its last 64 KiB plus 22 bytes hold no zip end-of-central-directory
+    in any ASCII case, and only ASCII is folded: `toLowerCase` would read `.mKv` written with
+    the Kelvin sign U+212A as `.mkv`. And no byte of it starts a zip end-of-central-directory
     signature (`PK\x05\x06`). The skips one diff makes also share a budget of
     `BINARY_FREE_TOTAL_MAX_BYTES` (4 MiB), spent in path order with the bytes each file's
     branch side holds; a file the branch deleted spends nothing. The file that would go past
@@ -30,15 +32,19 @@
     files as binary files that are no known format within 1 MiB a file and 4 MiB a diff. The ledger description
     keeps its `Text files git reports as binary` wording, so a re-gate still matches an
     entry filed before this decision.
-    *Which magics.* Each magic in the table holds a byte that no source text can hold where
-    it sits: a NUL, a control character, or a byte that cannot start UTF-8. That byte comes
-    before any byte that could open a comment or a string, so a JavaScript, TypeScript or
-    Python loader that reads a file from its first byte rejects one that opens with it. A
-    zip reader starts from the other end: Python's `zipimport` and `runpy` and `java -jar`
-    find a zip by the end record in its last 64 KiB plus 22 bytes, whatever the extension
-    or first bytes. A PNG with a zip appended is then a module path that one counted line
-    imports (`sys.path.insert(0, 'assets/x.png')`), with megabytes of source compressed
-    inside, which is why a tail holding that record is never a known binary. What is left: PNG, JPEG, ICO, TIFF,
+    *Which magics.* Each magic in the table holds a NUL, a control character or a non-ASCII
+    byte before any byte that could open a comment or a string. That keeps a loader reading
+    UTF-8 from a file's first byte from running it, but it does not make the bytes something
+    no source text can hold: decoded as Latin-1, a JPEG opens with `ÿØÿ`, a valid JavaScript
+    identifier. What bounds the risk is the caps, 1 MiB a file and 4 MiB a diff, not the
+    magic. A zip reader starts from the other end: Python's `zipimport` and `runpy` and
+    `java -jar` find a zip by its end record, whatever the extension or first bytes. A PNG
+    with a zip appended is then a module path that one counted line imports
+    (`sys.path.insert(0, 'assets/x.png')`), with megabytes of source compressed inside. How
+    far back a reader searches varies: the classic reach is 64 KiB plus 22 bytes, and a
+    Zip64-aware `zipimport` (Python 3.13 on) goes further. So the whole blob, already capped
+    at 1 MiB and in memory, is searched, and one holding that record anywhere is never a
+    known binary. What is left: PNG, JPEG, ICO, TIFF,
     WebM/Matroska, MP3 frames and TrueType's `\0\x01\0\0`. Left out, because the magic is
     printable and the file can be written as `GIF89a=0//\0`: GIF, RIFF (WebP, WAV, AVI),
     BMP, PDF, WOFF, WOFF2, OTF, Ogg, FLAC, an MP3 `ID3` tag and TrueType's `true`. MP4 and
@@ -54,7 +60,7 @@
     a test, because the test split takes only the `.test.ts` suffix. And every path outside
     `docs/` counts as source (decision 110), so the rule would flag every image outside
     `docs/`. Reading "source path" as a directory such as `src/` or `lib/` is beaten by
-    moving the file. Tightening the magics and refusing a zip tail stop the loaders instead.
+    moving the file. Tightening the magics and refusing a zip end record stop most loaders instead.
     The 1 MiB file cap and the 4 MiB diff budget then bound how much known formats can carry
     together, wherever they sit.
     *Ceilings.* A repo committing a format outside the table, a known one over 1 MiB, or
@@ -62,12 +68,14 @@
     (decision 17). Which file goes past the budget follows path order, not size. Its patch is then parsed as text, and a
     patch larger than `GIT_MAX_BUFFER` (64 MiB) errors the gate. That costs a repo
     committing GIFs, WebP, PDFs, web fonts or videos one acceptance per merge that adds one.
-    A loader that runs a file past bytes no source can hold still runs a known binary under
+    A loader that runs a file past bytes it cannot run still runs a known binary under
     the cap: PHP's `include` prints a PNG's bytes and runs a `<?php` block inside it, and a
     shell running a file line by line goes on past the lines it cannot run. Up to 1 MiB of
-    such content per file, and 4 MiB per diff, goes uncounted. A zip reader that searches
-    further back than the end record's 64 KiB reach is not covered. Symlink blobs holding a NUL, which no checkout
-    writes, are recounted and flagged. The recount still runs `merge-base` and one `diff`
+    such content per file, and 4 MiB per diff, goes uncounted, and so does a loader that
+    decodes the magic as text it accepts, such as Latin-1. A real image whose compressed data
+    happens to hold `PK\x05\x06` is flagged, about one 1 MiB file in 4 096. Symlink blobs,
+    which hold a NUL only when no checkout wrote them, are recounted and flagged by mode,
+    whatever their bytes. The recount still runs `merge-base` and one `diff`
     per `-\t-` file, so many NUL-carrying files still cost two processes each. Batching
     that means parsing one multi-file patch, and stays owed.
     *Reads from the top of the tree.* The merge gate does not call `assertNoWorktreeConfig`,
@@ -111,8 +119,11 @@
     and `%PDF-//\0` in a `.pdf`, `x=1;ftyp//\0` in an `.mp4`, a `.zip`, a `.wasm`, and a
     PNG one byte over the cap. A known-format path whose blob object is deleted throws
     instead of returning null. `readBlobs` returns each blob byte for byte (a NUL, an empty
-    blob, a repeat). A PNG with a zip end record appended recounts, and one whose record sits
-    past the 64 KiB reach stays null. With a shared budget, a deleted PNG spends nothing, a
+    blob, a repeat). A PNG with a zip end record appended recounts, and so does one whose
+    record sits more than 64 KiB plus 22 bytes before its end. A symlink blob opening with
+    the PNG signature and a NUL, a `.mKv` spelled with the Kelvin sign and a `.png` with the
+    PNG signature and no NUL under `* -diff` all recount. Every call passes the budget, which
+    has no default: a fresh 4 MiB per call would cap nothing. With a shared budget, a deleted PNG spends nothing, a
     PNG the budget covers is skipped and spends its size, and the next one is recounted.
     `readBlobs` refuses a missing oid, a size one byte short (the buffer overflows)
     or long, and, before running git, sizes that add past 64 MiB. In `merge-gate.test.ts`, a

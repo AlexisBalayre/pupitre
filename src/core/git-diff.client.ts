@@ -743,10 +743,13 @@ const BINARY_SNIFF_BYTES = 8000;
  * The binary formats a diff-size count may skip (decision 154): the
  * extensions each is committed under and the bytes it opens with. A NUL is
  * not enough, as one in a source file's comment makes git call it binary.
- * Every magic holds a byte no source text can hold where it sits (a NUL, a
- * control or a byte that does not start UTF-8) before any byte that could
- * open a comment or a string, so no JavaScript, TypeScript or Python loader
- * runs a file that opens with it. Formats whose magic is printable (GIF,
+ * Every magic holds a NUL, a control or a non-ASCII byte before any byte
+ * that could open a comment or a string, which keeps a loader reading UTF-8
+ * from its first byte from running the file. That does not hold for every
+ * loader: decoded as Latin-1, a JPEG opens with `ÿØÿ`, a valid JavaScript
+ * identifier. So the caps (`BINARY_FREE_MAX_BYTES`,
+ * `BINARY_FREE_TOTAL_MAX_BYTES`) bound what a known binary can carry
+ * uncounted. Formats whose magic is printable (GIF,
  * RIFF, BMP, PDF, WOFF, Ogg, FLAC, an MP3 `ID3` tag, a TrueType `true`) or
  * sits past free leading bytes (MP4's `ftyp`) are left out, as are archives
  * and compiled code, whose content is files or code a loader unpacks. A file
@@ -779,18 +782,22 @@ export const BINARY_FREE_MAX_BYTES = 1024 * 1024;
 export const BINARY_FREE_TOTAL_MAX_BYTES = 4 * 1024 * 1024;
 
 /**
- * A zip's end-of-central-directory signature, and how far from a file's end
- * it may sit: the 22-byte record plus a comment of up to 64 KiB. Python's
- * `zipimport` and `runpy` and `java -jar` find a zip by this record whatever
- * the file's extension or first bytes, so a PNG with a zip appended is a
- * module path one counted line can import (decision 154).
+ * A zip's end-of-central-directory signature. Python's `zipimport` and
+ * `runpy` and `java -jar` find a zip by this record whatever the file's
+ * extension or first bytes, so a PNG with a zip appended is a module path one
+ * counted line can import. How far back a reader searches for it varies (a
+ * Zip64-aware `zipimport` goes past the classic 64 KiB plus 22 bytes), so the
+ * whole blob, already capped and read, is searched (decision 154).
  */
 const ZIP_EOCD = Buffer.from('PK\x05\x06', 'latin1');
-const ZIP_EOCD_REACH = 64 * 1024 + 22;
 
-/** The formats `path`'s extension, in any ASCII case, names. */
+/**
+ * The formats `path`'s extension names, in any ASCII case. Only ASCII is
+ * folded: `toLowerCase` folds the Kelvin sign U+212A to `k`, and `.mKv`
+ * written with it names no format a reader opens as one.
+ */
 function formatsNamed(path: string): typeof BINARY_FORMATS {
-  const name = basename(path).toLowerCase();
+  const name = basename(path).replace(/[A-Z]/g, (letter) => letter.toLowerCase());
   return BINARY_FORMATS.filter((format) =>
     format.extensions.some((extension) => name.endsWith(extension)),
   );
@@ -798,9 +805,10 @@ function formatsNamed(path: string): typeof BINARY_FORMATS {
 
 /**
  * The size of `path` on `rev` when it is a binary to skip, false when it is
- * not: a blob no larger than `BINARY_FREE_MAX_BYTES`, binary by content, never
- * by attribute, opening with the magic of a format its extension names, and
- * with no zip end record in its tail (`ZIP_EOCD`). Only an empty `ls-tree`
+ * not: a regular file (mode 100644 or 100755, never a 120000 symlink) no
+ * larger than `BINARY_FREE_MAX_BYTES`, binary by content, never by attribute,
+ * opening with the magic of a format its extension names, and holding no zip
+ * end record anywhere (`ZIP_EOCD`). Only an empty `ls-tree`
  * listing means the side does not exist and answers undefined; a git that
  * fails, times out or is killed throws, as reading a failed answer as absent
  * would skip the file uncounted. The entry is read by the oid `ls-tree`
@@ -833,11 +841,12 @@ function blobIsKnownBinary(
     return tab !== -1 && line.slice(tab + 1) === path;
   });
   if (entry === undefined) return undefined;
-  const [, type, oid = '', size] = entry.slice(0, entry.indexOf('\t')).split(/ +/);
-  if (type !== 'blob' || Number(size) > BINARY_FREE_MAX_BYTES) return false;
+  const [mode, , oid = '', size] = entry.slice(0, entry.indexOf('\t')).split(/ +/);
+  if (mode !== '100644' && mode !== '100755') return false;
+  if (Number(size) > BINARY_FREE_MAX_BYTES) return false;
   const [blob = Buffer.alloc(0)] = readBlobs(repoPath, [{ oid, size: Number(size) }]);
   if (!blob.subarray(0, BINARY_SNIFF_BYTES).includes(0)) return false;
-  if (blob.subarray(-ZIP_EOCD_REACH).includes(ZIP_EOCD)) return false;
+  if (blob.includes(ZIP_EOCD)) return false;
   const known = formats.some(({ magic }) =>
     magic.some((bytes) => blob.subarray(0, bytes.length).equals(Buffer.from(bytes, 'latin1'))),
   );
@@ -860,15 +869,16 @@ function blobIsKnownBinary(
  * it binary. So the file is skipped only when every side it exists on is a
  * known binary (`blobIsKnownBinary`), and a path no format names is recounted
  * unread (decision 154). A skip spends the branch side's bytes from `budget`,
- * which one diff's calls share, and a file the budget cannot cover is
- * recounted (`BINARY_FREE_TOTAL_MAX_BYTES`).
+ * which every call for one diff must share (start it at
+ * `BINARY_FREE_TOTAL_MAX_BYTES`), and a file the budget cannot cover is
+ * recounted. It has no default: a fresh budget per call would cap nothing.
  */
 export function gitDiffBinaryRecount(
   repoPath: string,
   target: string,
   branch: string,
   path: string,
-  budget: { bytes: number } = { bytes: BINARY_FREE_TOTAL_MAX_BYTES },
+  budget: { bytes: number },
 ): { added: number; deleted: number } | null {
   const base = runGit(repoPath, ['merge-base', target, branch]).trim();
   const formats = formatsNamed(path);

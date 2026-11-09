@@ -18,6 +18,7 @@ import {
   assertNoArmedGitDrivers,
   assertNoWorktreeConfig,
   BINARY_FREE_MAX_BYTES,
+  BINARY_FREE_TOTAL_MAX_BYTES,
   currentBranch,
   gitDiffAddedLines,
   gitDiffBinaryRecount,
@@ -105,7 +106,7 @@ describe('a changed path that reads as pathspec magic', () => {
     commitAll(repo, 'magic');
 
     expect(gitDiffAddedLines(repo, 'main', 'feature')).toEqual({ ':(top)foo': [1, 2] });
-    expect(gitDiffBinaryRecount(repo, 'main', 'feature', ':(top)foo')).toEqual({
+    expect(gitDiffBinaryRecount(repo, 'main', 'feature', ':(top)foo', fullBudget())).toEqual({
       added: 2,
       deleted: 0,
     });
@@ -153,7 +154,10 @@ describe('a changed NFD path with an NFC sibling under core.precomposeUnicode', 
   it('recounts the NFD file when its NFC sibling is binary', () => {
     const repo = siblingRepo('x\0y\n');
 
-    expect(gitDiffBinaryRecount(repo, 'main', 'feature', nfd)).toEqual({ added: 3, deleted: 0 });
+    expect(gitDiffBinaryRecount(repo, 'main', 'feature', nfd, fullBudget())).toEqual({
+      added: 3,
+      deleted: 0,
+    });
   });
 });
 
@@ -340,6 +344,11 @@ describe('gitDiffNumstat under a session-written diff.renames=copies', () => {
   });
 });
 
+/** The budget one diff's known-binary skips start from (decision 154). */
+function fullBudget(): { bytes: number } {
+  return { bytes: BINARY_FREE_TOTAL_MAX_BYTES };
+}
+
 // `--text` restores the `-U0` patch above but not `--numstat`: under the same
 // `* -diff` line every file reads `-\t-`, and a null skipped as a real binary
 // lets any diff count as zero changed lines (decision 53).
@@ -364,7 +373,10 @@ describe('gitDiffBinaryRecount', () => {
     expect(gitDiffNumstat(repo, 'main', 'feature')).toEqual([
       { path: 'a.ts', added: null, deleted: null },
     ]);
-    expect(gitDiffBinaryRecount(repo, 'main', 'feature', 'a.ts')).toEqual({ added: 3, deleted: 2 });
+    expect(gitDiffBinaryRecount(repo, 'main', 'feature', 'a.ts', fullBudget())).toEqual({
+      added: 3,
+      deleted: 2,
+    });
   });
 
   it('recounts a new text file under core.attributesFile', () => {
@@ -373,7 +385,7 @@ describe('gitDiffBinaryRecount', () => {
     writeFileSync(attributes, '* binary\n');
     sh(repo, 'git', 'config', 'core.attributesFile', attributes);
 
-    expect(gitDiffBinaryRecount(repo, 'main', 'feature', 'fresh.ts')).toEqual({
+    expect(gitDiffBinaryRecount(repo, 'main', 'feature', 'fresh.ts', fullBudget())).toEqual({
       added: 2,
       deleted: 0,
     });
@@ -418,13 +430,13 @@ describe('gitDiffBinaryRecount', () => {
     // The signature's CR and LF make its first three lines; the fourth is `line`.
     expect(gitDiffAddedLines(repo, 'main', 'feature')['image.png']).toEqual([3, 5]);
     for (const path of paths) {
-      expect(gitDiffBinaryRecount(repo, 'main', 'feature', path)).toBeNull();
+      expect(gitDiffBinaryRecount(repo, 'main', 'feature', path, fullBudget())).toBeNull();
     }
 
     writeFileSync(join(repo, '.git', 'info', 'attributes'), '* -diff\n');
 
     for (const path of paths) {
-      expect(gitDiffBinaryRecount(repo, 'main', 'feature', path)).toBeNull();
+      expect(gitDiffBinaryRecount(repo, 'main', 'feature', path, fullBudget())).toBeNull();
     }
   });
 
@@ -438,11 +450,11 @@ describe('gitDiffBinaryRecount', () => {
       { path: 'a.ts', added: null, deleted: null },
       { path: 'fresh.js', added: null, deleted: null },
     ]);
-    expect(gitDiffBinaryRecount(repo, 'main', 'feature', 'a.ts')).toEqual({
+    expect(gitDiffBinaryRecount(repo, 'main', 'feature', 'a.ts', fullBudget())).toEqual({
       added: 5001,
       deleted: 1,
     });
-    expect(gitDiffBinaryRecount(repo, 'main', 'feature', 'fresh.js')).toEqual({
+    expect(gitDiffBinaryRecount(repo, 'main', 'feature', 'fresh.js', fullBudget())).toEqual({
       added: 5001,
       deleted: 0,
     });
@@ -462,19 +474,19 @@ describe('gitDiffBinaryRecount', () => {
     );
 
     // The signature splits into three lines at its CR and LF.
-    expect(gitDiffBinaryRecount(repo, 'main', 'feature', 'swapped.png')).toEqual({
+    expect(gitDiffBinaryRecount(repo, 'main', 'feature', 'swapped.png', fullBudget())).toEqual({
       added: 2,
       deleted: 3,
     });
-    expect(gitDiffBinaryRecount(repo, 'main', 'feature', 'text.png')).toEqual({
+    expect(gitDiffBinaryRecount(repo, 'main', 'feature', 'text.png', fullBudget())).toEqual({
       added: 2,
       deleted: 1,
     });
-    expect(gitDiffBinaryRecount(repo, 'main', 'feature', 'code.js')).toEqual({
+    expect(gitDiffBinaryRecount(repo, 'main', 'feature', 'code.js', fullBudget())).toEqual({
       added: 4,
       deleted: 0,
     });
-    expect(gitDiffBinaryRecount(repo, 'main', 'feature', 'gif.png')).toEqual({
+    expect(gitDiffBinaryRecount(repo, 'main', 'feature', 'gif.png', fullBudget())).toEqual({
       added: 2,
       deleted: 0,
     });
@@ -499,21 +511,23 @@ describe('gitDiffBinaryRecount', () => {
     );
 
     for (const path of ['anim.gif', 'font.ttf', 'doc.pdf', 'clip.mp4', 'lib.zip', 'mod.wasm']) {
-      expect(gitDiffBinaryRecount(repo, 'main', 'feature', path)).toEqual({
+      expect(gitDiffBinaryRecount(repo, 'main', 'feature', path, fullBudget())).toEqual({
         added: 4,
         deleted: 0,
       });
     }
     // The signature's CR and LF make three lines, then the IHDR line and the filler.
-    expect(gitDiffBinaryRecount(repo, 'main', 'feature', 'big.png')).toEqual({
+    expect(gitDiffBinaryRecount(repo, 'main', 'feature', 'big.png', fullBudget())).toEqual({
       added: 4,
       deleted: 0,
     });
   });
 
-  // zipimport, runpy and `java -jar` find a zip by the end record in its tail,
-  // whatever comes first, so a PNG with a zip appended is an importable module.
-  it('recounts a known binary with a zip end record in its last 64 KiB', () => {
+  // zipimport, runpy and `java -jar` find a zip by its end record, whatever
+  // comes first, so a PNG with a zip appended is an importable module. A
+  // Zip64-aware zipimport searches past the classic 64 KiB plus 22 bytes, so
+  // a record anywhere in the blob counts.
+  it('recounts a known binary with a zip end record anywhere in it', () => {
     const endRecord = `PK\x05\x06${'\0'.repeat(18)}`;
     const repo = repoWith(
       { 'base.ts': 'one\n' },
@@ -523,11 +537,92 @@ describe('gitDiffBinaryRecount', () => {
       },
     );
 
-    expect(gitDiffBinaryRecount(repo, 'main', 'feature', 'zipped.png')).toEqual({
+    expect(gitDiffBinaryRecount(repo, 'main', 'feature', 'zipped.png', fullBudget())).toEqual({
       added: 4,
       deleted: 0,
     });
-    expect(gitDiffBinaryRecount(repo, 'main', 'feature', 'far.png')).toBeNull();
+    // The signature's CR and LF make three lines; the record ends the third.
+    expect(gitDiffBinaryRecount(repo, 'main', 'feature', 'far.png', fullBudget())).toEqual({
+      added: 4,
+      deleted: 0,
+    });
+  });
+
+  // A known binary is a regular file: a symlink blob holding a PNG signature
+  // and a NUL is no image a checkout writes, so it is recounted (decision 154).
+  it('recounts a symlink whose blob opens with a known magic and holds a NUL', () => {
+    const repo = repoWith({ 'base.ts': 'one\n' }, { 'other.ts': 'x\n' });
+    const oid = execFileSync('git', ['hash-object', '-w', '--stdin'], {
+      cwd: repo,
+      env: GIT_ENV,
+      input: png('q\n'),
+      encoding: 'utf8',
+    }).trim();
+    execFileSync('git', ['update-index', '--index-info'], {
+      cwd: repo,
+      env: GIT_ENV,
+      input: `120000 ${oid}\tlink.png\n`,
+      encoding: 'utf8',
+    });
+    sh(repo, 'git', 'commit', '-q', '-m', 'link');
+
+    expect(
+      execFileSync('git', ['ls-tree', 'feature', 'link.png'], {
+        cwd: repo,
+        env: GIT_ENV,
+        encoding: 'utf8',
+      }),
+    ).toMatch(/^120000 blob /);
+    // The signature's CR and LF make three lines; `q` ends the third.
+    expect(gitDiffBinaryRecount(repo, 'main', 'feature', 'link.png', fullBudget())).toEqual({
+      added: 3,
+      deleted: 0,
+    });
+  });
+
+  // `toLowerCase` folds the Kelvin sign U+212A to `k`, which made `.mKv`
+  // written with it name Matroska. Written through the index, so no file
+  // system or precompose step rewrites the name.
+  it('folds only ASCII case in the extension', () => {
+    const repo = repoWith({ 'base.ts': 'one\n' }, { 'other.ts': 'x\n' });
+    const path = 'clip.mKv';
+    const oid = execFileSync('git', ['hash-object', '-w', '--stdin'], {
+      cwd: repo,
+      env: GIT_ENV,
+      input: `\x1a\x45\xdf\xa3\0\n${'module.exports = 1;\n'.repeat(3)}`,
+      encoding: 'latin1',
+    }).trim();
+    execFileSync('git', ['-c', 'core.precomposeUnicode=false', 'update-index', '--index-info'], {
+      cwd: repo,
+      env: GIT_ENV,
+      input: `100644 ${oid}\t${path}\n`,
+      encoding: 'utf8',
+    });
+    sh(repo, 'git', 'commit', '-q', '-m', 'kelvin');
+
+    expect(gitDiffBinaryRecount(repo, 'main', 'feature', path, fullBudget())).toEqual({
+      added: 4,
+      deleted: 0,
+    });
+  });
+
+  // Magic alone is not enough: with no NUL in its first 8000 bytes a `.png`
+  // is text to git, and under a forged `* -diff` it is still recounted.
+  it('recounts a .png that opens with the PNG magic but holds no NUL', () => {
+    const repo = repoWith(
+      { 'base.ts': 'one\n' },
+      { 'nonul.png': Buffer.from('\x89PNG\r\n\x1a\nx\ny\n', 'latin1') },
+    );
+    writeFileSync(join(repo, '.git', 'info', 'attributes'), '* -diff\n');
+
+    expect(gitDiffNumstat(repo, 'main', 'feature')).toEqual([
+      { path: 'nonul.png', added: null, deleted: null },
+    ]);
+    // The signature's CR and LF make two lines, then `x` and `y`.
+    expect(gitDiffBinaryRecount(repo, 'main', 'feature', 'nonul.png', fullBudget())).toEqual({
+      added: 4,
+      deleted: 0,
+    });
   });
 
   // Many files under the per-file cap would otherwise add up to an unread tree.
@@ -563,7 +658,7 @@ describe('gitDiffBinaryRecount', () => {
     }).trim();
     unlinkSync(join(repo, '.git', 'objects', oid.slice(0, 2), oid.slice(2)));
 
-    expect(() => gitDiffBinaryRecount(repo, 'main', 'feature', 'image.png')).toThrow(
+    expect(() => gitDiffBinaryRecount(repo, 'main', 'feature', 'image.png', fullBudget())).toThrow(
       /no byte count for .*: its object cannot be read/,
     );
   });
@@ -578,7 +673,10 @@ describe('gitDiffBinaryRecount', () => {
 
     writeFileSync(join(repo, '.git', 'info', 'attributes'), '* -diff\n');
 
-    expect(gitDiffBinaryRecount(repo, 'main', 'feature', 'a.ts')).toEqual({ added: 2, deleted: 0 });
+    expect(gitDiffBinaryRecount(repo, 'main', 'feature', 'a.ts', fullBudget())).toEqual({
+      added: 2,
+      deleted: 0,
+    });
   });
 });
 
