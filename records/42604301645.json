@@ -1,0 +1,118 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-09T10:54:49.177Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42604301645",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42604301645",
+  "actor": "AlexisBalayre",
+  "commit_sha": "314b44a75414f258955ce7ebeb4cb898090d0b9e",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 284,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "conventions",
+    "docs",
+    "simplicity",
+    "guards"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "conventions",
+    "docs",
+    "simplicity",
+    "guards"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/test-slot.service.ts",
+      "line": "512",
+      "description": "Inside a session, the pre-commit hook runs `pup session test --related` through xargs. So the new 8-minute bound also applies to every worker commit with staged source. When the bound runs out, xargs turns exit 75 into 123, the hook prints 'Tests related to the staged files failed. Fix them before committing.' and the commit fails. Decision 140 (the new ADR) wrongly says commit-time tests do not go through the slots.",
+      "status": "unresolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/test-slot.test.ts",
+      "line": "491-507",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The 'live gate's slot' control fills both slots (slot-1 holds a live session), so the worker waits even with decision 140's gate check removed. It doesn't show that a live gate's slot keeps a worker off a free slot, which is what ADR 0140's Tests paragraph says the dead/live pair pins. Today the in-process test at L423 covers that rule; this pair adds no cross-process check of it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "1367-1369",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The conductor-context change (\"the merge gate's run first and alone but for the runs already going\") has no test. profile-compiler-context.test.ts:1382 only checks 'A session waiting there is not stalled.', so reverting this sentence still passes, even though ADR 0140's Tests paragraph says the conductor's context states that a session's run waits while a gate runs its tests.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Round 3 re-review of the same head as the prior record (314b44a). The prior important (pre-commit hook routes worker commits through the 8-minute bound; ADR 0140 lines 34-44 say otherwise) remains unresolved: the ADR text at this head still says the commit-time suite does not go through the slots. Skipped review-security (slot-acquisition logic, compiled profile prose and an ADR changed; no new shell-out, input handling or hook generation), review-context (no spec, protocol or infra surface), review-spec (no closing keywords or linked issues), review-workflow-safety (no workflow change) and review-maintainability (not on the default roster). Dropped the first nit's suggestion because suggestions are only carried on important findings."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.63783425,
+  "duration_ms": 146028,
+  "num_turns": 15,
+  "tokens": {
+    "input": 14,
+    "output": 9926,
+    "cache_read": 343492,
+    "cache_creation": 50472,
+    "total": 403904
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 50,
+      "output": 26537,
+      "cache_read": 728408,
+      "cache_creation": 118354,
+      "cost_usd": 1.4198075999999997
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 34,
+      "output": 5095,
+      "cache_read": 232437,
+      "cache_creation": 57248,
+      "cost_usd": 0.21738169999999998
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 147,
+      "cache_read": 0,
+      "cache_creation": 4570,
+      "cost_usd": 0.00064495
+    }
+  ],
+  "permission_denials": []
+}
