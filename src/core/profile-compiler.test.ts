@@ -10,10 +10,15 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { saveSessionEnv } from '../claude/session-runtime.service.js';
 import { makeInput } from '../test/helpers/profile-compiler.mock.js';
 import { tempDir } from '../test/temp-dir.mock.js';
 import { DEFAULT_BASE_PROFILE } from './default-profile.constants.js';
-import { HOOK_TIMEOUT_SECONDS, SLIM_CONTEXT_ENV } from './profile.constants.js';
+import {
+  HOOK_TIMEOUT_SECONDS,
+  SLIM_CONTEXT_ENV,
+  WORKER_SUBAGENT_ENV,
+} from './profile.constants.js';
 import * as ProfileCompiler from './profile-compiler.service.js';
 
 // Many tests here spawn real git and sh; under load or coverage the 5 s default
@@ -641,6 +646,18 @@ describe('worker search delegation (decision 152)', () => {
       CLAUDE_CODE_SUBAGENT_MODEL_FORCE: '1',
       CLAUDE_CODE_SUBAGENT_EFFORT: 'low',
     });
+  });
+
+  it('keeps the pin when --session-env names its variables, so the shell cannot override it', () => {
+    vi.stubEnv('HOME', tempDir('pup-session-env-home-'));
+    try {
+      saveSessionEnv('/repo', ['CLAUDE_CODE_SUBAGENT_MODEL', 'CLAUDE_CODE_SUBAGENT_MODEL_FORCE']);
+      const settings = settingsOf(ProfileCompiler.compileProfile(makeInput()));
+
+      expect(settings.env).toEqual({ ...SLIM_CONTEXT_ENV, ...WORKER_SUBAGENT_ENV });
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it("leaves the conductor's deny list and env unpinned", () => {

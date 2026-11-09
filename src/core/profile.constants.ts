@@ -36,7 +36,9 @@ export const SLIM_CONTEXT_ENV = {
  * `CLAUDE_CODE_SUBAGENT_MODEL`. Only `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` makes
  * the pin win, and it also removes the Agent tool's `model` parameter. It pins
  * every subagent a worker spawns. The conductor's security review needs Opus,
- * so the conductor never gets it.
+ * so the conductor never gets it. A value `pup init --session-env` hands the
+ * window for one of these names is ignored: Claude Code applies the settings
+ * file's `env` over the window's inherited environment, so the pin wins.
  */
 export const WORKER_SUBAGENT_ENV = {
   CLAUDE_CODE_SUBAGENT_MODEL: WORKER_SUBAGENT_ROUTE.model,

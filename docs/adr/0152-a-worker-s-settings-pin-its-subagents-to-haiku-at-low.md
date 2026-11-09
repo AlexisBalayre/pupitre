@@ -1,11 +1,12 @@
-# 0152. A worker's settings pin its subagents to Haiku at low effort, and its kickoff sends every where-is and how-does question to Explore (2026-11-08, amends 107 and 129)
+# 0152. A worker's settings pin its subagents to Haiku at low effort, and its kickoff sends every where-is and how-does question to Explore (2026-11-08, amends 106, 107 and 129)
 
 - Status: accepted
+- Amends: [0106](0106-pup-init-session-env-a-b-names-the.md)
 - Amends: [0107](0107-every-compiled-settings-file-turns-off-the-artifact.md)
 - Amends: [0129](0129-workers-and-the-conductor-learn-the-code-through-an-explore.md)
 
 152. **A worker's settings pin its subagents to Haiku at low effort, and its kickoff sends every
-    where-is and how-does question to Explore (2026-11-08, amends 107 and 129).**
+    where-is and how-does question to Explore (2026-11-08, amends 106, 107 and 129).**
     Over five days, 38% of 3,218 worker turns were grep, sed, cat or Read turns, and most of them
     ran on Opus. Decision 129 already told a worker to delegate. It named `model: "sonnet"` on the
     Agent call, which is an instruction and not a pin, and it framed delegation as learning the
@@ -27,6 +28,19 @@
     still `SLIM_CONTEXT_ENV`. Its security review runs a general-purpose subagent on Opus
     (decision 118), and FORCE would silently put that review on Haiku. Its `## Exploring code`
     section keeps decision 129's text word for word, `model: "sonnet"` included.
+    *The pin outranks `--session-env` (#276's CI review, operator's call).* Decision 106 lets a
+    run hand every window `CLAUDE_CODE_SUBAGENT_MODEL(_FORCE)` from the launching shell, through
+    the window's `tmux -e`. In a worker, the compiled pin wins. `--session-env` may add variables,
+    but it never overrides a key `WORKER_SUBAGENT_ENV` sets. The compiler does not read the
+    recorded names, and Claude Code applies a settings file's `env` over the environment the
+    process inherited. That was checked on 2.1.319: with `CLAUDE_CODE_SUBAGENT_MODEL=claude-sonnet-5-5`
+    and `CLAUDE_CODE_SUBAGENT_MODEL_FORCE=0` in the shell and the pin in `--settings`, the
+    window's Bash saw `claude-haiku-5-5` and `1`. So a worker's value from the shell is ignored,
+    and decision 106's knob still pins the conductor, which has no pin. A run that has to measure
+    workers on another subagent model changes `WORKER_SUBAGENT_ROUTE`, not the shell. The window
+    is still handed the ignored value. Dropping the pinned names from a worker's `-e` in
+    `spawnClaudeWindow` would make the rule independent of Claude Code's load order, but that
+    file is outside this change's scope and is owed.
     *Agent stays.* No deny takes the Agent tool from a worker. A layer's `deny` can still add it
     (decision 77), which turns delegation off for that profile.
     *The kickoff.* The worker's `## Exploring code` section becomes `## Searching`. For any
@@ -60,8 +74,9 @@
     *Re-measuring.* `pup retro` (decision 150) splits a window's tokens by tool. After this
     change, a worker's grep, sed, cat and Read turns should fall well below 38%, and its Agent
     turns should report `claude-haiku-5-5` as their model.
-    *Tests.* `profile-compiler.test.ts` checks four things. A worker's deny list has no `Agent`.
-    Its `env` is `SLIM_CONTEXT_ENV` plus the three pin variables. The conductor's deny list and
+    *Tests.* `profile-compiler.test.ts` checks five things. A worker's deny list has no `Agent`.
+    Its `env` is `SLIM_CONTEXT_ENV` plus the three pin variables, and it stays that way when
+    `--session-env` has recorded both subagent-model names. The conductor's deny list and
     `env` are unchanged. A worker on the default profile carries the `## Searching` section word
     for word, with neither `## Exploring code` nor `model: "sonnet"`, and stays within its context
     budget.
