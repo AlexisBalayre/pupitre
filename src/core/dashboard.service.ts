@@ -17,7 +17,14 @@ import { WATCH_STALE_AFTER_MS } from './overlap.service.js';
 import { SESSION_ID_PATTERN } from './paths.constants.js';
 import { type ProjectPaths, projectId, projectPaths } from './paths.utils.js';
 import { asStringArray, displayStages, parseJsonOr, toIsoUtc } from './report-data.utils.js';
-import { asTier, type ClimbReason, climbFrom, taskTier, windowFailure } from './routing.utils.js';
+import {
+  asTier,
+  type ClimbReason,
+  climbFrom,
+  fixRoundFailure,
+  taskTier,
+  windowFailure,
+} from './routing.utils.js';
 import {
   decodeEvent,
   type EventRow,
@@ -236,30 +243,62 @@ export function windowFailureOf(
 ): ClimbReason | 'blocked' | undefined {
   const rows = listEvents(db, session.id);
   const events = rows.map(decodeEvent);
-  let endedAt = now;
-  let running = session.state === 'running';
-  if (session.state === 'killed') {
-    const at = events
-      .map((event) => event.type === 'gate_result' && event.to)
-      .lastIndexOf('killed');
-    const kill = events[at];
-    endedAt = Date.parse(toIsoUtc(rows[at]?.created_at ?? ''));
-    running = kill?.type === 'gate_result' && kill.from === 'running';
-  }
-  const eventsFile = eventsFileOf(paths, session.id);
-  // The events file is per session, not per window: until the new window's
-  // first hook, its mtime is the last window's, so the newest respawn bounds it.
+  return windowFailure(events, windowStalled(paths, session, rows, events, now));
+}
+
+/**
+ * What a merged session's CI fix round ran into, for the retry of a round
+ * killed mid-window: `fixRoundFailure` with the stall `windowFailureOf` reads,
+ * since that kill is a `running` -> `merged` edge, not a `killed` session.
+ */
+export function fixRoundFailureOf(
+  db: Database,
+  paths: ProjectPaths,
+  session: SessionRow,
+  now: number,
+): ClimbReason | 'blocked' | undefined {
+  const rows = listEvents(db, session.id);
+  const events = rows.map(decodeEvent);
+  return fixRoundFailure(events, windowStalled(paths, session, rows, events, now));
+}
+
+/**
+ * Whether the session's newest window was stalled when it ended: at `now` for
+ * one still running, at the kill for a killed session or a fix round killed
+ * back to `merged`, when that kill came after the newest respawn. The events
+ * file is per session, not per window: until the new window's first hook, its
+ * mtime is the last window's, so the newest respawn bounds it.
+ */
+function windowStalled(
+  paths: ProjectPaths,
+  session: SessionRow,
+  rows: EventRow[],
+  events: SessionEvent[],
+  now: number,
+): boolean {
   const respawnAt = events
     .map((event) => event.type === 'other' && event.eventType)
     .lastIndexOf('respawn');
   const windowStart =
     respawnAt < 0 ? 0 : Date.parse(toIsoUtc(rows[respawnAt]?.created_at ?? '')) || 0;
-  const stalled =
+  let endedAt = now;
+  let running = session.state === 'running';
+  if (session.state === 'killed' || session.state === 'merged') {
+    const at = events
+      .map((event) => event.type === 'gate_result' && event.to)
+      .lastIndexOf(session.state);
+    const kill = events[at];
+    endedAt = Date.parse(toIsoUtc(rows[at]?.created_at ?? ''));
+    const inWindow = session.state === 'killed' || at > respawnAt;
+    running = kill?.type === 'gate_result' && kill.from === 'running' && inWindow;
+  }
+  const eventsFile = eventsFileOf(paths, session.id);
+  return (
     running &&
     eventsFile !== undefined &&
     existsSync(eventsFile) &&
-    isSessionStalled(endedAt - Math.max(statSync(eventsFile).mtimeMs, windowStart));
-  return windowFailure(events, stalled);
+    isSessionStalled(endedAt - Math.max(statSync(eventsFile).mtimeMs, windowStart))
+  );
 }
 
 /**

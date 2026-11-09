@@ -192,10 +192,12 @@ export function windowFailure(
  * pushes, so a re-raised finding never shares one. The retry of a round whose
  * window opened since the newest merge, and was killed, climbs on a rejection
  * or a dead turn that window ran into, as a respawn of it would: its repeat
- * climb is recorded already. A stall at that kill is not measured yet.
+ * climb is recorded already. So does a stall at that kill, which the caller
+ * measures off the events file and hands in as `stalledAtEnd`.
  */
 export function fixRoundFailure(
   events: readonly SessionEvent[],
+  stalledAtEnd = false,
 ): ClimbReason | 'blocked' | undefined {
   let handed = false;
   let opened = false;
@@ -218,7 +220,7 @@ export function fixRoundFailure(
     }
     ran.push(event);
   }
-  if (opened) return windowFailure(ran);
+  if (opened) return windowFailure(ran, stalledAtEnd);
   return repeats ? 'repeat-fix-round' : undefined;
 }
 
