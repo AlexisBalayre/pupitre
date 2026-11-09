@@ -63,6 +63,7 @@ import {
   originRepoSlug,
   rewritePullRequest,
 } from './github.client.js';
+import { globToRegExp } from './glob.utils.js';
 import { readOriginUrl } from './init.service.js';
 import {
   hasOpenLedgerEntry,
@@ -86,8 +87,13 @@ import {
   MAX_REJECTS_BEFORE_BLOCKED,
   MERGE_LOCK_DIRNAME,
   PR_TITLE_MAX_CHARS,
+  UNTESTED_PATH_GLOBS,
 } from './merge-gate.constants.js';
-import { MergeLockHeldError, SessionNotReviewableError } from './merge-gate.errors.js';
+import {
+  MergeLockHeldError,
+  MergeLockLostError,
+  SessionNotReviewableError,
+} from './merge-gate.errors.js';
 import { SESSION_ID_PATTERN } from './paths.constants.js';
 import { mergeToRegate, planRegate, type RegatePlan, regateMerged } from './regate.service.js';
 import {
@@ -746,16 +752,33 @@ function directoryIdentity(path: string): LockIdentity | undefined {
  * `.git` a session can write, so anything else found there is left and named
  * rather than removed with it, and so is a directory that is no longer
  * `identity`, a link or another directory a session swapped in, whose pid
- * could be another lock's (decision 88).
+ * could be another lock's (decision 88). False for such a directory. One
+ * whose identity cannot be read is left and named too. Only EIO, a disk
+ * fault, counts it as the take's, so a correct release never fails the run it
+ * ends: the rename already took it off the lock path. Every other error does
+ * not: a session that owns `.git` can chmod the path (EACCES, EPERM) or swap a
+ * component of it (ENOTDIR, ELOOP) to hide a swapped lock.
  */
-function removeLockDir(dir: string, identity: LockIdentity): void {
-  const now = directoryIdentity(dir);
+function removeLockDir(dir: string, identity: LockIdentity): boolean {
+  let now: LockIdentity | undefined;
+  try {
+    now = directoryIdentity(dir);
+  } catch (error) {
+    const fault = (error as NodeJS.ErrnoException).code === 'EIO';
+    console.error(
+      `Could not read ${dir}: ${failureSummary(error)}, so it was left as it is. ` +
+        (fault
+          ? 'No run reads it; remove it from the trusted checkout.'
+          : 'Treat a session that kept pup from its lock as compromised.'),
+    );
+    return fault;
+  }
   if (now?.dev !== identity.dev || now.ino !== identity.ino) {
     console.error(
       `${dir} is no longer the lock directory pup made, so it was left as it is. Treat a ` +
         'session that replaced it as compromised.',
     );
-    return;
+    return false;
   }
   try {
     rmSync(join(dir, MERGE_LOCK_PID_FILE), { force: true });
@@ -766,21 +789,23 @@ function removeLockDir(dir: string, identity: LockIdentity): void {
         'trusted checkout.',
     );
   }
+  return true;
 }
 
 /**
  * Move the lock directory aside under a fresh name, then remove it there, so
  * no reader ever finds the lock without its pid. A removal that fails leaves
- * only the aside directory, which no reader looks at.
+ * only the aside directory, which no reader looks at. False when what was
+ * moved aside is not `identity`, the directory the take made.
  */
 function dropMergeLock(
   lockPath: string,
   why: 'released' | 'reclaimed',
   identity: LockIdentity,
-): void {
+): boolean {
   const aside = `${lockPath}.${why}-${randomBytes(8).toString('hex')}`;
   renameSync(lockPath, aside);
-  removeLockDir(aside, identity);
+  return removeLockDir(aside, identity);
 }
 
 /** Make `dir`; false when it already exists or cannot be made. */
@@ -905,7 +930,11 @@ function heldBy(lockPath: string, holder: number): MergeLockHeldError {
  * run, and one a live run holds is waited for up to `maxWaitMs`, printing one
  * line when the wait starts, and by default not at all (decision 88). `fn` is
  * told whether the take waited: anything read before the wait may have changed
- * under the run that held the lock meanwhile.
+ * under the run that held the lock meanwhile. A lock found gone or replaced at
+ * the release throws `MergeLockLostError` with `fn`'s result, or is printed
+ * beside `fn`'s error, whatever error the release met; only a lock still the
+ * take's own directory that cannot be moved is printed and the result
+ * returned. A release error never replaces what `fn` did.
  */
 export async function withMergeLock<TResult>(
   repoPath: string,
@@ -952,17 +981,46 @@ export async function withMergeLock<TResult>(
   }
   const stayAlive = (): void => undefined;
   for (const signal of LOCK_SIGNALS) process.on(signal, stayAlive);
-  try {
-    return await fn(waited);
-  } finally {
+  const taken = identity;
+  /** Release the lock; false when it was no longer the one this run took. */
+  const release = (): boolean => {
     // The lock goes first: a signal between the two would otherwise meet
     // node's default disposition with the lock still on disk.
     try {
-      dropMergeLock(lockPath, 'released', identity);
+      return dropMergeLock(lockPath, 'released', taken);
+    } catch (error) {
+      // Whatever failed, the lock counts as this run's only while the take's
+      // own directory is still at the path: one moved away, even with another
+      // run's lock now there, is lost, and so is one that cannot be read.
+      let now: LockIdentity | undefined;
+      try {
+        now = directoryIdentity(lockPath);
+      } catch {
+        now = undefined;
+      }
+      if (now?.dev !== taken.dev || now.ino !== taken.ino) return false;
+      // Printed, never thrown, since `fn` has done what it did, and the lock
+      // left in place names this pid, which a later run reclaims once this
+      // process has exited (decision 88).
+      console.error(
+        `Could not release ${lockPath}: ${failureSummary(error)}. A later run reclaims it once ` +
+          'this process has exited.',
+      );
+      return true;
     } finally {
       for (const signal of LOCK_SIGNALS) process.off(signal, stayAlive);
     }
+  };
+  let result: TResult;
+  try {
+    result = await fn(waited);
+  } catch (error) {
+    // The section's own error still wins; the lost lock is said beside it.
+    if (!release()) console.error(new MergeLockLostError(lockPath, undefined).message);
+    throw error;
   }
+  if (!release()) throw new MergeLockLostError(lockPath, result);
+  return result;
 }
 
 /** `result` with the wall time since `started`, which the report prints (decision 95). */
@@ -2330,6 +2388,54 @@ export async function waitForLoad(
 }
 
 /**
+ * Whether every file the branch changed is on `UNTESTED_PATH_GLOBS`, so no
+ * test can run or read it (decision 139). A rename's old path counts as
+ * changed, since `--name-only` names only the new one. Something other than
+ * the path itself can read each of these, so each counts as testable, as
+ * decision 110 counts it as source: a symlink, a path a symlink can reach, a
+ * name outside ASCII, and Markdown that a Docusaurus config compiles. So does
+ * a path the branch's tree also holds in another ASCII case, itself or through
+ * one of its directories: APFS folds case (decision 78), so `docs/x.md` is the
+ * off-list `docs/x.MD` or `Docs/x.md` a test may read.
+ */
+function changesOnlyUntested(
+  repoPath: string,
+  target: string,
+  branch: string,
+  changedPaths: string[],
+): boolean {
+  const untested = UNTESTED_PATH_GLOBS.map(globToRegExp);
+  const listed = (path: string): boolean =>
+    !NON_ASCII.test(path) && untested.some((glob) => glob.test(path));
+  if (changedPaths.length === 0 || !changedPaths.every(listed)) return false;
+  for (const entry of rawDiffEntries(repoPath, target, branch).values()) {
+    if (entry.mode === '120000') return false;
+    if (entry.renamedFrom !== undefined && !listed(entry.renamedFrom)) return false;
+  }
+  const tree = readBranchTree(repoPath, branch);
+  // Every spelling of each path and directory in the branch's tree, by its folded form.
+  const spellings = new Map<string, Set<string>>();
+  const prefixes = (path: string): string[] =>
+    path.split('/').map((_, i, segments) => segments.slice(0, i + 1).join('/'));
+  for (const path of runGit(repoPath, ['ls-tree', '-r', '-z', '--name-only', branch]).split('\0')) {
+    for (const prefix of path ? prefixes(path) : []) {
+      const key = folded(prefix);
+      spellings.set(key, (spellings.get(key) ?? new Set()).add(prefix));
+    }
+  }
+  const foldsOntoAnother = (path: string): boolean =>
+    prefixes(path).some((prefix) =>
+      [...(spellings.get(folded(prefix)) ?? [])].some((spelling) => spelling !== prefix),
+    );
+  return changedPaths.every(
+    (path) =>
+      !tree.linked(path) &&
+      !(tree.markdownIsCode && path.endsWith('.md')) &&
+      !foldsOntoAnother(path),
+  );
+}
+
+/**
  * The stages every gate run measures on the pinned sha, from the gate's
  * checkout (decision 81): the ADR numbers it adds (decision 146), build, test
  * and lint, a touched nested package's own scripts, the scope audit, the diff
@@ -2473,7 +2579,7 @@ export async function measureBranch(
   // session that deletes a script fails that stage instead of skipping it.
   const commands = primary?.gateCommands(req.repoPath) ?? [];
   const commandFor = (stage: GateStage) => commands.find((c) => c.stage === stage);
-  const notMeasured = (stage: GateStage): GateStageResult => ({
+  const notMeasured = (stage: string): GateStageResult => ({
     stage,
     status: 'skipped',
     detail: 'not measured — no command available',
@@ -2487,9 +2593,24 @@ export async function measureBranch(
   stages.push(built);
   if (built.status === 'fail') return undefined;
 
+  // A change no test can run or read runs no suite, and so waits for no load
+  // and takes no slot; a nested package's change always runs its suite
+  // (decision 139).
+  const untested =
+    nestedPackages.length === 0 && changesOnlyUntested(req.repoPath, targetSha, sha, changedPaths);
+  // A stage nothing could have measured says so, as on any other change: the
+  // test stage without a test command.
+  const notTested = (stage: string, measurable: boolean): GateStageResult =>
+    measurable
+      ? {
+          stage,
+          status: 'skipped',
+          detail: `no testable file changed (${changedPaths.length} files)`,
+        }
+      : notMeasured(stage);
   // One instrumented run answers for the test stage and for coverage when the
   // adapter whose test command it is measures coverage too (decision 95).
-  const test = commandFor('test');
+  const test = untested ? undefined : commandFor('test');
   const hasSuite =
     test !== undefined ||
     nestedPackages.some((pkg) => pkg.commands.some((c) => c.stage === 'test'));
@@ -2616,7 +2737,11 @@ export async function measureBranch(
   // Reported in today's order, stopping where today's run stopped.
   const { results: suiteResults, folded } = await suites;
   for (const [stage, result] of [
-    ['test', suiteResults.get('test')],
+    [
+      'test',
+      suiteResults.get('test') ??
+        (untested ? notTested('test', commandFor('test') !== undefined) : undefined),
+    ],
     ['lint', await linted],
   ] as const) {
     const reported = result ?? notMeasured(stage);
@@ -2763,12 +2888,10 @@ export async function measureBranch(
     ),
   );
 
-  const measurement = await measureCoverage(
-    await staticDebt,
-    req.adapters,
-    capabilityContext,
-    folded,
-  );
+  // Untested, coverage has no run to read, and measuring it would run the suite.
+  const measurement = untested
+    ? await staticDebt
+    : await measureCoverage(await staticDebt, req.adapters, capabilityContext, folded);
   const judged = judgeDebt(
     {
       ...measurement,
@@ -2804,6 +2927,12 @@ export async function measureBranch(
   // the merge carries --accept-debt, and the nested-package stages above go
   // through the same wrapper.
   for (const stage of judged.stages) {
+    // With no coverage capability, the judged stage already says so, as on any
+    // other change.
+    if (untested && coverageAdapter && stage.stage === 'coverage') {
+      stages.push(notTested(stage.stage, true));
+      continue;
+    }
     stages.push(
       stage.status === 'flagged' ? { ...stage, detail: flagDetail(stage.detail ?? '') } : stage,
     );

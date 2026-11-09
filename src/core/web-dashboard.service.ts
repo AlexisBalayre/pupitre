@@ -10,6 +10,7 @@ import { readDebtSheet, renderDebtSheet } from './web-dashboard-debt.service.js'
 import { readHealthSheet, renderHealthSheet } from './web-dashboard-health.service.js';
 import { readOverview, renderOverview } from './web-dashboard-overview.service.js';
 import { escapeHtml, SHEETS, type SheetName } from './web-dashboard-sheet.utils.js';
+import { readTasksSheet, renderTasksSheet } from './web-dashboard-tasks.service.js';
 
 /** How often the server re-reads the store for the open streams (decision 91). */
 const DASHBOARD_POLL_MS = 2_000;
@@ -59,6 +60,8 @@ export async function startWebDashboard(
         return renderHealthSheet(readHealthSheet(db, repoPath));
       case 'overview':
         return renderOverview(readOverview(db, repoPath, now), hrefOf('debt'));
+      case 'tasks':
+        return renderTasksSheet(readTasksSheet(db, repoPath, now));
     }
   };
   const send = (stream: ServerResponse, body: string): void => {
@@ -159,6 +162,7 @@ const SHEET_TITLES: Record<SheetName, string> = {
   overview: 'Overview',
   health: 'Health',
   debt: 'Debt',
+  tasks: 'Tasks',
 };
 
 /** The sheet a request names, Overview when it names none, undefined for a name no sheet has. */

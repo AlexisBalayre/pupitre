@@ -142,8 +142,8 @@ if [ -n "${TEST_CMD:-}" ] && [ -n "$STAGED_SOURCE" ]; then
       echo "ERROR: PUP_BIN is not a file and no pupitre pup is on the PATH: the related tests cannot run through a test slot."
       exit 1
     fi
-    echo "Running related tests through a test slot (waits for a free one)"
-    if ! (set -o pipefail; printf '%s\n' "$STAGED_SOURCE" | sed 's|^|./|' | tr '\n' '\0' | xargs -0 "${PUP_CMD[@]}" session test --related --); then
+    echo "Running related tests through a test slot (waits for a free one, however long)"
+    if ! (set -o pipefail; printf '%s\n' "$STAGED_SOURCE" | sed 's|^|./|' | tr '\n' '\0' | xargs -0 env PUP_COMMIT_TEST=1 "${PUP_CMD[@]}" session test --related --); then
       echo ""
       echo "ERROR: Tests related to the staged files failed. Fix them before committing."
       exit 1
