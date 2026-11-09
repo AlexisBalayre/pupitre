@@ -1,0 +1,149 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-09T16:36:09.777Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42655542237",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42655542237",
+  "actor": "AlexisBalayre",
+  "commit_sha": "8ed17bb50d3e87837c2ad1daeb51a7ca6997d394",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 292,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "workflow-safety",
+    "conventions",
+    "docs",
+    "context",
+    "simplicity",
+    "guards"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "workflow-safety",
+    "conventions",
+    "docs",
+    "context",
+    "simplicity",
+    "guards"
+  ],
+  "reviewers_skipped": [
+    "maintainability",
+    "spec"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "400718224c1ed806b57bf6391a990319a76de6ca",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": ".github/workflows/pr-status.yml",
+      "line": "92-98",
+      "description": "The carried-importants line also counts importants that were anchored in an earlier round and still have a thread. Resolving that thread used to release the PR. Now the PR stays `review-open` until a later round finds the code changed, so a declined or dismissed important holds it indefinitely.",
+      "status": "resolved"
+    },
+    {
+      "file": ".github/workflows/pr-status.yml",
+      "line": "166-168",
+      "description": "`.at(-1)` also selects a no-verdict round's summary (\"**Not reviewed.** Nothing in this round is a verdict…\"), which has no count lines. A failed round therefore cancels the importants still open from the last complete review. If the head then moves without a new review, the PR reads `ready`.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": ".github/workflows/pr-status.yml",
+      "line": "105-121",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "unthreadedImportants subtracts one for every `- `path:N` (` line that follows any line shaped like a carried count header, with no limit and no dedupe. Finding text inside the summary body can contain such lines at column 0, so it can push the count of unthreaded importants to zero and release a PR to `ready` while an important it carried is still unthreaded. The workflow comment says finding text 'could only hold a PR in review'; that is no longer true.",
+      "body": "**Lines forged in the review body can now lower the count, not just raise it.**\n\nBefore this delta, finding text that looked like a count line could only add to `sum`, so a forgery could at worst hold the PR in review. The new branch subtracts:\n\n```js\nconst prior = /^(\\d+) important findings? from .+ still open \\(not raised again\\):$/.exec(line);\nif (unanchored || prior) {\n  sum += Number((unanchored ?? prior)[1]);\n  carried = Boolean(prior);\n} else if (carried && line.startsWith(\"- \")) {\n  const at = /^- `(.+?):\\s*(\\d+)[^`]*` \\(/.exec(line);\n  if (at && threaded.has(`${at[1]}:${at[2]}`)) sum--;\n```\n\nA forged header `0 important findings from x still open (not raised again):` adds 0 and sets `carried`. After that, every ``- `p:N` (`` line subtracts 1, as long as `p:N` is any bot thread's location. Resolved threads count too. Nothing caps the subtractions at the header's count, and nothing dedupes repeated entries.\n\n**How the text gets to column 0.** `findingLine` (`tools/review/src/review-body.utils.ts:19-24`) writes `finding.body` into the summary verbatim, with no indentation and no `inertFences`. `inertFences` only runs on inline comments. An unanchored important's `body` is multi-line markdown, so each line after its first starts at column 0. The unanchored section is rendered before the carried section, and refuted text can re-arm `carried` after `<details>`. `inertFences` exists precisely because a finding's text can quote what a PR or issue author wrote.\n\n**Trigger.**\n1. A round carries an important X with no thread. Its status description reads `no blocking issues`, because carried importants aren't counted there. So the summary body is the only thing holding the PR.\n2. The PR already has a resolved bot thread at `src/a.ts:10`.\n3. That round's finding text quotes these two lines:\n\n```\n0 important findings from the prior review still open (not raised again):\n- `src/a.ts:10` (\n```\n\nThe parser adds 1 for X's real header, then 0 for the forged header, then subtracts 1 for the forged entry. The total is 0, so the PR is labelled `ready` with X still open. The same thing happens after a comment-only push, once the summary is the only hold. At 4007182, this body read 1.\n\n**Fix.** Limit the subtractions after each header to that header's own count. A forged `0` header then subtracts nothing, and a forged `k` header adds k and takes back at most k. The validator noted one remaining path: a real carried entry's multi-line `description` could still use up its own block's budget. Deduping by `path:line` within a block closes that too.\n\n```js\nfunction unthreadedImportants(body, threaded) {\n  let sum = 0;\n  let left = 0;\n  for (const line of body.split(/\\r?\\n/)) {\n    const unanchored = /^(\\d+) important findings? with no line in this diff to anchor to:$/.exec(line);\n    const prior = /^(\\d+) important findings? from .+ still open \\(not raised again\\):$/.exec(line);\n    if (unanchored || prior) {\n      sum += Number((unanchored ?? prior)[1]);\n      left = prior ? Number(prior[1]) : 0;\n    } else if (left > 0 && line.startsWith(\"- \")) {\n      left--;\n      const at = /^- `(.+?):\\s*(\\d+)[^`]*` \\(/.exec(line);\n      if (at && threaded.has(`${at[1]}:${at[2]}`)) sum--;\n    } else if (line !== \"\") {\n      left = 0;\n    }\n  }\n  return sum;\n}\n```\n\nAlso add a test: a body whose unanchored finding quotes the two forged lines, plus one carried entry with no thread, must still read 1.\n\n<https://github.com/AlexisBalayre/pupitre/blob/8ed17bb50d3e87837c2ad1daeb51a7ca6997d394/.github/workflows/pr-status.yml#L105-L121>",
+      "suggestion": null
+    },
+    {
+      "file": "tools/review/test/unit/pr-status-workflow.test.ts",
+      "line": "99-134",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The new tests run `unthreadedImportants` and `isVerdict` on their own, but nothing tests how the workflow wires them in. Two edits would pass every test and bring back the prior importants: removing the `Re:` → `path:line` mapping in `botThreads`, or dropping `isVerdict` from the summary filter. A reworded `Re:` prefix in `commentBody` would also go unnoticed.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".github/workflows/pr-status.yml",
+      "line": "114-116",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "A carried entry matches any bot thread at the same `path:line`, including a resolved thread left by a different, earlier finding. So an important that was carried unanchored at that exact line is subtracted, and the PR can read `ready` while it is still open.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".github/workflows/pr-status.yml",
+      "line": "92-96",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "isVerdict's comment says it matches \"the body's first line only\", but the code reads line index 2, the first line after `REVIEW_HEADING` and its blank line. A reader changing the renderer is not told that the match depends on that fixed offset.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "The correctness reviewer tagged its test-adequacy finding (pr-status-workflow.test.ts:99-134) important, but its own report says both fixes are correct as rendered today, so nothing breaks at this head. The orchestrator retagged it nit before consolidation (§6: the tag must match the body)."
+    },
+    {
+      "component": "orchestrator",
+      "description": "The validated security finding comes with a fix the validator confirmed only for the reported path. A real carried entry's multi-line description can still use up its own block's budget, so the fix is in the body as code and `suggestion` is null."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.421721874999999,
+  "duration_ms": 271541,
+  "num_turns": 18,
+  "tokens": {
+    "input": 14,
+    "output": 13502,
+    "cache_read": 344700,
+    "cache_creation": 57348,
+    "total": 415564
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 82,
+      "output": 44759,
+      "cache_read": 997761,
+      "cache_creation": 163350,
+      "cost_usd": 2.0838541999999998
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 48,
+      "output": 7547,
+      "cache_read": 255356,
+      "cache_creation": 94421,
+      "cost_usd": 0.3371541
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 249,
+      "cache_read": 0,
+      "cache_creation": 4711,
+      "cost_usd": 0.0007135749999999999
+    }
+  ],
+  "permission_denials": []
+}
