@@ -7,6 +7,7 @@ import { asTier, taskTier, tierForScope } from './routing.utils.js';
 import {
   appendEvent,
   claimingSession,
+  getProject,
   getSession,
   getTask,
   listTaskSessions,
@@ -17,6 +18,7 @@ import {
 } from './session.repository.js';
 import { isTerminal } from './session-state.utils.js';
 import { assertPlannableSpec } from './task-spec.utils.js';
+import type { RescopeCaller } from './types/session-event.types.js';
 
 /** What a rescope did: the globs it appended, none when all were there, and the tier it leaves. */
 interface Rescoped {
@@ -86,10 +88,16 @@ function routedTier(db: Database, taskId: string, sessionId: string, scopeIn: st
  * tier raise, the `rescope` event on the claiming session and the decision
  * record `pup log` lists are one immediate transaction: no other writer lands
  * between the read and the write, and a refusal after the write rolls it
- * back. The caller is the operator: the CLI refuses a session and the
- * conductor before this runs.
+ * back. The CLI refuses a session and the conductor before this runs, and
+ * hands over what it saw of the caller it took for the operator, which the
+ * event records as seen, not as confirmed.
  */
-export function rescopeTask(db: Database, taskId: string, globs: string[]): Rescoped {
+export function rescopeTask(
+  db: Database,
+  taskId: string,
+  globs: string[],
+  caller: RescopeCaller,
+): Rescoped {
   for (const glob of globs) assertRescopableGlob(glob);
   return db
     .transaction((): Rescoped => {
@@ -122,6 +130,7 @@ export function rescopeTask(db: Database, taskId: string, globs: string[]): Resc
       // teardown and `pup kill` close its window but leave its pane id
       // recorded, and a restarted server numbers its panes from `%0` again.
       const open = mayHaveOpenWindow(
+        getProject(db, task.project_id)?.repo_path ?? '',
         listTaskSessions(db, taskId).map((row) => ({
           sessionId: row.id,
           paneId: isTerminal(row.state) ? null : row.tmux_target,
@@ -139,10 +148,12 @@ export function rescopeTask(db: Database, taskId: string, globs: string[]): Resc
       // operator pinned standard over a critical scope (decision 92) stays so.
       const raised = tierForScope(added) === 'critical' && raiseToCritical(db, taskId, sessionId);
       const tier = routedTier(db, taskId, sessionId, widened.scopeIn);
-      appendEvent(db, sessionId, 'rescope', { task: taskId, added, by: 'operator', tier, raised });
+      appendEvent(db, sessionId, 'rescope', { task: taskId, added, tier, raised, ...caller });
       insertDecisionRecord(db, {
         sessionId,
-        summary: `The operator widened ${taskId}'s scope-in after launch, adding ${added.join(', ')}.`,
+        summary:
+          `A caller taken for the operator (no session or conductor marker) widened ${taskId}'s ` +
+          `scope-in after launch, adding ${added.join(', ')}.`,
         files: added,
       });
       return { sessionId, added, tier, raised };

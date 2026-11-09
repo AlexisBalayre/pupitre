@@ -13,10 +13,20 @@
     already there to the task's scope-in. It never removes one and takes no other field, so
     it can only let a session commit more, never less, and the goal and acceptance the
     session was told stay as they were. The widened spec passes `assertPlannableSpec`, as
-    every stored spec does.
-    *Who.* The operator only. A session is refused by `pup plan`'s existing rule (decision
-    40), and the conductor here too: the conductor runs the fix rounds that hit the scope
-    failure, and a scope the gate-failing side widens for itself is no scope at all.
+    every stored spec does; no glob the refusals below take can fail it today, so the call
+    guards against the two drifting apart, and its test stubs the check to prove a refusal
+    there writes nothing.
+    *Who.* Meant for the operator only. A session is refused by `pup plan`'s existing rule
+    (decision 40), and the conductor here too: the conductor runs the fix rounds that hit
+    the scope failure, and a scope the gate-failing side widens for itself is no scope at
+    all. This is not enforced, only inferred. The refusals read what a worker controls:
+    its cwd, which it can leave, and `PUP_SESSION_ID` and `PUP_CONDUCTOR`, which it can
+    unset (decisions 27, 44). The window probe below is the one check a worker does not
+    pass by shedding its environment, and it stops only a worker whose window is still
+    up. A process a worker detached before its window closed (`nohup`, `setsid`, a
+    double fork) outlives the window, carries no marker, and can rescope its own task.
+    Like the socket ceiling below, this is a limit of the design, not a bug to close
+    here. What the rescope records says the same thing (see *The record*).
     *When.* Allowed only while every session on the task is in a state listed as
     rescopable, `awaiting-review`, `blocked` or `merged`, or `killed`, which claims nothing,
     and no session on it has a window open. The list names the states that allow a rescope,
@@ -27,10 +37,20 @@
     launch's own name) or, for a session not merged or killed, its
     recorded pane. A terminal session is matched by name only: the gate's teardown and
     `pup kill` close its window but leave the `%N` pane id recorded, and a restarted server
-    numbers its panes from `%0` again, so that id can be another window's. A launch hands tmux the operator's `TMUX_TMPDIR` (decision
-    47), so its window may be on the server at `$TMUX_TMPDIR/tmux-<uid>/default` or, unset,
-    at `/tmp/tmux-<uid>/default`; the probe asks both, `/tmp`'s always and
-    `TMUX_TMPDIR`'s when it is set, each with one `tmux -S <socket> list-panes -a`. tmux is
+    numbers its panes from `%0` again, so that id can be another window's. A launch hands
+    tmux the launching shell's `TMUX_TMPDIR` (decision 47), so its window may be on the
+    server at `$TMUX_TMPDIR/tmux-<uid>/default` or, unset, at `/tmp/tmux-<uid>/default`.
+    The caller's own `TMUX_TMPDIR` cannot say which: a caller that unset it would probe
+    only `/tmp`'s and miss a live window on the operator's socket. So `launchSession`
+    records the socket before the window opens, in `tmux-socket` beside the session's
+    compiled profile, written by the operator's or the conductor's `pup`, never by the
+    session. The probe asks `/tmp`'s server always, the one under the caller's
+    `TMUX_TMPDIR` when set, and each socket a session on the task recorded, each with one
+    `tmux -S <socket> list-panes -a`. A session can write that file, so it is read as one
+    it wrote: no symlink followed, no fifo opened, a bounded regular file, and only an
+    absolute path ending `tmux-<uid>/default` with no control character counts. A missing
+    or malformed record (a launch from before it, a removed session dir) records nothing,
+    and the default sockets are probed, failing closed as before. tmux is
     looked up on a fixed PATH (`/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin`, `/bin`)
     with none of the caller's environment, so a worker cannot hand the probe a fake tmux,
     and each probe gets two seconds: it runs inside the store's write lock, and a listener
@@ -49,7 +69,9 @@
     answers, so one with no tmux server running at `/tmp`, or none at `TMUX_TMPDIR` when it
     is set, starts one first. The ceiling: the probe trusts whatever server answers at
     those sockets, so a worker that removes a socket and starts a fresh, empty server at
-    its path hides the windows of the old one, which keeps running unlisted. A task no
+    its path hides the windows of the old one, which keeps running unlisted. A worker that
+    rewrites its own `tmux-socket` record does the same for a window on the operator's
+    socket, when the caller's environment does not name that socket too. A task no
     session claims is refused too: plain `pup plan edit --scope` edits it.
     *The globs.* Stricter than a plan's: a rescope widens a scope the gate already
     audited, so it names paths. Each glob is checked in the form the matcher reads it,
@@ -57,7 +79,10 @@
     on the raw string. Refused are an empty glob, an absolute one, one with a wildcard
     (`*` or `?`) anywhere in its first segment, which could match every top-level directory,
     one with a `..` segment, one under `.github` (in any case), whose workflows a same-repo
-    PR runs with the repo's secrets, and any with a C0 control, DEL or C1 control.
+    PR runs with the repo's secrets, and any with a C0 control, DEL or C1 control. `[`,
+    `]`, `{`, `}` and `\` are no bypass: the matcher escapes them, so `[.]github/**`,
+    `{docs,.github}/**` and `\.github/**` are literal paths that match nothing under
+    `.github`, and the rescope takes them as such.
     *Atomicity.* The read of the spec, the write, the window check, the tier raise and both
     records run in one `immediate` transaction, so no writer lands between the read and the
     write. The state rule is the `UPDATE`'s own guard, the one check of it, so no caller
@@ -84,9 +109,15 @@
     the session's next window routes on, read after the raise as the window's route reads
     it, so with both rows null it is the widened scope-in's, not the old one's.
     *The record.* In the same transaction as the write, a `rescope` event on the claiming
-    session names the task, the added globs and `by: 'operator'`, and a decision record on
-    that session lists the added globs as its files, so `pup log` (and `pup log <module>`)
-    shows the rescope beside the merges it changes.
+    session names the task and the added globs, and records what was seen of the caller,
+    not who it was. `by: 'inferred-operator'` says the operator was inferred from absent
+    markers. `tty` is the terminal on the caller's stdin, as the system's `tty` names it,
+    or null. `tmuxPane` is the pane `TMUX_PANE` names, or null when unset or not a pane id.
+    The caller can set all of these, so they are evidence an audit weighs, not proof: an
+    inferred operator on no terminal and no pane is the case to look at. A decision record
+    on that session lists the added globs as its files and says the caller was taken for
+    the operator, so `pup log` (and `pup log <module>`) shows the rescope beside the merges
+    it changes.
     *Tests.* In `task-rescope.test.ts`, with the probe mocked, a rescope on a merged,
     awaiting-review or blocked session's task with its window closed appends and writes the
     event and the record. A queued, running or rejected one writes nothing, nor does one
@@ -96,12 +127,19 @@
     fails (no server, no tmux), passes one listed nowhere and matches no pane id it was not
     handed, runs on the pinned PATH with a timeout whatever the caller's PATH, asks only
     `/tmp`'s server when `TMUX_TMPDIR` is unset and both when it is set, and reports the
-    window when only `TMUX_TMPDIR`'s lists it or does not answer. Each refused glob is refused, each matcher-form bypass with it,
-    and globs the matcher reads as plain paths (`./docs/**`, `src/cli/`) pass. A re-gate's scope-audit then passes the added path and still fails a
+    window when only `TMUX_TMPDIR`'s lists it or does not answer. A launch records the
+    socket under the launching shell's `TMUX_TMPDIR`. A window on that socket is reported
+    even when the caller's environment lacks `TMUX_TMPDIR`. A record that is relative,
+    names another socket or holds a control character reads as none. Each refused glob is
+    refused, each matcher-form bypass with it, and globs the matcher reads as plain paths
+    (`./docs/**`, `src/cli/`) pass, as do `[.]github/**`, `{docs,.github}/**` and
+    `\.github/**`, none of which matches `.github/x`. A stub of `assertPlannableSpec`
+    shows the widened spec goes through it, and a refusal there writes nothing. The event
+    records the caller as an inferred operator, with its tty and tmux pane. A re-gate's scope-audit then passes the added path and still fails a
     scope-out one. A standard task and session widened onto `src/core/merge-gate*` are
     raised to critical from the bottom rung; a standard glob leaves them standard, a task
     pinned standard over a critical scope and widened with `docs/**` stays standard, a task
     stored standard under a session already critical is raised on its own, a pair of null
     rows reports the widened scope-in's critical, and a critical tier is never lowered. `session-repository.test.ts` holds the statement's
     guard to each state, and `index.test.ts` refuses a session, the conductor and an open
-    window.
+    window, and records the tty and `TMUX_PANE` it saw, dropping a pane that is not one.

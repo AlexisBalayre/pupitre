@@ -148,7 +148,7 @@ import type { DebtBaseline, InitReport } from '../core/types/init.types.js';
 import type { LandOutcome } from '../core/types/land.types.js';
 import type { GateReport, MergeOutcome } from '../core/types/merge-gate.types.js';
 import type { TaskId, TaskSpec } from '../core/types/profile.types.js';
-import type { StoredGateStage } from '../core/types/session-event.types.js';
+import type { RescopeCaller, StoredGateStage } from '../core/types/session-event.types.js';
 import type { NewSessionRequest, RouteOverride } from '../core/types/session-lifecycle.types.js';
 import { buildUsageReport, claudeDirsOf, formatUsageReport } from '../core/usage-report.service.js';
 import { startWebDashboard } from '../core/web-dashboard.service.js';
@@ -853,11 +853,40 @@ function rescopeOrRefuse(db: Database, target: string, opts: PlanOptions): void 
     return;
   }
   try {
-    console.log(rescopedLine(target, rescopeTask(db, target, opts.scope)));
+    console.log(rescopedLine(target, rescopeTask(db, target, opts.scope, rescopeCaller())));
   } catch (error) {
     if (!(error instanceof InvalidProfileError)) throw error;
     // Store text: a refusal can name a session id read back from the store.
     refuse(sanitizeLines(error.message));
+  }
+}
+
+/**
+ * What a rescope records of its caller (decision 115): the operator, inferred
+ * from the session and conductor markers being absent, and the terminal and
+ * tmux pane the command ran on, each only in the shape a real one has.
+ */
+function rescopeCaller(): RescopeCaller {
+  const pane = process.env.TMUX_PANE;
+  return {
+    by: 'inferred-operator',
+    tty: callerTty(),
+    tmuxPane: pane !== undefined && /^%\d+$/.test(pane) ? pane : null,
+  };
+}
+
+/** The terminal device on stdin, from the system's own `tty`; null when there is none. */
+function callerTty(): string | null {
+  if (!process.stdin.isTTY) return null;
+  try {
+    const name = execFileSync('/usr/bin/tty', [], {
+      encoding: 'utf8',
+      stdio: ['inherit', 'pipe', 'ignore'],
+      timeout: 2000,
+    }).trim();
+    return /^\/dev\/[\w./-]+$/.test(name) ? name : null;
+  } catch {
+    return null;
   }
 }
 

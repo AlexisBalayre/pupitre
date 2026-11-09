@@ -278,24 +278,12 @@ export function saveSessionEnv(repoPath: string, names: string[]): void {
  * against the allowlist again, and one off it is dropped, never handed on.
  */
 export function readSessionEnv(repoPath: string): string[] {
-  let fd: number;
-  try {
-    fd = openSync(
-      sessionEnvFile(repoPath),
-      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
-    );
-  } catch {
-    return [];
-  }
+  const text = readSessionWritable(sessionEnvFile(repoPath), SESSION_ENV_FILE_MAX_BYTES);
   let stored: unknown;
   try {
-    const stat = fstatSync(fd);
-    if (!stat.isFile() || stat.size > SESSION_ENV_FILE_MAX_BYTES) return [];
-    stored = JSON.parse(readFileSync(fd, 'utf8'));
+    stored = JSON.parse(text ?? '');
   } catch {
     return [];
-  } finally {
-    closeSync(fd);
   }
   return Array.isArray(stored)
     ? stored.filter(
@@ -303,6 +291,29 @@ export function readSessionEnv(repoPath: string): string[] {
           typeof name === 'string' && refusedSessionEnv([name]) === undefined,
       )
     : [];
+}
+
+/**
+ * A file any session can write, read like a pointer a session wrote: no
+ * symlink followed, no fifo blocked on, a regular file of at most `maxBytes`;
+ * undefined for anything else, a missing file included.
+ */
+function readSessionWritable(file: string, maxBytes: number): string | undefined {
+  let fd: number;
+  try {
+    fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  } catch {
+    return undefined;
+  }
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.size > maxBytes) return undefined;
+    return readFileSync(fd, 'utf8');
+  } catch {
+    return undefined;
+  } finally {
+    closeSync(fd);
+  }
 }
 
 /**
@@ -796,6 +807,7 @@ function spawnClaudeWindow(opts: ClaudeWindowOptions): SessionPane {
  * id is minted here, once, and nothing later re-derives it from the session.
  */
 export function launchSession(opts: LaunchOptions): SessionPane {
+  recordWindowSocket(opts.repoPath, opts.sessionId);
   return spawnClaudeWindow({
     sessionId: opts.sessionId,
     cwd: opts.worktreePath,
@@ -982,15 +994,66 @@ const PROBE_TMUX_PATH = '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin';
  */
 const PROBE_TIMEOUT_MS = 2000;
 
+/** The default server's socket for a client whose `TMUX_TMPDIR` is `dir`; empty is unset. */
+function defaultSocketIn(dir: string | undefined): string {
+  return join(dir || '/tmp', `tmux-${process.getuid?.()}`, 'default');
+}
+
+/** Where a session's launch records the socket its window opened on (decision 115). */
+function socketRecordFile(repoPath: string, sessionId: string): string {
+  return join(projectPaths(repoPath).sessionDir(sessionId), 'tmux-socket');
+}
+
 /**
- * The sockets a session's window can be on: the default server's at tmux's
- * built-in `/tmp`, and at the operator's `TMUX_TMPDIR` when set, which the
- * launch hands tmux (decision 47). An empty one is unset, as tmux reads it.
+ * Record the socket the session's window is about to open on: the default
+ * server under the launching shell's `TMUX_TMPDIR`, which the launch hands
+ * tmux (decision 47). Written by the operator's or the conductor's `pup`
+ * before the window exists, so the session never wrote it; a probe reads it
+ * rather than its own caller's `TMUX_TMPDIR`, which a caller can unset.
+ * Written beside and renamed over, so a probe never reads half a path.
  */
-function defaultSockets(): string[] {
-  const uid = process.getuid?.();
-  const dirs = ['/tmp', process.env.TMUX_TMPDIR || '/tmp'];
-  return [...new Set(dirs.map((dir) => join(dir, `tmux-${uid}`, 'default')))];
+function recordWindowSocket(repoPath: string, sessionId: string): void {
+  const file = socketRecordFile(repoPath, sessionId);
+  mkdirSync(dirname(file), { recursive: true });
+  const staged = `${file}.${randomUUID()}.tmp`;
+  writeFileSync(staged, defaultSocketIn(process.env.TMUX_TMPDIR));
+  renameSync(staged, file);
+}
+
+/** Any C0 control or DEL: none belongs in a socket path a launch wrote. */
+// biome-ignore lint/suspicious/noControlCharactersInRegex: matching them is the point
+const CONTROL_CHAR = /[\u0000-\u001f\u007f]/;
+
+/** Far past any socket path tmux can bind: a Unix socket path is at most 104 bytes. */
+const SOCKET_RECORD_MAX_BYTES = 1024;
+
+/**
+ * The socket the session's launch recorded, or undefined when there is none
+ * to read: a launch from before the record, a removed session dir, or a file
+ * that is not a default-server socket path as a launch writes one. The
+ * session can write the file, so it is read as one it wrote.
+ */
+function recordedSocket(repoPath: string, sessionId: string): string | undefined {
+  const text = readSessionWritable(socketRecordFile(repoPath, sessionId), SOCKET_RECORD_MAX_BYTES);
+  const launchWrote =
+    text !== undefined &&
+    isAbsolute(text) &&
+    !CONTROL_CHAR.test(text) &&
+    text.endsWith(`/tmux-${process.getuid?.()}/default`);
+  return launchWrote ? text : undefined;
+}
+
+/**
+ * The sockets the windows can be on: the default server's at tmux's built-in
+ * `/tmp` and under the caller's `TMUX_TMPDIR`, and each socket a window's
+ * launch recorded. The caller's alone would miss a window on the operator's
+ * socket whenever the caller unset `TMUX_TMPDIR`.
+ */
+function probedSockets(repoPath: string, windows: readonly ProbedWindow[]): string[] {
+  const recorded = windows.flatMap((window) => recordedSocket(repoPath, window.sessionId) ?? []);
+  return [
+    ...new Set([defaultSocketIn('/tmp'), defaultSocketIn(process.env.TMUX_TMPDIR), ...recorded]),
+  ];
 }
 
 /**
@@ -1031,16 +1094,20 @@ function listsWindow(panes: string, window: ProbedWindow): boolean {
 }
 
 /**
- * The first of `windows` that may still be open, or undefined when every
- * default server answered and listed none of them (decision 115). Any server
- * that does not answer, no server running, no tmux found and a timeout
- * included, leaves every window possibly open. tmux runs on a fixed PATH with
+ * The first of `windows`, sessions of the project at `repoPath`, that may
+ * still be open, or undefined when every server asked answered and listed
+ * none of them (decision 115). Any server that does not answer, no server
+ * running, no tmux found and a timeout included, leaves every window possibly
+ * open. tmux runs on a fixed PATH with
  * no caller environment and a timeout, so a worker can neither fake it nor
  * hang the caller. A pane id is matched only when the caller passes one: a
  * closed window's recorded id can be another window's on a restarted server.
  */
-export function mayHaveOpenWindow(windows: readonly ProbedWindow[]): string | undefined {
-  const servers = defaultSockets().map(listPanes);
+export function mayHaveOpenWindow(
+  repoPath: string,
+  windows: readonly ProbedWindow[],
+): string | undefined {
+  const servers = probedSockets(repoPath, windows).map(listPanes);
   return windows.find((window) =>
     servers.some((panes) => panes === undefined || listsWindow(panes, window)),
   )?.sessionId;

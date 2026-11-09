@@ -832,6 +832,46 @@ describe('CLI commands', () => {
       expect(logs.join('\n')).toContain('files: docs/**');
     });
 
+    // The operator is inferred from absent markers, so the event keeps what
+    // was seen of the caller rather than claiming who it was.
+    const rescopeEvent = (db: ReturnType<typeof claimed>) =>
+      JSON.parse(listEvents(db, 's1').find((event) => event.type === 'rescope')?.payload ?? '{}');
+
+    it('records the caller as an inferred operator, with its tmux pane and no terminal', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      const db = claimed(repo, 'merged');
+      vi.stubEnv('TMUX_PANE', '%12');
+
+      rescope();
+
+      expect(rescopeEvent(db)).toMatchObject({
+        by: 'inferred-operator',
+        tty: null,
+        tmuxPane: '%12',
+      });
+    });
+
+    it('records the terminal on stdin, and no pane a TMUX_PANE does not name', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      const db = claimed(repo, 'merged');
+      vi.stubEnv('TMUX_PANE', 'pup-s1');
+      const real = vi.mocked(execFileSync).getMockImplementation() as typeof execFileSync;
+      vi.mocked(execFileSync).mockImplementation(((file: string, ...rest: never[]) =>
+        file === '/usr/bin/tty' ? '/dev/ttys009\n' : real(file, ...rest)) as typeof execFileSync);
+      const wasTty = process.stdin.isTTY;
+      Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true });
+      try {
+        rescope();
+      } finally {
+        Object.defineProperty(process.stdin, 'isTTY', { value: wasTty, configurable: true });
+        vi.mocked(execFileSync).mockImplementation(real);
+      }
+
+      expect(rescopeEvent(db)).toMatchObject({ tty: '/dev/ttys009', tmuxPane: null });
+    });
+
     it('says so when every glob is already in scope, writing nothing', () => {
       const repo = initRepo();
       useCwd(repo);

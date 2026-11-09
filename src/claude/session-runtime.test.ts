@@ -56,7 +56,7 @@ vi.mock('node:fs', async (importOriginal) => {
 });
 
 import { verifiedWorktreeGitEnv, WorktreeRepointedError } from '../core/git-diff.client.js';
-import { projectId } from '../core/paths.utils.js';
+import { projectId, projectPaths } from '../core/paths.utils.js';
 import { tempDir } from '../test/temp-dir.mock.js';
 import { CONDUCTOR_ROUTE, LADDERS, type ModelRoute } from './model-ladder.constants.js';
 import {
@@ -543,6 +543,18 @@ describe('launchSession', () => {
     const made = initRepoWithWorktree();
     repo = made.repo;
     opts = { ...OPTS, repoPath: repo, worktreePath: made.worktree };
+    // A launch records its socket under ~/.pupitre: a throwaway one here.
+    vi.stubEnv('HOME', tempDir('pup-launch-home-'));
+  });
+
+  it("records the socket the window opens on, under the launching shell's TMUX_TMPDIR", () => {
+    vi.stubEnv('TMUX_TMPDIR', '/tmp/elsewhere');
+
+    launchSession(opts);
+
+    expect(readFileSync(join(projectPaths(repo).sessionDir('s-1'), 'tmux-socket'), 'utf8')).toBe(
+      `/tmp/elsewhere/tmux-${process.getuid?.()}/default`,
+    );
   });
 
   afterEach(() => {
@@ -1007,6 +1019,8 @@ describe('mayHaveOpenWindow (decision 115)', () => {
   const tmpSocket = `/tmp/tmux-${uid}/default`;
   const elsewhere = `/tmp/elsewhere/tmux-${uid}/default`;
   const S1 = { sessionId: 's1', paneId: '%3' };
+  // A project none of whose sessions recorded a socket.
+  const NO_RECORD = '/repo/no-record';
   let original: unknown;
 
   // Every server asked answers `answer(socket)`; one that throws did not answer.
@@ -1020,6 +1034,8 @@ describe('mayHaveOpenWindow (decision 115)', () => {
   beforeEach(() => {
     original = vi.mocked(execFileSync).getMockImplementation();
     vi.stubEnv('TMUX_TMPDIR', '');
+    // Launches record their socket under ~/.pupitre: a throwaway one here.
+    vi.stubEnv('HOME', tempDir('pup-probe-home-'));
   });
 
   afterEach(() => {
@@ -1033,13 +1049,13 @@ describe('mayHaveOpenWindow (decision 115)', () => {
   ])('reports a window whose %s a server lists', (_what, panes) => {
     servers(() => panes);
 
-    expect(mayHaveOpenWindow([{ sessionId: 's0', paneId: null }, S1])).toBe('s1');
+    expect(mayHaveOpenWindow(NO_RECORD, [{ sessionId: 's0', paneId: null }, S1])).toBe('s1');
   });
 
   it('passes a window listed nowhere, and matches no pane id the caller did not pass', () => {
     servers(() => '%1 pup-other\n%3 pup-s9\n');
 
-    expect(mayHaveOpenWindow([{ sessionId: 's1', paneId: null }])).toBeUndefined();
+    expect(mayHaveOpenWindow(NO_RECORD, [{ sessionId: 's1', paneId: null }])).toBeUndefined();
   });
 
   // A server that cannot be reached, a tmux that is not there: either way no
@@ -1051,7 +1067,7 @@ describe('mayHaveOpenWindow (decision 115)', () => {
         throw new Error(message);
       });
 
-      expect(mayHaveOpenWindow([S1])).toBe('s1');
+      expect(mayHaveOpenWindow(NO_RECORD, [S1])).toBe('s1');
     },
   );
 
@@ -1061,7 +1077,7 @@ describe('mayHaveOpenWindow (decision 115)', () => {
     servers(() => '');
     vi.stubEnv('PATH', '/tmp/fake-bin');
 
-    mayHaveOpenWindow([S1]);
+    mayHaveOpenWindow(NO_RECORD, [S1]);
 
     expect(vi.mocked(execFileSync).mock.calls).toEqual([
       [
@@ -1081,7 +1097,7 @@ describe('mayHaveOpenWindow (decision 115)', () => {
     servers(() => '');
     vi.stubEnv('TMUX_TMPDIR', '/tmp/elsewhere/');
 
-    expect(mayHaveOpenWindow([S1])).toBeUndefined();
+    expect(mayHaveOpenWindow(NO_RECORD, [S1])).toBeUndefined();
     expect(sockets()).toEqual([tmpSocket, elsewhere]);
   });
 
@@ -1097,7 +1113,35 @@ describe('mayHaveOpenWindow (decision 115)', () => {
     vi.stubEnv('TMUX_TMPDIR', '/tmp/elsewhere');
     servers((socket) => (socket === elsewhere ? answer() : '%1 pup-other\n'));
 
-    expect(mayHaveOpenWindow([S1])).toBe('s1');
+    expect(mayHaveOpenWindow(NO_RECORD, [S1])).toBe('s1');
+  });
+
+  // A caller can unset TMUX_TMPDIR; the launch recorded the operator's.
+  it("probes the socket the launch recorded, though the caller's environment lacks TMUX_TMPDIR", () => {
+    const { repo, worktree } = initRepoWithWorktree();
+    vi.stubEnv('TMUX_TMPDIR', '/tmp/elsewhere');
+    launchSession({ ...OPTS, repoPath: repo, worktreePath: worktree });
+    vi.stubEnv('TMUX_TMPDIR', undefined);
+    servers((socket) => (socket === elsewhere ? '%9 pup-s-1\n' : '%1 pup-other\n'));
+    // Only the probe's calls: the fixture's git and the launch made their own.
+    vi.mocked(execFileSync).mockClear();
+
+    expect(mayHaveOpenWindow(repo, [{ sessionId: 's-1', paneId: null }])).toBe('s-1');
+    expect(sockets()).toEqual([tmpSocket, elsewhere]);
+  });
+
+  it.each([
+    ['a relative path', 'tmux-1/default'],
+    ['another tmux socket', `/tmp/elsewhere/tmux-${uid}/pup-conductor`],
+    ['a control character', `/tmp/\n/tmux-${uid}/default`],
+  ])('reads a record holding %s as none, and probes the default sockets', (_what, record) => {
+    const dir = projectPaths(NO_RECORD).sessionDir('s1');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'tmux-socket'), record);
+    servers(() => '');
+
+    expect(mayHaveOpenWindow(NO_RECORD, [S1])).toBeUndefined();
+    expect(sockets()).toEqual([tmpSocket]);
   });
 });
 

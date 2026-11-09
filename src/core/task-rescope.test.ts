@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mayHaveOpenWindow } from '../claude/session-runtime.service.js';
 import { openStore } from './db.client.js';
 import { listDecisionRecords } from './decision-record.repository.js';
+import { globToRegExp } from './glob.utils.js';
 import { InvalidProfileError } from './profile.errors.js';
 import { auditScope } from './scope-audit.utils.js';
 import {
@@ -15,6 +16,8 @@ import {
   readTaskSpec,
 } from './session.repository.js';
 import { rescopeTask } from './task-rescope.service.js';
+import { assertPlannableSpec } from './task-spec.utils.js';
+import type { RescopeCaller } from './types/session-event.types.js';
 
 // The tmux boundary: by default no window of the task's is open, as the gate
 // leaves a merged session's.
@@ -22,6 +25,15 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../claude/session-runtime.service.js')>()),
   mayHaveOpenWindow: vi.fn(),
 }));
+
+// The plan's own check, real unless a test stubs it.
+vi.mock('./task-spec.utils.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./task-spec.utils.js')>();
+  return { ...actual, assertPlannableSpec: vi.fn(actual.assertPlannableSpec) };
+});
+
+// What the CLI hands over of a caller it took for the operator.
+const CALLER: RescopeCaller = { by: 'inferred-operator', tty: '/dev/ttys003', tmuxPane: '%4' };
 
 const SPEC = {
   id: 't-1',
@@ -47,6 +59,7 @@ describe('rescopeTask (decision 115)', () => {
 
   beforeEach(() => {
     vi.mocked(mayHaveOpenWindow).mockReset().mockReturnValue(undefined);
+    vi.mocked(assertPlannableSpec).mockReset();
     db = openStore(':memory:');
     ensureProject(db, 'proj-1', '/repo');
     insertTask(db, { id: 't-1', projectId: 'proj-1', spec: JSON.stringify(SPEC) });
@@ -57,7 +70,7 @@ describe('rescopeTask (decision 115)', () => {
     (state) => {
       launched('s1', state);
 
-      expect(rescopeTask(db, 't-1', ['src/cli/index.ts', 'src/core/**'])).toEqual({
+      expect(rescopeTask(db, 't-1', ['src/cli/index.ts', 'src/core/**'], CALLER)).toEqual({
         sessionId: 's1',
         added: ['src/cli/index.ts'],
         tier: 'critical',
@@ -72,7 +85,9 @@ describe('rescopeTask (decision 115)', () => {
       expect(JSON.parse(rescope?.payload ?? '{}')).toEqual({
         task: 't-1',
         added: ['src/cli/index.ts'],
-        by: 'operator',
+        by: 'inferred-operator',
+        tty: '/dev/ttys003',
+        tmuxPane: '%4',
         tier: 'critical',
         raised: false,
       });
@@ -88,7 +103,7 @@ describe('rescopeTask (decision 115)', () => {
     launched('s1', 'merged');
     launched('s2', 'killed');
 
-    expect(rescopeTask(db, 't-1', ['docs/**'])).toMatchObject({ sessionId: 's1' });
+    expect(rescopeTask(db, 't-1', ['docs/**'], CALLER)).toMatchObject({ sessionId: 's1' });
   });
 
   it.each(['queued', 'running', 'rejected'])(
@@ -97,7 +112,7 @@ describe('rescopeTask (decision 115)', () => {
       launched('s1', 'merged');
       launched('s2', state);
 
-      expect(() => rescopeTask(db, 't-1', ['docs/**'])).toThrow(
+      expect(() => rescopeTask(db, 't-1', ['docs/**'], CALLER)).toThrow(
         'Session s2 is at work on t-1; rescope once it stops.',
       );
       expect(readTaskSpec(db, 't-1').scopeIn).toEqual(['src/core/**']);
@@ -107,10 +122,10 @@ describe('rescopeTask (decision 115)', () => {
   );
 
   it('refuses a task nobody claimed, and one that does not exist', () => {
-    expect(() => rescopeTask(db, 't-1', ['docs/**'])).toThrow('No session has claimed t-1');
+    expect(() => rescopeTask(db, 't-1', ['docs/**'], CALLER)).toThrow('No session has claimed t-1');
     launched('s1', 'killed');
-    expect(() => rescopeTask(db, 't-1', ['docs/**'])).toThrow('No session has claimed t-1');
-    expect(() => rescopeTask(db, 't-gone', ['docs/**'])).toThrow('No task t-gone.');
+    expect(() => rescopeTask(db, 't-1', ['docs/**'], CALLER)).toThrow('No session has claimed t-1');
+    expect(() => rescopeTask(db, 't-gone', ['docs/**'], CALLER)).toThrow('No task t-gone.');
   });
 
   // The session's next window routes from its own stored tier, so a standard
@@ -133,7 +148,7 @@ describe('rescopeTask (decision 115)', () => {
       (stored) => {
         standard(stored);
 
-        expect(rescopeTask(db, 't-1', ['src/core/merge-gate.service.ts'])).toMatchObject({
+        expect(rescopeTask(db, 't-1', ['src/core/merge-gate.service.ts'], CALLER)).toMatchObject({
           tier: 'critical',
           raised: true,
         });
@@ -155,7 +170,7 @@ describe('rescopeTask (decision 115)', () => {
     it('keeps a standard task standard when the added globs are', () => {
       standard('standard');
 
-      expect(rescopeTask(db, 't-1', ['src/cli/index.ts'])).toMatchObject({
+      expect(rescopeTask(db, 't-1', ['src/cli/index.ts'], CALLER)).toMatchObject({
         tier: 'standard',
         raised: false,
       });
@@ -175,7 +190,7 @@ describe('rescopeTask (decision 115)', () => {
         "UPDATE sessions SET tier = 'standard', rung = 2, rung_reason = 'ci-fix-round' WHERE id = ?",
       ).run('s1');
 
-      expect(rescopeTask(db, 't-1', ['docs/**'])).toMatchObject({
+      expect(rescopeTask(db, 't-1', ['docs/**'], CALLER)).toMatchObject({
         tier: 'standard',
         raised: false,
       });
@@ -193,7 +208,7 @@ describe('rescopeTask (decision 115)', () => {
       standard('standard');
       db.prepare("UPDATE sessions SET tier = 'critical', rung = 1 WHERE id = ?").run('s1');
 
-      expect(rescopeTask(db, 't-1', ['src/core/merge-gate.service.ts'])).toMatchObject({
+      expect(rescopeTask(db, 't-1', ['src/core/merge-gate.service.ts'], CALLER)).toMatchObject({
         tier: 'critical',
         raised: true,
       });
@@ -210,7 +225,7 @@ describe('rescopeTask (decision 115)', () => {
       );
       launched('s1', 'merged');
 
-      expect(rescopeTask(db, 't-1', ['src/core/merge-gate.service.ts'])).toMatchObject({
+      expect(rescopeTask(db, 't-1', ['src/core/merge-gate.service.ts'], CALLER)).toMatchObject({
         tier: 'critical',
         raised: false,
       });
@@ -226,7 +241,7 @@ describe('rescopeTask (decision 115)', () => {
       launched('s1', 'merged');
       db.prepare("UPDATE sessions SET tier = 'critical', rung = 1 WHERE id = ?").run('s1');
 
-      expect(rescopeTask(db, 't-1', ['src/cli/index.ts'])).toMatchObject({
+      expect(rescopeTask(db, 't-1', ['src/cli/index.ts'], CALLER)).toMatchObject({
         tier: 'critical',
         raised: false,
       });
@@ -238,7 +253,7 @@ describe('rescopeTask (decision 115)', () => {
   it('writes nothing when every glob is already in scope', () => {
     launched('s1', 'merged');
 
-    expect(rescopeTask(db, 't-1', ['src/core/**'])).toEqual({
+    expect(rescopeTask(db, 't-1', ['src/core/**'], CALLER)).toEqual({
       sessionId: 's1',
       added: [],
       tier: 'critical',
@@ -248,10 +263,24 @@ describe('rescopeTask (decision 115)', () => {
     expect(listDecisionRecords(db)).toEqual([]);
   });
 
-  it('refuses a glob the hooks could not hold', () => {
+  // No glob the refusal table takes can fail the plan's own check today, and
+  // the stored spec passed it on the way out of the store, so a stub stands
+  // in for a gap opening between them: the widened spec still goes through
+  // the check, and its refusal writes nothing.
+  it('puts the widened spec through the plan check, writing nothing when it refuses', () => {
     launched('s1', 'merged');
+    vi.mocked(assertPlannableSpec).mockImplementation((spec) => {
+      if (spec.scopeIn.includes('docs/**')) throw new InvalidProfileError('plan check refused');
+    });
 
-    expect(() => rescopeTask(db, 't-1', ['src/\n**'])).toThrow(InvalidProfileError);
+    expect(() => rescopeTask(db, 't-1', ['docs/**'], CALLER)).toThrow('plan check refused');
+    expect(vi.mocked(assertPlannableSpec)).toHaveBeenCalledWith({
+      ...SPEC,
+      scopeIn: ['src/core/**', 'docs/**'],
+    });
+    expect(readTaskSpec(db, 't-1').scopeIn).toEqual(['src/core/**']);
+    expect(listEvents(db, 's1')).toEqual([]);
+    expect(listDecisionRecords(db)).toEqual([]);
   });
 
   // A worker that ran `pup session done` is awaiting review with its window
@@ -262,7 +291,7 @@ describe('rescopeTask (decision 115)', () => {
       launched('s1', state);
       vi.mocked(mayHaveOpenWindow).mockReturnValue('s1');
 
-      expect(() => rescopeTask(db, 't-1', ['docs/**'])).toThrow(
+      expect(() => rescopeTask(db, 't-1', ['docs/**'], CALLER)).toThrow(
         "Session s1's window may still be open",
       );
       expect(readTaskSpec(db, 't-1').scopeIn).toEqual(['src/core/**']);
@@ -278,10 +307,11 @@ describe('rescopeTask (decision 115)', () => {
     launched('s2', 'killed');
     launched('s3', 'merged');
 
-    rescopeTask(db, 't-1', ['docs/**']);
+    rescopeTask(db, 't-1', ['docs/**'], CALLER);
 
     expect(vi.mocked(mayHaveOpenWindow).mock.calls).toEqual([
       [
+        '/repo',
         expect.arrayContaining([
           { sessionId: 's1', paneId: '%3' },
           { sessionId: 's2', paneId: null },
@@ -320,14 +350,32 @@ describe('rescopeTask (decision 115)', () => {
   ])('refuses the glob %j: it %s', (glob, why) => {
     launched('s1', 'merged');
 
-    expect(() => rescopeTask(db, 't-1', ['docs/**', glob])).toThrow(why);
+    expect(() => rescopeTask(db, 't-1', ['docs/**', glob], CALLER)).toThrow(why);
     expect(readTaskSpec(db, 't-1').scopeIn).toEqual(['src/core/**']);
   });
+
+  // The matcher escapes `[]`, `{}` and `\`, so each of these names a literal
+  // path: the table takes it, and it never matches anything under `.github`.
+  it.each(['[.]github/**', '{docs,.github}/**', '\\.github/**'])(
+    'takes %j as a literal path that never reaches .github',
+    (glob) => {
+      launched('s1', 'merged');
+
+      expect(rescopeTask(db, 't-1', [glob], CALLER)).toMatchObject({ added: [glob] });
+
+      const workflows = ['.github/x', '.github/workflows/ci.yml'];
+      expect(workflows.filter((path) => globToRegExp(glob).test(path))).toEqual([]);
+      const spec = readTaskSpec(db, 't-1');
+      expect(auditScope(workflows, spec.scopeIn, spec.scopeOut).map((v) => v.path)).toEqual(
+        workflows,
+      );
+    },
+  );
 
   it('takes a glob the matcher reads as a plain path', () => {
     launched('s1', 'merged');
 
-    expect(rescopeTask(db, 't-1', ['./docs/**', 'src/cli/'])).toMatchObject({
+    expect(rescopeTask(db, 't-1', ['./docs/**', 'src/cli/'], CALLER)).toMatchObject({
       added: ['./docs/**', 'src/cli/'],
     });
   });
@@ -342,7 +390,7 @@ describe('rescopeTask (decision 115)', () => {
     };
     expect(audit()).toEqual(['src/cli/index.ts', 'src/core/secret.ts']);
 
-    rescopeTask(db, 't-1', ['src/cli/index.ts']);
+    rescopeTask(db, 't-1', ['src/cli/index.ts'], CALLER);
 
     expect(audit()).toEqual(['src/core/secret.ts']);
   });
