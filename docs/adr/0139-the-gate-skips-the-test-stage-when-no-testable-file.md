@@ -23,7 +23,9 @@
     reads it, using the same branch tree reading that decision 110 uses for the diff-size
     split:
     - a rename whose old path is off the list (`--name-only` names only the new path, so
-      the old one is read from the `--raw -M` entries);
+      the old one is read from the `--raw -M` entries). An old path on the list goes
+      through every check below, since it is what a link or another case reached on the
+      target;
     - a changed symlink, or a path a symlink on the branch can reach;
     - a name outside ASCII, which the gate's filesystem can fold onto another name;
     - a path the branch's tree also holds in another ASCII case, itself or through one of
@@ -32,6 +34,10 @@
       replaces it;
     - Markdown under `docs/` on a branch where a Docusaurus config or dependency compiles
       it.
+
+    The tree is read from its root (`ls-tree --full-tree`, `top` pathspecs), as decision
+    157 reads the target's, so a `core.worktree` a session aims elsewhere in the shared
+    config hides no link, spelling or dependency file.
 
     A change that touches a nested package always runs that package's suite (decision 59).
     *What is left off the list.* `README.md` is left off because Rust's `include_str!` and
