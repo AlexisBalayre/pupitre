@@ -1496,6 +1496,100 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(steerPane).not.toHaveBeenCalled();
     });
   });
+
+  // git follows `<repo>/.git/commondir` under `-C`, so a session that plants one
+  // naming a decoy repo that borrows the real objects picks every ref the gate
+  // reads (decision 172).
+  describe('a commondir planted in the main git dir (decision 172)', () => {
+    /**
+     * A bare decoy that reads the real objects through an alternate, its main
+     * on the session's tip and its branch on a commit of its own, so both refs
+     * differ from the real ones. Returns the decoy's path.
+     */
+    const decoyRepo = (realBranchTip: string): string => {
+      const decoy = join(tempDir('pup-decoy-'), 'decoy.git');
+      sh(dirname(decoy), 'git', 'init', '-q', '--bare', '-b', 'main', decoy);
+      writeFileSync(
+        join(decoy, 'objects', 'info', 'alternates'),
+        `${join(repo, '.git', 'objects')}\n`,
+      );
+      const own = sh(
+        decoy,
+        'git',
+        '-c',
+        'user.name=decoy',
+        '-c',
+        'user.email=decoy@test',
+        'commit-tree',
+        '-m',
+        'decoy',
+        `${realBranchTip}^{tree}`,
+      ).trim();
+      sh(decoy, 'git', 'update-ref', 'refs/heads/main', realBranchTip);
+      sh(decoy, 'git', 'update-ref', `refs/heads/${BRANCH}`, own);
+      return decoy;
+    };
+
+    /** Plants `<repo>/.git/commondir` naming `decoy`, as a file or as a symlink to one. */
+    const plant = (decoy: string, as: 'file' | 'symlink'): void => {
+      const commondir = join(repo, '.git', 'commondir');
+      if (as === 'file') {
+        writeFileSync(commondir, `${decoy}\n`);
+        return;
+      }
+      const pointer = join(tempDir('pup-pointer-'), 'commondir');
+      writeFileSync(pointer, `${decoy}\n`);
+      symlinkSync(pointer, commondir);
+    };
+
+    const gitSpawns = (): unknown[][] =>
+      vi.mocked(execFileSync).mock.calls.filter(([file]) => file === 'git');
+
+    it.each(['file', 'symlink'] as const)(
+      'refuses a commondir planted as a %s before resolving any ref',
+      async (as) => {
+        const worktree = seedSession(db, repo);
+        commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+        const realMain = sh(repo, 'git', 'rev-parse', 'refs/heads/main').trim();
+        const realBranch = sh(repo, 'git', 'rev-parse', `refs/heads/${BRANCH}`).trim();
+        plant(decoyRepo(realBranch), as);
+        // The control: plain git now reads the decoy's refs, not the real ones.
+        expect(sh(repo, 'git', 'rev-parse', 'refs/heads/main').trim()).toBe(realBranch);
+        expect(sh(repo, 'git', 'rev-parse', `refs/heads/${BRANCH}`).trim()).not.toBe(realBranch);
+        vi.mocked(execFileSync).mockClear();
+
+        await expect(merge()).rejects.toThrow(/\.git\/commondir exists.*decision 172/s);
+
+        expect(gitSpawns()).toEqual([]);
+        expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+        rmSync(join(repo, '.git', 'commondir'));
+        expect(sh(repo, 'git', 'rev-parse', 'refs/heads/main').trim()).toBe(realMain);
+      },
+    );
+
+    it('refuses a commondir planted while the stages run, merging nothing', async () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      const realMain = sh(repo, 'git', 'rev-parse', 'refs/heads/main').trim();
+      const decoy = decoyRepo(sh(repo, 'git', 'rev-parse', `refs/heads/${BRANCH}`).trim());
+      // The seam a session racing the gate stands in at: after the pins, before
+      // the fast-forward reads the target again.
+      const plantingAdapter: Adapter = {
+        ...passingAdapter,
+        gateCommands: (repoPath) => {
+          plant(decoy, 'file');
+          return passingAdapter.gateCommands(repoPath);
+        },
+      };
+
+      await expect(merge(plantingAdapter)).rejects.toThrow(/\.git\/commondir exists/);
+
+      rmSync(join(repo, '.git', 'commondir'));
+      expect(sh(repo, 'git', 'rev-parse', 'refs/heads/main').trim()).toBe(realMain);
+      expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+      expect(existsSync(worktree)).toBe(true);
+    });
+  });
 });
 
 describe('countChangedLines', () => {

@@ -43,6 +43,7 @@ import {
   ArmedGitDriverError,
   armedGitDrivers,
   assertNoArmedGitDrivers,
+  assertNoPlantedCommondir,
   checkoutPinned,
   currentBranch,
   gitDiffAddedLines,
@@ -1065,11 +1066,17 @@ function formatGateReport(report: GateReport): string {
  * again on that head with `--pr` (decision 86).
  */
 export async function runMergeGate(db: Database, req: MergeRequest): Promise<MergeOutcome> {
+  // Before anything reads a ref, and again under the lock. `runGit` checks on
+  // every spawn too, but some catches here read a refusal as "no such ref",
+  // and a gate run should refuse outright rather than run on in the dark
+  // (decision 172).
+  assertNoPlantedCommondir(req.repoPath);
   const planned = planMerge(db, req);
   // The operator's and the conductor's runs wait for a live holder (decision 88).
   return withMergeLock(
     req.repoPath,
     async (waited) => {
+      assertNoPlantedCommondir(req.repoPath);
       // A run that held the lock before this one, a live one waited for or a
       // dead one reclaimed or one released during the gh calls, may have
       // merged, rejected or re-gated this session, or opened its fix round, and

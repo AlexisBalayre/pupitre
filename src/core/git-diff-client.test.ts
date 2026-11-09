@@ -4,6 +4,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  rmSync,
   symlinkSync,
   unlinkSync,
   utimesSync,
@@ -16,6 +17,7 @@ import {
   ArmedGitDriverError,
   armedGitDrivers,
   assertNoArmedGitDrivers,
+  assertNoPlantedCommondir,
   assertNoWorktreeConfig,
   currentBranch,
   gitDiffAddedLines,
@@ -1477,5 +1479,94 @@ describe('armedGitDrivers: an info/attributes that is not a regular file', () =>
 
     writeFileSync(attributes, '# a comment\n*.ts diff\n');
     expect(armedGitDrivers(repo)).toEqual(['info/attributes (*.ts diff)']);
+  });
+});
+
+// git follows `<repo>/.git/commondir` under `-C`, `--git-dir` and
+// `GIT_COMMON_DIR`, so one planted there hands every ref read to the repo it
+// names (decision 172).
+describe('a commondir planted in the main git dir (decision 172)', () => {
+  /** `repo` with a commit on main, and a bare decoy whose main names another commit. */
+  function repoAndDecoy(): { repo: string; decoy: string; realMain: string } {
+    const repo = makeRepo();
+    writeFileSync(join(repo, 'a.ts'), 'a\n');
+    commitAll(repo, 'a');
+    const realMain = revParse(repo, 'refs/heads/main');
+    const decoy = join(tempDir('pup-decoy-'), 'decoy.git');
+    sh(dirname(decoy), 'git', 'init', '-q', '--bare', '-b', 'main', decoy);
+    writeFileSync(
+      join(decoy, 'objects', 'info', 'alternates'),
+      `${join(repo, '.git', 'objects')}\n`,
+    );
+    const own = execFileSync(
+      'git',
+      [
+        '-c',
+        'user.name=d',
+        '-c',
+        'user.email=d@test',
+        'commit-tree',
+        '-m',
+        'decoy',
+        `${realMain}^{tree}`,
+      ],
+      { cwd: decoy, encoding: 'utf8', env: GIT_ENV },
+    ).trim();
+    sh(decoy, 'git', 'update-ref', 'refs/heads/main', own);
+    return { repo, decoy, realMain };
+  }
+
+  const plants: Record<string, (commondir: string, decoy: string) => void> = {
+    'a file': (commondir, decoy) => writeFileSync(commondir, `${decoy}\n`),
+    'a symlink': (commondir, decoy) => {
+      const pointer = join(tempDir('pup-pointer-'), 'commondir');
+      writeFileSync(pointer, `${decoy}\n`);
+      symlinkSync(pointer, commondir);
+    },
+    'a dangling symlink': (commondir) => symlinkSync('/nonexistent/commondir', commondir),
+    'a directory': (commondir) => mkdirSync(commondir),
+  };
+
+  it.each(Object.keys(plants))('refuses every git call while it is %s', (kind) => {
+    const { repo, decoy, realMain } = repoAndDecoy();
+    const commondir = join(repo, '.git', 'commondir');
+    plants[kind]?.(commondir, decoy);
+
+    expect(() => runGit(repo, ['rev-parse', 'refs/heads/main'])).toThrow(
+      /\.git\/commondir exists.*decision 172/s,
+    );
+    expect(() => gitDiffPaths(repo, 'main', 'main')).toThrow(/\.git\/commondir exists/);
+    expect(() => currentBranch(repo)).toThrow(/\.git\/commondir exists/);
+
+    rmSync(commondir, { recursive: true });
+    expect(runGit(repo, ['rev-parse', 'refs/heads/main']).trim()).toBe(realMain);
+  });
+
+  it('is live: plain git reads the decoy refs the check refuses', () => {
+    const { repo, decoy, realMain } = repoAndDecoy();
+    writeFileSync(join(repo, '.git', 'commondir'), `${decoy}\n`);
+
+    expect(revParse(repo, 'refs/heads/main')).not.toBe(realMain);
+    expect(revParse(repo, 'refs/heads/main')).toBe(revParse(decoy, 'refs/heads/main'));
+  });
+
+  it('runs git in a linked worktree, whose .git is a gitfile, and in a repo with none planted', () => {
+    const { repo, realMain } = repoAndDecoy();
+    const worktree = join(tempDir('pup-wt-'), 'wt');
+    sh(repo, 'git', 'worktree', 'add', '-q', '--detach', worktree);
+
+    expect(runGit(worktree, ['rev-parse', 'HEAD']).trim()).toBe(realMain);
+    expect(() => assertNoPlantedCommondir(repo)).not.toThrow();
+  });
+
+  it('is what every git spawn in git-diff.client.ts builds its argv through', () => {
+    const source = readFileSync(join(process.cwd(), 'src', 'core', 'git-diff.client.ts'), 'utf8');
+    const spawns = [...source.matchAll(/execFileSync\(\s*'git',\s*(\w+)\(/g)].map((m) => m[1]);
+    const safeArgv = /function safeArgv\([^)]*\)[^{]*\{([^}]*)\}/.exec(source)?.[1] ?? '';
+
+    expect(spawns.length).toBeGreaterThan(0);
+    expect(spawns.every((builder) => builder === 'safeArgv')).toBe(true);
+    expect(source.match(/execFileSync\(\s*'git'/g)).toHaveLength(spawns.length);
+    expect(safeArgv).toMatch(/^\s*assertNoPlantedCommondir\(cwd\);/);
   });
 });

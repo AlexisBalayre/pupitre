@@ -511,7 +511,38 @@ export function rethrowIfKilled(error: unknown): void {
   if (signal === 'SIGINT' || signal === 'SIGTERM' || signal === 'SIGHUP') throw error;
 }
 
+/**
+ * Refuse while `<cwd>/.git/commondir` exists, as any kind of file, a symlink
+ * included, dangling or not (decision 172). A main checkout's git dir has no
+ * such file. A session can write one there, and git then reads every ref, the
+ * shared config and `info/` from the repo the file names, under `-C`,
+ * `--git-dir` and `GIT_COMMON_DIR` alike (reproduced on Git 2.39.5 and
+ * 2.54). So a decoy repo that borrows the real objects could hand the gate a
+ * target and a branch of its choosing. The check is an lstat that does not
+ * follow the file, made on every spawn: one check made once would leave a
+ * file planted after it unseen. A session worktree's `.git` is a gitfile, so
+ * the lstat finds nothing there, and its pinned git never reads the main
+ * dir's commondir anyway.
+ */
+export function assertNoPlantedCommondir(cwd: string): void {
+  const commondir = join(cwd, '.git', 'commondir');
+  try {
+    lstatSync(commondir);
+  } catch (error) {
+    const code = typeof error === 'object' && error !== null && 'code' in error ? error.code : '';
+    if (code === 'ENOENT' || code === 'ENOTDIR') return;
+  }
+  throw new Error(
+    `Refusing to run git in ${sanitizeReason(cwd)}: ${sanitizeReason(commondir)} exists, or ` +
+      'cannot be checked. A main checkout has no such file. With it there, git reads ' +
+      'every ref and the shared config from the repo it names, which a session can write ' +
+      'from inside its sandbox (decision 172). Inspect it, remove it, and treat the session ' +
+      'that wrote it as compromised.',
+  );
+}
+
 function safeArgv(cwd: string, args: string[]): string[] {
+  assertNoPlantedCommondir(cwd);
   return [...GIT_SAFE_CONFIG, '-C', cwd, ...args];
 }
 
