@@ -1892,7 +1892,6 @@ describe('CLI commands', () => {
         repoPath: repo,
         sessionId: 's1',
         supersededBy: '9',
-        wait: true,
       });
       expect(logs).toEqual([
         `Retired s1: ${PR} was closed, superseded by ${SUPERSEDING}.`,
@@ -1900,6 +1899,32 @@ describe('CLI commands', () => {
         'Kept pup/s1: it holds commits past the sha its PR carried.',
       ]);
       expect(process.exitCode).toBeUndefined();
+    });
+
+    it('reports a retire made under a lock that was lost, and fails on it', async () => {
+      useCwd(initRepo());
+      vi.mocked(retireSession).mockRejectedValue(
+        new MergeLockLostError('/repo/.git/pup-merge.lock', {
+          prUrl: PR,
+          supersededBy: SUPERSEDING,
+          removedWorktree: true,
+          keptBranch: 'pup/s1',
+        }),
+      );
+
+      await buildProgram().parseAsync(['retire', 's1', '--superseded-by', '9'], { from: 'user' });
+
+      expect(logs).toEqual([
+        `Retired s1: ${PR} was closed, superseded by ${SUPERSEDING}.`,
+        'Removed the session worktree.',
+        'Kept pup/s1: it holds commits past the sha its PR carried.',
+      ]);
+      expect(errors).toEqual([
+        expect.stringMatching(
+          /^The merge lock at \/repo\/\.git\/pup-merge\.lock was gone or replaced/,
+        ),
+      ]);
+      expect(process.exitCode).toBe(1);
     });
 
     it('prints a refusal on one line with its control characters gone', async () => {

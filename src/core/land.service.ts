@@ -35,7 +35,7 @@ import {
   deleteBranchIfHeld,
   isRegisteredWorktree,
   pinnedPullRequest,
-} from './session-teardown.utils.js';
+} from './session-teardown.service.js';
 import type { LandOutcome } from './types/land.types.js';
 
 const LAND_USE: OriginUse = { command: '`pup land`', untouched: 'Nothing was landed.' };

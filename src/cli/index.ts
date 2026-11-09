@@ -140,7 +140,7 @@ import {
   SessionCapReachedError,
   steerSession,
 } from '../core/session-lifecycle.service.js';
-import { type RetireOutcome, retireSession } from '../core/session-retire.service.js';
+import { retireSession } from '../core/session-retire.service.js';
 import {
   describeSlotWait,
   runSessionTest,
@@ -157,6 +157,7 @@ import type { GateReport, MergeOutcome } from '../core/types/merge-gate.types.js
 import type { TaskId, TaskSpec } from '../core/types/profile.types.js';
 import type { StoredGateStage } from '../core/types/session-event.types.js';
 import type { NewSessionRequest, RouteOverride } from '../core/types/session-lifecycle.types.js';
+import type { RetireOutcome } from '../core/types/session-retire.types.js';
 import {
   readUsage,
   UsageLimitReachedError,
@@ -2403,16 +2404,18 @@ export function buildProgram(): Command {
         );
       }
       let outcome: RetireOutcome;
+      let lockLost: MergeLockLostError | undefined;
       try {
         outcome = await retireSession(db, {
           repoPath,
           sessionId: session,
           supersededBy: opts.supersededBy,
-          wait: true,
         });
       } catch (error) {
         if (error instanceof GateInterruptedError) throw error;
-        return refuseScrubbed(error);
+        if (!(error instanceof MergeLockLostError)) return refuseScrubbed(error);
+        outcome = error.result as RetireOutcome;
+        lockLost = error;
       }
       console.log(
         `Retired ${sanitizeReason(session)}: ${outcome.prUrl} was closed, superseded by ` +
@@ -2424,6 +2427,7 @@ export function buildProgram(): Command {
           `Kept ${sanitizeReason(outcome.keptBranch)}: it holds commits past the sha its PR carried.`,
         );
       }
+      if (lockLost !== undefined) refuseScrubbed(lockLost);
     });
   program
     .command('fix <session>')

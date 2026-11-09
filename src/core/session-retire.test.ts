@@ -10,8 +10,8 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   killSession: vi.fn(),
 }));
 
+import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import { killSession } from '../claude/session-runtime.service.js';
-import { tempDir } from '../test/temp-dir.mock.js';
 import { openStore } from './db.client.js';
 import { projectId } from './paths.utils.js';
 import {
@@ -32,7 +32,7 @@ import {
   deleteBranchIfHeld,
   isRegisteredWorktree,
   pinnedPullRequest,
-} from './session-teardown.utils.js';
+} from './session-teardown.service.js';
 
 // Test repos must not inherit the developer's global git config nor GIT_DIR &
 // co., which a pre-commit hook run would aim at the pupitre repo instead.
@@ -165,7 +165,6 @@ describe('retireSession', { timeout: 20_000 }, () => {
         repoPath: repo,
         sessionId: SESSION_ID,
         supersededBy: SUPERSEDING_URL,
-        wait: true,
       });
     } finally {
       errors.mockRestore();

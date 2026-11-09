@@ -23,7 +23,8 @@ import {
   assertUnlockedWorktree,
   deleteBranchIfHeld,
   pinnedPullRequest,
-} from './session-teardown.utils.js';
+} from './session-teardown.service.js';
+import type { RetireOutcome } from './types/session-retire.types.js';
 
 const UNTOUCHED = 'Nothing was retired.';
 const RETIRE_USE: OriginUse = { command: '`pup retire`', untouched: UNTOUCHED };
@@ -35,17 +36,6 @@ interface RetireRequest {
   sessionId: string;
   /** The merged PR that re-landed the work: its number, or its url on the session's repo. */
   supersededBy: string;
-  /** Wait for a merge lock a live run holds, as `pup retire` does, rather than refuse (decision 88). */
-  wait?: boolean;
-}
-
-/** What `pup retire` did, for the CLI to print (decision 141). */
-export interface RetireOutcome {
-  prUrl: string;
-  supersededBy: string;
-  removedWorktree: boolean;
-  /** Set when the local branch held commits past the pinned sha, and was kept. */
-  keptBranch?: string;
 }
 
 /**
@@ -126,7 +116,7 @@ export async function retireSession(db: Database, req: RetireRequest): Promise<R
       appendEvent(db, session.id, 'retired', { prUrl, supersededBy });
       return { prUrl, supersededBy, ...tornDown };
     },
-    req.wait ? MERGE_LOCK_WAIT_MS : 0,
+    MERGE_LOCK_WAIT_MS,
   );
 }
 
