@@ -991,6 +991,7 @@ describe('compileConductorProfile', () => {
       'context.md',
       'hooks/bash-guard.sh',
       'hooks/edit-block.sh',
+      'hooks/statusline.sh',
       'settings.json',
     ]);
   });
@@ -1011,7 +1012,7 @@ describe('compileConductorProfile', () => {
 
     const settings = JSON.parse(compiled.files['settings.json'] as string);
     expect(settings.env).toEqual(SLIM_ENV);
-    expect(Object.keys(settings).sort()).toEqual(['env', 'hooks', 'permissions']);
+    expect(Object.keys(settings).sort()).toEqual(['env', 'hooks', 'permissions', 'statusLine']);
   });
 
   // The conductor's graph is main's, pinned the way a session's is pinned to
