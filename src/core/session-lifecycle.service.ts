@@ -91,13 +91,17 @@ import type {
   RouteOverride,
   SessionPeer,
 } from './types/session-lifecycle.types.js';
+import { assertUsageRoom } from './usage-limits.service.js';
 
 /**
  * `--over-cap`: the operator's word that one more session may go past the cap
- * (decision 96). Only the operator's: a launch the conductor makes ignores it.
+ * (decision 96); `--over-limit`, that one may start while the plan's usage
+ * holds launches (decision 156). Only the operator's: a launch the conductor
+ * makes ignores both.
  */
 interface CapOverride {
   overCap?: boolean;
+  overLimit?: boolean;
 }
 
 /** A launch refused because the project already has as many working sessions as its cap. */
@@ -143,7 +147,7 @@ function assertRoomToLaunch(
   repoPath: string,
   req: CapOverride & Pick<LaunchTaskRequest, 'overlapVia' | 'overrideVia'>,
 ): void {
-  const byOperator = req.overlapVia !== 'conductor' && req.overrideVia !== 'conductor';
+  const byOperator = launchedByOperator(req);
   if (!(req.overCap && byOperator)) {
     const working = holdingStates().filter((state) => state !== 'awaiting-review');
     const count = listSessions(db, working).length;
@@ -152,6 +156,23 @@ function assertRoomToLaunch(
   }
   const available = availableMemoryBytes();
   if (available < MIN_AVAILABLE_MEMORY_BYTES) throw new LowMemoryError(available);
+}
+
+function launchedByOperator(req: Pick<LaunchTaskRequest, 'overlapVia' | 'overrideVia'>): boolean {
+  return req.overlapVia !== 'conductor' && req.overrideVia !== 'conductor';
+}
+
+/**
+ * Hold a new launch while the plan's usage is near a window's limit (decision
+ * 152), asked where the cap is and as early. Only `pup launch` and `pup new`
+ * are held: a fix round or a respawn carries work already started, which a
+ * hold would strand. `--over-limit` lifts it for the operator alone.
+ */
+function assertUsageAllows(
+  repoPath: string,
+  req: CapOverride & Pick<LaunchTaskRequest, 'overlapVia' | 'overrideVia'>,
+): void {
+  if (!(req.overLimit && launchedByOperator(req))) assertUsageRoom(repoPath, Date.now());
 }
 
 /** A short, filesystem- and tmux-safe id derived from the task id and a counter. */
@@ -201,6 +222,7 @@ export function launchTask(db: Database, req: LaunchTaskRequest & CapOverride): 
   const claimedBy = claimingSession(db, row.id);
   if (claimedBy) throw new TaskAlreadyClaimedError(row.id, claimedBy);
   assertRoomToLaunch(db, req.repoPath, req);
+  assertUsageAllows(req.repoPath, req);
   // Validated before the conflict check, the first thing to read the stored
   // spec's globs: a row written before `pup plan add` validated would otherwise
   // reach `scopedPaths` with no `scopeIn` and throw a bare TypeError.
@@ -321,6 +343,7 @@ export function createSession(db: Database, req: NewSessionRequest & CapOverride
   assertNoWorktreeConfig(req.repoPath);
   assertNoArmedGitDrivers(req.repoPath);
   assertRoomToLaunch(db, req.repoPath, req);
+  assertUsageAllows(req.repoPath, req);
   planTask(db, req);
   return launchTask(db, { ...req, taskId: req.task.id });
 }

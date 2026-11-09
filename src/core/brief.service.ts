@@ -47,7 +47,7 @@ export const BRIEF_MAX_CHARS = 8000;
  * whitespace that a Markdown document is structured by.
  */
 // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping them is the point
-const CONTROL_CHARS = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g;
+export const CONTROL_CHARS = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g;
 
 /**
  * An opening code fence, with CommonMark's three spaces of slack. Captures the
@@ -55,8 +55,8 @@ const CONTROL_CHARS = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g;
  * carry an info string after the run; a closer may not, so `~~~ end of example`
  * is fence content and the fence stays open past it.
  */
-const FENCE_OPEN = /^ {0,3}(`{3,}|~{3,})/;
-const FENCE_CLOSE = /^ {0,3}(`{3,}|~{3,})[ \t]*$/;
+export const FENCE_OPEN = /^ {0,3}(`{3,}|~{3,})/;
+export const FENCE_CLOSE = /^ {0,3}(`{3,}|~{3,})[ \t]*$/;
 
 /**
  * A level-2 ATX heading, which is the only structure the brief has, with the
