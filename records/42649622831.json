@@ -1,0 +1,159 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-09T16:00:45.868Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42649622831",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42649622831",
+  "actor": "AlexisBalayre",
+  "commit_sha": "5e9cbcdfe365d53a58041b6a4212ca52ebf7e964",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 290,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "simplicity",
+    "guards"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "simplicity",
+    "guards"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/github.client.ts",
+      "line": "413-417",
+      "description": "A thread an earlier fix round already answered (and the gate deliberately left open \"for the operator\") now counts as open, so `pup ci wait` names `pup fix` again and `pup fix` hands the same finding back as a repeat round, each repeat climbing the model ladder.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/ci-wait.service.ts",
+      "line": "286-288",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "`pup ci wait` and `pup fix` now tell the operator to reply on an answered thread so the next round takes it again, but `fixRoundBrief` relays only the bot's first comment, so the worker gets the same finding with neither the operator's reply nor its earlier decline, and the round counts as a repeat-fix-round.",
+      "body": "**Reopening an answered thread gives the worker the bare finding again.**\n\nThis PR adds advice that tells the operator how to send an answered thread back to a round. In `reviewDigest`:\n\n```ts\nanswered > 0 &&\n  `answer the ${answered} thread(s) a fix round left open: resolve each, or reply for ` +\n    'the next round to take it again',\n```\nhttps://github.com/AlexisBalayre/pupitre/blob/5e9cbcdfe365d53a58041b6a4212ca52ebf7e964/src/core/ci-wait.service.ts#L285-L291\n\nThe same advice is in `reviewVerdict`'s refusal (\"or reply on it to have the next round take it again\"):\nhttps://github.com/AlexisBalayre/pupitre/blob/5e9cbcdfe365d53a58041b6a4212ca52ebf7e964/src/core/fix-round.service.ts#L688-L700\n\n**Trigger.**\n1. A round declines thread T, so pup's marked reply is T's last comment.\n2. The operator follows the advice and replies on T as OWNER, for example \"this is a real bug, guard the null at line 40\".\n3. `isAnswered` turns false, `pup ci wait` names `pup fix`, and `reviewVerdict` relays T.\n\n**Wrong result.**\n- `fixRoundBrief` quotes only `reviewerText(thread.body)`, and `ReviewThread.body` is the first comment from `comments(first: 1)`: https://github.com/AlexisBalayre/pupitre/blob/5e9cbcdfe365d53a58041b6a4212ca52ebf7e964/src/core/fix-round.service.ts#L1008-L1044\n- The query reads the `trail` connection only to compute `isAnswered`, and nothing passes its comments to the worker. The worker never sees the operator's reply or its own earlier decline. It gets the same finding with no history, so it will probably decline it again for the same reason.\n- `fixRoundFailure` (src/core/routing.utils.ts:197-223) counts the round as a `repeat-fix-round`, so it climbs the ladder.\n\nADR 0163 gives exactly this as its reason for `isAnswered`: relaying the thread again \"would hand the worker a finding it already declined, with no sign that it did\". The reopen path the PR now recommends leads straight back to that case, and the operator's instruction is lost too.\n\n**Fix options.**\n- Relay, framed as reviewer data, the comments after the finding from the bot, pup, OWNER, MEMBER or COLLABORATOR. That covers the prior round's reply and the operator's reopening comment.\n- Or drop \"reply for the next round to take it again\" from both messages until those comments are relayed.",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/ci-wait.service.ts",
+      "line": "292-300",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Under a SUCCESS status that is not clean (e.g. an unanchored important finding left in the review body), any answered or outdated thread makes `pup ci wait` and `pup fix` print only the resolve-threads message, skipping the \"read the PR: its findings are in the review body\" step, so an operator who resolves those threads and clicks merge may never see the body finding.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0163-every-unresolved-non-outdated-review-thread-counts-as-open.md",
+      "line": "17-22",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "ADR 0163's \"The rule\" paragraph says `pup fix` hands every open thread to the round and `pup ci wait` names `pup fix` whenever one remains, contradicting its later paragraph where answered threads are left to the operator; add \"unanswered\" or point forward.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/github.client.ts",
+      "line": "429",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The now-unconditional 100-thread page cap counts outsider threads too, so on a public repo any account can block `pup fix` and `pup ci wait` with one review of 100+ line comments, and resolving them does not clear it. The refusal fails closed, but its message could name the case so the operator knows to delete the spam threads.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/ci-wait.service.ts",
+      "line": "281-282",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new inline comment in `reviewDigest` (answered or outdated threads are the operator's, not a round's) repeats the JSDoc sentence the same diff added to that function (AGENTS.md: a WHY comment restating the seam's docs is a duplicate); drop one.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/github.client.ts",
+      "line": "452",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `openThreads` flatMap re-checks `typeof thread.id !== 'string'`, which the `unresolved` filter just above already guarantees, leaving a dead branch.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.7563129699999998,
+  "duration_ms": 235377,
+  "num_turns": 16,
+  "tokens": {
+    "input": 12,
+    "output": 13176,
+    "cache_read": 303726,
+    "cache_creation": 59880,
+    "total": 376794
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 108,
+      "output": 50903,
+      "cache_read": 1376590,
+      "cache_creation": 202906,
+      "cost_usd": 2.4879799999999994
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 38,
+      "output": 7701,
+      "cache_read": 210903,
+      "cache_creation": 67846,
+      "cost_usd": 0.26779130000000007
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 279,
+      "cache_read": 1822,
+      "cache_creation": 3070,
+      "cost_usd": 0.00054167
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "git -C /home/runner/work/pupitre/pupitre diff 83168a0938dbe3babbe0c041cf7dda84c42b419d..HEAD --stat"
+    }
+  ]
+}
