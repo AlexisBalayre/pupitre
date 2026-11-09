@@ -378,6 +378,15 @@ function worktreeConfigState(
  * `diff.external` and `textconv` are disarmed per diff call instead — see
  * `DIFF_SAFE_FLAGS` below — because an empty `diff.external` makes every diff die.
  *
+ * `safe.bareRepository=explicit` keeps git's discovery from taking a directory
+ * for a bare repo. Discovery under `-C <repo>` that finds `<repo>/.git` unusable
+ * (a session can write junk into its HEAD) falls back to `<repo>` itself as a
+ * bare repo. Every file in that bare repo, HEAD, `refs/` and an `objects/info/alternates`
+ * that borrows the real objects, is one a session can write into the checkout.
+ * With the key, git refuses the fallback ("cannot use bare repository"), and
+ * a repo named by `--git-dir` or `GIT_DIR`, as pup's scratch dir and the
+ * pinned worktrees are, still opens (Git 2.38+; decision 172).
+ *
  * A smudge filter or merge driver armed through the untracked `info/attributes`
  * has no `-c` disarm at all — its driver name is chosen by whoever wrote it —
  * so it is refused rather than disarmed; see `armedGitDrivers` (decision 50).
@@ -417,6 +426,8 @@ export const GIT_SAFE_CONFIG = [
   'filter.lfs.smudge=',
   '-c',
   'filter.lfs.clean=',
+  '-c',
+  'safe.bareRepository=explicit',
 ] as const;
 
 /**
@@ -514,11 +525,18 @@ export function rethrowIfKilled(error: unknown): void {
 }
 
 /**
- * The main checkouts `assertMainCheckout` has passed in this process. A path
- * keeps the role for the life of the process, so a `.git` swapped out after
- * that check is refused at the next spawn rather than followed.
+ * The main checkouts `assertMainCheckout` has passed in this process, resolved,
+ * so `repo/` or `./repo` names the same one. A path keeps the role for the life
+ * of the process, so a `.git` swapped out after that check is refused at the
+ * next spawn rather than followed.
  */
 const mainCheckouts = new Set<string>();
+
+/**
+ * A HEAD git would take as one, as `validate_headref` reads it: a symbolic ref
+ * under `refs/`, or a detached sha-1 or sha-256.
+ */
+const VALID_HEAD = /^(?:ref:\s*refs\/[^\n]+|[0-9a-f]{40}(?:[0-9a-f]{24})?)\n?$/;
 
 /**
  * A `.git` git would follow to a repo a session chose (decision 172). Its own
@@ -561,6 +579,11 @@ function lstatIfThere(cwd: string, path: string): Stats | undefined {
  * with no commondir at all, and neither pup's worktrees nor a main checkout
  * has one. A gitfile is what a worktree has, and it passes here, except at a
  * path `assertMainCheckout` has passed: only a decoy would put one there.
+ * A `.git` directory git would not take as a repo, with no valid HEAD or no
+ * `objects/` or `refs/`, is refused too: git's discovery skips it and falls
+ * back to the checkout itself as a bare repo, whose HEAD, refs and alternates
+ * are files a session can write. `safe.bareRepository=explicit` refuses that
+ * fallback as well; this names the cause before git runs.
  * Checked on every spawn, because a check made once would leave a file
  * planted after it unseen.
  */
@@ -570,7 +593,9 @@ function assertGitDirUnplanted(cwd: string): void {
   const shown = sanitizeReason(dotGit);
   if (stat?.isSymbolicLink()) refuseGitDir(cwd, `${shown} is a symlink`);
   if (stat === undefined || stat.isFile()) {
-    if (mainCheckouts.has(cwd)) refuseGitDir(cwd, `${shown} is no longer a directory`);
+    if (mainCheckouts.has(resolve(cwd))) {
+      refuseGitDir(cwd, `${shown} is no longer a directory`);
+    }
     return;
   }
   if (!stat.isDirectory()) refuseGitDir(cwd, `${shown} is neither a directory nor a gitfile`);
@@ -578,11 +603,25 @@ function assertGitDirUnplanted(cwd: string): void {
   if (lstatIfThere(cwd, commondir)) {
     refuseGitDir(cwd, `${sanitizeReason(commondir)} exists, and a main checkout has none`);
   }
+  const head = readRegularFile(join(dotGit, 'HEAD'), POINTER_MAX_BYTES);
+  if (
+    typeof head !== 'object' ||
+    !VALID_HEAD.test(head.text) ||
+    !lstatIfThere(cwd, join(dotGit, 'objects'))?.isDirectory() ||
+    !lstatIfThere(cwd, join(dotGit, 'refs'))?.isDirectory()
+  ) {
+    refuseGitDir(
+      cwd,
+      `${shown} is not a repo git would use: its HEAD names no ref or commit, or it has no ` +
+        'objects/ or refs/ directory, so git would take the checkout itself for a bare repo',
+    );
+  }
 }
 
 /**
  * Refuse unless `repoPath` is a main checkout whose `.git` is a directory of
- * its own, not a gitfile or a symlink, and holds no commondir. Called wherever
+ * its own, not a gitfile or a symlink, that git would take as a repo and that
+ * holds no commondir. Called wherever
  * pup knows it is about to read the main repo's refs. From then on the path is
  * one `safeArgv` holds to the same rule on every spawn (decision 172).
  */
@@ -596,7 +635,7 @@ export function assertMainCheckout(repoPath: string): void {
         'a symlink there names a repo of its own',
     );
   }
-  mainCheckouts.add(repoPath);
+  mainCheckouts.add(resolve(repoPath));
   assertGitDirUnplanted(repoPath);
 }
 

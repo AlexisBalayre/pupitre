@@ -1643,6 +1643,36 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       },
     );
 
+    it('refuses a junk HEAD that would make git read the checkout as a bare decoy', async () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      const realMain = sh(repo, 'git', 'rev-parse', 'refs/heads/main').trim();
+      const realBranch = sh(repo, 'git', 'rev-parse', `refs/heads/${BRANCH}`).trim();
+      // The checkout root as a bare repo: main on the session's tip, the real
+      // objects borrowed, every file one a session can write.
+      writeFileSync(join(repo, 'HEAD'), 'ref: refs/heads/main\n');
+      mkdirSync(join(repo, 'refs', 'heads'), { recursive: true });
+      writeFileSync(join(repo, 'refs', 'heads', 'main'), `${realBranch}\n`);
+      mkdirSync(join(repo, 'objects', 'info'), { recursive: true });
+      writeFileSync(
+        join(repo, 'objects', 'info', 'alternates'),
+        `${join(repo, '.git', 'objects')}\n`,
+      );
+      const head = join(repo, '.git', 'HEAD');
+      const realHead = readFileSync(head, 'utf8');
+      writeFileSync(head, 'ref: x\n');
+      // The control: plain git falls back to the decoy and reads its main.
+      expect(sh(repo, 'git', 'rev-parse', 'refs/heads/main').trim()).toBe(realBranch);
+      vi.mocked(execFileSync).mockClear();
+
+      await expect(merge()).rejects.toThrow(/\.git is not a repo git would use.*decision 172/s);
+
+      expect(gitSpawns()).toEqual([]);
+      writeFileSync(head, realHead);
+      expect(sh(repo, 'git', 'rev-parse', 'refs/heads/main').trim()).toBe(realMain);
+      expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+    });
+
     it('refuses a .git swapped for a gitfile while the stages run, merging nothing', async () => {
       const worktree = seedSession(db, repo);
       commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');

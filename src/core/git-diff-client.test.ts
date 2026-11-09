@@ -21,10 +21,12 @@ import {
   assertNoArmedGitDrivers,
   assertNoWorktreeConfig,
   currentBranch,
+  GIT_SAFE_CONFIG,
   gitDiffAddedLines,
   gitDiffBinaryRecount,
   gitDiffNumstat,
   gitDiffPaths,
+  RewrittenGitDirError,
   rethrowIfKilled,
   runGit,
   verifiedWorktreeGitEnv,
@@ -1603,47 +1605,156 @@ describe("a main checkout's .git a session rewrote (decision 172)", () => {
     expect(() => assertMainCheckout(worktree)).toThrow(/\.git is not a directory/);
     expect(runGit(worktree, ['rev-parse', 'HEAD']).trim()).toBe(realMain);
   });
+
+  it('holds a main checkout passed under another spelling of its path', () => {
+    const { repo, decoy } = repoAndDecoy();
+    assertMainCheckout(`${repo}/`);
+    swapGitDir(repo, decoy);
+    writeFileSync(join(repo, '.git'), `gitdir: ${decoy}\n`);
+
+    expect(() => runGit(join(repo, '.'), ['rev-parse', 'HEAD'])).toThrow(
+      /\.git is no longer a directory/,
+    );
+  });
+
+  /**
+   * The checkout's own root made a bare repo whose main names a commit of the
+   * session's, borrowing the real objects: git's discovery falls back to it
+   * once `.git` is not a repo it would use. Returns the decoy commit.
+   */
+  function plantBareCheckout(repo: string, realMain: string): string {
+    const own = execFileSync(
+      'git',
+      [
+        '-c',
+        'user.name=d',
+        '-c',
+        'user.email=d@test',
+        'commit-tree',
+        '-m',
+        'decoy',
+        `${realMain}^{tree}`,
+      ],
+      { cwd: repo, encoding: 'utf8', env: GIT_ENV },
+    ).trim();
+    writeFileSync(join(repo, 'HEAD'), 'ref: refs/heads/main\n');
+    mkdirSync(join(repo, 'refs', 'heads'), { recursive: true });
+    writeFileSync(join(repo, 'refs', 'heads', 'main'), `${own}\n`);
+    mkdirSync(join(repo, 'objects', 'info'), { recursive: true });
+    writeFileSync(
+      join(repo, 'objects', 'info', 'alternates'),
+      `${join(repo, '.git', 'objects')}\n`,
+    );
+    return own;
+  }
+
+  const breaks: Record<string, (dotGit: string) => void> = {
+    'a junk HEAD': (dotGit) => writeFileSync(join(dotGit, 'HEAD'), 'ref: x\n'),
+    'no HEAD': (dotGit) => rmSync(join(dotGit, 'HEAD')),
+    'no refs/': (dotGit) => renameSync(join(dotGit, 'refs'), join(tempDir('pup-refs-'), 'refs')),
+  };
+
+  it.each(Object.keys(breaks))(
+    'refuses a .git with %s, which would make git read the checkout as a bare decoy',
+    (kind) => {
+      const { repo, realMain } = repoAndDecoy();
+      const own = plantBareCheckout(repo, realMain);
+      breaks[kind]?.(join(repo, '.git'));
+      // The control: plain git, at its default `safe.bareRepository=all`, reads the decoy.
+      expect(revParse(repo, 'refs/heads/main')).toBe(own);
+
+      expect(() => runGit(repo, ['rev-parse', 'refs/heads/main'])).toThrow(
+        /\.git is not a repo git would use.*decision 172/s,
+      );
+      expect(() => assertMainCheckout(repo)).toThrow(RewrittenGitDirError);
+    },
+  );
+
+  it('pins safe.bareRepository=explicit, so pinned git refuses the fallback on its own', () => {
+    const { repo, realMain } = repoAndDecoy();
+    plantBareCheckout(repo, realMain);
+    writeFileSync(join(repo, '.git', 'HEAD'), 'ref: x\n');
+
+    expect(() =>
+      execFileSync('git', [...GIT_SAFE_CONFIG, '-C', repo, 'rev-parse', 'refs/heads/main'], {
+        encoding: 'utf8',
+        env: GIT_ENV,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      }),
+    ).toThrow(/cannot use bare repository/);
+  });
 });
 
 /**
- * Every `child_process` call in git-diff.client.ts that spawns git, by any
- * entry point, with the function that builds its argv: `undefined` where it
- * has none, as a shell string or a literal array.
+ * Every use of a `child_process` binding in `source`, in source order, with the
+ * function that builds a call's argv: undefined for a call whose argv no
+ * function builds, a use that is not a call, and a `require` or dynamic import
+ * of the module, which no import list names. Whatever the binary: a literal
+ * path, a variable and an aliased or namespace import all count.
  */
-function gitSpawnBuilders(source: string): (string | undefined)[] {
-  const spawn =
-    /\b(?:execFileSync|execFile|spawnSync|spawn|execSync|exec)\(\s*(['"`])git(?:\1\s*,\s*(\w+)\(|\1|\s)/g;
-  return [...source.matchAll(spawn)].map((match) => match[2]);
+function childProcessUses(source: string): (string | undefined)[] {
+  const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  const fromModule = /import\s+([^;]*?)\s+from\s+['"](?:node:)?child_process['"];?/g;
+  const names: string[] = [];
+  for (const [, clause = ''] of code.matchAll(fromModule)) {
+    if (clause.startsWith('type ')) continue;
+    const named = /\{([^}]*)\}/.exec(clause)?.[1] ?? '';
+    for (const spec of named.split(',').map((part) => part.trim())) {
+      if (spec && !spec.startsWith('type ')) names.push(spec.split(/\s+as\s+/).at(-1) as string);
+    }
+    // A namespace or default binding: `* as cp`, `cp`.
+    const whole = clause
+      .replace(/\{[^}]*\}/, '')
+      .replace(/[*,]|\bas\b/g, ' ')
+      .trim();
+    if (whole) names.push(...whole.split(/\s+/));
+  }
+  const body = code.replace(fromModule, '');
+  const uses: { at: number; builder: string | undefined }[] = [];
+  for (const name of names) {
+    for (const match of body.matchAll(new RegExp(`(?<![.\\w$])${name}(?:\\.\\w+)?\\b`, 'g'))) {
+      const call = /\s*\(\s*[^,()]+,\s*(\w+)\(/y;
+      call.lastIndex = match.index + match[0].length;
+      uses.push({ at: match.index, builder: call.exec(body)?.[1] });
+    }
+  }
+  for (const match of body.matchAll(/\b(?:require|import)\(\s*['"`](?:node:)?child_process/g)) {
+    uses.push({ at: match.index, builder: undefined });
+  }
+  return uses.sort((a, b) => a.at - b.at).map((use) => use.builder);
 }
 
-describe('the commondir check on every git spawn (decision 172)', () => {
-  it('is what every git spawn in git-diff.client.ts builds its argv through', () => {
+describe('the .git check on every git spawn (decision 172)', () => {
+  it('is what every child_process call in git-diff.client.ts builds its argv through', () => {
     const source = readFileSync(join(process.cwd(), 'src', 'core', 'git-diff.client.ts'), 'utf8');
     const safeArgv = /function safeArgv\([^)]*\)[^{]*\{([^}]*)\}/.exec(source)?.[1] ?? '';
 
-    expect(gitSpawnBuilders(source).length).toBeGreaterThan(0);
-    expect(gitSpawnBuilders(source).every((builder) => builder === 'safeArgv')).toBe(true);
+    expect(childProcessUses(source).length).toBeGreaterThan(0);
+    expect(childProcessUses(source).every((builder) => builder === 'safeArgv')).toBe(true);
     expect(safeArgv).toMatch(/^\s*assertGitDirUnplanted\(cwd\);/);
   });
 
-  it('flags a git spawn through any entry point that skips safeArgv', () => {
+  it('flags any child_process use whose argv safeArgv does not build, whatever the binary', () => {
     const source = [
+      `import { execFileSync, spawn as run, type ExecFileSyncOptions } from 'node:child_process';`,
+      `import * as cp from 'child_process';`,
       `execFileSync('git', safeArgv(cwd, args), {});`,
-      `spawn('git', safeArgv(cwd, args));`,
-      `spawn('git', ['rev-parse', 'HEAD']);`,
-      `spawnSync("git", otherArgv(cwd));`,
-      `execFile(\`git\`, args);`,
-      `execSync('git rev-parse HEAD');`,
-      `exec('git status');`,
-      `execFileSync('gitleaks', ['detect']);`,
+      `execFileSync('/usr/bin/git', ['rev-parse', 'HEAD']);`,
+      `const bin = 'git'; run(bin, safeArgv(cwd, args));`,
+      `run(bin, args);`,
+      `cp.spawnSync(gitPath, otherArgv(cwd));`,
+      `const alias = execFileSync;`,
+      `// execFileSync in a comment is no use`,
+      `const options: ExecFileSyncOptions = {};`,
+      `const legacy = require('node:child_process');`,
     ].join('\n');
 
-    expect(gitSpawnBuilders(source)).toEqual([
+    expect(childProcessUses(source)).toEqual([
       'safeArgv',
+      undefined,
       'safeArgv',
       undefined,
       'otherArgv',
-      undefined,
       undefined,
       undefined,
     ]);
