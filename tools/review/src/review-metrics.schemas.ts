@@ -20,6 +20,9 @@ export const REVIEWER_AREAS = [
   "maintainability",
   "docs",
   "spec",
+  "simplicity",
+  "guards",
+  "workflow-safety",
 ] as const;
 
 export const reviewerAreaSchema = z.enum(REVIEWER_AREAS);
@@ -37,6 +40,9 @@ const processComponentSchema = z.enum([
   "maintainability",
   "docs",
   "spec",
+  "simplicity",
+  "guards",
+  "workflow-safety",
   "consolidator",
   "validator",
   "orchestrator",

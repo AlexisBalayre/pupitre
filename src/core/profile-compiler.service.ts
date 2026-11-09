@@ -30,6 +30,7 @@ import {
   RECHECK_HASH_MAX_BYTES,
   RECHECK_MAX_DIRTY_PATHS,
   SLIM_CONTEXT_ENV,
+  WORKER_SLIM_CONTEXT_ENV,
   WORKER_SUBAGENT_ENV,
 } from './profile.constants.js';
 import { ContextBudgetExceededError, InvalidProfileError } from './profile.errors.js';
@@ -71,10 +72,28 @@ const UNANSWERABLE_TOOLS = ['AskUserQuestion', 'EnterPlanMode', 'ExitPlanMode'];
 
 /**
  * Tools a worker never calls, denied by bare name, which takes the definition
- * out of its context rather than refusing a call (decision 107). The conductor
- * keeps them: it is the operator's window as much as pup's.
+ * out of its context rather than refusing a call (decisions 107, 149). The
+ * conductor keeps them: it is the operator's window as much as pup's. A worker
+ * keeps SendMessage and ListAgents to reach its peers (decision 99) and Agent to
+ * delegate reading; plan mode is already among `UNANSWERABLE_TOOLS`.
  */
-const WORKER_UNUSED_TOOLS = ['SendFeedback', 'ScheduleWakeup', 'ReportFindings'];
+const WORKER_UNUSED_TOOLS = [
+  'SendFeedback',
+  'ScheduleWakeup',
+  'ReportFindings',
+  'CronCreate',
+  'CronDelete',
+  'CronList',
+  'DesignSync',
+  'EndConversation',
+  'EnterWorktree',
+  'ExitWorktree',
+  'NotebookEdit',
+  'PushNotification',
+  'RemoteTrigger',
+  'WebFetch',
+  'WebSearch',
+];
 
 /**
  * Claude Code sends the skill listing only while the Skill tool is in the
@@ -1156,7 +1175,9 @@ export function compileProfile(input: SessionCompileInput): CompiledProfile {
         ]),
       ],
     },
-    env: { ...SLIM_CONTEXT_ENV, ...WORKER_SUBAGENT_ENV },
+    // The operator's MEMORY.md is theirs, not the task's (decision 149).
+    autoMemoryEnabled: false,
+    env: { ...SLIM_CONTEXT_ENV, ...WORKER_SLIM_CONTEXT_ENV, ...WORKER_SUBAGENT_ENV },
     statusLine: { type: 'command', command: hookPath('statusline.sh') },
   };
 

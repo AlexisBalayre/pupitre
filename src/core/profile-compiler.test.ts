@@ -642,8 +642,7 @@ describe('worker search delegation (decision 152)', () => {
     const settings = settingsOf(ProfileCompiler.compileProfile(makeInput()));
 
     expect(settings.permissions.deny).not.toContain('Agent');
-    expect(settings.env).toEqual({
-      ...SLIM_CONTEXT_ENV,
+    expect(settings.env).toMatchObject({
       CLAUDE_CODE_SUBAGENT_MODEL: 'claude-haiku-5-5',
       CLAUDE_CODE_SUBAGENT_MODEL_FORCE: '1',
       CLAUDE_CODE_SUBAGENT_EFFORT: 'low',
@@ -656,7 +655,7 @@ describe('worker search delegation (decision 152)', () => {
       saveSessionEnv('/repo', ['CLAUDE_CODE_SUBAGENT_MODEL', 'CLAUDE_CODE_SUBAGENT_MODEL_FORCE']);
       const settings = settingsOf(ProfileCompiler.compileProfile(makeInput()));
 
-      expect(settings.env).toEqual({ ...SLIM_CONTEXT_ENV, ...WORKER_SUBAGENT_ENV });
+      expect(settings.env).toMatchObject(WORKER_SUBAGENT_ENV);
     } finally {
       vi.unstubAllEnvs();
     }

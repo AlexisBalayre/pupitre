@@ -45,3 +45,14 @@ export const WORKER_SUBAGENT_ENV = {
   CLAUDE_CODE_SUBAGENT_MODEL_FORCE: '1',
   CLAUDE_CODE_SUBAGENT_EFFORT: WORKER_SUBAGENT_ROUTE.effort,
 };
+
+/**
+ * A worker's `env` beyond `SLIM_CONTEXT_ENV` (decision 149): the operator's
+ * claude.ai connectors and Claude in Chrome, whose tools and server
+ * instructions a worker never uses. The conductor keeps both: it is the
+ * operator's window.
+ */
+export const WORKER_SLIM_CONTEXT_ENV = {
+  ENABLE_CLAUDEAI_MCP_SERVERS: 'false',
+  CLAUDE_CODE_ENABLE_CFC: 'false',
+};
