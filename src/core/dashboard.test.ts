@@ -6,13 +6,19 @@ import BetterSqlite3, { type Database } from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // The tmux boundary only: the store, the events files and the transcripts all
-// run for real, per docs/conventions/testing.md.
-vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../claude/session-runtime.service.js')>()),
-  hasConductorWindow: vi.fn(() => false),
-}));
+// run for real, per docs/conventions/testing.md. `claudeUserDir` runs for real
+// too, spied on so a test can make it fail as no refusal does.
+vi.mock('../claude/session-runtime.service.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../claude/session-runtime.service.js')>();
+  return {
+    ...actual,
+    hasConductorWindow: vi.fn(() => false),
+    claudeUserDir: vi.fn(actual.claudeUserDir),
+  };
+});
 
 import {
+  claudeUserDir,
   hasConductorWindow,
   saveSessionEnv,
   transcriptDir,
@@ -532,6 +538,19 @@ describe('buildDashboardSnapshot', () => {
       transitionSession(db, 's1', 'running');
 
       expect(buildDashboardSnapshot(db, repo, NOW).sessions[0]?.contextTokens).toBeUndefined();
+    });
+
+    // Only a refusal reads as no transcript: anything else failing on the way to
+    // the dir is a fault to surface, not a row to quietly blank.
+    it('lets a failure that is not a refusal through', () => {
+      seedSession(db, repo, 's1');
+      vi.mocked(claudeUserDir).mockImplementationOnce(() => {
+        throw new Error('EIO reading the session-env list');
+      });
+
+      expect(() => buildDashboardSnapshot(db, repo, NOW)).toThrow(
+        'EIO reading the session-env list',
+      );
     });
 
     /**

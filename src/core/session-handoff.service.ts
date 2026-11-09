@@ -183,6 +183,19 @@ export function awaitHandoffReady(
 }
 
 /**
+ * What both respawns take: the session, the window env its command resolved
+ * (decision 106), and the route override the operator named, if any.
+ */
+type RespawnArgs = [
+  db: Database,
+  repoPath: string,
+  sessionId: string,
+  env: WindowEnv,
+  pathsBase?: string,
+  override?: RouteOverride,
+];
+
+/**
  * Replace the session's tmux pane with a fresh `claude` in the same worktree,
  * branch, and session id, kicked off with the original compiled context plus
  * the handoff. The session row keeps its profile hash and history: this is
@@ -191,15 +204,9 @@ export function awaitHandoffReady(
  * failure on the top rung refuses the respawn before anything is killed
  * (decision 92).
  */
-export function respawnSession(
-  db: Database,
-  repoPath: string,
-  sessionId: string,
-  env: WindowEnv,
-  pathsBase?: string,
-  override?: RouteOverride,
-): void {
-  relaunchWindow(db, repoPath, sessionId, env, pathsBase, override, (paths) => {
+export function respawnSession(...args: RespawnArgs): void {
+  const [db, , sessionId] = args;
+  relaunchWindow(args, (paths) => {
     const handoffPath = paths.handoffFile(sessionId);
     const handoff = readHandoff(handoffPath);
     if (handoff === undefined) {
@@ -234,15 +241,8 @@ export function respawnSession(
  * worktree instead of assuming a clean start. It climbs as `respawnSession`
  * does: a wedged window is the stall a hard respawn is most often for.
  */
-export function hardRespawnSession(
-  db: Database,
-  repoPath: string,
-  sessionId: string,
-  env: WindowEnv,
-  pathsBase?: string,
-  override?: RouteOverride,
-): void {
-  relaunchWindow(db, repoPath, sessionId, env, pathsBase, override, () => ({
+export function hardRespawnSession(...args: RespawnArgs): void {
+  relaunchWindow(args, () => ({
     promptSuffix:
       '\n\n## Fresh start after a kill\n' +
       'The previous run of this session was killed without writing a handoff (it was ' +
@@ -287,12 +287,7 @@ function graphForRespawn(
  * this is called, so nothing past the kill reads the list again (decision 106).
  */
 function relaunchWindow(
-  db: Database,
-  repoPath: string,
-  sessionId: string,
-  env: WindowEnv,
-  pathsBase: string | undefined,
-  override: RouteOverride | undefined,
+  [db, repoPath, sessionId, env, pathsBase, override]: RespawnArgs,
   extrasFor: (paths: ProjectPaths) => {
     promptSuffix: string;
     eventPayload: Record<string, unknown>;

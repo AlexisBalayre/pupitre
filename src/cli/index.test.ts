@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import Database from 'better-sqlite3';
 import { isValidElement, type ReactNode } from 'react';
@@ -600,6 +600,50 @@ describe('CLI commands', () => {
 
       expect(process.exitCode).toBe(1);
       expect(errors).toEqual([expect.stringContaining('--since needs a date')]);
+    });
+  });
+
+  describe('retro', () => {
+    it('reads the transcripts of the config dir --session-env names', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      const configDir = tempDir('pup-cli-retro-config-');
+      saveSessionEnv(repo, ['CLAUDE_CONFIG_DIR']);
+      vi.stubEnv('CLAUDE_CONFIG_DIR', configDir);
+      vi.stubEnv('HOME', tempDir('pup-cli-retro-home-'));
+      const dir = transcriptDir(join(repo, '.worktrees', 's1'), configDir);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(
+        join(dir, 'a.jsonl'),
+        `${JSON.stringify({
+          type: 'assistant',
+          requestId: 'r1',
+          timestamp: new Date().toISOString(),
+          message: { model: 'claude-opus-5-5', usage: { input_tokens: 5 } },
+        })}\n`,
+      );
+
+      buildProgram().parse(['retro', '--json', '--out', tempDir('pup-cli-retro-out-')], {
+        from: 'user',
+      });
+
+      expect(JSON.parse(logs[0] as string)).toMatchObject({ transcripts: 1 });
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it('refuses a relative CLAUDE_CONFIG_DIR that --session-env passes, and writes nothing', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      saveSessionEnv(repo, ['CLAUDE_CONFIG_DIR']);
+      vi.stubEnv('CLAUDE_CONFIG_DIR', '~/w4b');
+      const out = tempDir('pup-cli-retro-out-');
+
+      buildProgram().parse(['retro', '--out', out], { from: 'user' });
+
+      expect(process.exitCode).toBe(1);
+      expect(errors).toEqual([expect.stringContaining('it must be an absolute path')]);
+      expect(logs).toEqual([]);
+      expect(readdirSync(out)).toEqual([]);
     });
   });
 
