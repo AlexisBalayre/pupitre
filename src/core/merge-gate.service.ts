@@ -229,8 +229,12 @@ interface RawDiffEntry {
  * rather than left to `diff.renames` and `diff.renameLimit`, which sit in the
  * shared config a session can write, so a rename onto a test name is paired
  * whatever that config says: a limit of 1 skipped inexact pairing as soon as a
- * second file was added. `copies` adds `-C -C`, which pairs a copy of any file
- * the target holds, changed on the branch or not.
+ * second file was added. `--no-relative`, with `diff.relative` pinned off, for
+ * the same reason: aimed by a `core.worktree` elsewhere, a relative listing
+ * names only the files under the cwd's prefix, and that prefix stripped, so a
+ * source change would vanish from the untested skip (decision 139). `copies`
+ * adds `-C -C`, which pairs a copy of any file the target holds, changed on the
+ * branch or not.
  */
 function rawDiffEntries(
   repoPath: string,
@@ -241,7 +245,10 @@ function rawDiffEntries(
   const fields = runGit(
     repoPath,
     [
+      '-c',
+      'diff.relative=false',
       'diff',
+      '--no-relative',
       '--no-ext-diff',
       '--no-textconv',
       '--no-color',
@@ -2414,8 +2421,8 @@ export async function waitForLoad(
  * Whether every file the branch changed is on `UNTESTED_PATH_GLOBS`, so no
  * test can run or read it (decision 139). The files are those `--name-only`
  * names and both paths of every `--raw -M` entry: `--name-only` pairs renames
- * as the shared config says, so the skip holds only if both readings are
- * listed, and a rename's old path, which `--name-only` never names, is what a
+ * and reads `diff.relative` as the shared config says, while the raw entries
+ * pin both, so the skip holds only if both readings are listed, and a rename's old path, which `--name-only` never names, is what a
  * link or another case reached on the target. Each goes through every check
  * below. The tree is listed `--full-tree`, as `targetHolds` lists it, so a
  * `core.worktree` aimed elsewhere hides no link or spelling. Something other than

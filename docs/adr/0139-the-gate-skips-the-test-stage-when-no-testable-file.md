@@ -38,7 +38,10 @@
 
     The tree is read from its root (`ls-tree --full-tree`, `top` pathspecs), as decision
     157 reads the target's, so a `core.worktree` a session aims elsewhere in the shared
-    config hides no link, spelling or dependency file.
+    config hides no link, spelling or dependency file. The raw entries are read with
+    `--no-relative` and `diff.relative` pinned off, so `diff.relative` in that config,
+    which with such a `core.worktree` would list only the files under the cwd's prefix,
+    hides no changed file either.
 
     A change that touches a nested package always runs that package's suite (decision 59).
     *What is left off the list.* `README.md` is left off because Rust's `include_str!` and
@@ -111,4 +114,6 @@
     leaves it out. The last stands in for the two readings disagreeing, by narrowing
     `gitDiffPaths`, because no config git reads makes `--name-only` pair a rename `-M -l0`
     does not. With `core.worktree` aimed at `/` in the shared config, the symlink, other
-    case and Docusaurus dependency cases still run the full test stage.
+    case and Docusaurus dependency cases still run the full test stage, and so does a source
+    change beside a `<repo>/docs/` file with `core.worktree` aimed at the repo's parent and
+    `diff.relative` set.

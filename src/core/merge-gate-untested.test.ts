@@ -8,7 +8,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, posix } from 'node:path';
+import { basename, dirname, join, posix } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -367,6 +367,21 @@ describe('the test stage on a change no test reads (decision 139)', { timeout: 2
       const worktree = seedSession(db, repo, { scopeIn: ['**'] });
       commitSpelled(worktree, 'docs/x.md', '# x\n');
       aimedAway(worktree);
+
+      const outcome = await merge(failingSuite().adapter);
+
+      expect(testStage(outcome.report.stages)?.status).toBe('fail');
+    });
+
+    // Relative to a cwd under the prefix, `git diff` names only the files under
+    // it, prefix stripped: the source change would vanish and the file under
+    // `<repo>/docs/` would read as a listed `docs/` path.
+    it('still sees every changed file when diff.relative is set', async () => {
+      const worktree = seedSession(db, repo, { scopeIn: ['**'] });
+      commitIn(worktree, 'src/app.ts', 'export const app = 2;\n');
+      commitIn(worktree, `${basename(repo)}/docs/x.md`, '# x\n');
+      sh(worktree, 'git', 'config', 'core.worktree', dirname(repo));
+      sh(worktree, 'git', 'config', 'diff.relative', 'true');
 
       const outcome = await merge(failingSuite().adapter);
 
