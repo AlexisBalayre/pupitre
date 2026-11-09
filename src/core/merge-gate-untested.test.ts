@@ -40,6 +40,7 @@ import {
   untimed,
 } from '@test/helpers/merge-gate.mock.js';
 import type { Adapter } from '../adapters/types/adapter.types.js';
+import { typescriptAdapter } from '../adapters/typescript.adapter.js';
 import { openStore } from './db.client.js';
 import { gitDiffPaths } from './git-diff.client.js';
 import { globToRegExp } from './glob.utils.js';
@@ -304,6 +305,54 @@ describe('the test stage on a change no test reads (decision 139)', { timeout: 2
     );
 
     const outcome = await merge(failingSuite().adapter);
+
+    expect(testStage(outcome.report.stages)?.status).toBe('fail');
+  });
+
+  /** Commits a gitlink to the repo's own HEAD at `path`, with the empty directory checkout leaves. */
+  const commitGitlink = (dir: string, path: string) => {
+    mkdirSync(join(dir, path), { recursive: true });
+    const head = sh(dir, 'git', 'rev-parse', 'HEAD').trim();
+    sh(dir, 'git', 'update-index', '--add', '--cacheinfo', `160000,${head},${path}`);
+    sh(dir, 'git', 'commit', '-m', `link ${path}`);
+  };
+
+  it('runs the test stage when a gitlink lands on a listed path', async () => {
+    const worktree = seedSession(db, repo, { scopeIn: ['**'] });
+    commitGitlink(worktree, 'docs/x.md');
+
+    const outcome = await merge(failingSuite().adapter);
+
+    expect(testStage(outcome.report.stages)?.status).toBe('fail');
+  });
+
+  // `diff.ignoreSubmodules`, or a `submodule.<name>.ignore`, drops a gitlink
+  // from a diff that does not pin `--ignore-submodules=none`.
+  it('runs the test stage when the shared config hides a gitlink change', async () => {
+    const worktree = seedSession(db, repo, { scopeIn: ['**'] });
+    commitGitlink(worktree, 'src/vendor');
+    commitIn(worktree, 'docs/notes.md', '# notes\n');
+    sh(worktree, 'git', 'config', 'diff.ignoreSubmodules', 'all');
+
+    const outcome = await merge(failingSuite().adapter);
+
+    expect(testStage(outcome.report.stages)?.status).toBe('fail');
+  });
+
+  // Moving a file out of a nested package changes that package, though
+  // `--name-only` names only where the file went (decision 59).
+  it('runs the test stage when a rename moves a file out of a nested package', async () => {
+    commitIn(repo, 'docs/site/package.json', JSON.stringify({ scripts: { test: 'true' } }));
+    commitIn(repo, 'docs/site/guide.md', '# guide\n');
+    const worktree = seedSession(db, repo, { scopeIn: ['**'] });
+    sh(worktree, 'git', 'mv', 'docs/site/guide.md', 'docs/guide.md');
+    sh(worktree, 'git', 'commit', '-m', 'move');
+    const adapter: Adapter = {
+      ...failingSuite().adapter,
+      touchedNestedPackages: typescriptAdapter.touchedNestedPackages,
+    };
+
+    const outcome = await merge(adapter);
 
     expect(testStage(outcome.report.stages)?.status).toBe('fail');
   });

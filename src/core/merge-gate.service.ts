@@ -232,7 +232,9 @@ interface RawDiffEntry {
  * second file was added. `--no-relative`, with `diff.relative` pinned off, for
  * the same reason: aimed by a `core.worktree` elsewhere, a relative listing
  * names only the files under the cwd's prefix, and that prefix stripped, so a
- * source change would vanish from the untested skip (decision 139). `copies`
+ * source change would vanish from the untested skip (decision 139).
+ * `--ignore-submodules=none` because `diff.ignoreSubmodules` there, or a
+ * `submodule.<name>.ignore`, would drop a gitlink change the same way. `copies`
  * adds `-C -C`, which pairs a copy of any file the target holds, changed on the
  * branch or not.
  */
@@ -249,6 +251,7 @@ function rawDiffEntries(
       'diff.relative=false',
       'diff',
       '--no-relative',
+      '--ignore-submodules=none',
       '--no-ext-diff',
       '--no-textconv',
       '--no-color',
@@ -2426,9 +2429,10 @@ export async function waitForLoad(
  * link or another case reached on the target. Each goes through every check
  * below. The tree is listed `--full-tree`, as `targetHolds` lists it, so a
  * `core.worktree` aimed elsewhere hides no link or spelling. Something other than
- * the path itself can read each of these, so each counts as testable, as
- * decision 110 counts it as source: a symlink, a path a symlink can reach, a
- * name outside ASCII, and Markdown that a Docusaurus config compiles. So does
+ * the path itself can read each of these, so each counts as testable: a
+ * gitlink, whose commit is code at a listed name, and, as decision 110 counts
+ * them as source, a symlink, a path a symlink can reach, a name outside
+ * ASCII, and Markdown that a Docusaurus config compiles. So does
  * a path the branch's tree also holds in another ASCII case, itself or through
  * one of its directories: APFS folds case (decision 78), so `docs/x.md` is the
  * off-list `docs/x.MD` or `Docs/x.md` a test may read.
@@ -2445,7 +2449,7 @@ function changesOnlyUntested(
   if (changedPaths.length === 0 || !changedPaths.every(listed)) return false;
   const paths = [...changedPaths];
   for (const [path, entry] of rawDiffEntries(repoPath, target, branch)) {
-    if (entry.mode === '120000') return false;
+    if (entry.mode === '120000' || entry.mode === '160000') return false;
     paths.push(path, ...(entry.renamedFrom === undefined ? [] : [entry.renamedFrom]));
   }
   const checked = [...new Set(paths)];
@@ -2602,7 +2606,16 @@ export async function measureBranch(
   const targetHeld = measuresComplexity
     ? targetHolds(req.repoPath, targetSha, complexityPaths)
     : [];
-  const nestedPackages = primary?.touchedNestedPackages?.(capabilityContext, changedPaths) ?? [];
+  // `--name-only` names a rename by its new path, but moving a file out of a
+  // nested package changes that package too, so its source counts: its suite
+  // runs (decision 59) and the untested skip does not apply (decision 139).
+  const renameSources = [...rawDiffEntries(req.repoPath, targetSha, sha).values()].flatMap(
+    (entry) => entry.renamedFrom ?? [],
+  );
+  const nestedPackages =
+    primary?.touchedNestedPackages?.(capabilityContext, [
+      ...new Set([...changedPaths, ...renameSources]),
+    ]) ?? [];
   // Every environment before any stage: a stage runs session code with the
   // checkout writable, so a link made after it could follow a swapped-in
   // parent out of the checkout (decision 81).

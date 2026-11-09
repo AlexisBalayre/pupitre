@@ -28,6 +28,9 @@
       goes through every check below, since it is what a link or another case reached on
       the target;
     - a changed symlink, or a path a symlink on the branch can reach;
+    - a changed gitlink, whose commit is code whatever its path is named. The raw entries
+      are read with `--ignore-submodules=none`, so `diff.ignoreSubmodules` or a
+      `submodule.<name>.ignore` cannot hide one;
     - a name outside ASCII, which the gate's filesystem can fold onto another name;
     - a path the branch's tree also holds in another ASCII case, itself or through one of
       its directories. APFS folds case (decision 78), so a changed `docs/x.md` is the
@@ -44,6 +47,8 @@
     hides no changed file either.
 
     A change that touches a nested package always runs that package's suite (decision 59).
+    A rename's old path counts toward that, so a file moved out of a nested package touches
+    it too.
     *What is left off the list.* `README.md` is left off because Rust's `include_str!` and
     doctest globs read it. `skills/` is left off because a plugin's tests check its
     `SKILL.md`. `.github/actions/` is left off because an action's own tests live there.
@@ -116,4 +121,6 @@
     does not. With `core.worktree` aimed at `/` in the shared config, the symlink, other
     case and Docusaurus dependency cases still run the full test stage, and so does a source
     change beside a `<repo>/docs/` file with `core.worktree` aimed at the repo's parent and
-    `diff.relative` set.
+    `diff.relative` set. So do a gitlink on a listed path, a gitlink change the shared
+    config's `diff.ignoreSubmodules=all` hides, and a rename that moves a Markdown file out
+    of a nested package under `docs/`.
