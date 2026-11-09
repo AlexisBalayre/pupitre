@@ -1,9 +1,11 @@
 import { execFileSync, spawn } from 'node:child_process';
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
   rmSync,
   symlinkSync,
@@ -1606,14 +1608,37 @@ describe("a main checkout's .git a session rewrote (decision 172)", () => {
     expect(runGit(worktree, ['rev-parse', 'HEAD']).trim()).toBe(realMain);
   });
 
-  it('holds a main checkout passed under another spelling of its path', () => {
+  it.each([
+    ['a trailing slash', (repo: string) => `${repo}/`],
+    [
+      'a symlink to it',
+      (repo: string) => {
+        const link = join(tempDir('pup-link-'), 'repo');
+        symlinkSync(repo, link);
+        return link;
+      },
+    ],
+  ])('holds a main checkout passed through %s, under its real path', (_, spelling) => {
     const { repo, decoy } = repoAndDecoy();
-    assertMainCheckout(`${repo}/`);
+    assertMainCheckout(spelling(repo));
     swapGitDir(repo, decoy);
     writeFileSync(join(repo, '.git'), `gitdir: ${decoy}\n`);
 
     expect(() => runGit(join(repo, '.'), ['rev-parse', 'HEAD'])).toThrow(
       /\.git is no longer a directory/,
+    );
+  });
+
+  it('names a .git directory to git outright, and leaves a gitfile to git', () => {
+    const { repo } = repoAndDecoy();
+    const worktree = join(tempDir('pup-wt-'), 'wt');
+    sh(repo, 'git', 'worktree', 'add', '-q', '--detach', worktree);
+
+    // Discovered from the root, git would print `.git`.
+    expect(runGit(repo, ['rev-parse', '--git-dir']).trim()).toBe(join(repo, '.git'));
+    expect(runGit(repo, ['rev-parse', '--show-toplevel']).trim()).toBe(realpathSync(repo));
+    expect(runGit(worktree, ['rev-parse', '--git-dir']).trim()).toBe(
+      join(realpathSync(repo), '.git', 'worktrees', 'wt'),
     );
   });
 
@@ -1651,7 +1676,10 @@ describe("a main checkout's .git a session rewrote (decision 172)", () => {
   const breaks: Record<string, (dotGit: string) => void> = {
     'a junk HEAD': (dotGit) => writeFileSync(join(dotGit, 'HEAD'), 'ref: x\n'),
     'no HEAD': (dotGit) => rmSync(join(dotGit, 'HEAD')),
+    'an unreadable HEAD': (dotGit) => chmodSync(join(dotGit, 'HEAD'), 0o200),
     'no refs/': (dotGit) => renameSync(join(dotGit, 'refs'), join(tempDir('pup-refs-'), 'refs')),
+    // `chmod a-x`: still a directory, with HEAD valid, but one git cannot search.
+    'a refs/ git cannot search': (dotGit) => chmodSync(join(dotGit, 'refs'), 0o644),
   };
 
   it.each(Object.keys(breaks))(
@@ -1667,6 +1695,8 @@ describe("a main checkout's .git a session rewrote (decision 172)", () => {
         /\.git is not a repo git would use.*decision 172/s,
       );
       expect(() => assertMainCheckout(repo)).toThrow(RewrittenGitDirError);
+      // Put back, so the temp dir can be removed.
+      if (existsSync(join(repo, '.git', 'refs'))) chmodSync(join(repo, '.git', 'refs'), 0o755);
     },
   );
 
@@ -1731,7 +1761,7 @@ describe('the .git check on every git spawn (decision 172)', () => {
 
     expect(childProcessUses(source).length).toBeGreaterThan(0);
     expect(childProcessUses(source).every((builder) => builder === 'safeArgv')).toBe(true);
-    expect(safeArgv).toMatch(/^\s*assertGitDirUnplanted\(cwd\);/);
+    expect(safeArgv).toMatch(/^\s*const gitDir = assertGitDirUnplanted\(cwd\);/);
   });
 
   it('flags any child_process use whose argv safeArgv does not build, whatever the binary', () => {

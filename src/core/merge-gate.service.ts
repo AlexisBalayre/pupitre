@@ -50,8 +50,8 @@ import {
   gitDiffBinaryRecount,
   gitDiffNumstat,
   gitDiffPaths,
-  RewrittenGitDirError,
   rethrowIfKilled,
+  rethrowIfNoUsableRepo,
   runGit,
   verifiedWorktreeGitEnv,
   type WorktreeGitEnv,
@@ -1401,6 +1401,7 @@ export function resolveCommit(repoPath: string, ref: string): string {
       return runGit(repoPath, ['symbolic-ref', '-q', ref], piped).trim();
     } catch (error) {
       rethrowIfKilled(error);
+      rethrowIfNoUsableRepo(repoPath, error);
       return undefined;
     }
   })();
@@ -1423,7 +1424,7 @@ export function resolveCommitIfPresent(repoPath: string, ref: string): string | 
     return resolveCommit(repoPath, ref);
   } catch (error) {
     rethrowIfKilled(error);
-    if (error instanceof RewrittenGitDirError) throw error;
+    rethrowIfNoUsableRepo(repoPath, error);
     if (error instanceof Error && error.message.includes('symbolic ref')) throw error;
     return undefined;
   }
@@ -1455,7 +1456,7 @@ function commitsPastPin(repoPath: string, branchRef: string, sha: string): numbe
   try {
     now = resolveCommit(repoPath, branchRef);
   } catch (error) {
-    if (error instanceof RewrittenGitDirError) throw error;
+    rethrowIfNoUsableRepo(repoPath, error);
     return 0;
   }
   if (now === sha) return 0;

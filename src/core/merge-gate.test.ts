@@ -1622,6 +1622,32 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       );
     });
 
+    // A `.git` broken between the check and git's own read, which only a race
+    // reaches: git dies finding no repo where pup checked one. Read as "no
+    // such ref", a resolve would answer undefined and a gate read no commits.
+    it.each([
+      `fatal: not a git repository: '/repo/.git'`,
+      `fatal: cannot use bare repository '/repo' (safe.bareRepository is 'explicit')`,
+    ])('reads a git that died with "%s" as a refusal, not an absent ref', (stderr) => {
+      seedSession(db, repo);
+      const died = (status: number, said: string) => () => {
+        throw Object.assign(new Error(`Command failed: git\n${said}`), { status, stderr: said });
+      };
+      // The resolve's symref probe dies first, then its rev-parse.
+      vi.mocked(execFileSync).mockImplementationOnce(died(128, stderr));
+      expect(() => resolveCommitIfPresent(repo, `refs/heads/${BRANCH}`)).toThrow(
+        /git found no repo it would use there.*decision 172/s,
+      );
+      vi.mocked(execFileSync)
+        .mockImplementationOnce(died(1, ''))
+        .mockImplementationOnce(died(128, stderr));
+      expect(() => resolveCommitIfPresent(repo, `refs/heads/${BRANCH}`)).toThrow(
+        RewrittenGitDirError,
+      );
+      // The control: a ref that is simply not there is still no answer, not a refusal.
+      expect(resolveCommitIfPresent(repo, 'refs/heads/no-such-branch')).toBeUndefined();
+    });
+
     it.each(['gitfile', 'symlink'] as const)(
       'refuses a .git swapped for a %s naming a decoy before any git runs',
       async (as) => {
@@ -1643,7 +1669,11 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       },
     );
 
-    it('refuses a junk HEAD that would make git read the checkout as a bare decoy', async () => {
+    it.each([
+      ['a junk HEAD', (dotGit: string) => writeFileSync(join(dotGit, 'HEAD'), 'ref: x\n')],
+      // `chmod a-x`: HEAD still valid, refs/ still a directory, but not one git can search.
+      ['a refs/ git cannot search', (dotGit: string) => chmodSync(join(dotGit, 'refs'), 0o644)],
+    ])('refuses %s that would make git read the checkout as a bare decoy', async (_, breakIt) => {
       const worktree = seedSession(db, repo);
       commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
       const realMain = sh(repo, 'git', 'rev-parse', 'refs/heads/main').trim();
@@ -1660,7 +1690,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       );
       const head = join(repo, '.git', 'HEAD');
       const realHead = readFileSync(head, 'utf8');
-      writeFileSync(head, 'ref: x\n');
+      breakIt(join(repo, '.git'));
       // The control: plain git falls back to the decoy and reads its main.
       expect(sh(repo, 'git', 'rev-parse', 'refs/heads/main').trim()).toBe(realBranch);
       vi.mocked(execFileSync).mockClear();
@@ -1669,6 +1699,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
       expect(gitSpawns()).toEqual([]);
       writeFileSync(head, realHead);
+      chmodSync(join(repo, '.git', 'refs'), 0o755);
       expect(sh(repo, 'git', 'rev-parse', 'refs/heads/main').trim()).toBe(realMain);
       expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
     });
