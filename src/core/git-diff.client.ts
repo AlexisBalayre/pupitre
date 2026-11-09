@@ -25,9 +25,22 @@ export type { DiffFileStat };
  * sets `diff.ignoreSubmodules=all` that way (decision 101), and a pup run from
  * it, its tests included, would otherwise inherit it into the scope audit's
  * diff and stop seeing a gitlink change.
+ * Without the global pathspec switches either: `git --literal-pathspecs`
+ * exports `GIT_LITERAL_PATHSPECS` to its children, and under it git reads
+ * pup's `:(top,literal)` and `:(top)` magic as file names that match nothing.
  */
 function scrubbedGitEnv(): NodeJS.ProcessEnv {
-  const scrubbed = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR', 'GIT_PREFIX'];
+  const scrubbed = [
+    'GIT_DIR',
+    'GIT_WORK_TREE',
+    'GIT_INDEX_FILE',
+    'GIT_COMMON_DIR',
+    'GIT_PREFIX',
+    'GIT_LITERAL_PATHSPECS',
+    'GIT_GLOB_PATHSPECS',
+    'GIT_NOGLOB_PATHSPECS',
+    'GIT_ICASE_PATHSPECS',
+  ];
   return Object.fromEntries(
     Object.entries(process.env).filter(
       ([key]) => !scrubbed.includes(key) && !ENV_CONFIG_KEY.test(key),

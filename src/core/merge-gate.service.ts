@@ -2450,7 +2450,14 @@ function changesOnlyUntested(
   const spellings = new Map<string, Set<string>>();
   const prefixes = (path: string): string[] =>
     path.split('/').map((_, i, segments) => segments.slice(0, i + 1).join('/'));
-  for (const path of runGit(repoPath, ['ls-tree', '-r', '-z', '--name-only', branch]).split('\0')) {
+  for (const path of runGit(repoPath, [
+    'ls-tree',
+    '--full-tree',
+    '-r',
+    '-z',
+    '--name-only',
+    branch,
+  ]).split('\0')) {
     for (const prefix of path ? prefixes(path) : []) {
       const key = folded(prefix);
       spellings.set(key, (spellings.get(key) ?? new Set()).add(prefix));

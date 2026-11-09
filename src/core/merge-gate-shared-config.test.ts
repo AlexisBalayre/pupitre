@@ -408,6 +408,33 @@ describe('the merge gate under a shared-config core.worktree and diff.relative',
     expect(stage(outcome, 'coverage')?.detail).toContain('50%');
   });
 
+  // A change to listed paths alone skips the test stage unless the branch's
+  // tree holds one in another case (decision 139). The tree's spellings come
+  // from an `ls-tree` in the main checkout, after the build stage: unanchored,
+  // it lists nothing under `repo/`, so no path folds onto another.
+  it('runs the test stage when the tree holds the changed path in another case', async () => {
+    commitIn(repo, 'docs/x.MD', '# x\n');
+    const worktree = seedSession(db, repo, { scopeIn: ['**'] });
+    // Through the index, since a case-folding disk would overwrite x.MD; the
+    // same bytes keep the folded working tree clean.
+    writeFileSync(join(worktree, 'docs', 'x.md'), '# x\n');
+    const blob = sh(worktree, 'git', 'hash-object', '-w', '--', 'docs/x.md').trim();
+    sh(worktree, 'git', 'update-index', '--add', '--cacheinfo', `100644,${blob},docs/x.md`);
+    sh(worktree, 'git', 'commit', '-m', 'add docs/x.md');
+    raceTheChecks();
+    const adapter = debtAdapter({
+      gateCommands: () => [
+        { stage: 'build', command: 'true', args: [] },
+        { stage: 'test', command: 'false', args: [] },
+        { stage: 'lint', command: 'true', args: [] },
+      ],
+    });
+
+    const outcome = await merge(adapter);
+
+    expect(stage(outcome, 'test')?.status).toBe('fail');
+  });
+
   /** A stage that sets the key while it runs, after every check before the stages. */
   const armingAdapter = (armWith: () => void): Adapter =>
     debtAdapter({

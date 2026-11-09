@@ -1056,6 +1056,25 @@ describe('worktree git pins (decision 101)', () => {
     vi.unstubAllEnvs();
   });
 
+  // `git --literal-pathspecs` exports GIT_LITERAL_PATHSPECS to its children, and
+  // under it, or a sibling switch, git reads the `:(top,literal)` a file's hunks
+  // are asked by as a file name: patch coverage would find no line to check.
+  it.each([
+    'GIT_LITERAL_PATHSPECS',
+    'GIT_GLOB_PATHSPECS',
+    'GIT_NOGLOB_PATHSPECS',
+    'GIT_ICASE_PATHSPECS',
+  ])("leaves out a %s the caller's environment hands git", (key) => {
+    sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
+    writeFileSync(join(repo, 'a.ts'), 'one\ntwo\n');
+    sh(repo, 'git', 'add', 'a.ts');
+    sh(repo, 'git', 'commit', '-q', '-m', 'add file');
+    vi.stubEnv(key, '1');
+
+    expect(gitDiffAddedLines(repo, 'main', 'feature')).toEqual({ 'a.ts': [1, 2] });
+    vi.unstubAllEnvs();
+  });
+
   it('refuses a gitfile that is a symlink or a fifo, without blocking on the fifo', () => {
     const copy = join(tempDir('pup-gitfile-'), 'gitfile');
     writeFileSync(copy, readFileSync(join(worktree, '.git')));

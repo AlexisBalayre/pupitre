@@ -39,10 +39,17 @@
       found none, so patch coverage read "no instrumentable changed lines";
     - `:(top,glob,icase)` for the Docusaurus grep, and `:(top)` with `--full-name` for the
       grep of a test file's importers;
-    - `--full-tree` on `readBranchTree`'s `ls-tree`, and on the target-tree listing the
-      complexity stage reads (decision 157), whose test now sets the key after the checks;
+    - `--full-tree` on `readBranchTree`'s `ls-tree`, on the listing whose spellings decide
+      whether a change no test reads folds onto another path (decision 139), so the test
+      stage is not skipped, and on the target-tree listing the complexity stage reads
+      (decision 157), whose test now sets the key after the checks;
     - `--full-tree` on the nested-package `ls-tree` in `src/adapters/git-tree.client.ts`,
       which reads the trusted checkout at the measured sha and at `HEAD`.
+    *Pathspec switches.* That magic holds only while git parses it: `scrubbedGitEnv` drops
+    `GIT_LITERAL_PATHSPECS`, `GIT_GLOB_PATHSPECS`, `GIT_NOGLOB_PATHSPECS` and
+    `GIT_ICASE_PATHSPECS`. Under the first, which `git --literal-pathspecs` exports to its
+    children, git reads `:(top,literal)a.ts` as a file name, and patch coverage found nothing
+    to check.
     *Renames.* `gitDiffPaths` passes `--no-renames`: under rename detection `--name-only` lists
     a rename's new path alone, so a file moved from outside scope-in into it passed the audit.
     *`GIT_GRAFT_FILE`* stays `/dev/null/no-grafts`, laid over every `runGit` caller's env
