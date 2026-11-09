@@ -1,0 +1,141 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-09T10:39:51.749Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42601982354",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42601982354",
+  "actor": "AlexisBalayre",
+  "commit_sha": "314b44a75414f258955ce7ebeb4cb898090d0b9e",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 284,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "conventions",
+    "docs",
+    "simplicity",
+    "guards"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "conventions",
+    "docs",
+    "simplicity",
+    "guards"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "docs/adr/0140-a-merge-gate-s-test-run-takes-the-machine-no.md",
+      "line": "34-43",
+      "description": "ADR 0140 says the worker pre-commit hook runs TEST_CMD (`pnpm test`, the full suite), but `scripts/pre-commit` runs only `vitest related` on staged source files (decision 135) and never TEST_CMD.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/test-slot.service.ts",
+      "line": "512",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "Inside a session, the pre-commit hook runs `pup session test --related` through xargs. So the new 8-minute bound also applies to every worker commit with staged source. When the bound runs out, xargs turns exit 75 into 123, the hook prints 'Tests related to the staged files failed. Fix them before committing.' and the commit fails. Decision 140 (the new ADR) wrongly says commit-time tests do not go through the slots.",
+      "body": "**The 8-minute bound also fails worker commits, and ADR 0140 says commits never reach it.**\n\nThis PR bounds a session's slot wait at `SESSION_SLOT_WAIT_MS` and returns `SLOTS_BUSY_STATUS` (75). The bound is set here:\n\n```ts\nconst maxWaitMs = req.slots?.maxWaitMs ?? SESSION_SLOT_WAIT_MS;\n```\n\nThe only CLI caller (`src/cli/index.ts`, the `session test` action) passes just `{ onWait }`, so the 8-minute default always applies.\n\nThe ADR's paragraph at lines 34-44 says \"The commit-time suite does not go through the slots\", that a worker commit's related tests \"run unqueued, beside the gate's suite\", and \"It is not routed here\". That stopped being true with #275 (34adae6), which is already in this PR's merge base. Inside a session (`PUP_SESSION_ID` set), `scripts/pre-commit` lines 129-150 send the related run through the slots:\n\n```sh\nif ! (set -o pipefail; printf '%s\\n' \"$STAGED_SOURCE\" | sed 's|^|./|' | tr '\\n' '\\0' | xargs -0 \"${PUP_CMD[@]}\" session test --related --); then\n  echo \"ERROR: Tests related to the staged files failed. Fix them before committing.\"\n  exit 1\n```\n\nThe hook's own `PUP_TEST_SLOT` bypass doesn't apply here. Only the child that `runSessionTest` spawns sets that variable, and a worker's `git commit` runs from the agent's Bash tool, outside that child.\n\n**Trigger.** A worker commits staged `.ts` source while a merge gate holds a slot, or while gates run back to back. By the ADR's own estimate, a gate's suite can take up to 10 minutes.\n\n**Result.**\n- Before this PR, the hook waited for a slot and then ran the tests.\n- Now it waits 8 minutes and `pup session test` exits 75.\n- GNU xargs maps that 75 to 123. The hook prints \"Tests related to the staged files failed. Fix them before committing.\" and the commit is refused, although no test ran.\n- The new protocol line (\"If it exits 75 … retry later, it is not a test failure\") never applies on this path, because the agent never sees the 75.\n- The 8-minute wait also comes on top of the hook's lint and typecheck. The commit's Bash call can therefore pass the 600 s that the bound was chosen to stay under.\n- Gates now block worker commits as well as `pup session test`. The ADR's ceilings paragraph doesn't account for that.\n\n**Untested.** The tests cover the exit-75 path only by calling `runSessionTest` directly.\n\n**Fix (pick one), then rewrite the ADR's commit-time paragraph either way:**\n- Have the hook treat 75 as \"slots busy, retry the commit\". It has to call `pup session test` directly instead of through xargs, which hides the status.\n- Or give the hook's run a different bound, or no bound.\n\n<https://github.com/AlexisBalayre/pupitre/blob/314b44a75414f258955ce7ebeb4cb898090d0b9e/src/core/test-slot.service.ts#L512-L557>\n<https://github.com/AlexisBalayre/pupitre/blob/314b44a75414f258955ce7ebeb4cb898090d0b9e/scripts/pre-commit#L124-L150>\n<https://github.com/AlexisBalayre/pupitre/blob/314b44a75414f258955ce7ebeb4cb898090d0b9e/docs/adr/0140-a-merge-gate-s-test-run-takes-the-machine-no.md#L34-L44>",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/test-slot.service.ts",
+      "line": "64",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The PR declares a new `Error` subclass in the same file that throws it. `runSessionTest` throws it from `onWaitExpired` and catches it a few lines later.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/test-slot.test.ts",
+      "line": "841",
+      "area": "simplicity",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The test 'bounds its wait under the 600 s a worker gives a Bash call' only asserts that a constant (8*60*1000) is below the literal 600_000. It runs no code path, so it can only fail if someone edits the constant. The fake-timer test at line 806 already pins the 480 s bound, since it advances SESSION_SLOT_WAIT_MS - 1000 and then 2000. Delete the test (3 lines). If the 600 s ceiling needs guarding, put it in the JSDoc, which already states it. Removing it also drops the reason to export SESSION_SLOT_WAIT_MS for this test. The fake-timer test would still need it, or a literal 480_000.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Skipped review-security: the change alters slot-acquisition logic, the compiled profile's prose and an ADR; it adds no new shell-out, input handling or hook generation, and the spawn call is unchanged. Skipped review-context (no spec, protocol or infra surface touched), review-spec (no closing keywords or linked issues), review-workflow-safety (no workflow changes) and review-maintainability (not on the default roster at about 465 lines). Dropped a low-confidence simplicity nit on the `told` re-notify key because the simpler alternative would remove behavior the author chose deliberately. Folded the simplicity nit about SlotWaitExpiredError into the conventions nit on the same class."
+    },
+    {
+      "component": "docs",
+      "description": "The docs reviewer judged the ADR's pre-commit paragraph accurate because it read only the hook's non-session branch. The correctness reviewer and the validator showed that the in-session branch (scripts/pre-commit:129-150) routes through `pup session test`, so the paragraph is wrong."
+    },
+    {
+      "component": "conventions",
+      "description": "The conventions reviewer could not run `bash scripts/adr-index.sh` under the static CI lock and read the large diff in ranges."
+    }
+  ],
+  "duplicates_merged": 1,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.4514783499999995,
+  "duration_ms": 197179,
+  "num_turns": 19,
+  "tokens": {
+    "input": 18,
+    "output": 11672,
+    "cache_read": 511812,
+    "cache_creation": 77595,
+    "total": 601097
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 96,
+      "output": 34722,
+      "cache_read": 1421687,
+      "cache_creation": 188610,
+      "cost_usd": 2.1549964
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 36,
+      "output": 7999,
+      "cache_read": 202810,
+      "cache_creation": 78197,
+      "cost_usd": 0.2958355
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 124,
+      "cache_read": 0,
+      "cache_creation": 4674,
+      "cost_usd": 0.00064645
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "gh pr diff 284 --repo AlexisBalayre/pupitre --name-only"
+    }
+  ]
+}
