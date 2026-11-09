@@ -1,0 +1,121 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-09T10:11:13.270Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42598615661",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42598615661",
+  "actor": "AlexisBalayre",
+  "commit_sha": "a81cb3a3643d60860cc54a5f7f158f574628f313",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 281,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "maintainability",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "spec"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "dac25bd856fd68c26519e8faa2b74529f002a9af",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/adr-number.service.ts",
+      "line": "167-176",
+      "description": "A merged session's open PR is never checked, because the gate deletes that session's local `refs/heads/pup/<id>` when it merges. The ADR check reads only that ref, finds nothing, and drops the peer without a note. The duplicate-number PRs this decision exists to stop still get through.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "2226-2241",
+      "description": "An `adr-number` refusal is reported as a flagged-debt refusal. The CLI prints \"Merge refused:  flagged. Re-run with --accept-debt …\" and the `pup status` inbox / conductor show \"gate refused on flagged debt\" with an `--accept-debt` command. Neither fixes the clash, because the ADR stage runs before debt is measured.",
+      "status": "unresolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/adr-number.service.ts",
+      "line": "173-174, 279-284",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`Competitor.pinned` exists only so `adrNumberStage` can patch `let theirs` afterwards with \"its open PR's gated commit is not in this repo\". That splits one decision across `competingBranches`, the interface and two statements in the loop, and one variable ends up holding either a reason or a result. Resolving the missing-commit reason where the pinned sha is chosen, or passing it into `peerDecisions`, would remove the `pinned` field, its JSDoc and the reassignment, and leave the loop as a single `const theirs = …`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0146-the-gate-refuses-an-adr-number-the-target-or.md",
+      "line": "30-36",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "ADR 0146 (and the `competingBranches` JSDoc) says a passing gate deletes the session's local branch in both modes and only `pup fix` restores it. `gateAndMerge` keeps the branch when it had to keep the worktree, or when the branch has moved past the gated sha (merge-gate.service.ts L2023-2027). Reading at the pinned sha is still right in those cases, but a reader is told no such branch can exist. Saying \"normally deletes\" would make it accurate.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "The skill roster has review-simplicity and review-guards, but the record schema's area enum has neither. In this record, simplicity is recorded as `maintainability` (that reviewer's nit included) and guards as a second `conventions` entry. The schema in tools/review needs the new areas."
+    },
+    {
+      "component": "orchestrator",
+      "description": "Skipped review-context (no CI/infra/protocol surface in the delta), review-workflow-safety (no .github/workflows change), review-maintainability proper (off the default roster; delta is 105 lines) and review-spec (no closing issue or --spec)."
+    },
+    {
+      "component": "orchestrator",
+      "description": "Deduplicated inline rather than spawning review-consolidator: the reviewers returned no important findings and only three nits, two of which (simplicity: the `pinned` field and the `let theirs` patch) share one root cause and were merged."
+    }
+  ],
+  "duplicates_merged": 1,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.7742012,
+  "duration_ms": 144072,
+  "num_turns": 19,
+  "tokens": {
+    "input": 18,
+    "output": 11702,
+    "cache_read": 418583,
+    "cache_creation": 55443,
+    "total": 485746
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 66,
+      "output": 26497,
+      "cache_read": 1042683,
+      "cache_creation": 137730,
+      "cost_usd": 1.5937196000000002
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 26,
+      "output": 4913,
+      "cache_read": 132921,
+      "cache_creation": 47203,
+      "cost_usd": 0.1804816
+    }
+  ],
+  "permission_denials": []
+}
