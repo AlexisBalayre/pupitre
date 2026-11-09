@@ -51,6 +51,8 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   // The real rule and the real file, under the throwaway HOME: which names
   // `pup init --session-env` refuses and keeps, and the config dir a launch
   // hashes from them, are the contract (decision 106).
+  resolveWindowEnv: (await importOriginal<typeof import('../claude/session-runtime.service.js')>())
+    .resolveWindowEnv,
   claudeUserDir: (await importOriginal<typeof import('../claude/session-runtime.service.js')>())
     .claudeUserDir,
   ConfigDirRefusedError: (
@@ -1719,7 +1721,7 @@ describe('CLI commands', () => {
         { from: 'user' },
       );
 
-      expect(firstCall(hardRespawnSession)[4]).toEqual({
+      expect(firstCall(hardRespawnSession)[5]).toEqual({
         model: 'claude-opus-5-5',
         effort: 'xhigh',
       });

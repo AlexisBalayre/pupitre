@@ -7,6 +7,7 @@ import {
   killSession as killTmux,
   launchSession,
   steerPane,
+  type WindowEnv,
 } from '../claude/session-runtime.service.js';
 import { codegraphBinary, prepareGraph } from './codegraph.client.js';
 import { verifiedWorktreeGitEnv, type WorktreeGitEnv } from './git-diff.client.js';
@@ -194,10 +195,11 @@ export function respawnSession(
   db: Database,
   repoPath: string,
   sessionId: string,
+  env: WindowEnv,
   pathsBase?: string,
   override?: RouteOverride,
 ): void {
-  relaunchWindow(db, repoPath, sessionId, pathsBase, override, (paths) => {
+  relaunchWindow(db, repoPath, sessionId, env, pathsBase, override, (paths) => {
     const handoffPath = paths.handoffFile(sessionId);
     const handoff = readHandoff(handoffPath);
     if (handoff === undefined) {
@@ -236,10 +238,11 @@ export function hardRespawnSession(
   db: Database,
   repoPath: string,
   sessionId: string,
+  env: WindowEnv,
   pathsBase?: string,
   override?: RouteOverride,
 ): void {
-  relaunchWindow(db, repoPath, sessionId, pathsBase, override, () => ({
+  relaunchWindow(db, repoPath, sessionId, env, pathsBase, override, () => ({
     promptSuffix:
       '\n\n## Fresh start after a kill\n' +
       'The previous run of this session was killed without writing a handoff (it was ' +
@@ -280,11 +283,14 @@ function graphForRespawn(
  * respawn indexes and opens a window over the path it names (decision 101).
  * `extrasFor` is then handed the project's paths to build what the kickoff
  * adds, and may refuse, before anything is read for the launch or killed.
+ * `env` is the caller's: resolved, and a refused config dir refused, before
+ * this is called, so nothing past the kill reads the list again (decision 106).
  */
 function relaunchWindow(
   db: Database,
   repoPath: string,
   sessionId: string,
+  env: WindowEnv,
   pathsBase: string | undefined,
   override: RouteOverride | undefined,
   extrasFor: (paths: ProjectPaths) => {
@@ -321,6 +327,7 @@ function relaunchWindow(
     sessionId,
     repoPath,
     worktreePath: session.worktree_path,
+    env,
     settingsPath: join(compiledDir, 'settings.json'),
     route: routeFor(route.tier, route.rung, route),
     // The context carries the `## Code graph` section whenever the launch

@@ -95,17 +95,47 @@ describe('startConductor', () => {
     vi.mocked(console.error).mockRestore();
   });
 
+  const HOME_ENV = () => ({ vars: {}, configDir: join(home, '.claude') });
+
   function start(
-    overrides: { model?: string; effort?: string; workerModel?: string; maxSessions?: number } = {},
+    overrides: {
+      model?: string;
+      effort?: string;
+      workerModel?: string;
+      maxSessions?: number;
+      windowEnv?: { vars: Record<string, string>; configDir: string };
+    } = {},
   ) {
     return startConductor({
       db,
       repoPath: REPO,
       base: DEFAULT_BASE_PROFILE,
-      claudeUserDir: join(home, '.claude'),
+      windowEnv: HOME_ENV(),
       ...overrides,
     });
   }
+
+  // `pup conductor start` resolves `--session-env` once: the hash it records
+  // is of the dir it named, and the window is handed that same env (decision 106).
+  it('hashes the config dir the start resolved, and opens the window on the same env', () => {
+    const profileHash = () =>
+      readFileSync(join(projectPaths(REPO).conductorCompiledDir, 'profile-hash'), 'utf8');
+    const named = (model: string) => {
+      const dir = tempDir('pup-conductor-config-');
+      writeFileSync(join(dir, 'settings.json'), JSON.stringify({ model }));
+      return { vars: { CLAUDE_CONFIG_DIR: dir }, configDir: dir };
+    };
+    const opus = named('opus');
+
+    start({ windowEnv: opus });
+    const onOpus = profileHash();
+    start({ windowEnv: named('sonnet') });
+
+    expect(vi.mocked(launchConductor).mock.calls[0]?.[0].env).toBe(opus);
+    expect(profileHash()).not.toBe(onOpus);
+    start({ windowEnv: opus });
+    expect(profileHash()).toBe(onOpus);
+  });
 
   it('compiles the profile beside the sessions, opens the window on it, and kicks its context in', () => {
     const handle = start({ model: 'claude-sonnet-5-5', workerModel: 'opus' });
@@ -121,6 +151,7 @@ describe('startConductor', () => {
     expect(launchConductor).toHaveBeenCalledWith({
       projectId: projectId(REPO),
       repoPath: REPO,
+      env: HOME_ENV(),
       settingsPath: join(outDir, 'settings.json'),
       route: { model: 'claude-sonnet-5-5', effort: 'high' },
       mcpConfigPath: undefined,
@@ -383,7 +414,7 @@ describe('startConductor code graph', { timeout: 20_000 }, () => {
       db,
       repoPath: repo,
       base: DEFAULT_BASE_PROFILE,
-      claudeUserDir: join(home, '.claude'),
+      windowEnv: { vars: {}, configDir: join(home, '.claude') },
     });
 
   const launchedWith = () => vi.mocked(launchConductor).mock.calls.at(-1)?.[0];

@@ -231,7 +231,7 @@ export async function startFixRound(db: Database, req: FixRoundRequest): Promise
   });
   relaunchWorker(
     db,
-    req.repoPath,
+    req,
     session,
     roundId,
     paths,
@@ -865,7 +865,7 @@ function takeFixRoundEdge(
  */
 function relaunchWorker(
   db: Database,
-  repoPath: string,
+  { repoPath, windowEnv }: Pick<ProfileSource, 'repoPath' | 'windowEnv'>,
   session: SessionRow,
   roundId: number,
   paths: ProjectPaths,
@@ -916,6 +916,7 @@ function relaunchWorker(
       sessionId: session.id,
       repoPath,
       worktreePath: session.worktree_path,
+      env: windowEnv,
       settingsPath,
       route: routeFor(route.tier, route.rung, route),
       mcpConfigPath,

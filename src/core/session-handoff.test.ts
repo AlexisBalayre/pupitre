@@ -44,6 +44,9 @@ import {
 } from './session-handoff.service.js';
 import { TopRungReachedError } from './session-lifecycle.errors.js';
 
+/** What a command resolved for its windows; the window itself is mocked here. */
+const WINDOW_ENV = { vars: {}, configDir: '/home/.claude' };
+
 // Without the GIT_* strip, git run inside the suite's own pre-commit hook acts
 // on the pupitre repo rather than the fixture's.
 const GIT_ENV: NodeJS.ProcessEnv = {
@@ -282,7 +285,7 @@ describe('session handoff', () => {
   it('hard-respawns without a handoff, pointing the fresh run at the worktree state', () => {
     writeCompiled();
 
-    hardRespawnSession(db, repoPath, 's1', stateBase);
+    hardRespawnSession(db, repoPath, 's1', WINDOW_ENV, stateBase);
 
     expect(killSession).toHaveBeenCalledWith('s1', '%3');
     const prompt = vi.mocked(kickoff).mock.calls[0]?.[1] ?? '';
@@ -302,7 +305,7 @@ describe('session handoff', () => {
 
   it('refuses a hard respawn on a session that is not running', () => {
     transitionSession(db, 's1', 'killed');
-    expect(() => hardRespawnSession(db, repoPath, 's1', stateBase)).toThrow(
+    expect(() => hardRespawnSession(db, repoPath, 's1', WINDOW_ENV, stateBase)).toThrow(
       'only running sessions',
     );
   });
@@ -316,7 +319,7 @@ describe('session handoff', () => {
       join(elsewhere, '.worktrees', 's1'),
     );
 
-    expect(() => hardRespawnSession(db, repoPath, 's1', stateBase)).toThrow(
+    expect(() => hardRespawnSession(db, repoPath, 's1', WINDOW_ENV, stateBase)).toThrow(
       /names a worktree or branch that is not its own; inspect the store\. Nothing was respawned\./,
     );
     expect(killSession).not.toHaveBeenCalled();
@@ -392,7 +395,7 @@ describe('session handoff', () => {
       const mcpConfigPath = writeCompiledMcp();
       fakeCodegraph();
 
-      hardRespawnSession(db, repoPath, 's1', stateBase);
+      hardRespawnSession(db, repoPath, 's1', WINDOW_ENV, stateBase);
 
       expect(cgCalls()).toEqual([`init ${worktree()} --yes`]);
       expect(launchedWith()?.mcpConfigPath).toBe(mcpConfigPath);
@@ -413,7 +416,7 @@ describe('session handoff', () => {
 
       let refusal: unknown;
       try {
-        hardRespawnSession(db, repoPath, 's1', stateBase);
+        hardRespawnSession(db, repoPath, 's1', WINDOW_ENV, stateBase);
       } catch (error) {
         refusal = error;
       }
@@ -444,7 +447,7 @@ describe('session handoff', () => {
       rmSync(marker);
       writeFileSync(cgLog, '');
 
-      hardRespawnSession(db, repoPath, 's1', stateBase);
+      hardRespawnSession(db, repoPath, 's1', WINDOW_ENV, stateBase);
 
       expect(cgCalls()).toEqual([`init ${worktree()} --yes`]);
       expect(launchedWith()?.mcpConfigPath).toBe(mcpConfigPath);
@@ -459,7 +462,7 @@ describe('session handoff', () => {
       // git stays: the pointer check runs it.
       vi.stubEnv('PATH', `${tempDir('pup-cg-empty-')}:/usr/bin:/bin`);
 
-      hardRespawnSession(db, repoPath, 's1', stateBase);
+      hardRespawnSession(db, repoPath, 's1', WINDOW_ENV, stateBase);
 
       expect(launchedWith()?.mcpConfigPath).toBeUndefined();
       expect(vi.mocked(console.error).mock.calls.flat().join(' ')).toContain(
@@ -472,7 +475,7 @@ describe('session handoff', () => {
     it('indexes nothing when the launch compiled no config', () => {
       fakeCodegraph();
 
-      hardRespawnSession(db, repoPath, 's1', stateBase);
+      hardRespawnSession(db, repoPath, 's1', WINDOW_ENV, stateBase);
 
       expect(launchedWith()?.mcpConfigPath).toBeUndefined();
       expect(cgCalls()).toEqual([]);
@@ -550,11 +553,11 @@ describe('session handoff', () => {
       recordSessionRoute(db, 's1', STANDARD_FIRST);
       appendEvent(db, 's1', 'turn_died', { reason: 'API Error: 529', stalledAt: 'x' });
 
-      hardRespawnSession(db, repoPath, 's1', stateBase);
+      hardRespawnSession(db, repoPath, 's1', WINDOW_ENV, stateBase);
       expect(routeColumns()).toMatchObject({ rung: 1, rung_reason: 'turn-death' });
 
       // The death was answered by that respawn; the next window ran into nothing.
-      hardRespawnSession(db, repoPath, 's1', stateBase);
+      hardRespawnSession(db, repoPath, 's1', WINDOW_ENV, stateBase);
       expect(routeColumns()).toMatchObject({ rung: 1, rung_reason: 'turn-death' });
     });
 
@@ -566,7 +569,7 @@ describe('session handoff', () => {
       const quietSince = new Date(Date.now() - 11 * 60 * 1000);
       utimesSync(eventsFile, quietSince, quietSince);
 
-      hardRespawnSession(db, repoPath, 's1', stateBase);
+      hardRespawnSession(db, repoPath, 's1', WINDOW_ENV, stateBase);
 
       expect(routeColumns()).toMatchObject({ rung: 1, rung_reason: 'stall' });
     });
@@ -579,8 +582,8 @@ describe('session handoff', () => {
       const quietSince = new Date(Date.now() - 11 * 60 * 1000);
       utimesSync(eventsFile, quietSince, quietSince);
 
-      hardRespawnSession(db, repoPath, 's1', stateBase);
-      hardRespawnSession(db, repoPath, 's1', stateBase);
+      hardRespawnSession(db, repoPath, 's1', WINDOW_ENV, stateBase);
+      hardRespawnSession(db, repoPath, 's1', WINDOW_ENV, stateBase);
 
       expect(routeColumns()).toMatchObject({ rung: 1, rung_reason: 'stall' });
     });
@@ -592,8 +595,10 @@ describe('session handoff', () => {
         throw new Error('paste never landed');
       });
 
-      expect(() => hardRespawnSession(db, repoPath, 's1', stateBase)).toThrow('paste never landed');
-      hardRespawnSession(db, repoPath, 's1', stateBase);
+      expect(() => hardRespawnSession(db, repoPath, 's1', WINDOW_ENV, stateBase)).toThrow(
+        'paste never landed',
+      );
+      hardRespawnSession(db, repoPath, 's1', WINDOW_ENV, stateBase);
 
       expect(routeColumns()).toMatchObject({ rung: 1, rung_reason: 'turn-death' });
       const events = db.prepare("SELECT payload FROM events WHERE type = 'respawn'").all();
@@ -605,7 +610,7 @@ describe('session handoff', () => {
       transitionSession(db, 's1', 'blocked');
       transitionSession(db, 's1', 'running', { kind: 'operator-unblock' });
 
-      hardRespawnSession(db, repoPath, 's1', stateBase);
+      hardRespawnSession(db, repoPath, 's1', WINDOW_ENV, stateBase);
 
       expect(routeColumns()).toMatchObject({ rung: 0, rung_reason: null });
     });
@@ -614,8 +619,10 @@ describe('session handoff', () => {
       recordSessionRoute(db, 's1', CRITICAL_TOP);
       rejectOnce();
 
-      expect(() => hardRespawnSession(db, repoPath, 's1', stateBase)).toThrow(TopRungReachedError);
-      expect(() => hardRespawnSession(db, repoPath, 's1', stateBase)).toThrow(
+      expect(() => hardRespawnSession(db, repoPath, 's1', WINDOW_ENV, stateBase)).toThrow(
+        TopRungReachedError,
+      );
+      expect(() => hardRespawnSession(db, repoPath, 's1', WINDOW_ENV, stateBase)).toThrow(
         /Session s1 hit gate-rejection on the top rung of its critical ladder/,
       );
       expect(killSession).not.toHaveBeenCalled();
@@ -627,7 +634,7 @@ describe('session handoff', () => {
       recordSessionRoute(db, 's1', CRITICAL_TOP);
       rejectOnce();
 
-      hardRespawnSession(db, repoPath, 's1', stateBase, {
+      hardRespawnSession(db, repoPath, 's1', WINDOW_ENV, stateBase, {
         model: 'claude-opus-5-5',
         effort: 'high',
       });
@@ -645,7 +652,9 @@ describe('session handoff', () => {
       recordSessionRoute(db, 's1', { ...CRITICAL_TOP, override: true });
       rejectOnce();
 
-      expect(() => hardRespawnSession(db, repoPath, 's1', stateBase)).toThrow(TopRungReachedError);
+      expect(() => hardRespawnSession(db, repoPath, 's1', WINDOW_ENV, stateBase)).toThrow(
+        TopRungReachedError,
+      );
     });
 
     it('keeps the override the session was launched with, the rung still climbing under it', () => {
@@ -657,7 +666,7 @@ describe('session handoff', () => {
       });
       rejectOnce();
 
-      hardRespawnSession(db, repoPath, 's1', stateBase);
+      hardRespawnSession(db, repoPath, 's1', WINDOW_ENV, stateBase);
 
       expect(launchedRoute()).toEqual({ model: 'claude-opus-5-5', effort: 'low' });
       expect(routeColumns()).toMatchObject({
@@ -684,7 +693,7 @@ describe('session handoff', () => {
   });
 
   function respawnSessionWithTestPaths(): void {
-    respawnSession(db, repoPath, 's1', stateBase);
+    respawnSession(db, repoPath, 's1', WINDOW_ENV, stateBase);
   }
 
   function readyWithTestPaths(): boolean {
