@@ -689,14 +689,7 @@ export function countChangedLines(
       counts[kind] += stat.added + stat.deleted;
       continue;
     }
-    const recount = gitDiffBinaryRecount(
-      repoPath,
-      target,
-      branch,
-      stat.path,
-      binaryBudget,
-      stat.renamedFrom,
-    );
+    const recount = gitDiffBinaryRecount(repoPath, target, branch, stat, binaryBudget);
     if (!recount) continue;
     counts[kind] += recount.added + recount.deleted;
     forged.push(stat.path);

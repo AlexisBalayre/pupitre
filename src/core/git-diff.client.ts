@@ -554,7 +554,7 @@ const GIT_READ_TIMEOUT_MS = 30_000;
  * The content of each blob in `blobs`, in order, read through one
  * `git cat-file --batch` however many there are: a process per blob let a
  * tree of 20 000 tiny files hold the merge lock for minutes (decision 154).
- * Sizes are the ones `ls-tree -l` reported, and together they may not pass
+ * Sizes are the ones git listed (`ls-tree -l`, `cat-file -s`), and together they may not pass
  * `GIT_MAX_BUFFER`, the cap each read had alone: past it, or past
  * `GIT_READ_TIMEOUT_MS`, this throws and the gate fails closed. A size that
  * is no byte count, which `ls-tree` lists for an object it cannot read, throws,
@@ -707,33 +707,69 @@ export function gitDiffAddedLines(
   return added;
 }
 
+/** One side of a file's diff as `--raw` lists it: its tree mode and blob oid. */
+type DiffSide = { mode: string; oid: string };
+
+/**
+ * A numstat entry. A renamed file carries the path it was `renamedFrom`, and a
+ * file numstat could not count (`-\t-`) its `sides`, `[base, branch]`, each
+ * undefined where the file does not exist, for `gitDiffBinaryRecount`.
+ */
+export type DiffNumstatEntry = DiffFileStat & {
+  renamedFrom?: string;
+  sides?: [DiffSide | undefined, DiffSide | undefined];
+};
+
+/** A `--raw` side's mode and oid, undefined for the all-zero mode of a side that does not exist. */
+function rawSide(mode: string, oid: string): DiffSide | undefined {
+  return /^0+$/.test(mode) ? undefined : { mode, oid };
+}
+
 /**
  * Per-file add/delete counts for the branch diff (merge-base diff),
  * rename-aware: a renamed file is listed under its new path, with the path it
- * was renamed from, which `gitDiffBinaryRecount` reads as its merge-base side.
+ * was renamed from. The `--raw` records of the same run give each `-\t-`
+ * entry its sides, which `gitDiffBinaryRecount` reads by oid: a path decoded
+ * from git's output is no key to read a blob by, since a name that is not
+ * UTF-8 decodes to U+FFFD and names another file or none (decision 154).
  */
 export function gitDiffNumstat(
   repoPath: string,
   target: string,
   branch: string,
-): (DiffFileStat & { renamedFrom?: string })[] {
-  // With -z, a renamed entry is "added\tdeleted\t" followed by the old and new
-  // paths as two separate NUL fields. An inline path is never quoted, so a tab
-  // in it is the path's own and everything after the second tab is the path.
+): DiffNumstatEntry[] {
+  // With -z, every `--raw` record comes first, in the order of the numstat
+  // records after it: ":<old mode> <new mode> <old oid> <new oid> <status>",
+  // then one path, or the old and the new path for a rename. A numstat
+  // renamed entry is "added\tdeleted\t" followed by the old and new paths as
+  // two separate NUL fields. An inline path is never quoted, so a tab in it
+  // is the path's own and everything after the second tab is the path.
   // Renames are pinned to plain detection: a session-written
   // `diff.renames=copies` would score a new file copied from a changed one as
-  // that copy's edits alone, under the oversize flag (decision 113).
+  // that copy's edits alone, under the oversize flag (decision 113), and
+  // `--no-abbrev` gives whole oids whatever `core.abbrev` says.
   const fields = runGit(repoPath, [
     '-c',
     'diff.renames=true',
     'diff',
     ...DIFF_SAFE_FLAGS,
     '-z',
+    '--raw',
+    '--no-abbrev',
     '--numstat',
     `${target}...${branch}`,
   ]).split('\0');
-  const stats: (DiffFileStat & { renamedFrom?: string })[] = [];
-  for (let i = 0; i < fields.length; i++) {
+  const raw: [DiffSide | undefined, DiffSide | undefined][] = [];
+  let i = 0;
+  for (; fields[i]?.startsWith(':'); i++) {
+    const [oldMode = '', newMode = '', oldOid = '', newOid = '', status = ''] = (fields[i] ?? '')
+      .slice(1)
+      .split(' ');
+    raw.push([rawSide(oldMode, oldOid), rawSide(newMode, newOid)]);
+    i += /^[RC]/.test(status) ? 2 : 1;
+  }
+  const stats: DiffNumstatEntry[] = [];
+  for (; i < fields.length; i++) {
     const field = fields[i];
     if (!field) continue;
     const [added, deleted, ...rest] = field.split('\t');
@@ -742,12 +778,19 @@ export function gitDiffNumstat(
     const path = inlinePath || fields[i + 2];
     if (!inlinePath) i += 2;
     if (!path) continue;
+    const sides = raw[stats.length];
     stats.push({
       path,
       added: added === '-' ? null : Number(added),
       deleted: deleted === '-' ? null : Number(deleted),
       ...(renamedFrom ? { renamedFrom } : {}),
+      ...(added === '-' && sides ? { sides } : {}),
     });
+  }
+  if (stats.length !== raw.length) {
+    throw new Error(
+      `git diff listed ${raw.length} raw records for ${stats.length} numstat records`,
+    );
   }
   return stats;
 }
@@ -756,46 +799,27 @@ export function gitDiffNumstat(
 export { BINARY_FREE_MAX_BYTES, BINARY_FREE_TOTAL_MAX_BYTES } from './known-binary.utils.js';
 
 /**
- * The size of `path` on `rev` when it is a binary to skip, false when it is
- * not: a regular file (mode 100644 or 100755, never a 120000 symlink) no
- * larger than `BINARY_FREE_MAX_BYTES`, binary by content, never by attribute,
+ * The size of a diff side when it is a binary to skip, false when it is not:
+ * a regular file (mode 100644 or 100755, never a 120000 symlink) no larger
+ * than `BINARY_FREE_MAX_BYTES`, binary by content, never by attribute,
  * opening with the magic of a format its extension names, and holding no zip
- * end record anywhere (`mayBeKnownBinary`, then `knownBinarySize`). Only an
- * empty `ls-tree` listing means the side does not exist and answers undefined; a git that
- * fails, times out or is killed throws, as reading a failed answer as absent
- * would skip the file uncounted. The entry is read by the oid `ls-tree`
- * gives, through `readBlobs`, so its size is checked against the listing.
+ * end record or phar stub anywhere (`mayBeKnownBinary`, then
+ * `knownBinarySize`). A side `--raw` lists as absent answers undefined. The
+ * blob is read by the oid `--raw` gave, its size from `cat-file -s`, through
+ * `readBlobs`, so its size is checked against that answer; a git that fails,
+ * times out or is killed throws, and the gate fails closed.
  */
 function blobIsKnownBinary(
   repoPath: string,
-  rev: string,
-  path: string,
+  side: DiffSide | undefined,
   formats: BinaryFormat[],
 ): number | false | undefined {
-  const listing = runGit(
-    repoPath,
-    [
-      ...PATH_AS_GIVEN,
-      '--literal-pathspecs',
-      'ls-tree',
-      '-z',
-      '-l',
-      '--full-tree',
-      rev,
-      '--',
-      path,
-    ],
-    { timeout: GIT_READ_TIMEOUT_MS },
+  if (side === undefined) return undefined;
+  const size = Number(
+    runGit(repoPath, ['cat-file', '-s', side.oid], { timeout: GIT_READ_TIMEOUT_MS }).trim(),
   );
-  // "<mode> <type> <oid> <padded size>\t<path>": the path is everything after the first tab.
-  const entry = listing.split('\0').find((line) => {
-    const tab = line.indexOf('\t');
-    return tab !== -1 && line.slice(tab + 1) === path;
-  });
-  if (entry === undefined) return undefined;
-  const [mode = '', , oid = '', size] = entry.slice(0, entry.indexOf('\t')).split(/ +/);
-  if (!mayBeKnownBinary(mode, Number(size))) return false;
-  const [blob = Buffer.alloc(0)] = readBlobs(repoPath, [{ oid, size: Number(size) }]);
+  if (!mayBeKnownBinary(side.mode, size)) return false;
+  const [blob = Buffer.alloc(0)] = readBlobs(repoPath, [{ oid: side.oid, size }]);
   return knownBinarySize(blob, formats);
 }
 
@@ -814,11 +838,15 @@ function blobIsKnownBinary(
  * not the whole answer either: one in a source file's comment makes git call
  * it binary. So the file is skipped only when every side it exists on is a
  * known binary (`blobIsKnownBinary`, `src/core/known-binary.utils.ts`), and a
- * path no format names is recounted unread (decision 154). A renamed file's
- * merge-base side is the path it was `renamedFrom`, which numstat reports and
- * the caller must pass on, and its recount reads both paths: a source file
- * renamed into a `.png` would otherwise have no base side, skip, and drop
- * every line it deleted. A skip spends the
+ * path no format names is recounted unread (decision 154). The sides are the
+ * ones `gitDiffNumstat` paired with the entry from the same run's `--raw`
+ * records, read by oid, never looked up again by path: a path that is not
+ * UTF-8 decodes to U+FFFD, and an `ls-tree` of that string found nothing,
+ * which read as absent and skipped, or found a decoy committed under it. An
+ * entry without sides is recounted. A renamed file's merge-base side is the
+ * blob it was `renamedFrom`, named by that path's extension, and its recount
+ * reads both paths: a source file renamed into a `.png` would otherwise have
+ * no base side, skip, and drop every line it deleted. A skip spends the
  * branch side's bytes from `budget` (`spendKnownBinarySkip`), which every call
  * for one diff must share (start it at `BINARY_FREE_TOTAL_MAX_BYTES`), and a
  * file the budget cannot cover is recounted. It has no default: a fresh budget
@@ -828,22 +856,18 @@ export function gitDiffBinaryRecount(
   repoPath: string,
   target: string,
   branch: string,
-  path: string,
+  entry: Pick<DiffNumstatEntry, 'path' | 'renamedFrom' | 'sides'>,
   budget: { bytes: number },
-  renamedFrom: string | undefined,
 ): { added: number; deleted: number } | null {
-  const sideOf = (rev: string, sidePath: string): number | false | undefined => {
+  const { path, renamedFrom } = entry;
+  const sideOf = (side: DiffSide | undefined, sidePath: string): number | false | undefined => {
     const formats = formatsNamed(sidePath);
-    return formats.length === 0 ? false : blobIsKnownBinary(repoPath, rev, sidePath, formats);
+    return formats.length === 0 ? false : blobIsKnownBinary(repoPath, side, formats);
   };
-  const branchSide = sideOf(branch, path);
+  const [baseBlob, branchBlob] = entry.sides ?? [];
+  const branchSide = entry.sides === undefined ? false : sideOf(branchBlob, path);
   const sides =
-    branchSide === false
-      ? [branchSide]
-      : [
-          sideOf(runGit(repoPath, ['merge-base', target, branch]).trim(), renamedFrom ?? path),
-          branchSide,
-        ];
+    branchSide === false ? [branchSide] : [sideOf(baseBlob, renamedFrom ?? path), branchSide];
   if (spendKnownBinarySkip(sides, budget)) return null;
   const paths = renamedFrom === undefined ? [path] : [renamedFrom, path];
   let added = 0;

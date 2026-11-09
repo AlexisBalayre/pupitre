@@ -65,6 +65,14 @@ const REGULAR_FILE_MODES = ['100644', '100755'];
 const ZIP_EOCD = Buffer.from('PK\x05\x06', 'latin1');
 
 /**
+ * The token that ends a PHP phar's stub, which PHP reads in any case. The
+ * `phar://` wrapper finds an archive by it after whatever bytes come first,
+ * and its entries may be compressed, so a PNG holding it is a module
+ * `include 'phar://assets/x.png/a.php'` runs, its code unread (decision 154).
+ */
+const PHAR_STUB_END = '__halt_compiler';
+
+/**
  * The formats `path`'s extension names, in any ASCII case. Only ASCII is
  * folded: `toLowerCase` folds the Kelvin sign U+212A to `k`, and `.mKv`
  * written with it names no format a reader opens as one.
@@ -96,6 +104,11 @@ function holdsZipEndRecord(blob: Buffer): boolean {
   return blob.includes(ZIP_EOCD);
 }
 
+/** Whether `blob` holds a phar stub's end (`PHAR_STUB_END`), in any ASCII case. */
+function holdsPharStub(blob: Buffer): boolean {
+  return blob.toString('latin1').toLowerCase().includes(PHAR_STUB_END);
+}
+
 /** Whether `blob` opens with the magic of one of `formats`. */
 function opensWithMagic(blob: Buffer, formats: BinaryFormat[]): boolean {
   return formats.some(({ magic }) =>
@@ -106,11 +119,11 @@ function opensWithMagic(blob: Buffer, formats: BinaryFormat[]): boolean {
 /**
  * The size of `blob` when it is a known binary of one of `formats`, false
  * when it is not: binary by content, opening with a format's magic, and
- * holding no zip end record.
+ * holding no zip end record and no phar stub.
  */
 export function knownBinarySize(blob: Buffer, formats: BinaryFormat[]): number | false {
   if (!holdsNul(blob)) return false;
-  if (holdsZipEndRecord(blob)) return false;
+  if (holdsZipEndRecord(blob) || holdsPharStub(blob)) return false;
   return opensWithMagic(blob, formats) && blob.length;
 }
 

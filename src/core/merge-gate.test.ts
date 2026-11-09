@@ -1693,6 +1693,43 @@ describe('countChangedLines', () => {
     });
   });
 
+  // A name that is not UTF-8 decodes to U+FFFD, and the blob looked up by that
+  // string was a decoy PNG's, which let the hidden file skip at any size.
+  it('flags a file whose name is not UTF-8 beside a decoy under the decoded name', () => {
+    const repo = initRepo();
+    sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
+    const magic = Buffer.from('\x89PNG\r\n\x1a\n\0\0\0\rIHDR', 'latin1');
+    const entries: [Buffer, Buffer][] = [
+      [Buffer.from('assets/�.png'), Buffer.concat([magic, Buffer.from('q\n')])],
+      [
+        Buffer.concat([Buffer.from('assets/'), Buffer.from([0xff]), Buffer.from('.png')]),
+        Buffer.concat([magic, Buffer.from(`${'export const v = 1;\n'.repeat(3)}PK\x05\x06`)]),
+      ],
+    ];
+    for (const [path, content] of entries) {
+      const blob = execFileSync('git', ['hash-object', '-w', '--stdin'], {
+        cwd: repo,
+        env: GIT_ENV,
+        input: content,
+        encoding: 'utf8',
+      }).trim();
+      execFileSync('git', ['update-index', '--index-info'], {
+        cwd: repo,
+        env: GIT_ENV,
+        input: Buffer.concat([Buffer.from(`100644 ${blob}\t`), path, Buffer.from('\n')]),
+      });
+    }
+    sh(repo, 'git', 'commit', '-q', '-m', 'hidden');
+
+    // Its hunks, read by the decoded path, are the decoy's three lines.
+    expect(countChangedLines(repo, 'main', 'feature')).toEqual({
+      source: 3,
+      test: 0,
+      docs: 0,
+      forged: ['assets/�.png'],
+    });
+  });
+
   // A session-written `core.worktree` naming the repo's parent puts every git
   // read under a `<repo>/` prefix: a tree listing, a grep and a per-file diff
   // scoped to it found nothing, and `diff.relative` emptied the numstat too.
