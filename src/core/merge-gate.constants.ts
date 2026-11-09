@@ -111,6 +111,29 @@ export const MERGE_LOCK_DIRNAME = 'pup-merge.lock';
  */
 export const GATE_COMMAND_TIMEOUT_MS = 25 * 60 * 1000;
 
+/**
+ * Paths no test runs or reads: a change of only these skips the test and
+ * coverage stages, and any other path runs them (decision 139). The list holds
+ * only prose and CI config. `README.md` is left off because Rust's
+ * `include_str!` and doctest globs read it. `skills/` is left off because a
+ * plugin's tests check its `SKILL.md`, and `.github/actions/` because an
+ * action's own tests live there. merge-gate-untested.test.ts checks every
+ * entry against what the suite reads.
+ */
+export const UNTESTED_PATH_GLOBS = [
+  'docs/**/*.md',
+  '.github/*.md',
+  '.github/*.yml',
+  '.github/*.yaml',
+  '.github/CODEOWNERS',
+  '.github/workflows/*.yml',
+  '.github/workflows/*.yaml',
+  'LICENSE',
+  'CONTRIBUTING.md',
+  'AGENTS.md',
+  'CLAUDE.md',
+];
+
 /** Tail of a failed command's output kept in the gate report / re-steer prompt. */
 export const GATE_OUTPUT_TAIL_CHARS = 2000;
 
