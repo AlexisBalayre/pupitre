@@ -215,6 +215,16 @@ describe('dashboard controls', () => {
       words.unmount();
     });
 
+    it('answers nothing on a number key with the cursor on a planned task', async () => {
+      const instance = mount(snapshotFixture({ sessions: [] }));
+
+      await press(instance, '1');
+
+      expect(instance.lastFrame()).toContain('Nothing to answer: the cursor is not on a session.');
+      expect(answerSelected).not.toHaveBeenCalled();
+      instance.unmount();
+    });
+
     it('interrupts the selected session on `i`, with nothing to confirm', async () => {
       const instance = mount();
 

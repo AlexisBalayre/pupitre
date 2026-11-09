@@ -4,6 +4,7 @@ import { formatStaleAge } from '../../core/session-activity.utils.js';
 import { RESPAWN_SUGGEST_TOKENS } from '../../core/session-handoff.service.js';
 import type { DashboardNeed, DashboardSession } from '../../core/types/dashboard.types.js';
 import type { FleetBlock } from '../../core/types/fleet.types.js';
+import { optionLines } from './question.utils.js';
 
 /**
  * The words both dashboard renderers print. `pup status` and `pup ui` read one
@@ -131,7 +132,7 @@ export function trailing(label: string): string {
  * double-space separators cannot be forged, since the scrub collapses runs of
  * whitespace; the label and reason have their own symbols taken away upstream.
  */
-export function needLine(need: DashboardNeed): string {
+function needLine(need: DashboardNeed): string {
   return `${sanitizeReason(need.label)}  ${sanitizeReason(need.reason)}  → ${sanitizeReason(need.answer)}`;
 }
 
@@ -143,10 +144,7 @@ export function needLine(need: DashboardNeed): string {
 export function needLines(need: DashboardNeed): string[] {
   return [
     needLine(need),
-    ...(need.options ?? []).map(
-      (option, index) =>
-        `    ${index + 1}. ${sanitizeReason(option)}${need.recommended === index + 1 ? '  (recommended)' : ''}`,
-    ),
+    ...optionLines(need.options ?? [], need.recommended).map((line) => `    ${line}`),
   ];
 }
 

@@ -121,9 +121,9 @@ vi.mock('node:child_process', async (importOriginal) => {
 vi.mock('../core/session-lifecycle.service.js', async (importOriginal) => ({
   // The real ask and answer: the store writes they make are what `pup status`
   // reads back, and the pane they type into is `steerPane`, faked above.
-  AnswerRefusedError: (
+  QuestionRefusedError: (
     await importOriginal<typeof import('../core/session-lifecycle.service.js')>()
-  ).AnswerRefusedError,
+  ).QuestionRefusedError,
   answerConductorQuestion: (
     await importOriginal<typeof import('../core/session-lifecycle.service.js')>()
   ).answerConductorQuestion,
@@ -1472,6 +1472,53 @@ describe('CLI commands', () => {
       buildProgram().parse(['answer', 'conductor', 'yes'], { from: 'user' });
 
       expect(errors.join('\n')).toContain('the question stays open');
+      expect(process.exitCode).toBe(1);
+    });
+
+    /** A repo whose running conductor asked `accept the debt?`. */
+    function seedConductorAsked(): string {
+      const repo = initRepo();
+      vi.mocked(isConductorRunning).mockReturnValue(true);
+      const { db } = resolveProject(repo);
+      appendEvent(db, null, 'question', { text: 'accept the debt?' });
+      db.close();
+      return repo;
+    }
+
+    // `pup conductor tell`'s refusals are the answer's too, read as one line.
+    it('refuses as the tell does when the tell is refused', () => {
+      useCwd(seedConductorAsked());
+      vi.mocked(tellConductor).mockImplementation(() => {
+        throw new ConductorTellRefusedError('The message runs past 800 characters.');
+      });
+
+      buildProgram().parse(['answer', 'conductor', 'yes'], { from: 'user' });
+
+      expect(errors).toEqual(['The message runs past 800 characters.']);
+      expect(process.exitCode).toBe(1);
+    });
+
+    // A failure that is no refusal is a bug: it surfaces, not printed as one.
+    it('rethrows a failure that is no refusal', () => {
+      useCwd(seedConductorAsked());
+      vi.mocked(tellConductor).mockImplementation(() => {
+        throw new Error('tmux exploded');
+      });
+
+      expect(() => buildProgram().parse(['answer', 'conductor', 'yes'], { from: 'user' })).toThrow(
+        'tmux exploded',
+      );
+      expect(errors).toEqual([]);
+    });
+
+    it('refuses as a steer does, for a session it cannot steer', () => {
+      useCwd(seedAsked());
+
+      buildProgram().parse(['answer', 's-none', '1'], { from: 'user' });
+
+      expect(steerPane).not.toHaveBeenCalled();
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toContain('s-none');
       expect(process.exitCode).toBe(1);
     });
 

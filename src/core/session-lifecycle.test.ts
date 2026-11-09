@@ -91,7 +91,6 @@ import {
   UnknownTaskError,
 } from './session-lifecycle.errors.js';
 import {
-  AnswerRefusedError,
   answerConductorQuestion,
   answerSessionQuestion,
   createSession,
@@ -102,6 +101,7 @@ import {
   launchTask,
   markSessionQuestion,
   planTask,
+  QuestionRefusedError,
   recompileSessionProfile,
   recordSteerMessage,
   SessionCapReachedError,
@@ -1719,8 +1719,16 @@ describe('answering an open question', () => {
     ]);
   });
 
+  it('refuses a blank reply and types nothing', () => {
+    expect(() => answerSessionQuestion(db, 's-1', '   ')).toThrow(
+      'Nothing to answer with: give an option number or words.',
+    );
+    expect(steerPane).not.toHaveBeenCalled();
+    expect(openQuestion(db, 's-1')).toBeDefined();
+  });
+
   it.each(['3', '0'])('refuses option %s, past the options, and types nothing', (reply) => {
-    expect(() => answerSessionQuestion(db, 's-1', reply)).toThrow(AnswerRefusedError);
+    expect(() => answerSessionQuestion(db, 's-1', reply)).toThrow(QuestionRefusedError);
     expect(steerPane).not.toHaveBeenCalled();
     expect(answers('s-1')).toEqual([]);
     expect(openQuestion(db, 's-1')).toBeDefined();
@@ -1778,23 +1786,23 @@ describe('answering an open question', () => {
     });
 
     it('tells the conductor the answer, prefixed by its question, and closes it', () => {
-      const outcome = answerConductorQuestion(db, REPO, '1');
+      const answer = answerConductorQuestion(db, REPO, '1');
 
       expect(tellConductor).toHaveBeenCalledWith(
         REPO,
         'Answer to your question "accept the debt?": option 1, yes',
       );
-      expect(outcome.landed).toBe(true);
+      expect(answer).toEqual({ question: 'accept the debt?', text: 'yes', option: 1 });
       expect(answers(null)).toEqual([{ question: 'accept the debt?', text: 'yes', option: 1 }]);
       expect(openQuestion(db, null)).toBeUndefined();
       // A session's question is its own: the conductor's answer leaves it open.
       expect(openQuestion(db, 's-1')).toBeDefined();
     });
 
-    it('leaves the question open when the tell did not land', () => {
+    it('refuses, leaving the question open, when the tell did not land', () => {
       vi.mocked(tellConductor).mockReturnValueOnce(false);
 
-      expect(answerConductorQuestion(db, REPO, 'no').landed).toBe(false);
+      expect(() => answerConductorQuestion(db, REPO, 'no')).toThrow(/did not land/);
       expect(answers(null)).toEqual([]);
       expect(openQuestion(db, null)).toBeDefined();
     });
@@ -1802,7 +1810,7 @@ describe('answering an open question', () => {
     it('refuses when no conductor runs, telling nothing', () => {
       vi.mocked(isConductorRunning).mockReturnValueOnce(false);
 
-      expect(() => answerConductorQuestion(db, REPO, '1')).toThrow(AnswerRefusedError);
+      expect(() => answerConductorQuestion(db, REPO, '1')).toThrow(QuestionRefusedError);
       expect(tellConductor).not.toHaveBeenCalled();
     });
   });

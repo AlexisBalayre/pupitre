@@ -127,6 +127,9 @@ vi.mock('../core/session-lifecycle.service.js', async (importOriginal) => ({
   markSessionDone: vi.fn(),
   markSessionQuestion: vi.fn(),
   planTask: vi.fn(),
+  QuestionRefusedError: (
+    await importOriginal<typeof import('../core/session-lifecycle.service.js')>()
+  ).QuestionRefusedError,
   recordSteerMessage: vi.fn(),
   SessionCapReachedError: (
     await importOriginal<typeof import('../core/session-lifecycle.service.js')>()

@@ -130,7 +130,6 @@ import {
   UnknownTaskError,
 } from '../core/session-lifecycle.errors.js';
 import {
-  AnswerRefusedError,
   answerConductorQuestion,
   answerSessionQuestion,
   createSession,
@@ -142,6 +141,7 @@ import {
   markSessionDone,
   markSessionQuestion,
   planTask,
+  QuestionRefusedError,
   recordSteerMessage,
   SessionCapReachedError,
   steerSession,
@@ -161,7 +161,7 @@ import type { DebtBaseline, InitReport } from '../core/types/init.types.js';
 import type { LandOutcome } from '../core/types/land.types.js';
 import type { GateReport, MergeOutcome } from '../core/types/merge-gate.types.js';
 import type { TaskId, TaskSpec } from '../core/types/profile.types.js';
-import type { EventPayloads, StoredGateStage } from '../core/types/session-event.types.js';
+import type { StoredGateStage } from '../core/types/session-event.types.js';
 import type { NewSessionRequest, RouteOverride } from '../core/types/session-lifecycle.types.js';
 import type { RetireOutcome } from '../core/types/session-retire.types.js';
 import {
@@ -191,6 +191,7 @@ import {
   sessionLine,
   trailing,
 } from './ui/dashboard-text.utils.js';
+import { type AskOptions, askedLines, askedQuestion } from './ui/question.utils.js';
 
 /**
  * A multi-line string scrubbed line by line, for the three surfaces that hand
@@ -619,76 +620,24 @@ function tellOrRefuse(repoPath: string, message: string): void {
 }
 
 /**
- * Answer the conductor's open question and say whether it landed, refusing as
- * `pup conductor tell` does; one that did not land leaves the question open.
+ * Run an ask or an answer and print what it says (decision 93): the refusals
+ * core throws are the operator's to read, a steer's and a tell's among them,
+ * and anything else is a bug and is rethrown.
  */
-function answerConductorOrRefuse(db: Database, repoPath: string, reply: string): void {
-  let outcome: ReturnType<typeof answerConductorQuestion>;
+function questionOrRefuse(act: () => string[]): void {
+  let lines: string[];
   try {
-    outcome = answerConductorQuestion(db, repoPath, reply);
+    lines = act();
   } catch (error) {
     const refused =
-      error instanceof AnswerRefusedError ||
+      error instanceof QuestionRefusedError ||
       error instanceof ConductorTellRefusedError ||
-      error instanceof SessionPaneMissingError;
+      isSteerRefusal(error);
     if (!refused) throw error;
     refuse(error.message);
     return;
   }
-  if (!outcome.landed) {
-    refuse(
-      "The answer did not land: the conductor's input box never showed it whole, still holds " +
-        'text after a second Enter, or left the screen; the question stays open. Look with `pup attach`.',
-    );
-    return;
-  }
-  console.log(`Answered the conductor: ${sanitizeReason(outcome.answer.text)}`);
-}
-
-/** `pup session ask`'s and `pup conductor ask`'s options (decision 93). */
-interface AskOptions {
-  option?: string[];
-  recommend?: string;
-}
-
-/**
- * The question `pup session ask` or `pup conductor ask` stores, or a refusal
- * printed: its text, up to `MAX_QUESTION_OPTIONS` options, and `--recommend`
- * naming one of them by its 1-based number (decision 93).
- */
-function askedOrRefuse(
-  command: string,
-  text: string,
-  opts: AskOptions,
-): EventPayloads['question'] | undefined {
-  const options = opts.option ?? [];
-  const problem = !text.trim()
-    ? `${command} needs the question itself.`
-    : options.length > MAX_QUESTION_OPTIONS
-      ? `A question offers at most ${MAX_QUESTION_OPTIONS} options, one key each; ask it in words, or fewer.`
-      : options.some((option) => !option.trim())
-        ? 'Every --option needs its text.'
-        : undefined;
-  if (problem) {
-    refuse(problem);
-    return undefined;
-  }
-  if (opts.recommend === undefined) return { text, ...(options.length > 0 ? { options } : {}) };
-  const recommended = Number(opts.recommend);
-  if (!/^\d+$/.test(opts.recommend) || recommended < 1 || recommended > options.length) {
-    refuse(`--recommend takes the number of one of the ${options.length} options, from 1.`);
-    return undefined;
-  }
-  return { text, options, recommended };
-}
-
-/** What an asking command prints: the question as stored, its options numbered. */
-function printAsked(who: string, asked: EventPayloads['question']): void {
-  console.log(`${who} asked: ${sanitizeReason(asked.text)}`);
-  for (const [index, option] of (asked.options ?? []).entries()) {
-    const mark = asked.recommended === index + 1 ? '  (recommended)' : '';
-    console.log(`  ${index + 1}. ${sanitizeReason(option)}${mark}`);
-  }
+  for (const line of lines) console.log(line);
 }
 
 /**
@@ -1297,10 +1246,11 @@ export function buildProgram(): Command {
         if (callingSession(db) || callingConductor() !== projectId(repoPath)) {
           return refuse('`pup conductor ask` is for the conductor only.');
         }
-        const asked = askedOrRefuse('pup conductor ask', message ?? '', opts);
-        if (!asked) return;
-        markConductorQuestion(db, asked);
-        return printAsked('The conductor', asked);
+        return questionOrRefuse(() => {
+          const asked = askedQuestion('pup conductor ask', message, opts);
+          markConductorQuestion(db, asked);
+          return askedLines('The conductor', asked);
+        });
       }
       if (opts.option !== undefined || opts.recommend !== undefined) {
         return refuse('Only `pup conductor ask` takes --option and --recommend.');
@@ -2005,15 +1955,14 @@ export function buildProgram(): Command {
       // The asker waits on the operator's decision: a session or the conductor
       // answering it would decide in the operator's name (decision 93).
       if (callingSession(db) || callingConductor()) return refuse('`pup answer` is operator-only.');
-      if (target === CONDUCTOR_TARGET) return answerConductorOrRefuse(db, repoPath, reply);
-      let answer: EventPayloads['answer'];
-      try {
-        answer = answerSessionQuestion(db, target, reply);
-      } catch (error) {
-        if (!(error instanceof AnswerRefusedError || isSteerRefusal(error))) throw error;
-        return refuse(error.message);
+      if (target === CONDUCTOR_TARGET) {
+        return questionOrRefuse(() => [
+          `Answered the conductor: ${sanitizeReason(answerConductorQuestion(db, repoPath, reply).text)}`,
+        ]);
       }
-      console.log(`Answered session ${sanitizeReason(target)}: ${sanitizeReason(answer.text)}`);
+      questionOrRefuse(() => [
+        `Answered session ${sanitizeReason(target)}: ${sanitizeReason(answerSessionQuestion(db, target, reply).text)}`,
+      ]);
     });
 
   program
@@ -2926,10 +2875,11 @@ export function buildProgram(): Command {
       const { db } = project();
       const sessionId = ownSession(db, 'ask');
       if (!sessionId) return;
-      const asked = askedOrRefuse('pup session ask', question, opts);
-      if (!asked) return;
-      markSessionQuestion(db, sessionId, asked);
-      printAsked(`Session ${sanitizeReason(sessionId)}`, asked);
+      questionOrRefuse(() => {
+        const asked = askedQuestion('pup session ask', question, opts);
+        markSessionQuestion(db, sessionId, asked);
+        return askedLines(`Session ${sanitizeReason(sessionId)}`, asked);
+      });
     });
   session
     .command('test [args...]')

@@ -782,11 +782,14 @@ export function markSessionQuestion(
   appendEvent(db, sessionId, 'question', question);
 }
 
-/** An answer refused before anything was typed: nothing reached the asker. */
-export class AnswerRefusedError extends Error {
+/**
+ * A question or an answer refused (decision 93): nothing was stored, or nothing
+ * the asker reads as an answer reached it.
+ */
+export class QuestionRefusedError extends Error {
   constructor(message: string) {
     super(message);
-    this.name = 'AnswerRefusedError';
+    this.name = 'QuestionRefusedError';
   }
 }
 
@@ -800,12 +803,12 @@ function resolveAnswer(asked: QuestionEvent, reply: string): EventPayloads['answ
   const question = sanitizeReason(asked.text ?? '');
   const words = reply.trim();
   if (words === '')
-    throw new AnswerRefusedError('Nothing to answer with: give an option number or words.');
+    throw new QuestionRefusedError('Nothing to answer with: give an option number or words.');
   const count = asked.options.length;
   if (count === 0 || !/^\d+$/.test(words)) return { question, text: sanitizeReason(words) };
   const option = Number(words);
   if (option < 1 || option > count) {
-    throw new AnswerRefusedError(
+    throw new QuestionRefusedError(
       `The question offers ${count} option${count === 1 ? '' : 's'}; answer 1 to ${count}, ` +
         'or in words. Nothing was sent.',
     );
@@ -832,7 +835,7 @@ export function answerSessionQuestion(
   requireLiveSession(db, sessionId, 'answer');
   const asked = openQuestion(db, sessionId);
   if (!asked) {
-    throw new AnswerRefusedError(
+    throw new QuestionRefusedError(
       `Session ${sanitizeReason(sessionId)} has no open question; \`pup steer\` sends it words.`,
     );
   }
@@ -845,23 +848,28 @@ export function answerSessionQuestion(
 /**
  * Answer the running conductor's open question (decision 93) with a `pup
  * conductor tell`, its refusals the same; recorded as an `answer` only when
- * the message landed, so one that did not leaves the question open.
+ * the message landed, and refused when it did not, so the question stays open.
  */
 export function answerConductorQuestion(
   db: Database,
   repoPath: string,
   reply: string,
-): { answer: EventPayloads['answer']; landed: boolean } {
+): EventPayloads['answer'] {
   const asked = isConductorRunning(repoPath) ? openQuestion(db, null) : undefined;
   if (!asked) {
-    throw new AnswerRefusedError(
+    throw new QuestionRefusedError(
       'The conductor has no open question; `pup conductor tell` sends it words.',
     );
   }
   const answer = resolveAnswer(asked, reply);
-  const landed = tellConductor(repoPath, answerMessage(answer));
-  if (landed) appendEvent(db, null, 'answer', answer);
-  return { answer, landed };
+  if (!tellConductor(repoPath, answerMessage(answer))) {
+    throw new QuestionRefusedError(
+      "The answer did not land: the conductor's input box never showed it whole, still holds " +
+        'text after a second Enter, or left the screen; the question stays open. Look with `pup attach`.',
+    );
+  }
+  appendEvent(db, null, 'answer', answer);
+  return answer;
 }
 
 /**
