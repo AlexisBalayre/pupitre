@@ -1,0 +1,167 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-09T08:48:46.013Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42588079011",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42588079011",
+  "actor": "AlexisBalayre",
+  "commit_sha": "9fff0286a0b38d1765c312bf7b2dbe0d703c1a8d",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 286,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "docs",
+    "maintainability",
+    "maintainability"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "docs",
+    "maintainability",
+    "maintainability"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/session-retire.service.ts",
+      "line": "56-58",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The prose is false. ADR 0141 and commit 2a5ae63 both say the inbox does not yet treat `retired` as it treats `landed`. That reader change is follow-up task t-mw6a2pfo, and until it lands the Needs-you line stays.",
+      "body": "The `retireSession` JSDoc says the `retired` event \"drops the session from the inbox\". The code does not do that yet.\n\n- `openPullRequest` in `src/core/dashboard.service.ts` (L741-L756) returns `undefined` only on a `landed` row. It skips every other row type (`if (event.type !== 'merge') continue;`), so a `retired` row is passed over and the newest `merge` is still returned.\n- A retired session stays in state `merged`, and `dashboard.service.ts` L651 calls `openPullRequest` for every `merged` row. So after a retire, the session still shows `PR opened, not landed` in Needs you.\n- Nothing under `src/` (tests aside) reads `retired` except the new writer and its own re-retire check.\n\nADR 0141 (L40-L44) defers this reader change to task t-mw6a2pfo: \"until it lands the line stays\". The PR description's acceptance says the opposite: \"the session no longer appears in Needs you\". A maintainer who trusts this JSDoc will close t-mw6a2pfo as already done, or file a bug when the line persists.\n\nThere are two ways to fix it:\n- Fix the reader in this PR. That means `if (row.type === 'landed' || row.type === 'retired')` in both `openPullRequest` and `prFixRounds`, plus a test that asserts `needsYou` drops a retired session.\n- Or reword the JSDoc (and the acceptance line) to say the event is recorded and t-mw6a2pfo clears the inbox line.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/9fff0286a0b38d1765c312bf7b2dbe0d703c1a8d/src/core/session-retire.service.ts#L51-L62\nhttps://github.com/AlexisBalayre/pupitre/blob/9fff0286a0b38d1765c312bf7b2dbe0d703c1a8d/src/core/dashboard.service.ts#L741-L756",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-teardown.utils.ts",
+      "line": "1-12",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "important",
+      "description": "`docs/conventions/naming.md` line 76 says: \"`utils` | **Pure functions only.** Cannot import `service`, `manager`, `repository`, or `client`. If it needs one of those, it isn't a util.\" The new file imports `./git-diff.client.js` (`runGit`, `rethrowIfKilled`), `./merge-gate.service.js` (`deleteBranchAt`, `isAncestor`, `newestMerge`, `resolveCommit`) and `./session.repository.js` (`getSession`). Its functions also run git and read the database, so they are not pure. The next maintainer will either break the util contract or have to move the file.",
+      "body": "`docs/conventions/naming.md` L76 says:\n\n> `utils` | **Pure functions only.** Cannot import `service`, `manager`, `repository`, or `client`. If it needs one of those, it isn't a util.\n\nThis new file imports all three forbidden roles:\n\n- `./git-diff.client.js`: `runGit`, `rethrowIfKilled`\n- `./merge-gate.service.js`: `deleteBranchAt`, `isAncestor`, `newestMerge`, `resolveCommit`\n- `./session.repository.js`: `getSession`\n\nIts helpers also take a `Database` and run git (`worktree prune`, `worktree list`, `update-ref -d`), so they do I/O and are not pure. No ADR amends the rule. The file-naming hook only checks the suffix, so it won't catch this.\n\nPulling the teardown out of `land.service.ts` was the right call. But a module that does git and store I/O is a service. Rename it to `session-teardown.service.ts` and update the three importers: `land.service.ts`, `session-retire.service.ts` and `session-retire.test.ts`.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/9fff0286a0b38d1765c312bf7b2dbe0d703c1a8d/src/core/session-teardown.utils.ts#L1-L12",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-retire.service.ts",
+      "line": "42-49",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "important",
+      "description": "`RetireOutcome` is an exported interface declared in a `*.service.ts` and imported by `src/cli/index.ts`, against `docs/conventions/general.md` §Type separation (exported types live in `src/core/types/*.types.ts`).",
+      "body": "`docs/conventions/general.md` L75-L77 says:\n\n> Exported types live in `*.types.ts` under the area's `types/` folder — `src/core/types/`, `src/adapters/types/`. **Never inline an exported or reused `type`/`interface` in a `*.service.ts` or `*.routes.ts` file**\n\nL35-L36 says the same under \"No inline types\".\n\n`export interface RetireOutcome` is declared at L43-L49 of this service, and `src/cli/index.ts:136` imports it: `import { type RetireOutcome, retireSession } from '../core/session-retire.service.js';`. The sibling `land.service.ts` follows the rule: it imports `LandOutcome` from `./types/land.types.js`.\n\nMove `RetireOutcome` to `src/core/types/session-retire.types.ts` and import it from there in the service and in `index.ts`.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/9fff0286a0b38d1765c312bf7b2dbe0d703c1a8d/src/core/session-retire.service.ts#L42-L49",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-retire.service.ts",
+      "line": "31, 134-142",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Only the private `newestStanding` treats `retired` as ending a session's PR. The shared `newestMerge` reader (`merge-gate.service.ts`) still stops only at `landed`, so `pup land`, `pup fix` and `pup ci wait` on a retired session still see its merge as standing, and the follow-up inbox task has to chase every `newestMerge` caller instead of making one change.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-retire.test.ts",
+      "line": "37-64",
+      "area": "maintainability",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`GIT_ENV`, `sh`, `commitIn`, `SESSION_ID`, `BRANCH`, `ORIGIN_URL` and `PR_URL` are copied from `src/test/helpers/land.mock.ts` and `git.mock.ts` instead of imported. A later fix to the git env isolation would then reach the land suites but miss this one.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/types/session-event.types.ts",
+      "line": null,
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `retired` payload doc says the worktree and branch were removed, but the branch is kept when it holds commits past the pinned sha. Suggested wording: \"removed the session's worktree and, unless it held commits past the pinned sha, its branch\".",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-retire.test.ts",
+      "line": "503-639",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The only unit tests for `session-teardown.utils.ts` sit inside the retire suite, even though `pup land` now depends on those helpers too. Someone changing them for land will look for `session-teardown.test.ts` and not find these tests. Move the `describe('session teardown helpers')` block into its own file.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-teardown.utils.ts",
+      "line": "23-28",
+      "area": "maintainability",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`pinnedPullRequest` takes a bare `untouched` string, while `assertStillMerged` and `assertUnlockedWorktree` in the same module take the whole `OriginUse`. Both callers already hold an `OriginUse`, and retire keeps a separate `UNTOUCHED` constant in sync with `RETIRE_USE`. Fix: take `use: OriginUse` in `pinnedPullRequest` as well.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 3,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 3.659689775000001,
+  "duration_ms": 243152,
+  "num_turns": 19,
+  "tokens": {
+    "input": 14,
+    "output": 18366,
+    "cache_read": 343395,
+    "cache_creation": 57578,
+    "total": 419353
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 160,
+      "output": 61290,
+      "cache_read": 2273574,
+      "cache_creation": 283884,
+      "cost_usd": 3.2733087999999997
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 54,
+      "output": 11342,
+      "cache_read": 396994,
+      "cache_creation": 92953,
+      "cost_usd": 0.38560989999999995
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 281,
+      "cache_read": 0,
+      "cache_creation": 5043,
+      "cost_usd": 0.000771075
+    }
+  ],
+  "permission_denials": []
+}
