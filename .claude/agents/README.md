@@ -29,7 +29,10 @@ is spawned (relevance-gated, model-tiered) by the [`pr-ci-review` skill](../skil
 | `review-conventions` | Audits changed files against `docs/conventions/*`, accepted ADRs, and `CLAUDE.md`, quoting the exact rule violated. | Sonnet · Read/Glob/Grep/Bash |
 | `review-correctness` | Logic/behavior defects deterministic tooling can't catch, including silent regressions on the surface tests don't cover. | Opus · Read/Glob/Grep/Bash |
 | `review-docs` | Accuracy and usefulness of prose a change introduces; strict on noise comments and stale docs. | Sonnet · Read/Glob/Grep/Bash |
-| `review-maintainability` | Structural regressions — wrong layer, duplication, needless indirection — each with a citable mechanism. | Sonnet · Read/Glob/Grep/Bash |
+| `review-maintainability` | Structural regressions — wrong layer, duplication, needless indirection — each with a citable mechanism. Deep reviews only. | Sonnet · Read/Glob/Grep/Bash |
+| `review-simplicity` | Structure the diff adds beyond what the change needs (one-caller helpers, unreachable branches), each naming the simpler alternative. Default roster, replacing maintainability. | Sonnet · Read/Glob/Grep/Bash |
+| `review-guards` | Changed files that would trip an architectural guard test or ADR invariant, citing the guard. | Sonnet · Read/Glob/Grep/Bash |
+| `review-workflow-safety` | Trigger, token and expression-injection risks in changed GitHub Actions workflows. Spawned only when `.github/workflows` changes. | Sonnet · Read/Glob/Grep/Bash |
 | `review-security` | Real, reachable security issues at trust boundaries, cross-referenced against the threat model. | Opus · Read/Glob/Grep/Bash |
 | `review-spec` | Holds the change against the issue or spec it implements: requirements missing, partial, or built wrong, and scope creep. Spawned only when the change links a spec. | Sonnet · Read/Glob/Grep/Bash |
 | `review-validator` | Adversarial gate: tries to refute each finding against the actual code before it is posted or auto-fixed. | Opus · Read/Glob/Grep/Bash |
