@@ -32,15 +32,16 @@
     worker is now told again whenever the gates it waits for, holding or queued, change to others,
     so one that began waiting on two sessions learns when a gate is what keeps it.
     The commit-time suite does not go through the slots. A worker's `git commit` runs the
-    `pre-commit` hook installed from `scripts/pre-commit`, which runs `TEST_CMD` from the main
-    checkout's `.claude/project.env`, `pnpm test`, the full Vitest suite, with `bash -c`. The
-    session's test guard reads only the Bash tool's command, `git commit ...`, so it neither
-    refuses nor queues that run: every worker commit runs the full suite unqueued, beside the
-    gate's, and adds to the load measured above. It is not routed here: the hook lives in
+    `pre-commit` hook installed from `scripts/pre-commit`, which since decision
+    [135](0135-the-pre-commit-hook-runs-only-the-tests-related-to.md) runs only
+    `pnpm exec vitest related --run` on the staged source files, never the full suite; the main
+    checkout's `TEST_CMD` only turns it on or off, and a commit with no staged source runs no
+    tests. The session's test guard reads only the Bash tool's command, `git commit ...`, so it
+    neither refuses nor queues that run: a worker commit's related tests run unqueued, beside the
+    gate's suite, a smaller load than a slot's run. It is not routed here: the hook lives in
     `scripts/pre-commit`, outside this change, is installed per clone by copying, and runs for
-    human commits where no pup session or slot exists. Routing it, or narrowing a session's
-    commit-time suite to what the gate does not already run, is a follow-up; until then this rule
-    protects the gate from `pup session test` runs only.
+    human commits where no pup session or slot exists. So this rule protects the gate from
+    `pup session test` runs only.
     Ceilings: a gate's slot now keeps every worker's test run waiting, not one of two, so a gate
     run that hangs, or a live process holding a slot forged as a gate's, fails every session's
     `pup session test` after its 8-minute wait until it ends; a gate's run is bounded by its
