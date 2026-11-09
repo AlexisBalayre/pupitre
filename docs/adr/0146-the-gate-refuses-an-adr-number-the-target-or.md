@@ -29,10 +29,12 @@
     can still land: a state that holds its scope (queued, running, awaiting review, rejected,
     blocked; decision 41) or `merged` with an open PR that has not landed (decision 84). A live
     session is read at its branch. A merged one is read at the sha its newest merge event
-    pinned: a passing gate deletes the session's local branch in both modes, and only the
-    operator's `pup fix` restores it. The sha is read rather than the remote-tracking ref the
-    push wrote, because pup recorded the sha and any session can move that ref. A re-gate records a new merge event, so the newest one is the PR's current
-    head. A merge event with no sha, one whose sha is not a full commit sha (`COMMIT_SHA`:
+    pinned. A passing gate normally deletes the session's local branch, in both modes, and
+    only the operator's `pup fix` restores it. It keeps the branch with a worktree it could not
+    remove, or when the branch moved past the gated sha, and such a branch may then hold
+    commits the PR does not. The sha is read rather than the branch or the remote-tracking ref
+    the push wrote, because pup recorded the sha and any session can move either ref. A
+    re-gate records a new merge event, so the newest one is the PR's current head. A merge event with no sha, one whose sha is not a full commit sha (`COMMIT_SHA`:
     anchored, exactly 40 lowercase hex digits or 64), or one whose commit the repo lacks fails
     the stage closed, under its own heading. Nothing else in the repo holds what that PR adds,
     so passing would let a clash through unseen. The line names the branch and the PR, whose url
@@ -103,7 +105,7 @@
     narrows the race to the window between two commits rather than closing it. A branch merged
     with no PR leaves the store's countable states with its number on the target, where the next
     gate finds it. An open PR's gated commit is kept reachable only by the remote-tracking ref
-    the gate's push writes, `refs/remotes/origin/<branch>`, once it has deleted the local branch
+    the gate's push writes, `refs/remotes/origin/<branch>`, once it has (normally) deleted the local branch
     and the worktree with its reflog. That ref is not pup's alone. A `git fetch --prune` after
     the remote branch is deleted removes it, any session sharing the `.git` can move it, and
     `git gc` may then prune the commit once it is older than the prune window. Pinning the

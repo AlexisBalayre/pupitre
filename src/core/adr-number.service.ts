@@ -181,10 +181,12 @@ interface Competitor {
 /**
  * The other sessions whose branch can still land: one holding its scope
  * (decision 41's live states), read at its branch, or a merged one whose PR is
- * open, not landed, read at the sha its newest merge pinned. That gate deleted
- * the local branch in both modes, and only the operator's `pup fix` brings it
- * back; the sha is pup's record of the PR's head, where the remote-tracking ref
- * the push wrote is one any session can move (decision 84).
+ * open, not landed, read at the sha its newest merge pinned. That gate normally
+ * deleted the local branch, in both modes; it keeps it with a worktree it could
+ * not remove or when the branch moved past the pin, and then the branch may
+ * hold commits the PR does not. Either way the sha is pup's record of the PR's
+ * head, where the remote-tracking ref the push wrote is one any session can
+ * move (decision 84).
  */
 function competingBranches(db: Database, sessionId: string): Competitor[] {
   const holding = holdingStates();
@@ -226,7 +228,8 @@ const pad = (number: number): string => String(number).padStart(4, '0');
  * measures the branch. It fails on each decision the branch at `sha` adds whose
  * number the target at `targetSha` holds, that the branch adds twice, or that
  * another session branch adds while its session is live or holds an open PR
- * (that one read at the sha its gate pinned, since the gate deleted the branch),
+ * (that one read at the sha its gate pinned, since the gate normally deleted
+ * the branch),
  * each line naming the lowest free number above the target's highest. A file
  * git pairs as a rename of a target decision under the same number is that
  * decision under a new slug, not a new one: it is checked against the other
