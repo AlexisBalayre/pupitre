@@ -276,13 +276,18 @@ function reviewDigest(
   }
   if (status?.state === 'SUCCESS' && isOnHead) {
     const important = Number(/(\d+) important finding/.exec(status.description)?.[1] ?? 0);
+    // A thread a fix round answered and left open is the operator's, not a round's.
+    const answered = review.openThreads.filter((thread) => thread.isAnswered).length;
     const next =
-      threads > 0
+      threads > answered
         ? `pup fix ${id}`
-        : status.description === CLEAN_REVIEW_STATUS
-          ? "ready for the operator's merge click"
-          : 'read the PR: its findings are in the review body, or the review was partial ' +
-            "(the operator's call)";
+        : answered > 0
+          ? `answer the ${answered} thread(s) a fix round left open: resolve each, or reply ` +
+            "for the next round to take it again (the operator's call)"
+          : status.description === CLEAN_REVIEW_STATUS
+            ? "ready for the operator's merge click"
+            : 'read the PR: its findings are in the review body, or the review was partial ' +
+              "(the operator's call)";
     return line(said, threads, important, next);
   }
   return {

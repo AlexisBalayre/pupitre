@@ -170,7 +170,7 @@ describe('startFixRound', { timeout: 90_000 }, () => {
         '  case "$*" in',
         // One line per mutation, so a test counts the replies and resolves.
         `    *mutation*) printf '%s' "$*" | tr '\\n' ' ' >> ${ghDir}/mutations; printf '\\n' >> ${ghDir}/mutations; echo '{"data":{}}'; exit 0;;`,
-        `    *viewerDidAuthor*) [ -f ${ghDir}/answers-fail ] && exit 1; [ -f ${ghDir}/answers-slow ] && exec sleep 5; cat ${ghDir}/answers.json 2>/dev/null || echo '{}'; exit 0;;`,
+        `    *replies:*) [ -f ${ghDir}/answers-fail ] && exit 1; [ -f ${ghDir}/answers-slow ] && exec sleep 5; cat ${ghDir}/answers.json 2>/dev/null || echo '{}'; exit 0;;`,
         '  esac',
         `  cat ${ghDir}/review.json; exit 0`,
         'fi',
@@ -213,7 +213,8 @@ describe('startFixRound', { timeout: 90_000 }, () => {
       state: string;
       description: string;
     } | null,
-    threads = [] as (ThreadSeed & { isOutdated?: boolean })[],
+    /** `isAnswered`: its last comment is a fix round's own marked reply. */
+    threads = [] as (ThreadSeed & { isOutdated?: boolean; isAnswered?: boolean })[],
     /** Threads older than the page read. */
     unread = 0,
   } = {}): void {
@@ -262,6 +263,16 @@ describe('startFixRound', { timeout: 90_000 }, () => {
                       editor: thread.editor ?? null,
                       isMinimized: thread.isMinimized ?? false,
                     },
+                  ],
+                },
+                lastComment: {
+                  nodes: [
+                    thread.isAnswered
+                      ? {
+                          body: `Declined.\n\n<!-- pup fix-round ${OTHER_SHA} -->`,
+                          viewerDidAuthor: true,
+                        }
+                      : { body: thread.body, viewerDidAuthor: false },
                   ],
                 },
               })),
@@ -495,7 +506,8 @@ describe('startFixRound', { timeout: 90_000 }, () => {
   });
 
   // On #284, a run's clean status hid a thread an earlier run left open on the
-  // same head: every unresolved, non-outdated thread is handed to the round.
+  // same head: every unresolved, non-outdated thread is handed to the round,
+  // but one an earlier round answered and left open is the operator's.
   it('hands a thread left open on the head to a round even under a clean status', async () => {
     await gateWithPr();
     recordSessionRoute(db, SESSION_ID, routeAt(0));
@@ -504,6 +516,7 @@ describe('startFixRound', { timeout: 90_000 }, () => {
       threads: [
         { id: 'PRRT_left', body: 'Still open from an earlier run.' },
         { id: 'PRRT_moved', body: 'A line a later push changed.', isOutdated: true },
+        { id: 'PRRT_declined', body: 'A round declined it.', isAnswered: true },
       ],
     });
 
@@ -513,6 +526,7 @@ describe('startFixRound', { timeout: 90_000 }, () => {
     ]);
     expect(prompt()).toContain('### Thread 1 of 1: PRRT_left, at src/feature.ts:1');
     expect(prompt()).not.toContain('PRRT_moved');
+    expect(prompt()).not.toContain('PRRT_declined');
   });
 
   it.each<[string, Parameters<typeof reviewOnGitHub>[0], RegExp]>([
@@ -611,6 +625,14 @@ describe('startFixRound', { timeout: 90_000 }, () => {
         ],
       },
       /opened no thread on .*set its status to FAILURE \(the review could not be posted\), not a clean review/,
+    ],
+    [
+      'only threads a fix round answered and left open',
+      {
+        status: { state: 'SUCCESS', description: 'no blocking issues' },
+        threads: [{ id: 'PRRT_declined', body: 'A false positive.', isAnswered: true }],
+      },
+      /The CI review's 1 open thread\(s\) on .* were each answered by a fix round and left open for the operator: resolve one once its answer holds, or reply on it to have the next round take it again\. No fix round was started\./,
     ],
     [
       'no open thread and findings with no line to anchor to',

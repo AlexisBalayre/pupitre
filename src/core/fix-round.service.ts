@@ -20,6 +20,7 @@ import {
 import {
   assertGhAvailable,
   commentOnPullRequest,
+  fixRoundMarker,
   isCutOffByNode,
   originRepoSlug,
   type PullRequestReview,
@@ -183,7 +184,8 @@ interface StoredPullRequest {
  * must have opened a PR of origin's recorded repo with no landing after it,
  * and GitHub must report that PR OPEN with its head at the pinned sha, the
  * review bot's newest review and final status on that head, and a thread of
- * the bot's still unresolved and not outdated (decision 163). Then the profile is compiled afresh, the
+ * the bot's still unresolved, not outdated, and not one an earlier round
+ * answered and left open (decision 163). Then the profile is compiled afresh, the
  * worktree comes back on its branch at that head, one transaction records the
  * round and takes the edge out of `merged`, and a fresh window is kicked off
  * with the task's context and the threads, framed as reviewer data. A kickoff
@@ -326,7 +328,7 @@ export function answerFixRoundThreads(
   const changed = withinBudget((timeoutMs) =>
     filesTheRoundChanged(repoPath, head, sha, targetSha, timeoutMs),
   );
-  const marker = `<!-- pup fix-round ${sha} -->`;
+  const marker = fixRoundMarker(sha);
   const workerAnswers = threadAnswers(summaries, threadIds);
   const answers: ThreadAnswers = {
     prUrl,
@@ -588,7 +590,9 @@ function orNotStarted<T>(run: () => T): T {
  * and the review bot's newest review must be on that head. The threads are
  * every unresolved one of the bot's that no push outdated, whichever run
  * opened it, so they are about the code the worker will be handed: a newer
- * run's clean status does not close an earlier one's (decision 163). They are
+ * run's clean status does not close an earlier one's (decision 163). One whose
+ * last comment is a fix round's own reply is left to the operator, not relayed
+ * again, and with only those left there is no round to run. They are
  * relayed only under the bot's SUCCESS status on the head, the one the poster
  * sets on every run it posted, findings or not. A finding
  * someone else edited, or one hidden on GitHub, is refused, not relayed. With
@@ -650,7 +654,10 @@ function reviewVerdict(
             wait,
     };
   }
-  const threads = review.openThreads;
+  // A thread a round already answered and left open is the operator's: relaying
+  // it again would hand the worker a finding it declined, as a new round.
+  const threads = review.openThreads.filter((thread) => !thread.isAnswered);
+  const answered = review.openThreads.length - threads.length;
   const untrusted = threads.find((thread) => thread.isEditedByOther || thread.isMinimized);
   if (untrusted !== undefined) {
     return {
@@ -672,6 +679,14 @@ function reviewVerdict(
       };
     }
     return { head, threads };
+  }
+  if (answered > 0) {
+    return {
+      refusal:
+        `The CI review's ${answered} open thread(s) on ${prUrl} were each answered by a fix ` +
+        'round and left open for the operator: resolve one once its answer holds, or reply on ' +
+        'it to have the next round take it again.',
+    };
   }
   if (status?.state === 'SUCCESS' && status.description === CLEAN_REVIEW_STATUS) {
     return { head, threads };

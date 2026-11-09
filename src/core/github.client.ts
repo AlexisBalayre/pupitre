@@ -307,6 +307,7 @@ const PULL_REQUEST_REVIEW_QUERY = `query($owner: String!, $name: String!, $numbe
               editor { __typename login }
             }
           }
+          lastComment: comments(last: 1) { nodes { body viewerDidAuthor } }
         }
       }
       comments(last: ${REVIEW_PAGE}) {
@@ -338,6 +339,19 @@ export interface ReviewThread {
    * shape never reads as shown.
    */
   isMinimized: boolean;
+  /**
+   * A fix round already replied on it and left it open for the operator, and
+   * nobody commented since: its last comment is pup's own reply, marked.
+   */
+  isAnswered: boolean;
+}
+
+/** What every reply and comment a fix round posts ends on, before the round's sha. */
+const FIX_ROUND_MARKER = '<!-- pup fix-round';
+
+/** The marker a fix round gated at `sha` ends its posts on, so a re-run finds them. */
+export function fixRoundMarker(sha: string): string {
+  return `${FIX_ROUND_MARKER} ${sha} -->`;
 }
 
 export interface PullRequestReview {
@@ -355,7 +369,7 @@ export interface PullRequestReview {
   isRereviewAsked: boolean;
   /**
    * Every unresolved, non-outdated thread the bot opened, whichever of its runs
-   * opened it, in GitHub's order.
+   * opened it, in GitHub's order, those a fix round answered included.
    */
   openThreads: ReviewThread[];
 }
@@ -421,6 +435,7 @@ export function readPullRequestReview(
       const isEdited = [finding.lastEditedAt, finding.editor].some(
         (field) => field !== undefined && field !== null,
       );
+      const [last] = nodesOf(thread.lastComment);
       return [
         {
           id: thread.id,
@@ -429,6 +444,10 @@ export function readPullRequestReview(
           body: typeof finding.body === 'string' ? finding.body : '',
           isEditedByOther: isEdited && !isReviewBot(finding.editor),
           isMinimized: finding.isMinimized !== false,
+          isAnswered:
+            last?.viewerDidAuthor === true &&
+            typeof last.body === 'string' &&
+            last.body.includes(`${FIX_ROUND_MARKER} `),
         },
       ];
     }),

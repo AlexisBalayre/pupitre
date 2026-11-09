@@ -171,7 +171,7 @@ describe('startFixRound', { timeout: 90_000 }, () => {
         '  case "$*" in',
         // One line per mutation, so a test counts the replies and resolves.
         `    *mutation*) printf '%s' "$*" | tr '\\n' ' ' >> ${ghDir}/mutations; printf '\\n' >> ${ghDir}/mutations; echo '{"data":{}}'; exit 0;;`,
-        `    *viewerDidAuthor*) [ -f ${ghDir}/answers-fail ] && exit 1; [ -f ${ghDir}/answers-slow ] && exec sleep 5; cat ${ghDir}/answers.json 2>/dev/null || echo '{}'; exit 0;;`,
+        `    *replies:*) [ -f ${ghDir}/answers-fail ] && exit 1; [ -f ${ghDir}/answers-slow ] && exec sleep 5; cat ${ghDir}/answers.json 2>/dev/null || echo '{}'; exit 0;;`,
         '  esac',
         `  cat ${ghDir}/review.json; exit 0`,
         'fi',

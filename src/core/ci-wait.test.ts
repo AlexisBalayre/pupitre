@@ -68,6 +68,8 @@ interface ReviewSeed {
   threads?: number;
   /** Unresolved threads of the bot's that a later push outdated. */
   outdated?: number;
+  /** How many of the open `threads` end on a fix round's own marked reply. */
+  answered?: number;
   /** The PR's comments, each `{ body, createdAt, authorAssociation }`. */
   comments?: unknown[];
 }
@@ -81,6 +83,7 @@ function reviewAnswer({
   statusAt = '2026-10-26T10:00:00Z',
   threads = 0,
   outdated = 0,
+  answered = 0,
   comments = [],
 }: ReviewSeed = {}): unknown {
   return {
@@ -122,6 +125,16 @@ function reviewAnswer({
                     body: 'finding',
                     isMinimized: false,
                   },
+                ],
+              },
+              lastComment: {
+                nodes: [
+                  index < answered
+                    ? {
+                        body: `Declined.\n\n<!-- pup fix-round ${OLDER} -->`,
+                        viewerDidAuthor: true,
+                      }
+                    : { body: 'finding', viewerDidAuthor: false },
                 ],
               },
             })),
@@ -249,6 +262,30 @@ describe('waitForCiReview', { timeout: 20_000 }, () => {
       finished: true,
       line:
         `${PR_URL} at ${HEAD}: review no blocking issues; 1 open thread(s), 0 important → ` +
+        `pup fix ${SESSION_ID}`,
+    });
+  });
+
+  // A thread a fix round declined stays open for the operator: it keeps the PR
+  // from reading ready, but a new round would only relay it again.
+  it('names the operator, not pup fix, when every open thread is one a fix round answered', async () => {
+    githubAnswers({ threads: 1, answered: 1 });
+
+    expect(await wait()).toEqual({
+      finished: true,
+      line:
+        `${PR_URL} at ${HEAD}: review no blocking issues; 1 open thread(s), 0 important → ` +
+        'answer the 1 thread(s) a fix round left open: resolve each, or reply for the next ' +
+        "round to take it again (the operator's call)",
+    });
+
+    // The read stands on its last answer, so this one replaces it.
+    githubAnswers({ threads: 2, answered: 1 });
+
+    expect(await wait()).toEqual({
+      finished: true,
+      line:
+        `${PR_URL} at ${HEAD}: review no blocking issues; 2 open thread(s), 0 important → ` +
         `pup fix ${SESSION_ID}`,
     });
   });

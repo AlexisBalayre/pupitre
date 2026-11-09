@@ -22,6 +22,19 @@
     status, `pup fix` hands every one of them to the round, and that includes the clean
     `no blocking issues`. The edited-or-hidden refusal now covers all of them, not only the
     newest run's.
+    *A thread a round answered.* A fix round replies on every thread it relays, but resolves
+    only the ones it addressed. A declined, unanswered or unverified thread stays open for the
+    operator, and the round's push usually leaves its line alone, so it is not outdated either.
+    Relaying it again would hand the worker a finding it already declined, with no sign that it
+    did, and would count as a `repeat-fix-round`. Each thread therefore carries `isAnswered`,
+    read from `lastComment: comments(last: 1)`: its last comment is pup's own
+    (`viewerDidAuthor`) and carries the `<!-- pup fix-round ` marker that `fixRoundMarker`
+    builds. Such a thread still counts as open, so the PR does not read ready. `pup ci wait`
+    names the operator, not `pup fix`, when the answered ones are all that remain. `pup fix`
+    relays only unanswered threads and refuses when nothing else is left. Any comment after
+    pup's reply, whether the operator's or the bot's, makes the thread live again, and the next
+    round takes it. The answer is read from GitHub, not from the `fix_round` events, so the
+    reply itself is what marks it.
     *What is gone.* The newest-run grouping goes. That was the bodiless reviews the poster's
     one-finding-at-a-time fallback leaves, matched through each thread's
     `pullRequestReview.id`. The newest bot review's commit is still `reviewedHead`. The
@@ -42,3 +55,7 @@
     refused even when the thread on the page is resolved. In `ci-wait.test.ts`, a clean status
     with one open thread and two outdated ones names `pup fix`. In `fix-round-kickoff.test.ts`,
     a clean status with an open thread and an outdated one starts a round on the open one only.
+    `isAnswered` is read only for a marked last comment of pup's own. When a round's answered
+    threads are all that remain, `ci wait` names the operator and `pup fix` refuses, but an
+    answered thread beside an unanswered one leaves the round to relay only the unanswered
+    one.

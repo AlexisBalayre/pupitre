@@ -191,6 +191,7 @@ describe('readPullRequestReview', () => {
           body: 'finding',
           isEditedByOther: false,
           isMinimized: false,
+          isAnswered: false,
         },
         {
           id: 'PRRT_moved',
@@ -199,6 +200,7 @@ describe('readPullRequestReview', () => {
           body: 'finding',
           isEditedByOther: false,
           isMinimized: false,
+          isAnswered: false,
         },
       ],
     });
@@ -252,6 +254,47 @@ describe('readPullRequestReview', () => {
     });
 
     expect(read().openThreads.map((open) => open.isMinimized)).toEqual([false, true, true]);
+  });
+
+  // A fix round replies on each thread it relays and leaves the ones it does not
+  // resolve open: only its own marked reply, still the last word, answers one.
+  it("tells a thread whose last comment is a fix round's own reply", () => {
+    const MARKED = `Declined: a false positive.\n\n<!-- pup fix-round ${'d'.repeat(40)} -->`;
+    const last = (comment: unknown) => ({ nodes: [comment] });
+    ghAnswers({
+      state: 'OPEN',
+      headRefOid: HEAD,
+      reviews: { nodes: [review()] },
+      reviewThreads: {
+        pageInfo: { hasPreviousPage: false },
+        nodes: [
+          thread({
+            id: 'PRRT_answered',
+            lastComment: last({ body: MARKED, viewerDidAuthor: true }),
+          }),
+          // Someone else quoting the marker answers nothing.
+          thread({
+            id: 'PRRT_quoted',
+            lastComment: last({ body: MARKED, viewerDidAuthor: false }),
+          }),
+          // pup's own hand reply, unmarked, is not a round's.
+          thread({
+            id: 'PRRT_own',
+            lastComment: last({ body: 'Looking.', viewerDidAuthor: true }),
+          }),
+          thread({ id: 'PRRT_unread', lastComment: last({ body: MARKED }) }),
+          thread({ id: 'PRRT_bare' }),
+        ],
+      },
+    });
+
+    expect(read().openThreads.map((open) => open.isAnswered)).toEqual([
+      true,
+      false,
+      false,
+      false,
+      false,
+    ]);
   });
 
   it('reads no status set by another creator, or on a commit that is not the head', () => {
