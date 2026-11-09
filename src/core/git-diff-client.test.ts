@@ -1360,6 +1360,39 @@ describe('the branch diff under a shared-config core.worktree and diff.relative'
       deleted: 0,
     });
   });
+
+  // `--no-relative` on every gate diff would hide a dropped pin, so the pin is
+  // read on its own: a diff runGit runs without the flag.
+  it('lists every changed path with no --no-relative, by the diff.relative=false pin', () => {
+    const repo = armedBranch();
+
+    expect(runGit(repo, ['diff', '--name-only', 'main...feature'])).toBe('new.ts\nsrc/a.ts\n');
+  });
+
+  // Decision 161 refuses the key because no pin reaches it: were one to, the
+  // refusal could give way to it.
+  it('is a key no -c core.worktree moves, empty or aimed at the repo', () => {
+    const repo = armedBranch();
+
+    for (const pin of ['core.worktree=', `core.worktree=${repo}`]) {
+      expect(runGit(repo, ['-c', pin, 'rev-parse', '--show-prefix']).trim()).toBe('repo/');
+    }
+  });
+});
+
+// Under git's default rename detection `--name-only` lists a rename's new path
+// alone: a file moved into scope hid that it left a path outside it.
+it('gitDiffPaths lists both sides of a rename', () => {
+  const repo = nestedRepo();
+  mkdirSync(join(repo, 'notes'));
+  writeFileSync(join(repo, 'notes/secret.ts'), 'export const secret = 1;\n'.repeat(4));
+  commitAll(repo, 'base');
+  sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
+  mkdirSync(join(repo, 'src'));
+  sh(repo, 'git', 'mv', 'notes/secret.ts', 'src/secret.ts');
+  commitAll(repo, 'move');
+
+  expect(gitDiffPaths(repo, 'main', 'feature')).toEqual(['notes/secret.ts', 'src/secret.ts']);
 });
 
 describe('assertNoSharedWorktreeKey', () => {

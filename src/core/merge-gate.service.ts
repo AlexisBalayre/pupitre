@@ -2056,6 +2056,8 @@ async function gateAndMerge(
       ...pullRequestText(spec, session.id, report, commitSubjects, sha, ownSubject),
     };
     try {
+      // After the last stage: a live session can set the key while they run.
+      assertNoSharedWorktreeKey(req.repoPath);
       pushBranch(req.repoPath, pullRequest.originUrl, session.branch, sha, !pullRequest.adoptedUrl);
       if (pullRequest.adoptedUrl) {
         rewritePullRequest(req.repoPath, pullRequest.adoptedUrl, newPr);
@@ -2077,6 +2079,10 @@ async function gateAndMerge(
       // session alive during the stages can re-arm `info/attributes`, and the
       // checkout runs a smudge filter on every file it writes (decision 80).
       // Both stay last, after the ledger write, because they guard the checkout.
+      // So does a shared-config `core.worktree` a session set during the stages:
+      // `fastForward` pins `--work-tree`, but a run the key shifted is refused,
+      // not merged (decision 161). It goes first: an empty key stops every git.
+      assertNoSharedWorktreeKey(req.repoPath);
       const checkedOut = currentBranch(req.repoPath);
       if (checkedOut !== target) {
         throw new Error(

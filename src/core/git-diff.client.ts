@@ -609,12 +609,16 @@ export function currentBranch(cwd: string): string {
  * Repo-relative paths changed on the branch (merge-base diff). NUL-delimited
  * (`-z`) so git never C-quotes non-ASCII names — the scope audit must see the
  * exact byte paths, or a quoted `.claude/…` path would slip past the
- * protected-glob backstop.
+ * protected-glob backstop. `--no-renames`, so a rename lists its deleted
+ * source as well as its new path: under git's default rename detection a file
+ * moved from outside scope-in into it showed only the new path, and the scope
+ * audit passed the deletion it never saw (decision 161).
  */
 export function gitDiffPaths(repoPath: string, target: string, branch: string): string[] {
   return runGit(repoPath, [
     'diff',
     ...DIFF_SAFE_FLAGS,
+    '--no-renames',
     '-z',
     '--name-only',
     `${target}...${branch}`,

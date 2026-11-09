@@ -1,5 +1,5 @@
-import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
+import { execFileSync, spawn } from 'node:child_process';
+import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { Database } from 'better-sqlite3';
@@ -16,10 +16,15 @@ vi.mock('../claude/utility.service.js', () => ({
   runUtility: vi.fn(() => ({ ok: false, output: 'mocked out in tests' })),
 }));
 
-// The real spawn every gate stage runs through, so a test can count them.
+// The real spawn every gate stage runs through, so a test can count them, and
+// the real execFileSync every git call runs through, so one can read its argv.
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>();
-  return { ...actual, spawn: vi.fn(actual.spawn) };
+  return {
+    ...actual,
+    execFileSync: vi.fn(actual.execFileSync),
+    spawn: vi.fn(actual.spawn),
+  };
 });
 
 // Set by the tests of a session racing the gate: it clears the key right
@@ -41,6 +46,7 @@ vi.mock('./git-diff.client.js', async (importOriginal) => {
 
 import type { Adapter, CapabilityContext } from '../adapters/types/adapter.types.js';
 import {
+  BRANCH,
   commitIn,
   debtAdapter,
   passingAdapter,
@@ -57,7 +63,7 @@ import { DUPLICATION_RULE_ID } from './merge-gate.constants.js';
 import { runMergeGate } from './merge-gate.service.js';
 import { projectId } from './paths.utils.js';
 import { TOOLCHAIN_CACHE_DIRNAME } from './sandbox.utils.js';
-import { getSession, saveProjectBaseline } from './session.repository.js';
+import { getSession, saveProjectBaseline, saveProjectOriginUrl } from './session.repository.js';
 import { HELD_SLOT_ENV } from './test-slot.service.js';
 import type { DebtBaseline } from './types/init.types.js';
 
@@ -338,5 +344,114 @@ describe('the merge gate under a shared-config core.worktree and diff.relative',
     const outcome = await merge(adapter);
 
     expect(stage(outcome, 'coverage')?.detail).toContain('50%');
+  });
+
+  /** A stage that sets the key while it runs, after every check before the stages. */
+  const armingAdapter = (): Adapter =>
+    debtAdapter({
+      deadCode: () => {
+        arm();
+        return [];
+      },
+    });
+
+  it('refuses the fast-forward when a stage set the key, merging nothing', async () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+    seedDebtBaseline({ deadExports: [], duplicatedLines: 0 });
+    const mainTip = sh(repo, 'git', 'rev-parse', 'main');
+
+    await expect(merge(armingAdapter())).rejects.toThrow(SharedWorktreeKeyError);
+
+    expect(sh(repo, 'git', 'rev-parse', 'main')).toBe(mainTip);
+    expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+  });
+
+  it('refuses the PR push when a stage set the key, pushing nothing', async () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+    seedDebtBaseline({ deadExports: [], duplicatedLines: 0 });
+    // Origin is GitHub-shaped so the --repo pin can be derived, and rewritten
+    // by the operator's global config onto a local bare repo (decision 56).
+    const host = tempDir('pup-origin-');
+    const bare = join(host, 'owner', 'repo.git');
+    mkdirSync(bare, { recursive: true });
+    sh(bare, 'git', 'init', '--bare', '-b', 'main');
+    const originUrl = 'git@github.com:owner/repo.git';
+    sh(repo, 'git', 'remote', 'add', 'origin', originUrl);
+    saveProjectOriginUrl(db, 'proj-1', originUrl);
+    const globalConfig = join(host, 'gitconfig');
+    writeFileSync(globalConfig, `[url "${host}/"]\n\tinsteadOf = git@github.com:\n`);
+    vi.stubEnv('GIT_CONFIG_GLOBAL', globalConfig);
+    // A gh that knows no open PR and answers nothing else.
+    const ghDir = tempDir('pup-gh-');
+    writeFileSync(
+      join(ghDir, 'gh'),
+      [
+        '#!/bin/sh',
+        '[ "$1" = "--version" ] && exit 0',
+        `if [ "$2" = "list" ]; then echo '[]'; exit 0; fi`,
+        'echo "gh $* was not expected" >&2; exit 1',
+      ].join('\n'),
+      { mode: 0o755 },
+    );
+    vi.stubEnv('PATH', `${ghDir}:${process.env.PATH}`);
+
+    await expect(
+      runMergeGate(db, {
+        repoPath: repo,
+        sessionId: SESSION_ID,
+        adapters: [armingAdapter()],
+        openPr: true,
+      }),
+    ).rejects.toThrow(SharedWorktreeKeyError);
+
+    expect(sh(bare, 'git', 'for-each-ref', `refs/heads/${BRANCH}`)).toBe('');
+    expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+  });
+
+  // Under git's default rename detection `--name-only` lists a rename's new
+  // path alone, and the deletion of an out-of-scope file passed the audit.
+  it('audits the out-of-scope source of a file renamed into scope', async () => {
+    commitIn(repo, 'notes/secret.ts', 'export const secret = 1;\n'.repeat(4));
+    const worktree = seedSession(db, repo);
+    mkdirSync(join(worktree, 'src'), { recursive: true });
+    sh(worktree, 'git', 'mv', 'notes/secret.ts', 'src/secret.ts');
+    sh(worktree, 'git', 'commit', '-m', 'move into scope');
+
+    const outcome = await merge();
+
+    expect(stage(outcome, 'scope-audit')).toEqual({
+      stage: 'scope-audit',
+      status: 'fail',
+      detail: 'Out-of-scope changes:\n  notes/secret.ts (outside scope-in)',
+    });
+  });
+
+  // `diff.relative=false` in GIT_SAFE_CONFIG would hide a diff that dropped the
+  // flag, so each gate diff's argv is read: the flag must hold on its own.
+  it('passes --no-relative to every diff the gate runs', async () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/feature.ts', 'export const a = 1;\nexport const b = 2;\n');
+    seedDebtBaseline({ deadExports: [], duplicatedLines: 0, coverageRatio: 0.8 });
+    const adapter = debtAdapter({
+      complexity: () => [],
+      coverableFiles: (_ctx: CapabilityContext, files: string[]) => files,
+      coverage: () => ({
+        files: { 'src/feature.ts': { covered: [1], instrumented: [1, 2] } },
+      }),
+    });
+
+    await merge(adapter);
+
+    const diffs = vi
+      .mocked(execFileSync)
+      .mock.calls.filter(([file, args]) => file === 'git' && (args as string[]).includes('diff'))
+      .map(([, args]) => args as string[]);
+    // The scope audit's listing, the numstat, the raw pairing and a file's hunks.
+    for (const shape of ['--name-only', '--numstat', '--raw', '-U0']) {
+      expect(diffs.some((args) => args.includes(shape))).toBe(true);
+    }
+    expect(diffs.filter((args) => !args.includes('--no-relative'))).toEqual([]);
   });
 });

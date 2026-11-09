@@ -20,20 +20,31 @@
     session can turn it on after its launch was asked. `cutGateCheckout` asks about the key
     again under the lock, right before the stage listings, as it does for the drivers. The key
     is read with `git -C / config --file <repo>/.git/config`, so an empty value cannot stop
-    the read. Any failure other than "no such key" refuses too.
+    the read. Any failure other than "no such key" refuses too. After the last stage the gate
+    asks once more, right before the fast-forward or the PR push, so a key a session set while
+    the stages ran is refused, not merged.
+    *Narrower than before.* `assertNoWorktreeConfig` already ran before the session's own
+    commit check; at `planMerge` it now stops a gate in a main checkout with
+    `extensions.worktreeConfig` on (as `git sparse-checkout` turns on) or whose `.git` is a
+    gitfile (a `--separate-git-dir` checkout or a submodule). The gate refuses both now, where it
+    ran before; the error names the fix.
     *Anchored.* A live session can still set the key after the last check, so each listing a
     stage reads is anchored at the root:
     - `diff.relative=false` in `GIT_SAFE_CONFIG`;
-    - `--no-relative` on every gate diff (`DIFF_SAFE_FLAGS`, `rawDiffEntries`);
+    - `--no-relative` on every gate diff (`DIFF_SAFE_FLAGS`, `rawDiffEntries`), each it and the
+      pin tested without the other;
     - `:(top,literal)` for a file's hunks, where a plain path under `--literal-pathspecs`
       found none, so patch coverage read "no instrumentable changed lines";
     - `:(top,glob,icase)` for the Docusaurus grep, and `:(top)` with `--full-name` for the
       grep of a test file's importers;
     - `--full-tree` on `readBranchTree`'s `ls-tree`.
+    *Renames.* `gitDiffPaths` passes `--no-renames`: under rename detection `--name-only` lists
+    a rename's new path alone, so a file moved from outside scope-in into it passed the audit.
     *`GIT_GRAFT_FILE`* stays `/dev/null/no-grafts`, laid over every `runGit` caller's env
     (decision 89). `/dev/null` itself opens as an empty file, and git prints its graft
     deprecation hint on every call.
-    *Ceiling.* The nested-package `ls-tree` in `src/adapters/git-tree.client.ts` is not
-    anchored yet. It relies on the refusal alone, so a key set after `cutGateCheckout`'s check
-    drops nested packages from the run. The ADR-number stage (decision 146) anchors its own
-    reads.
+    *Open gap.* The nested-package `ls-tree` in `src/adapters/git-tree.client.ts` is not
+    anchored: it lies outside this change's scope. It relies on the refusals alone, so a key set
+    after `cutGateCheckout`'s check and cleared before the pre-merge one drops nested packages
+    from the run; a follow-up passes it `--full-tree`. The ADR-number stage (decision 146)
+    anchors its own reads.
