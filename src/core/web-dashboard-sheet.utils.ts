@@ -17,11 +17,7 @@ export function escapeHtml(text: string): string {
     .replace(/'/g, '&#39;');
 }
 
-/**
- * A store or file-name string on one line with no control character (decision
- * 29) and no direction mark: a U+202E in a path would show the operator a file
- * name other than the one the store holds.
- */
+/** A string on one line with no control character (decision 29) and no direction mark, which could disguise a path. */
 export function oneLine(text: string): string {
   return displayText(sanitizeReason(text));
 }

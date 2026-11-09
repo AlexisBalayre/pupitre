@@ -478,7 +478,7 @@ describe('startWebDashboard', () => {
     });
 
     it('refuses a sheet it does not have, and a sheet without the token', async () => {
-      expect((await get(sheetUrl('decisions'))).status).toBe(404);
+      expect((await get(sheetUrl('releases'))).status).toBe(404);
       expect((await get(`${address().origin}/?sheet=debt`)).status).toBe(403);
     });
 

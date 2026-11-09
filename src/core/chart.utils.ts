@@ -336,11 +336,7 @@ interface Box {
 const transpose = ({ x, y, w, h }: Box): Box => ({ x: y, y: x, w: h, h: w });
 const sumOf = (values: number[]): number => values.reduce((sum, v) => sum + v, 0);
 
-/**
- * Lays a row of cells as a column against the left edge of what is left, and
- * returns what is left after it; a box taller than wide is laid transposed,
- * so the row always runs along the shorter side.
- */
+/** Lays a row of cells along the shorter side of what is left, and returns what is left after it. */
 function layRow<T extends { value: number }>(
   row: T[],
   rest: Box,
@@ -360,11 +356,8 @@ function layRow<T extends { value: number }>(
 }
 
 /**
- * Lays items out as rectangles filling `box`, each with an area in proportion
- * to its value (the squarified treemap: a row grows while that keeps its
- * cells closer to square). Largest first, a tie keeping the given order; a
- * value that is not a finite positive number has no area and no rectangle.
- * The areas sum to the box's.
+ * The squarified treemap: rectangles filling `box`, largest first, each with an area in proportion
+ * to its value, so they sum to the box's; a value not finite and positive gets none.
  */
 export function squarify<T extends { value: number }>(items: T[], box: Box): (Box & { item: T })[] {
   const queue = items.filter((item) => drawable(item.value) > 0).sort((a, b) => b.value - a.value);
@@ -395,18 +388,10 @@ export function squarify<T extends { value: number }>(items: T[], box: Box): (Bo
   return placed;
 }
 
-/** One cell of a treemap: a file, sized by `value`, with one count per tone. */
-interface TreemapLeaf {
-  label: string;
-  value: number;
-  /** In the tones' order. */
-  counts: number[];
-}
-
-/** The cells of one region, outlined and named together: a module. */
+/** The cells of one region, outlined and named together: a module's files, each with a count per tone. */
 export interface TreemapGroup {
   label: string;
-  leaves: TreemapLeaf[];
+  leaves: { label: string; value: number; counts: number[] }[];
 }
 
 /** One way to colour the cells, chosen by a toggle; `CHART_CSS` styles two. */
@@ -448,14 +433,10 @@ function groupCells(
 }
 
 /**
- * A treemap of groups of cells, each cell's area its value's share of the
- * whole, so the cells' areas sum to the plot's. Groups are laid out by their
- * total, then their cells inside them; a group is outlined and, when it has
- * room, named over its cells, so no cell gives up area to a heading. A cell is
- * shaded by its count under the tone the toggle selects: radio inputs ahead of
- * the figure and `CHART_CSS`'s sibling rules, so it switches with the script
- * off. Every cell carries its own `<title>`; the figure line gives each
- * group's total and how many of its cells each tone colours.
+ * A treemap of groups of cells whose areas sum to the plot's. A group is outlined and named over its
+ * cells, so none gives up area to a heading. A cell is shaded by its count under the tone the radio
+ * toggle selects through `CHART_CSS`, so it switches with the script off. Each cell has a `<title>`;
+ * the figure line gives each group's total and how many cells each tone colours.
  */
 export function treemap(
   groups: TreemapGroup[],

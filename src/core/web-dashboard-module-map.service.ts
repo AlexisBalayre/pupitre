@@ -17,18 +17,9 @@ import { decodeEvent, type EventRow } from './session.repository.js';
 import type { SessionEvent } from './types/session-event.types.js';
 import { DAY_MS, oneLine } from './web-dashboard-sheet.utils.js';
 
-/** One file of the checkout's `src/`, with what weighs on it. */
-interface ModuleMapFile {
-  /** Repo-relative, through `oneLine`. */
-  file: string;
-  lines: number;
-  openDebt: number;
-  /** Sessions whose merge in the window touched it. */
-  merges: number;
-}
-
 export interface ModuleMap {
-  files: ModuleMapFile[];
+  /** Each file, repo-relative through `oneLine`, with its open entries and the sessions merged into it. */
+  files: { file: string; lines: number; openDebt: number; merges: number }[];
   /** Files left out: not a plain file, unreadable, or over the size cap. */
   unread: number;
   /** The walk stopped at a cap before reaching every file. */
@@ -89,10 +80,8 @@ function mergesByFile(db: Database, since: number): Map<string, number> {
 }
 
 /**
- * A file's line count, reading at most the `size` its `lstat` gave, opened
- * without following a link and without blocking: a link or a FIFO swapped in
- * since reads as unreadable or empty, never as a file outside the root or a
- * wait. Undefined when it cannot be read.
+ * A file's line count, reading at most the `size` its `lstat` gave, opened without following a
+ * link or blocking: a link or FIFO swapped in since is unreadable (undefined) or empty, never a wait.
  */
 function countLines(path: string, size: number): number | undefined {
   try {
@@ -125,27 +114,16 @@ function listDir(dir: string): string[] {
   }
 }
 
-/** A file's line count as last read, and the stat it was read under. */
-interface CountedFile {
-  stamp: string;
-  lines: number | undefined;
-}
-
 /**
- * Line counts kept between polls, one map per mapped root, replaced by each
- * walk: opening a file costs a hundred times its `lstat`, so only a file
- * whose inode, size, or modification or change time moved is read again.
+ * Each root's line counts as its last walk read them, under the stat they were read at: opening a
+ * file costs a hundred times its `lstat`, so only one whose inode, size or times moved is read again.
  */
-const countedFiles = new Map<string, Map<string, CountedFile>>();
+const countedFiles = new Map<string, Map<string, { stamp: string; lines: number | undefined }>>();
 
 /**
- * The checkout's `src/` (decision 167), walked in path order without
- * following a link, so nothing outside the project root is read: a linked
- * `src/` maps nothing, a linked directory or file under it is skipped, and so
- * are `node_modules` and `.worktrees`. Each file comes with its open debt
- * entries and the sessions merged into it in the last 30 days. The walk stops
- * at `limits.files` files or `limits.bytes` of them, counted by their sizes,
- * so where it stops does not hang on what an earlier poll read.
+ * The checkout's `src/` (decision 167) with each file's open debt and merges in 30 days, walked in
+ * path order following no link, so nothing outside the root is read; `node_modules` and `.worktrees`
+ * are skipped. It stops at `limits.files` files or `limits.bytes` by size, whatever earlier polls read.
  */
 export function readModuleMap(
   db: Database,
@@ -165,7 +143,7 @@ export function readModuleMap(
   const debt = debtByFile(db, repoPath);
   const merges = mergesByFile(db, since);
   const previous = countedFiles.get(root);
-  const counted = new Map<string, CountedFile>();
+  const counted: NonNullable<typeof previous> = new Map();
   let bytes = 0;
   // Counts one plain file, or says why it was not; false once a cap is reached.
   const visit = (path: string, file: string, stat: Stats): boolean => {
@@ -173,7 +151,7 @@ export function readModuleMap(
     if (map.files.length + map.unread >= limits.files || bytes > limits.bytes) return false;
     const stamp = `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
     const known = previous?.get(path);
-    // Never opened over the cap, so one huge file costs nothing.
+    // A file over the cap is never opened.
     const lines =
       stat.size > MAX_FILE_BYTES
         ? undefined

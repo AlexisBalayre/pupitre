@@ -60,9 +60,8 @@ function topModule(files: string[]): string {
 }
 
 /**
- * The Decisions sheet's reading (decision 167): every decision record, newest
- * first like `pup log`, and the module map of the checkout's `src/`. The
- * store is the project's own, so its records are this project's.
+ * The Decisions sheet's reading (decision 167): every decision record, newest first like
+ * `pup log` (the store is the project's own), and the module map of the checkout's `src/`.
  */
 export function readDecisionsSheet(db: Database, repoPath: string, now: number): DecisionsView {
   const records = listDecisionRecords(db).map((row) => {
@@ -85,12 +84,7 @@ export function readDecisionsSheet(db: Database, repoPath: string, now: number):
   return { records, map: readModuleMap(db, repoPath, now) };
 }
 
-/**
- * The Decisions sheet: the decision records as a timeline grouped by module,
- * each with its summary and the alternatives it weighed, and the module map of
- * `src/`, a treemap sized by line count and shaded by open debt or by recent
- * merges, so the fragile areas stand out.
- */
+/** The Decisions sheet: the records' timeline by module, then the module map, where fragile areas stand out. */
 export function renderDecisionsSheet(view: DecisionsView): string {
   return [timelineSection(view.records), mapSection(view.map)].join('\n');
 }
@@ -115,7 +109,13 @@ function timelineSection(records: DecisionSheetRecord[]): string {
       `${plural(records.length, 'decision', 'decisions')} across ${plural(groups.size, 'module', 'modules')}, each under the directory most of its files sit in, newest first.`,
     )}</p>` +
       barChart(ranked, { title: `Decisions by module, top ${TOP_MODULES}`, layout: 'rows' }) +
-      [...groups].map(([module, held]) => moduleTimeline(module, held)).join(''),
+      [...groups]
+        .map(
+          ([module, held]) =>
+            `<h3 class="state-group">${escapeHtml(`${module} — ${held.length}`)}</h3>` +
+            `<ul class="rows">${held.map(decisionRow).join('')}</ul>`,
+        )
+        .join(''),
   );
 }
 
@@ -134,31 +134,14 @@ function decisionRow(record: DecisionSheetRecord): string {
   );
 }
 
-function moduleTimeline(module: string, records: DecisionSheetRecord[]): string {
-  const rows = records.map(decisionRow);
-  return (
-    `<h3 class="state-group">${escapeHtml(`${module} — ${records.length}`)}</h3>` +
-    `<ul class="rows">${rows.join('')}</ul>`
-  );
-}
-
 function mapSection(map: ModuleMap): string {
   const title = `Module map of ${MAP_ROOT}/`;
-  const notes = (
-    [
-      [
-        map.unread > 0,
-        `${plural(map.unread, 'file', 'files')} not read (not a plain file, unreadable, or over 1 MiB).`,
-      ],
-      [
-        map.capped,
-        'The walk stopped at its cap; files after the last one shown by path are left out.',
-      ],
-    ] as const
-  )
-    .filter(([shown]) => shown)
-    .map(([, note]) => hint(note))
-    .join('');
+  const unread = `${plural(map.unread, 'file', 'files')} not read (not a plain file, unreadable, or over 1 MiB).`;
+  const notes =
+    (map.unread > 0 ? hint(unread) : '') +
+    (map.capped
+      ? hint('The walk stopped at its cap; files past the last one shown are left out.')
+      : '');
   const total = map.files.reduce((sum, file) => sum + file.lines, 0);
   if (total === 0) return section(title, hint(`No source under ${MAP_ROOT}/ to map.`) + notes);
   const groups = new Map<string, TreemapGroup>();
