@@ -1,0 +1,91 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-10T10:31:50.340Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42799604572",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42799604572",
+  "actor": "AlexisBalayre",
+  "commit_sha": "fb749c2c21db70c21bc907d35f5e7e2304b815e0",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 302,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context",
+    "maintainability",
+    "spec",
+    "simplicity",
+    "guards",
+    "workflow-safety"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "df187cee9f541d9b4a0d4cedcd75f414d90dd534",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/land-squash.test.ts",
+      "line": "541-579",
+      "description": "Test adequacy: dropping `-c core.commitGraph=false` from `descendsFrom` passes every test, though commit 931ebb7 adds it so a forged commit graph cannot answer the ancestry check.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/land-squash.test.ts",
+      "line": "540-541",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The two added comment sentences (here and ~line 699) restate what `descendsFrom`'s JSDoc (land.service.ts:416-421) and `mergedOnto`'s JSDoc (459-461) already say about the commit graph being off and decision 164. AGENTS.md §Comments says to delete a call-site copy the seam already documents. The new `asked` assertions already show the pin, so dropping the sentences loses nothing and leaves one fewer copy to drift.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.7042380999999999,
+  "duration_ms": 67395,
+  "num_turns": 11,
+  "tokens": {
+    "input": 12,
+    "output": 4142,
+    "cache_read": 247720,
+    "cache_creation": 36398,
+    "total": 288272
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 26,
+      "output": 7069,
+      "cache_read": 303001,
+      "cache_creation": 59298,
+      "cost_usd": 0.6077682
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 16,
+      "output": 2509,
+      "cache_read": 52779,
+      "cache_creation": 26428,
+      "cost_usd": 0.0964699
+    }
+  ],
+  "permission_denials": []
+}
