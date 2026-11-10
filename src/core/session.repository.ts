@@ -110,10 +110,11 @@ export interface TaskRow {
 /**
  * Every type the store holds: the schema's, `landed`, which `pup land` writes
  * (decision 84), `fix_round`, which `pup fix` writes (decision 90), and
- * `rescope`, which `pup plan edit --rescope` writes (decision 115), the three
- * `EventType` has yet to join.
+ * `rescope`, which `pup plan edit --rescope` writes (decision 115), and
+ * `retired`, which `pup retire` writes (decision 141), the four `EventType`
+ * has yet to join.
  */
-type StoredEventType = EventType | 'landed' | 'fix_round' | 'rescope';
+type StoredEventType = EventType | 'landed' | 'fix_round' | 'rescope' | 'retired';
 
 export interface EventRow {
   id: number;

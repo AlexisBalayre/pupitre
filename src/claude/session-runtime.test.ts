@@ -86,6 +86,7 @@ import {
   readInputBox,
   readSessionEnv,
   refusedSessionEnv,
+  resolveWindowEnv,
   type SessionPane,
   SessionPaneMissingError,
   SteerNotDeliveredError,
@@ -206,6 +207,7 @@ const OPTS = {
   sessionId: 's-1',
   repoPath: '/tmp/repo',
   worktreePath: '/tmp/repo/.worktrees/s-1',
+  env: { vars: {}, configDir: join(homedir(), '.claude') },
   settingsPath: '/tmp/compiled/settings.json',
   route: LADDERS.standard[0] as ModelRoute,
 };
@@ -808,7 +810,7 @@ describe('launchSession', () => {
     vi.stubEnv('CLAUDE_CODE_ENABLE_TELEMETRY', '1');
     vi.stubEnv('CLAUDE_CODE_SUBAGENT_MODEL', undefined);
 
-    launchSession(opts);
+    launchSession({ ...opts, env: resolveWindowEnv(repo) });
 
     expect(launchedWindowEnv()).toMatchObject({
       CLAUDE_CONFIG_DIR: configDir,
@@ -835,11 +837,28 @@ describe('launchSession', () => {
     saveSessionEnv(repo, ['CLAUDE_CONFIG_DIR']);
     vi.stubEnv('CLAUDE_CONFIG_DIR', configDir);
 
-    launchSession(opts);
+    launchSession({ ...opts, env: resolveWindowEnv(repo) });
 
     const projects = readProjects(join(configDir, '.claude.json'));
     expect(projects[opts.worktreePath]?.hasTrustDialogAccepted).toBe(true);
     expect(projects[repo]?.hasTrustDialogAccepted).toBe(true);
+  });
+
+  // The command reads the list once, where it starts, and hashes the dir it
+  // names: a session that rewrites the file before the window opens must not
+  // move the window off that dir (decision 106).
+  it('opens the window on the env the command resolved, whatever the list says by then', () => {
+    vi.stubEnv('HOME', tempDir('pup-session-env-home-'));
+    const configDir = tempDir('pup-w4b-config-');
+    saveSessionEnv(repo, ['CLAUDE_CONFIG_DIR']);
+    vi.stubEnv('CLAUDE_CONFIG_DIR', configDir);
+    const env = resolveWindowEnv(repo);
+    saveSessionEnv(repo, []);
+
+    launchSession({ ...opts, env });
+
+    expect(launchedWindowEnv().CLAUDE_CONFIG_DIR).toBe(configDir);
+    expect(readProjects(join(configDir, '.claude.json'))[repo]?.hasTrustDialogAccepted).toBe(true);
   });
 
   it('keeps stripping a variable the operator did not name', () => {
@@ -850,7 +869,7 @@ describe('launchSession', () => {
     vi.stubEnv('CLAUDE_CODE_EFFORT_LEVEL', 'max');
     vi.stubEnv('CLAUDE_CODE_MESSAGING_TOKEN', 'peer-token');
 
-    launchSession(opts);
+    launchSession({ ...opts, env: resolveWindowEnv(repo) });
 
     expect(Object.keys(launchedWindowEnv()).filter((key) => /^CLAUDE/.test(key))).toEqual([
       'CLAUDE_CONFIG_DIR',
@@ -881,7 +900,7 @@ describe('launchSession', () => {
     vi.stubEnv('CLAUDE_CODE_EFFORT_LEVEL', 'high;');
     vi.stubEnv('CLAUDE_CODE_ENABLE_TELEMETRY', '1\\;');
     vi.stubEnv('TMUX', undefined);
-    launchSession(opts);
+    launchSession({ ...opts, env: resolveWindowEnv(repo) });
     const [, spawn = [], options] =
       vi
         .mocked(execFileSync)
@@ -1319,7 +1338,7 @@ describe('transcriptDir', () => {
    * closed: `..` and separators are not escaped, they stop existing.
    */
   it('munges a traversing worktree path into one segment under ~/.claude/projects', () => {
-    const dir = transcriptDir('/repo/../.worktrees/t-1');
+    const dir = transcriptDir('/repo/../.worktrees/t-1', join(homedir(), '.claude'));
 
     expect(dirname(dir)).toBe(join(homedir(), '.claude', 'projects'));
     expect(basename(dir)).toBe('-repo-----worktrees-t-1');
@@ -2109,6 +2128,7 @@ describe('launchConductor', () => {
   const CONDUCTOR = {
     projectId: 'proj-1',
     repoPath: '/tmp/repo',
+    env: { vars: {}, configDir: join(homedir(), '.claude') },
     settingsPath: '/tmp/conductor/settings.json',
     route: CONDUCTOR_ROUTE,
   };
@@ -2170,7 +2190,7 @@ describe('launchConductor', () => {
     vi.stubEnv('CLAUDE_CONFIG_DIR', configDir);
 
     try {
-      launchConductor(CONDUCTOR);
+      launchConductor({ ...CONDUCTOR, env: resolveWindowEnv(CONDUCTOR.repoPath) });
     } finally {
       vi.unstubAllEnvs();
     }

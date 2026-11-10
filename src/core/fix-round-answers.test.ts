@@ -351,7 +351,7 @@ describe('startFixRound', { timeout: 90_000 }, () => {
       overrideVia,
       pathsBase: stateBase,
       base: DEFAULT_BASE_PROFILE,
-      claudeUserDir,
+      windowEnv: { vars: {}, configDir: claudeUserDir },
     });
   const payloads = (type: string) =>
     listEvents(db, SESSION_ID)
@@ -509,7 +509,9 @@ describe('startFixRound', { timeout: 90_000 }, () => {
     const refusal = /in a CI fix round.*`pup kill s1` \(back to merged\), then `pup fix s1`/;
 
     expect(() => requestHandoff(db, repo, SESSION_ID, stateBase)).toThrow(refusal);
-    expect(() => hardRespawnSession(db, repo, SESSION_ID, stateBase)).toThrow(refusal);
+    expect(() =>
+      hardRespawnSession(db, repo, SESSION_ID, { vars: {}, configDir: claudeUserDir }, stateBase),
+    ).toThrow(refusal);
   });
 
   // It would fast-forward the round's commits locally and leave the PR behind.

@@ -15,16 +15,17 @@ import {
   attachCommand,
   attachWindow,
   ConfigDirRefusedError,
-  claudeUserDir,
   conductorName,
   hasSessionWindow,
   killWatcher,
   launchWatcher,
   refusedSessionEnv,
+  resolveWindowEnv,
   SessionPaneMissingError,
   SteerNotDeliveredError,
   saveSessionEnv,
   sessionEnvAllowed,
+  type WindowEnv,
   windowLabel,
 } from '../claude/session-runtime.service.js';
 import { auditProject, buildSweepTask, formatDebtTransition } from '../core/audit.service.js';
@@ -139,6 +140,7 @@ import {
   SessionCapReachedError,
   steerSession,
 } from '../core/session-lifecycle.service.js';
+import { retireSession } from '../core/session-retire.service.js';
 import { launchedAncestor, rescopeTask } from '../core/task-rescope.service.js';
 import {
   describeSlotWait,
@@ -156,6 +158,7 @@ import type { GateReport, MergeOutcome } from '../core/types/merge-gate.types.js
 import type { TaskId, TaskSpec } from '../core/types/profile.types.js';
 import type { RescopeCaller, StoredGateStage } from '../core/types/session-event.types.js';
 import type { NewSessionRequest, RouteOverride } from '../core/types/session-lifecycle.types.js';
+import type { RetireOutcome } from '../core/types/session-retire.types.js';
 import {
   readUsage,
   UsageLimitReachedError,
@@ -688,15 +691,16 @@ function launchOrRefuse(
 }
 
 /**
- * The config dir a launch hashes and runs its window on, or a refusal printed
- * before anything is planned, killed or opened: a `CLAUDE_CONFIG_DIR` that
- * `--session-env` passes and a window may not run on — relative, or one others
- * can write — is the operator's to fix, not a crash (decision 106). Scrubbed,
- * since the message quotes the launching shell's value.
+ * What a command hands its windows, read once here and passed down to each —
+ * the named variables and the config dir it hashes and runs them on — or a
+ * refusal printed before anything is planned, killed or opened: a
+ * `CLAUDE_CONFIG_DIR` that `--session-env` passes and a window may not run on
+ * — relative, or one others can write — is the operator's to fix, not a crash
+ * (decision 106). Scrubbed, since the message quotes the launching shell's value.
  */
-function configDirOrRefuse(repoPath: string): string | undefined {
+function windowEnvOrRefuse(repoPath: string): WindowEnv | undefined {
   try {
-    return claudeUserDir(repoPath);
+    return resolveWindowEnv(repoPath);
   } catch (error) {
     if (!(error instanceof ConfigDirRefusedError)) throw error;
     refuseScrubbed(error);
@@ -720,14 +724,14 @@ function createOrRefuse(
     overLimit?: boolean;
   },
 ): string | undefined {
-  const userDir = configDirOrRefuse(repoPath);
-  if (userDir === undefined) return undefined;
+  const windowEnv = windowEnvOrRefuse(repoPath);
+  if (windowEnv === undefined) return undefined;
   return launchOrRefuse(task.id, [InvalidProfileError, ...NO_ROOM_ERRORS], () =>
     createSession(db, {
       repoPath,
       base: DEFAULT_BASE_PROFILE,
       task,
-      claudeUserDir: userDir,
+      windowEnv,
       ...fields,
     }),
   );
@@ -1236,8 +1240,8 @@ export function buildProgram(): Command {
           return refuse('`pup launch` is operator-only; sessions cannot launch sessions.');
         }
         if (refusedOverride(opts, 'launch')) return;
-        const userDir = configDirOrRefuse(repoPath);
-        if (userDir === undefined) return;
+        const windowEnv = windowEnvOrRefuse(repoPath);
+        if (windowEnv === undefined) return;
         noteAllowOverlap(opts.allowOverlap);
         const planned = getTask(db, taskId);
         if (planned) {
@@ -1259,7 +1263,7 @@ export function buildProgram(): Command {
               repoPath,
               base: DEFAULT_BASE_PROFILE,
               taskId,
-              claudeUserDir: userDir,
+              windowEnv,
               model: opts.model,
               effort: opts.effort,
               overlapVia: conductorAttribution().overlapVia,
@@ -1315,15 +1319,15 @@ export function buildProgram(): Command {
       if (!Number.isInteger(maxSessions) || maxSessions < 1) {
         return refuse('--max-sessions takes a whole number of at least 1.');
       }
-      const userDir = configDirOrRefuse(repoPath);
-      if (userDir === undefined) return;
+      const windowEnv = windowEnvOrRefuse(repoPath);
+      if (windowEnv === undefined) return;
       let handle: ConductorHandle;
       try {
         handle = startConductor({
           db,
           repoPath,
           base: DEFAULT_BASE_PROFILE,
-          claudeUserDir: userDir,
+          windowEnv,
           model: opts.model,
           effort: opts.effort,
           workerModel: opts.workerModel,
@@ -2029,9 +2033,10 @@ export function buildProgram(): Command {
       }
       if (opts.respawn) {
         // Before the kill: a refused config dir would leave the session no window.
-        if (configDirOrRefuse(repoPath) === undefined) return;
+        const windowEnv = windowEnvOrRefuse(repoPath);
+        if (windowEnv === undefined) return;
         try {
-          hardRespawnSession(db, repoPath, session, undefined, {
+          hardRespawnSession(db, repoPath, session, windowEnv, undefined, {
             model: opts.model,
             effort: opts.effort,
           });
@@ -2128,7 +2133,8 @@ export function buildProgram(): Command {
       }
       // Before the handoff is asked for and the window killed: a refused config
       // dir would leave the session no window.
-      if (configDirOrRefuse(repoPath) === undefined) return;
+      const windowEnv = windowEnvOrRefuse(repoPath);
+      if (windowEnv === undefined) return;
       // Both the handoff request and the relaunch kickoff are steers, and
       // either can be refused as never having landed whole.
       try {
@@ -2142,7 +2148,7 @@ export function buildProgram(): Command {
             );
           }
         }
-        respawnSession(db, repoPath, session, undefined, {
+        respawnSession(db, repoPath, session, windowEnv, undefined, {
           model: opts.model,
           effort: opts.effort,
         });
@@ -2472,6 +2478,50 @@ export function buildProgram(): Command {
       if (lockLost !== undefined) refuseScrubbed(lockLost);
     });
   program
+    .command('retire <session>')
+    .description(
+      'After its PR was closed because another PR re-landed the work: clean up the merged session',
+    )
+    .option('--superseded-by <pr>', 'the merged PR that re-landed the work: its number or url')
+    .action(async (session: string, opts: { supersededBy?: string }) => {
+      const { repoPath, db } = project();
+      // Declaring work superseded is a judgement about what landed, and the
+      // command deletes a branch: the operator's call (decision 141).
+      if (callingSession(db) || callingConductor()) {
+        return refuse('`pup retire` is operator-only; sessions and the conductor cannot run it.');
+      }
+      if (opts.supersededBy === undefined) {
+        return refuse(
+          '`pup retire` needs `--superseded-by <pr>`, the merged PR that re-landed the work.',
+        );
+      }
+      let outcome: RetireOutcome;
+      let lockLost: MergeLockLostError | undefined;
+      try {
+        outcome = await retireSession(db, {
+          repoPath,
+          sessionId: session,
+          supersededBy: opts.supersededBy,
+        });
+      } catch (error) {
+        if (error instanceof GateInterruptedError) throw error;
+        if (!(error instanceof MergeLockLostError)) return refuseScrubbed(error);
+        outcome = error.result as RetireOutcome;
+        lockLost = error;
+      }
+      console.log(
+        `Retired ${sanitizeReason(session)}: ${outcome.prUrl} was closed, superseded by ` +
+          `${outcome.supersededBy}.`,
+      );
+      if (outcome.removedWorktree) console.log('Removed the session worktree.');
+      if (outcome.keptBranch !== undefined) {
+        console.log(
+          `Kept ${sanitizeReason(outcome.keptBranch)}: it holds commits past the sha its PR carried.`,
+        );
+      }
+      if (lockLost !== undefined) refuseScrubbed(lockLost);
+    });
+  program
     .command('fix <session>')
     .description(
       "Hand the CI review's open threads on a merged session's PR back to its worker, in a fresh window",
@@ -2489,7 +2539,7 @@ export function buildProgram(): Command {
         outcome = await startFixRound(db, {
           repoPath,
           base: DEFAULT_BASE_PROFILE,
-          claudeUserDir: claudeUserDir(repoPath),
+          windowEnv: resolveWindowEnv(repoPath),
           sessionId: session,
           override: { model: opts.model, effort: opts.effort },
           overrideVia: callingConductor() ? 'conductor' : 'operator',
@@ -2762,9 +2812,12 @@ export function buildProgram(): Command {
       }
       // Workers and the conductor write under the dir the project's windows run
       // on; the console under the operator shell's own.
-      const userDir = configDirOrRefuse(repoPath);
-      if (userDir === undefined) return;
-      const report = buildUsageReport(db, repoPath, { since, claudeDirs: claudeDirsOf(userDir) });
+      const windowEnv = windowEnvOrRefuse(repoPath);
+      if (windowEnv === undefined) return;
+      const report = buildUsageReport(db, repoPath, {
+        since,
+        claudeDirs: claudeDirsOf(windowEnv.configDir),
+      });
       // JSON.stringify leaves DEL and C1 raw, and a terminal can read U+009B
       // as CSI; outside a string literal JSON has no such character, so the
       // `\uXXXX` form parses back to the same value (decision 68).
@@ -2797,9 +2850,12 @@ export function buildProgram(): Command {
           `--since needs a number of days such as 7, not "${sanitizeReason(opts.since)}".`,
         );
       }
-      const userDir = configDirOrRefuse(repoPath);
-      if (userDir === undefined) return;
-      const report = buildRetro(db, repoPath, { since, claudeDirs: claudeDirsOf(userDir) });
+      const windowEnv = windowEnvOrRefuse(repoPath);
+      if (windowEnv === undefined) return;
+      const report = buildRetro(db, repoPath, {
+        since,
+        claudeDirs: claudeDirsOf(windowEnv.configDir),
+      });
       const files = writeRetro(report, repoPath, opts.out, now);
       console.log(opts.json ? serializeRetro(report) : formatRetro(report));
       console.error(
