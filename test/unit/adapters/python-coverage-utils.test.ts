@@ -1,5 +1,5 @@
+import { coveragePyToCoverageReport } from '@src/adapters/python-coverage.utils.js';
 import { describe, expect, it } from 'vitest';
-import { coveragePyToCoverageReport } from './python-coverage.utils.js';
 
 describe('coveragePyToCoverageReport', () => {
   it('merges executed and missing lines into sorted instrumented sets', () => {

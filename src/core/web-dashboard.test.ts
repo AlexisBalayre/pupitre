@@ -12,8 +12,8 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   hasConductorWindow: vi.fn(() => false),
 }));
 
+import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import { hasConductorWindow } from '../claude/session-runtime.service.js';
-import { tempDir } from '../test/temp-dir.mock.js';
 import { formatDebtTransition } from './audit.service.js';
 import { appendBaselineHistory } from './baseline-history.repository.js';
 import { briefPath } from './brief.service.js';
@@ -460,6 +460,7 @@ describe('startWebDashboard', () => {
         ['overview', 'Overview'],
         ['health', 'Health'],
         ['debt', 'Debt'],
+        ['tasks', 'Tasks'],
       ]) {
         const reply = await get(sheetUrl(sheet as string));
 
@@ -468,13 +469,14 @@ describe('startWebDashboard', () => {
         expect(reply.body).toContain(`<a href="?token=${token}&amp;sheet=overview"`);
         expect(reply.body).toContain(`<a href="?token=${token}&amp;sheet=health"`);
         expect(reply.body).toContain(`<a href="?token=${token}&amp;sheet=debt"`);
+        expect(reply.body).toContain(`<a href="?token=${token}&amp;sheet=tasks"`);
         expect(reply.body).toContain(`sheet=${sheet}" aria-current="page">${title}</a>`);
       }
       expect((await get(dashboard.url)).body).toContain('aria-current="page">Overview</a>');
     });
 
     it('refuses a sheet it does not have, and a sheet without the token', async () => {
-      expect((await get(sheetUrl('tasks'))).status).toBe(404);
+      expect((await get(sheetUrl('decisions'))).status).toBe(404);
       expect((await get(`${address().origin}/?sheet=debt`)).status).toBe(403);
     });
 
@@ -482,6 +484,7 @@ describe('startWebDashboard', () => {
       const overview = (await get(dashboard.url)).body;
       const debt = (await get(sheetUrl('debt'))).body;
       const health = (await get(sheetUrl('health'))).body;
+      const tasks = (await get(sheetUrl('tasks'))).body;
 
       expect(overview).not.toContain('<svg');
       expect(overview).toContain('No goal yet — `pup brief edit` writes the Destination.');
@@ -492,6 +495,10 @@ describe('startWebDashboard', () => {
       expect(debt).toContain('No open debt — nothing to pay down.');
       expect(health).not.toContain('<svg');
       expect(health).toContain('No snapshot yet — `pup init` captures the first.');
+      expect(tasks).not.toContain('<svg');
+      expect(tasks).toContain('No gate run in the last 8 weeks.');
+      expect(tasks).toContain('Nothing planned — `pup plan` adds a task.');
+      expect(tasks).toContain('No session has reached a PR yet.');
     });
 
     it("leads the Overview with the brief's Destination", async () => {

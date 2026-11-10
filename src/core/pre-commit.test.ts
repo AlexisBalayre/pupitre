@@ -1,8 +1,8 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { chmodSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import { describe, expect, it } from 'vitest';
-import { tempDir } from '../test/temp-dir.mock.js';
 
 const HOOK = join(import.meta.dirname, '..', '..', 'scripts', 'pre-commit');
 
@@ -188,7 +188,7 @@ describe('scripts/pre-commit', () => {
       'typecheck',
       'pup session test --related -- ./src/sum.ts',
     ]);
-    expect(stdout).toContain('through a test slot (waits for a free one)');
+    expect(stdout).toContain('through a test slot (waits for a free one, however long)');
   });
 
   it('blocks the commit when the tests run through a slot fail', () => {

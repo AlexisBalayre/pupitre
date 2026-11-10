@@ -97,9 +97,6 @@ vi.mock('./test-slot.service.js', async (importOriginal) => {
   };
 });
 
-import type { Adapter, CapabilityContext } from '../adapters/types/adapter.types.js';
-import { typescriptAdapter } from '../adapters/typescript.adapter.js';
-import { SteerNotDeliveredError, steerPane } from '../claude/session-runtime.service.js';
 import {
   BRANCH,
   blockedReason,
@@ -113,8 +110,11 @@ import {
   seedSession,
   sh,
   untimed,
-} from '../test/helpers/merge-gate.mock.js';
-import { tempDir } from '../test/temp-dir.mock.js';
+} from '@test/helpers/merge-gate.mock.js';
+import { tempDir } from '@test/helpers/temp-dir.mock.js';
+import type { Adapter, CapabilityContext } from '../adapters/types/adapter.types.js';
+import { typescriptAdapter } from '../adapters/typescript.adapter.js';
+import { SteerNotDeliveredError, steerPane } from '../claude/session-runtime.service.js';
 import { openStore } from './db.client.js';
 import { ArmedGitDriverError } from './git-diff.client.js';
 import { insertLedgerEntry, listLedgerEntries } from './ledger.repository.js';

@@ -2,11 +2,11 @@ import { type ChildProcess, spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { chmodSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import Database from 'better-sqlite3';
 import { CommanderError } from 'commander';
 import type { ReactElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
-import { tempDir } from '../test/temp-dir.mock.js';
 
 // Side-effecting boundaries only (tmux/git spawns, `claude -p` sessions, and the
 // multi-stage merge-gate orchestration) — everything else (sqlite repositories,
@@ -154,6 +154,25 @@ vi.mock('../core/session-handoff.service.js', () => ({
   respawnSession: vi.fn(),
 }));
 
+import {
+  firstCall,
+  HANDOFF_WAIT_DEFAULT_MS,
+  initRepo,
+  initRepoWithAdapter,
+  markDormant,
+  registerProject,
+  rolledBackLaunch,
+  seedBacklogTask,
+  seedBlockedSession,
+  seedDeadTurn,
+  seedEventsFile,
+  seedKilledSession,
+  seedLedgerEntry,
+  seedSession,
+  seedStalledSession,
+  unreadableEventsFile,
+  worktreeOf,
+} from '@test/helpers/cli-index.mock.js';
 import { render } from 'ink';
 import {
   SessionPaneMissingError,
@@ -164,6 +183,7 @@ import type { SessionState } from '../core/db.client.js';
 import { insertDecisionRecord } from '../core/decision-record.repository.js';
 import { DEFAULT_BASE_PROFILE } from '../core/default-profile.constants.js';
 import { insertLedgerEntry } from '../core/ledger.repository.js';
+import { MergeLockLostError } from '../core/merge-gate.errors.js';
 import { runMergeGate } from '../core/merge-gate.service.js';
 import { replaceOverlaps } from '../core/overlap.repository.js';
 import { projectId } from '../core/paths.utils.js';
@@ -213,25 +233,6 @@ import {
 } from '../core/test-slot.service.js';
 import type { MergeOutcome } from '../core/types/merge-gate.types.js';
 import { startWebDashboard } from '../core/web-dashboard.service.js';
-import {
-  firstCall,
-  HANDOFF_WAIT_DEFAULT_MS,
-  initRepo,
-  initRepoWithAdapter,
-  markDormant,
-  registerProject,
-  rolledBackLaunch,
-  seedBacklogTask,
-  seedBlockedSession,
-  seedDeadTurn,
-  seedEventsFile,
-  seedKilledSession,
-  seedLedgerEntry,
-  seedSession,
-  seedStalledSession,
-  unreadableEventsFile,
-  worktreeOf,
-} from '../test/helpers/cli-index.mock.js';
 import { buildProgram, fatalExitCode } from './index.js';
 import { ProjectResolutionError, resolveProject } from './project.utils.js';
 import type { DashboardReading, ProjectReading } from './ui/use-snapshot.hook.js';
@@ -2884,6 +2885,25 @@ describe('CLI commands', () => {
         expect(fatalExitCode(escaped)).toBe(code);
         expect(errors).toEqual([expect.stringContaining(`Interrupted by ${signal}`)]);
       });
+    });
+
+    // A lock moved away while the gate ran let another run in alongside it: the
+    // merge it made is reported, then the lost lock, and the run fails (decision 88).
+    it('reports a merge made under a lock that was lost, and fails on it', async () => {
+      useCwd(initRepoWithAdapter());
+      vi.mocked(runMergeGate).mockRejectedValue(
+        new MergeLockLostError('/repo/.git/pup-merge.lock', mergedOutcome()),
+      );
+
+      await buildProgram().parseAsync(['merge', 's1'], { from: 'user' });
+
+      expect(logs).toContain('Merged s1; worktree and branch cleaned up.');
+      expect(errors).toEqual([
+        expect.stringMatching(
+          /^The merge lock at \/repo\/\.git\/pup-merge\.lock was gone or replaced/,
+        ),
+      ]);
+      expect(process.exitCode).toBe(1);
     });
 
     // The gate refuses before running a child (decision 78); the command turns

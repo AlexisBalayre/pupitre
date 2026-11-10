@@ -1,9 +1,9 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
-import { tempDir } from '../test/temp-dir.mock.js';
 
 // Side-effecting boundaries only (tmux/git spawns, `claude -p` sessions, and the
 // multi-stage merge-gate orchestration) — everything else (sqlite repositories,
@@ -152,6 +152,18 @@ vi.mock('../core/session-handoff.service.js', () => ({
 }));
 
 import {
+  firstCall,
+  GIT_ENV,
+  initRepo,
+  initRepoWithAdapter,
+  rolledBackLaunch,
+  seedBlockedSession,
+  seedKilledSession,
+  seedSession,
+  seedStalledSession,
+  stubCodegraph,
+} from '@test/helpers/cli-index.mock.js';
+import {
   attachWindow,
   hasSessionWindow,
   readSessionEnv,
@@ -164,6 +176,7 @@ import { insertDecisionRecord } from '../core/decision-record.repository.js';
 import { DEFAULT_BASE_PROFILE } from '../core/default-profile.constants.js';
 import { ciReviewLookup, startFixRound } from '../core/fix-round.service.js';
 import { landSession } from '../core/land.service.js';
+import { MergeLockLostError } from '../core/merge-gate.errors.js';
 import { projectId, projectPaths } from '../core/paths.utils.js';
 import { InvalidProfileError } from '../core/profile.errors.js';
 import {
@@ -184,18 +197,6 @@ import {
   steerSession,
 } from '../core/session-lifecycle.service.js';
 import type { LandOutcome } from '../core/types/land.types.js';
-import {
-  firstCall,
-  GIT_ENV,
-  initRepo,
-  initRepoWithAdapter,
-  rolledBackLaunch,
-  seedBlockedSession,
-  seedKilledSession,
-  seedSession,
-  seedStalledSession,
-  stubCodegraph,
-} from '../test/helpers/cli-index.mock.js';
 import { buildProgram } from './index.js';
 import { resolveProject } from './project.utils.js';
 
@@ -1752,6 +1753,46 @@ describe('CLI commands', () => {
       expect(errors).toEqual([expect.stringContaining('PUP_SANDBOX=vm')]);
       expect(process.exitCode).toBe(1);
       expect(landSession).not.toHaveBeenCalled();
+    });
+
+    // The land named each peer it could not steer before its audit started; the
+    // command adds no second line for them and exits as the audit says (decision 99).
+    it('exits 0 with its audit outcome when a peer went unsteered', async () => {
+      const repo = initRepoWithAdapter();
+      useCwd(repo);
+      vi.mocked(landSession).mockResolvedValue({
+        ...landedOutcome(),
+        unsteered: [{ sessionId: 's2', reason: 'tmux: server exited' }],
+      });
+
+      await buildProgram().parseAsync(['land', 's1'], { from: 'user' });
+
+      expect(logs).toContain('No stored baseline yet — captured one now, like `pup init`.');
+      expect(logs).toContain(`Project p (${repo})`);
+      expect(errors).toEqual([]);
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    // Landed and steered, and a re-run refuses it, but another run may have run
+    // alongside: reported as landed, then failed on the lost lock (decision 88).
+    it('reports a land made under a lock that was lost, and fails on it', async () => {
+      useCwd(initRepoWithAdapter());
+      vi.mocked(landSession).mockRejectedValue(
+        new MergeLockLostError('/repo/.git/pup-merge.lock', landedOutcome()),
+      );
+
+      await buildProgram().parseAsync(['land', 's1'], { from: 'user' });
+
+      expect(logs).toContain(
+        `Landed s1: ${PR} merged as ${'a'.repeat(40)}; main fast-forwarded to ${'a'.repeat(40)}.`,
+      );
+      expect(logs).toContain('No stored baseline yet — captured one now, like `pup init`.');
+      expect(errors).toEqual([
+        expect.stringMatching(
+          /^The merge lock at \/repo\/\.git\/pup-merge\.lock was gone or replaced/,
+        ),
+      ]);
+      expect(process.exitCode).toBe(1);
     });
 
     it('prints a refusal on one line with its control characters gone', async () => {

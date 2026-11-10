@@ -25,9 +25,9 @@ vi.mock('./audit.service.js', async (importOriginal) => {
   return { ...actual, auditProject: vi.fn(actual.auditProject) };
 });
 
+import { BRANCH, commitIn, ORIGIN_URL, PR_URL, SESSION_ID, sh } from '@test/helpers/land.mock.js';
+import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import type { Adapter } from '../adapters/types/adapter.types.js';
-import { BRANCH, commitIn, ORIGIN_URL, PR_URL, SESSION_ID, sh } from '../test/helpers/land.mock.js';
-import { tempDir } from '../test/temp-dir.mock.js';
 import { buildDashboardSnapshot, needsYou } from './dashboard.service.js';
 import { openStore } from './db.client.js';
 import { gitDiffPaths } from './git-diff.client.js';
