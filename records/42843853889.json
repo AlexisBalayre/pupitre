@@ -1,0 +1,173 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-10T15:29:25.250Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42843853889",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42843853889",
+  "actor": "AlexisBalayre",
+  "commit_sha": "fa412d9df8c98d50e458e266e19f6066c1970843",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 308,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "guards",
+    "simplicity"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "guards",
+    "simplicity"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/merge-gate-untested.test.ts",
+      "line": "397-450",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The four 'core.worktree elsewhere' tests can't catch a revert of their fixes. `safeArgv` (src/core/git-diff.client.ts:737-744) already passes `--work-tree=<repo>` on every gate spawn, which overrides `core.worktree`, so the tests still pass with `--full-tree`, `:(top,...)`, `--no-relative` and `-c diff.relative=false` removed. They would only start covering those flags if `safeArgv` stopped pinning the work tree; for now, either rewrite them or label them as defence in depth.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0139-the-gate-skips-the-test-stage-when-no-testable-file.md",
+      "line": "113",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "ADR 0139 says the full test stage fails 'in nine cases', but the list after it now has more than nine entries. Drop the number or recount it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "2428",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "One line of the `changesOnlyUntested` JSDoc runs to about 130 characters, against the roughly 80-column wrapping used in the rest of the file. Rewrap it after 'so the skip holds only if both readings are listed,'.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "2449-2455",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`listed` is checked twice: `changedPaths.every(listed)` runs first, then `checked.every(listed)` runs over a superset of the same paths. Keep the first check only if the early exit before the git call is intended, and say so in a short comment.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "2612",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`measureBranch` now runs `rawDiffEntries(repoPath, targetSha, sha)` just to collect rename sources, and `changesOnlyUntested` then runs the same `--raw -M` diff of the same pair again. Computing the entries once and passing them in would save a git subprocess.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "2450-2478",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Rename sources now go through `foldsOntoAnother`, so a rename that only changes the case of a listed doc (docs/Guide.md -> docs/guide.md) runs the full suite where it used to skip it. This is over-cautious rather than unsafe, since both spellings are on the list.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0139-the-gate-skips-the-test-stage-when-no-testable-file.md",
+      "line": "22",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The PR rewrites the landed text of ADR 0139 in place ('six cases' becomes 'nine', the rename bullet and test-scan paragraph are reworded). docs/adr/README.md says a landed decision gets a dated amendment section or a new decision linked through `Amends:`. Ignore this if #287's version of 0139 never landed.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "The correctness reviewer tagged the vacuous-test finding important, and the validator confirmed it. The orchestrator downgraded it to nit: the validator found no failure the gate can reach today, because safeArgv's --work-tree pin defeats the core.worktree attack in production too."
+    },
+    {
+      "component": "orchestrator",
+      "description": "Dropped three minor findings that didn't clear the bar: a low-confidence suggestion to drop the Set dedup, a suggestion to revert the listedFiles temp-tree test (the author gave a reason for that change), and a low-confidence docs nit on a test JSDoc clause."
+    },
+    {
+      "component": "orchestrator",
+      "description": "Skipped review-context, review-maintainability, review-workflow-safety and review-spec: the PR changes no infra or workflow surfaces and cites no spec source. Standard depth leaves maintainability out."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.8488072499999992,
+  "duration_ms": 299084,
+  "num_turns": 13,
+  "tokens": {
+    "input": 12,
+    "output": 8908,
+    "cache_read": 250829,
+    "cache_creation": 64181,
+    "total": 323930
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 94,
+      "output": 48629,
+      "cache_read": 1509673,
+      "cache_creation": 215972,
+      "cost_usd": 2.5472935999999997
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 42,
+      "output": 8441,
+      "cache_read": 227112,
+      "cache_creation": 77420,
+      "cost_usd": 0.30075520000000006
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 317,
+      "cache_read": 0,
+      "cache_creation": 4798,
+      "cost_usd": 0.00075845
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "git log --oneline -S\"--work-tree=${resolve(cwd)}\" -- src/core/git-diff.client.ts"
+    }
+  ]
+}
