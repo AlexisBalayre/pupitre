@@ -1,0 +1,214 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-10T10:53:58.884Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42801456726",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42801456726",
+  "actor": "AlexisBalayre",
+  "commit_sha": "e86ce1deb96016534d53e0edf7774948886f6fed",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 304,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/adapters/typescript.adapter.ts",
+      "line": "453-489",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "Package-manager configs (.npmrc, .yarnrc*, pnpm-workspace.yaml, bunfig.toml) are compared disk-vs-pinned-sha only, never against the trusted side, so a committed root .npmrc (node-options / script-shell) passes both checks and a production *.test.ts counts as test.",
+      "body": "**A package-manager config the branch commits passes both checks.**\n\n`VITEST_RUN_INPUT` lists `.npmrc`, `.yarnrc`, `.yarnrc.yml`, `pnpm-workspace.yaml` and `bunfig.toml` as files that change how the test script runs. Two checks look at the run's inputs, and neither compares those files with the target's:\n\n- `testInputsIntact` compares the checkout's disk only with the pinned sha's own blobs. A committed file matches itself:\n  ```ts\n  runInputs(diskRoot(ctx.measurePath)) === runInputs(treeRoot(ctx.configPath, ctx.measureSha))\n  ```\n- `testFiles` compares only the `test`/`pretest`/`posttest` scripts and the config with its lists cut out:\n  ```ts\n  if (!trusted || measured?.config !== trusted.config) return [];\n  ```\n\n**Trigger.**\n1. The target includes `src/**/*.test.ts`.\n2. The branch commits `src/big.test.ts`, which holds production code and no test.\n3. The branch also commits a root `.npmrc` with `node-options=--import ./scripts/reg.mjs`, or `script-shell=./scripts/sh`.\n\nThe test stage runs `pm run test` in the checkout (`merge-gate.service.ts` ~L2603/L2665), and npm/pnpm read that project `.npmrc`. Scrubbing `NODE_OPTIONS` from the environment (`gate-env.utils.ts:100`) does not cover a `node-options` key in the file.\n\n**Result.** The run passes and `intact` is true. Both configs are equal, so `big.test.ts` counts as test and the oversize flag stays silent. Yarn has a variant: `yarnPath` in `.yarnrc.yml` runs a branch file.\n\n**No existing guard catches this.**\n- `PROTECTED_PATH_GLOBS` covers only `.claude/**` and `.pupitre/**`.\n- ADR 0143's ceilings don't list it.\n- The tests cover only an `.npmrc` the build adds on disk.\n\n**Possible fix.** In `testFiles`, require both roots to hold the same `VITEST_RUN_INPUT` package-manager entries (compare them with `runInputs`), and return `[]` otherwise. Also refuse a `yarnPath` / `yarn-path`, or compare the file it names.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/e86ce1deb96016534d53e0edf7774948886f6fed/src/adapters/typescript.adapter.ts#L445-L489",
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/vitest-config.utils.ts",
+      "line": "35-36",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The workspace check misses vitest's `vitest.projects.*` workspace names. A branch that adds `vitest.projects.ts` changes what the run collects, but the read still answers from the root config's `include`.",
+      "body": "**`vitest.projects.*` is not treated as a workspace file.**\n\nVitest 2 and 3 discover a workspace file under either name, `vitest.workspace.*` or `vitest.projects.*` (their `WORKSPACES_NAMES`; this is pinned-version knowledge, hence medium confidence). This regex only knows the first:\n\n```ts\nconst VITEST_WORKSPACE_FILE = /^vitest\\.workspace\\.(?:[cm]?[jt]s|json)$/i;\n```\n\n**Trigger.** On a vitest 3 target, a branch commits a root `vitest.projects.ts` holding `[{ test: { include: ['src/real.test.ts'] } }]` and leaves `vitest.config.ts` untouched.\n\n**Result.**\n- The run collects only `src/real.test.ts`.\n- Both sides of the read see the same config file and rest, and still answer from `src/**/*.test.ts`.\n- So a production `src/big.test.ts` counts as test, which is the outcome ADR 0143 exists to prevent. The ADR's ceilings name only `vitest.workspace.*`.\n\nThe same gap appears in `typescript.adapter.ts`: `VITEST_RUN_INPUT` (L217-218, `vite(?:st)?\\.(?:config|workspace)\\.[^/]*`) misses `vitest.projects.*`, and so does `VITEST_CONFIG_FILE` at L258. Pupitre itself is on vitest 4, which dropped workspace files, so it is not exposed. The adapter does target vitest 3 repos, though (see L38 and L42-47).\n\nhttps://github.com/AlexisBalayre/pupitre/blob/e86ce1deb96016534d53e0edf7774948886f6fed/src/adapters/vitest-config.utils.ts#L35-L36\nhttps://github.com/AlexisBalayre/pupitre/blob/e86ce1deb96016534d53e0edf7774948886f6fed/src/adapters/typescript.adapter.ts#L217-L218",
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/vitest-config.utils.ts",
+      "line": "52-57, 129-140",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "`vitestGlob` limits a pattern to one inner `**` and at most one `*` per segment, but it does not limit how many segments follow that `**`. A branch-written include or exclude such as `**/*/*/…(×2000)…/z.test.ts` passes every check. Matched against a deep branch path, the cost grows with depth × segment count, not linearly as the comment says.",
+      "body": "**A branch-written pattern can make matching quadratic and stall the merge lock.**\n\n`vitestGlob` caps inner `**` at one and refuses `**`-less double stars. It does not cap the segment count:\n\n```ts\nconst innerGlobstars = segments.slice(0, -1).filter((segment) => segment === '**').length;\nif (\n  !READ_GLOB.test(pattern) ||\n  innerGlobstars > VITEST_PATTERN_MAX_INNER_GLOBSTARS ||\n  segments.some((segment) => UNREAD_SEGMENT.test(segment))\n) {\n```\n\n**Trigger.**\n- The target declares an `include` (and/or `exclude`).\n- The branch keeps the config text and rewrites only the lists, up to 64 patterns each, as `'**/' + '*/'.repeat(p) + 'z.test.ts'`.\n- `globToRegExpSource` compiles that to `^(?:[^/]+/)*(?:[^/]*/){p}z\\.test\\.ts$`.\n- The branch then adds paths `src/` + `a/`×~2000 + `xN.test.ts`, which the trusted include collects.\n\n**Cost.**\n- The leading group backs off once per segment, and each back-off re-walks up to `p` fixed segments. That is about n·p steps per pattern per path, millions at n = p ≈ 2000.\n- Every crafted exclude runs in full before the includes do.\n- Roughly 1–6 s per path, and hundreds of such files share one tree chain and blob.\n- All of it runs synchronously in `testFiles`, inside the merge lock, with no timeout.\n\nThe comments at L52-56 and L122-127, and ADR 0143 (\"read only when it runs in time linear in a path\"), claim this cannot happen. The claim holds only for a fixed pattern length.\n\n**Possible fix.** Bound `segments.length` (e.g. 16) or the pattern length in `vitestGlob`, next to `VITEST_PATTERN_MAX_INNER_GLOBSTARS`.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/e86ce1deb96016534d53e0edf7774948886f6fed/src/adapters/vitest-config.utils.ts#L129-L140",
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/vitest-config.utils.ts",
+      "line": "376-379",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "`collects` matches the git path, but on a case-insensitive disk (APFS) vitest globs the directory names actually written to disk. A branch path whose directory folds onto another spelling is counted as collected even though the run never collects it.",
+      "body": "**A directory whose name folds onto another spelling escapes the case-sensitive match.**\n\nThe gate runs on APFS (decision 78), which folds case. `collects` tests the path as git stores it:\n\n```ts\ncollects: (path) =>\n  !UNREAD_PATH.test(path) &&\n  !globs.exclude.some((glob) => glob.test(path)) &&\n  globs.include.some((glob) => glob.test(path)),\n```\n\n**Trigger.** A branch holds both `Src/zzz.txt` and `src/big.test.ts`.\n1. Git checks out in bytewise order, so it creates the directory `Src/` and writes `big.test.ts` into it.\n2. Vitest's crawl yields `Src/big.test.ts`, which the case-sensitive `src/**/*.test.ts` does not match (picomatch's default; pinned-version knowledge, hence medium confidence).\n3. The run never collects the file, yet `collects('src/big.test.ts')` is true on both sides, so its production lines count as test.\n\nAn exclude has the mirror case: `**/Fixtures/**` plus `src/Fixtures/zzz` drops `src/fixtures/big.test.ts` from the run.\n\nNothing upstream of `testFiles` refuses this:\n- `diffSizeKind` and `readBranchTree` don't check case collisions in directories.\n- `testInputsIntact` checks root names only.\n- ADR 0143's case folding covers root names only.\n\n`changesOnlyUntested` already refuses exactly this case with `foldsOntoAnother` (`merge-gate.service.ts` ~L2454-2462). `testFiles` receives every branch path, so it could drop any path whose path or directory folds onto another spelling in `files`.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/e86ce1deb96016534d53e0edf7774948886f6fed/src/adapters/vitest-config.utils.ts#L376-L379\nhttps://github.com/AlexisBalayre/pupitre/blob/e86ce1deb96016534d53e0edf7774948886f6fed/src/adapters/typescript.adapter.ts#L468-L472",
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/vitest-config.utils.ts",
+      "line": "32-33, 371-372",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "\"No config at the root\" is treated as \"empty config\", but vitest looks for its config in parent directories too. A config in the gate checkout's parent temp dir decides what the run collects, and the read never sees it.",
+      "body": "**With no root config, the run can load one from a parent directory the read never sees.**\n\n```ts\n/** What vitest runs with no config file: the same as an empty one. */\nconst VITEST_NO_CONFIG = 'export default {};\\n';\n...\nconst text = file === undefined ? VITEST_NO_CONFIG : (root.get(file) as () => string)();\n```\n\nWith no `--config` (which `runsPlainVitest` guarantees), vitest walks up from its root through every parent directory to find a config: `findUp` in vitest 3, `empathic` in vitest 4 (pinned-version knowledge, hence medium confidence). Vite keeps `root` as the cwd, so a parent's config applies its `include` to the checkout.\n\nThe gate checkout sits at `realpath(tmpdir())/pup-gate-checkout-X/pup-gate-checkout-X` (`merge-gate.service.ts` L1109-1114). The session runs unsandboxed by design (decision 5, `sandbox.utils.ts` L230-233), so it can write `<tmp>/vitest.config.mjs` with `include: ['src/real.test.ts']` before asking to merge.\n\n**Result, in a target with no root config.**\n- The run collects only that file.\n- Both sides read `VITEST_NO_CONFIG`, so the default include counts a production `src/big.test.ts` as test.\n- `testInputsIntact` checks root entries only, so it misses the planted config.\n- The planted config could equally set `setupFiles`, which the reader refuses everywhere else.\n\nADR 0143 states \"No config collects vitest's default\" and lists no parent-directory ceiling for configs.\n\n**Possible fix.** Make an absent root config an unknown answer, unless the read can show that no ancestor of the run's cwd holds one.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/e86ce1deb96016534d53e0edf7774948886f6fed/src/adapters/vitest-config.utils.ts#L32-L33\nhttps://github.com/AlexisBalayre/pupitre/blob/e86ce1deb96016534d53e0edf7774948886f6fed/src/adapters/vitest-config.utils.ts#L369-L373",
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/typescript.adapter.ts",
+      "line": "221-249",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "A build that writes its own entry into the gate checkout's `node_modules` makes `testInputsIntact` false on every gate run. After that, nothing counts as test, not even the `src/a.test.ts` the old spelling rule counted, so test-heavy branches get false \"Oversize diff\" debt.",
+      "body": "**A build output inside `node_modules` turns every test file into source.**\n\n`linkEnvironment` makes a real `node_modules` directory and fills it with per-entry links (`merge-gate.service.ts` L1352-1356). The build stage runs before the first `testInputsIntact`. `environmentLinked` accepts only those links and the vitest caches:\n\n```ts\nconst RUN_CACHE = /^(?:\\.cache$|\\.vite)/;\n...\nreaddirSync(local).every(\n  (name) => RUN_CACHE.test(name) || readlinkSync(join(local, name)) === join(trusted, name),\n)\n```\n\nAny other real entry makes `readlinkSync` throw `EINVAL`. The catch turns that into `false`, and `testFiles` answers `[]`.\n\n**Trigger.**\n- A build such as `tsc -b` with `tsBuildInfoFile: ./node_modules/.tmp/...` creates a real `node_modules/.tmp` on every gate run. create-vite's TS templates set this (template knowledge, hence medium confidence).\n- This happens whenever the trusted `node_modules` has no `.tmp` to link.\n\n**Result.**\n- Every `*.test.ts` counts as source, a regression from the old spelling rule.\n- Test-heavy branches file `Oversize diff` debt.\n- The stage detail shows only `0 test`, and no message says the inputs check failed.\n\nADR 0143 says the check holds for \"a build output beside it\". It never considered a build output landing inside `node_modules`, and the unit table at `typescript-adapter.test.ts` L480-510 has no such case.\n\n**Possible fix.** Allow a dot-named entry the trusted `node_modules` lacks, except `.bin` (npm package names cannot start with `.`), or say which outcome is intended.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/e86ce1deb96016534d53e0edf7774948886f6fed/src/adapters/typescript.adapter.ts#L221-L249",
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/vitest-config.utils.ts",
+      "line": "103-104, 227-231",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`loadsAFile` misses `import x = require('./…')` (an ImportEqualsDeclaration, which has no moduleSpecifier) and `#subpath` imports (mapped by the branch's package.json `imports`). A trusted config written that way runs branch code while the configs still compare equal.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/vitest-config.utils.ts",
+      "line": "85-101",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "VITEST_UNREAD_TEST_KEYS omits keys that load a module by path (snapshotSerializers, diff, snapshotEnvironment, coverage.customProviderModule). A shared config with `snapshotSerializers: ['./test/serializer.ts']` lets the branch rewrite that file and run code in every worker, while the lists are still read.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/typescript.adapter.ts",
+      "line": "484",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The intact check compares the checkout's files byte for byte with the raw blobs. In a repo whose checkout converts line endings (.gitattributes `eol=crlf`, or core.autocrlf), an untouched package.json never matches its blob, so every TypeScript test counts as source on every run.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/vitest-config-utils.test.ts",
+      "line": "1",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The new test sits beside its source in src/adapters/, but testing.md §Layout mirrors tests under test/unit/. Every other adapter test is in test/unit/adapters/, so this one belongs at test/unit/adapters/vitest-config-utils.test.ts.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/typescript.adapter.ts",
+      "line": "108-110",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`rootAt` has one caller (the testFiles map callback) and is a single ternary, `sha === undefined ? diskRoot(path) : treeRoot(ctx.configPath, sha)`. Inline it and drop the helper and its JSDoc.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [
+    {
+      "file": "src/adapters/vitest-config.utils.ts",
+      "line": "1-6",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "important",
+      "description": "A `.utils` file imports runGit from `../core/git-diff.client.js` and does I/O (treeRoot shells out to git, diskRoot calls readdirSync), against naming.md's utils row: \"Pure functions only. Cannot import … client.\"",
+      "refutation": "The rule's text matches, but main already follows the same pattern: src/cli/project.utils.ts imports both runGit from git-diff.client.js and openStore from db.client.js and does fs I/O, and ADR 0065 endorses that placement. Several other utils on main also do I/O (sandbox.utils.ts, sandbox-profile.utils.ts, capability.utils.ts), and ADR 0143 names vitest-config.utils.ts as the home for this code. This is at most a minor cleanup, not a blocking convention violation."
+    }
+  ],
+  "process_issues": [],
+  "duplicates_merged": 1,
+  "comments_posted_actual": 6,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 8.3638966,
+  "duration_ms": 624513,
+  "num_turns": 21,
+  "tokens": {
+    "input": 14,
+    "output": 25848,
+    "cache_read": 365817,
+    "cache_creation": 74119,
+    "total": 465798
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 316,
+      "output": 192095,
+      "cache_read": 5329553,
+      "cache_creation": 557505,
+      "cost_usd": 7.918956600000004
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 50,
+      "output": 11407,
+      "cache_read": 290578,
+      "cache_creation": 120337,
+      "cost_usd": 0.4440703
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 375,
+      "cache_read": 0,
+      "cache_creation": 5456,
+      "cost_usd": 0.0008696999999999999
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "bash /home/runner/work/pupitre/pupitre/scripts/adr-index.sh"
+    }
+  ]
+}
