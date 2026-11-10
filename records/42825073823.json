@@ -1,0 +1,120 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-10T13:33:39.458Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42825073823",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42825073823",
+  "actor": "AlexisBalayre",
+  "commit_sha": "cac9e846b26859ff9e41fbb3db42de9b3073e53c",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 306,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "simplicity",
+    "guards",
+    "workflow-safety"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "8bad0037931130c8af07ea2c26840a16443c2986",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "3077-3093",
+      "description": "`commitsPastPin` now rethrows `RewrittenGitDirError`. `recordMerge` calls it before `appendEvent(db, session.id, 'merge', …)`. So a main `.git` rewritten after the fast-forward lands means the `merge` event is never written, even though the session is already `merged` and the target already holds the sha.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "3101",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The refusal `recordMerge` rethrows after the fast-forward is bare: `RewrittenGitDirError`'s text says 'Refusing to run git ... treat the session that wrote it as compromised' and nothing about the merge. Trigger: the new test's scenario (commondir planted during the teardown, local mode). `pup merge` exits through `refuseScrubbed` with only that text, while `main` already holds the session's sha, the session is `merged`, and the ratchet and decision draft were skipped; the other refusals on this path say 'nothing was merged'. Suggest extending the message before `throw refused`, as `withLedgerKept` does (e.g. 'The merge of <sha> into <target> had already landed and is recorded; the ratchet and decision draft did not run.').",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "3068-3070",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new `recordMerge` JSDoc says \"A main `.git` rewritten after the fast-forward refuses that count\", but the code catches any error from `commitsPastPin`, writes the event without `leftBehind`, and rethrows the original. A reader would not learn that any failure of the count still records the merge. Suggested shape: \"If the count throws, the event is still written without it, since the target already holds `sha`, and the error is rethrown.\"",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.test.ts",
+      "line": "1601-1602",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The test comment says \"The window ADR 0172 names: the fast-forward landed and the session, not yet killed, rewrites `.git`…\", but ADR 0172 names no teardown-specific window (L100-101 only says a mid-gate plant is refused at the next read). Drop the ADR attribution, e.g. \"Planted from `killSession`: the fast-forward has landed, but the session is still alive to rewrite `.git`.\"",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.516650175,
+  "duration_ms": 162699,
+  "num_turns": 13,
+  "tokens": {
+    "input": 12,
+    "output": 6436,
+    "cache_read": 263397,
+    "cache_creation": 43884,
+    "total": 313729
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 78,
+      "output": 22248,
+      "cache_read": 1098492,
+      "cache_creation": 119925,
+      "cost_usd": 1.3962473999999998
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 16,
+      "output": 3028,
+      "cache_read": 68507,
+      "cache_creation": 33005,
+      "cost_usd": 0.11967520000000001
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 299,
+      "cache_read": 0,
+      "cache_creation": 4623,
+      "cost_usd": 0.000727575
+    }
+  ],
+  "permission_denials": []
+}
