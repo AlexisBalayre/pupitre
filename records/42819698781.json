@@ -1,0 +1,200 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-10T13:05:37.669Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42819698781",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42819698781",
+  "actor": "AlexisBalayre",
+  "commit_sha": "6ed129a7446baf49cdea7503dc589aa5f0b5c01b",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 289,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "819-824",
+      "description": "The 'every side is a known binary' rule only reads `path` at the merge-base and at the branch. For a rename, `gitDiffNumstat` reports only the new path, so the rename's source file is never checked or counted. Renaming a source file into a `.png` therefore drops all its deleted lines, with no forged flag.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "242-243",
+      "description": "Test adequacy: no test fails if the new `--no-relative` in rawDiffEntries is removed. The new core.worktree + diff.relative test has no rename and no symlink with a test name, so an empty raw map changes no count.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "843-855",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "When `--numstat` reports a binary rename or mode-only change as `-\\t-`, the old and new oids are the same. Two kinds of file now get flagged where they used to be skipped: a file outside the table (GIF, PDF, WOFF2, WebP), and a PNG over 1 MiB. The recount diffs the oid against itself, which gives `{0, 0}`, and `countChangedLines` still pushes it to `forged` because it only checks `!recount`. Known PNGs moved unchanged also spend the 4 MiB budget.",
+      "body": "**An unchanged move of a binary is now filed as forged**\n\nGit's numstat prints `-\\t-` for a binary pair even when the content is unchanged. It sets `is_binary` before `same_contents` zeroes the counts. (This is pinned-version knowledge of git's `diff.c`, not a spike.) `gitDiffNumstat` forces `diff.renames=true`, so an exact rename (R100) of a binary reaches `gitDiffBinaryRecount` with `baseBlob.oid === branchBlob.oid`:\n\nhttps://github.com/AlexisBalayre/pupitre/blob/6ed129a7446baf49cdea7503dc589aa5f0b5c01b/src/core/git-diff.client.ts#L843-L855\n\nWhat happens next:\n- **A path outside `BINARY_FORMATS` (PDF, GIF, WOFF2, WebP):** `formatsNamed` returns `[]`, so `sides = [false]` and the skip is refused. `diffHunks(repo, [oid, oid])` returns no hunks, so the function returns `{ added: 0, deleted: 0 }`.\n- **A PNG over `BINARY_FREE_MAX_BYTES`:** the skip is refused the same way.\n- **The forged flag:** `countChangedLines` only checks `if (!recount) continue;`. `{0, 0}` is truthy, so the path goes into `forged`:\n\n  https://github.com/AlexisBalayre/pupitre/blob/6ed129a7446baf49cdea7503dc589aa5f0b5c01b/src/core/merge-gate.service.ts#L698-L701\n\n  That files a \"Text files git reports as binary\" debt entry and flags the diff-size stage, for a write that has nothing unread in it.\n- **A known PNG under the cap moved unchanged:** it is skipped, but `spendKnownBinarySkip` charges its bytes to the 4 MiB budget. Moving an `assets/` directory of small PNGs therefore flags every file past 4 MiB.\n\n**Trigger:** `git mv docs/manual.pdf docs/guide/manual.pdf` in any repo that commits a PDF. Before this PR, `blobIsBinary(branch, path)` found the NUL and skipped the file. ADR 0154's *Ceilings* accepts \"one acceptance per merge that **adds** one\", and a byte-identical move adds nothing. The existing test `skips a known binary renamed from a known binary` changes the content, so it doesn't cover this.\n\n**Possible fix:** when both sides exist with the same oid and mode, nothing new entered the tree, so answer `null` before the budget is spent. That matches a text R100, which numstat counts as `0\\t0`. Place it right after `const [baseBlob, branchBlob] = entry.sides;`:\n\n```ts\nif (baseBlob?.oid === branchBlob?.oid && baseBlob?.mode === branchBlob?.mode) return null;\n```\n\n`DiffSides` never has both sides undefined, so this only holds for two identical sides. A mode-only change (same oid, 100644 → 100755) is still recounted and flagged, which matches the ADR's rule for an executable PNG. A test would pin the move: commit a `.pdf` holding a NUL, `git mv` it, and assert nothing goes into `forged` and the budget is unchanged.",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "524-527",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The filesNaming JSDoc still says 'a listed path the tree does not hold refuses', but commit 4c2ab2a removed that throw: such a path is now read as naming every target (lines 586-591), like a U+FFFD name. A maintainer trusting the doc expects a refusal that no longer happens. Replace the clause with 'a listed path the tree does not hold names every target, as one not UTF-8 does' (ADR 0154 lines 135-137 already say so).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0154-a-diff-size-binary-is-a-known-format-by.md",
+      "line": "145-147",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The ADR says the readBlobs batch runs under GIT_READ_TIMEOUT_MS (30 s) \"as does the `ls-tree` behind each known-binary check\". No ls-tree in the diff-size path takes that timeout: the known-binary check now sizes each side with `cat-file -s` (src/core/git-diff.client.ts:785), and that call carries the timeout. Someone auditing which calls are bounded under the merge lock would look for a timeout on an ls-tree that isn't there. Name `cat-file -s` instead.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/known-binary.utils.ts",
+      "line": "106-111",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`mayBeKnownBinary` is written as `!(size > BINARY_FREE_MAX_BYTES)` so that a NaN size passes, and its JSDoc justifies that with the `ls-tree` `BAD` size. Its only caller, `blobIsKnownBinary`, gets `size` from `blobSize` (`cat-file -s`), which throws on a bad object, so NaN never reaches it. Use `size <= BINARY_FREE_MAX_BYTES` and drop the NaN paragraph; that removes a double negation and a comment pointing a maintainer at the wrong path.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/known-binary.utils.ts",
+      "line": "180-191",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`spendKnownBinarySkip` mutates its argument (`budget.bytes -= spent`), but docs/conventions/naming.md says `utils` hold \"pure functions only\". A caller reading a utils module could pass a shared budget object without expecting it to be drained. Return the remaining budget, or move the function next to its caller in git-diff.client.ts, which owns the budget.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "774-792",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`blobIsKnownBinary` and `blobLines` each call `blobSize` (a `cat-file -s` process) and then `readBlobs(repoPath, [oneBlob])`, with the same `[blob = Buffer.alloc(0)] = readBlobs(...)` unwrapping written out twice. A small `readBlob(repoPath, oid)` next to `blobSize` would remove the duplicated unwrapping and the array wrapping at both sites.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "789-796, 847-851",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "Under a `-diff` or `binary` attribute, a submodule path reads `-\\t-` in numstat; its `--raw` sides are mode 160000 commit oids, so the recount runs `git diff <commit> <commit>` / `cat-file -s` / readBlobs on a commit and the gate errors on every such submodule bump.",
+      "refutation": "Git applies diff attributes only to regular files: `diff_filespec_load_driver` looks up the attribute driver only when `S_ISREG(mode)`, and a gitlink's populated content is the text `Subproject commit <oid>\\n`, which has no NUL. Numstat therefore prints `1\\t1` (or `1\\t0`/`0\\t1`) for a gitlink, never `-\\t-`. merge-gate.service.ts:694-698 counts any entry with numeric counts directly, and gitDiffNumstat sets `sides` only for a `-` count, so gitDiffBinaryRecount is never reached for a submodule. Pre-PR behaviour was the same. (Medium confidence: rests on git's diff.c internals, not a spike.)"
+    }
+  ],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "The orchestrator's first review-correctness spawn went out with a placeholder brief (the literal text \"BRIEF\"), so that instance reviewed only the top commit 6ed129a. It found nothing. Two properly briefed correctness instances were then spawned, split into the numstat/recount/known-binary decision and the readBlobs/batched reach checks, so correctness ran as three instances. Only the two briefed instances covered the full PR."
+    }
+  ],
+  "duplicates_merged": 2,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 7.1472770500000005,
+  "duration_ms": 633255,
+  "num_turns": 21,
+  "tokens": {
+    "input": 18,
+    "output": 20395,
+    "cache_read": 486150,
+    "cache_creation": 76529,
+    "total": 583092
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 196,
+      "output": 157215,
+      "cache_read": 4042551,
+      "cache_creation": 509908,
+      "cost_usd": 6.7327212
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 44,
+      "output": 11006,
+      "cache_read": 287059,
+      "cache_creation": 109978,
+      "cost_usd": 0.41379889999999997
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 215,
+      "cache_read": 0,
+      "cache_creation": 5194,
+      "cost_usd": 0.0007569499999999999
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "git log --oneline main..HEAD 2>/dev/null | head; git diff --stat $(git merge-base HEAD origin/main 2>/dev/null || git merge-base HEAD main)..HEAD"
+    },
+    {
+      "tool": "Bash",
+      "input": "cat > $TMPDIR/spike-a.mts <<'EOF'\nconst b = await import('/home/runner/work/pupitre/pupitre/src/core/git-blobs.client.ts');\nconst oid = (await import('node:child_process')).execFileSync('git',['-C','/"
+    },
+    {
+      "tool": "Bash",
+      "input": "printf '%s\\n' \"import { readBlobs } from '/home/runner/work/pupitre/pupitre/src/core/git-blobs.client.ts';\" \"import { execFileSync } from 'node:child_process';\" \"const r = '/home/runner/work/pupitre/p"
+    },
+    {
+      "tool": "Bash",
+      "input": "mkdir -p /tmp/claude/spike && cd /tmp/claude/spike && cat > a.mts <<'EOF'\nimport { readBlobs } from '/home/runner/work/pupitre/pupitre/src/core/git-blobs.client.ts';\nimport { execFileSync } from 'node"
+    },
+    {
+      "tool": "Bash",
+      "input": "npx vitest run src/core/git-blobs-client.test.ts src/core/git-diff-client.test.ts 2>&1 | tail -6; git status --short"
+    }
+  ]
+}
