@@ -357,6 +357,53 @@ describe('typescriptAdapter.testFiles', () => {
     );
   });
 
+  // The script runs under the branch's package-manager configs, which can have
+  // it load a file of the branch's own, even where they are the target's.
+  it.each([
+    ['the same .npmrc on both sides', { '.npmrc': 'engine-strict=true\n' }, {}, ['src/a.test.ts']],
+    ['an .npmrc only the branch commits', {}, { '.npmrc': 'engine-strict=true\n' }, []],
+    [
+      'an .npmrc the branch rewrites',
+      { '.npmrc': 'engine-strict=true\n' },
+      { '.npmrc': 'engine-strict=false\n' },
+      [],
+    ],
+    ...[
+      ['.npmrc', 'node-options=--import ./scripts/reg.mjs\n'],
+      ['.npmrc', 'script-shell=./scripts/sh\n'],
+      ['.yarnrc', 'yarn-path "./scripts/yarn.js"\n'],
+      ['.yarnrc.yml', 'yarnPath: .yarn/releases/yarn.cjs\n'],
+      ['.yarnrc.yml', 'plugins:\n  - path: .yarn/plugins/p.cjs\n'],
+      ['pnpm-workspace.yaml', 'nodeOptions: --import ./scripts/reg.mjs\n'],
+      ['bunfig.toml', 'preload = ["./scripts/reg.ts"]\n'],
+    ].map(
+      ([name, text]) =>
+        [`a target ${name} that runs a file`, { [name as string]: text }, {}, []] as const,
+    ),
+  ] as [string, Record<string, string>, Record<string, string>, string[]][])(
+    'reads the package-manager configs of %s',
+    (_, both, branchOnly, expected) => {
+      const files = {
+        'package.json': plainVitest,
+        'vitest.config.ts': configWith("{ include: ['src/**/*.test.ts'] }"),
+        ...both,
+      };
+      const configPath = makeRepo(files);
+      const measurePath = makeRepo({ ...files, ...branchOnly });
+
+      expect(typescriptAdapter.testFiles?.({ configPath, measurePath }, ['src/a.test.ts'])).toEqual(
+        expected,
+      );
+    },
+  );
+
+  // Vitest then loads the first config in a directory above, which a session can write.
+  it('collects nothing with no config at the root', () => {
+    const repo = makeRepo({ 'package.json': plainVitest });
+
+    expect(typescriptAdapter.testFiles?.(localContext(repo), ['src/a.test.ts'])).toEqual([]);
+  });
+
   // The run reads the measured checkout's lists, so a branch that narrows them
   // leaves a file vitest never collects.
   it('collects only what both checkouts collect', () => {
@@ -484,6 +531,26 @@ describe('typescriptAdapter.testFiles', () => {
       (modules: string) => mkdirSync(join(modules, '.vite', 'vitest'), { recursive: true }),
       true,
     ],
+    // `tsc -b` with `tsBuildInfoFile: ./node_modules/.tmp/...`; no package is dot-named.
+    [
+      'holds a build output the trusted one lacks',
+      (modules: string) => mkdirSync(join(modules, '.tmp')),
+      true,
+    ],
+    ['holds binaries of its own', (modules: string) => mkdirSync(join(modules, '.bin')), false],
+    [
+      'holds binaries of its own in another case',
+      (modules: string) => mkdirSync(join(modules, '.BIN')),
+      false,
+    ],
+    [
+      'replaces a dot-named link with an entry of its own',
+      (modules: string) => {
+        rmSync(join(modules, '.pnpm'));
+        mkdirSync(join(modules, '.pnpm'));
+      },
+      false,
+    ],
     [
       'replaces a link with a package of its own',
       (modules: string) => {
@@ -514,11 +581,13 @@ describe('typescriptAdapter.testFiles', () => {
       'vitest.config.ts': configWith("{ include: ['src/**/*.test.ts'] }"),
     };
     const { repo, sha } = committed(files);
-    mkdirSync(join(repo, 'node_modules', 'vitest'), { recursive: true });
     const checkout = makeRepo(files);
     const modules = join(checkout, 'node_modules');
     mkdirSync(modules);
-    symlinkSync(join(repo, 'node_modules', 'vitest'), join(modules, 'vitest'));
+    for (const entry of ['vitest', '.pnpm']) {
+      mkdirSync(join(repo, 'node_modules', entry), { recursive: true });
+      symlinkSync(join(repo, 'node_modules', entry), join(modules, entry));
+    }
     change(modules);
 
     expect(
@@ -759,7 +828,11 @@ describe('typescriptAdapter nested packages', () => {
 
   it("leaves a nested package's test files out of the root run's tests", () => {
     const ctx = localContext(
-      makeTree({ ...tree, 'package.json': JSON.stringify({ scripts: { test: 'vitest run' } }) }),
+      makeTree({
+        ...tree,
+        'package.json': JSON.stringify({ scripts: { test: 'vitest run' } }),
+        'vitest.config.ts': 'export default {};\n',
+      }),
     );
 
     expect(

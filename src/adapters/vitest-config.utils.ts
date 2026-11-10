@@ -29,11 +29,11 @@ const VITEST_CONFIG_FILES = ['vitest', 'vite'].flatMap((stem) =>
   ['ts', 'mts', 'cts', 'js', 'mjs', 'cjs'].map((ext) => `${stem}.config.${ext}`),
 );
 
-/** What vitest runs with no config file: the same as an empty one. */
-const VITEST_NO_CONFIG = 'export default {};\n';
-
-/** A workspace file, which turns one run into several projects this does not read. */
-const VITEST_WORKSPACE_FILE = /^vitest\.workspace\.(?:[cm]?[jt]s|json)$/i;
+/**
+ * A workspace file, under either name vitest 2 and 3 look for, which turns one
+ * run into several projects this does not read.
+ */
+const VITEST_WORKSPACE_FILE = /^vitest\.(?:workspace|projects)\.(?:[cm]?[jt]s|json)$/i;
 
 /** What vitest collects when its config declares no `include` (vitest 3 and 4). */
 const VITEST_DEFAULT_INCLUDE = /(?:^|\/)[^/]*\.(?:test|spec)\.[cm]?[jt]sx?$/;
@@ -55,6 +55,19 @@ const VITEST_MAX_PATTERNS = 64;
  * last `**` is a `.*$`, which matches whatever reaches it.
  */
 const VITEST_PATTERN_MAX_INNER_GLOBSTARS = 1;
+
+/**
+ * Segments allowed in one pattern: after a `**`, each fixed one is re-walked
+ * every time the `**` gives back a segment, so a path costs its length times
+ * this.
+ */
+const VITEST_PATTERN_MAX_SEGMENTS = 16;
+
+/**
+ * Characters allowed in one pattern: a `*` gives back one character at a time
+ * to the literal after it, so a segment costs its length times this.
+ */
+const VITEST_PATTERN_MAX_LENGTH = 256;
 
 /**
  * The one spelling of a pattern this reads: segments of ASCII letters, digits,
@@ -121,8 +134,9 @@ const OUTER_EXPRESSIONS = new Set([
 
 /**
  * A glob's regex, or undefined where it is not one this reads in linear time
- * on a path: each segment is `**` or holds at most one `*`, and at most one
- * before the last is `**`. Patterns come from config a session writes, or one
+ * on a path: each segment is `**` or holds at most one `*`, at most one before
+ * the last is `**`, and the pattern is short, since a long one multiplies what
+ * each of those costs. Patterns come from config a session writes, or one
  * merge earlier wrote, and are matched against every path on the branch inside
  * the merge lock.
  */
@@ -130,6 +144,8 @@ function vitestGlob(pattern: string): RegExp | undefined {
   const segments = pattern.split('/');
   const innerGlobstars = segments.slice(0, -1).filter((segment) => segment === '**').length;
   if (
+    pattern.length > VITEST_PATTERN_MAX_LENGTH ||
+    segments.length > VITEST_PATTERN_MAX_SEGMENTS ||
     !READ_GLOB.test(pattern) ||
     innerGlobstars > VITEST_PATTERN_MAX_INNER_GLOBSTARS ||
     segments.some((segment) => UNREAD_SEGMENT.test(segment))
@@ -361,16 +377,18 @@ interface VitestCollection {
 
 /**
  * What a plain vitest run over `root` collects, or undefined where that cannot
- * be read: a workspace file, or a config `configGlobs` does not read. The
- * config is the first of vitest's own list present, parsed, never run. A path
- * holding a line break is collected by nothing (`UNREAD_PATH`). Throws where
- * the root cannot be read.
+ * be read: no config at the root, a workspace file, or a config `configGlobs`
+ * does not read. The config is the first of vitest's own list present, parsed,
+ * never run. With none at the root, vitest loads the first it finds in a
+ * directory above, which a session can write and no read of the commit sees.
+ * A path holding a line break is collected by nothing (`UNREAD_PATH`). Throws
+ * where the root cannot be read.
  */
 export function vitestCollection(root: RootFiles): VitestCollection | undefined {
   if ([...root.keys()].some((name) => VITEST_WORKSPACE_FILE.test(name))) return undefined;
   const file = VITEST_CONFIG_FILES.find((name) => root.has(name));
-  const text = file === undefined ? VITEST_NO_CONFIG : (root.get(file) as () => string)();
-  const globs = configGlobs(text);
+  if (file === undefined) return undefined;
+  const globs = configGlobs((root.get(file) as () => string)());
   return (
     globs && {
       collects: (path) =>

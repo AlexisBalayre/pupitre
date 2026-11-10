@@ -49,9 +49,9 @@ describe('vitestCollection', () => {
     ]);
   });
 
-  it("collects vitest's default include, past its default exclude, with no config", () => {
+  it("collects vitest's default include, past its default exclude, with no include", () => {
     expect(
-      collected({}, [
+      collected({ 'vitest.config.ts': configWith('{}') }, [
         'src/a.spec.tsx',
         'b.test.js',
         'src/c.test.mts',
@@ -61,6 +61,11 @@ describe('vitestCollection', () => {
         'vitest.config.test.ts',
       ]),
     ).toEqual(['src/a.spec.tsx', 'b.test.js', 'src/c.test.mts']);
+  });
+
+  // Vitest then loads the first config in a directory above, which a session can write.
+  it('collects nothing with no config at the root', () => {
+    expect(vitestCollection(diskRoot(repoWith({ 'package.json': '{}' })))).toBeUndefined();
   });
 
   it('reads vitest.config before vite.config, as vitest does', () => {
@@ -137,6 +142,9 @@ describe('vitestCollection', () => {
     ['an exclude with braces', configWith("{ exclude: ['src/{a,b}.test.ts'] }")],
     ['an exclude with a !', configWith("{ exclude: ['!src/a.test.ts'] }")],
     ['an exclude over 64 patterns', configWith(`{ exclude: ${patterns(65)} }`)],
+    // A `**` re-walks each fixed segment after it, and a `*` each character.
+    ['an exclude over 16 segments', configWith(`{ exclude: ['**/${'*/'.repeat(15)}z.test.ts'] }`)],
+    ['an exclude over 256 characters', configWith(`{ exclude: ['src/*${'a'.repeat(256)}'] }`)],
     ['an exclude climbing with ..', configWith("{ exclude: ['../src/a.test.ts'] }")],
     ['an absolute exclude', configWith("{ exclude: ['/abs/a.test.ts'] }")],
     // Spellings vitest's globber reads otherwise than the pattern says (M3).
@@ -220,14 +228,24 @@ describe('vitestCollection', () => {
     expect(Date.now() - started).toBeLessThan(500);
   });
 
-  it.each(['vitest.workspace.ts', 'Vitest.Workspace.ts', 'VITEST.WORKSPACE.JSON'])(
-    'collects nothing beside a workspace file named %s',
-    (name) => {
-      expect(
-        vitestCollection(diskRoot(repoWith({ [name]: 'export default [];\n' }))),
-      ).toBeUndefined();
-    },
-  );
+  it.each([
+    'vitest.workspace.ts',
+    'Vitest.Workspace.ts',
+    'VITEST.WORKSPACE.JSON',
+    'vitest.projects.ts',
+    'VITEST.PROJECTS.JSON',
+  ])('collects nothing beside a workspace file named %s', (name) => {
+    expect(
+      vitestCollection(
+        diskRoot(
+          repoWith({
+            'vitest.config.ts': configWith("{ include: ['src/**/*.test.ts'] }"),
+            [name]: 'export default [];\n',
+          }),
+        ),
+      ),
+    ).toBeUndefined();
+  });
 
   it('refuses to read a config that is a symlink', () => {
     const repo = repoWith({ 'real.config.ts': configWith("{ include: ['src/**/*.test.ts'] }") });

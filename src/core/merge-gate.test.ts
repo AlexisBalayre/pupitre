@@ -1626,6 +1626,28 @@ describe('countChangedLines', () => {
     });
   });
 
+  // APFS checks `src/big.test.ts` out into `Src/`, where a case-sensitive
+  // include does not see it, and `src/fixtures/` into a `Fixtures/` an exclude names.
+  it('counts a collected test as source where its directory folds onto another spelling', () => {
+    const repo = initRepo();
+    sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
+    commitBlobs(repo, [
+      ['100644', 'Src/zzz.txt', 'z\n'],
+      ['100644', 'src/big.test.ts', 'export const X = 1;\n'.repeat(5)],
+      ['100644', 'lib/Fixtures/zzz.txt', 'z\n'],
+      ['100644', 'lib/fixtures/c.test.ts', 'x\n'.repeat(2)],
+      ['100644', 'lib/a.test.ts', 'x\n'.repeat(3)],
+    ]);
+    const collects = (files: string[]) => files.filter((file) => file.endsWith('.test.ts'));
+
+    expect(countChangedLines(repo, 'main', 'feature', collects)).toEqual({
+      source: 9,
+      test: 3,
+      docs: 0,
+      forged: [],
+    });
+  });
+
   it('counts a deleted test the runner collected as test', () => {
     const repo = initRepo();
     commitIn(repo, 'src/old.spec.ts', 'it("o", () => {});\n'.repeat(7));

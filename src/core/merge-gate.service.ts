@@ -328,12 +328,15 @@ type DiffSizeKind = 'source' | 'test' | 'docs';
 
 /**
  * What the branch's tree tells the diff-size split beyond a path's own name
- * (decision 110): every path on it, whether a symlink can reach the path, and
- * whether a Docusaurus config compiles the Markdown under `docs/`.
+ * (decision 110): every path on it, whether a symlink can reach the path,
+ * whether the tree also holds the path, or one of its directories, in another
+ * ASCII case, and whether a Docusaurus config compiles the Markdown under
+ * `docs/`.
  */
 interface BranchTree {
   paths: string[];
   linked: (path: string) => boolean;
+  foldsOntoAnother: (path: string) => boolean;
   markdownIsCode: boolean;
 }
 
@@ -426,6 +429,14 @@ function readBranchTree(repoPath: string, branch: string): BranchTree {
       lands.startsWith('../');
     landings.push(folded(lands));
   }
+  // Every spelling of each path and directory in the tree, by its folded form.
+  const spellings = new Map<string, Set<string>>();
+  const prefixes = (path: string): string[] =>
+    path.split('/').map((_, i, segments) => segments.slice(0, i + 1).join('/'));
+  for (const prefix of paths.flatMap(prefixes)) {
+    const key = folded(prefix);
+    spellings.set(key, (spellings.get(key) ?? new Set()).add(prefix));
+  }
   return {
     paths,
     linked: (path) => {
@@ -435,6 +446,10 @@ function readBranchTree(repoPath: string, branch: string): BranchTree {
         landings.some((lands) => lands === '.' || key === lands || key.startsWith(`${lands}/`))
       );
     },
+    foldsOntoAnother: (path) =>
+      prefixes(path).some((prefix) =>
+        [...(spellings.get(folded(prefix)) ?? [])].some((spelling) => spelling !== prefix),
+      ),
     markdownIsCode,
   };
 }
@@ -454,9 +469,13 @@ const UNSPELLABLE_NAME = /[^\w.$+@-]/;
  * path holding a character outside ASCII, which a link spelled in ASCII may
  * reach through the filesystem's folding. A test is only a path the test
  * stage's runner collects, or the trusted suffix where its adapter cannot say
- * (`collected` undefined, decision 143), under a name a token can spell, and
- * never a file renamed onto it from a name that was not one, which would carry
- * production code in under the test count. `.md` under `docs/` is code where a
+ * (`collected` undefined, decision 143), under a name a token can spell, at a
+ * path the tree holds in no other ASCII case, itself or through a directory,
+ * and never a file renamed onto it from a name that was not one, which would
+ * carry production code in under the test count. APFS folds case (decision
+ * 78), so checkout writes `src/big.test.ts` into a `Src/` the tree also holds,
+ * where the runner's case-sensitive patterns see `Src/big.test.ts`, which none
+ * may collect. `.md` under `docs/` is code where a
  * Docusaurus config compiles it.
  */
 function diffSizeKind(
@@ -475,7 +494,8 @@ function diffSizeKind(
   }
   const isTest = (candidate: string): boolean =>
     (collected ? collected.has(candidate) : candidate.endsWith(DIFF_SIZE_TEST_SUFFIX)) &&
-    !UNSPELLABLE_NAME.test(basename(candidate));
+    !UNSPELLABLE_NAME.test(basename(candidate)) &&
+    !tree.foldsOntoAnother(candidate);
   if (isTest(path) && (entry?.renamedFrom === undefined || isTest(entry.renamedFrom))) {
     return 'test';
   }
@@ -2441,25 +2461,11 @@ function changesOnlyUntested(
     if (entry.renamedFrom !== undefined && !listed(entry.renamedFrom)) return false;
   }
   const tree = readBranchTree(repoPath, branch);
-  // Every spelling of each path and directory in the branch's tree, by its folded form.
-  const spellings = new Map<string, Set<string>>();
-  const prefixes = (path: string): string[] =>
-    path.split('/').map((_, i, segments) => segments.slice(0, i + 1).join('/'));
-  for (const path of runGit(repoPath, ['ls-tree', '-r', '-z', '--name-only', branch]).split('\0')) {
-    for (const prefix of path ? prefixes(path) : []) {
-      const key = folded(prefix);
-      spellings.set(key, (spellings.get(key) ?? new Set()).add(prefix));
-    }
-  }
-  const foldsOntoAnother = (path: string): boolean =>
-    prefixes(path).some((prefix) =>
-      [...(spellings.get(folded(prefix)) ?? [])].some((spelling) => spelling !== prefix),
-    );
   return changedPaths.every(
     (path) =>
       !tree.linked(path) &&
       !(tree.markdownIsCode && path.endsWith('.md')) &&
-      !foldsOntoAnother(path),
+      !tree.foldsOntoAnother(path),
   );
 }
 

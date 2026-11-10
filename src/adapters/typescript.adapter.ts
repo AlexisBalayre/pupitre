@@ -215,10 +215,24 @@ function runsPlainVitest(root: RootFiles): boolean {
  * or vite reads.
  */
 const VITEST_RUN_INPUT =
-  /^(?:package\.json|\.npmrc|\.yarnrc(?:\.yml)?|pnpm-workspace\.yaml|bunfig\.toml|vite(?:st)?\.(?:config|workspace)\.[^/]*)$/;
+  /^(?:package\.json|\.npmrc|\.yarnrc(?:\.yml)?|pnpm-workspace\.yaml|bunfig\.toml|vite(?:st)?\.(?:config|workspace|projects)\.[^/]*)$/;
+
+/** The npm, yarn, pnpm and bun configs among the run inputs, which the branch may commit. */
+const PACKAGE_MANAGER_CONFIG = /^(?:\.npmrc|\.yarnrc(?:\.yml)?|pnpm-workspace\.yaml|bunfig\.toml)$/;
+
+/**
+ * A key, in any of their spellings, by which a package-manager config has the
+ * test script run a file, which in the gate is the branch's even where the
+ * config is the target's: yarn's own binary and plugins, a node option such
+ * as `--import`, the shell scripts run in, and bun's preloads.
+ */
+const RUNS_A_FILE = /yarn-?path|plugins|node-?options|script-?shell|preload/i;
 
 /** What vitest and vite write in `node_modules` as they run, which the gate does not link. */
 const RUN_CACHE = /^(?:\.cache$|\.vite)/;
+
+/** Where a package manager puts the binaries a script runs by name. */
+const BIN_DIR = '.bin';
 
 /**
  * A checkout's root as the diff-size split reads it: from the commit it holds
@@ -231,9 +245,23 @@ function rootAt(ctx: CapabilityContext, path: string, sha: string | undefined): 
 }
 
 /**
+ * Whether a `node_modules` entry the trusted checkout's lacks is one no run
+ * loads: a dot-named one, which no package can be named, such as the build
+ * info `tsc -b` may write there, but not the binaries' directory, in any case.
+ */
+function unloadedEntry(trusted: string, name: string): boolean {
+  return (
+    name.startsWith('.') &&
+    name.toLowerCase() !== BIN_DIR &&
+    lstatSync(join(trusted, name), { throwIfNoEntry: false }) === undefined
+  );
+}
+
+/**
  * Whether the gate checkout's `node_modules` still links each entry to the
  * trusted checkout's, as the gate made it: one replaced runs the branch's
- * vitest, or a package it loads.
+ * vitest, or a package it loads. A run cache, or an entry no run loads, may
+ * stand beside them.
  */
 function environmentLinked({ configPath, measurePath }: CapabilityContext): boolean {
   const local = join(measurePath, GATE_ENVIRONMENT_DIR);
@@ -243,19 +271,38 @@ function environmentLinked({ configPath, measurePath }: CapabilityContext): bool
   return (
     stat.isDirectory() &&
     readdirSync(local).every(
-      (name) => RUN_CACHE.test(name) || readlinkSync(join(local, name)) === join(trusted, name),
+      (name) =>
+        RUN_CACHE.test(name) ||
+        unloadedEntry(trusted, name) ||
+        readlinkSync(join(local, name)) === join(trusted, name),
     )
   );
 }
 
-/** The run inputs a root holds, by name, each read, as one string. Throws where one cannot be read. */
-function runInputs(root: RootFiles): string {
-  const inputs = [...root].filter(([name]) => VITEST_RUN_INPUT.test(name));
+/**
+ * The root files `pattern` names, by name, each read, as one string. Throws
+ * where one cannot be read.
+ */
+function runInputs(root: RootFiles, pattern: RegExp): string {
+  const inputs = [...root].filter(([name]) => pattern.test(name));
   return JSON.stringify(inputs.map(([name, read]) => [name, read()]).sort());
 }
 
+/**
+ * What a plain vitest run over `root` collects, with its package-manager
+ * configs beside the config it compares across checkouts; undefined where it
+ * is unknown, or where one of those configs runs a file. Throws where the root
+ * cannot be read.
+ */
+function plainVitestCollection(root: RootFiles): ReturnType<typeof vitestCollection> {
+  const managers = runInputs(root, PACKAGE_MANAGER_CONFIG);
+  const collection =
+    runsPlainVitest(root) && !RUNS_A_FILE.test(managers) ? vitestCollection(root) : undefined;
+  return collection && { ...collection, config: [collection.config, managers].join('\0') };
+}
+
 /** The config files vitest reads at a package root. */
-const VITEST_CONFIG_FILE = /^vite(?:st)?\.(?:config|workspace)\.[cm]?[jt]s$/;
+const VITEST_CONFIG_FILE = /^vite(?:st)?\.(?:config|workspace|projects)\.[cm]?[jt]s$/;
 
 /**
  * Whether a vitest or vite config at `repoPath` mentions coverage thresholds.
@@ -449,7 +496,8 @@ export const typescriptAdapter: Adapter = {
     // nothing when it holds no test (decisions 31, 143). A nested package's file
     // is its own runner's (decision 58). Unknown on either side collects nothing.
     // Vitest runs the branch's config, so its lists count only where the rest
-    // of it is the trusted one's.
+    // of it, and the package-manager configs the script runs under, are the
+    // trusted one's.
     const [trusted, measured] = (
       [
         [ctx.configPath, ctx.configSha],
@@ -457,8 +505,7 @@ export const typescriptAdapter: Adapter = {
       ] as const
     ).map(([path, sha]) => {
       try {
-        const root = rootAt(ctx, path, sha);
-        return runsPlainVitest(root) ? vitestCollection(root) : undefined;
+        return plainVitestCollection(rootAt(ctx, path, sha));
       } catch {
         return undefined;
       }
@@ -481,7 +528,8 @@ export const typescriptAdapter: Adapter = {
     try {
       return (
         environmentLinked(ctx) &&
-        runInputs(diskRoot(ctx.measurePath)) === runInputs(treeRoot(ctx.configPath, ctx.measureSha))
+        runInputs(diskRoot(ctx.measurePath), VITEST_RUN_INPUT) ===
+          runInputs(treeRoot(ctx.configPath, ctx.measureSha), VITEST_RUN_INPUT)
       );
     } catch {
       return false;

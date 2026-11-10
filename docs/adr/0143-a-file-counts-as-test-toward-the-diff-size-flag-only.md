@@ -35,10 +35,13 @@
     once after the build and before any suite and once before the split. It compares the
     checkout's root files that decide the run with the sha's blobs: `package.json`, `.npmrc`,
     `.yarnrc`, `.yarnrc.yml`, `pnpm-workspace.yaml`, `bunfig.toml`, every `vite.config.*`,
-    `vitest.config.*` and `vitest.workspace.*`, names folded to lower case. It also checks
-    that each entry of the checkout's `node_modules` is still the link to the trusted
-    checkout's entry that the gate made, apart from the `.cache` and `.vite*` caches vitest
-    writes. One changed, added, removed, a link or named in another case at either check,
+    `vitest.config.*`, `vitest.workspace.*` and `vitest.projects.*`, names folded to lower
+    case. It also checks that each entry of the checkout's `node_modules` is still the link to
+    the trusted checkout's entry that the gate made, apart from the `.cache` and `.vite*`
+    caches vitest writes and a dot-named entry the trusted `node_modules` lacks, such as the
+    `.tmp` a `tsc -b` with `tsBuildInfoFile: ./node_modules/.tmp/...` writes: no package can
+    be named with a leading dot, so no run loads one. `.bin`, in any case, is the exception,
+    since a script runs the binaries in it by name. One changed, added, removed, a link or named in another case at either check,
     or a `node_modules` entry replaced or linked elsewhere, counts no file as test.
     **TypeScript** answers from vitest. The `test` script must be plain `vitest` or `vitest
     run` in both checkouts, with no `pretest` or `posttest` beside it (the `coveredTest` rule
@@ -51,7 +54,11 @@
     case-insensitive disk opens `Vitest.config.ts` for `vitest.config.ts` and a
     case-sensitive one does not, so a config or manifest named in another case, or two names
     that fold to one, leaves the answer unknown, and `Vitest.Workspace.ts` is a workspace
-    file. It is read statically: a
+    file. A root with no config leaves the answer unknown: vitest then loads the first
+    config it finds in a directory above the checkout, which a session can write, since it
+    runs unsandboxed (decision 5), and no read of the commit sees. The checkout sits in the
+    temp directory, and a check of its parents after the run does not prove what they held
+    during it. It is read statically: a
     default export that is an object literal, bare or through the `defineConfig` imported from
     `vitest/config` or `vite`, whose `test` holds `include` and `exclude` as arrays of at most
     64 string literals. Anything else that decides what one run collects leaves the answer
@@ -63,7 +70,8 @@
     too), a `root` or a `__proto__` at either level (an object literal's `__proto__` hands it
     inherited keys the read never sees), `test.dir`, `test.projects`, `test.workspace` or
     `test.typecheck` (whose `only` runs type tests alone, so no test-named file runs), or a
-    `vitest.workspace.*` beside it.
+    workspace file beside it, under either name vitest 2 and 3 look for, `vitest.workspace.*`
+    or `vitest.projects.*`.
     The measured config is the branch's, and vitest runs it, so the run can collect what its
     lists name and still pass a file holding no test. A setup file can register a test in
     every collected file, and a reporter, runner or pool can pass a run that failed. So the
@@ -79,7 +87,19 @@
     `environment`, `runner`, `pool`, `poolOptions`, `execArgv` or `sequence`. This reverses
     the earlier rule that a measured config had to be data alone: that rule refused this
     repo's own config on every branch, and it did not stop a data key from naming a branch
-    module. No config collects vitest's default `**/*.{test,spec}.?(c|m)[jt]s?(x)`. Vitest 3's
+    module. A config with no `include` collects vitest's default
+    `**/*.{test,spec}.?(c|m)[jt]s?(x)`.
+    The script runs under the npm, yarn, pnpm and bun configs at the root, `.npmrc`,
+    `.yarnrc`, `.yarnrc.yml`, `pnpm-workspace.yaml` and `bunfig.toml`, and the branch may
+    commit them: an `.npmrc` with `node-options=--import ./scripts/reg.mjs` loads a branch
+    file into the run, and `testInputsIntact` cannot see it, since a committed file matches
+    its own blob. So those files, by name and text, are compared across the two sides as the
+    rest of the config is, and a branch that adds, removes or changes one leaves the answer
+    unknown. One the two share may still name a file the branch can rewrite, so on either
+    side a config mentioning `yarnPath`, `yarn-path`, `plugins`, `node-options` or
+    `nodeOptions`, `script-shell` or `scriptShell`, or `preload` leaves the answer unknown,
+    matched as text in any case. That costs a Yarn Berry repo, whose `.yarnrc.yml` names its
+    own binary, the split: its run is the binary's, which is the branch's to rewrite. Vitest 3's
     default `exclude` (a `node_modules`, `dist`, `cypress`, `.idea`, `.git`, `.cache`,
     `.output` or `.temp` directory, a tool's `*.config.*`), a superset of vitest 4's, applies
     whatever the config declares, since excluding more only counts more as source. A declared
@@ -94,8 +114,11 @@
     session writes, or one merge earlier wrote, and are matched against every path on the
     branch inside the merge lock, so a pattern is read only when it runs in time linear in a
     path: each segment `**` or holding at most one `*`, at most one `**` before the last
-    segment, no `..` and no absolute path, at most 64 patterns (decision 31's cap; more leave
-    the answer unknown). Two inner
+    segment, at most 16 segments and 256 characters, no `..` and no absolute path, at most 64
+    patterns (decision 31's cap; more leave the answer unknown). Each fixed segment after a
+    `**` is re-walked every time the `**` gives back a segment, and a `*` gives back one
+    character at a time to the literal after it, so a pattern's own length multiplies what a
+    path costs: `**/` and two thousand `*/` cost a deep path seconds. Two inner
     `**` cost a path of k segments k squared (`**/b/**/c` against `b/b/b/…`), while a last
     `**` is a `.*$` that matches whatever reaches it. An `include` pattern outside that
     collects nothing; an `exclude` one leaves the answer unknown. An exclude is matched once
@@ -105,6 +128,13 @@
     stops at one, so the `.*(?:/.*)?$` an exclude ending `**` becomes would backtrack over
     every `/` before it, quadratically. A file in a
     nested package is its own runner's (decision 58) and is never a root test.
+    APFS folds case (decision 78), and checkout writes each path into whichever spelling of a
+    directory it created first, so a branch holding `Src/zzz.txt` beside `src/big.test.ts`
+    checks the test out as `Src/big.test.ts`, which a case-sensitive `src/**/*.test.ts` does
+    not collect, and `src/Fixtures/zzz` beside `src/fixtures/big.test.ts` drops the test
+    under an exclude of `**/fixtures/**`. So a path the branch's tree also holds in another
+    ASCII case, itself or through one of its directories, is never test, whatever its runner
+    answers. The check is decision 139's, now on the branch tree the split reads.
     A collected test is named by its file name without whatever extension it has, no longer
     without `.ts` alone, so the reach check finds `./big.spec.js` naming `big.spec.tsx`.
     **Python does not answer**, and keeps decision 110's rule: every `.py`, `test_*.py`
@@ -117,7 +147,7 @@
     `testFiles`.
     Ceilings, stated. A vitest config that is a link collects nothing, and one named by
     `--config` is never read, as the script rule refuses the flag. In a repo whose `include`
-    is wider than this one's, or which has no config and so takes vitest's default, more
+    is wider than this one's, or whose config declares none and so takes vitest's default, more
     spellings than `.test.ts` count as test: `.spec.*`, `.tsx`, `.mts` and the rest the
     `include` names. Each still fails the run if it holds no test. Code loaded by convention or
     by a glob rather than by a specifier that spells its name escapes the reach check, so a
@@ -132,13 +162,14 @@
     The gate's own branch is measured
     by the main checkout's adapter (the metric-scope lesson of decision 39), so this change
     first applies to the merge after it lands. Tests: in the config reader, an `include` of
-    `src/**` collects `src/a.test.ts` and not `scripts/x.test.ts`, no config collects the
-    default spellings past the default exclude, `vitest.config` wins over `vite.config`, an
+    `src/**` collects `src/a.test.ts` and not `scripts/x.test.ts`, a config with no include
+    collects the default spellings past the default exclude, no config at the root is unknown, `vitest.config` wins over `vite.config`, an
     exclude drops a file, a directory and what `**/fixtures/**` names, and an include pattern
     with two stars in a segment, two inner `**`, braces or a leading `./` collects nothing by
     it. Each of these is unknown: a function config, the
     config's own `defineConfig` wrapper, one imported from elsewhere, another import aliased to
-    the name, a run-time include, an include or exclude over 64 patterns, a spread exclude, a
+    the name, a run-time include, an include or exclude over 64 patterns, an exclude over 16
+    segments or 256 characters, a spread exclude, a
     braced exclude, an exclude with a `!`, a `..` or an absolute path, an exclude spelled
     `./src/prod`, `src/prod/`, `src/./prod`, `src//prod`, with a `?`, a backslash, whitespace
     or an `@`, an empty exclude pattern, a config that does not parse, a spread `test`, a
@@ -146,7 +177,8 @@
     `test.root`, `typecheck`, a `__proto__` under `test` or at the top, a top-level `root`,
     an import or re-export of a file, `plugins`, `setupFiles`, `globalSetup`, `reporters`, an
     `environment`, a `runner`, a `pool`, `poolOptions`, `execArgv` and a sequencer. A
-    workspace file is unknown too, named in any case, and a config that is a
+    workspace file is unknown too, `vitest.workspace.*` or `vitest.projects.*` named in any
+    case, and a config that is a
     symlink or named in another case is not read. Read from a commit, the config is the
     tree's whatever the disk holds, and one committed as a link or beside a name that folds
     to it is not read. A config that runs code and imports a package is read. Two configs
@@ -157,15 +189,22 @@
     narrowing script, another runner, a `pretest`, a `posttest` and a manifest that is not
     JSON each collect nothing, and a nested package's test is not a root test. A branch whose
     config is the trusted one, though it runs code, collects. One that sets another key,
-    changes a value or adds a setup file collects nothing. A branch narrowing its include or
+    changes a value or adds a setup file collects nothing. The same `.npmrc` on both sides
+    collects; one only the branch commits or rewrites collects nothing, and so does a shared
+    `.npmrc` with `node-options` or `script-shell`, `.yarnrc` with `yarn-path`, `.yarnrc.yml`
+    with `yarnPath` or `plugins`, `pnpm-workspace.yaml` with `nodeOptions` or `bunfig.toml`
+    with `preload`. A root with no config collects nothing. A branch narrowing its include or
     excluding a file drops it. The measured config is read from the pinned sha and the trusted
     one from the target sha, whatever either checkout's disk holds. `testInputsIntact` holds
     for an untouched checkout, a build output beside it, a `node_modules` linked as the gate
-    links it or holding a vite cache, and outside the gate. It fails for a rewritten config,
+    links it, holding a vite cache or holding a `.tmp` build output the trusted one lacks,
+    and outside the gate. It fails for a rewritten config,
     an added `.npmrc`, `.yarnrc`, `.yarnrc.yml`, `pnpm-workspace.yaml` or `bunfig.toml`, a
     removed manifest, a config made a link, a manifest renamed into another case, a
-    `node_modules` entry replaced by a package or linked elsewhere, and a `node_modules` that is
-    itself a link. In the gate,
+    `node_modules` entry replaced by a package or linked elsewhere, a `.bin` of its own in
+    either case, a dot-named link replaced by an entry of its own, and a `node_modules` that is
+    itself a link. In the split, a collected test under a directory the tree also holds in
+    another case, `src/` beside `Src/` or `fixtures/` beside `Fixtures/`, counts as source. In the gate,
     `scripts/x.test.ts` outside the trusted include counts as source while `src/a.test.ts`
     counts as test, with a second adapter claiming every file not asked, every file counts as
     source where only the branch's config imports its `defineConfig` from elsewhere, a
