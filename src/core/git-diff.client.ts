@@ -823,13 +823,15 @@ function blobLines(repoPath: string, side: DiffSide): number {
  * renamed file's merge-base side is the blob it was `renamedFrom`, named by
  * that path's extension: a source file renamed into a `.png` would otherwise
  * have no base side, skip, and drop every line it deleted. A rename that keeps
- * the oid, the mode and the extension (`extensionOf`) adds nothing to the
- * tree, so it answers null unread and spends nothing, as numstat counts a text
- * one `0\t0`: numstat prints `-\t-` for it all the same. Renamed to another
- * extension, the same bytes are read as something else, so a PNG carrying a
- * `<?php` block renamed to `.php` is judged by its new name and recounted.
- * Copies cannot pass as renames, as `gitDiffNumstat` pins plain rename
- * detection. A skip spends the
+ * the oid, the mode and an extension (`extensionOf`) of more than its dot,
+ * byte for byte, case included, adds nothing to the tree, so it answers null
+ * unread and spends nothing, as numstat counts a text one `0\t0`: numstat
+ * prints `-\t-` for it all the same. Under another extension, or under none,
+ * the same bytes can be read as something else (a PNG's `<?php` block renamed
+ * to `.php`, `.PHP` to `.php`, a name with no extension or a trailing dot moved
+ * to `.husky/pre-commit` or `b.php.`), so it is judged by its new name and
+ * recounted. Copies cannot pass as renames, as `gitDiffNumstat` pins plain
+ * rename detection. A skip spends the
  * branch side's bytes from `budget` (`spendKnownBinarySkip`), which every call
  * for one diff must share (start it at `BINARY_FREE_TOTAL_MAX_BYTES`), and a
  * file the budget cannot cover is recounted. It has no default: a fresh budget
@@ -845,12 +847,14 @@ export function gitDiffBinaryRecount(
     throw new Error(`git diff listed no --raw sides to recount ${path} from`);
   }
   const [baseBlob, branchBlob] = entry.sides;
+  const extension = extensionOf(path);
   if (
     baseBlob !== undefined &&
     branchBlob !== undefined &&
     baseBlob.oid === branchBlob.oid &&
     baseBlob.mode === branchBlob.mode &&
-    extensionOf(renamedFrom ?? path) === extensionOf(path)
+    extension.length > '.'.length &&
+    extensionOf(renamedFrom ?? path) === extension
   ) {
     return null;
   }

