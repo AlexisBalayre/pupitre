@@ -169,8 +169,8 @@ describe('adrNumberStage', { timeout: 20_000 }, () => {
     expect(refusals()).toEqual([
       'ADR numbers already taken:',
       '  docs/adr/0002-a.md: decision 0002 renames docs/adr/0002-second.md, which pup/other, a ' +
-        'session branch that is live or has an open PR, also renames or adds under that number; ' +
-        "settle one name with it or keep the target's",
+        'session branch that is live or whose PR has not landed, also renames or adds under that ' +
+        "number; settle one name with it or keep the target's",
     ]);
   });
 
@@ -201,7 +201,7 @@ describe('adrNumberStage', { timeout: 20_000 }, () => {
     expect(stage()?.detail).toBe(
       'ADR numbers already taken:\n' +
         '  docs/adr/0004-mine.md: decision 0004 is also added by pup/other, a session branch ' +
-        'that is live or has an open PR; renumber it 0005, the lowest free number\n' +
+        'that is live or whose PR has not landed; renumber it 0005, the lowest free number\n' +
         'not checked against pup/orphan: git could not read it against the target',
     );
   });
@@ -236,7 +236,7 @@ describe('adrNumberStage', { timeout: 20_000 }, () => {
       expect(refusals()).toEqual([
         'ADR numbers already taken:',
         '  docs/adr/0003-mine.md: decision 0003 is also added by pup/other, a session branch that ' +
-          'is live or has an open PR; renumber it 0004, the lowest free number',
+          'is live or whose PR has not landed; renumber it 0004, the lowest free number',
       ]);
     },
   );
@@ -262,7 +262,7 @@ describe('adrNumberStage', { timeout: 20_000 }, () => {
     expect(refusals()).toEqual([
       'ADR numbers already taken:',
       '  docs/adr/0003-mine.md: decision 0003 is also added by pup/other, a session branch that ' +
-        'is live or has an open PR; renumber it 0004, the lowest free number',
+        'is live or whose PR has not landed; renumber it 0004, the lowest free number',
     ]);
   });
 
@@ -286,8 +286,8 @@ describe('adrNumberStage', { timeout: 20_000 }, () => {
     openPrPeer(sha);
     commitOn(repo, 'pup/me', 'docs/adr/0003-mine.md');
     expect(refusals()).toEqual([
-      'Open PRs whose gated commit cannot be read, so no number this branch adds can be ' +
-        'cleared against them:',
+      'PRs not landed whose gated commit cannot be read, so no number this branch adds can ' +
+        'be cleared against them:',
       `  pup/other (https://github.com/o/r/pull/1): ${why}`,
     ]);
   });
@@ -434,7 +434,7 @@ describe('adrNumberStage', { timeout: 20_000 }, () => {
       'ADR numbers already taken:',
       '  docs/adr/0002-mine.md: decision 0002 is already on the target; renumber it 0004, the lowest free number',
       '  docs/adr/0003-mine.md: decision 0003 is also added by pup/other, a session branch that ' +
-        'is live or has an open PR; renumber it 0005, the lowest free number',
+        'is live or whose PR has not landed; renumber it 0005, the lowest free number',
     ]);
   });
 

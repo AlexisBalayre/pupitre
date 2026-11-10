@@ -177,7 +177,7 @@ interface Competitor {
    */
   rev: string | undefined;
   /**
-   * The open PR's url, set on a pinned peer: one whose commit git cannot find
+   * The PR's url, set on a pinned peer: one whose commit git cannot find
    * refuses the gate, naming the PR, rather than read as absent.
    */
   prUrl?: string;
@@ -185,8 +185,10 @@ interface Competitor {
 
 /**
  * The other sessions whose branch can still land: one holding its scope
- * (decision 41's live states), read at its branch, or a merged one whose PR is
- * open, not landed, read at the sha its newest merge pinned. That gate normally
+ * (decision 41's live states), read at its branch, or a merged one whose PR has
+ * not landed, read at the sha its newest merge pinned. The store cannot tell
+ * such a PR open from closed unmerged, so a closed one counts too: nothing
+ * records a close (decision 146's ceilings). That gate normally
  * deleted the local branch, in both modes; it keeps it with a worktree it could
  * not remove or when the branch moved past the pin, and then the branch may
  * hold commits the PR does not. Either way the sha is pup's record of the PR's
@@ -232,9 +234,9 @@ const pad = (number: number): string => String(number).padStart(4, '0');
  * The gate's ADR-number stage (decision 146), run before any other stage
  * measures the branch. It fails on each decision the branch at `sha` adds whose
  * number the target at `targetSha` holds, that the branch adds twice, or that
- * another session branch adds while its session is live or holds an open PR
- * (that one read at the sha its gate pinned, since the gate normally deleted
- * the branch),
+ * another session branch adds while its session is live or holds a PR that has
+ * not landed (that one read at the sha its gate pinned, since the gate normally
+ * deleted the branch),
  * each line naming the lowest free number above the target's highest. A file
  * git pairs as a rename of a target decision under the same number is that
  * decision under a new slug, not a new one: it is checked against the other
@@ -246,7 +248,7 @@ const pad = (number: number): string => String(number).padStart(4, '0');
  * slugs merge without a conflict. Another branch git cannot read against the
  * target (an orphan, a symbolic ref, a read past its time or buffer), or one
  * adding more than `MAX_PEER_DECISIONS`, is skipped and named rather than
- * failing or blocking everyone's gate. An open PR whose merge recorded no
+ * failing or blocking everyone's gate. A PR not landed whose merge recorded no
  * commit sha, or whose commit the repo lacks, fails the stage instead, naming
  * the branch and the PR: nothing else holds what it adds, so passing would let
  * a clash through unseen. Any other new file under `docs/adr/`,
@@ -333,8 +335,8 @@ export function adrNumberStage(
       if (other !== undefined) {
         refusals.push(
           `${decision} renames ${quotePath(from as string)}, which ${other}, a session branch that is ` +
-            'live or has an open PR, also renames or adds under that number; settle one name ' +
-            "with it or keep the target's",
+            'live or whose PR has not landed, also renames or adds under that number; settle one ' +
+            "name with it or keep the target's",
         );
       }
       continue;
@@ -353,7 +355,7 @@ export function adrNumberStage(
       : first !== undefined
         ? `is also added by ${quotePath(first)} on this branch`
         : other !== undefined
-          ? `is also added by ${other}, a session branch that is live or has an open PR`
+          ? `is also added by ${other}, a session branch that is live or whose PR has not landed`
           : undefined;
     if (where === undefined) continue;
     refusals.push(`${decision} ${where}; ${renumber()}`);
@@ -363,8 +365,8 @@ export function adrNumberStage(
   const lines = [
     ...section('ADR numbers already taken:', refusals),
     ...section(
-      'Open PRs whose gated commit cannot be read, so no number this branch adds can be ' +
-        'cleared against them:',
+      'PRs not landed whose gated commit cannot be read, so no number this branch adds can ' +
+        'be cleared against them:',
       unreadPrs,
     ),
     ...section(

@@ -27,7 +27,9 @@
     new number. Git pairs on the branch's whole diff against the target, so splitting the change
     across commits does not help. The other branches count only when their session
     can still land: a state that holds its scope (queued, running, awaiting review, rejected,
-    blocked; decision 41) or `merged` with an open PR that has not landed (decision 84). A live
+    blocked; decision 41) or `merged` with a PR that has not landed (decision 84), open or, since
+    nothing records a close, closed unmerged (see *Ceilings*). The refusal says only what the
+    store knows, that the other branch is live or its PR has not landed. A live
     session is read at its branch. A merged one is read at the sha its newest merge event
     pinned. A passing gate normally deletes the session's local branch, in both modes, and
     only the operator's `pup fix` restores it. It keeps the branch with a worktree it could not
@@ -112,7 +114,17 @@
     commit under a ref of pup's own, written when the gate opens the PR, would need `pup land`
     and the session teardown to delete that ref, and those are outside this decision. Until a
     decision adds that pin, a pruned commit refuses every ADR-adding gate, as above, rather
-    than being read as having added nothing.
+    than being read as having added nothing. A PR closed without merging counts for as long as
+    its session is in the store, because the store records no close. `pup land` writes `landed`
+    only for a `MERGED` PR. `merged` is terminal, so `pup kill` refuses it. `pup fix` and the
+    re-gate refuse a closed PR. The gate does not ask GitHub, which under the merge lock would
+    add a network read per such peer to every gate that adds a decision. So a closed PR keeps
+    its up to three numbers from every later gate, including a decision redone in a new session
+    under the same number. Once its commit is pruned, it refuses every ADR-adding gate as an
+    unreadable PR until its head is fetched again, which GitHub keeps for a closed PR as
+    `refs/pull/<n>/head`. Until then the way out is to renumber, or to fetch that head. Retiring a
+    closed PR needs a terminal event, written by `pup land` or an operator command, that
+    `newestMerge` reads like `landed`. That is outside this decision.
     Tests: `adrNumberStage` adds no stage for a branch adding no decision, a free number, an
     edit to a decision already on the target or a slug-only rename of one. It refuses a number
     on the target, an unpaired file under the number of one the branch deletes (as a rename

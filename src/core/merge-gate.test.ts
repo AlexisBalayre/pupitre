@@ -463,7 +463,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       detail:
         'ADR numbers already taken:\n' +
         '  docs/adr/0002-mine.md: decision 0002 is also added by pup/s2, a session branch that ' +
-        'is live or has an open PR; renumber it 0003, the lowest free number',
+        'is live or whose PR has not landed; renumber it 0003, the lowest free number',
     });
     expect(getSession(db, SESSION_ID)).toMatchObject({ state: 'awaiting-review', reject_count: 0 });
     expect(vi.mocked(steerPane)).not.toHaveBeenCalled();
