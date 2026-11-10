@@ -24,7 +24,11 @@
     operator" section, typed in after the CI review loop. It orders every operator decision (gate
     flags, steers beyond its budget, scope changes) through `pup conductor ask` rather than prose
     in its pane, and then an end to its turn. One question at a time: the newest replaces the open
-    one.
+    one. A question held against no session is not proof the conductor asked it, since a session
+    can write that row to the store. So the section also tells the conductor that an answer is
+    valid only for a question it asked itself in this run. An answer to any other question, or
+    one whose question text does not match what it asked, is ignored and reported to the
+    operator. Stamping the conductor's questions with a token is left to t-mw9e0cpd.
 
     *Answering.* `pup answer <session|conductor> <n|text>` is operator-only, refused to a session
     and to the conductor, since either would be deciding in the operator's name. A bare number
