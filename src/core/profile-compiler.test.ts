@@ -706,8 +706,8 @@ describe('the status line records the plan usage (decision 156)', () => {
     model: { display_name: 'Opus' },
     context_window: { used_percentage: 12.7 },
     rate_limits: {
-      five_hour: { used_percentage: 23.5, resets_at: 1738425600, extra: 'dropped' },
-      seven_day: { used_percentage: 41.2, resets_at: 1738857600 },
+      five_hour: { used_percentage: 23.5, resets_at: 1738425600 },
+      seven_day: { used_percentage: 41.2, resets_at: 1738857600, extra: 'dropped' },
       spend_limit: { used_percentage: 62.8, resets_at: 1740787200, used_usd: 314.12 },
     },
   };
@@ -744,13 +744,12 @@ describe('the status line records the plan usage (decision 156)', () => {
     });
   });
 
-  it('writes only the two windows used share and reset, and prints one line', () => {
+  it('writes only the 7-day window used share and reset, and prints one line', () => {
     const { status, stdout } = runStatusLine(SAMPLE);
 
     expect(status).toBe(0);
-    expect(stdout).toBe('ctx 12% | 5h 23% | 7d 41%\n');
+    expect(stdout).toBe('ctx 12% | 7d 41%\n');
     expect(JSON.parse(readFileSync(usageFile(), 'utf8'))).toEqual({
-      five_hour: { used_percentage: 23.5, resets_at: 1738425600 },
       seven_day: { used_percentage: 41.2, resets_at: 1738857600 },
     });
     // Through a temp file and a rename: nothing is left beside the reading.
@@ -758,17 +757,20 @@ describe('the status line records the plan usage (decision 156)', () => {
   });
 
   it('leaves the last reading as it was when the JSON has no usable window', () => {
-    writeFileSync(usageFile(), '{"five_hour":{"used_percentage":50,"resets_at":1}}\n');
+    writeFileSync(usageFile(), '{"seven_day":{"used_percentage":50,"resets_at":1}}\n');
 
     const { status, stdout } = runStatusLine({
       context_window: { used_percentage: null },
-      rate_limits: { five_hour: { used_percentage: '$(touch pwned)', resets_at: 1 } },
+      rate_limits: {
+        five_hour: { used_percentage: 50, resets_at: 1 },
+        seven_day: { used_percentage: '$(touch pwned)', resets_at: 1 },
+      },
     });
 
     expect(status).toBe(0);
-    expect(stdout).toBe('ctx ? | 5h ? | 7d ?\n');
+    expect(stdout).toBe('ctx ? | 7d ?\n');
     expect(readFileSync(usageFile(), 'utf8')).toBe(
-      '{"five_hour":{"used_percentage":50,"resets_at":1}}\n',
+      '{"seven_day":{"used_percentage":50,"resets_at":1}}\n',
     );
     expect(existsSync(join(outDir, 'pwned'))).toBe(false);
     expect(existsSync('pwned')).toBe(false);
@@ -778,19 +780,11 @@ describe('the status line records the plan usage (decision 156)', () => {
     mkdirSync(usageFile());
 
     for (let render = 0; render < 3; render++) {
-      expect(runStatusLine(SAMPLE).stdout).toBe('ctx 12% | 5h 23% | 7d 41%\n');
+      expect(runStatusLine(SAMPLE).stdout).toBe('ctx 12% | 7d 41%\n');
     }
 
     expect(readdirSync(dirname(usageFile()))).toEqual(['usage.json']);
     expect(readdirSync(usageFile())).toEqual([]);
-  });
-
-  it('writes a window that is present without the one that is absent', () => {
-    runStatusLine({ rate_limits: { seven_day: SAMPLE.rate_limits.seven_day } });
-
-    expect(JSON.parse(readFileSync(usageFile(), 'utf8'))).toEqual({
-      seven_day: { used_percentage: 41.2, resets_at: 1738857600 },
-    });
   });
 
   it('prints a line and writes nothing from input that is not JSON', () => {
@@ -800,7 +794,7 @@ describe('the status line records the plan usage (decision 156)', () => {
     });
 
     expect(result.status).toBe(0);
-    expect(result.stdout).toBe('ctx ? | 5h ? | 7d ?\n');
+    expect(result.stdout).toBe('ctx ? | 7d ?\n');
     expect(existsSync(usageFile())).toBe(false);
   });
 

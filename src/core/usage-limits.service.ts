@@ -5,12 +5,10 @@ import { projectPaths } from './paths.utils.js';
 /**
  * The plan's usage windows a launch is held for (decision 156), as Claude
  * Code's statusline JSON names them under `rate_limits`, with the share of
- * each at which `pup launch` and `pup new` stop starting windows.
+ * each at which `pup launch` and `pup new` stop starting windows. The plan
+ * has had no 5-hour window since 2026-11-09, so only the 7-day one is left.
  */
-const USAGE_WINDOWS = [
-  { key: 'five_hour', label: '5-hour', short: '5h', holdAt: 85 },
-  { key: 'seven_day', label: '7-day', short: '7d', holdAt: 90 },
-] as const;
+const USAGE_WINDOWS = [{ key: 'seven_day', label: '7-day', short: '7d', holdAt: 90 }] as const;
 
 /** A reading older than this says nothing about now: it counts as unknown and never holds. */
 const USAGE_FRESH_MS = 30 * 60_000;
