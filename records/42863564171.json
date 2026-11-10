@@ -1,0 +1,99 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-10T17:21:53.742Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42863564171",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42863564171",
+  "actor": "AlexisBalayre",
+  "commit_sha": "8dc7c8274f9237bdbf518fe0d42748c1f493757d",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 309,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "conventions",
+    "docs",
+    "guards",
+    "simplicity"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "conventions",
+    "docs",
+    "guards",
+    "simplicity"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/types/session-event.types.ts",
+      "line": "38-47",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "important",
+      "description": "ADR 0164 states \"The `landed` event is unchanged\"; this diff adds `acceptedHead`/`pinned` to that event and cites decision 164 as the reason, but no ADR was amended.",
+      "body": "**Code and ADR now disagree.** This PR adds `acceptedHead` and `pinned` to the `landed` payload on a moved-head land, and it cites decision 164 as the authority for doing so. The accepted ADR says the event does not change.\n\n[`docs/adr/0164-pup-land-takes-a-moved-head-on-the-operator-s-word.md` L25-26](https://github.com/AlexisBalayre/pupitre/blob/8dc7c8274f9237bdbf518fe0d42748c1f493757d/docs/adr/0164-pup-land-takes-a-moved-head-on-the-operator-s-word.md#L25-L26):\n\n> The teardown deletes the branch when main or the accepted head holds it. The `landed` event is unchanged.\n\nWhere the PR conflicts with it:\n\n- [`land.service.ts` L249-255](https://github.com/AlexisBalayre/pupitre/blob/8dc7c8274f9237bdbf518fe0d42748c1f493757d/src/core/land.service.ts#L249-L255) writes `{ ...landed, acceptedHead: head, pinned: sha }` whenever `head !== sha`.\n- The new JSDoc ([`session-event.types.ts` L38-47](https://github.com/AlexisBalayre/pupitre/blob/8dc7c8274f9237bdbf518fe0d42748c1f493757d/src/core/types/session-event.types.ts#L38-L47)) cites \"(decision 164)\" for the new fields.\n- The new test comment (`land.test.ts` L707) cites decision 164 too.\n\nNo ADR has `Amends: 0164`, and nothing under `docs/` mentions `acceptedHead`. AGENTS.md makes `docs/adr/` the record of resolved decisions.\n\n**Cost:** a reader who follows either citation finds a decision that says the opposite of the code. A later change that brings the code back in line with 0164 would strip these fields as drift.\n\n**Fix:** record the decision. `docs/adr/README.md` says a landed ADR is not rewritten in place, so either:\n\n- append a dated amendment section to 0164, or\n- add a new decision with `Amends: 0164`.\n\nIt should say the event records `acceptedHead` and `pinned` when a head past the pin is accepted. Then point the JSDoc and the test comment at that record. The code itself needs no change.",
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "conventions",
+      "description": "The reviewer reported that the docs/conventions/*.md contents reached it only as @-references in .claude/rules/*.md, not as injected text. Its testing, naming and general checks therefore rest on comparison with sibling files, not on quoted rules."
+    }
+  ],
+  "duplicates_merged": 3,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.228348575,
+  "duration_ms": 143495,
+  "num_turns": 13,
+  "tokens": {
+    "input": 12,
+    "output": 8632,
+    "cache_read": 249986,
+    "cache_creation": 41462,
+    "total": 300092
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 46,
+      "output": 14518,
+      "cache_read": 596420,
+      "cache_creation": 75913,
+      "cost_usd": 0.913779
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 52,
+      "output": 9455,
+      "cache_read": 248410,
+      "cache_creation": 77761,
+      "cost_usd": 0.31389750000000005
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 166,
+      "cache_read": 0,
+      "cache_creation": 4711,
+      "cost_usd": 0.000672075
+    }
+  ],
+  "permission_denials": []
+}
