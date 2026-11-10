@@ -1313,7 +1313,7 @@ describe('launchTask model routing (decision 92)', () => {
     const session = () => getSession(db, sessionId) as SessionRow;
     appendEvent(db, sessionId, 'merge', { branch: 'pup/x', target: 'main', files: [] });
 
-    expect(fixRoundRoute(db, session(), {}, 'conductor')).toEqual({
+    expect(fixRoundRoute(db, projectPaths(repo), session(), {}, 'conductor')).toEqual({
       tier: 'standard',
       rung: 0,
       model: 'claude-sonnet-5-5',
@@ -1323,7 +1323,7 @@ describe('launchTask model routing (decision 92)', () => {
 
     finishedRound(sessionId);
 
-    expect(fixRoundRoute(db, session(), {}, 'conductor')).toEqual({
+    expect(fixRoundRoute(db, projectPaths(repo), session(), {}, 'conductor')).toEqual({
       tier: 'standard',
       rung: 1,
       model: 'claude-sonnet-5-5',
@@ -1340,18 +1340,116 @@ describe('launchTask model routing (decision 92)', () => {
     const named = { model: 'claude-opus-5-5', effort: 'max' };
     db.prepare('UPDATE sessions SET rung = 3 WHERE id = ?').run(sessionId);
 
-    expect(fixRoundRoute(db, session(), {}, 'operator')).toMatchObject({ rung: 3 });
+    expect(fixRoundRoute(db, projectPaths(repo), session(), {}, 'operator')).toMatchObject({
+      rung: 3,
+    });
 
     finishedRound(sessionId);
     // A re-gate after the head moved does not undo the repeat.
     appendEvent(db, sessionId, 'merge', { branch: 'pup/x', target: 'main', files: [] });
 
-    expect(() => fixRoundRoute(db, session(), {}, 'operator')).toThrow(TopRungReachedError);
-    expect(() => fixRoundRoute(db, session(), named, 'conductor')).toThrow(TopRungReachedError);
-    expect(fixRoundRoute(db, session(), named, 'operator')).toMatchObject({
+    expect(() => fixRoundRoute(db, projectPaths(repo), session(), {}, 'operator')).toThrow(
+      TopRungReachedError,
+    );
+    expect(() => fixRoundRoute(db, projectPaths(repo), session(), named, 'conductor')).toThrow(
+      TopRungReachedError,
+    );
+    expect(fixRoundRoute(db, projectPaths(repo), session(), named, 'operator')).toMatchObject({
       rung: 3,
       ...named,
       override: true,
+    });
+  });
+
+  /**
+   * A first fix round whose window opened twenty minutes ago and was killed
+   * (running -> merged, kind fix-round-killed), its events file last written
+   * `quietAgeMs` before now.
+   */
+  const killedRound = (quietAgeMs: number) => {
+    planTask(db, { repoPath: repo, task: spec(UI_SCOPE) });
+    const sessionId = launch();
+    appendEvent(db, sessionId, 'merge', { branch: 'pup/x', target: 'main', files: [] });
+    appendEvent(db, sessionId, 'fix_round', {
+      prUrl: 'u',
+      head: 'h',
+      threads: ['T1'],
+      rejectBase: 0,
+    });
+    appendEvent(db, sessionId, 'respawn', { delivered: true });
+    db.prepare(
+      "UPDATE events SET created_at = datetime('now', '-20 minutes') WHERE type = 'respawn'",
+    ).run();
+    quietFor(sessionId, quietAgeMs);
+    expect(killSession(db, sessionId)).toBe('merged');
+    return getSession(db, sessionId) as SessionRow;
+  };
+
+  it('climbs the retry of a fix round killed while stalled, recording the stall', () => {
+    const session = killedRound(STALLED);
+
+    expect(fixRoundRoute(db, projectPaths(repo), session, {}, 'conductor')).toMatchObject({
+      rung: 1,
+      reason: 'stall',
+    });
+  });
+
+  it('keeps the retry of a fix round killed while busy on its rung', () => {
+    const session = killedRound(60_000);
+
+    expect(fixRoundRoute(db, projectPaths(repo), session, {}, 'conductor')).toMatchObject({
+      rung: 0,
+    });
+  });
+
+  /**
+   * Round 1 opened twenty minutes ago, its events file last written
+   * `quietAgeMs` before now, and killed `killedAgo` minutes ago; round 2 then
+   * takes the edge, appends `retry` and is killed back to merged now.
+   */
+  const retriedRound = (quietAgeMs: number, killedAgo: number, retry?: boolean) => {
+    planTask(db, { repoPath: repo, task: spec(UI_SCOPE) });
+    const sessionId = launch();
+    appendEvent(db, sessionId, 'merge', { branch: 'pup/x', target: 'main', files: [] });
+    const round = () =>
+      appendEvent(db, sessionId, 'fix_round', {
+        prUrl: 'u',
+        head: 'h',
+        threads: ['T1'],
+        rejectBase: 0,
+      });
+    round();
+    appendEvent(db, sessionId, 'respawn', { delivered: true });
+    db.prepare(
+      "UPDATE events SET created_at = datetime('now', '-20 minutes') WHERE type = 'respawn'",
+    ).run();
+    quietFor(sessionId, quietAgeMs);
+    killSession(db, sessionId);
+    db.prepare(
+      "UPDATE events SET created_at = datetime('now', ?) WHERE type = 'gate_result' AND json_extract(payload, '$.to') = 'merged'",
+    ).run(`-${killedAgo} minutes`);
+    db.prepare("UPDATE sessions SET state = 'running' WHERE id = ?").run(sessionId);
+    round();
+    if (retry !== undefined) appendEvent(db, sessionId, 'respawn', { delivered: retry });
+    killSession(db, sessionId);
+    return getSession(db, sessionId) as SessionRow;
+  };
+
+  // The rollback of an undone retry is no end of the window that ran.
+  it('does not climb a busy round for the quiet before its undone retry', () => {
+    const session = retriedRound(19 * 60 * 1000, 19);
+
+    expect(fixRoundRoute(db, projectPaths(repo), session, {}, 'conductor')).toMatchObject({
+      rung: 0,
+    });
+  });
+
+  it('climbs a stalled round although its retry was undone after an undelivered kickoff', () => {
+    const session = retriedRound(15 * 60 * 1000, 2, false);
+
+    expect(fixRoundRoute(db, projectPaths(repo), session, {}, 'conductor')).toMatchObject({
+      rung: 1,
+      reason: 'stall',
     });
   });
 });
