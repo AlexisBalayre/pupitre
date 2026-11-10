@@ -13,6 +13,7 @@ import {
 import { basename, join, resolve } from 'node:path';
 
 import { sanitizeReason } from '../adapters/capability.utils.js';
+import { readBlobs } from './git-blobs.client.js';
 import {
   type BinaryFormat,
   formatsNamed,
@@ -490,7 +491,7 @@ const DIFF_SAFE_FLAGS = [
  * exceed and turn into a throw mid-gate; 64 MiB covers any patch worth
  * parsing and still fails loudly rather than silently truncating.
  */
-const GIT_MAX_BUFFER = 64 * 1024 * 1024;
+export const GIT_MAX_BUFFER = 64 * 1024 * 1024;
 
 /**
  * What a call site may add to a git spawn. `env` is laid over the scrubbed
@@ -510,6 +511,25 @@ interface RunGitOptions {
  */
 export function runGit(cwd: string, args: string[], opts: RunGitOptions = {}): string {
   return execFileSync('git', safeArgv(cwd, args), { ...spawnOptions(opts), encoding: 'utf8' });
+}
+
+/**
+ * `runGit` for bytes: the output as git wrote it, `input` on stdin, and a
+ * `maxBuffer` the caller sizes to exactly what git should print, so one byte
+ * more throws (decision 154).
+ */
+export function runGitBytes(
+  cwd: string,
+  args: string[],
+  opts: RunGitOptions & { input: Buffer; maxBuffer: number },
+): Buffer {
+  return execFileSync('git', safeArgv(cwd, args), {
+    ...spawnOptions(opts),
+    encoding: 'buffer',
+    // A Buffer: a string input is encoded with `encoding`, which `buffer` is not.
+    input: opts.input,
+    maxBuffer: opts.maxBuffer,
+  });
 }
 
 /**
@@ -544,61 +564,7 @@ function spawnOptions(opts: RunGitOptions): ExecFileSyncOptions {
  * (decision 154): a batch of up to `GIT_MAX_BUFFER` or one tree entry, under
  * the merge lock, which a stalled read would hold.
  */
-const GIT_READ_TIMEOUT_MS = 30_000;
-
-/**
- * The content of each blob in `blobs`, in order, read through one
- * `git cat-file --batch` however many there are: a process per blob let a
- * tree of 20 000 tiny files hold the merge lock for minutes (decision 154).
- * Sizes are the ones git listed (`ls-tree -l`, `cat-file -s`), and together they may not pass
- * `GIT_MAX_BUFFER`, the cap each read had alone: past it, or past
- * `GIT_READ_TIMEOUT_MS`, this throws and the gate fails closed. A size that
- * is no byte count, which `ls-tree` lists for an object it cannot read, throws,
- * and so does an answer that is not the oid asked for, a blob of the size listed.
- * The output buffer is sized exactly, so a byte past the last blob overflows it
- * and throws too.
- */
-export function readBlobs(repoPath: string, blobs: { oid: string; size: number }[]): Buffer[] {
-  if (blobs.length === 0) return [];
-  let total = 0;
-  let maxBuffer = 0;
-  for (const { oid, size } of blobs) {
-    // `ls-tree -l` lists `BAD` for an object it cannot read.
-    if (!Number.isSafeInteger(size) || size < 0) {
-      throw new Error(`git ls-tree listed no byte count for ${oid}: its object cannot be read`);
-    }
-    total += size;
-    // Each object prints as `<oid> blob <size>\n<content>\n`.
-    maxBuffer += size + oid.length + ` blob ${size}\n\n`.length;
-  }
-  if (total > GIT_MAX_BUFFER) {
-    throw new Error(
-      `git cat-file --batch would read ${total} bytes, past the ${GIT_MAX_BUFFER}-byte cap`,
-    );
-  }
-  const out = execFileSync('git', safeArgv(repoPath, ['cat-file', '--batch']), {
-    ...spawnOptions({ timeout: GIT_READ_TIMEOUT_MS }),
-    encoding: 'buffer',
-    // A Buffer: a string input is encoded with `encoding`, which `buffer` is not.
-    input: Buffer.from(`${blobs.map(({ oid }) => oid).join('\n')}\n`),
-    maxBuffer,
-  });
-  const contents: Buffer[] = [];
-  let at = 0;
-  for (const { oid, size } of blobs) {
-    const eol = out.indexOf('\n', at);
-    const header = out.subarray(at, eol === -1 ? out.length : eol).toString('utf8');
-    const end = eol + 1 + size;
-    if (eol === -1 || header !== `${oid} blob ${size}` || out[end] !== 0x0a) {
-      throw new Error(
-        `git cat-file --batch answered ${JSON.stringify(header)} for ${oid}, not a blob of ${size} bytes`,
-      );
-    }
-    contents.push(out.subarray(eol + 1, end));
-    at = end + 1;
-  }
-  return contents;
-}
+export const GIT_READ_TIMEOUT_MS = 30_000;
 
 /** The branch checked out at `cwd`, empty on a detached HEAD. */
 export function currentBranch(cwd: string): string {

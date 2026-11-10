@@ -39,6 +39,7 @@ import { patchCoverage } from './coverage.utils.js';
 import { judgeDebt, measureCoverage, measureStaticDebt, quotePath } from './debt.service.js';
 import { draftDecisionRecord } from './decision-record.service.js';
 import { answerFixRoundThreads } from './fix-round.service.js';
+import { readBlobs } from './git-blobs.client.js';
 import {
   ArmedGitDriverError,
   armedGitDrivers,
@@ -51,7 +52,6 @@ import {
   gitDiffBinaryRecount,
   gitDiffNumstat,
   gitDiffPaths,
-  readBlobs,
   rethrowIfKilled,
   runGit,
   verifiedWorktreeGitEnv,

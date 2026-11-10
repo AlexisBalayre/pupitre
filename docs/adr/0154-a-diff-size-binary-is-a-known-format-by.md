@@ -129,7 +129,9 @@
     20 000 tiny files held the merge lock for minutes.
     *The rule.* `readBranchTree` runs `ls-tree -r -l -z`, which gives every blob's oid and
     size. Every symlink's target, then each round's listed importers, is read through one
-    `git cat-file --batch` (`readBlobs`). Importers are read by oid, not by `<rev>:<path>`,
+    `git cat-file --batch` (`readBlobs`, in `src/core/git-blobs.client.ts`, which spawns
+    through `runGitBytes`, so git still runs from `git-diff.client.ts` alone, decision 73).
+    Importers are read by oid, not by `<rev>:<path>`,
     so `core.precomposeUnicode` has no path to rewrite (decision 114). A listed path the
     tree does not hold, which git does not list, has no blob to read, so it is read as
     naming every target, as a name that is not UTF-8 is; an unprefixed listing entry
@@ -166,15 +168,16 @@
     own. A `.ts` with a NUL under a name that is not UTF-8 recounts 5 001 lines. A PNG
     holding `__HALT_COMPILER` or `__halt_Compiler`, or `PK\x03\x04`, is no known binary,
     and neither is one whose first 512 bytes pass the tar checksum by unsigned or by signed
-    sum; one whose checksum field is off by one stays known. `readBlobs` returns each blob byte for byte (a NUL, an empty
-    blob, a repeat). A PNG with a zip end record appended recounts, and so does one whose
+    sum; one whose checksum field is off by one stays known. A PNG with a zip end record appended recounts, and so does one whose
     record sits more than 64 KiB plus 22 bytes before its end. A symlink blob opening with
     the PNG signature and a NUL, a `.mKv` spelled with the Kelvin sign and a `.png` with the
     PNG signature and no NUL under `* -diff` all recount. Every call passes the budget, which
     has no default: a fresh 4 MiB per call would cap nothing. With a shared budget, a deleted PNG spends nothing, a
     PNG the budget covers is skipped and spends its size, and the next one is recounted.
-    `readBlobs` refuses a missing oid, a size one byte short (the buffer overflows)
-    or long, and, before running git, sizes that add past 64 MiB. In `merge-gate.test.ts`, a
+    In `git-blobs-client.test.ts`, `readBlobs` returns each blob byte for byte (a NUL, an
+    empty blob, a repeat). It refuses a missing oid, a size one byte short (the buffer
+    overflows) or long, and, before running git, a size that is no byte count or sizes that
+    add past 64 MiB. In `merge-gate.test.ts`, a
     5 000-line `.ts` with a NUL counts 5 001 source lines and is forged, beside a real PNG
     that counts nothing. A `.ts` renamed into a PNG is forged, and so is the hidden file
     beside a decoy under the U+FFFD spelling of its name, counting its own 6 lines. An importer with a NUL in a comment still reaches its test. A tree
