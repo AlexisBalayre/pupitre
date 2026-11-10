@@ -595,6 +595,41 @@ describe('gitDiffBinaryRecount', () => {
     expect(recount(repo, 'new.png')).toBeNull();
   });
 
+  // Numstat prints `-\t-` for a binary pair even when its content is unchanged,
+  // so a moved PDF or PNG over the cap was recounted as 0 lines and forged, and
+  // moved small PNGs spent the budget. A mode change adds what the new mode
+  // runs, so it is still recounted (decision 154).
+  it('answers null for a binary moved unchanged, and spends nothing', () => {
+    const repo = repoWith(
+      {
+        'manual.pdf': `%PDF-1.7\0\n${'x\n'.repeat(3)}`,
+        'big.png': png(`\n${'x'.repeat(BINARY_FREE_MAX_BYTES)}\n`),
+        'small.png': png('a\n'),
+        'run.png': png('echo hi\n'),
+      },
+      { 'other.ts': 'x\n' },
+    );
+    sh(repo, 'git', 'mv', 'manual.pdf', 'guide.pdf');
+    sh(repo, 'git', 'mv', 'big.png', 'large.png');
+    sh(repo, 'git', 'mv', 'small.png', 'tiny.png');
+    sh(repo, 'git', 'update-index', '--chmod=+x', 'run.png');
+    sh(repo, 'git', 'commit', '-q', '-m', 'move');
+    const budget = fullBudget();
+
+    expect(gitDiffNumstat(repo, 'main', 'feature')).toMatchObject([
+      { path: 'guide.pdf', added: null, deleted: null, renamedFrom: 'manual.pdf' },
+      { path: 'large.png', added: null, deleted: null, renamedFrom: 'big.png' },
+      { path: 'other.ts', added: 1, deleted: 0 },
+      { path: 'run.png', added: null, deleted: null },
+      { path: 'tiny.png', added: null, deleted: null, renamedFrom: 'small.png' },
+    ]);
+    for (const path of ['guide.pdf', 'large.png', 'tiny.png']) {
+      expect(recount(repo, path, budget)).toBeNull();
+    }
+    expect(budget.bytes).toBe(BINARY_FREE_TOTAL_MAX_BYTES);
+    expect(recount(repo, 'run.png', budget)).toEqual({ added: 0, deleted: 0 });
+  });
+
   // Extension and magic are both the session's to write, so either alone
   // would let code with a NUL in it pass as an image.
   it('recounts a binary whose extension and magic do not name one format', () => {

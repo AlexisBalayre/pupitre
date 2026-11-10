@@ -74,7 +74,13 @@
     throws in the recount. A renamed entry carries the path it was
     `renamedFrom`, and its base side is that blob, judged by that path's extension: a
     source file renamed into a `.png` is then recounted, with both paths in the recount's
-    pathspec, not skipped as an image with no base side. Each side's size comes from
+    pathspec, not skipped as an image with no base side. Numstat prints `-\t-` for a
+    binary pair even when its content is unchanged, so a rename keeping the oid and mode
+    reached the recount too: a moved PDF or PNG over the cap counted 0 lines and was
+    forged, and moved small PNGs spent the budget. Two sides with one oid and one mode
+    add nothing to the tree, so they answer null unread and spend nothing, as numstat
+    counts a text rename `0\t0`. A mode change on the same oid is still recounted: the
+    new mode is what a 100755 PNG runs by. Each side's size comes from
     `cat-file -s` and its bytes from `readBlobs`, by oid. Paths were the key before: an
     `ls-tree` of the path on each revision, absent when it listed nothing. But `runGit`
     decodes git's output as UTF-8, so a name that is not UTF-8 reached `ls-tree` as U+FFFD,
@@ -162,7 +168,9 @@
     the PNG signature puts a CR and LF before its first NUL, so bash runs the lines after
     it, and no real image needs the exec bit. A `.ts` renamed into a `.png` holding its bytes recounts,
     with the rename source and both oids in its numstat entry, and a PNG renamed into a
-    PNG skips. A target PNG renamed to a name that is not UTF-8 with a zip end record
+    PNG skips. A PDF with a NUL, a PNG over the cap and a small PNG each moved unchanged
+    answer null and leave the budget whole, while a PNG made executable in place recounts
+    0 lines. A target PNG renamed to a name that is not UTF-8 with a zip end record
     appended recounts its 6 added lines, and so does a PNG over the cap under such a name
     beside a decoy PNG committed under its U+FFFD spelling, which skips: 10 lines, its
     own. A `.ts` with a NUL under a name that is not UTF-8 recounts 5 001 lines. A PNG

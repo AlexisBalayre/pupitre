@@ -820,7 +820,10 @@ function blobLines(repoPath: string, side: DiffSide): number {
  * never picks whose lines are counted. An entry without sides throws. A
  * renamed file's merge-base side is the blob it was `renamedFrom`, named by
  * that path's extension: a source file renamed into a `.png` would otherwise
- * have no base side, skip, and drop every line it deleted. A skip spends the
+ * have no base side, skip, and drop every line it deleted. A rename that keeps
+ * the oid and mode adds nothing to the tree, so it answers null unread and
+ * spends nothing, as numstat counts a text one `0\t0`: numstat prints `-\t-`
+ * for it all the same. A skip spends the
  * branch side's bytes from `budget` (`spendKnownBinarySkip`), which every call
  * for one diff must share (start it at `BINARY_FREE_TOTAL_MAX_BYTES`), and a
  * file the budget cannot cover is recounted. It has no default: a fresh budget
@@ -836,6 +839,7 @@ export function gitDiffBinaryRecount(
     throw new Error(`git diff listed no --raw sides to recount ${path} from`);
   }
   const [baseBlob, branchBlob] = entry.sides;
+  if (baseBlob?.oid === branchBlob?.oid && baseBlob?.mode === branchBlob?.mode) return null;
   const sideOf = (side: DiffSide | undefined, sidePath: string): number | false | undefined => {
     const formats = formatsNamed(sidePath);
     return formats.length === 0 ? false : blobIsKnownBinary(repoPath, side, formats);
