@@ -69,14 +69,45 @@ const READ_GLOB = /^(?!\.\.?(?:\/|$))[\w.*-]+(?:\/(?!\.\.?(?:\/|$))[\w.*-]+)*$/;
 /** A segment holding two `*` without being a bare `**`, which is not linear. */
 const UNREAD_SEGMENT = /^(?!\*\*$)(?:[^*]*\*){2}/;
 
-/** Top-level keys that move what one run collects; `__proto__` hands the config inherited keys. */
-const VITEST_UNREAD_KEYS = ['root', '__proto__'];
+/**
+ * Top-level keys that move what one run collects, or run code the branch may
+ * have written; `__proto__` hands the config inherited keys.
+ */
+const VITEST_UNREAD_KEYS = ['root', 'plugins', '__proto__'];
 
 /**
- * Keys under `test` that move or split what one run collects; `typecheck` can
- * make a run collect only type tests, which run no test-named file.
+ * Keys under `test` that move or split what one run collects, or name modules
+ * the run loads, which the branch may have written: a setup file can register
+ * a test in every collected file, and a reporter, runner or pool can pass a
+ * run that failed. `typecheck` can make a run collect only type tests, which
+ * run no test-named file.
  */
-const VITEST_UNREAD_TEST_KEYS = ['dir', 'root', 'projects', 'workspace', 'typecheck', '__proto__'];
+const VITEST_UNREAD_TEST_KEYS = [
+  'dir',
+  'root',
+  'projects',
+  'workspace',
+  'typecheck',
+  'setupFiles',
+  'globalSetup',
+  'reporters',
+  'environment',
+  'runner',
+  'pool',
+  'poolOptions',
+  'execArgv',
+  'sequence',
+  '__proto__',
+];
+
+/** A module specifier naming a file, which in the gate is the branch's. */
+const FILE_SPECIFIER = /^[./]/;
+
+/**
+ * A path holding a line break, which `.` in a pattern's regex does not match,
+ * so a `**` before an exclude's `(?:/.*)?$` backtracks over it quadratically.
+ */
+const UNREAD_PATH = /[\n\r\u2028\u2029]/;
 
 /** The modules a config may take `defineConfig` from, which returns its argument. */
 const VITEST_CONFIG_MODULES = ['vitest/config', 'vite'];
@@ -86,29 +117,6 @@ const OUTER_EXPRESSIONS = new Set([
   ts.SyntaxKind.ParenthesizedExpression,
   ts.SyntaxKind.AsExpression,
   ts.SyntaxKind.SatisfiesExpression,
-]);
-
-/**
- * The nodes a measured config's object may be built of: data, and names read
- * but never called. No call, function, assignment, operator or computed key,
- * so running it builds the object the read sees and changes nothing else.
- */
-const DATA_NODES = new Set([
-  ts.SyntaxKind.ObjectLiteralExpression,
-  ts.SyntaxKind.PropertyAssignment,
-  ts.SyntaxKind.ShorthandPropertyAssignment,
-  ts.SyntaxKind.SpreadAssignment,
-  ts.SyntaxKind.ArrayLiteralExpression,
-  ts.SyntaxKind.SpreadElement,
-  ts.SyntaxKind.OmittedExpression,
-  ts.SyntaxKind.StringLiteral,
-  ts.SyntaxKind.NoSubstitutionTemplateLiteral,
-  ts.SyntaxKind.NumericLiteral,
-  ts.SyntaxKind.TrueKeyword,
-  ts.SyntaxKind.FalseKeyword,
-  ts.SyntaxKind.NullKeyword,
-  ts.SyntaxKind.Identifier,
-  ts.SyntaxKind.PropertyAccessExpression,
 ]);
 
 /**
@@ -177,11 +185,6 @@ function literalStrings(node: ts.Expression): string[] | undefined {
   return array.elements.map((element) => (element as ts.StringLiteralLike).text);
 }
 
-/** Whether `node` and everything in it is one of `DATA_NODES`. */
-function holdsOnlyData(node: ts.Node): boolean {
-  return DATA_NODES.has(node.kind) && !ts.forEachChild(node, (child) => !holdsOnlyData(child));
-}
-
 /** Whether a statement imports from a module whose `defineConfig` returns its argument. */
 function importsVitestConfig(statement: ts.Statement): statement is ts.ImportDeclaration {
   return (
@@ -203,12 +206,10 @@ function defineConfigNames(statement: ts.ImportDeclaration): string[] {
  * The object a vitest config exports by default, bare or through the
  * `defineConfig` imported from vitest or vite; undefined for a function
  * config, `mergeConfig`, any other callee, an identifier or CommonJS, which no
- * static read answers. A `measured` config is the branch's, and vitest runs
- * it, so it is read only where running it builds the object read and nothing
- * else: its other statements all imports from vitest or vite, and its object
- * only data (`DATA_NODES`).
+ * static read answers, and for a config that imports or re-exports a file by
+ * path, which in the gate is the branch's and runs when vitest loads it.
  */
-function exportedConfig(text: string, measured: boolean): ts.Expression | undefined {
+function exportedConfig(text: string): ts.Expression | undefined {
   const source = ts.createSourceFile(
     'vitest.config.ts',
     text,
@@ -223,11 +224,12 @@ function exportedConfig(text: string, measured: boolean): ts.Expression | undefi
   const imports = source.statements.filter(importsVitestConfig);
   // A config with a syntax error: the parser recovers into a tree vitest never loads.
   const parseErrors = (source as unknown as { parseDiagnostics: unknown[] }).parseDiagnostics;
-  if (
-    exported.length !== 1 ||
-    parseErrors.length > 0 ||
-    (measured && imports.length + exported.length !== source.statements.length)
-  ) {
+  const loadsAFile = source.statements.some((statement) =>
+    FILE_SPECIFIER.test(
+      (statement as { moduleSpecifier?: ts.StringLiteral }).moduleSpecifier?.text ?? '',
+    ),
+  );
+  if (exported.length !== 1 || parseErrors.length > 0 || loadsAFile) {
     return undefined;
   }
   const callees = new Set(imports.flatMap(defineConfigNames));
@@ -240,22 +242,33 @@ function exportedConfig(text: string, measured: boolean): ts.Expression | undefi
   ) {
     config = unwrapExpression(config.arguments[0] as ts.Expression);
   }
-  if (!ts.isObjectLiteralExpression(config)) return undefined;
-  return measured && !holdsOnlyData(config) ? undefined : config;
+  return ts.isObjectLiteralExpression(config) ? config : undefined;
 }
 
 /**
- * A config's `include` and `exclude` as regexes, or undefined where they cannot
- * be read: a `root`, `dir`, projects or typecheck, or an `include` or `exclude`
- * that is not a literal list. An `include` pattern this does not read collects
- * nothing; an `exclude` one leaves the whole answer unknown. An exclude names a
- * directory as well as a file, so it matches a path up to any `/`.
+ * `text` with each of `lists` cut out, with the whitespace and comments before
+ * it, which run nothing: the config the read compares across checkouts.
+ */
+function withoutLists(text: string, lists: ts.Expression[]): string {
+  let rest = text;
+  for (const list of lists.sort((a, b) => b.pos - a.pos)) {
+    rest = rest.slice(0, list.pos) + rest.slice(list.end);
+  }
+  return rest;
+}
+
+/**
+ * A config's `include` and `exclude` as regexes, and its text without them, or
+ * undefined where they cannot be read: an unread key, or an `include` or
+ * `exclude` that is not a literal list. An `include` pattern this does not
+ * read collects nothing; an `exclude` one leaves the whole answer unknown. An
+ * exclude names a directory as well as a file, so it matches a path up to any
+ * `/`.
  */
 function configGlobs(
   text: string,
-  measured: boolean,
-): { include: RegExp[]; exclude: RegExp[] } | undefined {
-  const config = exportedConfig(text, measured);
+): { include: RegExp[]; exclude: RegExp[]; rest: string } | undefined {
+  const config = exportedConfig(text);
   const top = config && literalProperties(config, ['test', ...VITEST_UNREAD_KEYS]);
   if (top === undefined || VITEST_UNREAD_KEYS.some((key) => top.has(key))) return undefined;
   const testConfig = top.get('test');
@@ -280,6 +293,7 @@ function configGlobs(
       VITEST_DEFAULT_EXCLUDE,
       ...(exclude as RegExp[]).map((glob) => new RegExp(`${glob.source.slice(0, -1)}(?:/.*)?$`)),
     ],
+    rest: withoutLists(text, [...test.values()]),
   };
 }
 
@@ -333,25 +347,37 @@ export function treeRoot(repoPath: string, sha: string): RootFiles {
   );
 }
 
+/** What one vitest run collects, and the config that says so without its lists. */
+export interface VitestCollection {
+  collects: (path: string) => boolean;
+  /**
+   * The config's file name and text with its `include` and `exclude` lists cut
+   * out. Vitest runs the branch's config, so its lists are read only where the
+   * rest is the trusted config's: whatever else the branch's sets runs, and may
+   * pass a file the lists collect (decision 143).
+   */
+  config: string;
+}
+
 /**
- * Which paths a plain vitest run over `root` collects, or undefined where that
- * cannot be read: a workspace file, or a config `configGlobs` does not read.
- * The config is the first of vitest's own list present, parsed, never run;
- * `measured` says it is the branch's (`exportedConfig`). Throws where the root
- * cannot be read.
+ * What a plain vitest run over `root` collects, or undefined where that cannot
+ * be read: a workspace file, or a config `configGlobs` does not read. The
+ * config is the first of vitest's own list present, parsed, never run. A path
+ * holding a line break is collected by nothing (`UNREAD_PATH`). Throws where
+ * the root cannot be read.
  */
-export function vitestCollection(
-  root: RootFiles,
-  measured: boolean,
-): ((path: string) => boolean) | undefined {
+export function vitestCollection(root: RootFiles): VitestCollection | undefined {
   if ([...root.keys()].some((name) => VITEST_WORKSPACE_FILE.test(name))) return undefined;
   const file = VITEST_CONFIG_FILES.find((name) => root.has(name));
   const text = file === undefined ? VITEST_NO_CONFIG : (root.get(file) as () => string)();
-  const globs = configGlobs(text, measured);
+  const globs = configGlobs(text);
   return (
-    globs &&
-    ((path) =>
-      !globs.exclude.some((glob) => glob.test(path)) &&
-      globs.include.some((glob) => glob.test(path)))
+    globs && {
+      collects: (path) =>
+        !UNREAD_PATH.test(path) &&
+        !globs.exclude.some((glob) => glob.test(path)) &&
+        globs.include.some((glob) => glob.test(path)),
+      config: [file, globs.rest].join('\0'),
+    }
   );
 }

@@ -23,26 +23,30 @@
     Both checkouts answer, as decision 31 has `python_files` answer for coverage, and a file
     is a test only where both collect it: the trusted checkout is what the gate trusts, and the
     measured one is what the stage's run actually reads, so a branch that narrows its own
-    `include` or adds an `exclude` leaves a file the run never collects, which then fails
-    nothing however little test it holds. The trusted side alone is not enough, for the
-    reason decision 31 gives. The trusted checkout is the operator's checkout (`configPath`,
-    the gate's `repoPath`), read as it stands on disk, not the tree at `targetSha`. The
-    measured one is read from the pinned sha's tree in that repo's object store, never from
-    the gate checkout's disk: the branch's build and test stages ran code there before the
-    split reads it, and could narrow the config the run read, then restore the committed one.
-    The run itself read that disk, so the adapter's optional `testInputsIntact` compares the
-    checkout's root files that decide the run (`package.json`, `.npmrc`, every
-    `vite.config.*`, `vitest.config.*` and `vitest.workspace.*`, names folded to lower case)
-    with the sha's blobs, once after the build and before any suite and once before the
-    split. One changed, added, removed, a link or named in another case at either check
-    counts no file as test.
+    `include` or `exclude` leaves a file the run never collects, which then fails nothing
+    however little test it holds. The trusted side alone is not enough, for the reason decision
+    31 gives. Neither is read from a disk a session can write. The trusted side is read from
+    the tree at `targetSha` (`configSha`, the commit the merge lock holds the main checkout
+    at), not from that checkout's disk. The measured side is read from the pinned sha's tree
+    (`measureSha`). Both trees are read from the main repo's object store, never from the
+    gate checkout's disk: the branch's build and test stages ran code there before the split
+    reads it, and could narrow the config the run read, then restore the committed one. The
+    run itself read that disk, so the adapter's optional `testInputsIntact` checks it twice,
+    once after the build and before any suite and once before the split. It compares the
+    checkout's root files that decide the run with the sha's blobs: `package.json`, `.npmrc`,
+    `.yarnrc`, `.yarnrc.yml`, `pnpm-workspace.yaml`, `bunfig.toml`, every `vite.config.*`,
+    `vitest.config.*` and `vitest.workspace.*`, names folded to lower case. It also checks
+    that each entry of the checkout's `node_modules` is still the link to the trusted
+    checkout's entry that the gate made, apart from the `.cache` and `.vite*` caches vitest
+    writes. One changed, added, removed, a link or named in another case at either check,
+    or a `node_modules` entry replaced or linked elsewhere, counts no file as test.
     **TypeScript** answers from vitest. The `test` script must be plain `vitest` or `vitest
     run` in both checkouts, with no `pretest` or `posttest` beside it (the `coveredTest` rule
     of decision 95): `vitest run src/core`, another runner or a script around the run collects
     or does something else, and then nothing counts as test. The config is the
     first of `vitest.config.{ts,mts,cts,js,mjs,cjs}` then `vite.config.*` present, vitest's own
-    order, read without following a link (a plain file on the trusted disk, a regular file's
-    blob in the measured tree) and parsed with the TypeScript compiler, never run, by
+    order, read without following a link (a regular file's blob in a tree, a plain file on
+    disk outside the gate) and parsed with the TypeScript compiler, never run, by
     `src/adapters/vitest-config.utils.ts`. Root names are matched folded to lower case: a
     case-insensitive disk opens `Vitest.config.ts` for `vitest.config.ts` and a
     case-sensitive one does not, so a config or manifest named in another case, or two names
@@ -60,15 +64,22 @@
     inherited keys the read never sees), `test.dir`, `test.projects`, `test.workspace` or
     `test.typecheck` (whose `only` runs type tests alone, so no test-named file runs), or a
     `vitest.workspace.*` beside it.
-    The measured config is the branch's, and vitest runs it, so a static read of it can be
-    wrong: a branch can add a plugin whose `config` hook pushes an `exclude` at run time, or
-    assign one onto `Object.prototype` inside a value. So it is read only where running it
-    builds the object the read sees and does nothing else. Every statement but the default
-    export must be an import from `vitest/config` or `vite`, and the exported object must be
-    data alone: object and array literals, spreads, string, number, boolean and `null`
-    literals, names and property reads. A call, function, assignment, operator, template,
-    parenthesis or computed key anywhere in it leaves the answer unknown. The trusted config is
-    the operator's, and is read as written, whatever else it holds. No config collects vitest's default `**/*.{test,spec}.?(c|m)[jt]s?(x)`. Vitest 3's
+    The measured config is the branch's, and vitest runs it, so the run can collect what its
+    lists name and still pass a file holding no test. A setup file can register a test in
+    every collected file, and a reporter, runner or pool can pass a run that failed. So the
+    measured config's lists are read only where the rest of it is the trusted one's: the same
+    file name and the same text once each `include` and `exclude` list is cut out, with the
+    whitespace and comments before it. A key the branch adds or changes, a value or an import
+    leaves the answer unknown, and so does adding a list the trusted config lacks. What the two
+    share runs the same code on both sides, so a config that calls
+    `availableParallelism()` from `node:os`, as this repo's does, is read. What the shared code
+    loads is not, since in the gate it is the branch's file. So these leave the answer unknown
+    on either side: a statement that imports or re-exports a module by path (`./`, `../`,
+    `/`); a top-level `plugins`; and, under `test`, `setupFiles`, `globalSetup`, `reporters`,
+    `environment`, `runner`, `pool`, `poolOptions`, `execArgv` or `sequence`. This reverses
+    the earlier rule that a measured config had to be data alone: that rule refused this
+    repo's own config on every branch, and it did not stop a data key from naming a branch
+    module. No config collects vitest's default `**/*.{test,spec}.?(c|m)[jt]s?(x)`. Vitest 3's
     default `exclude` (a `node_modules`, `dist`, `cypress`, `.idea`, `.git`, `.cache`,
     `.output` or `.temp` directory, a tool's `*.config.*`), a superset of vitest 4's, applies
     whatever the config declares, since excluding more only counts more as source. A declared
@@ -89,7 +100,10 @@
     `**` is a `.*$` that matches whatever reaches it. An `include` pattern outside that
     collects nothing; an `exclude` one leaves the answer unknown. An exclude is matched once
     against the whole path, extended to match it up to any `/`, not once per ancestor
-    directory, which made a deep path cost its depth times over. A file in a
+    directory, which made a deep path cost its depth times over. A path holding a line break
+    (`\n`, `\r`, U+2028, U+2029) is collected by nothing and never reaches a pattern: `.`
+    stops at one, so the `.*(?:/.*)?$` an exclude ending `**` becomes would backtrack over
+    every `/` before it, quadratically. A file in a
     nested package is its own runner's (decision 58) and is never a root test.
     A collected test is named by its file name without whatever extension it has, no longer
     without `.ts` alone, so the reach check finds `./big.spec.js` naming `big.spec.tsx`.
@@ -109,12 +123,12 @@
     by a glob rather than by a specifier that spells its name escapes the reach check, so a
     collected test it loads still counts as test: a Next.js `pages/` or `app/` route, a
     `import.meta.glob('./**/*.spec.ts')`. That is the module-graph item decision 110 still
-    owes. A measured config that runs code, as this repo's does (`availableParallelism()` from
-    `node:os` sets `maxWorkers`), is unknown on every branch, so there every test file counts
-    as source, the `.test.ts` files decision 110 counted as test included. Such a repo gets
-    the split back by making its config data. Lint and a nested package's checks run beside
-    the suites in the same writable checkout, so one that rewrites the config while vitest
-    loads it and restores it before the last check is not seen.
+    owes. A config the two sides share that loads a file some other way than a static
+    specifier, a dynamic `import()`, a `require` or a key this does not list, loads the
+    branch's file unseen. Lint and a nested package's checks run beside the suites in the same
+    writable checkout, so one that rewrites the config while vitest loads it and restores it
+    before the last check is not seen. A `node_modules` entry the branch removes is not
+    missed, since resolution then climbs to a parent directory's.
     The gate's own branch is measured
     by the main checkout's adapter (the metric-scope lesson of decision 39), so this change
     first applies to the merge after it lands. Tests: in the config reader, an `include` of
@@ -122,26 +136,36 @@
     default spellings past the default exclude, `vitest.config` wins over `vite.config`, an
     exclude drops a file, a directory and what `**/fixtures/**` names, and an include pattern
     with two stars in a segment, two inner `**`, braces or a leading `./` collects nothing by
-    it. Read as the
-    trusted checkout's, the laxer side, each of these is unknown: a function config, the
+    it. Each of these is unknown: a function config, the
     config's own `defineConfig` wrapper, one imported from elsewhere, another import aliased to
     the name, a run-time include, an include or exclude over 64 patterns, a spread exclude, a
     braced exclude, an exclude with a `!`, a `..` or an absolute path, an exclude spelled
     `./src/prod`, `src/prod/`, `src/./prod`, `src//prod`, with a `?`, a backslash, whitespace
     or an `@`, an empty exclude pattern, a config that does not parse, a spread `test`, a
     shorthand, getter or twice-named include, `projects`, `test.workspace`, `dir`,
-    `test.root`, `typecheck`, a `__proto__` under `test` or at the top, and a top-level
-    `root`. A workspace file is unknown too, named in any case, and a config that is a
+    `test.root`, `typecheck`, a `__proto__` under `test` or at the top, a top-level `root`,
+    an import or re-export of a file, `plugins`, `setupFiles`, `globalSetup`, `reporters`, an
+    `environment`, a `runner`, a `pool`, `poolOptions`, `execArgv` and a sequencer. A
+    workspace file is unknown too, named in any case, and a config that is a
     symlink or named in another case is not read. Read from a commit, the config is the
     tree's whatever the disk holds, and one committed as a link or beside a name that folds
-    to it is not read. Another
-    import, a call or an assignment in a value, a plugin hook and a plugin built by `eval` are
-    each read in the trusted checkout and unknown in the measured one, while a measured config
-    of data, with an imported name, a spread and a property read, is read. In the adapter, a
+    to it is not read. A config that runs code and imports a package is read. Two configs
+    that differ only inside their lists give one rest, while another key, another value, an
+    assignment in a value, another import, an added exclude or another file name each give
+    another. A path holding any of the four line breaks is collected by nothing, in linear
+    time. In the adapter, a
     narrowing script, another runner, a `pretest`, a `posttest` and a manifest that is not
-    JSON each collect nothing, a config calling `availableParallelism()` is read in the
-    trusted checkout and collects nothing in the measured one, a nested package's test is not
-    a root test, and a branch narrowing its include or excluding a file drops it. In the gate,
+    JSON each collect nothing, and a nested package's test is not a root test. A branch whose
+    config is the trusted one, though it runs code, collects. One that sets another key,
+    changes a value or adds a setup file collects nothing. A branch narrowing its include or
+    excluding a file drops it. The measured config is read from the pinned sha and the trusted
+    one from the target sha, whatever either checkout's disk holds. `testInputsIntact` holds
+    for an untouched checkout, a build output beside it, a `node_modules` linked as the gate
+    links it or holding a vite cache, and outside the gate. It fails for a rewritten config,
+    an added `.npmrc`, `.yarnrc`, `.yarnrc.yml`, `pnpm-workspace.yaml` or `bunfig.toml`, a
+    removed manifest, a config made a link, a manifest renamed into another case, a
+    `node_modules` entry replaced by a package or linked elsewhere, and a `node_modules` that is
+    itself a link. In the gate,
     `scripts/x.test.ts` outside the trusted include counts as source while `src/a.test.ts`
     counts as test, with a second adapter claiming every file not asked, every file counts as
     source where only the branch's config imports its `defineConfig` from elsewhere, a

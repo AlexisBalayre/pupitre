@@ -2885,7 +2885,9 @@ export async function measureBranch(
     req.repoPath,
     targetSha,
     sha,
-    collects && ((files) => (intact ? collects(capabilityContext, files) : [])),
+    // The trusted lists are the target's, not what a session wrote to the main checkout.
+    collects &&
+      ((files) => (intact ? collects({ ...capabilityContext, configSha: targetSha }, files) : [])),
   );
   const split = `${changed.source} source + ${changed.test} test + ${changed.docs} docs changed lines`;
   const sizeFindings: string[] = [];

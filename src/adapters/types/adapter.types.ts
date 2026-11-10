@@ -75,6 +75,12 @@ export interface CapabilityContext {
    */
   measureSha?: string;
   /**
+   * The commit `configPath` holds, when it is the gate's trusted checkout: the
+   * target the merge lock holds it at. What must be the target's, not whatever
+   * a session wrote to that checkout's disk, is read from it (decision 143).
+   */
+  configSha?: string;
+  /**
    * Env names the operator allowed into capability children with `--gate-env`
    * (decision 36). Optional because absence narrows the child's environment
    * rather than widening it — the safe direction for a caller that forgets,

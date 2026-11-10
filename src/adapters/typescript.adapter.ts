@@ -1,8 +1,17 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync } from 'node:fs';
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, normalize, relative, sep } from 'node:path';
 import ts from 'typescript';
 import { withoutFiles } from '../core/coverage.utils.js';
+import { GATE_ENVIRONMENT_DIR } from '../core/merge-gate.constants.js';
 import { GateInterruptedError, removeGateDir, runGateChild } from '../core/sandbox.utils.js';
 import { failureSummary, isUnavailable, readPlainFile } from './capability.utils.js';
 import { nestedPackageDirs } from './git-tree.client.js';
@@ -201,20 +210,42 @@ function runsPlainVitest(root: RootFiles): boolean {
 
 /**
  * The root files, by lower-cased name, that decide what a vitest run collects:
- * the manifest whose script starts it, the npm config that can change how that
- * script runs, and every config and workspace file vitest or vite reads.
+ * the manifest whose script starts it, the npm, yarn, pnpm and bun configs that
+ * can change how that script runs, and every config and workspace file vitest
+ * or vite reads.
  */
-const VITEST_RUN_INPUT = /^(?:package\.json|\.npmrc|vite(?:st)?\.(?:config|workspace)\.[^/]*)$/;
+const VITEST_RUN_INPUT =
+  /^(?:package\.json|\.npmrc|\.yarnrc(?:\.yml)?|pnpm-workspace\.yaml|bunfig\.toml|vite(?:st)?\.(?:config|workspace)\.[^/]*)$/;
+
+/** What vitest and vite write in `node_modules` as they run, which the gate does not link. */
+const RUN_CACHE = /^(?:\.cache$|\.vite)/;
 
 /**
- * A checkout's root as the diff-size split reads it: the gate's checkout from
- * the commit it was cut at, since the branch's build and tests ran in it and
- * may have rewritten it (decision 143), and any other from disk.
+ * A checkout's root as the diff-size split reads it: from the commit it holds
+ * where it has one, the target's for the trusted checkout and the pinned one
+ * for the gate's (decision 143), since a session can write either disk; from
+ * disk outside the gate.
  */
-function checkoutRoot(ctx: CapabilityContext, path: string): RootFiles {
-  return path === ctx.measurePath && ctx.measureSha !== undefined
-    ? treeRoot(ctx.configPath, ctx.measureSha)
-    : diskRoot(path);
+function rootAt(ctx: CapabilityContext, path: string, sha: string | undefined): RootFiles {
+  return sha === undefined ? diskRoot(path) : treeRoot(ctx.configPath, sha);
+}
+
+/**
+ * Whether the gate checkout's `node_modules` still links each entry to the
+ * trusted checkout's, as the gate made it: one replaced runs the branch's
+ * vitest, or a package it loads.
+ */
+function environmentLinked({ configPath, measurePath }: CapabilityContext): boolean {
+  const local = join(measurePath, GATE_ENVIRONMENT_DIR);
+  const trusted = join(configPath, GATE_ENVIRONMENT_DIR);
+  const stat = lstatSync(local, { throwIfNoEntry: false });
+  if (stat === undefined) return !existsSync(trusted);
+  return (
+    stat.isDirectory() &&
+    readdirSync(local).every(
+      (name) => RUN_CACHE.test(name) || readlinkSync(join(local, name)) === join(trusted, name),
+    )
+  );
 }
 
 /** The run inputs a root holds, by name, each read, as one string. Throws where one cannot be read. */
@@ -417,18 +448,27 @@ export const typescriptAdapter: Adapter = {
     // include or exclude leaves a file vitest never collects, which then fails
     // nothing when it holds no test (decisions 31, 143). A nested package's file
     // is its own runner's (decision 58). Unknown on either side collects nothing.
-    const sides = [...new Set([ctx.configPath, ctx.measurePath])].map((path) => {
+    // Vitest runs the branch's config, so its lists count only where the rest
+    // of it is the trusted one's.
+    const [trusted, measured] = (
+      [
+        [ctx.configPath, ctx.configSha],
+        [ctx.measurePath, ctx.measureSha],
+      ] as const
+    ).map(([path, sha]) => {
       try {
-        const root = checkoutRoot(ctx, path);
-        return runsPlainVitest(root) ? vitestCollection(root, path === ctx.measurePath) : undefined;
+        const root = rootAt(ctx, path, sha);
+        return runsPlainVitest(root) ? vitestCollection(root) : undefined;
       } catch {
         return undefined;
       }
     });
-    if (sides.some((collects) => collects === undefined)) return [];
+    if (!trusted || measured?.config !== trusted.config) return [];
     const nested = nestedPackageDirs(ctx);
     return files.filter(
-      (file) => !isInNestedPackage(file, nested) && sides.every((collects) => collects?.(file)),
+      (file) =>
+        !isInNestedPackage(file, nested) &&
+        [trusted, measured].every((side) => side.collects(file)),
     );
   },
 
@@ -440,6 +480,7 @@ export const typescriptAdapter: Adapter = {
     if (ctx.measureSha === undefined) return true;
     try {
       return (
+        environmentLinked(ctx) &&
         runInputs(diskRoot(ctx.measurePath)) === runInputs(treeRoot(ctx.configPath, ctx.measureSha))
       );
     } catch {

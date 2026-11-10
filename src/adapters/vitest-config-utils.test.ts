@@ -33,40 +33,33 @@ function treeWith(entries: [string, string, string][]): { repo: string; tree: st
 }
 
 /** What the run at a checkout of `files` collects of `paths`, or undefined where it is unknown. */
-function collected(
-  files: Record<string, string>,
-  paths: string[],
-  measured: boolean,
-): string[] | undefined {
-  const collects = vitestCollection(diskRoot(repoWith(files)), measured);
-  return collects && paths.filter(collects);
+function collected(files: Record<string, string>, paths: string[]): string[] | undefined {
+  const read = vitestCollection(diskRoot(repoWith(files)));
+  return read && paths.filter(read.collects);
 }
 
 // What one vitest run collects, read statically from its config (decision 143).
 describe('vitestCollection', () => {
-  it('collects only what the include names, in a measured checkout too', () => {
+  it('collects only what the include names', () => {
     const files = { 'vitest.config.ts': configWith("{ include: ['src/**/*.test.ts'] }") };
 
-    expect(
-      collected(files, ['src/a.test.ts', 'src/deep/b.test.ts', 'scripts/x.test.ts'], true),
-    ).toEqual(['src/a.test.ts', 'src/deep/b.test.ts']);
+    expect(collected(files, ['src/a.test.ts', 'src/deep/b.test.ts', 'scripts/x.test.ts'])).toEqual([
+      'src/a.test.ts',
+      'src/deep/b.test.ts',
+    ]);
   });
 
   it("collects vitest's default include, past its default exclude, with no config", () => {
     expect(
-      collected(
-        {},
-        [
-          'src/a.spec.tsx',
-          'b.test.js',
-          'src/c.test.mts',
-          'src/d.ts',
-          'node_modules/pkg/e.test.ts',
-          'dist/f.test.ts',
-          'vitest.config.test.ts',
-        ],
-        true,
-      ),
+      collected({}, [
+        'src/a.spec.tsx',
+        'b.test.js',
+        'src/c.test.mts',
+        'src/d.ts',
+        'node_modules/pkg/e.test.ts',
+        'dist/f.test.ts',
+        'vitest.config.test.ts',
+      ]),
     ).toEqual(['src/a.spec.tsx', 'b.test.js', 'src/c.test.mts']);
   });
 
@@ -76,9 +69,7 @@ describe('vitestCollection', () => {
       'vitest.config.mts': configWith("{ include: ['src/**/*.test.ts'] }"),
     };
 
-    expect(collected(files, ['src/a.test.ts', 'scripts/x.test.ts'], false)).toEqual([
-      'src/a.test.ts',
-    ]);
+    expect(collected(files, ['src/a.test.ts', 'scripts/x.test.ts'])).toEqual(['src/a.test.ts']);
   });
 
   it('drops what an exclude names, as a file or as a directory above it', () => {
@@ -89,16 +80,12 @@ describe('vitestCollection', () => {
     };
 
     expect(
-      collected(
-        files,
-        [
-          'src/a.test.ts',
-          'src/legacy/b.test.ts',
-          'src/deep/slow.test.ts',
-          'src/fixtures/c.test.ts',
-        ],
-        false,
-      ),
+      collected(files, [
+        'src/a.test.ts',
+        'src/legacy/b.test.ts',
+        'src/deep/slow.test.ts',
+        'src/fixtures/c.test.ts',
+      ]),
     ).toEqual(['src/a.test.ts']);
   });
 
@@ -110,18 +97,14 @@ describe('vitestCollection', () => {
     };
 
     expect(
-      collected(
-        files,
-        [
-          'src/ab.test.ts',
-          'w/x/y/c.test.ts',
-          'src/e.test.ts',
-          'src/{e,f}.test.ts',
-          'src/g.test.ts',
-          'src/d.test.ts',
-        ],
-        false,
-      ),
+      collected(files, [
+        'src/ab.test.ts',
+        'w/x/y/c.test.ts',
+        'src/e.test.ts',
+        'src/{e,f}.test.ts',
+        'src/g.test.ts',
+        'src/d.test.ts',
+      ]),
     ).toEqual(['src/d.test.ts']);
   });
 
@@ -181,29 +164,67 @@ describe('vitestCollection', () => {
     ['typecheck', configWith('{ typecheck: { enabled: true, only: true } }')],
     ['a prototype under test', configWith("{ __proto__: { exclude: ['src/**'] } }")],
     ['a root', "export default { root: 'src', test: {} };\n"],
+    // Modules the run loads, which in the gate are the branch's.
+    [
+      'an import of a file',
+      `import shared from './shared.js';\n${configWith("{ include: ['src/**/*.test.ts'] }")}`,
+    ],
+    [
+      'a re-export of a file',
+      `export * from './shared.js';\n${configWith("{ include: ['src/**/*.test.ts'] }")}`,
+    ],
+    ['setupFiles', configWith("{ setupFiles: ['./setup.ts'] }")],
+    ['globalSetup', configWith("{ globalSetup: 'global.ts' }")],
+    ['reporters', configWith("{ reporters: ['./reporter.ts'] }")],
+    ['an environment', configWith("{ environment: './env.ts' }")],
+    ['a runner', configWith("{ runner: './runner.ts' }")],
+    ['a pool', configWith("{ pool: './pool.ts' }")],
+    ['poolOptions', configWith("{ poolOptions: { forks: { execArgv: ['--import=./x.js'] } } }")],
+    ['execArgv', configWith("{ execArgv: ['--import=./x.js'] }")],
+    ['a sequencer', configWith("{ sequence: { sequencer: './sequencer.ts' } }")],
+    [
+      'plugins',
+      "import { defineConfig } from 'vitest/config';\nexport default defineConfig({ plugins: [], test: {} });\n",
+    ],
     ['a prototype', "export default { __proto__: { test: { exclude: ['src/**'] } } };\n"],
   ])('collects nothing under %s', (_, config) => {
-    expect(
-      vitestCollection(diskRoot(repoWith({ 'vitest.config.ts': config })), false),
-    ).toBeUndefined();
+    expect(vitestCollection(diskRoot(repoWith({ 'vitest.config.ts': config })))).toBeUndefined();
   });
 
-  it('reads a measured config of data, imported names and spreads included', () => {
+  // This repo's own: the gate compares it across checkouts rather than run it.
+  it('reads a config that runs code and imports packages', () => {
     const files = {
       'vitest.config.ts':
-        "import { configDefaults, defineConfig } from 'vitest/config';\n" +
-        "export default defineConfig({ test: { include: ['src/**/*.test.ts'], " +
-        "coverage: { exclude: [...configDefaults.coverage.exclude, 'x'] }, retry: 0 } });\n",
+        "import { availableParallelism } from 'node:os';\n" +
+        configWith(
+          "{ include: ['src/**/*.test.ts'], maxWorkers: Math.max(2, availableParallelism()) }",
+        ),
     };
 
-    expect(collected(files, ['src/a.test.ts', 'b.test.ts'], true)).toEqual(['src/a.test.ts']);
+    expect(collected(files, ['src/a.test.ts', 'b.test.ts'])).toEqual(['src/a.test.ts']);
+  });
+
+  // A `.` stops at a line break, so `src/**`'s `.*(?:/.*)?$` would backtrack
+  // over every `/` before one, quadratically.
+  it('collects no path holding a line break, in linear time', () => {
+    const files = {
+      'vitest.config.ts': configWith("{ include: ['**/*.test.ts'], exclude: ['src/**'] }"),
+    };
+    const collects = vitestCollection(diskRoot(repoWith(files)))?.collects;
+    const started = Date.now();
+
+    for (const breaks of ['\n', '\r', '\u2028', '\u2029']) {
+      expect(collects?.(`src/${'a/'.repeat(20_000)}${breaks}x.test.ts`)).toBe(false);
+    }
+    expect(collects?.('lib/a\nb.test.ts')).toBe(false);
+    expect(Date.now() - started).toBeLessThan(500);
   });
 
   it.each(['vitest.workspace.ts', 'Vitest.Workspace.ts', 'VITEST.WORKSPACE.JSON'])(
     'collects nothing beside a workspace file named %s',
     (name) => {
       expect(
-        vitestCollection(diskRoot(repoWith({ [name]: 'export default [];\n' })), false),
+        vitestCollection(diskRoot(repoWith({ [name]: 'export default [];\n' }))),
       ).toBeUndefined();
     },
   );
@@ -212,14 +233,14 @@ describe('vitestCollection', () => {
     const repo = repoWith({ 'real.config.ts': configWith("{ include: ['src/**/*.test.ts'] }") });
     symlinkSync('real.config.ts', join(repo, 'vitest.config.ts'));
 
-    expect(() => vitestCollection(diskRoot(repo), false)).toThrow();
+    expect(() => vitestCollection(diskRoot(repo))).toThrow();
   });
 
   // A case-insensitive disk opens it for vitest.config.ts; a case-sensitive one does not.
   it('refuses to read a config named in another case', () => {
     const repo = repoWith({ 'Vitest.config.ts': configWith("{ include: ['src/**/*.test.ts'] }") });
 
-    expect(() => vitestCollection(diskRoot(repo), false)).toThrow();
+    expect(() => vitestCollection(diskRoot(repo))).toThrow();
   });
 
   it("reads a commit's config from the object store, whatever the disk holds", () => {
@@ -227,7 +248,7 @@ describe('vitestCollection', () => {
       ['vitest.config.ts', '100644', configWith("{ include: ['src/**/*.test.ts'] }")],
     ]);
     writeFileSync(join(repo, 'vitest.config.ts'), configWith("{ include: ['**/*.test.ts'] }"));
-    const collects = vitestCollection(treeRoot(repo, tree), true);
+    const collects = vitestCollection(treeRoot(repo, tree))?.collects;
 
     expect(['src/a.test.ts', 'b.test.ts'].filter((path) => collects?.(path))).toEqual([
       'src/a.test.ts',
@@ -248,37 +269,51 @@ describe('vitestCollection', () => {
     (_, entries) => {
       const { repo, tree } = treeWith(entries);
 
-      expect(() => vitestCollection(treeRoot(repo, tree), true)).toThrow();
+      expect(() => vitestCollection(treeRoot(repo, tree))).toThrow();
     },
   );
 
-  // Vitest runs the branch's config, so the measured one is read only where
-  // running it builds the object read and nothing else: each row is read in
-  // the trusted checkout and unknown in the measured one.
-  const withPlugins = (plugins: string): string =>
-    "import { defineConfig } from 'vitest/config';\n" +
-    `export default defineConfig({ plugins: [${plugins}], test: { include: ['src/**/*.test.ts'] } });\n`;
+  // Vitest runs the branch's config, so the gate reads its lists only where
+  // the rest of it is the trusted one's: `config` is that rest.
+  const configOf = (config: string): string | undefined =>
+    vitestCollection(diskRoot(repoWith({ 'vitest.config.ts': config })))?.config;
+  const trusted = configWith("{ include: ['src/**/*.test.ts'], maxWorkers: 2 }");
+
+  it('gives two configs that differ only in their lists one rest', () => {
+    expect(
+      configOf(
+        configWith("{ include: [\n    'src/a/**', // and lib\n    'lib/**',\n  ], maxWorkers: 2 }"),
+      ),
+    ).toBe(configOf(trusted));
+    expect(configOf(configWith('{ include: [], maxWorkers: 2 }'))).toBe(configOf(trusted));
+  });
 
   it.each([
+    ['another key', configWith("{ include: ['src/**/*.test.ts'], maxWorkers: 2, retry: 3 }")],
+    ['another value', configWith("{ include: ['src/**/*.test.ts'], maxWorkers: 3 }")],
+    [
+      'an assignment in a value',
+      configWith(
+        "{ include: ['src/**/*.test.ts'], maxWorkers: (Object.prototype.exclude = ['src/**'], 2) }",
+      ),
+    ],
     [
       'another import',
       "import { availableParallelism } from 'node:os';\n" +
-        configWith("{ include: ['src/**/*.test.ts'] }"),
-    ],
-    ['a call in a value', configWith("{ include: ['src/**/*.test.ts'], maxWorkers: Math.max(2) }")],
-    [
-      'an assignment in a value',
-      configWith("{ include: ['src/**/*.test.ts'], pool: Object.prototype.exclude = ['src/**'] }"),
+        configWith("{ include: ['src/**/*.test.ts'], maxWorkers: 2 }"),
     ],
     [
-      'a plugin hook pushing an exclude',
-      withPlugins("{ name: 'x', config: (config) => { config.test.exclude = ['src/**']; } }"),
+      'an exclude added',
+      configWith("{ include: ['src/**/*.test.ts'], exclude: [], maxWorkers: 2 }"),
     ],
-    ['a plugin built by eval', withPlugins('eval(\'({ name: "x" })\')')],
-  ])('reads %s only in the trusted checkout', (_, config) => {
-    const files = { 'vitest.config.ts': config };
+    ['another config file', trusted],
+  ])('tells apart a config with %s', (name, config) => {
+    const other =
+      name === 'another config file'
+        ? vitestCollection(diskRoot(repoWith({ 'vite.config.ts': config })))?.config
+        : configOf(config);
 
-    expect(collected(files, ['src/a.test.ts'], false)).toEqual(['src/a.test.ts']);
-    expect(collected(files, ['src/a.test.ts'], true)).toBeUndefined();
+    expect(other).toBeDefined();
+    expect(other).not.toBe(configOf(trusted));
   });
 });
