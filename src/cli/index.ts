@@ -141,6 +141,7 @@ import {
   SessionCapReachedError,
   steerSession,
 } from '../core/session-lifecycle.service.js';
+import { retireSession } from '../core/session-retire.service.js';
 import {
   describeSlotWait,
   runSessionTest,
@@ -157,6 +158,7 @@ import type { GateReport, MergeOutcome } from '../core/types/merge-gate.types.js
 import type { TaskId, TaskSpec } from '../core/types/profile.types.js';
 import type { StoredGateStage } from '../core/types/session-event.types.js';
 import type { NewSessionRequest, RouteOverride } from '../core/types/session-lifecycle.types.js';
+import type { RetireOutcome } from '../core/types/session-retire.types.js';
 import {
   readUsage,
   UsageLimitReachedError,
@@ -2393,6 +2395,50 @@ export function buildProgram(): Command {
       }
       if (outcome.audit) printAuditOutcome(db, outcome.audit, repoPath);
       else console.log('Audit skipped: run `pup audit` once after the last land.');
+      if (lockLost !== undefined) refuseScrubbed(lockLost);
+    });
+  program
+    .command('retire <session>')
+    .description(
+      'After its PR was closed because another PR re-landed the work: clean up the merged session',
+    )
+    .option('--superseded-by <pr>', 'the merged PR that re-landed the work: its number or url')
+    .action(async (session: string, opts: { supersededBy?: string }) => {
+      const { repoPath, db } = project();
+      // Declaring work superseded is a judgement about what landed, and the
+      // command deletes a branch: the operator's call (decision 141).
+      if (callingSession(db) || callingConductor()) {
+        return refuse('`pup retire` is operator-only; sessions and the conductor cannot run it.');
+      }
+      if (opts.supersededBy === undefined) {
+        return refuse(
+          '`pup retire` needs `--superseded-by <pr>`, the merged PR that re-landed the work.',
+        );
+      }
+      let outcome: RetireOutcome;
+      let lockLost: MergeLockLostError | undefined;
+      try {
+        outcome = await retireSession(db, {
+          repoPath,
+          sessionId: session,
+          supersededBy: opts.supersededBy,
+        });
+      } catch (error) {
+        if (error instanceof GateInterruptedError) throw error;
+        if (!(error instanceof MergeLockLostError)) return refuseScrubbed(error);
+        outcome = error.result as RetireOutcome;
+        lockLost = error;
+      }
+      console.log(
+        `Retired ${sanitizeReason(session)}: ${outcome.prUrl} was closed, superseded by ` +
+          `${outcome.supersededBy}.`,
+      );
+      if (outcome.removedWorktree) console.log('Removed the session worktree.');
+      if (outcome.keptBranch !== undefined) {
+        console.log(
+          `Kept ${sanitizeReason(outcome.keptBranch)}: it holds commits past the sha its PR carried.`,
+        );
+      }
       if (lockLost !== undefined) refuseScrubbed(lockLost);
     });
   program
