@@ -1,0 +1,165 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-10T16:38:22.731Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42855300908",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42855300908",
+  "actor": "AlexisBalayre",
+  "commit_sha": "1cd5957d9d58d5ee6b3ec1c4e5b8b894be1763ef",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 305,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/session-lifecycle.service.ts",
+      "line": "900-920",
+      "description": "Nothing limits the length of a conductor question when it is asked, but its answer must fit `tellConductor`'s 800-character limit. A question of about 760+ characters can never be answered with `pup answer conductor`, and it stays at the top of the needs-you inbox until the conductor restarts.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/session-lifecycle.service.ts",
+      "line": "789-795",
+      "description": "QuestionRefusedError is declared inline in a service file instead of session-lifecycle.errors.ts.",
+      "status": "unresolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/cli/ui/use-controls.hook.ts",
+      "line": "235-249",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The new digit keys answer whichever session sits at the cursor's index. The new sortRank moves rows exactly when a question is asked or answered, so a refresh between reading and pressing can send one session's option to a different worker, with no confirm step.",
+      "body": "**A digit key can answer a different session's question than the one the operator was reading.**\n\nThe `pup ui` cursor is a bare index (`useState(0)`, use-controls.hook.ts L121). `sessionRow = live[cursor]` reads it (L145-146), and `live` follows `snapshot.sessions` order, which is re-read every 2 s. Nothing re-pins the selection to a session id after a refresh; the only adjustment clamps it to the row count.\n\nThis PR adds a question tier to the sort, so rows now move exactly when a question opens or closes:\n\n```ts\nfunction sortRank(session: DashboardSession): number {\n  if (session.question !== undefined) return 2;\n  return session.state === 'blocked' || session.stalledAgeMs !== undefined ? 1 : 0;\n}\n```\n\nIt also adds a digit key (L467, `/^[1-9]$/` → `answerOption`) that acts at once, with no confirm step, on whatever row the index points at:\n\n```ts\n} else {\n  const { deps } = sessionRow.project;\n  runAfterFrame(`Answering ${asking.id}: waiting for the paste to land …`, () =>\n    answerSelected(deps, asking.id, option),\n  );\n}\n```\n\n**Trigger:**\n1. Session B has an open two-option question and sits at row 0. The operator is reading its options in the detail pane.\n2. Session C, created before B, runs `pup session ask \"...\" --option X --option Y`.\n3. On the next refresh, C sorts above B, because the sort is stable in creation order. The cursor stays at index 0.\n4. The operator presses `1`, meaning B's first option. `answerSessionQuestion` pastes C's option 1 into C's pane, records an operator `answer`, and closes C's question.\n\nC then acts on a decision the operator never made, and B is still waiting. A CLI `pup answer` or steer reorders the rows the same way while the UI is open. The older irreversible keys (`k`, `m`, `u`) avoid this by going through a confirm prompt that names the session id. The digit key has no such guard.\n\nThis is separate from the earlier nit about a question re-asked on the *same* session. Here the answer reaches a *different* worker.\n\n**Fix direction:** keep the selection by session id (store the selected id and look it up in `live` on each render). Alternatively, have the digit path pass along the session id and question text the frame showed, and refuse when they no longer match.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/1cd5957d9d58d5ee6b3ec1c4e5b8b894be1763ef/src/cli/ui/use-controls.hook.ts#L235-L249\nhttps://github.com/AlexisBalayre/pupitre/blob/1cd5957d9d58d5ee6b3ec1c4e5b8b894be1763ef/src/core/dashboard.service.ts#L419-L422",
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/use-controls.hook.ts",
+      "line": "246",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "pup ui's 1-9 keys pass the scrubbed display id (sanitizeReason(row.id)) and never check isMintedId. A planted row 't-abc ' shows its own question but sends an operator-attributed answer, of t-abc's own option n, to the real t-abc, whose question the operator never saw. The inbox's needOf already swaps in UNMINTED_ID for such rows. The older keys (s, k, m, u) share the scrubbed-id pattern, so refusing `!asking.isMintedId` in answerOption, and ideally in onSession, closes it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/conductor.service.ts",
+      "line": null,
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The markConductorQuestion JSDoc says the question leads the inbox \"until `pup answer conductor` closes it\", but openQuestion and ADR 0093 also end it at the conductor's next start (conductor_start). It should say \"until `pup answer conductor` or the conductor's next start closes it\".",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "863",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The boolean `marks` in dashboardQuestion has no is/has/should/can prefix, which general.md §Type safety requires for boolean names; rename it to, e.g., `isRecommendedInRange`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "635",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The boolean `refused` in questionOrRefuse has no is/has/should/can prefix, which general.md §Type safety requires for boolean names; rename it to, e.g., `isRefusal`.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Skipped review-context (no spec/protocol/infra surface), review-workflow-safety (no workflow change), review-spec (no closing issues or --spec), review-maintainability (off the default roster). The prior important on QuestionRefusedError placement is carried forward as unresolved."
+    },
+    {
+      "component": "orchestrator",
+      "description": "Downgraded the security finding on the digit key's scrubbed id (use-controls.hook.ts:246) from important to nit after validation confirmed it. The validator showed the scrubbed-id pattern predates the PR on the s/k/m/u keys, which do more harm on the same planted row, and that the digit key delivers only the target's own option text."
+    },
+    {
+      "component": "docs",
+      "description": "The docs reviewer's first Bash call failed with a bwrap error about .git/config.worktree.lock; the retry succeeded."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 5.011335900000001,
+  "duration_ms": 393727,
+  "num_turns": 20,
+  "tokens": {
+    "input": 18,
+    "output": 15136,
+    "cache_read": 450099,
+    "cache_creation": 71253,
+    "total": 536506
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 270,
+      "output": 79020,
+      "cache_read": 5023829,
+      "cache_creation": 354093,
+      "cost_usd": 4.5704698000000015
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 54,
+      "output": 10365,
+      "cache_read": 473439,
+      "cache_creation": 115590,
+      "cost_usd": 0.4400768999999999
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 395,
+      "cache_read": 0,
+      "cache_creation": 4732,
+      "cost_usd": 0.0007892
+    }
+  ],
+  "permission_denials": []
+}
