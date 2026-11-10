@@ -704,6 +704,32 @@ describe('landSession', { timeout: 20_000 }, () => {
     expectNothingChanged(mainBefore);
   });
 
+  // Decision 164: the event names the commits only the operator's word vouched for.
+  it('records the accepted head and the pin on the landed event', async () => {
+    seedPrMerge();
+    const later = commitIn(worktree, 'src/fix.ts', 'export const fix = 1;\n');
+    sh(repo, 'git', 'push', '-q', origin, BRANCH);
+    sh(origin, 'git', 'update-ref', 'refs/pull/7/head', later);
+    const merge = mergeOnGitHub(later);
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: later,
+      mergeCommit: { oid: merge },
+    });
+
+    await landSession(db, {
+      repoPath: repo,
+      sessionId: SESSION_ID,
+      adapters: [passingAdapter],
+      acceptHead: later,
+    });
+
+    expect(landedEvents().map((row) => JSON.parse(row.payload))).toEqual([
+      { sha: merge, target: 'main', prUrl: PR_URL, acceptedHead: later, pinned },
+    ]);
+  });
+
   // GitHub prints the repo in its canonical case whatever case origin was
   // recorded with; two names apart by case are one GitHub repo.
   it('accepts a pull request url whose case differs from the recorded origin', async () => {
