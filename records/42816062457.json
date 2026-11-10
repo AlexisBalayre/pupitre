@@ -1,0 +1,189 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-10T12:39:36.771Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42816062457",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42816062457",
+  "actor": "AlexisBalayre",
+  "commit_sha": "8bad0037931130c8af07ea2c26840a16443c2986",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 306,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "3077-3093",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "`commitsPastPin` now rethrows `RewrittenGitDirError`. `recordMerge` calls it before `appendEvent(db, session.id, 'merge', …)`. So a main `.git` rewritten after the fast-forward lands means the `merge` event is never written, even though the session is already `merged` and the target already holds the sha.",
+      "body": "**A `.git` rewritten after the fast-forward drops the `merge` event for a merge that already landed.**\n\nBefore this PR, `commitsPastPin` ended in `catch { return 0; }`. Two things changed:\n- It now calls `rethrowIfNoUsableRepo(repoPath, error)` ([L1454-L1464](https://github.com/AlexisBalayre/pupitre/blob/8bad0037931130c8af07ea2c26840a16443c2986/src/core/merge-gate.service.ts#L1454-L1464)).\n- `resolveCommit` now begins with `assertMainCheckout`.\n\n`recordMerge` calls `commitsPastPin` before `appendEvent`, so a refusal there skips the event. That breaks the promise in `gateAndMerge`'s `finally`: the merge is \"recorded even if the teardown threw, since the target already holds the pinned sha\".\n\n**How it happens.** ADR 0172's premise is that a session can write `.git`.\n1. `fastForward` lands (~L2076) and the session moves to `merged` (~L2081). The session is still alive until `killTmux` (~L2090), and a background child of it can live longer.\n2. During that window it plants `.git/commondir` or swaps `.git`.\n3. `worktree remove` (~L2092) throws in `safeArgv`. The error is caught and `keptWorktree` is set.\n4. `deleteBranchAt` is skipped, so `isDeleted` stays `false`.\n5. In the `finally`, `recordMerge` calls `commitsPastPin`, which calls `resolveCommit`, which throws.\n6. No `merge` event is written.\n\n**What it costs.**\n- `newestMerge` (~L1681) finds nothing. In PR mode, `pinnedPullRequest` then says the session opened no PR, which blocks `land`, ci-wait, fix-round and retire for a session that is already `merged`.\n- `regate.service.ts:228` always passes `isDeleted=false`, so a re-gate loses its new merge event the same way.\n- Nothing writes the event again later, and no test covers this rethrow.\n\nThe refusal should still surface, but after the durable record. Write the event without `leftBehind`, then rethrow.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/8bad0037931130c8af07ea2c26840a16443c2986/src/core/merge-gate.service.ts#L3077-L3093",
+      "suggestion": "  const { sha, prUrl } = merge;\n  let leftBehind = 0;\n  let refused: unknown;\n  try {\n    leftBehind = isDeleted ? 0 : commitsPastPin(repoPath, `refs/heads/${session.branch}`, sha);\n  } catch (error) {\n    // The target already holds `sha`: record the merge first, then let the refusal go on.\n    refused = error;\n  }\n  if (leftBehind > 0) {\n    console.error(\n      `${sanitizeReason(session.branch)} moved after the gate pinned ${sha}: ${leftBehind} ` +\n        `later commit${leftBehind === 1 ? ' was' : 's were'} left behind on it, not merged.`,\n    );\n  }\n  appendEvent(db, session.id, 'merge', {\n    branch: session.branch,\n    sha,\n    target: merge.target,\n    files: merge.files,\n    ...(prUrl !== undefined ? { prUrl } : {}),\n    ...(leftBehind > 0 ? { leftBehind } : {}),\n  });\n  if (refused !== undefined) throw refused;\n}"
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "689-700",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`rethrowIfNoUsableRepo` only spots git's refusal by matching English stderr. Under a translated git and a non-English locale (e.g. `LANG=fr_FR.UTF-8` with git's locale files installed) the match always fails. A `.git` broken after `safeArgv`'s check then reads as \"no such ref\", which is the outcome this helper exists to stop.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "142-150",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The PR lets `RewrittenGitDirError` through some catches that read a failed git as a negative answer, but not all of them. `isAncestor` still turns it into `false`, and in the gate that becomes a `fresh-base` FAIL. The session is then rejected and re-steered, not refused. The same gap is in `swapBranch`'s catch (L1812-1820) and in `deleteBranchIfHeld` (session-teardown.service.ts:119-125). Each one needs `.git` rewritten between two adjacent spawns, and the fix is the same `rethrowIfNoUsableRepo(repoPath, error)` line in each catch.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "320-326",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`worktreeConfigState`'s catch turns the `RewrittenGitDirError` that `safeArgv` now throws (planted commondir, junk HEAD, unsearchable refs/) into `'unreadable'`. Launch then fails with a `WorktreeConfigError` that tells the operator to run sparse-checkout/config commands and never names the planted file. Fix: rethrow `RewrittenGitDirError` after `rethrowIfKilled(error)`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/conductor.service.ts",
+      "line": "154",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`assertMainCheckout(repoPath)` runs inside the conductor's `prepareGraph` envelope. That envelope prints any error as \"Could not index …: launching without a code graph\", cut to 300 chars, and then launches the conductor anyway. A planted commondir therefore shows up as a truncated no-graph line, with no compromise alarm. The check also runs only when a codegraph binary is installed.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0172-git-refuses-a-main-checkout-s-git-a-session-rewrote.md",
+      "line": "110-113",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "ADR \"What remains\" says only the symlink and commondir cases are refused for a checkout no `assertMainCheckout` recorded. But `assertGitDirUnplanted` checks HEAD/objects/refs on every spawn, so the bare-fallback and unusable-.git cases are refused there too. The real gaps are a gitfile swap, a missing .git, and a decoy directory.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1070-1074",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Call-site comments restate `assertMainCheckout`'s JSDoc (a .git dir of its own, no commondir, gitfile/symlink, safeArgv holds the path). They do this here and at conductor.service.ts:152-153, which also wrongly puts a gitfile/symlink \"in\" .git. general.md §Comments says to keep only the ordering WHY, e.g. \"before any ref read, and again under the lock (decision 172)\".",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "665-680",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The HEAD/objects/refs pre-check (`VALID_HEAD`, `searchableDir`) copies git's `is_git_directory` rules. Explicit `--git-dir` naming plus `safe.bareRepository=explicit` already stop the bare fallback, and `rethrowIfNoUsableRepo` already refuses git's \"not a git repository\". Removing the pre-check would cut about 35 lines and one regex to keep in step with git, at the cost of a less specific message.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1080",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The second `assertMainCheckout` under the lock repeats the check that the next spawn (via `safeArgv`) and `resolveCommit` make anyway, since L1074 has already recorded the path. It could be dropped, together with its \"and again under the lock\" justification.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0172-git-refuses-a-main-checkout-s-git-a-session-rewrote.md",
+      "line": "1",
+      "area": "guards",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "docs/adr/README.md:15 numbers a new ADR as the highest on origin/main plus one, which gives 0168 at this merge base, but this ADR is 0172. Renumber unless 0168-0171 are reserved on other branches. The source comments cite \"decision 172\" too.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 5,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 7.77715975,
+  "duration_ms": 609954,
+  "num_turns": 18,
+  "tokens": {
+    "input": 18,
+    "output": 20012,
+    "cache_read": 452622,
+    "cache_creation": 68990,
+    "total": 541642
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 306,
+      "output": 146672,
+      "cache_read": 7128908,
+      "cache_creation": 536626,
+      "cost_usd": 7.2505456000000015
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 56,
+      "output": 17167,
+      "cache_read": 467402,
+      "cache_creation": 122787,
+      "cost_usd": 0.5254897000000001
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 890,
+      "cache_read": 0,
+      "cache_creation": 5434,
+      "cost_usd": 0.00112445
+    }
+  ],
+  "permission_denials": []
+}
