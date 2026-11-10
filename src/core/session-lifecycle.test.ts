@@ -1401,6 +1401,57 @@ describe('launchTask model routing (decision 92)', () => {
       rung: 0,
     });
   });
+
+  /**
+   * Round 1 opened twenty minutes ago, its events file last written
+   * `quietAgeMs` before now, and killed `killedAgo` minutes ago; round 2 then
+   * takes the edge, appends `retry` and is killed back to merged now.
+   */
+  const retriedRound = (quietAgeMs: number, killedAgo: number, retry?: boolean) => {
+    planTask(db, { repoPath: repo, task: spec(UI_SCOPE) });
+    const sessionId = launch();
+    appendEvent(db, sessionId, 'merge', { branch: 'pup/x', target: 'main', files: [] });
+    const round = () =>
+      appendEvent(db, sessionId, 'fix_round', {
+        prUrl: 'u',
+        head: 'h',
+        threads: ['T1'],
+        rejectBase: 0,
+      });
+    round();
+    appendEvent(db, sessionId, 'respawn', { delivered: true });
+    db.prepare(
+      "UPDATE events SET created_at = datetime('now', '-20 minutes') WHERE type = 'respawn'",
+    ).run();
+    quietFor(sessionId, quietAgeMs);
+    killSession(db, sessionId);
+    db.prepare(
+      "UPDATE events SET created_at = datetime('now', ?) WHERE type = 'gate_result' AND json_extract(payload, '$.to') = 'merged'",
+    ).run(`-${killedAgo} minutes`);
+    db.prepare("UPDATE sessions SET state = 'running' WHERE id = ?").run(sessionId);
+    round();
+    if (retry !== undefined) appendEvent(db, sessionId, 'respawn', { delivered: retry });
+    killSession(db, sessionId);
+    return getSession(db, sessionId) as SessionRow;
+  };
+
+  // The rollback of an undone retry is no end of the window that ran.
+  it('does not climb a busy round for the quiet before its undone retry', () => {
+    const session = retriedRound(19 * 60 * 1000, 19);
+
+    expect(fixRoundRoute(db, projectPaths(repo), session, {}, 'conductor')).toMatchObject({
+      rung: 0,
+    });
+  });
+
+  it('climbs a stalled round although its retry was undone after an undelivered kickoff', () => {
+    const session = retriedRound(15 * 60 * 1000, 2, false);
+
+    expect(fixRoundRoute(db, projectPaths(repo), session, {}, 'conductor')).toMatchObject({
+      rung: 1,
+      reason: 'stall',
+    });
+  });
 });
 
 describe('steer, interrupt and kill by session id', () => {

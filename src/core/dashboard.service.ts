@@ -23,7 +23,14 @@ import { WATCH_STALE_AFTER_MS } from './overlap.service.js';
 import { SESSION_ID_PATTERN } from './paths.constants.js';
 import { type ProjectPaths, projectId, projectPaths } from './paths.utils.js';
 import { asStringArray, displayStages, parseJsonOr, toIsoUtc } from './report-data.utils.js';
-import { asTier, type ClimbReason, climbFrom, taskTier, windowFailure } from './routing.utils.js';
+import {
+  asTier,
+  type ClimbReason,
+  climbFrom,
+  fixRoundWindow,
+  taskTier,
+  windowFailure,
+} from './routing.utils.js';
 import {
   decodeEvent,
   type EventRow,
@@ -287,22 +294,38 @@ function windowStalled(
   events: SessionEvent[],
   now: number,
 ): boolean {
-  const respawnAt = events
+  let windowFrom = events
     .map((event) => event.type === 'other' && event.eventType)
     .lastIndexOf('respawn');
-  const windowStart =
-    respawnAt < 0 ? 0 : Date.parse(toIsoUtc(rows[respawnAt]?.created_at ?? '')) || 0;
   let endedAt = now;
   let running = session.state === 'running';
-  if (session.state === 'killed' || session.state === 'merged') {
+  if (session.state === 'killed') {
     const at = events
       .map((event) => event.type === 'gate_result' && event.to)
-      .lastIndexOf(session.state);
+      .lastIndexOf('killed');
     const kill = events[at];
     endedAt = Date.parse(toIsoUtc(rows[at]?.created_at ?? ''));
-    const inWindow = session.state === 'killed' || at > respawnAt;
-    running = kill?.type === 'gate_result' && kill.from === 'running' && inWindow;
+    running = kill?.type === 'gate_result' && kill.from === 'running';
+  } else if (session.state === 'merged') {
+    // The window `fixRoundFailure` scores, ended by the first kill back to
+    // `merged` before another round is handed: a later undone retry's kill is
+    // not its end.
+    windowFrom = fixRoundWindow(events).openedAt;
+    const at = events.findIndex(
+      (event, i) =>
+        i > windowFrom &&
+        event.type === 'gate_result' &&
+        event.from === 'running' &&
+        event.to === 'merged',
+    );
+    const handedAt = events.findIndex(
+      (event, i) => i > windowFrom && event.type === 'other' && event.eventType === 'fix_round',
+    );
+    running = windowFrom >= 0 && at >= 0 && (handedAt < 0 || at < handedAt);
+    endedAt = Date.parse(toIsoUtc(rows[at]?.created_at ?? ''));
   }
+  const windowStart =
+    windowFrom < 0 ? 0 : Date.parse(toIsoUtc(rows[windowFrom]?.created_at ?? '')) || 0;
   const eventsFile = eventsFileOf(paths, session.id);
   return (
     running &&
