@@ -381,8 +381,207 @@ describe('landSession', { timeout: 20_000 }, () => {
     await expect(land()).rejects.toThrow(
       /merged with its head at .* not .* the commit the gate pinned; .* re-gated with `pup merge s1 --pr`/,
     );
+    // Decision 164: the commits past the pin are read on GitHub, never with git
+    // in the repo a session can write.
+    const refusal = await land().catch((error: Error) => error.message);
+    expect(refusal).toContain(
+      `https://github.com/owner/repo/compare/${pinned}...${later}) and, if you vouch for ` +
+        `them, run \`pup land s1 --accept-head ${later}\``,
+    );
+    expect(refusal).not.toMatch(/`git /);
 
     expectNothingChanged(mainBefore);
+    expect(hasTrackingRef()).toBe(false);
+  });
+
+  /** The PR's head ref GitHub keeps on origin, as `refs/pull/7/head`. */
+  const setPullHead = (head: string) => sh(origin, 'git', 'update-ref', 'refs/pull/7/head', head);
+  const landAccepting = (acceptHead: string) =>
+    landSession(db, {
+      repoPath: repo,
+      sessionId: SESSION_ID,
+      adapters: [passingAdapter],
+      acceptHead,
+    });
+
+  // Decision 164: the operator's word for the commits past the pin.
+  it('lands a merge commit over a moved head the operator accepted', async () => {
+    seedPrMerge();
+    const later = commitIn(worktree, 'src/late.ts', 'export const late = 1;\n');
+    sh(repo, 'git', 'push', '-q', origin, BRANCH);
+    setPullHead(later);
+    const merge = mergeOnGitHub(later);
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: later,
+      mergeCommit: { oid: merge },
+    });
+
+    const outcome = await landAccepting(later);
+
+    expect(outcome).toMatchObject({ mergeCommit: merge, targetSha: merge, fastForwarded: true });
+    expect(mainSha()).toBe(merge);
+    expect(existsSync(worktree)).toBe(false);
+    // The branch at the accepted head is all on main now.
+    expect(sh(repo, 'git', 'branch', '--list', BRANCH)).toBe('');
+    expect(landedEvents()).toHaveLength(1);
+  });
+
+  it('refuses an accepted head that is not the one the PR merged at, changing nothing', async () => {
+    seedPrMerge();
+    const later = commitIn(worktree, 'src/late.ts', 'export const late = 1;\n');
+    sh(repo, 'git', 'push', '-q', origin, BRANCH);
+    setPullHead(later);
+    const merge = mergeOnGitHub(later);
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: later,
+      mergeCommit: { oid: merge },
+    });
+    const mainBefore = mainSha();
+
+    await expect(landAccepting(pinned)).rejects.toThrow(
+      `--accept-head names ${pinned}, but ${PR_URL} merged with its head at ${later}`,
+    );
+    expectNothingChanged(mainBefore);
+    expect(hasTrackingRef()).toBe(false);
+  });
+
+  it('refuses an accepted head that does not descend from the pin, changing nothing', async () => {
+    seedPrMerge();
+    // A fix round that rebased: the same change rewritten onto main, plus one more.
+    const clone = cloneOrigin();
+    commitIn(clone, 'src/feature.ts', 'export const feature = 2;\n');
+    const rebased = commitIn(clone, 'src/late.ts', 'export const late = 1;\n');
+    sh(clone, 'git', 'push', '-q', 'origin', 'HEAD:refs/pull/7/head');
+    const merge = mergeOnGitHub(rebased);
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: rebased,
+      mergeCommit: { oid: merge },
+    });
+    const mainBefore = mainSha();
+
+    await expect(landAccepting(rebased)).rejects.toThrow(
+      `${rebased}, the head ${PR_URL} merged at, does not descend from ${pinned}`,
+    );
+    expectNothingChanged(mainBefore);
+    expect(hasTrackingRef()).toBe(false);
+  });
+
+  it("refuses an accepted head origin's PR ref does not hold, changing nothing", async () => {
+    seedPrMerge();
+    const later = commitIn(worktree, 'src/late.ts', 'export const late = 1;\n');
+    sh(repo, 'git', 'push', '-q', origin, BRANCH);
+    setPullHead(pinned);
+    const merge = mergeOnGitHub(later);
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: later,
+      mergeCommit: { oid: merge },
+    });
+    const mainBefore = mainSha();
+
+    await expect(landAccepting(later)).rejects.toThrow(
+      `origin's refs/pull/7/head is at ${pinned}, not ${later}`,
+    );
+    expectNothingChanged(mainBefore);
+    expect(hasTrackingRef()).toBe(false);
+  });
+
+  // The operator vouched for the commits past the pin, not for a change the merge adds.
+  it('refuses a merge commit with a change beyond the accepted head, changing nothing', async () => {
+    seedPrMerge();
+    const later = commitIn(worktree, 'src/late.ts', 'export const late = 1;\n');
+    sh(repo, 'git', 'push', '-q', origin, BRANCH);
+    setPullHead(later);
+    const clone = cloneOrigin();
+    sh(clone, 'git', 'merge', '--no-ff', '--no-commit', '-q', `origin/${BRANCH}`);
+    const merge = commitIn(clone, 'src/extra.ts', 'x;\n');
+    sh(clone, 'git', 'push', '-q', 'origin', 'HEAD:main');
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: later,
+      mergeCommit: { oid: merge },
+    });
+    const before = mainSha();
+
+    await expect(landAccepting(later)).rejects.toThrow(
+      `${merge}, the commit GitHub says merged ${PR_URL}, does not have the tree git gives ` +
+        `merging ${later}, the head you accepted`,
+    );
+    expectNothingChanged(before);
+    expect(hasTrackingRef()).toBe(false);
+  });
+
+  // gh text: a head outside a sha's shape is neither the pin nor one to accept.
+  it.each([
+    ['no head', {}],
+    ['a head that is not a sha', { headRefOid: 'HEAD~1' }],
+  ])('refuses a MERGED answer with %s, changing nothing', async (_, head) => {
+    seedPrMerge();
+    const merge = mergeOnGitHub();
+    fakeGh({ state: 'MERGED', baseRefName: 'main', ...head, mergeCommit: { oid: merge } });
+    const before = mainSha();
+
+    await expect(land()).rejects.toThrow(
+      `GitHub reports ${PR_URL} merged with an unreadable head. Nothing was landed.`,
+    );
+    expectNothingChanged(before);
+    expect(hasTrackingRef()).toBe(false);
+  });
+
+  // A merge-base that fails other than by "no" (status 1) is git failing, not
+  // an answer: refused as such, as `mergedOnto`'s reads are. The check is asked
+  // with the commit graph off, so a forged one cannot answer it (decision 164).
+  it('refuses, landing nothing, when the ancestry check of an accepted head fails', async () => {
+    seedPrMerge();
+    const later = commitIn(worktree, 'src/late.ts', 'export const late = 1;\n');
+    sh(repo, 'git', 'push', '-q', origin, BRANCH);
+    setPullHead(later);
+    const merge = mergeOnGitHub(later);
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: later,
+      mergeCommit: { oid: merge },
+    });
+    const failure = Object.assign(new Error('fatal: bad object'), { status: 128 });
+    const asked: string[] = [];
+    const real = vi.mocked(withScratchGitDir).getMockImplementation();
+    vi.mocked(withScratchGitDir).mockImplementation((repoPath, prefix, fn) =>
+      (real as typeof withScratchGitDir)(repoPath, prefix, (git) =>
+        fn((args, opts) => {
+          if (args.includes('merge-base')) {
+            asked.push(args.join(' '));
+            throw failure;
+          }
+          return git(args, opts);
+        }),
+      ),
+    );
+    const before = mainSha();
+
+    try {
+      await expect(landAccepting(later)).rejects.toThrow(
+        new RegExp(
+          `^Reading whether ${later} descends from ${pinned} failed\\. Nothing was ` +
+            'landed\\.\\n.*bad object',
+          's',
+        ),
+      );
+    } finally {
+      vi.mocked(withScratchGitDir).mockReset();
+    }
+    expect(asked).toEqual([
+      `-c core.commitGraph=false merge-base --is-ancestor ${pinned} ${later}`,
+    ]);
+    expectNothingChanged(before);
     expect(hasTrackingRef()).toBe(false);
   });
 
@@ -497,6 +696,7 @@ describe('landSession', { timeout: 20_000 }, () => {
 
   // A merge-tree that fails other than by a conflict (status 1), as one without
   // `--write-tree` does, is git failing, not content the gate never measured.
+  // Each read is made with the commit graph off, so a forged one cannot answer it.
   it.each([
     ['rev-list', Object.assign(new Error('fatal: bad object'), { status: 128 })],
     ['merge-tree', Object.assign(new Error('fatal: bad object'), { status: 128 })],
@@ -513,11 +713,15 @@ describe('landSession', { timeout: 20_000 }, () => {
         headRefOid: pinned,
         mergeCommit: { oid: squash },
       });
+      const asked: string[] = [];
       const real = vi.mocked(withScratchGitDir).getMockImplementation();
       vi.mocked(withScratchGitDir).mockImplementation((repoPath, prefix, fn) =>
         (real as typeof withScratchGitDir)(repoPath, prefix, (git) =>
           fn((args, opts) => {
-            if (args.includes(failing)) throw failure;
+            if (args.includes(failing)) {
+              asked.push(args.join(' '));
+              throw failure;
+            }
             return git(args, opts);
           }),
         ),
@@ -534,6 +738,8 @@ describe('landSession', { timeout: 20_000 }, () => {
       } finally {
         vi.mocked(withScratchGitDir).mockReset();
       }
+      expect(asked).toHaveLength(1);
+      expect(asked[0]).toMatch(new RegExp(`^-c core\\.commitGraph=false ${failing} `));
       expectNothingChanged(before);
       expect(hasTrackingRef()).toBe(false);
     },
