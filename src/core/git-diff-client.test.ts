@@ -1,9 +1,13 @@
 import { execFileSync, spawn } from 'node:child_process';
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   readdirSync,
   readFileSync,
+  realpathSync,
+  renameSync,
+  rmSync,
   symlinkSync,
   unlinkSync,
   utimesSync,
@@ -15,15 +19,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   ArmedGitDriverError,
   armedGitDrivers,
+  assertMainCheckout,
   assertNoArmedGitDrivers,
   assertNoWorktreeConfig,
   BINARY_FREE_MAX_BYTES,
   BINARY_FREE_TOTAL_MAX_BYTES,
   currentBranch,
+  GIT_SAFE_CONFIG,
   gitDiffAddedLines,
   gitDiffBinaryRecount,
   gitDiffNumstat,
   gitDiffPaths,
+  RewrittenGitDirError,
   rethrowIfKilled,
   runGit,
   verifiedWorktreeGitEnv,
@@ -2176,5 +2183,386 @@ describe('known-binary.utils', () => {
       expect(spendKnownBinarySkip([undefined, 10], budget)).toBe(true);
       expect(budget.bytes).toBe(0);
     });
+  });
+});
+
+// A session can write the main checkout's `.git`. git follows a `commondir`
+// planted in it under `-C`, `--git-dir` and `GIT_COMMON_DIR`, and a `.git`
+// swapped for a gitfile or a symlink names another repo outright, so each hands
+// every ref read to a decoy (decision 172).
+describe("a main checkout's .git a session rewrote (decision 172)", () => {
+  /**
+   * `repo` with a commit on main, and a bare decoy that borrows its objects and
+   * whose main names another commit. `objects` is where the real objects are,
+   * so a test that moves the real git dir aside points the decoy there.
+   */
+  function repoAndDecoy(objects?: string): { repo: string; decoy: string; realMain: string } {
+    const repo = makeRepo();
+    writeFileSync(join(repo, 'a.ts'), 'a\n');
+    commitAll(repo, 'a');
+    const realMain = revParse(repo, 'refs/heads/main');
+    const decoy = join(tempDir('pup-decoy-'), 'decoy.git');
+    sh(dirname(decoy), 'git', 'init', '-q', '--bare', '-b', 'main', decoy);
+    writeFileSync(
+      join(decoy, 'objects', 'info', 'alternates'),
+      `${objects ?? join(repo, '.git', 'objects')}\n`,
+    );
+    const own = execFileSync(
+      'git',
+      [
+        '-c',
+        'user.name=d',
+        '-c',
+        'user.email=d@test',
+        'commit-tree',
+        '-m',
+        'decoy',
+        `${realMain}^{tree}`,
+      ],
+      { cwd: decoy, encoding: 'utf8', env: GIT_ENV },
+    ).trim();
+    sh(decoy, 'git', 'update-ref', 'refs/heads/main', own);
+    return { repo, decoy, realMain };
+  }
+
+  /** Moves the real git dir aside and points the decoy's alternates at its objects. */
+  function swapGitDir(repo: string, decoy: string): void {
+    const aside = join(tempDir('pup-aside-'), 'git');
+    renameSync(join(repo, '.git'), aside);
+    writeFileSync(join(decoy, 'objects', 'info', 'alternates'), `${join(aside, 'objects')}\n`);
+  }
+
+  const plants: Record<string, (commondir: string, decoy: string) => void> = {
+    'a file': (commondir, decoy) => writeFileSync(commondir, `${decoy}\n`),
+    'a symlink': (commondir, decoy) => {
+      const pointer = join(tempDir('pup-pointer-'), 'commondir');
+      writeFileSync(pointer, `${decoy}\n`);
+      symlinkSync(pointer, commondir);
+    },
+    'a dangling symlink': (commondir) => symlinkSync('/nonexistent/commondir', commondir),
+    'a directory': (commondir) => mkdirSync(commondir),
+  };
+
+  it.each(Object.keys(plants))('refuses every git call while its commondir is %s', (kind) => {
+    const { repo, decoy, realMain } = repoAndDecoy();
+    const commondir = join(repo, '.git', 'commondir');
+    plants[kind]?.(commondir, decoy);
+
+    expect(() => runGit(repo, ['rev-parse', 'refs/heads/main'])).toThrow(
+      /\.git\/commondir exists.*decision 172/s,
+    );
+    expect(() => gitDiffPaths(repo, 'main', 'main')).toThrow(/\.git\/commondir exists/);
+    expect(() => currentBranch(repo)).toThrow(/\.git\/commondir exists/);
+    expect(() => assertMainCheckout(repo)).toThrow(/\.git\/commondir exists/);
+
+    rmSync(commondir, { recursive: true });
+    expect(runGit(repo, ['rev-parse', 'refs/heads/main']).trim()).toBe(realMain);
+  });
+
+  it('is live: plain git reads the decoy refs the check refuses', () => {
+    const { repo, decoy, realMain } = repoAndDecoy();
+    writeFileSync(join(repo, '.git', 'commondir'), `${decoy}\n`);
+
+    expect(revParse(repo, 'refs/heads/main')).not.toBe(realMain);
+    expect(revParse(repo, 'refs/heads/main')).toBe(revParse(decoy, 'refs/heads/main'));
+  });
+
+  it('refuses a .git swapped for a gitfile naming a decoy, at a main checkout it passed', () => {
+    const { repo, decoy, realMain } = repoAndDecoy();
+    assertMainCheckout(repo);
+    swapGitDir(repo, decoy);
+    writeFileSync(join(repo, '.git'), `gitdir: ${decoy}\n`);
+    // The control: plain git now reads the decoy's main.
+    expect(revParse(repo, 'refs/heads/main')).not.toBe(realMain);
+
+    expect(() => runGit(repo, ['rev-parse', 'refs/heads/main'])).toThrow(
+      /\.git is no longer a directory.*decision 172/s,
+    );
+    expect(() => currentBranch(repo)).toThrow(/\.git is no longer a directory/);
+    expect(() => assertMainCheckout(repo)).toThrow(/\.git is not a directory/);
+  });
+
+  it('refuses a .git swapped for a symlink to a decoy, on every spawn and as a main checkout', () => {
+    const { repo, decoy, realMain } = repoAndDecoy();
+    swapGitDir(repo, decoy);
+    symlinkSync(decoy, join(repo, '.git'));
+    // The decoy has no commondir: only the link itself gives it away.
+    expect(revParse(repo, 'refs/heads/main')).not.toBe(realMain);
+
+    expect(() => runGit(repo, ['rev-parse', 'refs/heads/main'])).toThrow(
+      /\.git is a symlink.*decision 172/s,
+    );
+    expect(() => gitDiffPaths(repo, 'main', 'main')).toThrow(/\.git is a symlink/);
+    expect(() => assertMainCheckout(repo)).toThrow(/\.git is not a directory/);
+  });
+
+  it('runs git in a linked worktree, whose .git is a gitfile, but never takes it for a main checkout', () => {
+    const { repo, realMain } = repoAndDecoy();
+    const worktree = join(tempDir('pup-wt-'), 'wt');
+    sh(repo, 'git', 'worktree', 'add', '-q', '--detach', worktree);
+
+    expect(runGit(worktree, ['rev-parse', 'HEAD']).trim()).toBe(realMain);
+    expect(() => assertMainCheckout(repo)).not.toThrow();
+    expect(() => assertMainCheckout(worktree)).toThrow(/\.git is not a directory/);
+    expect(runGit(worktree, ['rev-parse', 'HEAD']).trim()).toBe(realMain);
+  });
+
+  it.each([
+    ['a trailing slash', (repo: string) => `${repo}/`],
+    [
+      'a symlink to it',
+      (repo: string) => {
+        const link = join(tempDir('pup-link-'), 'repo');
+        symlinkSync(repo, link);
+        return link;
+      },
+    ],
+  ])('holds a main checkout passed through %s, under its real path', (_, spelling) => {
+    const { repo, decoy } = repoAndDecoy();
+    assertMainCheckout(spelling(repo));
+    swapGitDir(repo, decoy);
+    writeFileSync(join(repo, '.git'), `gitdir: ${decoy}\n`);
+
+    expect(() => runGit(join(repo, '.'), ['rev-parse', 'HEAD'])).toThrow(
+      /\.git is no longer a directory/,
+    );
+  });
+
+  it('names a .git directory to git outright, and leaves a gitfile to git', () => {
+    const { repo } = repoAndDecoy();
+    const worktree = join(tempDir('pup-wt-'), 'wt');
+    sh(repo, 'git', 'worktree', 'add', '-q', '--detach', worktree);
+
+    // Discovered from the root, git would print `.git`.
+    expect(runGit(repo, ['rev-parse', '--git-dir']).trim()).toBe(join(repo, '.git'));
+    expect(runGit(repo, ['rev-parse', '--show-toplevel']).trim()).toBe(realpathSync(repo));
+    expect(runGit(worktree, ['rev-parse', '--git-dir']).trim()).toBe(
+      join(realpathSync(repo), '.git', 'worktrees', 'wt'),
+    );
+  });
+
+  /**
+   * A minimal git dir at `dotGit`: HEAD on main, empty `refs/`, the objects at
+   * `objects` borrowed, and a packed-refs naming `main` at `own`. Every check
+   * but the identity passes it.
+   */
+  function plantDecoyGitDir(dotGit: string, objects: string, own: string): void {
+    mkdirSync(join(dotGit, 'refs', 'heads'), { recursive: true });
+    mkdirSync(join(dotGit, 'objects', 'info'), { recursive: true });
+    writeFileSync(join(dotGit, 'HEAD'), 'ref: refs/heads/main\n');
+    writeFileSync(join(dotGit, 'objects', 'info', 'alternates'), `${objects}\n`);
+    writeFileSync(join(dotGit, 'packed-refs'), `${own} refs/heads/main\n`);
+  }
+
+  it('refuses a .git swapped for a decoy directory, at a main checkout it passed', () => {
+    const { repo, decoy, realMain } = repoAndDecoy();
+    const own = revParse(decoy, 'refs/heads/main');
+    expect(runGit(repo, ['rev-parse', 'refs/heads/main']).trim()).toBe(realMain);
+    assertMainCheckout(repo);
+    const aside = join(tempDir('pup-aside-'), 'git');
+    renameSync(join(repo, '.git'), aside);
+    plantDecoyGitDir(join(repo, '.git'), join(aside, 'objects'), own);
+    // The control: plain git, and a check that knows no identity, take the decoy.
+    expect(revParse(repo, 'refs/heads/main')).toBe(own);
+    const elsewhere = join(tempDir('pup-copy-'), 'repo');
+    mkdirSync(elsewhere);
+    plantDecoyGitDir(join(elsewhere, '.git'), join(aside, 'objects'), own);
+    expect(runGit(elsewhere, ['rev-parse', 'refs/heads/main']).trim()).toBe(own);
+
+    expect(() => runGit(repo, ['rev-parse', 'refs/heads/main'])).toThrow(
+      /\.git or its objects\/ is not the directory pup found there first.*decision 172/s,
+    );
+    expect(() => assertMainCheckout(repo)).toThrow(RewrittenGitDirError);
+  });
+
+  it('refuses a .git whose objects/ was swapped for another, at a main checkout it passed', () => {
+    const { repo } = repoAndDecoy();
+    assertMainCheckout(repo);
+    const objects = join(repo, '.git', 'objects');
+    const aside = join(tempDir('pup-aside-'), 'objects');
+    renameSync(objects, aside);
+    mkdirSync(join(objects, 'info'), { recursive: true });
+    writeFileSync(join(objects, 'info', 'alternates'), `${aside}\n`);
+
+    expect(() => runGit(repo, ['rev-parse', 'HEAD'])).toThrow(
+      /is not the directory pup found there first/,
+    );
+    // Put back: the identity is the real directory's, so git runs again.
+    rmSync(objects, { recursive: true });
+    renameSync(aside, objects);
+    expect(() => runGit(repo, ['rev-parse', 'HEAD'])).not.toThrow();
+  });
+
+  it("keeps a pinned worktree's GIT_DIR, and refuses its .git turned into a directory", () => {
+    const { repo, decoy } = repoAndDecoy();
+    const own = revParse(decoy, 'refs/heads/main');
+    const worktree = join(tempDir('pup-wt-'), 'wt');
+    sh(repo, 'git', 'worktree', 'add', '-q', '--detach', worktree);
+    const env = { ...verifiedWorktreeGitEnv(realpathSync(repo), realpathSync(worktree)) };
+    // Pinned, git reads the admin dir pup verified, not one pup named over it.
+    expect(runGit(worktree, ['rev-parse', '--git-dir'], { env }).trim()).toBe(env.GIT_DIR);
+
+    rmSync(join(worktree, '.git'));
+    plantDecoyGitDir(join(worktree, '.git'), join(repo, '.git', 'objects'), own);
+    // The control: a --git-dir naming the new directory outranks the pinned GIT_DIR.
+    const named = join(worktree, '.git');
+    expect(
+      execFileSync('git', ['-C', worktree, `--git-dir=${named}`, 'rev-parse', '--git-dir'], {
+        encoding: 'utf8',
+        env: { ...GIT_ENV, ...env },
+      }).trim(),
+    ).toBe(named);
+
+    expect(() => runGit(worktree, ['rev-parse', '--git-dir'], { env })).toThrow(
+      /\.git is a directory other than the GIT_DIR this git is pinned to.*decision 172/s,
+    );
+  });
+
+  /**
+   * The checkout's own root made a bare repo whose main names a commit of the
+   * session's, borrowing the real objects: git's discovery falls back to it
+   * once `.git` is not a repo it would use. Returns the decoy commit.
+   */
+  function plantBareCheckout(repo: string, realMain: string): string {
+    const own = execFileSync(
+      'git',
+      [
+        '-c',
+        'user.name=d',
+        '-c',
+        'user.email=d@test',
+        'commit-tree',
+        '-m',
+        'decoy',
+        `${realMain}^{tree}`,
+      ],
+      { cwd: repo, encoding: 'utf8', env: GIT_ENV },
+    ).trim();
+    writeFileSync(join(repo, 'HEAD'), 'ref: refs/heads/main\n');
+    mkdirSync(join(repo, 'refs', 'heads'), { recursive: true });
+    writeFileSync(join(repo, 'refs', 'heads', 'main'), `${own}\n`);
+    mkdirSync(join(repo, 'objects', 'info'), { recursive: true });
+    writeFileSync(
+      join(repo, 'objects', 'info', 'alternates'),
+      `${join(repo, '.git', 'objects')}\n`,
+    );
+    return own;
+  }
+
+  const breaks: Record<string, (dotGit: string) => void> = {
+    'a junk HEAD': (dotGit) => writeFileSync(join(dotGit, 'HEAD'), 'ref: x\n'),
+    'no HEAD': (dotGit) => rmSync(join(dotGit, 'HEAD')),
+    'an unreadable HEAD': (dotGit) => chmodSync(join(dotGit, 'HEAD'), 0o200),
+    'no refs/': (dotGit) => renameSync(join(dotGit, 'refs'), join(tempDir('pup-refs-'), 'refs')),
+    // `chmod a-x`: still a directory, with HEAD valid, but one git cannot search.
+    'a refs/ git cannot search': (dotGit) => chmodSync(join(dotGit, 'refs'), 0o644),
+  };
+
+  it.each(Object.keys(breaks))(
+    'refuses a .git with %s, which would make git read the checkout as a bare decoy',
+    (kind) => {
+      const { repo, realMain } = repoAndDecoy();
+      const own = plantBareCheckout(repo, realMain);
+      breaks[kind]?.(join(repo, '.git'));
+      // The control: plain git, at its default `safe.bareRepository=all`, reads the decoy.
+      expect(revParse(repo, 'refs/heads/main')).toBe(own);
+
+      expect(() => runGit(repo, ['rev-parse', 'refs/heads/main'])).toThrow(
+        /\.git is not a repo git would use.*decision 172/s,
+      );
+      expect(() => assertMainCheckout(repo)).toThrow(RewrittenGitDirError);
+      // Put back, so the temp dir can be removed.
+      if (existsSync(join(repo, '.git', 'refs'))) chmodSync(join(repo, '.git', 'refs'), 0o755);
+    },
+  );
+
+  it('pins safe.bareRepository=explicit, so pinned git refuses the fallback on its own', () => {
+    const { repo, realMain } = repoAndDecoy();
+    plantBareCheckout(repo, realMain);
+    writeFileSync(join(repo, '.git', 'HEAD'), 'ref: x\n');
+
+    expect(() =>
+      execFileSync('git', [...GIT_SAFE_CONFIG, '-C', repo, 'rev-parse', 'refs/heads/main'], {
+        encoding: 'utf8',
+        env: GIT_ENV,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      }),
+    ).toThrow(/cannot use bare repository/);
+  });
+});
+
+/**
+ * Every use of a `child_process` binding in `source`, in source order, with the
+ * function that builds a call's argv: undefined for a call whose argv no
+ * function builds, a use that is not a call, and a `require` or dynamic import
+ * of the module, which no import list names. Whatever the binary: a literal
+ * path, a variable and an aliased or namespace import all count.
+ */
+function childProcessUses(source: string): (string | undefined)[] {
+  const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  const fromModule = /import\s+([^;]*?)\s+from\s+['"](?:node:)?child_process['"];?/g;
+  const names: string[] = [];
+  for (const [, clause = ''] of code.matchAll(fromModule)) {
+    if (clause.startsWith('type ')) continue;
+    const named = /\{([^}]*)\}/.exec(clause)?.[1] ?? '';
+    for (const spec of named.split(',').map((part) => part.trim())) {
+      if (spec && !spec.startsWith('type ')) names.push(spec.split(/\s+as\s+/).at(-1) as string);
+    }
+    // A namespace or default binding: `* as cp`, `cp`.
+    const whole = clause
+      .replace(/\{[^}]*\}/, '')
+      .replace(/[*,]|\bas\b/g, ' ')
+      .trim();
+    if (whole) names.push(...whole.split(/\s+/));
+  }
+  const body = code.replace(fromModule, '');
+  const uses: { at: number; builder: string | undefined }[] = [];
+  for (const name of names) {
+    for (const match of body.matchAll(new RegExp(`(?<![.\\w$])${name}(?:\\.\\w+)?\\b`, 'g'))) {
+      const call = /\s*\(\s*[^,()]+,\s*(\w+)\(/y;
+      call.lastIndex = match.index + match[0].length;
+      uses.push({ at: match.index, builder: call.exec(body)?.[1] });
+    }
+  }
+  for (const match of body.matchAll(/\b(?:require|import)\(\s*['"`](?:node:)?child_process/g)) {
+    uses.push({ at: match.index, builder: undefined });
+  }
+  return uses.sort((a, b) => a.at - b.at).map((use) => use.builder);
+}
+
+describe('the .git check on every git spawn (decision 172)', () => {
+  it('is what every child_process call in git-diff.client.ts builds its argv through', () => {
+    const source = readFileSync(join(process.cwd(), 'src', 'core', 'git-diff.client.ts'), 'utf8');
+    const safeArgv = /function safeArgv\([^)]*\)[^{]*\{([^}]*)\}/.exec(source)?.[1] ?? '';
+
+    expect(childProcessUses(source).length).toBeGreaterThan(0);
+    expect(childProcessUses(source).every((builder) => builder === 'safeArgv')).toBe(true);
+    expect(safeArgv).toMatch(/^\s*const gitDir = assertGitDirUnplanted\(cwd, env\.GIT_DIR\);/);
+  });
+
+  it('flags any child_process use whose argv safeArgv does not build, whatever the binary', () => {
+    const source = [
+      `import { execFileSync, spawn as run, type ExecFileSyncOptions } from 'node:child_process';`,
+      `import * as cp from 'child_process';`,
+      `execFileSync('git', safeArgv(cwd, args), {});`,
+      `execFileSync('/usr/bin/git', ['rev-parse', 'HEAD']);`,
+      `const bin = 'git'; run(bin, safeArgv(cwd, args));`,
+      `run(bin, args);`,
+      `cp.spawnSync(gitPath, otherArgv(cwd));`,
+      `const alias = execFileSync;`,
+      `// execFileSync in a comment is no use`,
+      `const options: ExecFileSyncOptions = {};`,
+      `const legacy = require('node:child_process');`,
+    ].join('\n');
+
+    expect(childProcessUses(source)).toEqual([
+      'safeArgv',
+      undefined,
+      'safeArgv',
+      undefined,
+      'otherArgv',
+      undefined,
+      undefined,
+    ]);
   });
 });
