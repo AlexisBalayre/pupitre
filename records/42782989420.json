@@ -1,0 +1,154 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-10T08:33:45.406Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42782989420",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42782989420",
+  "actor": "AlexisBalayre",
+  "commit_sha": "95d6ed3783a2a3e53a3eea27da6e987d02e4c99d",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 293,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/web-dashboard-module-map.service.ts",
+      "line": "172-179",
+      "description": "`lstatSync(path, { throwIfNoEntry: false })` only suppresses ENOENT. A directory under `src/` that can be listed but not searched (mode `0644`/`0444`) makes `lstat` of each child throw EACCES. `readModuleMap` then throws, and the whole Decisions sheet, timeline included, returns 500 \"The store could not be read.\" on every request and poll.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/web-dashboard-module-map.service.ts",
+      "line": "176-182",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The new catch adds 1 to `map.unread` for each entry whose lstat throws, before anyone knows whether the entry is a file or a directory. A directory that can be listed but not searched (mode r--, e.g. after a `chmod -R 644 src/x`) turns each of its children into one unread entry, and some of those children are subdirectories. A subdirectory holding hundreds of files then adds 1 to the count, and the sheet prints \"1 file not read (not a plain file, unreadable, or over 1 MiB).\" That understates what was dropped, and it labels a directory as a file. Trigger: `src/listed/` at mode 0644 holding `sub/` with 200 files gives `unread === 1`, but the map is missing 200 files. The same path also counts a `node_modules` or `.worktrees` entry in that directory, which the walk would otherwise skip. The ADR says the sheet reports \"how many files were left unread\", so either the count should say entries, or the hint wording should cover directories (e.g. \"N files or directories not read\").",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/chart.utils.ts",
+      "line": "477",
+      "area": "simplicity",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`escapeHtml('(stronger contrast: 1, 2–3, 4 or more)')` escapes a string literal that has no HTML-special characters. Inline the literal into the template. This removes one call and the implication that the text is dynamic. The text also hard-codes `TONE_STEPS` (1, 2, 4) as prose. Building the text from `TONE_STEPS` would keep the two in sync, but only if the author wants to keep the legend.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/chart.utils.ts",
+      "line": "410",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`toneLevel` takes `n: number | undefined` and wraps it in `Number(n)`. That guard is not needed. `undefined >= 1` and `NaN >= 1` are already false in JS. The only caller that can pass `undefined` is `leaf.counts[i]` in the figure-line filter, and `groupCells` already guards its own read with `?? 0`. Take `n: number` and write `TONE_STEPS.filter((s) => n >= s).length`. Pass `leaf.counts[i] ?? 0` at the one call site that indexes. This removes the `undefined` union and the coercion.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard-module-map.service.ts",
+      "line": "33",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "MERGE_WINDOW_DAYS (30) and MAX_FILE_BYTES (1 << 20) are exported or declared with no JSDoc, although MAP_ROOT, SKIPPED_DIRS and MAP_LIMITS in the same block have one. general.md §No hardcoded values says a named constant gets 'a JSDoc line saying what the number means and why it is that number'. §JSDoc adds that 'exported constants and types are almost always documented'. The sibling web-dashboard-debt.service.ts documents its day-count constant (WEIGHT_DOUBLING_DAYS: 'An entry this many days old weighs twice a fresh one'). The sibling web-dashboard-tasks.service.ts documents OVERLAP_FILES_SHOWN. Add one line each: why 30 days, and why 1 MiB is the read cap.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "conventions",
+      "description": "The conventions reviewer read only the first 60 lines of chart.test.ts and the first 70 of web-dashboard-decisions.test.ts. It did not read web-dashboard-decisions.service.ts in full. Testing-convention compliance in the rest of the test files, and conventions in the decisions service, went partly unchecked."
+    },
+    {
+      "component": "guards",
+      "description": "The CI sandbox blocked scripts/adr-index.sh and scripts/check-file-layout.sh, so the ADR-format check and the file-layout check were done by reading the code."
+    },
+    {
+      "component": "docs",
+      "description": "The docs reviewer did not read docs/conventions/general.md and read only the test names, not the test bodies."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 3.1206855449999993,
+  "duration_ms": 206810,
+  "num_turns": 18,
+  "tokens": {
+    "input": 12,
+    "output": 12543,
+    "cache_read": 291461,
+    "cache_creation": 61724,
+    "total": 365740
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 130,
+      "output": 51341,
+      "cache_read": 1899280,
+      "cache_creation": 223762,
+      "cost_usd": 2.711178
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 50,
+      "output": 12587,
+      "cache_read": 432355,
+      "cache_creation": 95946,
+      "cost_usd": 0.40907050000000006
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 135,
+      "cache_read": 1822,
+      "cache_creation": 2809,
+      "cost_usd": 0.000437045
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "bash -c 'ls /home/runner/work/pupitre/pupitre/docs/adr | sed -n \"24,31p\"'"
+    }
+  ]
+}
