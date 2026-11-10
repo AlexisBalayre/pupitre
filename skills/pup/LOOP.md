@@ -76,6 +76,18 @@ pup audit                # re-stamps the baseline; run from main, it measures ma
 pup debt close <n>       # for ledger entries whose review-by names the merged task
 ```
 
+When the PR was closed rather than merged because another PR re-landed its work, `pup land`
+refuses it and Needs you keeps it as `PR opened, not landed`. Close it out from the main
+checkout:
+
+```
+pup retire <task> --superseded-by <pr>   # <pr>: the merged PR's number or url
+```
+
+It refuses unless the task's PR is closed unmerged on GitHub and `<pr>` merged into the same
+target, then removes the worktree and the branch (one with commits past the PR's head is kept)
+and records the superseding PR. Naming `<pr>` is your call: pup never reads it off PR comments.
+
 Then the next task: `pup launch <task>`, or hand the order to the conductor.
 
 ## Gotchas that are not repo-specific

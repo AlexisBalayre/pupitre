@@ -1,7 +1,7 @@
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { tempDir } from '../test/temp-dir.mock.js';
 import { DEFAULT_BASE_PROFILE } from './default-profile.constants.js';
 import { InvalidProfileError } from './profile.errors.js';
 import { UnknownProfileError } from './profile-store.errors.js';

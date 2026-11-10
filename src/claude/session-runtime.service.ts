@@ -21,6 +21,7 @@ import { dirname, isAbsolute, join } from 'node:path';
 
 import { runGit, verifiedWorktreeGitEnv, type WorktreeGitEnv } from '../core/git-diff.client.js';
 import { projectPaths } from '../core/paths.utils.js';
+import { shellWord } from '../core/shell-quote.utils.js';
 import type { ModelRoute } from './model-ladder.constants.js';
 import {
   hasUnsubmittedInput,
@@ -43,6 +44,8 @@ export interface LaunchOptions {
    */
   repoPath: string;
   worktreePath: string;
+  /** What the launching command resolved, handed to the window unread again (decision 106). */
+  env: WindowEnv;
   /** Compiled settings.json path, passed to `claude --settings`. */
   settingsPath: string;
   /** The model and effort the window runs on: its rung, or the operator's override (decision 92). */
@@ -59,6 +62,8 @@ export interface ConductorLaunchOptions {
   projectId: string;
   /** The main checkout: the conductor reads the repo, edits nothing, and launches from here. */
   repoPath: string;
+  /** What `pup conductor start` resolved, handed to the window unread again (decision 106). */
+  env: WindowEnv;
   settingsPath: string;
   route: ModelRoute;
   /**
@@ -423,13 +428,35 @@ function namedConfigDir(vars: Record<string, string>): string | undefined {
 }
 
 /**
- * The Claude Code config dir a window of this project runs on: the launching
- * shell's `CLAUDE_CONFIG_DIR` when `--session-env` names it, `~/.claude`
- * otherwise. What the launch hashes for decision 9's drift check, and where
- * the window's `.claude.json` and transcripts live.
+ * What a command hands every window it opens (decision 106), resolved once
+ * where the command starts and passed down to the window, so the hash it
+ * records, the trust it seeds and the window's `-e` agree on one dir: a list
+ * read twice could be rewritten by a session between the reads.
  */
+export interface WindowEnv {
+  /** Each recorded name the launching shell has a value for, as the window's own `-e`. */
+  vars: Record<string, string>;
+  /**
+   * The Claude Code config dir the window runs on: the launching shell's
+   * `CLAUDE_CONFIG_DIR` when `--session-env` names it, `~/.claude` otherwise.
+   * What the launch hashes for decision 9's drift check, and where the
+   * window's `.claude.json` and transcripts live.
+   */
+  configDir: string;
+}
+
+/**
+ * Read the list and check the dir it names, once: throws
+ * `ConfigDirRefusedError` before the caller has cut, stored or killed anything.
+ */
+export function resolveWindowEnv(repoPath: string): WindowEnv {
+  const vars = sessionEnv(repoPath);
+  return { vars, configDir: namedConfigDir(vars) ?? join(homedir(), '.claude') };
+}
+
+/** The config dir a window of this project runs on, for a reader of what it wrote. */
 export function claudeUserDir(repoPath: string): string {
-  return namedConfigDir(sessionEnv(repoPath)) ?? join(homedir(), '.claude');
+  return resolveWindowEnv(repoPath).configDir;
 }
 
 function tmux(socket: string | undefined, args: string[]): string {
@@ -698,8 +725,8 @@ interface ClaudeWindowOptions {
   sessionId: string;
   /** Where the window opens: a session's worktree, the conductor's main checkout. */
   cwd: string;
-  /** The project's main checkout, whose recorded `--session-env` names the window gets. */
-  repoPath: string;
+  /** What the launching command resolved: the window's named variables and config dir. */
+  env: WindowEnv;
   settingsPath: string;
   route: ModelRoute;
   mcpConfigPath?: string;
@@ -760,12 +787,11 @@ const SESSION_NICENESS = '10';
  * and hand the process the same bypass-permissions, user-setting-sources argv.
  */
 function spawnClaudeWindow(opts: ClaudeWindowOptions): SessionPane {
-  // One read of the list, so the trust and the window agree on the config dir.
-  const handed = sessionEnv(opts.repoPath);
-  const configDir = namedConfigDir(handed);
+  // The command's one read of the list, so the trust and the window agree on the config dir.
+  const { vars, configDir } = opts.env;
   preseedTrust(
     opts.cwd,
-    configDir === undefined ? CLAUDE_JSON : join(configDir, '.claude.json'),
+    vars.CLAUDE_CONFIG_DIR === undefined ? CLAUDE_JSON : join(configDir, '.claude.json'),
     opts.git,
   );
   const which = (bin: string): string => execFileSync('which', [bin], { encoding: 'utf8' }).trim();
@@ -773,7 +799,7 @@ function spawnClaudeWindow(opts: ClaudeWindowOptions): SessionPane {
     cwd: opts.cwd,
     window: WINDOW_SIZE,
     env: {
-      ...handed,
+      ...vars,
       ...opts.caller,
       ...(opts.git ? WINDOW_GIT_CONFIG : {}),
       // Absolute path to this CLI, so `pup session done` works even when `pup`
@@ -799,7 +825,7 @@ export function launchSession(opts: LaunchOptions): SessionPane {
   return spawnClaudeWindow({
     sessionId: opts.sessionId,
     cwd: opts.worktreePath,
-    repoPath: opts.repoPath,
+    env: opts.env,
     settingsPath: opts.settingsPath,
     route: opts.route,
     mcpConfigPath: opts.mcpConfigPath,
@@ -903,11 +929,6 @@ export function attachWindow(target: WindowTarget): number | null {
   return result.status;
 }
 
-/** A word a shell takes literally, single-quoted when it would not. */
-export function shellWord(word: string): string {
-  return /^[\w.,:/@-]+$/.test(word) ? word : `'${word.replace(/'/g, "'\\''")}'`;
-}
-
 /**
  * Open the conductor's window in the repo's main checkout and return its
  * pane. Same launch as a session — bypass permissions, compiled settings,
@@ -930,7 +951,7 @@ export function launchConductor(opts: ConductorLaunchOptions): SessionPane {
   return spawnClaudeWindow({
     sessionId: conductorId(opts.projectId),
     cwd: opts.repoPath,
-    repoPath: opts.repoPath,
+    env: opts.env,
     settingsPath: opts.settingsPath,
     route: opts.route,
     mcpConfigPath: opts.mcpConfigPath,
@@ -1317,10 +1338,7 @@ function killTarget(target: string, socket?: string): void {
  * guarantee is load-bearing: a munge that let a separator or a `..` through
  * would let a store row aim the operator's reader anywhere on disk.
  */
-export function transcriptDir(
-  worktreePath: string,
-  claudeDir = join(homedir(), '.claude'),
-): string {
+export function transcriptDir(worktreePath: string, claudeDir: string): string {
   const munged = worktreePath.replace(/[^a-zA-Z0-9]/g, '-');
   return join(claudeDir, 'projects', munged);
 }

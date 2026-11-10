@@ -97,9 +97,6 @@ vi.mock('./test-slot.service.js', async (importOriginal) => {
   };
 });
 
-import type { Adapter, CapabilityContext } from '../adapters/types/adapter.types.js';
-import { typescriptAdapter } from '../adapters/typescript.adapter.js';
-import { SteerNotDeliveredError, steerPane } from '../claude/session-runtime.service.js';
 import {
   BRANCH,
   blockedReason,
@@ -113,8 +110,11 @@ import {
   seedSession,
   sh,
   untimed,
-} from '../test/helpers/merge-gate.mock.js';
-import { tempDir } from '../test/temp-dir.mock.js';
+} from '@test/helpers/merge-gate.mock.js';
+import { tempDir } from '@test/helpers/temp-dir.mock.js';
+import type { Adapter, CapabilityContext } from '../adapters/types/adapter.types.js';
+import { typescriptAdapter } from '../adapters/typescript.adapter.js';
+import { SteerNotDeliveredError, steerPane } from '../claude/session-runtime.service.js';
 import { openStore } from './db.client.js';
 import { ArmedGitDriverError } from './git-diff.client.js';
 import { insertLedgerEntry, listLedgerEntries } from './ledger.repository.js';
@@ -771,11 +771,17 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       return slots;
     };
 
-    /** The refusal a test run timed out under `load` throws (decision 138). */
-    const underLoad = (load: number): string =>
+    /**
+     * The refusal a test run timed out under `load` throws (decision 138); a
+     * re-run's names what failed the first time, `firstFailures`.
+     */
+    const underLoad = (load: number, firstFailures?: string): string =>
       `The test stage timed out under load ${load.toFixed(1)}, at or over the machine's ` +
-      `${availableParallelism()} cores, with other test runs going; nothing was merged; run ` +
-      'pup merge again when the load falls.';
+      `${availableParallelism()} cores, with other test runs going` +
+      (firstFailures === undefined
+        ? ''
+        : `, on its re-run; failing the first time: ${firstFailures}`) +
+      '; nothing was merged; run pup merge again when the load falls.';
 
     /** Loaded only once the gate has started the test run: the run's own load. */
     const loadedByTheRun = (): number => (runsOf('test-run') > 0 ? availableParallelism() * 4 : 0);
@@ -838,8 +844,9 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     });
 
     // The first run failed on its own, so it gets its re-run; the re-run is
-    // what the load ran out, and it is judged as a first run would be.
-    it('refuses a test stage whose re-run ran out its timeout under load, after a first run that failed', async () => {
+    // what the load ran out, and it is judged as a first run would be. The
+    // first run's failures are real, so the refusal still names them.
+    it('refuses a test stage whose re-run ran out its timeout under load, after a first run that failed, naming its failures', async () => {
       const worktree = seedSession(db, repo);
       commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
       shortTimeout();
@@ -848,7 +855,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       loadAt(cores);
 
       await expect(merge(adapterWith('test', failsOnce(timesOut)))).rejects.toThrow(
-        underLoad(cores),
+        underLoad(cores, 'src/a.test.ts > times out under load'),
       );
 
       expect(runsOf('test-run')).toBe(2);

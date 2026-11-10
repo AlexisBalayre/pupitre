@@ -1,9 +1,9 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { sh } from '@test/helpers/git.mock.js';
+import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import type { Database } from 'better-sqlite3';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { sh } from '../test/helpers/git.mock.js';
-import { tempDir } from '../test/temp-dir.mock.js';
 import type { SessionState } from './db.client.js';
 import { openStore } from './db.client.js';
 import { projectId } from './paths.utils.js';

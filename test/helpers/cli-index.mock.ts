@@ -1,12 +1,11 @@
 import { chmodSync, mkdirSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { afterAll, vi } from 'vitest';
-import { SteerNotDeliveredError } from '../../claude/session-runtime.service.js';
-import { resolveProject } from '../../cli/project.utils.js';
-import { runGit } from '../../core/git-diff.client.js';
-import { insertLedgerEntry } from '../../core/ledger.repository.js';
-import { projectId, projectPaths } from '../../core/paths.utils.js';
-import { endSandboxRun } from '../../core/sandbox.utils.js';
+import { SteerNotDeliveredError } from '@src/claude/session-runtime.service.js';
+import { resolveProject } from '@src/cli/project.utils.js';
+import { runGit } from '@src/core/git-diff.client.js';
+import { insertLedgerEntry } from '@src/core/ledger.repository.js';
+import { projectId, projectPaths } from '@src/core/paths.utils.js';
+import { endSandboxRun } from '@src/core/sandbox.utils.js';
 import {
   appendEvent,
   ensureProject,
@@ -15,10 +14,11 @@ import {
   insertTask,
   saveProjectDormantAt,
   transitionSession,
-} from '../../core/session.repository.js';
-import { STALLED_AFTER_MS } from '../../core/session-activity.constants.js';
-import { LaunchRolledBackError } from '../../core/session-lifecycle.errors.js';
-import { tempDir } from '../temp-dir.mock.js';
+} from '@src/core/session.repository.js';
+import { STALLED_AFTER_MS } from '@src/core/session-activity.constants.js';
+import { LaunchRolledBackError } from '@src/core/session-lifecycle.errors.js';
+import { afterAll, vi } from 'vitest';
+import { tempDir } from './temp-dir.mock.js';
 
 export const HANDOFF_WAIT_DEFAULT_MS = 10 * 60 * 1000;
 
