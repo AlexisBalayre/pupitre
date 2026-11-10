@@ -3065,7 +3065,9 @@ export function fileAcceptedDebt(
 
 /**
  * The `merge` event, with the commits the branch gained after the pin counted
- * and named unless the branch was deleted at it.
+ * and named unless the branch was deleted at it. A main `.git` rewritten after
+ * the fast-forward refuses that count, but the target already holds `sha`, so
+ * the event is written without it and the refusal goes on after (decision 172).
  */
 export function recordMerge(
   db: Database,
@@ -3075,7 +3077,13 @@ export function recordMerge(
   isDeleted: boolean,
 ): void {
   const { sha, prUrl } = merge;
-  const leftBehind = isDeleted ? 0 : commitsPastPin(repoPath, `refs/heads/${session.branch}`, sha);
+  let leftBehind = 0;
+  let refused: unknown;
+  try {
+    leftBehind = isDeleted ? 0 : commitsPastPin(repoPath, `refs/heads/${session.branch}`, sha);
+  } catch (error) {
+    refused = error;
+  }
   if (leftBehind > 0) {
     console.error(
       `${sanitizeReason(session.branch)} moved after the gate pinned ${sha}: ${leftBehind} ` +
@@ -3090,6 +3098,7 @@ export function recordMerge(
     ...(prUrl !== undefined ? { prUrl } : {}),
     ...(leftBehind > 0 ? { leftBehind } : {}),
   });
+  if (refused !== undefined) throw refused;
 }
 
 /**

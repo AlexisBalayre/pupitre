@@ -1593,6 +1593,26 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(existsSync(worktree)).toBe(true);
     });
 
+    it('records the merge that landed before a commondir planted during the teardown refuses', async () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      const realBranch = sh(repo, 'git', 'rev-parse', `refs/heads/${BRANCH}`).trim();
+      const decoy = decoyRepo(realBranch);
+      // The window ADR 0172 names: the fast-forward landed and the session,
+      // not yet killed, rewrites `.git` before the teardown reads a ref.
+      vi.mocked(killSession).mockImplementationOnce(() => plant(decoy, 'file'));
+
+      await expect(merge()).rejects.toThrow(/\.git\/commondir exists/);
+
+      rmSync(join(repo, '.git', 'commondir'));
+      expect(sh(repo, 'git', 'rev-parse', 'refs/heads/main').trim()).toBe(realBranch);
+      expect(getSession(db, SESSION_ID)?.state).toBe('merged');
+      const recorded = listEvents(db, SESSION_ID).filter((row) => row.type === 'merge');
+      expect(recorded).toHaveLength(1);
+      expect(JSON.parse(recorded[0]?.payload ?? '{}')).toMatchObject({ sha: realBranch });
+      expect(JSON.parse(recorded[0]?.payload ?? '{}')).not.toHaveProperty('leftBehind');
+    });
+
     /**
      * Moves the real git dir aside, points the decoy's alternates at its
      * objects, and puts `as` in its place naming the decoy. Returns the undo.
