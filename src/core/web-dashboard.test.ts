@@ -488,6 +488,7 @@ describe('startWebDashboard', () => {
         ['health', 'Health'],
         ['debt', 'Debt'],
         ['tasks', 'Tasks'],
+        ['decisions', 'Decisions'],
       ]) {
         const reply = await get(sheetUrl(sheet as string));
 
@@ -497,13 +498,14 @@ describe('startWebDashboard', () => {
         expect(reply.body).toContain(`<a href="?token=${token}&amp;sheet=health"`);
         expect(reply.body).toContain(`<a href="?token=${token}&amp;sheet=debt"`);
         expect(reply.body).toContain(`<a href="?token=${token}&amp;sheet=tasks"`);
+        expect(reply.body).toContain(`<a href="?token=${token}&amp;sheet=decisions"`);
         expect(reply.body).toContain(`sheet=${sheet}" aria-current="page">${title}</a>`);
       }
       expect((await get(dashboard.url)).body).toContain('aria-current="page">Overview</a>');
     });
 
     it('refuses a sheet it does not have, and a sheet without the token', async () => {
-      expect((await get(sheetUrl('decisions'))).status).toBe(404);
+      expect((await get(sheetUrl('releases'))).status).toBe(404);
       expect((await get(`${address().origin}/?sheet=debt`)).status).toBe(403);
     });
 
@@ -512,6 +514,7 @@ describe('startWebDashboard', () => {
       const debt = (await get(sheetUrl('debt'))).body;
       const health = (await get(sheetUrl('health'))).body;
       const tasks = (await get(sheetUrl('tasks'))).body;
+      const decisions = (await get(sheetUrl('decisions'))).body;
 
       expect(overview).not.toContain('<svg');
       expect(overview).toContain('No goal yet — `pup brief edit` writes the Destination.');
@@ -526,6 +529,9 @@ describe('startWebDashboard', () => {
       expect(tasks).toContain('No gate run in the last 8 weeks.');
       expect(tasks).toContain('Nothing planned — `pup plan` adds a task.');
       expect(tasks).toContain('No session has reached a PR yet.');
+      expect(decisions).not.toContain('<svg');
+      expect(decisions).toContain('No decision recorded yet — each merge records one.');
+      expect(decisions).toContain('No source under src/ to map.');
     });
 
     it("leads the Overview with the brief's Destination", async () => {
