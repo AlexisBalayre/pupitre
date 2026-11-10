@@ -1,0 +1,298 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-10T12:13:10.687Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42811446472",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42811446472",
+  "actor": "AlexisBalayre",
+  "commit_sha": "50f1ea5316fde71bf1246a6422ab2f746ef51e2c",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 304,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/adapters/typescript.adapter.ts",
+      "line": "453-489",
+      "description": "Package-manager configs (.npmrc, .yarnrc*, pnpm-workspace.yaml, bunfig.toml) are compared disk-vs-pinned-sha only, never against the trusted side, so a committed root .npmrc (node-options / script-shell) passes both checks and a production *.test.ts counts as test.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/adapters/vitest-config.utils.ts",
+      "line": "35-36",
+      "description": "The workspace check misses vitest's `vitest.projects.*` workspace names. A branch that adds `vitest.projects.ts` changes what the run collects, but the read still answers from the root config's `include`.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/adapters/vitest-config.utils.ts",
+      "line": "52-57, 129-140",
+      "description": "`vitestGlob` limits a pattern to one inner `**` and at most one `*` per segment, but it does not limit how many segments follow that `**`. A branch-written include or exclude such as `**/*/*/…(×2000)…/z.test.ts` passes every check. Matched against a deep branch path, the cost grows with depth × segment count, not linearly as the comment says.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/adapters/vitest-config.utils.ts",
+      "line": "376-379",
+      "description": "`collects` matches the git path, but on a case-insensitive disk (APFS) vitest globs the directory names actually written to disk. A branch path whose directory folds onto another spelling is counted as collected even though the run never collects it.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/adapters/vitest-config.utils.ts",
+      "line": "32-33, 371-372",
+      "description": "\"No config at the root\" is treated as \"empty config\", but vitest looks for its config in parent directories too. A config in the gate checkout's parent temp dir decides what the run collects, and the read never sees it.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/adapters/typescript.adapter.ts",
+      "line": "221-249",
+      "description": "A build that writes its own entry into the gate checkout's `node_modules` makes `testInputsIntact` false on every gate run. After that, nothing counts as test, not even the `src/a.test.ts` the old spelling rule counted, so test-heavy branches get false \"Oversize diff\" debt.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/adapters/typescript.adapter.ts",
+      "line": "217-229",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "Root files Yarn loads into every script are neither run inputs nor compared across checkouts: `.env.yarn` (Yarn 4 reads it by default), `.pnp.cjs` and `.pnp.loader.mjs` (PnP). The branch commits or builds one carrying `NODE_OPTIONS=--import ./scripts/reg.mjs` and the shared config is still read as the trusted one's. `RUNS_A_FILE` also misses the `NODE_OPTIONS` spelling and the `injectEnvironmentFiles` key.",
+      "body": "**Yarn loads root files into the test script that neither check covers.**\n\nWhen a `yarn.lock` is present, the gate runs `yarn run test` (`packageManager`, L169-173; `gateCommands`, L406). With Yarn 4 started through corepack (`COREPACK_HOME` is set in `gate-env.utils.ts:52`), `.yarnrc.yml` needs no `yarnPath`. ADR 0143's \"a Yarn Berry repo loses the split\" assumes it always has one, so this case still gets an answer. Yarn then also loads, for every script:\n\n- **`.env.yarn`.** `injectEnvironmentFiles` defaults to `.env.yarn?`, so the file's variables go into the script's environment. `gateChildEnv` scrubs `NODE_OPTIONS` from pup's own environment, but yarn injects this file after that.\n- **The files a shared `.yarnrc.yml` names under `injectEnvironmentFiles`.** `RUNS_A_FILE` has no term for that key.\n- **`.pnp.cjs` and `.pnp.loader.mjs`** in a PnP repo. Yarn adds them to `NODE_OPTIONS` (`--require`, `--experimental-loader`).\n\n```ts\nconst VITEST_RUN_INPUT =\n  /^(?:package\\.json|\\.npmrc|\\.yarnrc(?:\\.yml)?|pnpm-workspace\\.yaml|bunfig\\.toml|vite(?:st)?\\.(?:config|workspace|projects)\\.[^/]*)$/;\nconst PACKAGE_MANAGER_CONFIG = /^(?:\\.npmrc|\\.yarnrc(?:\\.yml)?|pnpm-workspace\\.yaml|bunfig\\.toml)$/;\nconst RUNS_A_FILE = /yarn-?path|plugins|node-?options|script-?shell|preload/i;\n```\n\nNone of those files is in either list. So `plainVitestCollection` leaves them out of the string it compares across checkouts. A committed one also matches its own blob, so `testInputsIntact` passes. `node-?options` also misses the `NODE_OPTIONS` spelling, because of the underscore.\n\n**Trigger.** In a yarn 4 repo with no `yarnPath`:\n1. The branch commits `.env.yarn` holding `NODE_OPTIONS=--import ./scripts/reg.mjs`.\n2. `reg.mjs` registers a test in every worker.\n3. The vitest config and `.yarnrc.yml` equal the target's, so `testFiles` returns a test-less `scripts/big.test.ts` and its production lines count as test.\n\nThis is the same hole ADR 0143 closes for `.npmrc` `node-options`.\n\n**Possible fix:**\n- add `.env.yarn`, `.pnp.cjs` and `.pnp.loader.mjs` to both `VITEST_RUN_INPUT` and `PACKAGE_MANAGER_CONFIG`;\n- widen `RUNS_A_FILE` to `yarn[-_]?path|plugins|node[-_]?options|script[-_]?shell|preload|inject-?environment-?files`.\n\nThe other option is to leave the answer unknown for any repo with a `yarn.lock`.\n\nThis rests on pinned-version knowledge of Yarn 4, hence medium confidence.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/50f1ea5316fde71bf1246a6422ab2f746ef51e2c/src/adapters/typescript.adapter.ts#L217-L229",
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/vitest-config.utils.ts",
+      "line": "325-333",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "rootFiles folds root names with String#toLowerCase, but APFS (the gate's filesystem) also folds `ſ` (U+017F) onto `s`, and toLowerCase leaves `ſ` unchanged. So a branch can commit `viteſt.config.ts` (or `vite.config.tſ`), which the gate's disk opens for a higher-priority config name than the repo's. The read never sees it, testInputsIntact never compares it, and vitest runs the branch's config while the read answers from the trusted one.",
+      "body": "**The root-name fold is not the disk's fold.**\n\nADR 0143 says a root name that folds onto another leaves the answer unknown. `rootFiles` folds with `toLowerCase` only:\n\n```ts\nfor (const [name, read] of entries.sort((a, b) => notLowerCase(a) - notLowerCase(b))) {\n  const key = name.toLowerCase();\n  root.set(key, name === key ? read : unreadable(name));\n}\n```\n\nThe repo's own `NON_ASCII` comment (`merge-gate.service.ts:344-347`) records that APFS folds `ſ` onto `s` \"by its own tables, which no JavaScript case mapping or normalization reproduces\". `'ſ'.toLowerCase()` is still `'ſ'`, so `viteſt.config.ts` gets a key of its own with a working read.\n\n**Trigger.**\n1. The target's root config is `vite.config.ts`, or any name after `vitest.config.ts` in vitest's order.\n2. The branch keeps it unchanged and commits `viteſt.config.ts` (or `vitest.config.tſ`). That file sets an `exclude`, `passWithNoTests` or a `setupFiles`.\n3. `vitestCollection` picks the first ASCII name present (L389). On both sides that is `vite.config.ts`, so the `config` strings match and `testFiles` answers from the trusted lists.\n4. On APFS, vitest probes `vitest.config.ts`, opens the branch's file, and never runs a production `src/big.test.ts` that the split counts as test.\n\nNothing upstream refuses a non-ASCII root name. `NON_ASCII` only makes the path itself count as source, and ADR 0143's ceilings do not list this case.\n\n**Possible fix.** Refuse a root holding any name outside ASCII, as merge-gate does elsewhere. `diskRoot` and `treeRoot` then throw, and `testFiles` collects nothing.\n\nVitest probing a config name on a case-folding disk is pinned-version knowledge, hence medium confidence.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/50f1ea5316fde71bf1246a6422ab2f746ef51e2c/src/adapters/vitest-config.utils.ts#L325-L333",
+      "suggestion": "/** APFS folds some names outside ASCII onto ASCII (`ſ` onto `s`) by tables no JavaScript case mapping reproduces. */\nconst NON_ASCII_NAME = /[^\\x00-\\x7f]/;\n\nfunction rootFiles(entries: [string, () => string][]): RootFiles {\n  if (entries.some(([name]) => NON_ASCII_NAME.test(name))) {\n    throw new Error('a root name outside ASCII may open for any file a run reads');\n  }\n  const root: RootFiles = new Map();\n  // Lower-case names first, so one that folds onto another replaces its read.\n  for (const [name, read] of entries.sort((a, b) => notLowerCase(a) - notLowerCase(b))) {\n    const key = name.toLowerCase();\n    root.set(key, name === key ? read : unreadable(name));\n  }\n  return root;\n}"
+    },
+    {
+      "file": "src/adapters/typescript.adapter.ts",
+      "line": "522-537",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "`testInputsIntact` and the cross-checkout comparison read only the checkout root. npm, yarn and pnpm also read config from the checkout's parent directories and from the operator's home, both of which the unsandboxed session can write. The ADR makes this same argument to refuse a root with no vitest config, but does not apply it to package-manager config.",
+      "body": "**Package-manager config outside the checkout root is never compared.**\n\nEvery check this PR adds reads only the root:\n- `VITEST_RUN_INPUT` and `PACKAGE_MANAGER_CONFIG` are anchored bare names.\n- `plainVitestCollection` (L297) tests `RUNS_A_FILE` against those root files only.\n- `testInputsIntact` compares only the root disk with the sha's tree.\n\n```ts\nenvironmentLinked(ctx) &&\n  runInputs(diskRoot(ctx.measurePath), VITEST_RUN_INPUT) ===\n    runInputs(treeRoot(ctx.configPath, ctx.measureSha), VITEST_RUN_INPUT)\n```\n\nThe gate checkout is `mkdtempSync(join(realpathSync(tmpdir()), 'pup-gate-checkout-'))` (`merge-gate.service.ts:1129`). `gateChildEnv` passes the real `HOME` and `XDG_CONFIG_HOME` through, and the sandbox blocks only `~/.npmrc` (`sandbox-profile.utils.ts:101-112, 156-158`). Yarn reads `.yarnrc`/`.yarnrc.yml` in every ancestor directory and in `~`. pnpm reads `<config dir>/pnpm/rc`.\n\nADR 0143 (L57-61) refuses a root with no vitest config for exactly this reason: a directory above the checkout \"a session can write, since it runs unsandboxed (decision 5)\", where \"a check of its parents after the run does not prove what they held during it\". The package-manager defence (L92-102) does not apply that reasoning, and the stated ceilings (L148-161) do not name it.\n\n**Trigger.**\n1. In a repo with a `yarn.lock`, the session writes `$TMPDIR/.yarnrc.yml` with `yarnPath: $TMPDIR/y.cjs` during its merge.\n2. Yarn walks up from the checkout and runs `y.cjs`, which exits 0 or runs vitest under a preload.\n3. Both checks pass, and a test-less `scripts/big.test.ts` counts as test.\n\n**Possible fixes:**\n- pin the package managers' user and global config in the gate env (e.g. `npm_config_userconfig`, `YARN_RC_FILENAME`, a scratch `XDG_CONFIG_HOME`);\n- or state this as a ceiling in ADR 0143 beside L57-61.\n\nWhat yarn and pnpm read outside the root is pinned-version knowledge, hence medium confidence.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/50f1ea5316fde71bf1246a6422ab2f746ef51e2c/src/adapters/typescript.adapter.ts#L522-L537",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "2624-2628",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "`testInputsIntact` treats the test run's inputs as clean after the build, but the package manager that runs the test script comes from the corepack install in the per-repo toolchain cache. The build child is granted write access there (sandbox.utils.ts:413), and the unsandboxed session can write there too. A build that swaps corepack's pnpm or yarn entrypoint makes the test stage run the branch's package manager, and neither check looks at it.",
+      "body": "**The test stage's package manager can be the branch's.**\n\n```ts\nconst testInputsIntact = () => primary?.testInputsIntact?.(capabilityContext) ?? true;\nconst intactBeforeSuites = testInputsIntact();\n```\n\nThe check covers root config files and `node_modules` links only. Meanwhile:\n- `gateInvocation` grants every gate child, the build included, write access to `[scratchDir, cacheDir]` (`sandbox.utils.ts:412-413`).\n- `COREPACK_HOME` points into that cache (`gate-env.utils.ts:52`).\n- Corepack runs `pnpm`/`yarn` from `<COREPACK_HOME>/v1/<manager>/<version>/` (`src/adapters/capability.utils.ts:106-119`).\n- Nothing checks a replaced entrypoint. `quarantineBrokenCorepackInstalls` and `brokenPackageManagerInstall` only catch a missing one.\n\nDecision 36 accepted same-repo cache poisoning because \"a gate child already runs that repo's code\". Decision 143 changes that: the split now trusts that the test stage ran plain vitest under the compared configs. ADR 0143's own `yarnPath` rule (L98-102) treats a package-manager binary the branch can rewrite as making the answer unknown, and this is the same binary reached through the cache.\n\n**Trigger.**\n1. In a pnpm or yarn repo where `pnpm`/`yarn` is corepack's shim, the branch's `build` script overwrites `$COREPACK_HOME/v1/pnpm/<ver>/dist/pnpm.cjs` with a wrapper that exits 0, or runs vitest under `--import`.\n2. `pnpm run test` runs the wrapper. Both checks pass, and a test-less `src/big.test.ts` counts as test.\n3. The poisoned binary also stays in the cache for later merges of the repo.\n\nnpm repos are not affected.\n\n**Possible fixes:**\n- check the corepack install in `testInputsIntact`, for example by hashing it before the build and comparing after;\n- or don't grant the build write access to `COREPACK_HOME`;\n- or state this as a ceiling in ADR 0143.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/50f1ea5316fde71bf1246a6422ab2f746ef51e2c/src/core/merge-gate.service.ts#L2624-L2628",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "495-500",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "diffSizeKind applies `tree.foldsOntoAnother` to `entry.renamedFrom` too, but that path is on the target tree, not the branch tree. A case-only rename breaks the split. Example: `src/Foo.test.ts` renamed to `src/foo.test.ts` with edits, or a `Tests/` to `tests/` directory rename. The old path folds onto its own new spelling, so `isTest(renamedFrom)` is false and the edited test lines count as source, which can push the split toward a false diff-size flag. Before this PR the spelling rule counted them as test. Applying the fold check to `path` only (keeping `collected`/suffix and UNSPELLABLE_NAME for `renamedFrom`) fixes it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0143-a-file-counts-as-test-toward-the-diff-size-flag-only.md",
+      "line": "20-22",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "ADR 0143 says an adapter without the capability \"keeps the `*.test.ts` spelling\", and the `diffSizeKind` JSDoc gives the APFS fold only as a runner reason. The new `foldsOntoAnother` check also applies on that fallback, so a Python-primary repo's `src/big.test.ts` beside a `Src/` now counts as source. Say the fold rule applies to the spelling fallback too.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/typescript.adapter.ts",
+      "line": "229",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`RUNS_A_FILE` matches key names as raw text, so a quoted key written with escapes gets past it while the parser still reads the real key: `\"node-options\"=--import=./test/env.mjs` in `.npmrc` (ini JSON-parses double-quoted keys), or `\"yarn\\x50ath\"` / `\"node\\x4fptions\"` in `.yarnrc.yml` or `pnpm-workspace.yaml` (YAML double-quoted escapes). A branch's config must equal the target's, so this takes two merges: one lands the escaped key (that merge's own split is unknown), then later branches rewrite the file it names and keep their split. A possible fix is to also refuse any package-manager config whose raw text contains a backslash inside a quoted key, or `${`, testing each file's raw read rather than the JSON-stringified `managers`, where every newline becomes a backslash.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/typescript.adapter.ts",
+      "line": "221",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The package-manager file alternation (`\\.npmrc|\\.yarnrc(?:\\.yml)?|pnpm-workspace\\.yaml|bunfig\\.toml`) is written twice, in `PACKAGE_MANAGER_CONFIG` and inside `VITEST_RUN_INPUT`. A name added to one and not the other silently drops it from either the cross-checkout comparison or the disk-vs-commit check; build `VITEST_RUN_INPUT` from a shared fragment.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0110-the-diff-size-flag-counts-source-lines-only.md",
+      "line": "153",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "docs/adr/README.md line 19-21 says 'Once a decision has landed, a later change appends an amendment section to it (dated, with the PR) or adds a new decision that links back through `Amends:`.' The appended 'Note (2026-11-07): decision 143 closes the owed runner-collection item...' carries a date but names no PR. A later reader of 0110 cannot tell which change added the note without a git search. Adding the PR number, `(2026-11-07, #304)`, fixes it. No sibling ADR has an appended note, so there is no precedent either way.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/typescript.adapter.ts",
+      "line": "235",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`BIN_DIR = '.bin'` has one use (`unloadedEntry`), while `coveredTest` spells the same directory as a bare `'.bin'`. The constant shares nothing, and `unloadedEntry`'s JSDoc already gives the WHY, so inline it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "2624-2626",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The comment above `const testInputsIntact` repeats the `testInputsIntact` JSDoc in adapter.types.ts (the build ran in the checkout; checked after the build and again before the split). Only \"before any suite\" is new, so cut it to that clause.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0143-a-file-counts-as-test-toward-the-diff-size-flag-only.md",
+      "line": "37-38",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "ADR 0143's run-input list names `vite.config.*`, `vitest.config.*`, `vitest.workspace.*` and `vitest.projects.*`, but the `VITEST_RUN_INPUT` regex also covers `vite.workspace.*` and `vite.projects.*`, so a reader checking the list against the code finds the two differ.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0143-a-file-counts-as-test-toward-the-diff-size-flag-only.md",
+      "line": "164-214",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "ADR 0143's \"Tests:\" section re-lists every rule above it and every test case in the three test files, and has already drifted (`projects` there vs `test.projects` earlier). The next rule change has to be edited in three places. Trim it to what the tests don't make obvious, or point to the test files.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "407",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "readBranchTree lists the branch with `ls-tree -r -z branch` and no `--full-tree` (unlike `targetHolds`). When a session sets `core.worktree=/` in the shared config, the listing comes back empty, so the new `foldsOntoAnother` check in diffSizeKind never fires, and neither do `linked` or `markdownIsCode`. Adding `--full-tree` fixes all of them.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [
+    {
+      "file": "src/adapters/typescript.adapter.ts",
+      "line": "266-280",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "environmentLinked checks that each entry the gate checkout's node_modules holds is a link, a cache or an unloaded dot entry. It never checks that the entries the trusted node_modules has are still there. Two triggers follow. (a) The branch's build deletes the `node_modules/vitest` link. (b) The branch commits `node_modules/.keep`: the gate then links nothing (merge-gate.service.ts:1362 returns early), and `.keep` passes as an unloadedEntry. In both cases testInputsIntact returns true while vitest, `vitest/config` or a package it loads resolves from an ancestor directory the session can write. Trigger (b) is new with the round-2 unloadedEntry fix.",
+      "refutation": "ADR 0143 L160-161 already states this as an accepted ceiling: \"A `node_modules` entry the branch removes is not missed, since resolution then climbs to a parent directory's.\" Trigger (b) is that same ceiling (every entry the gate would link is missing), and the `linkEnvironment` JSDoc keeps a committed `node_modules` on purpose, for the operator to review. It is also not new with e89adf2: a committed `node_modules/.cache/x` already passed through `RUN_CACHE` before that commit."
+    }
+  ],
+  "process_issues": [
+    {
+      "component": "consolidator",
+      "description": "The consolidator returned no groups (merged: 0), but findings 2 and 6 (Yarn .env.yarn / .pnp.cjs from correctness and security) and 13 and 14 (the fold check on the spelling fallback, ADR and JSDoc) were clearly one root cause each. The orchestrator merged them inline."
+    },
+    {
+      "component": "validator",
+      "description": "The validator for the corepack-cache finding reported `gh pr diff 304` as denied, so it confirmed from the checked-out tree without reading the diff. The orchestrator checked provenance itself: the testInputsIntact call lines are added by the PR."
+    }
+  ],
+  "duplicates_merged": 2,
+  "comments_posted_actual": 4,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 10.062879524999994,
+  "duration_ms": 1007346,
+  "num_turns": 26,
+  "tokens": {
+    "input": 24,
+    "output": 41016,
+    "cache_read": 847388,
+    "cache_creation": 114189,
+    "total": 1002617
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 268,
+      "output": 255029,
+      "cache_read": 5359421,
+      "cache_creation": 629215,
+      "cost_usd": 9.662178200000001
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 48,
+      "output": 12783,
+      "cache_read": 336160,
+      "cache_creation": 95115,
+      "cost_usd": 0.3993295
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 1251,
+      "cache_read": 0,
+      "cache_creation": 5969,
+      "cost_usd": 0.0013718250000000001
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "gh pr diff 304 --repo AlexisBalayre/pupitre --name-only"
+    },
+    {
+      "tool": "Bash",
+      "input": "gh pr diff 304 --repo AlexisBalayre/pupitre --name-only"
+    },
+    {
+      "tool": "Bash",
+      "input": "git ls-files src/core/gate-env.utils.ts src/core/gate-runner.utils.ts"
+    }
+  ]
+}
