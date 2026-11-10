@@ -1,9 +1,9 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
-import { tempDir } from '../test/temp-dir.mock.js';
 
 // Side-effecting boundaries only (tmux/git spawns, `claude -p` sessions, and the
 // multi-stage merge-gate orchestration) — everything else (sqlite repositories,
@@ -50,6 +50,8 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   // The real rule and the real file, under the throwaway HOME: which names
   // `pup init --session-env` refuses and keeps, and the config dir a launch
   // hashes from them, are the contract (decision 106).
+  resolveWindowEnv: (await importOriginal<typeof import('../claude/session-runtime.service.js')>())
+    .resolveWindowEnv,
   claudeUserDir: (await importOriginal<typeof import('../claude/session-runtime.service.js')>())
     .claudeUserDir,
   ConfigDirRefusedError: (
@@ -97,6 +99,8 @@ vi.mock('../core/merge-gate.service.js', () => ({
 }));
 // The land's own git and gh work is land.test.ts's, against a real repo.
 vi.mock('../core/land.service.js', () => ({ landSession: vi.fn() }));
+// So is the retire's, in session-retire.test.ts.
+vi.mock('../core/session-retire.service.js', () => ({ retireSession: vi.fn() }));
 // So is the fix round's, in fix-round.test.ts; `pup status` asks GitHub nothing here.
 vi.mock('../core/fix-round.service.js', () => ({
   ciReviewLookup: vi.fn(),
@@ -152,6 +156,18 @@ vi.mock('../core/session-handoff.service.js', () => ({
 }));
 
 import {
+  firstCall,
+  GIT_ENV,
+  initRepo,
+  initRepoWithAdapter,
+  rolledBackLaunch,
+  seedBlockedSession,
+  seedKilledSession,
+  seedSession,
+  seedStalledSession,
+  stubCodegraph,
+} from '@test/helpers/cli-index.mock.js';
+import {
   attachWindow,
   hasSessionWindow,
   readSessionEnv,
@@ -184,19 +200,8 @@ import {
   recordSteerMessage,
   steerSession,
 } from '../core/session-lifecycle.service.js';
+import { retireSession } from '../core/session-retire.service.js';
 import type { LandOutcome } from '../core/types/land.types.js';
-import {
-  firstCall,
-  GIT_ENV,
-  initRepo,
-  initRepoWithAdapter,
-  rolledBackLaunch,
-  seedBlockedSession,
-  seedKilledSession,
-  seedSession,
-  seedStalledSession,
-  stubCodegraph,
-} from '../test/helpers/cli-index.mock.js';
 import { buildProgram } from './index.js';
 import { resolveProject } from './project.utils.js';
 
@@ -1825,6 +1830,116 @@ describe('CLI commands', () => {
     });
   });
 
+  describe('retire', () => {
+    const PR = 'https://github.com/o/r/pull/7';
+    const SUPERSEDING = 'https://github.com/o/r/pull/9';
+
+    it('refuses a session running it from its worktree, retiring nothing', async () => {
+      const repo = initRepo();
+      const worktree = join(repo, '.worktrees', 's1');
+      mkdirSync(worktree, { recursive: true });
+      seedSession(repo, 's1', worktree);
+      useCwd(worktree);
+
+      await buildProgram().parseAsync(['retire', 's1', '--superseded-by', '9'], { from: 'user' });
+
+      expect(errors).toEqual([
+        '`pup retire` is operator-only; sessions and the conductor cannot run it.',
+      ]);
+      expect(process.exitCode).toBe(1);
+      expect(retireSession).not.toHaveBeenCalled();
+    });
+
+    it('refuses the conductor, retiring nothing', async () => {
+      const repo = initRepo();
+      useCwd(repo);
+      vi.stubEnv('PUP_CONDUCTOR', projectId(repo));
+
+      await buildProgram().parseAsync(['retire', 's1', '--superseded-by', '9'], { from: 'user' });
+
+      expect(errors).toEqual([
+        '`pup retire` is operator-only; sessions and the conductor cannot run it.',
+      ]);
+      expect(process.exitCode).toBe(1);
+      expect(retireSession).not.toHaveBeenCalled();
+    });
+
+    it('refuses without --superseded-by, retiring nothing', async () => {
+      useCwd(initRepo());
+
+      await buildProgram().parseAsync(['retire', 's1'], { from: 'user' });
+
+      expect(errors).toEqual([
+        '`pup retire` needs `--superseded-by <pr>`, the merged PR that re-landed the work.',
+      ]);
+      expect(process.exitCode).toBe(1);
+      expect(retireSession).not.toHaveBeenCalled();
+    });
+
+    it('retires and reports what it removed and kept', async () => {
+      const repo = initRepo();
+      useCwd(repo);
+      vi.mocked(retireSession).mockResolvedValue({
+        prUrl: PR,
+        supersededBy: SUPERSEDING,
+        removedWorktree: true,
+        keptBranch: 'pup/s1',
+      });
+
+      await buildProgram().parseAsync(['retire', 's1', '--superseded-by', '9'], { from: 'user' });
+
+      expect(firstCall(retireSession)[1]).toEqual({
+        repoPath: repo,
+        sessionId: 's1',
+        supersededBy: '9',
+      });
+      expect(logs).toEqual([
+        `Retired s1: ${PR} was closed, superseded by ${SUPERSEDING}.`,
+        'Removed the session worktree.',
+        'Kept pup/s1: it holds commits past the sha its PR carried.',
+      ]);
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it('reports a retire made under a lock that was lost, and fails on it', async () => {
+      useCwd(initRepo());
+      vi.mocked(retireSession).mockRejectedValue(
+        new MergeLockLostError('/repo/.git/pup-merge.lock', {
+          prUrl: PR,
+          supersededBy: SUPERSEDING,
+          removedWorktree: true,
+          keptBranch: 'pup/s1',
+        }),
+      );
+
+      await buildProgram().parseAsync(['retire', 's1', '--superseded-by', '9'], { from: 'user' });
+
+      expect(logs).toEqual([
+        `Retired s1: ${PR} was closed, superseded by ${SUPERSEDING}.`,
+        'Removed the session worktree.',
+        'Kept pup/s1: it holds commits past the sha its PR carried.',
+      ]);
+      expect(errors).toEqual([
+        expect.stringMatching(
+          /^The merge lock at \/repo\/\.git\/pup-merge\.lock was gone or replaced/,
+        ),
+      ]);
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('prints a refusal on one line with its control characters gone', async () => {
+      useCwd(initRepo());
+      vi.mocked(retireSession).mockImplementation(() => {
+        throw new Error('PR is OPEN\u001b[2J on GitHub, not CLOSED. Nothing was retired.');
+      });
+
+      await buildProgram().parseAsync(['retire', 's1', '--superseded-by', '9'], { from: 'user' });
+
+      expect(errors).toEqual(['PR is OPEN [2J on GitHub, not CLOSED. Nothing was retired.']);
+      expect(process.exitCode).toBe(1);
+    });
+  });
+
   describe('fix', () => {
     const PR = 'https://github.com/o/r/pull/7';
     const HEAD = 'c'.repeat(40);
@@ -1883,7 +1998,7 @@ describe('CLI commands', () => {
         override: { model: 'claude-opus-5-5', effort: 'xhigh' },
         overrideVia: 'operator',
         base: DEFAULT_BASE_PROFILE,
-        claudeUserDir: join(home, '.claude'),
+        windowEnv: { vars: {}, configDir: join(home, '.claude') },
       });
       expect(logs).toEqual([
         `Fix round started for s1: the 2 open threads the CI review left on ${PR} at ${HEAD} went to a fresh window.`,

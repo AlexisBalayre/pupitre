@@ -1,5 +1,9 @@
+import {
+  findDeadExports,
+  findDuplication,
+  measureComplexity,
+} from '@src/adapters/typescript-debt.utils.js';
 import { describe, expect, it } from 'vitest';
-import { findDeadExports, findDuplication, measureComplexity } from './typescript-debt.utils.js';
 
 describe('findDeadExports', () => {
   it('flags an export no other file imports', () => {

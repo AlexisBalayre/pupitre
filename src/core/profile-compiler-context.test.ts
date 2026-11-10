@@ -9,15 +9,15 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { loadCustomAdapter } from '../adapters/custom.adapter.js';
 import {
   commandScopeConfig,
   makeInput,
   runHook,
   task,
-} from '../test/helpers/profile-compiler.mock.js';
-import { tempDir } from '../test/temp-dir.mock.js';
+} from '@test/helpers/profile-compiler.mock.js';
+import { tempDir } from '@test/helpers/temp-dir.mock.js';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { loadCustomAdapter } from '../adapters/custom.adapter.js';
 import { BRIEF_MAX_CHARS, BRIEF_TEMPLATE, briefPath } from './brief.service.js';
 import { DEFAULT_BASE_PROFILE } from './default-profile.constants.js';
 import { verifiedWorktreeGitEnv } from './git-diff.client.js';

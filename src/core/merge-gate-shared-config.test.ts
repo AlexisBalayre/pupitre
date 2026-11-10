@@ -48,8 +48,6 @@ vi.mock('./git-diff.client.js', async (importOriginal) => {
   };
 });
 
-import { nestedPackageDirs } from '../adapters/git-tree.client.js';
-import type { Adapter, CapabilityContext } from '../adapters/types/adapter.types.js';
 import {
   BRANCH,
   commitIn,
@@ -59,8 +57,10 @@ import {
   seedSession,
   sh,
   untimed,
-} from '../test/helpers/merge-gate.mock.js';
-import { tempDir } from '../test/temp-dir.mock.js';
+} from '@test/helpers/merge-gate.mock.js';
+import { tempDir } from '@test/helpers/temp-dir.mock.js';
+import { nestedPackageDirs } from '../adapters/git-tree.client.js';
+import type { Adapter, CapabilityContext } from '../adapters/types/adapter.types.js';
 import { openStore } from './db.client.js';
 import { SharedWorktreeKeyError, WorktreeConfigError } from './git-diff.client.js';
 import { listLedgerEntries } from './ledger.repository.js';

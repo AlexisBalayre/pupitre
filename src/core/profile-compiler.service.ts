@@ -9,7 +9,6 @@ import {
   type ModelRoute,
   SECURITY_REVIEW_EFFORT,
 } from '../claude/model-ladder.constants.js';
-import { shellWord } from '../claude/session-runtime.service.js';
 import { readBrief, workerBrief } from './brief.service.js';
 import { codegraphMcpConfig } from './codegraph.client.js';
 import {
@@ -35,6 +34,7 @@ import {
 } from './profile.constants.js';
 import { ContextBudgetExceededError, InvalidProfileError } from './profile.errors.js';
 import { CRITICAL_AREAS } from './routing.utils.js';
+import { shellWord } from './shell-quote.utils.js';
 import { scopeInFiles } from './task-spec.utils.js';
 import type { ConductorCompileInput } from './types/conductor.types.js';
 import type {

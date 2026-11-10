@@ -1,8 +1,8 @@
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
-import * as ProfileCompiler from '../../core/profile-compiler.service.js';
-import type { CompileInput, SessionId, TaskId, TaskSpec } from '../../core/types/profile.types.js';
-import { tempDir } from '../temp-dir.mock.js';
+import * as ProfileCompiler from '@src/core/profile-compiler.service.js';
+import type { CompileInput, SessionId, TaskId, TaskSpec } from '@src/core/types/profile.types.js';
+import { tempDir } from './temp-dir.mock.js';
 
 export const task: TaskSpec = {
   id: 'task-1' as TaskId,

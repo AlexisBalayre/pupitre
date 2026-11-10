@@ -10,8 +10,8 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { tempDir } from '../test/temp-dir.mock.js';
 import {
   ArmedGitDriverError,
   armedGitDrivers,
@@ -1220,7 +1220,7 @@ describe('assertNoWorktreeConfig', () => {
     setExtension(repo, 'maybe');
     const [unset, disable] = hintCommands(repo);
     expect(unset).toBe(
-      `git -C / config --file '${join(repo, '.git/config')}' --unset-all extensions.worktreeConfig`,
+      `git -C / config --file ${join(repo, '.git/config')} --unset-all extensions.worktreeConfig`,
     );
     expect(disable).toBe('git sparse-checkout disable');
     expect(() => paste(repo, disable as string)).toThrow(/bad boolean config value/);
@@ -1435,8 +1435,9 @@ describe('assertNoSharedWorktreeKey', () => {
 
     expect(message).toContain(`core.worktree is set in ${join(repo, '.git', 'config')}`);
     const unset = /then run `([^`]*)`/.exec(message)?.[1] as string;
+    // A temp path holds no character the shell reads, so it goes unquoted.
     expect(unset).toBe(
-      `git -C / config --file '${join(repo, '.git', 'config')}' --unset-all core.worktree`,
+      `git -C / config --file ${join(repo, '.git', 'config')} --unset-all core.worktree`,
     );
     execFileSync('sh', ['-c', unset], { cwd: repo, env: GIT_ENV, stdio: 'pipe' });
     expect(() => assertNoSharedWorktreeKey(repo)).not.toThrow();

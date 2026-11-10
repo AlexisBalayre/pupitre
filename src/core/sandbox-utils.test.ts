@@ -31,7 +31,7 @@ vi.mock('node:fs', async (importOriginal) => {
   };
 });
 
-import { tempDir } from '../test/temp-dir.mock.js';
+import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import { projectId } from './paths.utils.js';
 import {
   endSandboxRun,

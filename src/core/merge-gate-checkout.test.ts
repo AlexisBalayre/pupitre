@@ -86,10 +86,6 @@ vi.mock('./test-slot.service.js', async (importOriginal) => {
   };
 });
 
-import type { Adapter, CapabilityContext, NestedPackage } from '../adapters/types/adapter.types.js';
-import { typescriptAdapter } from '../adapters/typescript.adapter.js';
-import { killSession, steerPane } from '../claude/session-runtime.service.js';
-import { runUtility } from '../claude/utility.service.js';
 import {
   BRANCH,
   commitIn,
@@ -102,8 +98,12 @@ import {
   seedSession,
   sh,
   untimed,
-} from '../test/helpers/merge-gate.mock.js';
-import { tempDir } from '../test/temp-dir.mock.js';
+} from '@test/helpers/merge-gate.mock.js';
+import { tempDir } from '@test/helpers/temp-dir.mock.js';
+import type { Adapter, CapabilityContext, NestedPackage } from '../adapters/types/adapter.types.js';
+import { typescriptAdapter } from '../adapters/typescript.adapter.js';
+import { killSession, steerPane } from '../claude/session-runtime.service.js';
+import { runUtility } from '../claude/utility.service.js';
 import { openStore } from './db.client.js';
 import { ArmedGitDriverError, WorktreeConfigError } from './git-diff.client.js';
 import { listLedgerEntries } from './ledger.repository.js';

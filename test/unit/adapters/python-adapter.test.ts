@@ -1,10 +1,10 @@
 import { readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { localContext } from '@src/adapters/capability.utils.js';
+import { pythonAdapter } from '@src/adapters/python.adapter.js';
+import { endSandboxRun } from '@src/core/sandbox.utils.js';
+import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import { afterAll, describe, expect, it, vi } from 'vitest';
-import { endSandboxRun } from '../core/sandbox.utils.js';
-import { tempDir } from '../test/temp-dir.mock.js';
-import { localContext } from './capability.utils.js';
-import { pythonAdapter } from './python.adapter.js';
 
 function makeRepo(files: Record<string, string>): string {
   const dir = tempDir('pup-py-');

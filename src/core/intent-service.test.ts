@@ -7,8 +7,8 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
+import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import { describe, expect, it, vi } from 'vitest';
-import { tempDir } from '../test/temp-dir.mock.js';
 import { IntentStatus } from './enums/intent.enums.js';
 import { IntentRefusedError } from './errors/intent.errors.js';
 import {
