@@ -1,9 +1,8 @@
 import { type ChildProcess, spawn } from 'node:child_process';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
 import { sanitizeReason } from '../../adapters/capability.utils.js';
 import {
   attachWindow,
+  resolveWindowEnv,
   type WindowTarget,
   windowLabel,
 } from '../../claude/session-runtime.service.js';
@@ -92,15 +91,18 @@ function rolledBackLine(error: LaunchRolledBackError, retry: string): string {
  * window refused has already been rolled back by `launchTask` — the task is
  * back in the backlog (decision 40), so the retry is the same key on the same
  * task. `model` empty means the profile's default, as omitting `--model` does.
+ * The config dir is resolved first, as `pup launch` resolves it, so a refused
+ * one cuts no worktree and inserts no row (decision 106).
  */
 export function launchSelected(deps: ActionDeps, taskId: string, model: string): ActionResult {
   return attempt(() => {
+    const windowEnv = resolveWindowEnv(deps.repoPath);
     try {
       const sessionId = launchTask(deps.db, {
         repoPath: deps.repoPath,
         base: DEFAULT_BASE_PROFILE,
         taskId,
-        claudeUserDir: join(homedir(), '.claude'),
+        windowEnv,
         ...(model ? { model } : {}),
       });
       return `Launched ${sessionId} (tmux: ${windowLabel({ sessionId })}).`;
@@ -183,6 +185,8 @@ export function unblockSelected(deps: ActionDeps, sessionId: string): ActionResu
  * every frame, stop the two-second reading and swallow every keypress for up to
  * ten minutes — the one thing a held-open screen must not do. So the poll is
  * the same poll, awaited instead of slept, and `onWaiting` puts it on screen.
+ * The config dir is resolved before the handoff is asked for, as `pup respawn`
+ * resolves it, so a refused one kills no window (decision 106).
  */
 export async function respawnSelected(
   deps: ActionDeps,
@@ -193,6 +197,7 @@ export async function respawnSelected(
 ): Promise<ActionResult> {
   const { db, repoPath } = deps;
   try {
+    const windowEnv = resolveWindowEnv(repoPath);
     if (!isHandoffReady(db, repoPath, sessionId)) {
       requestHandoff(db, repoPath, sessionId);
       const deadline = Date.now() + waitMs;
@@ -210,7 +215,7 @@ export async function respawnSelected(
         await new Promise((resolve) => setTimeout(resolve, pollMs));
       }
     }
-    respawnSession(db, repoPath, sessionId);
+    respawnSession(db, repoPath, sessionId, windowEnv);
     return { message: `Respawned ${sessionId} on a fresh context window with its handoff.` };
   } catch (error) {
     return failure(error);
@@ -233,12 +238,13 @@ export function toggleConductor(
       stopConductor(deps.repoPath);
       return 'Conductor stopped.';
     }
+    const windowEnv = resolveWindowEnv(deps.repoPath);
     try {
       const handle = startConductor({
         db: deps.db,
         repoPath: deps.repoPath,
         base: DEFAULT_BASE_PROFILE,
-        claudeUserDir: join(homedir(), '.claude'),
+        windowEnv,
         ...(models.model ? { model: models.model } : {}),
         ...(models.workerModel ? { workerModel: models.workerModel } : {}),
       });

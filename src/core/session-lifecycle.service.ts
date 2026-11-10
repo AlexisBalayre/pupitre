@@ -50,13 +50,11 @@ import {
   appendEvent,
   claimingSession,
   currentFixRound,
-  decodeEvent,
   ensureProject,
   getSession,
   getTask,
   insertSession,
   insertTask,
-  listEvents,
   listSessions,
   listTaskSessions,
   readTaskSpec,
@@ -441,6 +439,7 @@ export function respawnRoute(
  */
 export function fixRoundRoute(
   db: Database,
+  paths: ProjectPaths,
   session: SessionRow,
   override: RouteOverride,
   overrideVia: 'operator' | 'conductor',
@@ -448,7 +447,7 @@ export function fixRoundRoute(
   return sessionWindowRoute(
     db,
     session,
-    () => fixRoundFailure(listEvents(db, session.id).map(decodeEvent)),
+    () => windowFailureOf(db, paths, session, Date.now(), fixRoundFailure),
     override,
     overrideVia === 'operator',
   );
@@ -491,7 +490,7 @@ function sessionWindowRoute(
  * and the user config. A role is the launch caller's to pass, and only an API
  * caller does: the task row keeps its name alone, which nothing resolves back.
  */
-export type ProfileSource = Pick<LaunchTaskRequest, 'repoPath' | 'base' | 'claudeUserDir'>;
+export type ProfileSource = Pick<LaunchTaskRequest, 'repoPath' | 'base' | 'windowEnv'>;
 
 /** A compiled profile and the codegraph binary it was compiled for, if any. */
 export interface SessionCompile {
@@ -511,7 +510,7 @@ function compileSessionProfile(
   peers: SessionPeer[],
 ): SessionCompile {
   const compiledDir = paths.compiledDir(session.id);
-  const userConfigHash = snapshotUserConfigHash(source.claudeUserDir);
+  const userConfigHash = snapshotUserConfigHash(source.windowEnv.configDir);
   mkdirSync(compiledDir, { recursive: true });
   // Before the compile, because the answer shapes the compiled files and the
   // hash is recorded over them: which binary serves the graph is part of the
@@ -693,7 +692,7 @@ function startSession(
     worktreePath,
     branch,
     profileHash: compiled.hash,
-    transcriptPath: transcriptDir(worktreePath),
+    transcriptPath: transcriptDir(worktreePath, req.windowEnv.configDir),
     route,
   });
 
@@ -701,6 +700,7 @@ function startSession(
     sessionId,
     repoPath: req.repoPath,
     worktreePath,
+    env: req.windowEnv,
     settingsPath,
     route: routeFor(route.tier, route.rung, route),
     mcpConfigPath,

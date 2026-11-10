@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { barChart, lineChart, sparkline, timeLineChart } from './chart.utils.js';
+import {
+  barChart,
+  lineChart,
+  sparkline,
+  squarify,
+  type TreemapGroup,
+  timeLineChart,
+  treemap,
+} from './chart.utils.js';
 
 const WEEKS = [
   { label: '10-05', value: 2 },
@@ -138,5 +146,150 @@ describe('chart.utils', () => {
 
     expect(svg).toContain('<figcaption>None: a not measured</figcaption>');
     expect(svg).not.toMatch(/<polyline|<circle|NaN/);
+  });
+
+  describe('treemap', () => {
+    const TONES = [
+      { label: 'with open debt', count: (n: number) => `${n} debt` },
+      { label: 'merged lately', count: (n: number) => `${n} merges` },
+    ];
+    const GROUPS: TreemapGroup[] = [
+      {
+        label: 'src/core',
+        leaves: [
+          { label: 'src/core/a.ts', value: 300, counts: [0, 1] },
+          { label: 'src/core/b.ts', value: 100, counts: [5, 0] },
+        ],
+      },
+      { label: 'src/cli', leaves: [{ label: 'src/cli/c.ts', value: 50, counts: [2, 3] }] },
+    ];
+    const cells = (svg: string): { w: number; h: number; className: string }[] =>
+      [
+        ...svg.matchAll(
+          /<rect class="(cell[^"]*)" x="[\d.]+" y="[\d.]+" width="([\d.]+)" height="([\d.]+)"/g,
+        ),
+      ].map(([, className, w, h]) => ({
+        className: className as string,
+        w: Number(w),
+        h: Number(h),
+      }));
+
+    it('lays out areas in proportion to the values, filling the box', () => {
+      const values = [612, 1, 37, 240, 240, 9, 88, 1500];
+      const total = values.reduce((sum, v) => sum + v, 0);
+      // A box whose area is the total, so each area is its value.
+      const placed = squarify(
+        values.map((value) => ({ value })),
+        { x: 0, y: 0, w: 100, h: total / 100 },
+      );
+
+      expect(placed).toHaveLength(values.length);
+      for (const { item, w, h } of placed) expect(w * h).toBeCloseTo(item.value, 6);
+      expect(placed.reduce((sum, { w, h }) => sum + w * h, 0)).toBeCloseTo(total, 6);
+      for (const { x, y, w, h } of placed) {
+        expect(x).toBeGreaterThanOrEqual(-1e-9);
+        expect(y).toBeGreaterThanOrEqual(-1e-9);
+        expect(x + w).toBeLessThanOrEqual(100 + 1e-9);
+        expect(y + h).toBeLessThanOrEqual(total / 100 + 1e-9);
+      }
+      // With the areas summing to the box and every cell inside it, no overlap means they tile it.
+      for (const [i, a] of placed.entries()) {
+        for (const b of placed.slice(i + 1)) {
+          const overlapW = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
+          const overlapH = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
+          expect(Math.min(overlapW, overlapH)).toBeLessThanOrEqual(1e-9);
+        }
+      }
+    });
+
+    it('gives no area to a zero, negative or non-finite value', () => {
+      const placed = squarify(
+        [0, -3, Number.NaN, Number.POSITIVE_INFINITY, 4].map((value) => ({ value })),
+        { x: 0, y: 0, w: 10, h: 10 },
+      );
+
+      expect(placed.map(({ item }) => item.value)).toEqual([4]);
+      expect(squarify([{ value: 0 }], { x: 0, y: 0, w: 10, h: 10 })).toEqual([]);
+    });
+
+    it('draws cells whose areas sum to the plot, each its share of the total', () => {
+      const svg = treemap(GROUPS, { title: 'Map', tones: TONES });
+      const [, , width, height] = (/viewBox="([\d. ]+)"/.exec(svg)?.[1] ?? '')
+        .split(' ')
+        .map(Number);
+      const drawn = cells(svg);
+      const unit = ((width as number) * (height as number)) / 450;
+
+      expect(drawn).toHaveLength(3);
+      // Coordinates print to two decimals, so an area is good to about a pixel.
+      expect(drawn.reduce((sum, { w, h }) => sum + w * h, 0) / unit).toBeCloseTo(450, 0);
+      expect(drawn.map(({ w, h }) => Math.round((w * h) / unit))).toEqual([300, 100, 50]);
+    });
+
+    it('carries a title and a figure line with every group, and a hover on every cell', () => {
+      const svg = treemap(GROUPS, { title: 'Map', tones: TONES, format: (n) => `${n} lines` });
+      const line =
+        'Map: 450 lines in total · src/core 400 lines in 2 files, 1 with open debt, 1 merged lately · ' +
+        'src/cli 50 lines in 1 file, 1 with open debt, 1 merged lately';
+
+      expect(svg).toContain(`<title>${line}</title>`);
+      expect(svg).toContain(`<figcaption>${line}</figcaption>`);
+      expect(svg).toContain('<title>src/core/b.ts: 100 lines, 5 debt, 0 merges</title>');
+    });
+
+    it('shades each cell per tone by its count, through classes the toggle selects', () => {
+      const svg = treemap(GROUPS, { title: 'Map', tones: TONES });
+
+      expect(cells(svg).map(({ className }) => className)).toEqual([
+        'cell t0-0 t1-1',
+        'cell t0-3 t1-0',
+        'cell t0-2 t1-2',
+      ]);
+      expect(svg).toMatch(
+        /^<div class="treemap">.*<input type="radio" name="treemap-tone" id="treemap-tone-0" checked><label for="treemap-tone-0">with open debt<\/label> <input type="radio" name="treemap-tone" id="treemap-tone-1"><label for="treemap-tone-1">merged lately<\/label>.*<figure/,
+      );
+      expect(svg).not.toMatch(/style=|fill="#|stroke="#/);
+    });
+
+    it('escapes its labels and draws no NaN for values it cannot place', () => {
+      const svg = treemap(
+        [
+          {
+            label: '<b>mod</b>',
+            leaves: [
+              { label: 'x.ts', value: Number.POSITIVE_INFINITY, counts: [Number.NaN, 0] },
+              { label: '<i>y</i>.ts', value: 3, counts: [Number.NaN, 0] },
+              { label: 'z.ts', value: 2, counts: [0, 0] },
+            ],
+          },
+        ],
+        { title: 'A & "B"', tones: TONES },
+      );
+
+      expect(cells(svg)).toHaveLength(2);
+      expect(svg).toContain('&lt;b&gt;mod&lt;/b&gt;</text>');
+      expect(svg).toContain('<title>&lt;i&gt;y&lt;/i&gt;.ts: 3,');
+      expect(svg).not.toMatch(/<b>|<i>/);
+      expect(svg).toContain('A &amp; &quot;B&quot;');
+      expect(svg).not.toMatch(/="[^"]*(NaN|Infinity)/);
+    });
+
+    it('draws nothing for a group whose total overflows', () => {
+      const svg = treemap(
+        [
+          {
+            label: 'mod',
+            leaves: [
+              { label: 'y.ts', value: 1e308, counts: [0, 0] },
+              { label: 'z.ts', value: 1e308, counts: [0, 0] },
+            ],
+          },
+        ],
+        { title: 'Map', tones: TONES },
+      );
+
+      expect(cells(svg)).toEqual([]);
+      expect(svg).not.toMatch(/="[^"]*(NaN|Infinity)/);
+    });
   });
 });

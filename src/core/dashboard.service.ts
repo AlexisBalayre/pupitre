@@ -3,7 +3,13 @@ import type { Database } from 'better-sqlite3';
 
 import { sanitizeReason } from '../adapters/capability.utils.js';
 import { LADDERS } from '../claude/model-ladder.constants.js';
-import { attachCommand, conductorName, transcriptDir } from '../claude/session-runtime.service.js';
+import {
+  attachCommand,
+  ConfigDirRefusedError,
+  claudeUserDir,
+  conductorName,
+  transcriptDir,
+} from '../claude/session-runtime.service.js';
 import { latestContextTokens } from '../claude/transcript.service.js';
 import { isConductorRunning } from './conductor.service.js';
 import { PR_URL } from './constants/dashboard.constants.js';
@@ -17,7 +23,14 @@ import { WATCH_STALE_AFTER_MS } from './overlap.service.js';
 import { SESSION_ID_PATTERN } from './paths.constants.js';
 import { type ProjectPaths, projectId, projectPaths } from './paths.utils.js';
 import { asStringArray, displayStages, parseJsonOr, toIsoUtc } from './report-data.utils.js';
-import { asTier, type ClimbReason, climbFrom, taskTier, windowFailure } from './routing.utils.js';
+import {
+  asTier,
+  type ClimbReason,
+  climbFrom,
+  fixRoundWindow,
+  taskTier,
+  windowFailure,
+} from './routing.utils.js';
 import {
   decodeEvent,
   type EventRow,
@@ -70,6 +83,7 @@ export function buildDashboardSnapshot(
   const tasks = new Map(listTasks(db, pid).map((task) => [task.id, task]));
   const stalls = new Map(findStalledSessions(db, repoPath, now).map((stall) => [stall.id, stall]));
   const isLanded = landedShaLookup(repoPath);
+  const claudeDir = windowsClaudeDir(repoPath);
   const rows = listSessions(db);
   // Oldest first, so each task maps to its newest session: the one a relaunch climbs from.
   const newestOfTask = new Map(rows.map((row) => [row.task_id, row.id]));
@@ -84,6 +98,7 @@ export function buildDashboardSnapshot(
       stalls.get(row.id),
       isLanded,
       newest ? topRungFailure(db, paths, row, task, now) : undefined,
+      claudeDir,
     );
   });
   const beat = getWatcherBeat(db, pid);
@@ -181,9 +196,25 @@ function eventsFileOf(paths: ProjectPaths, sessionId: string): string | undefine
 }
 
 /**
+ * The config dir this project's windows write their transcripts under
+ * (decision 106), or nothing when the one `--session-env` names is refused:
+ * no window can have opened on it, and a dir another user could swap is not
+ * one to read from either.
+ */
+function windowsClaudeDir(repoPath: string): string | undefined {
+  try {
+    return claudeUserDir(repoPath);
+  } catch (error) {
+    if (error instanceof ConfigDirRefusedError) return undefined;
+    throw error;
+  }
+}
+
+/**
  * The transcript directory a session row names, or nothing when it is not pup's own.
  *
- * `sessions.transcript_path` is stamped at launch as `transcriptDir(worktree)`,
+ * `sessions.transcript_path` is stamped at launch as `transcriptDir(worktree,
+ * claudeDir)`,
  * but it is read back out of a store the sessions write and every registered
  * store is swept here, so the column is checked against the derivation rather
  * than followed: a row that does not match reads as one with no transcript —
@@ -191,13 +222,17 @@ function eventsFileOf(paths: ProjectPaths, sessionId: string): string | undefine
  * column is null already does. `worktree_path` is session-writable too, so this
  * is only a guard because `transcriptDir` munges every non-alphanumeric
  * character away: whatever the column holds, the derivation is one segment
- * directly under `~/.claude/projects` — except for the empty string, which
+ * directly under `<claudeDir>/projects` — except for the empty string, which
  * `join` drops, leaving the projects root itself, so it is refused before the
  * derivation is taken (decision 67).
  */
-function transcriptDirOf(worktreePath: string, transcriptPath: string | null): string | undefined {
-  if (!worktreePath) return undefined;
-  const expected = transcriptDir(worktreePath);
+function transcriptDirOf(
+  worktreePath: string,
+  transcriptPath: string | null,
+  claudeDir: string | undefined,
+): string | undefined {
+  if (!worktreePath || claudeDir === undefined) return undefined;
+  const expected = transcriptDir(worktreePath, claudeDir);
   return transcriptPath === expected ? expected : undefined;
 }
 
@@ -226,16 +261,42 @@ export function findStalledSessions(db: Database, repoPath: string, now: number)
  * window opened, or a stall when its events file had been quiet past the stall
  * bar (decision 35) by the time the window ended, at its kill or, for one still
  * up, `now`. Like the stall rule, only a window that was running then can have
- * stalled; one killed while awaiting review had only finished.
+ * stalled; one killed while awaiting review had only finished. A CI fix
+ * round's retry reads its events with `fixRoundFailure` as `read`: that kill is
+ * a `running` -> `merged` edge, not a `killed` session, and stalls the same.
  */
 export function windowFailureOf(
   db: Database,
   paths: ProjectPaths,
   session: SessionRow,
   now: number,
+  read: (
+    events: SessionEvent[],
+    stalledAtEnd: boolean,
+  ) => ClimbReason | 'blocked' | undefined = windowFailure,
 ): ClimbReason | 'blocked' | undefined {
   const rows = listEvents(db, session.id);
   const events = rows.map(decodeEvent);
+  return read(events, windowStalled(paths, session, rows, events, now));
+}
+
+/**
+ * Whether the session's newest window was stalled when it ended: at `now` for
+ * one still running, at the kill for a killed session or a fix round killed
+ * back to `merged`, when that kill came after the newest respawn. The events
+ * file is per session, not per window: until the new window's first hook, its
+ * mtime is the last window's, so the newest respawn bounds it.
+ */
+function windowStalled(
+  paths: ProjectPaths,
+  session: SessionRow,
+  rows: EventRow[],
+  events: SessionEvent[],
+  now: number,
+): boolean {
+  let windowFrom = events
+    .map((event) => event.type === 'other' && event.eventType)
+    .lastIndexOf('respawn');
   let endedAt = now;
   let running = session.state === 'running';
   if (session.state === 'killed') {
@@ -245,21 +306,33 @@ export function windowFailureOf(
     const kill = events[at];
     endedAt = Date.parse(toIsoUtc(rows[at]?.created_at ?? ''));
     running = kill?.type === 'gate_result' && kill.from === 'running';
+  } else if (session.state === 'merged') {
+    // The window `fixRoundFailure` scores, ended by the first kill back to
+    // `merged` before another round is handed: a later undone retry's kill is
+    // not its end.
+    windowFrom = fixRoundWindow(events).openedAt;
+    const at = events.findIndex(
+      (event, i) =>
+        i > windowFrom &&
+        event.type === 'gate_result' &&
+        event.from === 'running' &&
+        event.to === 'merged',
+    );
+    const handedAt = events.findIndex(
+      (event, i) => i > windowFrom && event.type === 'other' && event.eventType === 'fix_round',
+    );
+    running = windowFrom >= 0 && at >= 0 && (handedAt < 0 || at < handedAt);
+    endedAt = Date.parse(toIsoUtc(rows[at]?.created_at ?? ''));
   }
-  const eventsFile = eventsFileOf(paths, session.id);
-  // The events file is per session, not per window: until the new window's
-  // first hook, its mtime is the last window's, so the newest respawn bounds it.
-  const respawnAt = events
-    .map((event) => event.type === 'other' && event.eventType)
-    .lastIndexOf('respawn');
   const windowStart =
-    respawnAt < 0 ? 0 : Date.parse(toIsoUtc(rows[respawnAt]?.created_at ?? '')) || 0;
-  const stalled =
+    windowFrom < 0 ? 0 : Date.parse(toIsoUtc(rows[windowFrom]?.created_at ?? '')) || 0;
+  const eventsFile = eventsFileOf(paths, session.id);
+  return (
     running &&
     eventsFile !== undefined &&
     existsSync(eventsFile) &&
-    isSessionStalled(endedAt - Math.max(statSync(eventsFile).mtimeMs, windowStart));
-  return windowFailure(events, stalled);
+    isSessionStalled(endedAt - Math.max(statSync(eventsFile).mtimeMs, windowStart))
+  );
 }
 
 /**
@@ -629,6 +702,7 @@ function dashboardSession(
   stall: StalledSession | undefined,
   isLanded: (target: string | undefined, sha: string | undefined) => boolean,
   topReached: string | undefined,
+  claudeDir: string | undefined,
 ): DashboardSession {
   const spec = taskSpecForDisplay(task);
   // Decision 2: hook events, never pane contents. Nothing to classify for a
@@ -640,7 +714,7 @@ function dashboardSession(
   const stalledAgeMs = stall?.ageMs;
   // Only a running session has a context window to fill; a merged one's last
   // transcript is history, and reading it is I/O per row for nothing.
-  const transcripts = transcriptDirOf(row.worktree_path, row.transcript_path);
+  const transcripts = transcriptDirOf(row.worktree_path, row.transcript_path, claudeDir);
   const contextTokens =
     row.state === 'running' && transcripts ? latestContextTokens(transcripts) : undefined;
   // Newest first, so `find` returns the latest matching event.

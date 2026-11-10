@@ -2275,17 +2275,28 @@ function oneMinuteLoad(): number {
  * climbs no rung of the reject cap and injects nothing into the session, and
  * the gate stops before any merge or push. Every other timeout, and every
  * failure that is not a timeout, returns, and the stage fails and rejects as
- * before. It judges a test stage's re-run as it judges the first run.
+ * before. It judges a test stage's re-run as it judges the first run, and a
+ * re-run's refusal names the tests that failed the first time (`firstRun`),
+ * which the timeout does not unsay.
  */
-function refuseTimeoutUnderLoad(error: unknown, loadBefore: number, sessionId: string): void {
+function refuseTimeoutUnderLoad(
+  error: unknown,
+  loadBefore: number,
+  sessionId: string,
+  firstRun?: unknown,
+): void {
   if ((error as { code?: string }).code !== 'ETIMEDOUT') return;
   const cores = availableParallelism();
   const load = oneMinuteLoad();
   if (Math.min(loadBefore, load) < cores || !otherTestRunGoing(sessionId)) return;
+  const firstFailures =
+    firstRun === undefined
+      ? ''
+      : `, on its re-run; failing the first time: ${failingTestNames(firstRun)}`;
   throw new Error(
     `The test stage timed out under load ${load.toFixed(1)}, at or over the machine's ` +
-      `${cores} cores, with other test runs going; nothing was merged; run pup merge again ` +
-      'when the load falls.',
+      `${cores} cores, with other test runs going${firstFailures}; nothing was merged; run ` +
+      'pup merge again when the load falls.',
   );
 }
 
@@ -2540,8 +2551,9 @@ export async function measureBranch(
     }
     const rerun = await runCommand(command, cwd);
     // A first run that failed on its own and a re-run the load ran out: the
-    // re-run's timeout says no more about the code than a first run's would.
-    if (rerun !== undefined) refuseTimeoutUnderLoad(rerun, loadBeforeSuites, session.id);
+    // re-run's timeout says no more about the code than a first run's would,
+    // and the first run's failures are still what the operator needs to read.
+    if (rerun !== undefined) refuseTimeoutUnderLoad(rerun, loadBeforeSuites, session.id, first);
     if (rerun === undefined) {
       return timedSince(started, {
         stage,
@@ -3270,8 +3282,9 @@ export function withScratchGitDir<TResult>(
 
 /**
  * Characters that render as nothing or reorder what follows them: the soft
- * hyphen, the combining grapheme joiner, the Hangul fillers, the Mongolian
- * vowel separator, zero-width spaces and joiners, directional marks,
+ * hyphen, the combining grapheme joiner, the Hangul fillers (choseong,
+ * jungseong, compatibility and halfwidth), the Khmer inherent vowels, the
+ * Mongolian vowel separator, zero-width spaces and joiners, directional marks,
  * embeddings, overrides and isolates, invisible operators, variation
  * selectors, the byte-order mark, and the tag block, which spells out text
  * no one sees and is how instructions get hidden from AI reviewers. Dropped,
@@ -3279,7 +3292,7 @@ export function withScratchGitDir<TResult>(
  */
 const INVISIBLE_FORMAT_CHARS =
   // biome-ignore lint/suspicious/noMisleadingCharacterClass: each is dropped alone, combining ones included
-  /[\u00ad\u034f\u061c\u115f\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\u3164\ufe00-\ufe0f\ufeff\u{e0000}-\u{e007f}\u{e0100}-\u{e01ef}]/gu;
+  /[\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\u3164\ufe00-\ufe0f\ufeff\uffa0\u{e0000}-\u{e007f}\u{e0100}-\u{e01ef}]/gu;
 
 /** A terminal escape sequence (CSI, 7-bit or 8-bit), dropped whole so no `[31m` is left. */
 // biome-ignore lint/suspicious/noControlCharactersInRegex: matching them is the point

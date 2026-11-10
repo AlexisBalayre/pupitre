@@ -6,14 +6,24 @@ import BetterSqlite3, { type Database } from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // The tmux boundary only: the store, the events files and the transcripts all
-// run for real, per docs/conventions/testing.md.
-vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../claude/session-runtime.service.js')>()),
-  hasConductorWindow: vi.fn(() => false),
-}));
+// run for real, per docs/conventions/testing.md. `claudeUserDir` runs for real
+// too, spied on so a test can make it fail as no refusal does.
+vi.mock('../claude/session-runtime.service.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../claude/session-runtime.service.js')>();
+  return {
+    ...actual,
+    hasConductorWindow: vi.fn(() => false),
+    claudeUserDir: vi.fn(actual.claudeUserDir),
+  };
+});
 
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
-import { hasConductorWindow, transcriptDir } from '../claude/session-runtime.service.js';
+import {
+  claudeUserDir,
+  hasConductorWindow,
+  saveSessionEnv,
+  transcriptDir,
+} from '../claude/session-runtime.service.js';
 import {
   blockedReason,
   buildDashboardSnapshot,
@@ -486,11 +496,61 @@ describe('buildDashboardSnapshot', () => {
     it('reads the context a running session carried into its last turn', () => {
       seedSession(db, repo, 's1', {
         // The directory pup stamps at launch: `seedSession`'s worktree, munged.
-        transcriptPath: seedTranscript(transcriptDir(join(repo, '.worktrees', 's1')), 90_000),
+        transcriptPath: seedTranscript(
+          transcriptDir(join(repo, '.worktrees', 's1'), join(homedir(), '.claude')),
+          90_000,
+        ),
       });
       transitionSession(db, 's1', 'running');
 
       expect(buildDashboardSnapshot(db, repo, NOW).sessions[0]?.contextTokens).toBe(90_000);
+    });
+
+    // A window on a config dir `--session-env` names writes its transcript
+    // there, and its launch stamps the row with that dir (decision 106).
+    it('reads the transcript of a session on a named config dir', () => {
+      const configDir = tempDir('pup-dash-config-');
+      saveSessionEnv(repo, ['CLAUDE_CONFIG_DIR']);
+      vi.stubEnv('CLAUDE_CONFIG_DIR', configDir);
+      seedSession(db, repo, 's1', {
+        transcriptPath: seedTranscript(
+          transcriptDir(join(repo, '.worktrees', 's1'), configDir),
+          90_000,
+        ),
+      });
+      transitionSession(db, 's1', 'running');
+
+      expect(buildDashboardSnapshot(db, repo, NOW).sessions[0]?.contextTokens).toBe(90_000);
+    });
+
+    // No window opens on a refused dir, and one another user could swap is not
+    // one to read from: the row reads as having no transcript, and the
+    // snapshot is still taken.
+    it('reads no transcript when the named config dir is refused', () => {
+      saveSessionEnv(repo, ['CLAUDE_CONFIG_DIR']);
+      vi.stubEnv('CLAUDE_CONFIG_DIR', 'relative/config');
+      seedSession(db, repo, 's1', {
+        transcriptPath: seedTranscript(
+          transcriptDir(join(repo, '.worktrees', 's1'), join(homedir(), '.claude')),
+          90_000,
+        ),
+      });
+      transitionSession(db, 's1', 'running');
+
+      expect(buildDashboardSnapshot(db, repo, NOW).sessions[0]?.contextTokens).toBeUndefined();
+    });
+
+    // Only a refusal reads as no transcript: anything else failing on the way to
+    // the dir is a fault to surface, not a row to quietly blank.
+    it('lets a failure that is not a refusal through', () => {
+      seedSession(db, repo, 's1');
+      vi.mocked(claudeUserDir).mockImplementationOnce(() => {
+        throw new Error('EIO reading the session-env list');
+      });
+
+      expect(() => buildDashboardSnapshot(db, repo, NOW)).toThrow(
+        'EIO reading the session-env list',
+      );
     });
 
     /**
