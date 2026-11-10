@@ -1,0 +1,133 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-10T10:01:56.601Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42795271552",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42795271552",
+  "actor": "AlexisBalayre",
+  "commit_sha": "e4b61d3b19dfe5828be0fa41a8d1ac21e45dc50f",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 303,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "guards"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "guards"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "simplicity",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/claude/model-ladder-constants.test.ts",
+      "line": "106",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`expect(second.env).toEqual(first.env)` compares two copies of `{ ...process.env, ...UTILITY_ENV }`, so it passes even if utility.service.ts:45 becomes `env: UTILITY_ENV`. The spawned `claude` would then lose PATH, HOME and CLAUDE_CONFIG_DIR, and every draft would silently fall back to the mechanical record. Pin the inheritance, e.g. `expect(first.env?.PATH).toBe(process.env.PATH)`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/claude/utility.service.ts",
+      "line": "20",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Dropping the `--disallowedTools Bash Edit Write NotebookEdit WebFetch` list leaves `--tools ''` as the only read-only guard. If a future `claude` build treats an empty `--tools` value as unset, every default tool comes back, the project's `Edit(*)`/`Write(*)` allow rules may apply, and an injected commit subject could edit the main checkout. Keeping the deny list next to `--tools ''` costs nothing and should not change the cached prefix.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/claude/utility.service.ts",
+      "line": "12-21",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`UTILITY_FLAGS` and `UTILITY_ENV` are tool and flag names declared in the service file under a `//` comment. general.md §No hardcoded values puts these in the area's `*.constants.ts` (`model-ladder.constants.ts`, which already holds `UTILITY_ROUTE`) with a JSDoc line. `UTILITY_TIMEOUT_MS` sets a local precedent, so this is a judgment call.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/claude/utility.service.ts",
+      "line": "19-20",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The comment's last sentence (\"Measured on `claude` 2.1.322 in the repo: cache hit 53% of ~22.2k tokens, now 78% of ~3.1k\") is a point-in-time snapshot. It goes stale on the next Claude Code upgrade and nothing re-checks it. The commit message already records it, and the WHY reads fine without it.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Skipped review-simplicity: the diff adds only two module-level constants and no helper or branch. Skipped review-context: the CLI flags were left to correctness and security. Skipped review-workflow-safety: no workflow was touched. Skipped review-spec: no spec source, no closing keywords and no linked issues. Skipped review-maintainability: not on the default roster."
+    },
+    {
+      "component": "platform",
+      "description": "The CI review is static only, so no reviewer could check `--safe-mode` against the installed `claude` CLI: whether the option exists, whether it skips settings.json auth/proxy config or project permission rules, and whether it changes the transcript entrypoint that `pup usage` relies on. Claims about the flags are capped at medium confidence."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.2007497,
+  "duration_ms": 106879,
+  "num_turns": 13,
+  "tokens": {
+    "input": 10,
+    "output": 7007,
+    "cache_read": 195909,
+    "cache_creation": 40319,
+    "total": 243245
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 44,
+      "output": 18002,
+      "cache_read": 418754,
+      "cache_creation": 83614,
+      "cost_usd": 0.9829937999999998
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 22,
+      "output": 6436,
+      "cache_read": 106462,
+      "cache_creation": 56786,
+      "cost_usd": 0.21701520000000002
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 306,
+      "cache_read": 0,
+      "cache_creation": 4700,
+      "cost_usd": 0.0007407000000000001
+    }
+  ],
+  "permission_denials": []
+}
