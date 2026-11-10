@@ -1,5 +1,6 @@
 import { type ExecFileSyncOptions, execFileSync } from 'node:child_process';
 import {
+  accessSync,
   closeSync,
   constants,
   existsSync,
@@ -8,7 +9,7 @@ import {
   openSync,
   readSync,
   realpathSync,
-  statSync,
+  type Stats,
 } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 
@@ -272,12 +273,14 @@ export function assertNoWorktreeConfig(repoPath: string): void {
   // Every path pup trusts is built as `<repo>/.git/...`, the pins included.
   // Under a gitfile those name nothing: this check would read no config, and
   // the pointer check would refuse only once the row and the worktree exist.
-  if (!statSync(dotGit, { throwIfNoEntry: false })?.isDirectory()) {
+  // lstat: a symlinked `.git` is refused too, as the gate refuses it (decision 172).
+  if (!lstatSync(dotGit, { throwIfNoEntry: false })?.isDirectory()) {
     throw new Error(
       `Refusing to launch a session in ${sanitizeReason(repoPath)}: its .git is not a ` +
         'directory. pup pins a session to the repository at <repo>/.git (decision 101), so it ' +
         'launches from a main checkout only, never from a linked worktree, a submodule or a ' +
-        '`--separate-git-dir` clone, whose .git is a gitfile. Run it from the main checkout.',
+        '`--separate-git-dir` clone, whose .git is a gitfile, nor from one whose .git is a ' +
+        'symlink. Run it from the main checkout.',
     );
   }
   // The extension first: `git sparse-checkout` writes the file too, and while
@@ -376,6 +379,15 @@ function worktreeConfigState(
  * `diff.external` and `textconv` are disarmed per diff call instead — see
  * `DIFF_SAFE_FLAGS` below — because an empty `diff.external` makes every diff die.
  *
+ * `safe.bareRepository=explicit` keeps git's discovery from taking a directory
+ * for a bare repo. Discovery under `-C <repo>` that finds `<repo>/.git` unusable
+ * (a session can write junk into its HEAD) falls back to `<repo>` itself as a
+ * bare repo. Every file in that bare repo, HEAD, `refs/` and an `objects/info/alternates`
+ * that borrows the real objects, is one a session can write into the checkout.
+ * With the key, git refuses the fallback ("cannot use bare repository"), and
+ * a repo named by `--git-dir` or `GIT_DIR`, as pup's scratch dir and the
+ * pinned worktrees are, still opens (Git 2.38+; decision 172).
+ *
  * A smudge filter or merge driver armed through the untracked `info/attributes`
  * has no `-c` disarm at all — its driver name is chosen by whoever wrote it —
  * so it is refused rather than disarmed; see `armedGitDrivers` (decision 50).
@@ -415,6 +427,8 @@ export const GIT_SAFE_CONFIG = [
   'filter.lfs.smudge=',
   '-c',
   'filter.lfs.clean=',
+  '-c',
+  'safe.bareRepository=explicit',
 ] as const;
 
 /**
@@ -494,7 +508,10 @@ interface RunGitOptions {
  * must reach its parser whole — so a caller reading one value trims it.
  */
 export function runGit(cwd: string, args: string[], opts: RunGitOptions = {}): string {
-  return execFileSync('git', safeArgv(cwd, args), { ...spawnOptions(opts), encoding: 'utf8' });
+  return execFileSync('git', safeArgv(cwd, args, opts.env), {
+    ...spawnOptions(opts),
+    encoding: 'utf8',
+  });
 }
 
 /**
@@ -511,8 +528,219 @@ export function rethrowIfKilled(error: unknown): void {
   if (signal === 'SIGINT' || signal === 'SIGTERM' || signal === 'SIGHUP') throw error;
 }
 
-function safeArgv(cwd: string, args: string[]): string[] {
-  return [...GIT_SAFE_CONFIG, '-C', cwd, ...args];
+/**
+ * The main checkouts `assertMainCheckout` has passed in this process, by real
+ * path, so no other spelling of one (`repo/`, a symlink to it, another case on
+ * a case-folding volume) escapes it. A path keeps the role for the life of the
+ * process, so a `.git` swapped out after that check is refused at the next
+ * spawn rather than followed. Each holds the identity its `.git` had then,
+ * from `gitDirIdentity`: a decoy directory moved into its place is a sound
+ * repo by every other check.
+ */
+const mainCheckouts = new Map<string, string>();
+
+/**
+ * The device and inode of `<cwd>/.git`, whose lstat is `dotGit`, and of its
+ * `objects/`. A directory swapped in for either, however complete, has others.
+ */
+function gitDirIdentity(cwd: string, dotGit: Stats): string {
+  const objects = lstatIfThere(cwd, join(cwd, '.git', 'objects'));
+  return `${dotGit.dev}:${dotGit.ino} ${objects ? `${objects.dev}:${objects.ino}` : 'none'}`;
+}
+
+/** `path` as the filesystem names it, or resolved when it does not exist. */
+function realPath(path: string): string {
+  try {
+    return realpathSync.native(path);
+  } catch {
+    return resolve(path);
+  }
+}
+
+/**
+ * A HEAD git would take as one, as `validate_headref` reads it: a symbolic ref
+ * under `refs/`, or a detached sha-1 or sha-256.
+ */
+const VALID_HEAD = /^(?:ref:\s*refs\/[^\n]+|[0-9a-f]{40}(?:[0-9a-f]{24})?)\n?$/;
+
+/**
+ * A `.git` git would follow to a repo a session chose (decision 172). Its own
+ * class, so a catch that reads a failed git as "no such ref" can let it through.
+ */
+export class RewrittenGitDirError extends Error {
+  constructor(cwd: string, problem: string) {
+    super(
+      `Refusing to run git in ${sanitizeReason(cwd)}: ${problem}. With it there, git reads ` +
+        'every ref and the shared config from a repo the session chose, and a session can ' +
+        "write the main checkout's .git from inside its sandbox (decision 172). Inspect it, " +
+        'restore it, and treat the session that wrote it as compromised.',
+    );
+    this.name = 'RewrittenGitDirError';
+  }
+}
+
+function refuseGitDir(cwd: string, problem: string): never {
+  throw new RewrittenGitDirError(cwd, problem);
+}
+
+/** What is at `path`, without following a symlink; undefined when nothing is. */
+function lstatIfThere(cwd: string, path: string): Stats | undefined {
+  try {
+    return lstatSync(path);
+  } catch (error) {
+    const code = typeof error === 'object' && error !== null && 'code' in error ? error.code : '';
+    if (code === 'ENOENT' || code === 'ENOTDIR') return undefined;
+    return refuseGitDir(cwd, `${sanitizeReason(path)} cannot be checked`);
+  }
+}
+
+/** A directory git can search, as `is_git_directory` asks of `objects/` and `refs/`. */
+function searchableDir(cwd: string, path: string): boolean {
+  if (!lstatIfThere(cwd, path)?.isDirectory()) return false;
+  try {
+    accessSync(path, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The check `safeArgv` makes before every git spawn (decision 172), with lstats
+ * that never follow a link. Git follows `<cwd>/.git/commondir` under `-C`,
+ * `--git-dir` and `GIT_COMMON_DIR` alike (reproduced on Git 2.39.5 and 2.54),
+ * and a main checkout's git dir has no such file. So a planted one, naming a
+ * decoy repo that borrows the real objects, could hand the gate a target and a
+ * branch of the session's choosing. A `.git` that is a symlink does the same
+ * with no commondir at all, and neither pup's worktrees nor a main checkout
+ * has one. A gitfile is what a worktree has, and it passes here, except at a
+ * path `assertMainCheckout` has passed: only a decoy would put one there.
+ * A `.git` directory git would not take as a repo is refused too: no readable
+ * HEAD naming a ref or a commit, or an `objects/` or `refs/` that is not a
+ * directory git can search. Git's discovery skips such a `.git` and falls back
+ * to the checkout itself as a bare repo, whose HEAD, refs and alternates are
+ * files a session can write, or walks up to a parent repo.
+ * `safe.bareRepository=explicit` refuses the first; this names the cause
+ * before git runs.
+ * At a main checkout, a `.git` directory or `objects/` other than the one
+ * `assertMainCheckout` first found is refused: a session can move the real one
+ * aside and put a decoy directory there that passes everything else.
+ * A spawn whose env pins `GIT_DIR`, `pinnedGitDir`, refuses a `.git`
+ * directory other than that one: a worktree pup pins has a gitfile naming its
+ * admin dir, and one turned into a directory is not the worktree decision 101
+ * verified.
+ * Checked on every spawn, because a check made once would leave a file
+ * planted after it unseen. Returns the `.git` directory when there is one, for
+ * `safeArgv` to name to git so that git discovers nothing.
+ */
+function assertGitDirUnplanted(cwd: string, pinnedGitDir?: string): string | undefined {
+  const dotGit = join(cwd, '.git');
+  const stat = lstatIfThere(cwd, dotGit);
+  const shown = sanitizeReason(dotGit);
+  if (stat?.isSymbolicLink()) refuseGitDir(cwd, `${shown} is a symlink`);
+  const held = mainCheckouts.get(realPath(cwd));
+  if (stat === undefined || stat.isFile()) {
+    if (held !== undefined) refuseGitDir(cwd, `${shown} is no longer a directory`);
+    return undefined;
+  }
+  if (!stat.isDirectory()) refuseGitDir(cwd, `${shown} is neither a directory nor a gitfile`);
+  if (pinnedGitDir !== undefined && realPath(pinnedGitDir) !== realPath(dotGit)) {
+    refuseGitDir(
+      cwd,
+      `${shown} is a directory other than the GIT_DIR this git is pinned to, where a ` +
+        'worktree pup pins has a gitfile naming the admin dir pup verified (decision 101)',
+    );
+  }
+  if (held !== undefined && gitDirIdentity(cwd, stat) !== held) {
+    refuseGitDir(
+      cwd,
+      `${shown} or its objects/ is not the directory pup found there first, in this ` +
+        'process. If you re-created the repo yourself, restart pup',
+    );
+  }
+  const commondir = join(dotGit, 'commondir');
+  if (lstatIfThere(cwd, commondir)) {
+    refuseGitDir(cwd, `${sanitizeReason(commondir)} exists, and a main checkout has none`);
+  }
+  const head = readRegularFile(join(dotGit, 'HEAD'), POINTER_MAX_BYTES);
+  if (
+    typeof head !== 'object' ||
+    !VALID_HEAD.test(head.text) ||
+    !searchableDir(cwd, join(dotGit, 'objects')) ||
+    !searchableDir(cwd, join(dotGit, 'refs'))
+  ) {
+    refuseGitDir(
+      cwd,
+      `${shown} is not a repo git would use: its HEAD names no ref or commit, or its ` +
+        'objects/ or refs/ is not a directory git can search, so git would look past it, ' +
+        'to the checkout itself as a bare repo or to a parent repo',
+    );
+  }
+  return resolve(dotGit);
+}
+
+/**
+ * Rethrow `error` when git found no repo it would use at `repoPath`, as a
+ * `RewrittenGitDirError`. A catch that reads a failed git as "no such ref" must
+ * not read this as one: pup checked a `.git` there, so a git that then finds
+ * none, or only the checkout as a bare repo, is reading a `.git` a session
+ * rewrote after the check (decision 172).
+ */
+export function rethrowIfNoUsableRepo(repoPath: string, error: unknown): void {
+  if (error instanceof RewrittenGitDirError) throw error;
+  const stderr =
+    typeof error === 'object' && error !== null && 'stderr' in error ? String(error.stderr) : '';
+  const said = /fatal: (cannot use bare repository|not a git repository)[^\n]*/.exec(stderr);
+  if (said) {
+    throw new RewrittenGitDirError(
+      repoPath,
+      `git found no repo it would use there (${sanitizeReason(said[0])})`,
+    );
+  }
+}
+
+/**
+ * Refuse unless `repoPath` is a main checkout whose `.git` is a directory of
+ * its own, not a gitfile or a symlink, that git would take as a repo and that
+ * holds no commondir. Called wherever
+ * pup knows it is about to read the main repo's refs. The first call records
+ * the identity of its `.git` and `objects/`, and from then on the path is one
+ * `safeArgv` holds to the same rule, and to that identity, on every spawn
+ * (decision 172).
+ */
+export function assertMainCheckout(repoPath: string): void {
+  const dotGit = join(repoPath, '.git');
+  const stat = lstatIfThere(repoPath, dotGit);
+  if (!stat?.isDirectory()) {
+    refuseGitDir(
+      repoPath,
+      `${sanitizeReason(dotGit)} is not a directory. A main checkout's is, and a gitfile or ` +
+        'a symlink there names a repo of its own',
+    );
+  }
+  const key = realPath(repoPath);
+  if (!mainCheckouts.has(key)) mainCheckouts.set(key, gitDirIdentity(repoPath, stat));
+  assertGitDirUnplanted(repoPath);
+}
+
+/**
+ * `GIT_SAFE_CONFIG`, then `-C cwd`, once the `.git` there is checked. Where
+ * `cwd` holds a `.git` directory, as a main checkout does, git is named it and
+ * its work tree outright, so it discovers nothing. A `.git` a session breaks
+ * after the check then fails git as "not a git repository", which
+ * `rethrowIfNoUsableRepo` reads as the refusal it is. Otherwise discovery would
+ * fall back to a bare repo planted in the checkout, or a parent repo. A
+ * gitfile, a worktree's, is left to git to read, pinned or not (decision 172).
+ * A spawn whose `env` pins `GIT_DIR` names nothing: git's `--git-dir` would
+ * override the pin, which is the admin dir decision 101 verified.
+ */
+function safeArgv(cwd: string, args: string[], env: NodeJS.ProcessEnv = {}): string[] {
+  const gitDir = assertGitDirUnplanted(cwd, env.GIT_DIR);
+  const named =
+    gitDir && env.GIT_DIR === undefined
+      ? [`--git-dir=${gitDir}`, `--work-tree=${resolve(cwd)}`]
+      : [];
+  return [...GIT_SAFE_CONFIG, '-C', cwd, ...named, ...args];
 }
 
 function spawnOptions(opts: RunGitOptions): ExecFileSyncOptions {
