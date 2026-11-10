@@ -291,6 +291,21 @@ describe('vitestCollection', () => {
     },
   );
 
+  // APFS folds `ſ` onto `s`, so vitest opens `viteſt.config.ts` for
+  // `vitest.config.ts`, which JavaScript's lower case does not.
+  it('refuses to read a root holding a name outside ASCII, on disk or in a commit', () => {
+    const files = {
+      'vite.config.ts': configWith("{ include: ['src/**/*.test.ts'] }"),
+      'viteſt.config.ts': configWith("{ include: ['**/*.test.ts'] }"),
+    };
+    const { repo, tree } = treeWith(
+      Object.entries(files).map(([name, content]) => [name, '100644', content]),
+    );
+
+    expect(() => diskRoot(repoWith(files))).toThrow();
+    expect(() => treeRoot(repo, tree)).toThrow();
+  });
+
   // Vitest runs the branch's config, so the gate reads its lists only where
   // the rest of it is the trusted one's: `config` is that rest.
   const configOf = (config: string): string | undefined =>
