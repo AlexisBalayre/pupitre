@@ -1,0 +1,105 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-10T08:33:05.549Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42782840478",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42782840478",
+  "actor": "AlexisBalayre",
+  "commit_sha": "ce61e5a3728e7c39840c97f5bc1b0b19f2ed5c6d",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 299,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "simplicity",
+    "guards"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "simplicity",
+    "guards"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/conductor.service.ts",
+      "line": "473-479",
+      "description": "When a conductor is stopped or dies, nothing drops `conductor/blocked-since`, so the next conductor inherits the old time. Its first look that isn't an empty box then gets reported as `conductor blocked` with an age of hours, skipping the ten-minute grace.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/conductor.service.ts",
+      "line": "394-398",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "A refused tell can only come from the operator's `pup conductor tell`. Worker idle notices reach the conductor through Claude Code's peer socket (`notify_when_idle`) and never call `tellConductor`. So the clock still starts at the first `pup status` / `pup ui` look, and an operator who only runs `pup status` sees nothing on the first look after hours of blockage.",
+      "body": "**No worker notice ever starts the blocked clock, so the first `pup status` after hours of blockage shows nothing**\n\nThe new comment here, and decision 168 (`docs/adr/0168-…md` lines 31-33), both say a bounced tell starts the clock. The ADR puts it this way: \"So the first worker notice refused, not the operator's next `pup status`, is when the ten minutes begin.\" No worker notice ever reaches this code path:\n\n- Workers notify the conductor over Claude Code's peer socket. The conductor's profile has it subscribe with `notify_when_idle: true` (`src/core/profile-compiler.service.ts:1367`, `:1423`), and pupitre never speaks that protocol (decision 47).\n- `tellConductor` has one caller, `pup conductor tell` (`src/cli/index.ts:597`). That command is refused for every session and for the conductor (`src/cli/index.ts:1211-1213`).\n- Nothing in the background looks at the box. The watcher's `nudgeConductor` (`src/core/turn-watchdog.service.ts:164-184`) reads the conductor pane on every sweep but never calls `noteConductorBox` or `conductorBlock`. Every `buildDashboardSnapshot` caller is a reader the operator starts.\n\n**Trigger** (the ADR's own incident):\n1. The conductor holds a draft from 06:41, and workers' idle notices pile up against it.\n2. The operator has no `pup ui` or dashboard open and does not run `pup conductor tell`.\n3. At 09:22 they run `pup status`. That is the first look, so `noteConductorBox` writes `09:22` and returns it. `now - since` is 0, and Needs-you is empty.\n4. The conductor is listed only on a second `pup status` more than ten minutes later.\n\nThat breaks the PR's first acceptance line (\"A conductor whose input box has held unsent text for over 10 minutes appears in pup status Needs-you\") for the one-shot reader it names.\n\n**Fix:** start the clock where a background reader already looks at the pane. For example, the watcher sweep could call `conductorBlock`, or an exported `noteConductorBox`. Otherwise, correct this comment and decision 168 to say the clock starts at the first operator look or the operator's own bounced tell, and accept the second-look delay.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/ce61e5a3728e7c39840c97f5bc1b0b19f2ed5c6d/src/core/conductor.service.ts#L394-L398",
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "I did not spawn the consolidator. Only one finding survived the tag and finding-bar checks, so there was nothing to group. I dropped a conventions nit (the CLI-side `answer` rewrite against 'src/cli stays thin') because its reviewer said the sibling `showAttachCommand` check already sets the precedent and named no cost."
+    },
+    {
+      "component": "conventions",
+      "description": "The reviewer read the diff but not `docs/conventions/naming.md` or the full source files, so naming went unchecked."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 3.467754599999998,
+  "duration_ms": 260927,
+  "num_turns": 18,
+  "tokens": {
+    "input": 14,
+    "output": 11936,
+    "cache_read": 347439,
+    "cache_creation": 75038,
+    "total": 434427
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 174,
+      "output": 47577,
+      "cache_read": 2954132,
+      "cache_creation": 258945,
+      "cost_usd": 3.0629013999999986
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 46,
+      "output": 11096,
+      "cache_read": 358612,
+      "cache_creation": 103176,
+      "cost_usd": 0.4048532
+    }
+  ],
+  "permission_denials": []
+}
