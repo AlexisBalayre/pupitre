@@ -1,12 +1,14 @@
 import {
   mkdirSync,
+  mkdtempSync,
   readdirSync,
   readFileSync,
   statSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { dirname, join, posix } from 'node:path';
+import { tmpdir } from 'node:os';
+import { basename, dirname, join, posix } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -15,6 +17,13 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   killSession: vi.fn(),
   steerPane: vi.fn(),
 }));
+
+// The real reading, which one test narrows to stand for a `--name-only` that
+// paired a rename the `--raw -M` entries left as a deletion.
+vi.mock('./git-diff.client.js', async (importOriginal) => {
+  const real = await importOriginal<typeof import('./git-diff.client.js')>();
+  return { ...real, gitDiffPaths: vi.fn(real.gitDiffPaths) };
+});
 
 // Without this, every merging test would spawn a real `claude -p` call.
 vi.mock('../claude/utility.service.js', () => ({
@@ -31,7 +40,9 @@ import {
   untimed,
 } from '@test/helpers/merge-gate.mock.js';
 import type { Adapter } from '../adapters/types/adapter.types.js';
+import { typescriptAdapter } from '../adapters/typescript.adapter.js';
 import { openStore } from './db.client.js';
+import { gitDiffPaths } from './git-diff.client.js';
 import { globToRegExp } from './glob.utils.js';
 import { DUPLICATION_RULE_ID, UNTESTED_PATH_GLOBS } from './merge-gate.constants.js';
 import { runMergeGate } from './merge-gate.service.js';
@@ -51,8 +62,11 @@ describe('the test stage on a change no test reads (decision 139)', { timeout: 2
     vi.stubEnv(HELD_SLOT_ENV, 'merge-gate-untested.test');
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     vi.unstubAllEnvs();
+    const real =
+      await vi.importActual<typeof import('./git-diff.client.js')>('./git-diff.client.js');
+    vi.mocked(gitDiffPaths).mockImplementation(real.gitDiffPaths);
   });
 
   /** A suite that always fails and a coverage run that counts, so a skip is the only pass. */
@@ -276,6 +290,164 @@ describe('the test stage on a change no test reads (decision 139)', { timeout: 2
 
     expect(testStage(outcome.report.stages)?.status).toBe('fail');
   });
+
+  // `--name-only` pairs renames as the shared config says and `--raw -M -l0`
+  // pairs every one, so the two can name different files. Here `--name-only`
+  // leaves out a deleted source file the raw entries still name.
+  it('runs the test stage when the raw entries name a file --name-only does not', async () => {
+    const worktree = seedSession(db, repo, { scopeIn: ['**'] });
+    sh(worktree, 'git', 'rm', '-q', 'src/app.ts');
+    sh(worktree, 'git', 'commit', '-m', 'drop app');
+    commitIn(worktree, 'docs/notes.md', '# notes\n');
+    const real = vi.mocked(gitDiffPaths).getMockImplementation() as typeof gitDiffPaths;
+    vi.mocked(gitDiffPaths).mockImplementation((...args) =>
+      real(...args).filter((path) => path !== 'src/app.ts'),
+    );
+
+    const outcome = await merge(failingSuite().adapter);
+
+    expect(testStage(outcome.report.stages)?.status).toBe('fail');
+  });
+
+  /** Commits a gitlink to the repo's own HEAD at `path`, with the empty directory checkout leaves. */
+  const commitGitlink = (dir: string, path: string) => {
+    mkdirSync(join(dir, path), { recursive: true });
+    const head = sh(dir, 'git', 'rev-parse', 'HEAD').trim();
+    sh(dir, 'git', 'update-index', '--add', '--cacheinfo', `160000,${head},${path}`);
+    sh(dir, 'git', 'commit', '-m', `link ${path}`);
+  };
+
+  it('runs the test stage when a gitlink lands on a listed path', async () => {
+    const worktree = seedSession(db, repo, { scopeIn: ['**'] });
+    commitGitlink(worktree, 'docs/x.md');
+
+    const outcome = await merge(failingSuite().adapter);
+
+    expect(testStage(outcome.report.stages)?.status).toBe('fail');
+  });
+
+  // `diff.ignoreSubmodules`, or a `submodule.<name>.ignore`, drops a gitlink
+  // from a diff that does not pin `--ignore-submodules=none`.
+  it('runs the test stage when the shared config hides a gitlink change', async () => {
+    const worktree = seedSession(db, repo, { scopeIn: ['**'] });
+    commitGitlink(worktree, 'src/vendor');
+    commitIn(worktree, 'docs/notes.md', '# notes\n');
+    sh(worktree, 'git', 'config', 'diff.ignoreSubmodules', 'all');
+
+    const outcome = await merge(failingSuite().adapter);
+
+    expect(testStage(outcome.report.stages)?.status).toBe('fail');
+  });
+
+  // Moving a file out of a nested package changes that package, though
+  // `--name-only` names only where the file went (decision 59).
+  it('runs the test stage when a rename moves a file out of a nested package', async () => {
+    commitIn(repo, 'docs/site/package.json', JSON.stringify({ scripts: { test: 'true' } }));
+    commitIn(repo, 'docs/site/guide.md', '# guide\n');
+    const worktree = seedSession(db, repo, { scopeIn: ['**'] });
+    sh(worktree, 'git', 'mv', 'docs/site/guide.md', 'docs/guide.md');
+    sh(worktree, 'git', 'commit', '-m', 'move');
+    const adapter: Adapter = {
+      ...failingSuite().adapter,
+      touchedNestedPackages: typescriptAdapter.touchedNestedPackages,
+    };
+
+    const outcome = await merge(adapter);
+
+    expect(testStage(outcome.report.stages)?.status).toBe('fail');
+  });
+
+  /** Moves `from` to `to` in the index only, so a case-folding filesystem keeps every spelling. */
+  const renameSpelled = (dir: string, from: string, to: string) => {
+    writeFileSync(join(dir, to), readFileSync(join(dir, from)));
+    sh(dir, 'git', 'update-index', '--force-remove', '--', from);
+    sh(dir, 'git', 'update-index', '--add', '--', to);
+    sh(dir, 'git', 'commit', '-m', `move ${from}`);
+  };
+
+  // `--name-only` names a rename by its new path, but the old one is what a
+  // link or another case reached on the target.
+  it('runs the test stage when a symlink reaches a renamed path', async () => {
+    commitIn(repo, 'docs/notes.md', '# notes\n');
+    symlinkSync('../docs/notes.md', join(repo, 'src/notes.md'));
+    sh(repo, 'git', 'add', '.');
+    sh(repo, 'git', 'commit', '-m', 'link');
+    const worktree = seedSession(db, repo, { scopeIn: ['**'] });
+    sh(worktree, 'git', 'mv', 'docs/notes.md', 'docs/notes-old.md');
+    sh(worktree, 'git', 'commit', '-m', 'move');
+
+    const outcome = await merge(failingSuite().adapter);
+
+    expect(testStage(outcome.report.stages)?.status).toBe('fail');
+  });
+
+  it('runs the test stage when a renamed path folds onto another in the tree', async () => {
+    commitIn(repo, 'docs/x.MD', '# x\n');
+    commitSpelled(repo, 'docs/x.md', '# x\n');
+    const worktree = seedSession(db, repo, { scopeIn: ['**'] });
+    renameSpelled(worktree, 'docs/x.md', 'docs/y.md');
+
+    const outcome = await merge(failingSuite().adapter);
+
+    expect(testStage(outcome.report.stages)?.status).toBe('fail');
+  });
+
+  // A session can write the shared config, and a `core.worktree` aimed at `/`
+  // gives an unpinned tree read a cwd prefix no branch path matches.
+  describe('when the shared config aims core.worktree elsewhere', () => {
+    const aimedAway = (worktree: string) => sh(worktree, 'git', 'config', 'core.worktree', '/');
+
+    it('still sees a symlink reach the changed path', async () => {
+      commitIn(repo, 'docs/notes.md', '# notes\n');
+      symlinkSync('../docs/notes.md', join(repo, 'src/notes.md'));
+      sh(repo, 'git', 'add', '.');
+      sh(repo, 'git', 'commit', '-m', 'link');
+      const worktree = seedSession(db, repo, { scopeIn: ['**'] });
+      commitIn(worktree, 'docs/notes.md', '# notes, edited\n');
+      aimedAway(worktree);
+
+      const outcome = await merge(failingSuite().adapter);
+
+      expect(testStage(outcome.report.stages)?.status).toBe('fail');
+    });
+
+    it('still sees the tree hold the changed path in another case', async () => {
+      commitIn(repo, 'docs/x.MD', '# x\n');
+      const worktree = seedSession(db, repo, { scopeIn: ['**'] });
+      commitSpelled(worktree, 'docs/x.md', '# x\n');
+      aimedAway(worktree);
+
+      const outcome = await merge(failingSuite().adapter);
+
+      expect(testStage(outcome.report.stages)?.status).toBe('fail');
+    });
+
+    // Relative to a cwd under the prefix, `git diff` names only the files under
+    // it, prefix stripped: the source change would vanish and the file under
+    // `<repo>/docs/` would read as a listed `docs/` path.
+    it('still sees every changed file when diff.relative is set', async () => {
+      const worktree = seedSession(db, repo, { scopeIn: ['**'] });
+      commitIn(worktree, 'src/app.ts', 'export const app = 2;\n');
+      commitIn(worktree, `${basename(repo)}/docs/x.md`, '# x\n');
+      sh(worktree, 'git', 'config', 'core.worktree', dirname(repo));
+      sh(worktree, 'git', 'config', 'diff.relative', 'true');
+
+      const outcome = await merge(failingSuite().adapter);
+
+      expect(testStage(outcome.report.stages)?.status).toBe('fail');
+    });
+
+    it('still sees a dependency file name Docusaurus', async () => {
+      commitIn(repo, 'package.json', '{ "dependencies": { "@docusaurus/core": "3.0.0" } }\n');
+      const worktree = seedSession(db, repo, { scopeIn: ['**'] });
+      commitIn(worktree, 'docs/guide.md', '# guide\n');
+      aimedAway(worktree);
+
+      const outcome = await merge(failingSuite().adapter);
+
+      expect(testStage(outcome.report.stages)?.status).toBe('fail');
+    });
+  });
 });
 
 const ANCHOR = String.raw`process\.cwd\(\)|import\.meta\.dirname|__dirname`;
@@ -446,8 +618,9 @@ function suiteFiles(root: string): string[] {
 
 /**
  * Every path the suite reads from the checkout, by `readsIn`. This file is
- * left out: its table of read forms names listed files on purpose, and its
- * own walks read only `src/`, the vitest config and the roots the list names.
+ * left out: its table of read forms names listed files on purpose, its own
+ * walks read only `src/`, the vitest config and the roots the list names, and
+ * no assertion names a file of this checkout's on the list.
  */
 function checkoutReads(): string[] {
   const root = process.cwd();
@@ -457,9 +630,8 @@ function checkoutReads(): string[] {
     .flatMap((file) => readsIn(file, readFileSync(join(root, file), 'utf8')));
 }
 
-/** Every file in this checkout on `UNTESTED_PATH_GLOBS`, found under the roots the globs name. */
-function listedFiles(): string[] {
-  const root = process.cwd();
+/** Every file under `root` on `UNTESTED_PATH_GLOBS`, found under the roots the globs name. */
+function listedFiles(root: string): string[] {
   const untested = UNTESTED_PATH_GLOBS.map(globToRegExp);
   const tops = [...new Set(UNTESTED_PATH_GLOBS.map((glob) => glob.split('/')[0] as string))];
   const files: string[] = [];
@@ -538,17 +710,12 @@ describe('UNTESTED_PATH_GLOBS against what the suite reads (decision 139)', () =
 
   it('holds no file and no directory any file the suite loads reads from the checkout', () => {
     const reads = checkoutReads();
-    const listed = listedFiles();
-    // Neither side is vacuous: the suite's real reads are seen, and the list
-    // matches files this checkout holds.
+    const listed = listedFiles(process.cwd());
+    // The suite's real reads are seen, so that side is not vacuous; the walk
+    // that finds listed files is proven on concrete files below, not on this
+    // checkout's, which a change the gate lets skip this test could delete.
     expect(reads).toEqual(
       expect.arrayContaining(['scripts/pre-commit', 'src', 'src/core/sandbox.utils.ts']),
-    );
-    expect(listed).toEqual(
-      expect.arrayContaining([
-        '.github/workflows/claude-code-review.yml',
-        'docs/adr/0139-the-gate-skips-the-test-stage-when-no-testable-file.md',
-      ]),
     );
     const readListed = reads.flatMap((path) => {
       const glob = /[*?]/.test(path) ? globToRegExp(path) : undefined;
@@ -557,5 +724,32 @@ describe('UNTESTED_PATH_GLOBS against what the suite reads (decision 139)', () =
         .map((file) => ({ path, file }));
     });
     expect(readListed).toEqual([]);
+  });
+
+  it('finds the listed files a tree holds, and only those', () => {
+    const root = mkdtempSync(join(tmpdir(), 'pup-untested-'));
+    const tree = [
+      '.github/CODEOWNERS',
+      '.github/workflows/ci.yml',
+      '.github/actions/setup/action.yml',
+      'docs/adr/0001-a.md',
+      'docs/adr/0001-a.ts',
+      'src/a.ts',
+      'CLAUDE.md',
+      'LICENSE',
+      'README.md',
+    ];
+    for (const path of tree) {
+      mkdirSync(dirname(join(root, path)), { recursive: true });
+      writeFileSync(join(root, path), '');
+    }
+
+    expect(listedFiles(root).sort()).toEqual([
+      '.github/CODEOWNERS',
+      '.github/workflows/ci.yml',
+      'CLAUDE.md',
+      'LICENSE',
+      'docs/adr/0001-a.md',
+    ]);
   });
 });
