@@ -11,7 +11,7 @@ import { readPlainFile } from './capability.utils.js';
  * A case-insensitive disk opens `Vitest.config.ts` for `vitest.config.ts` and
  * a case-sensitive one does not, so which file a tool opens there depends on
  * the disk: a name not in lower case, or two that fold to one, is not read and
- * throws when asked.
+ * throws when asked. A root holding a name outside ASCII is not read at all.
  */
 export type RootFiles = Map<string, () => string>;
 
@@ -322,7 +322,18 @@ function unreadable(name: string): () => string {
 /** Higher for a name not in lower case, which sorts after one that is. */
 const notLowerCase = ([name]: [string, unknown]): number => Number(name !== name.toLowerCase());
 
+/**
+ * A character outside ASCII. APFS folds some onto ASCII by its own tables
+ * (`ſ` onto `s`), which no JavaScript case mapping reproduces, so a root name
+ * holding one may open for any file a run reads.
+ */
+const NON_ASCII = /[\u0080-￿]/;
+
+/** Throws where a name holds a character outside ASCII (`NON_ASCII`). */
 function rootFiles(entries: [string, () => string][]): RootFiles {
+  if (entries.some(([name]) => NON_ASCII.test(name))) {
+    throw new Error('a root name outside ASCII may open for any file a run reads');
+  }
   const root: RootFiles = new Map();
   // Lower-case names first, so one that folds onto another replaces its read.
   for (const [name, read] of entries.sort((a, b) => notLowerCase(a) - notLowerCase(b))) {

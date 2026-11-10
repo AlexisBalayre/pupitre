@@ -368,12 +368,17 @@ describe('typescriptAdapter.testFiles', () => {
       { '.npmrc': 'engine-strict=false\n' },
       [],
     ],
+    ['an .env.yarn only the branch commits', {}, { '.env.yarn': 'CI=1\n' }, []],
+    ["yarn's Plug'n'Play runtime on both sides", { '.pnp.cjs': 'module.exports = {};\n' }, {}, []],
     ...[
       ['.npmrc', 'node-options=--import ./scripts/reg.mjs\n'],
+      ['.npmrc', 'node_options=--import ./scripts/reg.mjs\n'],
       ['.npmrc', 'script-shell=./scripts/sh\n'],
       ['.yarnrc', 'yarn-path "./scripts/yarn.js"\n'],
       ['.yarnrc.yml', 'yarnPath: .yarn/releases/yarn.cjs\n'],
       ['.yarnrc.yml', 'plugins:\n  - path: .yarn/plugins/p.cjs\n'],
+      ['.yarnrc.yml', 'injectEnvironmentFiles:\n  - .env.ci\n'],
+      ['.env.yarn', 'NODE_OPTIONS=--import ./scripts/reg.mjs\n'],
       ['pnpm-workspace.yaml', 'nodeOptions: --import ./scripts/reg.mjs\n'],
       ['bunfig.toml', 'preload = ["./scripts/reg.ts"]\n'],
     ].map(
@@ -402,6 +407,20 @@ describe('typescriptAdapter.testFiles', () => {
     const repo = makeRepo({ 'package.json': plainVitest });
 
     expect(typescriptAdapter.testFiles?.(localContext(repo), ['src/a.test.ts'])).toEqual([]);
+  });
+
+  // APFS folds `ſ` onto `s`, so vitest opens the branch's file for vitest.config.ts.
+  it('collects nothing where the branch root holds a name outside ASCII', () => {
+    const files = {
+      'package.json': plainVitest,
+      'vite.config.ts': configWith("{ include: ['src/**/*.test.ts'] }"),
+    };
+    const configPath = makeRepo(files);
+    const measurePath = makeRepo({ ...files, 'viteſt.config.ts': configWith('{}') });
+
+    expect(typescriptAdapter.testFiles?.({ configPath, measurePath }, ['src/a.test.ts'])).toEqual(
+      [],
+    );
   });
 
   // The run reads the measured checkout's lists, so a branch that narrows them
@@ -486,10 +505,23 @@ describe('typescriptAdapter.testFiles', () => {
       false,
     ],
     ['given an .npmrc', (dir: string) => writeFileSync(join(dir, '.npmrc'), 'x=1\n'), false],
-    ...['.yarnrc', '.yarnrc.yml', 'pnpm-workspace.yaml', 'bunfig.toml'].map(
+    ...[
+      '.yarnrc',
+      '.yarnrc.yml',
+      '.env.yarn',
+      '.pnp.cjs',
+      'pnpm-workspace.yaml',
+      'bunfig.toml',
+    ].map(
       (name) =>
         [`given a ${name}`, (dir: string) => writeFileSync(join(dir, name), 'x\n'), false] as const,
     ),
+    // APFS folds `ſ` onto `s`, so vitest opens it for `vitest.workspace.ts`.
+    [
+      'given a name outside ASCII',
+      (dir: string) => writeFileSync(join(dir, 'viteſt.workspace.ts'), 'export default [];\n'),
+      false,
+    ],
     ['without its manifest', (dir: string) => rmSync(join(dir, 'package.json')), false],
     [
       'with its config made a link',

@@ -34,9 +34,9 @@
     run itself read that disk, so the adapter's optional `testInputsIntact` checks it twice,
     once after the build and before any suite and once before the split. It compares the
     checkout's root files that decide the run with the sha's blobs: `package.json`, `.npmrc`,
-    `.yarnrc`, `.yarnrc.yml`, `pnpm-workspace.yaml`, `bunfig.toml`, every `vite.config.*`,
-    `vitest.config.*`, `vitest.workspace.*` and `vitest.projects.*`, names folded to lower
-    case. It also checks that each entry of the checkout's `node_modules` is still the link to
+    `.yarnrc`, `.yarnrc.yml`, `.env.yarn`, every `.pnp.*`, `pnpm-workspace.yaml`,
+    `bunfig.toml`, every `vite.config.*`, `vitest.config.*`, `vitest.workspace.*` and
+    `vitest.projects.*`, names folded to lower case. It also checks that each entry of the checkout's `node_modules` is still the link to
     the trusted checkout's entry that the gate made, apart from the `.cache` and `.vite*`
     caches vitest writes and a dot-named entry the trusted `node_modules` lacks, such as the
     `.tmp` a `tsc -b` with `tsBuildInfoFile: ./node_modules/.tmp/...` writes: no package can
@@ -54,8 +54,11 @@
     case-insensitive disk opens `Vitest.config.ts` for `vitest.config.ts` and a
     case-sensitive one does not, so a config or manifest named in another case, or two names
     that fold to one, leaves the answer unknown, and `Vitest.Workspace.ts` is a workspace
-    file. A root with no config leaves the answer unknown: vitest then loads the first
-    config it finds in a directory above the checkout, which a session can write, since it
+    file. APFS also folds some names outside ASCII onto ASCII by tables no JavaScript case
+    mapping reproduces (`ſ` onto `s`, the `NON_ASCII` rule of the split), so it opens
+    `viteſt.config.ts` for `vitest.config.ts`: a root holding any name outside ASCII, on disk
+    or in a tree, leaves the answer unknown. A root with no config leaves the answer
+    unknown: vitest then loads the first config it finds in a directory above the checkout, which a session can write, since it
     runs unsandboxed (decision 5), and no read of the commit sees. The checkout sits in the
     temp directory, and a check of its parents after the run does not prove what they held
     during it. It is read statically: a
@@ -90,16 +93,23 @@
     module. A config with no `include` collects vitest's default
     `**/*.{test,spec}.?(c|m)[jt]s?(x)`.
     The script runs under the npm, yarn, pnpm and bun configs at the root, `.npmrc`,
-    `.yarnrc`, `.yarnrc.yml`, `pnpm-workspace.yaml` and `bunfig.toml`, and the branch may
-    commit them: an `.npmrc` with `node-options=--import ./scripts/reg.mjs` loads a branch
-    file into the run, and `testInputsIntact` cannot see it, since a committed file matches
-    its own blob. So those files, by name and text, are compared across the two sides as the
+    `.yarnrc`, `.yarnrc.yml`, `pnpm-workspace.yaml` and `bunfig.toml`, with the `.env.yarn`
+    Yarn 4 injects into every script's environment by default, and the branch may commit
+    them: an `.npmrc` with `node-options=--import ./scripts/reg.mjs` loads a branch file into
+    the run, as does a `NODE_OPTIONS` in `.env.yarn`, and `testInputsIntact` cannot see it,
+    since a committed file matches its own blob. So those files, by name and text, are compared across the two sides as the
     rest of the config is, and a branch that adds, removes or changes one leaves the answer
     unknown. One the two share may still name a file the branch can rewrite, so on either
     side a config mentioning `yarnPath`, `yarn-path`, `plugins`, `node-options` or
-    `nodeOptions`, `script-shell` or `scriptShell`, or `preload` leaves the answer unknown,
-    matched as text in any case. That costs a Yarn Berry repo, whose `.yarnrc.yml` names its
-    own binary, the split: its run is the binary's, which is the branch's to rewrite. Vitest 3's
+    `nodeOptions`, `script-shell` or `scriptShell`, `preload`, or the
+    `injectEnvironmentFiles` that names more env files, leaves the answer unknown, matched
+    as text in any case and with `-`, `_` or nothing between the words, so `NODE_OPTIONS`
+    and `YARN_YARN_PATH` too. Yarn's Plug'n'Play runtime, any `.pnp.*` at the root, leaves
+    the answer unknown on either side: yarn loads it into every script, and it resolves
+    packages from a cache the branch may commit, never the `node_modules` the gate links and
+    checks. That costs a Yarn Berry repo whose `.yarnrc.yml` names its own binary (one
+    corepack starts names none) the split, since its run is the binary's, which is the
+    branch's to rewrite, and a Plug'n'Play repo too. Vitest 3's
     default `exclude` (a `node_modules`, `dist`, `cypress`, `.idea`, `.git`, `.cache`,
     `.output` or `.temp` directory, a tool's `*.config.*`), a superset of vitest 4's, applies
     whatever the config declares, since excluding more only counts more as source. A declared
@@ -158,7 +168,16 @@
     branch's file unseen. Lint and a nested package's checks run beside the suites in the same
     writable checkout, so one that rewrites the config while vitest loads it and restores it
     before the last check is not seen. A `node_modules` entry the branch removes is not
-    missed, since resolution then climbs to a parent directory's.
+    missed, since resolution then climbs to a parent directory's. A package manager reads
+    config outside the checkout too, which no read of a commit sees: yarn a `.yarnrc` or
+    `.yarnrc.yml` in every directory above it, npm the `.npmrc` of a directory above whose
+    `package.json` names the checkout a workspace, pnpm a workspace root above a root
+    without its own `pnpm-workspace.yaml`, and each the operator's own config and its global
+    one, which the gate's environment leaves where they are. A session can write any of them
+    during its merge, since it runs unsandboxed (decision 5), and one it writes reaches the
+    run unseen, as it reaches the test stage itself. A root with no vitest config is refused
+    for that reason only because a config at the root ends vitest's search, and nothing at
+    the root ends yarn's or npm's.
     The gate's own branch is measured
     by the main checkout's adapter (the metric-scope lesson of decision 39), so this change
     first applies to the merge after it lands. Tests: in the config reader, an `include` of
@@ -179,8 +198,8 @@
     `environment`, a `runner`, a `pool`, `poolOptions`, `execArgv` and a sequencer. A
     workspace file is unknown too, `vitest.workspace.*` or `vitest.projects.*` named in any
     case, and a config that is a
-    symlink or named in another case is not read. Read from a commit, the config is the
-    tree's whatever the disk holds, and one committed as a link or beside a name that folds
+    symlink or named in another case is not read, nor a root holding a name outside ASCII,
+    on disk or in a commit. Read from a commit, the config is the tree's whatever the disk holds, and one committed as a link or beside a name that folds
     to it is not read. A config that runs code and imports a package is read. Two configs
     that differ only inside their lists give one rest, while another key, another value, an
     assignment in a value, another import, an added exclude or another file name each give
@@ -190,18 +209,20 @@
     JSON each collect nothing, and a nested package's test is not a root test. A branch whose
     config is the trusted one, though it runs code, collects. One that sets another key,
     changes a value or adds a setup file collects nothing. The same `.npmrc` on both sides
-    collects; one only the branch commits or rewrites collects nothing, and so does a shared
-    `.npmrc` with `node-options` or `script-shell`, `.yarnrc` with `yarn-path`, `.yarnrc.yml`
-    with `yarnPath` or `plugins`, `pnpm-workspace.yaml` with `nodeOptions` or `bunfig.toml`
-    with `preload`. A root with no config collects nothing. A branch narrowing its include or
-    excluding a file drops it. The measured config is read from the pinned sha and the trusted
+    collects; one only the branch commits or rewrites collects nothing, as does an
+    `.env.yarn` only the branch commits, and so does a shared `.npmrc` with `node-options`,
+    `node_options` or `script-shell`, `.yarnrc` with `yarn-path`, `.yarnrc.yml` with
+    `yarnPath`, `plugins` or `injectEnvironmentFiles`, `.env.yarn` with `NODE_OPTIONS`,
+    `pnpm-workspace.yaml` with `nodeOptions`, `bunfig.toml` with `preload`, or `.pnp.cjs`. A
+    root with no config collects nothing, nor a branch root holding a name outside ASCII. A
+    branch narrowing its include or excluding a file drops it. The measured config is read from the pinned sha and the trusted
     one from the target sha, whatever either checkout's disk holds. `testInputsIntact` holds
     for an untouched checkout, a build output beside it, a `node_modules` linked as the gate
     links it, holding a vite cache or holding a `.tmp` build output the trusted one lacks,
     and outside the gate. It fails for a rewritten config,
-    an added `.npmrc`, `.yarnrc`, `.yarnrc.yml`, `pnpm-workspace.yaml` or `bunfig.toml`, a
-    removed manifest, a config made a link, a manifest renamed into another case, a
-    `node_modules` entry replaced by a package or linked elsewhere, a `.bin` of its own in
+    an added `.npmrc`, `.yarnrc`, `.yarnrc.yml`, `.env.yarn`, `.pnp.cjs`, `pnpm-workspace.yaml`
+    or `bunfig.toml`, an added name outside ASCII, a removed manifest, a config made a link,
+    a manifest renamed into another case, a `node_modules` entry replaced by a package or linked elsewhere, a `.bin` of its own in
     either case, a dot-named link replaced by an entry of its own, and a `node_modules` that is
     itself a link. In the split, a collected test under a directory the tree also holds in
     another case, `src/` beside `Src/` or `fixtures/` beside `Fixtures/`, counts as source. In the gate,
