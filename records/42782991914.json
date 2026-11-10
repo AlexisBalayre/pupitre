@@ -1,0 +1,141 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-10T08:34:34.071Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42782991914",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42782991914",
+  "actor": "AlexisBalayre",
+  "commit_sha": "adbe20bd998f8829fa92d5660ddec755b7057e57",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 295,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "262-276",
+      "description": "For a merged session, windowStalled measures from the newest `respawn` of any kind (delivered or not) to the newest gate_result `to: merged`. fixRoundFailure, though, applies stalledAtEnd to the newest *delivered* round window it saw open. A retry round rolled back by startFixRound's undoRound still ends in a running->merged kill, and that kill is what gets measured, not the opened window's. If the retry failed before its `respawn` was appended (writeSessionProfile/launchSession throw, or a `pup kill` while the window opens), the measured span runs from round 1's last hook to the rollback. It includes the idle time while the session sat merged, so the next `pup fix` falsely climbs with reason `stall`. If the retry's kickoff was undelivered, the span is the kickoff wait of about 45s, so a real stall of round 1 is dropped.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "278-284",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "windowStalled's JSDoc says a fix round's kill counts \"when that kill came after the newest respawn\", but the merged branch bounds the window by the delivered round's respawn (fixRoundWindow.openedAt) and the first running->merged kill before the next fix_round; a later undelivered respawn does not bound it. Reword to e.g. \"when that kill ended the delivered round's window\".",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "309-325",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The merged branch of windowStalled re-derives the window's end with two findIndex scans plus a handedAt comparison, a second walk of the boundaries fixRoundWindow already tracks; returning a `closedAt` index (first running->merged kill before the next fix_round) from fixRoundWindow would reduce this branch to a lookup and keep the window bounds in one place.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "270-276",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `read` callback parameter on windowFailureOf (with its inline function type) exists for a single alternate caller, fixRoundRoute; exporting windowStalled and having that caller compute fixRoundFailure(events, windowStalled(...)) directly would drop the callback, at the cost of moving listEvents/decodeEvent into the caller.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/routing.utils.ts",
+      "line": "223-240",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "fixRoundWindow's switch from a for loop to forEach turns the undelivered-kickoff `continue` into a `return` that silently means \"skip this event\"; `for (const [at, event] of events.entries())` keeps the index and the plain `continue`.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "313-328",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "Since adbe20b, the merged branch starts the stall window at `fixRoundWindow(events).openedAt`, which is the round's own kickoff respawn. That ignores a `pup respawn` made during the round. The trigger: a fix round's window stalls, the operator runs `pup respawn` (which already climbs a rung and records `stall`), then `pup kill` ends the respawned window before its first PostToolUse, Stop or Notification hook. The next `pup fix` then measures quiet from the old stalled window's last write to the kill, finds a stall, and climbs a second rung for the same stall. Before adbe20b the window started at the newest respawn of any kind, so this case did not climb. The `ran` events that `windowFailure` scores are already bounded by that `pup respawn`, so the stall bound and the event bound now disagree.",
+      "refutation": "`pup respawn` cannot run during an open fix round: relaunchWindow's first call, requireRunning (src/core/session-handoff.service.ts:72-80), throws when currentFixRound(db, sessionId) is defined. The only other place that appends a `respawn` is the round's own kickoff (fix-round.service.ts:944). So between a round's kickoff and its kill back to merged, no second respawn can exist, and openedAt is always the newest respawn."
+    }
+  ],
+  "process_issues": [],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.0807816999999997,
+  "duration_ms": 271284,
+  "num_turns": 15,
+  "tokens": {
+    "input": 16,
+    "output": 11446,
+    "cache_read": 398872,
+    "cache_creation": 51602,
+    "total": 461936
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 108,
+      "output": 32233,
+      "cache_read": 1879360,
+      "cache_creation": 139545,
+      "cost_usd": 1.8734949999999997
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 32,
+      "output": 5434,
+      "cache_read": 156615,
+      "cache_creation": 54556,
+      "cost_usd": 0.20645550000000001
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 450,
+      "cache_read": 0,
+      "cache_creation": 4848,
+      "cost_usd": 0.0008312
+    }
+  ],
+  "permission_denials": []
+}
