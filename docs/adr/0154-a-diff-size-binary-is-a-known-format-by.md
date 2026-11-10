@@ -69,8 +69,9 @@
     *Sides come from the diff, by oid.* `gitDiffNumstat` runs `--raw --no-abbrev` beside
     `--numstat` in one `git diff`, which lists every raw record first, in the order of the
     numstat records, and gives each `-\t-` entry its `sides`: the base and branch mode and
-    oid, a side absent only where `--raw` lists the all-zero mode. A count of raw records
-    that differs from the numstat's throws. A renamed entry carries the path it was
+    oid, a side absent only where `--raw` lists the all-zero mode, never on both sides. Raw
+    and numstat records come from one diff queue, one for one; an entry without sides
+    throws in the recount. A renamed entry carries the path it was
     `renamedFrom`, and its base side is that blob, judged by that path's extension: a
     source file renamed into a `.png` is then recounted, with both paths in the recount's
     pathspec, not skipped as an image with no base side. Each side's size comes from
@@ -130,7 +131,9 @@
     size. Every symlink's target, then each round's listed importers, is read through one
     `git cat-file --batch` (`readBlobs`). Importers are read by oid, not by `<rev>:<path>`,
     so `core.precomposeUnicode` has no path to rewrite (decision 114). A listed path the
-    tree does not hold refuses, as an unprefixed listing entry does. The reach checks now
+    tree does not hold, which git does not list, has no blob to read, so it is read as
+    naming every target, as a name that is not UTF-8 is; an unprefixed listing entry
+    refuses. The reach checks now
     run a fixed number of git processes plus two per reach round, however many files the
     tree holds. Grep does not take `-I`: it would skip a JavaScript importer whose NUL sits
     in a comment. A binary file grep lists is still read whole, inside the one batch.
@@ -141,7 +144,8 @@
     `GIT_READ_TIMEOUT_MS` (30 s), as does the `ls-tree` behind each known-binary check: a read
     stalled under the merge lock throws instead of holding the lock. Each answer must name
     the oid asked for, in order, as a blob of the listed size followed by its newline, and
-    nothing may follow the last one. A missing object, a wrong size or a stray byte throws,
+    nothing may follow the last one: the exactly sized buffer overflows on a stray byte. A
+    missing object, a wrong size or a stray byte throws,
     so no caller reads a blob as empty. Past the cap, a branch whose test stems are named
     by more than 64 MiB of files errors the gate. One file over 64 MiB already did.
     *Tests.* In `git-diff-client.test.ts`, a `.ts` and a `.js` file opening with `// \0`

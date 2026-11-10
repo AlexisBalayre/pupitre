@@ -555,6 +555,8 @@ const GIT_READ_TIMEOUT_MS = 30_000;
  * `GIT_READ_TIMEOUT_MS`, this throws and the gate fails closed. A size that
  * is no byte count, which `ls-tree` lists for an object it cannot read, throws,
  * and so does an answer that is not the oid asked for, a blob of the size listed.
+ * The output buffer is sized exactly, so a byte past the last blob overflows it
+ * and throws too.
  */
 export function readBlobs(repoPath: string, blobs: { oid: string; size: number }[]): Buffer[] {
   if (blobs.length === 0) return [];
@@ -594,9 +596,6 @@ export function readBlobs(repoPath: string, blobs: { oid: string; size: number }
     }
     contents.push(out.subarray(eol + 1, end));
     at = end + 1;
-  }
-  if (at !== out.length) {
-    throw new Error(`git cat-file --batch answered ${out.length - at} bytes past the last blob`);
   }
   return contents;
 }
@@ -705,15 +704,15 @@ export function gitDiffAddedLines(
 /** One side of a file's diff as `--raw` lists it: its tree mode and blob oid. */
 type DiffSide = { mode: string; oid: string };
 
+/** A file's `[base, branch]` sides, undefined where it does not exist: never on both. */
+type DiffSides = [DiffSide, DiffSide] | [DiffSide, undefined] | [undefined, DiffSide];
+
 /**
  * A numstat entry. A renamed file carries the path it was `renamedFrom`, and a
  * file numstat could not count (`-\t-`) its `sides`, `[base, branch]`, each
  * undefined where the file does not exist, for `gitDiffBinaryRecount`.
  */
-export type DiffNumstatEntry = DiffFileStat & {
-  renamedFrom?: string;
-  sides?: [DiffSide | undefined, DiffSide | undefined];
-};
+type DiffNumstatEntry = DiffFileStat & { renamedFrom?: string; sides?: DiffSides };
 
 /** A `--raw` side's mode and oid, undefined for the all-zero mode of a side that does not exist. */
 function rawSide(mode: string, oid: string): DiffSide | undefined {
@@ -754,13 +753,15 @@ export function gitDiffNumstat(
     '--numstat',
     `${target}...${branch}`,
   ]).split('\0');
-  const raw: [DiffSide | undefined, DiffSide | undefined][] = [];
+  // Raw and numstat records come from one diff queue, one for one, and git
+  // lists no record with both sides absent.
+  const raw: DiffSides[] = [];
   let i = 0;
   for (; fields[i]?.startsWith(':'); i++) {
-    const [oldMode = '', newMode = '', oldOid = '', newOid = '', status = ''] = (fields[i] ?? '')
+    const [oldMode = '', newMode = '', oldOid = '', newOid = '', status = ''] = String(fields[i])
       .slice(1)
       .split(' ');
-    raw.push([rawSide(oldMode, oldOid), rawSide(newMode, newOid)]);
+    raw.push([rawSide(oldMode, oldOid), rawSide(newMode, newOid)] as DiffSides);
     i += /^[RC]/.test(status) ? 2 : 1;
   }
   const stats: DiffNumstatEntry[] = [];
@@ -768,24 +769,21 @@ export function gitDiffNumstat(
     const field = fields[i];
     if (!field) continue;
     const [added, deleted, ...rest] = field.split('\t');
-    const inlinePath = rest.join('\t');
-    const renamedFrom = inlinePath ? undefined : fields[i + 1];
-    const path = inlinePath || fields[i + 2];
-    if (!inlinePath) i += 2;
+    let path = rest.join('\t');
+    let renamedFrom: string | undefined;
+    if (!path) {
+      renamedFrom = fields[i + 1];
+      path = fields[i + 2] ?? '';
+      i += 2;
+    }
     if (!path) continue;
-    const sides = raw[stats.length];
     stats.push({
       path,
       added: added === '-' ? null : Number(added),
       deleted: deleted === '-' ? null : Number(deleted),
-      ...(renamedFrom ? { renamedFrom } : {}),
-      ...(added === '-' && sides ? { sides } : {}),
+      renamedFrom,
+      sides: added === '-' ? raw[stats.length] : undefined,
     });
-  }
-  if (stats.length !== raw.length) {
-    throw new Error(
-      `git diff listed ${raw.length} raw records for ${stats.length} numstat records`,
-    );
   }
   return stats;
 }
@@ -821,8 +819,11 @@ function blobSize(repoPath: string, oid: string): number {
   return Number(runGit(repoPath, ['cat-file', '-s', oid], { timeout: GIT_READ_TIMEOUT_MS }).trim());
 }
 
-/** The lines a whole-file add or delete of `blob` counts, a last line without a newline included. */
-function lineCount(blob: Buffer): number {
+/** The lines a whole-file add or delete of `side` counts, a last line without a newline included. */
+function blobLines(repoPath: string, side: DiffSide): number {
+  const [blob = Buffer.alloc(0)] = readBlobs(repoPath, [
+    { oid: side.oid, size: blobSize(repoPath, side.oid) },
+  ]);
   let lines = 0;
   for (let at = blob.indexOf(0x0a); at !== -1; at = blob.indexOf(0x0a, at + 1)) lines++;
   return blob.length > 0 && blob[blob.length - 1] !== 0x0a ? lines + 1 : lines;
@@ -877,12 +878,8 @@ export function gitDiffBinaryRecount(
   const sides =
     branchSide === false ? [branchSide] : [sideOf(baseBlob, renamedFrom ?? path), branchSide];
   if (spendKnownBinarySkip(sides, budget)) return null;
-  if (baseBlob === undefined || branchBlob === undefined) {
-    const { oid } = branchBlob ?? baseBlob ?? { oid: '' };
-    const [blob = Buffer.alloc(0)] = readBlobs(repoPath, [{ oid, size: blobSize(repoPath, oid) }]);
-    const lines = lineCount(blob);
-    return branchBlob === undefined ? { added: 0, deleted: lines } : { added: lines, deleted: 0 };
-  }
+  if (baseBlob === undefined) return { added: blobLines(repoPath, branchBlob), deleted: 0 };
+  if (branchBlob === undefined) return { added: 0, deleted: blobLines(repoPath, baseBlob) };
   let added = 0;
   let deleted = 0;
   for (const hunk of diffHunks(repoPath, [baseBlob.oid, branchBlob.oid])) {

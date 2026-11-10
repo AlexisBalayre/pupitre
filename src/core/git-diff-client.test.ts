@@ -797,6 +797,16 @@ describe('gitDiffBinaryRecount', () => {
     });
   });
 
+  // Sides are what the recount reads; without them there is nothing to read
+  // by oid, and a path is no key to fall back on.
+  it('throws for an entry without the sides numstat pairs with it', () => {
+    const repo = repoWith({ 'base.ts': 'one\n' }, { 'image.png': png('q\n') });
+
+    expect(() => gitDiffBinaryRecount(repo, { path: 'image.png' }, fullBudget())).toThrow(
+      /no --raw sides to recount image\.png from/,
+    );
+  });
+
   // An object read that fails was read as "this side does not exist", and a
   // known-format path then went uncounted; only `--raw`'s all-zero mode is absence.
   it('throws when the blob of a side cannot be read, rather than skip the file', () => {
@@ -878,6 +888,18 @@ describe('readBlobs', () => {
     // One byte short overflows the buffer sized from the listing before any parse.
     expect(() => readBlobs(repo, [{ oid, size: 3 }])).toThrow(/ENOBUFS/);
     expect(() => readBlobs(repo, [{ oid, size: 5 }])).toThrow(/not a blob of 5 bytes/);
+  });
+
+  // `ls-tree -l` lists `BAD` for an object it cannot read, which reads as NaN.
+  it('refuses, before running git, a size that is no byte count', () => {
+    const repo = makeRepo();
+    writeFileSync(join(repo, 'a.ts'), 'one\n');
+    commitAll(repo, 'base');
+    const [{ oid = '' } = {}] = blobsOf(repo);
+
+    for (const size of [Number.NaN, -1, 1.5]) {
+      expect(() => readBlobs(repo, [{ oid, size }])).toThrow(/no byte count for .*: its object/);
+    }
   });
 
   // Each read alone was capped at 64 MiB; the batch holds them all at once.

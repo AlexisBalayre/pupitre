@@ -583,13 +583,12 @@ function filesNaming(
     }
     const importer = entry.slice(prefix.length);
     if (skip(importer)) continue;
-    if (importer.includes('\ufffd')) {
+    const blob = blobs.get(importer);
+    // A name decoded with U+FFFD may be a decoy's, and one the tree does not
+    // hold has no blob: either importer is read as naming every target.
+    if (importer.includes('\ufffd') || !blob) {
       named.set(importer, new Set(targets.filter((target) => target !== importer)));
       continue;
-    }
-    const blob = blobs.get(importer);
-    if (!blob) {
-      throw new Error(`git grep listed ${JSON.stringify(entry)}, which ls-tree does not hold`);
     }
     importers.push({ path: importer, ...blob });
   }
