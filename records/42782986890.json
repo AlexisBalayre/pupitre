@@ -1,0 +1,103 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-10T08:33:39.477Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42782986890",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42782986890",
+  "actor": "AlexisBalayre",
+  "commit_sha": "4a9cd73c6657c2640d38db6932bec515d0bb841b",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 290,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "guards"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "guards"
+  ],
+  "reviewers_skipped": [
+    "conventions",
+    "context",
+    "maintainability",
+    "docs",
+    "spec",
+    "simplicity",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/ci-wait.service.ts",
+      "line": "286-288",
+      "description": "`pup ci wait` and `pup fix` now tell the operator to reply on an answered thread so the next round takes it again, but `fixRoundBrief` relays only the bot's first comment, so the worker gets the same finding with neither the operator's reply nor its earlier decline, and the round counts as a repeat-fix-round.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "688-705",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The new advice for answered threads, \"open a new round\", sends the operator to `pup fix`, which refuses again with the same advice while the answered threads stay unresolved and nobody has commented on them since; the one step that makes a round possible, a reply on the thread, was dropped from both messages.",
+      "body": "**Problem:** the new advice for answered threads can't be followed as written. Commit 4a9cd73 changed \"reply for the next round to take it again\" to \"open a new round knowing the worker sees only the bot's finding, not your reply\", in both `reviewVerdict` and `reviewDigest`.\n\n**How it happens:** a fix round replies to a thread and leaves it open, so `isAnswered` is true. The status is `SUCCESS` and no other thread is open.\n1. `pup ci wait` sees `threads > answered` as false. It names the operator and prints the new advice (`ci-wait.service.ts` L286-291).\n2. The operator follows the advice and runs `pup fix <id>`. `reviewVerdict` removes answered threads first (`review.openThreads.filter((thread) => !thread.isAnswered)`, L661), so there is nothing to relay. It then reaches L688-705 and refuses with the same \"open a new round\" text. Running it again gets the same refusal every time.\n\n**What actually reopens a round:** `isAnswered` turns false only when a counted comment comes after pup's marked reply (`github.client.ts` L459-479). A counted comment is one from the bot, from pup's own account without the marker (normally the operator's gh login), or from an OWNER, MEMBER or COLLABORATOR. ADR 0163 says the same. `pup fix` has only `--model` and `--effort` (`src/cli/index.ts` L2433-2438), and no other command takes answered threads. The old text was wrong to suggest the worker would see the reply, but it was the only place that told the operator to post one. Now the operator either keeps hitting the refusal or resolves a finding they wanted fixed again.\n\n**Fix:** name the step in both messages, for example: `` `${answered} a fix round answered and left open (resolve each once its answer holds, or comment on it and re-run \\`pup fix ${id}\\`: the new round sees only the bot's finding, not your comment)` `` (fix-round.service.ts L692-693). Make the matching change at ci-wait.service.ts L288-289, then update the asserted strings in fix-round-kickoff.test.ts L639 and ci-wait.test.ts L282 and L316.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/4a9cd73c6657c2640d38db6932bec515d0bb841b/src/core/fix-round.service.ts#L688-L705\nhttps://github.com/AlexisBalayre/pupitre/blob/4a9cd73c6657c2640d38db6932bec515d0bb841b/src/core/ci-wait.service.ts#L286-L291",
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Round 4 budget: conventions, docs, context, simplicity and maintainability were not spawned. Spec had no source (no closing issues). Workflow-safety had nothing to check (no workflow change). The consolidator was not spawned because only one finding came back, so there was nothing to merge."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.1843078999999994,
+  "duration_ms": 228555,
+  "num_turns": 13,
+  "tokens": {
+    "input": 12,
+    "output": 8517,
+    "cache_read": 273848,
+    "cache_creation": 51137,
+    "total": 333514
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 102,
+      "output": 38938,
+      "cache_read": 1316847,
+      "cache_creation": 183072,
+      "cost_usd": 2.1113083999999995
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 12,
+      "output": 2022,
+      "cache_read": 72330,
+      "cache_creation": 18209,
+      "cost_usd": 0.0729995
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "git -C /home/runner/work/pupitre/pupitre diff 788ad03afa9ffb11b654fced11fc2d1da3db41c2..HEAD -- src/core/fix-round.service.ts src/core/ci-wait.service.ts"
+    }
+  ]
+}
