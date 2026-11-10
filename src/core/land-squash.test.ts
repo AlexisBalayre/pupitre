@@ -537,7 +537,8 @@ describe('landSession', { timeout: 20_000 }, () => {
   });
 
   // A merge-base that fails other than by "no" (status 1) is git failing, not
-  // an answer: refused as such, as `mergedOnto`'s reads are.
+  // an answer: refused as such, as `mergedOnto`'s reads are. The check is asked
+  // with the commit graph off, so a forged one cannot answer it (decision 164).
   it('refuses, landing nothing, when the ancestry check of an accepted head fails', async () => {
     seedPrMerge();
     const later = commitIn(worktree, 'src/late.ts', 'export const late = 1;\n');
@@ -551,11 +552,15 @@ describe('landSession', { timeout: 20_000 }, () => {
       mergeCommit: { oid: merge },
     });
     const failure = Object.assign(new Error('fatal: bad object'), { status: 128 });
+    const asked: string[] = [];
     const real = vi.mocked(withScratchGitDir).getMockImplementation();
     vi.mocked(withScratchGitDir).mockImplementation((repoPath, prefix, fn) =>
       (real as typeof withScratchGitDir)(repoPath, prefix, (git) =>
         fn((args, opts) => {
-          if (args.includes('merge-base')) throw failure;
+          if (args.includes('merge-base')) {
+            asked.push(args.join(' '));
+            throw failure;
+          }
           return git(args, opts);
         }),
       ),
@@ -573,6 +578,9 @@ describe('landSession', { timeout: 20_000 }, () => {
     } finally {
       vi.mocked(withScratchGitDir).mockReset();
     }
+    expect(asked).toEqual([
+      `-c core.commitGraph=false merge-base --is-ancestor ${pinned} ${later}`,
+    ]);
     expectNothingChanged(before);
     expect(hasTrackingRef()).toBe(false);
   });
@@ -688,6 +696,7 @@ describe('landSession', { timeout: 20_000 }, () => {
 
   // A merge-tree that fails other than by a conflict (status 1), as one without
   // `--write-tree` does, is git failing, not content the gate never measured.
+  // Each read is made with the commit graph off, so a forged one cannot answer it.
   it.each([
     ['rev-list', Object.assign(new Error('fatal: bad object'), { status: 128 })],
     ['merge-tree', Object.assign(new Error('fatal: bad object'), { status: 128 })],
@@ -704,11 +713,15 @@ describe('landSession', { timeout: 20_000 }, () => {
         headRefOid: pinned,
         mergeCommit: { oid: squash },
       });
+      const asked: string[] = [];
       const real = vi.mocked(withScratchGitDir).getMockImplementation();
       vi.mocked(withScratchGitDir).mockImplementation((repoPath, prefix, fn) =>
         (real as typeof withScratchGitDir)(repoPath, prefix, (git) =>
           fn((args, opts) => {
-            if (args.includes(failing)) throw failure;
+            if (args.includes(failing)) {
+              asked.push(args.join(' '));
+              throw failure;
+            }
             return git(args, opts);
           }),
         ),
@@ -725,6 +738,8 @@ describe('landSession', { timeout: 20_000 }, () => {
       } finally {
         vi.mocked(withScratchGitDir).mockReset();
       }
+      expect(asked).toHaveLength(1);
+      expect(asked[0]).toMatch(new RegExp(`^-c core\\.commitGraph=false ${failing} `));
       expectNothingChanged(before);
       expect(hasTrackingRef()).toBe(false);
     },
