@@ -9,9 +9,6 @@
   },
   "permissions": {
     "allow": [
-      "Read(*)",
-      "Glob(*)",
-      "Grep(*)",
       "Edit(*)",
       "Write(*)",
       "Agent(*)",
