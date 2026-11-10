@@ -1,0 +1,101 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-10T11:47:06.011Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42809640417",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42809640417",
+  "actor": "AlexisBalayre",
+  "commit_sha": "302bf557340a2fe231bebc8a3cccbd9a754eeed1",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 292,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "workflow-safety",
+    "guards"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "workflow-safety",
+    "guards"
+  ],
+  "reviewers_skipped": [
+    "conventions",
+    "context",
+    "maintainability",
+    "docs",
+    "spec",
+    "simplicity"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": ".github/workflows/pr-status.yml",
+      "line": "105-121",
+      "description": "unthreadedImportants subtracts one for every `- `path:N` (` line that follows any line shaped like a carried count header, with no limit and no dedupe. Finding text inside the summary body can contain such lines at column 0, so it can push the count of unthreaded importants to zero and release a PR to `ready` while an important it carried is still unthreaded. The workflow comment says finding text 'could only hold a PR in review'; that is no longer true.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": ".github/workflows/pr-status.yml",
+      "line": "119-123",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "A carried description with a forged bullet followed by a non-bullet line ends the bullet scan early. The forged line takes a genuine bullet's place in the N-line window, so an owed unthreaded important stops holding `review-open`.",
+      "body": "The bound added in 302bf55 counts the consecutive `- ` lines after a carried header and releases only when there are exactly N of them. But each carried bullet is written by `findingLine` from `prior.description`, and nothing makes that description one line: `priorImportantSchema.description` is a bare `z.string()` (`review-metrics.schemas.ts:57-59`). `carriedLines` and the poster pass newlines through unchanged.\n\nA description can add lines to the genuine block in two ways:\n\n- If the extra line starts with `- `, the run grows past N and nothing is released. The existing `stray` test covers this case.\n- If a forged `- ` line is followed by any other line, the run **stops early**. The window still holds exactly N lines, but a forged bullet now stands where a genuine one was.\n\nA concrete case. The prior round has two unresolved importants:\n\n- P1 at `src/a.ts:10`, which was anchored in its own round, so it has a bot thread. Its description is ``x\\n- `src/z.ts:1` (a): y\\nend``.\n- P2 at `src/q.ts:4`, which has no thread.\n\nSome earlier bot thread, resolved or not, exists at `src/z.ts:1`. The body renders as:\n\n```\n2 important findings from the review of abcdef0 still open (not raised again):\n\n- `src/a.ts:10` (correctness): x\n- `src/z.ts:1` (a): y\nend\n- `src/q.ts:4` (correctness): the guard misses deletions\n```\n\nThe loop at line 122 collects 2 bullets and stops at `end`, so `bullets.length === owed` holds. Both keys are in `threaded`, so `sum` goes from 2 to 0. P2 is still owed and has no thread, yet the PR leaves `review-open`. This disproves the comment at lines 103-107, which says forgery \"cannot take the total below the genuine count\". That argument covers a forged header, not a forged bullet plus a terminator inside a genuine header's window.\n\nRequiring a blank line after the N bullets doesn't close the hole: the description can hold `\\n\\nend` instead. The parse is sound only if every carried bullet is exactly one line, and only the renderer can guarantee that. One fix is to flatten line breaks in `carriedLines` (for example `description: prior.description.replace(/\\s*[\\r\\n]+\\s*/g, \" \")`) and add a test with the body above that expects 1.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/302bf557340a2fe231bebc8a3cccbd9a754eeed1/.github/workflows/pr-status.yml#L119-L131\nhttps://github.com/AlexisBalayre/pupitre/blob/302bf557340a2fe231bebc8a3cccbd9a754eeed1/tools/review/src/review-body.utils.ts#L128-L136",
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Round 4 importants-only budget: conventions, docs, context, simplicity and maintainability were not spawned; spec skipped (no spec source)."
+    },
+    {
+      "component": "orchestrator",
+      "description": "review-consolidator not spawned: only one finding was returned, so there was nothing to group."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.6478874000000003,
+  "duration_ms": 198779,
+  "num_turns": 12,
+  "tokens": {
+    "input": 10,
+    "output": 7294,
+    "cache_read": 214765,
+    "cache_creation": 48311,
+    "total": 270380
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 66,
+      "output": 27424,
+      "cache_read": 651494,
+      "cache_creation": 138587,
+      "cost_usd": 1.5169108000000002
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 18,
+      "output": 3547,
+      "cache_read": 86681,
+      "cache_creation": 34721,
+      "cost_usd": 0.1309766
+    }
+  ],
+  "permission_denials": []
+}
