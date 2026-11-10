@@ -82,6 +82,7 @@ vi.mock('../core/conductor.service.js', async (importOriginal) => ({
     .markConductorQuestion,
   NO_CONDUCTOR_RUNNING:
     'No conductor is running for this project; start one with `pup conductor start`.',
+  TELL_MAX_CHARS: 800,
   isConductorRunning: vi.fn(() => false),
   startConductor: vi.fn(),
   stopConductor: vi.fn(),
@@ -132,6 +133,8 @@ vi.mock('../core/session-lifecycle.service.js', async (importOriginal) => ({
   ).answerSessionQuestion,
   askedQuestion: (await importOriginal<typeof import('../core/session-lifecycle.service.js')>())
     .askedQuestion,
+  conductorQuestion: (await importOriginal<typeof import('../core/session-lifecycle.service.js')>())
+    .conductorQuestion,
   createSession: vi.fn(),
   interruptSession: vi.fn(),
   killSession: vi.fn(),
@@ -1232,6 +1235,27 @@ describe('CLI commands', () => {
         logs.length = 0;
         buildProgram().parse(['status'], { from: 'user' });
 
+        expect(logs.join('\n')).not.toContain('accept the debt?');
+      });
+
+      // `pup answer conductor` would quote it whole in a tell over the 800
+      // characters a tell takes, and the operator cannot shorten the quote.
+      it('refuses a question too long to answer, and stores nothing', () => {
+        const repo = initRepo();
+        useCwd(repo);
+        vi.stubEnv('PUP_CONDUCTOR', projectId(repo));
+
+        buildProgram().parse(['conductor', 'ask', `accept the debt? ${'q'.repeat(760)}`], {
+          from: 'user',
+        });
+
+        expect(errors).toHaveLength(1);
+        expect(errors[0]).toMatch(/runs to \d+\. Nothing was stored: ask in fewer words/);
+        expect(process.exitCode).toBe(1);
+        vi.stubEnv('PUP_CONDUCTOR', '');
+        vi.mocked(isConductorRunning).mockReturnValue(true);
+        logs.length = 0;
+        buildProgram().parse(['status'], { from: 'user' });
         expect(logs.join('\n')).not.toContain('accept the debt?');
       });
 

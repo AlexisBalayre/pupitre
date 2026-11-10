@@ -134,6 +134,7 @@ import {
   answerConductorQuestion,
   answerSessionQuestion,
   askedQuestion,
+  conductorQuestion,
   createSession,
   interruptSession,
   killedFixRoundMessage,
@@ -1249,7 +1250,7 @@ export function buildProgram(): Command {
           return refuse('`pup conductor ask` is for the conductor only.');
         }
         return questionOrRefuse(() => {
-          const asked = askedQuestion('pup conductor ask', message, opts);
+          const asked = conductorQuestion(message, opts);
           markConductorQuestion(db, asked);
           return askedLines('The conductor', asked);
         });

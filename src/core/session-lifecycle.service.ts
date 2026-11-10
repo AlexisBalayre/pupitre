@@ -17,7 +17,12 @@ import {
 } from '../claude/session-runtime.service.js';
 import { buildCodeMap, buildKnowledgeSlice } from './code-map.service.js';
 import { codegraphBinary, prepareGraph } from './codegraph.client.js';
-import { isConductorRunning, maxSessions, tellConductor } from './conductor.service.js';
+import {
+  isConductorRunning,
+  maxSessions,
+  TELL_MAX_CHARS,
+  tellConductor,
+} from './conductor.service.js';
 import { windowFailureOf } from './dashboard.service.js';
 import {
   assertNoArmedGitDrivers,
@@ -828,7 +833,8 @@ export function askedQuestion(
  * Text bound for a pane as one line: control characters out and whitespace
  * collapsed, as `sanitizeReason` does, but whole. An answer is the operator's
  * own words and a question the asker's, so neither is cut: the steer's and the
- * tell's refusals bound them, and the quote stays the question asked.
+ * tell's refusals bound them, `conductorQuestion` keeps a conductor question
+ * short enough to quote, and the quote stays the question asked.
  */
 function paneLine(text: string): string {
   return (
@@ -867,6 +873,45 @@ function resolveAnswer(asked: QuestionEvent, reply: string): EventPayloads['answ
 function answerMessage(answer: EventPayloads['answer']): string {
   const picked = answer.option === undefined ? '' : `option ${answer.option}, `;
   return `Answer to your question "${answer.question}": ${picked}${answer.text}`;
+}
+
+/**
+ * The room a conductor question leaves for an answer in words: the operator
+ * can shorten their own words, never the question quoted in front of them.
+ */
+const FREE_ANSWER_ROOM = 200;
+
+/**
+ * The question `pup conductor ask` stores (decision 93): `askedQuestion`'s,
+ * refused too when an answer could not reach the conductor. `pup answer
+ * conductor` quotes the question whole in a tell, so the message for every
+ * option, and for `FREE_ANSWER_ROOM` characters of words, must fit
+ * `TELL_MAX_CHARS`; refused here, the conductor rewords while it sees why.
+ */
+export function conductorQuestion(
+  text: string | undefined,
+  opts: AskOptions,
+): EventPayloads['question'] {
+  const asked = askedQuestion('pup conductor ask', text, opts);
+  const question = paneLine(asked.text);
+  const answers: EventPayloads['answer'][] = [
+    { question, text: 'x'.repeat(FREE_ANSWER_ROOM) },
+    ...(asked.options ?? []).map((option, index) => ({
+      question,
+      text: paneLine(option),
+      option: index + 1,
+    })),
+  ];
+  const longest = Math.max(...answers.map((answer) => answerMessage(answer).length));
+  if (longest > TELL_MAX_CHARS) {
+    throw new QuestionRefusedError(
+      `An answer quotes the question back in a \`pup conductor tell\`, which takes ${TELL_MAX_CHARS} ` +
+        `characters; with its longest option, or ${FREE_ANSWER_ROOM} characters of words, this one ` +
+        `runs to ${longest}. Nothing was stored: ask in fewer words, and put the detail in a file ` +
+        'the question names.',
+    );
+  }
+  return asked;
 }
 
 /**

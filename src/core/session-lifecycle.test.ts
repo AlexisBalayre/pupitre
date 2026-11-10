@@ -57,7 +57,7 @@ import {
   transcriptDir,
 } from '../claude/session-runtime.service.js';
 import { briefPath } from './brief.service.js';
-import { isConductorRunning, tellConductor } from './conductor.service.js';
+import { isConductorRunning, TELL_MAX_CHARS, tellConductor } from './conductor.service.js';
 import { openStore } from './db.client.js';
 import { DEFAULT_BASE_PROFILE } from './default-profile.constants.js';
 import {
@@ -94,6 +94,7 @@ import {
   answerConductorQuestion,
   answerSessionQuestion,
   askedQuestion,
+  conductorQuestion,
   createSession,
   fixRoundRoute,
   interruptSession,
@@ -1661,9 +1662,6 @@ describe('steer, interrupt and kill by session id', () => {
   });
 });
 
-// Decision 93: a question answered with one keystroke. `pup answer` steers the
-// asker with the question in front of the answer and records the answer, which
-// closes the question; the conductor's goes by a tell instead.
 // Decision 93: what `pup session ask` and `pup conductor ask` store, refused
 // before anything is stored when it is not a question the operator can answer
 // with one key.
@@ -1708,6 +1706,49 @@ describe('askedQuestion', () => {
   });
 });
 
+// Decision 93: `pup answer conductor` quotes the question whole in a tell, so
+// a question no answer could reach the conductor through is refused at the
+// ask, while the conductor can still reword it.
+describe('conductorQuestion', () => {
+  const FRAME = 'Answer to your question "": '.length;
+  const WORDS_ROOM = 200;
+
+  it('stores a question every answer to fits a tell', () => {
+    expect(
+      conductorQuestion('accept the debt?', { option: ['yes', 'no'], recommend: '2' }),
+    ).toEqual({ text: 'accept the debt?', options: ['yes', 'no'], recommended: 2 });
+  });
+
+  it('stores a question that leaves exactly the room for an answer in words', () => {
+    const text = 'q'.repeat(TELL_MAX_CHARS - FRAME - WORDS_ROOM);
+
+    expect(conductorQuestion(text, {})).toEqual({ text });
+  });
+
+  it.each([
+    ['a question too long for an answer in words', 'q'.repeat(TELL_MAX_CHARS - FRAME - 199), []],
+    ['a short question with an option too long to pick', 'which?', ['yes', 'o'.repeat(780)]],
+  ])('refuses %s', (_, text, option) => {
+    expect(() => conductorQuestion(text, { option })).toThrow(QuestionRefusedError);
+    expect(() => conductorQuestion(text, { option })).toThrow(/Nothing was stored/);
+  });
+
+  it('measures the question as the answer quotes it, folded to one line', () => {
+    const text = `${'q'.repeat(TELL_MAX_CHARS - FRAME - WORDS_ROOM)}\n\n\n\n`;
+
+    expect(conductorQuestion(text, {})).toEqual({ text });
+  });
+
+  it("refuses what askedQuestion refuses, in the conductor's command", () => {
+    expect(() => conductorQuestion(' ', {})).toThrow(
+      'pup conductor ask needs the question itself.',
+    );
+  });
+});
+
+// Decision 93: a question answered with one keystroke. `pup answer` steers the
+// asker with the question in front of the answer and records the answer, which
+// closes the question; the conductor's goes by a tell instead.
 describe('answering an open question', () => {
   let db: Database;
 

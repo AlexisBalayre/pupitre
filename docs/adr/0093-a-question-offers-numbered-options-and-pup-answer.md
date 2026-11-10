@@ -41,7 +41,10 @@
     800-character limit. Both the answer and the question it quotes are scrubbed of control
     characters and folded to one line, never cut: they are typed into a pane, the steer's and the
     tell's refusals bound their length, and the quote must stay the question the conductor asked.
-    An `answer` event `{question, text, option?}` is recorded only once the paste landed. A tell
+    The operator can shorten their own words but not that quote, so `pup conductor ask` refuses,
+    storing nothing, a question no answer could reach the conductor with: the answer message for
+    each option, and for 200 characters of words, must fit the tell's 800 (`conductorQuestion`).
+    The conductor rewords it while it still sees the refusal. An `answer` event `{question, text, option?}` is recorded only once the paste landed. A tell
     that did not land leaves the question open and says so.
 
     *Open questions are read in one place.* `openQuestion(db, sessionId | null)` in the session
