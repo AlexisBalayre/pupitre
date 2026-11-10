@@ -348,7 +348,7 @@ export function treeRoot(repoPath: string, sha: string): RootFiles {
 }
 
 /** What one vitest run collects, and the config that says so without its lists. */
-export interface VitestCollection {
+interface VitestCollection {
   collects: (path: string) => boolean;
   /**
    * The config's file name and text with its `include` and `exclude` lists cut
