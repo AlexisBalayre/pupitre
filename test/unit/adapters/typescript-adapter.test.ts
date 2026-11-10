@@ -1,5 +1,13 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 
@@ -15,6 +23,7 @@ import type { DeadExport, DuplicationReport } from '@src/adapters/types/adapter.
 import type { IstanbulCoverageMap } from '@src/adapters/types/istanbul.types.js';
 import { rootCoverageReport, typescriptAdapter } from '@src/adapters/typescript.adapter.js';
 import { endSandboxRun, runGateChild, sandboxLabel } from '@src/core/sandbox.utils.js';
+import { sh } from '@test/helpers/git.mock.js';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 
 function makeRepo(files: Record<string, string>): string {
@@ -362,6 +371,84 @@ describe('typescriptAdapter.testFiles', () => {
         'scripts/x.test.ts',
       ]),
     ).toEqual(['src/a.test.ts']);
+  });
+
+  /** A repo with `files` committed; the repo and the commit's sha. */
+  function committed(files: Record<string, string>): { repo: string; sha: string } {
+    const repo = makeRepo(files);
+    sh(repo, 'git', 'init', '-q');
+    sh(repo, 'git', 'add', '-A');
+    sh(repo, 'git', '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'init');
+    return { repo, sha: sh(repo, 'git', 'rev-parse', 'HEAD') };
+  }
+
+  // The gate's checkout is where the branch's build and tests ran, so its
+  // config is read from the commit it was cut at, never from its disk.
+  it('reads the measured config from the pinned sha, whatever the checkout holds', () => {
+    const trusted = {
+      'package.json': plainVitest,
+      'vitest.config.ts': configWith("{ include: ['src/**/*.test.ts'] }"),
+    };
+    const { repo, sha } = committed(trusted);
+    writeFileSync(
+      join(repo, 'vitest.config.ts'),
+      configWith("{ include: ['src/**/*.test.ts'], exclude: ['src/big.test.ts'] }"),
+    );
+    sh(repo, 'git', '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qam', 'narrow');
+    const narrowed = sh(repo, 'git', 'rev-parse', 'HEAD');
+    sh(repo, 'git', 'reset', '-q', '--hard', sha);
+    const ctx = { configPath: repo, measurePath: makeRepo(trusted), measureSha: narrowed };
+
+    expect(typescriptAdapter.testFiles?.(ctx, ['src/a.test.ts', 'src/big.test.ts'])).toEqual([
+      'src/a.test.ts',
+    ]);
+  });
+
+  // Each row is what a branch's code may leave in the checkout before or while
+  // vitest reads it; only a file outside the run's inputs leaves them intact.
+  it.each([
+    ['untouched', () => {}, true],
+    ['given a build output', (dir: string) => writeFileSync(join(dir, 'out.js'), 'x\n'), true],
+    [
+      'with its config rewritten',
+      (dir: string) => writeFileSync(join(dir, 'vitest.config.ts'), configWith('{}')),
+      false,
+    ],
+    ['given an .npmrc', (dir: string) => writeFileSync(join(dir, '.npmrc'), 'x=1\n'), false],
+    ['without its manifest', (dir: string) => rmSync(join(dir, 'package.json')), false],
+    [
+      'with its config made a link',
+      (dir: string) => {
+        renameSync(join(dir, 'vitest.config.ts'), join(dir, 'real.ts'));
+        symlinkSync('real.ts', join(dir, 'vitest.config.ts'));
+      },
+      false,
+    ],
+    [
+      'with its manifest renamed into another case',
+      (dir: string) => renameSync(join(dir, 'package.json'), join(dir, 'Package.json')),
+      false,
+    ],
+  ])('checks the run inputs of a checkout %s', (_, change, intact) => {
+    const { repo, sha } = committed({
+      'package.json': plainVitest,
+      'vitest.config.ts': configWith("{ include: ['src/**/*.test.ts'] }"),
+    });
+    change(repo);
+
+    expect(
+      typescriptAdapter.testInputsIntact?.({
+        configPath: repo,
+        measurePath: repo,
+        measureSha: sha,
+      }),
+    ).toBe(intact);
+  });
+
+  it('holds the run inputs intact outside the gate, where nothing ran', () => {
+    const repo = makeRepo({ 'package.json': plainVitest, '.npmrc': 'x=1\n' });
+
+    expect(typescriptAdapter.testInputsIntact?.(localContext(repo))).toBe(true);
   });
 });
 
