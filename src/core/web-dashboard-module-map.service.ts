@@ -145,13 +145,12 @@ export function readModuleMap(
   const previous = countedFiles.get(root);
   const counted: NonNullable<typeof previous> = new Map();
   let bytes = 0;
-  // Counts one plain file, or says why it was not; false once a cap is reached.
+  // Counts one plain file, or tallies it as unread; false once a cap is reached.
   const visit = (path: string, file: string, stat: Stats): boolean => {
     bytes += Math.min(stat.size, MAX_FILE_BYTES + 1);
     if (map.files.length + map.unread >= limits.files || bytes > limits.bytes) return false;
     const stamp = `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
     const known = previous?.get(path);
-    // A file over the cap is never opened.
     const lines =
       stat.size > MAX_FILE_BYTES
         ? undefined
@@ -173,7 +172,14 @@ export function readModuleMap(
     listDir(dir).every((name) => {
       const path = join(dir, name);
       const file = posix.join(relative, name);
-      const stat = lstatSync(path, { throwIfNoEntry: false });
+      let stat: Stats | undefined;
+      try {
+        stat = lstatSync(path, { throwIfNoEntry: false });
+      } catch {
+        // A directory that lists but cannot be searched fails lstat with EACCES.
+        map.unread++;
+        return true;
+      }
       if (stat?.isDirectory()) return SKIPPED_DIRS.has(name) || walk(path, file);
       return !stat?.isFile() || visit(path, file, stat);
     });

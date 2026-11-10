@@ -172,6 +172,18 @@ describe('the Decisions sheet', () => {
     expect(map.unread).toBe(1);
   });
 
+  it('counts the entries of a directory it can list but not search as unread, not as an error', () => {
+    write('src/a.ts', 'a\n');
+    write('src/listed/b.ts', 'b\n');
+    chmodSync(join(repo, 'src/listed'), 0o644);
+
+    const sheet = readDecisionsSheet(db, repo, Date.now());
+    chmodSync(join(repo, 'src/listed'), 0o755);
+
+    expect(sheet.map.files.map(({ file }) => file)).toEqual(['src/a.ts']);
+    expect(sheet.map.unread).toBe(1);
+  });
+
   it('stops the walk at its file or byte cap, in path order, and says so', () => {
     write('src/a.ts', 'a\n');
     write('src/b.ts', 'bb\n');
