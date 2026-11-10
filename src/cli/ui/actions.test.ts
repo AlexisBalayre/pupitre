@@ -39,10 +39,12 @@ import { SteerNotDeliveredError, saveSessionEnv } from '../../claude/session-run
 import { startConductor, stopConductor } from '../../core/conductor.service.js';
 import { openStore } from '../../core/db.client.js';
 import {
+  appendEvent,
   ensureProject,
   getSession,
   insertSession,
   insertTask,
+  openQuestion,
   transitionSession,
 } from '../../core/session.repository.js';
 import {
@@ -390,6 +392,16 @@ describe('dashboard actions', () => {
         workerModel: 'sonnet',
       });
       expect(result.message).toBe('Conductor running (tmux: pup-conductor-x).');
+    });
+
+    // As `pup conductor start` does: the new run never asked the last run's
+    // question, so the start ends it (decision 93).
+    it("ends the last run's question", () => {
+      appendEvent(db, null, 'question', { text: 'accept the debt?', options: ['yes', 'no'] });
+
+      toggleConductor(deps, false, { model: '', workerModel: '' });
+
+      expect(openQuestion(db, null)).toBeUndefined();
     });
 
     // The radar is `startConductor`'s to bring up, by the store's beat

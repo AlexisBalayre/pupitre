@@ -38,8 +38,11 @@
     (`Answer to your question "<q>": option 2, <text>`), so a late answer is never a riddle. For a
     session it goes through `steerSession` (kind `answer`, by `operator`), with that function's
     refusals. For the conductor it goes as a `pup conductor tell`, with the tell's refusals and its
-    800-character limit. An `answer` event `{question, text, option?}` is recorded only once the
-    paste landed. A tell that did not land leaves the question open and says so.
+    800-character limit. Both the answer and the question it quotes are scrubbed of control
+    characters and folded to one line, never cut: they are typed into a pane, the steer's and the
+    tell's refusals bound their length, and the quote must stay the question the conductor asked.
+    An `answer` event `{question, text, option?}` is recorded only once the paste landed. A tell
+    that did not land leaves the question open and says so.
 
     *Open questions are read in one place.* `openQuestion(db, sessionId | null)` in the session
     repository is the newest `question` with no `answer` after it and no steer whose `by` is
@@ -49,7 +52,12 @@
     sender types into the pane but leaves the inbox entry standing until the operator has seen it.
     `pup steer` from the operator and `pup ui`'s `s`, which is read-only to a session and the
     conductor and so records its steer as the operator's, still close it. The conductor's question
-    closes only on an answer, since no steer reaches it. The dashboard, `pup answer` and the TUI all read through it, so the inbox's
+    closes only on an answer, since no steer reaches it. A question also ends with the run it was
+    asked in, since the agent after it never asked it: a session's at a CI fix round (`fix_round`),
+    a handoff respawn (`respawn`), `pup session done` (`session_done`), or a transition back to
+    `running` from another state (an unblock, a gate re-steer); the conductor's at its next start,
+    which the CLI's and the TUI's start record as a `conductor_start` event held against no
+    session. The dashboard, `pup answer` and the TUI all read through it, so the inbox's
     numbers and the answer's cannot disagree. The payload is session-writable, so the dashboard
     scrubs the text and every option with `sanitizeReason` (decision 29) and drops a recommendation
     that names no option. The inbox also swaps arrows and emoji for `-`, as it already did for the

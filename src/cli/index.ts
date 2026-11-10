@@ -95,6 +95,7 @@ import {
   UndeclaredSandboxError,
 } from '../core/sandbox.utils.js';
 import {
+  appendEvent,
   dropTask,
   editTaskSpec,
   findSessionByWorktree,
@@ -132,6 +133,7 @@ import {
 import {
   answerConductorQuestion,
   answerSessionQuestion,
+  askedQuestion,
   createSession,
   interruptSession,
   killedFixRoundMessage,
@@ -161,7 +163,7 @@ import type { DebtBaseline, InitReport } from '../core/types/init.types.js';
 import type { LandOutcome } from '../core/types/land.types.js';
 import type { GateReport, MergeOutcome } from '../core/types/merge-gate.types.js';
 import type { TaskId, TaskSpec } from '../core/types/profile.types.js';
-import type { StoredGateStage } from '../core/types/session-event.types.js';
+import type { AskOptions, StoredGateStage } from '../core/types/session-event.types.js';
 import type { NewSessionRequest, RouteOverride } from '../core/types/session-lifecycle.types.js';
 import type { RetireOutcome } from '../core/types/session-retire.types.js';
 import {
@@ -191,7 +193,7 @@ import {
   sessionLine,
   trailing,
 } from './ui/dashboard-text.utils.js';
-import { type AskOptions, askedLines, askedQuestion } from './ui/question.utils.js';
+import { askedLines } from './ui/question.utils.js';
 
 /**
  * A multi-line string scrubbed line by line, for the three surfaces that hand
@@ -1300,6 +1302,8 @@ export function buildProgram(): Command {
         // the conductor's whole footprint, so killing it is the whole rollback.
         return reportRolledBack(error, 'Re-run `pup conductor`.');
       }
+      // The new run's start ends the last run's question (decision 93).
+      appendEvent(db, null, 'conductor_start', { name: handle.name });
       // Scrubbed like every other named field a print interpolates, rather
       // than allowlisted as another derivation of the repo path: `handle.name`
       // is a local, and chasing its provenance per line is the carve-out

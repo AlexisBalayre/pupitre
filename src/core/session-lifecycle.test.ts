@@ -93,6 +93,7 @@ import {
 import {
   answerConductorQuestion,
   answerSessionQuestion,
+  askedQuestion,
   createSession,
   fixRoundRoute,
   interruptSession,
@@ -1663,6 +1664,50 @@ describe('steer, interrupt and kill by session id', () => {
 // Decision 93: a question answered with one keystroke. `pup answer` steers the
 // asker with the question in front of the answer and records the answer, which
 // closes the question; the conductor's goes by a tell instead.
+// Decision 93: what `pup session ask` and `pup conductor ask` store, refused
+// before anything is stored when it is not a question the operator can answer
+// with one key.
+describe('askedQuestion', () => {
+  const ask = (text: string | undefined, option?: string[], recommend?: string) =>
+    askedQuestion('pup session ask', text, {
+      ...(option ? { option } : {}),
+      ...(recommend === undefined ? {} : { recommend }),
+    });
+
+  it('stores the bare text when no options are offered', () => {
+    expect(ask('rebase or merge?')).toEqual({ text: 'rebase or merge?' });
+  });
+
+  it('stores the options and the recommended one by its number', () => {
+    expect(ask('which?', ['rebase', 'merge'], '2')).toEqual({
+      text: 'which?',
+      options: ['rebase', 'merge'],
+      recommended: 2,
+    });
+  });
+
+  it('stores options with no recommendation', () => {
+    expect(ask('which?', ['rebase', 'merge'])).toEqual({
+      text: 'which?',
+      options: ['rebase', 'merge'],
+    });
+  });
+
+  it.each([
+    ['no question', undefined, undefined, undefined, 'pup session ask needs the question itself.'],
+    ['a blank question', '  ', undefined, undefined, 'pup session ask needs the question itself.'],
+    ['five options', 'which?', ['a', 'b', 'c', 'd', 'e'], undefined, /at most 4 options/],
+    ['a blank option', 'which?', ['a', ' '], undefined, 'Every --option needs its text.'],
+    ['a recommendation past them', 'which?', ['a', 'b'], '3', /one of the 2 options, from 1/],
+    ['a recommendation of 0', 'which?', ['a', 'b'], '0', /one of the 2 options/],
+    ['a recommendation in words', 'which?', ['a', 'b'], 'two', /one of the 2 options/],
+    ['a recommendation with no options', 'which?', undefined, '1', /one of the 0 options/],
+  ])('refuses %s', (_, text, option, recommend, message) => {
+    expect(() => ask(text, option, recommend)).toThrow(QuestionRefusedError);
+    expect(() => ask(text, option, recommend)).toThrow(message);
+  });
+});
+
 describe('answering an open question', () => {
   let db: Database;
 
@@ -1777,6 +1822,43 @@ describe('answering an open question', () => {
     expect(() => answerSessionQuestion(db, 's-1', '1')).toThrow(TerminalSessionError);
   });
 
+  // A question belongs to the run it was asked in: the agent a fresh window
+  // or a return to running puts there never asked it (decision 93).
+  it.each([
+    ['a CI fix round', 'fix_round', { prUrl: 'u', head: 'h', threads: [], rejectBase: 0 }],
+    ['a handoff respawn', 'respawn', { delivered: true }],
+    ['`pup session done`', 'session_done', { summary: 'done' }],
+    ['a return to running', 'gate_result', { from: 'blocked', to: 'running' }],
+  ] as const)('ends the question at %s', (_, type, payload) => {
+    appendEvent(db, 's-1', type, payload as never);
+
+    expect(openQuestion(db, 's-1')).toBeUndefined();
+    expect(() => answerSessionQuestion(db, 's-1', '1')).toThrow(/no open question/);
+  });
+
+  it('keeps the question through a block, and ends it at the unblock', () => {
+    transitionSession(db, 's-1', 'blocked');
+    expect(openQuestion(db, 's-1')).toBeDefined();
+
+    transitionSession(db, 's-1', 'running', { kind: 'operator-unblock' });
+
+    expect(openQuestion(db, 's-1')).toBeUndefined();
+  });
+
+  it('delivers a long answer and a long question whole', () => {
+    const question = `${'why '.repeat(100)}?`;
+    const reply = 'because '.repeat(80).trim();
+    markSessionQuestion(db, 's-1', { text: question });
+
+    answerSessionQuestion(db, 's-1', reply);
+
+    expect(steerPane).toHaveBeenCalledWith(
+      { sessionId: 's-1', paneId: '%7' },
+      `Answer to your question "${question}": ${reply}`,
+    );
+    expect(answers('s-1')).toEqual([{ question, text: reply }]);
+  });
+
   it('records no answer when the paste was refused, so the question stays open', () => {
     vi.mocked(steerPane).mockImplementationOnce(() => {
       throw new SteerNotDeliveredError('s-1', 12);
@@ -1827,6 +1909,14 @@ describe('answering an open question', () => {
       expect(() => answerConductorQuestion(db, REPO, 'no')).toThrow(/did not land/);
       expect(answers(null)).toEqual([]);
       expect(openQuestion(db, null)).toBeDefined();
+    });
+
+    it("ends the previous run's question when the conductor starts again", () => {
+      appendEvent(db, null, 'conductor_start', { name: 'pup-conductor-x' });
+
+      expect(openQuestion(db, null)).toBeUndefined();
+      expect(() => answerConductorQuestion(db, REPO, '1')).toThrow(/no open question/);
+      expect(tellConductor).not.toHaveBeenCalled();
     });
 
     it('refuses when no conductor runs, telling nothing', () => {

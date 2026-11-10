@@ -130,6 +130,8 @@ vi.mock('../core/session-lifecycle.service.js', async (importOriginal) => ({
   answerSessionQuestion: (
     await importOriginal<typeof import('../core/session-lifecycle.service.js')>()
   ).answerSessionQuestion,
+  askedQuestion: (await importOriginal<typeof import('../core/session-lifecycle.service.js')>())
+    .askedQuestion,
   createSession: vi.fn(),
   interruptSession: vi.fn(),
   killSession: vi.fn(),
@@ -1213,6 +1215,24 @@ describe('CLI commands', () => {
           '      2. no  (recommended)',
           '  s-blocked  blocked (3 rejections)  → pup unblock s-blocked',
         ]);
+      });
+
+      // The new conductor never asked it, so its kickoff would have it ignore
+      // the answer: the start ends the last run's question (decision 93).
+      it("ends the last run's question when the conductor starts again", () => {
+        const repo = initRepo();
+        useCwd(repo);
+        vi.stubEnv('PUP_CONDUCTOR', projectId(repo));
+        buildProgram().parse(ASK, { from: 'user' });
+        vi.stubEnv('PUP_CONDUCTOR', '');
+        vi.mocked(startConductor).mockReturnValue({ name: 'pup-conductor-p1', paneId: '%3' });
+
+        buildProgram().parse(['conductor', 'start'], { from: 'user' });
+        vi.mocked(isConductorRunning).mockReturnValue(true);
+        logs.length = 0;
+        buildProgram().parse(['status'], { from: 'user' });
+
+        expect(logs.join('\n')).not.toContain('accept the debt?');
       });
 
       it.each([

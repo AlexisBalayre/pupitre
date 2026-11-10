@@ -9,7 +9,7 @@ import {
 import { startConductor, stopConductor } from '../../core/conductor.service.js';
 import { blockedReason } from '../../core/dashboard.service.js';
 import { DEFAULT_BASE_PROFILE } from '../../core/default-profile.constants.js';
-import { getSession, transitionSession } from '../../core/session.repository.js';
+import { appendEvent, getSession, transitionSession } from '../../core/session.repository.js';
 import {
   isHandoffReady,
   requestHandoff,
@@ -260,6 +260,8 @@ export function toggleConductor(
         ...(models.model ? { model: models.model } : {}),
         ...(models.workerModel ? { workerModel: models.workerModel } : {}),
       });
+      // The new run's start ends the last run's question, as the CLI's does (decision 93).
+      appendEvent(deps.db, null, 'conductor_start', { name: handle.name });
       const radar = handle.radarTarget
         ? ` Conflict radar started with it (tmux: ${handle.radarTarget}).`
         : '';

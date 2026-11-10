@@ -1,51 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { QuestionRefusedError } from '../../core/session-lifecycle.service.js';
-import { askedLines, askedQuestion, optionLines } from './question.utils.js';
-
-// Decision 93: what `pup session ask` and `pup conductor ask` store, refused
-// before anything is stored when it is not a question the operator can answer
-// with one key.
-describe('askedQuestion', () => {
-  const ask = (text: string | undefined, option?: string[], recommend?: string) =>
-    askedQuestion('pup session ask', text, {
-      ...(option ? { option } : {}),
-      ...(recommend === undefined ? {} : { recommend }),
-    });
-
-  it('stores the bare text when no options are offered', () => {
-    expect(ask('rebase or merge?')).toEqual({ text: 'rebase or merge?' });
-  });
-
-  it('stores the options and the recommended one by its number', () => {
-    expect(ask('which?', ['rebase', 'merge'], '2')).toEqual({
-      text: 'which?',
-      options: ['rebase', 'merge'],
-      recommended: 2,
-    });
-  });
-
-  it('stores options with no recommendation', () => {
-    expect(ask('which?', ['rebase', 'merge'])).toEqual({
-      text: 'which?',
-      options: ['rebase', 'merge'],
-    });
-  });
-
-  it.each([
-    ['no question', undefined, undefined, undefined, 'pup session ask needs the question itself.'],
-    ['a blank question', '  ', undefined, undefined, 'pup session ask needs the question itself.'],
-    ['five options', 'which?', ['a', 'b', 'c', 'd', 'e'], undefined, /at most 4 options/],
-    ['a blank option', 'which?', ['a', ' '], undefined, 'Every --option needs its text.'],
-    ['a recommendation past them', 'which?', ['a', 'b'], '3', /one of the 2 options, from 1/],
-    ['a recommendation of 0', 'which?', ['a', 'b'], '0', /one of the 2 options/],
-    ['a recommendation in words', 'which?', ['a', 'b'], 'two', /one of the 2 options/],
-    ['a recommendation with no options', 'which?', undefined, '1', /one of the 0 options/],
-  ])('refuses %s', (_, text, option, recommend, message) => {
-    expect(() => ask(text, option, recommend)).toThrow(QuestionRefusedError);
-    expect(() => ask(text, option, recommend)).toThrow(message);
-  });
-});
+import { askedLines, optionLines } from './question.utils.js';
 
 describe('optionLines', () => {
   it('numbers the options from 1 and marks the recommended one', () => {

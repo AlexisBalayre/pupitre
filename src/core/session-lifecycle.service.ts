@@ -57,6 +57,7 @@ import {
   insertTask,
   listSessions,
   listTaskSessions,
+  MAX_QUESTION_OPTIONS,
   openQuestion,
   type QuestionEvent,
   readTaskSpec,
@@ -84,7 +85,7 @@ import {
 } from './test-slot.service.js';
 import type { ScopeConflict } from './types/overlap.types.js';
 import type { CompiledProfile, SessionId, TaskSpec } from './types/profile.types.js';
-import type { EventPayloads } from './types/session-event.types.js';
+import type { AskOptions, EventPayloads } from './types/session-event.types.js';
 import type {
   LaunchTaskRequest,
   NewSessionRequest,
@@ -771,8 +772,8 @@ export function markSessionDone(db: Database, sessionId: string, summary: string
  * Record a question a session is blocked on (run by the agent via `pup session
  * ask`, decision 76), with the options it offers and the one it recommends
  * (decision 93). The session stays running: the agent ends its turn, and the
- * next steer or `pup answer` is the answer — which is also what clears the
- * question from the dashboard.
+ * operator's next steer or `pup answer` closes the question (see
+ * `openQuestion`); a steer from anyone else leaves it open.
  */
 export function markSessionQuestion(
   db: Database,
@@ -794,18 +795,64 @@ export class QuestionRefusedError extends Error {
 }
 
 /**
+ * The question an asking command stores (decision 93): its text, up to
+ * `MAX_QUESTION_OPTIONS` options, and `--recommend` naming one of them by its
+ * 1-based number. Refused with `QuestionRefusedError` before anything is stored.
+ */
+export function askedQuestion(
+  command: string,
+  text: string | undefined,
+  opts: AskOptions,
+): EventPayloads['question'] {
+  const options = opts.option ?? [];
+  if (!text?.trim()) throw new QuestionRefusedError(`${command} needs the question itself.`);
+  if (options.length > MAX_QUESTION_OPTIONS) {
+    throw new QuestionRefusedError(
+      `A question offers at most ${MAX_QUESTION_OPTIONS} options, one key each; ask it in words, or fewer.`,
+    );
+  }
+  if (options.some((option) => !option.trim())) {
+    throw new QuestionRefusedError('Every --option needs its text.');
+  }
+  if (opts.recommend === undefined) return { text, ...(options.length > 0 ? { options } : {}) };
+  const recommended = Number(opts.recommend);
+  if (!/^\d+$/.test(opts.recommend) || recommended < 1 || recommended > options.length) {
+    throw new QuestionRefusedError(
+      `--recommend takes the number of one of the ${options.length} options, from 1.`,
+    );
+  }
+  return { text, options, recommended };
+}
+
+/**
+ * Text bound for a pane as one line: control characters out and whitespace
+ * collapsed, as `sanitizeReason` does, but whole. An answer is the operator's
+ * own words and a question the asker's, so neither is cut: the steer's and the
+ * tell's refusals bound them, and the quote stays the question asked.
+ */
+function paneLine(text: string): string {
+  return (
+    text
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping them is the point
+      .replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+  );
+}
+
+/**
  * What `pup answer` delivers for `reply` (decision 93): a bare number picks
  * that option of a question that offers some, any other text is a free answer.
  * A number past the options is refused rather than sent as words, since it is
- * a slip, not an answer. Both texts are scrubbed: they are typed into a pane.
+ * a slip, not an answer. Both texts are scrubbed, never cut: they are typed into a pane.
  */
 function resolveAnswer(asked: QuestionEvent, reply: string): EventPayloads['answer'] {
-  const question = sanitizeReason(asked.text ?? '');
+  const question = paneLine(asked.text ?? '');
   const words = reply.trim();
   if (words === '')
     throw new QuestionRefusedError('Nothing to answer with: give an option number or words.');
   const count = asked.options.length;
-  if (count === 0 || !/^\d+$/.test(words)) return { question, text: sanitizeReason(words) };
+  if (count === 0 || !/^\d+$/.test(words)) return { question, text: paneLine(words) };
   const option = Number(words);
   if (option < 1 || option > count) {
     throw new QuestionRefusedError(
@@ -813,7 +860,7 @@ function resolveAnswer(asked: QuestionEvent, reply: string): EventPayloads['answ
         'or in words. Nothing was sent.',
     );
   }
-  return { question, text: sanitizeReason(asked.options[option - 1] ?? ''), option };
+  return { question, text: paneLine(asked.options[option - 1] ?? ''), option };
 }
 
 /** The answer as the asker reads it: the question first, so a late answer is never a riddle. */

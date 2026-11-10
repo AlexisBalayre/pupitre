@@ -68,6 +68,11 @@ export interface EventPayloads {
    * operator picked when they picked one.
    */
   answer: { question: string; text: string; option?: number };
+  /**
+   * A conductor window took its context (decision 93): the run a conductor
+   * question was asked in ends here, so the previous run's stays out of the inbox.
+   */
+  conductor_start: { name: string };
   handoff_ready: { hash: string };
   respawn: { delivered: boolean; handoffBytes?: number; hard?: boolean };
   scope_overlap: { via: string; accepted: { session: string; files: string[] }[] };
@@ -77,6 +82,12 @@ export interface EventPayloads {
   tool_call: Record<string, unknown>;
   scope_violation: { path: string; reason?: string; command?: string };
   config_drift: Record<string, unknown>;
+}
+
+/** `pup session ask`'s and `pup conductor ask`'s options, as commander hands them in. */
+export interface AskOptions {
+  option?: string[];
+  recommend?: string;
 }
 
 /** A gate stage as the store holds it: shape-checked, its text not yet scrubbed for any sink. */
