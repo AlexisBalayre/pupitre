@@ -77,8 +77,32 @@ describe('runUtility', () => {
       '--effort',
       'low',
     ]);
-    // Still read-only: the write and exec tools stay denied after the flags.
-    const denied = ['Bash', 'Edit', 'Write', 'NotebookEdit', 'WebFetch'];
-    expect(argv.slice(argv.indexOf('--disallowedTools') + 1)).toEqual(denied);
+  });
+
+  // The cached prefix is the system prompt and everything ahead of the prompt
+  // in the first user message; only the prompt may differ between two calls.
+  it('sends the same request apart from the prompt: no tools, MCP, customizations or git instructions', () => {
+    const call = (prompt: string): { argv: string[]; env: NodeJS.ProcessEnv | undefined } => {
+      vi.mocked(execFileSync).mockClear();
+      runUtility(prompt);
+      const [, argv, options] = vi.mocked(execFileSync).mock.calls[0] ?? [];
+      return { argv: argv as string[], env: (options as { env?: NodeJS.ProcessEnv }).env };
+    };
+    const first = call('draft one');
+    const second = call('draft two');
+
+    expect(first.argv.slice(2)).toEqual([
+      '--model',
+      'claude-haiku-5-5',
+      '--effort',
+      'low',
+      '--tools',
+      '',
+      '--strict-mcp-config',
+      '--safe-mode',
+    ]);
+    expect(second.argv).toEqual(['-p', 'draft two', ...first.argv.slice(2)]);
+    expect(first.env?.CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS).toBe('1');
+    expect(second.env).toEqual(first.env);
   });
 });
