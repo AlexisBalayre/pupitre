@@ -499,6 +499,34 @@ describe('launchedAncestor (decision 115)', () => {
     expect(launchedAncestor()).toEqual({ kind: 'launched', name });
   });
 
+  // As `ps -ww -o args=` printed them up a session's Bash and up the
+  // conductor's on macOS (Claude Code 2.1.322's native build, 2026-11-10),
+  // with the home directory, the repo and the project id renamed and the
+  // command the Bash ran swapped for the rescope.
+  const BASH =
+    "/bin/zsh -c source /Users/me/.claude/shell-snapshots/snapshot-zsh-1794221044218-bnrr9i.sh 2>/dev/null || true && eval 'env -u PUP_CONDUCTOR pup plan edit t-1 --rescope --scope docs/**' < /dev/null && pwd -P >| /tmp/claude-846a-cwd";
+  it.each([
+    [
+      'a session',
+      'pup-t-mvdw5id6',
+      [5050, 89656] as const,
+      '/Users/me/.local/bin/claude --model claude-opus-5-5 --effort xhigh --name pup-t-mvdw5id6 --dangerously-skip-permissions --settings /Users/me/.pupitre/p1/sessions/t-mvdw5id6/compiled/settings.json --mcp-config /Users/me/.pupitre/p1/sessions/t-mvdw5id6/compiled/mcp.json --setting-sources user',
+      'tmux new-session -d -P -F #{pane_id} -s pup-watch-p1 -c /repo /Users/me/.nvm/versions/node/v24.13.1/bin/node /Users/me/.nvm/versions/node/v24.13.1/bin/pup watch',
+    ],
+    [
+      'the conductor',
+      'pup-conductor-p1',
+      [44927, 44919] as const,
+      '/Users/me/.local/bin/claude --model claude-opus-5-5 --effort high --name pup-conductor-p1 --dangerously-skip-permissions --settings /Users/me/.pupitre/p1/conductor/compiled/settings.json --mcp-config /Users/me/.pupitre/p1/conductor/compiled/mcp.json --setting-sources user',
+      'tmux -L pup-conductor-p1 new-session -d -P -F #{pane_id} -s pup-conductor-p1 -x 220 -y 50 -c /repo -e PUP_CONDUCTOR=p1 -e PUP_BIN=/Users/me/.nvm/versions/node/v24.13.1/bin/pup /Users/me/.local/bin/claude --model claude-opus-5-5 --effort high --name pup-conductor-p1 --dangerously-skip-permissions --settings /Users/me/.pupitre/p1/conductor/compiled/settings.json --mcp-config /Users/me/.pupitre/p1/conductor/compiled/mcp.json --setting-sources user',
+    ],
+  ])("finds %s's Claude Code in what ps really printed", (_who, name, pids, claude, server) => {
+    const [claudePid, serverPid] = pids;
+    tree([process.ppid, claudePid, BASH], [claudePid, serverPid, claude], [serverPid, 1, server]);
+
+    expect(launchedAncestor()).toEqual({ kind: 'launched', name });
+  });
+
   // A server lists the command that started it, which is a launch's when a
   // launch started it; the operator's own panes run under that server.
   it.each([

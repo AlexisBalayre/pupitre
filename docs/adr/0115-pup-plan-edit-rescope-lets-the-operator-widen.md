@@ -34,7 +34,20 @@
     shed its markers and left its worktree, whatever its tmux socket record says. A tmux
     process on the way up is passed over: a server lists the command that started it,
     which is a launch's when a launch started the server, and the operator's own panes
-    run under it. A `ps` that fails refuses too, as unreadable. The suggested check on the
+    run under it. A `ps` that fails refuses too, as unreadable. The check reads the
+    arguments as `ps` shows them, which a process can overwrite (as `setproctitle` does on
+    Linux), so it was checked against what `ps` really prints. On macOS (Darwin 27, Claude
+    Code 2.1.322's native build, 2026-11-10), `ps -ww -o args=` up a session's own Bash and
+    the conductor's showed each Claude Code with its whole launch argv, `--name pup-t-<id>`
+    and `--name pup-conductor-<project>` included, under the tmux server its launch started,
+    which shows the creating command (`new-session ... -s pup-watch-<project>` for a
+    session's, `-L pup-conductor-<project> new-session ... --name pup-conductor-<project>`
+    for the conductor's). The tests replay those lines. Linux was not checked: a Claude Code
+    build that rewrote its title there would show no `--name`, and this check would pass it.
+    Matching each ancestor's pid to a tmux `pane_pid` whose `pane_start_command` is a
+    launch's would not depend on that, but needs every server's socket, the conductor's own
+    and other projects' included, so it is the fallback for such a build, not built now.
+    The suggested check on the
     caller's tmux pane or terminal would not hold: `TMUX_PANE` is a variable the caller
     unsets, and Claude Code's Bash runs a command with no terminal at all. The second
     check is the window probe below, which stops a worker whose window is still up.

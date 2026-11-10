@@ -1167,6 +1167,27 @@ describe('listProcesses (decision 115)', () => {
     );
   });
 
+  // As `ps -ww -A -o pid= -o ppid= -o args=` printed a session's Claude Code
+  // and the tmux server its launch started, on macOS (Claude Code 2.1.322's
+  // native build, 2026-11-10), with the home directory, the repo and the
+  // project id renamed: the launch's `--name` reaches the arguments whole.
+  it('reads the launch arguments ps really prints', () => {
+    const claude =
+      '/Users/me/.local/bin/claude --model claude-opus-5-5 --effort xhigh --name pup-t-mvdw5id6 --dangerously-skip-permissions --settings /Users/me/.pupitre/p1/sessions/t-mvdw5id6/compiled/settings.json --mcp-config /Users/me/.pupitre/p1/sessions/t-mvdw5id6/compiled/mcp.json --setting-sources user';
+    const server =
+      'tmux new-session -d -P -F #{pane_id} -s pup-watch-p1 -c /repo /Users/me/.nvm/versions/node/v24.13.1/bin/node /Users/me/.nvm/versions/node/v24.13.1/bin/pup watch';
+    vi.mocked(execFileSync).mockImplementation(
+      (() => ` 5050 89656 ${claude}\n89656     1 ${server}\n`) as unknown as typeof execFileSync,
+    );
+
+    expect(listProcesses()).toEqual(
+      new Map([
+        [5050, { parent: 89656, args: claude }],
+        [89656, { parent: 1, args: server }],
+      ]),
+    );
+  });
+
   // A worker could put a fake ps on PATH.
   it("runs ps on the pinned PATH with a timeout, whatever the caller's PATH", () => {
     vi.mocked(execFileSync).mockImplementation((() => '') as unknown as typeof execFileSync);
