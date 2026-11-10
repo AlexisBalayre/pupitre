@@ -334,6 +334,16 @@ describe('adrNumberStage', { timeout: 20_000 }, () => {
     );
   });
 
+  it('ignores a retired PR peer, even once its gated commit is pruned', () => {
+    openPrPeer('1'.repeat(40));
+    appendEvent(db, 'other', 'retired', {
+      prUrl: 'https://github.com/o/r/pull/1',
+      supersededBy: 'https://github.com/o/r/pull/2',
+    });
+    commitOn(repo, 'pup/me', 'docs/adr/0003-mine.md');
+    expect(stage()).toBeUndefined();
+  });
+
   it('adds no stage for a branch adding no ADR beside an unreadable open PR peer', () => {
     openPrPeer();
     commitOn(repo, 'pup/me', 'src/app.ts');

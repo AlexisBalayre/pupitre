@@ -5,7 +5,7 @@ import { quotePath } from './debt.service.js';
 import { rethrowIfKilled, runGit } from './git-diff.client.js';
 import { COMMIT_SHA } from './merge-gate.constants.js';
 import { newestMerge, resolveCommitIfPresent, timedSince } from './merge-gate.service.js';
-import { listSessions } from './session.repository.js';
+import { listEvents, listSessions } from './session.repository.js';
 import { holdingStates } from './session-state.utils.js';
 import type { GateStageResult } from './types/merge-gate.types.js';
 
@@ -180,12 +180,20 @@ interface Competitor {
   prUrl?: string;
 }
 
+/** Whether `pup retire` closed the session's PR out: its newest merge, landed or retired event is `retired`. */
+function isRetired(db: Database, sessionId: string): boolean {
+  const newest = listEvents(db, sessionId)
+    .reverse()
+    .find((row) => ['merge', 'landed', 'retired'].includes(row.type));
+  return newest?.type === 'retired';
+}
+
 /**
  * The other sessions whose branch can still land: one holding its scope
  * (decision 41's live states), read at its branch, or a merged one whose PR has
- * not landed, read at the sha its newest merge pinned. The store cannot tell
- * such a PR open from closed unmerged, so a closed one counts too: nothing
- * records a close (decision 146's ceilings). That gate normally
+ * not landed, read at the sha its newest merge pinned. A retired one is out
+ * (`pup retire` records the close). The store cannot tell any other such PR
+ * open from closed unmerged, so a closed one counts too (decision 146's ceilings). That gate normally
  * deleted the local branch, in both modes; it keeps it with a worktree it could
  * not remove or when the branch moved past the pin, and then the branch may
  * hold commits the PR does not. Either way the sha is pup's record of the PR's
@@ -201,6 +209,7 @@ function competingBranches(db: Database, sessionId: string): Competitor[] {
       competitors.push({ branch: session.branch, rev: `refs/heads/${session.branch}` });
       continue;
     }
+    if (session.state === 'merged' && isRetired(db, session.id)) continue;
     const merge = session.state === 'merged' ? newestMerge(db, session.id) : undefined;
     if (typeof merge !== 'object' || merge.prUrl === undefined) continue;
     const rev = COMMIT_SHA.test(String(merge.sha)) ? merge.sha : undefined;

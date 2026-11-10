@@ -128,9 +128,9 @@
     its up to three numbers from every later gate, including a decision redone in a new session
     under the same number. Once its commit is pruned, it refuses every ADR-adding gate as an
     unreadable PR until its head is fetched again, which GitHub keeps for a closed PR as
-    `refs/pull/<n>/head`. Until then the way out is to renumber, or to fetch that head. Retiring a
-    closed PR needs a terminal event, written by `pup land` or an operator command, that
-    `newestMerge` reads like `landed`. That is outside this decision.
+    `refs/pull/<n>/head`. Until then the way out is to renumber, or to fetch that head. A PR the
+    operator closed out with `pup retire` no longer counts: the gate skips a session whose newest
+    `merge`, `landed` or `retired` event is `retired`.
     Tests: `adrNumberStage` adds no stage for a branch adding no decision, a free number, an
     edit to a decision already on the target or a slug-only rename of one. It refuses a number
     on the target, an unpaired file under the number of one the branch deletes (as a rename
