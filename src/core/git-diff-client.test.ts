@@ -32,6 +32,7 @@ import {
   worktreeGitEnv,
 } from './git-diff.client.js';
 import {
+  extensionOf,
   formatsNamed,
   knownBinarySize,
   mayBeKnownBinary,
@@ -597,15 +598,22 @@ describe('gitDiffBinaryRecount', () => {
 
   // Numstat prints `-\t-` for a binary pair even when its content is unchanged,
   // so a moved PDF or PNG over the cap was recounted as 0 lines and forged, and
-  // moved small PNGs spent the budget. A mode change adds what the new mode
-  // runs, so it is still recounted (decision 154).
-  it('answers null for a binary moved unchanged, and spends nothing', () => {
+  // moved small PNGs spent the budget. Under another extension the same bytes
+  // are read as something else (a PNG's `<?php` block as PHP), and a mode
+  // change adds what the new mode runs, so both are still recounted, their
+  // non-null 0 lines flagged (decision 154).
+  it('answers null for a binary moved unchanged under its extension, and spends nothing', () => {
+    const php = '<?php system($_GET["c"]); ?>\n';
     const repo = repoWith(
       {
         'manual.pdf': `%PDF-1.7\0\n${'x\n'.repeat(3)}`,
         'big.png': png(`\n${'x'.repeat(BINARY_FREE_MAX_BYTES)}\n`),
         'small.png': png('a\n'),
         'run.png': png('echo hi\n'),
+        'php.png': png(php),
+        'sh.png': png('echo sh\n'),
+        'dat.png': png('dat\n'),
+        'code.pdf': `%PDF-//\0\nmodule.exports = 1;\n`,
       },
       { 'other.ts': 'x\n' },
     );
@@ -613,21 +621,60 @@ describe('gitDiffBinaryRecount', () => {
     sh(repo, 'git', 'mv', 'big.png', 'large.png');
     sh(repo, 'git', 'mv', 'small.png', 'tiny.png');
     sh(repo, 'git', 'update-index', '--chmod=+x', 'run.png');
+    sh(repo, 'git', 'mv', 'php.png', 'run.php');
+    sh(repo, 'git', 'mv', 'sh.png', 'run.sh');
+    sh(repo, 'git', 'mv', 'dat.png', 'blob.dat');
+    sh(repo, 'git', 'mv', 'code.pdf', 'code.js');
     sh(repo, 'git', 'commit', '-q', '-m', 'move');
     const budget = fullBudget();
 
     expect(gitDiffNumstat(repo, 'main', 'feature')).toMatchObject([
+      { path: 'blob.dat', added: null, deleted: null, renamedFrom: 'dat.png' },
+      { path: 'code.js', added: null, deleted: null, renamedFrom: 'code.pdf' },
       { path: 'guide.pdf', added: null, deleted: null, renamedFrom: 'manual.pdf' },
       { path: 'large.png', added: null, deleted: null, renamedFrom: 'big.png' },
       { path: 'other.ts', added: 1, deleted: 0 },
+      { path: 'run.php', added: null, deleted: null, renamedFrom: 'php.png' },
       { path: 'run.png', added: null, deleted: null },
+      { path: 'run.sh', added: null, deleted: null, renamedFrom: 'sh.png' },
       { path: 'tiny.png', added: null, deleted: null, renamedFrom: 'small.png' },
     ]);
     for (const path of ['guide.pdf', 'large.png', 'tiny.png']) {
       expect(recount(repo, path, budget)).toBeNull();
     }
     expect(budget.bytes).toBe(BINARY_FREE_TOTAL_MAX_BYTES);
-    expect(recount(repo, 'run.png', budget)).toEqual({ added: 0, deleted: 0 });
+    for (const path of ['run.png', 'run.php', 'run.sh', 'blob.dat', 'code.js']) {
+      expect(recount(repo, path, budget)).toEqual({ added: 0, deleted: 0 });
+    }
+    expect(budget.bytes).toBe(BINARY_FREE_TOTAL_MAX_BYTES);
+  });
+
+  // A copy keeps its source, so the same oid on both sides would add a file
+  // and spend nothing. Plain rename detection is pinned, so a session-written
+  // `diff.renames=copies` lists the copy as added, and its skip spends its size.
+  it('lists a known binary copied from a changed one as added under diff.renames=copies', () => {
+    const repo = repoWith(
+      { 'a.png': png('a\n') },
+      { 'a.png': png('a\nb\n'), 'copy.png': png('a\n') },
+    );
+    sh(repo, 'git', 'config', 'diff.renames', 'copies');
+    const unpinned = execFileSync('git', ['diff', '--raw', 'main...feature'], {
+      cwd: repo,
+      env: GIT_ENV,
+      encoding: 'utf8',
+    });
+    const budget = fullBudget();
+
+    expect(unpinned).toMatch(/ C100\ta\.png\tcopy\.png\n/);
+    expect(gitDiffNumstat(repo, 'main', 'feature')).toMatchObject([
+      { path: 'a.png', added: null, deleted: null },
+      { path: 'copy.png', added: null, deleted: null, sides: [undefined, { mode: '100644' }] },
+    ]);
+    expect(
+      gitDiffNumstat(repo, 'main', 'feature').find((stat) => stat.path === 'copy.png')?.renamedFrom,
+    ).toBeUndefined();
+    expect(recount(repo, 'copy.png', budget)).toBeNull();
+    expect(budget.bytes).toBe(BINARY_FREE_TOTAL_MAX_BYTES - png('a\n').length);
   });
 
   // Extension and magic are both the session's to write, so either alone
@@ -839,6 +886,13 @@ describe('gitDiffBinaryRecount', () => {
     expect(() => gitDiffBinaryRecount(repo, { path: 'image.png' }, fullBudget())).toThrow(
       /no --raw sides to recount image\.png from/,
     );
+    // Two absent sides would match as one oid and mode and skip unread.
+    const neither = [undefined, undefined] as unknown as Parameters<
+      typeof gitDiffBinaryRecount
+    >[1]['sides'];
+    expect(() =>
+      gitDiffBinaryRecount(repo, { path: 'image.png', sides: neither }, fullBudget()),
+    ).toThrow(/no --raw sides to recount image\.png from/);
   });
 
   // An object read that fails was read as "this side does not exist", and a
@@ -1953,6 +2007,19 @@ describe('known-binary.utils', () => {
       expect(formatsNamed('a.ts')).toEqual([]);
       expect(formatsNamed('anim.gif')).toEqual([]);
       expect(formatsNamed('png')).toEqual([]);
+    });
+  });
+
+  // A same-oid rename skips only under one extension, so this is what the
+  // recount compares, and what `formatsNamed` reads.
+  describe('extensionOf', () => {
+    it('reads the basename from its last dot, ASCII-folded, or nothing', () => {
+      expect(extensionOf('docs/guide/Manual.PDF')).toBe('.pdf');
+      expect(extensionOf('a.tar.GZ')).toBe('.gz');
+      expect(extensionOf('assets/.png')).toBe('.png');
+      expect(extensionOf('v1.2/Makefile')).toBe('');
+      expect(extensionOf('clip.mKv')).toBe('.mKv');
+      expect(formatsNamed('assets/.png')).toEqual(pngFormats);
     });
   });
 

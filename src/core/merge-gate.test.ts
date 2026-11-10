@@ -1728,6 +1728,36 @@ describe('countChangedLines', () => {
     });
   });
 
+  // Numstat prints `-\t-` for a binary moved unchanged. Under its extension it
+  // adds nothing, but a PNG on main carrying a `<?php` block, renamed to `.php`
+  // or `.sh` or a name no format takes, is read as that name now (decision 154).
+  it('skips a binary moved unchanged under its extension, and flags one renamed out of it', () => {
+    const repo = initRepo();
+    const png = (rest: string): Buffer =>
+      Buffer.concat([Buffer.from('\x89PNG\r\n\x1a\n\0\0\0\rIHDR', 'latin1'), Buffer.from(rest)]);
+    writeFileSync(join(repo, 'manual.pdf'), `%PDF-1.7\0\n${'x\n'.repeat(3)}`);
+    writeFileSync(join(repo, 'logo.png'), png('logo\n'));
+    writeFileSync(join(repo, 'php.png'), png('<?php system($_GET["c"]); ?>\n'));
+    writeFileSync(join(repo, 'sh.png'), png('echo sh\n'));
+    writeFileSync(join(repo, 'dat.png'), png('dat\n'));
+    sh(repo, 'git', 'add', '.');
+    sh(repo, 'git', 'commit', '-q', '-m', 'binaries');
+    sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
+    sh(repo, 'git', 'mv', 'manual.pdf', 'guide.pdf');
+    sh(repo, 'git', 'mv', 'logo.png', 'mark.png');
+    sh(repo, 'git', 'mv', 'php.png', 'run.php');
+    sh(repo, 'git', 'mv', 'sh.png', 'run.sh');
+    sh(repo, 'git', 'mv', 'dat.png', 'blob.dat');
+    sh(repo, 'git', 'commit', '-q', '-m', 'move');
+
+    expect(countChangedLines(repo, 'main', 'feature')).toEqual({
+      source: 0,
+      test: 0,
+      docs: 0,
+      forged: ['blob.dat', 'run.php', 'run.sh'],
+    });
+  });
+
   // A name that is not UTF-8 decodes to U+FFFD, and the blob looked up by that
   // string was a decoy PNG's, which let the hidden file skip at any size.
   it('flags a file whose name is not UTF-8 beside a decoy under the decoded name', () => {

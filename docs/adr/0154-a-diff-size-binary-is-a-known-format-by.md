@@ -77,10 +77,20 @@
     pathspec, not skipped as an image with no base side. Numstat prints `-\t-` for a
     binary pair even when its content is unchanged, so a rename keeping the oid and mode
     reached the recount too: a moved PDF or PNG over the cap counted 0 lines and was
-    forged, and moved small PNGs spent the budget. Two sides with one oid and one mode
-    add nothing to the tree, so they answer null unread and spend nothing, as numstat
-    counts a text rename `0\t0`. A mode change on the same oid is still recounted: the
-    new mode is what a 100755 PNG runs by. Each side's size comes from
+    forged, and moved small PNGs spent the budget. Two sides that both exist, with one
+    oid, one mode and one extension (the basename from its last dot, ASCII-folded, which
+    is also what `formatsNamed` reads), add nothing to the tree. They answer null unread
+    and spend nothing, as numstat counts a text rename `0\t0`. The blob is the same, so
+    its magic and its formats are too, and nothing needs reading. A mode change on the
+    same oid is still recounted, because the new mode is what a 100755 PNG runs by. So is
+    a rename to another extension: the same bytes are then read as that name. A PNG on
+    `main` carrying a `<?php` block, renamed unchanged to `.php`, `.sh` or a name no
+    format takes, recounts 0 lines and is forged. So is a NUL-carrying `.pdf` renamed to
+    `.js`, as it may have reached `main` uncounted under the old NUL rule. Matching only
+    known formats on both paths would have flagged a moved PDF again. A copy keeps its
+    source, so one oid on both sides would add a file while spending nothing. Copies
+    never pass as renames, because `gitDiffNumstat` pins `diff.renames=true` over a
+    session-written `copies` and passes no `-C`. Each side's size comes from
     `cat-file -s` and its bytes from `readBlobs`, by oid. Paths were the key before: an
     `ls-tree` of the path on each revision, absent when it listed nothing. But `runGit`
     decodes git's output as UTF-8, so a name that is not UTF-8 reached `ls-tree` as U+FFFD,
@@ -93,7 +103,8 @@
     <branch oid>`, or, for a file only one side holds, that blob's lines, read through
     `readBlobs`. Read by its decoded path, a recounted file whose name is not UTF-8 counted
     the hunks of whatever that name matched, or none: a 5 000-line source file with a NUL
-    counted 0 lines. An entry without sides throws.
+    counted 0 lines. An entry without sides throws, and so does one with neither side,
+    which would otherwise match itself as one oid and skip.
     *Not taken.* Flagging a known binary under a source or test path. A binary can never be
     a test, because the test split takes only the `.test.ts` suffix. And every path outside
     `docs/` counts as source (decision 110), so the rule would flag every image outside
@@ -169,8 +180,11 @@
     it, and no real image needs the exec bit. A `.ts` renamed into a `.png` holding its bytes recounts,
     with the rename source and both oids in its numstat entry, and a PNG renamed into a
     PNG skips. A PDF with a NUL, a PNG over the cap and a small PNG each moved unchanged
-    answer null and leave the budget whole, while a PNG made executable in place recounts
-    0 lines. A target PNG renamed to a name that is not UTF-8 with a zip end record
+    answer null and leave the budget whole. A PNG made executable in place, PNGs renamed
+    unchanged to `.php`, `.sh` and `.dat`, and a `.pdf` renamed to `.js` each recount 0
+    lines. Under a session-written `diff.renames=copies`, a PNG copied from a changed one
+    is listed as added, with no `renamedFrom`, and its skip spends its size. An entry with
+    neither side throws. A target PNG renamed to a name that is not UTF-8 with a zip end record
     appended recounts its 6 added lines, and so does a PNG over the cap under such a name
     beside a decoy PNG committed under its U+FFFD spelling, which skips: 10 lines, its
     own. A `.ts` with a NUL under a name that is not UTF-8 recounts 5 001 lines. A PNG
@@ -187,7 +201,9 @@
     overflows) or long, and, before running git, a size that is no byte count or sizes that
     add past 64 MiB. In `merge-gate.test.ts`, a
     5 000-line `.ts` with a NUL counts 5 001 source lines and is forged, beside a real PNG
-    that counts nothing. A `.ts` renamed into a PNG is forged, and so is the hidden file
+    that counts nothing. A PDF and a PNG moved unchanged count nothing and are not
+    forged, while PNGs renamed unchanged to `.php`, `.sh` and `.dat` are. A `.ts`
+    renamed into a PNG is forged, and so is the hidden file
     beside a decoy under the U+FFFD spelling of its name, counting its own 6 lines. An importer with a NUL in a comment still reaches its test. A tree
     with 40 links and 40 importers runs exactly as many git processes as a tree with 1 of
     each, with two `cat-file --batch` calls, each carrying the 30 s timeout, and no

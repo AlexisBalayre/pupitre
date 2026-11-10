@@ -92,15 +92,21 @@ const TAR_CHECKSUM_BYTES = 8;
 const PHAR_STUB_END = '__halt_compiler';
 
 /**
- * The formats `path`'s extension names, in any ASCII case. Only ASCII is
- * folded: `toLowerCase` folds the Kelvin sign U+212A to `k`, and `.mKv`
- * written with it names no format a reader opens as one.
+ * `path`'s extension: its basename from the last dot, in ASCII lower case,
+ * empty when the basename holds no dot. Only ASCII is folded: `toLowerCase`
+ * folds the Kelvin sign U+212A to `k`, and `.mKv` written with it names no
+ * format a reader opens as one.
  */
-export function formatsNamed(path: string): BinaryFormat[] {
+export function extensionOf(path: string): string {
   const name = basename(path).replace(/[A-Z]/g, (letter) => letter.toLowerCase());
-  return BINARY_FORMATS.filter((format) =>
-    format.extensions.some((extension) => name.endsWith(extension)),
-  );
+  const dot = name.lastIndexOf('.');
+  return dot === -1 ? '' : name.slice(dot);
+}
+
+/** The formats `path`'s extension (`extensionOf`) names, so two paths of one extension name the same. */
+export function formatsNamed(path: string): BinaryFormat[] {
+  const extension = extensionOf(path);
+  return BINARY_FORMATS.filter((format) => format.extensions.includes(extension));
 }
 
 /**
