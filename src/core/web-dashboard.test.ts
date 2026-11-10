@@ -11,14 +11,14 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../claude/session-runtime.service.js')>()),
   hasConductorWindow: vi.fn(() => false),
   conductorPane: vi.fn(() => undefined),
-  readInputBox: vi.fn(() => 'empty'),
+  readInputBoxLook: vi.fn(() => ({ state: 'empty', draft: '' })),
 }));
 
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import {
   conductorPane,
   hasConductorWindow,
-  readInputBox,
+  readInputBoxLook,
 } from '../claude/session-runtime.service.js';
 import { formatDebtTransition } from './audit.service.js';
 import { appendBaselineHistory } from './baseline-history.repository.js';
@@ -125,7 +125,7 @@ describe('startWebDashboard', () => {
     vi.unstubAllEnvs();
     vi.mocked(hasConductorWindow).mockReset();
     vi.mocked(conductorPane).mockReturnValue(undefined);
-    vi.mocked(readInputBox).mockReturnValue('empty');
+    vi.mocked(readInputBoxLook).mockReturnValue({ state: 'empty', draft: '' });
   });
 
   function seedSession(
@@ -347,7 +347,7 @@ describe('startWebDashboard', () => {
     it('lists a conductor nothing reaches under Needs you, with the attach line', async () => {
       vi.mocked(hasConductorWindow).mockReturnValue(true);
       vi.mocked(conductorPane).mockReturnValue({ sessionId: 'c', paneId: '%3', socket: 'sock' });
-      vi.mocked(readInputBox).mockReturnValue('holds');
+      vi.mocked(readInputBoxLook).mockReturnValue({ state: 'holds', draft: 'draft' });
       // The first look starts the clock; the page's own look, a quarter-hour on, finds it held.
       buildDashboardSnapshot(db, repo, Date.now() - 15 * 60_000);
 

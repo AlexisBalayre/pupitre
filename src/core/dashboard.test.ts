@@ -15,7 +15,7 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => {
     hasConductorWindow: vi.fn(() => false),
     claudeUserDir: vi.fn(actual.claudeUserDir),
     conductorPane: vi.fn(() => undefined),
-    readInputBox: vi.fn(() => 'empty'),
+    readInputBoxLook: vi.fn(() => ({ state: 'empty', draft: '' })),
   };
 });
 
@@ -24,7 +24,7 @@ import {
   claudeUserDir,
   conductorPane,
   hasConductorWindow,
-  readInputBox,
+  readInputBoxLook,
   saveSessionEnv,
   transcriptDir,
 } from '../claude/session-runtime.service.js';
@@ -273,14 +273,17 @@ describe('buildDashboardSnapshot', () => {
       afterEach(() => {
         vi.mocked(hasConductorWindow).mockReturnValue(false);
         vi.mocked(conductorPane).mockReturnValue(undefined);
-        vi.mocked(readInputBox).mockReturnValue('empty');
+        vi.mocked(readInputBoxLook).mockReturnValue({ state: 'empty', draft: '' });
       });
 
       it.each([
         ['holds', 'unsent draft'],
         ['absent', 'not on main input'],
       ] as const)('reports a box that %s across ten minutes as %s', (box, reason) => {
-        vi.mocked(readInputBox).mockReturnValue(box);
+        vi.mocked(readInputBoxLook).mockReturnValue({
+          state: box,
+          draft: box === 'holds' ? 'draft' : '',
+        });
 
         expect(buildDashboardSnapshot(db, repo, NOW).conductor.blocked).toBeUndefined();
         expect(buildDashboardSnapshot(db, repo, LATER).conductor.blocked).toEqual({
@@ -290,7 +293,7 @@ describe('buildDashboardSnapshot', () => {
       });
 
       it('never reports an empty box at the main prompt', () => {
-        vi.mocked(readInputBox).mockReturnValue('empty');
+        vi.mocked(readInputBoxLook).mockReturnValue({ state: 'empty', draft: '' });
 
         buildDashboardSnapshot(db, repo, NOW);
         expect(buildDashboardSnapshot(db, repo, LATER).conductor).not.toHaveProperty('blocked');
@@ -298,11 +301,11 @@ describe('buildDashboardSnapshot', () => {
 
       it('does not look at the pane while no conductor runs', () => {
         vi.mocked(hasConductorWindow).mockReturnValue(false);
-        vi.mocked(readInputBox).mockClear();
+        vi.mocked(readInputBoxLook).mockClear();
 
         buildDashboardSnapshot(db, repo, LATER);
 
-        expect(readInputBox).not.toHaveBeenCalled();
+        expect(readInputBoxLook).not.toHaveBeenCalled();
       });
     });
   });

@@ -9,7 +9,7 @@
     rewind menu. Every worker's idle notice and every `pup conductor tell` is refused there, since
     decision 85's tell types only into an empty box on screen, and nothing told the operator. It sat
     idle from 06:41 to 09:22 on 2026-10-26, and overnight on 2026-10-24.
-    `conductorBlock` makes the same look the tell refuses on, `readInputBox` on the conductor's
+    `conductorBlock` makes the same look the tell refuses on, `readInputBoxLook` on the conductor's
     pane, and only that look. Once the box has not been empty and on screen for over ten minutes
     (`CONDUCTOR_BLOCKED_AFTER_MS`), the snapshot's conductor carries `blocked` (`unsent draft` or
     `not on main input`, and its age). `needsYou` then lists it as a `conductor` line, after the
@@ -28,11 +28,23 @@
     `pup conductor start` before its window opens: a conductor stopped or crashed while unreachable
     leaves its clock behind, and the next one, booting or holding its kickoff, would otherwise be
     named blocked at once.
-    Holding a draft and then an overlay keeps one clock, since a tell reaches neither. A tell that
-    bounces off the box also starts the clock. So the first worker notice refused, not the
-    operator's next `pup status`, is when the ten minutes begin. A file that holds no time, a time
-    later than now, or a link is replaced rather than read or written through. A look whose
-    capture fails says nothing either way.
+    The clock holds only while every look sees the same thing, and the file keeps what the first
+    one saw. A draft is kept as the hash of its text with spaces and line breaks dropped, so the
+    resize `pup attach` makes does not turn it into another draft, and the operator's text never
+    reaches disk. An overlay is kept as `overlay`. A look that finds a different draft, or a draft
+    where an overlay was or the reverse, starts the clock again. Nothing records the moments
+    between looks, and the one-shot looks can be far apart. Without this, a draft sent unread at
+    10:00, with no look seeing the box empty afterwards, and another typed at 10:40 read as one
+    forty-minute block while the operator was typing. The cost: a block that changes form, such as
+    a draft and then an overlay over it, is named ten minutes after its last change rather than
+    its first. One case is left. Two overlay spells still read as one when no look between them
+    saw the box empty or holding a draft, since an overlay shows nothing that tells two apart.
+    A tell that bounces off the box also starts the clock. So the first worker notice refused, not
+    the operator's next `pup status`, is when the ten minutes begin. The box a tell leaves after
+    its last Enter is a look too: a tell that landed drops a clock a look taken mid-paste started
+    on the message itself, and one left in the box or under a dialog starts it. A file that holds
+    no time, a time later than now, or a link is replaced rather than read or written through. A
+    look whose capture fails says nothing either way.
     Rejected: clearing or submitting the draft automatically (the operator's text, lost or sent
     unread). Timing from the conductor's transcript or tmux's window activity (the transcript sits
     in a directory the operator's own sessions in the main checkout share, and an idle Claude

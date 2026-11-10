@@ -1,9 +1,10 @@
+import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { readPlainFile } from '../adapters/capability.utils.js';
 import { CONDUCTOR_ROUTE } from '../claude/model-ladder.constants.js';
-import type { InputBoxState } from '../claude/pane.utils.js';
+import type { InputBoxLook } from '../claude/pane.utils.js';
 import {
   conductorName,
   conductorPane,
@@ -13,7 +14,7 @@ import {
   launchConductor,
   launchWatcher,
   pasteIntoPane,
-  readInputBox,
+  readInputBoxLook,
   submitPane,
 } from '../claude/session-runtime.service.js';
 import { codegraphBinary, prepareGraph } from './codegraph.client.js';
@@ -395,7 +396,7 @@ export function tellConductor(repoPath: string, message: string): boolean {
   // operator's own from `pup attach`: refuse rather than send both or erase it.
   // The refusal also starts the blocked clock, so the first worker notice
   // that bounces off the box counts toward the inbox line (decision 168).
-  if (noteConductorBox(repoPath, readInputBox(pane), Date.now()) !== undefined) {
+  if (noteConductorBox(repoPath, readInputBoxLook(pane), Date.now()) !== undefined) {
     throw new ConductorTellRefusedError(
       "The conductor's input box holds unsent text, or is not on screen; nothing was sent. " +
         'Look with `pup attach`, send or clear what is there, then tell again.',
@@ -403,12 +404,16 @@ export function tellConductor(repoPath: string, message: string): boolean {
   }
   if (!pasteIntoPane(pane, message)) return false;
   submitPane(pane);
-  let box = readInputBox(pane);
-  if (box === 'holds') {
+  let box = readInputBoxLook(pane);
+  if (box.state === 'holds') {
     submitPane(pane);
-    box = readInputBox(pane);
+    box = readInputBoxLook(pane);
   }
-  return box === 'empty';
+  // The box the tell leaves is a look like any other. A tell that landed drops
+  // a clock that a look taken mid-paste started on the message, and one left in
+  // the box, or under a dialog, starts the clock (decision 168).
+  noteConductorBox(repoPath, box, Date.now());
+  return box.state === 'empty';
 }
 
 /**
@@ -418,7 +423,7 @@ export function tellConductor(repoPath: string, message: string): boolean {
  */
 export const CONDUCTOR_BLOCKED_AFTER_MS = 10 * 60_000;
 
-/** Where the first look that found the conductor unreachable is kept; derived as `maxSessionsFile` is. */
+/** Where the first look that found the conductor unreachable is kept, with what it saw; derived as `maxSessionsFile` is. */
 function blockedSinceFile(repoPath: string): string {
   return join(projectPaths(repoPath).root, 'conductor', 'blocked-since');
 }
@@ -437,19 +442,29 @@ function dropBlockedSince(repoPath: string): void {
  * been unreachable, or undefined when the box is empty and on screen, the one
  * state `tellConductor` types into. The time persists across the one-shot
  * readers (`pup status`, a bounced tell), so any two looks ten minutes apart
- * find it. A file that holds no time, or one later than `now`, starts the
- * clock again; one that cannot be written leaves it unstarted, so a
- * conductor is never named blocked on a guess.
+ * find it. Beside the time is what the look saw: a draft, kept by its hash and
+ * never as text (it may be the operator's), or an overlay. The clock holds only
+ * while each look sees the same thing. Nothing records the moments between
+ * looks, so a different draft, or a draft where an overlay was or the reverse,
+ * may be a new spell after one that no look saw end, and starts the clock
+ * again. A file that holds no time, or one later than `now`, starts the clock
+ * again too. One that cannot be written leaves it unstarted, so a conductor is
+ * never named blocked on a guess.
  */
-function noteConductorBox(repoPath: string, box: InputBoxState, now: number): number | undefined {
+function noteConductorBox(repoPath: string, look: InputBoxLook, now: number): number | undefined {
   const file = blockedSinceFile(repoPath);
-  if (box === 'empty') {
+  if (look.state === 'empty') {
     dropBlockedSince(repoPath);
     return undefined;
   }
+  const sight =
+    look.state === 'holds'
+      ? `draft ${createHash('sha256').update(look.draft).digest('hex')}`
+      : 'overlay';
   try {
-    const since = Number(readPlainFile(file, { followLinks: false }).trim());
-    if (Number.isInteger(since) && since > 0 && since <= now) return since;
+    const [time, seen] = readPlainFile(file, { followLinks: false }).split('\n');
+    const since = Number(time);
+    if (seen === sight && Number.isInteger(since) && since > 0 && since <= now) return since;
   } catch {
     // Nothing recorded yet: this look starts the clock.
   }
@@ -458,7 +473,7 @@ function noteConductorBox(repoPath: string, box: InputBoxState, now: number): nu
     // Removed first and created exclusively, so a link planted there is
     // replaced rather than written through.
     rmSync(file, { force: true });
-    writeFileSync(file, `${now}\n`, { flag: 'wx' });
+    writeFileSync(file, `${now}\n${sight}\n`, { flag: 'wx' });
   } catch {
     // Unrecorded: the next look starts the clock again.
   }
@@ -477,14 +492,17 @@ function noteConductorBox(repoPath: string, box: InputBoxState, now: number): nu
 export function conductorBlock(repoPath: string, now: number): ConductorBlocked | undefined {
   const pane = conductorPane(projectId(repoPath));
   if (!pane) return undefined;
-  let box: InputBoxState;
+  let look: InputBoxLook;
   try {
-    box = readInputBox(pane);
+    look = readInputBoxLook(pane);
   } catch {
     // A pane gone between the lookup and the capture says nothing either way.
     return undefined;
   }
-  const since = noteConductorBox(repoPath, box, now);
+  const since = noteConductorBox(repoPath, look, now);
   if (since === undefined || now - since <= CONDUCTOR_BLOCKED_AFTER_MS) return undefined;
-  return { reason: box === 'holds' ? 'unsent draft' : 'not on main input', ageMs: now - since };
+  return {
+    reason: look.state === 'holds' ? 'unsent draft' : 'not on main input',
+    ageMs: now - since,
+  };
 }
