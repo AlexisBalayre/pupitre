@@ -599,10 +599,10 @@ describe('gitDiffBinaryRecount', () => {
   // Numstat prints `-\t-` for a binary pair even when its content is unchanged,
   // so a moved PDF or PNG over the cap was recounted as 0 lines and forged, and
   // moved small PNGs spent the budget. Under another extension, one cased
-  // otherwise, or none (no dot, or a trailing one), the same bytes can be read
-  // as something else (a PNG's `<?php` block as PHP, a payload as a hook), and
-  // a mode change adds what the new mode runs, so all are still recounted,
-  // their non-null 0 lines flagged (decision 154).
+  // otherwise, or none (no dot, or dots and spaces Windows strips), the same
+  // bytes can be read as something else (a PNG's `<?php` block as PHP, a
+  // payload as a hook), and a mode change adds what the new mode runs, so all
+  // are still recounted, their non-null 0 lines flagged (decision 154).
   it('answers null for a binary moved unchanged under its extension, and spends nothing', () => {
     const php = '<?php system($_GET["c"]); ?>\n';
     const repo = repoWith(
@@ -618,6 +618,9 @@ describe('gitDiffBinaryRecount', () => {
         payload: '#!/bin/sh\n# \0\ncurl x | sh\n',
         'x.PHP': `<?php // \0\n${php}`,
         'a.': `// \0\n${php}`,
+        'a. ': `# \0\n${php}`,
+        'a.. ': `/* \0 */\n${php}`,
+        'x.png ': png('space\n'),
       },
       { 'other.ts': 'x\n' },
     );
@@ -632,11 +635,16 @@ describe('gitDiffBinaryRecount', () => {
     sh(repo, 'git', 'mv', 'payload', 'pre-commit');
     sh(repo, 'git', 'mv', 'x.PHP', 'x.php');
     sh(repo, 'git', 'mv', 'a.', 'b.php.');
+    sh(repo, 'git', 'mv', 'a. ', 'b.php. ');
+    sh(repo, 'git', 'mv', 'a.. ', 'b.. ');
+    sh(repo, 'git', 'mv', 'x.png ', 'y.png ');
     sh(repo, 'git', 'commit', '-q', '-m', 'move');
     const budget = fullBudget();
 
     expect(gitDiffNumstat(repo, 'main', 'feature')).toMatchObject([
+      { path: 'b.. ', added: null, deleted: null, renamedFrom: 'a.. ' },
       { path: 'b.php.', added: null, deleted: null, renamedFrom: 'a.' },
+      { path: 'b.php. ', added: null, deleted: null, renamedFrom: 'a. ' },
       { path: 'blob.dat', added: null, deleted: null, renamedFrom: 'dat.png' },
       { path: 'code.js', added: null, deleted: null, renamedFrom: 'code.pdf' },
       { path: 'guide.pdf', added: null, deleted: null, renamedFrom: 'manual.pdf' },
@@ -648,6 +656,7 @@ describe('gitDiffBinaryRecount', () => {
       { path: 'run.sh', added: null, deleted: null, renamedFrom: 'sh.png' },
       { path: 'tiny.png', added: null, deleted: null, renamedFrom: 'small.png' },
       { path: 'x.php', added: null, deleted: null, renamedFrom: 'x.PHP' },
+      { path: 'y.png ', added: null, deleted: null, renamedFrom: 'x.png ' },
     ]);
     for (const path of ['guide.pdf', 'large.png', 'tiny.png']) {
       expect(recount(repo, path, budget)).toBeNull();
@@ -662,6 +671,9 @@ describe('gitDiffBinaryRecount', () => {
       'pre-commit',
       'x.php',
       'b.php.',
+      'b.php. ',
+      'b.. ',
+      'y.png ',
     ]) {
       expect(recount(repo, path, budget)).toEqual({ added: 0, deleted: 0 });
     }

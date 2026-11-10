@@ -79,8 +79,9 @@
     reached the recount too: a moved PDF or PNG over the cap counted 0 lines and was
     forged, and moved small PNGs spent the budget. Some pairs add nothing to the tree:
     both sides exist, with one oid and one mode, and one extension. That extension is
-    the basename from its last dot, as written, case included, and holds more than the
-    dot (`formatsNamed` reads it ASCII-folded, so it names the same formats too). Such a
+    the basename from its last dot, as written, case included. It must be plain: a dot
+    and one or more ASCII letters or digits, nothing else (`formatsNamed` reads it
+    ASCII-folded, so it names the same formats too). Such a
     pair answers null unread and spends nothing, as numstat counts a text rename `0\t0`.
     The blob is the same, so its magic and its formats are too, and nothing needs
     reading. A mode change on the same oid is still recounted, because the new mode is
@@ -90,8 +91,11 @@
     NUL-carrying `.pdf` renamed to `.js`, as it may have reached `main` uncounted under
     the old NUL rule. A case change (`x.PHP` to `x.php`) recounts too, as a server
     mapping `.php` runs only the one. So do two names without an extension
-    (`tools/payload` moved to `.husky/pre-commit`, a hook) and two ending in a dot (`a.`
-    to `b.php.`, which Windows opens as `b.php`). Matching only known formats on both
+    (`tools/payload` moved to `.husky/pre-commit`, a hook), and two ending in the dots and
+    spaces Windows strips from a name: `a.` to `b.php.` and `a. ` to `b.php. `, both of
+    which Windows opens as `b.php`, `a.. ` to `b.. `, and `x.png ` to `y.png `. A length
+    check let `. ` through, two bytes matching on both sides, so the rule names the one
+    shape that skips rather than the shapes that do not. Matching only known formats on both
     paths would have flagged a moved PDF again. A copy keeps its
     source, so one oid on both sides would add a file while spending nothing. Copies
     never pass as renames, because `gitDiffNumstat` pins `diff.renames=true` over a
@@ -187,8 +191,8 @@
     PNG skips. A PDF with a NUL, a PNG over the cap and a small PNG each moved unchanged
     answer null and leave the budget whole. A PNG made executable in place, PNGs renamed
     unchanged to `.php`, `.sh` and `.dat`, a `.pdf` renamed to `.js`, `x.PHP` renamed to
-    `x.php`, `payload` renamed to `pre-commit` and `a.` renamed to `b.php.` each recount 0
-    lines. Under a session-written `diff.renames=copies`, a PNG copied from a changed one
+    `x.php`, `payload` renamed to `pre-commit`, and `a.`, `a. `, `a.. ` and `x.png `
+    renamed to `b.php.`, `b.php. `, `b.. ` and `y.png ` each recount 0 lines. Under a session-written `diff.renames=copies`, a PNG copied from a changed one
     is listed as added, with no `renamedFrom`, and its skip spends its size. An entry with
     neither side throws. A target PNG renamed to a name that is not UTF-8 with a zip end record
     appended recounts its 6 added lines, and so does a PNG over the cap under such a name
@@ -210,7 +214,8 @@
     that counts nothing. A PDF and a PNG moved unchanged count nothing and are not
     forged. PNGs renamed unchanged to `.php`, `.sh` and `.dat` are forged, and so are
     NUL-carrying files moved from `tools/payload` to `.husky/pre-commit`, from `x.PHP`
-    to `x.php` and from `a.` to `b.php.`. A `.ts`
+    to `x.php`, and from `a.`, `a. `, `a.. ` and `x.png ` to `b.php.`, `b.php. `, `b.. `
+    and `y.png `. A `.ts`
     renamed into a PNG is forged, and so is the hidden file
     beside a decoy under the U+FFFD spelling of its name, counting its own 6 lines. An importer with a NUL in a comment still reaches its test. A tree
     with 40 links and 40 importers runs exactly as many git processes as a tree with 1 of

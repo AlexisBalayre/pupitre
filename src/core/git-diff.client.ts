@@ -797,6 +797,14 @@ function blobLines(repoPath: string, side: DiffSide): number {
 }
 
 /**
+ * The one extension shape under which a binary renamed unchanged skips: a dot
+ * and ASCII letters or digits, nothing else. Windows strips the dots and
+ * spaces that end a name, so `a. ` renamed to `b.php. ` keeps `. ` byte for
+ * byte and opens as `b.php`; every other shape is recounted (decision 154).
+ */
+const PLAIN_EXTENSION = /^\.[A-Za-z0-9]+$/;
+
+/**
  * The add/delete counts `--numstat` withheld from a file it reported as
  * `-\t-`, or null when the file really is binary. `--text` does not restore a
  * numstat the way it restores a patch, and what git calls binary is not only
@@ -823,14 +831,14 @@ function blobLines(repoPath: string, side: DiffSide): number {
  * renamed file's merge-base side is the blob it was `renamedFrom`, named by
  * that path's extension: a source file renamed into a `.png` would otherwise
  * have no base side, skip, and drop every line it deleted. A rename that keeps
- * the oid, the mode and an extension (`extensionOf`) of more than its dot,
- * byte for byte, case included, adds nothing to the tree, so it answers null
- * unread and spends nothing, as numstat counts a text one `0\t0`: numstat
- * prints `-\t-` for it all the same. Under another extension, or under none,
- * the same bytes can be read as something else (a PNG's `<?php` block renamed
- * to `.php`, `.PHP` to `.php`, a name with no extension or a trailing dot moved
- * to `.husky/pre-commit` or `b.php.`), so it is judged by its new name and
- * recounted. Copies cannot pass as renames, as `gitDiffNumstat` pins plain
+ * the oid, the mode and a `PLAIN_EXTENSION` (`extensionOf`), byte for byte,
+ * case included, adds nothing to the tree, so it answers null unread and
+ * spends nothing, as numstat counts a text one `0\t0`: numstat prints `-\t-`
+ * for it all the same. Under another extension, or under none, the same bytes
+ * can be read as something else (a PNG's `<?php` block renamed to `.php`,
+ * `.PHP` to `.php`, a name with no extension or ending in dots and spaces
+ * moved to `.husky/pre-commit` or `b.php. `), so it is judged by its new name
+ * and recounted. Copies cannot pass as renames, as `gitDiffNumstat` pins plain
  * rename detection. A skip spends the
  * branch side's bytes from `budget` (`spendKnownBinarySkip`), which every call
  * for one diff must share (start it at `BINARY_FREE_TOTAL_MAX_BYTES`), and a
@@ -853,7 +861,7 @@ export function gitDiffBinaryRecount(
     branchBlob !== undefined &&
     baseBlob.oid === branchBlob.oid &&
     baseBlob.mode === branchBlob.mode &&
-    extension.length > '.'.length &&
+    PLAIN_EXTENSION.test(extension) &&
     extensionOf(renamedFrom ?? path) === extension
   ) {
     return null;

