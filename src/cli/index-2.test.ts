@@ -1729,6 +1729,34 @@ describe('CLI commands', () => {
       expect(process.exitCode).toBeUndefined();
     });
 
+    // Vouching for commits no gate measured is the merge's power, which the
+    // conductor does not hold (decisions 47, 164).
+    it('refuses --accept-head from the conductor, landing nothing', async () => {
+      const repo = initRepoWithAdapter();
+      useCwd(repo);
+      vi.stubEnv('PUP_CONDUCTOR', projectId(repo));
+
+      await buildProgram().parseAsync(['land', 's1', '--accept-head', 'b'.repeat(40)], {
+        from: 'user',
+      });
+
+      expect(errors).toEqual(['`pup land --accept-head` is operator-only.']);
+      expect(process.exitCode).toBe(1);
+      expect(landSession).not.toHaveBeenCalled();
+    });
+
+    it("hands the operator's --accept-head to the land", async () => {
+      useCwd(initRepoWithAdapter());
+      vi.mocked(landSession).mockResolvedValue(landedOutcome());
+
+      await buildProgram().parseAsync(['land', 's1', '--accept-head', 'b'.repeat(40)], {
+        from: 'user',
+      });
+
+      expect(firstCall(landSession)[1]).toMatchObject({ acceptHead: 'b'.repeat(40) });
+      expect(errors).toEqual([]);
+    });
+
     it('names a kept branch and a target that already held the merge', async () => {
       useCwd(initRepoWithAdapter());
       vi.mocked(landSession).mockResolvedValue({

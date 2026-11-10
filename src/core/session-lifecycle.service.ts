@@ -50,13 +50,11 @@ import {
   appendEvent,
   claimingSession,
   currentFixRound,
-  decodeEvent,
   ensureProject,
   getSession,
   getTask,
   insertSession,
   insertTask,
-  listEvents,
   listSessions,
   listTaskSessions,
   readTaskSpec,
@@ -441,6 +439,7 @@ export function respawnRoute(
  */
 export function fixRoundRoute(
   db: Database,
+  paths: ProjectPaths,
   session: SessionRow,
   override: RouteOverride,
   overrideVia: 'operator' | 'conductor',
@@ -448,7 +447,7 @@ export function fixRoundRoute(
   return sessionWindowRoute(
     db,
     session,
-    () => fixRoundFailure(listEvents(db, session.id).map(decodeEvent)),
+    () => windowFailureOf(db, paths, session, Date.now(), fixRoundFailure),
     override,
     overrideVia === 'operator',
   );

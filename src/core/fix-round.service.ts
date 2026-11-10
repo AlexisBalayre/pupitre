@@ -216,8 +216,8 @@ export async function startFixRound(db: Database, req: FixRoundRequest): Promise
         `then run \`pup land ${id}\`. ${NOT_STARTED}`,
     );
   }
-  const route = routeOrRefuse(db, session, req);
   const paths = projectPaths(req.repoPath, req.pathsBase);
+  const route = routeOrRefuse(db, paths, session, req);
   const recompiled = orNotStarted(() => recompileSessionProfile(db, req, session, paths));
   // Under the lock `pup merge` and `pup land` take, since both move the branch
   // and the worktree this restores; the window opens after it, as it may take
@@ -720,9 +720,14 @@ function reviewVerdict(
  * reworded for this command: the respawn the session's refusal names is for a
  * running window, and a merged session has none.
  */
-function routeOrRefuse(db: Database, session: SessionRow, req: FixRoundRequest): SessionRoute {
+function routeOrRefuse(
+  db: Database,
+  paths: ProjectPaths,
+  session: SessionRow,
+  req: FixRoundRequest,
+): SessionRoute {
   try {
-    return fixRoundRoute(db, session, req.override ?? {}, req.overrideVia);
+    return fixRoundRoute(db, paths, session, req.override ?? {}, req.overrideVia);
   } catch (error) {
     if (!(error instanceof TopRungReachedError)) throw error;
     const id = sanitizeReason(session.id);
