@@ -1,0 +1,133 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-10T09:53:52.273Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42793849909",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42793849909",
+  "actor": "AlexisBalayre",
+  "commit_sha": "df187cee9f541d9b4a0d4cedcd75f414d90dd534",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 302,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/land-squash.test.ts",
+      "line": "541-579",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "Test adequacy: dropping `-c core.commitGraph=false` from `descendsFrom` passes every test, though commit 931ebb7 adds it so a forged commit graph cannot answer the ancestry check.",
+      "body": "Commit 931ebb7 (`fix(land): … its ancestry from scratch`) makes two promises for the pin-to-head check. It runs from the scratch git dir, and it runs with `core.commitGraph=false`, \"so a forged commit graph cannot answer it\" (ADR 0164).\n\nOnly the ancestry-failure test sees this git call. Its interceptor matches on `args.includes('merge-base')` and throws without looking at the other arguments:\n\n```ts\nfn((args, opts) => {\n  if (args.includes('merge-base')) throw failure;\n  return git(args, opts);\n}),\n```\n\nNow take the mutant `git(['merge-base', '--is-ancestor', pin, head], …)` in `descendsFrom` (`src/core/land.service.ts:427`). It keeps the scratch dir but drops the commit-graph pin, and every test still passes:\n- the happy path and the non-descendant refusal, which both run real git on a repo with no commit graph;\n- this failure test;\n- `land-refusals.test.ts`'s kill test, where `head === sha`, so `descendsFrom` never runs.\n\nNo other test in the repo mentions `commitGraph` for land.\n\nThat mutant reopens the hole the fix closed: a session writes a forged `objects/info/commit-graph`, and a rewritten head passes as a descendant of the pin. To catch it, record the `merge-base` argv in the interceptor and assert it contains `-c core.commitGraph=false`. `merge-gate.test.ts:1794` already does this:\n\n```ts\nexpect(read.join(' ')).toContain('-c core.commitGraph=false log …')\n```\n\n`mergedOnto`'s commit-graph pin has no test either, so the same assertion would be worth adding there.\n\n<https://github.com/AlexisBalayre/pupitre/blob/df187cee9f541d9b4a0d4cedcd75f414d90dd534/src/core/land-squash.test.ts#L541-L579>",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land.service.ts",
+      "line": "135-147",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The refusal without --accept-head offers the compare link and the exact `pup land <id> --accept-head <head>` command before anything checks that the head descends from the pin, and that check (descendsFrom) only runs later under the lock. Trigger: a fix round rebased the PR branch (ADR 0164 names this case) and GitHub merged it. The operator gets a compare view against the merge-base, which hides that the pinned commits were rewritten, and is told to run a command that is then always refused under the lock. ADR 0164 lines 30-31 make the same claim (\"the view shows exactly the commits past it\") and are just as unchecked at that point.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land-squash.test.ts",
+      "line": "408-428",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The only accepted-head land test is a merge commit, so `deleteBranchIfHeld`'s `targetSha` already holds the branch. Reverting `tearDown(…, head)` to `tearDown(…, sha)` passes every test, and a squash or rebase merge at an accepted head would then keep the branch the ADR says is deleted.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "guards",
+      "description": "A Grep over the repository root was denied, so the guards reviewer searched only src/ for source-scanning guard tests and did not cover scripts/ or top-level test directories."
+    }
+  ],
+  "duplicates_merged": 1,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 3.0304186250000007,
+  "duration_ms": 229862,
+  "num_turns": 16,
+  "tokens": {
+    "input": 12,
+    "output": 12664,
+    "cache_read": 288421,
+    "cache_creation": 56529,
+    "total": 357626
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 114,
+      "output": 51160,
+      "cache_read": 1496739,
+      "cache_creation": 245126,
+      "cost_usd": 2.7182208000000005
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 36,
+      "output": 7850,
+      "cache_read": 244610,
+      "cache_creation": 83386,
+      "cost_usd": 0.31149800000000005
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 160,
+      "cache_read": 0,
+      "cache_creation": 4957,
+      "cost_usd": 0.000699825
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "bash -c \"ls /home/runner/work/pupitre/pupitre/docs/adr | grep -E '^00(2[4-9]|30|47|75)'\""
+    },
+    {
+      "tool": "Grep",
+      "input": "{\"pattern\":\"readdirSync|globSync|docs/adr|operator-only|OPERATOR_ONLY|CONDUCTOR_REFUSED\",\"path\":\"/home/runner/work/pupitre\",\"glob\":\"{src,scripts,test,tests}/**/*.{test.ts,ts,sh}\",\"output_mode\":\"files_"
+    }
+  ]
+}
