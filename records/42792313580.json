@@ -1,0 +1,116 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-10T09:45:39.148Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42792313580",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42792313580",
+  "actor": "AlexisBalayre",
+  "commit_sha": "5d478649fa0cf3a90500b08619157e2e3c6dae06",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 281,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "guards"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "guards"
+  ],
+  "reviewers_skipped": [
+    "conventions",
+    "context",
+    "maintainability",
+    "docs",
+    "spec",
+    "simplicity",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/adr-number.service.ts",
+      "line": "205-208",
+      "description": "A PR closed on GitHub without merging is counted as an open PR forever. Its numbers stay taken permanently. If its gated sha is ever pruned, every ADR-adding gate in the repo fails, and nothing in the store can retire the PR.",
+      "status": "unresolved"
+    },
+    {
+      "file": "src/core/adr-number.service.ts",
+      "line": "164-166",
+      "description": "An open-PR peer whose pinned commit exists but cannot be diffed against the target is skipped with a note, and the stage still passes. The session being gated can cause this, for example by listing the pinned sha in the shared `.git/shallow`, which no pin covers. It can then land a decision number that the open PR already holds.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/adr-number.service.ts",
+      "line": "204",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "`competingBranches` ignores the `retired` event that `pup retire` (decision 141) now writes. A retired session keeps its decision numbers on every later gate. Once its gated commit is pruned, it refuses every gate that adds an ADR, with a \"PR not landed\" line and a fetch remedy.",
+      "body": "**A retired session still counts as a peer whose PR has not landed.**\n\nA merged session counts as a competitor when its newest merge event has a `prUrl`:\n\n```ts\nconst merge = session.state === 'merged' ? newestMerge(db, session.id) : undefined;\nif (typeof merge !== 'object' || merge.prUrl === undefined) continue;\n```\n\n<https://github.com/AlexisBalayre/pupitre/blob/5d478649fa0cf3a90500b08619157e2e3c6dae06/src/core/adr-number.service.ts#L183-L210>\n\n`newestMerge` (`merge-gate.service.ts` L1666-1676) returns early only on a `landed` row, so it skips over a `retired` row and returns the `merge` event before it. The main branch this PR merged in adds `pup retire`. That command appends `retired` and leaves the state at `merged`:\n\n<https://github.com/AlexisBalayre/pupitre/blob/5d478649fa0cf3a90500b08619157e2e3c6dae06/src/core/session-retire.service.ts#L115-L116>\n\nADR 0146 (L123-133) and the JSDoc at L186-188 justify this ceiling with \"the store records no close\". They also say that retiring a closed PR \"needs a terminal event, written by `pup land` or an operator command, that `newestMerge` reads like `landed`\". The store now has exactly that event, but the stage does not read it, so both texts are out of date.\n\n**Trigger.**\n1. Session S gates with a PR adding `0150-x.md`.\n2. The PR is closed unmerged.\n3. The operator runs `pup retire S --superseded-by <pr>`. Teardown removes S's worktree and its local branch, so the gated sha is kept alive only by the remote-tracking ref.\n4. That ref is pruned and `git gc` runs.\n\n**Wrong result.**\n- Before the prune: every later gate still reads 0150 as taken. A decision redone under 0150 is refused as \"also added by pup/S, a session branch that is live or whose PR has not landed\".\n- After the prune: `readPeer` returns `unreadPr` (\"its gated commit … is not in this repo; fetch the PR's head here\"), and the stage fails every ADR-adding gate. This happens for a PR the operator has explicitly closed out.\n\n**Fix direction.** In `competingBranches`, skip a merged session whose newest `merge`/`landed`/`retired` row is `retired`. Leave `newestMerge` itself unchanged, since `land.service.ts` and other callers read its `'landed'` result. Then update the JSDoc and ADR 0146's ceiling to say a retired PR no longer counts. Add a test where a retired session with a pruned sha does not refuse the gate.",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/adr-number.service.ts",
+      "line": "344-354",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "When two live branches clash on one ADR number, both refusals tell their session to renumber to the same lowest free number (e.g. both get 0151). Following both reports, as the new CLI hint says to, recreates the clash, and a refusal never escalates to blocked. Consider naming a tie-break (e.g. the later session renumbers) or saying \"one of you renumbers\".",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Round 4 budget: only correctness, security and guards ran. conventions, docs, context, simplicity and maintainability were skipped under the round budget. workflow-safety was skipped because there is no .github/workflows change, and spec because there is no closing issue or --spec. Correctness and security ran two instances each, since the diff is past the size gate (461 source + 703 test lines). Correctness was split into adr-number.service.ts logic and gate/CLI/dashboard integration, and security into git argv/evasion and output/resource bounds. The review-consolidator was not spawned: only two findings came back, on different root causes, so nothing could be grouped. The validator judged the same-free-number finding real but not merge-blocking (nothing wrong lands, and ADR 0146's ceilings partly accept mutual refusal), so it was recorded as a nit. The head was unchanged at 5d47864 when re-checked."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 4.113509599999998,
+  "duration_ms": 404177,
+  "num_turns": 18,
+  "tokens": {
+    "input": 22,
+    "output": 11066,
+    "cache_read": 573098,
+    "cache_creation": 66285,
+    "total": 650471
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 176,
+      "output": 78334,
+      "cache_read": 3264194,
+      "cache_creation": 313835,
+      "cost_usd": 3.9882527999999997
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 16,
+      "output": 2640,
+      "cache_read": 129998,
+      "cache_creation": 34330,
+      "cost_usd": 0.1252568
+    }
+  ],
+  "permission_denials": []
+}
