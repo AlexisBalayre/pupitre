@@ -282,13 +282,18 @@ function reviewDigest(
     // the operator's, not a round's: either way the PR is not ready while it stands.
     const answered = review.openThreads.filter((thread) => thread.isAnswered).length;
     const outdated = review.outdatedThreads;
-    const leftToOperator = [
-      answered > 0 &&
-        `answer the ${answered} thread(s) a fix round left open: resolve each, or reply for ` +
-          'the next round to take it again',
-      outdated > 0 &&
+    const leftToOperator: string[] = [];
+    if (answered > 0) {
+      leftToOperator.push(
+        `resolve the ${answered} thread(s) a fix round left open, or open a new round knowing ` +
+          "the worker sees only the bot's finding, not your reply",
+      );
+    }
+    if (outdated > 0) {
+      leftToOperator.push(
         `resolve the ${outdated} unresolved thread(s) a push outdated, once each fix holds`,
-    ].filter((step): step is string => step !== false);
+      );
+    }
     const next =
       threads > answered
         ? `pup fix ${id}`

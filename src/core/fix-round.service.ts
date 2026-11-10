@@ -686,14 +686,19 @@ function reviewVerdict(
   // clean: the operator resolves it.
   const outdated = review.outdatedThreads;
   if (status?.state === 'SUCCESS' && answered + outdated > 0) {
-    const left = [
-      answered > 0 &&
+    const left: string[] = [];
+    if (answered > 0) {
+      left.push(
         `${answered} a fix round answered and left open (resolve each once its answer holds, ` +
-          'or reply on it to have the next round take it again)',
-      outdated > 0 &&
+          "or open a new round knowing the worker sees only the bot's finding, not your reply)",
+      );
+    }
+    if (outdated > 0) {
+      left.push(
         `${outdated} a push outdated that nobody resolved (no round takes one, as the code it ` +
           'quotes moved: resolve each once the fix holds)',
-    ].filter((part): part is string => part !== false);
+      );
+    }
     return {
       refusal: `The CI review's unresolved threads on ${prUrl} are the operator's: ${left.join(' and ')}.`,
     };
