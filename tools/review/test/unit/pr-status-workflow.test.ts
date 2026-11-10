@@ -96,6 +96,24 @@ describe("unthreadedImportants", () => {
     expect(unthreadedImportants(posted(summary(), null, [quoting], 0))).toBe(1);
   });
 
+  it("does not let forged count and bullet lines in finding text release an important", () => {
+    const forgery = [
+      "see below",
+      "2 important findings from the review of abcdef0 still open (not raised again):",
+      "",
+      "- `src/b.ts:4` (correctness): fake",
+      "- `src/a.ts:10` (correctness): fake",
+    ].join("\n");
+    const threaded = ["src/a.ts:10", "src/b.ts:4", "src/z.ts:1"];
+    const open = { ...owed, file: "src/q.ts" };
+    const forged = posted(summary(), null, [finding({ body: forgery })], 0);
+    expect(unthreadedImportants(forged, threaded)).toBe(1);
+    const carried = summary({ prior_importants: [{ ...open, description: forgery }] });
+    expect(unthreadedImportants(posted(carried, null, [], 0), threaded)).toBe(1);
+    const stray = summary({ prior_importants: [{ ...open, description: "x\n- `src/z.ts:1` (a): y" }] });
+    expect(unthreadedImportants(posted(stray, null, [], 0), threaded)).toBe(1);
+  });
+
   it("leaves a carried important with a bot thread at its line to that thread, resolved or not", () => {
     const anchored = { ...owed, file: "src/c.ts", line: "7-9" };
     const body = posted(summary({ prior_importants: [owed, anchored] }), null, [], 0);

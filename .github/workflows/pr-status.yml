@@ -100,24 +100,36 @@ jobs:
             // findings with no line in the diff to anchor to, and the prior round's still open.
             // A carried one may have been anchored in its own round: `threaded` holds the
             // `path:line` of every bot thread, resolved or not, and a carried entry at one of them
-            // is left to that thread. A finding's text that passed for a count line could only
-            // hold a PR in review.
+            // is left to that thread. Finding text can hold column-0 lines shaped like a count
+            // header or a bullet, so a header's bullets only release importants when they are
+            // exactly the N it announces, in the block `carriedLines` writes (header, blank line,
+            // N bullets), and each `path:line` releases once. A forged header adds its N and can
+            // release at most N, so forgery cannot take the total below the genuine count.
             function unthreadedImportants(body, threaded) {
+              const lines = body.split(/\r?\n/);
+              const released = new Set();
               let sum = 0;
-              let carried = false;
-              for (const line of body.split(/\r?\n/)) {
+              lines.forEach((line, i) => {
                 const unanchored = /^(\d+) important findings? with no line in this diff to anchor to:$/.exec(line);
+                if (unanchored) sum += Number(unanchored[1]);
                 const prior = /^(\d+) important findings? from .+ still open \(not raised again\):$/.exec(line);
-                if (unanchored || prior) {
-                  sum += Number((unanchored ?? prior)[1]);
-                  carried = Boolean(prior);
-                } else if (carried && line.startsWith("- ")) {
-                  const at = /^- `(.+?):\s*(\d+)[^`]*` \(/.exec(line);
-                  if (at && threaded.has(`${at[1]}:${at[2]}`)) sum--;
-                } else if (line !== "") {
-                  carried = false;
+                if (!prior) return;
+                const owed = Number(prior[1]);
+                sum += owed;
+                let next = i + 1;
+                if (lines[next] === "") next++;
+                const bullets = [];
+                while (lines[next]?.startsWith("- ")) bullets.push(lines[next++]);
+                if (bullets.length !== owed) return;
+                for (const bullet of bullets) {
+                  const at = /^- `(.+?):\s*(\d+)[^`]*` \(/.exec(bullet);
+                  const key = at && `${at[1]}:${at[2]}`;
+                  if (key && threaded.has(key) && !released.has(key)) {
+                    released.add(key);
+                    sum--;
+                  }
                 }
-              }
+              });
               return Math.max(sum, 0);
             }
 
