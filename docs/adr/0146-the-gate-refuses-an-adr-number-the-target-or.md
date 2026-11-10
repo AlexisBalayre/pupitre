@@ -37,13 +37,19 @@
     commits the PR does not. The sha is read rather than the branch or the remote-tracking ref
     the push wrote, because pup recorded the sha and any session can move either ref. A
     re-gate records a new merge event, so the newest one is the PR's current head. A merge event with no sha, one whose sha is not a full commit sha (`COMMIT_SHA`:
-    anchored, exactly 40 lowercase hex digits or 64), or one whose commit the repo lacks fails
-    the stage closed, under its own heading. Nothing else in the repo holds what that PR adds,
-    so passing would let a clash through unseen. The line names the branch and the PR, whose url
-    is withheld unless it has a pull request's shape (decisions 29, 83), and for a missing
-    commit says to fetch the PR's head into the repo. A branch that adds no decision never
-    reaches this check, so such a peer blocks only ADR-adding gates, until its PR lands or its
-    head is fetched. Each
+    anchored, exactly 40 lowercase hex digits or 64), one whose commit the repo lacks, or one
+    whose commit git cannot diff against the target, fails the stage closed, under its own
+    heading. Nothing else in the repo holds what that PR adds, so passing would let a clash
+    through unseen. A commit the repo holds can still be undiffable: a session can write the
+    PR's sha into the shared `shallow` file, which `GIT_HISTORY_ENV` does not pin (decision 89),
+    and so cut its merge base, or it can delete one of the commit's loose objects. Unlike a live
+    branch, which is skipped when unreadable (below), a PR's gated commit is fixed and was read
+    at its own gate, so a failed diff of it is refused, not skipped. The line names the branch
+    and the PR, whose url is withheld unless it has a pull request's shape (decisions 29, 83).
+    For a missing commit it says to fetch the PR's head into the repo. For an undiffable one it
+    names the likely causes and says to repair the repo, since fetching would not help. A branch
+    that adds no decision never reaches this check, so such a peer blocks only ADR-adding gates,
+    until its PR lands or its commit is readable again. Each
     refused file is one line of the stage's failure. The line names the other branch, the other
     file, or says the number is on the target, and gives the lowest free number above the
     target's highest: one that neither the target, any of those branches, nor the branch's own
@@ -53,7 +59,7 @@
     (`refuseGate`), the session keeps its state and its reject count, and nothing is steered.
     Run first, it also costs no suite. A re-gate of a merged session with an open PR is refused
     the same way, as every re-gate failure is.
-    *Unreadable branches.* A competing branch git cannot read against the target is skipped
+    *Unreadable branches.* A live competing branch git cannot read against the target is skipped
     rather than failing the gate of every other session: an orphan commit with no merge base, a
     symbolic ref, or a read past its 10 s timeout or git's output buffer. Node kills an overrun
     child with SIGTERM, the signal `rethrowIfKilled` reads as an interrupt, so an overrun
@@ -132,7 +138,8 @@
     file with one number, one a queued, running, awaiting-review, rejected or blocked session's
     branch adds, one a merged session with an open PR adds (read at its recorded sha after the
     gate deleted its branch, and refused, naming the branch and the PR, when that merge recorded
-    no sha, a malformed one or a commit the repo lacks, with a url that is not a pull request's
+    no sha, a malformed one, a commit the repo lacks, or a commit git cannot diff because it is
+    parentless or a `shallow` file cuts its history, with a url that is not a pull request's
     withheld), and a decision renamed onto a taken
     number. It ignores killed sessions, landed PRs, local merges and `pup/` branches no session
     holds. It skips and names an orphan branch while still refusing a clash with another, a

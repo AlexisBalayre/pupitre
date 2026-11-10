@@ -292,6 +292,34 @@ describe('adrNumberStage', { timeout: 20_000 }, () => {
     ]);
   });
 
+  it.each([
+    ['is parentless', () => git(repo, 'commit-tree', '-m', 'orphan', 'main^{tree}')],
+    [
+      'has its history cut by a shallow file a session wrote',
+      () => {
+        commitOn(repo, 'pup/other', 'docs/adr/0003-theirs.md');
+        const sha = git(repo, 'rev-parse', 'refs/heads/pup/other');
+        git(repo, 'branch', '-q', '-D', 'pup/other');
+        writeFileSync(join(repo, '.git', 'shallow'), `${sha}\n`);
+        return sha;
+      },
+    ],
+  ])(
+    'refuses, rather than skips, an open PR peer whose gated commit %s, so git cannot diff it',
+    (_, pin) => {
+      const sha = pin();
+      openPrPeer(sha);
+      commitOn(repo, 'pup/me', 'docs/adr/0003-mine.md');
+      expect(refusals()).toEqual([
+        'PRs not landed whose gated commit cannot be read, so no number this branch adds can ' +
+          'be cleared against them:',
+        `  pup/other (https://github.com/o/r/pull/1): its gated commit ${sha} is in this repo, ` +
+          'but git could not diff it against the target (a history a shallow file cuts, a ' +
+          'missing object, a read past its time); repair the repo, then gate again',
+      ]);
+    },
+  );
+
   it("withholds an open PR peer's url that is not a pull request's", () => {
     seedSession(db, 'other', 'merged');
     appendEvent(db, 'other', 'merge', {

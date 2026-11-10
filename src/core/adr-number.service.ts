@@ -144,26 +144,23 @@ function isOverrun(error: unknown): boolean {
 }
 
 /**
- * The decisions another session's branch, read at `rev`, adds, or why it is
- * not checked: git could not resolve or diff it (an orphan, a symbolic ref, an
- * overrun), or it adds more than `MAX_PEER_DECISIONS`. Undefined when `rev`
- * names no commit. An interrupt that killed git is rethrown.
+ * The decisions another session's branch, read at `rev`, adds: `'absent'` when
+ * `rev` names no commit, `'undiffable'` when git could not resolve or diff it
+ * against the target (an orphan, a symbolic ref, a history a `shallow` file
+ * cuts, a missing object, an overrun). An interrupt that killed git is rethrown.
  */
 function peerDecisions(
   repoPath: string,
   targetSha: string,
   rev: string,
-): Map<string, number> | string | undefined {
+): Map<string, number> | 'absent' | 'undiffable' {
   try {
     const tip = resolveCommitIfPresent(repoPath, rev);
-    if (tip === undefined) return undefined;
-    const theirs = decisionsOf(addedAdrPaths(repoPath, targetSha, tip, PEER_READ_TIMEOUT_MS));
-    return theirs.size > MAX_PEER_DECISIONS
-      ? `it adds ${theirs.size} decisions, more than the ${MAX_PEER_DECISIONS} a session branch is checked for`
-      : theirs;
+    if (tip === undefined) return 'absent';
+    return decisionsOf(addedAdrPaths(repoPath, targetSha, tip, PEER_READ_TIMEOUT_MS));
   } catch (error) {
     if (!isOverrun(error)) rethrowIfKilled(error);
-    return 'git could not read it against the target';
+    return 'undiffable';
   }
 }
 
@@ -213,6 +210,49 @@ function competingBranches(db: Database, sessionId: string): Competitor[] {
 }
 
 /**
+ * What the stage makes of one competing branch, `branch` its scrubbed name: the
+ * decisions it adds, why it was skipped, or a line refusing an unreadable PR. A
+ * live branch git cannot read, or one adding more than `MAX_PEER_DECISIONS`, is
+ * skipped rather than block every peer's gate. A PR's gated commit is fixed and
+ * was read at its own gate, so one the merge recorded no sha for, the repo
+ * lacks or git cannot diff refuses: a session can cut that commit's history
+ * with the shared `shallow` file (decision 89), and a skip would pass its clash.
+ */
+function readPeer(
+  repoPath: string,
+  targetSha: string,
+  peer: Competitor,
+  branch: string,
+): Map<string, number> | { skipped: string } | { unreadPr: string } {
+  const theirs = peer.rev === undefined ? 'absent' : peerDecisions(repoPath, targetSha, peer.rev);
+  if (theirs instanceof Map) {
+    if (theirs.size <= MAX_PEER_DECISIONS) return theirs;
+    return {
+      skipped: `it adds ${theirs.size} decisions, more than the ${MAX_PEER_DECISIONS} a session branch is checked for`,
+    };
+  }
+  if (peer.prUrl === undefined) {
+    // A live session that has not cut its branch yet adds nothing.
+    return theirs === 'absent'
+      ? new Map()
+      : { skipped: 'git could not read it against the target' };
+  }
+  // Store text printed as the thing to open: a url that is not a pull
+  // request's is withheld, not scrubbed (decisions 29, 83).
+  const url = sanitizeReason(peer.prUrl);
+  const pr = PR_URL.test(url) ? url : 'a pull request url pup withholds';
+  const why =
+    peer.rev === undefined
+      ? 'its merge recorded no gated commit sha'
+      : theirs === 'absent'
+        ? `its gated commit ${peer.rev} is not in this repo; fetch the PR's head here`
+        : `its gated commit ${peer.rev} is in this repo, but git could not diff it against the ` +
+          'target (a history a shallow file cuts, a missing object, a read past its time); ' +
+          'repair the repo, then gate again';
+  return { unreadPr: `  ${branch} (${pr}): ${why}` };
+}
+
+/**
  * The decision files in `sha`'s `docs/adr/`. `--full-tree`, so the path is the
  * root's whatever cwd prefix a session-set `core.worktree` gives git; ls-tree
  * takes no `icase` magic, so this reads the `docs/adr/` the target and the
@@ -245,12 +285,13 @@ const pad = (number: number): string => String(number).padStart(4, '0');
  * decision the branch deletes, unpaired, is refused as a rename that changed
  * too much to be paired rather than told to renumber. Parallel sessions pick the next
  * number from the target, and two files that share a number under different
- * slugs merge without a conflict. Another branch git cannot read against the
- * target (an orphan, a symbolic ref, a read past its time or buffer), or one
- * adding more than `MAX_PEER_DECISIONS`, is skipped and named rather than
+ * slugs merge without a conflict. Another live branch git cannot read against
+ * the target (an orphan, a symbolic ref, a read past its time or buffer), or
+ * one adding more than `MAX_PEER_DECISIONS`, is skipped and named rather than
  * failing or blocking everyone's gate. A PR not landed whose merge recorded no
- * commit sha, or whose commit the repo lacks, fails the stage instead, naming
- * the branch and the PR: nothing else holds what it adds, so passing would let
+ * commit sha, whose commit the repo lacks, or whose commit git cannot diff
+ * against the target, fails the stage instead, naming the branch and the PR:
+ * its commit is fixed and nothing else holds what it adds, so passing would let
  * a clash through unseen. Any other new file under `docs/adr/`,
  * in any case, that is neither exactly `docs/adr/NNNN-<slug>.md` nor
  * `docs/adr/README.md` is refused naming the expected form: a later gate would
@@ -291,24 +332,14 @@ export function adrNumberStage(
   const unreadPrs: string[] = [];
   for (const peer of competingBranches(db, sessionId)) {
     const branch = sanitizeReason(peer.branch);
-    const theirs =
-      peer.rev === undefined ? undefined : peerDecisions(repoPath, targetSha, peer.rev);
-    if (theirs === undefined && peer.prUrl !== undefined) {
-      // Store text printed as the thing to open: a url that is not a pull
-      // request's is withheld, not scrubbed (decisions 29, 83).
-      const url = sanitizeReason(peer.prUrl);
-      const pr = PR_URL.test(url) ? url : 'a pull request url pup withholds';
-      unreadPrs.push(
-        `  ${branch} (${pr}): ${
-          peer.rev === undefined
-            ? 'its merge recorded no gated commit sha'
-            : `its gated commit ${peer.rev} is not in this repo; fetch the PR's head here`
-        }`,
-      );
+    const read = readPeer(repoPath, targetSha, peer, branch);
+    if (read instanceof Map) {
+      for (const number of read.values()) takenBy.set(number, branch);
+    } else if ('unreadPr' in read) {
+      unreadPrs.push(read.unreadPr);
+    } else {
+      unchecked.push(`not checked against ${branch}: ${read.skipped}`);
     }
-    if (typeof theirs === 'string') unchecked.push(`not checked against ${branch}: ${theirs}`);
-    if (typeof theirs !== 'object') continue;
-    for (const number of theirs.values()) takenBy.set(number, branch);
   }
   const taken = new Set([...onTarget, ...takenBy.keys(), ...added.values()]);
   let free = Math.max(0, ...onTarget);
