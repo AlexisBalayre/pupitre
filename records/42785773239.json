@@ -1,0 +1,82 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-10T08:51:53.446Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42785773239",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42785773239",
+  "actor": "AlexisBalayre",
+  "commit_sha": "ee0cb0c64910e4f64f28b9310b3136eed9233f71",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 300,
+  "action": "review",
+  "reviewers_spawned": [
+    "security",
+    "context",
+    "conventions"
+  ],
+  "reviewers_returned": [
+    "security",
+    "context",
+    "conventions"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "maintainability",
+    "docs",
+    "spec",
+    "simplicity",
+    "guards",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "platform",
+      "description": "The PR's version of .claude/settings.json was not preserved at .claude-pr/settings.json as the protocol expects (the file was missing). The security and context reviewers read the head version with git show ee0cb0c:.claude/settings.json and the commit diff instead, so coverage was not lost."
+    },
+    {
+      "component": "orchestrator",
+      "description": "Gated out on a config-only diff (3 deleted lines in .claude/settings.json): correctness (no logic), docs (no prose), simplicity (nothing added), guards (no source files), workflow-safety (no workflow change), maintainability (off the default roster), spec (no spec source)."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.6195954000000001,
+  "duration_ms": 46704,
+  "num_turns": 8,
+  "tokens": {
+    "input": 8,
+    "output": 3616,
+    "cache_read": 143450,
+    "cache_creation": 30411,
+    "total": 177485
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 22,
+      "output": 6351,
+      "cache_read": 203576,
+      "cache_creation": 55187,
+      "cost_usd": 0.5349912000000001
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 14,
+      "output": 2117,
+      "cache_read": 48937,
+      "cache_creation": 23405,
+      "cost_usd": 0.0846042
+    }
+  ],
+  "permission_denials": []
+}
