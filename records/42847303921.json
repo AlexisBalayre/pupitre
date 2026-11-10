@@ -1,0 +1,209 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-10T15:50:31.677Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42847303921",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42847303921",
+  "actor": "AlexisBalayre",
+  "commit_sha": "26cd5d1d75c5d03e8eeb7e2e08b2821399819e38",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 305,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/session.repository.ts",
+      "line": "616-632",
+      "description": "openQuestion closes a question only on an answer or operator steer, with no lifetime bound, so a question survives a merge/fix round, unblock, or conductor restart and resurfaces as a live inbox item to an agent that never asked it.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/session-lifecycle.service.ts",
+      "line": "802-817",
+      "description": "resolveAnswer passes the operator's free-text answer through sanitizeReason, which caps text at 300 code points; a longer answer is cut, delivered and recorded as if whole, while pup steer sends the same words uncut.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/session-lifecycle.service.ts",
+      "line": "773-775",
+      "description": "markSessionQuestion JSDoc says \"the next steer or pup answer\" closes the question, but only an operator steer or an answer does now.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/cli/ui/question.utils.ts",
+      "line": "2-3",
+      "description": "A utils file imports a repository (MAX_QUESTION_OPTIONS) and a service (QuestionRefusedError), which naming.md forbids for the utils role.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/session-lifecycle.service.ts",
+      "line": "789-795",
+      "description": "QuestionRefusedError is declared inline in a service file instead of session-lifecycle.errors.ts.",
+      "status": "unresolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/session-lifecycle.service.ts",
+      "line": "900-920",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "Nothing limits the length of a conductor question when it is asked, but its answer must fit `tellConductor`'s 800-character limit. A question of about 760+ characters can never be answered with `pup answer conductor`, and it stays at the top of the needs-you inbox until the conductor restarts.",
+      "body": "**A long conductor question can never be answered with `pup answer conductor`.**\n\nCommit e2aad5e replaced the 300-character cut with `paneLine`, which never truncates. Its JSDoc says \"the steer's and the tell's refusals bound them\". For a session that is true, because `steerPane` takes long pastes. For the conductor it is not. `answerConductorQuestion` sends the whole message through `tellConductor`:\n\n```ts\nconst answer = resolveAnswer(asked, reply);\nif (!tellConductor(repoPath, answerMessage(answer))) {\n```\n\nThe message is built in two steps:\n- `answerMessage` wraps the uncut question as `Answer to your question \"${question}\": option N, ${text}`.\n- `tellConductor` then **refuses**, rather than cuts, anything over `TELL_MAX_CHARS` = 800 (`conductor.service.ts:415-421`).\n\nThe ask side has no length check:\n- `askedQuestion` (`session-lifecycle.service.ts:802-825`) checks blank text, the option count, blank options and `--recommend`, but never length.\n- The `pup conductor ask` handler (`src/cli/index.ts:1247-1255`) and `markConductorQuestion` add no bound either.\n\n**Trigger:**\n1. Kickoff rule `OPERATOR_QUESTIONS` tells the conductor to raise gate-flag decisions through `pup conductor ask`.\n2. The conductor asks a question of about 780 characters that quotes the flag.\n3. Every `pup answer conductor 1`, and every free-text answer, fails with `ConductorTellRefusedError` (\"Shorten it\"). The operator cannot shorten the quoted question.\n4. No operator steer exists for the conductor: `pup conductor tell` records no steer event. The question closes only on an `answer`, a `conductor_start`, or a new ask.\n5. So the question stays first in the inbox until the operator restarts the conductor, or manually tells it to re-ask in fewer words.\n\nA shorter question with a long option fails the same way when that option is picked.\n\n**Fix direction:** refuse the question at ask time (`pup conductor ask` / `markConductorQuestion`). Throw `QuestionRefusedError` when `answerMessage` with the longest option, or with a short free answer, would exceed `TELL_MAX_CHARS`. The conductor then rewords it while it still sees the refusal. The other option is to cut the quoted question in `answerConductorQuestion` so the message fits. That would conflict with kickoff rule 4's exact-match check.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/26cd5d1d75c5d03e8eeb7e2e08b2821399819e38/src/core/session-lifecycle.service.ts#L900-L920",
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "1306",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Both callers write `conductor_start` only after `startConductor` returns, and that return comes after `startRadarWith`/`launchWatcher`. If the radar spawn throws (tmux `new-session` fails), the new conductor is already running with its context, but no `conductor_start` is written. The previous run's question then stays open and can be answered into a conductor that never asked it. The same applies to src/cli/ui/actions.service.ts L264. Writing the event inside `startConductor`, once `kickoff` has delivered and before `startRadarWith` (as respawn's `finally` does in session-handoff.service.ts L341-345), closes this gap and removes the duplicate call.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-lifecycle.service.ts",
+      "line": "863",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Since e2aad5e, resolveAnswer sends a picked option to the pane whole, but the inbox shows each option through sanitizeReason, which cuts it at 300 code points with no ellipsis. Neither scrubber removes zero-width or Unicode tag characters (\\p{Cf}). So a question row written with session_id NULL (which ADR 0093 says a session can write) can copy the conductor's real question word for word and pad option 1 with about 300 U+200B characters. The operator sees '1. Yes, land it (recommended)', presses 1, and the conductor gets `Answer to your question \"<its own question>\": option 1, Yes, land it<hidden instruction>`. That passes kickoff rule 4, which checks only the question text, never the option. pasteLanded checks only the first and last words, so the hidden middle does not stop delivery, and the result stays under the 800-character TELL_MAX_CHARS. Interim fix: in resolveAnswer, refuse an option whose paneLine text differs from sanitizeReason of it (`if (text !== sanitizeReason(text)) throw new QuestionRefusedError('Option N is longer than the inbox shows; answer in words. Nothing was sent.')`), and make paneLine strip format characters (`.replace(/\\p{Cf}/gu, '')` before the whitespace fold). This is the same forged-row class as t-mw9e0cpd and goes away once questions carry a token, so tag it as nit or fold it into that task. https://github.com/AlexisBalayre/pupitre/blob/26cd5d1d75c5d03e8eeb7e2e08b2821399819e38/src/core/session-lifecycle.service.ts#L849-L864",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "508-511",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The web overview's Needs you list shows the new answer string `pup answer <id> <n>, or pup answer <id> \"...\"` for any question with options, but never lists the options. `needsSection` renders only `need.reason` and `need.answer`, and `sessionRow` shows only `question.text`. So on `pup dashboard --open` the operator is told to answer with a number the page never defines, and a guessed `pup answer <id> 2` sends whatever option 2 happens to be. ADR 0093 leaves the options to the text surfaces, but then the web should print only the words form of the command, or list the options as well.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-lifecycle.service.ts",
+      "line": "832-841",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "paneLine is sanitizeReason without its final cut: the same control-character regex, whitespace collapse and trim, with a second biome-ignore; splitting an exported uncut `oneLine` out of sanitizeReason in capability.utils.ts and calling it here removes the duplicate scrub.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session.repository.ts",
+      "line": "110-115",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The StoredEventType JSDoc still says the store holds landed, fix_round and retired, \"the three EventType has yet to join\", but the diff adds conductor_start to the union; it should say four and describe conductor_start (written at a conductor start, decision 93).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": null,
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The comment above conductorAsked in buildDashboardSnapshot (\"Like a session's: a question only the running conductor can be answered on.\") is garbled and does not say why the question is hidden while the conductor is down: `pup answer conductor` needs a live window.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session.repository.ts",
+      "line": "636-639",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "openQuestion rewrites the decoded event with capped options and exports a derived QuestionEvent type only so resolveAnswer can read options.length without a null check; having decodeEvent return capped options for question events would drop the type and the spread.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Skipped review-context (no spec/protocol/infra surface), review-workflow-safety (no workflow change), review-spec (no closing issues or --spec), and review-maintainability (off the default roster). Prior important on QuestionRefusedError placement is carried as unresolved: the author declined one thread, but an important is not deferrable."
+    },
+    {
+      "component": "orchestrator",
+      "description": "Folded the conventions nit (conductor_start appended in two CLI callers rather than in core startConductor) into the correctness nit on the same lines, alongside the consolidator's 2+4 group: one root cause, fixed by moving the append into startConductor."
+    }
+  ],
+  "duplicates_merged": 2,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 4.971526024999999,
+  "duration_ms": 380325,
+  "num_turns": 21,
+  "tokens": {
+    "input": 18,
+    "output": 17615,
+    "cache_read": 448417,
+    "cache_creation": 69471,
+    "total": 535521
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 250,
+      "output": 80925,
+      "cache_read": 5001607,
+      "cache_creation": 340557,
+      "cost_usd": 4.531019399999998
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 52,
+      "output": 10323,
+      "cache_read": 433488,
+      "cache_creation": 117176,
+      "cost_usd": 0.4396228
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 480,
+      "cache_read": 0,
+      "cache_creation": 5149,
+      "cost_usd": 0.000883825
+    }
+  ],
+  "permission_denials": []
+}
