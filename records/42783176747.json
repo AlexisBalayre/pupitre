@@ -1,0 +1,166 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-10T08:38:20.840Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42783176747",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42783176747",
+  "actor": "AlexisBalayre",
+  "commit_sha": "ce61e5a3728e7c39840c97f5bc1b0b19f2ed5c6d",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 299,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "simplicity",
+    "guards"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "simplicity",
+    "guards"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/conductor.service.ts",
+      "line": "394-398",
+      "description": "A refused tell can only come from the operator's `pup conductor tell`. Worker idle notices reach the conductor through Claude Code's peer socket (`notify_when_idle`) and never call `tellConductor`. So the clock still starts at the first `pup status` / `pup ui` look, and an operator who only runs `pup status` sees nothing on the first look after hours of blockage.",
+      "status": "unresolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/conductor.service.ts",
+      "line": "446-453",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The only thing that clears `conductor/blocked-since` is a look that sees the box `empty`. Any later non-empty look picks up the old timestamp, however long ago it was written. If no look happens while the box is empty, two separate short non-empty spells count as one long blockage. The conductor then shows up in Needs-you as `blocked` straight away, with a wrong age. This breaks the ADR's promise that \"an operator typing into the conductor ... never shows up\". A successful `tellConductor` also leaves the clock in place even though it sees an empty box at the end.",
+      "body": "**Two separate drafts can merge into one \"blocked\" spell when no look sees the box empty in between**\n\n`noteConductorBox` drops the clock only when a look sees `'empty'`. A non-empty look reuses any stored time that is a positive integer no later than `now`:\n\n```ts\nif (box === 'empty') {\n  dropBlockedSince(repoPath);\n  return undefined;\n}\ntry {\n  const since = Number(readPlainFile(file, { followLinks: false }).trim());\n  if (Number.isInteger(since) && since > 0 && since <= now) return since;\n```\n\nNothing records when the last non-empty look happened. If no look lands while the box is empty, two unrelated short non-empty spells read as one long blockage. `conductorBlock` (L488) then lists the conductor at once, with its age counted from the first spell.\n\nDecision 168 (`docs/adr/0168-…md` lines 24-27) promises that operator typing \"never shows up\", and it does not mention gaps between looks. The tests (`conductor.test.ts` ~975-983) only cover the case where an empty look does happen.\n\n**Trigger.** This needs no `pup ui` or `pup dashboard` open, since both poll every 2s and would see the empty spell. The looks are one-shot `pup status` runs and bounced tells.\n1. At 10:00 the operator, attached with `pup attach`, is typing to the conductor. A session's `pup status` sees `holds`, and `blocked-since` becomes 10:00.\n2. The operator sends. The conductor handles it without running `pup status`, and then sits idle. No look sees the box empty.\n3. At 10:40 the operator starts typing again or briefly opens a subagent's view. A `pup status` sees `holds`/`absent` and reads `since = 10:00`. Needs-you lists `conductor  blocked: unsent draft` with a 40-minute age, though the draft is seconds old and the operator is the one typing it.\n\n**Sibling, narrower.** After a successful submit, `tellConductor` reads the box again (L406-411) and knows it is `'empty'`, but never passes that read to `noteConductorBox`. A one-shot look that lands during the paste sees the pasted text as `holds` and starts a clock that the landed tell then leaves in place.\n\n**Fix direction:**\n- (a) Pass the final `box` in `tellConductor` to `noteConductorBox(repoPath, box, Date.now())`, so a tell that lands resets the clock.\n- (b) Keep the time of the last non-empty look next to `since`, and restart the clock when that look is older than a draft or overlay plausibly lasts. Or say in decision 168 that sparse looks can merge separate episodes.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/ce61e5a3728e7c39840c97f5bc1b0b19f2ed5c6d/src/core/conductor.service.ts#L446-L453\nhttps://github.com/AlexisBalayre/pupitre/blob/ce61e5a3728e7c39840c97f5bc1b0b19f2ed5c6d/src/core/conductor.service.ts#L406-L411",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard.service.ts",
+      "line": "265",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The new `conductor` need renders as `<li class=\"need need-conductor\">` (web-dashboard-overview.service.ts:306). The page stylesheet only gives the red left border to `.need.need-question, .need.need-blocked, .need.need-stalled`. NEED_ORDER puts `conductor` between `question` and `blocked`, so when a question, a blocked conductor and a blocked session are all present, `pup dashboard` shows two red-bordered rows with the conductor between them unmarked. It looks like a low-urgency pr-open row, which goes against decision 168's ranking, while the other three surfaces show it at its true rank. Fix: add `.need.need-conductor` to the selector on line 265.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "412",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The `needsYou` JSDoc still says \"One line per session, its first reason in `NEED_ORDER`\". The change adds a `conductor` line that belongs to no session; its `sessionId` is the window name `pup-conductor-<id>`. A reader of `needsYou` would not expect that line to be there. Suggested replacement: \"One line per session (plus the conductor's, when blocked; decision 168), its first reason in `NEED_ORDER`\".",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/types/dashboard.types.ts",
+      "line": "240-245",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `DashboardSnapshot` JSDoc still says everything is \"answered by the store and the events files\" plus one capture of the conductor's pane. But building a snapshot now also creates or removes `conductor/blocked-since`, including from readers documented as read-only such as the web dashboard's GET. Add \"and writes the blocked clock\" to that sentence.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "99-100",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `running ?` guard in `const blocked = running ? conductorBlock(repoPath, now) : undefined;` is redundant. `conductorBlock` already returns `undefined` when `conductorPane` finds no pane. `const blocked = conductorBlock(repoPath, now);` drops the ternary and costs at most one extra tmux probe on a stopped conductor.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "validator",
+      "description": "The validator confirmed the clock-merge important but suggested posting it as minor, because it cannot happen while `pup ui` or `pup dashboard` polls every 2s. The orchestrator kept it important: it is reachable in the one-shot-reader setup decision 168 targets, and it breaks the ADR's 'operator typing never shows up' promise."
+    },
+    {
+      "component": "orchestrator",
+      "description": "The head SHA ce61e5a is the same one the prior record reviewed, so this was a re-ask on that head. The prior important at conductor.service.ts 394-398 is still unresolved, and reviewers were briefed not to re-raise it. I dropped one simplicity nit (folding noteConductorBox's rmSync into dropBlockedSince) because its reviewer recommended leaving it."
+    },
+    {
+      "component": "conventions",
+      "description": "`bash scripts/adr-index.sh` was refused under the CI lock. The reviewer found ADRs by Glob/Grep and did not read testing.md, and it did not check whether ADRs 0083/0085 need an 'Amended by' line for 0168."
+    },
+    {
+      "component": "guards",
+      "description": "The reviewer did not read the new ADR 0168 and found no ADR-index format test. Its greps covered only *.test.ts, so a guard in another file type would be missed."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 3.150340820000001,
+  "duration_ms": 261271,
+  "num_turns": 18,
+  "tokens": {
+    "input": 16,
+    "output": 15008,
+    "cache_read": 333556,
+    "cache_creation": 56003,
+    "total": 404583
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 150,
+      "output": 51868,
+      "cache_read": 2265551,
+      "cache_creation": 226293,
+      "cost_usd": 2.790544200000001
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 38,
+      "output": 9423,
+      "cache_read": 278712,
+      "cache_creation": 94862,
+      "cost_usd": 0.35933219999999993
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 152,
+      "cache_read": 1822,
+      "cache_creation": 2960,
+      "cost_usd": 0.00046442
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "bash scripts/adr-index.sh"
+    }
+  ]
+}
