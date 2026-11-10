@@ -1,0 +1,104 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-10T17:31:49.860Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "42865403016",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/42865403016",
+  "actor": "AlexisBalayre",
+  "commit_sha": "609dbe282eadb9aa44afb030a557e5adf7cbd1a5",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 310,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "conventions",
+    "docs",
+    "guards",
+    "simplicity"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "conventions",
+    "docs",
+    "guards",
+    "simplicity"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/dashboard.test.ts",
+      "line": "1781-1793",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The test 'ends the stall at the round kill, not at a retry undone after it' passes without this PR's change. `fixRoundWindow` drops the undelivered kickoff before it can set `scoredFrom`, so `scoredFrom === openedAt`. Reverting dashboard.service.ts:313-314 to `fixRoundWindow(events).openedAt` leaves this test green, and it repeats the #295 case already covered at session-lifecycle.test.ts:1447. Only the first new test (a `pup respawn` inside the round) fails on revert, so one of the two acceptance cases has a test that distinguishes it, not both.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/routing.utils.ts",
+      "line": "211-214",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`fixRoundWindow`'s JSDoc doesn't say `scoredFrom` only means something while `openedAt >= 0`. A merge resets `openedAt` but not `scoredFrom`, so a future caller that reads `scoredFrom` alone gets a stale pre-merge respawn index. The only guard is the bare ternary at dashboard.service.ts:314.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.1452515250000002,
+  "duration_ms": 129880,
+  "num_turns": 12,
+  "tokens": {
+    "input": 10,
+    "output": 6659,
+    "cache_read": 191306,
+    "cache_creation": 36838,
+    "total": 234813
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 42,
+      "output": 15369,
+      "cache_read": 534098,
+      "cache_creation": 79668,
+      "cost_usd": 0.9232216000000002
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 38,
+      "output": 5942,
+      "cache_read": 155496,
+      "cache_creation": 58534,
+      "cost_usd": 0.22138059999999998
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 151,
+      "cache_read": 0,
+      "cache_creation": 4589,
+      "cost_usd": 0.0006493250000000001
+    }
+  ],
+  "permission_denials": []
+}
