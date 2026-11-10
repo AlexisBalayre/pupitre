@@ -7,6 +7,7 @@ import { CHART_CSS } from './chart.utils.js';
 import { PAGE_SHELL_CSS } from './page-shell.constants.js';
 import { PAGE_THEME_CSS } from './page-theme.constants.js';
 import { readDebtSheet, renderDebtSheet } from './web-dashboard-debt.service.js';
+import { readDecisionsSheet, renderDecisionsSheet } from './web-dashboard-decisions.service.js';
 import { readHealthSheet, renderHealthSheet } from './web-dashboard-health.service.js';
 import { readOverview, renderOverview } from './web-dashboard-overview.service.js';
 import { escapeHtml, SHEETS, type SheetName } from './web-dashboard-sheet.utils.js';
@@ -56,6 +57,8 @@ export async function startWebDashboard(
     switch (sheet) {
       case 'debt':
         return renderDebtSheet(readDebtSheet(db, repoPath, now));
+      case 'decisions':
+        return renderDecisionsSheet(readDecisionsSheet(db, repoPath, now));
       case 'health':
         return renderHealthSheet(readHealthSheet(db, repoPath));
       case 'overview':
@@ -163,6 +166,7 @@ const SHEET_TITLES: Record<SheetName, string> = {
   health: 'Health',
   debt: 'Debt',
   tasks: 'Tasks',
+  decisions: 'Decisions',
 };
 
 /** The sheet a request names, Overview when it names none, undefined for a name no sheet has. */
