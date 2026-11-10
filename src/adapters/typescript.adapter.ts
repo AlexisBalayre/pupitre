@@ -211,36 +211,22 @@ function runsPlainVitest(root: RootFiles): boolean {
 /**
  * The root files, by lower-cased name, that decide what a vitest run collects:
  * the manifest whose script starts it, the npm, yarn, pnpm and bun configs that
- * can change how that script runs, yarn's Plug'n'Play runtime, and every config
- * and workspace file vitest or vite reads.
+ * can change how that script runs, and every config and workspace file vitest
+ * or vite reads.
  */
 const VITEST_RUN_INPUT =
-  /^(?:package\.json|\.npmrc|\.yarnrc(?:\.yml)?|\.env\.yarn|\.pnp\.[^/]*|pnpm-workspace\.yaml|bunfig\.toml|vite(?:st)?\.(?:config|workspace|projects)\.[^/]*)$/;
+  /^(?:package\.json|\.npmrc|\.yarnrc(?:\.yml)?|pnpm-workspace\.yaml|bunfig\.toml|vite(?:st)?\.(?:config|workspace|projects)\.[^/]*)$/;
 
-/**
- * The npm, yarn, pnpm and bun configs among the run inputs, which the branch
- * may commit: `.env.yarn` too, which Yarn 4 injects into every script's
- * environment by default.
- */
-const PACKAGE_MANAGER_CONFIG =
-  /^(?:\.npmrc|\.yarnrc(?:\.yml)?|\.env\.yarn|pnpm-workspace\.yaml|bunfig\.toml)$/;
+/** The npm, yarn, pnpm and bun configs among the run inputs, which the branch may commit. */
+const PACKAGE_MANAGER_CONFIG = /^(?:\.npmrc|\.yarnrc(?:\.yml)?|pnpm-workspace\.yaml|bunfig\.toml)$/;
 
 /**
  * A key, in any of their spellings, by which a package-manager config has the
  * test script run a file, which in the gate is the branch's even where the
  * config is the target's: yarn's own binary and plugins, a node option such
- * as `--import`, the shell scripts run in, bun's preloads, and the env files
- * yarn injects, which may set any of these.
+ * as `--import`, the shell scripts run in, and bun's preloads.
  */
-const RUNS_A_FILE =
-  /yarn[-_]?path|plugins|node[-_]?options|script[-_]?shell|preload|inject[-_]?environment[-_]?files/i;
-
-/**
- * Yarn's Plug'n'Play runtime, which yarn loads into every script it runs. It
- * resolves packages without the `node_modules` the gate links and checks, from
- * a cache the branch may commit, so where it stands the run is the branch's.
- */
-const PNP_RUNTIME = /^\.pnp\./;
+const RUNS_A_FILE = /yarn-?path|plugins|node-?options|script-?shell|preload/i;
 
 /** What vitest and vite write in `node_modules` as they run, which the gate does not link. */
 const RUN_CACHE = /^(?:\.cache$|\.vite)/;
@@ -305,17 +291,13 @@ function runInputs(root: RootFiles, pattern: RegExp): string {
 /**
  * What a plain vitest run over `root` collects, with its package-manager
  * configs beside the config it compares across checkouts; undefined where it
- * is unknown, where one of those configs runs a file, or where yarn's
- * Plug'n'Play runtime stands at the root. Throws where the root cannot be read.
+ * is unknown, or where one of those configs runs a file. Throws where the root
+ * cannot be read.
  */
 function plainVitestCollection(root: RootFiles): ReturnType<typeof vitestCollection> {
   const managers = runInputs(root, PACKAGE_MANAGER_CONFIG);
   const collection =
-    runsPlainVitest(root) &&
-    !RUNS_A_FILE.test(managers) &&
-    ![...root.keys()].some((name) => PNP_RUNTIME.test(name))
-      ? vitestCollection(root)
-      : undefined;
+    runsPlainVitest(root) && !RUNS_A_FILE.test(managers) ? vitestCollection(root) : undefined;
   return collection && { ...collection, config: [collection.config, managers].join('\0') };
 }
 
