@@ -51,8 +51,13 @@ export const BINARY_FREE_MAX_BYTES = 1024 * 1024;
  */
 export const BINARY_FREE_TOTAL_MAX_BYTES = 4 * 1024 * 1024;
 
-/** The tree modes of a regular file; a 120000 symlink is no image a checkout writes. */
-const REGULAR_FILE_MODES = ['100644', '100755'];
+/**
+ * The one tree mode a known binary may have: a plain file. A 120000 symlink is
+ * no image a checkout writes, and a 100755 file is one a shell runs: the PNG
+ * signature puts a CR and LF before its first NUL, so bash runs the lines
+ * after it, uncounted. No real image needs the exec bit (decision 154).
+ */
+const KNOWN_BINARY_MODE = '100644';
 
 /**
  * A zip's end-of-central-directory and local file header signatures. Python's
@@ -99,13 +104,13 @@ export function formatsNamed(path: string): BinaryFormat[] {
 }
 
 /**
- * Whether a tree entry may be read as a known binary: a regular file not over
- * `BINARY_FREE_MAX_BYTES`. A size that is no number (`ls-tree` lists `BAD`
+ * Whether a tree entry may be read as a known binary: a non-executable
+ * regular file (`KNOWN_BINARY_MODE`) not over `BINARY_FREE_MAX_BYTES`. A size that is no number (`ls-tree` lists `BAD`
  * for an object it cannot read) is not over the cap, so the read goes ahead
  * and `readBlobs` refuses it, rather than this answer hiding the failure.
  */
 export function mayBeKnownBinary(mode: string, size: number): boolean {
-  return REGULAR_FILE_MODES.includes(mode) && !(size > BINARY_FREE_MAX_BYTES);
+  return mode === KNOWN_BINARY_MODE && !(size > BINARY_FREE_MAX_BYTES);
 }
 
 /** Git's content rule: a NUL in the first `BINARY_SNIFF_BYTES`. */

@@ -14,8 +14,8 @@
     *The rule.* `gitDiffBinaryRecount` skips a file only when every side of the merge-base
     diff it exists on is a known binary (`blobIsKnownBinary` in `src/core/git-diff.client.ts`,
     which reads the entry and leaves the decision to `src/core/known-binary.utils.ts`).
-    A side is one when five things hold. It is a regular file (mode 100644 or 100755, never
-    a 120000 symlink) of at most `BINARY_FREE_MAX_BYTES` (1 MiB). Its first 8000 bytes hold
+    A side is one when five things hold. It is a non-executable regular file (mode 100644,
+    never 100755 or a 120000 symlink) of at most `BINARY_FREE_MAX_BYTES` (1 MiB). Its first 8000 bytes hold
     a NUL. Its bytes open with the magic number of a format
     in `BINARY_FORMATS`. Its path ends with an extension that same format is committed under,
     in any ASCII case, and only ASCII is folded: `toLowerCase` would read `.mKv` written with
@@ -152,7 +152,9 @@
     and `%PDF-//\0` in a `.pdf`, `x=1;ftyp//\0` in an `.mp4`, a `.zip`, a `.wasm`, and a
     PNG one byte over the cap. A known-format path whose blob object is deleted throws
     instead of returning null. A `:(top)foo` file and an NFD file beside a binary NFC
-    sibling recount their own lines under `* -diff`. A `.ts` renamed into a `.png` holding its bytes recounts,
+    sibling recount their own lines under `* -diff`. An executable (100755) PNG recounts:
+    the PNG signature puts a CR and LF before its first NUL, so bash runs the lines after
+    it, and no real image needs the exec bit. A `.ts` renamed into a `.png` holding its bytes recounts,
     with the rename source and both oids in its numstat entry, and a PNG renamed into a
     PNG skips. A target PNG renamed to a name that is not UTF-8 with a zip end record
     appended recounts its 6 added lines, and so does a PNG over the cap under such a name

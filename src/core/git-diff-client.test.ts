@@ -684,6 +684,20 @@ describe('gitDiffBinaryRecount', () => {
     });
   });
 
+  // The PNG signature's CR and LF come before its first NUL, so bash runs an
+  // executable PNG's later lines; no real image needs the exec bit.
+  it('recounts an executable PNG', () => {
+    const repo = repoWith({ 'base.ts': 'one\n' }, { 'run.png': png('echo hi\n') });
+    sh(repo, 'git', 'update-index', '--chmod=+x', 'run.png');
+    sh(repo, 'git', 'commit', '-q', '-m', 'exec');
+
+    expect(gitDiffNumstat(repo, 'main', 'feature')).toMatchObject([
+      { path: 'run.png', added: null, deleted: null, sides: [undefined, { mode: '100755' }] },
+    ]);
+    // The signature's CR and LF make three lines; `echo hi` ends the third.
+    expect(recount(repo, 'run.png')).toEqual({ added: 3, deleted: 0 });
+  });
+
   // A known binary is a regular file: a symlink blob holding a PNG signature
   // and a NUL is no image a checkout writes, so it is recounted (decision 154).
   it('recounts a symlink whose blob opens with a known magic and holds a NUL', () => {
@@ -1968,12 +1982,12 @@ describe('known-binary.utils', () => {
   });
 
   describe('mayBeKnownBinary', () => {
-    it('admits a regular file up to the cap', () => {
+    it('admits a non-executable regular file up to the cap', () => {
       expect(mayBeKnownBinary('100644', BINARY_FREE_MAX_BYTES)).toBe(true);
-      expect(mayBeKnownBinary('100755', 0)).toBe(true);
     });
 
-    it('refuses a symlink, a gitlink, no mode and a file past the cap', () => {
+    it('refuses an executable, a symlink, a gitlink, no mode and a file past the cap', () => {
+      expect(mayBeKnownBinary('100755', 0)).toBe(false);
       expect(mayBeKnownBinary('120000', 10)).toBe(false);
       expect(mayBeKnownBinary('160000', 10)).toBe(false);
       expect(mayBeKnownBinary('', 10)).toBe(false);

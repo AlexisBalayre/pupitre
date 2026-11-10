@@ -795,7 +795,7 @@ export { BINARY_FREE_MAX_BYTES, BINARY_FREE_TOTAL_MAX_BYTES } from './known-bina
 
 /**
  * The size of a diff side when it is a binary to skip, false when it is not:
- * a regular file (mode 100644 or 100755, never a 120000 symlink) no larger
+ * a non-executable regular file (mode 100644, never 100755 or a 120000 symlink) no larger
  * than `BINARY_FREE_MAX_BYTES`, binary by content, never by attribute,
  * opening with the magic of a format its extension names, and holding no zip
  * record, phar stub or tar header (`mayBeKnownBinary`, then
