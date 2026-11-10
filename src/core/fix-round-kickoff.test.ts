@@ -636,7 +636,7 @@ describe('startFixRound', { timeout: 90_000 }, () => {
         status: { state: 'SUCCESS', description: 'no blocking issues' },
         threads: [{ id: 'PRRT_declined', body: 'A false positive.', isAnswered: true }],
       },
-      /The CI review's unresolved threads on .* are the operator's: 1 a fix round answered and left open \(resolve each once its answer holds, or open a new round knowing the worker sees only the bot's finding, not your reply\)\. No fix round was started\./,
+      /The CI review's unresolved threads on .* are the operator's: 1 a fix round answered and left open \(resolve each once its answer holds, or reply on it as the operator, so a comment follows the round's reply, and re-run pup fix to take it again; the worker sees only the bot's finding, not your reply\)\. No fix round was started\./,
     ],
     // A push that outdates a thread answers nothing (decision 163): a clean
     // status with one standing is not clean.

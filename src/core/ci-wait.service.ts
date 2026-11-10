@@ -285,8 +285,8 @@ function reviewDigest(
     const leftToOperator: string[] = [];
     if (answered > 0) {
       leftToOperator.push(
-        `resolve the ${answered} thread(s) a fix round left open, or open a new round knowing ` +
-          "the worker sees only the bot's finding, not your reply",
+        `resolve the ${answered} thread(s) a fix round left open, or reply on one as the operator ` +
+          "and re-run pup fix to take it again; the worker sees only the bot's finding, not your reply",
       );
     }
     if (outdated > 0) {

@@ -690,7 +690,8 @@ function reviewVerdict(
     if (answered > 0) {
       left.push(
         `${answered} a fix round answered and left open (resolve each once its answer holds, ` +
-          "or open a new round knowing the worker sees only the bot's finding, not your reply)",
+          "or reply on it as the operator, so a comment follows the round's reply, and re-run " +
+          "pup fix to take it again; the worker sees only the bot's finding, not your reply)",
       );
     }
     if (outdated > 0) {
