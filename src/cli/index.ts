@@ -855,6 +855,12 @@ interface ConductorOptions {
   maxSessions?: string;
 }
 
+interface LandOptions {
+  gateEnv?: string;
+  audit: boolean;
+  acceptHead?: string;
+}
+
 interface PlanOptions {
   scope?: string[];
   scopeOut?: string[];
@@ -2424,13 +2430,22 @@ export function buildProgram(): Command {
     )
     .option('--gate-env <names>', GATE_ENV_DESCRIPTION)
     .option('--no-audit', 'Land without the audit; run `pup audit` once after the last land')
-    .action(async (session: string, opts: { gateEnv?: string; audit: boolean }) => {
+    .option(
+      '--accept-head <sha>',
+      'Land a PR merged at this head, past the pinned sha, after reading the commits between them',
+    )
+    .action(async (session: string, opts: LandOptions) => {
       const { repoPath, db } = project();
       // The human merged the PR on GitHub already; what is left moves main to
       // what origin holds and re-stamps the baseline, so the conductor may run
       // it, and a session may not, as it may not run the audit (decision 84).
       if (callingSession(db)) {
         return refuse('`pup land` is refused to sessions; the operator or the conductor runs it.');
+      }
+      // Vouching for commits no gate measured is the merge's power, which the
+      // conductor does not hold (decisions 47, 164).
+      if (opts.acceptHead !== undefined && callingConductor()) {
+        return refuse('`pup land --accept-head` is operator-only.');
       }
       if (refusedUnsandboxed()) return;
       let outcome: LandOutcome;
@@ -2443,6 +2458,7 @@ export function buildProgram(): Command {
           gateEnv: parseGateEnv(opts.gateEnv),
           wait: true,
           audit: opts.audit,
+          acceptHead: opts.acceptHead,
         });
       } catch (error) {
         if (error instanceof GateInterruptedError) throw error;

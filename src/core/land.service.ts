@@ -49,6 +49,11 @@ interface LandRequest {
   wait?: boolean;
   /** `false` lands without the audit, so several lands share one `pup audit` (decision 132). */
   audit?: boolean;
+  /**
+   * The operator's word for a head the PR merged at past the pin (decision
+   * 164): the full sha GitHub reports, after reading the commits between them.
+   */
+  acceptHead?: string;
 }
 
 /**
@@ -56,7 +61,9 @@ interface LandRequest {
  * refusal comes before anything moves: the session must be merged with a PR
  * that GitHub says is MERGED, and the target fetched from the recorded origin
  * must hold the sha the gate pinned, or a squash or rebase merge of exactly its
- * content (decision 131). Then, under the merge lock, the local
+ * content (decision 131). A PR merged at a head past the pin lands only on the
+ * operator's `acceptHead`, a descendant of the pin read from origin, and the
+ * check is then against that head (decision 164). Then, under the merge lock, the local
  * target is fast-forwarded with the gate's plumbing, the session's worktree
  * and branch go, a `landed` event drops the PR from the inbox, and the audit
  * re-stamps the baseline the PR mode left alone (decision 26). A re-run after a
@@ -110,13 +117,32 @@ export async function landSession(db: Database, req: LandRequest): Promise<LandO
   }
   // A merge, squash or rebase of a head that moved past the pin lands commits
   // the gate never measured; the PR vouched for the pinned sha only (decision
-  // 82). GitHub's own "Update branch" moves the head too, and refuses.
-  // Only a re-gate before the merge vouches for a moved head (decision 86).
-  if (pr.head !== sha) {
+  // 82). GitHub's own "Update branch" moves the head too. A re-gate before the
+  // merge vouches for a moved head (decision 86); after the merge only the
+  // operator's `--accept-head` naming that very head does, and only for
+  // commits past the pin, checked under the lock (decision 164).
+  if (pr.head === undefined || !COMMIT_SHA.test(pr.head)) {
+    throw new Error(`GitHub reports ${prUrl} merged with an unreadable head. Nothing was landed.`);
+  }
+  const head = pr.head;
+  if (req.acceptHead !== undefined && req.acceptHead !== head) {
     throw new Error(
-      `${prUrl} merged with its head at ${pr.head ?? 'an unreadable commit'}, not ${sha}, the ` +
-        'commit the gate pinned; it lands commits the gate never measured. A PR whose head ' +
-        `moved is re-gated with \`pup merge ${id} --pr\` before it is merged. Nothing was landed.`,
+      `--accept-head names ${sanitizeReason(req.acceptHead)}, but ${prUrl} merged with its ` +
+        `head at ${head}; the operator's word holds for that commit only. Nothing was landed.`,
+    );
+  }
+  const pullRef = `refs/pull/${prUrl.slice(prUrl.lastIndexOf('/') + 1)}/head`;
+  if (head !== sha && req.acceptHead === undefined) {
+    // The operator's read is all that vouches for these commits, so it is
+    // pointed at GitHub, not at git in the repo, whose replace refs, attributes,
+    // pager, fsmonitor and remotes a session can write (decision 164).
+    const compare = `${prUrl.slice(0, prUrl.lastIndexOf('/pull/'))}/compare/${sha}...${head}`;
+    throw new Error(
+      `${prUrl} merged with its head at ${head}, not ${sha}, the commit the gate pinned; it ` +
+        'lands commits the gate never measured. A PR whose head moved is re-gated with ' +
+        `\`pup merge ${id} --pr\` before it is merged. Once merged, read the commits past the ` +
+        `pin on GitHub (${compare}) and, if you vouch for them, run ` +
+        `\`pup land ${id} --accept-head ${head}\`. Nothing was landed.`,
     );
   }
   // Merged into another base, the content never came through the gated one.
@@ -142,7 +168,14 @@ export async function landSession(db: Database, req: LandRequest): Promise<LandO
         throw new Error(`Session ${id} has already landed.`);
       }
       const localSha = resolveCommit(req.repoPath, `refs/heads/${target}`);
-      const originTip = fetchTarget(req.repoPath, originUrl, target, localSha);
+      const fetched = fetchTarget(
+        req.repoPath,
+        originUrl,
+        target,
+        localSha,
+        head === sha ? undefined : pullRef,
+      );
+      const originTip = fetched.tip;
       // The event will say this commit landed the pinned content on the target.
       if (!isAncestor(req.repoPath, mergeCommit, originTip)) {
         throw new Error(
@@ -150,15 +183,35 @@ export async function landSession(db: Database, req: LandRequest): Promise<LandO
             `says merged ${prUrl}; the PR landed elsewhere. Nothing was landed.`,
         );
       }
+      // The accepted head is read from origin, not the local branch a session
+      // can move, and must carry the pin whole: a head that rewrote the gated
+      // commits is no longer "the gate's content plus what the operator read".
+      if (head !== sha) {
+        if (fetched.pullHead !== head) {
+          throw new Error(
+            `origin's ${pullRef} is at ${fetched.pullHead}, not ${head}, the head GitHub says ` +
+              `${prUrl} merged at. Nothing was landed.`,
+          );
+        }
+        if (!descendsFrom(req.repoPath, head, sha)) {
+          throw new Error(
+            `${head}, the head ${prUrl} merged at, does not descend from ${sha}, the commit the ` +
+              'gate pinned: its commits rewrote what the gate measured, so --accept-head cannot ' +
+              'vouch for them. Nothing was landed.',
+          );
+        }
+      }
       // A merge, squash or rebase is taken when what it landed is exactly the
-      // gate's content: ancestry alone would take a merge commit carrying
-      // changes of its own (decision 131).
-      const landedOn = mergedOnto(req.repoPath, sha, mergeCommit);
+      // gate's content, or the accepted head's: ancestry alone would take a
+      // merge commit carrying changes of its own (decision 131).
+      const landedOn = mergedOnto(req.repoPath, head, mergeCommit);
       if (landedOn === undefined) {
+        const merged =
+          head === sha ? `${sha}, the commit the gate pinned` : `${head}, the head you accepted`;
         throw new Error(
           `${mergeCommit}, the commit GitHub says merged ${prUrl}, does not have the tree git ` +
-            `gives merging ${sha}, the commit the gate pinned, onto the commit the merge went ` +
-            'onto; the merge landed content the gate never measured. Nothing was landed.',
+            `gives merging ${merged}, onto the commit the merge went onto; the merge landed ` +
+            'content the gate never measured. Nothing was landed.',
         );
       }
       // What the gate checks under its lock before the same checkout (decisions
@@ -192,7 +245,7 @@ export async function landSession(db: Database, req: LandRequest): Promise<LandO
         originTip,
       ]);
       const targetSha = fastForwarded ? originTip : localSha;
-      const tornDown = tearDown(req.repoPath, session, targetSha, sha);
+      const tornDown = tearDown(req.repoPath, session, targetSha, head);
       appendEvent(db, session.id, 'landed', { sha: mergeCommit, target, prUrl });
       // Right after the event, still under the lock, and before the audit,
       // which can throw: once the event is written a re-run refuses, and
@@ -317,14 +370,18 @@ function steerOverlappingSessions(
  * session can write is never read. Objects land in the repo's own store, and
  * the local tip is lent as a ref so only what it lacks crosses. No ref of the
  * repo moves here; the caller records the tracking ref once the tip passes.
+ * With `pullRef`, the PR's head ref GitHub keeps, fetched in the same call,
+ * so an accepted head is read from origin (decision 164).
  */
 function fetchTarget(
   repoPath: string,
   originUrl: string,
   target: string,
   localSha: string,
-): string {
+  pullRef: string | undefined,
+): { tip: string; pullHead?: string } {
   const piped = { stdio: ['ignore', 'pipe', 'pipe'] as ['ignore', 'pipe', 'pipe'] };
+  const fetched = pullRef === undefined ? target : `${target} and ${pullRef}`;
   try {
     return withScratchGitDir(repoPath, 'pup-land-', (git) => {
       git(['update-ref', 'refs/heads/local', localSha], piped);
@@ -336,17 +393,51 @@ function fetchTarget(
           '--end-of-options',
           originUrl,
           `+refs/heads/${target}:refs/heads/origin`,
+          ...(pullRef === undefined ? [] : [`+${pullRef}:refs/heads/pull`]),
         ],
         {
           ...piped,
           timeout: GATE_COMMAND_TIMEOUT_MS,
         },
       );
-      return git(['rev-parse', '--verify', 'refs/heads/origin^{commit}'], piped).trim();
+      const tipOf = (ref: string) =>
+        git(['rev-parse', '--verify', `${ref}^{commit}`], piped).trim();
+      const tip = tipOf('refs/heads/origin');
+      return pullRef === undefined ? { tip } : { tip, pullHead: tipOf('refs/heads/pull') };
     });
   } catch (error) {
     throw new Error(
-      `Fetching ${target} from ${sanitizeReason(originUrl)} failed. Nothing was landed.\n` +
+      `Fetching ${fetched} from ${sanitizeReason(originUrl)} failed. Nothing was landed.\n` +
+        failureSummary(error),
+    );
+  }
+}
+
+/**
+ * Whether `head` descends from `pin`, asked from the scratch git dir with the
+ * repo's commit graph off, for `mergedOnto`'s reason: that cache is in the
+ * object store a session can write, and a forged one could answer yes
+ * (decision 164). Exit 1 is no; any other failure is git failing outright.
+ */
+function descendsFrom(repoPath: string, head: string, pin: string): boolean {
+  const piped = { stdio: ['ignore', 'pipe', 'pipe'] as ['ignore', 'pipe', 'pipe'] };
+  try {
+    return withScratchGitDir(repoPath, 'pup-land-', (git) => {
+      try {
+        git(['-c', 'core.commitGraph=false', 'merge-base', '--is-ancestor', pin, head], {
+          ...piped,
+          timeout: GATE_COMMAND_TIMEOUT_MS,
+        });
+        return true;
+      } catch (error) {
+        if ((error as { status?: unknown }).status !== 1) throw error;
+        return false;
+      }
+    });
+  } catch (error) {
+    rethrowIfKilled(error);
+    throw new Error(
+      `Reading whether ${head} descends from ${pin} failed. Nothing was landed.\n` +
         failureSummary(error),
     );
   }
@@ -418,7 +509,8 @@ function mergedOnto(repoPath: string, sha: string, mergeCommit: string): string 
 /**
  * What the gate's own teardown may have left (it is best effort): the
  * session's worktree, and its branch while main holds every commit of it, or
- * of the pinned `sha` whose content a squash or rebase merge landed. A branch
+ * of `head`, the pinned sha or the accepted head (decision 164), whose content
+ * a squash or rebase merge landed. A branch
  * with commits past both is kept for the operator, as the gate keeps one that
  * moved past the pin.
  */
@@ -426,7 +518,7 @@ function tearDown(
   repoPath: string,
   session: { worktree_path: string; branch: string },
   targetSha: string,
-  sha: string,
+  head: string,
 ): { removedWorktree: boolean; keptBranch?: string; keptWorktree?: string } {
   let removedWorktree = false;
   if (isRegisteredWorktree(repoPath, session.worktree_path)) {
@@ -441,6 +533,6 @@ function tearDown(
       return { removedWorktree, keptWorktree: session.worktree_path };
     }
   }
-  const keptBranch = deleteBranchIfHeld(repoPath, session.branch, [targetSha, sha]);
+  const keptBranch = deleteBranchIfHeld(repoPath, session.branch, [targetSha, head]);
   return keptBranch === undefined ? { removedWorktree } : { removedWorktree, keptBranch };
 }
