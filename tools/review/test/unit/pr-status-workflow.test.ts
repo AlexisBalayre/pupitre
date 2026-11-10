@@ -112,6 +112,13 @@ describe("unthreadedImportants", () => {
     expect(unthreadedImportants(posted(carried, null, [], 0), threaded)).toBe(1);
     const stray = summary({ prior_importants: [{ ...open, description: "x\n- `src/z.ts:1` (a): y" }] });
     expect(unthreadedImportants(posted(stray, null, [], 0), threaded)).toBe(1);
+    const terminated = summary({
+      prior_importants: [
+        { ...owed, file: "src/a.ts", line: "10", description: "x\n- `src/z.ts:1` (a): y\nend" },
+        { ...owed, file: "src/q.ts", line: "4" },
+      ],
+    });
+    expect(unthreadedImportants(posted(terminated, null, [], 0), threaded)).toBe(1);
   });
 
   it("leaves a carried important with a bot thread at its line to that thread, resolved or not", () => {
