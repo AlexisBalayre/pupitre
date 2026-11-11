@@ -310,7 +310,8 @@ function windowStalled(
     // The window `fixRoundFailure` scores, ended by the first kill back to
     // `merged` before another round is handed: a later undone retry's kill is
     // not its end.
-    windowFrom = fixRoundWindow(events).openedAt;
+    const round = fixRoundWindow(events);
+    windowFrom = round.openedAt < 0 ? -1 : round.scoredFrom;
     const at = events.findIndex(
       (event, i) =>
         i > windowFrom &&

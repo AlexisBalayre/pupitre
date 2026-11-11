@@ -42,6 +42,7 @@ import { answerFixRoundThreads } from './fix-round.service.js';
 import {
   ArmedGitDriverError,
   armedGitDrivers,
+  assertMainCheckout,
   assertNoArmedGitDrivers,
   checkoutPinned,
   currentBranch,
@@ -50,6 +51,7 @@ import {
   gitDiffNumstat,
   gitDiffPaths,
   rethrowIfKilled,
+  rethrowIfNoUsableRepo,
   runGit,
   verifiedWorktreeGitEnv,
   type WorktreeGitEnv,
@@ -227,8 +229,14 @@ interface RawDiffEntry {
  * rather than left to `diff.renames` and `diff.renameLimit`, which sit in the
  * shared config a session can write, so a rename onto a test name is paired
  * whatever that config says: a limit of 1 skipped inexact pairing as soon as a
- * second file was added. `copies` adds `-C -C`, which pairs a copy of any file
- * the target holds, changed on the branch or not.
+ * second file was added. `--no-relative`, with `diff.relative` pinned off, for
+ * the same reason: aimed by a `core.worktree` elsewhere, a relative listing
+ * names only the files under the cwd's prefix, and that prefix stripped, so a
+ * source change would vanish from the untested skip (decision 139).
+ * `--ignore-submodules=none` because `diff.ignoreSubmodules` there, or a
+ * `submodule.<name>.ignore`, would drop a gitlink change the same way. `copies`
+ * adds `-C -C`, which pairs a copy of any file the target holds, changed on the
+ * branch or not.
  */
 function rawDiffEntries(
   repoPath: string,
@@ -239,7 +247,11 @@ function rawDiffEntries(
   const fields = runGit(
     repoPath,
     [
+      '-c',
+      'diff.relative=false',
       'diff',
+      '--no-relative',
+      '--ignore-submodules=none',
       '--no-ext-diff',
       '--no-textconv',
       '--no-color',
@@ -357,7 +369,8 @@ const folded = (path: string): string => path.toLowerCase();
 /**
  * Whether a dependency file on the branch (`DIFF_SIZE_DEPENDENCY_FILES`), in
  * any ASCII case, names Docusaurus: its `@docusaurus/core` dependency or a
- * `docusaurus` script.
+ * `docusaurus` script. The pathspecs are `top`, for the reason `targetHolds`
+ * lists `--full-tree`.
  */
 function dependenciesNameDocusaurus(repoPath: string, branch: string): boolean {
   try {
@@ -371,7 +384,7 @@ function dependenciesNameDocusaurus(repoPath: string, branch: string): boolean {
       'docusaurus',
       branch,
       '--',
-      ...DIFF_SIZE_DEPENDENCY_FILES.map((name) => `:(glob,icase)**/${name}`),
+      ...DIFF_SIZE_DEPENDENCY_FILES.map((name) => `:(top,glob,icase)**/${name}`),
     ]);
     return true;
   } catch (error) {
@@ -394,12 +407,15 @@ function dependenciesNameDocusaurus(repoPath: string, branch: string): boolean {
  * path or target holds a character outside ASCII. A link named as a dependency
  * file may name Docusaurus where no grep reads it, and a file named outside
  * ASCII may be a config or dependency file no case-insensitive match finds.
+ * Listed `--full-tree`, for the reason `targetHolds` is.
  */
 function readBranchTree(repoPath: string, branch: string): BranchTree {
   const landings: string[] = [];
   let anywhere = false;
   let markdownIsCode = dependenciesNameDocusaurus(repoPath, branch);
-  for (const entry of runGit(repoPath, ['ls-tree', '-r', '-z', branch]).split('\0')) {
+  for (const entry of runGit(repoPath, ['ls-tree', '-r', '-z', '--full-tree', branch]).split(
+    '\0',
+  )) {
     if (!entry) continue;
     // "<mode> <type> <oid>\t<path>": the path is everything after the first tab.
     const tab = entry.indexOf('\t');
@@ -1065,11 +1081,17 @@ function formatGateReport(report: GateReport): string {
  * again on that head with `--pr` (decision 86).
  */
 export async function runMergeGate(db: Database, req: MergeRequest): Promise<MergeOutcome> {
+  // Before anything reads a ref, and again under the lock: the main checkout's
+  // .git is a directory of its own with no commondir. From here `runGit` holds
+  // the path to that on every spawn, but some catches below read a refusal as
+  // "no such ref", so the run refuses outright first (decision 172).
+  assertMainCheckout(req.repoPath);
   const planned = planMerge(db, req);
   // The operator's and the conductor's runs wait for a live holder (decision 88).
   return withMergeLock(
     req.repoPath,
     async (waited) => {
+      assertMainCheckout(req.repoPath);
       // A run that held the lock before this one, a live one waited for or a
       // dead one reclaimed or one released during the gh calls, may have
       // merged, rejected or re-gated this session, or opened its fix round, and
@@ -1382,14 +1404,18 @@ export function assertTargetName(repoPath: string, target: string): void {
  * bare name: a lightweight tag named like a branch wins a bare lookup. A
  * symbolic ref is refused: its sha is another branch's, so a gate that pinned
  * it would measure an empty diff and then move or delete that branch through it.
+ * Every resolve asks first that `repoPath` is a main checkout (decision 172), so
+ * a caller outside the gate, `land` or `regate`, never resolves through a decoy.
  */
 export function resolveCommit(repoPath: string, ref: string): string {
+  assertMainCheckout(repoPath);
   const piped = { stdio: ['ignore', 'pipe', 'pipe'] as ['ignore', 'pipe', 'pipe'] };
   const symbolic = (() => {
     try {
       return runGit(repoPath, ['symbolic-ref', '-q', ref], piped).trim();
     } catch (error) {
       rethrowIfKilled(error);
+      rethrowIfNoUsableRepo(repoPath, error);
       return undefined;
     }
   })();
@@ -1403,14 +1429,16 @@ export function resolveCommit(repoPath: string, ref: string): string {
 }
 
 /**
- * `resolveCommit`, undefined when `ref` names no commit. A symbolic ref keeps
- * its own refusal, which names the compromise, and a killed git its signal.
+ * `resolveCommit`, undefined when `ref` names no commit. A symbolic ref and a
+ * rewritten main `.git` (decision 172) keep their own refusals, which name the
+ * compromise, and a killed git its signal.
  */
 export function resolveCommitIfPresent(repoPath: string, ref: string): string | undefined {
   try {
     return resolveCommit(repoPath, ref);
   } catch (error) {
     rethrowIfKilled(error);
+    rethrowIfNoUsableRepo(repoPath, error);
     if (error instanceof Error && error.message.includes('symbolic ref')) throw error;
     return undefined;
   }
@@ -1434,13 +1462,15 @@ function assertTargetAt(repoPath: string, target: string, targetSha: string): vo
 /**
  * How many commits `branchRef` gained after the gate pinned `sha`: none when it
  * still names the pin, and none when it is gone or turned into a symref, which
- * hold no commit of the session's own.
+ * hold no commit of the session's own. A rewritten main `.git` is no answer
+ * at all, so its refusal goes on (decision 172).
  */
 function commitsPastPin(repoPath: string, branchRef: string, sha: string): number {
   let now: string;
   try {
     now = resolveCommit(repoPath, branchRef);
-  } catch {
+  } catch (error) {
+    rethrowIfNoUsableRepo(repoPath, error);
     return 0;
   }
   if (now === sha) return 0;
@@ -2392,11 +2422,17 @@ export async function waitForLoad(
 
 /**
  * Whether every file the branch changed is on `UNTESTED_PATH_GLOBS`, so no
- * test can run or read it (decision 139). A rename's old path counts as
- * changed, since `--name-only` names only the new one. Something other than
- * the path itself can read each of these, so each counts as testable, as
- * decision 110 counts it as source: a symlink, a path a symlink can reach, a
- * name outside ASCII, and Markdown that a Docusaurus config compiles. So does
+ * test can run or read it (decision 139). The files are those `--name-only`
+ * names and both paths of every `--raw -M` entry: `--name-only` pairs renames
+ * and reads `diff.relative` as the shared config says, while the raw entries
+ * pin both, so the skip holds only if both readings are listed, and a rename's old path, which `--name-only` never names, is what a
+ * link or another case reached on the target. Each goes through every check
+ * below. The tree is listed `--full-tree`, as `targetHolds` lists it, so a
+ * `core.worktree` aimed elsewhere hides no link or spelling. Something other than
+ * the path itself can read each of these, so each counts as testable: a
+ * gitlink, whose commit is code at a listed name, and, as decision 110 counts
+ * them as source, a symlink, a path a symlink can reach, a name outside
+ * ASCII, and Markdown that a Docusaurus config compiles. So does
  * a path the branch's tree also holds in another ASCII case, itself or through
  * one of its directories: APFS folds case (decision 78), so `docs/x.md` is the
  * off-list `docs/x.MD` or `Docs/x.md` a test may read.
@@ -2411,16 +2447,20 @@ function changesOnlyUntested(
   const listed = (path: string): boolean =>
     !NON_ASCII.test(path) && untested.some((glob) => glob.test(path));
   if (changedPaths.length === 0 || !changedPaths.every(listed)) return false;
-  for (const entry of rawDiffEntries(repoPath, target, branch).values()) {
-    if (entry.mode === '120000') return false;
-    if (entry.renamedFrom !== undefined && !listed(entry.renamedFrom)) return false;
+  const paths = [...changedPaths];
+  for (const [path, entry] of rawDiffEntries(repoPath, target, branch)) {
+    if (entry.mode === '120000' || entry.mode === '160000') return false;
+    paths.push(path, ...(entry.renamedFrom === undefined ? [] : [entry.renamedFrom]));
   }
+  const checked = [...new Set(paths)];
+  if (!checked.every(listed)) return false;
   const tree = readBranchTree(repoPath, branch);
   // Every spelling of each path and directory in the branch's tree, by its folded form.
   const spellings = new Map<string, Set<string>>();
   const prefixes = (path: string): string[] =>
     path.split('/').map((_, i, segments) => segments.slice(0, i + 1).join('/'));
-  for (const path of runGit(repoPath, ['ls-tree', '-r', '-z', '--name-only', branch]).split('\0')) {
+  const names = runGit(repoPath, ['ls-tree', '-r', '-z', '--full-tree', '--name-only', branch]);
+  for (const path of names.split('\0')) {
     for (const prefix of path ? prefixes(path) : []) {
       const key = folded(prefix);
       spellings.set(key, (spellings.get(key) ?? new Set()).add(prefix));
@@ -2430,7 +2470,7 @@ function changesOnlyUntested(
     prefixes(path).some((prefix) =>
       [...(spellings.get(folded(prefix)) ?? [])].some((spelling) => spelling !== prefix),
     );
-  return changedPaths.every(
+  return checked.every(
     (path) =>
       !tree.linked(path) &&
       !(tree.markdownIsCode && path.endsWith('.md')) &&
@@ -2566,7 +2606,16 @@ export async function measureBranch(
   const targetHeld = measuresComplexity
     ? targetHolds(req.repoPath, targetSha, complexityPaths)
     : [];
-  const nestedPackages = primary?.touchedNestedPackages?.(capabilityContext, changedPaths) ?? [];
+  // `--name-only` names a rename by its new path, but moving a file out of a
+  // nested package changes that package too, so its source counts: its suite
+  // runs (decision 59) and the untested skip does not apply (decision 139).
+  const renameSources = [...rawDiffEntries(req.repoPath, targetSha, sha).values()].flatMap(
+    (entry) => entry.renamedFrom ?? [],
+  );
+  const nestedPackages =
+    primary?.touchedNestedPackages?.(capabilityContext, [
+      ...new Set([...changedPaths, ...renameSources]),
+    ]) ?? [];
   // Every environment before any stage: a stage runs session code with the
   // checkout writable, so a link made after it could follow a swapped-in
   // parent out of the checkout (decision 81).
@@ -3049,7 +3098,9 @@ export function fileAcceptedDebt(
 
 /**
  * The `merge` event, with the commits the branch gained after the pin counted
- * and named unless the branch was deleted at it.
+ * and named unless the branch was deleted at it. A main `.git` rewritten after
+ * the fast-forward refuses that count, but the target already holds `sha`, so
+ * the event is written without it and the refusal goes on after (decision 172).
  */
 export function recordMerge(
   db: Database,
@@ -3059,7 +3110,13 @@ export function recordMerge(
   isDeleted: boolean,
 ): void {
   const { sha, prUrl } = merge;
-  const leftBehind = isDeleted ? 0 : commitsPastPin(repoPath, `refs/heads/${session.branch}`, sha);
+  let leftBehind = 0;
+  let refused: unknown;
+  try {
+    leftBehind = isDeleted ? 0 : commitsPastPin(repoPath, `refs/heads/${session.branch}`, sha);
+  } catch (error) {
+    refused = error;
+  }
   if (leftBehind > 0) {
     console.error(
       `${sanitizeReason(session.branch)} moved after the gate pinned ${sha}: ${leftBehind} ` +
@@ -3074,6 +3131,7 @@ export function recordMerge(
     ...(prUrl !== undefined ? { prUrl } : {}),
     ...(leftBehind > 0 ? { leftBehind } : {}),
   });
+  if (refused !== undefined) throw refused;
 }
 
 /**
