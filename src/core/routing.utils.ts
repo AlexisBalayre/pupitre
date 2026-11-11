@@ -192,20 +192,43 @@ export function windowFailure(
  * pushes, so a re-raised finding never shares one. The retry of a round whose
  * window opened since the newest merge, and was killed, climbs on a rejection
  * or a dead turn that window ran into, as a respawn of it would: its repeat
- * climb is recorded already. A stall at that kill is not measured yet.
+ * climb is recorded already. So does a stall at that kill, which the caller
+ * measures off the events file and hands in as `stalledAtEnd`.
  */
 export function fixRoundFailure(
   events: readonly SessionEvent[],
+  stalledAtEnd = false,
 ): ClimbReason | 'blocked' | undefined {
+  const { openedAt, repeats, ran } = fixRoundWindow(events);
+  if (openedAt >= 0) return windowFailure(ran, stalledAtEnd);
+  return repeats ? 'repeat-fix-round' : undefined;
+}
+
+/**
+ * The window `fixRoundFailure` scores, so whoever measures its stall bounds the
+ * same one: `openedAt` is the index of the delivered `respawn` that opened the
+ * newest round since the last merge (-1 when none did), `repeats` whether a
+ * round before a merge opened, `scoredFrom` the index of the newest respawn
+ * `ran` keeps, where `windowFailure` starts scoring (a `pup respawn` inside
+ * the round moves it past `openedAt`), `ran` the events minus the kickoffs
+ * that never landed.
+ */
+export function fixRoundWindow(events: readonly SessionEvent[]): {
+  openedAt: number;
+  scoredFrom: number;
+  repeats: boolean;
+  ran: SessionEvent[];
+} {
   let handed = false;
-  let opened = false;
+  let openedAt = -1;
+  let scoredFrom = -1;
   let repeats = false;
   const ran: SessionEvent[] = [];
-  for (const event of events) {
+  events.forEach((event, at) => {
     if (event.type === 'merge') {
-      repeats ||= opened;
+      repeats ||= openedAt >= 0;
       handed = false;
-      opened = false;
+      openedAt = -1;
     } else if (event.type === 'other' && event.eventType === 'fix_round') {
       handed = true;
     } else if (event.type === 'other' && event.eventType === 'respawn' && handed) {
@@ -213,13 +236,13 @@ export function fixRoundFailure(
       // route stored, unlike a `pup respawn`'s, so the window before it is
       // still the one that ran.
       handed = false;
-      if (event.fields.delivered !== true) continue;
-      opened = true;
+      if (event.fields.delivered !== true) return;
+      openedAt = at;
     }
+    if (event.type === 'other' && event.eventType === 'respawn') scoredFrom = at;
     ran.push(event);
-  }
-  if (opened) return windowFailure(ran);
-  return repeats ? 'repeat-fix-round' : undefined;
+  });
+  return { openedAt, scoredFrom, repeats, ran };
 }
 
 /**

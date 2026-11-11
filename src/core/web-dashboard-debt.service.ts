@@ -1,11 +1,10 @@
 import type { Database } from 'better-sqlite3';
 
-import { sanitizeReason } from '../adapters/capability.utils.js';
 import { barChart, type ChartDatum } from './chart.utils.js';
 import { listLedgerEntries, listOverdueLedgerEntries } from './ledger.repository.js';
 import { projectId } from './paths.utils.js';
-import { asStringArray, displayText, parseJsonOr, toIsoUtc } from './report-data.utils.js';
-import { DAY_MS, escapeHtml, hint, section } from './web-dashboard-sheet.utils.js';
+import { asStringArray, parseJsonOr, toIsoUtc } from './report-data.utils.js';
+import { DAY_MS, escapeHtml, hint, oneLine, section } from './web-dashboard-sheet.utils.js';
 
 /** One open ledger entry as the Debt sheet reads it, every string already through `oneLine`. */
 export interface DebtSheetEntry {
@@ -52,15 +51,6 @@ const AGES: { label: string; underDays: number }[] = [
   { label: '1–3 months', underDays: 91 },
   { label: 'older', underDays: Number.POSITIVE_INFINITY },
 ];
-
-/**
- * A ledger field on one line with no control character (decision 29) and no
- * direction mark: a U+202E in a path would show the operator a file name other
- * than the one the entry holds.
- */
-function oneLine(text: string): string {
-  return displayText(sanitizeReason(text));
-}
 
 /**
  * The open ledger as the Debt sheet reads it (decision 98), oldest first like

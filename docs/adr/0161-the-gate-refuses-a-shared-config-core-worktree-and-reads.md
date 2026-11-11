@@ -14,6 +14,10 @@
     config and no `GIT_CONFIG_*`, and `-c core.worktree=` leaves it in force (verified on Git
     2.54). So `GIT_SAFE_CONFIG` gets no entry for it, since one would read as protection and
     give none.
+    Since decision 172, `runGit` names a main checkout's `--git-dir` and `--work-tree` outright,
+    which does override the key for every git it runs there. The refusal and the anchors below
+    stay: a git run outside `runGit` (a gate child, the operator's) still reads the key, and
+    each anchor holds for a listing whose `cwd` is not one `runGit` names.
     *Refused.* `planMerge` calls `assertNoSharedWorktreeKey` before any git runs in the main
     checkout: an empty value stops every git in the repo, the driver check's included. It then
     calls `assertNoWorktreeConfig`, since per-worktree config can carry the key and a live
@@ -46,10 +50,10 @@
     - `--full-tree` on the nested-package `ls-tree` in `src/adapters/git-tree.client.ts`,
       which reads the trusted checkout at the measured sha and at `HEAD`. A failed listing
       there throws and the gate refuses: empty, the trusted set ran no nested package's own
-      stages, and a session could fail it alone with an empty `core.worktree` or an
-      unparsable `.git/config` mended before the last check. Only outside the gate, a directory
-      with no `.git` or a repository with no commit yet lists as empty. The key checks' `.git/config` reads are timed out like
-      a gate child, since a FIFO there would hang the gate under the merge lock.
+      stages, and a session could fail it alone with an unparsable `.git/config` mended
+      before the last check. Only outside the gate, a directory with no `.git` or a repository
+      with no commit yet lists as empty. The key checks' `.git/config` reads are timed out
+      like a gate child, since a FIFO there would hang the gate under the merge lock.
     *Pathspec switches.* That magic holds only while git parses it: `scrubbedGitEnv` drops
     `GIT_LITERAL_PATHSPECS`, `GIT_GLOB_PATHSPECS`, `GIT_NOGLOB_PATHSPECS` and
     `GIT_ICASE_PATHSPECS`. Under the first, which `git --literal-pathspecs` exports to its

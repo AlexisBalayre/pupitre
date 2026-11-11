@@ -1,4 +1,6 @@
+import { sanitizeReason } from '../adapters/capability.utils.js';
 import { PR_URL } from './constants/dashboard.constants.js';
+import { displayText } from './report-data.utils.js';
 import type { DashboardBaseline } from './types/dashboard.types.js';
 
 /**
@@ -13,6 +15,11 @@ export function escapeHtml(text: string): string {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+/** A string on one line with no control character (decision 29) and no direction mark, which could disguise a path. */
+export function oneLine(text: string): string {
+  return displayText(sanitizeReason(text));
 }
 
 export function section(title: string, body: string): string {
@@ -74,5 +81,5 @@ export const GATE_METRICS: {
 export const DAY_MS = 86_400_000;
 
 /** The sheets the dashboard serves, in the order its bar lists them (decision 98). */
-export const SHEETS = ['overview', 'health', 'debt', 'tasks'] as const;
+export const SHEETS = ['overview', 'health', 'debt', 'tasks', 'decisions'] as const;
 export type SheetName = (typeof SHEETS)[number];

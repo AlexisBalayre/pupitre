@@ -29,7 +29,7 @@ const MANIFEST = 'package.json';
  * exempt. Any other listing that fails throws, and at the gate, `measureSha`
  * given, every one does, so the gate refuses: an empty trusted set would run
  * no nested package's own stages, and a session can fail that listing alone,
- * by an empty `core.worktree` or a `.git/config` git cannot parse, and mend it
+ * by a `.git/config` git cannot parse, and mend it
  * before the gate's last check (decision 161).
  * The gate's checkout is listed at the sha it was cut at, from the trusted
  * repo's object store, never through the checkout: its HEAD and `commondir`

@@ -17,6 +17,7 @@ import {
 } from '../claude/session-runtime.service.js';
 import { codegraphBinary, prepareGraph } from './codegraph.client.js';
 import {
+  assertMainCheckout,
   assertNoArmedGitDrivers,
   checkoutPinned,
   currentBranch,
@@ -148,6 +149,9 @@ export function maxSessions(repoPath: string): number {
  * had to take another name is refused, which costs the graph.
  */
 function refreshConductorCheckout(repoPath: string, checkoutDir: string): WorktreeGitEnv {
+  // The tip read below is the review diff's base: a gitfile, symlink or
+  // commondir in the main checkout's .git would pick it (decision 172).
+  assertMainCheckout(repoPath);
   // A checkout runs smudge filters, so it is exactly the operation decision 50's
   // guard exists for. Inside the caller's try: an armed driver costs the
   // conductor its graph, not its window.

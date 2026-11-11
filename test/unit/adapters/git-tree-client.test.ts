@@ -101,21 +101,15 @@ describe('nestedPackageDirs', () => {
   });
 
   // A session can make the trusted listing alone fail, for as long as it runs,
-  // and clear the cause before the gate's last check: an empty trusted set
+  // and mend the cause before the gate's last check: an empty trusted set
   // would run no nested package's own stages, so the failure throws and the
   // gate refuses (decision 161).
-  it.each([
-    ['an empty core.worktree', (repo: string) => git(repo, 'config', 'core.worktree', '')],
-    [
-      'a .git/config git cannot parse',
-      (repo: string) => writeFileSync(join(repo, '.git', 'config'), '[core\n'),
-    ],
-  ])('throws when the trusted listing fails under %s', (_, breakConfig) => {
+  it('throws when the trusted listing fails under a .git/config git cannot parse', () => {
     const trusted = makeCheckout(['tools/review/package.json']);
     const cut = git(trusted, 'rev-parse', 'HEAD').toString().trim();
     const checkout = join(tempDir('pup-gate-'), 'checkout');
     git(trusted, 'worktree', 'add', '-q', '--detach', '--no-checkout', checkout, cut);
-    breakConfig(trusted);
+    writeFileSync(join(trusted, '.git', 'config'), '[core\n');
 
     expect(() =>
       nestedPackageDirs({ measurePath: checkout, configPath: trusted, measureSha: cut }),
