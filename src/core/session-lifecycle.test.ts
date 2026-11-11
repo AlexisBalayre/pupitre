@@ -84,6 +84,7 @@ import {
 } from './session.repository.js';
 import {
   LaunchRolledBackError,
+  QuestionRefusedError,
   TaskAlreadyClaimedError,
   TerminalSessionError,
   TopRungReachedError,
@@ -103,7 +104,6 @@ import {
   launchTask,
   markSessionQuestion,
   planTask,
-  QuestionRefusedError,
   recompileSessionProfile,
   recordSteerMessage,
   SessionCapReachedError,

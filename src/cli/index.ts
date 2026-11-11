@@ -124,6 +124,7 @@ import {
 import {
   isRefusedSteer,
   LaunchRolledBackError,
+  QuestionRefusedError,
   TaskAlreadyClaimedError,
   TerminalSessionError,
   TopRungReachedError,
@@ -144,7 +145,6 @@ import {
   markSessionDone,
   markSessionQuestion,
   planTask,
-  QuestionRefusedError,
   recordSteerMessage,
   SessionCapReachedError,
   steerSession,

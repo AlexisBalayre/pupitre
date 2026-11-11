@@ -122,9 +122,6 @@ vi.mock('node:child_process', async (importOriginal) => {
 vi.mock('../core/session-lifecycle.service.js', async (importOriginal) => ({
   // The real ask and answer: the store writes they make are what `pup status`
   // reads back, and the pane they type into is `steerPane`, faked above.
-  QuestionRefusedError: (
-    await importOriginal<typeof import('../core/session-lifecycle.service.js')>()
-  ).QuestionRefusedError,
   answerConductorQuestion: (
     await importOriginal<typeof import('../core/session-lifecycle.service.js')>()
   ).answerConductorQuestion,

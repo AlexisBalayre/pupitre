@@ -74,6 +74,7 @@ import {
 } from './session.repository.js';
 import {
   isRefusedSteer,
+  QuestionRefusedError,
   rollBackRefusedLaunch,
   TaskAlreadyClaimedError,
   TerminalSessionError,
@@ -786,17 +787,6 @@ export function markSessionQuestion(
   question: EventPayloads['question'],
 ): void {
   appendEvent(db, sessionId, 'question', question);
-}
-
-/**
- * A question or an answer refused (decision 93): nothing was stored, or nothing
- * the asker reads as an answer reached it.
- */
-export class QuestionRefusedError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'QuestionRefusedError';
-  }
 }
 
 /**
