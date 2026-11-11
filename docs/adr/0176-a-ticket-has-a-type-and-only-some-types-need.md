@@ -1,6 +1,7 @@
 # 0176. A ticket has a type, only some types need a design, and the operator's label starts the work (2026-11-11)
 
 - Status: accepted
+- Amends: [0090](0090-pup-fix-session-hands-the-ci-review-s.md)
 - Amends: [0099](0099-workers-share-files-and-collaborate-a-launch-overlapping.md)
 
 176. **A ticket has a type, only some types need a design, and the operator's label starts the work (2026-11-11).**
@@ -28,5 +29,7 @@
     `design-approved`. This replaces decision 99's rule for factory slices that a launch overlapping
     a live session is never refused: the overlap is ordered at design time.
     *Sessions.* One fresh session per slice, never steered after its PR merges. A fix runs in a new
-    short session. A stuck or failed slice restarts once with the failure summary, and a second
+    short session in place of decision 90's hand-back to the original worker. A stuck or failed slice restarts once with the failure summary, and a second
     failure pauses the ticket in the operator's queue.
+    *When it applies.* After the rollout setting of decision 178 is on for the project. Until then
+    decisions 90 and 99 govern.

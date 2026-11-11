@@ -1,6 +1,8 @@
 # 0174. Review runs in stages, and an important finding needs a failing scenario (2026-11-11)
 
 - Status: accepted
+- Amends: [0090](0090-pup-fix-session-hands-the-ci-review-s.md)
+- Amends: [0151](0151-ci-review-runs-at-opening-and-on-demand-only.md)
 
 174. **Review runs in stages, and an important finding needs a failing scenario (2026-11-11).**
     *The stages.* Reviewers run before a PR exists and after it opens, each stage with its own set.
@@ -27,6 +29,11 @@
     *Blocking highs.* A Security or Data Protection high is never deferred. A new short session
     fixes it and the reviewer re-checks. If it still holds after round 2, the PR goes to the
     operator's queue and only the operator can override it, with the reason recorded in the PR.
+    *When it applies.* After the rollout setting of decision 178 is on for the project. Until then
+    decisions 90 and 151 govern: the review runs at opening and on demand, and `pup fix` hands
+    review threads back to the session's own worker. Once on, round 2 is the last round, and the
+    fix of a blocking high or an important runs in a new short session instead of the original
+    worker.
     *Roster.* Correctness and security stay on Opus, and the rest on Sonnet. QA folds into
     correctness: each acceptance criterion needs a test that fails without the change. Data
     Protection is a rubric inside security until it produces a finding. A reviewer with no
