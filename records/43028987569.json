@@ -1,0 +1,170 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-11T13:31:41.583Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43028987569",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43028987569",
+  "actor": "AlexisBalayre",
+  "commit_sha": "1c2a04f9e69a0869db737da87d33b9e5e8a30c8e",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 294,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "2448-2458",
+      "description": "`changesOnlyUntested` still runs an unanchored `ls-tree`, so the case-fold check can be emptied and the test stage skipped.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "661-671",
+      "description": "`diffHunks` swapped `--literal-pathspecs` for `:(top,literal)<path>`; an inherited `GIT_LITERAL_PATHSPECS=1`, which `scrubbedGitEnv` keeps, makes git read the whole string as a literal file name, so every file has no hunks and patch coverage passes.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/merge-gate-shared-config.test.ts",
+      "line": "256-437",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The race tests that claim to prove the anchored listings cannot fail if the anchoring is reverted. Since 22c1f3d (#306, already in the merge base), `safeArgv` in git-diff.client.ts L831-835 adds `--git-dir=<repo>/.git --work-tree=<repo>` to every `runGit` whose cwd holds a `.git` directory, which is every main-checkout call the gate makes. Git takes `--work-tree` (GIT_WORK_TREE) over a config `core.worktree` (setup_explicit_git_dir), so with `-C <repo>` the cwd prefix is empty whatever the session writes, and `diff.relative` has nothing to strip. Trigger: drop `--full-tree` from `targetHolds` (L337) or from `changesOnlyUntested` (L2491), or `--full-name`/`:(top)` from `filesNaming` (L555/L564), then run 'reads the target tree whole' (L375), 'runs the test stage when the tree holds the changed path in another case' (L416), 'sizes the diff over every changed path' (L275), or the four `merge-gate-untested.test.ts` cases at L416-464. They still pass, because their armed key cannot shift a pinned `runGit`. Only the control at L199 shifts anything, and it uses raw `sh` git. Comments such as L414 ('unanchored, it lists nothing under `repo/`') and untested L395-400 describe a shift these paths no longer reach, so the anchoring could regress unnoticed. This overlaps the already-posted 'no guard test for anchored listings' nit; the new part is that the existing tests claim to cover the anchoring but cannot. The same holds for `src/core/git-diff-client.test.ts` L1378-1397 (the `diff.relative=false` pin and `:(top,literal)` hunks tests) and `test/unit/adapters/git-tree-client.test.ts` L70-85 (nested packages under an armed key with `--full-tree` removed). Code: `? [`--git-dir=${gitDir}`, `--work-tree=${resolve(cwd)}`]`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1197, 1281, 2082, 2109",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`assertNoWorktreeConfig` now runs at `pup merge` (planMerge L1197, ahead of `verifiedWorktreeGitEnv` at L1212) and after a full gate run (L2082 PR push, L2109 fast-forward). Its `WorktreeConfigError` begins 'Refusing to launch a session in <repo>: …' (git-diff.client.ts L199). Trigger: the operator runs `git sparse-checkout set` in the main checkout after the launch, or a live session turns `extensions.worktreeConfig` on, then the operator runs `pup merge`. Before this PR, L1212 refused that repo with `WorktreeRepointedError`, whose wording fits a merge. Now the operator is told a launch was refused, including after every stage passed and accepted debt was filed. The fix steps are still correct; only the opening verb is wrong. The `merge-gate-checkout.test.ts` change from `ArmedGitDriverError` to `WorktreeConfigError` locks the new error class in. Code: `assertNoWorktreeConfig(req.repoPath);`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "861-872",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`gitDiffPaths` now passes `'--no-renames'`, so a rename lists both its deleted source and its new path; the PR's own test shows this (`['notes/secret.ts', 'src/secret.ts']`). `buildEntry` in the review queue (`src/core/review.service.ts:64`, `:85`) reports `filesChanged: paths.length`. A session that only runs `git mv a.ts b.ts` now shows `filesChanged` 2 in `pup review`, where git's own `--stat` and the old output say 1. The `changedLines` next to it come from a rename-aware count, so the two figures now disagree for renamed files. This only affects the display; the scope audit's gain is intended.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/git-tree.client.ts",
+      "line": "88-102",
+      "area": "simplicity",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`unbornHead(checkout, rev)` opens with `if (rev !== 'HEAD') return false;`, but its only call site is `if (gate || (repo && !unbornHead(checkout, rev))) throw error;`, reached only when `gate` is false, where both `committedPackageDirs` calls pass `'HEAD'`. The parameter and the guard are unreachable; `unbornHead(checkout)` with `'HEAD'` hard-coded in the `rev-parse` argv removes both.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "359",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The exit-status-1 check `typeof error === 'object' && error !== null && 'status' in error && error.status === 1` is now written three times: the new `assertNoSharedWorktreeKey` (git-diff.client.ts ~L359) and `unbornHead` (git-tree.client.ts L101) add copies of the one in `worktreeConfigState` (git-diff.client.ts L398). One exported `exitedOne(error: unknown): boolean` beside `rethrowIfKilled` would replace all three.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Skipped areas: context (no spec, protocol or infra surface touched), workflow-safety (no .github/workflows change), spec (no closing issue or --spec source), maintainability (not on the default roster)."
+    },
+    {
+      "component": "orchestrator",
+      "description": "Dropped one simplicity nit at consolidation (the `const gate` local in nestedPackageDirs could be literals per ternary arm): its own reviewer called the saving small, and it names no concrete cost. Security instance 2 mentioned, outside its lane and not as a finding, that the comment at merge-gate.service.ts L2638-2640 ('--name-only names a rename by its new path') may be stale now that gitDiffPaths passes --no-renames. No docs or correctness reviewer raised it, so it is not recorded."
+    }
+  ],
+  "duplicates_merged": 1,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 5.374957275,
+  "duration_ms": 332519,
+  "num_turns": 18,
+  "tokens": {
+    "input": 12,
+    "output": 15854,
+    "cache_read": 311260,
+    "cache_creation": 73116,
+    "total": 400242
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 232,
+      "output": 94282,
+      "cache_read": 5437389,
+      "cache_creation": 373064,
+      "cost_usd": 5.058713800000002
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 40,
+      "output": 9304,
+      "cache_read": 268989,
+      "cache_creation": 78184,
+      "cost_usd": 0.3154789
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 253,
+      "cache_read": 0,
+      "cache_creation": 5103,
+      "cost_usd": 0.000764575
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "git log --oneline -S\"--work-tree=${resolve(cwd)}\" -- src/core/git-diff.client.ts"
+    },
+    {
+      "tool": "Bash",
+      "input": "git log --oneline -S\"--work-tree=${resolve(cwd)}\" -- src/core/git-diff.client.ts"
+    }
+  ]
+}
