@@ -42,3 +42,8 @@
     description and records a new pin, which means nothing once the PR has closed. A plain
     boolean flag was rejected too. It would also cover a head that moved again between the
     operator's read and the land.
+    *Amendment (2026-11-11, #309).* The `landed` event changes after all. A land that takes a head
+    past the pin records `acceptedHead`, the head the operator named, and `pinned`, the sha the
+    gate measured. Those two shas are the ends of the commits only the operator's word vouched
+    for, and the log otherwise loses them once the session is torn down. A land at the pin
+    carries neither field.
