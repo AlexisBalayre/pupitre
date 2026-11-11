@@ -74,8 +74,9 @@ function decisionNumber(path: string | undefined): number | undefined {
  * Rename detection is off, so a decision renumbered with `git mv` counts as
  * the add of its new name; colour and external diffs are off, so a
  * session-written config cannot change what the listing prints. Only
- * `docs/adr/` is listed, so a branch's other files are never buffered, and the
- * names are the root's (`--no-relative`, `ADR_PATHSPEC`), so a session-set
+ * `docs/adr/` and its lookalikes (`ADR_WIDE_PATHSPEC`, trimmed by
+ * `ADR_LOOKALIKE`) are listed, so a branch's other files are never buffered,
+ * and the names are the root's (`--no-relative`), so a session-set
  * `core.worktree` or `diff.relative` cannot empty the listing.
  */
 function addedAdrPaths(repoPath: string, base: string, tip: string, timeout?: number): string[] {
