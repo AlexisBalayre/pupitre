@@ -347,12 +347,12 @@ export function updateTaskSpec(db: Database, id: string, spec: string, tier?: Ti
 
 /**
  * The claimed states in which `pup plan edit --rescope` may widen a task's
- * spec (decision 115): a worker that said it was done, a gate that merged, a
- * reject cap that parked it. Listed rather than excluded, so a state added
- * later is refused until it is named here. A live window in any of them is
+ * spec (decision 115): a worker that said it was done, a gate that merged.
+ * Listed rather than excluded, so a state added later is refused until it is
+ * named here. A live window in any of them is
  * still refused, by the caller that can probe tmux.
  */
-const RESCOPABLE_STATES: readonly SessionState[] = ['awaiting-review', 'blocked', 'merged'];
+const RESCOPABLE_STATES: readonly SessionState[] = ['awaiting-review', 'merged'];
 
 /**
  * States in which a session is at work on its task, its hooks compiled from

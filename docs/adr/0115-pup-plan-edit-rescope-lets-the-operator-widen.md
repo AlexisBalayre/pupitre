@@ -65,11 +65,12 @@
     writing the store. These are limits of the design, like the socket ceiling below, not bugs to
     close here, and what the rescope records says the same thing.
     *When.* Allowed only while every session on the task is in a state listed as
-    rescopable, `awaiting-review`, `blocked` or `merged`, or `killed`, which claims nothing,
+    rescopable, `awaiting-review` or `merged`, or `killed`, which claims nothing,
     and no session on it has a window open. The list names the states that allow a rescope,
     and the refused ones are every other claimed state, derived from the state table as
     `claimedStates()` is, so a state added later is refused until someone names it. Today
-    that refuses `queued`, `running` and `rejected`, whose hooks hold the old scope. A
+    that refuses `queued`, `running`, `rejected` and `blocked`, whose hooks hold the old
+    scope: only `pup fix` recompiles a profile, and `pup unblock` and a respawn do not. A
     window is open when a default tmux server lists a pane in a tmux session named
     `pup-<id>` (the launch's own name), or a pane whose start command carries the launch's
     `--name pup-<id>` pair. tmux fixes a pane's start command when it starts the pane, so a
@@ -191,8 +192,8 @@
     the operator, so `pup log` (and `pup log <module>`) shows the rescope beside the merges
     it changes.
     *Tests.* In `task-rescope.test.ts`, with the tmux and `ps` reads mocked, a rescope on
-    a merged, awaiting-review or blocked session's task with its window closed appends and
-    writes the event and the record. A queued, running or rejected one writes nothing, nor
+    a merged or awaiting-review session's task with its window closed appends and
+    writes the event and the record. A queued, running, rejected or blocked one writes nothing, nor
     does one whose window a server lists, nor one where a server did not answer or no tmux
     was found, each refused with its own message, and the sockets of every session on the
     task, merged and killed ones included, are asked. A window is found by its launch name

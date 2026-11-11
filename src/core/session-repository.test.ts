@@ -322,8 +322,8 @@ describe('the backlog', () => {
     ['queued', false],
     ['running', false],
     ['rejected', false],
+    ['blocked', false],
     ['awaiting-review', true],
-    ['blocked', true],
     ['merged', true],
     ['killed', true],
   ] as const)('rescopes a claimed task whose session is %s: %s', (state, rescoped) => {

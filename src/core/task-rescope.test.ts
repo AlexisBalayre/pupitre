@@ -80,7 +80,7 @@ describe('rescopeTask (decision 115)', () => {
     insertTask(db, { id: 't-1', projectId: 'proj-1', spec: JSON.stringify(SPEC) });
   });
 
-  it.each(['merged', 'awaiting-review', 'blocked'])(
+  it.each(['merged', 'awaiting-review'])(
     'appends globs to a task whose session is %s, and records who approved them',
     (state) => {
       launched('s1', state);
@@ -121,7 +121,9 @@ describe('rescopeTask (decision 115)', () => {
     expect(rescopeTask(db, 't-1', ['docs/**'], CALLER)).toMatchObject({ sessionId: 's1' });
   });
 
-  it.each(['queued', 'running', 'rejected'])(
+  // A blocked session resumes on the profile it was compiled with, and only
+  // `pup fix` recompiles one.
+  it.each(['queued', 'running', 'rejected', 'blocked'])(
     'refuses while a session is %s, writing nothing',
     (state) => {
       launched('s1', 'merged');
@@ -300,7 +302,7 @@ describe('rescopeTask (decision 115)', () => {
 
   // A worker that ran `pup session done` is awaiting review with its window
   // still up: rescoping then would let it keep editing into the wider scope.
-  it.each(['awaiting-review', 'blocked', 'merged'])(
+  it.each(['awaiting-review', 'merged'])(
     'refuses while a %s session has its window open, writing nothing',
     (state) => {
       launched('s1', state);
@@ -326,7 +328,7 @@ describe('rescopeTask (decision 115)', () => {
       pane('%9', 'pup-s1', 'x\tpup-other\n%8\t\tpup-other'),
     ],
   ])('finds the window a server lists by %s', (_what, listed) => {
-    launched('s1', 'blocked');
+    launched('s1', 'awaiting-review');
     // Split as `listPanes` splits tmux's output.
     vi.mocked(listPanes).mockReturnValue(`%1\t\tmine\n${listed}\n`.split('\n'));
 
@@ -336,7 +338,7 @@ describe('rescopeTask (decision 115)', () => {
   // A `%N` names a pane only on the server that minted it: a restarted or
   // another server reuses the session's recorded id for a pane of its own.
   it("passes a window listed nowhere, whatever pane ids and other sessions' names it lists", () => {
-    launched('s1', 'blocked');
+    launched('s1', 'awaiting-review');
     vi.mocked(listPanes).mockReturnValue([
       '%3\t\tpup-other',
       '%4\t-zsh\tmine',
@@ -354,7 +356,7 @@ describe('rescopeTask (decision 115)', () => {
     ],
     [{ noTmux: true } as const, `No tmux on the window probe's fixed PATH (${PROBE_PATH})`],
   ])('refuses when the probe cannot see the windows (%o), writing nothing', (failure, says) => {
-    launched('s1', 'blocked');
+    launched('s1', 'awaiting-review');
     vi.mocked(listPanes).mockReturnValue(failure);
 
     expect(() => rescopeTask(db, 't-1', ['docs/**'], CALLER)).toThrow(says);
@@ -370,7 +372,7 @@ describe('rescopeTask (decision 115)', () => {
     ['%1\t\tpup-other', { noTmux: false as const, detail: 'x' }, `${OTHER} did not answer`],
     ['%1\t\tpup-s1', { noTmux: false as const, detail: 'x' }, `${OTHER} did not answer`],
   ])('asks every socket: the first listing %j, the second answering %o', (first, second, says) => {
-    launched('s1', 'blocked');
+    launched('s1', 'awaiting-review');
     vi.mocked(windowSockets).mockReturnValue([SOCKET, OTHER]);
     vi.mocked(listPanes).mockImplementation((socket) => (socket === SOCKET ? [first] : second));
 
@@ -378,7 +380,7 @@ describe('rescopeTask (decision 115)', () => {
   });
 
   it("looks for every session's window, a merged or killed one's too", () => {
-    launched('s1', 'blocked');
+    launched('s1', 'awaiting-review');
     launched('s2', 'killed');
     launched('s3', 'merged');
 
