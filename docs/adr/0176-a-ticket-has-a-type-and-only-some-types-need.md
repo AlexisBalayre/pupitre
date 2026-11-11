@@ -1,6 +1,7 @@
 # 0176. A ticket has a type, only some types need a design, and the operator's label starts the work (2026-11-11)
 
 - Status: accepted
+- Amends: [0099](0099-workers-share-files-and-collaborate-a-launch-overlapping.md)
 
 176. **A ticket has a type, only some types need a design, and the operator's label starts the work (2026-11-11).**
     *Intake.* GitHub Issues are the tracker, behind a narrow tracker interface so another tracker
