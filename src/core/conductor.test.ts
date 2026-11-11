@@ -10,7 +10,7 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../claude/session-runtime.service.js')>()),
   conductorPane: vi.fn(),
   hasConductorWindow: vi.fn(() => true),
-  readInputBox: vi.fn(),
+  readInputBoxLook: vi.fn(),
   kickoff: vi.fn(() => true),
   killConductor: vi.fn(),
   launchConductor: vi.fn(({ projectId }: { projectId: string }) => ({
@@ -24,6 +24,7 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
 }));
 
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
+import type { InputBoxLook, InputBoxState } from '../claude/pane.utils.js';
 import {
   conductorPane,
   hasConductorWindow,
@@ -32,14 +33,16 @@ import {
   launchConductor,
   launchWatcher,
   pasteIntoPane,
-  readInputBox,
+  readInputBoxLook,
   SessionPaneMissingError,
   SteerNotDeliveredError,
   submitPane,
 } from '../claude/session-runtime.service.js';
 import {
   CI_REVIEW_LOOP,
+  CONDUCTOR_BLOCKED_AFTER_MS,
   ConductorTellRefusedError,
+  conductorBlock,
   conductorCheckoutDir,
   DEFAULT_MAX_SESSIONS,
   isConductorRunning,
@@ -57,6 +60,14 @@ import { projectId, projectPaths } from './paths.utils.js';
 import { LaunchRolledBackError } from './session-lifecycle.errors.js';
 
 const REPO = '/repo';
+
+/** A look at the conductor's box finding `state`; a box that holds text shows `draft`. */
+function lookOf(state: InputBoxState, draft = 'draft'): InputBoxLook {
+  return { state, draft: state === 'holds' ? draft : '' };
+}
+
+/** Where the blocked clock is kept, under the `HOME` a test stubs. */
+const blockedFile = () => join(projectPaths(REPO).root, 'conductor', 'blocked-since');
 
 // Test repos must not inherit the developer's global git config nor GIT_DIR & co.
 // — when this suite runs inside a git hook (pre-commit), those would redirect
@@ -168,6 +179,24 @@ describe('startConductor', () => {
     });
     expect(prompt).toBe(`${readFileSync(join(outDir, 'context.md'), 'utf8')}\n\n${CI_REVIEW_LOOP}`);
     expect(prompt).toContain('pup launch <task> --model opus');
+  });
+
+  // A conductor stopped or crashed while unreachable leaves its clock; the
+  // next one starts its own, with its ten minutes' grace (decision 168).
+  it("drops a stopped conductor's blocked clock before the new window opens", () => {
+    const dir = join(projectPaths(REPO).root, 'conductor');
+    const file = join(dir, 'blocked-since');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(file, `${Date.now() - 900 * 60_000}\n`);
+    let clockAtLaunch: boolean | undefined;
+    vi.mocked(launchConductor).mockImplementationOnce((opts) => {
+      clockAtLaunch = existsSync(file);
+      return { sessionId: `conductor-${opts.projectId}`, paneId: '%3', socket: 'sock' };
+    });
+
+    start();
+
+    expect(clockAtLaunch).toBe(false);
   });
 
   // The conductor owns the CI wait, so the operator's console no longer
@@ -771,6 +800,8 @@ describe('tellConductor', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // A refused tell starts the blocked clock under $HOME/.pupitre.
+    vi.stubEnv('HOME', tempDir('pup-tell-home-'));
     typed = [];
     vi.mocked(conductorPane).mockReturnValue(PANE);
     vi.mocked(pasteIntoPane).mockImplementation((_pane, message) => {
@@ -781,13 +812,16 @@ describe('tellConductor', () => {
       typed.push('Enter');
     });
   });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
 
   /** The box answers each look in turn. */
-  function box(...answers: Array<'empty' | 'holds' | 'absent'>): void {
+  function box(...answers: InputBoxState[]): void {
     for (const answer of answers) {
-      vi.mocked(readInputBox).mockImplementationOnce(() => {
+      vi.mocked(readInputBoxLook).mockImplementationOnce(() => {
         typed.push(`look ${answer}`);
-        return answer;
+        return lookOf(answer);
       });
     }
   }
@@ -885,5 +919,202 @@ describe('tellConductor', () => {
 
     expect(pasteIntoPane).not.toHaveBeenCalled();
     expect(submitPane).not.toHaveBeenCalled();
+  });
+
+  it('starts the blocked clock when it refuses, so the bounce counts toward the inbox line', () => {
+    const bounced = Date.now();
+    box('holds');
+    expect(() => tellConductor(REPO, 'session t-1 is idle')).toThrow(ConductorTellRefusedError);
+
+    vi.mocked(readInputBoxLook).mockReturnValueOnce(lookOf('holds'));
+    expect(conductorBlock(REPO, bounced + CONDUCTOR_BLOCKED_AFTER_MS + 60_000)).toEqual({
+      reason: 'unsent draft',
+      ageMs: expect.any(Number),
+    });
+  });
+
+  it('drops the clock a look taken mid-paste started, once the tell lands', () => {
+    box('empty');
+    let started = false;
+    vi.mocked(pasteIntoPane).mockImplementationOnce((_pane, message) => {
+      // A one-shot `pup status` looks while the message sits in the box.
+      vi.mocked(readInputBoxLook)
+        .mockReturnValueOnce(lookOf('holds', message))
+        .mockReturnValueOnce(lookOf('empty'));
+      conductorBlock(REPO, Date.now());
+      started = existsSync(blockedFile());
+      return true;
+    });
+
+    expect(tellConductor(REPO, 'merge t-1 next')).toBe(true);
+
+    expect(started).toBe(true);
+    expect(existsSync(blockedFile())).toBe(false);
+  });
+
+  // Every answer queued is a look taken: one left over would answer the next test's first look.
+  it.each([
+    ['holds', ['holds', 'holds']],
+    ['absent', ['absent']],
+  ] as const)(
+    'starts the clock when its last look finds the box %s, since the next tell bounces there',
+    (_state, after) => {
+      box('empty', ...after);
+
+      expect(tellConductor(REPO, 'merge t-1 next')).toBe(false);
+
+      expect(existsSync(blockedFile())).toBe(true);
+    },
+  );
+});
+
+describe('conductorBlock', () => {
+  const PANE = { sessionId: `conductor-${projectId(REPO)}`, paneId: '%3', socket: 'sock' };
+  const T0 = Date.parse('2026-10-26T06:41:00Z');
+  const LATER = T0 + CONDUCTOR_BLOCKED_AFTER_MS + 60_000;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubEnv('HOME', tempDir('pup-blocked-home-'));
+    vi.mocked(conductorPane).mockReturnValue(PANE);
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  /** Each look at the pane, in turn, finds the next state, or the next look named whole. */
+  function looks(...seen: Array<InputBoxState | InputBoxLook>): void {
+    for (const look of seen) {
+      vi.mocked(readInputBoxLook).mockReturnValueOnce(
+        typeof look === 'string' ? lookOf(look) : look,
+      );
+    }
+  }
+  const AFTER = LATER + CONDUCTOR_BLOCKED_AFTER_MS + 60_000;
+
+  it('names an unsent draft held for over ten minutes, with its age', () => {
+    looks('holds', 'holds');
+
+    expect(conductorBlock(REPO, T0)).toBeUndefined();
+    expect(conductorBlock(REPO, LATER)).toEqual({ reason: 'unsent draft', ageMs: LATER - T0 });
+  });
+
+  it('names a pane off its main input for over ten minutes', () => {
+    looks('absent', 'absent');
+
+    conductorBlock(REPO, T0);
+    expect(conductorBlock(REPO, LATER)).toEqual({ reason: 'not on main input', ageMs: LATER - T0 });
+  });
+
+  // Sent unread at 06:41, a new draft typed at 06:52: no look saw the box
+  // empty between them, and the second is not eleven minutes old.
+  it('starts the clock again when another draft shows', () => {
+    looks(lookOf('holds', 'mergeT1next'), lookOf('holds', 'nowT2'), lookOf('holds', 'nowT2'));
+
+    conductorBlock(REPO, T0);
+    expect(conductorBlock(REPO, LATER)).toBeUndefined();
+    expect(conductorBlock(REPO, AFTER)).toEqual({ reason: 'unsent draft', ageMs: AFTER - LATER });
+  });
+
+  it.each([
+    ['a draft gives way to an overlay', 'holds', 'absent', 'not on main input'],
+    ['an overlay gives way to a draft', 'absent', 'holds', 'unsent draft'],
+  ] as const)(
+    'starts the clock again when %s: no look saw what came between',
+    (_what, first, then, reason) => {
+      looks(first, then, then);
+
+      conductorBlock(REPO, T0);
+      expect(conductorBlock(REPO, LATER)).toBeUndefined();
+      expect(conductorBlock(REPO, AFTER)).toEqual({ reason, ageMs: AFTER - LATER });
+    },
+  );
+
+  it('keeps a draft by its hash, never its text', () => {
+    looks(lookOf('holds', 'theoperatorsownnote'));
+
+    conductorBlock(REPO, T0);
+
+    expect(readFileSync(blockedFile(), 'utf8')).not.toContain('theoperatorsownnote');
+  });
+
+  it('says nothing at exactly ten minutes', () => {
+    looks('holds', 'holds');
+
+    conductorBlock(REPO, T0);
+    expect(conductorBlock(REPO, T0 + CONDUCTOR_BLOCKED_AFTER_MS)).toBeUndefined();
+  });
+
+  it('never names an empty box at the main prompt, and an empty look resets the clock', () => {
+    looks('empty', 'holds', 'empty', 'holds', 'empty');
+
+    expect(conductorBlock(REPO, T0)).toBeUndefined();
+    conductorBlock(REPO, T0 + 1);
+    expect(conductorBlock(REPO, T0 + 2)).toBeUndefined();
+    expect(conductorBlock(REPO, LATER)).toBeUndefined();
+    expect(conductorBlock(REPO, LATER + CONDUCTOR_BLOCKED_AFTER_MS * 10)).toBeUndefined();
+  });
+
+  it('only looks: no paste, no Enter, no clear reaches the pane', () => {
+    looks('holds', 'holds');
+
+    conductorBlock(REPO, T0);
+    conductorBlock(REPO, LATER);
+
+    expect(pasteIntoPane).not.toHaveBeenCalled();
+    expect(submitPane).not.toHaveBeenCalled();
+    expect(readInputBoxLook).toHaveBeenCalledWith(PANE);
+  });
+
+  it('says nothing when no conductor runs', () => {
+    looks('holds');
+    conductorBlock(REPO, T0);
+    vi.mocked(conductorPane).mockReturnValueOnce(undefined);
+
+    expect(conductorBlock(REPO, LATER)).toBeUndefined();
+  });
+
+  it('says nothing when the pane cannot be captured', () => {
+    vi.mocked(readInputBoxLook).mockImplementationOnce(() => {
+      throw new Error("can't find pane: %3");
+    });
+
+    expect(conductorBlock(REPO, LATER)).toBeUndefined();
+  });
+
+  it.each([
+    ['holds no time', 'soon'],
+    ['holds a time later than now', String(LATER + 1)],
+  ])('starts the clock again when the stored file %s', (_what, stored) => {
+    looks('holds', 'holds');
+    conductorBlock(REPO, T0);
+    const [, ...seen] = readFileSync(blockedFile(), 'utf8').split('\n');
+    writeFileSync(blockedFile(), [stored, ...seen].join('\n'));
+
+    expect(conductorBlock(REPO, LATER)).toBeUndefined();
+    expect(readFileSync(blockedFile(), 'utf8').split('\n')[0]).toBe(String(LATER));
+  });
+
+  it('starts the clock again when the stored file holds a time but not what the look saw', () => {
+    mkdirSync(join(projectPaths(REPO).root, 'conductor'), { recursive: true });
+    writeFileSync(blockedFile(), `${T0}\n`);
+    looks('holds');
+
+    expect(conductorBlock(REPO, LATER)).toBeUndefined();
+    expect(readFileSync(blockedFile(), 'utf8').split('\n')[0]).toBe(String(LATER));
+  });
+
+  it('replaces a link planted where the time is kept rather than writing through it', () => {
+    const file = blockedFile();
+    mkdirSync(join(projectPaths(REPO).root, 'conductor'), { recursive: true });
+    const target = join(tempDir('pup-planted-'), 'target');
+    writeFileSync(target, 'untouched');
+    symlinkSync(target, file);
+    looks('holds');
+
+    conductorBlock(REPO, T0);
+
+    expect(readFileSync(target, 'utf8')).toBe('untouched');
+    expect(readFileSync(file, 'utf8').split('\n')[0]).toBe(String(T0));
   });
 });
