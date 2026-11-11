@@ -1,0 +1,122 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-11T13:06:42.501Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43025007579",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43025007579",
+  "actor": "AlexisBalayre",
+  "commit_sha": "2c0b25d663ab45c395c57ae1a767014c0506676d",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 201,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "guards"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "guards"
+  ],
+  "reviewers_skipped": [
+    "conventions",
+    "context",
+    "maintainability",
+    "docs",
+    "spec",
+    "simplicity",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/task-rescope.service.ts",
+      "line": "259-275",
+      "description": "A rescope that lands while `pup fix` is starting a round on a merged session is lost. That round runs under hooks compiled from the old scope, and `recordSessionRoute` then writes its standard route back over the critical tier the rescope just set.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/session.repository.ts",
+      "line": "348-355",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "A rescope of a blocked session (or of an awaiting-review one the gate then parks) never reaches the worker's hooks. The only way to resume it, `pup unblock` then `pup kill --respawn`, relaunches from the launch-time compiled settings.json, scope-in.pat and context.md. Edits to the newly added globs stay BLOCKED even though the rescope reported success.",
+      "body": "**The problem.** `blocked` is one of the states `RESCOPABLE_STATES` allows, but a blocked session's hooks never see the widened scope. ADR 0115 promises the widened scope only to \"the next `pup fix` round\", and `pup fix` is the only thing that recompiles a profile (`startFixRound` → `recompileSessionProfile`, from `merged` only).\n\nhttps://github.com/AlexisBalayre/pupitre/blob/2c0b25d663ab45c395c57ae1a767014c0506676d/src/core/session.repository.ts#L348-L355\n\n**Trigger.** This applies to a session blocked during its first run, not during a CI fix round. It gets blocked when it hits the reject cap, or when the gate's re-steer fails because its window is closed. The rescope requires that closed window, so an awaiting-review session whose re-gate rejects ends up here too (`merge-gate.service.ts` `rejectOrBlock`).\n1. The operator closes the window.\n2. They run `pup plan edit T --rescope --scope src/new/**`, which succeeds and records a `rescope` event.\n3. They run `pup unblock`, then `pup kill --respawn` (or `pup respawn`).\n\n**What goes wrong.**\n- `pup unblock` only transitions the session to `running` (`src/cli/index.ts` ~L2101-2112).\n- The respawn goes through `relaunchWindow`. Its comment says nothing is recompiled because \"its profile hash must not move\". It launches with the compiled `settings.json` and `context.md`:\n\n  https://github.com/AlexisBalayre/pupitre/blob/2c0b25d663ab45c395c57ae1a767014c0506676d/src/core/session-handoff.service.ts#L289-L332\n\n- The scope hook still greps the old `scope-in.pat` and exits with `BLOCKED: file is outside this task's scope-in.` for every glob just added (`profile-compiler.service.ts` L695-698). The kickoff context still lists the old scope.\n- Only the tier raise gets through, because `respawnRoute` reads `sessions.tier`.\n\nSo the command reports success and changes nothing for the worker. ADR 0115 refuses `queued`/`running`/`rejected` because their \"hooks hold the old scope\", and a blocked session's only way back to work has exactly that problem. The CLI's success line gives no warning.\n\nA session blocked during a fix round is fine: `requireRunning` sends the operator to `pup kill` and then `pup fix`, which does recompile.\n\n**Possible fixes:**\n- Recompile the profile on respawn or unblock when `tasks.spec` differs from what it was compiled from.\n- Or allow `blocked` only when the session is in a fix round, and otherwise tell the operator to kill and relaunch.\n- At minimum, have the success line for a non-merged session say that a respawn keeps the old hooks, and record that limit in ADR 0115.",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "225-233, 856-861",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The new rescope refusal in `takeFixRoundEdge` fires after `restoreWorktree` has already added `.worktrees/<id>`, and maybe the branch, inside the same merge-lock callback. Nothing undoes them, and the refusal still ends with \"No fix round was started.\" Trigger: an operator rescope lands during the seconds-long gh review read of a `pup fix` (for example, the conductor's). Result: the retry the message implies is refused with \"pup fix found .worktrees/<id> left from an earlier round\" until the operator cleans it up by hand. The same leftover follows the existing transition refusal, but the rescope makes it reachable in normal use. Fix: when `takeFixRoundEdge` throws, append `dropUncheckedRound(req.repoPath, session)`'s message, as `restoreWorktree`'s own failure path does.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Round 4 budget: spawned only correctness (2 instances), security (2 instances) and guards. Skipped conventions, docs, context, simplicity and maintainability under the round budget. Skipped workflow-safety because no `.github/workflows` file changed, and spec because there is no closing issue or spec source."
+    },
+    {
+      "component": "security",
+      "description": "The security authorization instance could not statically confirm whether Claude Code on Linux rewrites its process title. If it does, the `launchedAncestor` `--name pup-<id>` check would miss a worker that dropped its env markers. ADR 0115 notes that Linux was not checked. This needs a runtime check, not a code change."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 4.843503475,
+  "duration_ms": 410831,
+  "num_turns": 14,
+  "tokens": {
+    "input": 12,
+    "output": 11176,
+    "cache_read": 286506,
+    "cache_creation": 53342,
+    "total": 351036
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 222,
+      "output": 94921,
+      "cache_read": 4502087,
+      "cache_creation": 358650,
+      "cost_usd": 4.7530014000000005
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 18,
+      "output": 3142,
+      "cache_read": 129335,
+      "cache_creation": 18192,
+      "cost_usd": 0.0898695
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 111,
+      "cache_read": 0,
+      "cache_creation": 4615,
+      "cost_usd": 0.000632575
+    }
+  ],
+  "permission_denials": []
+}
