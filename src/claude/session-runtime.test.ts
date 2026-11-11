@@ -84,6 +84,7 @@ import {
   pasteIntoPane,
   preseedTrust,
   readInputBox,
+  readInputBoxLook,
   readSessionEnv,
   refusedSessionEnv,
   resolveWindowEnv,
@@ -2039,6 +2040,19 @@ describe('steerPane with a fake tmux on PATH', () => {
 
       expect(readInputBox(CONDUCTOR)).toBe('empty');
       expect(argvLog()).toContain(`-L ${socket} send-keys -t %5 Enter`);
+    });
+
+    it('reads the box and the draft it holds from one capture, pressing nothing', () => {
+      landsAfter = 1;
+      expect(readInputBoxLook(CONDUCTOR)).toEqual({ state: 'empty', draft: '' });
+      expect(pasteIntoPane(CONDUCTOR, TELL)).toBe(true);
+      const captures = () => argvLog().filter((line) => line.includes('capture-pane')).length;
+      const before = captures();
+
+      expect(readInputBoxLook(CONDUCTOR)).toEqual({ state: 'holds', draft: '[Pastedtext#1]' });
+
+      expect(captures()).toBe(before + 1);
+      expect(argvLog().filter((line) => line.includes('send-keys'))).toEqual([]);
     });
   });
 

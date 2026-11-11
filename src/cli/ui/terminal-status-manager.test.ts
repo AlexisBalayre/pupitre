@@ -88,6 +88,25 @@ describe('createTerminalStatus', () => {
     expect(out.writes).toEqual([`${PUSH}${ESC}]2;pup proj · 0 running · ${count}${BEL}`]);
   });
 
+  // Decision 168: a conductor nothing reaches waits on the operator too.
+  it('puts a blocked conductor in the tab as a need, ahead of a blocked session', () => {
+    const out = tty();
+    const fleet = reading(session({ state: 'blocked', rejectCount: 3 }));
+    for (const { snapshot } of fleet.projects) {
+      snapshot.conductor.running = true;
+      snapshot.conductor.blocked = { reason: 'not on main input', ageMs: 720_000 };
+    }
+    createTerminalStatus(out, ITERM).update(fleet);
+    expect(out.writes).toEqual([
+      `${PUSH}${ESC}]2;pup proj · 0 running · 2 need you${BEL}` +
+        session21337(
+          'needs you',
+          '#ff9500',
+          'conductor: blocked: not on main input (12m), no notice reaches it, return it to ',
+        ),
+    ]);
+  });
+
   it('writes idle in green over an empty fleet', () => {
     const out = tty();
     createTerminalStatus(out, ITERM).update(reading());

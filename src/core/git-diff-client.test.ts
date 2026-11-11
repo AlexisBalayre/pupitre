@@ -21,6 +21,7 @@ import {
   armedGitDrivers,
   assertMainCheckout,
   assertNoArmedGitDrivers,
+  assertNoSharedWorktreeKey,
   assertNoWorktreeConfig,
   currentBranch,
   GIT_SAFE_CONFIG,
@@ -31,6 +32,7 @@ import {
   RewrittenGitDirError,
   rethrowIfKilled,
   runGit,
+  SharedWorktreeKeyError,
   verifiedWorktreeGitEnv,
   WorktreeConfigError,
   WorktreeRepointedError,
@@ -1061,6 +1063,25 @@ describe('worktree git pins (decision 101)', () => {
     vi.unstubAllEnvs();
   });
 
+  // `git --literal-pathspecs` exports GIT_LITERAL_PATHSPECS to its children, and
+  // under it, or a sibling switch, git reads the `:(top,literal)` a file's hunks
+  // are asked by as a file name: patch coverage would find no line to check.
+  it.each([
+    'GIT_LITERAL_PATHSPECS',
+    'GIT_GLOB_PATHSPECS',
+    'GIT_NOGLOB_PATHSPECS',
+    'GIT_ICASE_PATHSPECS',
+  ])("leaves out a %s the caller's environment hands git", (key) => {
+    sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
+    writeFileSync(join(repo, 'a.ts'), 'one\ntwo\n');
+    sh(repo, 'git', 'add', 'a.ts');
+    sh(repo, 'git', 'commit', '-q', '-m', 'add file');
+    vi.stubEnv(key, '1');
+
+    expect(gitDiffAddedLines(repo, 'main', 'feature')).toEqual({ 'a.ts': [1, 2] });
+    vi.unstubAllEnvs();
+  });
+
   it('refuses a gitfile that is a symlink or a fifo, without blocking on the fifo', () => {
     const copy = join(tempDir('pup-gitfile-'), 'gitfile');
     writeFileSync(copy, readFileSync(join(worktree, '.git')));
@@ -1291,6 +1312,167 @@ describe('assertNoWorktreeConfig', () => {
   });
 });
 
+/** A repo at `<host>/repo`, so a `core.worktree` can aim at a parent that is its own. */
+function nestedRepo(): string {
+  const repo = join(tempDir('pup-diff-'), 'repo');
+  mkdirSync(repo);
+  sh(repo, 'git', 'init', '-b', 'main');
+  sh(repo, 'git', 'config', 'user.email', 'diff@test');
+  sh(repo, 'git', 'config', 'user.name', 'diff-test');
+  return repo;
+}
+
+/** The shared config's `core.worktree` aimed at the repo's parent, and `diff.relative` on. */
+function armSharedWorktree(repo: string): void {
+  sh(repo, 'git', 'config', 'core.worktree', dirname(repo));
+  sh(repo, 'git', 'config', 'diff.relative', 'true');
+}
+
+// Git takes `core.worktree` from `.git/config` alone, before any `-c`, so with
+// it aimed at the parent every git in the repo runs from the subdirectory
+// `repo/`, and `diff.relative` lists only what is under it: nothing. The gate
+// refuses the key (`assertNoSharedWorktreeKey`); these are the readers it
+// relies on for a key set after that check.
+describe('the branch diff under a shared-config core.worktree and diff.relative', () => {
+  function armedBranch(): string {
+    const repo = nestedRepo();
+    mkdirSync(join(repo, 'src'));
+    writeFileSync(join(repo, 'src/a.ts'), 'one\n');
+    writeFileSync(join(repo, 'top.ts'), 'top\n');
+    commitAll(repo, 'base');
+    sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
+    writeFileSync(join(repo, 'src/a.ts'), 'one\ntwo\n');
+    writeFileSync(join(repo, 'new.ts'), 'n1\nn2\nn3\n');
+    commitAll(repo, 'change');
+    sh(repo, 'git', 'checkout', '-q', 'main');
+    armSharedWorktree(repo);
+    return repo;
+  }
+
+  // The control: a plain diff lists nothing. runGit names a main checkout's
+  // work tree outright (decision 172), which the key cannot move.
+  it('is a key a plain diff lists nothing under, and runGit runs at the root', () => {
+    const repo = armedBranch();
+    const plain = execFileSync('git', ['diff', '--name-only', 'main...feature'], {
+      cwd: repo,
+      encoding: 'utf8',
+      env: GIT_ENV,
+    });
+
+    expect(plain).toBe('');
+    expect(runGit(repo, ['rev-parse', '--show-prefix']).trim()).toBe('');
+  });
+
+  it('lists every changed path, as the scope audit reads them', () => {
+    expect(gitDiffPaths(armedBranch(), 'main', 'feature')).toEqual(['new.ts', 'src/a.ts']);
+  });
+
+  it('counts every changed path, as diff-size reads them', () => {
+    expect(gitDiffNumstat(armedBranch(), 'main', 'feature')).toEqual([
+      { path: 'new.ts', added: 3, deleted: 0 },
+      { path: 'src/a.ts', added: 1, deleted: 0 },
+    ]);
+  });
+
+  // Each file's hunks are read by a pathspec, which the key looked up under `repo/`.
+  it('reads every changed path’s hunks, as patch coverage and the recount do', () => {
+    const repo = armedBranch();
+
+    expect(gitDiffAddedLines(repo, 'main', 'feature')).toEqual({
+      'new.ts': [1, 2, 3],
+      'src/a.ts': [2],
+    });
+    expect(gitDiffBinaryRecount(repo, 'main', 'feature', 'src/a.ts')).toEqual({
+      added: 1,
+      deleted: 0,
+    });
+  });
+
+  // `--no-relative` on every gate diff would hide a dropped pin, so the pin is
+  // read on its own: a diff runGit runs without the flag.
+  it('lists every changed path with no --no-relative, by the diff.relative=false pin', () => {
+    const repo = armedBranch();
+
+    expect(runGit(repo, ['diff', '--name-only', 'main...feature'])).toBe('new.ts\nsrc/a.ts\n');
+  });
+
+  // Decision 161 refuses the key because no pin reaches it: were one to, the
+  // refusal could give way to it.
+  it('is a key no -c core.worktree moves, empty or aimed at the repo', () => {
+    const repo = armedBranch();
+
+    for (const pin of ['core.worktree=', `core.worktree=${repo}`]) {
+      const prefix = execFileSync('git', ['-c', pin, 'rev-parse', '--show-prefix'], {
+        cwd: repo,
+        encoding: 'utf8',
+        env: GIT_ENV,
+      });
+      expect(prefix.trim()).toBe('repo/');
+    }
+  });
+});
+
+// Under git's default rename detection `--name-only` lists a rename's new path
+// alone: a file moved into scope hid that it left a path outside it.
+it('gitDiffPaths lists both sides of a rename', () => {
+  const repo = nestedRepo();
+  mkdirSync(join(repo, 'notes'));
+  writeFileSync(join(repo, 'notes/secret.ts'), 'export const secret = 1;\n'.repeat(4));
+  commitAll(repo, 'base');
+  sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
+  mkdirSync(join(repo, 'src'));
+  sh(repo, 'git', 'mv', 'notes/secret.ts', 'src/secret.ts');
+  commitAll(repo, 'move');
+
+  expect(gitDiffPaths(repo, 'main', 'feature')).toEqual(['notes/secret.ts', 'src/secret.ts']);
+});
+
+describe('assertNoSharedWorktreeKey', () => {
+  it('passes a repo whose config sets no core.worktree', () => {
+    const repo = nestedRepo();
+    sh(repo, 'git', 'config', 'diff.relative', 'true');
+
+    expect(() => assertNoSharedWorktreeKey(repo)).not.toThrow();
+  });
+
+  it('refuses the key aimed at a parent, naming the file, and its pasted unset clears it', () => {
+    const repo = nestedRepo();
+    armSharedWorktree(repo);
+    let message = '';
+    try {
+      assertNoSharedWorktreeKey(repo);
+    } catch (error) {
+      expect(error).toBeInstanceOf(SharedWorktreeKeyError);
+      message = (error as Error).message;
+    }
+
+    expect(message).toContain(`core.worktree is set in ${join(repo, '.git', 'config')}`);
+    const unset = /then run `([^`]*)`/.exec(message)?.[1] as string;
+    // A temp path holds no character the shell reads, so it goes unquoted.
+    expect(unset).toBe(
+      `git -C / config --file ${join(repo, '.git', 'config')} --unset-all core.worktree`,
+    );
+    execFileSync('sh', ['-c', unset], { cwd: repo, env: GIT_ENV, stdio: 'pipe' });
+    expect(() => assertNoSharedWorktreeKey(repo)).not.toThrow();
+  });
+
+  // Empty, the key stops every git in the repo, `git config` included.
+  it('refuses an empty key, which stops git in the repo', () => {
+    const repo = nestedRepo();
+    sh(repo, 'git', 'config', 'core.worktree', '');
+
+    expect(() => sh(repo, 'git', 'status')).toThrow(/cannot chdir to ''/);
+    expect(() => assertNoSharedWorktreeKey(repo)).toThrow(SharedWorktreeKeyError);
+  });
+
+  it('refuses a config file git cannot read', () => {
+    const repo = nestedRepo();
+    writeFileSync(join(repo, '.git', 'config'), '[core\n');
+
+    expect(() => assertNoSharedWorktreeKey(repo)).toThrow(/or git cannot read that file/);
+  });
+});
+
 /** A sha in `repo`, read with plain git. */
 function revParse(repo: string, rev: string): string {
   return execFileSync('git', ['rev-parse', rev], {
@@ -1356,6 +1538,26 @@ describe('history a session can rewrite in the shared git dir (decision 89)', ()
 
     expect(plainDiffPaths(repo)).toEqual(['y.ts']);
     expect(gitDiffPaths(repo, 'main', 'feature')).toEqual(['x.ts', 'y.ts']);
+  });
+
+  // The pin is laid over a caller's env, so no call site can hand the grafts back.
+  it('reads past a graft file a caller names in its own env', () => {
+    const { repo, mainTip, firstOnFeature } = forkedRepo();
+    const grafts = join(repo, '.git', 'planted-grafts');
+    writeFileSync(grafts, `${mainTip} ${firstOnFeature}\n`);
+    const plainBase = execFileSync('git', ['merge-base', 'main', 'feature'], {
+      cwd: repo,
+      encoding: 'utf8',
+      env: { ...GIT_ENV, GIT_GRAFT_FILE: grafts },
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    expect(plainBase).toBe(firstOnFeature);
+
+    const base = runGit(repo, ['merge-base', 'main', 'feature'], {
+      env: { GIT_GRAFT_FILE: grafts },
+    }).trim();
+
+    expect(base).toBe(revParse(repo, 'main~1'));
   });
 
   it('reads the tree a forged commit-graph names in place of the tip’s own', () => {

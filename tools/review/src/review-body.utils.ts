@@ -132,7 +132,10 @@ function carriedLines(summary: ReviewSummary): string[] {
   return [
     `${plural(open.length, "important finding")} from ${sha ? `the review of ${sha}` : "the prior review"} still open (not raised again):`,
     "",
-    ...open.map((prior) => findingLine({ ...prior, area: "correctness", body: null })),
+    // One line per bullet: pr-status.yml parses the block by counting its lines.
+    ...open.map((prior) =>
+      findingLine({ ...prior, description: prior.description.replace(/\s*[\r\n]+\s*/g, " "), area: "correctness", body: null }),
+    ),
   ];
 }
 

@@ -25,7 +25,9 @@ import { shellWord } from '../core/shell-quote.utils.js';
 import type { ModelRoute } from './model-ladder.constants.js';
 import {
   hasUnsubmittedInput,
+  type InputBoxLook,
   type InputBoxState,
+  inputBoxLook,
   inputBoxState,
   pasteLanded,
 } from './pane.utils.js';
@@ -1321,6 +1323,11 @@ export function submitPane(pane: SessionPane): void {
 /** `inputBoxState` of a fresh capture of the pane. */
 export function readInputBox(pane: SessionPane): InputBoxState {
   return inputBoxState(captureInputBox(pane));
+}
+
+/** `inputBoxLook` of a fresh capture: one capture, so the state and the draft agree. */
+export function readInputBoxLook(pane: SessionPane): InputBoxLook {
+  return inputBoxLook(captureInputBox(pane));
 }
 
 /** Settle, then look for the message in the input box; bounded by its length. */
