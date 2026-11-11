@@ -1,0 +1,98 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-11T13:03:43.767Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43025012184",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43025012184",
+  "actor": "AlexisBalayre",
+  "commit_sha": "fa74ad7445a8bb102520b2fb81dab0bbca75c2c6",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 290,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "guards"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "guards"
+  ],
+  "reviewers_skipped": [
+    "conventions",
+    "context",
+    "maintainability",
+    "docs",
+    "spec",
+    "simplicity",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "688-705",
+      "description": "The new advice for answered threads, \"open a new round\", sends the operator to `pup fix`, which refuses again with the same advice while the answered threads stay unresolved and nobody has commented on them since; the one step that makes a round possible, a reply on the thread, was dropped from both messages.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "692",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The advice to reply as the operator and re-run pup fix loops when the re-run round makes no commit: its gated sha equals the previous round's, the sha-only marker check suppresses its reply and summary, the thread stays unanswered, and ci wait keeps naming pup fix.",
+      "body": "**Problem:** the new advice (reply on the thread as the operator, then re-run `pup fix`) loops if the re-run round commits nothing. That is the likely outcome, since the advice itself says the worker sees only the bot's finding.\n\n**How it happens:**\n1. Round 1 declines thread T and gates at sha `S1`. Its reply on T carries `<!-- pup fix-round S1 -->`, so T reads `isAnswered`.\n2. The operator replies on T and re-runs `pup fix`. T now reads unanswered, so `reviewVerdict` relays it. The worker declines again and commits nothing.\n3. The gate has no refusal for a round with no commit. The only worktree check is the dirty-tree one (`merge-gate.service.ts:1884`). Fresh-base passes with \"already based on\" (`merge-gate.service.ts:1923-1930`), and `sha = resolveCommit(branchRef)` (L1982) gives `S1` again. The push is a no-op, `recordMerge` records `S1`, and `answerFixRoundThreads` runs.\n4. `fixRoundMarker(sha)` builds the same string as round 1. `thread.ownReplies.some((body) => body.includes(marker))` (`fix-round.service.ts:346`) matches round 1's reply, so the decline is not posted on T. The PR summary, including its `@claude review` ask, is skipped the same way (L361).\n\nThis assumes the local target branch did not move between the two rounds. If it did, the auto-merge makes a new sha and the replies post normally.\n\n**Result:** the operator's comment stays the newest counted comment on T, so `isAnswered` stays false (`github.client.ts:476-479`). `pup ci wait` names `pup fix <id>` again (`ci-wait.service.ts:297-299`), and `pup fix` relays T again. Each repeat climbs the model ladder until the top-rung refusal, and an override lets it keep going. The round's decline never reaches GitHub; the only trace is a console line from the gate.\n\n**Root cause:** the dedup marker is keyed only on the gated sha. It cannot tell a re-gate of the same round apart from a new round that ends on the same sha. This was harmless while answered threads were never relayed again, but this PR's advice now leads to exactly that case.\n\n**Fix options:**\n- Key the marker on the round too, for example the `fix_round` event's id. A re-gate of the same round still finds its own posts, and a new round posts again.\n- Or skip a thread only when its newest marked own reply is also its newest counted comment.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/fa74ad7445a8bb102520b2fb81dab0bbca75c2c6/src/core/fix-round.service.ts#L690-L695\nhttps://github.com/AlexisBalayre/pupitre/blob/fa74ad7445a8bb102520b2fb81dab0bbca75c2c6/src/core/fix-round.service.ts#L331-L361\nhttps://github.com/AlexisBalayre/pupitre/blob/fa74ad7445a8bb102520b2fb81dab0bbca75c2c6/src/core/ci-wait.service.ts#L286-L299",
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Round 5 budget: conventions, docs, context, simplicity and maintainability were not spawned. Spec had no source (no closing issues), and workflow-safety had nothing to check (no workflow change). Security ran as a single instance despite the size gate: its trust-boundary surface is narrow (three files). The consolidator was not spawned because only one finding came back, so there was nothing to merge."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.4912116999999996,
+  "duration_ms": 244704,
+  "num_turns": 14,
+  "tokens": {
+    "input": 14,
+    "output": 8445,
+    "cache_read": 347449,
+    "cache_creation": 53258,
+    "total": 409166
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 124,
+      "output": 43596,
+      "cache_read": 1762246,
+      "cache_creation": 206106,
+      "cost_usd": 2.415169199999999
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 12,
+      "output": 1873,
+      "cache_read": 89710,
+      "cache_creation": 19327,
+      "cost_usd": 0.0760425
+    }
+  ],
+  "permission_denials": []
+}
