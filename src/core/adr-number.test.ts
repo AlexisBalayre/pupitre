@@ -492,6 +492,22 @@ describe('adrNumberStage', { timeout: 20_000 }, () => {
     ]);
   });
 
+  it('refuses a decision under a non-ASCII lookalike of docs/adr/', () => {
+    git(repo, 'checkout', '-q', '-b', 'pup/me', 'main');
+    // APFS folds U+017F onto 's', which git's ASCII-only icase does not.
+    const blobFile = join(repo, '.git', 'blob.md');
+    writeFileSync(blobFile, '# 0001 under a lookalike\n');
+    const blob = git(repo, 'hash-object', '-w', blobFile);
+    git(repo, 'update-index', '--add', '--cacheinfo', `100644,${blob},doc\u017F/adr/0001-x.md`);
+    git(repo, 'commit', '-q', '-m', 'lookalike');
+    git(repo, 'checkout', '-q', '-f', 'main');
+    expect(refusals()).toEqual([
+      'ADR files neither docs/adr/NNNN-<slug>.md nor docs/adr/README.md, in lowercase ' +
+        'docs/adr/ with four ASCII digits, a dash and .md:',
+      expect.stringContaining('adr/0001-x.md'),
+    ]);
+  });
+
   it('folds only ASCII when it names the path a misspelt decision was meant as', () => {
     // U+212A KELVIN SIGN lowercases to an ASCII 'k' under a Unicode fold, and
     // U+217F SMALL ROMAN NUMERAL ONE THOUSAND looks like an 'm'.

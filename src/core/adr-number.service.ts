@@ -20,6 +20,14 @@ const ADR_DIR = 'docs/adr/';
  */
 const ADR_PATHSPEC = ':(top,literal,icase)docs/adr/';
 /**
+ * A wider pathspec for `addedAdrPaths`: git's `icase` folds ASCII only, while
+ * APFS folds `ſ` onto `s` (decision 110), so `docſ/adr/` would land in `docs/adr/`
+ * unseen by `ADR_PATHSPEC`. `ADR_LOOKALIKE` then keeps from what it lists only
+ * the `docs/adr/` spellings and a `doc` + one non-ASCII character directory.
+ */
+const ADR_WIDE_PATHSPEC = ':(top,icase)doc*/adr/*';
+const ADR_LOOKALIKE = /^doc(?:s|[\u0080-\uffff])\/adr\//i;
+/**
  * A decision file, exactly `docs/adr/NNNN-<slug>.md`, its number captured: the
  * lowercase directory the target's listings read, ASCII digits, a lowercase
  * suffix. Any other spelling the case-blind diffs find is refused, so nothing
@@ -84,12 +92,12 @@ function addedAdrPaths(repoPath: string, base: string, tip: string, timeout?: nu
       '--name-only',
       `${base}...${tip}`,
       '--',
-      ADR_PATHSPEC,
+      ADR_WIDE_PATHSPEC,
     ],
     timeout === undefined ? {} : { timeout },
   )
     .split('\0')
-    .filter(Boolean);
+    .filter((path) => ADR_LOOKALIKE.test(path));
 }
 
 /** The decision files among `paths`, with their numbers. */
