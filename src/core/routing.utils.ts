@@ -208,16 +208,20 @@ export function fixRoundFailure(
  * The window `fixRoundFailure` scores, so whoever measures its stall bounds the
  * same one: `openedAt` is the index of the delivered `respawn` that opened the
  * newest round since the last merge (-1 when none did), `repeats` whether a
- * round before a merge opened, `ran` the events minus the kickoffs that never
- * landed.
+ * round before a merge opened, `scoredFrom` the index of the newest respawn
+ * `ran` keeps, where `windowFailure` starts scoring (a `pup respawn` inside
+ * the round moves it past `openedAt`), `ran` the events minus the kickoffs
+ * that never landed.
  */
 export function fixRoundWindow(events: readonly SessionEvent[]): {
   openedAt: number;
+  scoredFrom: number;
   repeats: boolean;
   ran: SessionEvent[];
 } {
   let handed = false;
   let openedAt = -1;
+  let scoredFrom = -1;
   let repeats = false;
   const ran: SessionEvent[] = [];
   events.forEach((event, at) => {
@@ -235,9 +239,10 @@ export function fixRoundWindow(events: readonly SessionEvent[]): {
       if (event.fields.delivered !== true) return;
       openedAt = at;
     }
+    if (event.type === 'other' && event.eventType === 'respawn') scoredFrom = at;
     ran.push(event);
   });
-  return { openedAt, repeats, ran };
+  return { openedAt, scoredFrom, repeats, ran };
 }
 
 /**

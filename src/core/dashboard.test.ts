@@ -34,6 +34,7 @@ import {
   needsYou,
   prFixRounds,
   routeLabel,
+  windowFailureOf,
 } from './dashboard.service.js';
 import type { SessionState } from './db.client.js';
 import { openStore } from './db.client.js';
@@ -41,15 +42,18 @@ import { insertLedgerEntry } from './ledger.repository.js';
 import { recordWatcherBeat, replaceOverlaps } from './overlap.repository.js';
 import { WATCH_STALE_AFTER_MS } from './overlap.service.js';
 import { projectId, projectPaths } from './paths.utils.js';
+import { fixRoundFailure } from './routing.utils.js';
 import {
   appendEvent,
   dropTask,
   ensureProject,
+  getSession,
   incrementRejectCount,
   insertSession,
   insertTask,
   recordSessionRoute,
   type SessionRoute,
+  type SessionRow,
   saveProjectBaseline,
   transitionSession,
 } from './session.repository.js';
@@ -1746,5 +1750,71 @@ describe('blockedReason', () => {
 
     expect(blockedReason(db, 's-bare')).toBeUndefined();
     expect(blockedReason(db, 's-running')).toBeUndefined();
+  });
+});
+
+describe('windowFailureOf on a merged session', () => {
+  let db: Database;
+  let repo: string;
+  const MIN = 60_000;
+
+  beforeEach(() => {
+    vi.stubEnv('HOME', tempDir('pup-dashboard-home-'));
+    db = openStore(':memory:');
+    repo = tempRepo();
+    seedSession(db, repo, 's1');
+    for (const state of ['running', 'awaiting-review', 'merged'] as const) {
+      transitionSession(db, 's1', state);
+    }
+    // Quiet since long before the round: only the window's own start bounds it.
+    seedEventsFile(repo, 's1', { hook_event_name: 'PostToolUse' }, 3 * 60 * MIN);
+  });
+
+  afterEach(() => {
+    db.close();
+    vi.unstubAllEnvs();
+  });
+
+  /** Append an event stamped `agoMin` minutes before NOW. */
+  function at(agoMin: number, type: Parameters<typeof appendEvent>[2], payload: object): void {
+    appendEvent(db, 's1', type, payload as never);
+    db.prepare('UPDATE events SET created_at = ? WHERE id = last_insert_rowid()').run(
+      new Date(NOW - agoMin * MIN).toISOString(),
+    );
+  }
+
+  const read = () =>
+    windowFailureOf(
+      db,
+      projectPaths(repo),
+      getSession(db, 's1') as SessionRow,
+      NOW,
+      fixRoundFailure,
+    );
+  const killed = (agoMin: number) => at(agoMin, 'gate_result', { from: 'running', to: 'merged' });
+
+  // `fixRoundFailure` scores from the newest respawn the round kept, so the
+  // stall is measured from there and not from the round's kickoff.
+  it('measures a round stall from a pup respawn inside the round, not its kickoff', () => {
+    at(170, 'merge', { files: [] });
+    at(160, 'fix_round', { threads: ['T1'], rejectBase: 0 });
+    at(150, 'respawn', { delivered: true });
+    at(10, 'respawn', { delivered: true });
+    killed(5);
+
+    expect(read()).toBeUndefined();
+  });
+
+  // The retry undone before its window opened is no part of the stall's end.
+  it('ends the stall at the round kill, not at a retry undone after it', () => {
+    at(170, 'merge', { files: [] });
+    at(160, 'fix_round', { threads: ['T1'], rejectBase: 0 });
+    at(150, 'respawn', { delivered: true });
+    killed(20);
+    at(10, 'fix_round', { threads: ['T1'], rejectBase: 0 });
+    at(9, 'respawn', { delivered: false });
+    killed(8);
+
+    expect(read()).toBe('stall');
   });
 });
