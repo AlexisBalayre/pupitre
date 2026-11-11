@@ -14,16 +14,21 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => {
     ...actual,
     hasConductorWindow: vi.fn(() => false),
     claudeUserDir: vi.fn(actual.claudeUserDir),
+    conductorPane: vi.fn(() => undefined),
+    readInputBoxLook: vi.fn(() => ({ state: 'empty', draft: '' })),
   };
 });
 
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import {
   claudeUserDir,
+  conductorPane,
   hasConductorWindow,
+  readInputBoxLook,
   saveSessionEnv,
   transcriptDir,
 } from '../claude/session-runtime.service.js';
+import { CONDUCTOR_BLOCKED_AFTER_MS } from './conductor.service.js';
 import {
   blockedReason,
   buildDashboardSnapshot,
@@ -257,6 +262,55 @@ describe('buildDashboardSnapshot', () => {
       const { conductor } = buildDashboardSnapshot(db, repo, NOW);
 
       expect(conductor).toMatchObject({ running: false, name: `pup-conductor-${projectId(repo)}` });
+    });
+
+    // Decision 168: the look `pup conductor tell` refuses on, held for over
+    // ten minutes, and only a look.
+    describe('blocked', () => {
+      const PANE = { sessionId: 'conductor-x', paneId: '%3', socket: 'sock' };
+      const LATER = NOW + CONDUCTOR_BLOCKED_AFTER_MS + 60_000;
+
+      beforeEach(() => {
+        vi.mocked(hasConductorWindow).mockReturnValue(true);
+        vi.mocked(conductorPane).mockReturnValue(PANE);
+      });
+      afterEach(() => {
+        vi.mocked(hasConductorWindow).mockReturnValue(false);
+        vi.mocked(conductorPane).mockReturnValue(undefined);
+        vi.mocked(readInputBoxLook).mockReturnValue({ state: 'empty', draft: '' });
+      });
+
+      it.each([
+        ['holds', 'unsent draft'],
+        ['absent', 'not on main input'],
+      ] as const)('reports a box that %s across ten minutes as %s', (box, reason) => {
+        vi.mocked(readInputBoxLook).mockReturnValue({
+          state: box,
+          draft: box === 'holds' ? 'draft' : '',
+        });
+
+        expect(buildDashboardSnapshot(db, repo, NOW).conductor.blocked).toBeUndefined();
+        expect(buildDashboardSnapshot(db, repo, LATER).conductor.blocked).toEqual({
+          reason,
+          ageMs: LATER - NOW,
+        });
+      });
+
+      it('never reports an empty box at the main prompt', () => {
+        vi.mocked(readInputBoxLook).mockReturnValue({ state: 'empty', draft: '' });
+
+        buildDashboardSnapshot(db, repo, NOW);
+        expect(buildDashboardSnapshot(db, repo, LATER).conductor).not.toHaveProperty('blocked');
+      });
+
+      it('does not look at the pane while no conductor runs', () => {
+        vi.mocked(hasConductorWindow).mockReturnValue(false);
+        vi.mocked(readInputBoxLook).mockClear();
+
+        buildDashboardSnapshot(db, repo, LATER);
+
+        expect(readInputBoxLook).not.toHaveBeenCalled();
+      });
     });
   });
 
@@ -1165,6 +1219,53 @@ describe('needsYou', () => {
   }
 
   const inbox = () => needsYou(buildDashboardSnapshot(db, repo, NOW));
+
+  // Decision 168: a conductor nothing reaches waits on the operator, who alone
+  // may attach to it.
+  describe('conductor blocked', () => {
+    const blockedAt = (blocked: { reason: 'unsent draft' | 'not on main input' }) => {
+      const snapshot = buildDashboardSnapshot(db, repo, NOW);
+      return {
+        ...snapshot,
+        conductor: {
+          ...snapshot.conductor,
+          running: true,
+          blocked: { ...blocked, ageMs: 9_660_000 },
+        },
+      };
+    };
+
+    it.each([
+      ['unsent draft', 'send or clear it'],
+      ['not on main input', 'return it to its prompt'],
+    ] as const)('lists a conductor with an %s, answered with the attach line', (reason, fix) => {
+      const snapshot = blockedAt({ reason });
+
+      expect(needsYou(snapshot)).toEqual([
+        {
+          kind: 'conductor',
+          sessionId: snapshot.conductor.name,
+          label: 'conductor',
+          reason: `blocked: ${reason} (161m), no notice reaches it; ${fix}`,
+          answer: snapshot.conductor.attachCommand,
+        },
+      ]);
+    });
+
+    it('comes after a question and before every other need', () => {
+      seedIn('s-blocked', ['running', 'blocked']);
+      seedIn('s-asked', ['running']);
+      appendEvent(db, 's-asked', 'question', { text: 'which way?' });
+
+      const kinds = needsYou(blockedAt({ reason: 'unsent draft' })).map((need) => need.kind);
+
+      expect(kinds).toEqual(['question', 'conductor', 'blocked']);
+    });
+
+    it('lists nothing for a conductor that is not blocked', () => {
+      expect(needsYou(buildDashboardSnapshot(db, repo, NOW))).toEqual([]);
+    });
+  });
 
   /** A critical task's session on its top rung, rejected by the gate, then killed. */
   function seedTopRungKill(sessionId: string, route: Partial<SessionRoute> = {}): void {

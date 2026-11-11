@@ -393,9 +393,25 @@ describe('the test stage on a change no test reads (decision 139)', { timeout: 2
   });
 
   // A session can write the shared config, and a `core.worktree` aimed at `/`
-  // gives an unpinned tree read a cwd prefix no branch path matches.
+  // gives an unpinned tree read a cwd prefix no branch path matches. The gate
+  // refuses a key set before it (decision 161), so each sets it as the gate
+  // reads its commands, after every check before the stages: a failing suite
+  // then ends the gate before the post-stage check, and a skipped one is
+  // refused there.
   describe('when the shared config aims core.worktree elsewhere', () => {
     const aimedAway = (worktree: string) => sh(worktree, 'git', 'config', 'core.worktree', '/');
+
+    /** The failing suite, arming the key as the gate reads its commands. */
+    const armedSuite = (arm: () => void): Adapter => {
+      const { adapter } = failingSuite();
+      return {
+        ...adapter,
+        gateCommands: (repoPath: string) => {
+          arm();
+          return adapter.gateCommands(repoPath);
+        },
+      };
+    };
 
     it('still sees a symlink reach the changed path', async () => {
       commitIn(repo, 'docs/notes.md', '# notes\n');
@@ -404,9 +420,8 @@ describe('the test stage on a change no test reads (decision 139)', { timeout: 2
       sh(repo, 'git', 'commit', '-m', 'link');
       const worktree = seedSession(db, repo, { scopeIn: ['**'] });
       commitIn(worktree, 'docs/notes.md', '# notes, edited\n');
-      aimedAway(worktree);
 
-      const outcome = await merge(failingSuite().adapter);
+      const outcome = await merge(armedSuite(() => aimedAway(worktree)));
 
       expect(testStage(outcome.report.stages)?.status).toBe('fail');
     });
@@ -415,9 +430,8 @@ describe('the test stage on a change no test reads (decision 139)', { timeout: 2
       commitIn(repo, 'docs/x.MD', '# x\n');
       const worktree = seedSession(db, repo, { scopeIn: ['**'] });
       commitSpelled(worktree, 'docs/x.md', '# x\n');
-      aimedAway(worktree);
 
-      const outcome = await merge(failingSuite().adapter);
+      const outcome = await merge(armedSuite(() => aimedAway(worktree)));
 
       expect(testStage(outcome.report.stages)?.status).toBe('fail');
     });
@@ -429,10 +443,12 @@ describe('the test stage on a change no test reads (decision 139)', { timeout: 2
       const worktree = seedSession(db, repo, { scopeIn: ['**'] });
       commitIn(worktree, 'src/app.ts', 'export const app = 2;\n');
       commitIn(worktree, `${basename(repo)}/docs/x.md`, '# x\n');
-      sh(worktree, 'git', 'config', 'core.worktree', dirname(repo));
-      sh(worktree, 'git', 'config', 'diff.relative', 'true');
+      const arm = () => {
+        sh(worktree, 'git', 'config', 'core.worktree', dirname(repo));
+        sh(worktree, 'git', 'config', 'diff.relative', 'true');
+      };
 
-      const outcome = await merge(failingSuite().adapter);
+      const outcome = await merge(armedSuite(arm));
 
       expect(testStage(outcome.report.stages)?.status).toBe('fail');
     });
@@ -441,9 +457,8 @@ describe('the test stage on a change no test reads (decision 139)', { timeout: 2
       commitIn(repo, 'package.json', '{ "dependencies": { "@docusaurus/core": "3.0.0" } }\n');
       const worktree = seedSession(db, repo, { scopeIn: ['**'] });
       commitIn(worktree, 'docs/guide.md', '# guide\n');
-      aimedAway(worktree);
 
-      const outcome = await merge(failingSuite().adapter);
+      const outcome = await merge(armedSuite(() => aimedAway(worktree)));
 
       expect(testStage(outcome.report.stages)?.status).toBe('fail');
     });
