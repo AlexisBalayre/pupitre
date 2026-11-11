@@ -588,6 +588,26 @@ describe('startFixRound', { timeout: 90_000 }, () => {
       expect(resolves()).toHaveLength(1);
     });
 
+    it('answers again a thread the operator replied on after its marker, at the same head', async () => {
+      const fixed = await gateTheRound(SUMMARY);
+      const marker = `<!-- pup fix-round ${fixed} -->`;
+      answersOnGitHub({
+        replies: {
+          PRRT_fixed: [marker],
+          PRRT_declined: [marker, 'still wrong, look again'],
+          PRRT_silent: [marker],
+        },
+        resolved: ['PRRT_fixed'],
+        comments: [marker],
+      });
+      const before = replies().length;
+
+      answerFixRoundThreads(db, repo, SESSION_ID, 'github.com/owner/repo', mainSha());
+
+      expect(replies()).toHaveLength(before + 1);
+      expect(replies().at(-1)).toContain('-f thread=PRRT_declined');
+    });
+
     // The worker's word alone resolves nothing under the operator's login: the
     // round's commits must change the file the finding is on.
     it('leaves open a thread answered fixed whose file the round never changed', async () => {

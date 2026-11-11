@@ -343,7 +343,9 @@ export function answerFixRoundThreads(
     if (!THREAD_ID.test(id) || thread === undefined || !thread.isBots) continue;
     const answer = workerAnswers.get(id);
     const verdict = threadVerdict(answer?.verdict, thread.path, changed);
-    if (!thread.ownReplies.some((body) => body.includes(marker))) {
+    // Only the newest reply counts: one the operator wrote after the marker reopens the
+    // thread, so a no-commit re-run at the same sha answers it again.
+    if (!thread.ownReplies.at(-1)?.includes(marker)) {
       const said = REPLIES[verdict](
         sha,
         codeSpan(answer?.reason ?? ''),
