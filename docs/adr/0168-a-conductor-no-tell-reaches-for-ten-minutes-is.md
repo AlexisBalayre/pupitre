@@ -39,8 +39,10 @@
     a draft and then an overlay over it, is named ten minutes after its last change rather than
     its first. One case is left. Two overlay spells still read as one when no look between them
     saw the box empty or holding a draft, since an overlay shows nothing that tells two apart.
-    A tell that bounces off the box also starts the clock. So the first worker notice refused, not
-    the operator's next `pup status`, is when the ten minutes begin. The box a tell leaves after
+    A tell that bounces off the box also starts the clock. Only the operator's `pup conductor tell`
+    does that: worker idle notices reach the conductor through Claude Code's peer socket and
+    never pass through pup, so when no tell is ever tried the ten minutes begin at the first
+    `pup status`, `pup ui` or `pup dashboard` look that finds the box not empty. The box a tell leaves after
     its last Enter is a look too: a tell that landed drops a clock a look taken mid-paste started
     on the message itself, and one left in the box or under a dialog starts it. A file that holds
     no time, a time later than now, or a link is replaced rather than read or written through. A

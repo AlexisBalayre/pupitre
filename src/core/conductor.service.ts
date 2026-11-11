@@ -394,8 +394,7 @@ export function tellConductor(repoPath: string, message: string): boolean {
   }
   // A paste appends to what the box holds, and the draft may be the
   // operator's own from `pup attach`: refuse rather than send both or erase it.
-  // The refusal also starts the blocked clock, so the first worker notice
-  // that bounces off the box counts toward the inbox line (decision 168).
+  // The refusal also starts the blocked clock (decision 168).
   if (noteConductorBox(repoPath, readInputBoxLook(pane), Date.now()) !== undefined) {
     throw new ConductorTellRefusedError(
       "The conductor's input box holds unsent text, or is not on screen; nothing was sent. " +
