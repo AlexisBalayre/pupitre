@@ -1,0 +1,76 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-11T13:09:10.567Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43026359657",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43026359657",
+  "actor": "AlexisBalayre",
+  "commit_sha": "2177352d30dfff320cdb18e801c7d0196c6f3e23",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 299,
+  "action": "review",
+  "reviewers_spawned": [],
+  "reviewers_returned": [],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "conventions",
+    "context",
+    "maintainability",
+    "docs",
+    "spec",
+    "simplicity",
+    "guards",
+    "workflow-safety"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "6e5b44ec896df64a981a1425f7f3a6b0700e0d15",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/conductor.service.ts",
+      "line": "394-398",
+      "description": "A refused tell can only come from the operator's `pup conductor tell`. Worker idle notices reach the conductor through Claude Code's peer socket (`notify_when_idle`) and never call `tellConductor`. So the clock still starts at the first `pup status` / `pup ui` look, and an operator who only runs `pup status` sees nothing on the first look after hours of blockage.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Round 4 limits the roster to importants-only reviewers. The delta 6e5b44e..2177352 changes only prose: ADR 0168 lines 42-45 and one comment at conductor.service.ts:397. No real logic changed, no trust boundary or workflow was touched, no source change could trip a guard, and there is no spec source. So none of correctness, security, guards, workflow-safety or spec met its gate, and no reviewer was spawned. docs, conventions, context, simplicity and maintainability are skipped by the round-4 budget. The orchestrator read the delta itself. HEAD equals the PR's headRefOid (2177352d)."
+    },
+    {
+      "component": "orchestrator",
+      "description": "The prior important at conductor.service.ts:394-398 is resolved by narrowing the documentation, not by changing behavior. The comment and ADR 0168 now say that only the operator's `pup conductor tell` starts the clock on a refusal, and that otherwise it starts at the first `pup status` / `pup ui` / `pup dashboard` look that finds the box not empty. That matches the code: conductorBlock is called from dashboard.service.ts:107 and noteConductorBox from tellConductor."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.38460079999999996,
+  "duration_ms": 30881,
+  "num_turns": 10,
+  "tokens": {
+    "input": 12,
+    "output": 2475,
+    "cache_read": 254944,
+    "cache_creation": 35508,
+    "total": 292939
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 12,
+      "output": 2475,
+      "cache_read": 254944,
+      "cache_creation": 35508,
+      "cost_usd": 0.38460079999999996
+    }
+  ],
+  "permission_denials": []
+}
