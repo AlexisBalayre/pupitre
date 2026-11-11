@@ -79,6 +79,7 @@ vi.mock('../core/conductor.service.js', () => ({
   DEFAULT_MAX_SESSIONS: 4,
   NO_CONDUCTOR_RUNNING:
     'No conductor is running for this project; start one with `pup conductor start`.',
+  conductorBlock: vi.fn(),
   isConductorRunning: vi.fn(() => false),
   startConductor: vi.fn(),
   stopConductor: vi.fn(),
@@ -183,6 +184,7 @@ import {
 import { waitForCiReview } from '../core/ci-wait.service.js';
 import {
   ConductorTellRefusedError,
+  conductorBlock,
   isConductorRunning,
   startConductor,
   stopConductor,
@@ -2042,6 +2044,46 @@ describe('CLI commands', () => {
       expect(logs.find((line) => line.startsWith('usage: '))).toMatch(
         /^usage: 5h 23% \(resets .+ UTC\), 7d 41% \(resets .+ UTC\); read 0m ago$/,
       );
+    });
+  });
+
+  // Decision 168: a conductor nothing reaches leads the inbox, answered with
+  // the attach line for the operator alone.
+  describe('status with the conductor blocked', () => {
+    beforeEach(() => {
+      vi.mocked(isConductorRunning).mockReturnValue(true);
+      vi.mocked(conductorBlock).mockReturnValue({ reason: 'unsent draft', ageMs: 9_660_000 });
+    });
+    afterEach(() => {
+      vi.mocked(isConductorRunning).mockReturnValue(false);
+      vi.mocked(conductorBlock).mockReturnValue(undefined);
+    });
+
+    it('lists it under Needs you with the attach line', () => {
+      const repo = initRepo();
+      useCwd(repo);
+
+      buildProgram().parse(['status'], { from: 'user' });
+
+      expect(logs[0]).toBe('Needs you');
+      expect(logs[1]).toBe(
+        '  conductor  blocked: unsent draft (161m), no notice reaches it; send or clear it' +
+          `  → tmux -L pup-conductor-${projectId(repo)} attach -t '=pup-conductor-${projectId(repo)}:'`,
+      );
+    });
+
+    it('tells a session it is blocked without the socket to reach it on', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      vi.stubEnv('PUP_CONDUCTOR', 'p1');
+
+      buildProgram().parse(['status'], { from: 'user' });
+
+      expect(logs[1]).toBe(
+        '  conductor  blocked: unsent draft (161m), no notice reaches it; send or clear it' +
+          '  → the operator attaches',
+      );
+      expect(logs.join('\n')).not.toContain('tmux -L');
     });
   });
 

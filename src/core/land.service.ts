@@ -246,7 +246,13 @@ export async function landSession(db: Database, req: LandRequest): Promise<LandO
       ]);
       const targetSha = fastForwarded ? originTip : localSha;
       const tornDown = tearDown(req.repoPath, session, targetSha, head);
-      appendEvent(db, session.id, 'landed', { sha: mergeCommit, target, prUrl });
+      const landed = { sha: mergeCommit, target, prUrl };
+      appendEvent(
+        db,
+        session.id,
+        'landed',
+        head === sha ? landed : { ...landed, acceptedHead: head, pinned: sha },
+      );
       // Right after the event, still under the lock, and before the audit,
       // which can throw: once the event is written a re-run refuses, and
       // nothing else steers (decision 88).

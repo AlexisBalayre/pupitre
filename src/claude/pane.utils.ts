@@ -166,6 +166,24 @@ export function inputBoxState(pane: string): InputBoxState {
   return hasUnsubmittedInput(pane) ? 'holds' : 'empty';
 }
 
+/** One look at the box: its state, and the draft it shows when it holds one. */
+export interface InputBoxLook {
+  state: InputBoxState;
+  /**
+   * The draft's text with every space and line break dropped, so one draft
+   * reads the same however the pane wraps it: `pup attach` resizes the
+   * conductor's window to the operator's terminal (decision 168). Empty
+   * unless the box holds text.
+   */
+  draft: string;
+}
+
+export function inputBoxLook(pane: string): InputBoxLook {
+  const state = inputBoxState(pane);
+  const draft = state === 'holds' ? (inputBoxText(pane) ?? '').replace(/\s+/g, '') : '';
+  return { state, draft };
+}
+
 /**
  * True when the input box holds `message` whole, as far as the pane can show
  * it. A folded paste shows only its placeholder, so the line count is the one

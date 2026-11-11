@@ -11,7 +11,8 @@
 # The name under `workflow_run` must match that workflow's `name:`.
 #
 # pull_request_target and workflow_run run with write access, so nothing here checks out or runs
-# PR code: it only reads PR metadata through the API.
+# PR code: it only reads PR metadata through the API. Nor does it run any file outside this one:
+# the token is in its environment (decision 165).
 name: PR status
 
 on:
@@ -83,8 +84,60 @@ jobs:
 
             const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-            // The newest bot-opened, unresolved review thread, as `ci-wait.service.ts` reads them.
-            async function hasOpenBotThread(number) {
+            // `REVIEW_HEADING` and the count lines of `bodyLines` (tools/review/src/review-body.utils.ts).
+            // tools/review/test/unit/pr-status-workflow.test.ts runs this copy on bodies that
+            // renderer writes, so a reworded line fails a test, not a label.
+            const REVIEW_HEADING = "## Claude code review";
+
+            // A round with no verdict (`noVerdictReason`) opens its body with this line and lists no
+            // finding, so it says nothing about the importants still owed. Matched on the body's
+            // first line only, so a finding's text quoting it cannot hide a verdict.
+            function isVerdict(body) {
+              return !/^\*\*.+\.\*\* Nothing in this round is a verdict on the diff\.$/.test(body.split(/\r?\n/)[2] ?? "");
+            }
+
+            // The importants a summary review lists with no inline thread to resolve: the round's
+            // findings with no line in the diff to anchor to, and the prior round's still open.
+            // A carried one may have been anchored in its own round: `threaded` holds the
+            // `path:line` of every bot thread, resolved or not, and a carried entry at one of them
+            // is left to that thread. Finding text can hold column-0 lines shaped like a count
+            // header or a bullet, so a header's bullets only release importants when they are
+            // exactly the N it announces, in the block `carriedLines` writes (header, blank line,
+            // N bullets), and each `path:line` releases once. A forged header adds its N and can
+            // release at most N, so forgery cannot take the total below the genuine count.
+            function unthreadedImportants(body, threaded) {
+              const lines = body.split(/\r?\n/);
+              const released = new Set();
+              let sum = 0;
+              lines.forEach((line, i) => {
+                const unanchored = /^(\d+) important findings? with no line in this diff to anchor to:$/.exec(line);
+                if (unanchored) sum += Number(unanchored[1]);
+                const prior = /^(\d+) important findings? from .+ still open \(not raised again\):$/.exec(line);
+                if (!prior) return;
+                const owed = Number(prior[1]);
+                sum += owed;
+                let next = i + 1;
+                if (lines[next] === "") next++;
+                const bullets = [];
+                while (lines[next]?.startsWith("- ")) bullets.push(lines[next++]);
+                if (bullets.length !== owed) return;
+                for (const bullet of bullets) {
+                  const at = /^- `(.+?):\s*(\d+)[^`]*` \(/.exec(bullet);
+                  const key = at && `${at[1]}:${at[2]}`;
+                  if (key && threaded.has(key) && !released.has(key)) {
+                    released.add(key);
+                    sum--;
+                  }
+                }
+              });
+              return Math.max(sum, 0);
+            }
+
+            // Every bot-opened review thread, as `ci-wait.service.ts` reads them, at the line its
+            // finding names: a comment pulled to the nearest diff line opens with that line
+            // (`commentBody`).
+            async function botThreads(number) {
+              const found = [];
               let after = null;
               do {
                 const { repository } = await github.graphql(
@@ -93,7 +146,10 @@ jobs:
                       pullRequest(number: $number) {
                         reviewThreads(first: 100, after: $after) {
                           pageInfo { hasNextPage endCursor }
-                          nodes { isResolved comments(first: 1) { nodes { author { login } } } }
+                          nodes {
+                            isResolved path originalLine
+                            comments(first: 1) { nodes { author { login } body } }
+                          }
                         }
                       }
                     }
@@ -101,12 +157,18 @@ jobs:
                   { owner, repo, number, after },
                 );
                 const threads = repository.pullRequest.reviewThreads;
-                if (threads.nodes.some((t) => !t.isResolved && t.comments.nodes[0]?.author?.login === "github-actions")) {
-                  return true;
+                for (const t of threads.nodes) {
+                  const first = t.comments.nodes[0];
+                  if (first?.author?.login !== "github-actions") continue;
+                  const relocated = /^Re: `(.+):(\d+)`/.exec(first.body ?? "");
+                  found.push({
+                    isResolved: t.isResolved,
+                    at: relocated ? `${relocated[1]}:${relocated[2]}` : `${t.path}:${t.originalLine}`,
+                  });
                 }
                 after = threads.pageInfo.hasNextPage ? threads.pageInfo.endCursor : null;
               } while (after);
-              return false;
+              return found;
             }
 
             async function statusOf(number) {
@@ -145,10 +207,22 @@ jobs:
               const review = combined.statuses.find((s) => s.context === "claude-review");
               // An unresolved bot thread is an important the review raised and nobody closed: it
               // outlives the pushes that clear the status description (an incremental round never
-              // re-raises a prior important). The description covers the round just posted.
+              // re-raises a prior important). The description covers the round just posted. An
+              // important with no line to anchor to gets no thread, nor does the incremental round
+              // open one for an important it carries: the newest summary review with a verdict
+              // lists both until a round finds them fixed, and it too outlives a push. A carried
+              // important that has a thread from its own round is that thread's to hold.
+              const summary = reviews
+                .filter(
+                  (r) =>
+                    r.user?.login === "github-actions[bot]" && r.body?.startsWith(REVIEW_HEADING) && isVerdict(r.body),
+                )
+                .at(-1);
+              const threads = await botThreads(number);
               if (
                 (review?.state === "success" && /\d+ important finding/.test(review.description ?? "")) ||
-                (await hasOpenBotThread(number))
+                unthreadedImportants(summary?.body ?? "", new Set(threads.map((t) => t.at))) > 0 ||
+                threads.some((t) => !t.isResolved)
               ) {
                 return "review-open";
               }
