@@ -704,7 +704,7 @@ describe('landSession', { timeout: 20_000 }, () => {
     expectNothingChanged(mainBefore);
   });
 
-  // Decision 164: the event names the commits only the operator's word vouched for.
+  // Decision 164's 2026-11-11 amendment: the event names the commits only the operator's word vouched for.
   it('records the accepted head and the pin on the landed event', async () => {
     seedPrMerge();
     const later = commitIn(worktree, 'src/fix.ts', 'export const fix = 1;\n');

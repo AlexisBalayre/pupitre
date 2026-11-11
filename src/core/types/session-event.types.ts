@@ -39,7 +39,8 @@ export interface EventPayloads {
    * `pup land` saw the PR merged on GitHub and main holding the pinned sha;
    * `sha` is the merge commit GitHub made (decision 84). A land of a head past
    * the pin on the operator's `--accept-head` also records that head and the
-   * pin it moved past, the ends of the commits no gate measured (decision 164).
+   * pin it moved past, the ends of the commits no gate measured (decision 164's
+   * 2026-11-11 amendment).
    */
   landed: { sha: string; target: string; prUrl: string } & (
     | { acceptedHead?: never; pinned?: never }
