@@ -1,0 +1,116 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-11T13:07:02.541Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43025008566",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43025008566",
+  "actor": "AlexisBalayre",
+  "commit_sha": "973a8990c05b88c2312fbb2ba362065bb903f4f3",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 281,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "guards"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "guards"
+  ],
+  "reviewers_skipped": [
+    "conventions",
+    "context",
+    "maintainability",
+    "docs",
+    "spec",
+    "simplicity",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/adr-number.service.ts",
+      "line": "204",
+      "description": "`competingBranches` ignores the `retired` event that `pup retire` (decision 141) now writes. A retired session keeps its decision numbers on every later gate. Once its gated commit is pruned, it refuses every gate that adds an ADR, with a \"PR not landed\" line and a fetch remedy.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/adr-number.service.ts",
+      "line": "205-208",
+      "description": "A PR closed on GitHub without merging is counted as an open PR forever. Its numbers stay taken permanently. If its gated sha is ever pruned, every ADR-adding gate in the repo fails, and nothing in the store can retire the PR.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/adr-number.service.ts",
+      "line": "21",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "A branch can add `docſ/adr/NNNN-x.md` (long s, U+017F), which git's ASCII-only `icase` pathspec does not match. The ADR stage never sees it, even though APFS folds `ſ` onto `s` and puts the file in `docs/adr/`.",
+      "body": "**The case-blind pathspec misses `docſ/adr/`, which APFS treats as `docs/adr/`.**\n\nBoth decision listings filter on one pathspec:\n\n```ts\nconst ADR_PATHSPEC = ':(top,literal,icase)docs/adr/';\n```\n\n<https://github.com/AlexisBalayre/pupitre/blob/973a8990c05b88c2312fbb2ba362065bb903f4f3/src/core/adr-number.service.ts#L15-L21>\n\nIt is used in `addedAdrPaths` (L87) and `decisionRenames` (L125). Git's `icase` folds one byte at a time and only for ASCII, so the UTF-8 bytes `C5 BF` of `ſ` never match `s`. APFS, the gate's filesystem, does fold `ſ` onto `s`. The repo has already measured this: ADR 0110 L89-92 says \"`docſ/impl.py -> impl.md` landed on `docs/impl.md` unseen\", and `merge-gate.service.ts` notes it in the comment above `NON_ASCII`:\n\n<https://github.com/AlexisBalayre/pupitre/blob/973a8990c05b88c2312fbb2ba362065bb903f4f3/src/core/merge-gate.service.ts#L352-L361>\n\n**Trigger.**\n1. A session uses plumbing (`update-index --cacheinfo`) to commit `docſ/adr/0012-x.md`, where 0012 is already on the target.\n2. The task's scope-in is broad enough to match the path, e.g. `**`. Scope-in globs match bytes exactly, so `docs/**` would reject it.\n3. `addedAdrPaths` returns nothing, so neither `added` nor `misnamed` is set, and `adrNumberStage` returns `undefined` (L326). The gate goes on.\n\n**Wrong result.** On the operator's APFS checkout the file lands in `docs/adr/` next to the target's 0012. Every later gate's `ls-tree --full-tree … docs/adr/` (L270-274) reads only the exact path and never counts it. ADR 0146's *Names* section gives exactly this harm (a name \"invisible to every later gate\" in the one folder a case-insensitive host gives it) as the reason for the `icase` refusal. Its *Ceilings* section does not accept it.\n\nNothing else in the gate catches it:\n- `NON_ASCII` only feeds the diff-size split and the untested-skip check.\n- `core.protectHFS` only guards spellings of `.git`.\n\nOf the letters in `docs/adr`, only `s` has a single non-ASCII character that folds onto it, so one extra pathspec closes the gap.\n\n**Fix direction.** Add the long-s spelling and pass both pathspecs in `addedAdrPaths` and `decisionRenames`:\n\n```ts\nconst ADR_PATHSPECS = [':(top,literal,icase)docs/adr/', ':(top,literal,icase)docſ/adr/'];\n// …\n'--', ...ADR_PATHSPECS\n```\n\nThe path then fails `ADR_DECISION` and is refused as misnamed. `meantAs` already suggests `docs/adr/…`, because `docſ/adr/` has the same UTF-16 length as `ADR_DIR`.\n\nThis was validated statically. Git's and APFS's folding behaviour comes from pinned-version knowledge, which is why confidence is medium.",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/adr-number.service.ts",
+      "line": "119",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`decisionRenames` passes `--find-renames` but no `-l0`. If a session sets `diff.renameLimit=1` in the shared config, a peer's real slug rename (edited text plus another added decision) is refused as \"changed too much\". This only causes false refusals, not evasion. `merge-gate.service.ts` L229-263 already pins `-l0` against this limit; the fix is to add `'-l0'` after `'--find-renames'`.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Round 5 budget: only correctness, security and guards ran.\n- conventions, docs, context, simplicity and maintainability were skipped under the round budget.\n- workflow-safety was skipped because nothing under .github/workflows changed.\n- spec was skipped because there is no closing issue or --spec.\n\nCorrectness and security each ran two instances, since the diff is past the size gate (1335 lines). Correctness was split into adr-number.service.ts logic and gate/CLI/dashboard integration. Security was split into git argv/evasion and output/resource bounds.\n\nThe review-consolidator was not spawned: only two findings came back, on different root causes, so nothing could be grouped.\n\nThe validator confirmed the long-s pathspec finding but suggested a nit, since the trigger needs an adversarial session using plumbing and a broad scope-in. It is kept as important because ADR 0110 precedent fixes every ſ evasion and ADR 0146's Names section targets this harm.\n\nThe guards reviewer checked the guard tests only, not prose invariants in the ADRs.\n\nThe head was unchanged at 973a899 when re-checked."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 4.323560399999998,
+  "duration_ms": 440478,
+  "num_turns": 15,
+  "tokens": {
+    "input": 12,
+    "output": 10743,
+    "cache_read": 294496,
+    "cache_creation": 57756,
+    "total": 363007
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 202,
+      "output": 85603,
+      "cache_read": 3786424,
+      "cache_creation": 322144,
+      "cost_usd": 4.254140799999999
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 14,
+      "output": 2168,
+      "cache_read": 78291,
+      "cache_creation": 15953,
+      "cost_usd": 0.0694196
+    }
+  ],
+  "permission_denials": []
+}
