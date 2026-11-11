@@ -1,0 +1,94 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-11T13:28:15.716Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43028954303",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43028954303",
+  "actor": "AlexisBalayre",
+  "commit_sha": "1fe30e19c8d6ee3f0852ff8626e2a885924da4ac",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 305,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "guards"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "guards"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "conventions",
+    "context",
+    "maintainability",
+    "docs",
+    "spec",
+    "simplicity",
+    "workflow-safety"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "1cd5957d9d58d5ee6b3ec1c4e5b8b894be1763ef",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/cli/ui/use-controls.hook.ts",
+      "line": "235-249",
+      "description": "The new digit keys answer whichever session sits at the cursor's index. The new sortRank moves rows exactly when a question is asked or answered, so a refresh between reading and pressing can send one session's option to a different worker, with no confirm step.",
+      "status": "unresolved"
+    },
+    {
+      "file": "src/core/session-lifecycle.service.ts",
+      "line": "789-795",
+      "description": "QuestionRefusedError is declared inline in a service file instead of session-lifecycle.errors.ts.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Round 4 budget: spawned only review-correctness and review-guards; skipped conventions, docs, context, simplicity and maintainability per the round budget. Also skipped review-security (the delta's only boundary change is the added isMintedId refusal, which narrows input), review-workflow-safety (no workflow change) and review-spec (no closing issues)."
+    },
+    {
+      "component": "orchestrator",
+      "description": "The prior important on the digit-key cursor stays unresolved. 91568ae pins the cursor to a session id, but only after an arrow-key press (setPinnedId is called only at use-controls.hook.ts:391). Before the operator first moves, the cursor is still the bare index 0, so the prior trigger still works: the operator reads the row-0 session, another session's question re-sorts above it, and the digit key answers that other session."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.0641124000000002,
+  "duration_ms": 137480,
+  "num_turns": 10,
+  "tokens": {
+    "input": 12,
+    "output": 5126,
+    "cache_read": 283323,
+    "cache_creation": 46010,
+    "total": 334471
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 50,
+      "output": 13019,
+      "cache_read": 851118,
+      "cache_creation": 87061,
+      "cost_usd": 1.0041386
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 8,
+      "output": 1598,
+      "cache_read": 45353,
+      "cache_creation": 15777,
+      "cost_usd": 0.05997380000000001
+    }
+  ],
+  "permission_denials": []
+}
