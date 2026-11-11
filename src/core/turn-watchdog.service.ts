@@ -7,6 +7,7 @@ import {
   SessionPaneMissingError,
   steerPane,
 } from '../claude/session-runtime.service.js';
+import { holdIdleCaches } from './cache-hold.service.js';
 import { findStalledSessions } from './dashboard.service.js';
 import { projectId } from './paths.utils.js';
 import { toIsoUtc } from './report-data.utils.js';
@@ -79,6 +80,10 @@ interface ResumedTurn {
  * A dormant project is passed over whole (decision 62): the operator put it
  * to sleep, and a resume typed into it would be the watcher waking it.
  *
+ * The same pass holds the cache of every worker waiting on someone else
+ * before its hour runs out (decision 179). A hold is no recovery: it is
+ * recorded in the store and not returned.
+ *
  * Returns what it acted on, one entry per pane, for `pup watch` to print.
  */
 export function sweepDeadTurns(db: Database, repoPath: string, now: number): ResumedTurn[] {
@@ -88,6 +93,7 @@ export function sweepDeadTurns(db: Database, repoPath: string, now: number): Res
     const entry = resumeSession(db, stalled.id, stalled.stalledAt, now);
     if (entry) resumed.push(entry);
   }
+  holdIdleCaches(db, repoPath, now);
   const nudged = nudgeConductor(db, repoPath, now);
   if (nudged) resumed.push(nudged);
   return resumed;
