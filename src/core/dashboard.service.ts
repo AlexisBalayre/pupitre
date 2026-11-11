@@ -860,8 +860,9 @@ function dashboardQuestion(asked: QuestionEvent | undefined): DashboardQuestion 
   if (!asked || !text) return undefined;
   const options = asked.options.map(sanitizeReason);
   const { recommended } = asked;
-  const marks = recommended !== undefined && recommended >= 1 && recommended <= options.length;
-  return { text, options, ...(marks ? { recommended } : {}) };
+  const isRecommendedInRange =
+    recommended !== undefined && recommended >= 1 && recommended <= options.length;
+  return { text, options, ...(isRecommendedInRange ? { recommended } : {}) };
 }
 
 /**

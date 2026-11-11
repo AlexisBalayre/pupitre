@@ -119,6 +119,9 @@ export function useControls({
 }): Controls {
   const { exit, suspendTerminal, waitUntilRenderFlush } = useApp();
   const [selected, setSelected] = useState(0);
+  // A refresh re-sorts the rows (a question moves its session up), so the
+  // cursor follows the session the operator moved to rather than its index.
+  const [pinnedId, setPinnedId] = useState<string | undefined>();
   /**
    * The model the last launch was given, offered as the next one's default: a
    * fleet run on one model is then one keystroke per launch rather than the
@@ -142,7 +145,8 @@ export function useControls({
   const rowCount = live.length + planned.length;
   // Clamped at render rather than on every keypress: a merge or a launch can
   // shorten the list under a cursor that was in range when it was last moved.
-  const cursor = Math.min(selected, Math.max(rowCount - 1, 0));
+  const pinnedAt = live.findIndex((row) => row.session.id === pinnedId);
+  const cursor = pinnedAt >= 0 ? pinnedAt : Math.min(selected, Math.max(rowCount - 1, 0));
   const sessionRow = live[cursor];
   const taskRow = planned[cursor - live.length];
   const session = sessionRow?.session;
@@ -236,6 +240,8 @@ export function useControls({
     const asking = sessionRow?.session;
     if (!sessionRow || !asking) {
       say('Nothing to answer: the cursor is not on a session.', true);
+    } else if (!asking.isMintedId) {
+      say('That session id is not a minted one; nothing was answered.', true);
     } else if (asking.question === undefined) {
       say(`${asking.id} has no open question.`, true);
     } else if (asking.question.options.length === 0) {
@@ -379,8 +385,11 @@ export function useControls({
     if (key.escape) return setDetailOpen(false);
     if (input === 'q') return exit();
     if (input === 'r') return refresh();
-    if (key.downArrow) return setSelected(Math.min(cursor + 1, rowCount - 1));
-    if (key.upArrow) return setSelected(Math.max(cursor - 1, 0));
+    if (key.downArrow || key.upArrow) {
+      const next = key.downArrow ? Math.min(cursor + 1, rowCount - 1) : Math.max(cursor - 1, 0);
+      setSelected(next);
+      return setPinnedId(live[next]?.session.id);
+    }
     if (readOnly) return;
     switch (input) {
       case 'l':

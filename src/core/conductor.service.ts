@@ -108,7 +108,7 @@ export const OPERATOR_QUESTIONS = [
 /**
  * Record a question the conductor puts to the operator (decision 93), held
  * against no session: it leads the needs-you inbox while the conductor runs,
- * until `pup answer conductor` closes it. Stored as asked and scrubbed by each
+ * until `pup answer conductor` or the conductor's next start closes it. Stored as asked and scrubbed by each
  * reader, as a session's question is (decision 29).
  */
 export function markConductorQuestion(db: Database, question: EventPayloads['question']): void {

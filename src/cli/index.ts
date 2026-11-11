@@ -632,11 +632,11 @@ function questionOrRefuse(act: () => string[]): void {
   try {
     lines = act();
   } catch (error) {
-    const refused =
+    const isRefusal =
       error instanceof QuestionRefusedError ||
       error instanceof ConductorTellRefusedError ||
       isSteerRefusal(error);
-    if (!refused) throw error;
+    if (!isRefusal) throw error;
     refuse(error.message);
     return;
   }

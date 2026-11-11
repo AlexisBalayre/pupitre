@@ -215,6 +215,41 @@ describe('dashboard controls', () => {
       words.unmount();
     });
 
+    it('keeps the cursor on the session it moved to when a refresh re-sorts the rows', async () => {
+      const reading = [sessionFixture({ id: 's-a' }), sessionFixture({ id: 's-b' })];
+      const instance = render(
+        createElement(App, {
+          read: () => readingOf(snapshotFixture({ sessions: reading })),
+          showAttach: true,
+        }),
+      );
+      await press(instance, '\u001B[B');
+
+      reading.unshift(
+        sessionFixture({ id: 's-c', question: { text: 'which?', options: ['x', 'y'] } }),
+      );
+      await press(instance, 'r', '1');
+
+      expect(answerSelected).not.toHaveBeenCalled();
+      expect(instance.lastFrame()).toContain('s-b has no open question.');
+      instance.unmount();
+    });
+
+    it('answers nothing on a number key for a session whose id is not a minted one', async () => {
+      const instance = mount(
+        snapshotFixture({
+          sessions: [
+            sessionFixture({ isMintedId: false, question: { text: 'q?', options: ['x'] } }),
+          ],
+        }),
+      );
+
+      await press(instance, '1');
+
+      expect(answerSelected).not.toHaveBeenCalled();
+      instance.unmount();
+    });
+
     it('answers nothing on a number key with the cursor on a planned task', async () => {
       const instance = mount(snapshotFixture({ sessions: [] }));
 
