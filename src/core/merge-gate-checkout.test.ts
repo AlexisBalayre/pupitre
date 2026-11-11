@@ -1211,6 +1211,29 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect((await merge(adapter)).status).toBe('merged');
     });
 
+    // Linking nothing, the stage would fail on a runner it cannot find, which
+    // reads as the branch's fault; the install is the operator's to run.
+    it('refuses, naming the install, a package with dependencies and no node_modules', async () => {
+      const ran = join(tempDir('pup-nested-ran-'), 'ran');
+      commitIn(
+        repo,
+        'tools/review/package.json',
+        JSON.stringify({
+          scripts: { test: `touch ${ran}`, typecheck: `touch ${ran}` },
+          devDependencies: { vitest: '^3.0.0' },
+        }),
+      );
+      commitIn(repo, 'tools/review/pnpm-lock.yaml', "lockfileVersion: '9.0'\n");
+      const worktree = seedSession(db, repo, NESTED_SCOPE);
+      commitIn(worktree, 'tools/review/src/r.ts', 'export const r = 1;\n');
+
+      await expect(merge(nestedAdapter())).rejects.toThrow(
+        /tools\/review has no node_modules in the main checkout.*`pnpm --dir tools\/review install`/,
+      );
+      expect(existsSync(ran)).toBe(false);
+      expect(sh(repo, 'git', 'log', '--oneline', 'main')).not.toContain('tools/review/src/r.ts');
+    });
+
     it("refuses the merge when the package's own test script fails", async () => {
       commitNestedPackage({ test: 'echo nested-test-ran; exit 3', typecheck: 'true' });
       const worktree = seedSession(db, repo, NESTED_SCOPE);

@@ -1508,6 +1508,41 @@ function linkEnvironment(repoPath: string, checkout: string, rel: string): void 
   }
 }
 
+/** How each package manager the adapter resolves names the directory to install in. */
+const INSTALL_DIR_FLAG: Record<string, string> = { pnpm: '--dir', yarn: '--cwd', npm: '--prefix' };
+
+/**
+ * Refuse a nested package whose stages would run with no environment: one
+ * the trusted manifest gives dependencies, which neither the main checkout
+ * has installed nor the pinned tree commits. `linkEnvironment` would link
+ * nothing, and the stage would fail on a runner it cannot find, which reads
+ * as the branch's fault. It throws, like a timeout under load: the operator
+ * installs, the session has nothing to fix (decision 138).
+ */
+function refuseUninstalled(repoPath: string, checkout: string, pkg: NestedPackage): void {
+  const [command] = pkg.commands;
+  if (command === undefined) return;
+  if (existsSync(join(repoPath, pkg.dir, GATE_ENVIRONMENT_DIR))) return;
+  if (lstatSync(join(checkout, pkg.dir, GATE_ENVIRONMENT_DIR), { throwIfNoEntry: false })) return;
+  let manifest: { dependencies?: object; devDependencies?: object };
+  try {
+    manifest = JSON.parse(readPlainFile(join(repoPath, pkg.dir, 'package.json')));
+  } catch {
+    // The adapter read no scripts from it either: its stages say what failed.
+    return;
+  }
+  const declared = { ...manifest.dependencies, ...manifest.devDependencies };
+  if (Object.keys(declared).length === 0) return;
+  const dir = quotePath(pkg.dir);
+  const flag = INSTALL_DIR_FLAG[command.command] ?? '--prefix';
+  throw new Error(
+    `${dir} has no ${GATE_ENVIRONMENT_DIR} in the main checkout, so its ` +
+      `${pkg.commands.map((c) => c.stage).join(' and ')} stages cannot find their tools; ` +
+      `nothing was merged. Install it with \`${shellWord(command.command)} ${flag} ` +
+      `${shellWord(dir)} install\` in ${shellWord(repoPath)}, then merge again.`,
+  );
+}
+
 /**
  * Remove the gate's checkout and its registration. A plain removal rather than
  * `worktree remove`, which refuses a checkout that was never cut; the prune
@@ -2793,7 +2828,9 @@ export async function measureBranch(
     ]) ?? [];
   // Every environment before any stage: a stage runs session code with the
   // checkout writable, so a link made after it could follow a swapped-in
-  // parent out of the checkout (decision 81).
+  // parent out of the checkout (decision 81). A package with no environment
+  // to link is refused before anything is linked.
+  for (const pkg of nestedPackages) refuseUninstalled(req.repoPath, checkoutDir, pkg);
   for (const rel of ['.', ...nestedPackages.map((pkg) => pkg.dir)]) {
     linkEnvironment(req.repoPath, checkoutDir, rel);
   }
