@@ -35,10 +35,22 @@ export type { DiffFileStat };
  * Without the config git takes from the environment too: a session window
  * sets `diff.ignoreSubmodules=all` that way (decision 101), and a pup run from
  * it, its tests included, would otherwise inherit it into the scope audit's
- * diff and stop seeing a gitlink change.
+ * diff and stop seeing a gitlink change. The pathspec-mode variables go too:
+ * `GIT_LITERAL_PATHSPECS` (which git exports to a hook's children) turns off
+ * the `:(top)` and `:(top,literal)` magic these reads rely on.
  */
 function scrubbedGitEnv(): NodeJS.ProcessEnv {
-  const scrubbed = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR', 'GIT_PREFIX'];
+  const scrubbed = [
+    'GIT_DIR',
+    'GIT_WORK_TREE',
+    'GIT_INDEX_FILE',
+    'GIT_COMMON_DIR',
+    'GIT_PREFIX',
+    'GIT_LITERAL_PATHSPECS',
+    'GIT_GLOB_PATHSPECS',
+    'GIT_NOGLOB_PATHSPECS',
+    'GIT_ICASE_PATHSPECS',
+  ];
   return Object.fromEntries(
     Object.entries(process.env).filter(
       ([key]) => !scrubbed.includes(key) && !ENV_CONFIG_KEY.test(key),

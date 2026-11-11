@@ -107,6 +107,21 @@ describe('gitDiffAddedLines', () => {
   });
 });
 
+describe('gitDiffAddedLines under an inherited pathspec mode', () => {
+  it('still reads the hunks when git was told to take every pathspec literally', () => {
+    const repo = makeRepo();
+    writeFileSync(join(repo, 'a.ts'), 'one\n');
+    commitAll(repo, 'base');
+    sh(repo, 'git', 'checkout', '-b', 'feature');
+    writeFileSync(join(repo, 'a.ts'), 'one\ntwo\n');
+    commitAll(repo, 'change');
+    vi.stubEnv('GIT_LITERAL_PATHSPECS', '1');
+
+    expect(gitDiffAddedLines(repo, 'main', 'feature')).toEqual({ 'a.ts': [2] });
+    vi.unstubAllEnvs();
+  });
+});
+
 // Each file's hunks are read with its path as a pathspec, which git would
 // parse as magic unless told it is literal (decision 113).
 describe('a changed path that reads as pathspec magic', () => {
