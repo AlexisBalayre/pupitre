@@ -1737,7 +1737,14 @@ export function buildProgram(): Command {
     shouldShowHistory: boolean,
     ciReview?: CiReviewLookup,
   ): void {
-    const needs = needsYou(snapshot, ciReview);
+    const isOperator = showAttachCommand(db);
+    // A blocked conductor is answered with its attach line, which only the
+    // operator is shown (decision 47); anyone else is told whose it is.
+    const needs = needsYou(snapshot, ciReview).map((need) =>
+      need.kind === 'conductor' && !isOperator
+        ? { ...need, answer: 'the operator attaches' }
+        : need,
+    );
     if (needs.length > 0) {
       console.log('Needs you');
       for (const line of needs.flatMap(needLines)) console.log(`  ${line}`);
@@ -1753,7 +1760,7 @@ export function buildProgram(): Command {
       // and nothing more, so pup is not the thing that hands a session the
       // socket its window lives on (decision 47).
       console.log(
-        showAttachCommand(db)
+        isOperator
           ? `conductor running (attach: ${snapshot.conductor.attachCommand})`
           : 'conductor running',
       );

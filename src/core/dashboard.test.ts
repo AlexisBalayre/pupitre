@@ -14,16 +14,21 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => {
     ...actual,
     hasConductorWindow: vi.fn(() => false),
     claudeUserDir: vi.fn(actual.claudeUserDir),
+    conductorPane: vi.fn(() => undefined),
+    readInputBoxLook: vi.fn(() => ({ state: 'empty', draft: '' })),
   };
 });
 
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import {
   claudeUserDir,
+  conductorPane,
   hasConductorWindow,
+  readInputBoxLook,
   saveSessionEnv,
   transcriptDir,
 } from '../claude/session-runtime.service.js';
+import { CONDUCTOR_BLOCKED_AFTER_MS } from './conductor.service.js';
 import {
   blockedReason,
   buildDashboardSnapshot,
@@ -34,6 +39,7 @@ import {
   needsYou,
   prFixRounds,
   routeLabel,
+  windowFailureOf,
 } from './dashboard.service.js';
 import type { SessionState } from './db.client.js';
 import { openStore } from './db.client.js';
@@ -41,15 +47,18 @@ import { insertLedgerEntry } from './ledger.repository.js';
 import { recordWatcherBeat, replaceOverlaps } from './overlap.repository.js';
 import { WATCH_STALE_AFTER_MS } from './overlap.service.js';
 import { projectId, projectPaths } from './paths.utils.js';
+import { fixRoundFailure } from './routing.utils.js';
 import {
   appendEvent,
   dropTask,
   ensureProject,
+  getSession,
   incrementRejectCount,
   insertSession,
   insertTask,
   recordSessionRoute,
   type SessionRoute,
+  type SessionRow,
   saveProjectBaseline,
   transitionSession,
 } from './session.repository.js';
@@ -284,6 +293,54 @@ describe('buildDashboardSnapshot', () => {
       vi.mocked(hasConductorWindow).mockReturnValue(true);
       appendEvent(db, null, 'answer', { question: 'accept the debt?', text: 'no' });
       expect(buildDashboardSnapshot(db, repo, NOW).conductor.question).toBeUndefined();
+    });
+    // Decision 168: the look `pup conductor tell` refuses on, held for over
+    // ten minutes, and only a look.
+    describe('blocked', () => {
+      const PANE = { sessionId: 'conductor-x', paneId: '%3', socket: 'sock' };
+      const LATER = NOW + CONDUCTOR_BLOCKED_AFTER_MS + 60_000;
+
+      beforeEach(() => {
+        vi.mocked(hasConductorWindow).mockReturnValue(true);
+        vi.mocked(conductorPane).mockReturnValue(PANE);
+      });
+      afterEach(() => {
+        vi.mocked(hasConductorWindow).mockReturnValue(false);
+        vi.mocked(conductorPane).mockReturnValue(undefined);
+        vi.mocked(readInputBoxLook).mockReturnValue({ state: 'empty', draft: '' });
+      });
+
+      it.each([
+        ['holds', 'unsent draft'],
+        ['absent', 'not on main input'],
+      ] as const)('reports a box that %s across ten minutes as %s', (box, reason) => {
+        vi.mocked(readInputBoxLook).mockReturnValue({
+          state: box,
+          draft: box === 'holds' ? 'draft' : '',
+        });
+
+        expect(buildDashboardSnapshot(db, repo, NOW).conductor.blocked).toBeUndefined();
+        expect(buildDashboardSnapshot(db, repo, LATER).conductor.blocked).toEqual({
+          reason,
+          ageMs: LATER - NOW,
+        });
+      });
+
+      it('never reports an empty box at the main prompt', () => {
+        vi.mocked(readInputBoxLook).mockReturnValue({ state: 'empty', draft: '' });
+
+        buildDashboardSnapshot(db, repo, NOW);
+        expect(buildDashboardSnapshot(db, repo, LATER).conductor).not.toHaveProperty('blocked');
+      });
+
+      it('does not look at the pane while no conductor runs', () => {
+        vi.mocked(hasConductorWindow).mockReturnValue(false);
+        vi.mocked(readInputBoxLook).mockClear();
+
+        buildDashboardSnapshot(db, repo, LATER);
+
+        expect(readInputBoxLook).not.toHaveBeenCalled();
+      });
     });
   });
 
@@ -1263,6 +1320,53 @@ describe('needsYou', () => {
 
   const inbox = () => needsYou(buildDashboardSnapshot(db, repo, NOW));
 
+  // Decision 168: a conductor nothing reaches waits on the operator, who alone
+  // may attach to it.
+  describe('conductor blocked', () => {
+    const blockedAt = (blocked: { reason: 'unsent draft' | 'not on main input' }) => {
+      const snapshot = buildDashboardSnapshot(db, repo, NOW);
+      return {
+        ...snapshot,
+        conductor: {
+          ...snapshot.conductor,
+          running: true,
+          blocked: { ...blocked, ageMs: 9_660_000 },
+        },
+      };
+    };
+
+    it.each([
+      ['unsent draft', 'send or clear it'],
+      ['not on main input', 'return it to its prompt'],
+    ] as const)('lists a conductor with an %s, answered with the attach line', (reason, fix) => {
+      const snapshot = blockedAt({ reason });
+
+      expect(needsYou(snapshot)).toEqual([
+        {
+          kind: 'conductor',
+          sessionId: snapshot.conductor.name,
+          label: 'conductor',
+          reason: `blocked: ${reason} (161m), no notice reaches it; ${fix}`,
+          answer: snapshot.conductor.attachCommand,
+        },
+      ]);
+    });
+
+    it('comes after a question and before every other need', () => {
+      seedIn('s-blocked', ['running', 'blocked']);
+      seedIn('s-asked', ['running']);
+      appendEvent(db, 's-asked', 'question', { text: 'which way?' });
+
+      const kinds = needsYou(blockedAt({ reason: 'unsent draft' })).map((need) => need.kind);
+
+      expect(kinds).toEqual(['question', 'conductor', 'blocked']);
+    });
+
+    it('lists nothing for a conductor that is not blocked', () => {
+      expect(needsYou(buildDashboardSnapshot(db, repo, NOW))).toEqual([]);
+    });
+  });
+
   /** A critical task's session on its top rung, rejected by the gate, then killed. */
   function seedTopRungKill(sessionId: string, route: Partial<SessionRoute> = {}): void {
     seedIn(sessionId, ['running']);
@@ -1872,5 +1976,71 @@ describe('blockedReason', () => {
 
     expect(blockedReason(db, 's-bare')).toBeUndefined();
     expect(blockedReason(db, 's-running')).toBeUndefined();
+  });
+});
+
+describe('windowFailureOf on a merged session', () => {
+  let db: Database;
+  let repo: string;
+  const MIN = 60_000;
+
+  beforeEach(() => {
+    vi.stubEnv('HOME', tempDir('pup-dashboard-home-'));
+    db = openStore(':memory:');
+    repo = tempRepo();
+    seedSession(db, repo, 's1');
+    for (const state of ['running', 'awaiting-review', 'merged'] as const) {
+      transitionSession(db, 's1', state);
+    }
+    // Quiet since long before the round: only the window's own start bounds it.
+    seedEventsFile(repo, 's1', { hook_event_name: 'PostToolUse' }, 3 * 60 * MIN);
+  });
+
+  afterEach(() => {
+    db.close();
+    vi.unstubAllEnvs();
+  });
+
+  /** Append an event stamped `agoMin` minutes before NOW. */
+  function at(agoMin: number, type: Parameters<typeof appendEvent>[2], payload: object): void {
+    appendEvent(db, 's1', type, payload as never);
+    db.prepare('UPDATE events SET created_at = ? WHERE id = last_insert_rowid()').run(
+      new Date(NOW - agoMin * MIN).toISOString(),
+    );
+  }
+
+  const read = () =>
+    windowFailureOf(
+      db,
+      projectPaths(repo),
+      getSession(db, 's1') as SessionRow,
+      NOW,
+      fixRoundFailure,
+    );
+  const killed = (agoMin: number) => at(agoMin, 'gate_result', { from: 'running', to: 'merged' });
+
+  // `fixRoundFailure` scores from the newest respawn the round kept, so the
+  // stall is measured from there and not from the round's kickoff.
+  it('measures a round stall from a pup respawn inside the round, not its kickoff', () => {
+    at(170, 'merge', { files: [] });
+    at(160, 'fix_round', { threads: ['T1'], rejectBase: 0 });
+    at(150, 'respawn', { delivered: true });
+    at(10, 'respawn', { delivered: true });
+    killed(5);
+
+    expect(read()).toBeUndefined();
+  });
+
+  // The retry undone before its window opened is no part of the stall's end.
+  it('ends the stall at the round kill, not at a retry undone after it', () => {
+    at(170, 'merge', { files: [] });
+    at(160, 'fix_round', { threads: ['T1'], rejectBase: 0 });
+    at(150, 'respawn', { delivered: true });
+    killed(20);
+    at(10, 'fix_round', { threads: ['T1'], rejectBase: 0 });
+    at(9, 'respawn', { delivered: false });
+    killed(8);
+
+    expect(read()).toBe('stall');
   });
 });

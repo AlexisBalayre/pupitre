@@ -1,8 +1,10 @@
+import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { readPlainFile } from '../adapters/capability.utils.js';
 import { CONDUCTOR_ROUTE } from '../claude/model-ladder.constants.js';
+import type { InputBoxLook } from '../claude/pane.utils.js';
 import {
   conductorName,
   conductorPane,
@@ -12,7 +14,7 @@ import {
   launchConductor,
   launchWatcher,
   pasteIntoPane,
-  readInputBox,
+  readInputBoxLook,
   submitPane,
 } from '../claude/session-runtime.service.js';
 import { codegraphBinary, prepareGraph } from './codegraph.client.js';
@@ -37,6 +39,7 @@ import {
 import { appendEvent } from './session.repository.js';
 import { isRefusedSteer, rollBackRefusedLaunch } from './session-lifecycle.errors.js';
 import type { ConductorHandle, StartConductorRequest } from './types/conductor.types.js';
+import type { ConductorBlocked } from './types/dashboard.types.js';
 import type { EventPayloads } from './types/session-event.types.js';
 
 /**
@@ -309,6 +312,10 @@ export function startConductor(
   // Cut and indexed before the launch, so the window opens on a graph that is
   // already there.
   const mcpConfigPath = graphForConductor(binary, req.repoPath, checkoutDir, outDir);
+  // A new conductor starts its own blocked clock: one left by a conductor
+  // stopped or crashed while unreachable would name this one blocked while it
+  // boots, or skip its ten minutes' grace (decision 168).
+  dropBlockedSince(req.repoPath);
   const pane = launchConductor({
     projectId: pid,
     repoPath: req.repoPath,
@@ -425,7 +432,8 @@ export function tellConductor(repoPath: string, message: string): boolean {
   }
   // A paste appends to what the box holds, and the draft may be the
   // operator's own from `pup attach`: refuse rather than send both or erase it.
-  if (readInputBox(pane) !== 'empty') {
+  // The refusal also starts the blocked clock (decision 168).
+  if (noteConductorBox(repoPath, readInputBoxLook(pane), Date.now()) !== undefined) {
     throw new ConductorTellRefusedError(
       "The conductor's input box holds unsent text, or is not on screen; nothing was sent. " +
         'Look with `pup attach`, send or clear what is there, then tell again.',
@@ -433,10 +441,105 @@ export function tellConductor(repoPath: string, message: string): boolean {
   }
   if (!pasteIntoPane(pane, message)) return false;
   submitPane(pane);
-  let box = readInputBox(pane);
-  if (box === 'holds') {
+  let box = readInputBoxLook(pane);
+  if (box.state === 'holds') {
     submitPane(pane);
-    box = readInputBox(pane);
+    box = readInputBoxLook(pane);
   }
-  return box === 'empty';
+  // The box the tell leaves is a look like any other. A tell that landed drops
+  // a clock that a look taken mid-paste started on the message, and one left in
+  // the box, or under a dialog, starts the clock (decision 168).
+  noteConductorBox(repoPath, box, Date.now());
+  return box.state === 'empty';
+}
+
+/**
+ * How long the conductor may sit where no tell reaches it before the inbox
+ * names it (decision 168): long enough that an operator typing into it, or a
+ * glance at a subagent's view, never shows.
+ */
+export const CONDUCTOR_BLOCKED_AFTER_MS = 10 * 60_000;
+
+/** Where the first look that found the conductor unreachable is kept, with what it saw; derived as `maxSessionsFile` is. */
+function blockedSinceFile(repoPath: string): string {
+  return join(projectPaths(repoPath).root, 'conductor', 'blocked-since');
+}
+
+/** Drop the clock. A directory planted in its place stays, so no clock ever starts, rather than fail the read. */
+function dropBlockedSince(repoPath: string): void {
+  try {
+    rmSync(blockedSinceFile(repoPath), { force: true });
+  } catch {
+    // Not a file: nothing a look may remove.
+  }
+}
+
+/**
+ * Record what the conductor's box showed at `now`, answering since when it has
+ * been unreachable, or undefined when the box is empty and on screen, the one
+ * state `tellConductor` types into. The time persists across the one-shot
+ * readers (`pup status`, a bounced tell), so any two looks ten minutes apart
+ * find it. Beside the time is what the look saw: a draft, kept by its hash and
+ * never as text (it may be the operator's), or an overlay. The clock holds only
+ * while each look sees the same thing. Nothing records the moments between
+ * looks, so a different draft, or a draft where an overlay was or the reverse,
+ * may be a new spell after one that no look saw end, and starts the clock
+ * again. A file that holds no time, or one later than `now`, starts the clock
+ * again too. One that cannot be written leaves it unstarted, so a conductor is
+ * never named blocked on a guess.
+ */
+function noteConductorBox(repoPath: string, look: InputBoxLook, now: number): number | undefined {
+  const file = blockedSinceFile(repoPath);
+  if (look.state === 'empty') {
+    dropBlockedSince(repoPath);
+    return undefined;
+  }
+  const sight =
+    look.state === 'holds'
+      ? `draft ${createHash('sha256').update(look.draft).digest('hex')}`
+      : 'overlay';
+  try {
+    const [time, seen] = readPlainFile(file, { followLinks: false }).split('\n');
+    const since = Number(time);
+    if (seen === sight && Number.isInteger(since) && since > 0 && since <= now) return since;
+  } catch {
+    // Nothing recorded yet: this look starts the clock.
+  }
+  try {
+    mkdirSync(dirname(file), { recursive: true });
+    // Removed first and created exclusively, so a link planted there is
+    // replaced rather than written through.
+    rmSync(file, { force: true });
+    writeFileSync(file, `${now}\n${sight}\n`, { flag: 'wx' });
+  } catch {
+    // Unrecorded: the next look starts the clock again.
+  }
+  return now;
+}
+
+/**
+ * Whether the conductor has been out of reach of every tell and worker notice
+ * for over `CONDUCTOR_BLOCKED_AFTER_MS`: its box holding an unsent draft, or
+ * its pane on something other than its main input (a subagent's view, the
+ * background-shell list, the rewind menu). The same look `tellConductor`
+ * refuses on, and only a look: no key reaches the pane, since the draft may be
+ * the operator's own and an overlay takes keys as choices (decision 168).
+ * Undefined when no conductor runs, or its pane cannot be read.
+ */
+export function conductorBlock(repoPath: string, now: number): ConductorBlocked | undefined {
+  const pane = conductorPane(projectId(repoPath));
+  if (!pane) return undefined;
+  let look: InputBoxLook;
+  try {
+    look = readInputBoxLook(pane);
+  } catch {
+    // A pane gone between the lookup and the capture says nothing either way.
+    return undefined;
+  }
+  const since = noteConductorBox(repoPath, look, now);
+  if (since === undefined || now - since <= CONDUCTOR_BLOCKED_AFTER_MS) return undefined;
+  return {
+    reason: look.state === 'holds' ? 'unsent draft' : 'not on main input',
+    ageMs: now - since,
+  };
 }
