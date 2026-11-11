@@ -1,0 +1,124 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-11T13:48:03.802Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43031568726",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43031568726",
+  "actor": "AlexisBalayre",
+  "commit_sha": "29a17ca4b99081f3cc2d45e80cfb5e22ab98db75",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 290,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "guards"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "guards"
+  ],
+  "reviewers_skipped": [
+    "conventions",
+    "context",
+    "maintainability",
+    "docs",
+    "spec",
+    "simplicity",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "692",
+      "description": "The advice to reply as the operator and re-run pup fix loops when the re-run round makes no commit: its gated sha equals the previous round's, the sha-only marker check suppresses its reply and summary, the thread stays unanswered, and ci wait keeps naming pup fix.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "346-357",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The re-post check reads only pup's own replies. Reopening is decided over a wider set of authors (`isAnswered` uses the trail filtered to the bot, `viewerDidAuthor`, and OWNER/MEMBER/COLLABORATOR). A collaborator's or bot's comment after the marker reopens the thread, but a no-commit round at the same sha never answers it again. The thread stays unanswered and `pup ci wait` keeps naming `pup fix`.",
+      "body": "**Problem:** 29a17ca fixes the same-sha loop only when the thread is reopened from the account `gh` is logged in as. ADR 0163 lists more reopeners: \"A later comment that counts, from the operator, a collaborator or the bot, makes the thread live again, and the next round takes it.\" For those reopeners the loop is still there.\n\n**The two checks disagree on who has the last word:**\n- `isAnswered` ([github.client.ts L459-479](https://github.com/AlexisBalayre/pupitre/blob/29a17ca4b99081f3cc2d45e80cfb5e22ab98db75/src/core/github.client.ts#L459-L479)) takes the newest trail comment from the bot, the viewer, or an OWNER/MEMBER/COLLABORATOR (`REOPENING_ASSOCIATIONS`, L354).\n- The skip below reads `ownReplies`. `readThreadAnswers` ([github.client.ts L526-586](https://github.com/AlexisBalayre/pupitre/blob/29a17ca4b99081f3cc2d45e80cfb5e22ab98db75/src/core/github.client.ts#L526-L586)) builds that list from `viewerDidAuthor === true` comments only:\n\n```ts\nif (!thread.ownReplies.at(-1)?.includes(marker)) {\n```\n\n**How it happens:**\n1. Round N declines thread T and gates at sha S. pup's reply carries `fixRoundMarker(S)`, so `isAnswered` is true.\n2. A collaborator replies on T. The same happens if the operator replies from an account other than gh's login, or if the bot comments. The newest counted comment is now theirs, so `isAnswered` is false, `pup ci wait` names `pup fix`, and `reviewVerdict` relays T.\n3. The worker declines again without committing. The gate pins S again: fresh-base reads \"already based on\", and `resolveCommit(branchRef)` is still S. `answerFixRoundThreads` runs.\n4. `ownReplies` is still `[marker S]`, because the collaborator's comment is not the viewer's. `.at(-1)` holds the marker, so no reply is posted.\n5. The collaborator's comment stays the newest counted one, so `isAnswered` stays false and the cycle repeats. Each pass is a full worker round up the repeat-round ladder, and the worker's new reason never reaches GitHub.\n\nThe new test ([fix-round.test.ts L591](https://github.com/AlexisBalayre/pupitre/blob/29a17ca4b99081f3cc2d45e80cfb5e22ab98db75/src/core/fix-round.test.ts#L591-L609)) seeds only a same-login reopener, so it does not reach this case.\n\n**Fix:** apply the same \"newest counted comment\" rule on both sides:\n- In `FIX_ROUND_THREADS_QUERY`, read `authorAssociation` and `author { __typename login }` on `replies`.\n- Expose the newest counted comment, using the same filter as `isAnswered`.\n- Skip only when that comment is `viewerDidAuthor` and contains `marker`.\n- Add a test where a COLLABORATOR's (or the bot's) reply follows the marker.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/29a17ca4b99081f3cc2d45e80cfb5e22ab98db75/src/core/fix-round.service.ts#L346-L357",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/github.client.ts",
+      "line": "460",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "isAnswered reads only `trail: comments(last: 100)`. On a public repo, an outsider can post 100 replies after pup's marked reply and push that reply out of the page. With no trusted comment left in view, isAnswered reads false, and the next `pup fix` relays the bot's finding for another round, despite ADR 0163's claim that a passer-by cannot trigger one. Possible fix: refuse when `trail.pageInfo.hasPreviousPage` is true and no trusted comment is in view, as the thread page cap does.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Round 6 budget: conventions, docs, context, simplicity and maintainability were not spawned. Spec had no source (no closing issues). Workflow-safety had nothing to check (no workflow change). Security ran as one instance despite the size gate, because its trust-boundary surface is three files."
+    },
+    {
+      "component": "consolidator",
+      "description": "The consolidator returned no groups. Findings 1 and 2 were the same root cause, raised by the two correctness instances from opposite ends: the ownReplies-only skip in fix-round.service.ts against isAnswered's wider reopener set in github.client.ts. Both are importants from the same area, so the orchestrator merged them by hand into one finding citing both paths, then validated it once (CONFIRMED)."
+    },
+    {
+      "component": "orchestrator",
+      "description": "The prior important is recorded as resolved. The case it described, the operator replying under gh's own login, is fixed by 29a17ca's `.at(-1)` check and covered by a test. The remaining case, a collaborator or the bot as the reopener, is raised as a new important on the changed line 348."
+    }
+  ],
+  "duplicates_merged": 1,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.4756648250000004,
+  "duration_ms": 274466,
+  "num_turns": 14,
+  "tokens": {
+    "input": 16,
+    "output": 10961,
+    "cache_read": 408995,
+    "cache_creation": 54551,
+    "total": 474523
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 122,
+      "output": 43936,
+      "cache_read": 1648299,
+      "cache_creation": 200777,
+      "cost_usd": 2.3764058000000006
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 14,
+      "output": 3087,
+      "cache_read": 83042,
+      "cache_creation": 23750,
+      "cost_usd": 0.0985772
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 181,
+      "cache_read": 0,
+      "cache_creation": 4729,
+      "cost_usd": 0.0006818249999999999
+    }
+  ],
+  "permission_denials": []
+}
