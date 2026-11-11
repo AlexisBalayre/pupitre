@@ -1,0 +1,193 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-11T11:01:33.295Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43007211071",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43007211071",
+  "actor": "AlexisBalayre",
+  "commit_sha": "fcbbb76065f1ed44f3a378bebf85875ad57ba4b5",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 304,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/adapters/typescript.adapter.ts",
+      "line": "217-229",
+      "description": "Root files Yarn loads into every script are neither run inputs nor compared across checkouts: `.env.yarn` (Yarn 4 reads it by default), `.pnp.cjs` and `.pnp.loader.mjs` (PnP). The branch commits or builds one carrying `NODE_OPTIONS=--import ./scripts/reg.mjs` and the shared config is still read as the trusted one's. `RUNS_A_FILE` also misses the `NODE_OPTIONS` spelling and the `injectEnvironmentFiles` key.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/adapters/vitest-config.utils.ts",
+      "line": "325-333",
+      "description": "rootFiles folds root names with String#toLowerCase, but APFS (the gate's filesystem) also folds `ſ` (U+017F) onto `s`, and toLowerCase leaves `ſ` unchanged. So a branch can commit `viteſt.config.ts` (or `vite.config.tſ`), which the gate's disk opens for a higher-priority config name than the repo's. The read never sees it, testInputsIntact never compares it, and vitest runs the branch's config while the read answers from the trusted one.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/adapters/typescript.adapter.ts",
+      "line": "522-537",
+      "description": "`testInputsIntact` and the cross-checkout comparison read only the checkout root. npm, yarn and pnpm also read config from the checkout's parent directories and from the operator's home, both of which the unsandboxed session can write. The ADR makes this same argument to refuse a root with no vitest config, but does not apply it to package-manager config.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "2624-2628",
+      "description": "`testInputsIntact` treats the test run's inputs as clean after the build, but the package manager that runs the test script comes from the corepack install in the per-repo toolchain cache. The build child is granted write access there (sandbox.utils.ts:413), and the unsandboxed session can write there too. A build that swaps corepack's pnpm or yarn entrypoint makes the test stage run the branch's package manager, and neither check looks at it.",
+      "status": "unresolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/adapters/vitest-config.utils.ts",
+      "line": "297-305",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "An `include` pattern starting with `!` is dropped as \"unread\". Vitest's globber treats it as a negation, so it narrows what the other patterns collect. A branch can stop vitest collecting a test-named file while the split still counts it as test.",
+      "body": "**A `!` include pattern narrows the run, but the reader drops it.**\n\n`configGlobs` treats each `include` pattern it cannot read as adding nothing. It removes the pattern and keeps the rest:\n\n```ts\nconst include = included\n  ? literalStrings(included)\n      ?.map(vitestGlob)\n      .filter((glob): glob is RegExp => glob !== undefined)\n  : [VITEST_DEFAULT_INCLUDE];\n```\n\nThat is only safe if `include` patterns can only add files. They can also remove them. Vitest (pinned `^4.1.10`) hands `test.include` to tinyglobby, which turns a leading `!` into an ignore that applies to all patterns. `READ_GLOB` rejects `!`, so `vitestGlob` returns `undefined` and the filter drops the negation silently.\n\n**Trigger.**\n1. The trusted config has `include: ['src/**/*.test.ts']`.\n2. The branch changes only the list, to `include: ['src/**/*.test.ts', '!src/core/big.test.ts']`. It adds 2000 lines of production code with no test in `src/core/big.test.ts`.\n3. `withoutLists` cuts both lists, so the rest of the config matches the trusted one (`testFiles` compares only `config`).\n4. The branch side reads only `src/**/*.test.ts` and says the file is collected. The trusted side says the same.\n5. Vitest never collects the file, so nothing fails, and the 2000 lines count as test.\n\nThis is the \"branch narrows its own include\" case decision 143 says the two-checkout intersection closes. The exclude side already handles it: an exclude starting with `!` leaves the answer unknown (test row `an exclude with a !`). No test covers a `!` in `include`. ADR 0143's line \"an `include` pattern outside that collects nothing\" has the same gap, and its ceilings do not list this case.\n\nVitest's `!` handling is pinned-version knowledge, hence medium confidence.\n\nA test row for the `collects nothing under %s` table would cover the fix: `['an include with a !', configWith(\"{ include: ['src/**/*.test.ts', '!src/a.test.ts'] }\")]`.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/fcbbb76065f1ed44f3a378bebf85875ad57ba4b5/src/adapters/vitest-config.utils.ts#L297-L305",
+      "suggestion": "  const included = test.get('include');\n  const excluded = test.get('exclude');\n  const includePatterns = included && literalStrings(included);\n  // The globber reads a `!` include as an ignore, which narrows what the others collect.\n  if (includePatterns?.some((pattern) => pattern.startsWith('!'))) return undefined;\n  const include = included\n    ? includePatterns?.map(vitestGlob).filter((glob): glob is RegExp => glob !== undefined)\n    : [VITEST_DEFAULT_INCLUDE];\n  const exclude = excluded ? literalStrings(excluded)?.map(vitestGlob) : [];\n  if (!include || !exclude || exclude.some((glob) => glob === undefined)) return undefined;"
+    },
+    {
+      "file": "src/adapters/typescript.adapter.ts",
+      "line": "540-555",
+      "area": "security",
+      "confidence": "high",
+      "tag": "important",
+      "description": "testInputsIntact checks only the root run inputs and node_modules links against the pinned sha, never the collected test files. The branch's own build script runs in the writable gate checkout before the suites, so it can delete or rewrite a collected `src/big.test.ts`. Vitest then never runs the committed file and the test stage passes. The split reads collection from the sha's tree, so it still counts the committed 2000 lines as test.",
+      "body": "**The post-build check never looks at the collected test files.**\n\nDecision 143 rests on one premise: a file the runner collects fails the test stage unless it holds a test. `testInputsIntact` exists so the disk the run read matches the pinned sha. But it only covers the inputs that decide *what* is collected, not the collected files themselves:\n\n```ts\nreturn (\n  environmentLinked(ctx) &&\n  runInputs(diskRoot(ctx.measurePath), VITEST_RUN_INPUT) ===\n    runInputs(treeRoot(ctx.configPath, ctx.measureSha), VITEST_RUN_INPUT)\n);\n```\n\n**Trigger.**\n1. The branch commits `src/big.test.ts`, 2000 lines of production code with no test, inside the trusted `src/**/*.test.ts` include.\n2. It also sets its `build` script to `\"tsc && rm src/big.test.ts\"`, or to one that overwrites the file with `test('ok', () => {})`. Across checkouts, only `scripts.test`/`pretest`/`posttest` (`runsPlainVitest`) and the package-manager configs are compared, so a changed `build` script passes. Disk-vs-sha also matches, because the edited `package.json` is committed.\n3. `measureBranch` runs `pm run build` in the gate checkout (`merge-gate.service.ts:2669`), and that runs the checkout's own script.\n4. `intactBeforeSuites` (L2676) holds, because no root file or `node_modules` entry changed.\n5. `vitest run` never sees the committed `big.test.ts`. The test stage passes.\n6. In the split, `testFiles` reads both configs and the path list from the sha trees, so `src/big.test.ts` counts as collected. The second `testInputsIntact()` (L2937) passes again. The 2000 lines count as test.\n\nNothing compares the gate checkout's tracked files with the sha after the build. The `worktree-clean` stage runs on the session worktree before the checkout is cut. ADR 0143's ceilings name only lint and nested checks rewriting the *config* concurrently with the run. A build that removes or rewrites a collected file sequentially, before any suite, is not listed.\n\n**Fix direction.** In the post-build check (and again before the split), require every path the split would count as test to be on disk in the gate checkout as a plain file whose content is the pinned sha's blob, or drop from `collected` any path that fails that check.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/fcbbb76065f1ed44f3a378bebf85875ad57ba4b5/src/adapters/typescript.adapter.ts#L540-L555\nhttps://github.com/AlexisBalayre/pupitre/blob/fcbbb76065f1ed44f3a378bebf85875ad57ba4b5/src/core/merge-gate.service.ts#L2667-L2676\nhttps://github.com/AlexisBalayre/pupitre/blob/fcbbb76065f1ed44f3a378bebf85875ad57ba4b5/src/core/merge-gate.service.ts#L2936-L2945",
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/vitest-config.utils.ts",
+      "line": "4",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`vitest-config.utils.ts` imports `runGit` from `../core/git-diff.client.js` and does git/fs I/O (`treeRoot`, `diskRoot`), against naming.md §Constrained `utils`: \"Pure functions only. Cannot import service, manager, repository, or client.\" A few existing utils already break this, but keeping the pure config parsing in the `.utils.ts` file and moving the disk and git readers to an adapter or client file would follow the rule.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/typescript.adapter.ts",
+      "line": "624-630",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`coveredTest` now reads the manifest through `diskRoot(path)` instead of `readManifest(path)`. `diskRoot` throws when any root entry is named outside ASCII, and that includes untracked entries in the main checkout (a `文档/` dir, an operator's `notes–draft.md`). For such a repo, `coveredTest` always returns `undefined`, so every gate runs the suite twice under the merge lock instead of the folded coverage run (decision 95). Reading `package.json` for the script rule does not need the non-ASCII refusal.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/vitest-config.utils.ts",
+      "line": "116-117, 243-247",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`FILE_SPECIFIER` (`/^[./]/`) refuses only path-spelled imports. A Node subpath import such as `import { x } from '#shared/vitest'` in a config both sides share also loads a repo file. It resolves through the root `package.json` `imports`, which is not compared across sides, so the branch can repoint it or rewrite its target and the file runs unseen. Landing such an import in the trusted config takes one earlier merge. Refusing `#` too (`/^[./#]/`) closes it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/vitest-config.utils.ts",
+      "line": "16",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`export type RootFiles = Map<string, () => string>;` is declared inline in a behavioural file. naming.md §Enums, types and errors says every exported type lives in a `*.types.ts` / `*.interface.ts` file, and `src/adapters/types/adapter.types.ts` is already touched by this PR.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "2583-2590",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The test stage's re-run loads the runner config that the first run's session code left on disk. `testInputsIntact` is checked only after the build and before the split, so a test file can rewrite the config for the re-run and restore it. The gate then passes as \"flaky\" and counts uncollected production code as test.",
+      "refutation": "The trigger needs attacker code running at a collected test file's top level, and that code can simply register a test (`test('', () => {})`) and pass in one run. ADR 0143 accepts this: collection proving a file is test code is the design's bar, so the re-run adds nothing an adversary lacks. It also leaves a visible `flaky` detail. The rewrite-and-restore pattern is likewise the stated ceiling for branch code that rewrites the config vitest loads and restores it before the last check."
+    }
+  ],
+  "process_issues": [
+    {
+      "component": "consolidator",
+      "description": "The consolidator returned no groups (merged: 0). Findings 1 and 2 (the `!` include negation, from correctness and security) were one root cause at the same lines. Both were important, so the orchestrator merged them inline as a cross-area dedup and kept the correctness instance's text and suggestion."
+    },
+    {
+      "component": "orchestrator",
+      "description": "Skipped `context` (no infra/protocol surface), `spec` (no closing issue or spec source), `workflow-safety` (no workflow change) and `maintainability` (off the default roster). The conventions important (utils purity) was downgraded to nit on the validator's recommendation, because four existing utils files already break the same rule."
+    }
+  ],
+  "duplicates_merged": 1,
+  "comments_posted_actual": 2,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 6.596923474999995,
+  "duration_ms": 497388,
+  "num_turns": 24,
+  "tokens": {
+    "input": 22,
+    "output": 24285,
+    "cache_read": 671283,
+    "cache_creation": 105082,
+    "total": 800672
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 212,
+      "output": 141655,
+      "cache_read": 3971000,
+      "cache_creation": 456112,
+      "cost_usd": 6.2239539999999955
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 50,
+      "output": 12016,
+      "cache_read": 283649,
+      "cache_creation": 89412,
+      "cost_usd": 0.3721548999999999
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 364,
+      "cache_read": 0,
+      "cache_creation": 5059,
+      "cost_usd": 0.000814575
+    }
+  ],
+  "permission_denials": []
+}
