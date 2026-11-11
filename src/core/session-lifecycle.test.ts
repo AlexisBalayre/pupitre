@@ -2073,14 +2073,17 @@ describe('launch usage hold (decision 156)', () => {
     vi.unstubAllEnvs();
   });
 
-  /** A reading the status line wrote, `sevenDay` percent used, resetting in an hour. */
-  function writeReading(sevenDay: number, ageMs = 0): void {
+  /** A reading the status line wrote, `fiveHour` percent used, resetting in an hour. */
+  function writeReading(fiveHour: number, ageMs = 0): void {
     const file = projectPaths(repo).usageFile;
     mkdirSync(dirname(file), { recursive: true });
     const resetsAt = Math.floor(Date.now() / 1000) + 3600;
     writeFileSync(
       file,
-      JSON.stringify({ seven_day: { used_percentage: sevenDay, resets_at: resetsAt } }),
+      JSON.stringify({
+        five_hour: { used_percentage: fiveHour, resets_at: resetsAt },
+        seven_day: { used_percentage: 10, resets_at: resetsAt + 86_400 },
+      }),
     );
     const at = (Date.now() - ageMs) / 1000;
     utimesSync(file, at, at);
@@ -2100,12 +2103,12 @@ describe('launch usage hold (decision 156)', () => {
   };
 
   it.each(['operator', 'conductor'] as const)(
-    'refuses the %s at 90%% of the 7-day window, naming it and its reset',
+    'refuses the %s at 85%% of the 5-hour window, naming it and its reset',
     (by) => {
-      writeReading(90);
+      writeReading(85);
 
       expect(() => launch(by)).toThrow(
-        /The plan's 7-day usage is at 90%, at or over the 90% that holds launches; nothing was launched\. It resets at \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC\./,
+        /The plan's 5-hour usage is at 85%, at or over the 85% that holds launches; nothing was launched\. It resets at \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC\./,
       );
       expect(launchSession).not.toHaveBeenCalled();
       expect(getSession(db, 't-1')).toBeUndefined();
@@ -2113,7 +2116,7 @@ describe('launch usage hold (decision 156)', () => {
   );
 
   it('launches under the hold line', () => {
-    writeReading(89.9);
+    writeReading(84.9);
 
     expect(launch('operator')).toBe('t-1');
   });

@@ -2011,19 +2011,19 @@ describe('CLI commands', () => {
     it('refuses a held launch in one line naming the window and its reset', () => {
       useCwd(initRepo());
       vi.mocked(launchTask).mockImplementation(() => {
-        throw new UsageLimitReachedError('7-day', 91, 90, Date.UTC(2026, 10, 8, 13) / 1000);
+        throw new UsageLimitReachedError('5-hour', 91, 85, Date.UTC(2026, 10, 8, 13) / 1000);
       });
 
       buildProgram().parse(['launch', 't-abc'], { from: 'user' });
 
       expect(errors.join('\n')).toContain(
-        "The plan's 7-day usage is at 91%, at or over the 90% that holds launches; nothing " +
+        "The plan's 5-hour usage is at 91%, at or over the 85% that holds launches; nothing " +
           'was launched. It resets at 2026-11-08 13:00 UTC.',
       );
       expect(process.exitCode).toBe(1);
     });
 
-    it("prints the latest reading's 7-day share and age in `pup status`", () => {
+    it("prints the latest reading's shares and age in `pup status`", () => {
       const repo = initRepo();
       useCwd(repo);
       const file = projectPaths(repo).usageFile;
@@ -2031,13 +2031,16 @@ describe('CLI commands', () => {
       const resetsAt = Math.floor(Date.now() / 1000) + 3600;
       writeFileSync(
         file,
-        JSON.stringify({ seven_day: { used_percentage: 41.2, resets_at: resetsAt } }),
+        JSON.stringify({
+          five_hour: { used_percentage: 23.5, resets_at: resetsAt },
+          seven_day: { used_percentage: 41.2, resets_at: resetsAt },
+        }),
       );
 
       buildProgram().parse(['status'], { from: 'user' });
 
       expect(logs.find((line) => line.startsWith('usage: '))).toMatch(
-        /^usage: 7d 41% \(resets .+ UTC\); read 0m ago$/,
+        /^usage: 5h 23% \(resets .+ UTC\), 7d 41% \(resets .+ UTC\); read 0m ago$/,
       );
     });
   });

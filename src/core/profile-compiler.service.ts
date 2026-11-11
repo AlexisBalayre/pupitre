@@ -1016,11 +1016,11 @@ exit 2
 
 /**
  * The status line every compiled window runs (decision 156). It copies the
- * plan's `seven_day` window out of Claude Code's statusline JSON — its
- * `used_percentage` and `resets_at` and nothing else — to
+ * plan's `five_hour` and `seven_day` windows out of Claude Code's statusline
+ * JSON — each window's `used_percentage` and `resets_at` and nothing else — to
  * the project's usage file, through a temp file `mktemp` creates and a rename,
  * so a reader never sees half a file and a planted temp name is never written
- * through; over anything but a regular file the temp file is removed instead. A JSON without the window leaves the file as it was. The reading's
+ * through; over anything but a regular file the temp file is removed instead. A JSON with neither window leaves the file as it was. The reading's
  * age is the file's mtime. The usage path is pup's own, under the store, and is
  * checked shell-safe like every path a hook quotes; nothing from the JSON
  * reaches the shell but as jq's input.
@@ -1034,8 +1034,10 @@ INPUT=$(cat)
 READING=$(printf '%s' "$INPUT" | jq -c '
   def window: if type == "object" and (.used_percentage | type) == "number"
     and (.resets_at | type) == "number" then {used_percentage, resets_at} else empty end;
-  (.rate_limits | if type == "object" then . else {} end)
-  | {seven_day: (.seven_day | window)}' 2>/dev/null)
+  (.rate_limits | if type == "object" then . else {} end) as $limits
+  | {} + ({five_hour: ($limits.five_hour | window)} // {})
+       + ({seven_day: ($limits.seven_day | window)} // {})
+  | select(length > 0)' 2>/dev/null)
 # Only over a regular file or nothing: a rename onto a directory would move the
 # temp file into it, one per render; whatever does not land is removed.
 if [ -n "$READING" ] && TMP=$(mktemp "$USAGE.XXXXXX" 2>/dev/null); then
@@ -1045,7 +1047,9 @@ fi
 printf '%s' "$INPUT" | jq -r '
   def pct: if type == "object" and (.used_percentage | type) == "number"
     then "\\(.used_percentage | floor)%" else "?" end;
-  try "ctx \\(.context_window | pct) | 7d \\(.rate_limits.seven_day | pct)"
+  def five: .rate_limits.five_hour
+    | if type == "object" and (.used_percentage | type) == "number" then " | 5h \\(pct)" else "" end;
+  try "ctx \\(.context_window | pct)\\(five) | 7d \\(.rate_limits.seven_day | pct)"
   catch "ctx ? | 7d ?"' 2>/dev/null || echo 'ctx ? | 7d ?'
 `;
 }
@@ -1386,7 +1390,7 @@ function buildConductorContext(
       `- \`pup launch <task>${workerModel}\` — one session per task. It is refused once ` +
       `${cap} sessions are working (running, blocked or in a fix round; \`awaiting-review\` ` +
       'sessions do not count), while the machine has under 1.5 GB of memory available, and ' +
-      "while the plan's 7-day usage is at 90% (`pup status` shows it). " +
+      "while the plan's 5-hour usage is at 85% or its 7-day at 90% (`pup status` shows it). " +
       'Scopes may overlap: pup names each worker the live sessions sharing its files, and ' +
       'they agree between themselves who changes what.\n' +
       '- `pup steer <session-id> "<message>"` — type into the session\'s input box instead of ' +
