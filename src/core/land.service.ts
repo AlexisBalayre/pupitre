@@ -28,6 +28,7 @@ import {
 } from './merge-gate.service.js';
 import { SESSION_ID_PATTERN } from './paths.constants.js';
 import { mainLandedMessage } from './profile-compiler.service.js';
+import { NO_PROGRESS, type StageProgress } from './progress.utils.js';
 import { appendEvent, getSession, listSessions } from './session.repository.js';
 import { steerSession } from './session-lifecycle.service.js';
 import {
@@ -74,7 +75,12 @@ interface LandRequest {
  * `pup audit`'s to re-run. A lock lost under the land throws
  * `MergeLockLostError` carrying the outcome, steer and all.
  */
-export async function landSession(db: Database, req: LandRequest): Promise<LandOutcome> {
+export async function landSession(
+  db: Database,
+  req: LandRequest,
+  progress: StageProgress = NO_PROGRESS,
+): Promise<LandOutcome> {
+  progress.stage('read PR');
   const session = getSession(db, req.sessionId);
   const id = sanitizeReason(req.sessionId);
   if (!session) throw new Error(`No session ${id}. Nothing was landed.`);
@@ -167,6 +173,7 @@ export async function landSession(db: Database, req: LandRequest): Promise<LandO
       if (newestMerge(db, session.id) === 'landed') {
         throw new Error(`Session ${id} has already landed.`);
       }
+      progress.stage('fetch');
       const localSha = resolveCommit(req.repoPath, `refs/heads/${target}`);
       const fetched = fetchTarget(
         req.repoPath,
@@ -224,6 +231,7 @@ export async function landSession(db: Database, req: LandRequest): Promise<LandO
             `not ${target}; check out ${target} there and re-run \`pup land\`.`,
         );
       }
+      progress.stage('fast-forward');
       let fastForwarded = false;
       if (!isAncestor(req.repoPath, originTip, localSha)) {
         if (!isAncestor(req.repoPath, localSha, originTip)) {
@@ -245,6 +253,7 @@ export async function landSession(db: Database, req: LandRequest): Promise<LandO
         originTip,
       ]);
       const targetSha = fastForwarded ? originTip : localSha;
+      progress.stage('tear down');
       const tornDown = tearDown(req.repoPath, session, targetSha, head);
       const landed = { sha: mergeCommit, target, prUrl };
       appendEvent(
@@ -256,6 +265,7 @@ export async function landSession(db: Database, req: LandRequest): Promise<LandO
       // Right after the event, still under the lock, and before the audit,
       // which can throw: once the event is written a re-run refuses, and
       // nothing else steers (decision 88).
+      progress.stage('steer');
       const unsteered = steerOverlappingSessions(
         db,
         req.repoPath,
@@ -270,7 +280,7 @@ export async function landSession(db: Database, req: LandRequest): Promise<LandO
       // outcome unreturned and these sessions named nowhere (decision 99).
       const branch = sanitizeReason(target);
       for (const { sessionId, reason } of unsteered) {
-        console.error(
+        progress.note(
           `Could not tell ${sanitizeReason(sessionId)} that ${branch} moved: ` +
             `${sanitizeReason(reason)}. Steer it to take ${branch} in.`,
         );
@@ -291,10 +301,12 @@ export async function landSession(db: Database, req: LandRequest): Promise<LandO
       // refresh (decision 88). The conductor may run this, so no human stands
       // between an observed regression and the bar: a regressed measurement is
       // reported and left for `pup audit`, which the operator runs (decision 84).
+      progress.stage('audit');
       const audit = await auditProject(db, req.repoPath, req.adapters, req.gateEnv, 'keep');
       return { ...outcome, audit };
     },
     req.wait ? MERGE_LOCK_WAIT_MS : 0,
+    progress,
   );
 }
 

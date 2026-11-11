@@ -98,6 +98,12 @@ import {
   SessionNotReviewableError,
 } from './merge-gate.errors.js';
 import { SESSION_ID_PATTERN } from './paths.constants.js';
+import {
+  formatElapsed,
+  MERGE_LOCK_STAGE,
+  NO_PROGRESS,
+  type StageProgress,
+} from './progress.utils.js';
 import { mergeToRegate, planRegate, type RegatePlan, regateMerged } from './regate.service.js';
 import {
   endSandboxRun,
@@ -694,6 +700,20 @@ export function countChangedLines(
 /** Inside the merge lock's directory: the holder's pid, which a later run reads (decision 88). */
 const MERGE_LOCK_PID_FILE = 'pid';
 
+/**
+ * Beside the pid: what the holder runs, since when, and its stage, which a
+ * waiter prints and nothing decides on (decision 179).
+ */
+const MERGE_LOCK_STATUS_FILE = 'status';
+
+interface MergeLockStatus {
+  command: string;
+  /** When the lock was taken, epoch ms. */
+  since: number;
+  /** The holder's status-line label; empty before its first stage. */
+  stage: string;
+}
+
 const MERGE_LOCK_POLL_MS = 1000;
 
 /**
@@ -758,6 +778,64 @@ function mergeLockHolder(lockPath: string): number | undefined {
   return Number.isSafeInteger(pid) ? pid : undefined;
 }
 
+/**
+ * A held lock's status, read as the pid is; undefined when there is none or
+ * it is not what pup writes: a lock an earlier pup took has none.
+ */
+function mergeLockStatus(lockPath: string): MergeLockStatus | undefined {
+  let status: Partial<MergeLockStatus>;
+  try {
+    status = JSON.parse(
+      readPlainFile(join(lockPath, MERGE_LOCK_STATUS_FILE), { followLinks: false }),
+    ) as Partial<MergeLockStatus>;
+  } catch {
+    return undefined;
+  }
+  const { command, since, stage } = status ?? {};
+  if (typeof command !== 'string' || typeof stage !== 'string') return undefined;
+  if (typeof since !== 'number' || !Number.isFinite(since)) return undefined;
+  return { command, since, stage };
+}
+
+/**
+ * Record the status in the lock this run took, best effort since only a
+ * waiter's line reads it. Only while the path is still the take's own
+ * directory, and staged under a fresh name then renamed over, so nothing is
+ * ever written through a link or into a file a session put there.
+ */
+function writeMergeLockStatus(
+  lockPath: string,
+  identity: LockIdentity,
+  status: MergeLockStatus,
+): void {
+  const staged = join(lockPath, `${MERGE_LOCK_STATUS_FILE}.${randomBytes(8).toString('hex')}`);
+  try {
+    const now = directoryIdentity(lockPath);
+    if (now?.dev !== identity.dev || now.ino !== identity.ino) return;
+    writeFileSync(staged, JSON.stringify(status), { flag: 'wx', mode: 0o600 });
+    renameSync(staged, join(lockPath, MERGE_LOCK_STATUS_FILE));
+  } catch {
+    rmSync(staged, { force: true });
+  }
+}
+
+/**
+ * The line a waiter prints: the holder's pid, and once a pup that records it
+ * holds the lock, its command, how long it has held it and its stage. Store
+ * text a session can write, so each is scrubbed.
+ */
+function describeLockWait(
+  holder: number,
+  status: MergeLockStatus | undefined,
+  leftMs: number,
+): string {
+  const doing = status
+    ? ` (\`${sanitizeReason(status.command)}\`, held for ${formatElapsed(Date.now() - status.since)}` +
+      `${status.stage ? `, at ${sanitizeReason(status.stage)}` : ''})`
+    : '';
+  return `Waiting for the merge lock, held by pid ${holder}${doing}, for up to ${formatDuration(leftMs)}.`;
+}
+
 /** Which directory a lock is, so a later step can tell it from one swapped in for it. */
 interface LockIdentity {
   dev: number;
@@ -771,7 +849,7 @@ function directoryIdentity(path: string): LockIdentity | undefined {
 }
 
 /**
- * Remove a lock directory and the pid in it, and nothing else: it sits in the
+ * Remove a lock directory and the pid and status in it, and nothing else: it sits in the
  * `.git` a session can write, so anything else found there is left and named
  * rather than removed with it, and so is a directory that is no longer
  * `identity`, a link or another directory a session swapped in, whose pid
@@ -804,6 +882,7 @@ function removeLockDir(dir: string, identity: LockIdentity): boolean {
     return false;
   }
   try {
+    rmSync(join(dir, MERGE_LOCK_STATUS_FILE), { force: true });
     rmSync(join(dir, MERGE_LOCK_PID_FILE), { force: true });
     rmdirSync(dir);
   } catch (error) {
@@ -951,7 +1030,9 @@ function heldBy(lockPath: string, holder: number): MergeLockHeldError {
  * listener, and the locked section runs on. Outside the lock node's default
  * applies again. A lock a SIGKILL or a crash strands is reclaimed by the next
  * run, and one a live run holds is waited for up to `maxWaitMs`, printing one
- * line when the wait starts, and by default not at all (decision 88). `fn` is
+ * line when the wait starts and one whenever the holder or its stage changes,
+ * and by default not at all (decision 88). While held, the lock records this
+ * run's command, since when, and `progress`'s stage (decision 179). `fn` is
  * told whether the take waited: anything read before the wait may have changed
  * under the run that held the lock meanwhile. A lock found gone or replaced at
  * the release throws `MergeLockLostError` with `fn`'s result, or is printed
@@ -963,11 +1044,14 @@ export async function withMergeLock<TResult>(
   repoPath: string,
   fn: (waited: boolean) => TResult | Promise<TResult>,
   maxWaitMs = 0,
+  progress: StageProgress = NO_PROGRESS,
 ): Promise<TResult> {
   const lockPath = join(repoPath, '.git', MERGE_LOCK_DIRNAME);
   const deadline = Date.now() + maxWaitMs;
   let waited = false;
-  let announced = false;
+  /** The holder and its stage last said, so a change is said again and nothing else is. */
+  let announced: string | undefined;
+  progress.stage(MERGE_LOCK_STAGE);
   /** When the lock was first found with no pid to read. */
   let pidless: number | undefined;
   // Waited for with node's default disposition, so a Ctrl-C ends the wait;
@@ -993,11 +1077,11 @@ export async function withMergeLock<TResult>(
     }
     pidless = undefined;
     if (left <= 0) throw heldBy(lockPath, holder);
-    if (!announced) {
-      announced = true;
-      console.error(
-        `Waiting for the merge lock, held by pid ${holder}, for up to ${formatDuration(left)}.`,
-      );
+    const status = mergeLockStatus(lockPath);
+    const seen = `${holder} ${status?.command} ${status?.stage}`;
+    if (announced !== seen) {
+      announced = seen;
+      progress.note(describeLockWait(holder, status, left));
     }
     waited = true;
     await sleep(Math.min(MERGE_LOCK_POLL_MS, left));
@@ -1005,8 +1089,13 @@ export async function withMergeLock<TResult>(
   const stayAlive = (): void => undefined;
   for (const signal of LOCK_SIGNALS) process.on(signal, stayAlive);
   const taken = identity;
+  const held = { command: ['pup', ...process.argv.slice(2)].join(' '), since: Date.now() };
+  const unwatch = progress.watch((stage) =>
+    writeMergeLockStatus(lockPath, taken, { ...held, stage }),
+  );
   /** Release the lock; false when it was no longer the one this run took. */
   const release = (): boolean => {
+    unwatch();
     // The lock goes first: a signal between the two would otherwise meet
     // node's default disposition with the lock still on disk.
     try {
@@ -1087,12 +1176,17 @@ function formatGateReport(report: GateReport): string {
  * merge lock. A merged session whose open PR's head moved past the pin is gated
  * again on that head with `--pr` (decision 86).
  */
-export async function runMergeGate(db: Database, req: MergeRequest): Promise<MergeOutcome> {
+export async function runMergeGate(
+  db: Database,
+  req: MergeRequest,
+  progress: StageProgress = NO_PROGRESS,
+): Promise<MergeOutcome> {
   // Before anything reads a ref, and again under the lock: the main checkout's
   // .git is a directory of its own with no commondir. From here `runGit` holds
   // the path to that on every spawn, but some catches below read a refusal as
   // "no such ref", so the run refuses outright first (decision 172).
   assertMainCheckout(req.repoPath);
+  progress.stage('plan');
   const planned = planMerge(db, req);
   // The operator's and the conductor's runs wait for a live holder (decision 88).
   return withMergeLock(
@@ -1118,7 +1212,7 @@ export async function runMergeGate(db: Database, req: MergeRequest): Promise<Mer
         const checkoutDir = join(checkoutRoot, basename(checkoutRoot));
         return await (regate
           ? regateMerged(db, req, session, regate, target, sandbox, checkoutDir)
-          : gateAndMerge(db, req, session, target, sandbox, checkoutDir, pullRequest));
+          : gateAndMerge(db, req, session, target, sandbox, checkoutDir, pullRequest, progress));
       } finally {
         // Still under the lock, on a pass, a failed stage and a throw alike, and
         // before this process goes on to anything else (decision 100).
@@ -1134,6 +1228,7 @@ export async function runMergeGate(db: Database, req: MergeRequest): Promise<Mer
       }
     },
     req.wait ? MERGE_LOCK_WAIT_MS : 0,
+    progress,
   );
 }
 
@@ -1904,7 +1999,8 @@ async function gateAndMerge(
   target: string,
   sandbox: string,
   checkoutDir: string,
-  pullRequest?: PullRequestPlan,
+  pullRequest: PullRequestPlan | undefined,
+  progress: StageProgress,
 ): Promise<MergeOutcome> {
   const worktree = session.worktree_path;
   const stages: GateStageResult[] = [];
@@ -1919,6 +2015,7 @@ async function gateAndMerge(
   // drops the pins.
   const worktreeEnv = verifiedWorktreeGitEnv(req.repoPath, worktree);
   const pinned = { env: { ...worktreeEnv } };
+  progress.stage('worktree-clean');
   let started = Date.now();
   const dirty = runGit(
     worktree,
@@ -1944,6 +2041,7 @@ async function gateAndMerge(
   // live session commits or tags meanwhile. The stages read that sha's files
   // from the gate's own checkout (decision 81).
   const branchRef = `refs/heads/${session.branch}`;
+  progress.stage('fresh-base');
   started = Date.now();
   const targetSha = resolveCommit(req.repoPath, `refs/heads/${target}`);
   // An open PR's commits are what its review and CI read, so its branch takes
@@ -2051,11 +2149,21 @@ async function gateAndMerge(
     return failed();
   }
 
-  const measured = await measureBranch(db, req, session, stages, checkoutDir, targetSha, sha);
+  const measured = await measureBranch(
+    db,
+    req,
+    session,
+    stages,
+    checkoutDir,
+    targetSha,
+    sha,
+    progress,
+  );
   if (!measured) return failed();
   const { changedPaths, flaggedDebt, debtCandidates, spec, project, baseline } = measured;
 
   if (flaggedDebt.length > 0 && !req.acceptDebt) return refuseGate(db, session, sandbox, stages);
+  progress.stage('merge');
   // Before the ledger write, not only before the checkout: a target moved while
   // the stages ran is the one under-lock refusal that can be settled this early,
   // and debt filed for a merge that then aborts reads as merged from this
@@ -2522,6 +2630,7 @@ export async function measureBranch(
   checkoutDir: string,
   targetSha: string,
   sha: string,
+  progress: StageProgress = NO_PROGRESS,
 ): Promise<BranchMeasurement | undefined> {
   /** One run of a stage's command: the error it threw, `undefined` on a pass. */
   const runCommand = async (
@@ -2664,6 +2773,7 @@ export async function measureBranch(
     `${stage} (${quotePath(pkg.dir)})`;
 
   // Build first and alone: every stage after it reads what it produced.
+  progress.stage('build');
   const build = commandFor('build');
   const built = build ? await commandStage('build', build, checkoutDir) : notMeasured('build');
   stages.push(built);
@@ -2687,6 +2797,7 @@ export async function measureBranch(
   // One instrumented run answers for the test stage and for coverage when the
   // adapter whose test command it is measures coverage too (decision 95).
   const test = untested ? undefined : commandFor('test');
+  progress.stage('tests and checks');
   const hasSuite =
     test !== undefined ||
     nestedPackages.some((pkg) => pkg.commands.some((c) => c.stage === 'test'));
@@ -2733,17 +2844,17 @@ export async function measureBranch(
   // suite to run takes no slot.
   const suites = hasSuite
     ? withTestSlot({ kind: 'gate', label: session.id }, runSuites, {
-        onWait: (holders, gatesAhead) => console.error(describeSlotWait(holders, gatesAhead)),
+        onWait: (holders, gatesAhead) => progress.note(describeSlotWait(holders, gatesAhead)),
         // Bounded, as the wait holds the merge lock (decision 96).
         maxWaitMs: GATE_SLOT_WAIT_MS,
         onWaitExpired: () =>
-          console.error(
+          progress.note(
             `No test slot came free in ${formatDuration(GATE_SLOT_WAIT_MS)}; the gate runs its ` +
               'tests without one.',
           ),
         // A slots path a session broke must not fail every gate on the machine.
         onSlotsUnusable: (error) =>
-          console.error(
+          progress.note(
             `The test slots could not be used (${failureSummary(error)}); the ` +
               'gate runs its tests without one.',
           ),
@@ -2883,6 +2994,7 @@ export async function measureBranch(
   const specRow = db.prepare('SELECT project_id FROM tasks WHERE id = ?').get(session.task_id) as {
     project_id: string;
   };
+  progress.stage('scope-audit');
   let started = Date.now();
   const spec = readTaskSpec(db, session.task_id);
   const violations = auditScope(changedPaths, spec.scopeIn, spec.scopeOut);
@@ -2923,6 +3035,7 @@ export async function measureBranch(
     ? (JSON.parse(project.baseline) as ProjectBaseline)
     : undefined;
 
+  progress.stage('debt');
   started = Date.now();
   const changed = countChangedLines(req.repoPath, targetSha, sha);
   const split = `${changed.source} source + ${changed.test} test + ${changed.docs} docs changed lines`;

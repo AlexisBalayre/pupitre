@@ -48,6 +48,7 @@ import { landSession } from './land.service.js';
 import { MergeLockLostError } from './merge-gate.errors.js';
 import { runMergeGate } from './merge-gate.service.js';
 import { projectId } from './paths.utils.js';
+import { LAND_STAGES, stageProgress } from './progress.utils.js';
 import {
   appendEvent,
   ensureProject,
@@ -705,6 +706,35 @@ describe('landSession', { timeout: 20_000 }, () => {
   });
 
   // Decision 164's 2026-11-11 amendment: the event names the commits only the operator's word vouched for.
+  // Decision 179: one plain line per stage off a terminal, the lock's included.
+  it('shows each stage it runs, in order, on its status line', async () => {
+    seedPrMerge();
+    const merge = mergeOnGitHub();
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: pinned,
+      mergeCommit: { oid: merge },
+    });
+    const lines: string[] = [];
+
+    await landSession(
+      db,
+      { repoPath: repo, sessionId: SESSION_ID, adapters: [passingAdapter] },
+      stageProgress(LAND_STAGES, { write: (chunk) => lines.push(chunk) }),
+    );
+
+    expect(lines.map((line) => line.replace(/, \d+s\n$/, ''))).toEqual([
+      'stage 1/7, read PR',
+      'stage 2/7, merge lock',
+      'stage 3/7, fetch',
+      'stage 4/7, fast-forward',
+      'stage 5/7, tear down',
+      'stage 6/7, steer',
+      'stage 7/7, audit',
+    ]);
+  });
+
   it('records the accepted head and the pin on the landed event', async () => {
     seedPrMerge();
     const later = commitIn(worktree, 'src/fix.ts', 'export const fix = 1;\n');

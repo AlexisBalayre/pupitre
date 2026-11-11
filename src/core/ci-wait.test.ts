@@ -15,6 +15,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { type CiWaitClock, waitForCiReview } from './ci-wait.service.js';
 import { openStore } from './db.client.js';
 import { projectId } from './paths.utils.js';
+import { CI_WAIT_STAGES, stageProgress } from './progress.utils.js';
 import {
   appendEvent,
   ensureProject,
@@ -234,6 +235,28 @@ describe('waitForCiReview', { timeout: 20_000 }, () => {
     expect(readFileSync(join(ghDir, 'calls'), 'utf8')).toContain(
       'api graphql --hostname github.com -f query=',
     );
+  });
+
+  // Decision 179: the stages go to stderr, and the digest stays the one line.
+  it('shows its stages off a terminal as one plain line each, the digest unchanged', async () => {
+    githubAnswers({ reviewedOn: null, status: null }, {});
+    const lines: string[] = [];
+    const progress = stageProgress(CI_WAIT_STAGES, { write: (chunk) => lines.push(chunk) });
+
+    const outcome = await waitForCiReview(
+      db,
+      { repoPath: repo, target: SESSION_ID, timeoutMs: 600_000, readTimeoutMs: 1000, clock },
+      progress,
+    );
+
+    expect(outcome.line).toBe(
+      `${PR_URL} at ${HEAD}: review no blocking issues; 0 open thread(s), 0 important → ` +
+        "ready for the operator's merge click",
+    );
+    expect(lines.map((line) => line.replace(/, \d+s\n$/, ''))).toEqual([
+      'stage 1/2, find PR',
+      'stage 2/2, wait for review',
+    ]);
   });
 
   it('ignores a review on an older head and waits for the current one', async () => {
