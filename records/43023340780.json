@@ -1,0 +1,141 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-11T12:49:32.994Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43023340780",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43023340780",
+  "actor": "AlexisBalayre",
+  "commit_sha": "3aa02a1be15f78050f1350e6fd8dbc88f81475f1",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 311,
+  "action": "review",
+  "reviewers_spawned": [
+    "conventions",
+    "docs",
+    "context"
+  ],
+  "reviewers_returned": [
+    "conventions",
+    "docs",
+    "context"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "maintainability",
+    "spec",
+    "simplicity",
+    "guards",
+    "workflow-safety"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "111ff71da1c30fbcb04ff44c519887a06ab8f981",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "docs/adr/0175-the-merge-queue-runs-the-full-suite-and-reverts.md",
+      "line": "15-16",
+      "description": "0175 removes `pup land`'s merge/re-test/moved-head refusal but amends only 0138; 0164, 0084, 0086, 0131, 0095 still define that behaviour.",
+      "status": "resolved"
+    },
+    {
+      "file": "docs/adr/0174-review-runs-in-stages-and-an-important-finding-needs.md",
+      "line": "12-17",
+      "description": "0174/0176 replace the fix loop (0090 `pup fix`) and the open-ended review trigger (0151) without declaring Amends.",
+      "status": "resolved"
+    },
+    {
+      "file": "docs/adr/0173-the-diff-size-and-complexity-caps-are-hard-and.md",
+      "line": "5",
+      "description": "The link `0021-debt-delta-three-soft-stages-with-a-merge-time.md` points to a file that doesn't exist; the real file is `0021-debt-delta-three-soft-stages-with-a-merge.md`.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "docs/adr/0174-review-runs-in-stages-and-an-important-finding-needs.md",
+      "line": "32-36",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The new \"When it applies\" paragraphs in 0173 to 0177 say \"the rollout setting of decision 178 is on for the project\" (0173 says \"rollout flag\"). But 178 defines one setting per step, turned on one ticket at a time, so an implementer can't tell which setting gates the caps, the review stages, the queue, the ticket types or the budget.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0175-the-merge-queue-runs-the-full-suite-and-reverts.md",
+      "line": "15-17",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The reworded hook paragraph says the hook keeps decision 135's \"lint and the tests related to the staged files\", but 135 (L36-38) also runs typecheck, so a reader concludes 0175 drops typecheck from the hook.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0175-the-merge-queue-runs-the-full-suite-and-reverts.md",
+      "line": "4-9",
+      "area": "context",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "0175 removes the baseline measurement of decision 95 but does not amend 0132, whose `pup land --no-audit` exists only to share that baseline, so 0132 still reads as active after rollout.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0174-review-runs-in-stages-and-an-important-finding-needs.md",
+      "line": "32-36",
+      "area": "context",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "0174's \"When it applies\" says decisions 90 and 151 govern until rollout. It doesn't say whether the pre-PR stage, the failing-scenario rule, the validator and the roster also wait for rollout, and neither 90 nor 151 covers them.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 1,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.7400962500000001,
+  "duration_ms": 86872,
+  "num_turns": 13,
+  "tokens": {
+    "input": 12,
+    "output": 6725,
+    "cache_read": 264310,
+    "cache_creation": 44103,
+    "total": 315150
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 12,
+      "output": 6725,
+      "cache_read": 264310,
+      "cache_creation": 44103,
+      "cost_usd": 0.540234
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 22,
+      "output": 6389,
+      "cache_read": 126968,
+      "cache_creation": 49018,
+      "cost_usd": 0.19917580000000004
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 175,
+      "cache_read": 0,
+      "cache_creation": 4790,
+      "cost_usd": 0.00068645
+    }
+  ],
+  "permission_denials": []
+}
