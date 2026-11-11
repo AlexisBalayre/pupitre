@@ -45,6 +45,8 @@ import {
   armedGitDrivers,
   assertMainCheckout,
   assertNoArmedGitDrivers,
+  assertNoSharedWorktreeKey,
+  assertNoWorktreeConfig,
   BINARY_FREE_MAX_BYTES,
   BINARY_FREE_TOTAL_MAX_BYTES,
   checkoutPinned,
@@ -258,7 +260,6 @@ function rawDiffEntries(
       '--no-ext-diff',
       '--no-textconv',
       '--no-color',
-      // A session-written `diff.relative` would list only a prefix's paths (decision 154).
       '--no-relative',
       '-z',
       '--raw',
@@ -543,9 +544,11 @@ const NAME_TOKEN = /[\w.$+@-]+/g;
  * name it spells, however many tokens repeat a name or targets share it. Grep
  * runs with colour pinned off: `color.grep=always` in the shared config would
  * wrap each path in escapes, and a listing entry that does not start with the
- * branch refuses rather than skips (decision 110). A path git listed in bytes
- * that are not UTF-8 reads back with `U+FFFD` in their place, which names
- * another file or none, so that importer names every target unread.
+ * branch refuses rather than skips (decision 110). The search is the whole
+ * tree (`:(top)`) by root paths (`--full-name`), not the subdirectory and its
+ * `../` names a shared-config `core.worktree` would run git from. A path git
+ * listed in bytes that are not UTF-8 reads back with `U+FFFD` in their place,
+ * which names another file or none, so that importer names every target unread.
  */
 function filesNaming(
   repoPath: string,
@@ -1213,6 +1216,13 @@ function planMerge(db: Database, req: MergeRequest): MergePlan {
         '.pupitre/adapter.yml).',
     );
   }
+  // Before any git runs in the main checkout, which an empty or misplaced
+  // `core.worktree` would stop or shift, the drivers' check included: every
+  // listing a stage reads would describe another directory. Per-worktree config
+  // too, which can carry the key, and which a live session can turn on long
+  // after its launch was asked.
+  assertNoSharedWorktreeKey(req.repoPath);
+  assertNoWorktreeConfig(req.repoPath);
   // Before the auto-rebase or merge, which runs a smudge filter on every file it
   // checks out and a merge driver on every conflict, with the operator's environment
   // and ahead of the sandbox that confines the stages. Both paths, because the
@@ -1281,7 +1291,10 @@ function sessionMark(db: Database, sessionId: string): string {
  * gives: `--no-sparse-checkout`, because a planted `core.sparseCheckout` would
  * leave out committed files no stage would then see. The checkout runs a
  * smudge filter on every file it writes, so the drivers are checked again
- * right before it, as they are before the fast-forward.
+ * right before it, as they are before the fast-forward, and so is a
+ * shared-config `core.worktree`, or per-worktree config that could carry one,
+ * since the stage listings read next run in the main checkout and a live
+ * session can set the key during the rebase.
  *
  * Its git after the add runs pinned to the dirs pup trusts, checked first
  * (decision 101): the admin dir sits under `<common>/worktrees/` beside the
@@ -1292,6 +1305,8 @@ function sessionMark(db: Database, sessionId: string): string {
  * elsewhere.
  */
 function cutGateCheckout(repoPath: string, dir: string, sha: string): void {
+  assertNoSharedWorktreeKey(repoPath);
+  assertNoWorktreeConfig(repoPath);
   assertNoArmedGitDrivers(repoPath);
   runGit(repoPath, ['worktree', 'add', '--detach', '--no-checkout', dir, sha]);
   const git = checkoutPinned(repoPath, dir, sha);
@@ -2089,6 +2104,10 @@ async function gateAndMerge(
       ...pullRequestText(spec, session.id, report, commitSubjects, sha, ownSubject),
     };
     try {
+      // After the last stage: a live session can set the key while they run,
+      // in the shared config or through per-worktree config it turned on.
+      assertNoSharedWorktreeKey(req.repoPath);
+      assertNoWorktreeConfig(req.repoPath);
       pushBranch(req.repoPath, pullRequest.originUrl, session.branch, sha, !pullRequest.adoptedUrl);
       if (pullRequest.adoptedUrl) {
         rewritePullRequest(req.repoPath, pullRequest.adoptedUrl, newPr);
@@ -2110,6 +2129,12 @@ async function gateAndMerge(
       // session alive during the stages can re-arm `info/attributes`, and the
       // checkout runs a smudge filter on every file it writes (decision 80).
       // Both stay last, after the ledger write, because they guard the checkout.
+      // So does a shared-config `core.worktree` a session set during the stages:
+      // `fastForward` pins `--work-tree`, but a run the key shifted is refused,
+      // not merged (decision 161), and so is per-worktree config turned on to
+      // carry it. Both go first: an empty key stops every git.
+      assertNoSharedWorktreeKey(req.repoPath);
+      assertNoWorktreeConfig(req.repoPath);
       const checkedOut = currentBranch(req.repoPath);
       if (checkedOut !== target) {
         throw new Error(
