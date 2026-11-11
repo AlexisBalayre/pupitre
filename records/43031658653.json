@@ -1,0 +1,114 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-11T13:51:49.576Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43031658653",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43031658653",
+  "actor": "AlexisBalayre",
+  "commit_sha": "526406a3c4c28a6242634b76f205350310858001",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 201,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "guards"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "guards"
+  ],
+  "reviewers_skipped": [
+    "conventions",
+    "context",
+    "maintainability",
+    "docs",
+    "spec",
+    "simplicity",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/task-rescope.service.ts",
+      "line": "259-275",
+      "description": "A rescope that lands while `pup fix` is starting a round on a merged session is lost. That round runs under hooks compiled from the old scope, and `recordSessionRoute` then writes its standard route back over the critical tier the rescope just set.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/session.repository.ts",
+      "line": "348-355",
+      "description": "A rescope of a blocked session (or of an awaiting-review one the gate then parks) never reaches the worker's hooks. The only way to resume it, `pup unblock` then `pup kill --respawn`, relaunches from the launch-time compiled settings.json, scope-in.pat and context.md. Edits to the newly added globs stay BLOCKED even though the rescope reported success.",
+      "status": "unresolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "1008-1025, 1139-1157",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "`listProcesses` finds `ps` on `PROBE_PATH`, which lists `/opt/homebrew/bin` and `/usr/local/bin` before `/usr/bin` and `/bin`, and the operator's uid can write both. The conductor can plant a `ps` there that prints nothing. `launchedAncestor()` then finds no ancestor, and `env -u PUP_CONDUCTOR pup plan edit … --rescope` from the conductor's own Bash succeeds and is recorded as the inferred operator, which is the very case ADR 0115 says is refused.",
+      "body": "**The problem.** The process-tree check is the one refusal ADR 0115 says a worker cannot shed: \"So `env -u PUP_CONDUCTOR pup plan edit ... --rescope` from the conductor's own Bash is refused\". But it trusts whatever `ps` comes first on `PROBE_PATH`, and that PATH starts with two directories the operator's user can write:\n\n```ts\nexport const PROBE_PATH = [\n  '/opt/homebrew/bin',\n  '/usr/local/bin',\n  '/usr/bin',\n  '/bin',\n  ...\n```\nhttps://github.com/AlexisBalayre/pupitre/blob/526406a3c4c28a6242634b76f205350310858001/src/claude/session-runtime.service.ts#L1016-L1025\n\nThe repo itself says `/opt/homebrew/bin` \"is group-writable on a standard install\" (`src/core/sandbox-profile.utils.ts:123`). The conductor runs as that same uid.\n\n**Trigger.**\n1. From the conductor's Bash, write `/opt/homebrew/bin/ps` as a script that exits 0 and prints nothing. It could also exec `/bin/ps` and drop the lines containing `--name pup-`.\n2. Run `env -u PUP_CONDUCTOR pup plan edit <task> --rescope --scope <glob>` on a task whose session is `awaiting-review` or `merged` with its window closed.\n\n**What goes wrong.**\n- `listProcesses` returns `undefined` only when `execFileSync` throws. Output that exits cleanly becomes a table, even an empty one (https://github.com/AlexisBalayre/pupitre/blob/526406a3c4c28a6242634b76f205350310858001/src/claude/session-runtime.service.ts#L1139-L1157).\n- `launchedAncestor` finds nothing in that table and returns `undefined` (https://github.com/AlexisBalayre/pupitre/blob/526406a3c4c28a6242634b76f205350310858001/src/core/task-rescope.service.ts#L192-L205).\n- `rescopeOrRefuse` refuses only on `'launched'` or `'unreadable'`, so the rescope goes through (`src/cli/index.ts` L881-902).\n- `callingConductor()` reads only `PUP_CONDUCTOR`, and the window probe never looks at the conductor's own window, so nothing else refuses it.\n- The event and the decision record then name `inferred-operator`, so the audit trail credits the operator with a scope widening the conductor made.\n\n**Why this is not one of ADR 0115's accepted limits.** The ADR accepts a writable prefix only for tmux, which really does install under Homebrew (\"One that can write one of those directories can still replace the tmux there … that is a ceiling like the socket one\"). `ps` always ships with the OS, so nothing needs to look for it in a package manager's prefix. The tree check's only accepted escape is a process that left the tree, and here the conductor never leaves it.\n\n**Possible fix.** Look `ps` up on a separate root-owned path: `/bin:/usr/bin`, plus `/run/current-system/sw/bin` so NixOS, which has no `/bin/ps`, keeps working. Leave `PROBE_PATH` as it is for tmux. Checking that the table holds `process.ppid` is a reasonable extra check, but it is not enough alone: a wrapper around the real `ps` that drops lines passes it. If you would rather accept the risk, the ADR's ceiling sentence should name `ps` as well as tmux.",
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Round 5 budget: spawned only correctness (2 instances), security (2 instances) and guards. Skipped conventions, docs, context, simplicity and maintainability under the round budget. Skipped workflow-safety because no `.github/workflows` file changed, and spec because there is no closing issue or spec source."
+    },
+    {
+      "component": "consolidator",
+      "description": "Not spawned: the reviewers returned a single finding, so there was nothing to group and dedup was trivial."
+    },
+    {
+      "component": "orchestrator",
+      "description": "Prior important on session.repository.ts 348-355 is marked unresolved. 526406a removed `blocked` from RESCOPABLE_STATES, which closes the direct case. The parenthetical path is still reachable at head, as correctness instance 1 verified. An awaiting-review session is rescoped with its window closed, its re-gate rejects, and `rejectOrBlock` parks it as blocked because re-steering needs a window. `pup unblock` and `pup kill --respawn` then go through `relaunchWindow`, which launches from the launch-time compiled settings.json, scope-in.pat and context.md."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 4.3668225,
+  "duration_ms": 466600,
+  "num_turns": 17,
+  "tokens": {
+    "input": 16,
+    "output": 10785,
+    "cache_read": 434288,
+    "cache_creation": 61347,
+    "total": 506436
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 174,
+      "output": 89680,
+      "cache_read": 3344146,
+      "cache_creation": 326476,
+      "cost_usd": 4.2795461999999995
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 16,
+      "output": 3058,
+      "cache_read": 105118,
+      "cache_creation": 18461,
+      "cost_usd": 0.0872763
+    }
+  ],
+  "permission_denials": []
+}
