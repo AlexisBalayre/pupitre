@@ -137,6 +137,7 @@ describe('vitestCollection', () => {
       "import { loadEnv as defineConfig } from 'vite';\nexport default defineConfig({ test: {} });\n",
     ],
     ['an include built at run time', configWith('{ include: patterns }')],
+    ['an include with a !', configWith("{ include: ['src/**/*.test.ts', '!src/a.test.ts'] }")],
     ['an include over 64 patterns', configWith(`{ include: ${patterns(65)} }`)],
     ['an exclude spreading the defaults', configWith('{ exclude: [...configDefaults.exclude] }')],
     ['an exclude with braces', configWith("{ exclude: ['src/{a,b}.test.ts'] }")],
@@ -180,6 +181,10 @@ describe('vitestCollection', () => {
     [
       'a re-export of a file',
       `export * from './shared.js';\n${configWith("{ include: ['src/**/*.test.ts'] }")}`,
+    ],
+    [
+      'a subpath import',
+      `import shared from '#shared/vitest';\n${configWith("{ include: ['src/**/*.test.ts'] }")}`,
     ],
     ['setupFiles', configWith("{ setupFiles: ['./setup.ts'] }")],
     ['globalSetup', configWith("{ globalSetup: 'global.ts' }")],

@@ -5,15 +5,7 @@ import { runGit } from '../core/git-diff.client.js';
 import { globToRegExp } from '../core/glob.utils.js';
 import { GATE_COMMAND_TIMEOUT_MS } from '../core/merge-gate.constants.js';
 import { readPlainFile } from './capability.utils.js';
-
-/**
- * The entries at a checkout's root, by lower-cased name, each read when asked.
- * A case-insensitive disk opens `Vitest.config.ts` for `vitest.config.ts` and
- * a case-sensitive one does not, so which file a tool opens there depends on
- * the disk: a name not in lower case, or two that fold to one, is not read and
- * throws when asked. A root holding a name outside ASCII is not read at all.
- */
-export type RootFiles = Map<string, () => string>;
+import type { RootFiles } from './types/adapter.types.js';
 
 /** Timed like every other child pup runs: git reads config a session can write. */
 const GIT_READ: Parameters<typeof runGit>[2] = {
@@ -113,8 +105,8 @@ const VITEST_UNREAD_TEST_KEYS = [
   '__proto__',
 ];
 
-/** A module specifier naming a file, which in the gate is the branch's. */
-const FILE_SPECIFIER = /^[./]/;
+/** A specifier naming a file, a path or a `#` subpath import, which in the gate is the branch's. */
+const FILE_SPECIFIER = /^[./#]/;
 
 /**
  * A path holding a line break, which `.` in a pattern's regex does not match,
@@ -296,10 +288,10 @@ function configGlobs(
   }
   const included = test.get('include');
   const excluded = test.get('exclude');
+  const includePatterns = included && literalStrings(included);
+  if (includePatterns?.some((pattern) => pattern.startsWith('!'))) return undefined;
   const include = included
-    ? literalStrings(included)
-        ?.map(vitestGlob)
-        .filter((glob): glob is RegExp => glob !== undefined)
+    ? includePatterns?.map(vitestGlob).filter((glob): glob is RegExp => glob !== undefined)
     : [VITEST_DEFAULT_INCLUDE];
   const exclude = excluded ? literalStrings(excluded)?.map(vitestGlob) : [];
   if (!include || !exclude || exclude.some((glob) => glob === undefined)) return undefined;

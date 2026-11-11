@@ -29,6 +29,7 @@ import type {
   GateStage,
   NestedPackage,
   NestedPackageStage,
+  RootFiles,
 } from './types/adapter.types.js';
 import type { IstanbulCoverageMap } from './types/istanbul.types.js';
 import { istanbulToCoverageReport } from './typescript-coverage.utils.js';
@@ -43,7 +44,7 @@ import {
   resolveImport,
   SOURCE_EXTENSIONS,
 } from './typescript-source.utils.js';
-import { diskRoot, type RootFiles, treeRoot, vitestCollection } from './vitest-config.utils.js';
+import { diskRoot, treeRoot, vitestCollection } from './vitest-config.utils.js';
 
 interface PackageManifest {
   scripts?: Record<string, string>;
@@ -198,9 +199,8 @@ const PLAIN_VITEST_SCRIPT = /^vitest(?: run)?$/;
  * diff-size split reads the collection of (decision 143). Throws on a manifest
  * that cannot be read.
  */
-function runsPlainVitest(root: RootFiles): boolean {
-  const manifest = root.get('package.json');
-  const scripts = (manifest && (JSON.parse(manifest()) as PackageManifest).scripts) ?? {};
+function runsPlainVitest(manifest: PackageManifest | undefined): boolean {
+  const scripts = manifest?.scripts ?? {};
   return (
     PLAIN_VITEST_SCRIPT.test(scripts.test?.trim() ?? '') &&
     scripts.pretest === undefined &&
@@ -308,10 +308,15 @@ function runInputs(root: RootFiles, pattern: RegExp): string {
  * is unknown, where one of those configs runs a file, or where yarn's
  * Plug'n'Play runtime stands at the root. Throws where the root cannot be read.
  */
+function parsedManifest(root: RootFiles): PackageManifest | undefined {
+  const read = root.get('package.json');
+  return read && (JSON.parse(read()) as PackageManifest);
+}
+
 function plainVitestCollection(root: RootFiles): ReturnType<typeof vitestCollection> {
   const managers = runInputs(root, PACKAGE_MANAGER_CONFIG);
   const collection =
-    runsPlainVitest(root) &&
+    runsPlainVitest(parsedManifest(root)) &&
     !RUNS_A_FILE.test(managers) &&
     ![...root.keys()].some((name) => PNP_RUNTIME.test(name))
       ? vitestCollection(root)
@@ -623,7 +628,8 @@ export const typescriptAdapter: Adapter = {
     // session that edits its own scripts or config keeps the two runs.
     for (const path of new Set([ctx.configPath, ctx.measurePath])) {
       try {
-        if (!runsPlainVitest(diskRoot(path)) || declaresCoverageThresholds(path)) return undefined;
+        if (!runsPlainVitest(readManifest(path)) || declaresCoverageThresholds(path))
+          return undefined;
       } catch {
         return undefined;
       }

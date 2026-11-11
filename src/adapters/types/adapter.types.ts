@@ -196,3 +196,12 @@ export interface Adapter {
    */
   touchedNestedPackages?(ctx: CapabilityContext, files: string[]): NestedPackage[];
 }
+
+/**
+ * The entries at a checkout's root, by lower-cased name, each read when asked.
+ * A case-insensitive disk opens `Vitest.config.ts` for `vitest.config.ts` and
+ * a case-sensitive one does not, so which file a tool opens there depends on
+ * the disk: a name not in lower case, or two that fold to one, is not read and
+ * throws when asked. A root holding a name outside ASCII is not read at all.
+ */
+export type RootFiles = Map<string, () => string>;

@@ -177,7 +177,11 @@
     during its merge, since it runs unsandboxed (decision 5), and one it writes reaches the
     run unseen, as it reaches the test stage itself. A root with no vitest config is refused
     for that reason only because a config at the root ends vitest's search, and nothing at
-    the root ends yarn's or npm's.
+    the root ends yarn's or npm's. Nor is the package manager's own binary, corepack's install
+    in the toolchain cache the build may write, or a collected file the build deletes or
+    rewrites before the suites: either lets a branch pass the test stage with a file that
+    holds production code and no test. The branch can reach the same count more cheaply by
+    putting one trivial test in that file, which collection already takes for test code.
     The gate's own branch is measured
     by the main checkout's adapter (the metric-scope lesson of decision 39), so this change
     first applies to the merge after it lands. Tests: in the config reader, an `include` of
@@ -189,7 +193,7 @@
     config's own `defineConfig` wrapper, one imported from elsewhere, another import aliased to
     the name, a run-time include, an include or exclude over 64 patterns, an exclude over 16
     segments or 256 characters, a spread exclude, a
-    braced exclude, an exclude with a `!`, a `..` or an absolute path, an exclude spelled
+    braced exclude, an include or exclude with a `!`, a `#` subpath import in the config, a `..` or an absolute path, an exclude spelled
     `./src/prod`, `src/prod/`, `src/./prod`, `src//prod`, with a `?`, a backslash, whitespace
     or an `@`, an empty exclude pattern, a config that does not parse, a spread `test`, a
     shorthand, getter or twice-named include, `projects`, `test.workspace`, `dir`,
