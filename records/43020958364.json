@@ -1,0 +1,147 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-11T12:34:20.750Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43020958364",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43020958364",
+  "actor": "AlexisBalayre",
+  "commit_sha": "111ff71da1c30fbcb04ff44c519887a06ab8f981",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 311,
+  "action": "review",
+  "reviewers_spawned": [
+    "conventions",
+    "docs",
+    "context"
+  ],
+  "reviewers_returned": [
+    "conventions",
+    "docs",
+    "context"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "maintainability",
+    "spec",
+    "simplicity",
+    "guards",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "docs/adr/0175-the-merge-queue-runs-the-full-suite-and-reverts.md",
+      "line": "15-16",
+      "area": "context",
+      "confidence": "high",
+      "tag": "important",
+      "description": "0175 removes `pup land`'s merge/re-test/moved-head refusal but amends only 0138; 0164, 0084, 0086, 0131, 0095 still define that behaviour.",
+      "body": "**0175 changes `pup land`'s contract without linking the decisions that define it.**\n\n0175 says `pup land` \"no longer merges, re-tests or refuses a moved head\" ([L15-16](https://github.com/AlexisBalayre/pupitre/blob/111ff71da1c30fbcb04ff44c519887a06ab8f981/docs/adr/0175-the-merge-queue-runs-the-full-suite-and-reverts.md#L15-L16)), but its header carries only `Amends: 0138`. These accepted decisions still define the behaviour 0175 removes:\n\n- **0164**: \"`pup land` refuses a head other than the pin\" and adds `pup land <session> --accept-head <sha>`. With the refusal gone, that flag has nothing left to do.\n- **0084**: land refuses a merge commit over a head that moved past the pin.\n- **0086**: a PR merged over a moved head \"is re-gated before it is merged\".\n- **0131**: keeps \"with its head moved past the pin\" among the refusals that stay.\n- **0095**: `pup land` (`measureBaseline`) runs build, test, lint and static debt, which conflicts with \"no longer … re-tests\".\n\n`docs/adr/README.md` says a later change \"adds a new decision that links back through `Amends:`\", and the repo follows that elsewhere (0164 amends 0084, 0086 and 0131). No rule says a later ADR beats an earlier one. So a session implementing or fixing `pup land` (for example `--accept-head`) reads two conflicting accepted decisions, with only the date to tell them apart. 0178 keeps the old gate on until a step's flag is on, so both behaviours are live at once, and 0175 doesn't say which one applies when the flag is off.\n\n**Fix:** add `Amends:` lines for 0084, 0086, 0095, 0131 and 0164 (0132 is adjacent). Also state that the change applies once the 0178 setting is on.",
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0174-review-runs-in-stages-and-an-important-finding-needs.md",
+      "line": "12-17",
+      "area": "context",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "0174/0176 replace the fix loop (0090 `pup fix`) and the open-ended review trigger (0151) without declaring Amends.",
+      "body": "**0174 and 0176 replace the review/fix loop without linking the decisions they override.**\n\n- 0174 says \"PR round 2, the last: … Whatever is still open then becomes a Follow-up ticket\" ([L12-17](https://github.com/AlexisBalayre/pupitre/blob/111ff71da1c30fbcb04ff44c519887a06ab8f981/docs/adr/0174-review-runs-in-stages-and-an-important-finding-needs.md#L12-L17)). It has no `Amends:` line at all.\n- 0151 ([file](https://github.com/AlexisBalayre/pupitre/blob/111ff71da1c30fbcb04ff44c519887a06ab8f981/docs/adr/0151-ci-review-runs-at-opening-and-on-demand-only.md)) triggers review on opened, ready_for_review, reopened and `@claude review`. After every gated fix round, its comment ends with `@claude review`. Together with 0090's `pup fix`, that is a loop with no round cap. The current `pr-ci-review` skill also budgets rounds 4 and later.\n- 0176's Sessions paragraph says \"A fix runs in a new short session\" ([L30-32](https://github.com/AlexisBalayre/pupitre/blob/111ff71da1c30fbcb04ff44c519887a06ab8f981/docs/adr/0176-a-ticket-has-a-type-and-only-some-types-need.md#L30-L32)). 0090 instead hands review threads back to the session's own worker. 0176 amends only 0099.\n\n0178 rolls the rework out behind a default-off setting, so 0090 and 0151 stay in force next to 0174 and 0176. Neither new ADR says it applies only when the setting is on. A later session working on review rounds or `pup fix` therefore sees two accepted, unconditional decisions with no precedence between them.\n\n**Fix:** add `Amends: 0090` and `Amends: 0151` to 0174, and `Amends: 0090` to 0176. Alternatively, state that the 0090/0151 behaviour governs until the step's 0178 setting is on.",
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0173-the-diff-size-and-complexity-caps-are-hard-and.md",
+      "line": "5",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The link `0021-debt-delta-three-soft-stages-with-a-merge-time.md` points to a file that doesn't exist; the real file is `0021-debt-delta-three-soft-stages-with-a-merge.md`.",
+      "body": "**Dead `Amends:` link.** [Line 5](https://github.com/AlexisBalayre/pupitre/blob/111ff71da1c30fbcb04ff44c519887a06ab8f981/docs/adr/0173-the-diff-size-and-complexity-caps-are-hard-and.md#L5-L5) links to `0021-debt-delta-three-soft-stages-with-a-merge-time.md`, which doesn't exist. The real file is `docs/adr/0021-debt-delta-three-soft-stages-with-a-merge.md`, with no `-time` suffix, and 0145 links it correctly.\n\n`docs/adr/README.md` (L22-23) says \"the amending decision's `Amends:` line is the link\" between the two decisions. Amended ADRs never get an `Amended by:` back-link, so this line is the only route from 0173 to the decision it amends. No tooling parses `Amends` links, so CI won't catch it.",
+      "suggestion": "- Amends: [0021](0021-debt-delta-three-soft-stages-with-a-merge.md)"
+    },
+    {
+      "file": "docs/adr/0173-the-diff-size-and-complexity-caps-are-hard-and.md",
+      "line": "11",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "0173 says the new-file cap is \"50 lines\", but `COMPLEXITY_NEW_FILE_FLAG_CAP = 50` in src/core/merge-gate.constants.ts counts decision points, so a slice planner would size new files by the wrong unit.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0175-the-merge-queue-runs-the-full-suite-and-reverts.md",
+      "line": "10-11",
+      "area": "context",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "0175 says the full suite \"no longer runs per commit, which is the run that times out (decision 138)\", but 0135 already limited the hook to related tests and 0138 is about the gate's test-stage timeout, so readers infer the hook still runs the full suite.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0177-a-ticket-has-a-token-budget-and-the-scheduler.md",
+      "line": "12-16",
+      "area": "context",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "0177's capacity rule gates launches on the 7-day usage window only and doesn't cite 0156, which also holds launches on the 5-hour window; an implementer replacing the cap could drop that hold and let sessions stall mid-turn.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 1,
+  "comments_posted_actual": 3,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.3495951500000003,
+  "duration_ms": 174201,
+  "num_turns": 13,
+  "tokens": {
+    "input": 12,
+    "output": 9894,
+    "cache_read": 241816,
+    "cache_creation": 63469,
+    "total": 315191
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 12,
+      "output": 9894,
+      "cache_read": 241816,
+      "cache_creation": 63469,
+      "cost_usd": 0.7540432
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 60,
+      "output": 20275,
+      "cache_read": 468405,
+      "cache_creation": 138054,
+      "cost_usd": 0.5948455
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 182,
+      "cache_read": 0,
+      "cache_creation": 4922,
+      "cost_usd": 0.0007064500000000001
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "cd /home/runner/work/pupitre/pupitre/docs/adr; for f in 017[3-8]*; do echo \"=== $f\"; cat \"$f\"; done; ls | grep -E '^(0138|0144)'"
+    }
+  ]
+}
