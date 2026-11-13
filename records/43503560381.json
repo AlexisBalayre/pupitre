@@ -1,0 +1,116 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-13T20:42:08.083Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43503560381",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43503560381",
+  "actor": "AlexisBalayre",
+  "commit_sha": "dd3a5d526e1ecf57cb09367ffa8686d79ef7ac95",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 322,
+  "action": "review",
+  "reviewers_spawned": [
+    "docs",
+    "context",
+    "conventions",
+    "security"
+  ],
+  "reviewers_returned": [
+    "docs",
+    "context",
+    "conventions",
+    "security"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "maintainability",
+    "spec",
+    "simplicity",
+    "guards",
+    "workflow-safety"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "4b89b5e96e7c351c2bfecf087d5af448bef9540e",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "skills/pup/LOOP.md",
+      "line": "62-65",
+      "description": "Once `pup-gate` is required, an open PR that an older pup gated (head still at the pin, no status) cannot be merged. `planRegate` refuses to re-gate it with \"nothing new to gate… Merge it on GitHub\", which GitHub now blocks. The new docs forbid setting the status by hand, so nothing can unblock it.",
+      "status": "resolved"
+    },
+    {
+      "file": "docs/adr/0182-pup-merge-pr-sets-a-pup-gate-status-on.md",
+      "line": "43-49",
+      "description": "On a branch that is protected but has no required status checks, GitHub probably answers `PATCH .../protection/required_status_checks` with 404 \"Required status checks not enabled\". That would leave no working command for this state except the `PUT`, which the ADR itself says wipes existing protection.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "skills/pup/LOOP.md",
+      "line": "58-62",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "LOOP.md leaves out the ADR's caveat for the Settings > Branches step: the page lists only checks the repo has seen recently, so run one `pup merge --pr` first if `pup-gate` is missing. An operator who follows only LOOP.md on a repo that has never run `pup merge --pr` since decision 182 finds no `pup-gate` to add, and nothing tells them why. Add that clause, or point to the ADR for this step.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "skills/pup/LOOP.md",
+      "line": "66-70",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "LOOP.md has the conductor hand the operator 'the sha the refusal names' from the conductor's own re-gate. ADR 0182 instead has the operator run `pup merge <task> --pr` and read the sha from that refusal themselves. Following the ADR here would stop a steered conductor from passing on an unmeasured head, such as one named in a fresh-base or pinRegatedHead refusal.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.995946575,
+  "duration_ms": 117652,
+  "num_turns": 12,
+  "tokens": {
+    "input": 10,
+    "output": 6974,
+    "cache_read": 212090,
+    "cache_creation": 43520,
+    "total": 262594
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 24,
+      "output": 11833,
+      "cache_read": 309677,
+      "cache_creation": 68246,
+      "cost_usd": 0.7704814
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 42,
+      "output": 7038,
+      "cache_read": 326521,
+      "cache_creation": 48682,
+      "cost_usd": 0.22482109999999997
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 136,
+      "cache_read": 0,
+      "cache_creation": 4607,
+      "cost_usd": 0.000644075
+    }
+  ],
+  "permission_denials": []
+}
