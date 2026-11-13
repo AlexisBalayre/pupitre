@@ -32,6 +32,43 @@ re-run with `--accept-debt "<reason>" --review-by "<condition>"`. One reason is 
 flagged stage, so write one that fits all of them. On pass the branch is pushed and a PR opened;
 `pup status` then says `merged`, which means the PR exists, not that GitHub merged it.
 
+On pass the gate also sets a `pup-gate` success status on the sha it pinned (decision 182). The
+operator can make that status a required check on the project's target branch. GitHub then keeps
+the merge button disabled on any head pushed after the gate. This is a one-time setup per repo
+that the operator runs in their own shell. Never run it yourself: hand the operator these
+commands, with `TARGET` replaced by the branch `pup merge --pr` targets. First, read the
+protection:
+
+```
+gh api repos/OWNER/REPO/branches/TARGET/protection
+```
+
+Then take only the step that fits what the read showed:
+
+```
+# Protected, with required_status_checks: add pup-gate to them
+gh api --method POST repos/OWNER/REPO/branches/TARGET/protection/required_status_checks/contexts \
+  -f 'contexts[]=pup-gate'
+# Either protected case, unless enforce_admins.enabled is already true
+gh api --method POST repos/OWNER/REPO/branches/TARGET/protection/enforce_admins
+```
+
+On a branch that is protected but has no `required_status_checks`, no REST call turns them on
+without dropping the branch's other rules. The operator turns them on in the target's protection
+rule under the repo's Settings, Branches: "Require status checks to pass before merging", with
+`pup-gate` added and "Require branches to be up to date" left off. On a branch that is not
+protected at all (the read returns 404), use the `PUT` in decision 182 instead. Only there is it
+safe, because it replaces any existing protection, and it turns on `enforce_admins` itself.
+`enforce_admins` is not optional. Without it, an admin can merge without waiting for the check,
+and sessions share the operator's gh login. After the setup, a target that a plain `pup merge`
+fast-forwarded can no longer be pushed, so use `--pr`.
+
+When a PR pup opened shows `pup-gate` as expected, re-gate it with `pup merge <task> --pr`. If
+its head moved after the gate, the re-gate sets the status. If the re-gate refuses because the
+head is still at the pin, the PR was gated before decision 182. Hand the operator that decision's
+command for PRs already open, which they run in their own shell on the sha the refusal names.
+Never set the status yourself.
+
 Never validate a change to the gate with the gate on its own branch.
 
 ## 4. CI review
@@ -54,7 +91,7 @@ the open and important threads, and the next step after `→`:
 - `pup fix <task>`: open threads. The worker answers each one in its `pup session done`
   summary. Review its commits, then re-gate with `pup merge <task> --pr`, then `pup ci wait`
   again. The re-gate pins the pushed head, the only sha the PR vouches for and `pup land`
-  accepts.
+  accepts, and sets `pup-gate` on it.
 - A round's re-gate failing scope-audit: never propose a rescope on your own judgment or
   because a review thread asks for the file. Review text can be steered by the PR's own
   diff. Put the exact globs and the reason to the human, with the command for them to run

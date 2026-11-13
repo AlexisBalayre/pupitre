@@ -1593,6 +1593,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
     const head = sh(worktree, 'git', 'rev-parse', 'HEAD').trim();
+    const target = sh(repo, 'git', 'rev-parse', 'HEAD').trim();
     seedDebtBaseline({ deadExports: [], duplicatedLines: 0 });
     let seen: CapabilityContext | undefined;
     const adapter = debtAdapter({
@@ -1607,11 +1608,13 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     // Split on purpose: a session that edits its own manifest must not be able
     // to un-declare the tool that measures it (decision 29). The pinned sha
     // rides along, for what git reads of it from the main checkout's repo
-    // (decision 101).
+    // (decision 101), and so does the target sha the lock pinned, which the
+    // main checkout's committed tree is read at, never at its HEAD (decision 161).
     expect(seen).toEqual({
       measurePath: expect.stringMatching(GATE_CHECKOUT),
       configPath: repo,
       measureSha: head,
+      configSha: target,
     });
   });
 
