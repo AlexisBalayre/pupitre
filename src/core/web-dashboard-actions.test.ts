@@ -187,7 +187,10 @@ const CASES: {
         removedWorktree: true,
       } as never),
     expectCall: [DB, { repoPath: REPO, sessionId: 's-1', adapters: [ADAPTER] }],
-    lines: [`Landed s-1: ${PR} merged as m1; main fast-forwarded to m1.`, 'Audit skipped.'],
+    lines: [
+      `Landed s-1: ${PR} merged as m1; main fast-forwarded to m1.`,
+      'Audit skipped: run `pup audit` once after the last land.',
+    ],
   },
   {
     action: 'debt-close',
@@ -361,7 +364,7 @@ describe('runAction', () => {
       fastForwarded: false,
       keptWorktree: '/repo/.worktrees/s-1',
       keptBranch: 'pup/s-1',
-      audit: {},
+      audit: { unmeasured: [], heldOnRegression: false },
     } as never);
 
     await expect(runAction(DB, REPO, 'land', { session: 's-1' })).resolves.toEqual([
@@ -378,6 +381,67 @@ describe('runAction', () => {
     await expect(runAction(DB, REPO, 'merge', { session: 's-1' })).rejects.toThrow(
       /^Gate passed;[\s\S]*\nThe merge lock at \/lock was gone or replaced/,
     );
+  });
+
+  it('says the land and then refuses when the lock was lost under it, as pup land does', async () => {
+    vi.mocked(landSession).mockRejectedValue(
+      new MergeLockLostError('/lock', {
+        prUrl: PR,
+        mergeCommit: 'm1',
+        target: 'main',
+        targetSha: 'm1',
+        fastForwarded: true,
+      }),
+    );
+
+    await expect(runAction(DB, REPO, 'land', { session: 's-1' })).rejects.toThrow(
+      /^Landed s-1: \S+ merged as m1; main fast-forwarded to m1\.\n[\s\S]*\nThe merge lock at \/lock was gone or replaced/,
+    );
+  });
+
+  it('names each peer the land could not steer', async () => {
+    vi.mocked(landSession).mockResolvedValue({
+      prUrl: PR,
+      mergeCommit: 'm1',
+      target: 'main',
+      targetSha: 'm1',
+      fastForwarded: true,
+      unsteered: [{ sessionId: 's-\u001b[31mpeer', reason: 'pane gone' }],
+    } as never);
+
+    await expect(runAction(DB, REPO, 'land', { session: 's-1' })).resolves.toContain(
+      'Could not tell s- [31mpeer that main moved: pane gone. Steer it to take main in.',
+    );
+  });
+
+  it.each([
+    [
+      'held the baseline over a regression',
+      { unmeasured: [], heldOnRegression: true },
+      'Baseline kept: the measurement regressed, and a land does not move the bar over a regression; run `pup audit` to accept it or fix it first.',
+    ],
+    [
+      'left a debt metric unmeasured',
+      {
+        unmeasured: ['duplication: not measured'],
+        heldOnRegression: false,
+        previous: { capturedAt: '2026-11-01' },
+      },
+      'duplication: not measured\nBaseline kept: a debt metric was not measured, so the baseline from 2026-11-01 still stands.',
+    ],
+  ])('refuses a land whose audit %s, after saying the land', async (_case, audit, said) => {
+    vi.mocked(landSession).mockResolvedValue({
+      prUrl: PR,
+      mergeCommit: 'm1',
+      target: 'main',
+      targetSha: 'm1',
+      fastForwarded: true,
+      audit,
+    } as never);
+
+    const refusal = runAction(DB, REPO, 'land', { session: 's-1' });
+    await expect(refusal).rejects.toThrow(/^Landed s-1: /);
+    await expect(refusal).rejects.toThrow(said);
   });
 
   it('refuses a land off a declared sandbox before landing anything', async () => {

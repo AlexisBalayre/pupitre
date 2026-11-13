@@ -20,6 +20,7 @@ import {
   launchTask,
   steerSession,
 } from './session-lifecycle.service.js';
+import type { LandOutcome } from './types/land.types.js';
 import type { MergeOutcome } from './types/merge-gate.types.js';
 import { escapeHtml } from './web-dashboard-sheet.utils.js';
 
@@ -260,16 +261,46 @@ async function mergeAction(
   return lines;
 }
 
-/** `pup land <session>`: asked of the sandbox first, as the CLI asks before it lands. */
+/**
+ * `pup land <session>`: asked of the sandbox first, as the CLI asks before it
+ * lands. What the land did is said whole, each peer it could not steer named,
+ * and then refused where `pup land` fails: a lock lost under it (decision 88),
+ * or an audit that kept the baseline.
+ */
 async function landAction(db: Database, repoPath: string, session: string): Promise<string[]> {
   sandboxLabel();
-  const outcome = await landSession(db, {
-    repoPath,
-    sessionId: session,
-    adapters: detectAdapters(repoPath),
-  });
+  let outcome: LandOutcome;
+  let lost = '';
+  try {
+    outcome = await landSession(db, {
+      repoPath,
+      sessionId: session,
+      adapters: detectAdapters(repoPath),
+    });
+  } catch (error) {
+    if (!(error instanceof MergeLockLostError)) throw error;
+    outcome = error.result as LandOutcome;
+    lost = error.message;
+  }
   const target = sanitizeReason(outcome.target);
-  return [
+  const audit = outcome.audit;
+  const kept =
+    audit === undefined
+      ? []
+      : audit.unmeasured.length > 0
+        ? [
+            ...audit.unmeasured.map(sanitizeReason),
+            `Baseline kept: ${audit.unmeasured.length === 1 ? 'a debt metric was' : 'debt metrics were'} not measured, ` +
+              `so the baseline from ${sanitizeReason(audit.previous?.capturedAt ?? '')} still stands. Fix the measurement ` +
+              'and re-run `pup audit`.',
+          ]
+        : audit.heldOnRegression
+          ? [
+              'Baseline kept: the measurement regressed, and a land does not move the bar over a ' +
+                'regression; run `pup audit` to accept it or fix it first.',
+            ]
+          : [];
+  const lines = [
     `Landed ${sanitizeReason(session)}: ${outcome.prUrl} merged as ${outcome.mergeCommit}; ` +
       (outcome.fastForwarded
         ? `${target} fast-forwarded to ${outcome.targetSha}.`
@@ -280,8 +311,20 @@ async function landAction(db: Database, repoPath: string, session: string): Prom
     ...(outcome.keptBranch === undefined
       ? []
       : [`Kept ${sanitizeReason(outcome.keptBranch)}: it holds commits ${target} does not.`]),
-    outcome.audit ? 'The audit ran; the Health sheet shows its figures.' : 'Audit skipped.',
+    ...(outcome.unsteered ?? []).map(
+      ({ sessionId, reason }) =>
+        `Could not tell ${sanitizeReason(sessionId)} that ${target} moved: ${sanitizeReason(reason)}. ` +
+        `Steer it to take ${target} in.`,
+    ),
+    ...(audit === undefined
+      ? ['Audit skipped: run `pup audit` once after the last land.']
+      : kept.length > 0
+        ? kept
+        : ['The audit ran; the Health sheet shows its figures.']),
   ];
+  if (lost) throw new Error([...lines, lost].join('\n'));
+  if (kept.length > 0) throw new Error(lines.join('\n'));
+  return lines;
 }
 
 /**
