@@ -4,6 +4,7 @@ import { formatStaleAge } from '../../core/session-activity.utils.js';
 import { RESPAWN_SUGGEST_TOKENS } from '../../core/session-handoff.service.js';
 import type { DashboardNeed, DashboardSession } from '../../core/types/dashboard.types.js';
 import type { FleetBlock } from '../../core/types/fleet.types.js';
+import { optionLines } from './question.utils.js';
 
 /**
  * The words both dashboard renderers print. `pup status` and `pup ui` read one
@@ -131,8 +132,20 @@ export function trailing(label: string): string {
  * double-space separators cannot be forged, since the scrub collapses runs of
  * whitespace; the label and reason have their own symbols taken away upstream.
  */
-export function needLine(need: DashboardNeed): string {
+function needLine(need: DashboardNeed): string {
   return `${sanitizeReason(need.label)}  ${sanitizeReason(need.reason)}  → ${sanitizeReason(need.answer)}`;
+}
+
+/**
+ * An inbox entry as both text surfaces print it: its line, then a question's
+ * options, numbered as `pup answer` reads the number and the recommended one
+ * marked (decision 93), indented under it.
+ */
+export function needLines(need: DashboardNeed): string[] {
+  return [
+    needLine(need),
+    ...optionLines(need.options ?? [], need.recommended).map((line) => `    ${line}`),
+  ];
 }
 
 /**
@@ -184,7 +197,7 @@ function fleetBlockLines(block: Exclude<FleetBlock, { reason: string }>): string
     ),
     // The inbox's own lines, reason and answer, not the bare session row: a
     // merged session listed for its PR says nothing by its state alone.
-    ...summary.needsYou.map((need) => `  ${needLine(need)}`),
+    ...summary.needsYou.flatMap(needLines).map((line) => `  ${line}`),
     `  ${summary.running} running, ${summary.planned} planned, ${summary.merged} merged`,
   ];
 }

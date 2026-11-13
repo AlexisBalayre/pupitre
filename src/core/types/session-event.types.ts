@@ -15,6 +15,21 @@ export interface TransitionPayload {
 }
 
 /**
+ * What the CLI saw of a rescope's caller (decision 115). It takes the caller
+ * for the operator from what is absent: no session's worktree holds the cwd,
+ * and neither `PUP_SESSION_ID` nor `PUP_CONDUCTOR` is set. A worker can shed
+ * each of those, so the operator is inferred, never confirmed; the terminal
+ * the command ran on is kept beside the inference for an audit to weigh.
+ */
+export interface RescopeCaller {
+  by: 'inferred-operator';
+  /** The caller's terminal device, null when stdin is not one. */
+  tty: string | null;
+  /** The pane `TMUX_PANE` names, null when it is unset or not a pane id. */
+  tmuxPane: string | null;
+}
+
+/**
  * The payload `appendEvent` writes for each event type. `tool_call`,
  * `scope_violation` and `config_drift` have no writer in pup: the session's
  * hooks append them to its events file, never to the store.
@@ -59,10 +74,32 @@ export interface EventPayloads {
    * which the gate's cap counts the round's rejections from.
    */
   fix_round: { prUrl: string; head: string; threads: string[]; rejectBase: number };
+  /**
+   * `pup plan edit --rescope` widened the session's task (decision 115): the
+   * globs it appended to scope-in, what was seen of the caller, the tier the
+   * session's next window runs on, and whether the rescope raised it to critical.
+   */
+  rescope: { task: string; added: string[]; tier: string; raised: boolean } & RescopeCaller;
   steer: { kind: string; by?: string; delivered?: boolean };
   interrupt: { steered: boolean };
   session_done: { summary: string };
-  question: { text: string };
+  /**
+   * `options` are the answers the asker offers, at most four, and `recommended`
+   * the 1-based one it would pick (decision 93). Both are absent on a
+   * question asked in words alone.
+   */
+  question: { text: string; options?: string[]; recommended?: number };
+  /**
+   * `pup answer` delivered an answer to the open question (decision 93): the
+   * question it answers, the text delivered, and the 1-based option the
+   * operator picked when they picked one.
+   */
+  answer: { question: string; text: string; option?: number };
+  /**
+   * A conductor window took its context (decision 93): the run a conductor
+   * question was asked in ends here, so the previous run's stays out of the inbox.
+   */
+  conductor_start: { name: string };
   handoff_ready: { hash: string };
   respawn: { delivered: boolean; handoffBytes?: number; hard?: boolean };
   scope_overlap: { via: string; accepted: { session: string; files: string[] }[] };
@@ -72,6 +109,12 @@ export interface EventPayloads {
   tool_call: Record<string, unknown>;
   scope_violation: { path: string; reason?: string; command?: string };
   config_drift: Record<string, unknown>;
+}
+
+/** `pup session ask`'s and `pup conductor ask`'s options, as commander hands them in. */
+export interface AskOptions {
+  option?: string[];
+  recommend?: string;
 }
 
 /** A gate stage as the store holds it: shape-checked, its text not yet scrubbed for any sink. */
@@ -113,7 +156,7 @@ export type SessionEvent =
     }
   | { type: 'steer'; kind?: string; by?: string }
   | { type: 'session_done'; summary?: string }
-  | { type: 'question'; text?: string }
+  | { type: 'question'; text?: string; options?: string[]; recommended?: number }
   | { type: 'turn_died'; reason?: string; stalledAt?: string; refusal?: string }
   | { type: 'handoff_ready'; hash?: string }
   | { type: 'other'; eventType: string; fields: Record<string, unknown> };

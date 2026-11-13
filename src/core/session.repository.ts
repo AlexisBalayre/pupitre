@@ -110,10 +110,17 @@ export interface TaskRow {
 /**
  * Every type the store holds: the schema's, `landed`, which `pup land` writes
  * (decision 84), `fix_round`, which `pup fix` writes (decision 90), and
- * `retired`, which `pup retire` writes (decision 141), the three `EventType`
+ * `rescope`, which `pup plan edit --rescope` writes (decision 115), and
+ * `retired`, which `pup retire` writes (decision 141), the four `EventType`
  * has yet to join.
  */
-type StoredEventType = EventType | 'landed' | 'fix_round' | 'retired';
+type StoredEventType =
+  | EventType
+  | 'landed'
+  | 'fix_round'
+  | 'rescope'
+  | 'retired'
+  | 'conductor_start';
 
 export interface EventRow {
   id: number;
@@ -342,6 +349,80 @@ export function updateTaskSpec(db: Database, id: string, spec: string, tier?: Ti
       )
       .run(spec, tier ?? null, id, ...claimed).changes > 0
   );
+}
+
+/**
+ * The claimed states in which `pup plan edit --rescope` may widen a task's
+ * spec (decision 115): a worker that said it was done, a gate that merged.
+ * Listed rather than excluded, so a state added later is refused until it is
+ * named here. A live window in any of them is
+ * still refused, by the caller that can probe tmux.
+ */
+const RESCOPABLE_STATES: readonly SessionState[] = ['awaiting-review', 'merged'];
+
+/**
+ * States in which a session is at work on its task, its hooks compiled from
+ * the spec it holds: every claimed state a rescope is not allowed in.
+ */
+function workingStates(): SessionState[] {
+  return claimedStates().filter((state) => !RESCOPABLE_STATES.includes(state));
+}
+
+/** The session, if any, at work on this task right now. */
+export function workingSession(db: Database, taskId: string): string | undefined {
+  const working = workingStates();
+  const row = db
+    .prepare(
+      `SELECT id FROM sessions
+        WHERE task_id = ? AND state IN (${working.map(() => '?').join(', ')})
+        ORDER BY created_at DESC LIMIT 1`,
+    )
+    .get(taskId, ...working) as { id: string } | undefined;
+  return row?.id;
+}
+
+/**
+ * Rewrite a claimed task's spec for `pup plan edit --rescope`. Refused, with
+ * nothing written, while a session is at work on the task: the guard is in the
+ * statement, so no caller can write past it (decision 115).
+ */
+export function rescopeTaskSpec(db: Database, id: string, spec: string): boolean {
+  const working = workingStates();
+  return (
+    db
+      .prepare(
+        `UPDATE tasks SET spec = ?
+          WHERE id = ?
+            AND NOT EXISTS (
+              SELECT 1 FROM sessions s
+               WHERE s.task_id = tasks.id
+                 AND s.state IN (${working.map(() => '?').join(', ')})
+            )`,
+      )
+      .run(spec, id, ...working).changes > 0
+  );
+}
+
+/**
+ * Raise a rescoped task to critical once its widened scope-in implies it
+ * (decision 115): a tier stored as standard, the task's and its claiming
+ * session's, becomes critical, and never the other way. A null tier is left
+ * alone, since it is derived from the scope-in that now implies critical. The
+ * session's rung is cleared with it, so its next window starts the critical
+ * ladder from the bottom, as a re-tiered task's does, rather than clamping a
+ * standard rung onto it. True when either row was raised.
+ */
+export function raiseToCritical(db: Database, taskId: string, sessionId: string): boolean {
+  const task = db
+    .prepare("UPDATE tasks SET tier = 'critical' WHERE id = ? AND tier = 'standard'")
+    .run(taskId);
+  const session = db
+    .prepare(
+      `UPDATE sessions SET tier = 'critical', rung = NULL, rung_reason = NULL
+        WHERE id = ? AND tier = 'standard'`,
+    )
+    .run(sessionId);
+  return task.changes + session.changes > 0;
 }
 
 function isStringArray(value: unknown): value is string[] {
@@ -598,6 +679,47 @@ export function currentFixRound(db: Database, sessionId: string): EventRow | und
   return newest?.type === 'fix_round' ? newest : undefined;
 }
 
+/** A `question` event still open, as `openQuestion` reads it: its options always a list. */
+export type QuestionEvent = Extract<SessionEvent, { type: 'question' }> & { options: string[] };
+
+/** The most options a question offers: one keystroke each, and the inbox stays a glance (decision 93). */
+export const MAX_QUESTION_OPTIONS = 4;
+
+/**
+ * The question a session asked with `pup session ask`, or the conductor with
+ * `pup conductor ask` (`sessionId` null), that is still open (decisions 76,
+ * 93): the newest `question` with no `answer` after it, no steer the operator
+ * sent, and no end of the run it was asked in. The question is the operator's
+ * to answer: a steer from the conductor, a peer or the watchdog types into the
+ * pane but leaves it open, so nothing else can clear the inbox entry before the
+ * operator sees it. A run ends at a fresh window (a CI fix round, a handoff
+ * respawn, a conductor start), at `pup session done`, or when the session
+ * comes back to `running` from another state (an unblock, a re-steer): the
+ * agent there never asked it, so an answer would be a riddle. Its options are
+ * cut to `MAX_QUESTION_OPTIONS`.
+ */
+export function openQuestion(db: Database, sessionId: string | null): QuestionEvent | undefined {
+  const rows = db
+    .prepare(
+      `SELECT type, payload FROM events WHERE session_id IS ?
+         AND type IN ('question', 'steer', 'answer', 'fix_round', 'respawn', 'session_done',
+                      'gate_result', 'conductor_start')
+         ORDER BY id DESC`,
+    )
+    .iterate(sessionId) as IterableIterator<Pick<EventRow, 'type' | 'payload'>>;
+  let event: SessionEvent | undefined;
+  for (const row of rows) {
+    event = decodeEvent(row);
+    if (event.type === 'steer' && event.by !== 'operator') continue;
+    if (event.type === 'gate_result' && event.to !== 'running') continue;
+    break;
+  }
+  if (event?.type !== 'question') return undefined;
+  // The payload is session-writable: past the cap is never an option, so the
+  // inbox's numbers and `pup answer`'s cannot disagree.
+  return { ...event, options: (event.options ?? []).slice(0, MAX_QUESTION_OPTIONS) };
+}
+
 /**
  * Read one stored event back as the shape its type was written with — the one
  * place a payload is parsed. A payload is session-writable: one that is not
@@ -639,7 +761,14 @@ export function decodeEvent(row: Pick<EventRow, 'type' | 'payload'>): SessionEve
     case 'session_done':
       return { type: 'session_done', summary: text('summary') };
     case 'question':
-      return { type: 'question', text: text('text') };
+      return {
+        type: 'question',
+        text: text('text'),
+        options: Array.isArray(fields.options) ? asStringArray(fields.options) : undefined,
+        recommended: Number.isSafeInteger(fields.recommended)
+          ? (fields.recommended as number)
+          : undefined,
+      };
     case 'turn_died':
       // Keys in the order the watchdog writes them: the dossier prints this
       // event as the JSON it was stored as.

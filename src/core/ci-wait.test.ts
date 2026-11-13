@@ -65,7 +65,12 @@ interface ReviewSeed {
   status?: { state: string; description: string } | null;
   /** When the bot set `status`. */
   statusAt?: string;
+  /** Unresolved threads the bot opened, whichever of its reviews opened them. */
   threads?: number;
+  /** Unresolved threads of the bot's that a later push outdated. */
+  outdated?: number;
+  /** How many of the open `threads` end on a fix round's own marked reply. */
+  answered?: number;
   /** The PR's comments, each `{ body, createdAt, authorAssociation }`. */
   comments?: unknown[];
 }
@@ -78,6 +83,8 @@ function reviewAnswer({
   status = { state: 'SUCCESS', description: 'no blocking issues' },
   statusAt = '2026-10-26T10:00:00Z',
   threads = 0,
+  outdated = 0,
+  answered = 0,
   comments = [],
 }: ReviewSeed = {}): unknown {
   return {
@@ -106,19 +113,33 @@ function reviewAnswer({
           },
           reviewThreads: {
             pageInfo: { hasPreviousPage: false },
-            nodes: Array.from({ length: threads }, (_, index) => ({
+            nodes: Array.from({ length: threads + outdated }, (_, index) => ({
               id: `PRRT_${index}`,
               isResolved: false,
+              isOutdated: index >= threads,
               path: 'src/a.ts',
               line: 1,
               comments: {
                 nodes: [
                   {
                     author: BOT,
-                    pullRequestReview: { id: 'PRR_1' },
                     body: 'finding',
                     isMinimized: false,
                   },
+                ],
+              },
+              trail: {
+                nodes: [
+                  { author: BOT, body: 'finding' },
+                  ...(index < answered
+                    ? [
+                        {
+                          body: `Declined.\n\n<!-- pup fix-round ${OLDER} -->`,
+                          viewerDidAuthor: true,
+                          authorAssociation: 'OWNER',
+                        },
+                      ]
+                    : []),
                 ],
               },
             })),
@@ -237,7 +258,7 @@ describe('waitForCiReview', { timeout: 20_000 }, () => {
     );
   });
 
-  // Decision 179: the stages go to stderr, and the digest stays the one line.
+  // Decision 184: the stages go to stderr, and the digest stays the one line.
   it('shows its stages off a terminal as one plain line each, the digest unchanged', async () => {
     githubAnswers({ reviewedOn: null, status: null }, {});
     const lines: string[] = [];
@@ -259,12 +280,74 @@ describe('waitForCiReview', { timeout: 20_000 }, () => {
     ]);
   });
 
+  // On #284, a run's clean status hid a thread an earlier run left open on the
+  // same head: every open thread counts, whatever the newest status says.
+  it('names pup fix for a thread left open under a clean status, but not for an outdated one', async () => {
+    githubAnswers({ threads: 1, outdated: 2 });
+
+    expect(await wait()).toEqual({
+      finished: true,
+      line:
+        `${PR_URL} at ${HEAD}: review no blocking issues; 1 open thread(s), 0 important → ` +
+        `pup fix ${SESSION_ID}`,
+    });
+  });
+
+  // A thread a fix round declined stays open for the operator: it keeps the PR
+  // from reading ready, but a new round would only relay it again.
+  it('names the operator, not pup fix, when every open thread is one a fix round answered', async () => {
+    githubAnswers({ threads: 1, answered: 1 });
+
+    expect(await wait()).toEqual({
+      finished: true,
+      line:
+        `${PR_URL} at ${HEAD}: review no blocking issues; 1 open thread(s), 0 important → ` +
+        'resolve the 1 thread(s) a fix round left open, or reply on one as the operator ' +
+        "and re-run pup fix to take it again; the worker sees only the bot's finding, not your reply (the operator's call)",
+    });
+
+    // The read stands on its last answer, so this one replaces it.
+    githubAnswers({ threads: 2, answered: 1 });
+
+    expect(await wait()).toEqual({
+      finished: true,
+      line:
+        `${PR_URL} at ${HEAD}: review no blocking issues; 2 open thread(s), 0 important → ` +
+        `pup fix ${SESSION_ID}`,
+    });
+  });
+
+  // A push that outdates a thread's line answers nothing: a worker could
+  // outdate one it declined with a cosmetic edit, and the next run may not
+  // raise it again (#284).
+  it('names the operator, never the merge click, while an outdated thread stands unresolved', async () => {
+    githubAnswers({ outdated: 2 });
+
+    expect(await wait()).toEqual({
+      finished: true,
+      line:
+        `${PR_URL} at ${HEAD}: review no blocking issues; 0 open thread(s), 0 important → ` +
+        "resolve the 2 unresolved thread(s) a push outdated, once each fix holds (the operator's call)",
+    });
+
+    githubAnswers({ threads: 1, answered: 1, outdated: 1 });
+
+    expect(await wait()).toEqual({
+      finished: true,
+      line:
+        `${PR_URL} at ${HEAD}: review no blocking issues; 1 open thread(s), 0 important → ` +
+        'resolve the 1 thread(s) a fix round left open, or reply on one as the operator ' +
+        "and re-run pup fix to take it again; the worker sees only the bot's finding, not your reply; resolve the 1 unresolved thread(s) a push outdated, once " +
+        "each fix holds (the operator's call)",
+    });
+  });
+
   it('ignores a review on an older head and waits for the current one', async () => {
     githubAnswers(
-      // The newest review and its threads are on an earlier push.
-      { reviewedOn: OLDER, threads: 1, status: { state: 'PENDING', description: 'reviewing' } },
+      // The newest review and its threads are on an earlier push, which outdated them.
+      { reviewedOn: OLDER, outdated: 1, status: { state: 'PENDING', description: 'reviewing' } },
       // A SUCCESS on the head, with the newest review still on the earlier push.
-      { reviewedOn: OLDER, threads: 1 },
+      { reviewedOn: OLDER, outdated: 1 },
       {},
     );
 

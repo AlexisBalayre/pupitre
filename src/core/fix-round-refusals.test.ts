@@ -21,6 +21,11 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   steerPane: vi.fn(),
 }));
 
+vi.mock('./session-lifecycle.service.js', async (importOriginal) => {
+  const original = await importOriginal<typeof import('./session-lifecycle.service.js')>();
+  return { ...original, recompileSessionProfile: vi.fn(original.recompileSessionProfile) };
+});
+
 // The code graph is a property of the test, not of the machine (decision 51).
 vi.mock('./codegraph.client.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./codegraph.client.js')>()),
@@ -73,7 +78,11 @@ import {
   transitionSession,
 } from './session.repository.js';
 import { LaunchRolledBackError } from './session-lifecycle.errors.js';
-import { killSession as killPupSession, markSessionDone } from './session-lifecycle.service.js';
+import {
+  killSession as killPupSession,
+  markSessionDone,
+  recompileSessionProfile,
+} from './session-lifecycle.service.js';
 
 // The file's temp dirs, its children's included, go to a TMPDIR of its own,
 // which must hold no pup-* entry once every test has removed its own
@@ -174,7 +183,7 @@ describe('startFixRound', { timeout: 90_000 }, () => {
         '  case "$*" in',
         // One line per mutation, so a test counts the replies and resolves.
         `    *mutation*) printf '%s' "$*" | tr '\\n' ' ' >> ${ghDir}/mutations; printf '\\n' >> ${ghDir}/mutations; echo '{"data":{}}'; exit 0;;`,
-        `    *viewerDidAuthor*) [ -f ${ghDir}/answers-fail ] && exit 1; [ -f ${ghDir}/answers-slow ] && exec sleep 5; cat ${ghDir}/answers.json 2>/dev/null || echo '{}'; exit 0;;`,
+        `    *replies:*) [ -f ${ghDir}/answers-fail ] && exit 1; [ -f ${ghDir}/answers-slow ] && exec sleep 5; cat ${ghDir}/answers.json 2>/dev/null || echo '{}'; exit 0;;`,
         '  esac',
         `  cat ${ghDir}/review.json; exit 0`,
         'fi',
@@ -218,10 +227,9 @@ describe('startFixRound', { timeout: 90_000 }, () => {
       description: string;
     } | null,
     threads = [] as ThreadSeed[],
-    /** Threads the newest review opened that are older than the page read. */
+    /** Threads older than the page read. */
     unread = 0,
   } = {}): void {
-    const opened = threads.filter((thread) => !thread.earlier).length + unread;
     const answer = {
       data: {
         repository: {
@@ -245,12 +253,7 @@ describe('startFixRound', { timeout: 90_000 }, () => {
                   ? []
                   : [
                       { id: 'PRR_earlier', author: BOT, commit: { oid: OTHER_SHA } },
-                      {
-                        id: 'PRR_newest',
-                        author: BOT,
-                        commit: { oid: reviewedOn },
-                        comments: { totalCount: opened },
-                      },
+                      { id: 'PRR_newest', author: BOT, commit: { oid: reviewedOn } },
                     ]),
               ],
             },
@@ -266,7 +269,6 @@ describe('startFixRound', { timeout: 90_000 }, () => {
                   nodes: [
                     {
                       author: thread.author ?? BOT,
-                      pullRequestReview: { id: thread.earlier ? 'PRR_earlier' : 'PRR_newest' },
                       body: thread.body,
                       lastEditedAt: thread.editor === undefined ? null : '2026-10-18T09:00:00Z',
                       editor: thread.editor ?? null,
@@ -427,6 +429,29 @@ describe('startFixRound', { timeout: 90_000 }, () => {
 
     expect(atLaunch).toMatchObject({ state: 'running', tmux_target: null });
     expect(getSession(db, SESSION_ID)?.tmux_target).toBe('%9');
+  });
+
+  it('refuses a round whose scope an operator rescope widened while it was prepared', async () => {
+    seedPrMerge();
+    reviewOnGitHub({ threads: OPEN_THREAD });
+    const compile = vi.mocked(recompileSessionProfile);
+    compile.mockImplementationOnce((...args) => {
+      const compiled = compile.getMockImplementation()?.(...args) as ReturnType<
+        typeof recompileSessionProfile
+      >;
+      db.prepare("UPDATE tasks SET spec = ?, tier = 'critical' WHERE id = 'task-s1'").run(
+        JSON.stringify({
+          id: 'task-s1',
+          goal: 'g',
+          scopeIn: ['src/**', 'docs/**'],
+          acceptance: ['a'],
+        }),
+      );
+      db.prepare("UPDATE sessions SET tier = 'critical' WHERE id = ?").run(SESSION_ID);
+      return compiled;
+    });
+
+    await expectRefusedUnwritten(/scope or tier changed while the round was prepared/, 'merged');
   });
 
   it('refuses a session that is not merged without asking GitHub', async () => {

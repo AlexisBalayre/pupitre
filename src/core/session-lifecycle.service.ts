@@ -17,7 +17,12 @@ import {
 } from '../claude/session-runtime.service.js';
 import { buildCodeMap, buildKnowledgeSlice } from './code-map.service.js';
 import { codegraphBinary, prepareGraph } from './codegraph.client.js';
-import { maxSessions } from './conductor.service.js';
+import {
+  isConductorRunning,
+  maxSessions,
+  TELL_MAX_CHARS,
+  tellConductor,
+} from './conductor.service.js';
 import { windowFailureOf } from './dashboard.service.js';
 import {
   assertNoArmedGitDrivers,
@@ -57,6 +62,9 @@ import {
   insertTask,
   listSessions,
   listTaskSessions,
+  MAX_QUESTION_OPTIONS,
+  openQuestion,
+  type QuestionEvent,
   readTaskSpec,
   type SessionRoute,
   type SessionRow,
@@ -66,6 +74,7 @@ import {
 } from './session.repository.js';
 import {
   isRefusedSteer,
+  QuestionRefusedError,
   rollBackRefusedLaunch,
   TaskAlreadyClaimedError,
   TerminalSessionError,
@@ -82,6 +91,7 @@ import {
 } from './test-slot.service.js';
 import type { ScopeConflict } from './types/overlap.types.js';
 import type { CompiledProfile, SessionId, TaskSpec } from './types/profile.types.js';
+import type { AskOptions, EventPayloads } from './types/session-event.types.js';
 import type {
   LaunchTaskRequest,
   NewSessionRequest,
@@ -766,12 +776,182 @@ export function markSessionDone(db: Database, sessionId: string, summary: string
 
 /**
  * Record a question a session is blocked on (run by the agent via `pup session
- * ask`, decision 76). The session stays running: the agent ends its turn, and
- * the next steer is the answer — which is also what clears the question from
- * the dashboard.
+ * ask`, decision 76), with the options it offers and the one it recommends
+ * (decision 93). The session stays running: the agent ends its turn, and the
+ * operator's next steer or `pup answer` closes the question (see
+ * `openQuestion`); a steer from anyone else leaves it open.
  */
-export function markSessionQuestion(db: Database, sessionId: string, text: string): void {
-  appendEvent(db, sessionId, 'question', { text });
+export function markSessionQuestion(
+  db: Database,
+  sessionId: string,
+  question: EventPayloads['question'],
+): void {
+  appendEvent(db, sessionId, 'question', question);
+}
+
+/**
+ * The question an asking command stores (decision 93): its text, up to
+ * `MAX_QUESTION_OPTIONS` options, and `--recommend` naming one of them by its
+ * 1-based number. Refused with `QuestionRefusedError` before anything is stored.
+ */
+export function askedQuestion(
+  command: string,
+  text: string | undefined,
+  opts: AskOptions,
+): EventPayloads['question'] {
+  const options = opts.option ?? [];
+  if (!text?.trim()) throw new QuestionRefusedError(`${command} needs the question itself.`);
+  if (options.length > MAX_QUESTION_OPTIONS) {
+    throw new QuestionRefusedError(
+      `A question offers at most ${MAX_QUESTION_OPTIONS} options, one key each; ask it in words, or fewer.`,
+    );
+  }
+  if (options.some((option) => !option.trim())) {
+    throw new QuestionRefusedError('Every --option needs its text.');
+  }
+  if (opts.recommend === undefined) return { text, ...(options.length > 0 ? { options } : {}) };
+  const recommended = Number(opts.recommend);
+  if (!/^\d+$/.test(opts.recommend) || recommended < 1 || recommended > options.length) {
+    throw new QuestionRefusedError(
+      `--recommend takes the number of one of the ${options.length} options, from 1.`,
+    );
+  }
+  return { text, options, recommended };
+}
+
+/**
+ * Text bound for a pane as one line: control characters out and whitespace
+ * collapsed, as `sanitizeReason` does, but whole. An answer is the operator's
+ * own words and a question the asker's, so neither is cut: the steer's and the
+ * tell's refusals bound them, `conductorQuestion` keeps a conductor question
+ * short enough to quote, and the quote stays the question asked.
+ */
+function paneLine(text: string): string {
+  return (
+    text
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping them is the point
+      .replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+  );
+}
+
+/**
+ * What `pup answer` delivers for `reply` (decision 93): a bare number picks
+ * that option of a question that offers some, any other text is a free answer.
+ * A number past the options is refused rather than sent as words, since it is
+ * a slip, not an answer. Both texts are scrubbed, never cut: they are typed into a pane.
+ */
+function resolveAnswer(asked: QuestionEvent, reply: string): EventPayloads['answer'] {
+  const question = paneLine(asked.text ?? '');
+  const words = reply.trim();
+  if (words === '')
+    throw new QuestionRefusedError('Nothing to answer with: give an option number or words.');
+  const count = asked.options.length;
+  if (count === 0 || !/^\d+$/.test(words)) return { question, text: paneLine(words) };
+  const option = Number(words);
+  if (option < 1 || option > count) {
+    throw new QuestionRefusedError(
+      `The question offers ${count} option${count === 1 ? '' : 's'}; answer 1 to ${count}, ` +
+        'or in words. Nothing was sent.',
+    );
+  }
+  return { question, text: paneLine(asked.options[option - 1] ?? ''), option };
+}
+
+/** The answer as the asker reads it: the question first, so a late answer is never a riddle. */
+function answerMessage(answer: EventPayloads['answer']): string {
+  const picked = answer.option === undefined ? '' : `option ${answer.option}, `;
+  return `Answer to your question "${answer.question}": ${picked}${answer.text}`;
+}
+
+/**
+ * The room a conductor question leaves for an answer in words: the operator
+ * can shorten their own words, never the question quoted in front of them.
+ */
+const FREE_ANSWER_ROOM = 200;
+
+/**
+ * The question `pup conductor ask` stores (decision 93): `askedQuestion`'s,
+ * refused too when an answer could not reach the conductor. `pup answer
+ * conductor` quotes the question whole in a tell, so the message for every
+ * option, and for `FREE_ANSWER_ROOM` characters of words, must fit
+ * `TELL_MAX_CHARS`; refused here, the conductor rewords while it sees why.
+ */
+export function conductorQuestion(
+  text: string | undefined,
+  opts: AskOptions,
+): EventPayloads['question'] {
+  const asked = askedQuestion('pup conductor ask', text, opts);
+  const question = paneLine(asked.text);
+  const answers: EventPayloads['answer'][] = [
+    { question, text: 'x'.repeat(FREE_ANSWER_ROOM) },
+    ...(asked.options ?? []).map((option, index) => ({
+      question,
+      text: paneLine(option),
+      option: index + 1,
+    })),
+  ];
+  const longest = Math.max(...answers.map((answer) => answerMessage(answer).length));
+  if (longest > TELL_MAX_CHARS) {
+    throw new QuestionRefusedError(
+      `An answer quotes the question back in a \`pup conductor tell\`, which takes ${TELL_MAX_CHARS} ` +
+        `characters; with its longest option, or ${FREE_ANSWER_ROOM} characters of words, this one ` +
+        `runs to ${longest}. Nothing was stored: ask in fewer words, and put the detail in a file ` +
+        'the question names.',
+    );
+  }
+  return asked;
+}
+
+/**
+ * Answer a session's open question (decision 93): steered into its pane like
+ * `pup steer`, its refusals the same, and recorded as an `answer` once the
+ * paste landed. Refused, with nothing typed, when nothing is open.
+ */
+export function answerSessionQuestion(
+  db: Database,
+  sessionId: string,
+  reply: string,
+): EventPayloads['answer'] {
+  requireLiveSession(db, sessionId, 'answer');
+  const asked = openQuestion(db, sessionId);
+  if (!asked) {
+    throw new QuestionRefusedError(
+      `Session ${sanitizeReason(sessionId)} has no open question; \`pup steer\` sends it words.`,
+    );
+  }
+  const answer = resolveAnswer(asked, reply);
+  steerSession(db, sessionId, answerMessage(answer), { kind: 'answer', by: 'operator' });
+  appendEvent(db, sessionId, 'answer', answer);
+  return answer;
+}
+
+/**
+ * Answer the running conductor's open question (decision 93) with a `pup
+ * conductor tell`, its refusals the same; recorded as an `answer` only when
+ * the message landed, and refused when it did not, so the question stays open.
+ */
+export function answerConductorQuestion(
+  db: Database,
+  repoPath: string,
+  reply: string,
+): EventPayloads['answer'] {
+  const asked = isConductorRunning(repoPath) ? openQuestion(db, null) : undefined;
+  if (!asked) {
+    throw new QuestionRefusedError(
+      'The conductor has no open question; `pup conductor tell` sends it words.',
+    );
+  }
+  const answer = resolveAnswer(asked, reply);
+  if (!tellConductor(repoPath, answerMessage(answer))) {
+    throw new QuestionRefusedError(
+      "The answer did not land: the conductor's input box never showed it whole, still holds " +
+        'text after a second Enter, or left the screen; the question stays open. Look with `pup attach`.',
+    );
+  }
+  appendEvent(db, null, 'answer', answer);
+  return answer;
 }
 
 /**

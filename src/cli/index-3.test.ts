@@ -128,6 +128,8 @@ vi.mock('../core/session-lifecycle.service.js', async (importOriginal) => ({
   markSessionDone: vi.fn(),
   markSessionQuestion: vi.fn(),
   planTask: vi.fn(),
+  askedQuestion: (await importOriginal<typeof import('../core/session-lifecycle.service.js')>())
+    .askedQuestion,
   recordSteerMessage: vi.fn(),
   SessionCapReachedError: (
     await importOriginal<typeof import('../core/session-lifecycle.service.js')>()
@@ -483,7 +485,7 @@ describe('CLI commands', () => {
 
       expect(logs.slice(0, 5)).toEqual([
         'Needs you',
-        '  s-asking  question: rebase or merge?  → pup steer s-asking "..."',
+        '  s-asking  question: rebase or merge?  → pup answer s-asking "..."',
         '  s-blocked  blocked (3 rejections)  → pup unblock s-blocked',
         expect.stringMatching(
           /^ {2}s-stalled {2}STALLED \(\d+m\) {2}→ pup steer s-stalled "\.\.\."$/,
@@ -2705,9 +2707,9 @@ describe('CLI commands', () => {
         buildProgram().parse(['session', 'ask', 'rebase\u001b[2J or\nmerge?'], { from: 'user' });
 
         expect(markSessionQuestion).toHaveBeenCalledTimes(1);
-        const [, sessionId, text] = firstCall(markSessionQuestion);
+        const [, sessionId, question] = firstCall(markSessionQuestion);
         expect(sessionId).toBe('s1');
-        expect(text).toBe('rebase\u001b[2J or\nmerge?');
+        expect(question).toEqual({ text: 'rebase\u001b[2J or\nmerge?' });
         expect(logs).toEqual(['Session s1 asked: rebase [2J or merge?']);
         expect(markSessionDone).not.toHaveBeenCalled();
         expect(process.exitCode).toBeUndefined();

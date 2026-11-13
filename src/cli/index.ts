@@ -28,6 +28,7 @@ import {
   type WindowEnv,
   windowLabel,
 } from '../claude/session-runtime.service.js';
+import { ADR_NUMBER_STAGE } from '../core/adr-number.service.js';
 import { auditProject, buildSweepTask, formatDebtTransition } from '../core/audit.service.js';
 import { briefPath, ensureBrief, readBrief } from '../core/brief.service.js';
 import { waitForCiReview } from '../core/ci-wait.service.js';
@@ -37,6 +38,7 @@ import {
   ConductorTellRefusedError,
   DEFAULT_MAX_SESSIONS,
   isConductorRunning,
+  markConductorQuestion,
   NO_CONDUCTOR_RUNNING,
   startConductor,
   stopConductor,
@@ -46,6 +48,7 @@ import {
   blockedReason,
   buildDashboardSnapshot,
   type CiReviewLookup,
+  CONDUCTOR_TARGET,
   findStalledSessions,
   goalHeadline,
   needsYou,
@@ -103,6 +106,7 @@ import {
   UndeclaredSandboxError,
 } from '../core/sandbox.utils.js';
 import {
+  appendEvent,
   dropTask,
   editTaskSpec,
   findSessionByWorktree,
@@ -111,6 +115,7 @@ import {
   getTask,
   listBacklogTasks,
   listSessions,
+  MAX_QUESTION_OPTIONS,
   MalformedTaskSpecError,
   taskSpecForDisplay,
   transitionSession,
@@ -130,6 +135,7 @@ import {
 import {
   isRefusedSteer,
   LaunchRolledBackError,
+  QuestionRefusedError,
   TaskAlreadyClaimedError,
   TerminalSessionError,
   TopRungReachedError,
@@ -137,6 +143,10 @@ import {
   UnknownTaskError,
 } from '../core/session-lifecycle.errors.js';
 import {
+  answerConductorQuestion,
+  answerSessionQuestion,
+  askedQuestion,
+  conductorQuestion,
   createSession,
   interruptSession,
   killedFixRoundMessage,
@@ -151,6 +161,7 @@ import {
   steerSession,
 } from '../core/session-lifecycle.service.js';
 import { retireSession } from '../core/session-retire.service.js';
+import { launchedAncestor, rescopeTask } from '../core/task-rescope.service.js';
 import {
   describeSlotWait,
   runSessionTest,
@@ -165,7 +176,11 @@ import type { DebtBaseline, InitReport } from '../core/types/init.types.js';
 import type { LandOutcome } from '../core/types/land.types.js';
 import type { GateReport, MergeOutcome } from '../core/types/merge-gate.types.js';
 import type { TaskId, TaskSpec } from '../core/types/profile.types.js';
-import type { StoredGateStage } from '../core/types/session-event.types.js';
+import type {
+  AskOptions,
+  RescopeCaller,
+  StoredGateStage,
+} from '../core/types/session-event.types.js';
 import type { NewSessionRequest, RouteOverride } from '../core/types/session-lifecycle.types.js';
 import type { RetireOutcome } from '../core/types/session-retire.types.js';
 import {
@@ -190,11 +205,12 @@ import { App, type AppProps } from './ui/app.component.js';
 import {
   fleetLines,
   goalColumn,
-  needLine,
+  needLines,
   originMarker,
   sessionLine,
   trailing,
 } from './ui/dashboard-text.utils.js';
+import { askedLines } from './ui/question.utils.js';
 
 /**
  * A multi-line string scrubbed line by line, for the three surfaces that hand
@@ -405,7 +421,7 @@ function printPushTargetLine(db: Database, id: string): void {
  */
 /**
  * `running` once it settles, with the status line cleared first, so the
- * outcome or refusal printed next starts on a line of its own (decision 179).
+ * outcome or refusal printed next starts on a line of its own (decision 184).
  */
 async function settled<TResult>(
   progress: StageProgress,
@@ -635,6 +651,27 @@ function tellOrRefuse(repoPath: string, message: string): void {
     return;
   }
   console.log('Told the conductor; the message landed.');
+}
+
+/**
+ * Run an ask or an answer and print what it says (decision 93): the refusals
+ * core throws are the operator's to read, a steer's and a tell's among them,
+ * and anything else is a bug and is rethrown.
+ */
+function questionOrRefuse(act: () => string[]): void {
+  let lines: string[];
+  try {
+    lines = act();
+  } catch (error) {
+    const isRefusal =
+      error instanceof QuestionRefusedError ||
+      error instanceof ConductorTellRefusedError ||
+      isSteerRefusal(error);
+    if (!isRefusal) throw error;
+    refuse(error.message);
+    return;
+  }
+  for (const line of lines) console.log(line);
 }
 
 /**
@@ -872,7 +909,7 @@ function operatorOnlyProject(): ProjectResolutionError {
   );
 }
 
-interface ConductorOptions {
+interface ConductorOptions extends AskOptions {
   model?: string;
   effort?: string;
   workerModel?: string;
@@ -891,6 +928,95 @@ interface PlanOptions {
   accept?: string[];
   goal?: string;
   tier?: string;
+  rescope?: boolean;
+}
+
+/**
+ * `pup plan edit <task> --rescope --scope <glob...>` (decision 115). The
+ * caller already refused a session; the conductor is refused here, because a
+ * scope a gate-failing agent widens for itself is no scope at all. Both are
+ * refused again by the process tree, which a caller that unset its markers
+ * and left its worktree still runs under. Only `--scope` rides along: a
+ * rescope appends globs and changes nothing else.
+ */
+function rescopeOrRefuse(db: Database, target: string, opts: PlanOptions): void {
+  if (callingConductor()) {
+    refuse(
+      '`pup plan edit --rescope` is operator-only; the conductor cannot widen a claimed task.',
+    );
+    return;
+  }
+  const ancestor = launchedAncestor();
+  if (ancestor?.kind === 'launched') {
+    refuse(
+      `\`pup plan edit --rescope\` is operator-only, and this runs under ${sanitizeReason(ancestor.name)}, ` +
+        'a Claude Code pup launched, whatever its environment says; run it from your own shell.',
+    );
+    return;
+  }
+  if (ancestor?.kind === 'unreadable') {
+    refuse(
+      '`pup plan edit --rescope` could not read the process tree (`ps` failed), so it cannot ' +
+        'tell this caller from a session or the conductor; nothing changed.',
+    );
+    return;
+  }
+  if ([opts.goal, opts.scopeOut, opts.accept, opts.tier].some((field) => field !== undefined)) {
+    refuse('--rescope takes only --scope: it appends scope-in globs and changes nothing else.');
+    return;
+  }
+  if (!opts.scope) {
+    refuse('Usage: pup plan edit <task> --rescope --scope <glob...>');
+    return;
+  }
+  try {
+    console.log(rescopedLine(target, rescopeTask(db, target, opts.scope, rescopeCaller())));
+  } catch (error) {
+    if (!(error instanceof InvalidProfileError)) throw error;
+    // Store text: a refusal can name a session id read back from the store.
+    refuse(sanitizeLines(error.message));
+  }
+}
+
+/**
+ * What a rescope records of its caller (decision 115): the operator, inferred
+ * from the session and conductor markers being absent, and the terminal and
+ * tmux pane the command ran on, each only in the shape a real one has.
+ */
+function rescopeCaller(): RescopeCaller {
+  const pane = process.env.TMUX_PANE;
+  return {
+    by: 'inferred-operator',
+    tty: callerTty(),
+    tmuxPane: pane !== undefined && /^%\d+$/.test(pane) ? pane : null,
+  };
+}
+
+/** The terminal device on stdin, from the system's own `tty`; null when there is none. */
+function callerTty(): string | null {
+  if (!process.stdin.isTTY) return null;
+  try {
+    const name = execFileSync('/usr/bin/tty', [], {
+      encoding: 'utf8',
+      stdio: ['inherit', 'pipe', 'ignore'],
+      timeout: 2000,
+    }).trim();
+    return /^\/dev\/[\w./-]+$/.test(name) ? name : null;
+  } catch {
+    return null;
+  }
+}
+
+/** What a rescope that went through says: the globs it appended and the tier it leaves. */
+function rescopedLine(target: string, outcome: ReturnType<typeof rescopeTask>): string {
+  if (outcome.added.length === 0) {
+    return `${target}'s scope-in already holds every glob given; nothing changed.`;
+  }
+  return (
+    `Widened ${target}'s scope-in with ${sanitizeReason(outcome.added.join(', '))}; ` +
+    `recorded on session ${sanitizeReason(outcome.sessionId)}; tier ${outcome.tier}` +
+    `${outcome.raised ? ', raised from standard' : ''}.`
+  );
 }
 
 /**
@@ -1049,6 +1175,7 @@ export function buildProgram(): Command {
     .option('--accept <criterion...>', 'acceptance criteria')
     .option('--goal <goal>', 'replacement goal (edit)')
     .option('--tier <tier>', 'critical|standard, over the tier the scope-in implies (add, edit)')
+    .option('--rescope', "append --scope globs to a claimed task's scope-in (edit, operator only)")
     .action((action: string | undefined, target: string | undefined, opts: PlanOptions) => {
       const { repoPath, db } = project();
       const verb = action ?? 'list';
@@ -1129,6 +1256,7 @@ export function buildProgram(): Command {
           if (!target) {
             return refuse('Usage: pup plan edit <task> [--goal ...] [--scope ...]');
           }
+          if (opts.rescope) return rescopeOrRefuse(db, target, opts);
           let outcome: ReturnType<typeof editTaskSpec>;
           try {
             outcome = editTaskSpec(db, target, {
@@ -1219,7 +1347,7 @@ export function buildProgram(): Command {
   program
     .command('conductor [action] [message]')
     .description(
-      'Start a Claude session that plans, launches, steers and reports on sessions, or type a message into it (start|stop|tell <message>)',
+      'Start a Claude session that plans, launches, steers and reports on sessions, or type a message into it (start|stop|tell <message>); the conductor asks the operator with ask <question>',
     )
     .option('--model <model>', 'claude model for the conductor itself (default claude-opus-5-5)')
     .option('--effort <effort>', 'effort for the conductor itself (default high)')
@@ -1231,9 +1359,27 @@ export function buildProgram(): Command {
       '--max-sessions <n>',
       `most live sessions any launch may reach, stored for the project (default ${DEFAULT_MAX_SESSIONS})`,
     )
+    .option('--option <text...>', `ask: an answer to offer, up to ${MAX_QUESTION_OPTIONS}`)
+    .option('--recommend <n>', 'ask: the number of the option the conductor would pick')
     .action((action: string | undefined, message: string | undefined, opts: ConductorOptions) => {
       const { repoPath, db } = project();
       const verb = action ?? 'start';
+      // The conductor's own: it raises every operator decision this way rather
+      // than as prose in its pane (decision 93). A session, or the operator,
+      // has its own way to ask or to tell.
+      if (verb === 'ask') {
+        if (callingSession(db) || callingConductor() !== projectId(repoPath)) {
+          return refuse('`pup conductor ask` is for the conductor only.');
+        }
+        return questionOrRefuse(() => {
+          const asked = conductorQuestion(message, opts);
+          markConductorQuestion(db, asked);
+          return askedLines('The conductor', asked);
+        });
+      }
+      if (opts.option !== undefined || opts.recommend !== undefined) {
+        return refuse('Only `pup conductor ask` takes --option and --recommend.');
+      }
       // The conductor holds every operator power but the merge, so only the
       // operator starts one — a session or a conductor minting a conductor
       // would be a session launching sessions under another name (decision 47).
@@ -1252,7 +1398,7 @@ export function buildProgram(): Command {
         return;
       }
       if (verb !== 'start') {
-        return refuse(`Unknown conductor action \`${action}\` (expected start|stop|tell).`);
+        return refuse(`Unknown conductor action \`${action}\` (expected start|stop|tell|ask).`);
       }
       const maxSessions = Number(opts.maxSessions ?? DEFAULT_MAX_SESSIONS);
       if (!Number.isInteger(maxSessions) || maxSessions < 1) {
@@ -1279,6 +1425,8 @@ export function buildProgram(): Command {
         // the conductor's whole footprint, so killing it is the whole rollback.
         return reportRolledBack(error, 'Re-run `pup conductor`.');
       }
+      // The new run's start ends the last run's question (decision 93).
+      appendEvent(db, null, 'conductor_start', { name: handle.name });
       // Scrubbed like every other named field a print interpolates, rather
       // than allowlisted as another derivation of the repo path: `handle.name`
       // is a local, and chasing its provenance per line is the carve-out
@@ -1721,7 +1869,7 @@ export function buildProgram(): Command {
     );
     if (needs.length > 0) {
       console.log('Needs you');
-      for (const need of needs) console.log(`  ${needLine(need)}`);
+      for (const line of needs.flatMap(needLines)) console.log(`  ${line}`);
     }
     for (const entry of snapshot.overdueDebt) {
       console.log(
@@ -1750,7 +1898,7 @@ export function buildProgram(): Command {
       return;
     }
     for (const session of sessions) {
-      const question = session.question === undefined ? '' : `question: ${session.question}`;
+      const question = session.question === undefined ? '' : `question: ${session.question.text}`;
       console.log(`${sessionLine(session)}${trailing(question)}`);
     }
     // Planned tasks share the session table's columns under `planned`, the
@@ -1929,6 +2077,26 @@ export function buildProgram(): Command {
         () => steerSession(db, session, message, { kind: 'manual', by }),
         `Steered session ${session}.`,
       );
+    });
+
+  program
+    .command('answer <target> <reply>')
+    .description(
+      "Answer a session's open question, or the conductor's (target `conductor`): an option's number, or words (operator only)",
+    )
+    .action((target: string, reply: string) => {
+      const { repoPath, db } = project();
+      // The asker waits on the operator's decision: a session or the conductor
+      // answering it would decide in the operator's name (decision 93).
+      if (callingSession(db) || callingConductor()) return refuse('`pup answer` is operator-only.');
+      if (target === CONDUCTOR_TARGET) {
+        return questionOrRefuse(() => [
+          `Answered the conductor: ${sanitizeReason(answerConductorQuestion(db, repoPath, reply).text)}`,
+        ]);
+      }
+      questionOrRefuse(() => [
+        `Answered session ${sanitizeReason(target)}: ${sanitizeReason(answerSessionQuestion(db, target, reply).text)}`,
+      ]);
     });
 
   program
@@ -2351,6 +2519,17 @@ export function buildProgram(): Command {
             if (outcome.regated && failedStage) {
               console.log(
                 `Re-gate refused: ${sanitizeReason(failedStage.stage)} failed on the new head, and the PR still vouches for the earlier pin only. Fix it on the branch, push, then re-run \`pup merge ${session} --pr\`.`,
+              );
+              break;
+            }
+            // Refused before any debt was measured (decision 146): accepting
+            // debt cannot get it through, only the session's own fix can.
+            if (failedStage) {
+              console.log(
+                `Merge refused: ${sanitizeReason(failedStage.stage)} failed, which --accept-debt does not cover. ` +
+                  (failedStage.stage === ADR_NUMBER_STAGE
+                    ? `Steer the session to renumber its ADR as the report says: \`pup steer ${session} "..."\`.`
+                    : `Steer the session to fix it: \`pup steer ${session} "..."\`.`),
               );
               break;
             }
@@ -2884,15 +3063,19 @@ export function buildProgram(): Command {
   session
     .command('ask <question>')
     .description(
-      'Ask the operator a question and stay running; a steer answers it (run by the agent)',
+      'Ask the operator a question and stay running; `pup answer` or a steer answers it (run by the agent)',
     )
-    .action((question: string) => {
+    .option('--option <text...>', `an answer to offer, up to ${MAX_QUESTION_OPTIONS}`)
+    .option('--recommend <n>', 'the number of the option you would pick')
+    .action((question: string, opts: AskOptions) => {
       const { db } = project();
       const sessionId = ownSession(db, 'ask');
       if (!sessionId) return;
-      if (!question.trim()) return refuse('pup session ask needs the question itself.');
-      markSessionQuestion(db, sessionId, question);
-      console.log(`Session ${sanitizeReason(sessionId)} asked: ${sanitizeReason(question)}`);
+      questionOrRefuse(() => {
+        const asked = askedQuestion('pup session ask', question, opts);
+        markSessionQuestion(db, sessionId, asked);
+        return askedLines(`Session ${sanitizeReason(sessionId)}`, asked);
+      });
     });
   session
     .command('test [args...]')

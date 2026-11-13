@@ -4,7 +4,7 @@
 - Amends: [0096](0096-test-runs-queue-for-a-few-machine-wide.md)
 
 156. **Launches hold while the plan's usage windows run low (2026-11-08).**
-    A Max plan meters usage in a 5-hour window and a 7-day window. Before this, pup launched
+    A Max plan meters usage in a 7-day window, and in a 5-hour window on the plans that still have one. Before this, pup launched
     into an exhausted window: the conductor kept the cap full, and every new session hit the
     limit mid-turn and stalled with work half done.
     *The reading.* Every compiled window, sessions and the conductor alike, gets a `statusLine`
@@ -16,7 +16,8 @@
     with neither window (a plan without them, or before the session's first response) leaves
     the file as it was. The reading's age is the file's mtime, so the file holds only what the
     JSON said. The script then prints one line, `ctx N% | 5h N% | 7d N%`, which replaces the
-    operator's own status line in pup's windows.
+    operator's own status line in pup's windows. A plan with no 5-hour window reports none: the
+    `5h N%` segment is left out, never printed as `5h ?`, and nothing holds on it.
     *The hold.* `pup launch` and `pup new` refuse a launch while a fresh reading has the 5-hour
     window at or over 85% or the 7-day window at or over 90%. They ask right after the session
     cap, before `pup new` writes its task. The refusal names the window, its share and its reset
@@ -30,7 +31,8 @@
     is never followed and a fifo never opened. The status line runs only when a window has
     something to show, so an idle fleet's reading goes stale. That is the intent: a quiet fleet
     has nothing to protect, and the next window to talk to Claude writes a fresh reading.
-    *`pup status`* prints `usage: 5h N% (resets …), 7d N% (resets …); read Nm ago` after the
+    *`pup status`* prints `usage: 5h N% (resets …), 7d N% (resets …); read Nm ago` (the 5h
+    part only when the plan reports that window) after the
     conductor line, and adds `stale: holds nothing` past 30 minutes. Without a reading it prints
     no line.
     *Security.* The script quotes one path, the usage file's, which pup derives from the store
@@ -49,4 +51,10 @@
     and runs nothing. A launch at 85% (5-hour) or 90% (7-day) is refused with the window and its
     reset named. `--over-limit` lets the operator through and never the conductor. A stale,
     missing, malformed, future-dated or reset reading never holds. `pup status` prints both
-    shares and the age.
+    shares and the age. A reading without a 5-hour window prints no 5h text and holds nothing
+    on it.
+    *Amended 2026-11-11: a window the plan reports.* Some plans have lost the 5-hour window
+    and others keep it. Claude Code's statusline JSON carries `rate_limits.five_hour` only on a
+    plan that has it, and `rate_limits.seven_day` always. The script, the hold and `pup status`
+    read the 5-hour window when it is there and say nothing about it when it is not. An absent
+    window is never exhausted and never unknown-blocking.

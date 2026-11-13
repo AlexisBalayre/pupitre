@@ -125,7 +125,9 @@ describe('createTerminalStatus', () => {
   it('writes a question holding escapes inert', () => {
     const out = tty();
     const hostile = `${ESC}]0;pwned${BEL} \u009b31m\u007f x;status=idle`;
-    createTerminalStatus(out, ITERM).update(reading(session({ question: hostile })));
+    createTerminalStatus(out, ITERM).update(
+      reading(session({ question: { text: hostile, options: [] } })),
+    );
     const [written] = out.writes;
     // The only ESC and BEL left are the writer's own.
     expect(written?.split(ESC).length).toBe(1 + 3 + 0); // push, title, status

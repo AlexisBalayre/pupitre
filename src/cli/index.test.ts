@@ -36,6 +36,11 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   // `pup attach` hands the terminal to tmux; here it hands it to nothing.
   attachWindow: vi.fn(() => 0),
   hasSessionWindow: vi.fn(() => true),
+  // The rescope's tmux and ps reads (decision 115), tested against both in
+  // their own suite.
+  windowSockets: vi.fn(),
+  listPanes: vi.fn(),
+  listProcesses: vi.fn(),
   // The turn watchdog's reads: a conductor window to find, a pane to read for
   // a dead turn, a nudge to type (addendum to decision 35).
   conductorPane: vi.fn(),
@@ -74,11 +79,15 @@ vi.mock('ink', async (importOriginal) => ({
   ...(await importOriginal<typeof import('ink')>()),
   render: vi.fn(),
 }));
-vi.mock('../core/conductor.service.js', () => ({
+vi.mock('../core/conductor.service.js', async (importOriginal) => ({
   ConductorTellRefusedError: class ConductorTellRefusedError extends Error {},
   DEFAULT_MAX_SESSIONS: 4,
+  // The store write, not a boundary: what it records is what `pup status` reads.
+  markConductorQuestion: (await importOriginal<typeof import('../core/conductor.service.js')>())
+    .markConductorQuestion,
   NO_CONDUCTOR_RUNNING:
     'No conductor is running for this project; start one with `pup conductor start`.',
+  TELL_MAX_CHARS: 800,
   conductorBlock: vi.fn(),
   isConductorRunning: vi.fn(() => false),
   startConductor: vi.fn(),
@@ -117,6 +126,18 @@ vi.mock('node:child_process', async (importOriginal) => {
   return { ...actual, execFileSync: vi.fn(actual.execFileSync), spawn: vi.fn(actual.spawn) };
 });
 vi.mock('../core/session-lifecycle.service.js', async (importOriginal) => ({
+  // The real ask and answer: the store writes they make are what `pup status`
+  // reads back, and the pane they type into is `steerPane`, faked above.
+  answerConductorQuestion: (
+    await importOriginal<typeof import('../core/session-lifecycle.service.js')>()
+  ).answerConductorQuestion,
+  answerSessionQuestion: (
+    await importOriginal<typeof import('../core/session-lifecycle.service.js')>()
+  ).answerSessionQuestion,
+  askedQuestion: (await importOriginal<typeof import('../core/session-lifecycle.service.js')>())
+    .askedQuestion,
+  conductorQuestion: (await importOriginal<typeof import('../core/session-lifecycle.service.js')>())
+    .conductorQuestion,
   createSession: vi.fn(),
   interruptSession: vi.fn(),
   killSession: vi.fn(),
@@ -124,7 +145,9 @@ vi.mock('../core/session-lifecycle.service.js', async (importOriginal) => ({
     .LowMemoryError,
   launchTask: vi.fn(),
   markSessionDone: vi.fn(),
-  markSessionQuestion: vi.fn(),
+  markSessionQuestion: (
+    await importOriginal<typeof import('../core/session-lifecycle.service.js')>()
+  ).markSessionQuestion,
   planTask: vi.fn(),
   recordSteerMessage: vi.fn(),
   SessionCapReachedError: (
@@ -176,10 +199,14 @@ import {
 import {
   deadTurnError,
   launchWatcher,
+  listPanes,
+  listProcesses,
   SessionPaneMissingError,
   SteerNotDeliveredError,
   saveSessionEnv,
+  steerPane,
   transcriptDir,
+  windowSockets,
 } from '../claude/session-runtime.service.js';
 import { waitForCiReview } from '../core/ci-wait.service.js';
 import {
@@ -197,7 +224,16 @@ import { intentTemplate } from '../core/intent.service.js';
 import { runMergeGate } from '../core/merge-gate.service.js';
 import { projectId, projectPaths } from '../core/paths.utils.js';
 import { InvalidProfileError } from '../core/profile.errors.js';
-import { getSession, listEvents, transitionSession } from '../core/session.repository.js';
+import {
+  appendEvent,
+  ensureProject,
+  getSession,
+  getTask,
+  insertSession,
+  insertTask,
+  listEvents,
+  transitionSession,
+} from '../core/session.repository.js';
 import { STALLED_AFTER_MS } from '../core/session-activity.constants.js';
 import {
   hardRespawnSession,
@@ -882,6 +918,231 @@ describe('CLI commands', () => {
     });
   });
 
+  describe('plan edit --rescope (decision 115)', () => {
+    const claimed = (repo: string, state: string, scopeIn = ['src/**']) => {
+      const { db, repoPath } = resolveProject(repo);
+      ensureProject(db, projectId(repoPath), repoPath);
+      insertTask(db, {
+        id: 't-1',
+        projectId: projectId(repoPath),
+        spec: JSON.stringify({ id: 't-1', goal: 'g', scopeIn, acceptance: ['a'] }),
+      });
+      insertSession(db, {
+        id: 's1',
+        taskId: 't-1',
+        worktreePath: join(repoPath, '.worktrees', 's1'),
+        branch: 'pup/s1',
+        profileHash: 'hash',
+      });
+      db.prepare('UPDATE sessions SET state = ? WHERE id = ?').run(state, 's1');
+      return db;
+    };
+    const rescope = (...extra: string[]) =>
+      buildProgram().parse(['plan', 'edit', 't-1', '--rescope', '--scope', 'docs/**', ...extra], {
+        from: 'user',
+      });
+    // By default no window of the task's is open, as the gate leaves a merged
+    // session's, and the caller runs under no Claude Code pup launched.
+    beforeEach(() => {
+      vi.mocked(windowSockets).mockReturnValue(['/tmp/tmux-1/default']);
+      vi.mocked(listPanes).mockReturnValue([]);
+      vi.mocked(listProcesses).mockReturnValue(new Map());
+    });
+
+    it("appends to a merged task's scope-in, and pup log shows it", () => {
+      const repo = initRepo();
+      useCwd(repo);
+      const db = claimed(repo, 'merged');
+
+      rescope();
+      buildProgram().parse(['log'], { from: 'user' });
+
+      expect(logs).toContain(
+        "Widened t-1's scope-in with docs/**; recorded on session s1; tier critical.",
+      );
+      expect(JSON.parse(getTask(db, 't-1')?.spec ?? '{}').scopeIn).toEqual(['src/**', 'docs/**']);
+      expect(listEvents(db, 's1').map((event) => event.type)).toContain('rescope');
+      expect(logs.join('\n')).toContain('session s1');
+      expect(logs.join('\n')).toContain('files: docs/**');
+    });
+
+    // The operator is inferred from absent markers, so the event keeps what
+    // was seen of the caller rather than claiming who it was.
+    const rescopeEvent = (db: ReturnType<typeof claimed>) =>
+      JSON.parse(listEvents(db, 's1').find((event) => event.type === 'rescope')?.payload ?? '{}');
+
+    it('records the caller as an inferred operator, with its tmux pane and no terminal', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      const db = claimed(repo, 'merged');
+      vi.stubEnv('TMUX_PANE', '%12');
+
+      rescope();
+
+      expect(rescopeEvent(db)).toMatchObject({
+        by: 'inferred-operator',
+        tty: null,
+        tmuxPane: '%12',
+      });
+    });
+
+    it('records the terminal on stdin, and no pane a TMUX_PANE does not name', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      const db = claimed(repo, 'merged');
+      vi.stubEnv('TMUX_PANE', 'pup-s1');
+      const real = vi.mocked(execFileSync).getMockImplementation() as typeof execFileSync;
+      vi.mocked(execFileSync).mockImplementation(((file: string, ...rest: never[]) =>
+        file === '/usr/bin/tty' ? '/dev/ttys009\n' : real(file, ...rest)) as typeof execFileSync);
+      const wasTty = process.stdin.isTTY;
+      Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true });
+      try {
+        rescope();
+      } finally {
+        Object.defineProperty(process.stdin, 'isTTY', { value: wasTty, configurable: true });
+        vi.mocked(execFileSync).mockImplementation(real);
+      }
+
+      expect(rescopeEvent(db)).toMatchObject({ tty: '/dev/ttys009', tmuxPane: null });
+    });
+
+    it('says so when every glob is already in scope, writing nothing', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      const db = claimed(repo, 'merged');
+
+      buildProgram().parse(['plan', 'edit', 't-1', '--rescope', '--scope', 'src/**'], {
+        from: 'user',
+      });
+
+      expect(logs).toContain("t-1's scope-in already holds every glob given; nothing changed.");
+      expect(listEvents(db, 's1')).toEqual([]);
+    });
+
+    it('names the tier a rescope raised', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      const db = claimed(repo, 'merged', ['docs/**']);
+      db.prepare("UPDATE sessions SET tier = 'standard', rung = 1 WHERE id = ?").run('s1');
+
+      buildProgram().parse(
+        ['plan', 'edit', 't-1', '--rescope', '--scope', 'src/core/merge-gate.service.ts'],
+        { from: 'user' },
+      );
+
+      expect(logs).toContain(
+        "Widened t-1's scope-in with src/core/merge-gate.service.ts; recorded on session s1; " +
+          'tier critical, raised from standard.',
+      );
+      expect(getSession(db, 's1')?.tier).toBe('critical');
+    });
+
+    it('refuses a glob with a wildcard in its first segment', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      const db = claimed(repo, 'merged');
+
+      buildProgram().parse(['plan', 'edit', 't-1', '--rescope', '--scope', '**'], {
+        from: 'user',
+      });
+
+      expect(errors).toContain('Rescope glob "**" has a wildcard in its first segment.');
+      expect(JSON.parse(getTask(db, 't-1')?.spec ?? '{}').scopeIn).toEqual(['src/**']);
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('refuses while the session is running', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      const db = claimed(repo, 'running');
+
+      rescope();
+
+      expect(errors).toContain('Session s1 is at work on t-1; rescope once it stops.');
+      expect(JSON.parse(getTask(db, 't-1')?.spec ?? '{}').scopeIn).toEqual(['src/**']);
+      expect(process.exitCode).toBe(1);
+    });
+
+    // `pup session done` leaves the worker's window up while it awaits review.
+    it('refuses while the session window is still open', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      const db = claimed(repo, 'awaiting-review');
+      vi.mocked(listPanes).mockReturnValue(['%3\t\tpup-s1']);
+
+      rescope();
+
+      expect(errors.join('\n')).toContain("Session s1's window is open");
+      expect(JSON.parse(getTask(db, 't-1')?.spec ?? '{}').scopeIn).toEqual(['src/**']);
+      expect(process.exitCode).toBe(1);
+    });
+
+    it.each([
+      ['a session', 'PUP_SESSION_ID', 's1'],
+      ['the conductor', 'PUP_CONDUCTOR', 'p1'],
+    ])('refuses %s', (_who, variable, value) => {
+      const repo = initRepo();
+      useCwd(repo);
+      const db = claimed(repo, 'merged');
+      vi.stubEnv(variable, value);
+
+      rescope();
+
+      expect(errors.join('\n')).toContain('operator-only');
+      expect(JSON.parse(getTask(db, 't-1')?.spec ?? '{}').scopeIn).toEqual(['src/**']);
+      expect(process.exitCode).toBe(1);
+    });
+
+    // `env -u PUP_CONDUCTOR pup plan edit ...` from the conductor's own Bash
+    // sheds the marker, not the process tree it runs in.
+    it.each([
+      ['the conductor', 'pup-conductor-p1'],
+      ['a session', 'pup-s9'],
+    ])('refuses %s by its process tree when its markers are unset', (_who, name) => {
+      const repo = initRepo();
+      useCwd(repo);
+      const db = claimed(repo, 'merged');
+      vi.mocked(listProcesses).mockReturnValue(
+        new Map([[process.ppid, { parent: 1, args: `claude --name ${name}` }]]),
+      );
+
+      rescope();
+
+      expect(errors.join('\n')).toContain(`operator-only, and this runs under ${name}`);
+      expect(JSON.parse(getTask(db, 't-1')?.spec ?? '{}').scopeIn).toEqual(['src/**']);
+      expect(listEvents(db, 's1')).toEqual([]);
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('refuses when the process tree cannot be read', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      const db = claimed(repo, 'merged');
+      vi.mocked(listProcesses).mockReturnValue(undefined);
+
+      rescope();
+
+      expect(errors.join('\n')).toContain('could not read the process tree');
+      expect(JSON.parse(getTask(db, 't-1')?.spec ?? '{}').scopeIn).toEqual(['src/**']);
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('takes no field but --scope, and needs one', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      claimed(repo, 'merged');
+
+      rescope('--goal', 'other');
+      expect(errors).toContain(
+        '--rescope takes only --scope: it appends scope-in globs and changes nothing else.',
+      );
+
+      buildProgram().parse(['plan', 'edit', 't-1', '--rescope'], { from: 'user' });
+      expect(errors).toContain('Usage: pup plan edit <task> --rescope --scope <glob...>');
+      expect(process.exitCode).toBe(1);
+    });
+  });
+
   describe('debt close', () => {
     // Retiring an entry erases the operator's own overdue-debt reminder; no
     // session closes one (decisions 30, 47).
@@ -1159,6 +1420,400 @@ describe('CLI commands', () => {
         ]);
         expect(process.exitCode).toBe(1);
       });
+    });
+
+    // Decision 93: the conductor raises an operator decision as a question in
+    // the inbox, never as prose in its pane; only the conductor asks this way.
+    describe('ask', () => {
+      const ASK = ['conductor', 'ask', 'accept the debt?', '--option', 'yes', '--option', 'no'];
+
+      it('records the conductor question, which then leads the needs-you inbox', () => {
+        const repo = initRepo();
+        useCwd(repo);
+        seedBlockedSession(repo, 's-blocked', 'lint keeps failing');
+        vi.stubEnv('PUP_CONDUCTOR', projectId(repo));
+
+        buildProgram().parse([...ASK, '--recommend', '2'], { from: 'user' });
+
+        expect(logs).toEqual([
+          'The conductor asked: accept the debt?',
+          '  1. yes',
+          '  2. no  (recommended)',
+        ]);
+        expect(process.exitCode).toBeUndefined();
+
+        vi.stubEnv('PUP_CONDUCTOR', '');
+        vi.mocked(isConductorRunning).mockReturnValue(true);
+        logs.length = 0;
+        buildProgram().parse(['status'], { from: 'user' });
+
+        expect(logs.slice(0, 5)).toEqual([
+          'Needs you',
+          '  conductor  question: accept the debt?  → pup answer conductor <n>, or pup answer conductor "..."',
+          '      1. yes',
+          '      2. no  (recommended)',
+          '  s-blocked  blocked (3 rejections)  → pup unblock s-blocked',
+        ]);
+      });
+
+      // The new conductor never asked it, so its kickoff would have it ignore
+      // the answer: the start ends the last run's question (decision 93).
+      it("ends the last run's question when the conductor starts again", () => {
+        const repo = initRepo();
+        useCwd(repo);
+        vi.stubEnv('PUP_CONDUCTOR', projectId(repo));
+        buildProgram().parse(ASK, { from: 'user' });
+        vi.stubEnv('PUP_CONDUCTOR', '');
+        vi.mocked(startConductor).mockReturnValue({ name: 'pup-conductor-p1', paneId: '%3' });
+
+        buildProgram().parse(['conductor', 'start'], { from: 'user' });
+        vi.mocked(isConductorRunning).mockReturnValue(true);
+        logs.length = 0;
+        buildProgram().parse(['status'], { from: 'user' });
+
+        expect(logs.join('\n')).not.toContain('accept the debt?');
+      });
+
+      // `pup answer conductor` would quote it whole in a tell over the 800
+      // characters a tell takes, and the operator cannot shorten the quote.
+      it('refuses a question too long to answer, and stores nothing', () => {
+        const repo = initRepo();
+        useCwd(repo);
+        vi.stubEnv('PUP_CONDUCTOR', projectId(repo));
+
+        buildProgram().parse(['conductor', 'ask', `accept the debt? ${'q'.repeat(760)}`], {
+          from: 'user',
+        });
+
+        expect(errors).toHaveLength(1);
+        expect(errors[0]).toMatch(/runs to \d+\. Nothing was stored: ask in fewer words/);
+        expect(process.exitCode).toBe(1);
+        vi.stubEnv('PUP_CONDUCTOR', '');
+        vi.mocked(isConductorRunning).mockReturnValue(true);
+        logs.length = 0;
+        buildProgram().parse(['status'], { from: 'user' });
+        expect(logs.join('\n')).not.toContain('accept the debt?');
+      });
+
+      it.each([
+        ['the operator', undefined, undefined],
+        ['a session', 'PUP_SESSION_ID', 's1'],
+        ["another project's conductor", 'PUP_CONDUCTOR', 'p1'],
+      ])('refuses %s', (_who, variable, value) => {
+        const repo = initRepo();
+        useCwd(repo);
+        seedSession(repo, 's1');
+        if (variable && value) vi.stubEnv(variable, value);
+
+        buildProgram().parse(ASK, { from: 'user' });
+
+        expect(errors).toEqual(['`pup conductor ask` is for the conductor only.']);
+        expect(process.exitCode).toBe(1);
+        vi.stubEnv('PUP_SESSION_ID', '');
+        vi.stubEnv('PUP_CONDUCTOR', '');
+        vi.mocked(isConductorRunning).mockReturnValue(true);
+        logs.length = 0;
+        buildProgram().parse(['status'], { from: 'user' });
+        expect(logs.join('\n')).not.toContain('accept the debt?');
+      });
+
+      it('refuses --option on any other action', () => {
+        useCwd(initRepo());
+
+        buildProgram().parse(['conductor', 'stop', '--option', 'yes'], { from: 'user' });
+
+        expect(stopConductor).not.toHaveBeenCalled();
+        expect(errors).toEqual(['Only `pup conductor ask` takes --option and --recommend.']);
+      });
+    });
+  });
+
+  // Decision 93: a worker's question carries its options and the one it would
+  // pick, so the operator answers with one keystroke.
+  describe('session ask with options', () => {
+    /** A running session s1, its own worktree's cwd, asking as itself. */
+    function seedAsking(): { repo: string; worktree: string } {
+      const repo = initRepo();
+      seedSession(repo, 's1');
+      const { db } = resolveProject(repo);
+      transitionSession(db, 's1', 'running');
+      db.close();
+      vi.stubEnv('PUP_SESSION_ID', 's1');
+      return { repo, worktree: worktreeOf(repo, 's1') };
+    }
+
+    /** `pup status` as the operator, from the repo `useCwd` already points at. */
+    function operatorStatus(): string[] {
+      vi.stubEnv('PUP_SESSION_ID', '');
+      logs.length = 0;
+      buildProgram().parse(['status'], { from: 'user' });
+      return logs;
+    }
+
+    it('stores the options and the recommended one, and pup status numbers and marks them', () => {
+      const { repo, worktree } = seedAsking();
+      useCwd(worktree);
+
+      buildProgram().parse(
+        [
+          'session',
+          'ask',
+          'rebase or merge?',
+          '--option',
+          'rebase onto main',
+          '--option',
+          'merge main in',
+          '--recommend',
+          '1',
+        ],
+        { from: 'user' },
+      );
+
+      expect(logs).toEqual([
+        'Session s1 asked: rebase or merge?',
+        '  1. rebase onto main  (recommended)',
+        '  2. merge main in',
+      ]);
+      const { db } = resolveProject(repo);
+      expect(listEvents(db, 's1').map((event) => JSON.parse(event.payload))).toContainEqual({
+        text: 'rebase or merge?',
+        options: ['rebase onto main', 'merge main in'],
+        recommended: 1,
+      });
+      db.close();
+
+      useCwd(repo);
+      expect(operatorStatus().slice(0, 4)).toEqual([
+        'Needs you',
+        '  s1  question: rebase or merge?  → pup answer s1 <n>, or pup answer s1 "..."',
+        '      1. rebase onto main  (recommended)',
+        '      2. merge main in',
+      ]);
+    });
+
+    // A session's words reach the operator's terminal: control characters go,
+    // and shell syntax stays text that nothing runs (decision 29).
+    it('scrubs control characters out of the question and its options', () => {
+      const { repo, worktree } = seedAsking();
+      useCwd(worktree);
+
+      buildProgram().parse(
+        [
+          'session',
+          'ask',
+          '\u001b[2Jwhich?\u0007',
+          '--option',
+          '\u001b]0;pwned\u0007yes; $(whoami)',
+          '--option',
+          '`id` no',
+        ],
+        { from: 'user' },
+      );
+      const asked = logs.join('\n');
+      useCwd(repo);
+      const status = operatorStatus().join('\n');
+
+      for (const printed of [asked, status]) {
+        // biome-ignore lint/suspicious/noControlCharactersInRegex: asserting their absence
+        expect(printed).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/);
+        expect(printed).toContain('yes; $(whoami)');
+        expect(printed).toContain('`id` no');
+      }
+    });
+
+    it.each([
+      [['--option', 'a', 'b', 'c', 'd', 'e'], 'A question offers at most 4 options'],
+      [['--option', 'a', 'b', '--recommend', '3'], '--recommend takes the number of one of the 2'],
+      [['--option', 'a', 'b', '--recommend', 'first'], '--recommend takes the number'],
+      [['--recommend', '1'], '--recommend takes the number of one of the 0'],
+      [['--option', ' '], 'Every --option needs its text.'],
+    ])('refuses %j and records nothing', (flags, refusal) => {
+      const { repo, worktree } = seedAsking();
+      useCwd(worktree);
+
+      buildProgram().parse(['session', 'ask', 'which?', ...flags], { from: 'user' });
+
+      expect(errors.join('\n')).toContain(refusal);
+      expect(process.exitCode).toBe(1);
+      const { db } = resolveProject(repo);
+      expect(listEvents(db, 's1').map((event) => event.type)).not.toContain('question');
+      db.close();
+    });
+  });
+
+  // Decision 93: the operator's one-keystroke answer, typed into the asker's
+  // pane with the question in front of it.
+  describe('answer', () => {
+    /** A running session s1 on pane %7 with an open two-option question. */
+    function seedAsked(): string {
+      const repo = initRepo();
+      seedSession(repo, 's1');
+      const { db } = resolveProject(repo);
+      transitionSession(db, 's1', 'running');
+      db.prepare("UPDATE sessions SET tmux_target = '%7' WHERE id = 's1'").run();
+      appendEvent(db, 's1', 'question', {
+        text: 'rebase or merge?',
+        options: ['rebase onto main', 'merge main in'],
+        recommended: 1,
+      });
+      db.close();
+      return repo;
+    }
+
+    it("steers the worker with the second option's text, prefixed by the question, and closes it", () => {
+      const repo = seedAsked();
+      useCwd(repo);
+
+      buildProgram().parse(['answer', 's1', '2'], { from: 'user' });
+
+      expect(steerPane).toHaveBeenCalledWith(
+        { sessionId: 's1', paneId: '%7' },
+        'Answer to your question "rebase or merge?": option 2, merge main in',
+      );
+      expect(logs).toEqual(['Answered session s1: merge main in']);
+      const { db } = resolveProject(repo);
+      expect(listEvents(db, 's1').map((event) => event.type)).toContain('answer');
+      db.close();
+
+      logs.length = 0;
+      buildProgram().parse(['status'], { from: 'user' });
+      expect(logs.join('\n')).not.toContain('question');
+    });
+
+    it('sends any other text as a free answer', () => {
+      useCwd(seedAsked());
+
+      buildProgram().parse(['answer', 's1', 'neither, wait'], { from: 'user' });
+
+      expect(steerPane).toHaveBeenCalledWith(
+        { sessionId: 's1', paneId: '%7' },
+        'Answer to your question "rebase or merge?": neither, wait',
+      );
+    });
+
+    it('refuses a number past the options and types nothing', () => {
+      useCwd(seedAsked());
+
+      buildProgram().parse(['answer', 's1', '3'], { from: 'user' });
+
+      expect(steerPane).not.toHaveBeenCalled();
+      expect(errors).toEqual([
+        'The question offers 2 options; answer 1 to 2, or in words. Nothing was sent.',
+      ]);
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('refuses a session with no open question', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedSession(repo, 's2');
+      const { db } = resolveProject(repo);
+      transitionSession(db, 's2', 'running');
+      db.close();
+
+      buildProgram().parse(['answer', 's2', '1'], { from: 'user' });
+
+      expect(errors).toEqual(['Session s2 has no open question; `pup steer` sends it words.']);
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('tells the conductor its answer, prefixed by its question', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      vi.mocked(isConductorRunning).mockReturnValue(true);
+      vi.mocked(tellConductor).mockReturnValue(true);
+      const { db } = resolveProject(repo);
+      appendEvent(db, null, 'question', { text: 'accept the debt?', options: ['yes', 'no'] });
+      db.close();
+
+      buildProgram().parse(['answer', 'conductor', 'no, steer it to fix the lint'], {
+        from: 'user',
+      });
+
+      expect(tellConductor).toHaveBeenCalledWith(
+        repo,
+        'Answer to your question "accept the debt?": no, steer it to fix the lint',
+      );
+      expect(logs).toEqual(['Answered the conductor: no, steer it to fix the lint']);
+      logs.length = 0;
+      buildProgram().parse(['status'], { from: 'user' });
+      expect(logs.join('\n')).not.toContain('accept the debt?');
+    });
+
+    it('says so, and leaves the question open, when the answer did not land', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      vi.mocked(isConductorRunning).mockReturnValue(true);
+      vi.mocked(tellConductor).mockReturnValue(false);
+      const { db } = resolveProject(repo);
+      appendEvent(db, null, 'question', { text: 'accept the debt?' });
+      db.close();
+
+      buildProgram().parse(['answer', 'conductor', 'yes'], { from: 'user' });
+
+      expect(errors.join('\n')).toContain('the question stays open');
+      expect(process.exitCode).toBe(1);
+    });
+
+    /** A repo whose running conductor asked `accept the debt?`. */
+    function seedConductorAsked(): string {
+      const repo = initRepo();
+      vi.mocked(isConductorRunning).mockReturnValue(true);
+      const { db } = resolveProject(repo);
+      appendEvent(db, null, 'question', { text: 'accept the debt?' });
+      db.close();
+      return repo;
+    }
+
+    // `pup conductor tell`'s refusals are the answer's too, read as one line.
+    it('refuses as the tell does when the tell is refused', () => {
+      useCwd(seedConductorAsked());
+      vi.mocked(tellConductor).mockImplementation(() => {
+        throw new ConductorTellRefusedError('The message runs past 800 characters.');
+      });
+
+      buildProgram().parse(['answer', 'conductor', 'yes'], { from: 'user' });
+
+      expect(errors).toEqual(['The message runs past 800 characters.']);
+      expect(process.exitCode).toBe(1);
+    });
+
+    // A failure that is no refusal is a bug: it surfaces, not printed as one.
+    it('rethrows a failure that is no refusal', () => {
+      useCwd(seedConductorAsked());
+      vi.mocked(tellConductor).mockImplementation(() => {
+        throw new Error('tmux exploded');
+      });
+
+      expect(() => buildProgram().parse(['answer', 'conductor', 'yes'], { from: 'user' })).toThrow(
+        'tmux exploded',
+      );
+      expect(errors).toEqual([]);
+    });
+
+    it('refuses as a steer does, for a session it cannot steer', () => {
+      useCwd(seedAsked());
+
+      buildProgram().parse(['answer', 's-none', '1'], { from: 'user' });
+
+      expect(steerPane).not.toHaveBeenCalled();
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toContain('s-none');
+      expect(process.exitCode).toBe(1);
+    });
+
+    it.each([
+      ['a session', 'PUP_SESSION_ID', 's1'],
+      ['the conductor', 'PUP_CONDUCTOR', 'p1'],
+    ])('refuses %s', (_who, variable, value) => {
+      useCwd(seedAsked());
+      vi.stubEnv(variable, value);
+
+      buildProgram().parse(['answer', 's1', '1'], { from: 'user' });
+
+      expect(steerPane).not.toHaveBeenCalled();
+      expect(errors).toEqual(['`pup answer` is operator-only.']);
+      expect(process.exitCode).toBe(1);
     });
   });
 
@@ -2142,6 +2797,50 @@ describe('CLI commands', () => {
       ]);
       expect(process.exitCode).toBe(1);
       expect(waitForCiReview).not.toHaveBeenCalled();
+    });
+  });
+
+  // A stage that fails refuses the gate before any debt is weighed (decision
+  // 146): --accept-debt cannot get it through, only the session's fix can.
+  describe('merge refused by a failed stage', () => {
+    function refusedOn(stage: string): void {
+      vi.mocked(runMergeGate).mockResolvedValue({
+        status: 'refused',
+        report: {
+          sessionId: 's1',
+          passed: false,
+          sandbox: 'sandbox-exec (macOS)',
+          stages: [{ stage, status: 'fail', detail: 'taken' }],
+        },
+        rejectCount: 0,
+      });
+    }
+
+    it('tells the operator to steer the session to renumber its ADR, not to accept debt', async () => {
+      useCwd(initRepoWithAdapter());
+      refusedOn('adr-number');
+
+      await buildProgram().parseAsync(['merge', 's1'], { from: 'user' });
+
+      expect(logs).toContain(
+        'Merge refused: adr-number failed, which --accept-debt does not cover. Steer the ' +
+          'session to renumber its ADR as the report says: `pup steer s1 "..."`.',
+      );
+      expect(logs.join('\n')).not.toContain('Re-run with --accept-debt');
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('tells the operator to steer the session to fix any other failed stage', async () => {
+      useCwd(initRepoWithAdapter());
+      refusedOn('worktree-clean');
+
+      await buildProgram().parseAsync(['merge', 's1'], { from: 'user' });
+
+      expect(logs).toContain(
+        'Merge refused: worktree-clean failed, which --accept-debt does not cover. Steer the ' +
+          'session to fix it: `pup steer s1 "..."`.',
+      );
+      expect(process.exitCode).toBe(1);
     });
   });
 });

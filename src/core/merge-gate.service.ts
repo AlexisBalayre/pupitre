@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomBytes } from 'node:crypto';
 import {
   existsSync,
@@ -14,7 +15,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { availableParallelism, homedir, loadavg, tmpdir } from 'node:os';
-import { basename, dirname, join, resolve } from 'node:path';
+import { basename, dirname, extname, join, resolve } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import {
   failureSummary,
@@ -35,10 +36,12 @@ import {
   killSession as killTmux,
   SteerNotDeliveredError,
 } from '../claude/session-runtime.service.js';
+import { ADR_NUMBER_STAGE, adrNumberStage } from './adr-number.service.js';
 import { patchCoverage } from './coverage.utils.js';
 import { judgeDebt, measureCoverage, measureStaticDebt, quotePath } from './debt.service.js';
 import { draftDecisionRecord } from './decision-record.service.js';
 import { answerFixRoundThreads } from './fix-round.service.js';
+import { readBlobs } from './git-blobs.client.js';
 import {
   ArmedGitDriverError,
   armedGitDrivers,
@@ -46,6 +49,8 @@ import {
   assertNoArmedGitDrivers,
   assertNoSharedWorktreeKey,
   assertNoWorktreeConfig,
+  BINARY_FREE_MAX_BYTES,
+  BINARY_FREE_TOTAL_MAX_BYTES,
   checkoutPinned,
   currentBranch,
   gitDiffAddedLines,
@@ -104,6 +109,7 @@ import {
   NO_PROGRESS,
   type StageProgress,
 } from './progress.utils.js';
+import { skipsTestsOnUntestedChanges } from './project-config.config.js';
 import { mergeToRegate, planRegate, type RegatePlan, regateMerged } from './regate.service.js';
 import {
   endSandboxRun,
@@ -349,11 +355,17 @@ type DiffSizeKind = 'source' | 'test' | 'docs';
 
 /**
  * What the branch's tree tells the diff-size split beyond a path's own name
- * (decision 110): whether a symlink can reach the path, and whether a
- * Docusaurus config compiles the Markdown under `docs/`.
+ * (decision 110): every path on it, whether a symlink can reach the path,
+ * whether the tree also holds the path, or one of its directories, in another
+ * ASCII case, and whether a Docusaurus config compiles the Markdown under
+ * `docs/`. And every blob's oid and size by path, so the reach checks read
+ * blobs in one batch (decision 154).
  */
 interface BranchTree {
+  paths: string[];
+  blobs: Map<string, { oid: string; size: number }>;
   linked: (path: string) => boolean;
+  foldsOntoAnother: (path: string) => boolean;
   markdownIsCode: boolean;
 }
 
@@ -408,7 +420,8 @@ function dependenciesNameDocusaurus(repoPath: string, branch: string): boolean {
  * The branch's tree as the split reads it. A symlink reaches the path it lands
  * on and everything under it, read from its blob lexically from the link's
  * directory and compared folded; `git grep` never reads a link's blob, so this
- * is the one place a link is seen. The blob is read up to its first NUL, as
+ * is the one place a link is seen, every link's blob read in one batch
+ * (decision 154). The blob is read up to its first NUL, as
  * checkout writes the link with `symlink()`, which takes a C string. One whose
  * target is absolute, lands outside the repo, or has a `..` after a named
  * segment, which climbs from wherever that segment resolves and no lexical
@@ -416,26 +429,39 @@ function dependenciesNameDocusaurus(repoPath: string, branch: string): boolean {
  * path or target holds a character outside ASCII. A link named as a dependency
  * file may name Docusaurus where no grep reads it, and a file named outside
  * ASCII may be a config or dependency file no case-insensitive match finds.
- * Listed `--full-tree`, for the reason `targetHolds` is.
+ * Every read here and in `filesNaming` is taken from the top of the tree
+ * (`--full-tree`, `--full-name`, `:(top)`): a session-written `core.worktree`
+ * naming a directory above the repo puts git under a prefix, and a read
+ * scoped to it lists nothing (decision 154).
  */
 function readBranchTree(repoPath: string, branch: string): BranchTree {
+  const paths: string[] = [];
+  const blobs = new Map<string, { oid: string; size: number }>();
+  const links: { path: string; oid: string; size: number }[] = [];
   const landings: string[] = [];
   let anywhere = false;
   let markdownIsCode = dependenciesNameDocusaurus(repoPath, branch);
-  for (const entry of runGit(repoPath, ['ls-tree', '-r', '-z', '--full-tree', branch]).split(
+  for (const entry of runGit(repoPath, ['ls-tree', '-r', '-l', '-z', '--full-tree', branch]).split(
     '\0',
   )) {
     if (!entry) continue;
-    // "<mode> <type> <oid>\t<path>": the path is everything after the first tab.
+    // "<mode> <type> <oid> <padded size>\t<path>": the path is everything after the first tab.
     const tab = entry.indexOf('\t');
-    const [mode, , oid = ''] = entry.slice(0, tab).split(' ');
+    const [mode, type, oid = '', size] = entry.slice(0, tab).split(/ +/);
     const path = entry.slice(tab + 1);
+    paths.push(path);
+    const blob = { oid, size: Number(size) };
+    if (type === 'blob') blobs.set(path, blob);
     markdownIsCode ||= DIFF_SIZE_DOCUSAURUS_CONFIG.test(path) || NON_ASCII.test(basename(path));
     if (mode !== '120000') continue;
     markdownIsCode ||= DIFF_SIZE_DEPENDENCY_FILES.some(
       (name) => folded(name) === folded(basename(path)),
     );
-    const [target = ''] = runGit(repoPath, ['cat-file', 'blob', oid]).split('\0', 1);
+    links.push({ path, ...blob });
+  }
+  const contents = readBlobs(repoPath, links);
+  for (const [index, { path }] of links.entries()) {
+    const [target = ''] = String(contents[index]).split('\0', 1);
     const segments = target.split('/').filter((segment) => segment !== '' && segment !== '.');
     const firstName = segments.findIndex((segment) => segment !== '..');
     const lands = join(dirname(path), target).replace(/\/+$/, '');
@@ -448,7 +474,17 @@ function readBranchTree(repoPath: string, branch: string): BranchTree {
       lands.startsWith('../');
     landings.push(folded(lands));
   }
+  // Every spelling of each path and directory in the tree, by its folded form.
+  const spellings = new Map<string, Set<string>>();
+  const prefixes = (path: string): string[] =>
+    path.split('/').map((_, i, segments) => segments.slice(0, i + 1).join('/'));
+  for (const prefix of paths.flatMap(prefixes)) {
+    const key = folded(prefix);
+    spellings.set(key, (spellings.get(key) ?? new Set()).add(prefix));
+  }
   return {
+    paths,
+    blobs,
     linked: (path) => {
       const key = folded(path);
       return (
@@ -456,6 +492,10 @@ function readBranchTree(repoPath: string, branch: string): BranchTree {
         landings.some((lands) => lands === '.' || key === lands || key.startsWith(`${lands}/`))
       );
     },
+    foldsOntoAnother: (path) =>
+      prefixes(path).some((prefix) =>
+        [...(spellings.get(folded(prefix)) ?? [])].some((spelling) => spelling !== prefix),
+      ),
     markdownIsCode,
   };
 }
@@ -473,15 +513,22 @@ const UNSPELLABLE_NAME = /[^\w.$+@-]/;
  * Which part of the diff-size split a path counts toward (decision 110). A
  * symlink is source wherever it sits, and so is any path one can reach and any
  * path holding a character outside ASCII, which a link spelled in ASCII may
- * reach through the filesystem's folding. A test is only the trusted suffix
- * under a name a token can spell, and never a file renamed onto it from a name
- * that was not one, which would carry production code in under the test count.
- * `.md` under `docs/` is code where a Docusaurus config compiles it.
+ * reach through the filesystem's folding. A test is only a path the test
+ * stage's runner collects, or the trusted suffix where its adapter cannot say
+ * (`collected` undefined, decision 143), under a name a token can spell, at a
+ * path the tree holds in no other ASCII case, itself or through a directory,
+ * and never a file renamed onto it from a name that was not one, which would
+ * carry production code in under the test count. APFS folds case (decision
+ * 78), so checkout writes `src/big.test.ts` into a `Src/` the tree also holds,
+ * where the runner's case-sensitive patterns see `Src/big.test.ts`, which none
+ * may collect. `.md` under `docs/` is code where a
+ * Docusaurus config compiles it.
  */
 function diffSizeKind(
   path: string,
   entry: RawDiffEntry | undefined,
   tree: BranchTree,
+  collected: Set<string> | undefined,
 ): DiffSizeKind {
   if (entry?.mode === '120000' || NON_ASCII.test(path) || tree.linked(path)) return 'source';
   if (
@@ -492,14 +539,21 @@ function diffSizeKind(
     return 'docs';
   }
   const isTest = (candidate: string): boolean =>
-    candidate.endsWith(DIFF_SIZE_TEST_SUFFIX) && !UNSPELLABLE_NAME.test(basename(candidate));
+    (collected ? collected.has(candidate) : candidate.endsWith(DIFF_SIZE_TEST_SUFFIX)) &&
+    !UNSPELLABLE_NAME.test(basename(candidate)) &&
+    !tree.foldsOntoAnother(candidate);
   if (isTest(path) && (entry?.renamedFrom === undefined || isTest(entry.renamedFrom))) {
     return 'test';
   }
   return 'source';
 }
 
-const testStem = (path: string): string => basename(path).slice(0, -'.ts'.length);
+/** A test's name as a specifier spells it: its file name without the extension. */
+const testStem = (path: string): string => {
+  const name = basename(path);
+  const extension = extname(name);
+  return extension ? name.slice(0, -extension.length) : name;
+};
 
 /**
  * A run of the characters a name may hold. Every other character ends one, so
@@ -523,9 +577,12 @@ const NAME_TOKEN = /[\w.$+@-]+/g;
  * direction. Every file `git grep` lists is read but those `skip` names,
  * whatever its extension, since a Vue component, a Vite `index.html`, a
  * `package.json` or a serverless config loads a module as well as code does.
- * It is read with `core.precomposeUnicode` pinned off, as decision 114 pins
- * the gate's other per-file reads: on macOS an NFD path read as its NFC
- * sibling. A file costs one pass over its text and one lookup per distinct
+ * The listed files are read in one `cat-file --batch` by the oid `blobs`
+ * holds for each path (decision 154), never by `<rev>:<path>`, which on macOS
+ * `core.precomposeUnicode` rewrites from NFD to an NFC sibling (decision 114);
+ * a listed path the tree does not hold refuses. Grep keeps listing binary
+ * files: `-I` would skip a JavaScript importer with a NUL in a comment. A
+ * file costs one pass over its text and one lookup per distinct
  * name it spells, however many tokens repeat a name or targets share it. Grep
  * runs with colour pinned off: `color.grep=always` in the shared config would
  * wrap each path in escapes, and a listing entry that does not start with the
@@ -538,6 +595,7 @@ const NAME_TOKEN = /[\w.$+@-]+/g;
 function filesNaming(
   repoPath: string,
   branch: string,
+  blobs: BranchTree['blobs'],
   targets: string[],
   skip: (path: string) => boolean,
 ): Map<string, Set<string>> {
@@ -575,6 +633,7 @@ function filesNaming(
     if ((error as { status?: number }).status !== 1) throw error;
   }
   const prefix = `${branch}:`;
+  const importers: { path: string; oid: string; size: number }[] = [];
   for (const entry of listing.split('\0')) {
     if (!entry) continue;
     if (!entry.startsWith(prefix)) {
@@ -582,17 +641,18 @@ function filesNaming(
     }
     const importer = entry.slice(prefix.length);
     if (skip(importer)) continue;
-    if (importer.includes('\ufffd')) {
+    const blob = blobs.get(importer);
+    // A name decoded with U+FFFD may be a decoy's, and one the tree does not
+    // hold has no blob: either importer is read as naming every target.
+    if (importer.includes('\ufffd') || !blob) {
       named.set(importer, new Set(targets.filter((target) => target !== importer)));
       continue;
     }
-    const text = runGit(repoPath, [
-      '-c',
-      'core.precomposeUnicode=false',
-      'cat-file',
-      'blob',
-      `${branch}:${importer}`,
-    ]);
+    importers.push({ path: importer, ...blob });
+  }
+  const contents = readBlobs(repoPath, importers);
+  for (const [index, { path: importer }] of importers.entries()) {
+    const text = String(contents[index]);
     const names = new Set<string>();
     for (const [token] of folded(text).matchAll(NAME_TOKEN)) {
       for (
@@ -623,6 +683,7 @@ function filesNaming(
 function reachableTestFiles(
   repoPath: string,
   branch: string,
+  blobs: BranchTree['blobs'],
   tests: string[],
   kindOf: (path: string) => DiffSizeKind,
 ): Set<string> {
@@ -633,7 +694,7 @@ function reachableTestFiles(
   let round = tests;
   while (round.length > 0) {
     const next: string[] = [];
-    const naming = filesNaming(repoPath, branch, round, (path) => kindOf(path) === 'docs');
+    const naming = filesNaming(repoPath, branch, blobs, round, (path) => kindOf(path) === 'docs');
     for (const [importer, named] of naming) {
       if (kindOf(importer) !== 'test') {
         for (const test of named) reached.add(test);
@@ -660,27 +721,42 @@ function reachableTestFiles(
 
 /**
  * Adds + deletes across the branch diff, excluding lockfiles and binary files,
- * split into source, test files and prose under `docs/` (decision 110). A null numstat is
+ * split into source, test files and prose under `docs/` (decision 110).
+ * `testFiles` is the test stage's adapter saying which paths its runner
+ * collects (decision 143), asked once for every path on the branch, every
+ * changed path, deletions included, and every path a rename left; without it
+ * a test is the `*.test.ts` spelling. A null numstat is
  * a measurement, not a skip: a file git reports as binary whose content is
  * text is recounted from its patch and named in `forged`, because git was told
- * to call it binary by something no diff shows (decision 53).
+ * to call it binary by something no diff shows (decision 53). Known binaries
+ * skip from one budget of `BINARY_FREE_TOTAL_MAX_BYTES`, so the file that
+ * would go past it is recounted and flagged too (decision 154).
  */
 export function countChangedLines(
   repoPath: string,
   target: string,
   branch: string,
+  testFiles?: (files: string[]) => string[],
 ): { source: number; test: number; docs: number; forged: string[] } {
   const counts = { source: 0, test: 0, docs: 0 };
   const forged: string[] = [];
+  const binaryBudget = { bytes: BINARY_FREE_TOTAL_MAX_BYTES };
   const raw = rawDiffEntries(repoPath, target, branch);
   const tree = readBranchTree(repoPath, branch);
-  const kindOf = (path: string): DiffSizeKind => diffSizeKind(path, raw.get(path), tree);
   const stats = gitDiffNumstat(repoPath, target, branch).filter(
     (stat) => !LOCKFILE_NAMES.includes(stat.path),
   );
+  // A deleted test is on no branch path but still a test the runner collected.
+  const asked = new Set([
+    ...tree.paths,
+    ...stats.map((stat) => stat.path),
+    ...[...raw.values()].flatMap((entry) => entry.renamedFrom ?? []),
+  ]);
+  const collected = testFiles && new Set(testFiles([...asked]));
+  const kindOf = (path: string): DiffSizeKind => diffSizeKind(path, raw.get(path), tree, collected);
   const kinds = new Map(stats.map((stat) => [stat.path, kindOf(stat.path)]));
   const tests = [...kinds].filter(([, kind]) => kind === 'test').map(([path]) => path);
-  for (const path of reachableTestFiles(repoPath, branch, tests, kindOf)) {
+  for (const path of reachableTestFiles(repoPath, branch, tree.blobs, tests, kindOf)) {
     kinds.set(path, 'source');
   }
   for (const stat of stats) {
@@ -689,7 +765,7 @@ export function countChangedLines(
       counts[kind] += stat.added + stat.deleted;
       continue;
     }
-    const recount = gitDiffBinaryRecount(repoPath, target, branch, stat.path);
+    const recount = gitDiffBinaryRecount(repoPath, stat, binaryBudget);
     if (!recount) continue;
     counts[kind] += recount.added + recount.deleted;
     forged.push(stat.path);
@@ -702,7 +778,7 @@ const MERGE_LOCK_PID_FILE = 'pid';
 
 /**
  * Beside the pid: what the holder runs, since when, and its stage, which a
- * waiter prints and nothing decides on (decision 179).
+ * waiter prints and nothing decides on (decision 184).
  */
 const MERGE_LOCK_STATUS_FILE = 'status';
 
@@ -713,6 +789,12 @@ interface MergeLockStatus {
   /** The holder's status-line label; empty before its first stage. */
   stage: string;
 }
+
+/**
+ * Inside the merge lock's directory: a random token fresh to each take, which
+ * the run that took it checks before every ref it moves.
+ */
+const MERGE_LOCK_TOKEN_FILE = 'token';
 
 const MERGE_LOCK_POLL_MS = 1000;
 
@@ -848,8 +930,55 @@ function directoryIdentity(path: string): LockIdentity | undefined {
   return stat?.isDirectory() ? { dev: stat.dev, ino: stat.ino } : undefined;
 }
 
+/** A take of the merge lock: the directory it made and the token it wrote there. */
+interface LockTake extends LockIdentity {
+  token: string;
+}
+
 /**
- * Remove a lock directory and the pid and status in it, and nothing else: it sits in the
+ * The take the running locked section holds, which `assertMergeLockHeld`
+ * checks. Per async context, not per path: two sections of one process on one
+ * lock path, which only a swapped lock lets run at once, keep a take each.
+ */
+const heldMergeLock = new AsyncLocalStorage<{ lockPath: string; take: LockTake }>();
+
+/**
+ * Whether `take` is still the lock at `lockPath`: the same directory, holding
+ * the same token. Neither alone: the directory's inode is free for the next
+ * run's `mkdir` once a session renamed it away and deleted it, and a session
+ * can read the token and copy it into a directory of its own. False when
+ * either cannot be read.
+ */
+function isTake(lockPath: string, take: LockTake): boolean {
+  try {
+    const token = readPlainFile(join(lockPath, MERGE_LOCK_TOKEN_FILE), { followLinks: false });
+    const now = directoryIdentity(lockPath);
+    return now?.dev === take.dev && now.ino === take.ino && token === take.token;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Refuse `step` unless this process still holds `repoPath`'s merge lock as it
+ * took it. Called right before each ref the locked section moves, so a run
+ * whose lock a session moved away, while another run may have taken a fresh
+ * one, refuses before acting rather than finding out at the release
+ * (decision 88).
+ */
+export function assertMergeLockHeld(repoPath: string, step: string): void {
+  const lockPath = join(repoPath, '.git', MERGE_LOCK_DIRNAME);
+  const held = heldMergeLock.getStore();
+  if (held?.lockPath === lockPath && isTake(lockPath, held.take)) return;
+  throw new Error(
+    `The merge lock at ${lockPath} is no longer the one this run took, so another merge or ` +
+      `land may be running: ${step} was refused, and nothing was moved by it. Check the target ` +
+      'branch and `pup status`, and treat a session that moved the lock as compromised.',
+  );
+}
+
+/**
+ * Remove a lock directory and the pid, status and token in it, and nothing else: it sits in the
  * `.git` a session can write, so anything else found there is left and named
  * rather than removed with it, and so is a directory that is no longer
  * `identity`, a link or another directory a session swapped in, whose pid
@@ -884,6 +1013,7 @@ function removeLockDir(dir: string, identity: LockIdentity): boolean {
   try {
     rmSync(join(dir, MERGE_LOCK_STATUS_FILE), { force: true });
     rmSync(join(dir, MERGE_LOCK_PID_FILE), { force: true });
+    rmSync(join(dir, MERGE_LOCK_TOKEN_FILE), { force: true });
     rmdirSync(dir);
   } catch (error) {
     console.error(
@@ -959,12 +1089,12 @@ function reclaimMergeLock(lockPath: string, dead: number): boolean {
 
 /**
  * Try the merge lock once: a directory, which only one `mkdir` can make,
- * holding the taker's pid. Answers the directory's identity once it is taken,
- * the pid holding it, or null for a lock with no pid to read; a lock whose pid
- * is dead is reclaimed and tried again, and a dead pid is answered only while
- * another run is reclaiming it (decision 88).
+ * holding the taker's pid and a token fresh to the take. Answers the take once
+ * it is made, the pid holding the lock, or null for a lock with no pid to
+ * read; a lock whose pid is dead is reclaimed and tried again, and a dead pid
+ * is answered only while another run is reclaiming it (decision 88).
  */
-function tryMergeLock(lockPath: string): LockIdentity | number | null {
+function tryMergeLock(lockPath: string): LockTake | number | null {
   for (;;) {
     let failed: string | undefined;
     try {
@@ -977,7 +1107,11 @@ function tryMergeLock(lockPath: string): LockIdentity | number | null {
       // every later step checks it is still this directory.
       const identity = directoryIdentity(lockPath);
       if (!identity) return null;
+      const token = randomBytes(16).toString('hex');
       try {
+        // The token before the pid: a reader takes a lock with no pid yet for
+        // one being taken, so the take is never seen whole without its token.
+        writeFileSync(join(lockPath, MERGE_LOCK_TOKEN_FILE), token, { flag: 'wx' });
         writeFileSync(join(lockPath, MERGE_LOCK_PID_FILE), `${process.pid}\n`, { flag: 'wx' });
       } catch (error) {
         // Taken but not recorded: undone, since a lock with no pid refuses every later run.
@@ -985,7 +1119,7 @@ function tryMergeLock(lockPath: string): LockIdentity | number | null {
         throw error;
       }
       const now = directoryIdentity(lockPath);
-      if (now?.dev === identity.dev && now.ino === identity.ino) return identity;
+      if (now?.dev === identity.dev && now.ino === identity.ino) return { ...identity, token };
       console.error(
         `${lockPath} was replaced while pup took it, so its pid may have been written through ` +
           'what replaced it; nothing was taken. Treat a session that replaced it as compromised.',
@@ -1032,13 +1166,15 @@ function heldBy(lockPath: string, holder: number): MergeLockHeldError {
  * run, and one a live run holds is waited for up to `maxWaitMs`, printing one
  * line when the wait starts and one whenever the holder or its stage changes,
  * and by default not at all (decision 88). While held, the lock records this
- * run's command, since when, and `progress`'s stage (decision 179). `fn` is
+ * run's command, since when, and `progress`'s stage (decision 184). `fn` is
  * told whether the take waited: anything read before the wait may have changed
- * under the run that held the lock meanwhile. A lock found gone or replaced at
- * the release throws `MergeLockLostError` with `fn`'s result, or is printed
- * beside `fn`'s error, whatever error the release met; only a lock still the
- * take's own directory that cannot be moved is printed and the result
- * returned. A release error never replaces what `fn` did.
+ * under the run that held the lock meanwhile. While `fn` runs, the section
+ * checks the take with `assertMergeLockHeld` before each ref it moves. A lock
+ * found gone or replaced at the release, another directory or one holding
+ * another token, is left where it is and throws `MergeLockLostError` with
+ * `fn`'s result, or is printed beside `fn`'s error, whatever error the release
+ * met; only a lock still the take that cannot be moved is printed and the
+ * result returned. A release error never replaces what `fn` did.
  */
 export async function withMergeLock<TResult>(
   repoPath: string,
@@ -1057,11 +1193,11 @@ export async function withMergeLock<TResult>(
   // Waited for with node's default disposition, so a Ctrl-C ends the wait;
   // the listeners go on in the same tick as the take, leaving no turn of the
   // event loop between them.
-  let identity: LockIdentity | undefined;
+  let take: LockTake | undefined;
   for (;;) {
     const holder = tryMergeLock(lockPath);
     if (holder !== null && typeof holder === 'object') {
-      identity = holder;
+      take = holder;
       break;
     }
     const now = Date.now();
@@ -1088,7 +1224,7 @@ export async function withMergeLock<TResult>(
   }
   const stayAlive = (): void => undefined;
   for (const signal of LOCK_SIGNALS) process.on(signal, stayAlive);
-  const taken = identity;
+  const taken = take;
   const held = { command: ['pup', ...process.argv.slice(2)].join(' '), since: Date.now() };
   const unwatch = progress.watch((stage) =>
     writeMergeLockStatus(lockPath, taken, { ...held, stage }),
@@ -1099,18 +1235,17 @@ export async function withMergeLock<TResult>(
     // The lock goes first: a signal between the two would otherwise meet
     // node's default disposition with the lock still on disk.
     try {
+      // Checked before the move: a lock that is no longer this take is another
+      // run's, or a session's, and is left on its path rather than moved from
+      // under the run holding it. Only the rename's own window is then left for
+      // a swap that a moved-aside lock too faulty to read would hide.
+      if (!isTake(lockPath, taken)) return false;
       return dropMergeLock(lockPath, 'released', taken);
     } catch (error) {
-      // Whatever failed, the lock counts as this run's only while the take's
-      // own directory is still at the path: one moved away, even with another
-      // run's lock now there, is lost, and so is one that cannot be read.
-      let now: LockIdentity | undefined;
-      try {
-        now = directoryIdentity(lockPath);
-      } catch {
-        now = undefined;
-      }
-      if (now?.dev !== taken.dev || now.ino !== taken.ino) return false;
+      // Whatever failed, the lock counts as this run's only while the take is
+      // still at the path: one moved away, even with another run's lock now
+      // there, is lost, and so is one that cannot be read.
+      if (!isTake(lockPath, taken)) return false;
       // Printed, never thrown, since `fn` has done what it did, and the lock
       // left in place names this pid, which a later run reclaims once this
       // process has exited (decision 88).
@@ -1125,7 +1260,7 @@ export async function withMergeLock<TResult>(
   };
   let result: TResult;
   try {
-    result = await fn(waited);
+    result = await heldMergeLock.run({ lockPath, take: taken }, () => fn(waited));
   } catch (error) {
     // The section's own error still wins; the lost lock is said beside it.
     if (!release()) console.error(new MergeLockLostError(lockPath, undefined).message);
@@ -1631,6 +1766,7 @@ export function fastForward(
   // Before the checkout is touched, not only at the compare-and-swap after it
   // (decision 80).
   assertTargetAt(repoPath, target, targetSha);
+  assertMergeLockHeld(repoPath, `the fast-forward of ${shown}`);
   // `--work-tree` because `core.worktree` sits in the shared config and would
   // aim the checkout's writes wherever a session chose; `submodule.recurse` is
   // pinned off in `GIT_SAFE_CONFIG`, and the flag here says so again; and
@@ -1658,6 +1794,9 @@ export function fastForward(
     );
   }
   try {
+    // Again after the checkout, which a large tree makes long: a lock lost
+    // meanwhile puts the checkout back below, like a refused swap.
+    assertMergeLockHeld(repoPath, `the fast-forward of ${shown}`);
     checkout([
       'update-ref',
       '--no-deref',
@@ -1937,6 +2076,9 @@ async function mergeTargetInto(
   } catch (error) {
     rethrowIfKilled(error);
   }
+  // Thrown to the operator, never returned for the worker: no fix of theirs
+  // gives the run its lock back.
+  assertMergeLockHeld(repoPath, `the merge of ${shown} into ${branch}`);
   try {
     swapBranch(`pup merge: merge ${target}`, merged, branchSha);
   } catch (error) {
@@ -2092,6 +2234,8 @@ async function gateAndMerge(
       timedSince(started, { stage: 'fresh-base', status: 'pass', detail: `auto-merged ${target}` }),
     );
   } else {
+    // Before the try, so a lost lock goes to the operator, not to the worker.
+    assertMergeLockHeld(req.repoPath, `the rebase of ${session.branch} onto ${target}`);
     try {
       // The strategy named, not left to `pull.twohead`: git's sequencer takes
       // the first value it reads, a session's local one before the `-c` pin,
@@ -2159,7 +2303,10 @@ async function gateAndMerge(
     sha,
     progress,
   );
-  if (!measured) return failed();
+  if (!measured) {
+    const adrNumber = stages.find((stage) => stage.stage === ADR_NUMBER_STAGE);
+    return adrNumber?.status === 'fail' ? refuseGate(db, session, sandbox, stages) : failed();
+  }
   const { changedPaths, flaggedDebt, debtCandidates, spec, project, baseline } = measured;
 
   if (flaggedDebt.length > 0 && !req.acceptDebt) return refuseGate(db, session, sandbox, stages);
@@ -2592,35 +2739,20 @@ function changesOnlyUntested(
   const checked = [...new Set(paths)];
   if (!checked.every(listed)) return false;
   const tree = readBranchTree(repoPath, branch);
-  // Every spelling of each path and directory in the branch's tree, by its folded form.
-  const spellings = new Map<string, Set<string>>();
-  const prefixes = (path: string): string[] =>
-    path.split('/').map((_, i, segments) => segments.slice(0, i + 1).join('/'));
-  const names = runGit(repoPath, ['ls-tree', '-r', '-z', '--full-tree', '--name-only', branch]);
-  for (const path of names.split('\0')) {
-    for (const prefix of path ? prefixes(path) : []) {
-      const key = folded(prefix);
-      spellings.set(key, (spellings.get(key) ?? new Set()).add(prefix));
-    }
-  }
-  const foldsOntoAnother = (path: string): boolean =>
-    prefixes(path).some((prefix) =>
-      [...(spellings.get(folded(prefix)) ?? [])].some((spelling) => spelling !== prefix),
-    );
   return checked.every(
     (path) =>
       !tree.linked(path) &&
       !(tree.markdownIsCode && path.endsWith('.md')) &&
-      !foldsOntoAnother(path),
+      !tree.foldsOntoAnother(path),
   );
 }
 
 /**
  * The stages every gate run measures on the pinned sha, from the gate's
- * checkout (decision 81): build, test and lint, a touched nested package's own
- * scripts, the scope audit, the diff size and the debt deltas. Undefined once a
- * hard stage has recorded its failure in `stages`; the caller decides what a
- * failure does to the session.
+ * checkout (decision 81): the ADR numbers it adds (decision 146), build, test
+ * and lint, a touched nested package's own scripts, the scope audit, the diff
+ * size and the debt deltas. Undefined once a hard stage has recorded its
+ * failure in `stages`; the caller decides what a failure does to the session.
  */
 export async function measureBranch(
   db: Database,
@@ -2712,6 +2844,12 @@ export async function measureBranch(
     });
   };
 
+  // Before the checkout and every stage: a taken decision number is the
+  // worker's to renumber, refused without a rejection (decision 146).
+  const adrNumber = adrNumberStage(db, req.repoPath, session.id, targetSha, sha);
+  if (adrNumber) stages.push(adrNumber);
+  if (adrNumber?.status === 'fail') return undefined;
+
   // One repo has one build, one test and one lint, and the runner that answers
   // for them is the one whose stack detected first (decision 22, which decision
   // 72 amends for debt only — that is measured over every adapter below). The
@@ -2778,12 +2916,19 @@ export async function measureBranch(
   const built = build ? await commandStage('build', build, checkoutDir) : notMeasured('build');
   stages.push(built);
   if (built.status === 'fail') return undefined;
+  // The build ran the branch's code in the checkout, and the test run reads
+  // what it left there, so the runner's inputs are checked against the pinned
+  // sha now, before any suite, and again before the split (decision 143).
+  const testInputsIntact = () => primary?.testInputsIntact?.(capabilityContext) ?? true;
+  const intactBeforeSuites = testInputsIntact();
 
   // A change no test can run or read runs no suite, and so waits for no load
-  // and takes no slot; a nested package's change always runs its suite
-  // (decision 139).
+  // and takes no slot; a nested package's change always runs its suite, and so
+  // does every change in a project that turned the skip off (decision 139).
   const untested =
-    nestedPackages.length === 0 && changesOnlyUntested(req.repoPath, targetSha, sha, changedPaths);
+    nestedPackages.length === 0 &&
+    skipsTestsOnUntestedChanges(req.repoPath) &&
+    changesOnlyUntested(req.repoPath, targetSha, sha, changedPaths);
   // A stage nothing could have measured says so, as on any other change: the
   // test stage without a test command.
   const notTested = (stage: string, measurable: boolean): GateStageResult =>
@@ -3037,7 +3182,19 @@ export async function measureBranch(
 
   progress.stage('debt');
   started = Date.now();
-  const changed = countChangedLines(req.repoPath, targetSha, sha);
+  // The primary adapter's runner is the one the test stage ran, so it alone
+  // says which changed files are tests, and none where the checkout's runner
+  // inputs left the pinned sha's at either check (decision 143).
+  const collects = primary?.testFiles;
+  const intact = intactBeforeSuites && testInputsIntact();
+  const changed = countChangedLines(
+    req.repoPath,
+    targetSha,
+    sha,
+    // The trusted lists are the target's, not what a session wrote to the main checkout.
+    collects &&
+      ((files) => (intact ? collects({ ...capabilityContext, configSha: targetSha }, files) : [])),
+  );
   const split = `${changed.source} source + ${changed.test} test + ${changed.docs} docs changed lines`;
   const sizeFindings: string[] = [];
   if (changed.source > DIFF_SIZE_FLAG_LINES) {
@@ -3050,7 +3207,10 @@ export async function measureBranch(
     sizeFindings.push(`source exceeds the ${DIFF_SIZE_FLAG_LINES}-line flag`);
   }
   // Flagged at any size: the count is honest again once recounted, but a text
-  // file git was told to call binary is a write nobody reviewed (decision 53).
+  // file git was told to call binary is a write nobody reviewed (decision 53),
+  // and so is a binary no known format or size lets go uncounted (decision
+  // 154). The description keeps its wording, so a re-gate still reads an entry
+  // filed before decision 154 as the same kind.
   if (changed.forged.length > 0) {
     const forged = [...changed.forged].sort();
     const quoted = forged.slice(0, DEBT_DETAIL_SAMPLES).map(quotePath).join(', ');
@@ -3060,7 +3220,9 @@ export async function measureBranch(
       files: forged,
     });
     sizeFindings.push(
-      `counts ${forged.length} text file(s) git reports as binary, recounted from the patch: ` +
+      `counts ${forged.length} file(s) git reports as binary that are no known binary format ` +
+        `within ${BINARY_FREE_MAX_BYTES / 1024 / 1024} MiB a file and ` +
+        `${BINARY_FREE_TOTAL_MAX_BYTES / 1024 / 1024} MiB a diff, recounted from the patch: ` +
         `${quoted}${ellipsis}`,
     );
   }
@@ -3367,6 +3529,7 @@ function pushBranch(
     }
   })();
   withScratchGitDir(repoPath, 'pup-push-', (git) => {
+    assertMergeLockHeld(repoPath, `the push of ${branch}`);
     // Unlike the other git calls here this gets a timeout: a stalled push would
     // otherwise hang while holding the merge lock. Hooks are off for the same
     // reason they are everywhere else in the gate (decision 28).

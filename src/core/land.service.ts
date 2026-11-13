@@ -13,6 +13,7 @@ import {
 import { assertGhAvailable, originRepoSlug, readPullRequestLanding } from './github.client.js';
 import { COMMIT_SHA, GATE_COMMAND_TIMEOUT_MS } from './merge-gate.constants.js';
 import {
+  assertMergeLockHeld,
   assertMintedRow,
   assertPullRequestOf,
   assertTargetName,
@@ -246,6 +247,7 @@ export async function landSession(
         fastForwarded = true;
       }
       // Last under the lock: every refusal above leaves the repo's refs as they were.
+      assertMergeLockHeld(req.repoPath, `the update of origin's ${target} tracking ref`);
       runGit(req.repoPath, [
         'update-ref',
         '--no-deref',

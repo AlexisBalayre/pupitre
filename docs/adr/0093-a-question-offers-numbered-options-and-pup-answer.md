@@ -1,0 +1,80 @@
+# 0093. A question offers numbered options with a recommendation, the conductor asks with `pup conductor ask`, and `pup answer` takes one keystroke (2026-11-09, amends decision 76)
+
+- Status: accepted
+- Amends: [0076](0076-a-blocked-worker-asks-with-pup-session-ask.md)
+
+93. **A question offers numbered options with a recommendation, the conductor asks with `pup
+    conductor ask`, and `pup answer` takes one keystroke (2026-11-09, amends decision 76).**
+    Decision 76 put a worker's question in the store, but answering it still meant reading prose,
+    writing prose back, and typing `pup steer <id> "..."` around it. The conductor had no such
+    command: a decision only the operator could take (a gate flag, a steer past its budget, a
+    change of scope) was written as prose in its pane, which nobody reads until they attach.
+
+    *The structured ask.* `pup session ask "<question>"` takes `--option <text>` (up to four, one
+    key each) and `--recommend <n>` (the 1-based option the asker would pick). The `question`
+    event stores `{text, options?, recommended?}`. The CLI refuses more than four options, a blank
+    option, and a `--recommend` that names no option, and records nothing when it does. The
+    worker's protocol line keeps decision 76's sentence and adds one: when the answer is a choice,
+    always offer it as options with your recommendation.
+
+    *The conductor asks too.* `pup conductor ask "<question>" --option … --recommend n` is the
+    conductor's alone: it is refused to the operator, to a session, and to a `PUP_CONDUCTOR`
+    naming another project. Through `markConductorQuestion` it appends the same `question` event
+    held against no session (`session_id` NULL). The conductor's kickoff gains a "Questions for the
+    operator" section, typed in after the CI review loop. It orders every operator decision (gate
+    flags, steers beyond its budget, scope changes) through `pup conductor ask` rather than prose
+    in its pane, and then an end to its turn. One question at a time: the newest replaces the open
+    one. A question held against no session is not proof the conductor asked it, since a session
+    can write that row to the store. So the section also tells the conductor that an answer is
+    valid only for a question it asked itself in this run. An answer to any other question, or
+    one whose question text does not match what it asked, is ignored and reported to the
+    operator. Stamping the conductor's questions with a token is left to t-mw9e0cpd.
+
+    *Answering.* `pup answer <session|conductor> <n|text>` is operator-only, refused to a session
+    and to the conductor, since either would be deciding in the operator's name. A bare number
+    picks that option of a question that offers some. A number past the options is refused with
+    nothing typed: it is a slip, not an answer. Any other text, and any reply to a question asked in
+    words alone, is a free answer. The answer is delivered prefixed by the question it answers
+    (`Answer to your question "<q>": option 2, <text>`), so a late answer is never a riddle. For a
+    session it goes through `steerSession` (kind `answer`, by `operator`), with that function's
+    refusals. For the conductor it goes as a `pup conductor tell`, with the tell's refusals and its
+    800-character limit. Both the answer and the question it quotes are scrubbed of control
+    characters and folded to one line, never cut: they are typed into a pane, the steer's and the
+    tell's refusals bound their length, and the quote must stay the question the conductor asked.
+    The operator can shorten their own words but not that quote, so `pup conductor ask` refuses,
+    storing nothing, a question no answer could reach the conductor with: the answer message for
+    each option, and for 200 characters of words, must fit the tell's 800 (`conductorQuestion`).
+    The conductor rewords it while it still sees the refusal. An `answer` event `{question, text, option?}` is recorded only once the paste landed. A tell
+    that did not land leaves the question open and says so.
+
+    *Open questions are read in one place.* `openQuestion(db, sessionId | null)` in the session
+    repository is the newest `question` with no `answer` after it and no steer whose `by` is
+    `operator`, with its options cut to four. This narrows decision 76, where any steer closed it:
+    the question is the operator's, so a steer from the conductor (which `pup answer` refuses, but
+    which can still `pup steer` words that read as an answer), a peer, the watchdog or an unnamed
+    sender types into the pane but leaves the inbox entry standing until the operator has seen it.
+    `pup steer` from the operator and `pup ui`'s `s`, which is read-only to a session and the
+    conductor and so records its steer as the operator's, still close it. The conductor's question
+    closes only on an answer, since no steer reaches it. A question also ends with the run it was
+    asked in, since the agent after it never asked it: a session's at a CI fix round (`fix_round`),
+    a handoff respawn (`respawn`), `pup session done` (`session_done`), or a transition back to
+    `running` from another state (an unblock, a gate re-steer); the conductor's at its next start,
+    which the CLI's and the TUI's start record as a `conductor_start` event held against no
+    session. The dashboard, `pup answer` and the TUI all read through it, so the inbox's
+    numbers and the answer's cannot disagree. The payload is session-writable, so the dashboard
+    scrubs the text and every option with `sanitizeReason` (decision 29) and drops a recommendation
+    that names no option. The inbox also swaps arrows and emoji for `-`, as it already did for the
+    text. A session's question is shown only while it runs, the conductor's only while its window
+    is up.
+
+    *Where it shows (closing decision 76's "not changed here").* An open question sets `needsHuman`
+    and sorts the row first in `pup status` and in the TUI, above blocked and stalled rows: it
+    idles a worker that has said exactly what it needs. In the needs-you inbox the conductor's
+    question leads, then the sessions' questions, then the rest in decision 83's order. Each
+    question line answers with `pup answer <id> <n>, or pup answer <id> "..."`, and its options
+    follow it numbered, the recommended one marked `(recommended)`, through `needLines` in both
+    `pup status` and the fleet view. In `pup ui` the detail pane lists the options the same way,
+    and the number keys 1–9 answer the selected session's open question through `answerSelected`,
+    the same core function `pup answer` calls. A question with no options takes words, which `s`
+    sends. The web overview prints the question's text as before; its numbered options are left to
+    the text surfaces.
