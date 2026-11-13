@@ -1,10 +1,45 @@
 import { globToRegExp } from './glob.utils.js';
 import { InvalidProfileError } from './profile.errors.js';
 import { scopedPaths } from './scope-audit.utils.js';
-import type { TaskSpec } from './types/profile.types.js';
+import type { TaskSpec, TaskTicket } from './types/profile.types.js';
 
 /** Control characters that must never reach a generated scope pattern file. */
 const GLOB_UNSAFE = /[\r\n\0]/;
+
+/**
+ * The ticket types with no design by default (decision 176). Listed rather
+ * than the one type that has one, so a type intake does not know yet needs
+ * the label too.
+ */
+const UNDESIGNED_TICKET_TYPES: readonly string[] = [
+  'bug',
+  'chore',
+  'refactor',
+  'docs',
+  'spike',
+  'follow-up',
+];
+
+/** The label the operator adds once per ticket when they validate its design. */
+const DESIGN_APPROVED_LABEL = 'design-approved';
+
+/**
+ * Refuse a task whose ticket needed a design the operator has not validated
+ * (decision 186): a feature, or any type a design trigger fired on, without
+ * the `design-approved` label.
+ */
+function assertDesignApproved(ticket: TaskTicket): void {
+  if (ticket.labels.includes(DESIGN_APPROVED_LABEL)) return;
+  const fired = ticket.triggers.length > 0;
+  if (!fired && UNDESIGNED_TICKET_TYPES.includes(ticket.type)) return;
+  const why = fired
+    ? `design triggers fired on it (${ticket.triggers.join(', ')})`
+    : `its type, ${ticket.type}, has a design by default`;
+  throw new InvalidProfileError(
+    `Ticket ${ticket.ref} has no ${DESIGN_APPROVED_LABEL} label, and ${why}: ` +
+      'the operator validates its design before a slice of it starts.',
+  );
+}
 
 /**
  * The subset of `compileProfile`'s validation a stored spec must satisfy to be
@@ -32,6 +67,7 @@ export function assertPlannableSpec(task: TaskSpec): void {
       );
     }
   }
+  if (task.ticket) assertDesignApproved(task.ticket);
 }
 
 /** What a task's scope-in names among the tracked files, as its kickoff lists them. */
