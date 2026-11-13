@@ -73,7 +73,8 @@ later run reverted, or main's change taken in by hand, does not count. A thread 
 with no such change, or declined, gets the reason and stays open for you. One summary comment per
 round. Never reply or resolve by hand on top of that. Minor issues in the
 review body never take a round alone. A thread that opens a design decision reaches your
-needs-you inbox through the worker's `pup session ask`: answer it there.
+needs-you inbox through the worker's `pup session ask`, with numbered options and the worker's
+recommendation: answer it with `pup answer <session> <n>`, or in words.
 
 ## 5. After the human merges
 

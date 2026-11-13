@@ -1,7 +1,7 @@
 import { Box, Text } from 'ink';
 import type { ReactNode } from 'react';
 import { routeLabel } from '../../core/dashboard.service.js';
-import type { DashboardSession } from '../../core/types/dashboard.types.js';
+import type { DashboardQuestion, DashboardSession } from '../../core/types/dashboard.types.js';
 import { STATE_COLOURS } from './dashboard.constants.js';
 import { originMarker } from './dashboard-text.utils.js';
 import type { DetailRow } from './use-controls.hook.js';
@@ -65,11 +65,7 @@ export function Detail({ row }: { row: DetailRow }) {
               <Text dimColor>launched before routing (decision 92)</Text>
             )}
           </Section>
-          {row.session.question === undefined ? null : (
-            <Section title="question">
-              <Text color="yellow">{row.session.question}</Text>
-            </Section>
-          )}
+          {row.session.question === undefined ? null : <Question question={row.session.question} />}
           <LastGate session={row.session} />
           <RecentEvents session={row.session} />
         </>
@@ -79,6 +75,30 @@ export function Detail({ row }: { row: DetailRow }) {
         </Section>
       )}
     </Box>
+  );
+}
+
+/**
+ * The session's open question, its options numbered as the number keys pick
+ * them and the recommended one marked (decision 93).
+ */
+function Question({ question }: { question: DashboardQuestion }) {
+  const count = question.options.length;
+  return (
+    <Section title="question">
+      <Text color="yellow">{question.text}</Text>
+      {question.options.map((option, index) => (
+        // Two options can read the same; the number that picks each cannot.
+        // biome-ignore lint/suspicious/noArrayIndexKey: the index is the identity
+        <Text key={index} bold={question.recommended === index + 1}>
+          {index + 1}. {option}
+          {question.recommended === index + 1 ? <Text color="green"> (recommended)</Text> : null}
+        </Text>
+      ))}
+      <Text dimColor>
+        {count > 0 ? `press 1-${count} to answer, or s to answer in words` : 's answers it'}
+      </Text>
+    </Section>
   );
 }
 

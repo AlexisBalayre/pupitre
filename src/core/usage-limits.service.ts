@@ -5,7 +5,9 @@ import { projectPaths } from './paths.utils.js';
 /**
  * The plan's usage windows a launch is held for (decision 156), as Claude
  * Code's statusline JSON names them under `rate_limits`, with the share of
- * each at which `pup launch` and `pup new` stop starting windows.
+ * each at which `pup launch` and `pup new` stop starting windows. Only the 7-day
+ * window is on every plan; a plan that has no 5-hour window reports none, and
+ * a missing window never holds nor reads as unknown.
  */
 const USAGE_WINDOWS = [
   { key: 'five_hour', label: '5-hour', short: '5h', holdAt: 85 },
@@ -116,18 +118,22 @@ export function assertUsageRoom(repoPath: string, now: number): void {
 
 /**
  * `pup status`'s usage line: each window's share and reset, and the reading's
- * age. None without a reading: a plan with no usage windows never writes one.
+ * age. A 5-hour window the plan does not report is left out, not shown as
+ * unknown. None without a reading: a plan with no usage windows never writes one.
  */
 export function usageStatusLine(
   reading: UsageReading | undefined,
   now: number,
 ): string | undefined {
   if (!reading) return undefined;
-  const parts = USAGE_WINDOWS.map(({ key, short }) => {
+  const parts = USAGE_WINDOWS.flatMap(({ key, short }) => {
     const window = reading.windows[key];
-    return window
-      ? `${short} ${Math.floor(window.usedPercentage)}% (resets ${resetTime(window.resetsAt)})`
-      : `${short} unknown`;
+    if (window) {
+      return [
+        `${short} ${Math.floor(window.usedPercentage)}% (resets ${resetTime(window.resetsAt)})`,
+      ];
+    }
+    return key === 'five_hour' ? [] : [`${short} unknown`];
   });
   const minutes = Math.max(0, Math.round((now - reading.writtenAt) / 60_000));
   const stale = now - reading.writtenAt > USAGE_FRESH_MS ? ', stale: holds nothing' : '';
