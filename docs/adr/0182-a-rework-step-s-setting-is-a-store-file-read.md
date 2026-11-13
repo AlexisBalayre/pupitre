@@ -1,9 +1,9 @@
-# 0179. A rework step's setting is a store file read at compile time (2026-11-11)
+# 0182. A rework step's setting is a store file read at compile time (2026-11-11)
 
 - Status: accepted
 - Amends: [0178](0178-each-rework-step-ships-behind-a-project-setting-and.md)
 
-179. **A rework step's setting is a store file read at compile time (2026-11-11).**
+182. **A rework step's setting is a store file read at compile time (2026-11-11).**
     *The setting.* A rework step of decision 178 is on for a project while
     `~/.pupitre/<project-id>/rework/<step>` holds `on`. A missing file, a symlink, a file that
     is not regular, or any other content reads as off, the default. The first step is
