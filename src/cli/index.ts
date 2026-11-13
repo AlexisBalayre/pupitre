@@ -1715,23 +1715,13 @@ export function buildProgram(): Command {
       // project's full table and so wins over `--all` (decision 60).
       const selected = program.opts().project as string | undefined;
       const own = selected === undefined ? enclosingProject(process.cwd()) : undefined;
-      if (own && !opts.all) {
-        const { repoPath, db } = held(own);
-        printDashboard(
-          db,
-          repoPath,
-          buildDashboardSnapshot(db, repoPath, Date.now()),
-          shouldShowHistory,
-          ciReviewLookup(db, repoPath),
-        );
-        return;
-      }
-      if (selected === undefined) {
+      const isSingleProject = selected !== undefined || (own !== undefined && !opts.all);
+      if (!isSingleProject) {
         refuseUnlessOperator(own);
         printFleet(opts.dormant === true);
         return;
       }
-      const { repoPath, db } = project();
+      const { repoPath, db } = own ? held(own) : project();
       printDashboard(
         db,
         repoPath,
