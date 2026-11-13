@@ -254,6 +254,13 @@ interface Review {
 }
 
 /**
+ * Review `n`'s node id, which GraphQL and REST (`node_id`) both give. Its REST `id`
+ * is past GraphQL's 32-bit `databaseId`, as github.com's review ids are.
+ */
+const nodeId = (n: number) => `PRR_kwDOTgOqVs${n}`;
+const restId = (n: number) => 3_000_000_000 + n;
+
+/**
  * The slice of the github-script client the job calls, answering from fixed data.
  * `accepted` puts on `review-accepted`, added after every summary review.
  */
@@ -287,7 +294,8 @@ function fakeGithub(pages: Thread[][], reviews: Review[] = [], accepted = false)
       }
       if (method !== listReviews) return [];
       return reviews.map((r) => ({
-        id: r.id,
+        id: restId(r.id),
+        node_id: nodeId(r.id),
         body: r.body,
         state: "COMMENTED",
         author_association: "NONE",
@@ -311,7 +319,7 @@ function fakeGithub(pages: Thread[][], reviews: Review[] = [], accepted = false)
                     {
                       author: { login: t.login ?? "github-actions" },
                       body: t.body ?? "the concern",
-                      pullRequestReview: { databaseId: t.review ?? 1 },
+                      pullRequestReview: { id: nodeId(t.review ?? 1) },
                     },
                   ],
                 },
@@ -324,7 +332,7 @@ function fakeGithub(pages: Thread[][], reviews: Review[] = [], accepted = false)
   };
 }
 
-type BotThread = { isResolved: boolean; important: string | null; review: number };
+type BotThread = { isResolved: boolean; important: string | null; review: string };
 
 function botThreadsOf(github: ReturnType<typeof fakeGithub>) {
   return inline<(number: number) => Promise<BotThread[]>>("botThreads", { github, owner: "o", repo: "r" });
@@ -344,8 +352,8 @@ describe("botThreads", () => {
       [threadOn(b, { review: 8 }, 6)],
     ]);
     expect(await botThreadsOf(github)(1)).toEqual([
-      { isResolved: false, important: held(a), review: 7 },
-      { isResolved: true, important: held(b), review: 8 },
+      { isResolved: false, important: held(a), review: nodeId(7) },
+      { isResolved: true, important: held(b), review: nodeId(8) },
     ]);
     expect(github.cursors).toEqual([null, "1"]);
   });

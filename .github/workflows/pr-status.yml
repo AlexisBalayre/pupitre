@@ -163,7 +163,9 @@ jobs:
             // `[file, line, description]` its comment's last line names (`importantMarker`), as
             // JSON, or null: a comment posted before the marker existed, or whose marker names
             // another file than the thread's, holds none. Only the last line counts, since the
-            // finding's own text comes before it. `review` is the id of the review that opened it.
+            // finding's own text comes before it. `review` is the node id of the review that opened
+            // it, which is the REST review's `node_id`: its `databaseId` is a 32-bit Int, and
+            // review ids have outgrown that.
             async function botThreads(number) {
               const found = [];
               let after = null;
@@ -176,7 +178,7 @@ jobs:
                           pageInfo { hasNextPage endCursor }
                           nodes {
                             isResolved path
-                            comments(first: 1) { nodes { author { login } body pullRequestReview { databaseId } } }
+                            comments(first: 1) { nodes { author { login } body pullRequestReview { id } } }
                           }
                         }
                       }
@@ -202,7 +204,7 @@ jobs:
                   found.push({
                     isResolved: t.isResolved,
                     important: named ? JSON.stringify(held) : null,
-                    review: first.pullRequestReview?.databaseId,
+                    review: first.pullRequestReview?.id,
                   });
                 }
                 after = threads.pageInfo.hasNextPage ? threads.pageInfo.endCursor : null;
@@ -259,7 +261,7 @@ jobs:
               const isSummary = (r) => r.user?.login === "github-actions[bot]" && r.body?.startsWith(REVIEW_HEADING);
               const verdictAt = reviews.findLastIndex((r) => isSummary(r) && isVerdict(r.body));
               const raisedAt = reviews.findLastIndex(
-                (r) => opened.has(r.id) || (isSummary(r) && /^\d+ important findings? /m.test(r.body)),
+                (r) => opened.has(r.node_id) ||(isSummary(r) && /^\d+ important findings? /m.test(r.body)),
               );
               const summary = reviews[verdictAt];
               // The operator's override: `review-accepted`, added after the newest summary review,
