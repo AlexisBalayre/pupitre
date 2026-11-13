@@ -1524,13 +1524,10 @@ function refuseUninstalled(repoPath: string, checkout: string, pkg: NestedPackag
   if (command === undefined) return;
   if (existsSync(join(repoPath, pkg.dir, GATE_ENVIRONMENT_DIR))) return;
   if (lstatSync(join(checkout, pkg.dir, GATE_ENVIRONMENT_DIR), { throwIfNoEntry: false })) return;
-  let manifest: { dependencies?: object; devDependencies?: object };
-  try {
-    manifest = JSON.parse(readPlainFile(join(repoPath, pkg.dir, 'package.json')));
-  } catch {
-    // The adapter read no scripts from it either: its stages say what failed.
-    return;
-  }
+  // Parsed without a guard: the adapter read `commands` from this same file.
+  const manifest: { dependencies?: object; devDependencies?: object } = JSON.parse(
+    readPlainFile(join(repoPath, pkg.dir, 'package.json')),
+  );
   const declared = { ...manifest.dependencies, ...manifest.devDependencies };
   if (Object.keys(declared).length === 0) return;
   const dir = quotePath(pkg.dir);
