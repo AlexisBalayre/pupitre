@@ -415,7 +415,7 @@ const FAILING_SCENARIO_RULE =
 
 /**
  * The shift-left kickoff is on for a project only while this file holds `on`
- * (decisions 178, 179). Store-resident beside the brief, and read at compile time as
+ * (decisions 178, 183). Store-resident beside the brief, and read at compile time as
  * the brief is, so turning it on reaches the next launch and never a window
  * already running.
  */
