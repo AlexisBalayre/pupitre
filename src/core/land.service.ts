@@ -42,7 +42,14 @@ import { SESSION_ID_PATTERN } from './paths.constants.js';
 import { mainLandedMessage } from './profile-compiler.service.js';
 import { CRITICAL_AREAS } from './routing.utils.js';
 import { endSandboxRun, removeGateDir, sandboxLabel } from './sandbox.utils.js';
-import { appendEvent, getSession, listSessions, type SessionRow } from './session.repository.js';
+import {
+  appendEvent,
+  decodeEvent,
+  getSession,
+  listEvents,
+  listSessions,
+  type SessionRow,
+} from './session.repository.js';
 import { steerSession } from './session-lifecycle.service.js';
 import {
   assertStillMerged,
@@ -667,6 +674,20 @@ async function remeasureMerge(
       );
     }
   }
+  // The passing report the pin's gate, or the re-gate that re-pinned it, filed
+  // on its way to merged: a stage it ran must run again.
+  const pinnedReport = listEvents(db, session.id)
+    .map(decodeEvent)
+    .reverse()
+    .find((event) => event.type === 'gate_result' && event.to === 'merged' && event.report?.passed);
+  const pinnedStages =
+    pinnedReport?.type === 'gate_result' ? pinnedReport.report?.stages : undefined;
+  if (pinnedStages === undefined) {
+    throw new Error(
+      `No passing gate report is recorded for ${sha}, the commit the gate pinned, so a remeasure ` +
+        'has no stages to hold the merge to. Nothing was landed.',
+    );
+  }
   const sandbox = sandboxLabel();
   const stages: GateStageResult[] = [];
   // Where and how `runMergeGate` cuts its checkout, for its reasons.
@@ -704,10 +725,32 @@ async function remeasureMerge(
     const kind = debtKind(entry.description, session.id);
     if (kind !== undefined) accepted.set(kind, [...(accepted.get(kind) ?? []), entry.description]);
   }
+  const flaggedBy = new Set(
+    (measured?.flaggedDebt ?? []).flatMap(
+      (flag) => debtFigures(flag.description, session.id)?.stage ?? [],
+    ),
+  );
+  // Past a stage that failed the rest never ran, so only a full run is held
+  // to the pin's stages.
+  const unrun =
+    measured === undefined
+      ? []
+      : pinnedStages.flatMap(({ stage, status }) => {
+          if (status !== 'pass' && status !== 'flagged') return [];
+          const now = stages.find((result) => result.stage === stage);
+          return now === undefined || now.status === 'skipped'
+            ? [`  ${stage}: ran at the pin, ${now === undefined ? 'absent' : 'skipped'} now`]
+            : [];
+        });
   const failed = [
     ...stages
       .filter((stage) => !LANDABLE_STATUSES.has(stage.status))
       .map((stage) => `  ${stage.stage}: ${stage.detail ?? stage.status}`),
+    ...unrun,
+    // A flagged stage the ledger can judge only through the debt it filed.
+    ...stages
+      .filter((stage) => stage.status === 'flagged' && !flaggedBy.has(stage.stage))
+      .map((stage) => `  ${stage.stage}: flagged, with no debt filed for it`),
     ...(measured?.flaggedDebt ?? []).flatMap((flag) => {
       const held = accepted.get(debtKind(flag.description, session.id) as string) ?? [];
       if (held.length === 0) return [`  flagged, never accepted: ${flag.description}`];
@@ -733,24 +776,57 @@ async function remeasureMerge(
  * Each wording a gate flag is filed in, matched whole on the description with
  * its ` session <id>` cut, and which way each figure it holds is worse: 1 when
  * higher, -1 when lower (decision 185). Whole, so a path or a name the session
- * chose cannot supply a figure. A wording with none matches on its kind alone.
+ * chose cannot supply a figure; the figures are the first captures, as many as
+ * `worse` has. `stage` names the stage that files it. A wording with no figure
+ * matches on its `debtKind` alone, which holds its every other word.
  */
-const DEBT_WORDINGS: readonly { pattern: RegExp; worse: readonly number[] }[] = [
-  { pattern: /^Oversize diff \((\d+) lines\) merged from$/, worse: [1] },
-  { pattern: /^Text files git reports as binary \((\d+)\) merged from$/, worse: [1] },
-  { pattern: /^New unused exports \((\d+)\) merged from$/, worse: [1] },
-  { pattern: /^Complexity rise \(\+(\d+) decision points\) merged from$/, worse: [1] },
-  { pattern: /^Duplicated lines rose from (\d+) to (\d+) in$/, worse: [-1, 1] },
-  { pattern: /^Coverage unmeasured over (\d+) changed source file\(s\) in$/, worse: [1] },
+const DEBT_WORDINGS: readonly {
+  pattern: RegExp;
+  worse: readonly number[];
+  stage: (match: RegExpExecArray) => string;
+}[] = [
+  { pattern: /^Oversize diff \((\d+) lines\) merged from$/, worse: [1], stage: () => 'diff-size' },
+  {
+    pattern: /^Text files git reports as binary \((\d+)\) merged from$/,
+    worse: [1],
+    stage: () => 'diff-size',
+  },
+  { pattern: /^New unused exports \((\d+)\) merged from$/, worse: [1], stage: () => 'dead-code' },
+  {
+    pattern: /^Complexity rise \(\+(\d+) decision points\) merged from$/,
+    worse: [1],
+    stage: () => 'complexity',
+  },
+  {
+    pattern: /^Duplicated lines rose from (\d+) to (\d+) in$/,
+    worse: [-1, 1],
+    stage: () => 'duplication',
+  },
+  {
+    pattern: /^Coverage unmeasured over (\d+) changed source file\(s\) in$/,
+    worse: [1],
+    stage: () => 'coverage',
+  },
   {
     pattern:
       /^Coverage gap \(patch coverage (\d+(?:\.\d)?)% below baseline (\d+(?:\.\d)?)%\) merged from$/,
     worse: [-1, 1],
+    stage: () => 'coverage',
   },
-  { pattern: /^Coverage gap \(unreported files(?: and patch coverage)?\) merged from$/, worse: [] },
   {
-    pattern: /^Nested package .+ changed with no (?:test|typecheck) script, merged from$/s,
+    pattern: /^Coverage gap \(unreported files\) merged from$/,
     worse: [],
+    stage: () => 'coverage',
+  },
+  {
+    pattern: /^Coverage gap \(unreported files and patch coverage\) merged from$/,
+    worse: [],
+    stage: () => 'coverage',
+  },
+  {
+    pattern: /^Nested package (.+) changed with no (test|typecheck) script, merged from$/s,
+    worse: [],
+    stage: (match) => `${match[2]} (${match[1]})`,
   },
 ];
 
@@ -764,34 +840,41 @@ const LANDABLE_STATUSES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * A flag description's wording, as an index into `DEBT_WORDINGS`, and its
- * figures; undefined when `sessionId` did not file it, it is no wording the
- * gate files, or a figure is no finite number.
+ * A flag description's wording, as an index into `DEBT_WORDINGS`, its figures
+ * and the stage that filed it; undefined when `sessionId` did not file it, it
+ * is no wording the gate files, or a figure is no finite number.
  */
 function debtFigures(
   description: string,
   sessionId: string,
-): { wording: number; figures: number[] } | undefined {
+): { wording: number; figures: number[]; stage: string } | undefined {
   const suffix = ` session ${sessionId}`;
   if (!description.endsWith(suffix)) return undefined;
   const body = description.slice(0, -suffix.length);
-  for (const [wording, { pattern }] of DEBT_WORDINGS.entries()) {
+  for (const [wording, { pattern, worse, stage }] of DEBT_WORDINGS.entries()) {
     const match = pattern.exec(body);
     if (match === null) continue;
-    const figures = match.slice(1).map(Number);
-    return figures.every(Number.isFinite) ? { wording, figures } : undefined;
+    const figures = match.slice(1, 1 + worse.length).map(Number);
+    return figures.every(Number.isFinite) ? { wording, figures, stage: stage(match) } : undefined;
   }
   return undefined;
 }
 
 /**
  * Whether the flag `description` is no worse than the accepted `held` on every
- * figure; never when either is unreadable or they differ in wording.
+ * figure; never when either is unreadable, or they differ in kind or wording.
  */
 function noWorse(description: string, held: string, sessionId: string): boolean {
   const now = debtFigures(description, sessionId);
   const then = debtFigures(held, sessionId);
-  if (now === undefined || then === undefined || now.wording !== then.wording) return false;
+  if (
+    now === undefined ||
+    then === undefined ||
+    now.wording !== then.wording ||
+    debtKind(description, sessionId) !== debtKind(held, sessionId)
+  ) {
+    return false;
+  }
   const { worse } = DEBT_WORDINGS[now.wording] as (typeof DEBT_WORDINGS)[number];
   return now.figures.every(
     (figure, i) => (figure - (then.figures[i] as number)) * (worse[i] as number) <= 0,

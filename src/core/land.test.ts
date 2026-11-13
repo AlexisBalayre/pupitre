@@ -899,9 +899,20 @@ describe('landSession', { timeout: 20_000 }, () => {
       );
     });
 
+    /** The stages the pin's gate ran, every one passing. */
+    const pinnedStages: GateStageResult[] = ['build', 'test', 'lint', 'scope-audit'].map(
+      (stage) => ({ stage, status: 'pass' }),
+    );
+
     /** A commit past the pin, pushed as the PR's head and merged on GitHub at it. */
     function mergeMovedHead(path = 'src/fix.ts', content = 'export const fix = 1;\n') {
       seedPrMerge();
+      // The passing report the gate files on its way to merged.
+      appendEvent(db, SESSION_ID, 'gate_result', {
+        from: 'merged',
+        to: 'merged',
+        report: { sessionId: SESSION_ID, passed: true, sandbox: 'none', stages: pinnedStages },
+      });
       return mergeAt(commitIn(worktree, path, content));
     }
 
@@ -1045,7 +1056,11 @@ describe('landSession', { timeout: 20_000 }, () => {
      * One remeasure's stages stood in for: a measurement reporting `stages`,
      * flagging `flags`, over the open ledger entries `held`.
      */
-    function measuredAs(stages: GateStageResult[], flags: string[] = [], held: string[] = []) {
+    function measuredAs(
+      stages: GateStageResult[] = pinnedStages,
+      flags: string[] = [],
+      held: string[] = [],
+    ) {
       vi.mocked(measureBranch).mockImplementationOnce(async (_db, _req, _session, reported) => {
         reported.push(...stages);
         return {
@@ -1066,7 +1081,10 @@ describe('landSession', { timeout: 20_000 }, () => {
     ])('refuses a measurement that came back with a %s stage', async (status, refusal) => {
       mergeMovedHead();
       const before = mainSha();
-      measuredAs([{ stage: 'build', status: status as GateStageResult['status'], detail: 'boom' }]);
+      measuredAs([
+        { stage: 'build', status: status as GateStageResult['status'], detail: 'boom' },
+        ...pinnedStages.slice(1),
+      ]);
 
       await expect(remeasure()).rejects.toThrow(refusal);
       expectNothingChanged(before);
@@ -1097,19 +1115,86 @@ describe('landSession', { timeout: 20_000 }, () => {
         filed('Duplicated lines rose from 100 to 150 in'),
         'flagged past the accepted',
       ],
+      // The gate's own wordings with no figure: every other word is the kind.
+      [
+        'a nested package and script other than the one accepted',
+        filed('Nested package packages/b changed with no typecheck script, merged from'),
+        filed('Nested package packages/a changed with no test script, merged from'),
+        'flagged, never accepted',
+      ],
+      [
+        'a coverage gap wider than the one accepted',
+        filed('Coverage gap (unreported files and patch coverage) merged from'),
+        filed('Coverage gap (unreported files) merged from'),
+        'flagged, never accepted',
+      ],
     ])('refuses %s', async (_case, flag, held, refusal) => {
       mergeMovedHead();
       const before = mainSha();
-      measuredAs([{ stage: 'build', status: 'pass' }], [flag], [held]);
+      measuredAs(pinnedStages, [flag], [held]);
 
       await expect(remeasure()).rejects.toThrow(`${refusal}`);
+      expectNothingChanged(before);
+    });
+
+    it('refuses a flagged stage that filed no debt, whatever else was flagged', async () => {
+      mergeMovedHead();
+      const before = mainSha();
+      measuredAs(
+        [...pinnedStages, { stage: 'complexity', status: 'flagged' }],
+        [filed('Oversize diff (651 lines) merged from')],
+        [filed('Oversize diff (700 lines) merged from')],
+      );
+
+      await expect(remeasure()).rejects.toThrow(
+        /did not pass:\n {2}complexity: flagged, with no debt filed for it\n/,
+      );
+      expectNothingChanged(before);
+    });
+
+    it('refuses a stage the pin ran that the remeasure did not', async () => {
+      mergeMovedHead();
+      const before = mainSha();
+      measuredAs(pinnedStages.filter(({ stage }) => stage !== 'lint'));
+
+      await expect(remeasure()).rejects.toThrow(
+        /did not pass:\n {2}lint: ran at the pin, absent now\n/,
+      );
+      expectNothingChanged(before);
+    });
+
+    // As when a commit past the pin took the test script away: the stage the
+    // pin's gate ran skips on the merge, and nothing measured it.
+    it('refuses when the test stage the pin ran skips on the merge', async () => {
+      mergeMovedHead();
+      const before = mainSha();
+      const untested: Adapter = {
+        ...passingAdapter,
+        gateCommands: (path) =>
+          passingAdapter.gateCommands(path).filter(({ stage }) => stage !== 'test'),
+      };
+
+      await expect(remeasure({ adapter: untested })).rejects.toThrow(
+        /did not pass:\n {2}test: ran at the pin, skipped now\n/,
+      );
+      expectNothingChanged(before);
+    });
+
+    it('refuses with no passing gate report recorded for the pin', async () => {
+      seedPrMerge();
+      mergeAt(commitIn(worktree, 'src/fix.ts', 'export const fix = 1;\n'));
+      const before = mainSha();
+
+      await expect(remeasure()).rejects.toThrow(
+        `No passing gate report is recorded for ${pinned}, the commit the gate pinned`,
+      );
       expectNothingChanged(before);
     });
 
     it('lands a flag whose every figure is no worse than an accepted one', async () => {
       const { merge } = mergeMovedHead();
       measuredAs(
-        [{ stage: 'build', status: 'pass' }],
+        [...pinnedStages, { stage: 'coverage', status: 'flagged' }],
         [filed('Coverage gap (patch coverage 61.5% below baseline 70%) merged from')],
         [filed('Coverage gap (patch coverage 60.5% below baseline 70%) merged from')],
       );

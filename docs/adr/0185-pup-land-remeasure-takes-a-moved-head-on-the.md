@@ -16,7 +16,13 @@
     full pass lands, and the land then goes on as usual. The land checks the stages itself, not
     only that `measureBranch` returned: it lands on `pass`, on `skipped` as the gate passes it (no
     command, the untested skip of decision 139), and on `flagged`, which the ledger judges. Any
-    other status refuses, a future one included, naming the stage and its detail. So does a debt
+    other status refuses, a future one included, naming the stage and its detail. A `skipped`
+    is held to the pin: the passing report the pin's gate (or the re-gate that re-pinned it)
+    filed on its way to merged is read back, and a stage that ran there, passing or flagged,
+    must run again, so a commit past the pin that takes a script or a config away cannot turn it
+    into a skip. With no such report recorded, the remeasure refuses. A `flagged` stage must
+    have filed debt: each wording below names the stage that files it, and a flagged stage with
+    no flag of its own refuses. So does a debt
     flag whose kind the session's own gate did not already file as accepted debt: no one
     accepted it. A kind the session already holds open in the ledger passes only up to the
     figures accepted: the stages measure the whole PR again, so the flags the first gate filed
@@ -26,7 +32,10 @@
     lower patch coverage or a higher baseline. A flag passes when one open entry of its kind is
     no worse on every figure. The figures are read from the gate's own wordings matched whole, so
     a path or a name inside a description cannot supply one; a description in no such wording,
-    or a figure that is no finite number, on either side, refuses. A refusal
+    or a figure that is no finite number, on either side, refuses. A wording with no figure (a
+    nested package missing a script, a coverage gap of unreported files) passes only against an
+    entry of the same kind, which keeps every word but the figures: the same package and script,
+    the same cause. A refusal
     changes nothing and records nothing: `measureBranch` only reads the store, and the debt it
     flags, the baseline it would ratchet and the event are written by the land alone, after a
     pass. The session stays merged, and the operator still has `--accept-head`.
