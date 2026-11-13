@@ -1,5 +1,13 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 
@@ -15,6 +23,7 @@ import type { DeadExport, DuplicationReport } from '@src/adapters/types/adapter.
 import type { IstanbulCoverageMap } from '@src/adapters/types/istanbul.types.js';
 import { rootCoverageReport, typescriptAdapter } from '@src/adapters/typescript.adapter.js';
 import { endSandboxRun, runGateChild, sandboxLabel } from '@src/core/sandbox.utils.js';
+import { sh } from '@test/helpers/git.mock.js';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 
 function makeRepo(files: Record<string, string>): string {
@@ -278,6 +287,357 @@ describe('typescriptAdapter.coveredTest', () => {
   });
 });
 
+// The diff-size split counts as test only what the test stage's vitest run
+// collects, read from both checkouts (decision 143); what one config collects
+// is vitest-config.utils.ts's, tested there.
+describe('typescriptAdapter.testFiles', () => {
+  const plainVitest = JSON.stringify({ scripts: { test: 'vitest run' } });
+  const configWith = (test: string): string =>
+    `import { defineConfig } from 'vitest/config';\n\nexport default defineConfig({\n  test: ${test},\n});\n`;
+
+  it('collects only what the include names, so a .test.ts outside it is not a test', () => {
+    const repo = makeRepo({
+      'package.json': plainVitest,
+      'vitest.config.ts': configWith("{ include: ['src/**/*.test.ts'] }"),
+    });
+
+    expect(
+      typescriptAdapter.testFiles?.(localContext(repo), [
+        'src/a.test.ts',
+        'src/deep/b.test.ts',
+        'scripts/x.test.ts',
+        'src/a.ts',
+      ]),
+    ).toEqual(['src/a.test.ts', 'src/deep/b.test.ts']);
+  });
+
+  // Each row is the trusted checkout's, beside a measured one that collects the
+  // file, so a row fails if its refusal is deleted.
+  it.each([
+    ['a test script that narrows the run', { test: 'vitest run src/core' }],
+    ['another runner', { test: 'jest' }],
+    ['a pretest script', { test: 'vitest run', pretest: 'node prep.js' }],
+    ['a posttest script', { test: 'vitest run', posttest: 'node report.js' }],
+  ])('collects nothing under %s', (_, scripts) => {
+    const configPath = makeRepo({ 'package.json': JSON.stringify({ scripts }) });
+    const measurePath = makeRepo({ 'package.json': plainVitest });
+
+    expect(typescriptAdapter.testFiles?.({ configPath, measurePath }, ['src/a.test.ts'])).toEqual(
+      [],
+    );
+  });
+
+  it('collects nothing beside a manifest that cannot be read', () => {
+    const repo = makeRepo({ 'package.json': '{ not json' });
+
+    expect(typescriptAdapter.testFiles?.(localContext(repo), ['src/a.test.ts'])).toEqual([]);
+  });
+
+  // Vitest runs the branch's config, so its lists are read only where the rest
+  // of it is the trusted one's; a config that runs code runs the same code.
+  const runsCode = configWith(
+    "{ include: ['src/**/*.test.ts'], maxWorkers: Math.max(2, availableParallelism()) }",
+  ).replace(/^/, "import { availableParallelism } from 'node:os';\n");
+
+  it.each([
+    ['the same config, which runs code', runsCode, ['src/a.test.ts']],
+    ['a config setting another key', runsCode.replace('maxWorkers', 'retry: 2, maxWorkers'), []],
+    ['a config changing a value', runsCode.replace('Math.max(2', 'Math.max(1'), []],
+    [
+      'a config adding a setup file',
+      runsCode.replace('maxWorkers', "setupFiles: ['./setup.ts'], maxWorkers"),
+      [],
+    ],
+  ])('reads the branch checkout holding %s', (_, branchConfig, expected) => {
+    const configPath = makeRepo({ 'package.json': plainVitest, 'vitest.config.ts': runsCode });
+    const measurePath = makeRepo({ 'package.json': plainVitest, 'vitest.config.ts': branchConfig });
+
+    expect(typescriptAdapter.testFiles?.({ configPath, measurePath }, ['src/a.test.ts'])).toEqual(
+      expected,
+    );
+  });
+
+  // The script runs under the branch's package-manager configs, which can have
+  // it load a file of the branch's own, even where they are the target's.
+  it.each([
+    ['the same .npmrc on both sides', { '.npmrc': 'engine-strict=true\n' }, {}, ['src/a.test.ts']],
+    ['an .npmrc only the branch commits', {}, { '.npmrc': 'engine-strict=true\n' }, []],
+    [
+      'an .npmrc the branch rewrites',
+      { '.npmrc': 'engine-strict=true\n' },
+      { '.npmrc': 'engine-strict=false\n' },
+      [],
+    ],
+    ['an .env.yarn only the branch commits', {}, { '.env.yarn': 'CI=1\n' }, []],
+    ["yarn's Plug'n'Play runtime on both sides", { '.pnp.cjs': 'module.exports = {};\n' }, {}, []],
+    ...[
+      ['.npmrc', 'node-options=--import ./scripts/reg.mjs\n'],
+      ['.npmrc', 'node_options=--import ./scripts/reg.mjs\n'],
+      ['.npmrc', 'script-shell=./scripts/sh\n'],
+      ['.yarnrc', 'yarn-path "./scripts/yarn.js"\n'],
+      ['.yarnrc.yml', 'yarnPath: .yarn/releases/yarn.cjs\n'],
+      ['.yarnrc.yml', 'plugins:\n  - path: .yarn/plugins/p.cjs\n'],
+      ['.yarnrc.yml', 'injectEnvironmentFiles:\n  - .env.ci\n'],
+      ['.env.yarn', 'NODE_OPTIONS=--import ./scripts/reg.mjs\n'],
+      ['pnpm-workspace.yaml', 'nodeOptions: --import ./scripts/reg.mjs\n'],
+      ['bunfig.toml', 'preload = ["./scripts/reg.ts"]\n'],
+    ].map(
+      ([name, text]) =>
+        [`a target ${name} that runs a file`, { [name as string]: text }, {}, []] as const,
+    ),
+  ] as [string, Record<string, string>, Record<string, string>, string[]][])(
+    'reads the package-manager configs of %s',
+    (_, both, branchOnly, expected) => {
+      const files = {
+        'package.json': plainVitest,
+        'vitest.config.ts': configWith("{ include: ['src/**/*.test.ts'] }"),
+        ...both,
+      };
+      const configPath = makeRepo(files);
+      const measurePath = makeRepo({ ...files, ...branchOnly });
+
+      expect(typescriptAdapter.testFiles?.({ configPath, measurePath }, ['src/a.test.ts'])).toEqual(
+        expected,
+      );
+    },
+  );
+
+  // Vitest then loads the first config in a directory above, which a session can write.
+  it('collects nothing with no config at the root', () => {
+    const repo = makeRepo({ 'package.json': plainVitest });
+
+    expect(typescriptAdapter.testFiles?.(localContext(repo), ['src/a.test.ts'])).toEqual([]);
+  });
+
+  // APFS folds `ſ` onto `s`, so vitest opens the branch's file for vitest.config.ts.
+  it('collects nothing where the branch root holds a name outside ASCII', () => {
+    const files = {
+      'package.json': plainVitest,
+      'vite.config.ts': configWith("{ include: ['src/**/*.test.ts'] }"),
+    };
+    const configPath = makeRepo(files);
+    const measurePath = makeRepo({ ...files, 'viteſt.config.ts': configWith('{}') });
+
+    expect(typescriptAdapter.testFiles?.({ configPath, measurePath }, ['src/a.test.ts'])).toEqual(
+      [],
+    );
+  });
+
+  // The run reads the measured checkout's lists, so a branch that narrows them
+  // leaves a file vitest never collects.
+  it('collects only what both checkouts collect', () => {
+    const configPath = makeRepo({
+      'package.json': plainVitest,
+      'vitest.config.ts': configWith("{ include: ['src/**/*.test.ts'], exclude: [] }"),
+    });
+    const measurePath = makeRepo({
+      'package.json': plainVitest,
+      'vitest.config.ts': configWith(
+        "{ include: ['src/**/*.test.ts', 'scripts/**/*.test.ts'], exclude: ['src/big.test.ts'] }",
+      ),
+    });
+
+    expect(
+      typescriptAdapter.testFiles?.({ configPath, measurePath }, [
+        'src/a.test.ts',
+        'src/big.test.ts',
+        'scripts/x.test.ts',
+      ]),
+    ).toEqual(['src/a.test.ts']);
+  });
+
+  /** A repo with `files` committed; the repo and the commit's sha. */
+  function committed(files: Record<string, string>): { repo: string; sha: string } {
+    const repo = makeRepo(files);
+    sh(repo, 'git', 'init', '-q');
+    sh(repo, 'git', 'add', '-A');
+    sh(repo, 'git', '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'init');
+    return { repo, sha: sh(repo, 'git', 'rev-parse', 'HEAD') };
+  }
+
+  // The gate's checkout is where the branch's build and tests ran, so its
+  // config is read from the commit it was cut at, never from its disk.
+  it('reads the measured config from the pinned sha, whatever the checkout holds', () => {
+    const trusted = {
+      'package.json': plainVitest,
+      'vitest.config.ts': configWith("{ include: ['src/**/*.test.ts'], exclude: [] }"),
+    };
+    const { repo, sha } = committed(trusted);
+    writeFileSync(
+      join(repo, 'vitest.config.ts'),
+      configWith("{ include: ['src/**/*.test.ts'], exclude: ['src/big.test.ts'] }"),
+    );
+    sh(repo, 'git', '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qam', 'narrow');
+    const narrowed = sh(repo, 'git', 'rev-parse', 'HEAD');
+    sh(repo, 'git', 'reset', '-q', '--hard', sha);
+    const ctx = { configPath: repo, measurePath: makeRepo(trusted), measureSha: narrowed };
+
+    expect(typescriptAdapter.testFiles?.(ctx, ['src/a.test.ts', 'src/big.test.ts'])).toEqual([
+      'src/a.test.ts',
+    ]);
+  });
+
+  // A session can write the main checkout's disk too, so the trusted config
+  // is the target commit's.
+  it("reads the trusted config from the target sha, whatever the main checkout's disk holds", () => {
+    const narrow = configWith("{ include: ['src/**/*.test.ts'] }");
+    const { repo, sha } = committed({ 'package.json': plainVitest, 'vitest.config.ts': narrow });
+    const wide = configWith("{ include: ['**/*.test.ts'] }");
+    writeFileSync(join(repo, 'vitest.config.ts'), wide);
+    sh(repo, 'git', '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qam', 'widen');
+    const branch = sh(repo, 'git', 'rev-parse', 'HEAD');
+    writeFileSync(join(repo, 'vitest.config.ts'), wide);
+    const ctx = { configPath: repo, configSha: sha, measurePath: repo, measureSha: branch };
+
+    expect(typescriptAdapter.testFiles?.(ctx, ['src/a.test.ts', 'scripts/x.test.ts'])).toEqual([
+      'src/a.test.ts',
+    ]);
+  });
+
+  // Each row is what a branch's code may leave in the checkout before or while
+  // vitest reads it; only a file outside the run's inputs leaves them intact.
+  it.each([
+    ['untouched', () => {}, true],
+    ['given a build output', (dir: string) => writeFileSync(join(dir, 'out.js'), 'x\n'), true],
+    [
+      'with its config rewritten',
+      (dir: string) => writeFileSync(join(dir, 'vitest.config.ts'), configWith('{}')),
+      false,
+    ],
+    ['given an .npmrc', (dir: string) => writeFileSync(join(dir, '.npmrc'), 'x=1\n'), false],
+    ...[
+      '.yarnrc',
+      '.yarnrc.yml',
+      '.env.yarn',
+      '.pnp.cjs',
+      'pnpm-workspace.yaml',
+      'bunfig.toml',
+    ].map(
+      (name) =>
+        [`given a ${name}`, (dir: string) => writeFileSync(join(dir, name), 'x\n'), false] as const,
+    ),
+    // APFS folds `ſ` onto `s`, so vitest opens it for `vitest.workspace.ts`.
+    [
+      'given a name outside ASCII',
+      (dir: string) => writeFileSync(join(dir, 'viteſt.workspace.ts'), 'export default [];\n'),
+      false,
+    ],
+    ['without its manifest', (dir: string) => rmSync(join(dir, 'package.json')), false],
+    [
+      'with its config made a link',
+      (dir: string) => {
+        renameSync(join(dir, 'vitest.config.ts'), join(dir, 'real.ts'));
+        symlinkSync('real.ts', join(dir, 'vitest.config.ts'));
+      },
+      false,
+    ],
+    [
+      'with its manifest renamed into another case',
+      (dir: string) => renameSync(join(dir, 'package.json'), join(dir, 'Package.json')),
+      false,
+    ],
+  ] as [string, (dir: string) => void, boolean][])(
+    'checks the run inputs of a checkout %s',
+    (_, change, intact) => {
+      const { repo, sha } = committed({
+        'package.json': plainVitest,
+        'vitest.config.ts': configWith("{ include: ['src/**/*.test.ts'] }"),
+      });
+      change(repo);
+
+      expect(
+        typescriptAdapter.testInputsIntact?.({
+          configPath: repo,
+          measurePath: repo,
+          measureSha: sha,
+        }),
+      ).toBe(intact);
+    },
+  );
+
+  // The gate links each entry of the trusted node_modules into its checkout.
+  it.each([
+    ['links each entry to the trusted one', () => {}, true],
+    [
+      'holds a vite cache of its own',
+      (modules: string) => mkdirSync(join(modules, '.vite', 'vitest'), { recursive: true }),
+      true,
+    ],
+    // `tsc -b` with `tsBuildInfoFile: ./node_modules/.tmp/...`; no package is dot-named.
+    [
+      'holds a build output the trusted one lacks',
+      (modules: string) => mkdirSync(join(modules, '.tmp')),
+      true,
+    ],
+    ['holds binaries of its own', (modules: string) => mkdirSync(join(modules, '.bin')), false],
+    [
+      'holds binaries of its own in another case',
+      (modules: string) => mkdirSync(join(modules, '.BIN')),
+      false,
+    ],
+    [
+      'replaces a dot-named link with an entry of its own',
+      (modules: string) => {
+        rmSync(join(modules, '.pnpm'));
+        mkdirSync(join(modules, '.pnpm'));
+      },
+      false,
+    ],
+    [
+      'replaces a link with a package of its own',
+      (modules: string) => {
+        rmSync(join(modules, 'vitest'));
+        mkdirSync(join(modules, 'vitest'));
+      },
+      false,
+    ],
+    [
+      'links an entry elsewhere',
+      (modules: string) => {
+        rmSync(join(modules, 'vitest'));
+        symlinkSync(tempDir('pup-elsewhere-'), join(modules, 'vitest'));
+      },
+      false,
+    ],
+    [
+      'is itself a link',
+      (modules: string) => {
+        rmSync(modules, { recursive: true });
+        symlinkSync(tempDir('pup-elsewhere-'), modules);
+      },
+      false,
+    ],
+  ])('checks the node_modules of a checkout that %s', (_, change, intact) => {
+    const files = {
+      'package.json': plainVitest,
+      'vitest.config.ts': configWith("{ include: ['src/**/*.test.ts'] }"),
+    };
+    const { repo, sha } = committed(files);
+    const checkout = makeRepo(files);
+    const modules = join(checkout, 'node_modules');
+    mkdirSync(modules);
+    for (const entry of ['vitest', '.pnpm']) {
+      mkdirSync(join(repo, 'node_modules', entry), { recursive: true });
+      symlinkSync(join(repo, 'node_modules', entry), join(modules, entry));
+    }
+    change(modules);
+
+    expect(
+      typescriptAdapter.testInputsIntact?.({
+        configPath: repo,
+        measurePath: checkout,
+        measureSha: sha,
+      }),
+    ).toBe(intact);
+  });
+
+  it('holds the run inputs intact outside the gate, where nothing ran', () => {
+    const repo = makeRepo({ 'package.json': plainVitest, '.npmrc': 'x=1\n' });
+
+    expect(typescriptAdapter.testInputsIntact?.(localContext(repo))).toBe(true);
+  });
+});
+
 describe('typescriptAdapter.depGraph', () => {
   function makeSourceRepo(files: Record<string, string>): string {
     const dir = tempDir('pup-graph-');
@@ -496,6 +856,20 @@ describe('typescriptAdapter nested packages', () => {
     expect(
       typescriptAdapter.coverableFiles?.(ctx, ['src/app.ts', 'tools/review/src/r.ts']),
     ).toEqual(['src/app.ts']);
+  });
+
+  it("leaves a nested package's test files out of the root run's tests", () => {
+    const ctx = localContext(
+      makeTree({
+        ...tree,
+        'package.json': JSON.stringify({ scripts: { test: 'vitest run' } }),
+        'vitest.config.ts': 'export default {};\n',
+      }),
+    );
+
+    expect(
+      typescriptAdapter.testFiles?.(ctx, ['tools/review/src/r.test.ts', 'tools/plain/p.test.ts']),
+    ).toEqual(['tools/plain/p.test.ts']);
   });
 
   it('still walks a directory without its own package.json', () => {
