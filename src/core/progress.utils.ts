@@ -46,7 +46,7 @@ export const RESPAWN_STAGES = ['request handoff', 'wait for handoff', 'relaunch'
 export const CI_WAIT_STAGES = ['find PR', 'wait for review'] as const;
 
 /** Where the line goes: stderr, or a test's stand-in. */
-export interface ProgressStream {
+interface ProgressStream {
   isTTY?: boolean;
   write(chunk: string): unknown;
 }
