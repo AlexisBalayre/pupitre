@@ -1,0 +1,158 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-13T22:44:20.189Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43520771902",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43520771902",
+  "actor": "AlexisBalayre",
+  "commit_sha": "6f167de8eec509138f13f63da46f4b9617d15041",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 321,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/turn-watchdog.service.ts",
+      "line": "118-121",
+      "description": "The watchdog decides a dead turn is the hold's only because the newest recorded prompt is a `cache_hold`. A turn started by an unrecorded prompt after the hold (text typed into the attached pane) can still die, and the watchdog then never resumes it, so the session stays STALLED with no `turn_died`. Before this change that turn was resumed.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/cache-hold.service.ts",
+      "line": "179-184",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "`typeHold` presses Enter once and returns true without checking that the hold was sent. The `cache_hold` event is then written whether or not the turn ever started.",
+      "body": "**Concern.** `typeHold` presses Enter once and reports success without reading the box again:\n\n```ts\n  if (readInputBox(pane) !== 'empty' || !pasteIntoPane(pane, CACHE_HOLD_MESSAGE)) return false;\n  submitPane(pane);\n  return true;\n```\n\nBoth paths this one copies check the box after Enter and press it again:\n- `steerPane` (`src/claude/session-runtime.service.ts` ~L1240-1271) re-reads the box after Enter and retries up to `SUBMIT_RETRY_LIMIT` times while it still `holds`. Commit 24f8a33 added that retry because \"Enter can land while the UI is still folding a large paste and leave the message unsubmitted (kickoff `delivered:false` in the wild)\".\n- `tellConductor` (`src/core/conductor.service.ts` L442-453, ADR 0085) uses the same `pasteIntoPane`/`submitPane` pair for short messages. It presses Enter once more if the box still `holds`, and reports success only when the box reads `empty`.\n\nADR 0179 says the hold \"is pasted and submitted like a steer (decision 45)\", but the code skips the steer's check.\n\n**Trigger:** the first Enter does not send the hold. That is the case both siblings retry for. When it happens:\n1. `holdIdleCaches` records `cache_hold` (L98), but no turn runs and the events file does not move.\n2. Every later sweep's `holdDue` sees a prompt at or after the mtime and refuses (L139-141). The box also reads `holds`. The cache lapses, which is the cost this feature exists to avoid, and the store says the window was held.\n3. The hold text stays in the input box. An operator who attaches to answer the open question by hand types after \"…Run no tool; reply with the single word held and end your turn.\", so the worker is told to ignore the answer.\n\n**Fix.** Mirror the tell's single retry, and treat a box that still holds text as not held so nothing is recorded. Text left in the box after the retry is still a gap, but the record no longer claims a hold that never ran.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/6f167de8eec509138f13f63da46f4b9617d15041/src/core/cache-hold.service.ts#L179-L184",
+      "suggestion": "function typeHold(row: SessionRow): boolean {\n  const pane = sessionPane(row);\n  if (readInputBox(pane) !== 'empty' || !pasteIntoPane(pane, CACHE_HOLD_MESSAGE)) return false;\n  submitPane(pane);\n  if (readInputBox(pane) === 'holds') submitPane(pane);\n  return readInputBox(pane) !== 'holds';\n}"
+    },
+    {
+      "file": "src/core/cache-hold.service.ts",
+      "line": "98",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "A worker in awaiting-review for more than about 4h10m collects five holds in a row. The dashboard detail pane shows only five recent events (`RECENT_EVENT_COUNT`, dashboard.service.ts:855), so all five become `cache_hold` rows and the `session_done` summary drops out of view. No other dashboard field shows that summary.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/cache-hold.service.ts",
+      "line": "93",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`holdIdleCaches` acts on the state `listSessions` read at the start of the sweep and never re-reads the row before `typeHold`. If the gate blocks an awaiting-review session mid-sweep (which can happen during earlier holds' tmux sleeps), that session still gets a hold turn, which decision 179 forbids. Re-read the row with `getSession` just before typing.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/cache-hold.service.ts",
+      "line": "38-42",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `CACHE_HOLD_AFTER_MS` JSDoc calls Claude Code's idle notification an \"idle prompt\". In this file \"prompt\" means a recorded prompt (`PROMPT_EVENTS`, `lastPrompt`), so a reader may think pup counts it. Use \"idle notice\" as ADR 0179 does.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/cache-hold.service.ts",
+      "line": "82-83",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `holdIdleCaches` JSDoc says \"with no prompt recorded since\" but never says since what. The code means since the events file last moved, compared at whole seconds. Name that reference point, or drop the clause and leave the rule to `holdDue`.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "simplicity",
+      "description": "The simplicity reviewer reported it ran out of budget before reading cache-hold.test.ts (350 lines) and turn-watchdog.test.ts, so nobody checked those tests for bloat."
+    },
+    {
+      "component": "security",
+      "description": "The security reviewer rated its one nit at low confidence. The schema has no low level, so it is recorded as medium."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 4.138691375000001,
+  "duration_ms": 373564,
+  "num_turns": 17,
+  "tokens": {
+    "input": 14,
+    "output": 13345,
+    "cache_read": 356667,
+    "cache_creation": 59598,
+    "total": 429624
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 192,
+      "output": 74701,
+      "cache_read": 3555036,
+      "cache_creation": 275710,
+      "cost_usd": 3.7631392000000012
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 44,
+      "output": 9438,
+      "cache_read": 303361,
+      "cache_creation": 100023,
+      "cost_usd": 0.3748616
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 169,
+      "cache_read": 0,
+      "cache_creation": 4847,
+      "cost_usd": 0.0006905749999999999
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "bash /home/runner/work/pupitre/pupitre/scripts/adr-index.sh"
+    }
+  ]
+}
