@@ -1,0 +1,136 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-13T16:33:05.171Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43462724277",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43462724277",
+  "actor": "AlexisBalayre",
+  "commit_sha": "db005a609a3829401f917574884a664ef154d599",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 320,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "workflow-safety",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs",
+    "context"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "workflow-safety",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs",
+    "context"
+  ],
+  "reviewers_skipped": [
+    "maintainability",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": ".github/workflows/pr-status.yml",
+      "line": "179-205",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The thread-to-review match reads GraphQL `pullRequestReview.databaseId`, a 32-bit `Int`. GitHub review ids have very likely passed 2^31 by now, so the field can error, which would crash every status recompute, or come back null, which would silently disable the thread-based `raisedAt` check.",
+      "body": "**What is wrong.** `botThreads` now reads which review opened each thread from the GraphQL field `pullRequestReview { databaseId }`. `statusOf` then compares it with the REST `reviews[].id`:\n\n```js\ncomments(first: 1) { nodes { author { login } body pullRequestReview { databaseId } } }\n...\nreview: first.pullRequestReview?.databaseId,\n...\nconst opened = new Set(threads.map((t) => t.review));\nconst raisedAt = reviews.findLastIndex((r) => opened.has(r.id) || ...);\n```\n\n**Why it breaks.** `databaseId` is a GraphQL `Int`, which is signed 32-bit (max 2,147,483,647). Pull request review ids on github.com have passed that, which is why GitHub added `fullDatabaseId: BigInt` alongside it. An id that does not fit leads to one of two outcomes, and both are bad:\n\n- **The field errors.** `github.graphql` throws on any response that has `errors`, so `statusOf` throws for every PR with a bot thread. The relabel loop then stops at the first such PR.\n- **The field returns null.** Every `t.review` is `undefined`, so `opened.has(r.id)` is never true. The new fail-closed rule for \"a review that opened a bot thread with no verdict summary at or after it\" then silently does nothing.\n\nThe unit test stubs `databaseId: t.review ?? 1` (`tools/review/test/unit/pr-status-workflow.test.ts:314`), so it cannot catch either outcome. Nothing else in the repo reads `databaseId` on reviews: `src/core/github.client.ts` matches reviews by the node `id`.\n\n**Fix.** Query `pullRequestReview { id }` and compare it with the REST review's `node_id`, the way the rest of the repo matches reviews. Alternatively, read `fullDatabaseId` (a string) and compare it with `String(r.id)`. Either way, give the test fixture a realistic id.\n\nCode: https://github.com/AlexisBalayre/pupitre/blob/db005a609a3829401f917574884a664ef154d599/.github/workflows/pr-status.yml#L179-L205 and https://github.com/AlexisBalayre/pupitre/blob/db005a609a3829401f917574884a664ef154d599/.github/workflows/pr-status.yml#L258-L263",
+      "suggestion": null
+    },
+    {
+      "file": "tools/review/src/review-body.utils.ts",
+      "line": "65-68",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "A carried important is now released only when the bullet's `[file, line, description]` exactly matches the thread's marker. The marker is built from the posted finding. The bullet is built from `prior_importants`, which the orchestrator model copies by hand from the prior record, again every round. Any drift in that copy means the thread no longer releases the important, so the PR stays `review-open` for good.",
+      "body": "**What is wrong.** Code fixes the marker: `importantMarker` writes `JSON.stringify([finding.file, finding.line, oneLine(finding.description)])` from the consolidated finding. The `post-review.script.ts` comment path and `review-metrics.script.ts`'s record both use that same object.\n\nThe carried bullet the marker must equal is different. `carriedLines` builds it from `summary.prior_importants`, and that is model output. `.claude/skills/pr-ci-review/SKILL.md` §9 tells the orchestrator to copy `description` \"from the prior record\" and to \"copy every still-unresolved entry forward, round after round\". `review-metrics.script.ts` passes it straight through (`prior_importants: summary?.prior_importants ?? null`), and no code checks it against, or rebuilds it from, the prior record's findings.\n\nThe workflow then needs an exact string match on all three fields:\n\n```js\nconst entry = /^- `([^`]+):([^`:]+)` \\([^)]*\\): (.*)$/.exec(bullet);\nconst holder = entry ? unclaimed.indexOf(JSON.stringify([entry[1], entry[2], entry[3]])) : -1;\n```\n\n**Trigger.**\n1. Round 1 anchors an important at `src/c.ts:7-9`, and the operator resolves its thread to decline it.\n2. A later round carries it, but the orchestrator writes `line: \"7\"`, drops a trailing period, collapses a double space, or re-escapes a quote.\n3. The bullet no longer equals the marker, so `unthreadedImportants` counts it and the PR reads `review-open`.\n\nEach later round copies the drifted entry forward, so the PR stays stuck. `review-accepted` lapses at every new summary, so it doesn't help either. Before this PR the key was path plus start line, so a reworded description or a changed range end still released. Every fixture builds the bullet and the marker from the same object, so no test covers drift.\n\n**Possible fixes.**\n- Key the release on `[file, line]` only, keeping the whole range, and leave the description in the marker for humans.\n- Or have the poster rebuild `prior_importants`' file, line and description from the prior record's findings, so the strings round-trip by construction.\n\nCode: https://github.com/AlexisBalayre/pupitre/blob/db005a609a3829401f917574884a664ef154d599/tools/review/src/review-body.utils.ts#L65-L68 and https://github.com/AlexisBalayre/pupitre/blob/db005a609a3829401f917574884a664ef154d599/.github/workflows/pr-status.yml#L139-L140",
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0165-pr-status-reads-unthreaded-importants-from-the-review-body.md",
+      "line": "16-23",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "important",
+      "description": "ADR 0165 still describes the removed `path:line` / `originalLine` / `Re:` thread match; the PR replaced it with the marker match, per-section release and fail-closed verdict rule.",
+      "body": "ADR 0165 records the decision for this mechanism, and AGENTS.md says ADRs win over the other design docs. Its \"Carried importants that have a thread\" paragraph still describes the behavior this PR removes:\n\n- a carried entry whose `path:line` matches a bot thread is left to that thread;\n- a thread's line is its `originalLine`, or the `Re: path:line` prefix when the poster relocated the comment.\n\nThe code no longer works that way:\n\n- `botThreads` no longer queries `originalLine` and no longer parses `Re:`.\n- Matching is now exact on `[file, whole line range, one-line description]` from the `<!-- important [...] -->` marker on the comment's last line (`importantMarker`), and each thread releases at most one entry.\n- Each carried section is counted on its own and releases only from its own N list lines.\n- A review that raised importants with no verdict summary at or after it now fails closed to `review-open` (`raisedAt > verdictAt`). That also changes the no-verdict rationale at lines 12-15.\n\nThis PR does not touch the ADR, and no other ADR supersedes it. Someone who treats the ADR as the contract would \"fix\" the matcher back to `path:line`.\n\nPlease rewrite lines 16-23 (and 12-15 for the fail-closed rule) to describe the marker match and the per-section, per-thread release, or add a superseding ADR.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/db005a609a3829401f917574884a664ef154d599/docs/adr/0165-pr-status-reads-unthreaded-importants-from-the-review-body.md#L12-L23",
+      "suggestion": null
+    },
+    {
+      "file": ".github/workflows/pr-status.yml",
+      "line": "139-140",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The carried-bullet regex splits `file:line` at the last colon. A finding whose `line` holds a colon (e.g. `42:7`, which still gets a thread at line 42) parses as file `f:42`, line `7`, never equals its marker `[\"f\",\"42:7\",…]`, and so keeps the PR `review-open` after its thread is resolved. Match the whole location against `` `${file}:${line}` `` instead.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 2,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 4.402653974999998,
+  "duration_ms": 351741,
+  "num_turns": 21,
+  "tokens": {
+    "input": 14,
+    "output": 18087,
+    "cache_read": 353594,
+    "cache_creation": 82089,
+    "total": 453784
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 154,
+      "output": 86364,
+      "cache_read": 1979979,
+      "cache_creation": 302674,
+      "cost_usd": 3.8835288000000006
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 68,
+      "output": 13482,
+      "cache_read": 402561,
+      "cache_creation": 137280,
+      "cost_usd": 0.5184121
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 212,
+      "cache_read": 0,
+      "cache_creation": 4855,
+      "cost_usd": 0.000713075
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "awk 'NR==62 || NR==179' /home/runner/work/pupitre/pupitre/.claude/skills/pr-ci-review/SKILL.md"
+    }
+  ]
+}
