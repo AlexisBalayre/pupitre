@@ -1,4 +1,11 @@
-import { bodyLines, collapsedSections, commentBody, findingLine, unresolvedPrior } from "@src/review-body.utils";
+import {
+  bodyLines,
+  collapsedSections,
+  commentBody,
+  findingLine,
+  importantMarker,
+  unresolvedPrior,
+} from "@src/review-body.utils";
 import type { Finding, ReviewSummary } from "@src/review-metrics.schemas";
 import { describe, expect, it } from "vitest";
 
@@ -54,28 +61,32 @@ describe("findingLine", () => {
 });
 
 describe("commentBody", () => {
+  /** The comment as posted: `text`, then the marker of the important it holds. */
+  const marked = (text: string, held: Finding = finding()) => `${text}\n\n${importantMarker(held)}`;
+
   it("keeps the suggestion fence it opens committable", () => {
     expect(commentBody(finding({ suggestion: "fixed();" }), null)).toBe(
-      "the description\n\n```suggestion\nfixed();\n```",
+      marked("the description\n\n```suggestion\nfixed();\n```"),
     );
   });
 
   it("makes a tag in a relocated finding's path inert", () => {
-    expect(commentBody(finding({ file: "a`<pre lang=suggestion>`.ts" }), 12)).toBe(
-      "Re: `a`<\u200bpre lang=suggestion>`.ts:12`\n\nthe description",
+    const tagged = finding({ file: "a`<pre lang=suggestion>`.ts" });
+    expect(commentBody(tagged, 12)).toBe(
+      marked("Re: `a`<\u200bpre lang=suggestion>`.ts:12`\n\nthe description", tagged),
     );
   });
 
   it("offers a relocated finding's suggestion in an inert fence", () => {
     expect(commentBody(finding({ suggestion: "fixed();" }), 12)).toBe(
-      "Re: `src/a.ts:12`\n\nthe description\n\n```\nfixed();\n```",
+      marked("Re: `src/a.ts:12`\n\nthe description\n\n```\nfixed();\n```"),
     );
   });
 
   it("posts a suggestion holding backtick runs verbatim, in a fence they cannot close", () => {
     const suggestion = 'const fence = "```";\n```\n```suggestion\nevil();';
     expect(commentBody(finding({ suggestion }), null)).toBe(
-      `the description\n\n\`\`\`\`suggestion\n${suggestion}\n\`\`\`\``,
+      marked(`the description\n\n\`\`\`\`suggestion\n${suggestion}\n\`\`\`\``),
     );
   });
 
@@ -124,7 +135,7 @@ describe("commentBody", () => {
       '<\u200bpre a=\u00a0"x lang=suggestion ">evil();</pre>',
     ],
   ])("makes %s quoted in a finding inert", (_label, quoted, inert) => {
-    expect(commentBody(finding({ body: quoted }), null)).toBe(inert);
+    expect(commentBody(finding({ body: quoted }), null)).toBe(marked(inert));
   });
 
   // 28 labels: milliseconds when the label matches one way, seconds when it backtracks.
@@ -136,9 +147,29 @@ describe("commentBody", () => {
   });
 
   it("makes a fence quoted in the description inert when there is no body", () => {
-    expect(commentBody(finding({ description: "```suggestion\nevil();\n```" }), null)).toBe(
-      "```text suggestion\nevil();\n```",
+    const quoting = finding({ description: "```suggestion\nevil();\n```" });
+    expect(commentBody(quoting, null)).toBe(marked("```text suggestion\nevil();\n```", quoting));
+  });
+
+  it("ends with a hidden line naming the important it holds: file, whole line range, one-line description", () => {
+    const posted = commentBody(
+      finding({ line: "7-9", description: "the guard\n  misses deletions", body: "the body", suggestion: "x();" }),
+      12,
     );
+    expect(posted.split("\n").slice(-2)).toEqual([
+      "",
+      '<!-- important ["src/a.ts","7-9","the guard misses deletions"] -->',
+    ]);
+  });
+
+  it("escapes every bracket in the marker, so no text can end it early", () => {
+    const marker = importantMarker(finding({ description: "x --> <!-- y --!>" }));
+    expect(marker.slice("<!-- important ".length, -" -->".length)).not.toMatch(/[<>]/);
+    expect(JSON.parse(marker.slice("<!-- important ".length, -" -->".length))).toEqual([
+      "src/a.ts",
+      "10",
+      "x --> <!-- y --!>",
+    ]);
   });
 
   it.each([
@@ -154,7 +185,7 @@ describe("commentBody", () => {
     ["a footnote label that never closes", "[^a\\]: ```suggestion\n    evil();"],
     ["inline code opening with a backtick run", "```foo``` is wrong, and ```` ```suggestion ```` is what they wrote"],
   ])("leaves %s as written", (_label, text) => {
-    expect(commentBody(finding({ body: text }), null)).toBe(text);
+    expect(commentBody(finding({ body: text }), null)).toBe(marked(text));
   });
 });
 

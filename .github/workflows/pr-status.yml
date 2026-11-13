@@ -109,16 +109,17 @@ jobs:
 
             // The importants a summary review lists with no inline thread to resolve: the round's
             // findings with no line in the diff to anchor to, and the prior round's still open.
-            // A carried one may have been anchored in its own round: `threaded` holds the
-            // `path:line` of every bot thread, resolved or not, and a carried entry at one of them
-            // is left to that thread, each `path:line` once. Finding text can hold column-0 lines
-            // shaped like a count header or a bullet, so each carried section is counted on its
-            // own: its header adds N, the list lines under it (after the blank line `carriedLines`
-            // writes) release at most those N, and a blank or any other line ends it. A forged
-            // section therefore never counts below zero, and cannot lower the genuine count.
+            // A carried one may have been anchored in its own round: `threaded` holds the important
+            // each bot thread names in its marker, resolved or not, and a carried entry whose file,
+            // whole line range and description match one is left to that thread, one entry per
+            // thread. Finding text can hold column-0 lines shaped like a count header or a bullet,
+            // so each carried section is counted on its own: its header adds N, the list lines
+            // under it (after the blank line `carriedLines` writes) release at most those N, and a
+            // blank or any other line ends it. A forged section therefore never counts below zero,
+            // and cannot lower the genuine count.
             function unthreadedImportants(body, threaded) {
               const lines = body.split(/\r?\n/);
-              const released = new Set();
+              const unclaimed = [...threaded];
               let sum = 0;
               lines.forEach((line, i) => {
                 const unanchored = /^(\d+) important findings? with no line in this diff to anchor to:$/.exec(line);
@@ -129,10 +130,10 @@ jobs:
                 let next = i + 1;
                 if (lines[next] === "") next++;
                 for (; open > 0 && lines[next]?.startsWith("- "); next++) {
-                  const at = /^- `(.+?):\s*(\d+)[^`]*` \(/.exec(lines[next]);
-                  const key = at && `${at[1]}:${at[2]}`;
-                  if (key && threaded.has(key) && !released.has(key)) {
-                    released.add(key);
+                  const entry = /^- `([^`]+):([^`:]+)` \([^)]*\): (.*)$/.exec(lines[next]);
+                  const holder = entry ? unclaimed.indexOf(JSON.stringify([entry[1], entry[2], entry[3]])) : -1;
+                  if (holder !== -1) {
+                    unclaimed.splice(holder, 1);
                     open--;
                   }
                 }
@@ -152,9 +153,11 @@ jobs:
               return last?.event === "labeled" && Date.parse(last.created_at) > since;
             }
 
-            // Every bot-opened review thread, as `ci-wait.service.ts` reads them, at the line its
-            // finding names: a comment pulled to the nearest diff line opens with that line
-            // (`commentBody`). `review` is the id of the review that opened it.
+            // Every bot-opened review thread, as `ci-wait.service.ts` reads them. `important` is the
+            // `[file, line, description]` its comment's last line names (`importantMarker`), as
+            // JSON, or null: a comment posted before the marker existed, or whose marker names
+            // another file than the thread's, holds none. Only the last line counts, since the
+            // finding's own text comes before it. `review` is the id of the review that opened it.
             async function botThreads(number) {
               const found = [];
               let after = null;
@@ -166,7 +169,7 @@ jobs:
                         reviewThreads(first: 100, after: $after) {
                           pageInfo { hasNextPage endCursor }
                           nodes {
-                            isResolved path originalLine
+                            isResolved path
                             comments(first: 1) { nodes { author { login } body pullRequestReview { databaseId } } }
                           }
                         }
@@ -179,10 +182,20 @@ jobs:
                 for (const t of threads.nodes) {
                   const first = t.comments.nodes[0];
                   if (first?.author?.login !== "github-actions") continue;
-                  const relocated = /^Re: `(.+):(\d+)`/.exec(first.body ?? "");
+                  const last = (first.body ?? "").trimEnd().split(/\r?\n/).at(-1);
+                  const marker = /^<!-- important (\[.*\]) -->$/.exec(last);
+                  let held = null;
+                  try {
+                    held = marker && JSON.parse(marker[1]);
+                  } catch {}
+                  const named =
+                    Array.isArray(held) &&
+                    held.length === 3 &&
+                    held.every((v) => typeof v === "string") &&
+                    held[0] === t.path;
                   found.push({
                     isResolved: t.isResolved,
-                    at: relocated ? `${relocated[1]}:${relocated[2]}` : `${t.path}:${t.originalLine}`,
+                    important: named ? JSON.stringify(held) : null,
                     review: first.pullRequestReview?.databaseId,
                   });
                 }
@@ -266,7 +279,7 @@ jobs:
               if (
                 (!accepted &&
                   ((review?.state === "success" && /\d+ important finding/.test(review.description ?? "")) ||
-                    unthreadedImportants(summary?.body ?? "", new Set(threads.map((t) => t.at))) > 0)) ||
+                    unthreadedImportants(summary?.body ?? "", threads.flatMap((t) => t.important ?? [])) > 0)) ||
                 raisedAt > verdictAt ||
                 threads.some((t) => !t.isResolved)
               ) {
