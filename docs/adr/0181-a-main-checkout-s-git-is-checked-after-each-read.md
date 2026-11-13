@@ -19,19 +19,30 @@
     planted commondir or a symlinked `.git` is refused before gh starts. A gitfile is
     refused at a checkout `assertMainCheckout` has passed in the process, and gh always
     runs after that, at the gate and through the CLI.
-    *CLI resolution.* The CLI's one project resolver, `project()` in `src/cli/index.ts`,
-    calls `assertMainCheckout` on the repo it resolves before any command reads it, so a
-    gitfile, a symlink or a commondir there refuses every command, `pup init` included. The
-    path is then held for every later spawn in that process. `fatalExitCode` prints a
-    `RewrittenGitDirError` as one line and exits 1, as it does for `ProjectResolutionError`.
-    `pup project dormant|wake` resolves on its own and reads no git, so it is left alone.
+    *CLI resolution.* `held` in `src/cli/index.ts` calls `assertMainCheckout` on a resolved
+    project's repo before any command reads it, and closes the store when that refuses. It
+    covers every path a command takes to one project's repo: the shared resolver
+    `project()`, and the repo around cwd that `pup status` and `pup ui` read without it.
+    `pup ui` hands that repo to the keys that write through it. A gitfile, a symlink or a
+    commondir there refuses the command, `pup init` included, and the path is then held for
+    every later spawn in that process. The fleet views, `pup status --all` and
+    `pup ui --all`, run git in each project they read, so `heldFleet` holds each of those
+    first: every project whose repo exists, is its own path, and is awake or shown with
+    `--dormant`. One that refuses stops the view, as it stops a command run in that repo.
+    `fatalExitCode` prints a `RewrittenGitDirError` as one line and exits 1, as it does for
+    `ProjectResolutionError`. `pup project list|dormant|wake` reads no git, so it is left
+    alone.
     *The identity.* It now holds the device, inode and birth time of `.git`, `objects/` and
-    `refs/`. The birth time tells a reused inode from the one pup saw. `HEAD` and
+    `refs/`. The device and inode are the protection: a directory swapped in has others
+    while the one pup saw still exists. The birth time adds little, since the owner can set
+    it on macOS and some Linux filesystems keep none. `HEAD` and
     `packed-refs` are left out because git replaces both by rename on every ref update, so
     their inodes change with no session involved. Writes there by a gate stage are already
     denied: the gate profile denies `file-write*` (unlink and rename included) on every
-    `/.git` path under a checkout it grants. `assertMainCheckout` records the identity only
-    after its checks pass, so a decoy that fails them is never the one held.
+    `/.git` path under a checkout it grants. `assertMainCheckout` takes the identity before
+    its checks and again after they pass, and holds it only when the two agree. So a decoy
+    that fails the checks is never the one held, and neither is a directory swapped in
+    while they ran.
     *The env and the argv.* The scrubbed env drops `GIT_OBJECT_DIRECTORY` and
     `GIT_ALTERNATE_OBJECT_DIRECTORIES` beside `GIT_DIR` and `GIT_COMMON_DIR`, so no
     inherited variable points git at an object store no check looked at. A caller still
@@ -41,7 +52,10 @@
     *What remains.* The identity is still the one the first `assertMainCheckout` in a
     process saw. Now that the CLI holds the checkout at resolution, that is the first thing
     a process does, but a `.git` swapped before a gate process starts is still recorded as
-    the real one. Recording it on the project row at `pup init`, and refusing when it is
+    the real one. Likewise, inside a repo, a gitfile shaped like a worktree's, naming
+    `<x>/.git/worktrees/<n>` of a decoy checkout `<x>`, resolves the command to `<x>`,
+    which passes as a main checkout of its own. Recording the identity on the project row at
+    `pup init`, and refusing when it is
     missing or differs, needs the schema in `db.client.ts`, `init.service.ts`, and seeding
     in every gate, land, fix-round and conductor test. That was outside this task's scope,
     and is a follow-up task, together with asserting `error.cause` or the lost-lock warning
@@ -60,4 +74,6 @@
     gitfile or a symlink, and its answer is refused when `.git` became a symlink while it
     ran. In `index.test.ts`, `--project <id> status` on a registered repo whose `.git`
     became a gitfile or a symlink throws the refusal, which `fatalExitCode` prints and exits
-    1 on. An untouched checkout runs.
+    1 on. So does `pup status` or `pup ui` run inside a repo whose `.git` became a
+    gitfile, and `pup status --all` or `pup ui --all` over a registered one. An untouched
+    checkout runs.

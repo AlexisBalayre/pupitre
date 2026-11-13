@@ -2851,49 +2851,72 @@ describe('CLI commands', () => {
     });
   });
 
-  // Project resolution holds the repo as a main checkout before any command
-  // reads it, so a `.git` a session swapped refuses the command (decision 172).
+  // Every path a command takes to a project's repo holds it as a main checkout
+  // before reading it, so a `.git` a session swapped refuses the command
+  // (decisions 172, 181).
   describe("a project whose main checkout's .git a session rewrote", () => {
-    /** A registered repo whose `.git` is now `swap`'s, and a bare decoy it can name. */
-    function rewritten(swap: (dotGit: string, decoy: string) => void): string {
+    /** A registered repo whose `.git` is now `swap`'s, naming a bare decoy. */
+    function rewritten(swap: (dotGit: string, decoy: string) => void): {
+      repo: string;
+      id: string;
+    } {
       const repo = initRepo();
       const id = registerProject(repo);
       const decoy = tempDir('pup-cli-decoy-');
       execFileSync('git', ['init', '-q', '--bare', '-b', 'main'], { cwd: decoy, env: GIT_ENV });
       renameSync(join(repo, '.git'), join(tempDir('pup-cli-aside-'), 'git'));
       swap(join(repo, '.git'), decoy);
-      return id;
+      return { repo, id };
     }
 
-    it.each([
-      ['a gitfile', (dotGit: string, decoy: string) => writeFileSync(dotGit, `gitdir: ${decoy}\n`)],
-      ['a symlink', (dotGit: string, decoy: string) => symlinkSync(decoy, dotGit)],
-    ])('refuses every command once .git is %s, and exits 1 with the reason', (_, swap) => {
-      const id = rewritten(swap);
-      useCwd(tempDir('pup-cli-noproj-'));
+    const swaps = {
+      'a gitfile': (dotGit: string, decoy: string) => writeFileSync(dotGit, `gitdir: ${decoy}\n`),
+      'a symlink': (dotGit: string, decoy: string) => symlinkSync(decoy, dotGit),
+    };
+    /** Each command, and whether it runs from inside the repo or from outside any. */
+    const commands: Record<string, { argv: (id: string) => string[]; isInside: boolean }> = {
+      '--project <id> status': { argv: (id) => ['--project', id, 'status'], isInside: false },
+      'status in the repo': { argv: () => ['status'], isInside: true },
+      'ui in the repo': { argv: () => ['ui'], isInside: true },
+      'status --all': { argv: () => ['status', '--all'], isInside: false },
+      'ui --all': { argv: () => ['ui', '--all'], isInside: false },
+    };
+
+    it.each(
+      Object.keys(commands).flatMap((command) =>
+        Object.keys(swaps).map((swap) => [command, swap] as const),
+      ),
+    )('refuses %s once .git is %s, and exits 1 with the reason', async (command, swap) => {
+      const { argv, isInside } = commands[command] as (typeof commands)[string];
+      const { repo, id } = rewritten(swaps[swap as keyof typeof swaps]);
+      useCwd(isInside ? repo : tempDir('pup-cli-noproj-'));
 
       let thrown: unknown;
       try {
-        buildProgram().parse(['--project', id, 'status'], { from: 'user' });
+        await buildProgram().parseAsync(argv(id), { from: 'user' });
       } catch (error) {
         thrown = error;
       }
 
       expect(thrown).toBeInstanceOf(RewrittenGitDirError);
-      expect((thrown as Error).message).toMatch(/\.git is not a directory.*decision 172/s);
+      expect((thrown as Error).message).toMatch(/decision 172/);
       expect(fatalExitCode(thrown)).toBe(1);
       expect(errors).toEqual([(thrown as Error).message]);
+      expect(logs).toEqual([]);
     });
 
-    it('runs a command whose main checkout is untouched', () => {
-      const repo = initRepo();
-      const id = registerProject(repo);
-      useCwd(tempDir('pup-cli-noproj-'));
+    it.each(Object.keys(commands))(
+      'runs %s on a main checkout that is untouched',
+      async (command) => {
+        const { argv, isInside } = commands[command] as (typeof commands)[string];
+        const repo = initRepo();
+        const id = registerProject(repo);
+        useCwd(isInside ? repo : tempDir('pup-cli-noproj-'));
 
-      expect(() =>
-        buildProgram().parse(['--project', id, 'status'], { from: 'user' }),
-      ).not.toThrow();
-    });
+        await expect(buildProgram().parseAsync(argv(id), { from: 'user' })).resolves.toBeDefined();
+        expect(logs).not.toEqual([]);
+      },
+    );
   });
 });
 

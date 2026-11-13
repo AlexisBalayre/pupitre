@@ -687,9 +687,11 @@ const mainCheckouts = new Map<string, string>();
 /**
  * The device, inode and birth time of `<cwd>/.git`, whose lstat is `dotGit`,
  * and of its `objects/` and `refs/`. A directory swapped in for any of them,
- * however complete, has others, and the birth time tells a reused inode from
- * the one pup saw. `HEAD` and `packed-refs` are not in it: git replaces both
- * by a rename on every update, so their inodes change with no session at all.
+ * however complete, has another device and inode while the one pup saw still
+ * exists, and that is the protection. The birth time adds little: the owner
+ * can set it on macOS, and some Linux filesystems keep none. `HEAD` and
+ * `packed-refs` are not in it: git replaces both by a rename on every update,
+ * so their inodes change with no session at all.
  */
 function gitDirIdentity(cwd: string, dotGit: Stats): string {
   const of = (stat: Stats | undefined): string =>
@@ -872,9 +874,15 @@ export function assertMainCheckout(repoPath: string): void {
         'a symlink there names a repo of its own',
     );
   }
-  const identity = gitDirIdentity(repoPath, stat);
+  const before = gitDirIdentity(repoPath, stat);
   assertGitDirUnplanted(repoPath);
-  // Only once the checks pass: a decoy recorded here would be the one held.
+  // Taken again once the checks pass, and held only when it is the one they
+  // checked: a directory swapped in between would be held as the real one.
+  const after = lstatIfThere(repoPath, dotGit);
+  const identity = after ? gitDirIdentity(repoPath, after) : 'none';
+  if (identity !== before) {
+    refuseGitDir(repoPath, `${sanitizeReason(dotGit)} changed while pup checked it`);
+  }
   const key = realPath(repoPath);
   if (!mainCheckouts.has(key)) mainCheckouts.set(key, identity);
 }
