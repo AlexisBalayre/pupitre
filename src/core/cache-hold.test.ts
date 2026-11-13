@@ -110,11 +110,14 @@ describe('holdIdleCaches (decision 180)', () => {
     expect(listEvents(db, 's1').filter((event) => event.type === 'steer')).toEqual([]);
   });
 
-  it('holds a blocked worker, which waits on the operator', () => {
+  it('never gives a blocked worker a turn, even with a question open', () => {
     seedSession(db, repo, 's1', 'blocked');
     seedEventsFile(repo, 's1', HOLD_AGE_MS);
+    appendEvent(db, 's1', 'question', { text: 'which ADR number?' });
 
-    expect(holdIdleCaches(db, repo, Date.now())).toEqual(['s1']);
+    expect(holdIdleCaches(db, repo, Date.now())).toEqual([]);
+    expect(readInputBox).not.toHaveBeenCalled();
+    expect(submitPane).not.toHaveBeenCalled();
   });
 
   it('holds nothing before the hold window, and nothing once the cache may have gone', () => {
@@ -279,7 +282,7 @@ describe('holdIdleCaches (decision 180)', () => {
   it('skips a window whose pane fails, and holds the next one', () => {
     seedSession(db, repo, 's1', 'awaiting-review');
     seedEventsFile(repo, 's1', HOLD_AGE_MS);
-    seedSession(db, repo, 's2', 'blocked');
+    seedSession(db, repo, 's2', 'awaiting-review');
     seedEventsFile(repo, 's2', HOLD_AGE_MS);
     vi.mocked(readInputBox).mockImplementationOnce(() => {
       throw new Error('tmux: no server running');

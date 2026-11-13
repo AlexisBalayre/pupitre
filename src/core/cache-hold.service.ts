@@ -63,10 +63,12 @@ export const CACHE_HOLD_EVENTS_TAIL_BYTES = 1 << 20;
 
 /**
  * Hold every worker window that is waiting on someone else and whose cache is
- * about to lapse: `awaiting-review` (the gate or a review answers it),
- * `blocked` (the operator's unblock does), and `running` with a question
- * nobody has answered (decision 76). A running worker with no open question
- * is not waiting on anyone pup can name, so it is left to the stall rule.
+ * about to lapse: `awaiting-review` (the gate or a review answers it), and
+ * `running` with a question nobody has answered (decision 76). A running
+ * worker with no open question is not waiting on anyone pup can name, so it
+ * is left to the stall rule. A `blocked` worker is never held: a hold is a
+ * turn, kept from tools by its wording alone, and a parked session is to take
+ * no turn until a human unblocks it.
  *
  * Only a turn that has ended is held, and only into an empty input box: a
  * draft in the box is the operator's, and a hold must never clear it. Each
@@ -78,7 +80,7 @@ export const CACHE_HOLD_EVENTS_TAIL_BYTES = 1 << 20;
 export function holdIdleCaches(db: Database, repoPath: string, now: number): string[] {
   const paths = projectPaths(repoPath);
   const held: string[] = [];
-  for (const row of listSessions(db, ['awaiting-review', 'blocked', 'running'])) {
+  for (const row of listSessions(db, ['awaiting-review', 'running'])) {
     if (!SESSION_ID_PATTERN.test(row.id)) continue;
     try {
       const idleMs = holdDue(db, row, paths.eventsFile(row.id), now);
