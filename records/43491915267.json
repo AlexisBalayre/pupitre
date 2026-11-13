@@ -1,0 +1,201 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-13T19:30:37.774Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43491915267",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43491915267",
+  "actor": "AlexisBalayre",
+  "commit_sha": "f9bf5ff8cb51995f85f7180c462c54efc9152381",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 325,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "2945-2951",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "Several stderr printers that run while the TTY status line is drawn still call console.error instead of progress.note. Their text lands on the end of the unterminated status line and stays there, e.g. every `pup fix` on a machine without codegraph prints `stage 5/5, open window, 3sNo \\`codegraph\\` outside the repo on PATH: ...`.",
+      "body": "**Concern.** On a TTY, `stageProgress` draws `` `${CLEAR_LINE}${line()}` `` with no trailing newline ([progress.utils.ts L118-L121](https://github.com/AlexisBalayre/pupitre/blob/f9bf5ff8cb51995f85f7180c462c54efc9152381/src/core/progress.utils.ts#L118-L121)). Only `note()` clears the line before it writes (L144-L151). Any other stderr write made while the line is up gets appended to it. The next tick then redraws on the row below, and `end()` clears only that row, so the joined text stays on screen.\n\nThis PR moved the slot-wait messages and the lock-wait message to `progress.note`. The sibling printers that run in the same window still call `console.error`. None of them is new, but before this PR there was no drawn line for them to land on:\n\n- **`waitForLoad`** ([L2668, L2685](https://github.com/AlexisBalayre/pupitre/blob/f9bf5ff8cb51995f85f7180c462c54efc9152381/src/core/merge-gate.service.ts#L2668-L2685)) runs right after `progress.stage('tests and checks')`:\n  ```ts\n  progress.stage('tests and checks');\n  ...\n  if (hasSuite && req.wait) await waitForLoad();\n  ```\n  It fires when the 1-minute load is at or above the core count, which is the normal case with parallel sessions.\n- **`replyOnFixRoundThreads`** (L2475, L2485, L2488), the worktree-remove refusal (L2399) and `recordMerge`'s commits-past-pin warning (L3425) all run during the `merge` stage. A fix-round session with an open PR prints `Answered the fix round's threads ...` on every gate.\n- **`withMergeLock`'s release and lost-lock lines** (L1252, L1266) and `removeLockDir`'s messages (L998-L1019) run before the CLI's `settled` calls `end()`.\n- **`prepareGraph`** ([codegraph.client.ts L365-L379](https://github.com/AlexisBalayre/pupitre/blob/f9bf5ff8cb51995f85f7180c462c54efc9152381/src/core/codegraph.client.ts#L365-L379)) is reached from `writeSessionProfile` inside `relaunchWorker` during fix's `open window` stage (fix-round.service.ts L249-L250). codegraph is optional, so every `pup fix` on a TTY without it prints the joined line. Respawn's `relaunch` stage reaches it through `graphForRespawn`, under narrower conditions.\n\n**Fix.** Route each of these writes through `progress.note`. That can mean passing a `note` callback, as the PR already does for `withTestSlot`'s `onWait`, or threading `progress` into `waitForLoad`, `replyOnFixRoundThreads`, `recordMerge`, the release path and `writeSessionProfile`/`prepareGraph`. Off a TTY nothing changes.",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1348-1350",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "A re-gate (`pup merge` of a merged session whose PR head moved, decision 86) does not get `progress`. The status line stays at `stage 2/9, merge lock` through the whole build and test run, waiters are told the holder is `at stage 2/9, merge lock`, and measureBranch's slot-wait notes go to plain console.error and tear the line.",
+      "body": "**Concern.** `runMergeGate` passes `progress` only to the plain gate:\n\n```ts\nreturn await (regate\n  ? regateMerged(db, req, session, regate, target, sandbox, checkoutDir)\n  : gateAndMerge(db, req, session, target, sandbox, checkoutDir, pullRequest, progress));\n```\n\n`regateMerged` takes no progress parameter. At [regate.service.ts L200](https://github.com/AlexisBalayre/pupitre/blob/f9bf5ff8cb51995f85f7180c462c54efc9152381/src/core/regate.service.ts#L200) it calls `measureBranch(db, req, session, stages, checkoutDir, targetSha, sha)`, so `progress` falls back to `NO_PROGRESS`.\n\n**Trigger.** Run `pup merge <id> --pr` in a terminal on a merged session whose open PR head moved past the pin. This is the usual step after `pup fix`. The last real stage set is `MERGE_LOCK_STAGE`, from `withMergeLock` at L1190. Three things follow:\n\n1. The status line shows `stage 2/9, merge lock, <elapsed>` for the whole build, test and debt run. It reads as if the run is still waiting on the lock.\n2. The lock's `status` file is written through `progress.watch` (L1229-L1231) and never moves past that stage. Every waiter therefore prints `... at stage 2/9, merge lock`.\n3. The slot-wait notes in `measureBranch` go to `NO_PROGRESS.note`, which is `console.error` (progress.utils.ts L77). On a TTY they land on the end of the drawn line.\n\n**Fix.** Add a `progress: StageProgress` parameter to `regateMerged`, pass it from this call, and forward it to `measureBranch` at regate.service.ts L200.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/f9bf5ff8cb51995f85f7180c462c54efc9152381/src/core/merge-gate.service.ts#L1348-L1350",
+      "suggestion": "        return await (regate\n          ? regateMerged(db, req, session, regate, target, sandbox, checkoutDir, progress)\n          : gateAndMerge(db, req, session, target, sandbox, checkoutDir, pullRequest, progress));"
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "888-902",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "writeMergeLockStatus checks the lock directory's identity and then writes and renames by path. A session that swaps `.git/pup-merge.lock` for a link in that window makes pup create `status.<hex>` and replace any `status` file in the linked directory. And because the check never reads the token, an inode the next `mkdir` reuses lets a run whose lock was moved away overwrite another holder's status.",
+      "body": "**Concern.** The docstring (L883-L886) says the status is written only while the path is still the take's own directory, \"so nothing is ever written through a link or into a file a session put there\". ADR 0184 repeats the claim. The code checks first and then acts through the path:\n\n```ts\nconst now = directoryIdentity(lockPath);\nif (now?.dev !== identity.dev || now.ino !== identity.ino) return;\nwriteFileSync(staged, JSON.stringify(status), { flag: 'wx', mode: 0o600 });\nrenameSync(staged, join(lockPath, MERGE_LOCK_STATUS_FILE));\n```\n\n**Trigger 1 (link swap).** `.git` is writable from a session, as `removeLockDir`'s doc says. While `pup merge` holds the lock, a session swaps `.git/pup-merge.lock` for a symlink to a directory D. `wx` only refuses a link as the final path component. So pup creates `D/status.<hex>`, and the `renameSync` replaces any existing `D/status`. The pid/token writes this mirrors use `wx` with no rename, so they never replace an existing file. The rename is a new capability. The window reopens on every stage change while the lock is held. ADR 0088 already says path-based checks cannot close this window, which contradicts the new docstring and ADR claim.\n\n**Trigger 2 (inode reuse).** The `isTake` docstring (L945-L960) describes this case: once a session renames the lock away and deletes it, the next run's `mkdir` can reuse the inode. The old run's next `progress.stage(...)` passes this dev/ino check and writes its own command and stage into the new holder's lock. The new holder's waiters then print the wrong holder. The old run refuses only later, in `assertMergeLockHeld`.\n\n**Fix.** At minimum, check `isTake(lockPath, taken)` instead of identity alone, which closes trigger 2, and correct the docstring and ADR wording. To close trigger 1 as well, create `status` once at the take with `wx`, next to the pid, keep its fd, and rewrite through that fd on each stage.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/f9bf5ff8cb51995f85f7180c462c54efc9152381/src/core/merge-gate.service.ts#L888-L902",
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "416-437",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The new `settled()` helper was inserted between `withPushTargetLine`'s existing JSDoc and the function itself, so that doc now sits as a stray block above `settled`'s own doc and `withPushTargetLine` has none.",
+      "body": "**Concern.** The hunk inserts `settled` and its JSDoc (L422-L435) right after the closing `*/` of `withPushTargetLine`'s doc (L416-L421) and before `withPushTargetLine` itself (L437). The result is two JSDoc blocks in a row:\n\n- The first block (\"The record is written before the stages run… with no output at all.\") describes the push-target line but is now attached to nothing.\n- `withPushTargetLine` has no doc.\n\nEditor hovers and readers of `withPushTargetLine` lose its documentation. Anyone reading `settled` sees an unrelated doc block above it.\n\n**Fix.** Move `settled` and its JSDoc to just below `withPushTargetLine` (after L448), or above L416. Both are hoisted function declarations, so the order does not matter for behavior.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/f9bf5ff8cb51995f85f7180c462c54efc9152381/src/cli/index.ts#L416-L437",
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0184-long-running-commands-keep-one-stage-line-on-stderr.md",
+      "line": null,
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The ADR says the waiter prints the holder's details 'in brackets', but describeLockWait uses parentheses. It also says only `pup land` and `pup merge` print the line, though `pup fix` takes the merge lock with progress too.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/audit.service.ts",
+      "line": null,
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The added comment clause 'and before the status line is drawn over which the refusal would print' is garbled. Something like 'before the status line is drawn, which a refusal would otherwise print over' states the ordering WHY clearly.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/progress.utils.ts",
+      "line": null,
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The StageProgress.stage JSDoc says 'Entering the stage already shown changes nothing', but on a TTY re-entering the stage redraws the line with a fresh elapsed time.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/progress.utils.ts",
+      "line": null,
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "progress.utils.ts holds a stateful resource (a setInterval ticker, a listener set, stderr writes), but naming.md says a `utils` file is 'Pure functions only'. The lifecycle object fits the `manager` role better, or the pure parts (formatElapsed, the stage lists) could stay in utils.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/progress.utils.ts",
+      "line": "62",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`watch`, with its listener Set, unsubscribe closure and NO_PROGRESS stub, has a single non-test consumer: the lock-status write in merge-gate.service.ts:1229. A single optional callback would do the same job with less machinery.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/progress.utils.ts",
+      "line": "105",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "stageProgress's `now` parameter is set only by tests; all six CLI callers pass just `names`. Using Date.now() with fake timers in tests would drop the parameter.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "consolidator",
+      "description": "The consolidator grouped only findings 1 and 6. It missed two exact root-cause duplicates between the correctness instances: the regate missing progress (2 and 5) and console.error tearing the status line (3 and 4). The orchestrator validated each one separately and merged them after validation."
+    },
+    {
+      "component": "conventions",
+      "description": "The conventions reviewer could not run scripts/adr-index.sh (it is blocked under CI). It also did not read general.md or testing.md, and did not inspect the service and CLI diffs for module-boundary or altitude rules, so its coverage of those files is partial."
+    }
+  ],
+  "duplicates_merged": 3,
+  "comments_posted_actual": 4,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 4.601930025,
+  "duration_ms": 320137,
+  "num_turns": 19,
+  "tokens": {
+    "input": 14,
+    "output": 19655,
+    "cache_read": 326418,
+    "cache_creation": 80094,
+    "total": 426181
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 196,
+      "output": 73904,
+      "cache_read": 2614090,
+      "cache_creation": 388631,
+      "cost_usd": 4.185118999999999
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 56,
+      "output": 12086,
+      "cache_read": 360732,
+      "cache_creation": 103483,
+      "cost_usd": 0.41575270000000003
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 765,
+      "cache_read": 0,
+      "cache_creation": 5405,
+      "cost_usd": 0.001058325
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "bash scripts/adr-index.sh"
+    }
+  ]
+}
