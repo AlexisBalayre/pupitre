@@ -63,15 +63,8 @@ describe('readPullRequestReview', () => {
   let originalPath: string | undefined;
   const HEAD = 'c'.repeat(40);
   const BOT = { __typename: 'Bot', login: 'github-actions' };
-  /** The bot's review of the head that opened `opened` threads. */
-  const review = (id: string, opened = 1, oid = HEAD, body = 'summary') => ({
-    id,
-    body,
-    author: BOT,
-    commit: { oid },
-    comments: { totalCount: opened },
-  });
-  const NEWEST = 'PRR_newest';
+  /** The bot's review of `oid`, the head unless named. */
+  const review = (oid = HEAD) => ({ author: BOT, commit: { oid } });
 
   beforeEach(() => {
     ghDir = tempDir('pup-review-gh-');
@@ -106,6 +99,7 @@ describe('readPullRequestReview', () => {
   const thread = (fields: Record<string, unknown>, comment: Record<string, unknown> = {}) => ({
     id: 'PRRT_1',
     isResolved: false,
+    isOutdated: false,
     path: 'src/a.ts',
     line: 4,
     originalLine: 2,
@@ -113,7 +107,6 @@ describe('readPullRequestReview', () => {
       nodes: [
         {
           author: BOT,
-          pullRequestReview: { id: NEWEST },
           body: 'finding',
           isMinimized: false,
           ...comment,
@@ -163,10 +156,9 @@ describe('readPullRequestReview', () => {
       },
       reviews: {
         nodes: [
-          review('PRR_older', 1, 'd'.repeat(40)),
-          review(NEWEST, 5),
+          review('d'.repeat(40)),
+          review(),
           {
-            id: 'PRR_user',
             author: { __typename: 'User', login: 'github-actions' },
             commit: { oid: 'e'.repeat(40) },
           },
@@ -175,10 +167,10 @@ describe('readPullRequestReview', () => {
       reviewThreads: {
         pageInfo: { hasPreviousPage: false },
         nodes: [
-          thread({ id: 'PRRT_older' }, { pullRequestReview: { id: 'PRR_older' } }),
           thread({ id: 'PRRT_open' }),
           thread({ id: 'PRRT_moved', path: null, line: null }),
           thread({ id: 'PRRT_resolved', isResolved: true }),
+          thread({ id: 'PRRT_outdated', isOutdated: true }),
           thread({ id: 'PRRT_human' }, { author: { __typename: 'User', login: 'github-actions' } }),
           thread({ id: 7 }),
         ],
@@ -191,6 +183,7 @@ describe('readPullRequestReview', () => {
       reviewedHead: HEAD,
       headStatus: { state: 'SUCCESS', description: '2 important finding(s)' },
       isRereviewAsked: false,
+      outdatedThreads: 1,
       openThreads: [
         {
           id: 'PRRT_open',
@@ -199,6 +192,7 @@ describe('readPullRequestReview', () => {
           body: 'finding',
           isEditedByOther: false,
           isMinimized: false,
+          isAnswered: false,
         },
         {
           id: 'PRRT_moved',
@@ -207,6 +201,7 @@ describe('readPullRequestReview', () => {
           body: 'finding',
           isEditedByOther: false,
           isMinimized: false,
+          isAnswered: false,
         },
       ],
     });
@@ -219,7 +214,7 @@ describe('readPullRequestReview', () => {
     ghAnswers({
       state: 'OPEN',
       headRefOid: HEAD,
-      reviews: { nodes: [review(NEWEST, 5)] },
+      reviews: { nodes: [review()] },
       reviewThreads: {
         pageInfo: { hasPreviousPage: false },
         nodes: [
@@ -248,7 +243,7 @@ describe('readPullRequestReview', () => {
     ghAnswers({
       state: 'OPEN',
       headRefOid: HEAD,
-      reviews: { nodes: [review(NEWEST, 5)] },
+      reviews: { nodes: [review()] },
       reviewThreads: {
         pageInfo: { hasPreviousPage: false },
         nodes: [
@@ -260,6 +255,87 @@ describe('readPullRequestReview', () => {
     });
 
     expect(read().openThreads.map((open) => open.isMinimized)).toEqual([false, true, true]);
+  });
+
+  // A fix round replies on each thread it relays and leaves the ones it does not
+  // resolve open: its own marked reply answers one until the bot, pup's own
+  // account or someone with write access says more. An outsider cannot reopen it.
+  it("tells a thread whose last word is a fix round's own reply", () => {
+    const MARKED = `Declined: a false positive.\n\n<!-- pup fix-round ${'d'.repeat(40)} -->`;
+    const finding = { author: BOT, body: 'finding', authorAssociation: 'NONE' };
+    const reply = { body: MARKED, viewerDidAuthor: true, authorAssociation: 'OWNER' };
+    const by = (authorAssociation: unknown, body = 'Please fix it.') => ({
+      author: { __typename: 'User', login: 'someone' },
+      body,
+      viewerDidAuthor: false,
+      authorAssociation,
+    });
+    const trail = (id: string, ...comments: unknown[]) =>
+      thread({ id, trail: { nodes: [finding, ...comments] } });
+    ghAnswers({
+      state: 'OPEN',
+      headRefOid: HEAD,
+      reviews: { nodes: [review()] },
+      reviewThreads: {
+        pageInfo: { hasPreviousPage: false },
+        nodes: [
+          trail('PRRT_answered', reply),
+          trail('PRRT_outsider', reply, by('NONE'), by('CONTRIBUTOR'), by(undefined)),
+          trail('PRRT_owner', reply, by('OWNER')),
+          trail('PRRT_member', reply, by('MEMBER')),
+          trail('PRRT_collaborator', reply, by('COLLABORATOR')),
+          trail('PRRT_bot', reply, finding),
+          // pup's own account, by hand: unmarked, so the operator's word.
+          trail('PRRT_own', reply, { body: 'Looking again.', viewerDidAuthor: true }),
+          // Someone else quoting the marker answers nothing.
+          trail('PRRT_quoted', by('NONE', MARKED)),
+          trail('PRRT_quoted_member', by('MEMBER', MARKED)),
+          trail('PRRT_unread', { body: MARKED }),
+          thread({ id: 'PRRT_bare' }),
+        ],
+      },
+    });
+
+    expect(
+      Object.fromEntries(read().openThreads.map((open) => [open.id, open.isAnswered])),
+    ).toEqual({
+      PRRT_answered: true,
+      PRRT_outsider: true,
+      PRRT_owner: false,
+      PRRT_member: false,
+      PRRT_collaborator: false,
+      PRRT_bot: false,
+      PRRT_own: false,
+      PRRT_quoted: false,
+      PRRT_quoted_member: false,
+      PRRT_unread: false,
+      PRRT_bare: false,
+    });
+  });
+
+  // A push that outdates a thread's line answers nothing: a worker could
+  // outdate one it declined with a cosmetic edit.
+  it("counts the bot's unresolved threads a push outdated, and only those", () => {
+    ghAnswers({
+      state: 'OPEN',
+      headRefOid: HEAD,
+      reviews: { nodes: [review()] },
+      reviewThreads: {
+        pageInfo: { hasPreviousPage: false },
+        nodes: [
+          thread({ id: 'PRRT_outdated', isOutdated: true }),
+          thread({ id: 'PRRT_outdated_too', isOutdated: true, line: null }),
+          thread({ id: 'PRRT_resolved', isOutdated: true, isResolved: true }),
+          thread({ id: 'PRRT_unreadable', isOutdated: true, isResolved: undefined }),
+          thread({ id: 'PRRT_human', isOutdated: true }, { author: { __typename: 'User' } }),
+          thread({ id: 'PRRT_open' }),
+        ],
+      },
+    });
+
+    const answer = read();
+    expect(answer.outdatedThreads).toBe(2);
+    expect(answer.openThreads.map((open) => open.id)).toEqual(['PRRT_open']);
   });
 
   it('reads no status set by another creator, or on a commit that is not the head', () => {
@@ -286,6 +362,7 @@ describe('readPullRequestReview', () => {
       reviewedHead: undefined,
       headStatus: undefined,
       isRereviewAsked: false,
+      outdatedThreads: 0,
       openThreads: [],
     });
   });
@@ -340,84 +417,44 @@ describe('readPullRequestReview', () => {
     expect(read().isRereviewAsked).toBe(false);
   });
 
-  // Two runs on one head: the newest run's verdict is the review's (decision 90).
-  it('reads only the threads the newest review opened, so a clean newest run reads clean', () => {
-    const twoRuns = (newestOpened: string[]) => ({
+  // On #284, a run's clean status hid a thread an earlier run left open on the
+  // same head: every open thread counts until it is resolved or outdated.
+  it('reads a thread an earlier review left open, and none a push outdated', () => {
+    const twoRuns = (isOutdated: unknown) => ({
       state: 'OPEN',
       headRefOid: HEAD,
-      reviews: { nodes: [review('PRR_first'), review(NEWEST, newestOpened.length)] },
+      reviews: { nodes: [review('d'.repeat(40)), review(), review()] },
       reviewThreads: {
         pageInfo: { hasPreviousPage: false },
-        nodes: [
-          thread({ id: 'PRRT_first' }, { pullRequestReview: { id: 'PRR_first' } }),
-          ...newestOpened.map((id) => thread({ id })),
-        ],
+        nodes: [thread({ id: 'PRRT_first', isOutdated })],
       },
     });
 
-    ghAnswers(twoRuns(['PRRT_again']));
-    expect(read().openThreads.map((open) => open.id)).toEqual(['PRRT_again']);
+    ghAnswers(twoRuns(false));
+    expect(read().openThreads.map((open) => open.id)).toEqual(['PRRT_first']);
+    // Only a plain `true` outdates a thread: a field outside its shape stays open.
+    ghAnswers(twoRuns(null));
+    expect(read().openThreads.map((open) => open.id)).toEqual(['PRRT_first']);
 
-    ghAnswers(twoRuns([]));
+    ghAnswers(twoRuns(true));
     expect(read().openThreads).toEqual([]);
   });
 
-  // The poster's fallback when GitHub refuses its batch review: one bodiless
-  // review per finding, then the summary with no thread (decision 90).
-  it('reads the threads of a run the poster posted one finding at a time', () => {
+  // An open thread may hide on the page before the read, whatever is on it.
+  it('refuses a PR whose threads reach past the newest page', () => {
     ghAnswers({
       state: 'OPEN',
       headRefOid: HEAD,
-      reviews: {
-        nodes: [
-          review('PRR_before', 1, HEAD),
-          review('PRR_one', 1, HEAD, ''),
-          review('PRR_two', 1, HEAD, ''),
-          review(NEWEST, 0),
-        ],
-      },
+      reviews: { nodes: [review()] },
       reviewThreads: {
         pageInfo: { hasPreviousPage: true },
-        nodes: [
-          thread({ id: 'PRRT_before' }, { pullRequestReview: { id: 'PRR_before' } }),
-          thread({ id: 'PRRT_one' }, { pullRequestReview: { id: 'PRR_one' } }),
-          thread({ id: 'PRRT_two' }, { pullRequestReview: { id: 'PRR_two' } }),
-        ],
+        nodes: [thread({ id: 'PRRT_1', isResolved: true })],
       },
-    });
-
-    expect(read()).toMatchObject({
-      reviewedHead: HEAD,
-      openThreads: [{ id: 'PRRT_one' }, { id: 'PRRT_two' }],
-    });
-  });
-
-  it("refuses a PR whose newest review's threads reach past the newest page", () => {
-    ghAnswers({
-      state: 'OPEN',
-      headRefOid: HEAD,
-      reviews: { nodes: [review(NEWEST, 2)] },
-      reviewThreads: { pageInfo: { hasPreviousPage: true }, nodes: [thread({ id: 'PRRT_1' })] },
     });
 
     expect(read).toThrow(
-      /more than 100 review threads, and the CI review's newest run opened some of them before the newest 100 one read returns; fix the PR by hand\./,
+      /more than 100 review threads, and an open one may be among those before the newest 100 one read returns; fix the PR by hand\./,
     );
-  });
-
-  // Older threads, resolved or an earlier review's, do not count toward the cap.
-  it('reads a PR past the page whose newest review opened only threads on it', () => {
-    ghAnswers({
-      state: 'OPEN',
-      headRefOid: HEAD,
-      reviews: { nodes: [review(NEWEST, 2)] },
-      reviewThreads: {
-        pageInfo: { hasPreviousPage: true },
-        nodes: [thread({ id: 'PRRT_1', isResolved: true }), thread({ id: 'PRRT_2' })],
-      },
-    });
-
-    expect(read().openThreads.map((open) => open.id)).toEqual(['PRRT_2']);
   });
 
   it('refuses a url that is not a pull request before asking gh', () => {
