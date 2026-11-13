@@ -1,5 +1,12 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { dirname, join } from 'node:path';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import Database from 'better-sqlite3';
@@ -219,7 +226,7 @@ import {
 } from '../core/conductor.service.js';
 import { DEFAULT_BASE_PROFILE } from '../core/default-profile.constants.js';
 import { startFixRound } from '../core/fix-round.service.js';
-import { gitDiffPaths } from '../core/git-diff.client.js';
+import { gitDiffPaths, RewrittenGitDirError } from '../core/git-diff.client.js';
 import { intentTemplate } from '../core/intent.service.js';
 import { runMergeGate } from '../core/merge-gate.service.js';
 import { projectId, projectPaths } from '../core/paths.utils.js';
@@ -251,7 +258,7 @@ import {
 } from '../core/session-lifecycle.service.js';
 import { RESUME_MESSAGE } from '../core/turn-watchdog.service.js';
 import { UsageLimitReachedError } from '../core/usage-limits.service.js';
-import { buildProgram } from './index.js';
+import { buildProgram, fatalExitCode } from './index.js';
 import { ProjectResolutionError, resolveProject } from './project.utils.js';
 import { Radar } from './ui/radar.component.js';
 
@@ -2841,6 +2848,51 @@ describe('CLI commands', () => {
           'session to fix it: `pup steer s1 "..."`.',
       );
       expect(process.exitCode).toBe(1);
+    });
+  });
+
+  // Project resolution holds the repo as a main checkout before any command
+  // reads it, so a `.git` a session swapped refuses the command (decision 172).
+  describe("a project whose main checkout's .git a session rewrote", () => {
+    /** A registered repo whose `.git` is now `swap`'s, and a bare decoy it can name. */
+    function rewritten(swap: (dotGit: string, decoy: string) => void): string {
+      const repo = initRepo();
+      const id = registerProject(repo);
+      const decoy = tempDir('pup-cli-decoy-');
+      execFileSync('git', ['init', '-q', '--bare', '-b', 'main'], { cwd: decoy, env: GIT_ENV });
+      renameSync(join(repo, '.git'), join(tempDir('pup-cli-aside-'), 'git'));
+      swap(join(repo, '.git'), decoy);
+      return id;
+    }
+
+    it.each([
+      ['a gitfile', (dotGit: string, decoy: string) => writeFileSync(dotGit, `gitdir: ${decoy}\n`)],
+      ['a symlink', (dotGit: string, decoy: string) => symlinkSync(decoy, dotGit)],
+    ])('refuses every command once .git is %s, and exits 1 with the reason', (_, swap) => {
+      const id = rewritten(swap);
+      useCwd(tempDir('pup-cli-noproj-'));
+
+      let thrown: unknown;
+      try {
+        buildProgram().parse(['--project', id, 'status'], { from: 'user' });
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown).toBeInstanceOf(RewrittenGitDirError);
+      expect((thrown as Error).message).toMatch(/\.git is not a directory.*decision 172/s);
+      expect(fatalExitCode(thrown)).toBe(1);
+      expect(errors).toEqual([(thrown as Error).message]);
+    });
+
+    it('runs a command whose main checkout is untouched', () => {
+      const repo = initRepo();
+      const id = registerProject(repo);
+      useCwd(tempDir('pup-cli-noproj-'));
+
+      expect(() =>
+        buildProgram().parse(['--project', id, 'status'], { from: 'user' }),
+      ).not.toThrow();
     });
   });
 });

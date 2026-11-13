@@ -66,6 +66,7 @@ import { IntentRefusedError } from '../core/errors/intent.errors.js';
 import { ciReviewLookup, type FixRoundOutcome, startFixRound } from '../core/fix-round.service.js';
 import { fleetReading, readFleet } from '../core/fleet.service.js';
 import { parseGateEnv } from '../core/gate-env.utils.js';
+import { assertMainCheckout, RewrittenGitDirError } from '../core/git-diff.client.js';
 import { initProject } from '../core/init.service.js';
 import { acceptIntent, createIntent, listIntents, readIntent } from '../core/intent.service.js';
 import { landSession } from '../core/land.service.js';
@@ -1022,13 +1023,23 @@ export function buildProgram(): Command {
    * asks `callingSession` and a session is unknown — so both are refused for
    * a session here, by the variable first and by its own store's rows second
    * (decision 43).
+   * The repo it hands over is held as a main checkout before any command reads
+   * it: a `.git` a session swapped for a gitfile, a symlink or a decoy, or one
+   * holding a commondir, would otherwise answer every ref the command reads,
+   * and from then on every git spawn there holds the same rule (decision 172).
    */
   const project = (): ResolvedProject => {
     const selected = program.opts().project as string | undefined;
     const own = enclosingProject(process.cwd());
-    if (own && selected === undefined) return own;
-    refuseUnlessOperator(own);
-    return resolveProject(process.cwd(), selected);
+    if (!own || selected !== undefined) refuseUnlessOperator(own);
+    const resolved = own && selected === undefined ? own : resolveProject(process.cwd(), selected);
+    try {
+      assertMainCheckout(resolved.repoPath);
+    } catch (error) {
+      resolved.db.close();
+      throw error;
+    }
+    return resolved;
   };
 
   /**
@@ -3084,7 +3095,8 @@ function isMainModule(): boolean {
  */
 export function fatalExitCode(error: unknown): number {
   if (error instanceof CommanderError) return error.exitCode;
-  if (error instanceof ProjectResolutionError) {
+  // A rewritten `.git` is the operator's to inspect, as its message says.
+  if (error instanceof ProjectResolutionError || error instanceof RewrittenGitDirError) {
     console.error(error.message);
     return 1;
   }
