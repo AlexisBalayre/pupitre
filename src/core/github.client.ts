@@ -348,6 +348,13 @@ export interface ReviewThread {
    * collaborator is pup's reply, marked. Anyone else's comment is skipped.
    */
   isAnswered: boolean;
+  /**
+   * What pup's own account by hand, the repo's owner, a member or a
+   * collaborator said on it since a fix round's newest marked reply, or since
+   * the finding when no round replied, oldest first: the operator's word a
+   * round takes with the finding. The bot's comments and anyone else's are not.
+   */
+  replies: string[];
 }
 
 /** Who may make a thread a fix round answered live again, besides the bot and pup's own account. */
@@ -457,14 +464,25 @@ export function readPullRequestReview(
         (field) => field !== undefined && field !== null,
       );
       // An outsider's comment neither answers a thread nor reopens one.
-      const last = nodesOf(thread.trail)
-        .filter(
-          (comment) =>
-            isReviewBot(comment.author) ||
-            comment.viewerDidAuthor === true ||
-            REOPENING_ASSOCIATIONS.has(String(comment.authorAssociation)),
-        )
-        .at(-1);
+      const said = nodesOf(thread.trail).filter(
+        (comment) =>
+          isReviewBot(comment.author) ||
+          comment.viewerDidAuthor === true ||
+          REOPENING_ASSOCIATIONS.has(String(comment.authorAssociation)),
+      );
+      const isMarked = (comment: Record<string, unknown> | undefined) =>
+        comment?.viewerDidAuthor === true &&
+        typeof comment.body === 'string' &&
+        comment.body.includes(`${FIX_ROUND_MARKER} `);
+      const newestMarked = said.reduce(
+        (found, comment, index) => (isMarked(comment) ? index : found),
+        -1,
+      );
+      const replies = said
+        .slice(newestMarked + 1)
+        .flatMap((comment) =>
+          !isReviewBot(comment.author) && typeof comment.body === 'string' ? [comment.body] : [],
+        );
       return [
         {
           id: thread.id,
@@ -473,10 +491,8 @@ export function readPullRequestReview(
           body: typeof finding.body === 'string' ? finding.body : '',
           isEditedByOther: isEdited && !isReviewBot(finding.editor),
           isMinimized: finding.isMinimized !== false,
-          isAnswered:
-            last?.viewerDidAuthor === true &&
-            typeof last.body === 'string' &&
-            last.body.includes(`${FIX_ROUND_MARKER} `),
+          isAnswered: isMarked(said.at(-1)),
+          replies,
         },
       ];
     }),

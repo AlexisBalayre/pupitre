@@ -193,6 +193,7 @@ describe('readPullRequestReview', () => {
           isEditedByOther: false,
           isMinimized: false,
           isAnswered: false,
+          replies: [],
         },
         {
           id: 'PRRT_moved',
@@ -202,6 +203,7 @@ describe('readPullRequestReview', () => {
           isEditedByOther: false,
           isMinimized: false,
           isAnswered: false,
+          replies: [],
         },
       ],
     });
@@ -310,6 +312,56 @@ describe('readPullRequestReview', () => {
       PRRT_quoted_member: false,
       PRRT_unread: false,
       PRRT_bare: false,
+    });
+  });
+
+  // What the operator said since the round's newest reply goes to the next
+  // round with the finding; the bot's comments, pup's own marked replies and
+  // an outsider's word do not.
+  it('reads the replies those who may reopen a thread posted since its newest marked reply', () => {
+    const marked = (sha: string) => ({
+      body: `Declined.\n\n<!-- pup fix-round ${sha} -->`,
+      viewerDidAuthor: true,
+      authorAssociation: 'OWNER',
+    });
+    const by = (authorAssociation: unknown, body: unknown) => ({
+      author: { __typename: 'User', login: 'someone' },
+      body,
+      viewerDidAuthor: false,
+      authorAssociation,
+    });
+    const finding = { author: BOT, body: 'finding', authorAssociation: 'NONE' };
+    const trail = (id: string, ...comments: unknown[]) =>
+      thread({ id, trail: { nodes: [finding, ...comments] } });
+    ghAnswers({
+      state: 'OPEN',
+      headRefOid: HEAD,
+      reviews: { nodes: [review()] },
+      reviewThreads: {
+        pageInfo: { hasPreviousPage: false },
+        nodes: [
+          trail(
+            'PRRT_reopened',
+            by('MEMBER', 'Before the first round.'),
+            marked('d'.repeat(40)),
+            by('OWNER', 'Before the newest round.'),
+            marked('e'.repeat(40)),
+            { body: 'Not a false positive.', viewerDidAuthor: true },
+            by('NONE', 'An outsider.'),
+            finding,
+            by('COLLABORATOR', 'Add a TTL.'),
+            by('MEMBER', 7),
+          ),
+          trail('PRRT_unanswered', by('OWNER', 'Fix this one first.')),
+          trail('PRRT_answered', marked('d'.repeat(40))),
+        ],
+      },
+    });
+
+    expect(Object.fromEntries(read().openThreads.map((open) => [open.id, open.replies]))).toEqual({
+      PRRT_reopened: ['Not a false positive.', 'Add a TTL.'],
+      PRRT_unanswered: ['Fix this one first.'],
+      PRRT_answered: [],
     });
   });
 

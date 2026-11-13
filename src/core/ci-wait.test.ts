@@ -280,7 +280,7 @@ describe('waitForCiReview', { timeout: 20_000 }, () => {
       line:
         `${PR_URL} at ${HEAD}: review no blocking issues; 1 open thread(s), 0 important → ` +
         'resolve the 1 thread(s) a fix round left open, or reply on one as the operator ' +
-        "and re-run pup fix to take it again; the worker sees only the bot's finding, not your reply (the operator's call)",
+        "and re-run pup fix to take it again; the worker gets your reply with the finding (the operator's call)",
     });
 
     // The read stands on its last answer, so this one replaces it.
@@ -314,7 +314,7 @@ describe('waitForCiReview', { timeout: 20_000 }, () => {
       line:
         `${PR_URL} at ${HEAD}: review no blocking issues; 1 open thread(s), 0 important → ` +
         'resolve the 1 thread(s) a fix round left open, or reply on one as the operator ' +
-        "and re-run pup fix to take it again; the worker sees only the bot's finding, not your reply; resolve the 1 unresolved thread(s) a push outdated, once " +
+        'and re-run pup fix to take it again; the worker gets your reply with the finding; resolve the 1 unresolved thread(s) a push outdated, once ' +
         "each fix holds (the operator's call)",
     });
   });
