@@ -26,9 +26,10 @@
     for its event stream, and `base-uri`, `form-action` and `frame-ancestors` all `'none'`. What
     the token does not cover: another local user or process of the operator's own can read the url
     from the terminal or, for the instant `open` runs, its argv; they already hold the store,
-    which is no worse. The page was read-only at first, with no CSRF to answer; the actions came
-    as part 2 below, with a nonce per page and confirmations, and a merge on GitHub stays a link,
-    never a button.
+    which is no worse for a page that only reads. The page was read-only at first, with no CSRF
+    to answer; the actions came as part 2 below, which made the token worth more and so spends it
+    on first use for a cookie, with a nonce per page and confirmations, and a merge on GitHub
+    stays a link, never a button.
     What it shows is what `pup status` and `pup ui` read, off one `buildDashboardSnapshot`:
     `needsYou` first, in its order with each answer; the conductor, with its attach command;
     sessions in states other than `merged` and `killed`, grouped by state (blocked, running,
@@ -78,8 +79,9 @@
     answer in words), tell the conductor (`tellConductor`), steer a session (`steerSession`, a
     `manual` steer by `operator`), launch a backlog task (`launchTask`), kill a session
     (`killSession`), gate it with `--pr` and optionally accept its flags as debt with a reason,
-    a review-by and an approver, `human` when left empty (`runMergeGate` with `openPr` and
-    `acceptDebt`, refused as `pup merge` refuses a reason without its review-by), start a fix
+    a review-by and an approver, the field holding `human` until the operator names someone else
+    and refused when it is empty once scrubbed, as `--approved-by` is (`runMergeGate` with `openPr`
+    and `acceptDebt`, refused as `pup merge` refuses a reason without its review-by), start a fix
     round (`startFixRound`), land (`landSession`, after the sandbox check `pup land` makes) and
     close a ledger entry (`closeLedgerEntry`). The page is the operator's alone, as `pup
     dashboard` refuses a session and the conductor, so every action runs as the operator's. A
@@ -96,12 +98,42 @@
     `src/claude/session-runtime.service.ts` at the pane pinned at launch (decision 46), with
     control characters and direction marks replaced and markup escaped, line breaks kept. A pane
     tmux no longer has is said in its place.
-    CSRF. Each action is a form post to `POST /action`, which still needs the token and the
-    loopback `Host`, and a form content type; a post naming another `Origin` is a 403. Every
-    page served mints an action nonce of 32 random bytes, held in the page's script. A post
-    uses it up before anything else is read, and its answer carries the next one; a nonce the
-    server never minted, or one already used, is a 403 before anything runs, and changes
-    nothing. One page holds one nonce, so it runs one action at a time; a reload mints another.
+    Threat model, restated. Acting, the page holds the operator's whole authority over the
+    project: answer as the operator, accept debt as `human` or a named approver, steer as
+    `operator`, launch, kill, gate and land, which the CLI refuses a session and the conductor
+    (`callingSession`, `callingConductor`). A url token kept as part 1 kept it, in browser history
+    and session restore, terminal scrollback and `open`/`xdg-open`'s argv (`/proc/<pid>/cmdline`
+    on Linux), would hand that to any process of the operator's own that reads it, and since a
+    page load mints a nonce, nonce and confirmation would be two scripted posts. So the token is
+    good for one exchange: the first page served for a `GET /` holding it sets a cookie of 32
+    other random bytes (`HttpOnly`, `SameSite=Strict`, `Path=/`, named `pup-dashboard-<port>`
+    since a cookie is not scoped to a port), and the page's script first takes the token out of
+    the address bar and history with `history.replaceState`; no link on the page holds it. The
+    page is served, not redirected to, because a `Strict` cookie is not sent on a redirect that
+    a click on another site started, which would spend the token and lock the operator out; the
+    page's own requests are same-site whatever opened it. A first load the server cannot answer,
+    an unknown view or an unreadable store, spends nothing. From then on every request, pages, the
+    stream and posts alike, must carry that cookie, compared in constant time; the url is
+    ignored. The token opens nothing a second time: a second load holding it is told the url was
+    opened already and to run `pup dashboard` again. Where the authority lives now: the cookie,
+    in the one browser that opened the url first, which scripts cannot read and which the
+    browser sends to no other site; while the url is unopened, in the url itself, printed to the
+    terminal and, with `--open`, in `open`'s argv for an instant. What is left: a process of the
+    operator's own that reads the url before the browser opens it wins the exchange, and the
+    operator's own load is then refused, which shows it; a local server on another port of
+    127.0.0.1 that the browser is made to visit same-site is sent the cookie, as cookies ignore
+    ports; and a process that can read the browser's cookie store already holds the operator's
+    account.
+    CSRF. Each action is a form post to `POST /action`, which needs the cookie, the loopback
+    `Host` and a form content type, and an `Origin` that is exactly `http://127.0.0.1:<port>`: a
+    post naming another origin or none is a 403, as is one whose `Sec-Fetch-Site`, when sent, is
+    not `same-origin`. Every page served mints an action nonce of 32 random bytes, held in the
+    page's script. A post uses it up before anything else is read, and its answer carries the
+    next one; a nonce the server never minted, one already used, or a page's left unused for 30
+    minutes is a 403 before anything runs, and changes nothing. The server holds at most 256
+    nonces: each mint sweeps the lapsed ones and, past the cap, drops the oldest, whose page is
+    told to reload. One page holds one nonce, so it runs one action at a time; a reload mints
+    another.
     Confirmation rule. Kill, merge, land and debt close cannot be taken back, so the first post
     of one runs nothing: it answers with the question to ask, naming what will run and with
     which fields, the debt accepted included, and a confirmation nonce bound to that action and
@@ -115,9 +147,14 @@
     so a refresh does not wipe a half-typed answer. `close` waits for an action still running
     before the store is closed.
     Tests: per action, the core function the CLI calls is called with the CLI's arguments and its
-    refusal is what the page shows; a post without the token, with a wrong token, from another
-    origin, with a wrong or reused nonce, or a reused confirmation is refused and leaves the
-    ledger entry open; kill, merge, land and debt close each answer only a confirmation on the
+    refusal is what the page shows; an approver missing, blank or empty once scrubbed is refused
+    and gates nothing; the first page served for the token sets an `HttpOnly`, `SameSite=Strict`
+    cookie and strips the token from the address bar, a first load answered 404 spends nothing,
+    a second load with the token is refused, and
+    a page, the stream or a post without the cookie, with a wrong one, or with the token alone is
+    a 403; a post without the cookie, from another origin, naming no origin, or with a cross-site
+    `Sec-Fetch-Site`, with a wrong, reused or lapsed nonce, or a reused confirmation is refused and
+    leaves the ledger entry open; past the cap the oldest nonce is refused; kill, merge, land and debt close each answer only a confirmation on the
     first post and change nothing; a confirmation runs only its own action and fields. The
     session view, tmux faked, shows a pane holding markup, ESC and a direction mark escaped, the
     copyable attach line, and a new pane on its stream within a poll; a merged session's view links

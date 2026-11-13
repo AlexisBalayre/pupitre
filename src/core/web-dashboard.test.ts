@@ -57,10 +57,26 @@ interface Reply {
   body: string;
 }
 
+/** The cookie the page's first load was handed; every request carries it unless it names `Cookie: ''`. */
+let cookie: string | undefined;
+
+/** The request's headers, the cookie included; one named as `''` is left out. */
+function withCookie(headers: Record<string, string>): Record<string, string> {
+  const all = { ...(cookie === undefined ? {} : { Cookie: cookie }), ...headers };
+  return Object.fromEntries(Object.entries(all).filter(([, value]) => value !== ''));
+}
+
+const NO_COOKIE = { Cookie: '' };
+
+/** The `name=value` of the cookie a reply sets. */
+function cookieSet(reply: Reply): string {
+  return String(reply.headers['set-cookie']?.[0]).split(';')[0] ?? '';
+}
+
 /** One request over the real socket, with the Host header the test names. */
 function get(url: string, headers: Record<string, string> = {}, method = 'GET'): Promise<Reply> {
   return new Promise((resolve, reject) => {
-    const req = request(url, { method, headers }, (res) => {
+    const req = request(url, { method, headers: withCookie(headers) }, (res) => {
       let body = '';
       res.setEncoding('utf8');
       res.on('data', (chunk: string) => {
@@ -73,7 +89,7 @@ function get(url: string, headers: Record<string, string> = {}, method = 'GET'):
   });
 }
 
-/** A form post over the real socket, answered as JSON when the server got that far. */
+/** A form post from the page's own origin over the real socket, answered as JSON when the server got that far. */
 function post(
   url: string,
   fields: Record<string, string>,
@@ -84,7 +100,11 @@ function post(
       url,
       {
         method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...headers },
+        headers: withCookie({
+          'Content-Type': 'application/x-www-form-urlencoded',
+          Origin: new URL(url).origin,
+          ...headers,
+        }),
       },
       (res) => {
         let body = '';
@@ -117,7 +137,7 @@ function openStream(url: string): Promise<{
     const frames: string[] = [];
     let waiting: ((frame: string) => void) | undefined;
     let buffer = '';
-    const req = request(url, (res) => {
+    const req = request(url, { headers: withCookie({}) }, (res) => {
       res.setEncoding('utf8');
       res.on('data', (chunk: string) => {
         buffer += chunk;
@@ -155,7 +175,9 @@ describe('startWebDashboard', () => {
     db = openStore(':memory:');
     repo = tempDir('pup-web-');
     ensureProject(db, projectId(repo), repo);
+    cookie = undefined;
     dashboard = await startWebDashboard(db, repo, { pollMs: POLL_MS });
+    cookie = cookieSet(await get(dashboard.url));
   });
 
   afterEach(async () => {
@@ -232,16 +254,77 @@ describe('startWebDashboard', () => {
       }
     });
 
+    it("trades the url's token, once, for a cookie scripts cannot read, and takes it out of the address bar", async () => {
+      const other = await startWebDashboard(db, repo, { pollMs: POLL_MS });
+      const otherUrl = new URL(other.url);
+      try {
+        const opened = await get(`${other.url}&sheet=debt`, NO_COOKIE);
+        const again = await get(other.url, NO_COOKIE);
+
+        expect(opened.status).toBe(200);
+        expect(opened.body).toContain('<title>pup dashboard — Debt</title>');
+        expect(opened.headers['set-cookie']).toEqual([
+          expect.stringMatching(
+            new RegExp(
+              `^pup-dashboard-${otherUrl.port}=[\\w-]{43}; HttpOnly; SameSite=Strict; Path=/$`,
+            ),
+          ),
+        ]);
+        expect(cookieSet(opened)).not.toContain(String(otherUrl.searchParams.get('token')));
+        expect(opened.body).toContain(
+          "history.replaceState(null, '', here.pathname + here.search);",
+        );
+        expect(again.status).toBe(403);
+        expect(again.body).toBe(
+          'This url was opened already: it lets one browser in, once. Run `pup dashboard` again for a new one.',
+        );
+        const page = await get(`${otherUrl.origin}/?sheet=debt`, { Cookie: cookieSet(opened) });
+        expect(page.status).toBe(200);
+        expect(page.headers['set-cookie']).toBeUndefined();
+      } finally {
+        await other.close();
+      }
+    });
+
+    it('spends the token only on a page it served, so a first load it could not answer leaves it good', async () => {
+      const other = await startWebDashboard(db, repo, { pollMs: POLL_MS });
+      try {
+        const missing = await get(`${other.url}&sheet=releases`, NO_COOKIE);
+        const opened = await get(other.url, NO_COOKIE);
+
+        expect(missing.status).toBe(404);
+        expect(missing.headers['set-cookie']).toBeUndefined();
+        expect(opened.status).toBe(200);
+        expect(opened.headers['set-cookie']).toHaveLength(1);
+      } finally {
+        await other.close();
+      }
+    });
+
     it.each([
-      ['no token', (url: URL) => `${url.origin}/`],
-      ['a wrong token', (url: URL) => `${url.origin}/?token=${'A'.repeat(43)}`],
-      ['a token one character short', (url: URL) => `${url.href.slice(0, -1)}`],
-      ['no token on the stream', (url: URL) => `${url.origin}/events`],
-    ])('refuses a request with %s before reading the store', async (_case, target) => {
-      const reply = await get(target(address()));
+      ['no cookie', (url: URL) => `${url.origin}/`, () => NO_COOKIE],
+      ['the spent token alone', (url: URL) => url.href, () => NO_COOKIE],
+      ['a wrong token', (url: URL) => `${url.origin}/?token=${'A'.repeat(43)}`, () => NO_COOKIE],
+      ['a token one character short', (url: URL) => url.href.slice(0, -1), () => NO_COOKIE],
+      [
+        'no cookie on the stream',
+        (url: URL) => url.href.replace('/?', '/events?'),
+        () => NO_COOKIE,
+      ],
+      [
+        'a wrong cookie',
+        (url: URL) => `${url.origin}/`,
+        () => ({ Cookie: `pup-dashboard-${address().port}=${'A'.repeat(43)}` }),
+      ],
+      [
+        "another port's cookie name",
+        (url: URL) => `${url.origin}/`,
+        () => ({ Cookie: String(cookie).replace(/-\d+=/, '-1=') }),
+      ],
+    ])('refuses a request with %s before reading the store', async (_case, target, headers) => {
+      const reply = await get(target(address()), headers());
 
       expect(reply.status).toBe(403);
-      expect(reply.body).toBe('Forbidden.');
     });
 
     it.each([
@@ -487,9 +570,10 @@ describe('startWebDashboard', () => {
 
       const page = (await get(dashboard.url)).body;
 
-      // The sheet and session-view links are the page's own, token and all;
-      // nothing else is a link.
-      expect(page).not.toMatch(/<a href="(?!\?token=[\w-]+&amp;(?:sheet=\w+|session=[\w-]+)")/);
+      // The sheet and session-view links are the page's own, with no token:
+      // the cookie carries the page; nothing else is a link.
+      expect(page).not.toMatch(/<a href="(?!\?(?:sheet=\w+|session=[\w-]+)")/);
+      expect(page).not.toContain(String(address().searchParams.get('token')));
       expect(page).not.toContain('evil.example');
       expect(page).toContain('(PR url outside the pull-request shape; inspect the store)');
       expect(page).toContain(`question: see ${PR}`);
@@ -522,8 +606,7 @@ describe('startWebDashboard', () => {
       });
     }
 
-    it('serves each sheet under a bar linking every sheet with the token, the current one marked', async () => {
-      const token = address().searchParams.get('token');
+    it('serves each sheet under a bar linking every sheet, the current one marked', async () => {
       for (const [sheet, title] of [
         ['overview', 'Overview'],
         ['health', 'Health'],
@@ -535,19 +618,19 @@ describe('startWebDashboard', () => {
 
         expect(reply.status).toBe(200);
         expect(reply.body).toContain(`<title>pup dashboard — ${title}</title>`);
-        expect(reply.body).toContain(`<a href="?token=${token}&amp;sheet=overview"`);
-        expect(reply.body).toContain(`<a href="?token=${token}&amp;sheet=health"`);
-        expect(reply.body).toContain(`<a href="?token=${token}&amp;sheet=debt"`);
-        expect(reply.body).toContain(`<a href="?token=${token}&amp;sheet=tasks"`);
-        expect(reply.body).toContain(`<a href="?token=${token}&amp;sheet=decisions"`);
+        expect(reply.body).toContain('<a href="?sheet=overview"');
+        expect(reply.body).toContain('<a href="?sheet=health"');
+        expect(reply.body).toContain('<a href="?sheet=debt"');
+        expect(reply.body).toContain('<a href="?sheet=tasks"');
+        expect(reply.body).toContain('<a href="?sheet=decisions"');
         expect(reply.body).toContain(`sheet=${sheet}" aria-current="page">${title}</a>`);
       }
       expect((await get(dashboard.url)).body).toContain('aria-current="page">Overview</a>');
     });
 
-    it('refuses a sheet it does not have, and a sheet without the token', async () => {
+    it('refuses a sheet it does not have, and a sheet without the cookie', async () => {
       expect((await get(sheetUrl('releases'))).status).toBe(404);
-      expect((await get(`${address().origin}/?sheet=debt`)).status).toBe(403);
+      expect((await get(`${address().origin}/?sheet=debt`, NO_COOKIE)).status).toBe(403);
     });
 
     it('renders every sheet on an empty store with a one-line hint for each chart', async () => {
@@ -881,13 +964,29 @@ describe('startWebDashboard', () => {
       listLedgerEntries(db, projectId(repo)).some((entry) => entry.id === id);
 
     it.each([
-      ['no token', () => `${origin()}/action`],
-      ['a wrong token', () => `${origin()}/action?token=${'A'.repeat(43)}`],
-    ])('refuses a post with %s, and changes nothing', async (_case, url) => {
+      ['no cookie', () => `${origin()}/action`, (): Record<string, string> => NO_COOKIE],
+      ['the spent token instead of the cookie', () => actionUrl(), () => NO_COOKIE],
+      [
+        'a wrong cookie',
+        () => actionUrl(),
+        () => ({ Cookie: `pup-dashboard-${address().port}=${'A'.repeat(43)}` }),
+      ],
+      ['no Origin', () => actionUrl(), () => ({ Origin: '' })],
+      [
+        'a cross-site Sec-Fetch-Site',
+        () => actionUrl(),
+        () => ({ 'Sec-Fetch-Site': 'cross-site' }),
+      ],
+      ['a same-site Sec-Fetch-Site', () => actionUrl(), () => ({ 'Sec-Fetch-Site': 'same-site' })],
+    ])('refuses a post with %s, and changes nothing', async (_case, url, headers) => {
       const id = seedDebt();
       const key = await pageKey();
 
-      const reply = await post(url(), { action: 'debt-close', id: String(id), nonce: key });
+      const reply = await post(
+        url(),
+        { action: 'debt-close', id: String(id), nonce: key },
+        headers(),
+      );
 
       expect(reply.status).toBe(403);
       expect(isOpen(id)).toBe(true);
@@ -1008,6 +1107,52 @@ describe('startWebDashboard', () => {
       expect(kill).toEqual(refusal);
       expect(late.status).toBe(403);
       expect(isOpen(id)).toBe(true);
+    });
+
+    it('takes a post the browser says is same-origin', async () => {
+      const id = seedDebt();
+
+      const reply = await post(
+        actionUrl(),
+        { action: 'debt-close', id: String(id), nonce: await pageKey() },
+        { 'Sec-Fetch-Site': 'same-origin' },
+      );
+
+      expect(reply.status).toBe(200);
+      expect(reply.json().confirm).toEqual(expect.any(String));
+    });
+
+    it('refuses a page nonce left unused for 30 minutes, and changes nothing', async () => {
+      const id = seedDebt();
+      const key = await pageKey();
+      const now = Date.now();
+      vi.spyOn(Date, 'now').mockReturnValue(now + 30 * 60_000 + 1);
+      try {
+        const reply = await post(actionUrl(), { action: 'debt-close', id: String(id), nonce: key });
+
+        expect(reply.status).toBe(403);
+        expect(reply.body).toContain('has lapsed');
+        expect(isOpen(id)).toBe(true);
+      } finally {
+        vi.mocked(Date.now).mockRestore();
+      }
+    });
+
+    it('holds at most 256 nonces, dropping the oldest first', async () => {
+      const id = seedDebt();
+      const oldest = await pageKey();
+      const second = await pageKey();
+      for (let served = 0; served < 255; served++) await pageKey();
+
+      const dropped = await post(actionUrl(), {
+        action: 'debt-close',
+        id: String(id),
+        nonce: oldest,
+      });
+      const kept = await post(actionUrl(), { action: 'debt-close', id: String(id), nonce: second });
+
+      expect(dropped.status).toBe(403);
+      expect(kept.status).toBe(200);
     });
 
     it("shows core's refusal as the answer, and hands the page its next nonce", async () => {

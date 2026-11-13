@@ -33,6 +33,10 @@ const DASHBOARD_POLL_MS = 2_000;
 const LOOPBACK = '127.0.0.1';
 /** How long a confirmation the page asked for stays good (decision 91). */
 const CONFIRM_TTL_MS = 5 * 60_000;
+/** How long a page's action nonce stays good unused; a page idle longer reloads (decision 91). */
+const PAGE_NONCE_TTL_MS = 30 * 60_000;
+/** The most nonces held at once; past it the oldest go first (decision 91). */
+const MAX_NONCES = 256;
 /** The most an action's form may carry; a steer or a tell is far below it. */
 const MAX_ACTION_BYTES = 64 * 1024;
 
@@ -45,11 +49,11 @@ type View = { sheet: SheetName } | { session: string };
  * the very fields the operator was asked about, before it expires.
  */
 type NonceGrant =
-  | { kind: 'page' }
+  | { kind: 'page'; mintedAt: number }
   | { kind: 'confirm'; action: ActionName; fields: string; mintedAt: number };
 
 export interface WebDashboard {
-  /** The page, token included: the one url that opens it. */
+  /** The page, token included: the one url that opens it, in one browser, once. */
   url: string;
   close: () => Promise<void>;
 }
@@ -59,9 +63,13 @@ export interface WebDashboard {
  * behind a token minted for this run. The threat is the operator's own
  * browser: any page it has open can make it request a loopback url, and a
  * rebound DNS name can make that request same-origin. So every request must
- * carry the token, which no other origin can read, and name the loopback
- * address as its Host, which a rebound name does not; anything else is refused
- * before the store is read. The page loads nothing from elsewhere, its CSP
+ * name the loopback address as its Host, which a rebound name does not, and
+ * carry the page's cookie, which no other origin can read or send; anything
+ * else is refused before the store is read. The url's token is good for one
+ * exchange: the first page served for it sets that cookie (HttpOnly,
+ * SameSite=Strict, named for this port) and its script takes the token out of
+ * the address bar, so the token left in history, scrollback or a browser's
+ * argv opens nothing. The page loads nothing from elsewhere, its CSP
  * admits only its own nonce'd script and style and its own event stream, and
  * every store-read string on it is escaped.
  *
@@ -72,8 +80,9 @@ export interface WebDashboard {
  * from that view's last one goes to every stream on it whole; the browser
  * never polls.
  *
- * The page acts through `POST /action`, token and all, with a nonce minted per
- * page that one post uses up and whose answer carries the next. An
+ * The page acts through `POST /action`, cookie and all, from its own origin,
+ * with a nonce minted per page that one post uses up and whose answer carries
+ * the next; one unused for `PAGE_NONCE_TTL_MS` lapses. An
  * irreversible action's first post only asks: it answers with a confirmation
  * nonce bound to that action and its fields, and only a second post carrying
  * it runs the action. Each action is the core call its CLI command makes.
@@ -84,15 +93,16 @@ export async function startWebDashboard(
   { pollMs = DASHBOARD_POLL_MS }: { pollMs?: number } = {},
 ): Promise<WebDashboard> {
   const token = Buffer.from(randomBytes(32).toString('base64url'));
+  const secret = Buffer.from(randomBytes(32).toString('base64url'));
+  let exchanged = false;
   const streams = new Map<ServerResponse, View>();
   const lastBody = new Map<string, string>();
   const nonces = new Map<string, NonceGrant>();
   const running = new Set<Promise<unknown>>();
-  // Relative, so it resolves against the page; the token rides along because
-  // every request must carry it.
-  const hrefOf = (sheet: SheetName): string => `?token=${token.toString()}&sheet=${sheet}`;
-  const sessionHref = (sessionId: string): string =>
-    `?token=${token.toString()}&session=${encodeURIComponent(sessionId)}`;
+  // Relative, so it resolves against the page; the cookie, not the url,
+  // carries the page's authority.
+  const hrefOf = (sheet: SheetName): string => `?sheet=${sheet}`;
+  const sessionHref = (sessionId: string): string => `?session=${encodeURIComponent(sessionId)}`;
 
   const render = (view: View): string => {
     const now = Date.now();
@@ -132,10 +142,14 @@ export async function startWebDashboard(
     }
   };
 
+  // Every mint sweeps what lapsed and, past the cap, drops the oldest first,
+  // so pages served and never used cannot grow the map without end.
   const mint = (grant: NonceGrant): string => {
     const now = Date.now();
-    for (const [nonce, held] of nonces) {
-      if (held.kind === 'confirm' && now - held.mintedAt > CONFIRM_TTL_MS) nonces.delete(nonce);
+    for (const [nonce, held] of nonces) if (lapsed(held, now)) nonces.delete(nonce);
+    for (const nonce of nonces.keys()) {
+      if (nonces.size < MAX_NONCES) break;
+      nonces.delete(nonce);
     }
     const nonce = randomBytes(32).toString('base64url');
     nonces.set(nonce, grant);
@@ -162,6 +176,7 @@ export async function startWebDashboard(
     const grant = nonces.get(given);
     if (grant === undefined) return undefined;
     nonces.delete(given);
+    if (grant.kind === 'page' && lapsed(grant, Date.now())) return undefined;
     const action = ACTIONS.find((name) => name === form.get('action'));
     const fields: ActionFields = {};
     for (const [name, value] of form)
@@ -170,7 +185,7 @@ export async function startWebDashboard(
       if (
         action !== grant.action ||
         canonical(fields) !== grant.fields ||
-        Date.now() - grant.mintedAt > CONFIRM_TTL_MS
+        lapsed(grant, Date.now())
       ) {
         return {
           ok: false,
@@ -179,7 +194,7 @@ export async function startWebDashboard(
       }
       return run(action, fields);
     }
-    const next = mint({ kind: 'page' });
+    const next = mint({ kind: 'page', mintedAt: Date.now() });
     if (action === undefined)
       return { ok: false, message: 'No such action; nothing was done.', nonce: next };
     if (!CONFIRMED_ACTIONS.has(action)) return { ...(await run(action, fields)), nonce: next };
@@ -207,10 +222,15 @@ export async function startWebDashboard(
 
   // Set once the socket is bound; no request is read before then.
   let port = 0;
+  const cookieName = (): string => `pup-dashboard-${port}`;
   const handle = (req: IncomingMessage, res: ServerResponse) => {
     if (req.headers.host !== `${LOOPBACK}:${port}`) return refuse(res, 403, 'Forbidden.');
     const url = new URL(req.url ?? '/', `http://${LOOPBACK}:${port}`);
-    if (!hasToken(url.searchParams.get('token'), token)) return refuse(res, 403, 'Forbidden.');
+    const opening = !matches(cookieOf(req, cookieName()), secret);
+    if (opening) {
+      const refusal = admission(req, url);
+      if (refusal !== undefined) return refuse(res, 403, refusal);
+    }
     if (url.pathname === '/action') return handleAction(req, res);
     if (req.method !== 'GET') return refuse(res, 405, 'Only /action takes a POST.');
     const view = viewOf(url);
@@ -232,17 +252,23 @@ export async function startWebDashboard(
         };
       }
       const nonce = randomBytes(16).toString('base64');
+      // Spent only once a page goes out with the cookie, so a first load the
+      // store could not answer leaves the url good for the next.
+      if (opening) exchanged = true;
       res.writeHead(200, {
         ...hardening(
           `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; ` +
             "connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
         ),
+        ...(opening && {
+          'Set-Cookie': `${cookieName()}=${secret.toString()}; HttpOnly; SameSite=Strict; Path=/`,
+        }),
         'Content-Type': 'text/html; charset=utf-8',
       });
       res.end(
         renderDashboardPage(
           repoPath,
-          { ...page, nonce, actionNonce: mint({ kind: 'page' }) },
+          { ...page, nonce, actionNonce: mint({ kind: 'page', mintedAt: Date.now() }) },
           hrefOf,
         ),
       );
@@ -263,14 +289,34 @@ export async function startWebDashboard(
   };
 
   /**
-   * A post to `/action`. Only a form post from this origin is read: a browser
-   * names the origin of every cross-site post, and a form is what the page's
-   * script sends. A wrong or used nonce is refused before anything runs.
+   * Why a request without the page's cookie is refused, or undefined for the
+   * one it is not: the first page load holding the url's token, which the page
+   * served for it trades for the cookie.
+   */
+  const admission = (req: IncomingMessage, url: URL): string | undefined => {
+    const given = url.searchParams.get('token') ?? undefined;
+    if (req.method !== 'GET' || url.pathname !== '/' || !matches(given, token)) {
+      return 'Forbidden.';
+    }
+    return exchanged
+      ? 'This url was opened already: it lets one browser in, once. Run `pup dashboard` again for a new one.'
+      : undefined;
+  };
+
+  /**
+   * A post to `/action`. Only a form post naming this origin is read: a
+   * browser names the origin of every post its pages make, and a form is what
+   * the page's script sends; one that says it came from another site, or does
+   * not say, is refused. A wrong, used or lapsed nonce is refused before
+   * anything runs.
    */
   const handleAction = (req: IncomingMessage, res: ServerResponse) => {
     if (req.method !== 'POST') return refuse(res, 405, 'POST only.');
-    const origin = req.headers.origin;
-    if (origin !== undefined && origin !== `http://${LOOPBACK}:${port}`) {
+    const site = req.headers['sec-fetch-site'];
+    if (
+      req.headers.origin !== `http://${LOOPBACK}:${port}` ||
+      (site !== undefined && site !== 'same-origin')
+    ) {
       return refuse(res, 403, 'Forbidden.');
     }
     if (!String(req.headers['content-type']).startsWith('application/x-www-form-urlencoded')) {
@@ -284,7 +330,7 @@ export async function startWebDashboard(
           return refuse(
             res,
             403,
-            'This page key was used already or never issued; nothing was done. Reload the page.',
+            'This page key was used already, has lapsed or was never issued; nothing was done. Reload the page.',
           );
         }
         res.writeHead(200, {
@@ -421,19 +467,33 @@ function viewOf(url: URL): View | undefined {
   return sheet && { sheet };
 }
 
+/** Whether a nonce is past its time: a confirmation's, or a page's left unused. */
+function lapsed(grant: NonceGrant, now: number): boolean {
+  return now - grant.mintedAt > (grant.kind === 'confirm' ? CONFIRM_TTL_MS : PAGE_NONCE_TTL_MS);
+}
+
+/** The value of the named cookie the request carries, if any. */
+function cookieOf(req: IncomingMessage, name: string): string | undefined {
+  for (const pair of (req.headers.cookie ?? '').split(';')) {
+    const at = pair.indexOf('=');
+    if (at !== -1 && pair.slice(0, at).trim() === name) return pair.slice(at + 1).trim();
+  }
+  return undefined;
+}
+
 /** Compared in constant time, so a wrong guess learns nothing from how long it took. */
-function hasToken(given: string | null, token: Buffer): boolean {
-  if (given === null) return false;
+function matches(given: string | undefined, secret: Buffer): boolean {
+  if (given === undefined) return false;
   const candidate = Buffer.from(given);
-  return candidate.length === token.length && timingSafeEqual(candidate, token);
+  return candidate.length === secret.length && timingSafeEqual(candidate, secret);
 }
 
 const REFUSAL_CSP =
   "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
 /**
- * Headers every response carries. `no-referrer`, because the url holds the
- * token and the page links out to pull requests; `no-store`, so the board is
+ * Headers every response carries. `no-referrer`, because the first url holds
+ * the token and the page links out to pull requests; `no-store`, so the board is
  * not kept on disk by the browser.
  */
 function hardening(csp: string): Record<string, string> {
@@ -473,8 +533,9 @@ interface PageParts {
  * holding it back while the operator types into a field on the board; it
  * reports whether the stream is up; and it posts each action form with the
  * page's nonce, asks before an irreversible one, and shows the answer as text.
- * The sheet bar is plain links, so a sheet opens as its own page with its own
- * stream (decision 98).
+ * It first takes the spent token out of the address bar. The sheet bar is
+ * plain links, so a sheet opens as its own page with its own stream
+ * (decision 98).
  */
 function renderDashboardPage(
   repoPath: string,
@@ -567,6 +628,13 @@ ${body}
 </main>
 <script nonce="${nonce}">
 (() => {
+  // The token in the url was spent on this page's cookie: out of the address
+  // bar and history, and out of every url built from it below.
+  const here = new URL(location.href);
+  if (here.searchParams.has('token')) {
+    here.searchParams.delete('token');
+    history.replaceState(null, '', here.pathname + here.search);
+  }
   const board = document.getElementById('board');
   const live = document.getElementById('live');
   const outcome = document.getElementById('outcome');

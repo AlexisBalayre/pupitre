@@ -132,7 +132,7 @@ const CASES: {
   },
   {
     action: 'merge',
-    fields: { session: 's-1', reason: 'one feature', reviewBy: '2027-01-01', approver: '' },
+    fields: { session: 's-1', reason: 'one feature', reviewBy: '2027-01-01', approver: 'human' },
     arrange: () =>
       vi
         .mocked(runMergeGate)
@@ -247,6 +247,24 @@ describe('runAction', () => {
     expect(runMergeGate).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['no approver', undefined],
+    ['a blank approver', '  '],
+    ['an approver nothing is left of once scrubbed', '\u001b\u0007'],
+  ])(
+    'refuses accepting debt with %s, as --approved-by refuses it, and gates nothing',
+    async (_case, approver) => {
+      const fields = { session: 's-1', reason: 'r', reviewBy: 'q1' };
+
+      await expect(
+        runAction(DB, REPO, 'merge', approver === undefined ? fields : { ...fields, approver }),
+      ).rejects.toThrow(
+        'Accepting debt needs an approver, such as human or tg:<user>; nothing was gated.',
+      );
+      expect(runMergeGate).not.toHaveBeenCalled();
+    },
+  );
+
   it('gates without debt and with a named approver, scrubbed, always with --pr', async () => {
     vi.mocked(runMergeGate).mockResolvedValue(gate('merged', []));
 
@@ -304,9 +322,14 @@ describe('confirmations', () => {
   it('names what will run, the debt accepted included', () => {
     expect(confirmationText('kill', { session: 's-1' })).toContain('Kill session s-1?');
     expect(
-      confirmationText('merge', { session: 's-1', reason: 'one feature', reviewBy: 'q1' }),
+      confirmationText('merge', {
+        session: 's-1',
+        reason: 'one feature',
+        reviewBy: 'q1',
+        approver: 'tg:ana',
+      }),
     ).toBe(
-      'Gate session s-1 and open its pull request, accepting what the gate flags as debt ("one feature", review by q1, accepted by human)?',
+      'Gate session s-1 and open its pull request, accepting what the gate flags as debt ("one feature", review by q1, accepted by tg:ana)?',
     );
     expect(confirmationText('debt-close', { id: '4' })).toContain('Close ledger entry #4?');
   });

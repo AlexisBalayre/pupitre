@@ -102,7 +102,7 @@ export function renderSessionHead({ session }: SessionView): string {
     fields,
     '<input type="text" name="reason" placeholder="accept flags as debt: reason">' +
       '<input type="text" name="reviewBy" placeholder="review by">' +
-      '<input type="text" name="approver" placeholder="approver (default human)">' +
+      '<input type="text" name="approver" value="human" placeholder="approver">' +
       `<button type="submit">${escapeHtml(session.state === 'merged' ? 'Re-gate the PR' : 'Gate and open a PR')}</button>`,
     'act wide',
   );

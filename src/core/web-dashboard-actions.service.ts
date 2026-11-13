@@ -62,10 +62,16 @@ function acceptDebtOf(fields: ActionFields) {
     throw new Error('A debt reason and a review-by go together; nothing was gated.');
   }
   if (!reason) return undefined;
-  // Scrubbed before it is stored, as `--approved-by` is; the operator's own
-  // acceptance is `human`, as on the command line (decision 75).
+  // Scrubbed before it is stored, and refused when nothing is left, as
+  // `--approved-by` is (decision 75). The form names `human` until the
+  // operator names someone else, so an acceptor is never assumed.
   const approver = sanitizeReason(fields.approver ?? '');
-  return { reason, reviewBy, acceptedBy: approver || 'human' };
+  if (approver === '') {
+    throw new Error(
+      'Accepting debt needs an approver, such as human or tg:<user>; nothing was gated.',
+    );
+  }
+  return { reason, reviewBy, acceptedBy: approver };
 }
 
 /**
