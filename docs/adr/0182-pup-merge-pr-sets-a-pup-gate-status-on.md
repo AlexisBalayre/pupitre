@@ -40,13 +40,14 @@
       JSON
       ```
 
-    - Protected, with no `required_status_checks`: turn them on with `pup-gate` alone. This
-      `PATCH` replaces the list of required checks, which is empty in this state.
-
-      ```sh
-      gh api --method PATCH repos/OWNER/REPO/branches/TARGET/protection/required_status_checks \
-        -F strict=false -f 'contexts[]=pup-gate'
-      ```
+    - Protected, with no `required_status_checks`: turn them on in the target's protection rule
+      on GitHub, under the repo's Settings, Branches. Tick "Require status checks to pass before
+      merging", add `pup-gate`, leave "Require branches to be up to date before merging" off,
+      and save. No REST call does this alone. The `PATCH` and `POST` under
+      `required_status_checks` change checks that are already on, and answer 404 in this state.
+      Only the `PUT` above turns them on, and it would drop the rules the branch has. The page
+      offers only the checks the repo has seen recently, so if it does not list `pup-gate`, run
+      one `pup merge --pr` first.
 
     - Protected, with `required_status_checks`: add `pup-gate` to the checks already required.
 
@@ -70,6 +71,22 @@
     Strict mode would also make every move of the target a push to the PR, and each push needs a
     re-gate. The check also holds every PR that pup did not open. That is intended: no PR merges
     without the gate.
+    *PRs already open.* A PR opened by a `pup merge --pr` from before this decision has no
+    `pup-gate` on its head. Once the check is required, its merge button stays off. If its head
+    moved after its gate, the usual re-gate sets the status. If its head is still at the pin,
+    nothing pup runs sets it, because a re-gate refuses a head at the pin as having nothing new
+    to measure (decision 86). For each such PR, the operator does one of two things. They can
+    merge it and run `pup land` before turning protection on. Or they can run
+    `pup merge <task> --pr`, which refuses and names the PR's head as the sha the gate pinned,
+    and then set the status on that sha (`PIN`) in their own shell:
+
+    ```sh
+    gh api --method POST repos/OWNER/REPO/statuses/PIN \
+      -f state=success -f context=pup-gate -f 'description=Gated before decision 182'
+    ```
+
+    This is the only status ever set by hand, and only the operator sets it. A session or the
+    conductor never does. `pup land` still refuses a merge at any head but the pin.
     *Limits, accepted.* Anyone who can write to the repo can set a status, including a session
     that holds the operator's gh login. So `pup-gate` stops an honest push made after the gate from
     being merged. It does not stop a session that forges the status. `pup land`, which reads the

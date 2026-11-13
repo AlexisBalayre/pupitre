@@ -43,26 +43,31 @@ protection:
 gh api repos/OWNER/REPO/branches/TARGET/protection
 ```
 
-Then run only the command that fits what the read showed:
+Then take only the step that fits what the read showed:
 
 ```
 # Protected, with required_status_checks: add pup-gate to them
 gh api --method POST repos/OWNER/REPO/branches/TARGET/protection/required_status_checks/contexts \
   -f 'contexts[]=pup-gate'
-# Protected, with no required_status_checks: turn them on with pup-gate alone
-gh api --method PATCH repos/OWNER/REPO/branches/TARGET/protection/required_status_checks \
-  -F strict=false -f 'contexts[]=pup-gate'
 # Either protected case, unless enforce_admins.enabled is already true
 gh api --method POST repos/OWNER/REPO/branches/TARGET/protection/enforce_admins
 ```
 
-On a branch that is not protected at all (the read returns 404), use the `PUT` in decision 182
-instead. Only there is it safe, because it replaces any existing protection, and it turns on
-`enforce_admins` itself. `enforce_admins` is not optional. Without it, an admin can merge without
-waiting for the check, and sessions share the operator's gh login. After the setup, a target that
-a plain `pup merge` fast-forwarded can no longer be pushed, so use `--pr`. When a PR shows
-`pup-gate` as expected, its head moved after the gate: re-gate it with `pup merge <task> --pr`.
-Never set the status by hand.
+On a branch that is protected but has no `required_status_checks`, no REST call turns them on
+without dropping the branch's other rules. The operator turns them on in the target's protection
+rule under the repo's Settings, Branches: "Require status checks to pass before merging", with
+`pup-gate` added and "Require branches to be up to date" left off. On a branch that is not
+protected at all (the read returns 404), use the `PUT` in decision 182 instead. Only there is it
+safe, because it replaces any existing protection, and it turns on `enforce_admins` itself.
+`enforce_admins` is not optional. Without it, an admin can merge without waiting for the check,
+and sessions share the operator's gh login. After the setup, a target that a plain `pup merge`
+fast-forwarded can no longer be pushed, so use `--pr`.
+
+When a PR pup opened shows `pup-gate` as expected, re-gate it with `pup merge <task> --pr`. If
+its head moved after the gate, the re-gate sets the status. If the re-gate refuses because the
+head is still at the pin, the PR was gated before decision 182. Hand the operator that decision's
+command for PRs already open, which they run in their own shell on the sha the refusal names.
+Never set the status yourself.
 
 Never validate a change to the gate with the gate on its own branch.
 
