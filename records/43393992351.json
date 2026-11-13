@@ -1,0 +1,123 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-13T08:38:47.065Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43393992351",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43393992351",
+  "actor": "AlexisBalayre",
+  "commit_sha": "7c042e1bd4eb95595190f158b11b2a0924f3cd02",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 201,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "guards"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "guards"
+  ],
+  "reviewers_skipped": [
+    "conventions",
+    "context",
+    "maintainability",
+    "docs",
+    "spec",
+    "simplicity",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "1008-1025, 1139-1157",
+      "description": "`listProcesses` finds `ps` on `PROBE_PATH`, which lists `/opt/homebrew/bin` and `/usr/local/bin` before `/usr/bin` and `/bin`, and the operator's uid can write both. The conductor can plant a `ps` there that prints nothing. `launchedAncestor()` then finds no ancestor, and `env -u PUP_CONDUCTOR pup plan edit … --rescope` from the conductor's own Bash succeeds and is recorded as the inferred operator, which is the very case ADR 0115 says is refused.",
+      "status": "unresolved"
+    },
+    {
+      "file": "src/core/session.repository.ts",
+      "line": "348-355",
+      "description": "A rescope of a blocked session (or of an awaiting-review one the gate then parks) never reaches the worker's hooks. The only way to resume it, `pup unblock` then `pup kill --respawn`, relaunches from the launch-time compiled settings.json, scope-in.pat and context.md. Edits to the newly added globs stay BLOCKED even though the rescope reported success.",
+      "status": "unresolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "1117",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "`listPanes` runs tmux with an environment holding only `PATH`, so tmux turns the tab separators in `PANE_FORMAT` into `_`; `listedPane` then never matches, and a rescope goes through while the session's window is open.",
+      "body": "**The problem.** `listPanes` gives the tmux client only `{ PATH: PROBE_PATH }`. `TMUX`, `LC_ALL`, `LC_CTYPE` and `LANG` are all unset, and `-u` is not passed:\n\n```ts\n    return execFileSync('tmux', ['-S', socket, 'list-panes', '-a', '-F', PANE_FORMAT], {\n      encoding: 'utf8',\n      stdio: ['ignore', 'pipe', 'pipe'],\n      env: { PATH: PROBE_PATH },\n```\nhttps://github.com/AlexisBalayre/pupitre/blob/7c042e1bd4eb95595190f158b11b2a0924f3cd02/src/claude/session-runtime.service.ts#L1115-L1122\n\nIn `tmux.c`, the client sets `CLIENT_UTF8` only when one of these holds:\n- `-u` is passed\n- `TMUX` is set\n- `LC_ALL`, `LC_CTYPE` or `LANG` names a UTF-8 locale\n\nHere none of them holds. `list-panes` run from outside a session is a client with no session and no `CLIENT_UTF8`. For that client, tmux's `cmdq_print` (`cmdq_print_data` in 3.4 and later) sends each line through `utf8_sanitize`. That function keeps only bytes 0x20 to 0x7e and writes `_` for anything else, so the tab (0x09) becomes `_`.\n\n`PANE_FORMAT` is `'#{pane_id}\\t#{pane_start_command}\\t#{session_name}'` (L1101), and `listedPane` splits on `'\\t'`:\nhttps://github.com/AlexisBalayre/pupitre/blob/7c042e1bd4eb95595190f158b11b2a0924f3cd02/src/core/task-rescope.service.ts#L97-L104\n\nWith the tabs gone, each line is one field:\n- `started` is `''` and `listed` is empty.\n- Neither the session-name match nor the ` --name pup-<id> ` match can be true.\n- `mayHaveOpenWindow` gets back a listing that matches nothing and returns `undefined`.\n\n**Trigger.**\n1. Take a task whose session is `awaiting-review` with its window still alive. This is ADR 0115's own case: a worker ran `pup session done` and its pane is still up.\n2. From the operator's shell, run `pup plan edit <task> --rescope --scope docs/**`.\n3. The transaction commits the widened spec, the tier raise, the event and the decision record.\n4. The \"window is open\" refusal that decision 115 requires never fires. The check passes on every tmux version that sanitizes this way, for every pane.\n\n**Why the tests miss it.** The `listPanes` tests mock `execFileSync` and return output that already contains tabs (`src/claude/session-runtime.test.ts` ~L1048-1086). The task-rescope and CLI tests mock `listPanes` itself, so no test runs a real tmux client under the stripped environment. All the other tmux calls in the runtime go through `tmuxEnv()`, which keeps `LANG`, so this is the only tab-separated `-F` read that runs without a locale.\n\n**Possible fix.** Pass tmux's `-u` client flag: `['-u', '-S', socket, 'list-panes', '-a', '-F', PANE_FORMAT]`. It sets `CLIENT_UTF8`, which skips the sanitizing, and it reads nothing from the caller's environment. The exact-argv expectation in `src/claude/session-runtime.test.ts` (~L1073-1086) needs `'-u'` added too. The other option is a separator that survives sanitizing, such as a printable delimiter that cannot appear in a pane id. The confidence is medium because the tmux behaviour comes from tmux's source, not from a run; a quick `env -i PATH=/usr/bin tmux list-panes -a -F '#{pane_id}\\t#{session_name}'` settles it.",
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Round 6 budget: spawned only correctness (2 instances), security (2 instances) and guards. Skipped conventions, docs, context, simplicity and maintainability under the round budget. Skipped workflow-safety because no `.github/workflows` file changed, and spec because there is no closing issue or spec source."
+    },
+    {
+      "component": "consolidator",
+      "description": "Not spawned: the reviewers returned a single finding, so there was nothing to group and dedup was trivial."
+    },
+    {
+      "component": "orchestrator",
+      "description": "Since the prior record (526406a), only merges from main reached the PR files (`readInputBoxLook` in session-runtime and the Needs-you conductor line in cli/index.ts), so both prior importants are unchanged at head. The ps-on-PROBE_PATH one is still there: `listProcesses` still runs on `PROBE_PATH`. The blocked one is too: RESCOPABLE_STATES is ['awaiting-review','merged'], but an awaiting-review session rescoped and then parked blocked by `rejectOrBlock` still relaunches from the launch-time hooks."
+    },
+    {
+      "component": "orchestrator",
+      "description": "The confirmed finding carries no `suggestion`. The one-line `-u` fix would break the exact-argv test in session-runtime.test.ts, so a committable block would not resolve the finding on its own."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 4.365529699999999,
+  "duration_ms": 343833,
+  "num_turns": 16,
+  "tokens": {
+    "input": 16,
+    "output": 11334,
+    "cache_read": 422146,
+    "cache_creation": 77327,
+    "total": 510823
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 206,
+      "output": 76156,
+      "cache_read": 3800489,
+      "cache_creation": 350906,
+      "cost_usd": 4.270552799999999
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 18,
+      "output": 3201,
+      "cache_read": 122334,
+      "cache_creation": 20279,
+      "cost_usd": 0.0949769
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Glob",
+      "input": "{\"pattern\":\"**/@anthropic-ai/claude-code/cli.js\",\"path\":\"/home/runner\"}"
+    }
+  ]
+}
