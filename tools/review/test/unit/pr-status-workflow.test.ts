@@ -21,6 +21,8 @@ function inline<T>(name: string): T {
 const counted = inline<(body: string, threaded: Set<string>) => number>("unthreadedImportants");
 const unthreadedImportants = (body: string, threaded: string[] = []) => counted(body, new Set(threaded));
 const isVerdict = inline<(body: string) => boolean>("isVerdict");
+type LabelEvent = { event: string; label?: { name: string }; created_at: string };
+const acceptedSince = inline<(events: LabelEvent[], name: string, since: number) => boolean>("acceptedSince");
 
 function finding(overrides: Partial<Finding> = {}): Finding {
   return {
@@ -155,6 +157,43 @@ describe("isVerdict", () => {
     const quoting = finding({ body: "**Not reviewed.** Nothing in this round is a verdict on the diff." });
     expect(isVerdict(posted(summary(), null, [], 0))).toBe(true);
     expect(isVerdict(posted(summary(), null, [quoting], 0))).toBe(true);
+  });
+});
+
+describe("acceptedSince", () => {
+  const at = (event: string, name: string, time: string): LabelEvent => ({ event, label: { name }, created_at: time });
+  const summaryAt = Date.parse("2026-11-10T12:00:00Z");
+
+  it("holds when the label was added after the summary review", () => {
+    expect(acceptedSince([at("labeled", "review-accepted", "2026-11-10T12:05:00Z")], "review-accepted", summaryAt)).toBe(
+      true,
+    );
+  });
+
+  it("holds before any summary review", () => {
+    expect(acceptedSince([at("labeled", "review-accepted", "2026-11-10T12:05:00Z")], "review-accepted", 0)).toBe(true);
+  });
+
+  it("lapses when a summary review is newer than the label, or as new as it", () => {
+    expect(acceptedSince([at("labeled", "review-accepted", "2026-11-10T11:55:00Z")], "review-accepted", summaryAt)).toBe(
+      false,
+    );
+    expect(acceptedSince([at("labeled", "review-accepted", "2026-11-10T12:00:00Z")], "review-accepted", summaryAt)).toBe(
+      false,
+    );
+  });
+
+  it("reads the label's latest event only, and no other label's", () => {
+    const removed = [
+      at("labeled", "review-accepted", "2026-11-10T12:05:00Z"),
+      at("unlabeled", "review-accepted", "2026-11-10T12:06:00Z"),
+      at("labeled", "ready", "2026-11-10T12:07:00Z"),
+      { event: "commented", created_at: "2026-11-10T12:08:00Z" },
+    ];
+    expect(acceptedSince(removed, "review-accepted", summaryAt)).toBe(false);
+    const readded = [...removed, at("labeled", "review-accepted", "2026-11-10T12:09:00Z")];
+    expect(acceptedSince(readded, "review-accepted", summaryAt)).toBe(true);
+    expect(acceptedSince([], "review-accepted", 0)).toBe(false);
   });
 });
 
