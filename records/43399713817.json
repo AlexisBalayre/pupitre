@@ -1,0 +1,139 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-13T09:23:39.661Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43399713817",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43399713817",
+  "actor": "AlexisBalayre",
+  "commit_sha": "9af50101b6154818b1aa1c3c8c2ad25599f8cbd4",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 289,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "guards"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "guards"
+  ],
+  "reviewers_skipped": [
+    "conventions",
+    "context",
+    "maintainability",
+    "docs",
+    "spec",
+    "simplicity",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "1109-1118",
+      "description": "A branch that only deletes a real binary of a format outside BINARY_FORMATS (a .pdf, .gif, .woff2, .webp, .zip), or a PNG/JPEG over 1 MiB, now recounts its newline bytes as deleted source lines and names the file in `forged`. Before this PR it answered null. Nothing reaches the tree, so this is a false forged flag, and the bogus count can also trip the oversize flag.",
+      "status": "unresolved"
+    },
+    {
+      "file": "src/core/known-binary.utils.ts",
+      "line": "173-177",
+      "description": "A `.gitattributes` `working-tree-encoding` attribute rewrites a known-binary blob on checkout, so a blob that passes the ICO/TIFF/MKV/TTF magic and zip/phar/tar refusals is checked out as a real zip or phar, carrying uncounted compressed source past the diff-size gate.",
+      "status": "unresolved"
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "1087-1097, 1184-1200",
+      "description": "A gitlink (160000) side is read as a blob. If a branch swaps a binary file for a submodule at the same path, or a submodule for a binary file, `cat-file -s` or `git diff <blob> <commit>` throws, and the merge gate errors on every re-gate. Before this change the old code skipped that entry.",
+      "status": "unresolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "1087-1097",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The known-binary tar check reads the raw blob, but a branch .gitattributes `text eol=crlf` or `ident` on the path rewrites its first 512 bytes at checkout, so a PNG that passes the check lands as a PHP tar phar whose uncounted entry runs.",
+      "body": "**Concern.** `blobIsKnownBinary` judges the blob exactly as git stores it. `readBlobs` is a raw `cat-file --batch` with no `--filters`. `knownBinarySize` refuses a blob only when its *stored* first 512 bytes pass the tar checksum. Git still applies the tree's attribute conversions on every checkout, including the gate's own `read-tree -u` and the main checkout after the fast-forward. Two of those conversions are separate from the `working-tree-encoding` one that is still open from the prior round, and both can change the first 512 bytes after the check has run:\n\n- `text eol=crlf`: when `text` is set explicitly (not `auto`), `will_convert_lf_to_crlf` skips the `convert_is_binary` test, so every lone LF in a NUL-carrying PNG gets a CR.\n- `ident`: `ident_to_worktree` has no binary test at all, and it expands `$Id$` to `$Id: <40-hex> $`.\n\n```ts\nconst [blob = Buffer.alloc(0)] = readBlobs(repoPath, [{ oid: side.oid, size }]);\nreturn knownBinarySize(blob, formats);\n```\n```ts\nif (holdsZipRecord(blob) || holdsPharStub(blob) || opensWithTarHeader(blob)) return false;\n```\n\nNo code in `src/` reads the tracked `.gitattributes` for `text`, `eol` or `ident`. ADR 0154's Ceilings section does not list checkout conversions.\n\n**Trigger (`eol=crlf`).**\n1. Build the post-checkout image P: a valid tar whose name field opens `\\x89PNG\\r\\n\\x1a\\r\\n`, with the rest laid out so the 512-byte header checksum holds, then an `a.php` entry holding about 1 MiB of PHP with no lone LF.\n2. Commit the stored blob S as `assets/x.png`, mode 100644, under 1 MiB. S is P with the CR at offset 7 removed. S therefore opens with the exact PNG magic and holds NULs. It has no zip record, no phar stub and no `__halt_compiler`. Its stored checksum field is shifted by one byte, so `opensWithTarHeader(S)` is false. Result: S is a known binary. It is skipped and spends budget, and it is not flagged as forged.\n3. Commit `assets/.gitattributes` containing `x.png text eol=crlf` (1 counted line), plus one line `include 'phar://' . __DIR__ . '/assets/x.png/a.php';`.\n4. The gate counts about 2 source lines and flags nothing. Every checkout then writes P, and PHP's `phar_is_tar` accepts it on the checksum alone, whatever the extension.\n\n**Consequence.** Up to the caps (1 MiB per file, 4 MiB per diff) of executable source lands counted as 0 lines, unflagged, past the tar-header refusal this PR adds and documents.\n\n**Relation to the open `working-tree-encoding` finding.** Both have the same root cause: the gate judges the stored blob, not the file a checkout writes. Neither fix proposed there closes this one:\n- \"refuse a blob that is valid UTF-8\" misses it, because S opens with `\\x89`, so it is not valid UTF-8.\n- `check-attr working-tree-encoding` checks only that one attribute.\n\n**Fix direction.** Refuse the known-binary skip for a path that any checkout-conversion attribute applies to on the branch side (`text`, `eol`, `ident`, `working-tree-encoding`, `filter`). For example, use `git check-attr --source=<branch> text eol ident working-tree-encoding filter -- <path>`, or read the tree's `.gitattributes` blobs. Alternatively, judge the bytes a checkout would write instead of the raw blob. Either fix closes both findings together.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/9af50101b6154818b1aa1c3c8c2ad25599f8cbd4/src/core/git-diff.client.ts#L1087-L1097\nhttps://github.com/AlexisBalayre/pupitre/blob/9af50101b6154818b1aa1c3c8c2ad25599f8cbd4/src/core/known-binary.utils.ts#L168-L177",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-blobs.client.ts",
+      "line": "33-37",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "readBlobs sets the spawn's maxBuffer to exactly the expected stdout. In spawnSync that cap also covers stderr, so any stderr git writes (for example GIT_TRACE output, which scrubbedGitEnv keeps) kills cat-file with ENOBUFS and makes countChangedLines throw.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Round 6 importants-only budget. Conventions, docs, context, simplicity and maintainability were skipped. Spec was skipped because there is no closing issue or --spec source. Workflow-safety was skipped because the PR changes no workflow file (the merge from main touched claude-code-review.yml, but that file is not in the PR's diff). Correctness and security each ran two instances because the diff is about 1,800 lines. The head since the prior record (11dc7be) only merges main and changes none of the PR's files, so the three prior importants are still unresolved. Validation agreed that the readBlobs maxBuffer/stderr finding is minor (fails closed, operator-set GIT_TRACE only), which matches its earlier rating, so it is recorded as a nit at the corrected lines 33-37. Correctness instance A noted a further trigger for the open gitlink finding: a submodule bump marked binary through `.gitattributes`/`info/attributes` reaches diffHunks or blobLines with commit oids. The prior fix direction (treat a 160000 side as having no blob) already covers it, so it was not filed separately. Validators reported that `git diff --stat` needed approval; plain `git diff` was used instead."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 5.261303279999996,
+  "duration_ms": 477952,
+  "num_turns": 18,
+  "tokens": {
+    "input": 16,
+    "output": 13338,
+    "cache_read": 394020,
+    "cache_creation": 69185,
+    "total": 476559
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 140,
+      "output": 126824,
+      "cache_read": 2422286,
+      "cache_creation": 393758,
+      "cost_usd": 5.197842199999997
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 14,
+      "output": 2015,
+      "cache_read": 87688,
+      "cache_creation": 13638,
+      "cost_usd": 0.0630418
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 104,
+      "cache_read": 1933,
+      "cache_creation": 2782,
+      "cost_usd": 0.00041928
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "git -C /home/runner/work/pupitre/pupitre diff 23c4ff98717b097a391f14ca322ef768f1a0231f..HEAD --stat"
+    },
+    {
+      "tool": "Bash",
+      "input": "git -C /home/runner/work/pupitre/pupitre diff 23c4ff98717b097a391f14ca322ef768f1a0231f..HEAD --stat -- src/core/git-blobs.client.ts src/core/git-diff.client.ts src/core/merge-gate.service.ts"
+    }
+  ]
+}
