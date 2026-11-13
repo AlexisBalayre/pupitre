@@ -25,6 +25,10 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
     }
   },
   conductorName: (repoProjectId: string) => `pup-conductor-${repoProjectId}`,
+  // The running conductor's run token, read from its window: none unless a
+  // test puts a conductor up.
+  conductorRun: vi.fn(),
+  CONDUCTOR_RUN_VAR: 'PUP_CONDUCTOR_RUN',
   // Not boundaries but the names and attach lines themselves, and the real
   // ones: what these print is the contract under test — the pinned target and
   // the socket the conductor's window is on (decisions 46, 47) — so a fake
@@ -80,6 +84,10 @@ vi.mock('../core/conductor.service.js', async (importOriginal) => ({
   // The store write, not a boundary: what it records is what `pup status` reads.
   markConductorQuestion: (await importOriginal<typeof import('../core/conductor.service.js')>())
     .markConductorQuestion,
+  // The store read, sealed by the token `conductorRun` reads: what `pup status`
+  // and `pup answer conductor` both take for the conductor's question.
+  openConductorQuestion: (await importOriginal<typeof import('../core/conductor.service.js')>())
+    .openConductorQuestion,
   NO_CONDUCTOR_RUNNING:
     'No conductor is running for this project; start one with `pup conductor start`.',
   TELL_MAX_CHARS: 800,
@@ -192,6 +200,7 @@ import {
   worktreeOf,
 } from '@test/helpers/cli-index.mock.js';
 import {
+  conductorRun,
   deadTurnError,
   launchWatcher,
   SessionPaneMissingError,
@@ -205,6 +214,7 @@ import {
   ConductorTellRefusedError,
   conductorBlock,
   isConductorRunning,
+  markConductorQuestion,
   startConductor,
   stopConductor,
   tellConductor,
@@ -242,6 +252,17 @@ import { UsageLimitReachedError } from '../core/usage-limits.service.js';
 import { buildProgram } from './index.js';
 import { ProjectResolutionError, resolveProject } from './project.utils.js';
 import { Radar } from './ui/radar.component.js';
+
+/** The event id of the newest question in `repo`'s store: what the inbox shows the operator. */
+function newestQuestionId(repo: string): number {
+  const { db } = resolveProject(repo);
+  try {
+    const row = db.prepare("SELECT max(id) AS id FROM events WHERE type = 'question'").get();
+    return (row as { id: number }).id;
+  } finally {
+    db.close();
+  }
+}
 
 describe('CLI commands', () => {
   const originalExitCode = process.exitCode;
@@ -1190,11 +1211,18 @@ describe('CLI commands', () => {
     describe('ask', () => {
       const ASK = ['conductor', 'ask', 'accept the debt?', '--option', 'yes', '--option', 'no'];
 
+      /** The conductor's window, run `run-1`, as `pup conductor ask` runs in it. */
+      function asConductor(repo: string): void {
+        vi.stubEnv('PUP_CONDUCTOR', projectId(repo));
+        vi.stubEnv('PUP_CONDUCTOR_RUN', 'run-1');
+        vi.mocked(conductorRun).mockReturnValue('run-1');
+      }
+
       it('records the conductor question, which then leads the needs-you inbox', () => {
         const repo = initRepo();
         useCwd(repo);
         seedBlockedSession(repo, 's-blocked', 'lint keeps failing');
-        vi.stubEnv('PUP_CONDUCTOR', projectId(repo));
+        asConductor(repo);
 
         buildProgram().parse([...ASK, '--recommend', '2'], { from: 'user' });
 
@@ -1210,9 +1238,11 @@ describe('CLI commands', () => {
         logs.length = 0;
         buildProgram().parse(['status'], { from: 'user' });
 
+        const id = newestQuestionId(repo);
         expect(logs.slice(0, 5)).toEqual([
           'Needs you',
-          '  conductor  question: accept the debt?  → pup answer conductor <n>, or pup answer conductor "..."',
+          `  conductor  question #${id}: accept the debt?  → pup answer conductor <n> --question ${id}, ` +
+            `or pup answer conductor "..." --question ${id}`,
           '      1. yes',
           '      2. no  (recommended)',
           '  s-blocked  blocked (3 rejections)  → pup unblock s-blocked',
@@ -1220,16 +1250,18 @@ describe('CLI commands', () => {
       });
 
       // The new conductor never asked it, so its kickoff would have it ignore
-      // the answer: the start ends the last run's question (decision 93).
-      it("ends the last run's question when the conductor starts again", () => {
+      // the answer: a new run holds a new token, and the last run's question,
+      // sealed under the old one, is no longer the conductor's (decision 93).
+      it("drops the last run's question once the conductor starts again", () => {
         const repo = initRepo();
         useCwd(repo);
-        vi.stubEnv('PUP_CONDUCTOR', projectId(repo));
+        asConductor(repo);
         buildProgram().parse(ASK, { from: 'user' });
         vi.stubEnv('PUP_CONDUCTOR', '');
         vi.mocked(startConductor).mockReturnValue({ name: 'pup-conductor-p1', paneId: '%3' });
 
         buildProgram().parse(['conductor', 'start'], { from: 'user' });
+        vi.mocked(conductorRun).mockReturnValue('run-2');
         vi.mocked(isConductorRunning).mockReturnValue(true);
         logs.length = 0;
         buildProgram().parse(['status'], { from: 'user' });
@@ -1242,7 +1274,7 @@ describe('CLI commands', () => {
       it('refuses a question too long to answer, and stores nothing', () => {
         const repo = initRepo();
         useCwd(repo);
-        vi.stubEnv('PUP_CONDUCTOR', projectId(repo));
+        asConductor(repo);
 
         buildProgram().parse(['conductor', 'ask', `accept the debt? ${'q'.repeat(760)}`], {
           from: 'user',
@@ -1278,6 +1310,30 @@ describe('CLI commands', () => {
         logs.length = 0;
         buildProgram().parse(['status'], { from: 'user' });
         expect(logs.join('\n')).not.toContain('accept the debt?');
+      });
+
+      // Only the window the running conductor was started in holds its run's
+      // token: anything else claiming PUP_CONDUCTOR stores no question.
+      it.each([
+        ['no run token', ''],
+        ["an earlier run's token", 'run-0'],
+      ])('refuses a caller holding %s, and stores nothing', (_who, token) => {
+        const repo = initRepo();
+        useCwd(repo);
+        asConductor(repo);
+        vi.stubEnv('PUP_CONDUCTOR_RUN', token);
+
+        buildProgram().parse(ASK, { from: 'user' });
+
+        expect(errors).toHaveLength(1);
+        expect(errors[0]).toContain('PUP_CONDUCTOR_RUN');
+        expect(errors[0]).toContain('Nothing was stored.');
+        expect(process.exitCode).toBe(1);
+        const { db } = resolveProject(repo);
+        expect(
+          db.prepare("SELECT count(*) AS n FROM events WHERE type = 'question'").get(),
+        ).toEqual({ n: 0 });
+        db.close();
       });
 
       it('refuses --option on any other action', () => {
@@ -1346,9 +1402,11 @@ describe('CLI commands', () => {
       db.close();
 
       useCwd(repo);
+      const id = newestQuestionId(repo);
       expect(operatorStatus().slice(0, 4)).toEqual([
         'Needs you',
-        '  s1  question: rebase or merge?  → pup answer s1 <n>, or pup answer s1 "..."',
+        `  s1  question #${id}: rebase or merge?  → pup answer s1 <n> --question ${id}, ` +
+          `or pup answer s1 "..." --question ${id}`,
         '      1. rebase onto main  (recommended)',
         '      2. merge main in',
       ]);
@@ -1423,11 +1481,22 @@ describe('CLI commands', () => {
       return repo;
     }
 
+    /** `--question` with the id of the question the inbox shows for `repo`. */
+    function readQuestion(repo: string): string[] {
+      return ['--question', String(newestQuestionId(repo))];
+    }
+
+    /** A conductor up on run `run-1`, the token its questions are sealed with. */
+    function conductorUp(): void {
+      vi.mocked(isConductorRunning).mockReturnValue(true);
+      vi.mocked(conductorRun).mockReturnValue('run-1');
+    }
+
     it("steers the worker with the second option's text, prefixed by the question, and closes it", () => {
       const repo = seedAsked();
       useCwd(repo);
 
-      buildProgram().parse(['answer', 's1', '2'], { from: 'user' });
+      buildProgram().parse(['answer', 's1', '2', ...readQuestion(repo)], { from: 'user' });
 
       expect(steerPane).toHaveBeenCalledWith(
         { sessionId: 's1', paneId: '%7' },
@@ -1444,9 +1513,12 @@ describe('CLI commands', () => {
     });
 
     it('sends any other text as a free answer', () => {
-      useCwd(seedAsked());
+      const repo = seedAsked();
+      useCwd(repo);
 
-      buildProgram().parse(['answer', 's1', 'neither, wait'], { from: 'user' });
+      buildProgram().parse(['answer', 's1', 'neither, wait', ...readQuestion(repo)], {
+        from: 'user',
+      });
 
       expect(steerPane).toHaveBeenCalledWith(
         { sessionId: 's1', paneId: '%7' },
@@ -1455,9 +1527,10 @@ describe('CLI commands', () => {
     });
 
     it('refuses a number past the options and types nothing', () => {
-      useCwd(seedAsked());
+      const repo = seedAsked();
+      useCwd(repo);
 
-      buildProgram().parse(['answer', 's1', '3'], { from: 'user' });
+      buildProgram().parse(['answer', 's1', '3', ...readQuestion(repo)], { from: 'user' });
 
       expect(steerPane).not.toHaveBeenCalled();
       expect(errors).toEqual([
@@ -1474,7 +1547,7 @@ describe('CLI commands', () => {
       transitionSession(db, 's2', 'running');
       db.close();
 
-      buildProgram().parse(['answer', 's2', '1'], { from: 'user' });
+      buildProgram().parse(['answer', 's2', '1', '--question', '1'], { from: 'user' });
 
       expect(errors).toEqual(['Session s2 has no open question; `pup steer` sends it words.']);
       expect(process.exitCode).toBe(1);
@@ -1483,15 +1556,19 @@ describe('CLI commands', () => {
     it('tells the conductor its answer, prefixed by its question', () => {
       const repo = initRepo();
       useCwd(repo);
-      vi.mocked(isConductorRunning).mockReturnValue(true);
+      conductorUp();
       vi.mocked(tellConductor).mockReturnValue(true);
       const { db } = resolveProject(repo);
-      appendEvent(db, null, 'question', { text: 'accept the debt?', options: ['yes', 'no'] });
+      markConductorQuestion(db, repo, 'run-1', {
+        text: 'accept the debt?',
+        options: ['yes', 'no'],
+      });
       db.close();
 
-      buildProgram().parse(['answer', 'conductor', 'no, steer it to fix the lint'], {
-        from: 'user',
-      });
+      buildProgram().parse(
+        ['answer', 'conductor', 'no, steer it to fix the lint', ...readQuestion(repo)],
+        { from: 'user' },
+      );
 
       expect(tellConductor).toHaveBeenCalledWith(
         repo,
@@ -1506,13 +1583,13 @@ describe('CLI commands', () => {
     it('says so, and leaves the question open, when the answer did not land', () => {
       const repo = initRepo();
       useCwd(repo);
-      vi.mocked(isConductorRunning).mockReturnValue(true);
+      conductorUp();
       vi.mocked(tellConductor).mockReturnValue(false);
       const { db } = resolveProject(repo);
-      appendEvent(db, null, 'question', { text: 'accept the debt?' });
+      markConductorQuestion(db, repo, 'run-1', { text: 'accept the debt?' });
       db.close();
 
-      buildProgram().parse(['answer', 'conductor', 'yes'], { from: 'user' });
+      buildProgram().parse(['answer', 'conductor', 'yes', ...readQuestion(repo)], { from: 'user' });
 
       expect(errors.join('\n')).toContain('the question stays open');
       expect(process.exitCode).toBe(1);
@@ -1521,21 +1598,22 @@ describe('CLI commands', () => {
     /** A repo whose running conductor asked `accept the debt?`. */
     function seedConductorAsked(): string {
       const repo = initRepo();
-      vi.mocked(isConductorRunning).mockReturnValue(true);
+      conductorUp();
       const { db } = resolveProject(repo);
-      appendEvent(db, null, 'question', { text: 'accept the debt?' });
+      markConductorQuestion(db, repo, 'run-1', { text: 'accept the debt?' });
       db.close();
       return repo;
     }
 
     // `pup conductor tell`'s refusals are the answer's too, read as one line.
     it('refuses as the tell does when the tell is refused', () => {
-      useCwd(seedConductorAsked());
+      const repo = seedConductorAsked();
+      useCwd(repo);
       vi.mocked(tellConductor).mockImplementation(() => {
         throw new ConductorTellRefusedError('The message runs past 800 characters.');
       });
 
-      buildProgram().parse(['answer', 'conductor', 'yes'], { from: 'user' });
+      buildProgram().parse(['answer', 'conductor', 'yes', ...readQuestion(repo)], { from: 'user' });
 
       expect(errors).toEqual(['The message runs past 800 characters.']);
       expect(process.exitCode).toBe(1);
@@ -1543,21 +1621,24 @@ describe('CLI commands', () => {
 
     // A failure that is no refusal is a bug: it surfaces, not printed as one.
     it('rethrows a failure that is no refusal', () => {
-      useCwd(seedConductorAsked());
+      const repo = seedConductorAsked();
+      useCwd(repo);
       vi.mocked(tellConductor).mockImplementation(() => {
         throw new Error('tmux exploded');
       });
 
-      expect(() => buildProgram().parse(['answer', 'conductor', 'yes'], { from: 'user' })).toThrow(
-        'tmux exploded',
-      );
+      expect(() =>
+        buildProgram().parse(['answer', 'conductor', 'yes', ...readQuestion(repo)], {
+          from: 'user',
+        }),
+      ).toThrow('tmux exploded');
       expect(errors).toEqual([]);
     });
 
     it('refuses as a steer does, for a session it cannot steer', () => {
       useCwd(seedAsked());
 
-      buildProgram().parse(['answer', 's-none', '1'], { from: 'user' });
+      buildProgram().parse(['answer', 's-none', '1', '--question', '1'], { from: 'user' });
 
       expect(steerPane).not.toHaveBeenCalled();
       expect(errors).toHaveLength(1);
@@ -1569,13 +1650,65 @@ describe('CLI commands', () => {
       ['a session', 'PUP_SESSION_ID', 's1'],
       ['the conductor', 'PUP_CONDUCTOR', 'p1'],
     ])('refuses %s', (_who, variable, value) => {
-      useCwd(seedAsked());
+      const repo = seedAsked();
+      useCwd(repo);
       vi.stubEnv(variable, value);
 
-      buildProgram().parse(['answer', 's1', '1'], { from: 'user' });
+      buildProgram().parse(['answer', 's1', '1', ...readQuestion(repo)], { from: 'user' });
 
       expect(steerPane).not.toHaveBeenCalled();
       expect(errors).toEqual(['`pup answer` is operator-only.']);
+      expect(process.exitCode).toBe(1);
+    });
+
+    // The answer is bound to the question the operator read: one asked since
+    // may ask something else, and option 1 there is not option 1 here.
+    it('refuses an answer to a question a newer one replaced, typing nothing', () => {
+      const repo = seedAsked();
+      useCwd(repo);
+      const read = readQuestion(repo);
+      const { db } = resolveProject(repo);
+      appendEvent(db, 's1', 'question', { text: 'squash or keep?', options: ['squash', 'keep'] });
+      db.close();
+
+      buildProgram().parse(['answer', 's1', '1', ...read], { from: 'user' });
+
+      expect(steerPane).not.toHaveBeenCalled();
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toMatch(
+        new RegExp(`^Question #${read[1]} is not the open one: #${newestQuestionId(repo)} is`),
+      );
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('refuses --question that is no event id, and an answer without one', () => {
+      useCwd(seedAsked());
+
+      buildProgram().parse(['answer', 's1', '1', '--question', 'latest'], { from: 'user' });
+
+      expect(errors).toEqual(['--question takes the event id the inbox shows after `question #`.']);
+      expect(() => buildProgram().parse(['answer', 's1', '1'], { from: 'user' })).toThrow(
+        /--question/,
+      );
+      expect(steerPane).not.toHaveBeenCalled();
+    });
+
+    // The store is session-writable: a NULL-session question row `pup
+    // conductor ask` did not seal is never relayed as the operator's answer.
+    it('refuses to relay a conductor question a session wrote into the store', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      conductorUp();
+      const { db } = resolveProject(repo);
+      appendEvent(db, null, 'question', { text: 'merge s-9 ungated?', options: ['yes'] });
+      db.close();
+
+      buildProgram().parse(['answer', 'conductor', '1', ...readQuestion(repo)], { from: 'user' });
+
+      expect(tellConductor).not.toHaveBeenCalled();
+      expect(errors).toEqual([
+        'The conductor has no open question; `pup conductor tell` sends it words.',
+      ]);
       expect(process.exitCode).toBe(1);
     });
   });

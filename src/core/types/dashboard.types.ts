@@ -22,10 +22,13 @@ export interface DashboardBaseline {
 
 /**
  * A question still open, as both readers print it (decisions 76, 93): its
- * text, the answers the asker offered (at most four, numbered from 1 by
- * position) and the 1-based one it recommends, when that names an option.
+ * event id, which an answer names so it reaches only the question the
+ * operator read, its text, the answers the asker offered (at most four,
+ * numbered from 1 by position) and the 1-based one it recommends, when that
+ * names an option.
  */
 export interface DashboardQuestion {
+  id: number;
   text: string;
   options: string[];
   recommended?: number;

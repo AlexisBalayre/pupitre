@@ -65,9 +65,11 @@ export interface EventPayloads {
   /**
    * `options` are the answers the asker offers, at most four, and `recommended`
    * the 1-based one it would pick (decision 93). Both are absent on a
-   * question asked in words alone.
+   * question asked in words alone. `seal` is a conductor question's only:
+   * `pup conductor ask`'s proof that the run holding the token asked it,
+   * at this row and no other.
    */
-  question: { text: string; options?: string[]; recommended?: number };
+  question: { text: string; options?: string[]; recommended?: number; seal?: string };
   /**
    * `pup answer` delivered an answer to the open question (decision 93): the
    * question it answers, the text delivered, and the 1-based option the
@@ -75,8 +77,9 @@ export interface EventPayloads {
    */
   answer: { question: string; text: string; option?: number };
   /**
-   * A conductor window took its context (decision 93): the run a conductor
-   * question was asked in ends here, so the previous run's stays out of the inbox.
+   * A conductor run starts, recorded before its window opens (decision 93):
+   * the run a conductor question was asked in ends here, so the previous run's
+   * stays out of the inbox.
    */
   conductor_start: { name: string };
   handoff_ready: { hash: string };
@@ -135,7 +138,7 @@ export type SessionEvent =
     }
   | { type: 'steer'; kind?: string; by?: string }
   | { type: 'session_done'; summary?: string }
-  | { type: 'question'; text?: string; options?: string[]; recommended?: number }
+  | { type: 'question'; text?: string; options?: string[]; recommended?: number; seal?: string }
   | { type: 'turn_died'; reason?: string; stalledAt?: string; refusal?: string }
   | { type: 'handoff_ready'; hash?: string }
   | { type: 'other'; eventType: string; fields: Record<string, unknown> };

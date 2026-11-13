@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { Database } from 'better-sqlite3';
@@ -6,8 +6,10 @@ import { readPlainFile } from '../adapters/capability.utils.js';
 import { CONDUCTOR_ROUTE } from '../claude/model-ladder.constants.js';
 import type { InputBoxLook } from '../claude/pane.utils.js';
 import {
+  CONDUCTOR_RUN_VAR,
   conductorName,
   conductorPane,
+  conductorRun,
   hasConductorWindow,
   kickoff,
   killConductor,
@@ -36,8 +38,18 @@ import {
   snapshotUserConfigHash,
   writeCompiledProfile,
 } from './profile-compiler.service.js';
-import { appendEvent } from './session.repository.js';
-import { isRefusedSteer, rollBackRefusedLaunch } from './session-lifecycle.errors.js';
+import {
+  appendEvent,
+  appendSealedEvent,
+  openQuestion,
+  type QuestionEvent,
+  type StoredQuestion,
+} from './session.repository.js';
+import {
+  isRefusedSteer,
+  QuestionRefusedError,
+  rollBackRefusedLaunch,
+} from './session-lifecycle.errors.js';
 import type { ConductorHandle, StartConductorRequest } from './types/conductor.types.js';
 import type { ConductorBlocked } from './types/dashboard.types.js';
 import type { EventPayloads } from './types/session-event.types.js';
@@ -112,10 +124,59 @@ export const OPERATOR_QUESTIONS = [
  * Record a question the conductor puts to the operator (decision 93), held
  * against no session: it leads the needs-you inbox while the conductor runs,
  * until `pup answer conductor` or the conductor's next start closes it. Stored as asked and scrubbed by each
- * reader, as a session's question is (decision 29).
+ * reader, as a session's question is (decision 29). Sealed with `run`, the
+ * token the caller's window carries: refused unless it is the running
+ * conductor's, so a stale window or a caller holding no token stores nothing.
+ * Returns the question's event id.
  */
-export function markConductorQuestion(db: Database, question: EventPayloads['question']): void {
-  appendEvent(db, null, 'question', question);
+export function markConductorQuestion(
+  db: Database,
+  repoPath: string,
+  run: string | undefined,
+  question: EventPayloads['question'],
+): number {
+  const current = conductorRun(projectId(repoPath));
+  if (!run || current === undefined || !sameText(run, current)) {
+    throw new QuestionRefusedError(
+      `\`pup conductor ask\` takes the running conductor's ${CONDUCTOR_RUN_VAR}, and this caller ` +
+        'holds no such token. Nothing was stored.',
+    );
+  }
+  return appendSealedEvent(db, null, 'question', question, (id) =>
+    questionSeal(run, { ...question, id }),
+  );
+}
+
+/**
+ * The conductor's open question: the newest `pup conductor ask` sealed under
+ * the running conductor's token. A question row a session wrote into the
+ * store, one an earlier run asked, or a sealed row copied to another id is
+ * passed over, and none is open while no conductor runs.
+ */
+export function openConductorQuestion(db: Database, repoPath: string): QuestionEvent | undefined {
+  const run = conductorRun(projectId(repoPath));
+  if (run === undefined) return undefined;
+  return openQuestion(
+    db,
+    null,
+    (asked) => asked.seal !== undefined && sameText(asked.seal, questionSeal(run, asked)),
+  );
+}
+
+/** The HMAC a conductor question carries: its run's token over its row id and what it asks. */
+function questionSeal(
+  run: string,
+  asked: Pick<StoredQuestion, 'id' | 'text' | 'options' | 'recommended'>,
+): string {
+  const covered = [asked.id, asked.text, asked.options ?? [], asked.recommended ?? null];
+  return createHmac('sha256', run).update(JSON.stringify(covered)).digest('hex');
+}
+
+/** Equal, compared in constant time: a seal or a token is never matched byte by byte. */
+function sameText(a: string, b: string): boolean {
+  const left = Buffer.from(a);
+  const right = Buffer.from(b);
+  return left.length === right.length && timingSafeEqual(left, right);
 }
 
 /** How many live sessions a launch may reach when no conductor start set it (decision 96). */
@@ -316,6 +377,10 @@ export function startConductor(
   // stopped or crashed while unreachable would name this one blocked while it
   // boots, or skip its ten minutes' grace (decision 168).
   dropBlockedSince(req.repoPath);
+  // The new run's start ends the last run's question (decision 93). Recorded
+  // before the window opens: one recorded after the kickoff would close a
+  // question the new conductor had already asked.
+  appendEvent(req.db, null, 'conductor_start', { name });
   const pane = launchConductor({
     projectId: pid,
     repoPath: req.repoPath,
@@ -328,6 +393,9 @@ export function startConductor(
       effort: req.effort ?? CONDUCTOR_ROUTE.effort,
     },
     mcpConfigPath,
+    // Minted per start and kept in the window alone: what seals this run's
+    // questions, so neither a store row nor an earlier run's passes for one.
+    run: randomBytes(32).toString('hex'),
   });
   let delivered: boolean;
   try {

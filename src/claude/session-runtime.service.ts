@@ -74,7 +74,16 @@ export interface ConductorLaunchOptions {
    * or indexing the main checkout failed (decision 51).
    */
   mcpConfigPath?: string;
+  /**
+   * This run's token, exported to the window as `PUP_CONDUCTOR_RUN` and read
+   * back by `conductorRun`: what seals the run's questions, so a row a session
+   * wrote into the store, or one an earlier run asked, is never relayed.
+   */
+  run: string;
 }
+
+/** The variable a conductor window carries its run's token in. */
+export const CONDUCTOR_RUN_VAR = 'PUP_CONDUCTOR_RUN';
 
 /**
  * The pane a session was launched into. Every later command is addressed to
@@ -193,6 +202,8 @@ function onSocket(socket: string | undefined, args: string[]): string[] {
  * - `PUP_CONDUCTOR` and `PUP_SESSION_ID` say what a window IS; leaked into a
  *   server's global environment they make every later window read as their
  *   caller to every guard.
+ * - `PUP_CONDUCTOR_RUN` is the conductor run's token: a session that read it
+ *   back could seal a question of its own as the conductor's.
  * - `CLAUDE*` carries the agent's own credentials — `CLAUDE_CODE_MESSAGING_SOCKET`
  *   and `_TOKEN` are the peer channel, so a session that read them back could
  *   speak on it AS the conductor, past the tier entirely. `ANTHROPIC_*` is the
@@ -210,6 +221,7 @@ function onSocket(socket: string | undefined, args: string[]): string[] {
 const NOT_INHERITED = [
   /^TMUX$/,
   /^PUP_CONDUCTOR$/,
+  /^PUP_CONDUCTOR_RUN$/,
   /^PUP_SESSION_ID$/,
   /^CLAUDE/,
   /^ANTHROPIC_/,
@@ -957,9 +969,29 @@ export function launchConductor(opts: ConductorLaunchOptions): SessionPane {
     settingsPath: opts.settingsPath,
     route: opts.route,
     mcpConfigPath: opts.mcpConfigPath,
-    caller: { PUP_CONDUCTOR: opts.projectId },
+    caller: { PUP_CONDUCTOR: opts.projectId, [CONDUCTOR_RUN_VAR]: opts.run },
     socket: conductorSocket(opts.projectId),
   });
+}
+
+/**
+ * The running conductor's run token, as its window's `-e` set it on the
+ * conductor's own socket; undefined when no conductor runs there or its
+ * window carries none. Read from tmux, not from a file or the store a
+ * session can write: whatever reaches this server can type into the
+ * conductor already.
+ */
+export function conductorRun(repoProjectId: string): string | undefined {
+  const printed = tmuxProbe(conductorSocket(repoProjectId), [
+    'show-environment',
+    '-t',
+    pinned(conductorName(repoProjectId)),
+    CONDUCTOR_RUN_VAR,
+  ]);
+  const prefix = `${CONDUCTOR_RUN_VAR}=`;
+  const line = printed?.split('\n').find((entry) => entry.startsWith(prefix));
+  const run = line?.slice(prefix.length).trim();
+  return run || undefined;
 }
 
 /**

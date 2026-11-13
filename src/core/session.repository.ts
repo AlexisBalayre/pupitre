@@ -598,8 +598,36 @@ export function currentFixRound(db: Database, sessionId: string): EventRow | und
   return newest?.type === 'fix_round' ? newest : undefined;
 }
 
+/**
+ * Append an event whose `seal` covers the row id it is written at, in the one
+ * transaction the id is known in: a copy of the row at another id, or its
+ * payload under another, is no longer sealed.
+ */
+export function appendSealedEvent<TType extends StoredEventType>(
+  db: Database,
+  sessionId: string | null,
+  type: TType,
+  payload: EventPayloads[TType],
+  seal: (id: number) => string,
+): number {
+  return db.transaction(() => {
+    const { lastInsertRowid } = db
+      .prepare('INSERT INTO events (session_id, type, payload) VALUES (?, ?, ?)')
+      .run(sessionId, type, JSON.stringify(payload));
+    const id = Number(lastInsertRowid);
+    db.prepare('UPDATE events SET payload = ? WHERE id = ?').run(
+      JSON.stringify({ ...payload, seal: seal(id) }),
+      id,
+    );
+    return id;
+  })();
+}
+
+/** A stored `question` event, with the row id that names it to the operator. */
+export type StoredQuestion = Extract<SessionEvent, { type: 'question' }> & { id: number };
+
 /** A `question` event still open, as `openQuestion` reads it: its options always a list. */
-export type QuestionEvent = Extract<SessionEvent, { type: 'question' }> & { options: string[] };
+export type QuestionEvent = StoredQuestion & { options: string[] };
 
 /** The most options a question offers: one keystroke each, and the inbox stays a glance (decision 93). */
 export const MAX_QUESTION_OPTIONS = 4;
@@ -614,29 +642,35 @@ export const MAX_QUESTION_OPTIONS = 4;
  * operator sees it. A run ends at a fresh window (a CI fix round, a handoff
  * respawn, a conductor start), at `pup session done`, or when the session
  * comes back to `running` from another state (an unblock, a re-steer): the
- * agent there never asked it, so an answer would be a riddle. Its options are
- * cut to `MAX_QUESTION_OPTIONS`.
+ * agent there never asked it, so an answer would be a riddle. A question
+ * `accept` refuses is passed over as if never asked, so a row planted after
+ * the real one cannot hide it. Its options are cut to `MAX_QUESTION_OPTIONS`.
  */
-export function openQuestion(db: Database, sessionId: string | null): QuestionEvent | undefined {
+export function openQuestion(
+  db: Database,
+  sessionId: string | null,
+  accept: (asked: StoredQuestion) => boolean = () => true,
+): QuestionEvent | undefined {
   const rows = db
     .prepare(
-      `SELECT type, payload FROM events WHERE session_id IS ?
+      `SELECT id, type, payload FROM events WHERE session_id IS ?
          AND type IN ('question', 'steer', 'answer', 'fix_round', 'respawn', 'session_done',
                       'gate_result', 'conductor_start')
          ORDER BY id DESC`,
     )
-    .iterate(sessionId) as IterableIterator<Pick<EventRow, 'type' | 'payload'>>;
-  let event: SessionEvent | undefined;
+    .iterate(sessionId) as IterableIterator<Pick<EventRow, 'id' | 'type' | 'payload'>>;
   for (const row of rows) {
-    event = decodeEvent(row);
+    const event = decodeEvent(row);
     if (event.type === 'steer' && event.by !== 'operator') continue;
     if (event.type === 'gate_result' && event.to !== 'running') continue;
-    break;
+    if (event.type !== 'question') return undefined;
+    const asked = { ...event, id: row.id };
+    if (!accept(asked)) continue;
+    // The payload is session-writable: past the cap is never an option, so the
+    // inbox's numbers and `pup answer`'s cannot disagree.
+    return { ...asked, options: (event.options ?? []).slice(0, MAX_QUESTION_OPTIONS) };
   }
-  if (event?.type !== 'question') return undefined;
-  // The payload is session-writable: past the cap is never an option, so the
-  // inbox's numbers and `pup answer`'s cannot disagree.
-  return { ...event, options: (event.options ?? []).slice(0, MAX_QUESTION_OPTIONS) };
+  return undefined;
 }
 
 /**
@@ -687,6 +721,7 @@ export function decodeEvent(row: Pick<EventRow, 'type' | 'payload'>): SessionEve
         recommended: Number.isSafeInteger(fields.recommended)
           ? (fields.recommended as number)
           : undefined,
+        seal: text('seal'),
       };
     case 'turn_died':
       // Keys in the order the watchdog writes them: the dossier prints this

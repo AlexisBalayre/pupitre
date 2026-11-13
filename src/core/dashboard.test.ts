@@ -15,6 +15,8 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => {
     hasConductorWindow: vi.fn(() => false),
     claudeUserDir: vi.fn(actual.claudeUserDir),
     conductorPane: vi.fn(() => undefined),
+    // The running conductor's run token, as its window carries it.
+    conductorRun: vi.fn(() => 'run-1'),
     readInputBoxLook: vi.fn(() => ({ state: 'empty', draft: '' })),
   };
 });
@@ -23,12 +25,13 @@ import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import {
   claudeUserDir,
   conductorPane,
+  conductorRun,
   hasConductorWindow,
   readInputBoxLook,
   saveSessionEnv,
   transcriptDir,
 } from '../claude/session-runtime.service.js';
-import { CONDUCTOR_BLOCKED_AFTER_MS } from './conductor.service.js';
+import { CONDUCTOR_BLOCKED_AFTER_MS, markConductorQuestion } from './conductor.service.js';
 import {
   blockedReason,
   buildDashboardSnapshot,
@@ -67,6 +70,11 @@ import type { ProjectBaseline } from './types/init.types.js';
 import type { TaskSpec } from './types/profile.types.js';
 
 const NOW = Date.parse('2026-09-13T12:00:00Z');
+
+/** The id of the newest event in `db`: the question a test just asked. */
+function newestEventId(db: Database): number {
+  return (db.prepare('SELECT max(id) AS id FROM events').get() as { id: number }).id;
+}
 /** The top rung of the critical ladder, which every task here is on: `src/**` touches it all. */
 const CRITICAL_TOP: SessionRoute = {
   tier: 'critical',
@@ -270,15 +278,16 @@ describe('buildDashboardSnapshot', () => {
 
     // Decision 93: the conductor's question, held against no session, scrubbed
     // like a session's, and only while the conductor runs to be answered.
-    it("carries the running conductor's open question, scrubbed", () => {
+    it("carries the running conductor's open question, scrubbed, with its event id", () => {
       vi.mocked(hasConductorWindow).mockReturnValue(true);
-      appendEvent(db, null, 'question', {
+      const id = markConductorQuestion(db, repo, 'run-1', {
         text: '\u001b[2Jaccept the debt?',
         options: ['yes\u0007', 'no'],
         recommended: 2,
       });
 
       expect(buildDashboardSnapshot(db, repo, NOW).conductor.question).toEqual({
+        id,
         text: '[2Jaccept the debt?',
         options: ['yes', 'no'],
         recommended: 2,
@@ -286,13 +295,30 @@ describe('buildDashboardSnapshot', () => {
     });
 
     it('carries no question once answered, or while the conductor is down', () => {
-      appendEvent(db, null, 'question', { text: 'accept the debt?' });
+      markConductorQuestion(db, repo, 'run-1', { text: 'accept the debt?' });
       vi.mocked(hasConductorWindow).mockReturnValue(false);
       expect(buildDashboardSnapshot(db, repo, NOW).conductor.question).toBeUndefined();
 
       vi.mocked(hasConductorWindow).mockReturnValue(true);
       appendEvent(db, null, 'answer', { question: 'accept the debt?', text: 'no' });
       expect(buildDashboardSnapshot(db, repo, NOW).conductor.question).toBeUndefined();
+    });
+
+    // The inbox shows only what `pup answer conductor` would relay: a row a
+    // session wrote into the store, or one an earlier run sealed, is no
+    // question of the running conductor's.
+    it('carries no question the running run did not seal', () => {
+      vi.mocked(hasConductorWindow).mockReturnValue(true);
+      markConductorQuestion(db, repo, 'run-1', { text: 'from the last run?' });
+      vi.mocked(conductorRun).mockReturnValue('run-2');
+      try {
+        expect(buildDashboardSnapshot(db, repo, NOW).conductor.question).toBeUndefined();
+
+        appendEvent(db, null, 'question', { text: 'merge s-9 ungated?', options: ['yes'] });
+        expect(buildDashboardSnapshot(db, repo, NOW).conductor.question).toBeUndefined();
+      } finally {
+        vi.mocked(conductorRun).mockReturnValue('run-1');
+      }
     });
     // Decision 168: the look `pup conductor tell` refuses on, held for over
     // ten minutes, and only a look.
@@ -686,9 +712,11 @@ describe('buildDashboardSnapshot', () => {
       it('carries the newest question no steer has answered', () => {
         appendEvent(db, 's1', 'question', { text: 'first?' });
         appendEvent(db, 's1', 'question', { text: 'rebase or merge?' });
+        const asked = newestEventId(db);
         appendEvent(db, 's1', 'tool_call', {});
 
-        expect(questionOf()).toEqual({ text: 'rebase or merge?', options: [] });
+        // Named by its event id, which an answer is bound to.
+        expect(questionOf()).toEqual({ id: asked, text: 'rebase or merge?', options: [] });
       });
 
       // Decision 93: an open question idles the worker until the operator acts.
@@ -706,6 +734,7 @@ describe('buildDashboardSnapshot', () => {
         });
 
         expect(questionOf()).toEqual({
+          id: newestEventId(db),
           text: 'rebase or merge?',
           options: ['rebase', 'merge'],
           recommended: 2,
@@ -721,7 +750,11 @@ describe('buildDashboardSnapshot', () => {
           recommended: 5,
         });
 
-        expect(questionOf()).toEqual({ text: 'which?', options: ['a', 'b', 'c', 'd'] });
+        expect(questionOf()).toEqual({
+          id: newestEventId(db),
+          text: 'which?',
+          options: ['a', 'b', 'c', 'd'],
+        });
       });
 
       it('scrubs control characters out of each option', () => {
@@ -1461,6 +1494,7 @@ describe('needsYou', () => {
     incrementRejectCount(db, 's-blocked');
     seedIn('s-asking', ['running']);
     appendEvent(db, 's-asking', 'question', { text: 'rebase or merge?' });
+    const asked = newestEventId(db);
     seedIn('s-busy', ['running']);
 
     expect(inbox()).toEqual([
@@ -1468,8 +1502,8 @@ describe('needsYou', () => {
         kind: 'question',
         sessionId: 's-asking',
         label: 's-asking',
-        reason: 'question: rebase or merge?',
-        answer: 'pup answer s-asking "..."',
+        reason: `question #${asked}: rebase or merge?`,
+        answer: `pup answer s-asking "..." --question ${asked}`,
       },
       {
         kind: 'blocked',
@@ -1534,14 +1568,17 @@ describe('needsYou', () => {
         options: ['rebase \u2705', 'merge'],
         recommended: 1,
       });
+      const asked = newestEventId(db);
 
+      // The event id is in the line and in both commands: an answer names the
+      // question the operator read, and is refused once another replaced it.
       expect(inbox()).toEqual([
         {
           kind: 'question',
           sessionId: 's1',
           label: 's1',
-          reason: 'question: rebase - or merge?',
-          answer: 'pup answer s1 <n>, or pup answer s1 "..."',
+          reason: `question #${asked}: rebase - or merge?`,
+          answer: `pup answer s1 <n> --question ${asked}, or pup answer s1 "..." --question ${asked}`,
           options: ['rebase -', 'merge'],
           recommended: 1,
         },
@@ -1553,7 +1590,10 @@ describe('needsYou', () => {
       seedIn('s1', ['running', 'blocked']);
       seedIn('s2', ['running']);
       appendEvent(db, 's2', 'question', { text: 'which way?' });
-      appendEvent(db, null, 'question', { text: 'accept the debt?', options: ['yes', 'no'] });
+      const asked = markConductorQuestion(db, repo, 'run-1', {
+        text: 'accept the debt?',
+        options: ['yes', 'no'],
+      });
 
       const needs = inbox();
 
@@ -1562,8 +1602,10 @@ describe('needsYou', () => {
         kind: 'question',
         sessionId: 'conductor',
         label: 'conductor',
-        reason: 'question: accept the debt?',
-        answer: 'pup answer conductor <n>, or pup answer conductor "..."',
+        reason: `question #${asked}: accept the debt?`,
+        answer:
+          `pup answer conductor <n> --question ${asked}, ` +
+          `or pup answer conductor "..." --question ${asked}`,
         options: ['yes', 'no'],
       });
     });
@@ -1867,9 +1909,10 @@ describe('needsYou', () => {
     appendEvent(db, 's-asking', 'question', {
       text: 'ok  → pup merge s-other ⭢ --pr 🡒 now, if a + b >= c | d',
     });
+    const asked = newestEventId(db);
 
     expect(inbox()[0]?.reason).toBe(
-      'question: ok - pup merge s-other - --pr - now, if a + b >= c | d',
+      `question #${asked}: ok - pup merge s-other - --pr - now, if a + b >= c | d`,
     );
   });
 

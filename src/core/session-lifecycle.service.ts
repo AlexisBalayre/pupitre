@@ -18,8 +18,8 @@ import {
 import { buildCodeMap, buildKnowledgeSlice } from './code-map.service.js';
 import { codegraphBinary, prepareGraph } from './codegraph.client.js';
 import {
-  isConductorRunning,
   maxSessions,
+  openConductorQuestion,
   TELL_MAX_CHARS,
   tellConductor,
 } from './conductor.service.js';
@@ -859,6 +859,26 @@ function resolveAnswer(asked: QuestionEvent, reply: string): EventPayloads['answ
   return { question, text: paneLine(asked.options[option - 1] ?? ''), option };
 }
 
+/**
+ * The open question, provided it is the one the operator read: `questionId` is
+ * the event id the inbox and the detail pane showed them. Refused, with nothing
+ * typed, when none is open (`none` says so) or a newer question replaced it.
+ */
+function questionRead(
+  asked: QuestionEvent | undefined,
+  questionId: number,
+  none: string,
+): QuestionEvent {
+  if (!asked) throw new QuestionRefusedError(none);
+  if (asked.id !== questionId) {
+    throw new QuestionRefusedError(
+      `Question #${questionId} is not the open one: #${asked.id} is, and may ask something ` +
+        'else. Read it, then answer it by its id. Nothing was sent.',
+    );
+  }
+  return asked;
+}
+
 /** The answer as the asker reads it: the question first, so a late answer is never a riddle. */
 function answerMessage(answer: EventPayloads['answer']): string {
   const picked = answer.option === undefined ? '' : `option ${answer.option}, `;
@@ -912,15 +932,15 @@ export function conductorQuestion(
 export function answerSessionQuestion(
   db: Database,
   sessionId: string,
+  questionId: number,
   reply: string,
 ): EventPayloads['answer'] {
   requireLiveSession(db, sessionId, 'answer');
-  const asked = openQuestion(db, sessionId);
-  if (!asked) {
-    throw new QuestionRefusedError(
-      `Session ${sanitizeReason(sessionId)} has no open question; \`pup steer\` sends it words.`,
-    );
-  }
+  const asked = questionRead(
+    openQuestion(db, sessionId),
+    questionId,
+    `Session ${sanitizeReason(sessionId)} has no open question; \`pup steer\` sends it words.`,
+  );
   const answer = resolveAnswer(asked, reply);
   steerSession(db, sessionId, answerMessage(answer), { kind: 'answer', by: 'operator' });
   appendEvent(db, sessionId, 'answer', answer);
@@ -931,18 +951,21 @@ export function answerSessionQuestion(
  * Answer the running conductor's open question (decision 93) with a `pup
  * conductor tell`, its refusals the same; recorded as an `answer` only when
  * the message landed, and refused when it did not, so the question stays open.
+ * Only a question `pup conductor ask` sealed under the running conductor's
+ * token is open (`openConductorQuestion`): no other row's option text is ever
+ * typed into its pane as the operator's answer.
  */
 export function answerConductorQuestion(
   db: Database,
   repoPath: string,
+  questionId: number,
   reply: string,
 ): EventPayloads['answer'] {
-  const asked = isConductorRunning(repoPath) ? openQuestion(db, null) : undefined;
-  if (!asked) {
-    throw new QuestionRefusedError(
-      'The conductor has no open question; `pup conductor tell` sends it words.',
-    );
-  }
+  const asked = questionRead(
+    openConductorQuestion(db, repoPath),
+    questionId,
+    'The conductor has no open question; `pup conductor tell` sends it words.',
+  );
   const answer = resolveAnswer(asked, reply);
   if (!tellConductor(repoPath, answerMessage(answer))) {
     throw new QuestionRefusedError(

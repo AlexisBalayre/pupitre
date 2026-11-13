@@ -67,6 +67,7 @@ import {
   claudeUserDir,
   conductorName,
   conductorPane,
+  conductorRun,
   deadTurnError,
   hasConductorWindow,
   hasSessionWindow,
@@ -727,6 +728,7 @@ describe('launchSession', () => {
   it('opens the session on the default server when run from inside the conductor', () => {
     vi.stubEnv('TMUX', '/private/tmp/tmux-501/pup-conductor-proj-1,84321,0');
     vi.stubEnv('PUP_CONDUCTOR', 'proj-1');
+    vi.stubEnv('PUP_CONDUCTOR_RUN', 'run-1');
     vi.stubEnv('PUP_SESSION_ID', 'someone-else');
 
     const pane = launchSession(opts);
@@ -739,6 +741,9 @@ describe('launchSession', () => {
       const env = (options as { env?: NodeJS.ProcessEnv }).env;
       expect(env?.TMUX).toBeUndefined();
       expect(env?.PUP_CONDUCTOR).toBeUndefined();
+      // The run's token seals the conductor's questions: in a server's global
+      // environment, every session after would hold it.
+      expect(env?.PUP_CONDUCTOR_RUN).toBeUndefined();
       expect(env?.PUP_SESSION_ID).toBeUndefined();
       // The rest of the environment is the caller's, untouched.
       expect(env?.PATH).toBe(process.env.PATH);
@@ -1293,6 +1298,8 @@ case "$1" in
     [ -f "$buffer" ] || { echo "no buffer $buf" >&2; exit 1; }
     cp "$buffer" "$box"; rm -f "$buffer"; cat "$box" >> "$typed"; echo >> "$typed" ;;
   delete-buffer) rm -f "$buffer" ;;
+  show-environment)
+    grep "^$4=" "$server/env" 2>/dev/null || { echo "unknown variable: $4" >&2; exit 1; } ;;
   list-panes)
     if [ -n "$all" ] || [ ! -f "$server/window" ]; then sed 's/^/%/' "$server/panes"
     else sed 's/^/%/' "$server/window"; fi ;;
@@ -1964,6 +1971,26 @@ describe('steerPane with a fake tmux on PATH', () => {
       expect(conductorPane('proj-1')).toBeUndefined();
     });
   });
+
+  // The token that seals the conductor's questions is read from its window, on
+  // its own socket, never from a file or the store a session can write.
+  describe('conductorRun', () => {
+    const SOCKET = 'pup-conductor-proj-1';
+
+    it("reads the run token the conductor's window carries, on its own socket", () => {
+      serverWithPane(SOCKET, 5);
+      writeFileSync(join(state, SOCKET, 'env'), 'PUP_CONDUCTOR_RUN=abc123\n');
+
+      expect(conductorRun('proj-1')).toBe('abc123');
+      expect(argvLog()).toContain(`-L ${SOCKET} show-environment -t =${SOCKET}: PUP_CONDUCTOR_RUN`);
+    });
+
+    it('answers undefined when no conductor is up, or its window carries no token', () => {
+      expect(conductorRun('proj-1')).toBeUndefined();
+      serverWithPane(SOCKET, 5);
+      expect(conductorRun('proj-1')).toBeUndefined();
+    });
+  });
 });
 
 describe('launchConductor', () => {
@@ -1973,6 +2000,7 @@ describe('launchConductor', () => {
     env: { vars: {}, configDir: join(homedir(), '.claude') },
     settingsPath: '/tmp/conductor/settings.json',
     route: CONDUCTOR_ROUTE,
+    run: 'run-1',
   };
   const SOCKET = 'pup-conductor-proj-1';
 
@@ -2012,6 +2040,8 @@ describe('launchConductor', () => {
     // Marked as the conductor, never as a session: the guards tell the two
     // apart by which variable is set (decision 47).
     expect(spawn).toContain('PUP_CONDUCTOR=proj-1');
+    // The run's token, on this window alone: what seals its questions.
+    expect(spawn).toContain('PUP_CONDUCTOR_RUN=run-1');
     expect(spawn.some((arg) => String(arg).startsWith('PUP_SESSION_ID='))).toBe(false);
     // Not niced like a session's: the gate it runs inherits its priority, and
     // must keep the CPU over every worker's suite (decision 94).

@@ -83,6 +83,7 @@ vi.mock('../core/conductor.service.js', () => ({
     'No conductor is running for this project; start one with `pup conductor start`.',
   conductorBlock: vi.fn(),
   isConductorRunning: vi.fn(() => false),
+  openConductorQuestion: vi.fn(),
   startConductor: vi.fn(),
   stopConductor: vi.fn(),
   tellConductor: vi.fn(() => true),
@@ -413,7 +414,8 @@ describe('CLI commands', () => {
 
       // The session row, below the inbox line that leads with the same question.
       const line = logs.find((entry) => entry.includes('pup/s1')) ?? '';
-      expect(line).toMatch(/pup\/s1 {2}question: rebase \[2J or merge\?$/);
+      // Named by its event id, which `pup answer --question` takes.
+      expect(line).toMatch(/pup\/s1 {2}question #\d+: rebase \[2J or merge\?$/);
       expect(logs.join('\n')).not.toContain('\u001b');
 
       const again = resolveProject(repo).db;
@@ -477,6 +479,7 @@ describe('CLI commands', () => {
       }
       transitionSession(db, 's-asking', 'running');
       appendEvent(db, 's-asking', 'question', { text: 'rebase or merge?' });
+      const asked = (db.prepare('SELECT max(id) AS id FROM events').get() as { id: number }).id;
       db.close();
       seedLedgerEntry(repo, { reviewBy: '2020-01-01' });
       vi.mocked(isConductorRunning).mockReturnValue(true);
@@ -485,7 +488,7 @@ describe('CLI commands', () => {
 
       expect(logs.slice(0, 5)).toEqual([
         'Needs you',
-        '  s-asking  question: rebase or merge?  → pup answer s-asking "..."',
+        `  s-asking  question #${asked}: rebase or merge?  → pup answer s-asking "..." --question ${asked}`,
         '  s-blocked  blocked (3 rejections)  → pup unblock s-blocked',
         expect.stringMatching(
           /^ {2}s-stalled {2}STALLED \(\d+m\) {2}→ pup steer s-stalled "\.\.\."$/,

@@ -14,6 +14,7 @@ import { failureSummary, formatDuration, sanitizeReason } from '../adapters/capa
 import {
   attachCommand,
   attachWindow,
+  CONDUCTOR_RUN_VAR,
   ConfigDirRefusedError,
   conductorName,
   hasSessionWindow,
@@ -95,7 +96,6 @@ import {
   UndeclaredSandboxError,
 } from '../core/sandbox.utils.js';
 import {
-  appendEvent,
   dropTask,
   editTaskSpec,
   findSessionByWorktree,
@@ -1251,7 +1251,9 @@ export function buildProgram(): Command {
         }
         return questionOrRefuse(() => {
           const asked = conductorQuestion(message, opts);
-          markConductorQuestion(db, asked);
+          // The run's token is the window's, never the caller's to name: one
+          // without it, or a stale run's, is refused with nothing stored.
+          markConductorQuestion(db, repoPath, process.env[CONDUCTOR_RUN_VAR], asked);
           return askedLines('The conductor', asked);
         });
       }
@@ -1303,8 +1305,6 @@ export function buildProgram(): Command {
         // the conductor's whole footprint, so killing it is the whole rollback.
         return reportRolledBack(error, 'Re-run `pup conductor`.');
       }
-      // The new run's start ends the last run's question (decision 93).
-      appendEvent(db, null, 'conductor_start', { name: handle.name });
       // Scrubbed like every other named field a print interpolates, rather
       // than allowlisted as another derivation of the repo path: `handle.name`
       // is a local, and chasing its provenance per line is the carve-out
@@ -1776,7 +1776,10 @@ export function buildProgram(): Command {
       return;
     }
     for (const session of sessions) {
-      const question = session.question === undefined ? '' : `question: ${session.question.text}`;
+      const question =
+        session.question === undefined
+          ? ''
+          : `question #${session.question.id}: ${session.question.text}`;
       console.log(`${sessionLine(session)}${trailing(question)}`);
     }
     // Planned tasks share the session table's columns under `planned`, the
@@ -1962,18 +1965,26 @@ export function buildProgram(): Command {
     .description(
       "Answer a session's open question, or the conductor's (target `conductor`): an option's number, or words (operator only)",
     )
-    .action((target: string, reply: string) => {
+    .requiredOption(
+      '--question <id>',
+      'the event id of the question you read, as the inbox shows it; refused if a newer one replaced it',
+    )
+    .action((target: string, reply: string, opts: { question: string }) => {
       const { repoPath, db } = project();
       // The asker waits on the operator's decision: a session or the conductor
       // answering it would decide in the operator's name (decision 93).
       if (callingSession(db) || callingConductor()) return refuse('`pup answer` is operator-only.');
+      if (!/^\d+$/.test(opts.question)) {
+        return refuse('--question takes the event id the inbox shows after `question #`.');
+      }
+      const questionId = Number(opts.question);
       if (target === CONDUCTOR_TARGET) {
         return questionOrRefuse(() => [
-          `Answered the conductor: ${sanitizeReason(answerConductorQuestion(db, repoPath, reply).text)}`,
+          `Answered the conductor: ${sanitizeReason(answerConductorQuestion(db, repoPath, questionId, reply).text)}`,
         ]);
       }
       questionOrRefuse(() => [
-        `Answered session ${sanitizeReason(target)}: ${sanitizeReason(answerSessionQuestion(db, target, reply).text)}`,
+        `Answered session ${sanitizeReason(target)}: ${sanitizeReason(answerSessionQuestion(db, target, questionId, reply).text)}`,
       ]);
     });
 
