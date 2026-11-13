@@ -2851,7 +2851,7 @@ describe('CLI commands', () => {
     });
   });
 
-  describe('review of a task launched from a ticket (decision 186)', () => {
+  describe('review of a task launched from a ticket (decision 187)', () => {
     it("prints the ticket's slice criteria, scrubbed, before the diff", () => {
       const repo = initRepo();
       useCwd(repo);

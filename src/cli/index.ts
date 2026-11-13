@@ -2330,7 +2330,7 @@ export function buildProgram(): Command {
         console.log(`scope-out: ${sanitizeReason(detail.spec.scopeOut.join(', '))}`);
       console.log(`acceptance: ${sanitizeReason(detail.spec.acceptance.join('; '))}`);
       // Above the diff, so the reviewer reads what the slice owes before what
-      // it changed (decision 186).
+      // it changed (decision 187).
       if (detail.spec.ticket) {
         console.log(`ticket ${sanitizeReason(detail.spec.ticket.ref)} slice criteria:`);
         for (const criterion of detail.spec.ticket.criteria)

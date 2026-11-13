@@ -429,7 +429,7 @@ function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === 'string');
 }
 
-/** A stored ticket's shape (decision 186), so a bad one is a refusal, not a TypeError. */
+/** A stored ticket's shape (decision 187), so a bad one is a refusal, not a TypeError. */
 function isTaskTicket(value: unknown): value is TaskTicket {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
   const ticket = value as Partial<Record<keyof TaskTicket, unknown>>;

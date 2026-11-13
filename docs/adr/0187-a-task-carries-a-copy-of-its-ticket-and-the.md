@@ -1,9 +1,9 @@
-# 0186. A task carries a copy of its ticket, and the kickoff and the review show its design (2026-11-13)
+# 0187. A task carries a copy of its ticket, and the kickoff and the review show its design (2026-11-13)
 
 - Status: accepted
 - Amends: [0176](0176-a-ticket-has-a-type-and-only-some-types-need.md)
 
-186. **A task carries a copy of its ticket, and the kickoff and the review show its design (2026-11-13).**
+187. **A task carries a copy of its ticket, and the kickoff and the review show its design (2026-11-13).**
     *The copy.* A task launched from a ticket of decision 176 holds `ticket` on its spec: the
     tracker's reference, the type, the labels, the design triggers that fired, the design note and
     this slice's acceptance criteria. It is a copy taken when the task is written, not a read of
@@ -19,9 +19,16 @@
     A type the check does not know needs the label, as a feature does. The checks run at
     `pup plan add`, `pup plan edit`, the launch and every read of the spec, so the gate and
     `pup review` refuse such a task too.
+    *Bounds.* The same checks refuse a reference that is not a tracker's (`#412`, `412` or
+    `owner/repo#412`), since it heads the kickoff's section, and a ticket over a cap: a type over
+    30 characters, a design note over 8,000, over 30 labels or 10 triggers of 50 characters each,
+    or over 20 criteria of 500 characters each. Over a cap is refused, never cut: a design cut
+    short would tell the session less than the operator approved. Every ticket string in a refusal
+    is scrubbed to one line.
     *The kickoff.* A task with a ticket gains a `## Ticket` section below the session protocol:
-    the design note and the slice's criteria, each line quoted, framed as the brief is (decision
-    57). Issue text is written by whoever files the issue, so it reaches the prompt as quoted data
+    the design note and the slice's criteria, framed as the brief is (decision 57). Each line is
+    quoted, a line being anything between CR, LF, VT, FF, NEL or a Unicode line or paragraph
+    separator, and control characters are dropped. Issue text is written by whoever files the issue, so it reaches the prompt as quoted data
     (decision 176) that changes no task, scope or rule. A task with no ticket compiles exactly as
     before, to the same hash.
     *The review.* `pup review <session>` prints the ticket's slice criteria, one per line, above

@@ -39,7 +39,7 @@ export type TicketType = 'feature' | 'bug' | 'chore' | 'refactor' | 'docs' | 'sp
 
 /**
  * The ticket a task runs one slice of, as intake copied it off the tracker when
- * it wrote the task (decision 186). A copy, not a live read: the spec is frozen
+ * it wrote the task (decision 187). A copy, not a live read: the spec is frozen
  * once a session claims it, and the ticket with it.
  */
 export interface TaskTicket {

@@ -88,7 +88,7 @@ describe('scopeInFiles (decision 128)', () => {
   });
 });
 
-describe('assertPlannableSpec with a ticket (decision 186)', () => {
+describe('assertPlannableSpec with a ticket (decision 187)', () => {
   const spec = (ticket: Partial<TaskTicket>): TaskSpec => ({
     id: 't-1' as TaskId,
     goal: 'g',
@@ -143,8 +143,93 @@ describe('assertPlannableSpec with a ticket (decision 186)', () => {
     );
   });
 
+  // The refusal is printed by every caller; a string in it is scrubbed to one line.
+  it('scrubs the type and the triggers into the refusal', () => {
+    expect(() =>
+      assertPlannableSpec(spec({ type: 'ep\u001b[2Jic' as TicketType, triggers: [] })),
+    ).toThrow('its type, ep [2Jic, has a design by default');
+    expect(() => assertPlannableSpec(spec({ type: 'bug', triggers: ['adr\narea'] }))).toThrow(
+      'design triggers fired on it (adr area)',
+    );
+  });
+
   it('checks no ticket on a task that has none', () => {
     const { ticket: _, ...plain } = spec({});
     expect(() => assertPlannableSpec(plain)).not.toThrow();
+  });
+
+  const approved = (ticket: Partial<TaskTicket>) =>
+    spec({ labels: ['design-approved'], ...ticket });
+
+  it.each(['#412', '412', 'octo-org/my.repo_2#412'])('takes the tracker reference %j', (ref) => {
+    expect(() => assertPlannableSpec(approved({ ref }))).not.toThrow();
+  });
+
+  // The reference heads the kickoff's ticket section: nothing but a tracker's
+  // reference may reach it.
+  it.each([
+    '',
+    '#',
+    '#412 ',
+    '#1\n## Goal',
+    '#1 ## Goal',
+    'owner/repo#',
+    'owner#412',
+    '#12345678901',
+    '\u2028#412',
+  ])('refuses the reference %j', (ref) => {
+    expect(() => assertPlannableSpec(approved({ ref }))).toThrow(
+      'is not a tracker reference such as #412 or owner/repo#412.',
+    );
+  });
+
+  it('takes a ticket at every cap', () => {
+    expect(() =>
+      assertPlannableSpec(
+        approved({
+          type: 'f'.repeat(30) as TicketType,
+          design: 'd'.repeat(8_000),
+          labels: ['design-approved', ...Array.from({ length: 29 }, () => 'l'.repeat(50))],
+          triggers: Array.from({ length: 10 }, () => 't'.repeat(50)),
+          criteria: Array.from({ length: 20 }, () => 'c'.repeat(500)),
+        }),
+      ),
+    ).not.toThrow();
+  });
+
+  it.each<[string, Partial<TaskTicket>, string]>([
+    ['type', { type: 'f'.repeat(31) as TicketType }, 'its type is over 30 characters'],
+    ['design note', { design: 'd'.repeat(8_001) }, 'its design note is over 8000 characters'],
+    [
+      'label count',
+      { labels: ['design-approved', ...Array.from({ length: 30 }, () => 'l')] },
+      'it has over 30 labels',
+    ],
+    [
+      'label length',
+      { labels: ['design-approved', 'l'.repeat(51)] },
+      'one of its labels is over 50 characters',
+    ],
+    ['trigger count', { triggers: Array.from({ length: 11 }, () => 't') }, 'over 10 triggers'],
+    ['trigger length', { triggers: ['t'.repeat(51)] }, 'one of its triggers is over 50 characters'],
+    ['criteria count', { criteria: Array.from({ length: 21 }, () => 'c') }, 'over 20 criteria'],
+    [
+      'criterion length',
+      { criteria: ['c'.repeat(501)] },
+      'one of its criteria is over 500 characters',
+    ],
+  ])('refuses a ticket over its %s cap, naming it', (_, over, reason) => {
+    const check = () => assertPlannableSpec(approved(over));
+    expect(check).toThrow('Ticket #412 is over a cap: ');
+    expect(check).toThrow(reason);
+  });
+
+  it('names every cap a ticket is over at once', () => {
+    expect(() =>
+      assertPlannableSpec(approved({ design: 'd'.repeat(8_001), criteria: ['c'.repeat(501)] })),
+    ).toThrow(
+      'Ticket #412 is over a cap: its design note is over 8000 characters; ' +
+        'one of its criteria is over 500 characters.',
+    );
   });
 });

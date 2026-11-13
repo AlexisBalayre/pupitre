@@ -568,7 +568,7 @@ describe('task spec decoding', () => {
       expect(() => readTaskSpec(db, 't-gone')).toThrow(MalformedTaskSpecError);
     });
 
-    describe('a ticket (decision 186)', () => {
+    describe('a ticket (decision 187)', () => {
       const ticket = {
         ref: '#412',
         type: 'feature',
