@@ -106,12 +106,21 @@
     (`name` or `name/…`, from the root's `package.json`), which resolves through its own
     `exports` to a branch file; an `import x = require(…)` of any of those; any `require(…)`,
     `x.require(…)` or dynamic `import(…)` anywhere in the config, whose specifier may be
-    built at run time; a top-level `plugins` or `resolve.alias`; and, under `test`,
+    built at run time; a top-level `plugins`; and, under `test`,
     `setupFiles`, `globalSetup`, `reporters`, `environment`, `runner`, `pool`, `poolOptions`,
     `execArgv`, `sequence`, `alias`, `environmentMatchGlobs`, `poolMatchGlobs`,
     `snapshotSerializers`, `diff`, `browser` or `coverage.customProviderModule`. An alias
-    redirects a specifier a test or the code under it spells to a module the branch wrote,
-    which can register a test in every file that imports it. A `resolve` or `coverage` that is
+    redirects a specifier a test or the code under it spells to a module the branch wrote: an
+    alias of `vitest` can pass every test. So `test.alias` leaves the answer unknown, and so
+    does a `resolve.alias` unless it is an object literal whose every key is a bare `@name`
+    (ASCII letters, digits, `_`, `.` and `-`) with no `/`, which names no package. Vite
+    redirects a specifier equal to the key or starting with it and a `/`, so `@vitest` would
+    still take every `@vitest/*` package: the adapter leaves the answer unknown where the
+    trusted `node_modules`, whose entries the gate links into its checkout, holds a scope of
+    an alias key's name. A `@name` alias then redirects only what would resolve to nothing, to
+    the branch's own files, as a relative import does, and this repo's `@src` and `@test`
+    are read. An alias list of `find` entries, a computed or spread key, and a key naming a
+    package or holding a `/` are not. A `resolve`, `alias` or `coverage` that is
     not an object literal read statically (a spread, a computed key) may hold one, and leaves
     the answer unknown too. Only `include` and `exclude` are cut out of the text the two sides
     compare, so a `coverage` read for its provider module is still compared whole. This reverses
@@ -249,8 +258,10 @@
     `FILE:` URL import, an import of the package by its own name (and not of one whose name it
     prefixes), a test `alias`, `environmentMatchGlobs`, `poolMatchGlobs`,
     `snapshotSerializers`, a `diff` module, a `browser` run, a custom coverage provider, a
-    spread `coverage`, a `resolve.alias` and a spread `resolve`, while a `resolve` and a
-    `coverage` that load nothing are read. A workspace file is unknown too, `vitest.workspace.*` or `vitest.projects.*` named in any
+    spread `coverage`, a `resolve.alias` of `vitest` or `@vitest/spy`, an alias list, a
+    computed or spread alias and a spread `resolve`, while a `resolve` and a `coverage` that
+    load nothing are read, and a `resolve.alias` of `@src` and `@test` is read and names
+    them. A workspace file is unknown too, `vitest.workspace.*` or `vitest.projects.*` named in any
     case, and a config that is a
     symlink or named in another case is not read, nor a root holding a name outside ASCII,
     on disk or in a commit. Read from a commit, the config is the tree's whatever the disk holds, and one committed as a link or beside a name that folds
@@ -274,6 +285,8 @@
     into a value collects, as does a shared `.env.example` naming `$HOME` in a comment and a
     value. A branch manifest that adds a devDependency or another script collects; one that
     adds a `packageManager`, a `pnpm` block, a `type` or `imports` collects nothing. A
+    config aliasing `@src` collects beside a trusted `node_modules` without that scope, and
+    nothing beside one holding it. A
     root with no config collects nothing, nor a branch root holding a name outside ASCII. A
     branch narrowing its include or excluding a file drops it. The measured config is read from the pinned sha and the trusted
     one from the target sha, whatever either checkout's disk holds. `testInputsIntact` holds

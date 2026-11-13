@@ -116,6 +116,9 @@ describe('vitestCollection', () => {
   const patterns = (count: number): string =>
     JSON.stringify(Array.from({ length: count }, (_, i) => `x${i}`));
 
+  const aliasing = (alias: string): string =>
+    `import { defineConfig } from 'vitest/config';\nexport default defineConfig({ resolve: { alias: ${alias} }, test: {} });\n`;
+
   // Read as the trusted checkout's, the laxer side, so a row fails if its
   // refusal is deleted.
   it.each([
@@ -226,10 +229,11 @@ describe('vitestCollection', () => {
       configWith("{ coverage: { provider: 'custom', customProviderModule: './cov.ts' } }"),
     ],
     ['a coverage spread', configWith('{ coverage: { ...shared } }')],
-    [
-      'a resolve alias',
-      "import { defineConfig } from 'vitest/config';\nexport default defineConfig({ resolve: { alias: { vitest: './fake.ts' } }, test: {} });\n",
-    ],
+    ['a resolve alias of a package name', aliasing("{ vitest: './fake.ts' }")],
+    ['a resolve alias of a scoped package', aliasing("{ '@vitest/spy': './fake.ts' }")],
+    ['a resolve alias list', aliasing("[{ find: '@src', replacement: './src' }]")],
+    ['a computed resolve alias', aliasing("{ [name]: './src' }")],
+    ['a spread resolve alias', aliasing('{ ...shared }')],
     [
       'a resolve spread',
       "import { defineConfig } from 'vitest/config';\nexport default defineConfig({ resolve: { ...shared }, test: {} });\n",
@@ -251,6 +255,19 @@ describe('vitestCollection', () => {
     };
 
     expect(collected(files, ['src/a.test.ts', 'b.test.ts'])).toEqual(['src/a.test.ts']);
+  });
+
+  // This repo's own form: a bare `@name` is no package, and the adapter checks
+  // node_modules for a scope of that name.
+  it('reads a resolve alias whose keys are each a bare @name, and names them', () => {
+    const config =
+      "import { fileURLToPath } from 'node:url';\n" +
+      aliasing("{ '@src': fileURLToPath(new URL('./src', import.meta.url)), '@test': './test' }");
+
+    expect(vitestCollection(diskRoot(repoWith({ 'vitest.config.ts': config })))?.aliases).toEqual([
+      '@src',
+      '@test',
+    ]);
   });
 
   // Self-reference resolves the name through the package's own `exports`, to a branch file.

@@ -456,6 +456,29 @@ describe('typescriptAdapter.testFiles', () => {
     );
   });
 
+  // Vite redirects `@src/x` too, so an alias of a scope node_modules holds
+  // hands its packages to the branch.
+  it.each([
+    ['no such scope', [], ['src/a.test.ts']],
+    ['an @src scope', ['@src'], []],
+  ])('reads an @src alias beside a trusted node_modules holding %s', (_, scopes, expected) => {
+    const files = {
+      'package.json': plainVitest,
+      'vitest.config.ts':
+        "import { defineConfig } from 'vitest/config';\n" +
+        "export default defineConfig({ resolve: { alias: { '@src': './src' } }, test: { include: ['src/**/*.test.ts'] } });\n",
+    };
+    const configPath = makeRepo(files);
+    for (const scope of scopes)
+      mkdirSync(join(configPath, 'node_modules', scope), { recursive: true });
+
+    expect(
+      typescriptAdapter.testFiles?.({ configPath, measurePath: makeRepo(files) }, [
+        'src/a.test.ts',
+      ]),
+    ).toEqual(expected);
+  });
+
   // Vitest then loads the first config in a directory above, which a session can write.
   it('collects nothing with no config at the root', () => {
     const repo = makeRepo({ 'package.json': plainVitest });

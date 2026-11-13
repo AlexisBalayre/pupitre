@@ -87,14 +87,12 @@ const UNREAD_SEGMENT = /^(?!\*\*$)(?:[^*]*\*){2}/;
 const VITEST_UNREAD_KEYS = ['root', 'plugins', '__proto__'];
 
 /**
- * Keys one level down that name a module the run loads in place of the one a
- * specifier spells: `resolve.alias` at the top, and under `test` the custom
- * coverage provider's module.
+ * A `resolve.alias` key that is read: a bare `@name` with no `/`, which names
+ * no package. Vite redirects a specifier equal to it or starting with it and a
+ * `/`, so it still redirects the packages of a scope of that name, which the
+ * caller checks `node_modules` for (`VitestCollection.aliases`).
  */
-const VITEST_UNREAD_NESTED_KEYS: Record<string, string[]> = {
-  resolve: ['alias'],
-  coverage: ['customProviderModule'],
-};
+const READ_ALIAS_KEY = /^@[\w.-]+$/;
 
 /**
  * Keys under `test` that move or split what one run collects, or name modules
@@ -330,6 +328,30 @@ function setsAny(node: ts.Expression | undefined, keys: string[]): boolean {
 }
 
 /**
+ * The keys of a `resolve`'s `alias`, none where it has none, or undefined
+ * where one cannot be read: a `resolve` or `alias` that is not an object
+ * literal read statically (an array of `find` entries included), or an alias
+ * key that is not `READ_ALIAS_KEY`. An alias redirects a specifier a test or
+ * the code under it spells to a module the branch wrote.
+ */
+function aliasKeys(resolve: ts.Expression | undefined): string[] | undefined {
+  const found = resolve === undefined ? new Map() : literalProperties(resolve, ['alias']);
+  if (found === undefined) return undefined;
+  const alias = found.get('alias');
+  if (alias === undefined) return [];
+  const object = unwrapExpression(alias);
+  if (!ts.isObjectLiteralExpression(object)) return undefined;
+  const keys = object.properties.map((property) =>
+    ts.isPropertyAssignment(property) && !ts.isComputedPropertyName(property.name)
+      ? property.name.text
+      : undefined,
+  );
+  return keys.every((key): key is string => key !== undefined && READ_ALIAS_KEY.test(key))
+    ? keys
+    : undefined;
+}
+
+/**
  * A config's `include` and `exclude` as regexes, and its text without them, or
  * undefined where they cannot be read: an unread key, or an `include` or
  * `exclude` that is not a literal list. An `include` pattern this does not
@@ -341,16 +363,12 @@ function setsAny(node: ts.Expression | undefined, keys: string[]): boolean {
 function configGlobs(
   text: string,
   selfName: string | undefined,
-): { include: RegExp[]; exclude: RegExp[]; rest: string } | undefined {
+): { include: RegExp[]; exclude: RegExp[]; rest: string; aliases: string[] } | undefined {
   const config = exportedConfig(text, selfName);
   const top = config && literalProperties(config, ['test', 'resolve', ...VITEST_UNREAD_KEYS]);
-  if (
-    top === undefined ||
-    VITEST_UNREAD_KEYS.some((key) => top.has(key)) ||
-    setsAny(top.get('resolve'), VITEST_UNREAD_NESTED_KEYS.resolve as string[])
-  ) {
-    return undefined;
-  }
+  if (top === undefined || VITEST_UNREAD_KEYS.some((key) => top.has(key))) return undefined;
+  const aliases = aliasKeys(top.get('resolve'));
+  if (aliases === undefined) return undefined;
   const testConfig = top.get('test');
   const test = testConfig
     ? literalProperties(testConfig, ['include', 'exclude', 'coverage', ...VITEST_UNREAD_TEST_KEYS])
@@ -358,7 +376,7 @@ function configGlobs(
   if (
     test === undefined ||
     VITEST_UNREAD_TEST_KEYS.some((key) => test.has(key)) ||
-    setsAny(test.get('coverage'), VITEST_UNREAD_NESTED_KEYS.coverage as string[])
+    setsAny(test.get('coverage'), ['customProviderModule'])
   ) {
     return undefined;
   }
@@ -381,6 +399,7 @@ function configGlobs(
       text,
       [included, excluded].filter((list): list is ts.Expression => list !== undefined),
     ),
+    aliases,
   };
 }
 
@@ -513,6 +532,11 @@ interface VitestCollection {
    * pass a file the lists collect (decision 143).
    */
   config: string;
+  /**
+   * The config's `resolve.alias` keys, each a bare `@name`: one that names a
+   * scope in `node_modules` redirects its packages to the branch's modules.
+   */
+  aliases: string[];
 }
 
 /**
@@ -541,6 +565,7 @@ export function vitestCollection(root: RootFiles): VitestCollection | undefined 
         !globs.exclude.some((glob) => glob.test(path)) &&
         globs.include.some((glob) => glob.test(path)),
       config: [file, globs.rest].join('\0'),
+      aliases: globs.aliases,
     }
   );
 }

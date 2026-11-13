@@ -382,6 +382,19 @@ function plainVitestCollection(root: RootFiles): ReturnType<typeof vitestCollect
 }
 
 /**
+ * Whether a `resolve.alias` key names a scope the trusted `node_modules` holds,
+ * which the gate links into its checkout: the alias would redirect that
+ * scope's packages to the branch's modules.
+ */
+function aliasesAScope({ configPath }: CapabilityContext, aliases: string[]): boolean {
+  return aliases.some(
+    (key) =>
+      lstatSync(join(configPath, GATE_ENVIRONMENT_DIR, key), { throwIfNoEntry: false }) !==
+      undefined,
+  );
+}
+
+/**
  * The user-level `.npmrc` npm and pnpm read for the gate's run: the one the
  * operator names by `npm_config_userconfig` through `--gate-env`, or the one
  * in the home directory the gate's environment keeps.
@@ -610,7 +623,9 @@ export const typescriptAdapter: Adapter = {
         return undefined;
       }
     });
-    if (!trusted || measured?.config !== trusted.config) return [];
+    if (!trusted || measured?.config !== trusted.config || aliasesAScope(ctx, trusted.aliases)) {
+      return [];
+    }
     const nested = nestedPackageDirs(ctx);
     return files.filter(
       (file) =>
