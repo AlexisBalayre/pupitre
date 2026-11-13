@@ -1,0 +1,126 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-13T17:22:44.321Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43471521456",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43471521456",
+  "actor": "AlexisBalayre",
+  "commit_sha": "4b89b5e96e7c351c2bfecf087d5af448bef9540e",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 322,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs",
+    "context"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs",
+    "context"
+  ],
+  "reviewers_skipped": [
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "skills/pup/LOOP.md",
+      "line": "62-65",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "Once `pup-gate` is required, an open PR that an older pup gated (head still at the pin, no status) cannot be merged. `planRegate` refuses to re-gate it with \"nothing new to gate… Merge it on GitHub\", which GitHub now blocks. The new docs forbid setting the status by hand, so nothing can unblock it.",
+      "body": "**This change leaves PRs gated before decision 182 with no way to merge.**\n\nTake a session that a pre-182 `pup merge --pr` moved to `merged` while its PR is still open. That is the normal state: LOOP.md says `merged` means the PR exists, not that GitHub merged it. Its head is still at the pinned sha, and no `pup-gate` status was ever set on that sha.\n\nAfter the operator runs the decision-182 protection setup, GitHub turns the merge button off, admins included because `enforce_admins` is on. LOOP.md's fix is to re-gate with `pup merge <task> --pr`. For a `merged` session, `planMerge` routes that through `planRegate`, which refuses when the head equals the pin:\n\n```ts\nif (pr.head === pinned) {\n  throw new Error(\n    `${prUrl} still has its head at ${pinned}, the commit the gate pinned: there is nothing ` +\n      `new to gate. Merge it on GitHub, then run \\`pup land ...\\`. ` + NOT_REGATED,\n```\nhttps://github.com/AlexisBalayre/pupitre/blob/4b89b5e96e7c351c2bfecf087d5af448bef9540e/src/core/regate.service.ts#L123-L129\n\nThat error tells the operator to merge on GitHub, which protection now forbids. The docs also get these PRs wrong:\n\n- LOOP.md L63-64 says a missing status means \"its head moved after the gate\", but these heads never moved.\n- LOOP.md L65 says \"Never set the status by hand\", which rules out the only manual fix.\n- `pup land` needs a PR GitHub has already merged, so it cannot help.\n- The `findOpenPullRequest` first-gate path, which would reach `setGateStatus`, runs only for `awaiting-review` sessions.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/4b89b5e96e7c351c2bfecf087d5af448bef9540e/skills/pup/LOOP.md#L62-L65\n\n**Trigger:** any `--pr` PR that is still open when the operator turns protection on. The ADR's \"Limits, accepted\" section does not mention PRs already in flight.\n\n**Fix, either of:**\n- Let a re-gate whose PR head equals the pin set `pup-gate` on it once the head reads back at the pin, instead of refusing.\n- Document a one-time migration step, such as merging or closing in-flight `--pr` PRs before turning protection on.",
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0182-pup-merge-pr-sets-a-pup-gate-status-on.md",
+      "line": "43-49",
+      "area": "context",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "On a branch that is protected but has no required status checks, GitHub probably answers `PATCH .../protection/required_status_checks` with 404 \"Required status checks not enabled\". That would leave no working command for this state except the `PUT`, which the ADR itself says wipes existing protection.",
+      "body": "**The setup command for a branch that is protected but has no required checks probably fails.**\n\nThe ADR detects this state correctly: `GET .../protection` returns 200 with no `required_status_checks` key. For that state it prescribes:\n\n```sh\ngh api --method PATCH repos/OWNER/REPO/branches/TARGET/protection/required_status_checks \\\n  -F strict=false -f 'contexts[]=pup-gate'\n```\nhttps://github.com/AlexisBalayre/pupitre/blob/4b89b5e96e7c351c2bfecf087d5af448bef9540e/docs/adr/0182-pup-merge-pr-sets-a-pup-gate-status-on.md#L43-L49 (the same command is in `skills/pup/LOOP.md` L52-54)\n\nGitHub's \"Update status check protection\" endpoint (PATCH) changes an existing status-check setting but does not create one. On a protected branch without status checks it returns `404 {\"message\":\"Required status checks not enabled\"}`, and `POST .../required_status_checks/contexts` fails the same way. Required status checks have no endpoint that turns them on alone, the way `enforce_admins` does. The REST API turns them on only through the full `PUT .../protection`, and the ADR warns at L29-30 that this PUT replaces any protection the branch already has.\n\n**Trigger:** a target that has, for example, only required reviews. The operator runs the documented PATCH, gets a 404, and the only remaining documented route wipes the review rules.\n\n**Note:** four reviewers independently flagged this from knowledge of the API, and the validator agreed. None of them could make a live call, so please confirm it once on a scratch repo.\n\n**Fix:** for this state, tell the operator to add `pup-gate` as a required check in the branch-protection settings page, which turns status checks on without touching other rules. Alternatively, give a `jq` step that turns the GET output into a full PUT body. That is not a plain copy, because the GET and PUT shapes differ: `enforce_admins.enabled` must become a boolean, and the review and restriction objects must become lists of logins and slugs.",
+      "suggestion": null
+    },
+    {
+      "file": "skills/pup/SKILL.md",
+      "line": "45",
+      "area": "security",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "SKILL.md (and LOOP.md L60-61) say `enforce_admins` means no admin login can bypass `pup-gate`. That overclaims: a session holding the operator's admin `gh` login can delete `enforce_admins` or post `pup-gate` itself. Say it stops the routine admin bypass, and that `pup land` stays the real check, as the ADR's Limits section already admits.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/github.client.ts",
+      "line": "240",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `!host || !owner || !name` guard in `setGateStatus` can never fire, because both callers pass `pullRequest.repo` built by `originRepoSlug`, the same value `assertPullRequestHead` just used. Dropping it and its dedicated test removes a branch, and a malformed slug would still fail loudly in `gh`.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 2,
+  "comments_posted_actual": 2,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.120677475,
+  "duration_ms": 193006,
+  "num_turns": 17,
+  "tokens": {
+    "input": 12,
+    "output": 13392,
+    "cache_read": 272656,
+    "cache_creation": 52089,
+    "total": 338149
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 70,
+      "output": 35215,
+      "cache_read": 839845,
+      "cache_creation": 152870,
+      "cost_usd": 1.793166
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 52,
+      "output": 9808,
+      "cache_read": 287919,
+      "cache_creation": 79922,
+      "cost_usd": 0.32678090000000004
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 193,
+      "cache_read": 0,
+      "cache_creation": 5071,
+      "cost_usd": 0.000730575
+    }
+  ],
+  "permission_denials": []
+}
