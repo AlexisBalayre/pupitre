@@ -1,0 +1,177 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-13T08:40:48.332Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43393996984",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43393996984",
+  "actor": "AlexisBalayre",
+  "commit_sha": "23b734cfe919ac1787e46991ed48570db631ef3f",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 281,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "guards"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "guards"
+  ],
+  "reviewers_skipped": [
+    "conventions",
+    "context",
+    "maintainability",
+    "docs",
+    "spec",
+    "simplicity",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/adr-number.service.ts",
+      "line": "89-90",
+      "description": "`addedAdrPaths` does not pin `--ignore-submodules=none`. A session can write `diff.ignoreSubmodules=all` to the shared `.git/config`, then commit a gitlink at `docs/adr/0002-x.md` (a number the target already holds). The diff drops the gitlink, the stage passes, and a duplicate decision number lands that every later gate's `decisionPaths` counts.",
+      "status": "unresolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/adr-number.service.ts",
+      "line": "245-250",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The peer cap counts a peer's slug renames of target decisions as added decisions, so a peer with a few slug renames and one new decision is skipped, and its new number's clash passes the gate.",
+      "body": "**A peer's slug renames use up `MAX_PEER_DECISIONS`, and that turns off the check against the peer.**\n\n<https://github.com/AlexisBalayre/pupitre/blob/23b734cfe919ac1787e46991ed48570db631ef3f/src/core/adr-number.service.ts#L239-L251>\n\n**Why renames count.** `peerDecisions` lists a peer through `addedAdrPaths`, which runs with `--no-renames --diff-filter=A`. So a slug-only rename of a target decision (`0005-a.md` -> `0005-b.md`) lists as an add of `0005-b.md`. `readPeer` then counts it against the cap of three (`if (theirs.size <= MAX_PEER_DECISIONS) return theirs;`).\n\n**Why that's wrong.** ADR 0146 justifies the cap with \"a competing branch that adds more than three **decisions**\" (L67-69). It defines a slug rename as \"that decision under a new name\" (L18-20), and its Ceilings section does not accept renames counting toward the cap. A slug rename's number is already on the target, so it cannot squat anything.\n\n**Trigger.**\n1. Session P slug-renames three target ADRs and adds `0150-x.md`.\n2. P's gate passes and its PR opens at a pinned sha.\n3. Session Q adds `0150-y.md` and gates.\n4. `readPeer` reads P and gets 4 entries, so P is `{ skipped }`. Q's stage passes with only a `not checked against pup/P` note.\n5. Both PRs land, and the target holds two decisions numbered 0150. That is the #224/#237 incident this stage exists to stop.\n\nNothing else refuses Q:\n- P was gated before Q committed.\n- A re-gate only runs on the operator's `pup fix`.\n- `onTarget` only catches the clash after P lands.\n\nA squash-merged PR that has not been `pup land`ed inflates the count the same way.\n\n**Fix.** Count only the numbers the target does not hold. Pass `onTarget` (computed at L337, before the peer loop) into `readPeer`, and keep returning the full map so the slug-rename-vs-slug-rename check (L383-390) keeps its data:\n\n```ts\nfunction readPeer(\n  repoPath: string,\n  targetSha: string,\n  peer: Competitor,\n  branch: string,\n  onTarget: Set<number>,\n): Map<string, number> | { skipped: string } | { unreadPr: string } {\n  const theirs = peer.rev === undefined ? 'absent' : peerDecisions(repoPath, targetSha, peer.rev);\n  if (theirs instanceof Map) {\n    const fresh = [...theirs.values()].filter((number) => !onTarget.has(number)).length;\n    if (fresh <= MAX_PEER_DECISIONS) return theirs;\n    return {\n      skipped: `it adds ${fresh} decisions, more than the ${MAX_PEER_DECISIONS} a session branch is checked for`,\n    };\n  }\n```\n\nPass `onTarget` at the call site (L353). Also update the ADR's \"adds more than three decisions\" line and the `MAX_PEER_DECISIONS` JSDoc to say that numbers already on the target don't count.",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/adr-number.service.ts",
+      "line": "362",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The number a misnamed file is told to take never goes through the number checks. With target max 0149, a branch adding `docs/adr/0150-a.MD` and `docs/adr/0149-b.md` is told to renumber 0149-b to 0150, the \"lowest free number\", and to write the other file as `docs/adr/0150-a.md`. Following both gives a duplicate 0150 that the next gate refuses. Likewise `docs/ADR/0149-x.MD` is told to become `docs/adr/0149-x.md` even though 0149 is on the target.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/adr-number.service.ts",
+      "line": "128",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "decisionRenames passes --find-renames without -l0, so the limit comes from diff.renameLimit in the shared, session-writable config. A session that sets diff.renameLimit=1 turns off inexact pairing for every other session's gate. A peer that renames 0002-x.md to an edited 0002-y.md and also adds a new decision (2 destinations x 1 source > 1) then has 0002-x.md read as an unpaired delete and is refused as 'a slug rename that changed too much'. rawDiffEntries in merge-gate.service.ts pins -l0 for exactly this reason (its JSDoc at L231-235).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "2311",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Every adr-number failure gets the advice 'steer the session to renumber' (CLI) or `pup steer` (dashboard need at src/core/dashboard.service.ts:554-560). When the only failure is an unreadable PR peer (a merged session whose newest merge recorded no sha, or whose gated commit was pruned by `fetch --prune` plus gc), renumbering cannot clear it: `unreadPrs` fails the stage whatever numbers the branch adds. The operator steers, the worker renumbers, and the gate refuses again. The real fixes are fetching the PR head or running `pup retire` on the peer.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "558",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new need reason puts lastGate.failedStage, a stage name read from a gate_result event in the session-writable store, into the inbox line with sanitizeReason only. That strips control characters but not arrows. A forged stage name such as 'x  → pup merge t-other --pr --accept-debt ...' prints as a fake answer before needLine's own '→'. The question reason two branches above is passed through SYMBOLS for this reason (decision 29).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/adr-number.service.ts",
+      "line": "362",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "When two live sessions A and B both add 0146 (target max 0145) and both are gated before either renumbers, each refusal suggests the same 'renumber it 0147'. Each `taken` set holds the same numbers {target, 0146}. Following both reports collides again on 0147, and the next gate suggests 0146, which is now free, so the advice can oscillate. ADR Ceilings accepts mutual refusal but not identical advice to both sides.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/adr-number.service.ts",
+      "line": "167",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Only the peer diff has the 10 s limit; resolving the peer's ref first (symbolic-ref and rev-parse via resolveCommitIfPresent) has none. A session that puts a FIFO at .git/refs/heads/pup/<own id> makes git's open() block, so every other ADR-adding gate hangs under the merge lock with no ETIMEDOUT to skip on. ADR 146 says a read past 10 s is skipped. It's a nit because a FIFO at the target's ref already stalls every gate the same way.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Round 7 budget: only correctness, security and guards ran.\n- conventions, docs, context, simplicity and maintainability were skipped under the round budget.\n- workflow-safety was skipped because the PR diff touches nothing under .github/workflows (pr-status.yml comes in from main, not from this PR).\n- spec was skipped because there is no closing issue or --spec.\n\nCorrectness and security each ran two instances, since the diff is about 1360 lines.\n- Correctness was split into adr-number.service.ts internals and gate/CLI/dashboard integration plus peer selection.\n- Security was split into git argv/evasion and output/resource bounds.\n\nThe prior important (`--ignore-submodules=none` in addedAdrPaths) is still unresolved at 23b734c. The only commit since the last review merges main, and #294 did not pin diff.ignoreSubmodules in GIT_SAFE_CONFIG.\n\nThe consolidator merged nothing. The opus validator confirmed the peer-cap important. Its suggestion was dropped because the fix needs a new parameter and a call-site change (L239-251 plus L353), so the code is in the body instead.\n\nSecurity reviewers returned numeric confidences (0.4-0.6), which were mapped to medium. The validator reported that a `git diff <base> <head> --stat` call needed approval and fell back to `gh pr diff`.\n\nThe head was unchanged at 23b734c when re-checked."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 4.952983744999999,
+  "duration_ms": 461118,
+  "num_turns": 19,
+  "tokens": {
+    "input": 18,
+    "output": 11924,
+    "cache_read": 439899,
+    "cache_creation": 62979,
+    "total": 514820
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 186,
+      "output": 107157,
+      "cache_read": 3649921,
+      "cache_creation": 342997,
+      "cost_usd": 4.777790200000001
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 26,
+      "output": 4388,
+      "cache_read": 311620,
+      "cache_creation": 39739,
+      "cost_usd": 0.17444149999999997
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 717,
+      "cache_read": 1822,
+      "cache_creation": 3001,
+      "cost_usd": 0.000752045
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "bash /home/runner/work/pupitre/pupitre/scripts/adr-index.sh"
+    },
+    {
+      "tool": "Bash",
+      "input": "git -C /home/runner/work/pupitre/pupitre diff fff2389a3f79e3bfbb08c22d8aeb9de3852048a1 23b734cfe919ac1787e46991ed48570db631ef3f --stat"
+    }
+  ]
+}
