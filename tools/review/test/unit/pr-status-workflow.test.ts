@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { bodyLines, REVIEW_HEADING } from "@src/review-body.utils";
+import { bodyLines, commentBody, importantMarker, REVIEW_HEADING } from "@src/review-body.utils";
 import type { Finding, ReviewSummary } from "@src/review-metrics.schemas";
 import { describe, expect, it } from "vitest";
 
@@ -10,16 +10,24 @@ import { describe, expect, it } from "vitest";
  */
 const workflow = readFileSync(new URL("../../../../.github/workflows/pr-status.yml", import.meta.url), "utf8");
 
-function inline<T>(name: string): T {
-  const start = workflow.search(new RegExp(`^ *function ${name}\\(.*\\) \\{$`, "m"));
+/** `scope` holds the names the function reads from the script around it. */
+function inline<T>(name: string, scope: Record<string, unknown> = {}): T {
+  const start = workflow.search(new RegExp(`^ *(?:async )?function ${name}\\(.*\\) \\{$`, "m"));
   if (start === -1) throw new Error(`pr-status.yml has no inline ${name}`);
   const indent = /^ */.exec(workflow.slice(start))?.[0] ?? "";
   const end = workflow.indexOf(`\n${indent}}\n`, start);
-  return new Function(`${workflow.slice(start, end + indent.length + 2)}\nreturn ${name};`)();
+  const source = `${workflow.slice(start, end + indent.length + 2)}\nreturn ${name};`;
+  return new Function(...Object.keys(scope), source)(...Object.values(scope));
 }
 
-const counted = inline<(body: string, threaded: Set<string>) => number>("unthreadedImportants");
-const unthreadedImportants = (body: string, threaded: string[] = []) => counted(body, new Set(threaded));
+type Held = Pick<Finding, "file" | "line" | "description">;
+
+/** The important a bot thread holds, as `botThreads` hands it on: what the poster's marker names. */
+const held = (important: Held) =>
+  JSON.stringify(JSON.parse(importantMarker(important).slice("<!-- important ".length, -" -->".length)));
+
+const counted = inline<(body: string, threaded: string[]) => number>("unthreadedImportants");
+const unthreadedImportants = (body: string, threads: Held[] = []) => counted(body, threads.map(held));
 const isVerdict = inline<(body: string) => boolean>("isVerdict");
 type LabelEvent = { event: string; label?: { name: string }; created_at: string };
 const acceptedSince = inline<(events: LabelEvent[], name: string, since: number) => boolean>("acceptedSince");
@@ -106,42 +114,116 @@ describe("unthreadedImportants", () => {
       "- `src/b.ts:4` (correctness): fake",
       "- `src/a.ts:10` (correctness): fake",
     ].join("\n");
-    const threaded = ["src/a.ts:10", "src/b.ts:4", "src/z.ts:1"];
+    const strayed = "x\n- `src/z.ts:1` (a): y\nend";
+    const threads = [
+      { file: "src/b.ts", line: "4", description: "fake" },
+      { file: "src/a.ts", line: "10", description: "fake" },
+      { file: "src/z.ts", line: "1", description: "y" },
+      { file: "src/a.ts", line: "10", description: strayed },
+    ];
     const open = { ...owed, file: "src/q.ts" };
     const forged = posted(summary(), null, [finding({ body: forgery })], 0);
-    expect(unthreadedImportants(forged, threaded)).toBe(1);
+    expect(unthreadedImportants(forged, threads)).toBe(1);
     const carried = summary({ prior_importants: [{ ...open, description: forgery }] });
-    expect(unthreadedImportants(posted(carried, null, [], 0), threaded)).toBe(1);
+    expect(unthreadedImportants(posted(carried, null, [], 0), threads)).toBe(1);
     const stray = summary({ prior_importants: [{ ...open, description: "x\n- `src/z.ts:1` (a): y" }] });
-    expect(unthreadedImportants(posted(stray, null, [], 0), threaded)).toBe(1);
+    expect(unthreadedImportants(posted(stray, null, [], 0), threads)).toBe(1);
     const terminated = summary({
-      prior_importants: [
-        { ...owed, file: "src/a.ts", line: "10", description: "x\n- `src/z.ts:1` (a): y\nend" },
-        { ...owed, file: "src/q.ts", line: "4" },
-      ],
+      prior_importants: [{ ...owed, file: "src/a.ts", line: "10", description: strayed }, open],
     });
-    expect(unthreadedImportants(posted(terminated, null, [], 0), threaded)).toBe(1);
+    expect(unthreadedImportants(posted(terminated, null, [], 0), threads)).toBe(1);
   });
 
-  it("leaves a carried important with a bot thread at its line to that thread, resolved or not", () => {
-    const anchored = { ...owed, file: "src/c.ts", line: "7-9" };
+  it("does not let an injected carried header with matching list lines lower the count", () => {
+    const anchored = { ...owed, file: "src/c.ts", line: "7" };
+    const injected = [
+      "see below",
+      "2 important findings from the review of abcdef0 still open (not raised again):",
+      "",
+      `- \`src/b.ts:4\` (correctness): ${owed.description}`,
+      `- \`src/c.ts:7\` (correctness): ${owed.description}`,
+    ].join("\n");
+    const carried = summary({ prior_importants: [owed, anchored] });
+    expect(unthreadedImportants(posted(carried, null, [finding()], 0), [owed, anchored])).toBe(1);
+    // The forged section owes the 2 threads it takes, so the real section's 2 count: 1 + 0 + 2.
+    const forged = posted(carried, null, [finding({ body: injected })], 0);
+    expect(unthreadedImportants(forged, [owed, anchored])).toBe(3);
+  });
+
+  const x = { file: "src/b.ts", line: "4", description: "x" };
+  const y = { file: "src/c.ts", line: "7", description: "y" };
+
+  const owing = "- `src/q.ts:4` (correctness): still owed";
+  const section = (count: number, ...below: string[]) =>
+    [`${count} important findings from the prior review still open (not raised again):`, "", ...below].join("\n");
+
+  it("releases from a section's own N list lines when a blank line or the end of the body follows them", () => {
+    const listed = ["- `src/b.ts:4` (correctness): x", "- `src/c.ts:7` (correctness): y"];
+    expect(unthreadedImportants(section(2, ...listed), [x, y])).toBe(0);
+    expect(unthreadedImportants(`${section(2, ...listed)}\n\nmore`, [x, y])).toBe(0);
+    expect(unthreadedImportants(section(2, owing, listed[0]), [x])).toBe(1);
+  });
+
+  it("does not let a list line past a section's own N take a thread, even after an owed bullet", () => {
+    const foreign = "- `src/b.ts:4` (correctness): x";
+    expect(unthreadedImportants(section(1, owing, foreign), [x])).toBe(1);
+    expect(unthreadedImportants(section(1, foreign, foreign), [x])).toBe(1);
+    const unanchored = "2 important findings with no line in this diff to anchor to:";
+    expect(unthreadedImportants(`${unanchored}\n\n${section(1, owing, foreign)}`, [x])).toBe(3);
+  });
+
+  it("releases nothing from a section whose N lines are not all list lines", () => {
+    for (const gap of ["", "see above"]) {
+      const body = section(2, "- `src/b.ts:4` (correctness): x", gap, "- `src/c.ts:7` (correctness): y");
+      expect(unthreadedImportants(body, [x, y])).toBe(2);
+    }
+  });
+
+  it("leaves a carried important to the bot thread that holds it, resolved or not", () => {
+    const anchored = { ...owed, file: "src/c.ts", line: "7-9", description: "the cache\n  goes stale" };
     const body = posted(summary({ prior_importants: [owed, anchored] }), null, [], 0);
-    expect(unthreadedImportants(body, ["src/c.ts:7"])).toBe(1);
-    expect(unthreadedImportants(body, ["src/c.ts:7", "src/b.ts:4"])).toBe(0);
+    expect(unthreadedImportants(body, [anchored])).toBe(1);
+    expect(unthreadedImportants(body, [anchored, owed])).toBe(0);
   });
 
-  it("counts a carried important whose thread is at another line or file", () => {
+  it("leaves a carried important to its thread when the model's copy drifted in case, spacing or punctuation", () => {
+    const drifted = ["The guard misses deletions.", "the guard  misses\n deletions", 'the "guard" misses deletions'];
+    for (const description of drifted) {
+      const body = posted(summary({ prior_importants: [{ ...owed, description }] }), null, [], 0);
+      expect(unthreadedImportants(body, [owed])).toBe(0);
+    }
+  });
+
+  it("counts a carried important whose thread holds another important at the same lines, or another file or range", () => {
     const body = posted(summary({ prior_importants: [owed] }), null, [], 0);
-    expect(unthreadedImportants(body, ["src/b.ts:5", "src/a.ts:4"])).toBe(1);
+    const others = [
+      { ...owed, description: "the guard misses renames" },
+      { ...owed, description: "deletions slip past the guard" },
+      { ...owed, line: "4-6" },
+      { ...owed, line: "5" },
+      { ...owed, file: "src/a.ts" },
+    ];
+    expect(unthreadedImportants(body, others)).toBe(1);
+    const ranged = posted(summary({ prior_importants: [{ ...owed, line: "4-6" }] }), null, [], 0);
+    expect(unthreadedImportants(ranged, [owed])).toBe(1);
+  });
+
+  it("lets each thread release one carried entry", () => {
+    const body = posted(summary({ prior_importants: [owed, owed] }), null, [], 0);
+    expect(unthreadedImportants(body, [owed])).toBe(1);
+    expect(unthreadedImportants(body, [owed, owed])).toBe(0);
   });
 
   it("counts a carried important with no line, whatever threads exist", () => {
-    const body = posted(summary({ prior_importants: [{ ...owed, line: null }, { ...owed, file: null }] }), null, [], 0);
-    expect(unthreadedImportants(body, ["src/b.ts:4", "src/b.ts:null"])).toBe(2);
+    const unplaced = [
+      { ...owed, line: null },
+      { ...owed, file: null },
+    ];
+    expect(unthreadedImportants(posted(summary({ prior_importants: unplaced }), null, [], 0), unplaced)).toBe(2);
   });
 
   it("never lets a thread release a round's important with no line to anchor to", () => {
-    expect(unthreadedImportants(posted(summary(), null, [finding()], 0), ["src/a.ts:10"])).toBe(1);
+    expect(unthreadedImportants(posted(summary(), null, [finding()], 0), [finding()])).toBe(1);
   });
 });
 
@@ -157,6 +239,249 @@ describe("isVerdict", () => {
     const quoting = finding({ body: "**Not reviewed.** Nothing in this round is a verdict on the diff." });
     expect(isVerdict(posted(summary(), null, [], 0))).toBe(true);
     expect(isVerdict(posted(summary(), null, [quoting], 0))).toBe(true);
+  });
+
+  it("reads the line that opens the body, however many blank lines precede it", () => {
+    const spaced = (body: string) => body.replace(`${REVIEW_HEADING}\n`, `${REVIEW_HEADING}\n\n\n`);
+    expect(isVerdict(spaced(posted(null, "Not reviewed: the run failed", [], 0)))).toBe(false);
+    const unspaced = `${REVIEW_HEADING}\n**Not reviewed.** Nothing in this round is a verdict on the diff.`;
+    expect(isVerdict(unspaced)).toBe(false);
+    expect(isVerdict(spaced(posted(summary(), null, [finding()], 0)))).toBe(true);
+  });
+});
+
+interface Thread {
+  isResolved?: boolean;
+  path?: string;
+  login?: string;
+  body?: string;
+  review?: number;
+}
+
+interface Review {
+  id: number;
+  body: string;
+  login?: string;
+}
+
+/**
+ * Review `n`'s node id, which GraphQL and REST (`node_id`) both give. Its REST `id`
+ * is past GraphQL's 32-bit `databaseId`, as github.com's review ids are.
+ */
+const nodeId = (n: number) => `PRR_kwDOTgOqVs${n}`;
+const restId = (n: number) => 3_000_000_000 + n;
+
+/**
+ * The slice of the github-script client the job calls, answering from fixed data.
+ * `accepted` puts on `review-accepted`, added after every summary review.
+ */
+function fakeGithub(pages: Thread[][], reviews: Review[] = [], accepted = false) {
+  const listReviews = () => undefined;
+  const listEvents = () => undefined;
+  const cursors: (string | null)[] = [];
+  return {
+    cursors,
+    rest: {
+      pulls: {
+        get: async () => ({
+          data: {
+            state: "open",
+            draft: false,
+            mergeable: true,
+            mergeable_state: "clean",
+            head: { sha: "head" },
+            labels: accepted ? [{ name: "review-accepted" }] : [],
+          },
+        }),
+        listReviews,
+      },
+      repos: { getCombinedStatusForRef: async () => ({ data: { statuses: [] } }) },
+      checks: { listForRef: () => undefined },
+      issues: { listEvents, removeLabel: async () => undefined },
+    },
+    paginate: async (method: unknown) => {
+      if (method === listEvents) {
+        return [{ event: "labeled", label: { name: "review-accepted" }, created_at: "2026-11-10T12:05:00Z" }];
+      }
+      if (method !== listReviews) return [];
+      return reviews.map((r) => ({
+        id: restId(r.id),
+        node_id: nodeId(r.id),
+        body: r.body,
+        state: "COMMENTED",
+        author_association: "NONE",
+        submitted_at: "2026-11-10T12:00:00Z",
+        user: { login: r.login ?? "github-actions[bot]" },
+      }));
+    },
+    graphql: async (_query: string, { after }: { after: string | null }) => {
+      cursors.push(after);
+      const page = after === null ? 0 : Number(after);
+      return {
+        repository: {
+          pullRequest: {
+            reviewThreads: {
+              pageInfo: { hasNextPage: page < pages.length - 1, endCursor: String(page + 1) },
+              nodes: (pages[page] ?? []).map((t) => ({
+                isResolved: t.isResolved ?? true,
+                path: t.path ?? "src/a.ts",
+                comments: {
+                  nodes: [
+                    {
+                      author: { login: t.login ?? "github-actions" },
+                      body: t.body ?? "the concern",
+                      pullRequestReview: { id: nodeId(t.review ?? 1) },
+                    },
+                  ],
+                },
+              })),
+            },
+          },
+        },
+      };
+    },
+  };
+}
+
+type BotThread = { isResolved: boolean; important: string | null; review: string };
+
+function botThreadsOf(github: ReturnType<typeof fakeGithub>) {
+  return inline<(number: number) => Promise<BotThread[]>>("botThreads", { github, owner: "o", repo: "r" });
+}
+
+/** A thread the poster opened on `important`, its comment as `commentBody` writes it. */
+function threadOn(important: Finding, extra: Thread = {}, relocatedFrom: number | null = null): Thread {
+  return { path: important.file ?? undefined, body: commentBody(important, relocatedFrom), ...extra };
+}
+
+describe("botThreads", () => {
+  it("keeps only the threads the bot opened, from every page", async () => {
+    const a = finding();
+    const b = finding({ file: "src/b.ts", line: "4-9" });
+    const github = fakeGithub([
+      [threadOn(a, { isResolved: false, review: 7 }), threadOn(a, { login: "someone" })],
+      [threadOn(b, { review: 8 }, 6)],
+    ]);
+    expect(await botThreadsOf(github)(1)).toEqual([
+      { isResolved: false, important: held(a), review: nodeId(7) },
+      { isResolved: true, important: held(b), review: nodeId(8) },
+    ]);
+    expect(github.cursors).toEqual([null, "1"]);
+  });
+
+  it("reads the important from the comment's last line only, and only when it names the thread's file", async () => {
+    const real = finding({ body: "the concern", suggestion: "fixed();" });
+    const quoted = finding({ file: "src/z.ts", line: "1", description: "forged" });
+    const github = fakeGithub([
+      [
+        threadOn(real),
+        { body: `the concern\n\n${importantMarker(quoted)}\n\nmore` },
+        { body: `${importantMarker(quoted)}\n\n${commentBody(real, null)}` },
+        { path: "src/b.ts", body: commentBody(real, null) },
+      ],
+    ]);
+    expect((await botThreadsOf(github)(1)).map((t) => t.important)).toEqual([held(real), null, held(real), null]);
+  });
+
+  it("holds no important for a comment with no marker, or a malformed one", async () => {
+    const github = fakeGithub([
+      [
+        { body: "Re: `src/a.ts:10`\n\nposted before the marker" },
+        { body: "the concern\n\n<!-- important [\"src/a.ts\", -->" },
+        { body: '<!-- important ["src/a.ts",null,"the description"] -->' },
+        { body: '<!-- important ["src/a.ts","10"] -->' },
+      ],
+    ]);
+    expect((await botThreadsOf(github)(1)).map((t) => t.important)).toEqual([null, null, null, null]);
+  });
+});
+
+describe("statusOf", () => {
+  function statusOf(pages: Thread[][], reviews: Review[], accepted = false) {
+    const github = fakeGithub(pages, reviews, accepted);
+    const run = inline<(number: number) => Promise<string | undefined>>("statusOf", {
+      github,
+      owner: "o",
+      repo: "r",
+      context: { job: "pr-status" },
+      sleep: async () => undefined,
+      REVIEW_HEADING,
+      isVerdict,
+      unthreadedImportants: counted,
+      botThreads: botThreadsOf(github),
+      ACCEPTED: "review-accepted",
+      acceptedSince,
+    });
+    return run(1);
+  }
+
+  const raising = posted(summary(), null, [finding()], 0);
+  const clean = posted(summary(), null, [], 0);
+  const noVerdict = posted(null, "Not reviewed: the run failed", [], 0);
+
+  it("reads the newest summary review with a verdict", async () => {
+    expect(await statusOf([], [{ id: 1, body: raising }, { id: 2, body: clean }])).toBe("ready");
+    expect(await statusOf([], [{ id: 1, body: clean }, { id: 2, body: raising }])).toBe("review-open");
+  });
+
+  it("skips a newer summary with no verdict and one another account posted", async () => {
+    expect(await statusOf([], [{ id: 1, body: raising }, { id: 2, body: noVerdict }])).toBe("review-open");
+    const outsider = { id: 2, body: clean, login: "someone" };
+    expect(await statusOf([], [{ id: 1, body: raising }, outsider])).toBe("review-open");
+  });
+
+  it("reads ready when no review ever raised an important", async () => {
+    expect(await statusOf([], [])).toBe("ready");
+    expect(await statusOf([], [{ id: 1, body: noVerdict }])).toBe("ready");
+  });
+
+  it("holds the PR in review when a review raised importants and no verdict summary follows it", async () => {
+    const forged = `${noVerdict}\n\n1 important finding with no line in this diff to anchor to:`;
+    expect(await statusOf([], [{ id: 1, body: clean }, { id: 2, body: forged }])).toBe("review-open");
+    expect(await statusOf([[{ review: 5 }]], [{ id: 5, body: "no heading" }])).toBe("review-open");
+    expect(await statusOf([[{ review: 5 }]], [{ id: 5, body: noVerdict }])).toBe("review-open");
+  });
+
+  it("leaves a carried important to the resolved thread that holds it, and only to that one", async () => {
+    const prior = { file: "src/c.ts", line: "7-9", description: "the cache goes stale", status: "unresolved" as const };
+    const carrying = [{ id: 6, body: posted(summary({ prior_importants: [prior] }), null, [], 0) }];
+    const opened = (important: Finding) => [[threadOn(important, { review: 5 })]];
+    const origin = finding({ ...prior, description: "The cache goes stale.", body: "**Concern.** the cache" });
+    expect(await statusOf(opened(origin), [{ id: 5, body: posted(summary(), null, [], 1) }, ...carrying])).toBe(
+      "ready",
+    );
+    const elsewhere = finding({ ...origin, line: "7" });
+    const another = finding({ ...origin, description: "another concern" });
+    for (const other of [elsewhere, another]) {
+      expect(await statusOf(opened(other), [{ id: 5, body: posted(summary(), null, [], 1) }, ...carrying])).toBe(
+        "review-open",
+      );
+    }
+  });
+
+  it("does not let an earlier finding's resolved thread release a later finding carried at the same lines", async () => {
+    const lines = { file: "src/c.ts", line: "7-9" };
+    const earlier = finding({ ...lines, description: "the cache goes stale", body: "**Concern.** the cache" });
+    const later = { ...lines, description: "the cache key collides", status: "unresolved" as const };
+    const reviews = [
+      { id: 5, body: posted(summary(), null, [], 1) },
+      { id: 6, body: posted(summary(), null, [finding(later)], 0) },
+      { id: 7, body: posted(summary({ prior_importants: [later] }), null, [], 0) },
+    ];
+    expect(await statusOf([[threadOn(earlier, { review: 5 })]], reviews)).toBe("review-open");
+  });
+
+  it("lets review-accepted wave the newest verdict round's importants through, but not an unknown count", async () => {
+    expect(await statusOf([], [{ id: 1, body: raising }], true)).toBe("ready");
+    const forged = `${noVerdict}\n\n1 important finding with no line in this diff to anchor to:`;
+    expect(await statusOf([], [{ id: 1, body: clean }, { id: 2, body: forged }], true)).toBe("review-open");
+    expect(await statusOf([[{ review: 5, isResolved: false }]], [{ id: 5, body: raising }], true)).toBe("review-open");
+  });
+
+  it("reads ready once the review that opened a resolved thread is a verdict summary, or one follows it", async () => {
+    const anchored = posted(summary(), null, [], 1);
+    expect(await statusOf([[{ review: 5 }]], [{ id: 5, body: anchored }])).toBe("ready");
+    expect(await statusOf([[{ review: 5 }]], [{ id: 5, body: "no heading" }, { id: 6, body: clean }])).toBe("ready");
   });
 });
 
