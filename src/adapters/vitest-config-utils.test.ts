@@ -186,6 +186,26 @@ describe('vitestCollection', () => {
       'a subpath import',
       `import shared from '#shared/vitest';\n${configWith("{ include: ['src/**/*.test.ts'] }")}`,
     ],
+    [
+      'an import-equals of a file',
+      `import shared = require('./shared.cjs');\n${configWith("{ include: ['src/**/*.test.ts'] }")}`,
+    ],
+    [
+      'a require',
+      `const shared = require('./shared.cjs');\n${configWith("{ include: ['src/**/*.test.ts'] }")}`,
+    ],
+    [
+      "a module's require",
+      `module.require('./shared.cjs');\n${configWith("{ include: ['src/**/*.test.ts'] }")}`,
+    ],
+    [
+      'a dynamic import',
+      configWith("{ include: ['src/**/*.test.ts'], maxWorkers: (await import('./workers.js')).n }"),
+    ],
+    [
+      'a file: URL import',
+      `import shared from 'FILE:///tmp/shared.js';\n${configWith("{ include: ['src/**/*.test.ts'] }")}`,
+    ],
     ['setupFiles', configWith("{ setupFiles: ['./setup.ts'] }")],
     ['globalSetup', configWith("{ globalSetup: 'global.ts' }")],
     ['reporters', configWith("{ reporters: ['./reporter.ts'] }")],
@@ -195,6 +215,25 @@ describe('vitestCollection', () => {
     ['poolOptions', configWith("{ poolOptions: { forks: { execArgv: ['--import=./x.js'] } } }")],
     ['execArgv', configWith("{ execArgv: ['--import=./x.js'] }")],
     ['a sequencer', configWith("{ sequence: { sequencer: './sequencer.ts' } }")],
+    ['a test alias', configWith("{ alias: { vitest: './fake.ts' } }")],
+    ['environmentMatchGlobs', configWith("{ environmentMatchGlobs: [['src/**', './env.ts']] }")],
+    ['poolMatchGlobs', configWith("{ poolMatchGlobs: [['src/**', 'threads']] }")],
+    ['snapshotSerializers', configWith("{ snapshotSerializers: ['./serializer.ts'] }")],
+    ['a diff module', configWith("{ diff: './diff.ts' }")],
+    ['a browser run', configWith('{ browser: { enabled: true } }')],
+    [
+      'a custom coverage provider',
+      configWith("{ coverage: { provider: 'custom', customProviderModule: './cov.ts' } }"),
+    ],
+    ['a coverage spread', configWith('{ coverage: { ...shared } }')],
+    [
+      'a resolve alias',
+      "import { defineConfig } from 'vitest/config';\nexport default defineConfig({ resolve: { alias: { vitest: './fake.ts' } }, test: {} });\n",
+    ],
+    [
+      'a resolve spread',
+      "import { defineConfig } from 'vitest/config';\nexport default defineConfig({ resolve: { ...shared }, test: {} });\n",
+    ],
     [
       'plugins',
       "import { defineConfig } from 'vitest/config';\nexport default defineConfig({ plugins: [], test: {} });\n",
@@ -203,6 +242,31 @@ describe('vitestCollection', () => {
   ])('collects nothing under %s', (_, config) => {
     expect(vitestCollection(diskRoot(repoWith({ 'vitest.config.ts': config })))).toBeUndefined();
   });
+
+  it('reads a config that resolves and covers without loading a module of its own', () => {
+    const files = {
+      'vitest.config.ts':
+        "import { defineConfig } from 'vitest/config';\n" +
+        "export default defineConfig({ resolve: { conditions: ['node'] }, test: { include: ['src/**/*.test.ts'], coverage: { provider: 'v8' } } });\n",
+    };
+
+    expect(collected(files, ['src/a.test.ts', 'b.test.ts'])).toEqual(['src/a.test.ts']);
+  });
+
+  // Self-reference resolves the name through the package's own `exports`, to a branch file.
+  it.each(['my-app', 'my-app/vitest-shared'])(
+    'collects nothing where the config imports the package itself as %s',
+    (specifier) => {
+      const config = `import shared from '${specifier}';\n${configWith("{ include: ['src/**/*.test.ts'] }")}`;
+
+      expect(
+        collected({ 'package.json': '{"name":"my-app"}', 'vitest.config.ts': config }, []),
+      ).toBeUndefined();
+      expect(
+        collected({ 'package.json': '{"name":"my-app-ui"}', 'vitest.config.ts': config }, []),
+      ).toEqual([]);
+    },
+  );
 
   // This repo's own: the gate compares it across checkouts rather than run it.
   it('reads a config that runs code and imports packages', () => {
@@ -324,6 +388,17 @@ describe('vitestCollection', () => {
       ),
     ).toBe(configOf(trusted));
     expect(configOf(configWith('{ include: [], maxWorkers: 2 }'))).toBe(configOf(trusted));
+  });
+
+  // Only the lists are cut out: a `coverage` read for its provider module stays in.
+  it('tells apart two configs that differ only in their coverage', () => {
+    const covering = (reporter: string): string | undefined =>
+      configOf(
+        configWith(`{ include: ['src/**/*.test.ts'], coverage: { reporter: ['${reporter}'] } }`),
+      );
+
+    expect(covering('text')).toBeDefined();
+    expect(covering('text')).not.toBe(covering('json'));
   });
 
   it.each([

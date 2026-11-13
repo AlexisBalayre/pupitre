@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -9,7 +10,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
-import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 
 // The real mkdirSync and rmSync, wrapped so one test can make the report
 // directory's creation fail and another can act midway through a removal.
@@ -292,6 +293,14 @@ describe('typescriptAdapter.coveredTest', () => {
 // is vitest-config.utils.ts's, tested there.
 describe('typescriptAdapter.testFiles', () => {
   const plainVitest = JSON.stringify({ scripts: { test: 'vitest run' } });
+
+  // The run reads the user's own .npmrc, so the operator's would decide these.
+  beforeEach(() => {
+    vi.stubEnv('HOME', tempDir('pup-home-'));
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
   const configWith = (test: string): string =>
     `import { defineConfig } from 'vitest/config';\n\nexport default defineConfig({\n  test: ${test},\n});\n`;
 
@@ -369,6 +378,20 @@ describe('typescriptAdapter.testFiles', () => {
       [],
     ],
     ['an .env.yarn only the branch commits', {}, { '.env.yarn': 'CI=1\n' }, []],
+    ['an .env only the branch commits', {}, { '.env': 'CI=1\n' }, []],
+    [
+      'an .npmrc on both sides substituting a token in a value',
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: npm's own substitution, not a JS template
+      { '.npmrc': '//registry.npmjs.org/:_authToken=${NPM_TOKEN}\n' },
+      {},
+      ['src/a.test.ts'],
+    ],
+    [
+      'an .env on both sides naming a variable in a comment',
+      { '.env.example': '# under $HOME\nVAULT="$HOME/notes"\n' },
+      {},
+      ['src/a.test.ts'],
+    ],
     ["yarn's Plug'n'Play runtime on both sides", { '.pnp.cjs': 'module.exports = {};\n' }, {}, []],
     ...[
       ['.npmrc', 'node-options=--import ./scripts/reg.mjs\n'],
@@ -381,6 +404,15 @@ describe('typescriptAdapter.testFiles', () => {
       ['.env.yarn', 'NODE_OPTIONS=--import ./scripts/reg.mjs\n'],
       ['pnpm-workspace.yaml', 'nodeOptions: --import ./scripts/reg.mjs\n'],
       ['bunfig.toml', 'preload = ["./scripts/reg.ts"]\n'],
+      ['.env', 'NODE_OPTIONS=--import ./scripts/reg.mjs\n'],
+      ['.env.local', 'NODE_OPTIONS=--import ./scripts/reg.mjs\n'],
+      // Escaped or substituted keys, which their package manager reads as the key.
+      ['.yarnrc.yml', '"yarn\\u0050ath": .yarn/releases/yarn.cjs\n'],
+      ['pnpm-workspace.yaml', '"node\\u004Fptions": --import ./scripts/reg.mjs\n'],
+      ['bunfig.toml', '"pre\\u006Coad" = ["./scripts/reg.ts"]\n'],
+      ['.npmrc', '"node\\u002doptions"=--import ./scripts/reg.mjs\n'],
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: npm's own substitution, not a JS template
+      ['.npmrc', '${KEY}=--import ./scripts/reg.mjs\n'],
     ].map(
       ([name, text]) =>
         [`a target ${name} that runs a file`, { [name as string]: text }, {}, []] as const,
@@ -401,6 +433,28 @@ describe('typescriptAdapter.testFiles', () => {
       );
     },
   );
+
+  // Every manifest field but the dependency maps and the scripts may shape the
+  // run, so the branch's must be the target's.
+  it.each([
+    ['a devDependency', { devDependencies: { zod: '^4' } }, ['src/a.test.ts']],
+    ['another script', { scripts: { test: 'vitest run', lint: 'biome check' } }, ['src/a.test.ts']],
+    ['a packageManager', { packageManager: 'yarn@4.5.0' }, []],
+    ['a pnpm block', { pnpm: { executionEnv: { nodeVersion: '18.0.0' } } }, []],
+    ['a module type', { type: 'module' }, []],
+    ['subpath imports', { imports: { '#vitest': './fake.js' } }, []],
+  ])('reads a branch manifest that adds %s', (_, fields, expected) => {
+    const config = configWith("{ include: ['src/**/*.test.ts'] }");
+    const configPath = makeRepo({ 'package.json': plainVitest, 'vitest.config.ts': config });
+    const measurePath = makeRepo({
+      'package.json': JSON.stringify({ scripts: { test: 'vitest run' }, ...fields }),
+      'vitest.config.ts': config,
+    });
+
+    expect(typescriptAdapter.testFiles?.({ configPath, measurePath }, ['src/a.test.ts'])).toEqual(
+      expected,
+    );
+  });
 
   // Vitest then loads the first config in a directory above, which a session can write.
   it('collects nothing with no config at the root', () => {
@@ -514,7 +568,10 @@ describe('typescriptAdapter.testFiles', () => {
       '.yarnrc',
       '.yarnrc.yml',
       '.env.yarn',
+      '.env',
+      '.env.local',
       '.pnp.cjs',
+      '.pnp.loader.mjs',
       'pnpm-workspace.yaml',
       'bunfig.toml',
     ].map(
@@ -541,6 +598,14 @@ describe('typescriptAdapter.testFiles', () => {
       (dir: string) => renameSync(join(dir, 'package.json'), join(dir, 'Package.json')),
       false,
     ],
+    [
+      'given a .yarn directory',
+      (dir: string) => {
+        mkdirSync(join(dir, '.yarn', 'plugins'), { recursive: true });
+        writeFileSync(join(dir, '.yarn', 'plugins', 'p.cjs'), 'x\n');
+      },
+      false,
+    ],
   ] as [string, (dir: string) => void, boolean][])(
     'checks the run inputs of a checkout %s',
     (_, change, intact) => {
@@ -560,6 +625,98 @@ describe('typescriptAdapter.testFiles', () => {
     },
   );
 
+  // Yarn reads its own directory, which the branch's build may rewrite.
+  it.each([
+    ['untouched', () => {}, true],
+    ['given an empty directory', (yarn: string) => mkdirSync(join(yarn, 'cache')), true],
+    [
+      'with a file rewritten',
+      (yarn: string) => writeFileSync(join(yarn, 'releases', 'yarn.cjs'), 'y\n'),
+      false,
+    ],
+    [
+      'given a file',
+      (yarn: string) => writeFileSync(join(yarn, 'releases', 'other.cjs'), 'x\n'),
+      false,
+    ],
+    [
+      'with a file made executable',
+      (yarn: string) => chmodSync(join(yarn, 'releases', 'yarn.cjs'), 0o755),
+      false,
+    ],
+    [
+      'with a file made a link',
+      (yarn: string) => {
+        rmSync(join(yarn, 'releases', 'yarn.cjs'));
+        symlinkSync('../../package.json', join(yarn, 'releases', 'yarn.cjs'));
+      },
+      false,
+    ],
+  ] as [string, (yarn: string) => void, boolean][])(
+    'checks the .yarn directory of a checkout %s',
+    (_, change, intact) => {
+      const repo = makeRepo({
+        'package.json': plainVitest,
+        'vitest.config.ts': configWith("{ include: ['src/**/*.test.ts'] }"),
+      });
+      mkdirSync(join(repo, '.yarn', 'releases'), { recursive: true });
+      writeFileSync(join(repo, '.yarn', 'releases', 'yarn.cjs'), 'x\n');
+      sh(repo, 'git', 'init', '-q');
+      sh(repo, 'git', 'add', '-A');
+      sh(repo, 'git', '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'init');
+      const sha = sh(repo, 'git', 'rev-parse', 'HEAD');
+      change(join(repo, '.yarn'));
+
+      expect(
+        typescriptAdapter.testInputsIntact?.({
+          configPath: repo,
+          measurePath: repo,
+          measureSha: sha,
+        }),
+      ).toBe(intact);
+    },
+  );
+
+  // npm and pnpm read the operator's own .npmrc too, which a session can write.
+  it.each([
+    ['none', undefined, true],
+    ['one that runs nothing', 'fund=false\n', true],
+    ['one with node-options', 'node-options=--import /tmp/reg.mjs\n', false],
+    ['one with an escaped key', '"node\\u002doptions"=--import /tmp/reg.mjs\n', false],
+  ])('checks a checkout beside a user .npmrc of %s', (_, npmrc, intact) => {
+    const home = tempDir('pup-home-');
+    if (npmrc !== undefined) writeFileSync(join(home, '.npmrc'), npmrc);
+    vi.stubEnv('HOME', home);
+    const { repo, sha } = committed({
+      'package.json': plainVitest,
+      'vitest.config.ts': configWith("{ include: ['src/**/*.test.ts'] }"),
+    });
+
+    expect(
+      typescriptAdapter.testInputsIntact?.({
+        configPath: repo,
+        measurePath: repo,
+        measureSha: sha,
+      }),
+    ).toBe(intact);
+  });
+
+  it('checks the user .npmrc the operator names through --gate-env', () => {
+    const named = join(tempDir('pup-userconfig-'), 'npmrc');
+    writeFileSync(named, 'script-shell=/tmp/sh\n');
+    vi.stubEnv('npm_config_userconfig', named);
+    const { repo, sha } = committed({
+      'package.json': plainVitest,
+      'vitest.config.ts': configWith("{ include: ['src/**/*.test.ts'] }"),
+    });
+    const ctx = { configPath: repo, measurePath: repo, measureSha: sha };
+
+    expect(typescriptAdapter.testInputsIntact?.(ctx)).toBe(true);
+    expect(
+      typescriptAdapter.testInputsIntact?.({ ...ctx, gateEnv: ['npm_config_userconfig'] }),
+    ).toBe(false);
+  });
+
   // The gate links each entry of the trusted node_modules into its checkout.
   it.each([
     ['links each entry to the trusted one', () => {}, true],
@@ -575,6 +732,17 @@ describe('typescriptAdapter.testFiles', () => {
       true,
     ],
     ['holds binaries of its own', (modules: string) => mkdirSync(join(modules, '.bin')), false],
+    // npm 6 and older ran `.hooks/<event>` around each script.
+    ['holds npm hooks of its own', (modules: string) => mkdirSync(join(modules, '.HOOKS')), false],
+    // Only `.cache` and `.vite` are the run's caches; `.vitest` is a linked entry.
+    [
+      'replaces a linked .vite-named entry with one of its own',
+      (modules: string) => {
+        rmSync(join(modules, '.vitest'));
+        mkdirSync(join(modules, '.vitest'));
+      },
+      false,
+    ],
     [
       'holds binaries of its own in another case',
       (modules: string) => mkdirSync(join(modules, '.BIN')),
@@ -621,7 +789,7 @@ describe('typescriptAdapter.testFiles', () => {
     const checkout = makeRepo(files);
     const modules = join(checkout, 'node_modules');
     mkdirSync(modules);
-    for (const entry of ['vitest', '.pnpm']) {
+    for (const entry of ['vitest', '.pnpm', '.vitest']) {
       mkdirSync(join(repo, 'node_modules', entry), { recursive: true });
       symlinkSync(join(repo, 'node_modules', entry), join(modules, entry));
     }

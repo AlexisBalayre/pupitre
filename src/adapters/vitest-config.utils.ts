@@ -1,7 +1,7 @@
-import { readdirSync } from 'node:fs';
+import { lstatSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import ts from 'typescript';
-import { runGit } from '../core/git-diff.client.js';
+import { runGit, runGitBytes } from '../core/git-diff.client.js';
 import { globToRegExp } from '../core/glob.utils.js';
 import { GATE_COMMAND_TIMEOUT_MS } from '../core/merge-gate.constants.js';
 import { readPlainFile } from './capability.utils.js';
@@ -15,6 +15,12 @@ const GIT_READ: Parameters<typeof runGit>[2] = {
 
 /** The tree modes of a regular file; a link, a submodule or a directory is none. */
 const PLAIN_BLOB_MODE = /^100(?:644|755)$/;
+
+/** A directory's tree mode, which `ls-tree` lists recursively. */
+const TREE_MODE = '040000';
+
+/** The longest line `hash-object` prints for one file: a SHA-256 name and its newline. */
+const OBJECT_NAME_LINE_BYTES = 65;
 
 /** The root configs vitest looks for, in its own order: the first one present is the one it loads. */
 const VITEST_CONFIG_FILES = ['vitest', 'vite'].flatMap((stem) =>
@@ -81,6 +87,16 @@ const UNREAD_SEGMENT = /^(?!\*\*$)(?:[^*]*\*){2}/;
 const VITEST_UNREAD_KEYS = ['root', 'plugins', '__proto__'];
 
 /**
+ * Keys one level down that name a module the run loads in place of the one a
+ * specifier spells: `resolve.alias` at the top, and under `test` the custom
+ * coverage provider's module.
+ */
+const VITEST_UNREAD_NESTED_KEYS: Record<string, string[]> = {
+  resolve: ['alias'],
+  coverage: ['customProviderModule'],
+};
+
+/**
  * Keys under `test` that move or split what one run collects, or name modules
  * the run loads, which the branch may have written: a setup file can register
  * a test in every collected file, and a reporter, runner or pool can pass a
@@ -102,11 +118,20 @@ const VITEST_UNREAD_TEST_KEYS = [
   'poolOptions',
   'execArgv',
   'sequence',
+  'alias',
+  'environmentMatchGlobs',
+  'poolMatchGlobs',
+  'snapshotSerializers',
+  'diff',
+  'browser',
   '__proto__',
 ];
 
-/** A specifier naming a file, a path or a `#` subpath import, which in the gate is the branch's. */
-const FILE_SPECIFIER = /^[./#]/;
+/**
+ * A specifier naming a file, a path, a `file:` URL or a `#` subpath import,
+ * which in the gate is the branch's.
+ */
+const FILE_SPECIFIER = /^(?:[./#]|file:)/i;
 
 /**
  * A path holding a line break, which `.` in a pattern's regex does not match,
@@ -210,14 +235,48 @@ function defineConfigNames(statement: ts.ImportDeclaration): string[] {
     .map((element) => element.name.text);
 }
 
+/** A call that loads a module named at run time: `require(…)`, `x.require(…)` or `import(…)`. */
+function loadsAtRunTime(node: ts.Node): boolean {
+  if (!ts.isCallExpression(node)) return false;
+  const callee = node.expression;
+  return (
+    callee.kind === ts.SyntaxKind.ImportKeyword ||
+    (ts.isIdentifier(callee) && callee.text === 'require') ||
+    (ts.isPropertyAccessExpression(callee) && callee.name.text === 'require')
+  );
+}
+
+/**
+ * Whether a config loads a module that in the gate is the branch's: a static
+ * specifier naming a file (`FILE_SPECIFIER`) or the package itself by
+ * `selfName`, which resolves through its own `exports`, in an import, a
+ * re-export or an `import x = require(…)`; or any `require` or dynamic
+ * `import()`, whose specifier may be built at run time.
+ */
+function loadsAFile(source: ts.SourceFile, selfName: string | undefined): boolean {
+  const namesAFile = (specifier: string): boolean =>
+    FILE_SPECIFIER.test(specifier) ||
+    (selfName !== undefined && (specifier === selfName || specifier.startsWith(`${selfName}/`)));
+  const statically = source.statements.some((statement) => {
+    const specifier = ts.isImportEqualsDeclaration(statement)
+      ? ts.isExternalModuleReference(statement.moduleReference) &&
+        statement.moduleReference.expression
+      : (statement as { moduleSpecifier?: ts.Expression }).moduleSpecifier;
+    return specifier && ts.isStringLiteralLike(specifier) && namesAFile(specifier.text);
+  });
+  const atRunTime = (node: ts.Node): boolean =>
+    loadsAtRunTime(node) || ts.forEachChild(node, atRunTime) === true;
+  return statically || atRunTime(source);
+}
+
 /**
  * The object a vitest config exports by default, bare or through the
  * `defineConfig` imported from vitest or vite; undefined for a function
  * config, `mergeConfig`, any other callee, an identifier or CommonJS, which no
- * static read answers, and for a config that imports or re-exports a file by
- * path, which in the gate is the branch's and runs when vitest loads it.
+ * static read answers, and for a config that loads a module the branch wrote
+ * (`loadsAFile`), which runs when vitest loads the config.
  */
-function exportedConfig(text: string): ts.Expression | undefined {
+function exportedConfig(text: string, selfName: string | undefined): ts.Expression | undefined {
   const source = ts.createSourceFile(
     'vitest.config.ts',
     text,
@@ -232,12 +291,7 @@ function exportedConfig(text: string): ts.Expression | undefined {
   const imports = source.statements.filter(importsVitestConfig);
   // A config with a syntax error: the parser recovers into a tree vitest never loads.
   const parseErrors = (source as unknown as { parseDiagnostics: unknown[] }).parseDiagnostics;
-  const loadsAFile = source.statements.some((statement) =>
-    FILE_SPECIFIER.test(
-      (statement as { moduleSpecifier?: ts.StringLiteral }).moduleSpecifier?.text ?? '',
-    ),
-  );
-  if (exported.length !== 1 || parseErrors.length > 0 || loadsAFile) {
+  if (exported.length !== 1 || parseErrors.length > 0 || loadsAFile(source, selfName)) {
     return undefined;
   }
   const callees = new Set(imports.flatMap(defineConfigNames));
@@ -266,24 +320,46 @@ function withoutLists(text: string, lists: ts.Expression[]): string {
 }
 
 /**
+ * Whether an object sets one of `keys`, or cannot be read statically
+ * (`literalProperties`), which may hide one.
+ */
+function setsAny(node: ts.Expression | undefined, keys: string[]): boolean {
+  if (node === undefined) return false;
+  const found = literalProperties(node, keys);
+  return found === undefined || keys.some((key) => found.has(key));
+}
+
+/**
  * A config's `include` and `exclude` as regexes, and its text without them, or
  * undefined where they cannot be read: an unread key, or an `include` or
  * `exclude` that is not a literal list. An `include` pattern this does not
  * read collects nothing; an `exclude` one leaves the whole answer unknown. An
  * exclude names a directory as well as a file, so it matches a path up to any
- * `/`.
+ * `/`. `selfName` is the package's own name, a specifier the config may not
+ * load (`loadsAFile`).
  */
 function configGlobs(
   text: string,
+  selfName: string | undefined,
 ): { include: RegExp[]; exclude: RegExp[]; rest: string } | undefined {
-  const config = exportedConfig(text);
-  const top = config && literalProperties(config, ['test', ...VITEST_UNREAD_KEYS]);
-  if (top === undefined || VITEST_UNREAD_KEYS.some((key) => top.has(key))) return undefined;
+  const config = exportedConfig(text, selfName);
+  const top = config && literalProperties(config, ['test', 'resolve', ...VITEST_UNREAD_KEYS]);
+  if (
+    top === undefined ||
+    VITEST_UNREAD_KEYS.some((key) => top.has(key)) ||
+    setsAny(top.get('resolve'), VITEST_UNREAD_NESTED_KEYS.resolve as string[])
+  ) {
+    return undefined;
+  }
   const testConfig = top.get('test');
   const test = testConfig
-    ? literalProperties(testConfig, ['include', 'exclude', ...VITEST_UNREAD_TEST_KEYS])
+    ? literalProperties(testConfig, ['include', 'exclude', 'coverage', ...VITEST_UNREAD_TEST_KEYS])
     : new Map<string, ts.Expression>();
-  if (test === undefined || VITEST_UNREAD_TEST_KEYS.some((key) => test.has(key))) {
+  if (
+    test === undefined ||
+    VITEST_UNREAD_TEST_KEYS.some((key) => test.has(key)) ||
+    setsAny(test.get('coverage'), VITEST_UNREAD_NESTED_KEYS.coverage as string[])
+  ) {
     return undefined;
   }
   const included = test.get('include');
@@ -301,7 +377,10 @@ function configGlobs(
       VITEST_DEFAULT_EXCLUDE,
       ...(exclude as RegExp[]).map((glob) => new RegExp(`${glob.source.slice(0, -1)}(?:/.*)?$`)),
     ],
-    rest: withoutLists(text, [...test.values()]),
+    rest: withoutLists(
+      text,
+      [included, excluded].filter((list): list is ts.Expression => list !== undefined),
+    ),
   };
 }
 
@@ -335,20 +414,69 @@ function rootFiles(entries: [string, () => string][]): RootFiles {
   return root;
 }
 
-/** A checkout's root as it stands on disk, each file read without following a link. */
-export function diskRoot(checkout: string): RootFiles {
+/** A listing's lines in one order, whichever order they were found in. */
+function listing(lines: string[]): string {
+  return lines.sort().join('\0');
+}
+
+/**
+ * A directory on disk listed as `ls-tree -r -z` lists a tree: a line per file,
+ * its mode, object name and path, each file hashed in `repoPath`'s object
+ * format and nothing written. An empty directory, which no tree holds, lists
+ * nothing. Throws on a link or anything else a tree would not check out as a
+ * plain file, and on a name holding a line break, which `hash-object` cannot
+ * read back from its input.
+ */
+function diskListing(repoPath: string, dir: string): string {
+  const files: { path: string; mode: string }[] = [];
+  const walk = (at: string): void => {
+    for (const entry of readdirSync(join(dir, at), { withFileTypes: true })) {
+      const path = at === '' ? entry.name : `${at}/${entry.name}`;
+      if (entry.isDirectory()) {
+        walk(path);
+      } else if (entry.isFile() && !/[\r\n]/.test(path)) {
+        const executable = (lstatSync(join(dir, path)).mode & 0o100) !== 0;
+        files.push({ path, mode: executable ? '100755' : '100644' });
+      } else {
+        throw new Error(`${path} is not read: not a plain file named on one line`);
+      }
+    }
+  };
+  walk('');
+  if (files.length === 0) return '';
+  const names = runGitBytes(repoPath, ['hash-object', '--no-filters', '--stdin-paths'], {
+    input: Buffer.from(files.map(({ path }) => `${join(dir, path)}\n`).join('')),
+    maxBuffer: files.length * OBJECT_NAME_LINE_BYTES,
+    timeout: GATE_COMMAND_TIMEOUT_MS,
+  })
+    .toString('utf8')
+    .split('\n');
+  return listing(files.map(({ path, mode }, i) => `${mode} blob ${names[i]}\t${path}`));
+}
+
+/**
+ * A checkout's root as it stands on disk, each file read without following a
+ * link. Given the `repoPath` whose object format hashes its files, a directory
+ * reads as the listing of its tree (`diskListing`); without one, it is not read.
+ */
+export function diskRoot(checkout: string, repoPath?: string): RootFiles {
   return rootFiles(
-    readdirSync(checkout).map((name) => [
-      name,
-      () => readPlainFile(join(checkout, name), { followLinks: false }),
-    ]),
+    readdirSync(checkout, { withFileTypes: true }).map((entry) => {
+      const path = join(checkout, entry.name);
+      const read =
+        entry.isDirectory() && repoPath !== undefined
+          ? () => diskListing(repoPath, path)
+          : () => readPlainFile(path, { followLinks: false });
+      return [entry.name, read];
+    }),
   );
 }
 
 /**
  * A commit's root, listed and read from `repoPath`'s object store, never from a
  * checkout a session's code has run in (decision 143). Only a regular file's
- * blob is read, so a link is not followed.
+ * blob is read, so a link is not followed; a directory reads as `ls-tree -r`
+ * lists it, as `diskRoot` lists one on disk.
  */
 export function treeRoot(repoPath: string, sha: string): RootFiles {
   return rootFiles(
@@ -360,8 +488,17 @@ export function treeRoot(repoPath: string, sha: string): RootFiles {
         const tab = entry.indexOf('\t');
         const [mode = '', , oid = ''] = entry.slice(0, tab).split(' ');
         const name = entry.slice(tab + 1);
-        const read = () => runGit(repoPath, ['cat-file', 'blob', oid], GIT_READ);
-        return [name, PLAIN_BLOB_MODE.test(mode) ? read : unreadable(name)];
+        const read = PLAIN_BLOB_MODE.test(mode)
+          ? () => runGit(repoPath, ['cat-file', 'blob', oid], GIT_READ)
+          : mode === TREE_MODE
+            ? () =>
+                listing(
+                  runGit(repoPath, ['ls-tree', '-r', '-z', oid], GIT_READ)
+                    .split('\0')
+                    .filter((line) => line !== ''),
+                )
+            : unreadable(name);
+        return [name, read];
       }),
   );
 }
@@ -381,8 +518,8 @@ interface VitestCollection {
 /**
  * What a plain vitest run over `root` collects, or undefined where that cannot
  * be read: no config at the root, a workspace file, or a config `configGlobs`
- * does not read. The config is the first of vitest's own list present, parsed,
- * never run. With none at the root, vitest loads the first it finds in a
+ * does not read, given the package's own name from the root's manifest. The
+ * config is the first of vitest's own list present, parsed, never run. With none at the root, vitest loads the first it finds in a
  * directory above, which a session can write and no read of the commit sees.
  * A path holding a line break is collected by nothing (`UNREAD_PATH`). Throws
  * where the root cannot be read.
@@ -391,7 +528,12 @@ export function vitestCollection(root: RootFiles): VitestCollection | undefined 
   if ([...root.keys()].some((name) => VITEST_WORKSPACE_FILE.test(name))) return undefined;
   const file = VITEST_CONFIG_FILES.find((name) => root.has(name));
   if (file === undefined) return undefined;
-  const globs = configGlobs((root.get(file) as () => string)());
+  const manifest = root.get('package.json');
+  const name = manifest && (JSON.parse(manifest()) as { name?: unknown } | null)?.name;
+  const globs = configGlobs(
+    (root.get(file) as () => string)(),
+    typeof name === 'string' ? name : undefined,
+  );
   return (
     globs && {
       collects: (path) =>

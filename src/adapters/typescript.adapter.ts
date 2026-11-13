@@ -7,7 +7,7 @@ import {
   readFileSync,
   readlinkSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { dirname, join, normalize, relative, sep } from 'node:path';
 import ts from 'typescript';
 import { withoutFiles } from '../core/coverage.utils.js';
@@ -209,21 +209,23 @@ function runsPlainVitest(manifest: PackageManifest | undefined): boolean {
 }
 
 /**
- * The root files, by lower-cased name, that decide what a vitest run collects:
- * the manifest whose script starts it, the npm, yarn, pnpm and bun configs that
- * can change how that script runs, yarn's Plug'n'Play runtime, and every config
- * and workspace file vitest or vite reads.
+ * The root entries, by lower-cased name, that decide what a vitest run
+ * collects: the manifest whose script starts it, the npm, yarn, pnpm and bun
+ * configs and env files that can change how that script runs, yarn's
+ * Plug'n'Play runtime (`.pnp.cjs`, `.pnp.loader.mjs`) and its `.yarn`
+ * directory, read whole, and every config and workspace file vitest or vite
+ * reads.
  */
 const VITEST_RUN_INPUT =
-  /^(?:package\.json|\.npmrc|\.yarnrc(?:\.yml)?|\.env\.yarn|\.pnp\.[^/]*|pnpm-workspace\.yaml|bunfig\.toml|vite(?:st)?\.(?:config|workspace|projects)\.[^/]*)$/;
+  /^(?:package\.json|\.npmrc|\.yarnrc(?:\.yml)?|\.env(?:\.[^/]*)?|\.pnp\.[^/]*|\.yarn|pnpm-workspace\.yaml|bunfig\.toml|vite(?:st)?\.(?:config|workspace|projects)\.[^/]*)$/;
 
 /**
  * The npm, yarn, pnpm and bun configs among the run inputs, which the branch
- * may commit: `.env.yarn` too, which Yarn 4 injects into every script's
- * environment by default.
+ * may commit, and the env files: `.env.yarn`, which Yarn 4 injects into every
+ * script's environment by default, and every `.env*`, which bun loads.
  */
 const PACKAGE_MANAGER_CONFIG =
-  /^(?:\.npmrc|\.yarnrc(?:\.yml)?|\.env\.yarn|pnpm-workspace\.yaml|bunfig\.toml)$/;
+  /^(?:\.npmrc|\.yarnrc(?:\.yml)?|\.env(?:\.[^/]*)?|pnpm-workspace\.yaml|bunfig\.toml)$/;
 
 /**
  * A key, in any of their spellings, by which a package-manager config has the
@@ -236,6 +238,25 @@ const RUNS_A_FILE =
   /yarn[-_]?path|plugins|node[-_]?options|script[-_]?shell|preload|inject[-_]?environment[-_]?files/i;
 
 /**
+ * A `$` in a key, the text of a line that is not a comment before its first
+ * `=` or `:`, which npm substitutes from the environment, so `${KEY}=` may
+ * spell any key.
+ */
+const KEY_SUBSTITUTION = /^(?![ \t]*[#;])[^=:\r\n\u2028\u2029]*\$/m;
+
+/**
+ * Whether a package-manager config or env file may have the run load a file:
+ * it names one of `RUNS_A_FILE`'s keys as text, or holds a backslash, by which
+ * each of these formats escapes a character of a key, quoted or not
+ * (`"yarn\u0050ath"`), or a substitution in a key. Read as text rather than
+ * parsed as each package manager parses it, so a value with an escape costs
+ * the split too.
+ */
+function runsAFile(text: string): boolean {
+  return RUNS_A_FILE.test(text) || text.includes('\\') || KEY_SUBSTITUTION.test(text);
+}
+
+/**
  * Yarn's Plug'n'Play runtime, which yarn loads into every script it runs. It
  * resolves packages without the `node_modules` the gate links and checks, from
  * a cache the branch may commit, so where it stands the run is the branch's.
@@ -243,10 +264,13 @@ const RUNS_A_FILE =
 const PNP_RUNTIME = /^\.pnp\./;
 
 /** What vitest and vite write in `node_modules` as they run, which the gate does not link. */
-const RUN_CACHE = /^(?:\.cache$|\.vite)/;
+const RUN_CACHE = /^\.(?:cache|vite)$/;
 
-/** Where a package manager puts the binaries a script runs by name. */
-const BIN_DIR = '.bin';
+/**
+ * Dot-named `node_modules` entries a run loads: the binaries a script runs by
+ * name, and the `.hooks` npm 6 and older ran around each script.
+ */
+const RUN_LOADED_DOT_ENTRIES = ['.bin', '.hooks'];
 
 /**
  * A checkout's root as the diff-size split reads it: from the commit it holds
@@ -259,14 +283,16 @@ function rootAt(ctx: CapabilityContext, path: string, sha: string | undefined): 
 }
 
 /**
- * Whether a `node_modules` entry the trusted checkout's lacks is one no run
- * loads: a dot-named one, which no package can be named, such as the build
- * info `tsc -b` may write there, but not the binaries' directory, in any case.
+ * Whether a `node_modules` entry the trusted checkout's lacks is one the gate
+ * lets stand: a dot-named one, which no package can be named, such as the
+ * build info `tsc -b` may write there, but none the run itself loads, in any
+ * case. A package may still load one by name, as `@prisma/client` loads
+ * `.prisma/client`, but from its own real path, the trusted checkout's.
  */
 function unloadedEntry(trusted: string, name: string): boolean {
   return (
     name.startsWith('.') &&
-    name.toLowerCase() !== BIN_DIR &&
+    !RUN_LOADED_DOT_ENTRIES.includes(name.toLowerCase()) &&
     lstatSync(join(trusted, name), { throwIfNoEntry: false }) === undefined
   );
 }
@@ -294,34 +320,85 @@ function environmentLinked({ configPath, measurePath }: CapabilityContext): bool
 }
 
 /**
- * The root files `pattern` names, by name, each read, as one string. Throws
- * where one cannot be read.
+ * The root entries `pattern` names, by name, each read. Throws where one
+ * cannot be read.
  */
-function runInputs(root: RootFiles, pattern: RegExp): string {
+function runInputs(root: RootFiles, pattern: RegExp): [string, string][] {
   const inputs = [...root].filter(([name]) => pattern.test(name));
-  return JSON.stringify(inputs.map(([name, read]) => [name, read()]).sort());
+  return inputs.map(([name, read]): [string, string] => [name, read()]).sort();
 }
 
-/**
- * What a plain vitest run over `root` collects, with its package-manager
- * configs beside the config it compares across checkouts; undefined where it
- * is unknown, where one of those configs runs a file, or where yarn's
- * Plug'n'Play runtime stands at the root. Throws where the root cannot be read.
- */
 function parsedManifest(root: RootFiles): PackageManifest | undefined {
   const read = root.get('package.json');
   return read && (JSON.parse(read()) as PackageManifest);
 }
 
+/**
+ * Manifest fields `pm run test` does not read: the dependency maps, which the
+ * `node_modules` the gate links from the trusted checkout answers whatever the
+ * branch declares, and the scripts, whose test ones `runsPlainVitest` reads
+ * on each side.
+ */
+const NOT_RUN_FIELDS = [
+  'dependencies',
+  'devDependencies',
+  'optionalDependencies',
+  'peerDependencies',
+  'peerDependenciesMeta',
+  'scripts',
+];
+
+/**
+ * The manifest's fields that may shape the run, compared across checkouts:
+ * `packageManager`, a `pnpm` or `config` block, `type`, `imports` and the
+ * rest. A key the branch reorders counts as a change.
+ */
+function runFields(manifest: PackageManifest): [string, unknown][] {
+  return Object.entries(manifest).filter(([field]) => !NOT_RUN_FIELDS.includes(field));
+}
+
+/**
+ * What a plain vitest run over `root` collects, with the manifest's run fields
+ * and the package-manager configs beside the config it compares across
+ * checkouts; undefined where it is unknown, where one of those configs may run
+ * a file (`runsAFile`), or where yarn's Plug'n'Play runtime stands at the
+ * root. Throws where the root cannot be read.
+ */
 function plainVitestCollection(root: RootFiles): ReturnType<typeof vitestCollection> {
+  const manifest = parsedManifest(root);
   const managers = runInputs(root, PACKAGE_MANAGER_CONFIG);
   const collection =
-    runsPlainVitest(parsedManifest(root)) &&
-    !RUNS_A_FILE.test(managers) &&
+    runsPlainVitest(manifest) &&
+    !managers.some(([, text]) => runsAFile(text)) &&
     ![...root.keys()].some((name) => PNP_RUNTIME.test(name))
       ? vitestCollection(root)
       : undefined;
-  return collection && { ...collection, config: [collection.config, managers].join('\0') };
+  return (
+    collection && {
+      ...collection,
+      config: JSON.stringify([collection.config, runFields(manifest as PackageManifest), managers]),
+    }
+  );
+}
+
+/**
+ * The user-level `.npmrc` npm and pnpm read for the gate's run: the one the
+ * operator names by `npm_config_userconfig` through `--gate-env`, or the one
+ * in the home directory the gate's environment keeps.
+ */
+function userNpmrc({ gateEnv = [] }: CapabilityContext): string {
+  const named = gateEnv.find((name) => name.toLowerCase() === 'npm_config_userconfig');
+  return (named && process.env[named]) || join(homedir(), '.npmrc');
+}
+
+/**
+ * Whether the user-level `.npmrc` may have the run load a file
+ * (`runsAFile`): a session can write it, and no commit holds it. Throws where
+ * it stands but cannot be read.
+ */
+function userConfigRunsAFile(ctx: CapabilityContext): boolean {
+  const path = userNpmrc(ctx);
+  return existsSync(path) && runsAFile(readFileSync(path, 'utf8'));
 }
 
 /** The config files vitest reads at a package root. */
@@ -551,8 +628,9 @@ export const typescriptAdapter: Adapter = {
     try {
       return (
         environmentLinked(ctx) &&
-        runInputs(diskRoot(ctx.measurePath), VITEST_RUN_INPUT) ===
-          runInputs(treeRoot(ctx.configPath, ctx.measureSha), VITEST_RUN_INPUT)
+        !userConfigRunsAFile(ctx) &&
+        JSON.stringify(runInputs(diskRoot(ctx.measurePath, ctx.configPath), VITEST_RUN_INPUT)) ===
+          JSON.stringify(runInputs(treeRoot(ctx.configPath, ctx.measureSha), VITEST_RUN_INPUT))
       );
     } catch {
       return false;
