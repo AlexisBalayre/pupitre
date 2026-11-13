@@ -32,19 +32,37 @@ re-run with `--accept-debt "<reason>" --review-by "<condition>"`. One reason is 
 flagged stage, so write one that fits all of them. On pass the branch is pushed and a PR opened;
 `pup status` then says `merged`, which means the PR exists, not that GitHub merged it.
 
-On pass the gate also sets a `pup-gate` success status on the sha it pinned (decision 184). Once
-per repo, make that status a required check on the target. GitHub then keeps the merge button
-disabled on any head pushed after the gate:
+On pass the gate also sets a `pup-gate` success status on the sha it pinned (decision 184). The
+operator can make that status a required check on the project's target branch. GitHub then keeps
+the merge button disabled on any head pushed after the gate. This is a one-time setup per repo
+that the operator runs in their own shell. Never run it yourself: hand the operator these
+commands, with `TARGET` replaced by the branch `pup merge --pr` targets. First, read the
+protection:
 
 ```
-gh api --method POST repos/OWNER/REPO/branches/main/protection/required_status_checks/contexts \
+gh api repos/OWNER/REPO/branches/TARGET/protection
+```
+
+Then run only the command that fits what the read showed:
+
+```
+# Protected, with required_status_checks: add pup-gate to them
+gh api --method POST repos/OWNER/REPO/branches/TARGET/protection/required_status_checks/contexts \
   -f 'contexts[]=pup-gate'
+# Protected, with no required_status_checks: turn them on with pup-gate alone
+gh api --method PATCH repos/OWNER/REPO/branches/TARGET/protection/required_status_checks \
+  -F strict=false -f 'contexts[]=pup-gate'
+# Either protected case, unless enforce_admins.enabled is already true
+gh api --method POST repos/OWNER/REPO/branches/TARGET/protection/enforce_admins
 ```
 
-That command adds the check to a branch that already requires status checks. For a branch with no
-protection, use the `PUT` in decision 184, which replaces any protection the branch has. When a PR
-shows `pup-gate` as expected, its head moved after the gate: re-gate it with
-`pup merge <task> --pr`. Never set the status by hand.
+On a branch that is not protected at all (the read returns 404), use the `PUT` in decision 184
+instead. Only there is it safe, because it replaces any existing protection, and it turns on
+`enforce_admins` itself. `enforce_admins` is not optional. Without it, an admin can merge without
+waiting for the check, and sessions share the operator's gh login. After the setup, a target that
+a plain `pup merge` fast-forwarded can no longer be pushed, so use `--pr`. When a PR shows
+`pup-gate` as expected, its head moved after the gate: re-gate it with `pup merge <task> --pr`.
+Never set the status by hand.
 
 Never validate a change to the gate with the gate on its own branch.
 

@@ -17,36 +17,64 @@
     set it, the run fails before the session moves, and the retry of decision 27 sets it.
     *The protection.* As a required status check on the target branch, `pup-gate` keeps the merge
     button disabled until `pup merge --pr` has gated the PR's head. The operator sets this up once
-    per repo; pup does not, because it is a repo-wide setting and no session's change. For a target
-    with no protection yet (the `PUT` replaces any protection the branch already has):
+    per repo, in their own shell. pup does not do it, and neither does a session or the conductor,
+    because it is a repo-wide setting and no session's change. `TARGET` below is the branch
+    `pup merge --pr` targets, the main checkout's branch. First read the target's protection, then
+    run only the command for its state, so no existing rule is wiped:
 
     ```sh
-    gh api --method PUT repos/OWNER/REPO/branches/main/protection --input - <<'JSON'
-    {
-      "required_status_checks": { "strict": false, "contexts": ["pup-gate"] },
-      "enforce_admins": true,
-      "required_pull_request_reviews": null,
-      "restrictions": null
-    }
-    JSON
+    gh api repos/OWNER/REPO/branches/TARGET/protection
     ```
 
-    For a target that already requires status checks, add `pup-gate` to them:
+    - `Branch not protected` (404): protect it. This `PUT` is safe only here, because it replaces
+      any protection the branch already has.
+
+      ```sh
+      gh api --method PUT repos/OWNER/REPO/branches/TARGET/protection --input - <<'JSON'
+      {
+        "required_status_checks": { "strict": false, "contexts": ["pup-gate"] },
+        "enforce_admins": true,
+        "required_pull_request_reviews": null,
+        "restrictions": null
+      }
+      JSON
+      ```
+
+    - Protected, with no `required_status_checks`: turn them on with `pup-gate` alone. This
+      `PATCH` replaces the list of required checks, which is empty in this state.
+
+      ```sh
+      gh api --method PATCH repos/OWNER/REPO/branches/TARGET/protection/required_status_checks \
+        -F strict=false -f 'contexts[]=pup-gate'
+      ```
+
+    - Protected, with `required_status_checks`: add `pup-gate` to the checks already required.
+
+      ```sh
+      gh api --method POST repos/OWNER/REPO/branches/TARGET/protection/required_status_checks/contexts \
+        -f 'contexts[]=pup-gate'
+      ```
+
+    In both protected states, also turn on `enforce_admins` unless the read showed it already on:
 
     ```sh
-    gh api --method POST repos/OWNER/REPO/branches/main/protection/required_status_checks/contexts \
-      -f 'contexts[]=pup-gate'
+    gh api --method POST repos/OWNER/REPO/branches/TARGET/protection/enforce_admins
     ```
 
-    Check it with `gh api repos/OWNER/REPO/branches/main/protection/required_status_checks --jq
-    .contexts`. On GitHub Enterprise, add `--hostname HOST` to each command. `enforce_admins` is
-    on because the operator usually administers the repo, and GitHub offers an admin a bypass
-    otherwise. `strict` is off: the gate already brings the branch onto the target (decision 105).
+    Check the result by running the read again: `required_status_checks` must list `pup-gate`,
+    and `enforce_admins.enabled` must be `true`. On GitHub Enterprise, add `--hostname HOST` to each
+    command. `enforce_admins` is required, not optional. The operator usually administers the repo,
+    and without it GitHub lets an admin merge without waiting for the check (`gh pr merge --admin`,
+    or the merge box's bypass). Sessions share the operator's gh login, so they could do the same.
+    `strict` is off: the gate already brings the branch onto the target (decision 105).
     Strict mode would also make every move of the target a push to the PR, and each push needs a
     re-gate. The check also holds every PR that pup did not open. That is intended: no PR merges
     without the gate.
     *Limits, accepted.* Anyone who can write to the repo can set a status, including a session
     that holds the operator's gh login. So `pup-gate` stops an honest push made after the gate from
     being merged. It does not stop a session that forges the status. `pup land`, which reads the
-    pin from the store, remains the check for that case. On a private repo, branch protection needs
-    a paid GitHub plan. Without it, the status is only informational.
+    pin from the store, remains the check for that case. Once `pup-gate` is required, GitHub refuses
+    a push of the target made after a plain `pup merge`, because that path fast-forwards the local
+    target and sets no status. With `enforce_admins` on, that includes the operator's own push, so
+    `--pr` is the only way pup's work reaches such a target. On a private repo, branch protection
+    needs a paid GitHub plan. Without it, the status is only informational.
