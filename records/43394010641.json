@@ -1,0 +1,97 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-13T08:37:08.293Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43394010641",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43394010641",
+  "actor": "AlexisBalayre",
+  "commit_sha": "9c472bf272eed605b7f52bc78f8aa20919fe470a",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 305,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "guards"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "guards"
+  ],
+  "reviewers_skipped": [
+    "conventions",
+    "context",
+    "maintainability",
+    "docs",
+    "spec",
+    "simplicity",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/cli/ui/use-controls.hook.ts",
+      "line": "235-249",
+      "description": "The new digit keys answer whichever session sits at the cursor's index. The new sortRank moves rows exactly when a question is asked or answered, so a refresh between reading and pressing can send one session's option to a different worker, with no confirm step.",
+      "status": "unresolved"
+    }
+  ],
+  "findings": [],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Round 5 budget: spawned only review-correctness (2 instances: src/core, src/cli) plus review-security (2 instances: deliver path, store/display) and review-guards, whose gates held. Skipped conventions, docs, context, simplicity and maintainability per the round budget. Also skipped review-workflow-safety: the PR's own diff touches no workflow. Skipped review-spec: no closing issues. No reviewer returned a finding, so neither the consolidator nor any validator ran."
+    },
+    {
+      "component": "orchestrator",
+      "description": "The prior important on the digit-key cursor is still unresolved at 9c472bf. pinnedId is set only on an arrow-key press (use-controls.hook.ts ~391), so until the operator first moves the cursor, it is still the bare index into rows that a question re-sorts."
+    },
+    {
+      "component": "guards",
+      "description": "The guards reviewer did not open some test files that read source (routing-utils, overlap, merge-gate-untested, land, git-diff-client). It cannot rule out a source-scanning guard in them. The PR's gate ran the full suite green at 1cd5957, which limits the risk."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 3.4294683999999993,
+  "duration_ms": 200172,
+  "num_turns": 13,
+  "tokens": {
+    "input": 12,
+    "output": 8558,
+    "cache_read": 294889,
+    "cache_creation": 56391,
+    "total": 359850
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 186,
+      "output": 54134,
+      "cache_read": 3618367,
+      "cache_creation": 272842,
+      "cost_usd": 3.3404803999999992
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 18,
+      "output": 2917,
+      "cache_read": 117495,
+      "cache_creation": 19213,
+      "cost_usd": 0.088988
+    }
+  ],
+  "permission_denials": []
+}
