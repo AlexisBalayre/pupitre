@@ -51,13 +51,25 @@ const processComponentSchema = z.enum([
 
 const reviewModeSchema = z.enum(["full", "incremental"]);
 
+const priorStatusSchema = z.enum(["resolved", "unresolved"]).describe("Whether the current head resolves the prior finding.");
+
+/** A prior important as the record keeps it: the poster copies file, line and description from the prior record, never from the model. */
 const priorImportantSchema = z.object({
   file: z.string().nullable().describe("Repo-relative file path from the prior record."),
   line: z.string().nullable().describe("Line number or range from the prior record."),
-  description: z
-    .string()
-    .describe("The prior finding's one-line description, copied from the prior record, so an unresolved one can be named."),
-  status: z.enum(["resolved", "unresolved"]).describe("Whether the current head resolves the prior finding."),
+  description: z.string().describe("The prior finding's one-line description, as the prior record has it."),
+  status: priorStatusSchema,
+});
+
+const priorVerdictSchema = z.object({
+  from: z
+    .enum(["findings", "prior_importants"])
+    .describe("Which array of the prior record holds the entry: an important of its findings, or an unresolved entry of its prior_importants."),
+  index: z
+    .number()
+    .int()
+    .describe("The entry's position in that array, counting every element from 0, whatever its tag or status."),
+  status: priorStatusSchema,
 });
 
 const findingSchema = z.object({
@@ -114,9 +126,9 @@ export const reviewSummarySchema = z.object({
     .nullable()
     .describe("The prior review's head SHA the delta ran from; null on a full review."),
   prior_importants: z
-    .array(priorImportantSchema)
+    .array(priorVerdictSchema)
     .describe(
-      "When the Mode line names a prior record: its important findings, plus the unresolved entries its own prior_importants carried forward, each checked against the current head. Copy every still-unresolved entry forward; empty only when no prior record is named.",
+      "When the Mode line names a prior record: one verdict per important of its findings and per unresolved entry of its prior_importants, each checked against the current head. The poster names each from the record itself, and carries forward any entry not marked resolved; empty only when no prior record is named.",
     ),
   findings: z.array(findingSchema).describe("The confirmed findings the run acted on."),
   refuted_findings: z
@@ -225,6 +237,12 @@ export const metricsRecordSchema = z.object({
     ),
 });
 
+/** The fields of the prior review record a round carries its open importants from; older records may hold null. */
+export const priorReviewSchema = z.object({
+  findings: z.array(findingSchema).nullable(),
+  prior_importants: z.array(priorImportantSchema).nullable(),
+});
+
 /** The poster's hand-off to the metrics step, written as `posted.json`. */
 export const postedRecordSchema = z.object({
   comments_posted: z.number().int(),
@@ -233,6 +251,9 @@ export const postedRecordSchema = z.object({
 export type ReviewerArea = z.infer<typeof reviewerAreaSchema>;
 export type ReviewDepth = (typeof REVIEW_DEPTHS)[number];
 export type Finding = z.infer<typeof findingSchema>;
+export type PriorImportant = z.infer<typeof priorImportantSchema>;
+export type PriorVerdict = z.infer<typeof priorVerdictSchema>;
+export type PriorReview = z.infer<typeof priorReviewSchema>;
 export type RefutedFinding = z.infer<typeof refutedFindingSchema>;
 export type ReviewSummary = z.infer<typeof reviewSummarySchema>;
 export type MetricsRecord = z.infer<typeof metricsRecordSchema>;

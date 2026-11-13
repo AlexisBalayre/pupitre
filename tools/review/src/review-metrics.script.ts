@@ -1,5 +1,6 @@
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { parseReviewRequest } from "./preflight.utils";
+import { parsePriorReview, priorImportants, priorRecordPath } from "./prior-record.utils";
 import { consolidateSummary } from "./review-consolidate.utils";
 import { noVerdictReason } from "./review-completeness.utils";
 import {
@@ -26,7 +27,7 @@ import {
 // Bump whenever the record's meaning changes (a field added or repurposed, a
 // pipeline change that alters what a field measures): the retro partitions
 // trends by schema_version, so a silent semantic change poisons its baselines.
-const SCHEMA_VERSION = 7;
+const SCHEMA_VERSION = 8;
 
 function warn(message: string): void {
   process.stdout.write(`::warning::${message}\n`);
@@ -248,6 +249,10 @@ function main(): void {
   const summary = consolidated?.summary ?? null;
   const platform = platformMetrics(env.REVIEW_EXECUTION_FILE);
   const request = parseReviewRequest(env.REVIEW_COMMENT ?? "");
+  // Named from the prior record, as the poster names them, so the next round
+  // carries the text this round's threads and bullets hold.
+  const priorPath = priorRecordPath(env);
+  const priorRecord = parsePriorReview(existsSync(priorPath) ? readFileSync(priorPath, "utf8") : null);
 
   // A failed action step often produces no execution log, so its result cannot
   // report the error; the step outcome folds in through `noVerdictReason`. The
@@ -278,7 +283,7 @@ function main(): void {
     incremental_from_sha: summary?.incremental_from_sha ?? null,
     review_depth: request.depth,
     review_areas: request.areas,
-    prior_importants: summary?.prior_importants ?? null,
+    prior_importants: summary ? priorImportants(priorRecord, summary.prior_importants) : null,
     findings: summary?.findings ?? null,
     refuted_findings: summary?.refuted_findings ?? null,
     process_issues: summary?.process_issues ?? null,
