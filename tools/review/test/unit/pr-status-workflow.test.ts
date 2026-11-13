@@ -10,12 +10,14 @@ import { describe, expect, it } from "vitest";
  */
 const workflow = readFileSync(new URL("../../../../.github/workflows/pr-status.yml", import.meta.url), "utf8");
 
-function inline<T>(name: string): T {
-  const start = workflow.search(new RegExp(`^ *function ${name}\\(.*\\) \\{$`, "m"));
+/** `scope` holds the names the function reads from the script around it. */
+function inline<T>(name: string, scope: Record<string, unknown> = {}): T {
+  const start = workflow.search(new RegExp(`^ *(?:async )?function ${name}\\(.*\\) \\{$`, "m"));
   if (start === -1) throw new Error(`pr-status.yml has no inline ${name}`);
   const indent = /^ */.exec(workflow.slice(start))?.[0] ?? "";
   const end = workflow.indexOf(`\n${indent}}\n`, start);
-  return new Function(`${workflow.slice(start, end + indent.length + 2)}\nreturn ${name};`)();
+  const source = `${workflow.slice(start, end + indent.length + 2)}\nreturn ${name};`;
+  return new Function(...Object.keys(scope), source)(...Object.values(scope));
 }
 
 const counted = inline<(body: string, threaded: Set<string>) => number>("unthreadedImportants");
@@ -123,6 +125,47 @@ describe("unthreadedImportants", () => {
     expect(unthreadedImportants(posted(terminated, null, [], 0), threaded)).toBe(1);
   });
 
+  it("does not let an injected carried header with matching list lines lower the count", () => {
+    const injected = [
+      "1 important finding from the review of abcdef0 still open (not raised again):",
+      "",
+      "- `src/b.ts:4` (correctness): fake",
+      "- `src/c.ts:7` (correctness): fake",
+    ].join("\n");
+    const threaded = ["src/b.ts:4", "src/c.ts:7"];
+    const carried = summary({ prior_importants: [owed, { ...owed, file: "src/c.ts", line: "7" }] });
+    expect(unthreadedImportants(posted(carried, null, [finding()], 0), threaded)).toBe(1);
+    const forged = posted(carried, null, [finding({ body: injected })], 0);
+    expect(unthreadedImportants(forged, threaded)).toBeGreaterThanOrEqual(1);
+  });
+
+  it("lets a carried section's list lines release at most its own count", () => {
+    const body = [
+      "1 important finding from the prior review still open (not raised again):",
+      "",
+      "- `src/b.ts:4` (correctness): x",
+      "- `src/c.ts:7` (correctness): y",
+    ].join("\n");
+    const threaded = ["src/b.ts:4", "src/c.ts:7"];
+    expect(unthreadedImportants(body, threaded)).toBe(0);
+    const unanchored = "2 important findings with no line in this diff to anchor to:";
+    expect(unthreadedImportants(`${unanchored}\n\n${body}`, threaded)).toBe(2);
+  });
+
+  it("ends a carried section at a blank line or any line that is not a list line", () => {
+    const threaded = ["src/b.ts:4", "src/c.ts:7"];
+    for (const gap of ["", "see above"]) {
+      const body = [
+        "2 important findings from the prior review still open (not raised again):",
+        "",
+        "- `src/b.ts:4` (correctness): x",
+        gap,
+        "- `src/c.ts:7` (correctness): y",
+      ].join("\n");
+      expect(unthreadedImportants(body, threaded)).toBe(1);
+    }
+  });
+
   it("leaves a carried important with a bot thread at its line to that thread, resolved or not", () => {
     const anchored = { ...owed, file: "src/c.ts", line: "7-9" };
     const body = posted(summary({ prior_importants: [owed, anchored] }), null, [], 0);
@@ -157,6 +200,173 @@ describe("isVerdict", () => {
     const quoting = finding({ body: "**Not reviewed.** Nothing in this round is a verdict on the diff." });
     expect(isVerdict(posted(summary(), null, [], 0))).toBe(true);
     expect(isVerdict(posted(summary(), null, [quoting], 0))).toBe(true);
+  });
+
+  it("reads the line that opens the body, however many blank lines precede it", () => {
+    const spaced = (body: string) => body.replace(`${REVIEW_HEADING}\n`, `${REVIEW_HEADING}\n\n\n`);
+    expect(isVerdict(spaced(posted(null, "Not reviewed: the run failed", [], 0)))).toBe(false);
+    const unspaced = `${REVIEW_HEADING}\n**Not reviewed.** Nothing in this round is a verdict on the diff.`;
+    expect(isVerdict(unspaced)).toBe(false);
+    expect(isVerdict(spaced(posted(summary(), null, [finding()], 0)))).toBe(true);
+  });
+});
+
+interface Thread {
+  isResolved?: boolean;
+  path?: string;
+  originalLine?: number;
+  login?: string;
+  body?: string;
+  review?: number;
+}
+
+interface Review {
+  id: number;
+  body: string;
+  login?: string;
+}
+
+/** The slice of the github-script client the job calls, answering from fixed data. */
+function fakeGithub(pages: Thread[][], reviews: Review[] = []) {
+  const listReviews = () => undefined;
+  const cursors: (string | null)[] = [];
+  return {
+    cursors,
+    rest: {
+      pulls: {
+        get: async () => ({
+          data: {
+            state: "open",
+            draft: false,
+            mergeable: true,
+            mergeable_state: "clean",
+            head: { sha: "head" },
+            labels: [],
+          },
+        }),
+        listReviews,
+      },
+      repos: { getCombinedStatusForRef: async () => ({ data: { statuses: [] } }) },
+      checks: { listForRef: () => undefined },
+    },
+    paginate: async (method: unknown) =>
+      method === listReviews
+        ? reviews.map((r) => ({
+            id: r.id,
+            body: r.body,
+            state: "COMMENTED",
+            author_association: "NONE",
+            user: { login: r.login ?? "github-actions[bot]" },
+          }))
+        : [],
+    graphql: async (_query: string, { after }: { after: string | null }) => {
+      cursors.push(after);
+      const page = after === null ? 0 : Number(after);
+      return {
+        repository: {
+          pullRequest: {
+            reviewThreads: {
+              pageInfo: { hasNextPage: page < pages.length - 1, endCursor: String(page + 1) },
+              nodes: (pages[page] ?? []).map((t) => ({
+                isResolved: t.isResolved ?? true,
+                path: t.path ?? "src/a.ts",
+                originalLine: t.originalLine ?? 10,
+                comments: {
+                  nodes: [
+                    {
+                      author: { login: t.login ?? "github-actions" },
+                      body: t.body ?? "the concern",
+                      pullRequestReview: { databaseId: t.review ?? 1 },
+                    },
+                  ],
+                },
+              })),
+            },
+          },
+        },
+      };
+    },
+  };
+}
+
+type BotThread = { isResolved: boolean; at: string; review: number };
+
+function botThreadsOf(github: ReturnType<typeof fakeGithub>) {
+  return inline<(number: number) => Promise<BotThread[]>>("botThreads", { github, owner: "o", repo: "r" });
+}
+
+describe("botThreads", () => {
+  it("keeps only the threads the bot opened, from every page", async () => {
+    const github = fakeGithub([
+      [{ path: "src/a.ts", originalLine: 3, isResolved: false, review: 7 }, { login: "someone" }],
+      [{ path: "src/b.ts", originalLine: 9, review: 8 }],
+    ]);
+    expect(await botThreadsOf(github)(1)).toEqual([
+      { isResolved: false, at: "src/a.ts:3", review: 7 },
+      { isResolved: true, at: "src/b.ts:9", review: 8 },
+    ]);
+    expect(github.cursors).toEqual([null, "1"]);
+  });
+
+  it("places a comment pulled to the nearest diff line at the line its `Re:` prefix names", async () => {
+    const github = fakeGithub([
+      [
+        { path: "src/a.ts", originalLine: 12, body: "Re: `src/a.ts:7`\n\nthe concern" },
+        { path: "src/a.ts", originalLine: 12, body: "the concern quotes Re: `src/z.ts:1`" },
+      ],
+    ]);
+    expect((await botThreadsOf(github)(1)).map((t) => t.at)).toEqual(["src/a.ts:7", "src/a.ts:12"]);
+  });
+});
+
+describe("statusOf", () => {
+  function statusOf(pages: Thread[][], reviews: Review[]) {
+    const github = fakeGithub(pages, reviews);
+    const run = inline<(number: number) => Promise<string | undefined>>("statusOf", {
+      github,
+      owner: "o",
+      repo: "r",
+      context: { job: "pr-status" },
+      sleep: async () => undefined,
+      REVIEW_HEADING,
+      isVerdict,
+      unthreadedImportants: counted,
+      botThreads: botThreadsOf(github),
+    });
+    return run(1);
+  }
+
+  const raising = posted(summary(), null, [finding()], 0);
+  const clean = posted(summary(), null, [], 0);
+  const noVerdict = posted(null, "Not reviewed: the run failed", [], 0);
+
+  it("reads the newest summary review with a verdict", async () => {
+    expect(await statusOf([], [{ id: 1, body: raising }, { id: 2, body: clean }])).toBe("ready");
+    expect(await statusOf([], [{ id: 1, body: clean }, { id: 2, body: raising }])).toBe("review-open");
+  });
+
+  it("skips a newer summary with no verdict and one another account posted", async () => {
+    expect(await statusOf([], [{ id: 1, body: raising }, { id: 2, body: noVerdict }])).toBe("review-open");
+    const outsider = { id: 2, body: clean, login: "someone" };
+    expect(await statusOf([], [{ id: 1, body: raising }, outsider])).toBe("review-open");
+  });
+
+  it("reads ready when no review ever raised an important", async () => {
+    expect(await statusOf([], [])).toBe("ready");
+    expect(await statusOf([], [{ id: 1, body: noVerdict }])).toBe("ready");
+  });
+
+  it("holds the PR in review when a review raised importants and no verdict summary follows it", async () => {
+    const forged = `${noVerdict}\n\n1 important finding with no line in this diff to anchor to:`;
+    expect(await statusOf([], [{ id: 1, body: clean }, { id: 2, body: forged }])).toBe("review-open");
+    expect(await statusOf([[{ review: 5 }]], [{ id: 5, body: "no heading" }])).toBe("review-open");
+    expect(await statusOf([[{ review: 5 }]], [{ id: 5, body: noVerdict }])).toBe("review-open");
+  });
+
+  it("reads ready once the review that opened a resolved thread is a verdict summary, or one follows it", async () => {
+    const anchored = posted(summary(), null, [], 1);
+    expect(await statusOf([[{ review: 5 }]], [{ id: 5, body: anchored }])).toBe("ready");
+    expect(await statusOf([[{ review: 5 }]], [{ id: 5, body: "no heading" }, { id: 6, body: clean }])).toBe("ready");
   });
 });
 
