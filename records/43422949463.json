@@ -1,0 +1,86 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-13T12:12:51.268Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43422949463",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43422949463",
+  "actor": "AlexisBalayre",
+  "commit_sha": "2343d52ecb3adc0c5a71a1dedf6aba9364ee4658",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 318,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "guards"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "guards"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "simplicity",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "232",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The session-env allowlist JSDoc (and src/core/profile.constants.ts:22) still says NOT_INHERITED / tmuxEnv strips `CLAUDE*`, but the pattern is now the unanchored `/CLAUDE/`, so a reader takes it for a prefix match; say `*CLAUDE*` as the edited bullet at line 196 does.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.3217758999999998,
+  "duration_ms": 94031,
+  "num_turns": 13,
+  "tokens": {
+    "input": 10,
+    "output": 6705,
+    "cache_read": 183940,
+    "cache_creation": 58864,
+    "total": 249519
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 48,
+      "output": 16236,
+      "cache_read": 453357,
+      "cache_creation": 108600,
+      "cost_usd": 1.1351754
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 28,
+      "output": 4733,
+      "cache_read": 147270,
+      "cache_creation": 49795,
+      "cost_usd": 0.1866005
+    }
+  ],
+  "permission_denials": []
+}
