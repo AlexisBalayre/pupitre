@@ -1,0 +1,118 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-13T08:42:28.982Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43394003241",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43394003241",
+  "actor": "AlexisBalayre",
+  "commit_sha": "11dc7be7928b66ed3b594c80363d5d3e7d6d9c3e",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 289,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "guards"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "guards"
+  ],
+  "reviewers_skipped": [
+    "conventions",
+    "context",
+    "maintainability",
+    "docs",
+    "spec",
+    "simplicity",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "1109-1118",
+      "description": "A branch that only deletes a real binary of a format outside BINARY_FORMATS (a .pdf, .gif, .woff2, .webp, .zip), or a PNG/JPEG over 1 MiB, now recounts its newline bytes as deleted source lines and names the file in `forged`. Before this PR it answered null. Nothing reaches the tree, so this is a false forged flag, and the bogus count can also trip the oversize flag.",
+      "status": "unresolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/known-binary.utils.ts",
+      "line": "173-177",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "A `.gitattributes` `working-tree-encoding` attribute rewrites a known-binary blob on checkout, so a blob that passes the ICO/TIFF/MKV/TTF magic and zip/phar/tar refusals is checked out as a real zip or phar, carrying uncounted compressed source past the diff-size gate.",
+      "body": "**Concern.** `knownBinarySize` judges the blob, which is the bytes stored in git. A loader reads the checked-out file. The built-in `working-tree-encoding` attribute in `.gitattributes` rewrites those bytes on checkout. It needs no config driver, so ADR 0050's \"the attributes half alone is inert\" does not cover it. Nothing in `src/` consults attributes when judging a binary:\n\n```ts\nexport function knownBinarySize(blob: Buffer, formats: BinaryFormat[]): number | false {\n  if (!holdsNul(blob)) return false;\n  if (holdsZipRecord(blob) || holdsPharStub(blob) || opensWithTarHeader(blob)) return false;\n  return opensWithMagic(blob, formats) && blob.length;\n}\n```\n\nOn checkout, git's `encode_to_worktree` converts the blob from UTF-8 into the named encoding. It skips the conversion only when the blob is not valid UTF-8, and it does no binary or NUL check first. `IBM037` (EBCDIC) maps all 256 byte values, so a valid UTF-8 blob can be written out as any bytes at all. For example, the output `PK\\x05\\x06` comes from the characters `&.\\t\\u0086`, so the blob never contains the zip signature literally. Four of the seven magics are themselves valid UTF-8: ICO `\\0\\0\\x01\\0`, TIFF, Matroska and TTF. IBM037 also maps ICO's magic bytes to themselves.\n\n**Trigger.**\n1. Commit a one-line `.gitattributes`: `assets/x.ico working-tree-encoding=IBM037`.\n2. Commit `assets/x.ico`, mode 100644 and at most 1 MiB. It is `\\0\\0\\x01\\0` followed by the UTF-8 preimage of a deflated zip of Python. It holds a NUL and opens with the ICO magic. It carries no literal `PK\\x05\\x06`, `PK\\x03\\x04`, `__halt_compiler` or tar header. It is skipped at 0 lines and not added to `forged`.\n3. Add one counted line: `sys.path.insert(0, 'assets/x.ico')`.\n\n**Consequence.** Every checkout after the merge writes a real zip, which zipimport loads past the 4-byte prefix (`phar://` works the same way). This brings back the hole ADR 0154 closes by refusing a zip end record \"anywhere\": megabytes of compressed source behind a ≤1 MiB blob, and about four such files per 4 MiB budget. The `.gitattributes` line counts as 1 source line and raises no flag. This is not a regression, since before this PR any NUL-holding blob was skipped. It is a working bypass of a refusal this PR adds and documents.\n\n**Fix direction.** Git re-encodes only a blob that decodes as UTF-8. One fix is to refuse any blob that is entirely valid UTF-8: `if (!holdsNul(blob) || isUtf8(blob)) return false;` with `import { isUtf8 } from 'node:buffer'`. Real ICO, TIFF, MKV and TTF data almost never decodes as UTF-8. The other fix is to read `git check-attr --source=<branch> working-tree-encoding` for each side and refuse the skip when it is set.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/11dc7be7928b66ed3b594c80363d5d3e7d6d9c3e/src/core/known-binary.utils.ts#L173-L177",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "1087-1097, 1184-1200",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "A gitlink (160000) side is read as a blob. If a branch swaps a binary file for a submodule at the same path, or a submodule for a binary file, `cat-file -s` or `git diff <blob> <commit>` throws, and the merge gate errors on every re-gate. Before this change the old code skipped that entry.",
+      "body": "**Concern.** A binary file and a submodule can trade places at the same path, for example a committed prebuilt `vendor/libfoo` replaced by a submodule, or the reverse. Tree-diff then reports one typechange pair (`T`). Only a file against a directory is split into a delete and an add, and a gitlink is not a directory. Numstat prints `-\\t-` for the pair because its blob side is binary. The `--raw` sides become `{mode: '160000', oid: <submodule commit>}` and `{mode: '100644', oid: <blob>}`. Nothing filters gitlinks before the recount (`rawSide` drops only the all-zero mode, and `countChangedLines` filters only lockfiles). `gitDiffBinaryRecount` then treats both sides as blobs:\n\n```ts\nconst size = blobSize(repoPath, side.oid);          // cat-file -s <commit oid>\nif (!mayBeKnownBinary(side.mode, size)) return false; // mode checked only after the read\n```\n\n```ts\nfor (const hunk of diffHunks(repoPath, [baseBlob.oid, branchBlob.oid])) {\n```\n\n**Trigger.**\n- If the path names a format (e.g. `x.png`), `blobIsKnownBinary` runs `cat-file -s` on the submodule commit before the mode check. That commit lives in the submodule's own object store, so the read fails.\n- Otherwise `sideOf` returns `false` and the recount runs `git diff <commit> <blob>`. That fails with a bad object, or is refused because it mixes a commit with a blob.\n\n**Consequence.** The error propagates out of `countChangedLines` and `measureBranch`. The gate errors on every re-gate of that branch, and there is no forged flag the operator can accept. Before this PR, `blobIsBinary` returned true for the binary side and the entry was skipped. No test pairs a gitlink with a `-\\t-` entry. The only gitlink assertion is `mayBeKnownBinary('160000', 10)`.\n\n**Fix direction.** Treat a 160000 side as having no blob before reading anything. Either count only the blob side's lines with `blobLines`, as an add or a delete is counted, or skip that side. In `blobIsKnownBinary`, check the mode before calling `blobSize`.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/11dc7be7928b66ed3b594c80363d5d3e7d6d9c3e/src/core/git-diff.client.ts#L1184-L1200",
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Round 5 importants-only budget: conventions, docs, context, simplicity and maintainability were skipped. Spec was skipped because no closing issue or --spec source exists, and workflow-safety because no .github/workflows file changed. Correctness and security each ran two instances because the diff is about 1,800 added lines. Under the round-5 budget, reviewers' minors were not recorded: a PHP old-format (257-byte checksum) tar header passing opensWithTarHeader for a `.tar.png` name, at the same impact ADR 0154 already accepts; readBlobs' exact maxBuffer also counting stderr; diffHunks passing blob oids without a trailing `--`; one 64 MiB cap shared across a filesNaming batch, a cost the ADR declares; and the filesNaming JSDoc still saying a listed path the tree does not hold 'refuses'. The guards reviewer noted that git-blobs.client.ts and git-diff.client.ts import each other; no guard checks for cycles."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 2,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 6.040523620000001,
+  "duration_ms": 555814,
+  "num_turns": 15,
+  "tokens": {
+    "input": 12,
+    "output": 14129,
+    "cache_read": 317948,
+    "cache_creation": 65465,
+    "total": 397554
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 170,
+      "output": 146594,
+      "cache_read": 3257519,
+      "cache_creation": 424680,
+      "cost_usd": 5.903858800000001
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 20,
+      "output": 3833,
+      "cache_read": 197069,
+      "cache_creation": 31257,
+      "cost_usd": 0.13621940000000002
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 161,
+      "cache_read": 1822,
+      "cache_creation": 2772,
+      "cost_usd": 0.00044542000000000003
+    }
+  ],
+  "permission_denials": []
+}
