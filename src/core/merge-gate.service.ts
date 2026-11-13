@@ -1359,7 +1359,7 @@ export async function runMergeGate(
         // conductor's checkout held `checkout`, a name the pins cannot predict.
         const checkoutDir = join(checkoutRoot, basename(checkoutRoot));
         return await (regate
-          ? regateMerged(db, req, session, regate, target, sandbox, checkoutDir)
+          ? regateMerged(db, req, session, regate, target, sandbox, checkoutDir, progress)
           : gateAndMerge(db, req, session, target, sandbox, checkoutDir, pullRequest, progress));
       } finally {
         // Still under the lock, on a pass, a failed stage and a throw alike, and

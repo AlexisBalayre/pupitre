@@ -25,6 +25,7 @@ import {
   timedSince,
   withLedgerKept,
 } from './merge-gate.service.js';
+import { NO_PROGRESS, type StageProgress } from './progress.utils.js';
 import { appendEvent, type SessionRow } from './session.repository.js';
 import type { PullRequestRef } from './types/github.types.js';
 import type {
@@ -151,6 +152,7 @@ export function planRegate(
  * at the pin, and the session stays merged. Nothing the first merge did
  * repeats: no teardown (the branch is left for `pup land`), no ratchet, no
  * decision draft, and no ledger entry of a kind the session already holds open.
+ * `progress` shows the stages it runs, as `gateAndMerge`'s do (decision 184).
  */
 export async function regateMerged(
   db: Database,
@@ -160,6 +162,7 @@ export async function regateMerged(
   target: string,
   sandbox: string,
   checkoutDir: string,
+  progress: StageProgress = NO_PROGRESS,
 ): Promise<MergeOutcome> {
   const { regate } = pullRequest;
   const stages: GateStageResult[] = [
@@ -173,6 +176,7 @@ export async function regateMerged(
     ...refuseGate(db, session, sandbox, stages),
     regated: true,
   });
+  progress.stage('fresh-base');
   const started = Date.now();
   const targetSha = resolveCommit(req.repoPath, `refs/heads/${target}`);
   // Pinned first, and once: no rebase will move the branch.
@@ -197,8 +201,18 @@ export async function regateMerged(
     }),
   );
 
-  const measured = await measureBranch(db, req, session, stages, checkoutDir, targetSha, sha);
+  const measured = await measureBranch(
+    db,
+    req,
+    session,
+    stages,
+    checkoutDir,
+    targetSha,
+    sha,
+    progress,
+  );
   if (!measured || (measured.flaggedDebt.length > 0 && !req.acceptDebt)) return refused();
+  progress.stage('merge');
   const commitSubjects = commitSubjectsBetween(req.repoPath, targetSha, sha);
   const ownSubject = firstOwnSubject(req.repoPath, targetSha, sha);
   // The stages measure the whole branch again, so the flags the first gate

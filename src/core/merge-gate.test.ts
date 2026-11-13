@@ -141,7 +141,7 @@ import {
   waitForLoad,
   withMergeLock,
 } from './merge-gate.service.js';
-import { stageProgress } from './progress.utils.js';
+import { MERGE_STAGES, stageProgress } from './progress.utils.js';
 import { GateInterruptedError, UndeclaredSandboxError } from './sandbox.utils.js';
 import {
   appendEvent,
@@ -1379,6 +1379,35 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(sh(bare, 'git', 'rev-parse', BRANCH).trim()).toBe(tip);
       expect(vi.mocked(runUtility).mock.calls.length).toBe(drafts);
       expect(killSession).toHaveBeenCalledTimes(1);
+    });
+
+    // Decision 184: the status line follows the re-gate past the lock.
+    it('shows the stages it runs on the status line, not the merge lock throughout', async () => {
+      await gateThenFix();
+      const lines: string[] = [];
+      const progress = stageProgress(MERGE_STAGES, {
+        write: (chunk) => lines.push(String(chunk)),
+      });
+
+      const outcome = await withFakeGh(fakeGh([openPrOnMain]), () =>
+        runMergeGate(
+          db,
+          { repoPath: repo, sessionId: SESSION_ID, adapters: [fixChecking], openPr: true },
+          progress,
+        ),
+      );
+
+      expect(outcome).toMatchObject({ status: 'merged', regated: true });
+      expect(lines.map((line) => line.replace(/, [^,]+\n$/, ''))).toEqual([
+        'stage 1/9, plan',
+        'stage 2/9, merge lock',
+        'stage 4/9, fresh-base',
+        'stage 5/9, build',
+        'stage 6/9, tests and checks',
+        'stage 7/9, scope-audit',
+        'stage 8/9, debt',
+        'stage 9/9, merge',
+      ]);
     });
 
     /** Run a re-gate expected to refuse, and assert it wrote nothing. */
