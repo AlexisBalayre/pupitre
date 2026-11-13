@@ -1488,5 +1488,59 @@ describe('landSession', { timeout: 20_000 }, () => {
       await expect(remeasure()).rejects.toThrow('there is nothing to remeasure');
       expectNothingChanged(before);
     });
+
+    // Without the audit the empty adapter list reaches the remeasure's own check.
+    it('refuses a remeasure with no adapter to measure with', async () => {
+      mergeMovedHead();
+      const before = mainSha();
+
+      await expect(
+        landSession(db, {
+          repoPath: repo,
+          sessionId: SESSION_ID,
+          adapters: [],
+          audit: false,
+          remeasure: true,
+        }),
+      ).rejects.toThrow(
+        `No adapter for ${repo}; the remeasure would measure nothing. Nothing was landed.`,
+      );
+      expectNothingChanged(before);
+    });
+
+    it('refuses --remeasure together with --accept-head', async () => {
+      const { later } = mergeMovedHead();
+      const before = mainSha();
+
+      await expect(
+        landSession(db, {
+          repoPath: repo,
+          sessionId: SESSION_ID,
+          adapters: [passingAdapter],
+          remeasure: true,
+          acceptHead: later,
+        }),
+      ).rejects.toThrow('--remeasure and --accept-head each vouch for a moved head; pass one.');
+      expectNothingChanged(before);
+    });
+
+    // Each gate wording read back, its stage the one that files it.
+    it.each([
+      ['Text files git reports as binary (3) merged from', 'diff-size'],
+      ['New unused exports (2) merged from', 'dead-code'],
+      ['Complexity rise (+20 decision points) merged from', 'complexity'],
+      ['Coverage unmeasured over 2 changed source file(s) in', 'coverage'],
+      ['Coverage gap (unreported files) merged from', 'coverage'],
+    ])('lands "%s" flagged by %s against the same accepted', async (wording, stage) => {
+      const { merge } = mergeMovedHead();
+      measuredAs(
+        [...pinnedStages, { stage, status: 'flagged' }],
+        [filed(wording)],
+        [filed(wording)],
+      );
+
+      await remeasure();
+      expect(mainSha()).toBe(merge);
+    });
   });
 });
