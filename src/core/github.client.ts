@@ -357,10 +357,11 @@ export interface ReviewThread {
    */
   isAnswered: boolean;
   /**
-   * What the operator said on it since a fix round's newest marked reply, or
-   * since the finding when no round replied, oldest first: the comments pup's
-   * own account wrote by hand or the repo's owner wrote, the round takes them
-   * with the finding. A member or collaborator may reopen a thread but is not
+   * The comments on it since a fix round's newest marked reply, or since the
+   * finding when no round replied, oldest first, that pup's own gh account or
+   * the repo's owner wrote: the round takes them with the finding, as thread
+   * data. Every session posts as that same login, so none is proof of the
+   * operator's word. A member or collaborator may reopen a thread but is not
    * relayed, as neither proves write access; nor is a comment hidden on GitHub
    * or edited by an account other than its author's.
    */
@@ -501,7 +502,7 @@ export function readPullRequestReview(
         (found, comment, index) => (isMarked(comment) ? index : found),
         -1,
       );
-      // Only the operator's own word is relayed, as written and shown.
+      // Only pup's login's or the owner's comments are relayed, as written and shown.
       const replies = said
         .slice(newestMarked + 1)
         .flatMap((comment) =>
