@@ -48,16 +48,11 @@
       stage is not skipped, and on the target-tree listing the complexity stage reads
       (decision 157), whose test now sets the key after the checks;
     - `--full-tree` on the nested-package `ls-tree` in `src/adapters/git-tree.client.ts`,
-      which reads the trusted checkout's repo at the measured sha and at the target sha the
-      gate pinned under the merge lock (`configSha`), never at the main checkout's `HEAD`: a
-      session could detach `.git/HEAD` to a commit with no nested `package.json` while the
-      listing ran and restore it before the last check, and every nested package's stages
-      were skipped with no error. A failed listing
+      which reads the trusted checkout at the measured sha and at `HEAD` (see the amendment
+      below). A failed listing
       there throws and the gate refuses: empty, the trusted set ran no nested package's own
       stages, and a session could fail it alone with an unparsable `.git/config` mended
-      before the last check. A context pinning one sha and not the other is refused before
-      any listing, since the side it leaves unpinned would be read at a movable HEAD. Only outside
-      the gate, a directory with no `.git` or a repository
+      before the last check. Only outside the gate, a directory with no `.git` or a repository
       with no commit yet lists as empty. The key checks' `.git/config` reads are timed out
       like a gate child, since a FIFO there would hang the gate under the merge lock.
     *Pathspec switches.* That magic holds only while git parses it: `scrubbedGitEnv` drops
@@ -74,3 +69,11 @@
     `profile-compiler.service.ts` (the launch profile) run unanchored in the main checkout.
     Neither is a gate stage; a follow-up anchors them. The ADR-number stage (decision 146)
     anchors its own reads.
+    *Amendment (2026-11-13, #327): the trusted nested listing reads at the pinned target sha.*
+    The nested-package `ls-tree` no longer reads the trusted side at the main checkout's
+    `HEAD`. It reads the checkout's repo at the measured sha and at the target sha the gate
+    pinned under the merge lock (`configSha`). At `HEAD`, a session could detach `.git/HEAD`
+    to a commit with no nested `package.json` while the listing ran and restore it before
+    the last check, and every nested package's stages were skipped with no error. A context
+    that pins one sha and not the other is refused before any listing, since the side it
+    leaves unpinned would be read at a movable `HEAD`.
