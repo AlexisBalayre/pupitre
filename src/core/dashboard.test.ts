@@ -1694,6 +1694,19 @@ describe('needsYou', () => {
     expect(buildDashboardSnapshot(db, repo, NOW).sessions[0]?.openPr).toBeUndefined();
   });
 
+  it('leaves out a PR once a retired event comes after its merge', () => {
+    seedMerge('s-pr', 'https://github.com/o/r/pull/7');
+    appendEvent(db, 's-pr', 'retired', {
+      prUrl: 'https://github.com/o/r/pull/7',
+      supersededBy: 't-other',
+    });
+    seedMerge('s-open', 'https://github.com/o/r/pull/8');
+
+    expect(inbox().map((need) => need.sessionId)).toEqual(['s-open']);
+    const retired = buildDashboardSnapshot(db, repo, NOW).sessions.find((s) => s.id === 's-pr');
+    expect(retired?.openPr).toBeUndefined();
+  });
+
   it('leaves out a PR once the target holds the commit the gate pinned', () => {
     const git = (...args: string[]) =>
       execFileSync('git', args, { cwd: repo, encoding: 'utf8', env: GIT_ENV }).trim();

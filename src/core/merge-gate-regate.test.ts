@@ -1531,6 +1531,32 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(sh(bare, 'git', 'rev-parse', BRANCH).trim()).toBe(pushed);
     });
 
+    // A session can move the lock away while the gate runs: the run refuses
+    // before it moves the branch, as before every ref it moves (decision 88).
+    it('refuses to merge the target in once its lock was moved away, moving nothing', async () => {
+      const worktree = seedSession(db, repo);
+      const { bare, pushed } = await pushedOnce(worktree);
+      commitIn(repo, 'README.md', '# moved on\n');
+      const lock = join(repo, '.git', 'pup-merge.lock');
+      beforeGit(
+        (args) => args.includes('commit-tree'),
+        () => renameSync(lock, `${lock}.moved`),
+      );
+      const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      onTestFinished(() => errors.mockRestore());
+      vi.mocked(steerPane).mockClear();
+      vi.mocked(execFileSync).mockClear();
+
+      await expect(
+        withFakeGh(fakeGh([openPrOnMain]), () => runMergeGate(db, request())),
+      ).rejects.toThrow(`the merge of main into ${BRANCH} was refused`);
+      expect(vi.mocked(steerPane)).not.toHaveBeenCalled();
+      expect(sh(repo, 'git', 'rev-parse', BRANCH).trim()).toBe(pushed);
+      expect(sh(worktree, 'git', 'rev-parse', 'HEAD').trim()).toBe(pushed);
+      expect(sh(bare, 'git', 'rev-parse', BRANCH).trim()).toBe(pushed);
+      expect(pushCalls()).toEqual([]);
+    });
+
     // Only exit 1 is a conflict: git with no `--write-tree` (before 2.38) dies
     // with 128 on every merge, which no re-steer can fix.
     it('throws to the operator when merge-tree fails other than on a conflict', async () => {

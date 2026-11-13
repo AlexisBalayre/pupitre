@@ -894,7 +894,8 @@ function dashboardQuestion(asked: QuestionEvent | undefined): DashboardQuestion 
 
 /**
  * The PR the newest merge opened, with the commit it pinned, unless a `landed`
- * event came after it (decision 83). Only the newest merge counts: a session
+ * or `retired` event came after it (decision 83); `pup retire` closes out a PR
+ * closed unmerged. Only the newest merge counts: a session
  * merged twice is described by the merge that stands. A merge with no PR is a
  * local fast-forward, already on the target, so nothing is open. `pup land`
  * writes `landed` once GitHub merged the PR and main holds the pinned sha
@@ -904,7 +905,7 @@ function openPullRequest(
   newestFirst: EventRow[],
 ): { url: string | undefined; sha: string | undefined; target: string | undefined } | undefined {
   for (const row of newestFirst) {
-    if (row.type === 'landed') return undefined;
+    if (row.type === 'landed' || row.type === 'retired') return undefined;
     const event = decodeEvent(row);
     if (event.type !== 'merge') continue;
     if (event.prUrl === undefined) return undefined;
