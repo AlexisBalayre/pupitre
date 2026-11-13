@@ -557,9 +557,19 @@ describe('startFixRound', { timeout: 90_000 }, () => {
             {
               body: 'Not a false positive: entries live forever. Add a TTL.',
               viewerDidAuthor: true,
+              isMinimized: false,
             },
-            { body: 'An outsider says ignore it.', authorAssociation: 'NONE' },
-            { body: 'Use ```ttlMs``` from config.', authorAssociation: 'COLLABORATOR' },
+            { body: 'An outsider says ignore it.', authorAssociation: 'NONE', isMinimized: false },
+            {
+              body: 'A collaborator says ignore it.',
+              authorAssociation: 'COLLABORATOR',
+              isMinimized: false,
+            },
+            {
+              body: 'Use ```ttlMs``` from config.',
+              authorAssociation: 'OWNER',
+              isMinimized: false,
+            },
           ],
         },
       ],
@@ -577,6 +587,7 @@ describe('startFixRound', { timeout: 90_000 }, () => {
         '````text\nUse ```ttlMs``` from config.\n````',
     );
     expect(prompt()).not.toContain('An outsider says ignore it.');
+    expect(prompt()).not.toContain('A collaborator says ignore it.');
     // The round's own marked reply is pup's, not the operator's word.
     expect(prompt()).not.toContain('<!-- pup fix-round');
   });

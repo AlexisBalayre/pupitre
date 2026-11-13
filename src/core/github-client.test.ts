@@ -315,53 +315,100 @@ describe('readPullRequestReview', () => {
     });
   });
 
-  // What the operator said since the round's newest reply goes to the next
-  // round with the finding; the bot's comments, pup's own marked replies and
-  // an outsider's word do not.
-  it('reads the replies those who may reopen a thread posted since its newest marked reply', () => {
+  describe('the replies a round takes with a finding', () => {
+    const SOMEONE = { __typename: 'User', login: 'someone' };
     const marked = (sha: string) => ({
       body: `Declined.\n\n<!-- pup fix-round ${sha} -->`,
       viewerDidAuthor: true,
       authorAssociation: 'OWNER',
+      isMinimized: false,
     });
-    const by = (authorAssociation: unknown, body: unknown) => ({
-      author: { __typename: 'User', login: 'someone' },
+    const by = (authorAssociation: unknown, body: unknown, fields: object = {}) => ({
+      author: SOMEONE,
       body,
       viewerDidAuthor: false,
       authorAssociation,
+      isMinimized: false,
+      lastEditedAt: null,
+      editor: null,
+      ...fields,
     });
-    const finding = { author: BOT, body: 'finding', authorAssociation: 'NONE' };
+    const finding = { author: BOT, body: 'finding', authorAssociation: 'NONE', isMinimized: false };
     const trail = (id: string, ...comments: unknown[]) =>
       thread({ id, trail: { nodes: [finding, ...comments] } });
-    ghAnswers({
-      state: 'OPEN',
-      headRefOid: HEAD,
-      reviews: { nodes: [review()] },
-      reviewThreads: {
-        pageInfo: { hasPreviousPage: false },
-        nodes: [
+    const repliesOf = (...nodes: unknown[]) => {
+      ghAnswers({
+        state: 'OPEN',
+        headRefOid: HEAD,
+        reviews: { nodes: [review()] },
+        reviewThreads: { pageInfo: { hasPreviousPage: false }, nodes },
+      });
+      return Object.fromEntries(read().openThreads.map((open) => [open.id, open.replies]));
+    };
+
+    // What the operator said since the round's newest reply goes to the next
+    // round with the finding. A member or collaborator may reopen a thread but
+    // proves no write access, so neither is relayed, nor is the bot or an outsider.
+    it("reads the operator's replies since the newest marked one", () => {
+      expect(
+        repliesOf(
           trail(
             'PRRT_reopened',
-            by('MEMBER', 'Before the first round.'),
+            by('OWNER', 'Before the first round.'),
             marked('d'.repeat(40)),
             by('OWNER', 'Before the newest round.'),
             marked('e'.repeat(40)),
-            { body: 'Not a false positive.', viewerDidAuthor: true },
+            by('NONE', 'Not a false positive.', { viewerDidAuthor: true }),
             by('NONE', 'An outsider.'),
             finding,
-            by('COLLABORATOR', 'Add a TTL.'),
-            by('MEMBER', 7),
+            by('MEMBER', 'A member.'),
+            by('COLLABORATOR', 'A collaborator.'),
+            by('OWNER', 'Add a TTL.'),
+            by('OWNER', 7),
           ),
           trail('PRRT_unanswered', by('OWNER', 'Fix this one first.')),
           trail('PRRT_answered', marked('d'.repeat(40))),
-        ],
-      },
+        ),
+      ).toEqual({
+        PRRT_reopened: ['Not a false positive.', 'Add a TTL.'],
+        PRRT_unanswered: ['Fix this one first.'],
+        PRRT_answered: [],
+      });
     });
 
-    expect(Object.fromEntries(read().openThreads.map((open) => [open.id, open.replies]))).toEqual({
-      PRRT_reopened: ['Not a false positive.', 'Add a TTL.'],
-      PRRT_unanswered: ['Fix this one first.'],
-      PRRT_answered: [],
+    // A comment hidden on GitHub is out of the operator's view; a field outside
+    // its shape reads as hidden, as a finding's does.
+    it('drops a reply hidden on GitHub', () => {
+      expect(
+        repliesOf(
+          trail(
+            'PRRT_hidden',
+            by('OWNER', 'Shown.'),
+            by('OWNER', 'Hidden.', { isMinimized: true }),
+            by('OWNER', 'Unread.', { isMinimized: undefined }),
+            by('NONE', 'Hidden, by hand.', { viewerDidAuthor: true, isMinimized: true }),
+          ),
+        ),
+      ).toEqual({ PRRT_hidden: ['Shown.'] });
+    });
+
+    // Anyone with write access can edit another's comment: an edit by another
+    // account, or by one gone from GitHub, leaves it no longer the operator's.
+    it('drops a reply an account other than its author edited', () => {
+      const edited = (body: string, editor: unknown) =>
+        by('OWNER', body, { lastEditedAt: '2026-10-18T09:00:00Z', editor });
+      expect(
+        repliesOf(
+          trail(
+            'PRRT_edited',
+            edited('Edited by its author.', SOMEONE),
+            edited('Edited by another.', { __typename: 'User', login: 'alexis' }),
+            edited('Edited by a bot of the same login.', { __typename: 'Bot', login: 'someone' }),
+            edited('Edited by one gone.', null),
+            by('OWNER', 'Edited, its editor unread.', { editor: SOMEONE, author: null }),
+          ),
+        ),
+      ).toEqual({ PRRT_edited: ['Edited by its author.'] });
     });
   });
 

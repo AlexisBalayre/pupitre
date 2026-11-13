@@ -308,7 +308,15 @@ const PULL_REQUEST_REVIEW_QUERY = `query($owner: String!, $name: String!, $numbe
             }
           }
           trail: comments(last: ${REVIEW_PAGE}) {
-            nodes { body viewerDidAuthor authorAssociation author { __typename login } }
+            nodes {
+              body
+              viewerDidAuthor
+              authorAssociation
+              author { __typename login }
+              isMinimized
+              lastEditedAt
+              editor { __typename login }
+            }
           }
         }
       }
@@ -349,10 +357,12 @@ export interface ReviewThread {
    */
   isAnswered: boolean;
   /**
-   * What pup's own account by hand, the repo's owner, a member or a
-   * collaborator said on it since a fix round's newest marked reply, or since
-   * the finding when no round replied, oldest first: the operator's word a
-   * round takes with the finding. The bot's comments and anyone else's are not.
+   * What the operator said on it since a fix round's newest marked reply, or
+   * since the finding when no round replied, oldest first: the comments pup's
+   * own account wrote by hand or the repo's owner wrote, the round takes them
+   * with the finding. A member or collaborator may reopen a thread but is not
+   * relayed, as neither proves write access; nor is a comment hidden on GitHub
+   * or edited by an account other than its author's.
    */
   replies: string[];
 }
@@ -460,9 +470,22 @@ export function readPullRequestReview(
       if (!finding || typeof thread.id !== 'string' || isOutdated(thread)) return [];
       const line = [thread.line, thread.originalLine].find(Number.isSafeInteger);
       // An edit names its editor; one gone from GitHub reads as nobody, so as not the bot.
-      const isEdited = [finding.lastEditedAt, finding.editor].some(
-        (field) => field !== undefined && field !== null,
-      );
+      const isEdited = (comment: Record<string, unknown>) =>
+        [comment.lastEditedAt, comment.editor].some(
+          (field) => field !== undefined && field !== null,
+        );
+      const isEditedByOther = (comment: Record<string, unknown>) => {
+        const editor = objectFields(comment.editor);
+        const author = objectFields(comment.author);
+        return (
+          isEdited(comment) &&
+          !(
+            typeof editor.login === 'string' &&
+            editor.login === author.login &&
+            editor.__typename === author.__typename
+          )
+        );
+      };
       // An outsider's comment neither answers a thread nor reopens one.
       const said = nodesOf(thread.trail).filter(
         (comment) =>
@@ -478,10 +501,16 @@ export function readPullRequestReview(
         (found, comment, index) => (isMarked(comment) ? index : found),
         -1,
       );
+      // Only the operator's own word is relayed, as written and shown.
       const replies = said
         .slice(newestMarked + 1)
         .flatMap((comment) =>
-          !isReviewBot(comment.author) && typeof comment.body === 'string' ? [comment.body] : [],
+          (comment.viewerDidAuthor === true || comment.authorAssociation === 'OWNER') &&
+          comment.isMinimized === false &&
+          !isEditedByOther(comment) &&
+          typeof comment.body === 'string'
+            ? [comment.body]
+            : [],
         );
       return [
         {
@@ -489,7 +518,7 @@ export function readPullRequestReview(
           path: typeof thread.path === 'string' ? thread.path : undefined,
           line: line as number | undefined,
           body: typeof finding.body === 'string' ? finding.body : '',
-          isEditedByOther: isEdited && !isReviewBot(finding.editor),
+          isEditedByOther: isEdited(finding) && !isReviewBot(finding.editor),
           isMinimized: finding.isMinimized !== false,
           isAnswered: isMarked(said.at(-1)),
           replies,
