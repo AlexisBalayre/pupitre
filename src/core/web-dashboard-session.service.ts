@@ -15,7 +15,7 @@ import {
 import { escapeHtml, hint, section, textOrPrLink } from './web-dashboard-sheet.utils.js';
 
 /** What one render of a session's view reads: its snapshot row and what its window shows. */
-export interface SessionView {
+interface SessionView {
   session: DashboardSession;
   pane: { text: string } | { hint: string };
 }

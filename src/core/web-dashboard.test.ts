@@ -424,6 +424,7 @@ describe('startWebDashboard', () => {
 
     it('takes a post at /action only, and nothing but a post there', async () => {
       expect((await get(home(), {}, 'POST')).status).toBe(405);
+      expect((await get(eventsUrl(), {}, 'POST')).status).toBe(405);
       expect((await get(`${origin()}/action`)).status).toBe(405);
     });
 
@@ -1249,6 +1250,100 @@ describe('startWebDashboard', () => {
       expect(kept.status).toBe(200);
     });
 
+    it('sweeps the nonces that lapsed whenever it mints one', async () => {
+      const id = seedDebt();
+      const key = await pageKey();
+      const now = Date.now();
+      vi.spyOn(Date, 'now').mockReturnValue(now + 30 * 60_000 + 1);
+      try {
+        await pageKey();
+      } finally {
+        vi.mocked(Date.now).mockRestore();
+      }
+
+      const reply = await post(actionUrl(), { action: 'debt-close', id: String(id), nonce: key });
+
+      expect(reply.status).toBe(403);
+    });
+
+    it('answers an action it does not have with a refusal and the next nonce', async () => {
+      const answer = (await post(actionUrl(), { action: 'deploy', nonce: await pageKey() })).json();
+
+      expect(answer).toEqual({
+        ok: false,
+        message: 'No such action; nothing was done.',
+        nonce: expect.any(String),
+      });
+    });
+
+    it('drops a post past 64 KiB unread, and changes nothing', async () => {
+      const id = seedDebt();
+      const fields = { action: 'debt-close', id: String(id), nonce: await pageKey() };
+
+      const outcome = await post(actionUrl(), { ...fields, pad: 'x'.repeat(65 * 1024) }).then(
+        (reply) => reply.status,
+        () => 'reset',
+      );
+
+      expect([413, 'reset']).toContain(outcome);
+      expect(isOpen(id)).toBe(true);
+    });
+
+    it('survives a post its client gave up on mid-body, and keeps answering', async () => {
+      const id = seedDebt();
+      await new Promise<void>((resolve) => {
+        const req = request(actionUrl(), {
+          method: 'POST',
+          headers: withSecret({
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Content-Length': '1000',
+            Origin: origin(),
+          }),
+        });
+        req.on('error', () => resolve());
+        req.write('action=debt-close', () => setTimeout(() => req.destroy(), 50));
+      });
+
+      const reply = await post(actionUrl(), {
+        action: 'debt-close',
+        id: String(id),
+        nonce: await pageKey(),
+      });
+
+      expect(reply.status).toBe(200);
+      expect(isOpen(id)).toBe(true);
+    });
+
+    it('binds a confirmation to its fields whatever order the form sends them in', async () => {
+      seedSession('s-live', ['running']);
+      const asked = (
+        await post(actionUrl(), {
+          action: 'merge',
+          session: 's-live',
+          reason: 'one feature',
+          reviewBy: 'next sprint',
+          approver: 'human',
+          nonce: await pageKey(),
+        })
+      ).json();
+
+      const ran = (
+        await post(actionUrl(), {
+          approver: 'human',
+          reviewBy: 'next sprint',
+          reason: 'one feature',
+          session: 's-live',
+          action: 'merge',
+          nonce: String(asked.confirmNonce),
+        })
+      ).json();
+
+      // Run, not refused as another action's: core answers, here that this
+      // temp repo has no stack to gate.
+      expect(ran.ok).toBe(false);
+      expect(String(ran.message)).toContain('No adapter detected for this repo');
+    });
+
     it("shows core's refusal as the answer, and hands the page its next nonce", async () => {
       const first = (
         await post(actionUrl(), {
@@ -1398,6 +1493,25 @@ describe('startWebDashboard', () => {
       expect(await readPage(viewUrl('s-1'))).toContain(
         'No live window: its pane is gone or was never recorded.',
       );
+    });
+
+    it('says the pane could not be read when tmux fails another way', async () => {
+      seedWindow('s-1', ['running']);
+      vi.mocked(capturePane).mockImplementation(() => {
+        throw new Error('tmux: server exited');
+      });
+
+      expect(await readPage(viewUrl('s-1'))).toContain('The pane could not be read right now.');
+    });
+
+    it('says a killed session has no window, and offers nothing to act on', async () => {
+      seedWindow('s-k', ['running', 'killed']);
+
+      const page = await readPage(viewUrl('s-k'));
+
+      expect(page).toContain('No window: the session was killed.');
+      expect(page).toContain('Killed: nothing left to act on.');
+      expect(capturePane).not.toHaveBeenCalled();
     });
 
     it('links a merged session to its PR on GitHub and offers no button that merges there', async () => {

@@ -38,12 +38,18 @@ export const ACTIONS = [
 export type ActionName = (typeof ACTIONS)[number];
 
 /** The ones that cannot be taken back: the page asks before each runs (decision 91). */
-export const CONFIRMED_ACTIONS: ReadonlySet<ActionName> = new Set([
+export const CONFIRMED_ACTIONS = [
   'kill',
   'merge',
   'land',
   'debt-close',
-]);
+] as const satisfies readonly ActionName[];
+export type ConfirmedAction = (typeof CONFIRMED_ACTIONS)[number];
+
+/** Whether the page must ask before `action` runs. */
+export function isConfirmed(action: ActionName): action is ConfirmedAction {
+  return (CONFIRMED_ACTIONS as readonly ActionName[]).includes(action);
+}
 
 export type ActionFields = Record<string, string>;
 
@@ -78,7 +84,7 @@ function acceptDebtOf(fields: ActionFields) {
  * The question the page asks before an irreversible action runs, built from
  * the request's own fields so the operator confirms what will be sent.
  */
-export function confirmationText(action: ActionName, fields: ActionFields): string {
+export function confirmationText(action: ConfirmedAction, fields: ActionFields): string {
   const session = sanitizeReason(fields.session ?? '');
   switch (action) {
     case 'kill':
@@ -94,8 +100,6 @@ export function confirmationText(action: ActionName, fields: ActionFields): stri
       return `Land session ${session}? Its merged PR's target fast-forwards, the session is cleaned up and the audit runs.`;
     case 'debt-close':
       return `Close ledger entry #${sanitizeReason(fields.id ?? '')}? Only once a merge has removed the shortcut.`;
-    default:
-      return '';
   }
 }
 
@@ -281,8 +285,8 @@ async function landAction(db: Database, repoPath: string, session: string): Prom
 }
 
 /**
- * One action's form. The page's script posts it with the run token and the
- * page's nonce; `form-action 'none'` keeps the browser from submitting it any
+ * One action's form. The page's script posts it with the page's secret and
+ * the nonce its stream handed it; `form-action 'none'` keeps the browser from submitting it any
  * other way. Every value is escaped: ids and option text are store text.
  */
 export function actionForm(

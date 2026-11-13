@@ -30,6 +30,7 @@ vi.mock('./session-lifecycle.service.js', async (importOriginal) => ({
   steerSession: vi.fn(),
 }));
 
+import { detectAdapters } from '../adapters/adapter.registry.js';
 import { tellConductor } from './conductor.service.js';
 import { DEFAULT_BASE_PROFILE } from './default-profile.constants.js';
 import { startFixRound } from './fix-round.service.js';
@@ -302,6 +303,73 @@ describe('runAction', () => {
     await expect(runAction(DB, REPO, 'merge', { session: 's-1' })).rejects.toThrow(
       'Merge refused: diff size flagged. Accept it as debt with a reason and a review-by, or steer the session to address the flags.\ndiff size: flagged — 812 lines',
     );
+  });
+
+  it.each([
+    [
+      'a failed stage as one accepting debt does not cover',
+      gate('refused', [{ stage: 'build', status: 'fail' }]),
+      'Merge refused: build failed, which accepting debt does not cover. Steer the session to fix it.',
+    ],
+    [
+      'a rejection with its count',
+      gate('rejected', [{ stage: 'test', status: 'fail' }]),
+      'Gate failed; report re-injected into the session (rejection 1/2).',
+    ],
+    [
+      'a parked session with its unblock',
+      gate('blocked', [{ stage: 'test', status: 'fail' }]),
+      'Gate failed; session parked as blocked — needs a human, then `pup unblock s-1`.',
+    ],
+  ])('shows %s, as pup merge words it', async (_case, outcome, verdict) => {
+    vi.mocked(runMergeGate).mockResolvedValue(outcome);
+
+    await expect(runAction(DB, REPO, 'merge', { session: 's-1' })).rejects.toThrow(
+      new RegExp(`^${verdict.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\n`),
+    );
+  });
+
+  it('names the open debt a passed gate touched, and the decision record it drafted', async () => {
+    vi.mocked(runMergeGate).mockResolvedValue({
+      ...gate('merged', []),
+      debtCandidates: [{ id: 3, description: 'Oversize \u001b[31mdiff' }],
+      decisionRecordId: 12,
+    });
+
+    await expect(runAction(DB, REPO, 'merge', { session: 's-1' })).resolves.toEqual([
+      `Gate passed; ${PR} carries this gate report — merge it on GitHub, then land s-1.`,
+      'This merge touched files of open debt #3 (Oversize [31mdiff) — close it once the shortcut is gone.',
+      'Drafted decision record #12; the Decisions sheet lists it.',
+    ]);
+  });
+
+  it('refuses a gate in a repo no adapter is detected for, before the gate runs', async () => {
+    vi.mocked(detectAdapters).mockReturnValueOnce([]);
+
+    await expect(runAction(DB, REPO, 'merge', { session: 's-1' })).rejects.toThrow(
+      'No adapter detected for this repo (supported stacks: TypeScript, Python, or a .pupitre/adapter.yml).',
+    );
+    expect(runMergeGate).not.toHaveBeenCalled();
+  });
+
+  it('says what a land kept, a target that already held the merge, and an audit that ran', async () => {
+    vi.mocked(landSession).mockResolvedValue({
+      prUrl: PR,
+      mergeCommit: 'm1',
+      target: 'main',
+      targetSha: 'm1',
+      fastForwarded: false,
+      keptWorktree: '/repo/.worktrees/s-1',
+      keptBranch: 'pup/s-1',
+      audit: {},
+    } as never);
+
+    await expect(runAction(DB, REPO, 'land', { session: 's-1' })).resolves.toEqual([
+      `Landed s-1: ${PR} merged as m1; main already held it at m1.`,
+      'Kept the worktree at /repo/.worktrees/s-1: git could not remove it.',
+      'Kept pup/s-1: it holds commits main does not.',
+      'The audit ran; the Health sheet shows its figures.',
+    ]);
   });
 
   it('reports what the gate did and then refuses when the lock was lost under it', async () => {

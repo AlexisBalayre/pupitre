@@ -143,6 +143,9 @@
     at most 256 nonces: each mint sweeps the lapsed ones and, past the cap, drops the oldest,
     whose page is told to reload. One page holds one nonce, so it runs one action at a time; a
     reload mints another.
+    The token, the secret and its revocation live in `web-dashboard-access.service.ts`; the
+    nonces and `POST /action` in `web-dashboard-desk.service.ts`; the server routes between them
+    and the stream.
     Confirmation rule. Kill, merge, land and debt close cannot be taken back, so the first post
     of one runs nothing: it answers with the question to ask, naming what will run and with
     which fields, the debt accepted included, and a confirmation nonce bound to that action and
