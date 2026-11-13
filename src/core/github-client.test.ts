@@ -14,7 +14,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { assertMainCheckout, RewrittenGitDirError } from './git-diff.client.js';
 import {
   commentOnPullRequest,
@@ -571,6 +571,29 @@ describe('the git gh runs', () => {
     commentOnPullRequest(repo, 'https://github.com/o/r/pull/1', 'github.com/o/r', 'body');
 
     expect(existsSync(fired)).toBe(false);
+  });
+
+  it('hands gh no inherited GIT_SHALLOW_FILE or GIT_NAMESPACE', () => {
+    const repo = tempDir('pup-gh-env-');
+    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repo, env: plainEnv });
+    const seen = join(tempDir('pup-gh-env-log-'), 'env');
+    const ghDir = tempDir('pup-gh-env-bin-');
+    writeFileSync(join(ghDir, 'gh'), `#!/bin/sh\ncat > /dev/null\nenv > ${seen}\n`, {
+      mode: 0o755,
+    });
+    process.env.PATH = `${ghDir}:${originalPath}`;
+    vi.stubEnv('GIT_SHALLOW_FILE', join(repo, 'planted-shallow'));
+    vi.stubEnv('GIT_NAMESPACE', 'planted');
+    try {
+      commentOnPullRequest(repo, 'https://github.com/o/r/pull/1', 'github.com/o/r', 'body');
+    } finally {
+      vi.unstubAllEnvs();
+    }
+
+    const env = readFileSync(seen, 'utf8');
+    expect(env).toMatch(/^PATH=/m);
+    expect(env).not.toMatch(/^GIT_SHALLOW_FILE=/m);
+    expect(env).not.toMatch(/^GIT_NAMESPACE=/m);
   });
 });
 

@@ -30,42 +30,48 @@ import type { DiffFileStat } from './types/git-diff.types.js';
 export type { DiffFileStat };
 
 /**
- * Environment without the GIT_DIR family: when pup itself runs inside a git
- * hook, those inherited vars would point every child git call (and any git
- * usage in gate commands) at the hook's repo instead of the target path.
- * Without the config git takes from the environment too: a session window
- * sets `diff.ignoreSubmodules=all` that way (decision 101), and a pup run from
- * it, its tests included, would otherwise inherit it into the scope audit's
- * diff and stop seeing a gitlink change. The pathspec-mode variables go too:
- * `GIT_LITERAL_PATHSPECS` (which git exports to a hook's children) turns off
- * the `:(top)` and `:(top,literal)` magic these reads rely on.
- * Without the object-store pair: an inherited `GIT_OBJECT_DIRECTORY` or
- * `GIT_ALTERNATE_OBJECT_DIRECTORIES` would have git read commits from a store
- * no `.git` check ever looked at.
+ * The `GIT_*` variables a child git inherits from pup's environment: where the
+ * operator's config files are, who a commit pup makes is by, and how a fetch
+ * or push reaches the remote. Every other `GIT_*` variable steers what git
+ * answers, and pup's environment is a session's when pup runs inside one: the
+ * `GIT_DIR` family and `GIT_OBJECT_DIRECTORY` aim git at another repo or
+ * object store, `GIT_SHALLOW_FILE` rewrites parents and `GIT_NAMESPACE` the
+ * refs read, `GIT_EXEC_PATH` runs git's subcommands from a directory of the
+ * session's, `GIT_ATTR_SOURCE` reads attributes from another tree, the
+ * command-scope config pairs set keys (a session window sets
+ * `diff.ignoreSubmodules=all` that way, decision 101), and
+ * `GIT_LITERAL_PATHSPECS`, which git exports to a hook's children, turns off
+ * the `:(top)` magic these reads rely on. A list of what to keep, not of what
+ * to drop, so a variable a later git adds is dropped too. What pup sets on
+ * purpose, a call site's `opts.env`, is laid over this.
  */
+const INHERITED_GIT_VARS = new Set([
+  'GIT_CONFIG_GLOBAL',
+  'GIT_CONFIG_SYSTEM',
+  'GIT_CONFIG_NOSYSTEM',
+  'GIT_AUTHOR_NAME',
+  'GIT_AUTHOR_EMAIL',
+  'GIT_AUTHOR_DATE',
+  'GIT_COMMITTER_NAME',
+  'GIT_COMMITTER_EMAIL',
+  'GIT_COMMITTER_DATE',
+  'GIT_SSH',
+  'GIT_SSH_COMMAND',
+  'GIT_SSH_VARIANT',
+  'GIT_ASKPASS',
+  'GIT_TERMINAL_PROMPT',
+  'GIT_SSL_CAINFO',
+  'GIT_SSL_CAPATH',
+]);
+
+/** `process.env` with no `GIT_*` variable but those in `INHERITED_GIT_VARS`. */
 function scrubbedGitEnv(): NodeJS.ProcessEnv {
-  const scrubbed = [
-    'GIT_DIR',
-    'GIT_WORK_TREE',
-    'GIT_INDEX_FILE',
-    'GIT_COMMON_DIR',
-    'GIT_OBJECT_DIRECTORY',
-    'GIT_ALTERNATE_OBJECT_DIRECTORIES',
-    'GIT_PREFIX',
-    'GIT_LITERAL_PATHSPECS',
-    'GIT_GLOB_PATHSPECS',
-    'GIT_NOGLOB_PATHSPECS',
-    'GIT_ICASE_PATHSPECS',
-  ];
   return Object.fromEntries(
     Object.entries(process.env).filter(
-      ([key]) => !scrubbed.includes(key) && !ENV_CONFIG_KEY.test(key),
+      ([key]) => !key.startsWith('GIT_') || INHERITED_GIT_VARS.has(key),
     ),
   );
 }
-
-/** The variables git reads command-scope config from. */
-const ENV_CONFIG_KEY = /^GIT_CONFIG_(?:PARAMETERS|COUNT|KEY_\d+|VALUE_\d+)$/;
 
 /** The three variables that pin git to a session worktree's trusted dirs (decision 101). */
 export interface WorktreeGitEnv {

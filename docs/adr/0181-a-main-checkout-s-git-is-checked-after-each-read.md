@@ -43,12 +43,20 @@
     its checks and again after they pass, and holds it only when the two agree. So a decoy
     that fails the checks is never the one held, and neither is a directory swapped in
     while they ran.
-    *The env and the argv.* The scrubbed env drops `GIT_OBJECT_DIRECTORY` and
-    `GIT_ALTERNATE_OBJECT_DIRECTORIES` beside `GIT_DIR` and `GIT_COMMON_DIR`, so no
-    inherited variable points git at an object store no check looked at. A caller still
-    sets them through `opts.env`, as the gate's quarantined write does. `safeArgv`'s env is
-    a required argument, and both spawns pass their spawn's env, `runGitBytes` included,
-    so no spawn skips the pinned-`GIT_DIR` rule.
+    *The env and the argv.* The scrubbed env, which `runGit`, `runGitBytes` and gh (through
+    `pinnedGitEnv`) all start from, keeps only the `GIT_*` variables in an allowlist: the
+    operator's config locations (`GIT_CONFIG_GLOBAL`, `GIT_CONFIG_SYSTEM`,
+    `GIT_CONFIG_NOSYSTEM`), commit identity (`GIT_AUTHOR_*`, `GIT_COMMITTER_*`), and how a
+    fetch or push reaches the remote (`GIT_SSH`, `GIT_SSH_COMMAND`, `GIT_SSH_VARIANT`,
+    `GIT_ASKPASS`, `GIT_TERMINAL_PROMPT`, `GIT_SSL_CAINFO`, `GIT_SSL_CAPATH`). It replaces
+    a denylist that the re-review of 751cf8dd showed still passed `GIT_SHALLOW_FILE`
+    (rewrites parents), `GIT_NAMESPACE` (the refs read), `GIT_REPLACE_REF_BASE`,
+    `GIT_EXEC_PATH` (git's subcommands from a session's directory) and `GIT_ATTR_SOURCE`.
+    pup's environment is a session's when pup runs inside one, and an allowlist also drops
+    any variable a later git adds. What pup sets on purpose is the call site's `opts.env`,
+    laid over the scrubbed env, as the gate's quarantined write sets `GIT_OBJECT_DIRECTORY`.
+    `safeArgv`'s env is a required argument, and both spawns pass it their spawn's env, so
+    no spawn skips the pinned-`GIT_DIR` rule.
     *What remains.* The identity is still the one the first `assertMainCheckout` in a
     process saw. Now that the CLI holds the checkout at resolution, that is the first thing
     a process does, but a `.git` swapped before a gate process starts is still recorded as
@@ -70,9 +78,12 @@
     - A first check that refused holds no identity.
     - An inherited `GIT_COMMON_DIR`, `GIT_OBJECT_DIRECTORY` or
       `GIT_ALTERNATE_OBJECT_DIRECTORIES` does not change what `runGit` reads.
+    - An inherited `GIT_SHALLOW_FILE` does not change the parents `runGit` reads, and
+      neither it nor `GIT_NAMESPACE` reaches the git it spawns. `GIT_CONFIG_GLOBAL` and
+      `GIT_AUTHOR_NAME` still do.
     In `github-client.test.ts`, gh is refused before it runs on a planted commondir, a
     gitfile or a symlink, and its answer is refused when `.git` became a symlink while it
-    ran. In `index.test.ts`, `--project <id> status` on a registered repo whose `.git`
+    ran. gh is spawned with neither `GIT_SHALLOW_FILE` nor `GIT_NAMESPACE`. In `index.test.ts`, `--project <id> status` on a registered repo whose `.git`
     became a gitfile or a symlink throws the refusal, which `fatalExitCode` prints and exits
     1 on. So does `pup status` or `pup ui` run inside a repo whose `.git` became a
     gitfile, and `pup status --all` or `pup ui --all` over a registered one. An untouched

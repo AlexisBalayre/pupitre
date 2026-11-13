@@ -1241,6 +1241,42 @@ describe('runGit', () => {
     },
   );
 
+  it('hands a spawned git no inherited GIT_SHALLOW_FILE or GIT_NAMESPACE', () => {
+    const repo = makeRepo();
+    writeFileSync(join(repo, 'a.ts'), 'a\n');
+    commitAll(repo, 'a');
+    writeFileSync(join(repo, 'a.ts'), 'b\n');
+    commitAll(repo, 'b');
+    const shallow = join(tempDir('pup-shallow-'), 'shallow');
+    writeFileSync(shallow, `${runGit(repo, ['rev-parse', 'HEAD']).trim()}\n`);
+    // The control: under the variable, plain git reads the tip as having no parent.
+    const plainCount = execFileSync('git', ['rev-list', '--count', 'HEAD'], {
+      cwd: repo,
+      encoding: 'utf8',
+      env: { ...GIT_ENV, GIT_SHALLOW_FILE: shallow },
+    });
+    expect(plainCount.trim()).toBe('1');
+    vi.stubEnv('GIT_SHALLOW_FILE', shallow);
+    vi.stubEnv('GIT_NAMESPACE', 'planted');
+
+    expect(runGit(repo, ['rev-list', '--count', 'HEAD']).trim()).toBe('2');
+    // What git hands its own children is what it was spawned with.
+    const seen = runGit(repo, ['-c', 'alias.env=!env', 'env']);
+    expect(seen).not.toMatch(/^GIT_SHALLOW_FILE=/m);
+    expect(seen).not.toMatch(/^GIT_NAMESPACE=/m);
+  });
+
+  it("keeps the operator's config location and commit identity", () => {
+    const repo = makeRepo();
+    const global = join(tempDir('pup-global-'), 'gitconfig');
+    writeFileSync(global, '[pup]\n\tmarker = kept\n');
+    vi.stubEnv('GIT_CONFIG_GLOBAL', global);
+    vi.stubEnv('GIT_AUTHOR_NAME', 'operator');
+
+    expect(runGit(repo, ['config', '--get', 'pup.marker']).trim()).toBe('kept');
+    expect(runGit(repo, ['var', 'GIT_AUTHOR_IDENT'])).toMatch(/^operator </);
+  });
+
   // Verifying a signature runs `gpg.program` as surely as signing does, and a
   // session can forge the `gpgsig` header it verifies (decision 79).
   function signatureArmedRepo(): { repo: string; fired: string } {
