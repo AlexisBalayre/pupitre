@@ -9,7 +9,7 @@
     (finding 3) that the lstats run before git reads `.git`. In that window a process left
     behind by a session-controlled gate stage can swap `.git` for a symlink or a gitfile, or
     plant a commondir, and git follows them under `--git-dir`.
-    *Checked after the read.* `runGit` and the byte read in `blobIsBinary` run
+    *Checked after the read.* `runGit` and `runGitBytes`, the module's only git spawns, run
     `assertGitDirUnplanted` again once git ends (`checkedAfter`), whether git succeeded or
     failed. A refusal then outranks git's own failure, so a catch that reads a failed git as
     "no such ref" sees the `RewrittenGitDirError` instead. Decision 172's source test still
@@ -47,8 +47,8 @@
     `GIT_ALTERNATE_OBJECT_DIRECTORIES` beside `GIT_DIR` and `GIT_COMMON_DIR`, so no
     inherited variable points git at an object store no check looked at. A caller still
     sets them through `opts.env`, as the gate's quarantined write does. `safeArgv`'s env is
-    a required argument, and `blobIsBinary` passes its spawn's env, so no spawn skips the
-    pinned-`GIT_DIR` rule.
+    a required argument, and both spawns pass their spawn's env, `runGitBytes` included,
+    so no spawn skips the pinned-`GIT_DIR` rule.
     *What remains.* The identity is still the one the first `assertMainCheckout` in a
     process saw. Now that the CLI holds the checkout at resolution, that is the first thing
     a process does, but a `.git` swapped before a gate process starts is still recorded as
