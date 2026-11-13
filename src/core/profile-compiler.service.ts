@@ -1050,8 +1050,10 @@ fi
 printf '%s' "$INPUT" | jq -r '
   def pct: if type == "object" and (.used_percentage | type) == "number"
     then "\\(.used_percentage | floor)%" else "?" end;
-  try "ctx \\(.context_window | pct) | 5h \\(.rate_limits.five_hour | pct) | 7d \\(.rate_limits.seven_day | pct)"
-  catch "ctx ? | 5h ? | 7d ?"' 2>/dev/null || echo 'ctx ? | 5h ? | 7d ?'
+  def five: .rate_limits.five_hour
+    | if type == "object" and (.used_percentage | type) == "number" then " | 5h \\(pct)" else "" end;
+  try "ctx \\(.context_window | pct)\\(five) | 7d \\(.rate_limits.seven_day | pct)"
+  catch "ctx ? | 7d ?"' 2>/dev/null || echo 'ctx ? | 7d ?'
 `;
 }
 

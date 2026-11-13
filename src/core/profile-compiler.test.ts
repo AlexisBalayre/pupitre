@@ -64,7 +64,12 @@ describe('generated bash re-check (decision 63)', () => {
     }
     const outDir = join(root, 'compiled');
     const compiled = ProfileCompiler.compileProfile(
-      makeInput({ repoPath: repo, worktreePath: worktree, eventsFile: events, outDir }),
+      makeInput({
+        repoPath: repo,
+        worktreePath: worktree,
+        eventsFile: events,
+        outDir,
+      }),
     );
     ProfileCompiler.writeCompiledProfile(compiled, outDir);
   });
@@ -92,7 +97,11 @@ describe('generated bash re-check (decision 63)', () => {
   }
 
   function hook(phase: string, command: string, id = 'toolu_01abc') {
-    return run({ hook_event_name: phase, tool_use_id: id, tool_input: { command } });
+    return run({
+      hook_event_name: phase,
+      tool_use_id: id,
+      tool_input: { command },
+    });
   }
 
   /** The Bash call as Claude Code runs it: the pre hook, the command, the post hook. */
@@ -248,7 +257,9 @@ describe('generated bash re-check (decision 63)', () => {
       ...['jq', 'cat', 'tr', 'grep', 'head', 'mktemp', 'rm', 'mkdir', 'mv', 'wc'],
       ...['date', 'sleep', 'env'],
     ]) {
-      const found = spawnSync('/bin/sh', ['-c', `command -v ${tool}`], { encoding: 'utf8' });
+      const found = spawnSync('/bin/sh', ['-c', `command -v ${tool}`], {
+        encoding: 'utf8',
+      });
       spawnSync('ln', ['-s', found.stdout.trim(), join(bin, tool)]);
     }
     const missing = { PATH: bin };
@@ -270,11 +281,18 @@ describe('generated bash re-check (decision 63)', () => {
   it('refuses within the hook timeout while the repo config includes a fifo', () => {
     const fifo = join(root, 'included');
     spawnSync('mkfifo', [fifo]);
-    spawnSync('git', ['config', 'include.path', fifo], { cwd: repo, env: GIT_ENV });
+    spawnSync('git', ['config', 'include.path', fifo], {
+      cwd: repo,
+      env: GIT_ENV,
+    });
 
     const started = Date.now();
     const result = run(
-      { hook_event_name: 'PostToolUse', tool_use_id: 'toolu_01fifo', tool_input: { command: 'x' } },
+      {
+        hook_event_name: 'PostToolUse',
+        tool_use_id: 'toolu_01fifo',
+        tool_input: { command: 'x' },
+      },
       {},
       15_000,
     );
@@ -291,7 +309,11 @@ describe('generated bash re-check (decision 63)', () => {
     spawnSync('mkfifo', [join(worktree, 'src/net/.gitignore')]);
 
     const result = run(
-      { hook_event_name: 'PostToolUse', tool_use_id: 'toolu_01lock', tool_input: { command: 'x' } },
+      {
+        hook_event_name: 'PostToolUse',
+        tool_use_id: 'toolu_01lock',
+        tool_input: { command: 'x' },
+      },
       {},
       15_000,
     );
@@ -306,7 +328,9 @@ describe('generated bash re-check (decision 63)', () => {
     const written = join(worktree, 'src/cli/index.ts');
     const bin = join(root, 'bin');
     mkdirSync(bin);
-    const realWc = spawnSync('/bin/sh', ['-c', 'command -v wc'], { encoding: 'utf8' });
+    const realWc = spawnSync('/bin/sh', ['-c', 'command -v wc'], {
+      encoding: 'utf8',
+    });
     writeFileSync(
       join(bin, 'wc'),
       `#!/bin/sh\nfor arg; do last=$arg; done\nif [ "$last" = '${written}' ]; then rm -f "$last" && mkfifo "$last"; fi\nexec ${realWc.stdout.trim()} "$@"\n`,
@@ -317,7 +341,11 @@ describe('generated bash re-check (decision 63)', () => {
 
     const started = Date.now();
     const result = run(
-      { hook_event_name: 'PostToolUse', tool_use_id: 'toolu_01wc', tool_input: { command: 'x' } },
+      {
+        hook_event_name: 'PostToolUse',
+        tool_use_id: 'toolu_01wc',
+        tool_input: { command: 'x' },
+      },
       { PATH: `${bin}:${process.env.PATH}` },
       15_000,
     );
@@ -338,8 +366,12 @@ describe('generated bash re-check (decision 63)', () => {
     writeFileSync(target, 'dirty before the call\n');
     const bin = join(root, 'bin');
     mkdirSync(bin);
-    const realWc = spawnSync('/bin/sh', ['-c', 'command -v wc'], { encoding: 'utf8' });
-    const realSleep = spawnSync('/bin/sh', ['-c', 'command -v sleep'], { encoding: 'utf8' });
+    const realWc = spawnSync('/bin/sh', ['-c', 'command -v wc'], {
+      encoding: 'utf8',
+    });
+    const realSleep = spawnSync('/bin/sh', ['-c', 'command -v sleep'], {
+      encoding: 'utf8',
+    });
     writeFileSync(
       join(bin, 'wc'),
       `#!/bin/sh\nfor arg; do last=$arg; done\nif [ "$last" = '${slow}' ]; then exec ${realSleep.stdout.trim()} 30; fi\nexec ${realWc.stdout.trim()} "$@"\n`,
@@ -376,8 +408,12 @@ describe('generated bash re-check (decision 63)', () => {
     const deadline = ProfileCompiler.HOOK_READ_DEADLINE_SECONDS;
     const bin = join(root, 'bin');
     mkdirSync(bin);
-    const realWc = spawnSync('/bin/sh', ['-c', 'command -v wc'], { encoding: 'utf8' });
-    const realSleep = spawnSync('/bin/sh', ['-c', 'command -v sleep'], { encoding: 'utf8' });
+    const realWc = spawnSync('/bin/sh', ['-c', 'command -v wc'], {
+      encoding: 'utf8',
+    });
+    const realSleep = spawnSync('/bin/sh', ['-c', 'command -v sleep'], {
+      encoding: 'utf8',
+    });
     writeFileSync(
       join(bin, 'date'),
       `#!/bin/sh\n[ -f '${clock}' ] || echo 1000 > '${clock}'\nexec cat '${clock}'\n`,
@@ -401,7 +437,11 @@ exec ${realWc.stdout.trim()} "$@"
 
     const started = Date.now();
     const result = run(
-      { hook_event_name: 'PostToolUse', tool_use_id: 'toolu_01last', tool_input: { command: 'x' } },
+      {
+        hook_event_name: 'PostToolUse',
+        tool_use_id: 'toolu_01last',
+        tool_input: { command: 'x' },
+      },
       { PATH: `${bin}:${process.env.PATH}` },
       15_000,
     );
@@ -496,7 +536,9 @@ exec ${realWc.stdout.trim()} "$@"
       // check and the git call would.
       const bin = join(root, 'bin');
       mkdirSync(bin);
-      const realHead = spawnSync('/bin/sh', ['-c', 'command -v head'], { encoding: 'utf8' });
+      const realHead = spawnSync('/bin/sh', ['-c', 'command -v head'], {
+        encoding: 'utf8',
+      });
       writeFileSync(
         join(bin, 'head'),
         `#!/bin/sh\nfor arg; do last=$arg; done\nif [ "$last" = '${gitfile}' ]; then printf '%s' '${trusted.trimEnd()}'; else exec ${realHead.stdout.trim()} "$@"; fi\n`,
@@ -721,9 +763,17 @@ describe('the status line records the plan usage (decision 156)', () => {
     model: { display_name: 'Opus' },
     context_window: { used_percentage: 12.7 },
     rate_limits: {
-      five_hour: { used_percentage: 23.5, resets_at: 1738425600, extra: 'dropped' },
+      five_hour: {
+        used_percentage: 23.5,
+        resets_at: 1738425600,
+        extra: 'dropped',
+      },
       seven_day: { used_percentage: 41.2, resets_at: 1738857600 },
-      spend_limit: { used_percentage: 62.8, resets_at: 1740787200, used_usd: 314.12 },
+      spend_limit: {
+        used_percentage: 62.8,
+        resets_at: 1740787200,
+        used_usd: 314.12,
+      },
     },
   };
   let home: string;
@@ -742,7 +792,10 @@ describe('the status line records the plan usage (decision 156)', () => {
 
   const usageFile = (): string => projectPaths('/repo').usageFile;
 
-  function runStatusLine(payload: object): { status: number | null; stdout: string } {
+  function runStatusLine(payload: object): {
+    status: number | null;
+    stdout: string;
+  } {
     const result = spawnSync('/bin/sh', [join(outDir, 'hooks/statusline.sh')], {
       input: JSON.stringify(payload),
       encoding: 'utf8',
@@ -777,11 +830,13 @@ describe('the status line records the plan usage (decision 156)', () => {
 
     const { status, stdout } = runStatusLine({
       context_window: { used_percentage: null },
-      rate_limits: { five_hour: { used_percentage: '$(touch pwned)', resets_at: 1 } },
+      rate_limits: {
+        five_hour: { used_percentage: '$(touch pwned)', resets_at: 1 },
+      },
     });
 
     expect(status).toBe(0);
-    expect(stdout).toBe('ctx ? | 5h ? | 7d ?\n');
+    expect(stdout).toBe('ctx ? | 7d ?\n');
     expect(readFileSync(usageFile(), 'utf8')).toBe(
       '{"five_hour":{"used_percentage":50,"resets_at":1}}\n',
     );
@@ -800,6 +855,14 @@ describe('the status line records the plan usage (decision 156)', () => {
     expect(readdirSync(usageFile())).toEqual([]);
   });
 
+  it('prints no 5h segment when the plan reports no 5-hour window', () => {
+    const { rate_limits: limits, ...rest } = SAMPLE;
+
+    expect(runStatusLine({ ...rest, rate_limits: { seven_day: limits.seven_day } }).stdout).toBe(
+      'ctx 12% | 7d 41%\n',
+    );
+  });
+
   it('writes a window that is present without the one that is absent', () => {
     runStatusLine({ rate_limits: { seven_day: SAMPLE.rate_limits.seven_day } });
 
@@ -815,7 +878,7 @@ describe('the status line records the plan usage (decision 156)', () => {
     });
 
     expect(result.status).toBe(0);
-    expect(result.stdout).toBe('ctx ? | 5h ? | 7d ?\n');
+    expect(result.stdout).toBe('ctx ? | 7d ?\n');
     expect(existsSync(usageFile())).toBe(false);
   });
 
