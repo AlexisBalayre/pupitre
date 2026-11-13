@@ -3,8 +3,13 @@
 #   draft > conflicts > changes-requested > review-open > ci-failing >
 #   ci-pending > ready
 #
+# An operator who declines the CI review's importants that have no thread to resolve adds the
+# `review-accepted` label. It holds for the summary review it was added after, and this workflow
+# removes it once a later round posts (decision 165).
+#
 # Recomputed when the PR is opened, reopened, pushed to, retargeted, marked ready or draft or
-# closed, on a review, and when a Claude Code Review run for it ends. Two events recompute every
+# closed, on a review, when `review-accepted` is added or removed, and when a Claude Code Review
+# run for it ends. Two events recompute every
 # open PR: a push to main (it can introduce conflicts anywhere) and the owner's `@claude review`
 # retry, which runs on main and links no PR. No event an outsider can start does. A closed PR
 # loses its label.
@@ -17,7 +22,7 @@ name: PR status
 
 on:
   pull_request_target:
-    types: [opened, reopened, synchronize, edited, ready_for_review, converted_to_draft, closed]
+    types: [opened, reopened, synchronize, edited, ready_for_review, converted_to_draft, closed, labeled, unlabeled]
   pull_request_review:
     types: [submitted, dismissed]
   workflow_run:
@@ -45,9 +50,11 @@ jobs:
     # issue comment starts a run that skips. A run on main that links no PR counts only when the
     # owner started it: only the owner's comment makes that workflow's review job run, so no
     # outsider can start a recompute-all. A title or body edit cannot change the label; a new base
-    # branch can (conflicts).
+    # branch can (conflicts). Of the label events only `review-accepted` can; only someone with
+    # triage access can label, and the labels this job sets start no workflow.
     if: >-
       (github.event_name != 'pull_request_target' || github.event.action != 'edited' || github.event.changes.base)
+      && ((github.event.action != 'labeled' && github.event.action != 'unlabeled') || github.event.label.name == 'review-accepted')
       && (github.event_name != 'pull_request_review' || github.event.pull_request.head.repo.full_name == github.repository)
       && (github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion != 'skipped'
           && github.event.workflow_run.head_repository.full_name == github.repository
@@ -69,6 +76,8 @@ jobs:
               "ci-pending": ["fbca04", "Checks are still running"],
               "ready": ["0e8a16", "Ready to merge"],
             };
+            // Not a status: the operator sets it and the loop over LABELS never touches it.
+            const ACCEPTED = "review-accepted";
             const { owner, repo } = context.repo;
 
             const numbers = await (async () => {
@@ -131,6 +140,17 @@ jobs:
                 }
               });
               return Math.max(sum, 0);
+            }
+
+            // Whether the operator's `name` label, read from the PR's issue events in the order
+            // GitHub lists them, is on and was added after `since` (the newest summary review's
+            // time, in ms). Added in the same second as that review, it may predate it, so it
+            // does not hold.
+            function acceptedSince(events, name, since) {
+              const last = events
+                .filter((e) => (e.event === "labeled" || e.event === "unlabeled") && e.label?.name === name)
+                .at(-1);
+              return last?.event === "labeled" && Date.parse(last.created_at) > since;
             }
 
             // Every bot-opened review thread, as `ci-wait.service.ts` reads them, at the line its
@@ -219,9 +239,29 @@ jobs:
                 )
                 .at(-1);
               const threads = await botThreads(number);
+              // The operator's override: `review-accepted`, added after the newest summary review,
+              // accepts the importants that round left with no thread, and the description of that
+              // round or the push marker that replaced it. A later round lapses it, so its own
+              // importants count; the label comes off so the operator sees that. Open threads
+              // still count: each has its own resolve.
+              let accepted = false;
+              if (pr.labels.some((l) => l.name === ACCEPTED)) {
+                const events = await github.paginate(github.rest.issues.listEvents, {
+                  owner, repo, issue_number: number, per_page: 100,
+                });
+                accepted = acceptedSince(events, ACCEPTED, summary ? Date.parse(summary.submitted_at) : 0);
+                if (!accepted) {
+                  try {
+                    await github.rest.issues.removeLabel({ owner, repo, issue_number: number, name: ACCEPTED });
+                  } catch (e) {
+                    if (e.status !== 404) throw e;
+                  }
+                }
+              }
               if (
-                (review?.state === "success" && /\d+ important finding/.test(review.description ?? "")) ||
-                unthreadedImportants(summary?.body ?? "", new Set(threads.map((t) => t.at))) > 0 ||
+                (!accepted &&
+                  ((review?.state === "success" && /\d+ important finding/.test(review.description ?? "")) ||
+                    unthreadedImportants(summary?.body ?? "", new Set(threads.map((t) => t.at))) > 0)) ||
                 threads.some((t) => !t.isResolved)
               ) {
                 return "review-open";
@@ -268,6 +308,14 @@ jobs:
               } catch (e) {
                 if (e.status !== 422) throw e;
               }
+            }
+            try {
+              await github.rest.issues.createLabel({
+                owner, repo, name: ACCEPTED, color: "c5def5",
+                description: "The operator accepts the CI review's importants that have no thread; lapses at the next round",
+              });
+            } catch (e) {
+              if (e.status !== 422) throw e;
             }
 
             for (const number of numbers) {
