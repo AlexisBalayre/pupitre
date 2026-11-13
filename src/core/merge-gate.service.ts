@@ -2931,8 +2931,17 @@ export async function measureBranch(
     complexityAdapters.length > 0
       ? {
           // "Before" reads the main checkout, which the merge lock holds at
-          // the target branch — no historical checkout needed.
-          before: complexityOf(localContext(req.repoPath, req.gateEnv), complexityPaths),
+          // the target branch — no historical checkout needed. What git reads
+          // of it is pinned to the target sha, never the main checkout's HEAD,
+          // which a session can detach while this runs (decision 161).
+          before: complexityOf(
+            {
+              ...localContext(req.repoPath, req.gateEnv),
+              measureSha: targetSha,
+              configSha: targetSha,
+            },
+            complexityPaths,
+          ),
           after: complexityOf(capabilityContext, changedPaths),
         }
       : undefined;

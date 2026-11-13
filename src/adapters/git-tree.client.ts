@@ -66,7 +66,9 @@ export function nestedPackageDirs({
     measureSha ?? 'HEAD',
     gate,
   );
-  if (configPath === measurePath) return measured;
+  // One checkout outside the gate is one listing; at the gate the two shas are
+  // two commits whatever the paths, so the trusted one is always listed.
+  if (!gate && configPath === measurePath) return measured;
   const trusted = committedPackageDirs(configPath, configSha ?? 'HEAD', gate);
   return new Set([...measured].filter((dir) => trusted.has(dir)));
 }

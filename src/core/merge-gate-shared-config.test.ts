@@ -59,6 +59,7 @@ import {
   untimed,
 } from '@test/helpers/merge-gate.mock.js';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
+import { nestedPackageDirs } from '../adapters/git-tree.client.js';
 import type { Adapter, CapabilityContext } from '../adapters/types/adapter.types.js';
 import { typescriptAdapter } from '../adapters/typescript.adapter.js';
 import { openStore } from './db.client.js';
@@ -486,6 +487,38 @@ describe('the merge gate under a shared-config core.worktree and diff.relative',
 
     expect(stage(outcome, 'test (tools/review)')?.status).toBe('flagged');
     expect(stage(outcome, 'typecheck (tools/review)')?.status).toBe('flagged');
+  });
+
+  // Complexity's "before" side reads the main checkout: listed at its HEAD, a
+  // session that detaches it while the side runs changes which nested files
+  // the target's measure leaves out, while the "after" side is pinned.
+  it('lists nested packages at the target sha on both complexity sides with HEAD moved', async () => {
+    const withoutPackage = sh(repo, 'git', 'rev-parse', 'HEAD').trim();
+    commitIn(repo, 'tools/review/package.json', '{}\n');
+    const worktree = seedSession(db, repo, { scopeIn: ['**'] });
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+    const head = join(repo, '.git', 'HEAD');
+    const listed: { measurePath: string; nested: Set<string> }[] = [];
+    const adapter = debtAdapter({
+      complexity: (ctx: CapabilityContext) => {
+        const kept = readFileSync(head, 'utf8');
+        writeFileSync(head, `${withoutPackage}\n`);
+        try {
+          listed.push({ measurePath: ctx.measurePath, nested: nestedPackageDirs(ctx) });
+          return [];
+        } finally {
+          writeFileSync(head, kept);
+        }
+      },
+    });
+
+    await merge(adapter);
+
+    expect(listed).toHaveLength(2);
+    expect(listed.find((side) => side.measurePath === repo)?.nested).toEqual(
+      new Set(['tools/review']),
+    );
+    for (const side of listed) expect(side.nested).toEqual(new Set(['tools/review']));
   });
 
   /** A stage that sets the key while it runs, after every check before the stages. */

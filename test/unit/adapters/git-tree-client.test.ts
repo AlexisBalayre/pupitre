@@ -139,6 +139,26 @@ describe('nestedPackageDirs', () => {
     ).toThrow(/pins one and not the other/);
   });
 
+  // At the gate one path still holds two commits: the trusted listing at the
+  // target is the AND's other half even where measurePath is configPath.
+  it('lists the target sha too when a gate context names one checkout', () => {
+    const repo = makeCheckout([]);
+    const target = git(repo, 'rev-parse', 'HEAD').toString().trim();
+    writeFiles(repo, ['tools/review/package.json']);
+    git(repo, 'add', '-A');
+    git(repo, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'nested');
+    const cut = git(repo, 'rev-parse', 'HEAD').toString().trim();
+
+    expect(
+      nestedPackageDirs({
+        measurePath: repo,
+        configPath: repo,
+        measureSha: cut,
+        configSha: target,
+      }),
+    ).toEqual(new Set());
+  });
+
   // A session can detach the trusted checkout's `.git/HEAD` to a commit with no
   // nested marker while the listing runs and restore it before the gate's last
   // check: listed at HEAD, no nested package's own stages would run.
