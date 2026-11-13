@@ -45,6 +45,7 @@ import { openStore } from './db.client.js';
 import { gitDiffPaths } from './git-diff.client.js';
 import { initProject } from './init.service.js';
 import { landSession } from './land.service.js';
+import { insertLedgerEntry } from './ledger.repository.js';
 import { MergeLockLostError } from './merge-gate.errors.js';
 import { runMergeGate, withScratchGitDir } from './merge-gate.service.js';
 import { projectId } from './paths.utils.js';
@@ -877,5 +878,158 @@ describe('landSession', { timeout: 20_000 }, () => {
     await expect(land()).rejects.toThrow(refusal(squash));
     expectNothingChanged(before);
     expect(hasTrackingRef()).toBe(false);
+  });
+
+  // Decision 179: a PR merged at a head past the pin lands on the gate's word,
+  // its stages run again on the merge commit under the lock.
+  describe('--remeasure', () => {
+    beforeEach(() => {
+      // As inside a slot already held, so the stages never queue behind the
+      // machine's real test runs (decision 96).
+      vi.stubEnv(HELD_SLOT_ENV, 'land.test');
+      db.prepare('UPDATE tasks SET spec = ? WHERE id = ?').run(
+        JSON.stringify({ id: 'task-s1', goal: 'g', scopeIn: ['src/**'], acceptance: ['a'] }),
+        'task-s1',
+      );
+    });
+
+    /** A commit past the pin, pushed as the PR's head and merged on GitHub at it. */
+    function mergeMovedHead(path = 'src/fix.ts', content = 'export const fix = 1;\n') {
+      seedPrMerge();
+      const later = commitIn(worktree, path, content);
+      sh(repo, 'git', 'push', '-q', origin, BRANCH);
+      sh(origin, 'git', 'update-ref', 'refs/pull/7/head', later);
+      const merge = mergeOnGitHub(later);
+      fakeGh({
+        state: 'MERGED',
+        baseRefName: 'main',
+        headRefOid: later,
+        mergeCommit: { oid: merge },
+      });
+      return { later, merge };
+    }
+
+    const remeasure = (extra: { adapter?: Adapter; approvedBy?: string } = {}) =>
+      landSession(db, {
+        repoPath: repo,
+        sessionId: SESSION_ID,
+        adapters: [extra.adapter ?? passingAdapter],
+        remeasure: true,
+        ...(extra.approvedBy === undefined ? {} : { approvedBy: extra.approvedBy }),
+      });
+
+    it('lands a moved head whose remeasure passes, recording the report on the event', async () => {
+      const { later, merge } = mergeMovedHead();
+
+      const outcome = await remeasure();
+
+      expect(mainSha()).toBe(merge);
+      expect(outcome.remeasure).toMatchObject({ sessionId: SESSION_ID, passed: true });
+      expect(outcome.remeasure?.stages.map(({ stage, status }) => [stage, status])).toEqual(
+        expect.arrayContaining([
+          ['build', 'pass'],
+          ['test', 'pass'],
+          ['lint', 'pass'],
+          ['scope-audit', 'pass'],
+        ]),
+      );
+      const [event] = landedEvents().map((row) => JSON.parse(row.payload));
+      expect(event).toEqual({
+        sha: merge,
+        target: 'main',
+        prUrl: PR_URL,
+        remeasuredHead: later,
+        pinned,
+        remeasure: outcome.remeasure,
+      });
+      expect(existsSync(worktree)).toBe(false);
+    });
+
+    it('still refuses the same moved head without it, changing nothing', async () => {
+      const { later } = mergeMovedHead();
+      const before = mainSha();
+
+      await expect(land()).rejects.toThrow(
+        `${PR_URL} merged with its head at ${later}, not ${pinned}, the commit the gate pinned`,
+      );
+      expectNothingChanged(before);
+    });
+
+    it('refuses a remeasure whose stage fails, naming it and changing nothing', async () => {
+      mergeMovedHead();
+      const before = mainSha();
+      const failing: Adapter = {
+        ...passingAdapter,
+        gateCommands: () => [{ stage: 'build', command: 'false', args: [] }],
+      };
+
+      await expect(remeasure({ adapter: failing })).rejects.toThrow(
+        /The remeasure of [0-9a-f]{40} against main at [0-9a-f]{40} did not pass:\n {2}build: /,
+      );
+      expectNothingChanged(before);
+      expect(hasTrackingRef()).toBe(false);
+    });
+
+    it('refuses a flag the session never accepted, and lands one it did', async () => {
+      const big = Array.from({ length: 650 }, (_, i) => `export const v${i} = ${i};\n`).join('');
+      mergeMovedHead('src/big.ts', big);
+      const before = mainSha();
+
+      await expect(remeasure()).rejects.toThrow(
+        `flagged, never accepted: Oversize diff (651 lines) merged from session ${SESSION_ID}`,
+      );
+      expectNothingChanged(before);
+
+      // The kind the session's own gate filed as accepted debt, figures aside.
+      insertLedgerEntry(db, {
+        projectId: pid,
+        description: `Oversize diff (612 lines) merged from session ${SESSION_ID}`,
+        files: ['src/feature.ts'],
+        reason: 'r',
+        acceptedBy: 'human',
+        reviewBy: 'c',
+      });
+      expect((await remeasure()).remeasure?.passed).toBe(true);
+    });
+
+    it('refuses a critical-area change without --approved-by, before any stage runs', async () => {
+      mergeMovedHead('src/core/land.service.ts');
+      const before = mainSha();
+      const failing: Adapter = {
+        ...passingAdapter,
+        gateCommands: () => [{ stage: 'build', command: 'false', args: [] }],
+      };
+
+      await expect(remeasure({ adapter: failing })).rejects.toThrow(
+        /change 1 file\(s\) in a critical area \(src\/core\/land\.service\.ts\); .*`--remeasure --approved-by <who>`/,
+      );
+      expectNothingChanged(before);
+    });
+
+    it('lands a critical-area change on --approved-by, recording the approver', async () => {
+      const { merge } = mergeMovedHead('src/core/land.service.ts');
+
+      await remeasure({ approvedBy: 'tg:alexis' });
+
+      expect(mainSha()).toBe(merge);
+      expect(JSON.parse(landedEvents()[0]?.payload ?? '{}')).toMatchObject({
+        approvedBy: 'tg:alexis',
+      });
+    });
+
+    it('refuses a PR merged at the pin: there is nothing to remeasure', async () => {
+      seedPrMerge();
+      const merge = mergeOnGitHub();
+      fakeGh({
+        state: 'MERGED',
+        baseRefName: 'main',
+        headRefOid: pinned,
+        mergeCommit: { oid: merge },
+      });
+      const before = mainSha();
+
+      await expect(remeasure()).rejects.toThrow('there is nothing to remeasure');
+      expectNothingChanged(before);
+    });
   });
 });

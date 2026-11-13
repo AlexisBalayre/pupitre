@@ -1757,6 +1757,63 @@ describe('CLI commands', () => {
       expect(errors).toEqual([]);
     });
 
+    // The gate vouches for a remeasured head, so the conductor may run it; a
+    // critical change still needs the operator's approval, which it relays (decision 179).
+    it("hands the conductor's --remeasure and relayed --approved-by to the land, printing the stages", async () => {
+      const repo = initRepoWithAdapter();
+      useCwd(repo);
+      vi.stubEnv('PUP_CONDUCTOR', projectId(repo));
+      vi.mocked(landSession).mockResolvedValue({
+        ...landedOutcome(),
+        remeasure: {
+          sessionId: 's1',
+          passed: true,
+          sandbox: 'sandbox-exec (macOS)',
+          stages: [{ stage: 'build', status: 'pass' }],
+        },
+      });
+
+      await buildProgram().parseAsync(['land', 's1', '--remeasure', '--approved-by', 'tg:alexis'], {
+        from: 'user',
+      });
+
+      expect(firstCall(landSession)[1]).toMatchObject({
+        remeasure: true,
+        approvedBy: 'tg:alexis',
+      });
+      expect(logs).toContain('Remeasured the merge; every stage passed:');
+      expect(logs.some((line) => /^ {2}build +PASS$/.test(line))).toBe(true);
+      expect(errors).toEqual([]);
+    });
+
+    it('refuses --approved-by without --remeasure, landing nothing', async () => {
+      useCwd(initRepoWithAdapter());
+
+      await buildProgram().parseAsync(['land', 's1', '--approved-by', 'tg:alexis'], {
+        from: 'user',
+      });
+
+      expect(errors).toEqual([
+        '--approved-by names who approved a remeasure; pass it with --remeasure.',
+      ]);
+      expect(landSession).not.toHaveBeenCalled();
+    });
+
+    it('refuses a conductor naming `human` as the approver, landing nothing', async () => {
+      const repo = initRepoWithAdapter();
+      useCwd(repo);
+      vi.stubEnv('PUP_CONDUCTOR', projectId(repo));
+
+      await buildProgram().parseAsync(['land', 's1', '--remeasure', '--approved-by', 'Human'], {
+        from: 'user',
+      });
+
+      expect(errors).toEqual([
+        '--approved-by names the person who approved, not `human`; use <channel>:<name>.',
+      ]);
+      expect(landSession).not.toHaveBeenCalled();
+    });
+
     it('names a kept branch and a target that already held the merge', async () => {
       useCwd(initRepoWithAdapter());
       vi.mocked(landSession).mockResolvedValue({

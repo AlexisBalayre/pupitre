@@ -1,4 +1,5 @@
 import type { AuditOutcome } from './audit.types.js';
+import type { GateReport } from './merge-gate.types.js';
 
 /** What `pup land` did, for the CLI to print (decision 84). */
 export interface LandOutcome {
@@ -29,6 +30,8 @@ export interface LandOutcome {
    * Absent when every one was steered. `reason` is store and git text.
    */
   unsteered?: { sessionId: string; reason: string }[];
+  /** With `--remeasure`: the gate's stages on the merge commit, every one passed (decision 179). */
+  remeasure?: GateReport;
   /** Absent when the land skipped it (`--no-audit`, decision 132): `pup audit` is then the operator's. */
   audit?: AuditOutcome;
 }

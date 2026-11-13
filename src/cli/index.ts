@@ -895,6 +895,8 @@ interface LandOptions {
   gateEnv?: string;
   audit: boolean;
   acceptHead?: string;
+  remeasure?: boolean;
+  approvedBy?: string;
 }
 
 interface PlanOptions {
@@ -2528,6 +2530,14 @@ export function buildProgram(): Command {
       '--accept-head <sha>',
       'Land a PR merged at this head, past the pinned sha, after reading the commits between them',
     )
+    .option(
+      '--remeasure',
+      "Land a PR merged at a head past the pinned sha if the gate's stages pass on the merge",
+    )
+    .option(
+      '--approved-by <who>',
+      'with --remeasure: who approved commits past the pin that change a critical area',
+    )
     .action(async (session: string, opts: LandOptions) => {
       const { repoPath, db } = project();
       // The human merged the PR on GitHub already; what is left moves main to
@@ -2541,6 +2551,19 @@ export function buildProgram(): Command {
       if (opts.acceptHead !== undefined && callingConductor()) {
         return refuse('`pup land --accept-head` is operator-only.');
       }
+      if (opts.approvedBy !== undefined && !opts.remeasure) {
+        return refuse('--approved-by names who approved a remeasure; pass it with --remeasure.');
+      }
+      const approvedBy =
+        opts.approvedBy === undefined ? undefined : sanitizeReason(opts.approvedBy);
+      if (approvedBy === '') return refuse('--approved-by needs a name, such as tg:<user>.');
+      // The conductor relays the operator's approval of a critical change, it
+      // does not give one (decisions 75, 179).
+      if (callingConductor() && approvedBy?.toLowerCase() === 'human') {
+        return refuse(
+          '--approved-by names the person who approved, not `human`; use <channel>:<name>.',
+        );
+      }
       if (refusedUnsandboxed()) return;
       let outcome: LandOutcome;
       let lockLost: MergeLockLostError | undefined;
@@ -2553,6 +2576,8 @@ export function buildProgram(): Command {
           wait: true,
           audit: opts.audit,
           acceptHead: opts.acceptHead,
+          remeasure: opts.remeasure,
+          approvedBy,
         });
       } catch (error) {
         if (error instanceof GateInterruptedError) throw error;
@@ -2571,6 +2596,10 @@ export function buildProgram(): Command {
             ? `${target} fast-forwarded to ${outcome.targetSha}.`
             : `${target} already held it at ${outcome.targetSha}.`),
       );
+      if (outcome.remeasure) {
+        console.log('Remeasured the merge; every stage passed:');
+        printGateReport(outcome.remeasure);
+      }
       if (outcome.removedWorktree) console.log('Removed the session worktree.');
       if (outcome.keptWorktree !== undefined) {
         console.log(
