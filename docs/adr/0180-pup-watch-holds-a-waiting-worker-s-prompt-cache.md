@@ -27,6 +27,16 @@
     the next sweep tries again while the window lasts. The text (`CACHE_HOLD_MESSAGE`) tells the
     worker that nothing changed and that this answers nothing it asked, and asks it to run no
     tool and reply `held`.
+    The events file is the session's to write, and the sweep that reads it also resumes dead
+    turns and nudges the conductor, so it is read like a file the session may have replaced. It
+    is opened without following a link and without blocking. Only a regular file counts, and its
+    mtime is taken from that open descriptor, not from a separate `stat`. Only its last 1 MiB
+    (`CACHE_HOLD_EVENTS_TAIL_BYTES`) is read, with the line the cut tore dropped. A quarter of the
+    events files on the machine this was built on were over 1 MiB (the largest 18 MB), so refusing
+    a big file outright would leave the longest, dearest windows unheld. Reading newest first
+    needs only the turn that ended. One session's failure, whether a link, a directory, a fifo,
+    a pane tmux cannot reach or a refused store write, skips only that window's hold. It never
+    stops the rest of the sweep.
     A hold is recorded as a `cache_hold` event with the idle it ended, never as a `steer`. A
     steer answers an open question, and a hold must leave that question open, in Needs-you, and
     out of the window's last steer.
@@ -37,6 +47,12 @@
     therefore cost 0.8 of the input price, under half of the one re-write they avoid. That covers
     a working day of holds. A window left overnight pays the write once, when it wakes, instead
     of paying holds all night.
+    The cap is a cost control, not a boundary. The session controls both inputs: it moves the
+    events file's mtime with every hook it fires, and it can record another event itself (a
+    `pup session ask`, a hooked tool call), which starts the trailing count again. A worker that
+    keeps doing so is held indefinitely, at one hold per 50 minutes of quiet, a tenth of its
+    context each. That is the most it can make pup spend, far less than it could spend with
+    turns of its own.
     The cost to the stall rule, which this amends: each hold's turn moves the events file. So a
     running worker held over an open question no longer stays stalled once it passes ten minutes.
     Its stall age starts again after each hold, about every 51 minutes. The question itself

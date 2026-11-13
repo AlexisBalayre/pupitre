@@ -1,4 +1,5 @@
-import { mkdirSync, utimesSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -17,6 +18,7 @@ import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import { pasteIntoPane, readInputBox, submitPane } from '../claude/session-runtime.service.js';
 import {
   CACHE_HOLD_AFTER_MS,
+  CACHE_HOLD_EVENTS_TAIL_BYTES,
   CACHE_HOLD_LIMIT,
   CACHE_HOLD_MESSAGE,
   CACHE_HOLD_UNTIL_MS,
@@ -204,5 +206,86 @@ describe('holdIdleCaches (decision 180)', () => {
     saveProjectDormantAt(db, projectId(repo), null);
     expect(sweepDeadTurns(db, repo, Date.now())).toEqual([]);
     expect(holdsOf(db, 's1')).toHaveLength(1);
+  });
+
+  describe('an events file the session replaced', () => {
+    /** `bad` waits with its events file replaced by `plant`; `good` waits with a real one. */
+    function seedPair(plant: (eventsFile: string) => void): void {
+      seedSession(db, repo, 'bad', 'awaiting-review');
+      seedEventsFile(repo, 'bad', HOLD_AGE_MS);
+      const eventsFile = projectPaths(repo).eventsFile('bad');
+      plant(eventsFile);
+      const at = new Date(Date.now() - HOLD_AGE_MS);
+      utimesSync(eventsFile, at, at);
+      seedSession(db, repo, 'good', 'awaiting-review');
+      seedEventsFile(repo, 'good', HOLD_AGE_MS);
+    }
+
+    it('skips a directory, and holds the next session', () => {
+      seedPair((eventsFile) => {
+        rmSync(eventsFile);
+        mkdirSync(eventsFile);
+      });
+
+      expect(holdIdleCaches(db, repo, Date.now())).toEqual(['good']);
+      expect(readInputBox).toHaveBeenCalledTimes(1);
+    });
+
+    it('never follows a link, even to a file that would be held', () => {
+      seedPair((eventsFile) => {
+        const target = `${eventsFile}.real`;
+        renameSync(eventsFile, target);
+        symlinkSync(target, eventsFile);
+      });
+
+      expect(holdIdleCaches(db, repo, Date.now())).toEqual(['good']);
+      expect(readInputBox).toHaveBeenCalledTimes(1);
+    });
+
+    it('never blocks on a fifo', () => {
+      seedPair((eventsFile) => {
+        rmSync(eventsFile);
+        execFileSync('mkfifo', [eventsFile]);
+      });
+
+      expect(holdIdleCaches(db, repo, Date.now())).toEqual(['good']);
+      expect(readInputBox).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe(`an events file past ${CACHE_HOLD_EVENTS_TAIL_BYTES} bytes`, () => {
+    const oversized = (event: { hook_event_name: string }) => ({
+      ...event,
+      padding: 'x'.repeat(CACHE_HOLD_EVENTS_TAIL_BYTES),
+    });
+
+    it('is held from its tail', () => {
+      seedSession(db, repo, 's1', 'awaiting-review');
+      seedEventsFile(repo, 's1', HOLD_AGE_MS, [oversized(TOOL), TOOL, STOP]);
+
+      expect(holdIdleCaches(db, repo, Date.now())).toEqual(['s1']);
+    });
+
+    it('is read no further back than its tail: a turn end larger than it is never seen', () => {
+      seedSession(db, repo, 's1', 'awaiting-review');
+      // Read whole, the two turn ends are an ended turn, and the window is held.
+      seedEventsFile(repo, 's1', HOLD_AGE_MS, [TOOL, STOP, oversized(STOP)]);
+
+      expect(holdIdleCaches(db, repo, Date.now())).toEqual([]);
+      expect(readInputBox).not.toHaveBeenCalled();
+    });
+  });
+
+  it('skips a window whose pane fails, and holds the next one', () => {
+    seedSession(db, repo, 's1', 'awaiting-review');
+    seedEventsFile(repo, 's1', HOLD_AGE_MS);
+    seedSession(db, repo, 's2', 'blocked');
+    seedEventsFile(repo, 's2', HOLD_AGE_MS);
+    vi.mocked(readInputBox).mockImplementationOnce(() => {
+      throw new Error('tmux: no server running');
+    });
+
+    expect(holdIdleCaches(db, repo, Date.now())).toEqual(['s2']);
+    expect(holdsOf(db, 's1')).toEqual([]);
   });
 });

@@ -1,12 +1,7 @@
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { closeSync, constants, fstatSync, openSync, readSync } from 'node:fs';
 import type { Database } from 'better-sqlite3';
 
-import {
-  pasteIntoPane,
-  readInputBox,
-  SessionPaneMissingError,
-  submitPane,
-} from '../claude/session-runtime.service.js';
+import { pasteIntoPane, readInputBox, submitPane } from '../claude/session-runtime.service.js';
 import { SESSION_ID_PATTERN } from './paths.constants.js';
 import { projectPaths } from './paths.utils.js';
 import {
@@ -54,8 +49,17 @@ export const CACHE_HOLD_UNTIL_MS = 58 * 60 * 1000;
  * tenth of the input price and a re-write costs twice it, so eight cost under
  * half of the one re-write a never-woken window would have avoided: a working
  * day held, then a window left overnight pays the write once, when it wakes.
+ * A cost control, not a boundary: the session can record other events itself.
  */
 export const CACHE_HOLD_LIMIT = 8;
+
+/**
+ * The most of an events file a hold reads, from its end. The classifier walks
+ * newest first and needs only the turn that ended, while a long session's file
+ * runs to tens of megabytes. A turn longer than this reads as ended unless the
+ * part of it read launched a background shell.
+ */
+export const CACHE_HOLD_EVENTS_TAIL_BYTES = 1 << 20;
 
 /**
  * Hold every worker window that is waiting on someone else and whose cache is
@@ -76,19 +80,62 @@ export function holdIdleCaches(db: Database, repoPath: string, now: number): str
   const held: string[] = [];
   for (const row of listSessions(db, ['awaiting-review', 'blocked', 'running'])) {
     if (!SESSION_ID_PATTERN.test(row.id)) continue;
-    const eventsFile = paths.eventsFile(row.id);
-    if (!existsSync(eventsFile)) continue;
-    const idleMs = now - statSync(eventsFile).mtimeMs;
-    if (idleMs < CACHE_HOLD_AFTER_MS || idleMs >= CACHE_HOLD_UNTIL_MS) continue;
-    const events = listEvents(db, row.id).reverse();
-    if (row.state === 'running' && openQuestion(db, row.id) === undefined) continue;
-    if (trailingHolds(events) >= CACHE_HOLD_LIMIT) continue;
-    if (classifySessionActivity(readFileSync(eventsFile, 'utf8')).kind !== 'idle') continue;
-    if (!typeHold(row)) continue;
-    appendEvent(db, row.id, 'cache_hold', { idleMs: Math.round(idleMs) });
-    held.push(row.id);
+    try {
+      const idleMs = holdDue(db, row, paths.eventsFile(row.id), now);
+      if (idleMs === undefined || !typeHold(row)) continue;
+      appendEvent(db, row.id, 'cache_hold', { idleMs: Math.round(idleMs) });
+      held.push(row.id);
+    } catch {
+      // The events file and the pane are the session's to break: a file gone
+      // or replaced, a pane tmux cannot reach, or a store write refused skips
+      // this window's hold, never the sweep's other holds, resumes and nudge.
+      // A hold typed but left unrecorded moved the events file, so the next
+      // sweep finds the window quiet for minutes, not due again.
+    }
   }
   return held;
+}
+
+/**
+ * How long the session's events file has been quiet, when its window is due a
+ * hold. The file is the session's to write, so it is opened as one it may have
+ * replaced: no link followed and no fifo blocked on, a regular file only, its
+ * mtime read off the descriptor opened, and only its tail read. Throws when it
+ * cannot be opened, as a link cannot.
+ */
+function holdDue(
+  db: Database,
+  row: SessionRow,
+  eventsFile: string,
+  now: number,
+): number | undefined {
+  const fd = openSync(eventsFile, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile()) return undefined;
+    const idleMs = now - stat.mtimeMs;
+    if (idleMs < CACHE_HOLD_AFTER_MS || idleMs >= CACHE_HOLD_UNTIL_MS) return undefined;
+    const events = listEvents(db, row.id).reverse();
+    if (row.state === 'running' && openQuestion(db, row.id) === undefined) return undefined;
+    if (trailingHolds(events) >= CACHE_HOLD_LIMIT) return undefined;
+    return classifySessionActivity(readTail(fd, stat.size)).kind === 'idle' ? idleMs : undefined;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/** The file's last `CACHE_HOLD_EVENTS_TAIL_BYTES` at most, less the line the cut tore. */
+function readTail(fd: number, size: number): string {
+  const start = Math.max(0, size - CACHE_HOLD_EVENTS_TAIL_BYTES);
+  const buffer = Buffer.alloc(size - start);
+  let length = 0;
+  for (let read = -1; read !== 0 && length < buffer.length; length += read) {
+    read = readSync(fd, buffer, length, buffer.length - length, start + length);
+  }
+  const text = buffer.toString('utf8', 0, length);
+  if (start === 0) return text;
+  const torn = text.indexOf('\n');
+  return torn === -1 ? '' : text.slice(torn + 1);
 }
 
 /** The holds since anything else was recorded for the session, newest first. */
@@ -100,17 +147,11 @@ function trailingHolds(newestFirst: EventRow[]): number {
 /**
  * Type the hold into an empty box and submit it; false, with nothing typed,
  * when the box is absent or holds text, and with the box cleared when the
- * paste never landed whole (decision 45). A window never recorded or gone
- * since its launch is nothing to hold.
+ * paste never landed whole (decision 45).
  */
 function typeHold(row: SessionRow): boolean {
-  try {
-    const pane = sessionPane(row);
-    if (readInputBox(pane) !== 'empty' || !pasteIntoPane(pane, CACHE_HOLD_MESSAGE)) return false;
-    submitPane(pane);
-    return true;
-  } catch (error) {
-    if (error instanceof SessionPaneMissingError) return false;
-    throw error;
-  }
+  const pane = sessionPane(row);
+  if (readInputBox(pane) !== 'empty' || !pasteIntoPane(pane, CACHE_HOLD_MESSAGE)) return false;
+  submitPane(pane);
+  return true;
 }
