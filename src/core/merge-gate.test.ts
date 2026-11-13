@@ -145,9 +145,12 @@ import {
   appendEvent,
   getProject,
   getSession,
+  insertSession,
+  insertTask,
   listEvents,
   saveProjectBaseline,
   saveProjectOriginUrl,
+  transitionSession,
 } from './session.repository.js';
 import { GATE_SLOT_WAIT_MS, HELD_SLOT_ENV } from './test-slot.service.js';
 import type { DebtBaseline, ProjectBaseline } from './types/init.types.js';
@@ -429,6 +432,73 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(outcome.status).toBe('rejected');
     expect(outcome.report.stages.at(-1)).toMatchObject({ stage: 'scope-audit', status: 'fail' });
     expect(outcome.report.stages.at(-1)?.detail).toContain('.pupitre/adapter.yml (protected path)');
+  });
+
+  // Decision 146: two files sharing a decision number merge without a conflict.
+  it('refuses an ADR number another live session branch adds before any stage runs, with no rejection', async () => {
+    commitIn(repo, 'docs/adr/0001-first.md', '# 0001\n');
+    const worktree = seedSession(db, repo, { scopeIn: ['src/**', 'docs/adr/**'] });
+    insertTask(db, { id: 'task-s2', projectId: 'proj-1', spec: '{}' });
+    const sibling = join(repo, '.worktrees', 's2');
+    sh(repo, 'git', 'worktree', 'add', '-b', 'pup/s2', sibling, 'HEAD');
+    insertSession(db, {
+      id: 's2',
+      taskId: 'task-s2',
+      worktreePath: sibling,
+      branch: 'pup/s2',
+      profileHash: 'hash',
+    });
+    transitionSession(db, 's2', 'running');
+    commitIn(sibling, 'docs/adr/0002-theirs.md', '# 0002\n');
+    commitIn(worktree, 'docs/adr/0002-mine.md', '# 0002\n');
+
+    const outcome = await merge();
+
+    expect(outcome).toMatchObject({ status: 'refused', rejectCount: 0 });
+    // Before build, test and lint, which never ran.
+    expect(untimed(outcome.report.stages).map((stage) => stage.stage)).toEqual([
+      'worktree-clean',
+      'fresh-base',
+      'adr-number',
+    ]);
+    expect(outcome.report.stages.at(-1)).toMatchObject({
+      status: 'fail',
+      detail:
+        'ADR numbers already taken:\n' +
+        '  docs/adr/0002-mine.md: decision 0002 is also added by pup/s2, a session branch that ' +
+        'is live or whose PR has not landed; renumber it 0003, the lowest free number',
+    });
+    expect(getSession(db, SESSION_ID)).toMatchObject({ state: 'awaiting-review', reject_count: 0 });
+    expect(vi.mocked(steerPane)).not.toHaveBeenCalled();
+  });
+
+  it('rejects, not refuses, when a later stage fails after the ADR stage passed with a note', async () => {
+    commitIn(repo, 'docs/adr/0001-first.md', '# 0001\n');
+    const worktree = seedSession(db, repo, { scopeIn: ['src/**', 'docs/adr/**'] });
+    insertTask(db, { id: 'task-s2', projectId: 'proj-1', spec: '{}' });
+    insertSession(db, {
+      id: 's2',
+      taskId: 'task-s2',
+      worktreePath: join(repo, '.worktrees', 's2'),
+      branch: 'pup/s2',
+      profileHash: 'hash',
+    });
+    transitionSession(db, 's2', 'running');
+    // A parentless commit, which git cannot diff against the target.
+    const orphan = sh(repo, 'git', 'commit-tree', '-m', 'orphan', 'HEAD^{tree}').trim();
+    sh(repo, 'git', 'update-ref', 'refs/heads/pup/s2', orphan);
+    commitIn(worktree, 'docs/adr/0002-mine.md', '# 0002\n');
+    commitIn(worktree, 'notes.txt', 'off-scope\n');
+
+    const outcome = await merge();
+
+    expect(outcome).toMatchObject({ status: 'rejected', rejectCount: 1 });
+    expect(untimed(outcome.report.stages)).toContainEqual({
+      stage: 'adr-number',
+      status: 'pass',
+      detail: 'not checked against pup/s2: git could not read it against the target',
+    });
+    expect(outcome.report.stages.at(-1)).toMatchObject({ stage: 'scope-audit', status: 'fail' });
   });
 
   it('merges an oversize diff with --accept-debt and writes a ledger entry', async () => {

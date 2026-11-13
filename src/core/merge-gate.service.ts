@@ -36,6 +36,7 @@ import {
   killSession as killTmux,
   SteerNotDeliveredError,
 } from '../claude/session-runtime.service.js';
+import { ADR_NUMBER_STAGE, adrNumberStage } from './adr-number.service.js';
 import { patchCoverage } from './coverage.utils.js';
 import { judgeDebt, measureCoverage, measureStaticDebt, quotePath } from './debt.service.js';
 import { draftDecisionRecord } from './decision-record.service.js';
@@ -2121,7 +2122,10 @@ async function gateAndMerge(
   }
 
   const measured = await measureBranch(db, req, session, stages, checkoutDir, targetSha, sha);
-  if (!measured) return failed();
+  if (!measured) {
+    const adrNumber = stages.find((stage) => stage.stage === ADR_NUMBER_STAGE);
+    return adrNumber?.status === 'fail' ? refuseGate(db, session, sandbox, stages) : failed();
+  }
   const { changedPaths, flaggedDebt, debtCandidates, spec, project, baseline } = measured;
 
   if (flaggedDebt.length > 0 && !req.acceptDebt) return refuseGate(db, session, sandbox, stages);
@@ -2578,10 +2582,10 @@ function changesOnlyUntested(
 
 /**
  * The stages every gate run measures on the pinned sha, from the gate's
- * checkout (decision 81): build, test and lint, a touched nested package's own
- * scripts, the scope audit, the diff size and the debt deltas. Undefined once a
- * hard stage has recorded its failure in `stages`; the caller decides what a
- * failure does to the session.
+ * checkout (decision 81): the ADR numbers it adds (decision 146), build, test
+ * and lint, a touched nested package's own scripts, the scope audit, the diff
+ * size and the debt deltas. Undefined once a hard stage has recorded its
+ * failure in `stages`; the caller decides what a failure does to the session.
  */
 export async function measureBranch(
   db: Database,
@@ -2671,6 +2675,12 @@ export async function measureBranch(
         `on the re-run: ${failingTestNames(rerun)}\n${commandFailureDetail(rerun)}`,
     });
   };
+
+  // Before the checkout and every stage: a taken decision number is the
+  // worker's to renumber, refused without a rejection (decision 146).
+  const adrNumber = adrNumberStage(db, req.repoPath, session.id, targetSha, sha);
+  if (adrNumber) stages.push(adrNumber);
+  if (adrNumber?.status === 'fail') return undefined;
 
   // One repo has one build, one test and one lint, and the runner that answers
   // for them is the one whose stack detected first (decision 22, which decision

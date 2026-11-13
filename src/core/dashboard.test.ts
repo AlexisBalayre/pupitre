@@ -1646,6 +1646,32 @@ describe('needsYou', () => {
         ]);
       });
 
+      // A failed stage refused it before any debt was weighed (decision 146):
+      // accepting debt cannot help, so the answer is a steer, not --accept-debt.
+      it('names the failed stage and answers with a steer when a stage failed', () => {
+        vi.mocked(hasConductorWindow).mockReturnValue(true);
+        seedIn('s-review', ['running', 'awaiting-review']);
+        appendEvent(db, 's-review', 'gate_result', {
+          outcome: 'refused',
+          report: {
+            sessionId: 's-review',
+            passed: false,
+            sandbox: 'none',
+            stages: [{ stage: 'adr-number', status: 'fail', detail: '0146 is taken' }],
+          },
+        });
+
+        expect(inbox()).toEqual([
+          {
+            kind: 'awaiting-review',
+            sessionId: 's-review',
+            label: 's-review',
+            reason: 'gate refused: adr-number failed',
+            answer: 'pup steer s-review "..."',
+          },
+        ]);
+      });
+
       // Neither moves the state, so neither logs a transition after the refusal.
       it.each([
         ['a steer', (id: string) => appendEvent(db, id, 'steer', { kind: 'message' })],
