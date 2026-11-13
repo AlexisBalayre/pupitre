@@ -1,0 +1,95 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-13T09:22:24.218Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43399710310",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43399710310",
+  "actor": "AlexisBalayre",
+  "commit_sha": "b74fdc7581272b5604c913f527501d1d592b48df",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 281,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "guards"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "guards"
+  ],
+  "reviewers_skipped": [
+    "conventions",
+    "context",
+    "maintainability",
+    "docs",
+    "spec",
+    "simplicity",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/adr-number.service.ts",
+      "line": "245-250",
+      "description": "The peer cap counts a peer's slug renames of target decisions as added decisions, so a peer with a few slug renames and one new decision is skipped, and its new number's clash passes the gate.",
+      "status": "unresolved"
+    },
+    {
+      "file": "src/core/adr-number.service.ts",
+      "line": "89-90",
+      "description": "`addedAdrPaths` does not pin `--ignore-submodules=none`. A session can write `diff.ignoreSubmodules=all` to the shared `.git/config`, then commit a gitlink at `docs/adr/0002-x.md` (a number the target already holds). The diff drops the gitlink, the stage passes, and a duplicate decision number lands that every later gate's `decisionPaths` counts.",
+      "status": "unresolved"
+    }
+  ],
+  "findings": [],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Round 8 budget: only correctness, security and guards ran.\n- Skipped under the round budget: conventions, docs, context, simplicity and maintainability.\n- workflow-safety: skipped because the PR's own diff against the merge base touches nothing under .github/workflows. The claude-code-review.yml change comes in from main.\n- spec: skipped because the PR has no closing issue and no --spec.\n\nCorrectness and security each ran two instances, since the diff is about 1,360 lines:\n- correctness split into adr-number.service.ts internals, and gate/CLI/dashboard integration plus peer selection against the newly merged main code.\n- security split into git argv/config evasion, and output/resource bounds.\n\nNo reviewer returned an important finding, so there was nothing to consolidate or validate. Both prior importants are still unresolved at b74fdc7:\n- adr-number.service.ts L247 still caps on theirs.size.\n- --ignore-submodules=none is still absent.\nThe only commit since the prior review merges main and does not touch adr-number.service.ts.\n\nThe head was unchanged at b74fdc7 when re-checked."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 4.7402658,
+  "duration_ms": 399257,
+  "num_turns": 13,
+  "tokens": {
+    "input": 12,
+    "output": 8062,
+    "cache_read": 312537,
+    "cache_creation": 60590,
+    "total": 381201
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 202,
+      "output": 90513,
+      "cache_read": 4680381,
+      "cache_creation": 327469,
+      "cost_usd": 4.566259199999998
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 24,
+      "output": 4581,
+      "cache_read": 305011,
+      "cache_creation": 39059,
+      "cost_usd": 0.1740066
+    }
+  ],
+  "permission_denials": []
+}
