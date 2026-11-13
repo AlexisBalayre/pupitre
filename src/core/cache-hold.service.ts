@@ -16,7 +16,7 @@ import { classifySessionActivity } from './session-activity.utils.js';
 import { sessionPane } from './session-lifecycle.service.js';
 
 /**
- * The cache hold (decision 180): what keeps a worker that waits on someone
+ * The cache hold (decision 182): what keeps a worker that waits on someone
  * else from paying its whole context again when the wait passes the hour.
  *
  * A worker's prompt cache lives an hour from its last request. The retro of

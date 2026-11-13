@@ -81,7 +81,7 @@ interface ResumedTurn {
  * to sleep, and a resume typed into it would be the watcher waking it.
  *
  * The same pass holds the cache of every worker waiting on someone else
- * before its hour runs out (decision 180). A hold is no recovery: it is
+ * before its hour runs out (decision 182). A hold is no recovery: it is
  * recorded in the store and not returned.
  *
  * Returns what it acted on, one entry per pane, for `pup watch` to print.

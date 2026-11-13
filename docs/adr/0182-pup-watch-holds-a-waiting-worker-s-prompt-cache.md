@@ -1,9 +1,9 @@
-# 0180. `pup watch` holds a waiting worker's prompt cache before its hour runs out (2026-11-13)
+# 0182. `pup watch` holds a waiting worker's prompt cache before its hour runs out (2026-11-13)
 
 - Status: accepted
 - Amends: [0035](0035-a-running-session-is-stalled-by-events-file.md)
 
-180. **`pup watch` holds a waiting worker's prompt cache before its hour runs out (2026-11-13).**
+182. **`pup watch` holds a waiting worker's prompt cache before its hour runs out (2026-11-13).**
     A worker's prompt cache lives an hour from its last request. The retro of 2026-11-09
     (decision 150) counted 93 worker requests that came after a longer idle and wrote the whole
     context back at the write price: 8.6 million tokens, about 84 USD in a week, around 93k
