@@ -37,9 +37,10 @@
     needs only the turn that ended. One session's failure, whether a link, a directory, a fifo,
     a pane tmux cannot reach or a refused store write, skips only that window's hold. It never
     stops the rest of the sweep.
-    A hold is recorded as a `cache_hold` event with the idle it ended, never as a `steer`. A
-    steer answers an open question, and a hold must leave that question open, in Needs-you, and
-    out of the window's last steer.
+    A hold is recorded as a `cache_hold` event with the idle it ended, never as a `steer`.
+    `openQuestion` does not read it, so a question stays open and in Needs-you until the
+    operator answers it (decision 93), and the window's last steer stays one that was actually
+    sent to it.
     A window is held at most eight times in a row (`CACHE_HOLD_LIMIT`), counted as the
     `cache_hold` events since anything else was recorded for the session. After that it is left to
     lapse until something else is recorded, such as a state change or a steer. A hold reads the
