@@ -475,7 +475,10 @@ function buildContextMarkdown(
       '  (if `pup` is not found, run `node "$PUP_BIN" session done "<one-line summary>"`).\n' +
       '- If you are blocked on something only a human can decide, run ' +
       '`pup session ask "<question>"` and end your turn; a steer answers it. ' +
-      'pup cannot answer a selector or a plan approval.\n' +
+      'pup cannot answer a selector or a plan approval. When the answer is a choice, always ' +
+      'offer it as options with your recommendation, so the operator answers with one key: ' +
+      '`pup session ask "<question>" --option "<answer>" --option "<answer>" --recommend <n>` ' +
+      '(up to 4 options; n is the one you would pick).\n' +
       '- Peer sessions may share your files: those under Peers above, and any a steer names ' +
       'as joining later. Before editing a shared file, message the peer what you will change ' +
       '(the function or section) and agree who does what. If you change a shared signature or ' +
@@ -1047,8 +1050,10 @@ fi
 printf '%s' "$INPUT" | jq -r '
   def pct: if type == "object" and (.used_percentage | type) == "number"
     then "\\(.used_percentage | floor)%" else "?" end;
-  try "ctx \\(.context_window | pct) | 5h \\(.rate_limits.five_hour | pct) | 7d \\(.rate_limits.seven_day | pct)"
-  catch "ctx ? | 5h ? | 7d ?"' 2>/dev/null || echo 'ctx ? | 5h ? | 7d ?'
+  def five: .rate_limits.five_hour
+    | if type == "object" and (.used_percentage | type) == "number" then " | 5h \\(pct)" else "" end;
+  try "ctx \\(.context_window | pct)\\(five) | 7d \\(.rate_limits.seven_day | pct)"
+  catch "ctx ? | 7d ?"' 2>/dev/null || echo 'ctx ? | 7d ?'
 `;
 }
 

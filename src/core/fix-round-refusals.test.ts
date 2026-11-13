@@ -174,7 +174,7 @@ describe('startFixRound', { timeout: 90_000 }, () => {
         '  case "$*" in',
         // One line per mutation, so a test counts the replies and resolves.
         `    *mutation*) printf '%s' "$*" | tr '\\n' ' ' >> ${ghDir}/mutations; printf '\\n' >> ${ghDir}/mutations; echo '{"data":{}}'; exit 0;;`,
-        `    *viewerDidAuthor*) [ -f ${ghDir}/answers-fail ] && exit 1; [ -f ${ghDir}/answers-slow ] && exec sleep 5; cat ${ghDir}/answers.json 2>/dev/null || echo '{}'; exit 0;;`,
+        `    *replies:*) [ -f ${ghDir}/answers-fail ] && exit 1; [ -f ${ghDir}/answers-slow ] && exec sleep 5; cat ${ghDir}/answers.json 2>/dev/null || echo '{}'; exit 0;;`,
         '  esac',
         `  cat ${ghDir}/review.json; exit 0`,
         'fi',
@@ -218,10 +218,9 @@ describe('startFixRound', { timeout: 90_000 }, () => {
       description: string;
     } | null,
     threads = [] as ThreadSeed[],
-    /** Threads the newest review opened that are older than the page read. */
+    /** Threads older than the page read. */
     unread = 0,
   } = {}): void {
-    const opened = threads.filter((thread) => !thread.earlier).length + unread;
     const answer = {
       data: {
         repository: {
@@ -245,12 +244,7 @@ describe('startFixRound', { timeout: 90_000 }, () => {
                   ? []
                   : [
                       { id: 'PRR_earlier', author: BOT, commit: { oid: OTHER_SHA } },
-                      {
-                        id: 'PRR_newest',
-                        author: BOT,
-                        commit: { oid: reviewedOn },
-                        comments: { totalCount: opened },
-                      },
+                      { id: 'PRR_newest', author: BOT, commit: { oid: reviewedOn } },
                     ]),
               ],
             },
@@ -266,7 +260,6 @@ describe('startFixRound', { timeout: 90_000 }, () => {
                   nodes: [
                     {
                       author: thread.author ?? BOT,
-                      pullRequestReview: { id: thread.earlier ? 'PRR_earlier' : 'PRR_newest' },
                       body: thread.body,
                       lastEditedAt: thread.editor === undefined ? null : '2026-10-18T09:00:00Z',
                       editor: thread.editor ?? null,

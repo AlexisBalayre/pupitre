@@ -20,6 +20,7 @@ import {
 import {
   assertGhAvailable,
   commentOnPullRequest,
+  fixRoundMarker,
   isCutOffByNode,
   originRepoSlug,
   type PullRequestReview,
@@ -182,8 +183,9 @@ interface StoredPullRequest {
  * before anything is written: the session must be merged, its newest merge
  * must have opened a PR of origin's recorded repo with no landing after it,
  * and GitHub must report that PR OPEN with its head at the pinned sha, the
- * review bot's newest review run and final status on that head, and a thread
- * that run opened still unresolved. Then the profile is compiled afresh, the
+ * review bot's newest review and final status on that head, and a thread of
+ * the bot's still unresolved, not outdated, and not one an earlier round
+ * answered and left open (decision 163). Then the profile is compiled afresh, the
  * worktree comes back on its branch at that head, one transaction records the
  * round and takes the edge out of `merged`, and a fresh window is kicked off
  * with the task's context and the threads, framed as reviewer data. A kickoff
@@ -326,7 +328,7 @@ export function answerFixRoundThreads(
   const changed = withinBudget((timeoutMs) =>
     filesTheRoundChanged(repoPath, head, sha, targetSha, timeoutMs),
   );
-  const marker = `<!-- pup fix-round ${sha} -->`;
+  const marker = fixRoundMarker(sha);
   const workerAnswers = threadAnswers(summaries, threadIds);
   const answers: ThreadAnswers = {
     prUrl,
@@ -341,7 +343,9 @@ export function answerFixRoundThreads(
     if (!THREAD_ID.test(id) || thread === undefined || !thread.isBots) continue;
     const answer = workerAnswers.get(id);
     const verdict = threadVerdict(answer?.verdict, thread.path, changed);
-    if (!thread.ownReplies.some((body) => body.includes(marker))) {
+    // Only the newest reply counts: one the operator wrote after the marker reopens the
+    // thread, so a no-commit re-run at the same sha answers it again.
+    if (!thread.ownReplies.at(-1)?.includes(marker)) {
       const said = REPLIES[verdict](
         sha,
         codeSpan(answer?.reason ?? ''),
@@ -585,12 +589,16 @@ function orNotStarted<T>(run: () => T): T {
  * What the CI review leaves to a fix round, or why there is no round to run:
  * the PR must be OPEN with its head at the pin, since a round starts from a
  * commit the gate measured and a moved head is re-gated first (decision 86),
- * and the review bot's newest review run must be on that head, so its threads
- * are about the code the worker will be handed. The threads are the ones that
- * run opened: an earlier round's, left unresolved, are about code since
- * changed, and that run raised again whatever it still found. They are relayed
- * only under the bot's SUCCESS status on the head, the one the poster sets on
- * every run it posted, findings or not. A finding
+ * and the review bot's newest review must be on that head. The threads are
+ * every unresolved one of the bot's that no push outdated, whichever run
+ * opened it, so they are about the code the worker will be handed: a newer
+ * run's clean status does not close an earlier one's (decision 163). One a
+ * fix round already answered, its reply still the last word, is left to the
+ * operator, not relayed again, and so is an unresolved one a push outdated:
+ * with only those left under a SUCCESS status, there is no round to run and
+ * the head is not clean either. They are
+ * relayed only under the bot's SUCCESS status on the head, the one the poster
+ * sets on every run it posted, findings or not. A finding
  * someone else edited, or one hidden on GitHub, is refused, not relayed. With
  * none, the head is clean only when the bot's status says so: a review that
  * reached no verdict, a partial one, or one whose findings had no line to
@@ -650,7 +658,10 @@ function reviewVerdict(
             wait,
     };
   }
-  const threads = review.openThreads;
+  // A thread a round already answered and left open is the operator's: relaying
+  // it again would hand the worker a finding it declined, as a new round.
+  const threads = review.openThreads.filter((thread) => !thread.isAnswered);
+  const answered = review.openThreads.length - threads.length;
   const untrusted = threads.find((thread) => thread.isEditedByOther || thread.isMinimized);
   if (untrusted !== undefined) {
     return {
@@ -672,6 +683,28 @@ function reviewVerdict(
       };
     }
     return { head, threads };
+  }
+  // What stands unresolved but is no round's keeps a clean status from reading
+  // clean: the operator resolves it.
+  const outdated = review.outdatedThreads;
+  if (status?.state === 'SUCCESS' && answered + outdated > 0) {
+    const left: string[] = [];
+    if (answered > 0) {
+      left.push(
+        `${answered} a fix round answered and left open (resolve each once its answer holds, ` +
+          "or reply on it as the operator, so a comment follows the round's reply, and re-run " +
+          "pup fix to take it again; the worker sees only the bot's finding, not your reply)",
+      );
+    }
+    if (outdated > 0) {
+      left.push(
+        `${outdated} a push outdated that nobody resolved (no round takes one, as the code it ` +
+          'quotes moved: resolve each once the fix holds)',
+      );
+    }
+    return {
+      refusal: `The CI review's unresolved threads on ${prUrl} are the operator's: ${left.join(' and ')}.`,
+    };
   }
   if (status?.state === 'SUCCESS' && status.description === CLEAN_REVIEW_STATUS) {
     return { head, threads };

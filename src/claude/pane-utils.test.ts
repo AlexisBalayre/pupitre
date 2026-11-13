@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { hasUnsubmittedInput, inputBoxState, pasteLanded } from './pane.utils.js';
+import { hasUnsubmittedInput, inputBoxLook, inputBoxState, pasteLanded } from './pane.utils.js';
 
 // Fixtures are trimmed captures from live Claude Code 2.1.218, 2.1.263 and
 // 2.1.269 panes. The unstyled ones are `capture-pane -p`; the STYLED_ ones are
@@ -142,6 +142,32 @@ describe('inputBoxState', () => {
       '   2. Switch model',
     ].join('\n');
     expect(inputBoxState(pane)).toBe('absent');
+  });
+});
+
+describe('inputBoxLook', () => {
+  it('gives the state, and no draft unless the box holds text', () => {
+    expect(inputBoxLook(STYLED_EMPTY_PANE)).toEqual({ state: 'empty', draft: '' });
+    expect(inputBoxLook(STYLED_SUGGESTION_PANE)).toEqual({ state: 'empty', draft: '' });
+    expect(inputBoxLook('Accessing workspace:\n ❯ 1. Yes, I trust this folder')).toEqual({
+      state: 'absent',
+      draft: '',
+    });
+  });
+
+  it("gives a held draft's text with its spaces and line breaks dropped", () => {
+    expect(inputBoxLook(STYLED_DRAFT_PANE)).toEqual({ state: 'holds', draft: 'drafttext' });
+  });
+
+  // `pup attach` resizes the conductor's window to the operator's terminal.
+  it('reads one draft the same however wide the pane wraps it', () => {
+    const wide = `\u001b[38;5;244m${'─'.repeat(64)}
+\u001b[39m❯ HEAD word word word word word word word word word word word
+  word word TAIL.
+\u001b[38;5;244m${'─'.repeat(64)}`;
+
+    expect(inputBoxLook(wide).draft).toBe(inputBoxLook(STYLED_INLINE_PANE).draft);
+    expect(inputBoxLook(wide).draft).not.toBe(inputBoxLook(STYLED_DRAFT_PANE).draft);
   });
 });
 

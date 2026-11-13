@@ -88,6 +88,25 @@ describe('createTerminalStatus', () => {
     expect(out.writes).toEqual([`${PUSH}${ESC}]2;pup proj · 0 running · ${count}${BEL}`]);
   });
 
+  // Decision 168: a conductor nothing reaches waits on the operator too.
+  it('puts a blocked conductor in the tab as a need, ahead of a blocked session', () => {
+    const out = tty();
+    const fleet = reading(session({ state: 'blocked', rejectCount: 3 }));
+    for (const { snapshot } of fleet.projects) {
+      snapshot.conductor.running = true;
+      snapshot.conductor.blocked = { reason: 'not on main input', ageMs: 720_000 };
+    }
+    createTerminalStatus(out, ITERM).update(fleet);
+    expect(out.writes).toEqual([
+      `${PUSH}${ESC}]2;pup proj · 0 running · 2 need you${BEL}` +
+        session21337(
+          'needs you',
+          '#ff9500',
+          'conductor: blocked: not on main input (12m), no notice reaches it, return it to ',
+        ),
+    ]);
+  });
+
   it('writes idle in green over an empty fleet', () => {
     const out = tty();
     createTerminalStatus(out, ITERM).update(reading());
@@ -106,7 +125,9 @@ describe('createTerminalStatus', () => {
   it('writes a question holding escapes inert', () => {
     const out = tty();
     const hostile = `${ESC}]0;pwned${BEL} \u009b31m\u007f x;status=idle`;
-    createTerminalStatus(out, ITERM).update(reading(session({ question: hostile })));
+    createTerminalStatus(out, ITERM).update(
+      reading(session({ question: { text: hostile, options: [] } })),
+    );
     const [written] = out.writes;
     // The only ESC and BEL left are the writer's own.
     expect(written?.split(ESC).length).toBe(1 + 3 + 0); // push, title, status

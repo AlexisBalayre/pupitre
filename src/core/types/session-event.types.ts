@@ -37,9 +37,15 @@ export interface EventPayloads {
   };
   /**
    * `pup land` saw the PR merged on GitHub and main holding the pinned sha;
-   * `sha` is the merge commit GitHub made (decision 84).
+   * `sha` is the merge commit GitHub made (decision 84). A land of a head past
+   * the pin on the operator's `--accept-head` also records that head and the
+   * pin it moved past, the ends of the commits no gate measured (decision 164's
+   * 2026-11-11 amendment).
    */
-  landed: { sha: string; target: string; prUrl: string };
+  landed: { sha: string; target: string; prUrl: string } & (
+    | { acceptedHead?: never; pinned?: never }
+    | { acceptedHead: string; pinned: string }
+  );
   /**
    * `pup retire` saw the session's PR closed unmerged on GitHub and the PR the
    * operator named as its successor merged, and removed the session's worktree
@@ -56,7 +62,23 @@ export interface EventPayloads {
   steer: { kind: string; by?: string; delivered?: boolean };
   interrupt: { steered: boolean };
   session_done: { summary: string };
-  question: { text: string };
+  /**
+   * `options` are the answers the asker offers, at most four, and `recommended`
+   * the 1-based one it would pick (decision 93). Both are absent on a
+   * question asked in words alone.
+   */
+  question: { text: string; options?: string[]; recommended?: number };
+  /**
+   * `pup answer` delivered an answer to the open question (decision 93): the
+   * question it answers, the text delivered, and the 1-based option the
+   * operator picked when they picked one.
+   */
+  answer: { question: string; text: string; option?: number };
+  /**
+   * A conductor window took its context (decision 93): the run a conductor
+   * question was asked in ends here, so the previous run's stays out of the inbox.
+   */
+  conductor_start: { name: string };
   handoff_ready: { hash: string };
   respawn: { delivered: boolean; handoffBytes?: number; hard?: boolean };
   scope_overlap: { via: string; accepted: { session: string; files: string[] }[] };
@@ -66,6 +88,12 @@ export interface EventPayloads {
   tool_call: Record<string, unknown>;
   scope_violation: { path: string; reason?: string; command?: string };
   config_drift: Record<string, unknown>;
+}
+
+/** `pup session ask`'s and `pup conductor ask`'s options, as commander hands them in. */
+export interface AskOptions {
+  option?: string[];
+  recommend?: string;
 }
 
 /** A gate stage as the store holds it: shape-checked, its text not yet scrubbed for any sink. */
@@ -107,7 +135,7 @@ export type SessionEvent =
     }
   | { type: 'steer'; kind?: string; by?: string }
   | { type: 'session_done'; summary?: string }
-  | { type: 'question'; text?: string }
+  | { type: 'question'; text?: string; options?: string[]; recommended?: number }
   | { type: 'turn_died'; reason?: string; stalledAt?: string; refusal?: string }
   | { type: 'handoff_ready'; hash?: string }
   | { type: 'other'; eventType: string; fields: Record<string, unknown> };

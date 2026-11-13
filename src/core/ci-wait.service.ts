@@ -190,7 +190,9 @@ function sessionThatOpened(db: Database, repoPath: string, pr: string): SessionR
  * The digest line once the review of the PR's current head has finished, or
  * what the wait is on until then. Every string GitHub returned is scrubbed
  * where it prints. Each thread the poster anchors is an important finding;
- * minors stay in the review body, and never ask for a round. A head that is
+ * minors stay in the review body, and never ask for a round. No head reads
+ * ready while a thread of the bot's stands unresolved, outdated or answered by
+ * a round included (decision 163). A head that is
  * not `pinned`, the sha the gate measured and the PR vouches for, ends the
  * wait whatever its review says: `pup fix` and `pup land` refuse it, so the
  * next step is the re-gate (decision 86), or nothing once it merged.
@@ -276,13 +278,31 @@ function reviewDigest(
   }
   if (status?.state === 'SUCCESS' && isOnHead) {
     const important = Number(/(\d+) important finding/.exec(status.description)?.[1] ?? 0);
+    // A thread a fix round answered and left open, or one a push outdated, is
+    // the operator's, not a round's: either way the PR is not ready while it stands.
+    const answered = review.openThreads.filter((thread) => thread.isAnswered).length;
+    const outdated = review.outdatedThreads;
+    const leftToOperator: string[] = [];
+    if (answered > 0) {
+      leftToOperator.push(
+        `resolve the ${answered} thread(s) a fix round left open, or reply on one as the operator ` +
+          "and re-run pup fix to take it again; the worker sees only the bot's finding, not your reply",
+      );
+    }
+    if (outdated > 0) {
+      leftToOperator.push(
+        `resolve the ${outdated} unresolved thread(s) a push outdated, once each fix holds`,
+      );
+    }
     const next =
-      threads > 0
+      threads > answered
         ? `pup fix ${id}`
-        : status.description === CLEAN_REVIEW_STATUS
-          ? "ready for the operator's merge click"
-          : 'read the PR: its findings are in the review body, or the review was partial ' +
-            "(the operator's call)";
+        : leftToOperator.length > 0
+          ? `${leftToOperator.join('; ')} (the operator's call)`
+          : status.description === CLEAN_REVIEW_STATUS
+            ? "ready for the operator's merge click"
+            : 'read the PR: its findings are in the review body, or the review was partial ' +
+              "(the operator's call)";
     return line(said, threads, important, next);
   }
   return {
