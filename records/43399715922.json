@@ -1,0 +1,130 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-13T09:24:24.390Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43399715922",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43399715922",
+  "actor": "AlexisBalayre",
+  "commit_sha": "03ef7940fdd70e1326f4c5aff9c327774de23707",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 304,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "guards"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "guards"
+  ],
+  "reviewers_skipped": [
+    "conventions",
+    "context",
+    "maintainability",
+    "docs",
+    "spec",
+    "simplicity",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/adapters/typescript.adapter.ts",
+      "line": "536-542",
+      "description": "A test the branch deletes is asked whether the branch's own config collects it, so deleting a test suite together with its `include` entry counts the deleted lines as source and can trip the 600-line flag on a harmless change.",
+      "status": "unresolved"
+    },
+    {
+      "file": "src/adapters/typescript.adapter.ts",
+      "line": "540-555",
+      "description": "testInputsIntact checks only the root run inputs and node_modules links against the pinned sha, never the collected test files. The branch's own build script runs in the writable gate checkout before the suites, so it can delete or rewrite a collected `src/big.test.ts`. Vitest then never runs the committed file and the test stage passes. The split reads collection from the sha's tree, so it still counts the committed 2000 lines as test.",
+      "status": "unresolved"
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "2624-2628",
+      "description": "`testInputsIntact` treats the test run's inputs as clean after the build, but the package manager that runs the test script comes from the corepack install in the per-repo toolchain cache. The build child is granted write access there (sandbox.utils.ts:413), and the unsandboxed session can write there too. A build that swaps corepack's pnpm or yarn entrypoint makes the test stage run the branch's package manager, and neither check looks at it.",
+      "status": "unresolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/adapters/typescript.adapter.ts",
+      "line": "311-325",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The branch's root package.json is never compared across sides, so a branch can name itself `vitest` with an `exports` map, which (assuming vite's resolver checks self-references first) points the shared config's `import { defineConfig } from 'vitest/config'` at a branch module that vitest runs.",
+      "body": "**The branch's manifest can redirect the shared config's `vitest/config` import.**\n\nThe measured config's `include`/`exclude` are trusted only because the rest of it equals the trusted config's text, on the premise that what the two share runs the same code on both sides. Bare package imports are allowed by design, and `exportedConfig` accepts `defineConfig` from `vitest/config` or `vite` (`vitest-config.utils.ts` L118, L197-201). The compared string is the config without its lists, plus the package-manager configs. The root `package.json` is only checked for its `test`/`pretest`/`posttest` scripts:\n\n```ts\nfunction plainVitestCollection(root: RootFiles): ReturnType<typeof vitestCollection> {\n  const managers = runInputs(root, PACKAGE_MANAGER_CONFIG);\n  const collection =\n    runsPlainVitest(parsedManifest(root)) && ...\n  return collection && { ...collection, config: [collection.config, managers].join('\\0') };\n}\n```\n\nThe branch's manifest `name`, `exports` and `imports` can therefore differ freely, and nothing else catches it:\n- `testInputsIntact` compares the disk with the sha's own blobs, so a committed `package.json` passes.\n- `PACKAGE_MANAGER_CONFIG` leaves `package.json` out.\n- `FILE_SPECIFIER` refuses `#` imports, but not a bare specifier that self-references the root package.\n\nPackage self-reference resolves a bare specifier against the nearest `package.json` when its `name` matches and it has `exports`, before any `node_modules` lookup. Node's ESM resolver does this. In the pinned vite (8.1.5), the config bundler's `tryNodeResolve` checks the nearest package's self-reference first too. The vite and Node behaviour comes from pinned-version knowledge and could not be read in-tree, hence medium confidence.\n\n**Trigger.**\n1. The branch commits a root `package.json` with `\"name\": \"vitest\"` and `\"exports\": { \"./config\": \"./scripts/vc.mjs\", \".\": \"./scripts/v.mjs\" }`. `v.mjs` re-exports the real vitest from `node_modules`, so test files still import it. `scripts.test` stays `vitest run`.\n2. `scripts/vc.mjs` exports `defineConfig = (c) => ({ ...c, test: { ...c.test, exclude: ['src/big.test.ts'] } })`, or adds a `setupFiles` entry.\n3. `vitest.config.ts` stays byte-identical to the target's. This repo's config imports `defineConfig` from `vitest/config`.\n4. `src/big.test.ts` holds 2000 lines of production code.\n\n**Wrong result.** Both static reads parse the same object literal, so `trusted.config === measured.config` and both say `src/**/*.test.ts` collects `src/big.test.ts`. The real run loads the branch's `defineConfig`, which never collects the file, so the test stage passes. The split counts 2000 source lines as test and dodges the 600-line flag.\n\nADR 0143 doesn't accept this. It refuses a `defineConfig` \"of the config's own or imported from elsewhere\", and its \"some other way than a static specifier\" ceiling doesn't fit, because here the specifier is static. Its list of compared run inputs leaves out `package.json`.\n\n**Fix direction.** Add the manifest fields that steer how the config's specifiers resolve to the compared string, so a branch that changes them gets an unknown answer. In `plainVitestCollection`, read `const manifest = parsedManifest(root);`, use it for `runsPlainVitest(manifest)`, and append `JSON.stringify([manifest?.name, manifest?.exports, manifest?.imports])` to the joined `config`. Add a test where only the branch's manifest renames itself `vitest` with an `exports` map, and expect it to collect nothing.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/03ef7940fdd70e1326f4c5aff9c327774de23707/src/adapters/typescript.adapter.ts#L311-L325\nhttps://github.com/AlexisBalayre/pupitre/blob/03ef7940fdd70e1326f4c5aff9c327774de23707/src/adapters/vitest-config.utils.ts#L197-L201",
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [
+    {
+      "file": "src/adapters/vitest-config.utils.ts",
+      "line": "355",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "treeRoot lists the commit with a bare `ls-tree -z <sha>`, not anchored with --full-tree, so a core.worktree key a live session sets after the gate's pre-stage check moves the trusted and measured config reads to a subdirectory of the commit.",
+      "refutation": "`runGit` always goes through `safeArgv` (git-diff.client.ts L829-836). Because `GIT_READ` sets no env and the main checkout's `.git` is a directory (anything else is refused by `assertGitDirUnplanted`), it passes `--git-dir=<repo>/.git --work-tree=<cwd>`. A command-line `--work-tree` overrides a shared-config `core.worktree`, so the prefix is empty and a plain `ls-tree <sha>` lists the whole commit root. Adding `--full-tree` would only be a matter of style."
+    }
+  ],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Round 5 budget (REVIEW.md §1): only correctness, security and guards were spawned. Conventions, docs, context, simplicity and maintainability were skipped for the round budget. Spec was skipped because there is no closing issue or spec source, and workflow-safety because no workflow changed. Since the prior reviewed head edb9b27, the PR's own files differ only by the main merge (03ef794). The prior round's important (deleted tests judged by the branch's include) and the two owed importants (build rewriting collected tests, corepack toolchain cache) are untouched in code, so all three are carried as unresolved."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 5.25104743,
+  "duration_ms": 482210,
+  "num_turns": 20,
+  "tokens": {
+    "input": 20,
+    "output": 14900,
+    "cache_read": 526086,
+    "cache_creation": 66093,
+    "total": 607099
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 206,
+      "output": 106899,
+      "cache_read": 4407771,
+      "cache_creation": 388853,
+      "cost_usd": 5.162902200000001
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 16,
+      "output": 2982,
+      "cache_read": 103097,
+      "cache_creation": 19021,
+      "cost_usd": 0.0877142
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 135,
+      "cache_read": 1933,
+      "cache_creation": 2752,
+      "cost_usd": 0.00043103
+    }
+  ],
+  "permission_denials": []
+}
