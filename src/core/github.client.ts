@@ -266,6 +266,10 @@ const REVIEW_STATUS_CONTEXT = 'claude-review';
  */
 const REVIEW_PAGE = 100;
 
+/** What each read of a thread's comments asks of one: what `isRelayed` and `isMarked` judge it by. */
+const THREAD_COMMENT_FIELDS = `databaseId body viewerDidAuthor authorAssociation
+  author { __typename login } isMinimized lastEditedAt editor { __typename login }`;
+
 const PULL_REQUEST_REVIEW_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
@@ -308,16 +312,7 @@ const PULL_REQUEST_REVIEW_QUERY = `query($owner: String!, $name: String!, $numbe
             }
           }
           trail: comments(last: ${REVIEW_PAGE}) {
-            nodes {
-              databaseId
-              body
-              viewerDidAuthor
-              authorAssociation
-              author { __typename login }
-              isMinimized
-              lastEditedAt
-              editor { __typename login }
-            }
+            nodes { ${THREAD_COMMENT_FIELDS} }
           }
         }
       }
@@ -606,16 +601,7 @@ const FIX_ROUND_THREADS_QUERY = `query($owner: String!, $name: String!, $number:
           path
           finding: comments(first: 1) { nodes { author { __typename login } } }
           replies: comments(last: ${REVIEW_PAGE}) {
-            nodes {
-              databaseId
-              body
-              viewerDidAuthor
-              authorAssociation
-              author { __typename login }
-              isMinimized
-              lastEditedAt
-              editor { __typename login }
-            }
+            nodes { ${THREAD_COMMENT_FIELDS} }
           }
         }
       }
