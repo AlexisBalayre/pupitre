@@ -1215,6 +1215,98 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(ghCalls()).not.toContainEqual(expect.stringContaining('pr create'));
   });
 
+  /** `fakeGh`, but keeping what each `gh api` call reads on stdin in `payloads`, newest last. */
+  const keepingApiPayloads = (script: string, payloads: string): string =>
+    script.replace(
+      'cat >/dev/null',
+      `if [ "$1" = "api" ]; then cat >> ${payloads}; echo >> ${payloads}; exit 0; fi\ncat >/dev/null`,
+    );
+
+  /** The `gh api` calls that set a commit status, and the statuses they set. */
+  const statusesSet = (payloads: string) => ({
+    calls: ghCalls().filter((call) => call.startsWith('api ') && call.includes('/statuses/')),
+    payloads: existsSync(payloads)
+      ? readFileSync(payloads, 'utf8')
+          .split('\n')
+          .filter(Boolean)
+          .map((line) => JSON.parse(line) as Record<string, string>)
+      : [],
+  });
+
+  it.each([
+    ['opens', []],
+    ['reuses', [openPrOnMain]],
+  ])(
+    'with openPr sets a pup-gate success status on the pinned sha when it %s a PR (decision 179)',
+    async (_label, openPrs) => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      const bare = addOrigin();
+      const payloads = `${ghLog}.payloads`;
+
+      const outcome = await withFakeGh(keepingApiPayloads(fakeGh(openPrs), payloads), () =>
+        runMergeGate(db, {
+          repoPath: repo,
+          sessionId: SESSION_ID,
+          adapters: [passingAdapter],
+          openPr: true,
+        }),
+      );
+
+      expect(outcome.status).toBe('merged');
+      const pinned = listEvents(db, SESSION_ID)
+        .filter((row) => row.type === 'merge')
+        .map((row) => (JSON.parse(row.payload) as { sha: string }).sha);
+      expect(pinned).toEqual([sh(bare, 'git', 'rev-parse', BRANCH).trim()]);
+      const { calls, payloads: set } = statusesSet(payloads);
+      expect(calls).toEqual([
+        `api --method POST --hostname github.com repos/owner/repo/statuses/${pinned[0]} --input -`,
+      ]);
+      expect(set).toHaveLength(1);
+      expect(set[0]).toMatchObject({ state: 'success', context: 'pup-gate' });
+      expect(set[0]?.description).toMatch(
+        new RegExp(`^Session ${SESSION_ID} passed the pup merge --pr run of \\d{4}-\\d\\d-\\d\\dT`),
+      );
+      // Only once GitHub reported the PR's head at the pin.
+      const view = ghCalls().findIndex((call) => call.startsWith('pr view'));
+      expect(view).toBeGreaterThan(-1);
+      expect(ghCalls().indexOf(calls[0] as string)).toBeGreaterThan(view);
+    },
+  );
+
+  it('with openPr leaves the session to retry when gh cannot set the status, and the retry sets it', async () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+    addOrigin();
+    const statusRefused = fakeGh([]).replace(
+      'cat >/dev/null',
+      'if [ "$1" = "api" ]; then exit 1; fi\ncat >/dev/null',
+    );
+    const request = {
+      repoPath: repo,
+      sessionId: SESSION_ID,
+      adapters: [passingAdapter],
+      openPr: true,
+    };
+
+    await expect(withFakeGh(statusRefused, () => runMergeGate(db, request))).rejects.toThrow(
+      /gh api --method POST .*\/statuses\//,
+    );
+    expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+    expect(listEvents(db, SESSION_ID).some((row) => row.type === 'merge')).toBe(false);
+
+    const payloads = `${ghLog}.payloads`;
+    const retried = await withFakeGh(keepingApiPayloads(fakeGh([openPrOnMain]), payloads), () =>
+      runMergeGate(db, request),
+    );
+
+    expect(retried.status).toBe('merged');
+    expect(retried.prWasAdopted).toBe(true);
+    expect(statusesSet(payloads).payloads).toEqual([
+      expect.objectContaining({ state: 'success', context: 'pup-gate' }),
+    ]);
+  });
+
   it('with openPr refuses a same-named PR from a fork, before pushing', async () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');

@@ -70,6 +70,7 @@ import {
   findOpenPullRequest,
   originRepoSlug,
   rewritePullRequest,
+  setGateStatus,
 } from './github.client.js';
 import { globToRegExp } from './glob.utils.js';
 import { readOriginUrl } from './init.service.js';
@@ -2238,6 +2239,9 @@ async function gateAndMerge(
       // The body vouches for `sha`; a session holding the operator's gh login
       // can push the branch between our push and the PR call (decision 82).
       assertPullRequestHead(req.repoPath, prUrl, pullRequest.repo, sha);
+      // Before the session moves, so a gh failure here leaves a run to retry
+      // (decisions 27, 179).
+      setGateStatus(req.repoPath, pullRequest.repo, sha, session.id);
     } catch (error) {
       throw withLedgerKept(error, ledgerKept);
     }

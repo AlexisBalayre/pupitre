@@ -218,6 +218,47 @@ export function assertPullRequestHead(
   }
 }
 
+/** The commit status a passed `pup merge --pr` sets, which branch protection can require. */
+const GATE_STATUS_CONTEXT = 'pup-gate';
+/** GitHub's cap on a commit status description. */
+const STATUS_DESCRIPTION_MAX = 140;
+
+/**
+ * Set `pup-gate` to success on `sha` in `repo` (its `host/owner/name`), once the
+ * PR's head was read back at it. A status belongs to the commit, not to the
+ * PR, so a push after the gate leaves the new head without one, and a branch
+ * protection requiring `pup-gate` holds the merge button until a re-gate sets
+ * it there (decision 179). The payload goes over stdin, as a PR's body does.
+ */
+export function setGateStatus(
+  repoPath: string,
+  repo: string,
+  sha: string,
+  sessionId: string,
+): void {
+  const [host, owner, name] = repo.split('/');
+  if (!host || !owner || !name) throw new Error(`Cannot read a GitHub repo from ${repo}.`);
+  const description = `Session ${sessionId} passed the pup merge --pr run of ${new Date().toISOString()}`;
+  ghWithBody(
+    repoPath,
+    [
+      'api',
+      '--method',
+      'POST',
+      '--hostname',
+      host,
+      `repos/${owner}/${name}/statuses/${sha}`,
+      '--input',
+      '-',
+    ],
+    JSON.stringify({
+      state: 'success',
+      context: GATE_STATUS_CONTEXT,
+      description: description.slice(0, STATUS_DESCRIPTION_MAX),
+    }),
+  );
+}
+
 /**
  * What GitHub says became of the PR at `url`: its state (`OPEN`, `CLOSED`,
  * `MERGED`), its head, its base branch and, once merged, the commit the merge
