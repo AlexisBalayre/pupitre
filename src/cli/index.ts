@@ -33,7 +33,6 @@ import { auditProject, buildSweepTask, formatDebtTransition } from '../core/audi
 import { briefPath, ensureBrief, readBrief } from '../core/brief.service.js';
 import { waitForCiReview } from '../core/ci-wait.service.js';
 import { buildCodeMap, renderCodeMap } from '../core/code-map.service.js';
-import { codegraphLabel } from '../core/codegraph.client.js';
 import {
   ConductorTellRefusedError,
   DEFAULT_MAX_SESSIONS,
@@ -349,26 +348,24 @@ function printInitReport(db: Database, report: InitReport, repoPath: string): vo
     if (s.status === 'fail' && s.detail)
       console.log(`    ${sanitizeReason(s.detail.split('\n').at(-1) ?? '')}`);
   }
-  printBaselineTail(db, report, repoPath);
+  printBaselineTail(db, report);
 }
 
 /**
  * What `pup init` and `pup audit` both end on: the debt baseline, with the
- * audit's per-metric moves under it, then the sandbox, codegraph and push
- * target lines and the findings. The audit prints the same findings, so a
+ * audit's per-metric moves under it, then the sandbox and push target lines
+ * and the findings. The audit prints the same findings, so a
  * stage that cannot measure says why on the repeat path too, or that is where
  * the gap goes quiet (decision 29).
  */
 function printBaselineTail(
   db: Database,
   report: InitReport,
-  repoPath: string,
   debtTransitions: readonly string[] = [],
 ): void {
   console.log(`debt baseline: ${describeDebtBaseline(report.baseline.debt)}`);
   for (const t of debtTransitions) console.log(`  ${t}`);
   console.log(`sandbox: ${sanitizeReason(report.sandbox)}`);
-  printCodegraphLine(repoPath);
   printPushTargetLine(db, report.projectId);
   if (report.findings.length > 0) {
     console.log('findings:');
@@ -377,18 +374,7 @@ function printBaselineTail(
 }
 
 /**
- * Beside the sandbox line, and for the same reason (decision 36): an operator
- * who never sees it cannot tell a fleet whose sessions get a code graph from one
- * whose sessions grep. Probed here rather than carried in the report, because
- * what it reports is the operator's machine and not the baseline the stages
- * measured (decision 51).
- */
-function printCodegraphLine(repoPath: string): void {
-  console.log(`codegraph: ${codegraphLabel(repoPath)}`);
-}
-
-/**
- * Beside the sandbox line for the third time (decisions 36, 51): the recorded
+ * Beside the sandbox line (decision 36): the recorded
  * push target is the value `pup merge --pr` refuses to differ from, so the
  * operator has to be able to see what they are being held to — and, on a
  * project set up before it was recorded, that they are being held to nothing
@@ -465,7 +451,7 @@ function printAuditOutcome(db: Database, report: AuditOutcome, repoPath: string)
     );
     return;
   }
-  printBaselineTail(db, report, repoPath, report.debtTransitions.map(formatDebtTransition));
+  printBaselineTail(db, report, report.debtTransitions.map(formatDebtTransition));
   console.log('Baseline refreshed.');
   if (report.hasRegression) process.exitCode = 1;
 }

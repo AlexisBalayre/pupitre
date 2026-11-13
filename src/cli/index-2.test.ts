@@ -165,7 +165,6 @@ import {
   seedKilledSession,
   seedSession,
   seedStalledSession,
-  stubCodegraph,
 } from '@test/helpers/cli-index.mock.js';
 import {
   attachWindow,
@@ -325,30 +324,6 @@ describe('CLI commands', () => {
       await expect(buildProgram().parseAsync(['init'], { from: 'user' })).rejects.toThrow();
     });
 
-    // Beside the sandbox line and for the same reason (decision 36): an
-    // operator who never sees it cannot tell a fleet whose sessions get a code
-    // graph from one whose sessions grep.
-    it('reports the installed codegraph version beside the sandbox line', async () => {
-      useCwd(initRepoWithAdapter());
-      stubCodegraph('codegraph 1.6.0');
-
-      await buildProgram().parseAsync(['init'], { from: 'user' });
-
-      expect(logs).toContain('codegraph: codegraph 1.6.0');
-      expect(logs.indexOf('codegraph: codegraph 1.6.0')).toBe(
-        logs.findIndex((line) => line.startsWith('sandbox: ')) + 1,
-      );
-    });
-
-    it('says so when the operator has none — detected like gh and tmux, never required', async () => {
-      useCwd(initRepoWithAdapter());
-      stubCodegraph();
-
-      await buildProgram().parseAsync(['init'], { from: 'user' });
-
-      expect(logs).toContain('codegraph: not installed');
-    });
-
     it('prints each stage’s wall time (decision 95)', async () => {
       const repo = initRepo();
       useCwd(repo);
@@ -386,7 +361,8 @@ describe('CLI commands', () => {
 
     // The recorded push target is what `pup merge --pr` refuses to differ from,
     // so it is printed with the other lines about how this fleet is confined
-    // (decisions 36, 51, 56).
+    // (decisions 36, 56), straight after the sandbox line now that no code
+    // graph line sits between them (decision 186).
     it("records origin's URL and prints it beside the sandbox line", async () => {
       const repo = initRepoWithOrigin();
       useCwd(repo);
@@ -396,7 +372,7 @@ describe('CLI commands', () => {
       expect(recordedOrigin(repo)).toBe(ORIGIN_URL);
       expect(logs).toContain(`push target: ${ORIGIN_URL}`);
       expect(logs.indexOf(`push target: ${ORIGIN_URL}`)).toBe(
-        logs.findIndex((line) => line.startsWith('sandbox: ')) + 2,
+        logs.findIndex((line) => line.startsWith('sandbox: ')) + 1,
       );
     });
 
@@ -514,7 +490,7 @@ describe('CLI commands', () => {
       const repo = initRepoWithOrigin();
       useCwd(repo);
       // A row written before `recordOriginUrl` refused these: printing it raw
-      // would let it repaint the sandbox and codegraph lines above it.
+      // would let it repaint the sandbox line above it.
       const { db } = resolveProject(repo);
       ensureProject(db, projectId(repo), repo);
       db.prepare('UPDATE projects SET origin_url = ? WHERE id = ?').run(

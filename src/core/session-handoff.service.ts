@@ -9,8 +9,7 @@ import {
   steerPane,
   type WindowEnv,
 } from '../claude/session-runtime.service.js';
-import { codegraphBinary, prepareGraph } from './codegraph.client.js';
-import { verifiedWorktreeGitEnv, type WorktreeGitEnv } from './git-diff.client.js';
+import { verifiedWorktreeGitEnv } from './git-diff.client.js';
 import { assertMintedRow } from './merge-gate.service.js';
 import { type ProjectPaths, projectPaths } from './paths.utils.js';
 import { routeFor } from './routing.utils.js';
@@ -253,34 +252,9 @@ export function hardRespawnSession(...args: RespawnArgs): void {
 }
 
 /**
- * The respawned window's code graph, or undefined when it gets none. The
- * compiled `mcp.json` is the launch's, binary and worktree path already fixed
- * at compile time — nothing is recompiled here, because a respawn is the same
- * session on a fresh context window and its profile hash must not move.
- *
- * The index IS re-run: the worktree has been edited since the launch, and an
- * index the session's own commits have outrun answers its questions out of code
- * that is no longer there. Withheld when the operator's codegraph has gone
- * since, so a window is never pointed at a server that cannot start
- * (decision 51). Its git runs pinned to `git`, which the caller checked
- * (decision 101).
- */
-function graphForRespawn(
-  repoPath: string,
-  git: WorktreeGitEnv,
-  compiledDir: string,
-): string | undefined {
-  const mcpConfigPath = join(compiledDir, 'mcp.json');
-  if (!existsSync(mcpConfigPath)) return undefined;
-  return prepareGraph(codegraphBinary(repoPath), repoPath, git.GIT_WORK_TREE, () => git)
-    ? mcpConfigPath
-    : undefined;
-}
-
-/**
  * What both respawns share. The session must be running, on the worktree and
  * branch its launch minted: the row is store text a session can write, and a
- * respawn indexes and opens a window over the path it names (decision 101).
+ * respawn opens a window over the path it names (decision 101).
  * `extrasFor` is then handed the project's paths to build what the kickoff
  * adds, and may refuse, before anything is read for the launch or killed.
  * `env` is the caller's: resolved, and a refused config dir refused, before
@@ -303,21 +277,17 @@ function relaunchWindow(
   // it would have replaced running.
   const route = respawnRoute(db, paths, session, override);
   killTmux(sessionId, session.tmux_target);
-  // After the kill: the previous run writes to this worktree until it dies, and
-  // an index taken while it is still editing is an index of a tree nothing will
-  // ever see again. The pointers it may have rewritten are checked before the
-  // index, whose git runs outside any sandbox, and a rewrite refuses the
-  // respawn, as the window's own check would (decision 101).
-  let git: WorktreeGitEnv;
+  // After the kill: the previous run may rewrite the worktree's pointers until
+  // it dies. A rewrite refuses the respawn, as the window's own check would
+  // (decision 101), and the refusal says the old window is already gone.
   try {
-    git = verifiedWorktreeGitEnv(repoPath, session.worktree_path);
+    verifiedWorktreeGitEnv(repoPath, session.worktree_path);
   } catch (error) {
     if (error instanceof Error) {
       error.message += ' Its old window is already gone, and no new one was opened.';
     }
     throw error;
   }
-  const mcpConfigPath = graphForRespawn(repoPath, git, compiledDir);
   const pane = launchSession({
     sessionId,
     repoPath,
@@ -325,10 +295,6 @@ function relaunchWindow(
     env,
     settingsPath: join(compiledDir, 'settings.json'),
     route: routeFor(route.tier, route.rung, route),
-    // The context carries the `## Code graph` section whenever the launch
-    // compiled one, so a respawn without this flag tells the session to use a
-    // tool that is not connected — the gap decision 51's addendum named.
-    mcpConfigPath,
   });
   recordSessionRoute(db, sessionId, route);
   // A fresh window is a fresh pane: stored before the kickoff types into it,
