@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { pinnedGitEnv } from './git-diff.client.js';
+import { assertGitDirUnplanted, checkedAfter, pinnedGitEnv } from './git-diff.client.js';
 import type { NewPullRequest, PullRequestRef } from './types/github.types.js';
 
 // GitHub interaction goes through the operator's `gh` CLI and its normal
@@ -58,25 +58,40 @@ function ghWithBody(
   body: string,
   timeout = GH_COMMAND_TIMEOUT_MS,
 ): string {
-  return execFileSync('gh', args, {
-    cwd: repoPath,
-    encoding: 'utf8',
-    input: body,
-    timeout,
-    stdio: ['pipe', 'pipe', 'pipe'],
-    env: pinnedGitEnv(),
-  });
+  return ghInCheckout(repoPath, () =>
+    execFileSync('gh', args, {
+      cwd: repoPath,
+      encoding: 'utf8',
+      input: body,
+      timeout,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: pinnedGitEnv(),
+    }),
+  );
+}
+
+/**
+ * `spawn`, a gh run in `repoPath`, between the checks `runGit` makes around its
+ * own spawns: gh runs git there with no `--git-dir` of pup's, so a commondir,
+ * a gitfile or a symlink planted at the main checkout would hand gh's git a
+ * remote and a branch the session chose (decision 172).
+ */
+function ghInCheckout<T>(repoPath: string, spawn: () => T): T {
+  assertGitDirUnplanted(repoPath);
+  return checkedAfter(repoPath, undefined, spawn);
 }
 
 function ghJson(repoPath: string, args: string[], timeout = GH_COMMAND_TIMEOUT_MS): unknown {
-  const output = execFileSync('gh', args, {
-    cwd: repoPath,
-    encoding: 'utf8',
-    timeout,
-    maxBuffer: GH_MAX_BUFFER,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    env: pinnedGitEnv(),
-  });
+  const output = ghInCheckout(repoPath, () =>
+    execFileSync('gh', args, {
+      cwd: repoPath,
+      encoding: 'utf8',
+      timeout,
+      maxBuffer: GH_MAX_BUFFER,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: pinnedGitEnv(),
+    }),
+  );
   try {
     return JSON.parse(output);
   } catch {
