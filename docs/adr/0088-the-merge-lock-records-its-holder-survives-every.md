@@ -220,10 +220,15 @@
       the release reports it lost. The EIO allowance on the moved-aside directory then covers only
       a swap inside the rename itself.
     A rename away and back that completes between two checks is still invisible: the directory
-    and its token are the take's again, and no state on the path can tell. It no longer defeats
-    mutual exclusion at the moves, since while another run held the path every check of the first
-    refused, and the compare-and-swap on each ref catches what that run moved meanwhile. The check
-    and the move after it remain two calls, the window the identity checks above already name. The
+    and its token are the take's again, and no state on the path can tell. The token narrows mutual
+    exclusion; it does not restore it. It guarantees only that at most one take matches the path at
+    any instant. A same-uid session can flip the path between two live takes, renaming them back
+    and forth or rewriting the token in a reused inode, so that each run's checks pass in turn and
+    both runs move refs in parallel. The backstop there is the compare-and-swap on each ref, which
+    refuses a move whose old value another run changed. It does not cover what is not a ref with an
+    old value: the baseline ratchet, the ledger and the session's events, nor `pup land`'s update
+    of the origin tracking ref, which is written with no old value. The check and the move after it
+    also remain two calls, the window the identity checks above already name. The
     branch deletes of teardown, after the merge or land, stay unchecked: each is a compare-and-swap
     on the pinned sha. `pup fix` and `pup retire` run under the lock with no check of their own.
     Tests: each take writes a fresh 32-hex token and the check passes while it holds; the check
