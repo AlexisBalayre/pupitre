@@ -1462,14 +1462,63 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         to: 'merged',
         report: { passed: true },
       });
-      // Adopted and rewritten, then read back at the new pin; nothing pushed.
+      // Adopted and rewritten, then read back at the new pin and vouched for
+      // with pup-gate there (decision 179); nothing pushed.
       expect(prEdits()).toBe(2);
-      expect(ghCalls().at(-1)).toBe(
+      expect(ghCalls().slice(-2)).toEqual([
         `pr view ${PR_URL} --repo github.com/owner/repo --json headRefOid`,
-      );
+        `api --method POST --hostname github.com repos/owner/repo/statuses/${tip} --input -`,
+      ]);
       expect(sh(bare, 'git', 'rev-parse', BRANCH).trim()).toBe(tip);
       expect(vi.mocked(runUtility).mock.calls.length).toBe(drafts);
       expect(killSession).toHaveBeenCalledTimes(1);
+    });
+
+    const statusOn = (sha: string) =>
+      `api --method POST --hostname github.com repos/owner/repo/statuses/${sha} --input -`;
+
+    it('sets pup-gate on the pushed head, which the first gate left without one (decision 179)', async () => {
+      const tip = await gateThenFix();
+      const payloads = `${ghLog}.payloads`;
+      // The first gate vouched for its own pin, and the push moved the head off it.
+      expect(statusesSet(payloads).calls).toEqual([statusOn(pinned)]);
+      expect(tip).not.toBe(pinned);
+
+      const outcome = await regate(
+        [fixChecking],
+        keepingApiPayloads(fakeGh([openPrOnMain]), payloads),
+      );
+
+      expect(outcome.status).toBe('merged');
+      expect(statusesSet(payloads).calls).toEqual([statusOn(pinned), statusOn(tip)]);
+      expect(statusesSet(payloads).payloads).toEqual([
+        {
+          state: 'success',
+          context: 'pup-gate',
+          description: expect.stringMatching(
+            new RegExp(`^Session ${SESSION_ID} passed the pup merge --pr run of \\d{4}-`),
+          ),
+        },
+      ]);
+    });
+
+    it('records no re-gate when gh cannot set the status, so a retry sets it', async () => {
+      const tip = await gateThenFix();
+      const statusRefused = fakeGh([openPrOnMain]).replace(
+        'cat >/dev/null',
+        'if [ "$1" = "api" ]; then exit 1; fi\ncat >/dev/null',
+      );
+
+      await expect(regate([fixChecking], statusRefused)).rejects.toThrow(
+        `repos/owner/repo/statuses/${tip}`,
+      );
+      expect(merges().map((merge) => merge.sha)).toEqual([pinned]);
+
+      const outcome = await regate([fixChecking]);
+
+      expect(outcome.status).toBe('merged');
+      expect(merges().map((merge) => merge.sha)).toEqual([pinned, tip]);
+      expect(ghCalls().at(-1)).toBe(statusOn(tip));
     });
 
     /** Run a re-gate expected to refuse, and assert it wrote nothing. */
@@ -1660,6 +1709,9 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(listEvents(db, SESSION_ID)).toHaveLength(events);
       expect(merges().at(-1)?.sha).toBe(pinned);
       expect(getSession(db, SESSION_ID)?.state).toBe('merged');
+      // Neither the head the gate measured nor the one GitHub reported gets pup-gate.
+      expect(ghCalls()).not.toContainEqual(statusOn(tip));
+      expect(ghCalls()).not.toContainEqual(statusOn(elsewhere));
     });
 
     it('refuses a new head failing a hard stage, keeping the earlier merge event newest', async () => {

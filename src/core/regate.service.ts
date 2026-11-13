@@ -5,6 +5,7 @@ import {
   findOpenPullRequest,
   readPullRequestLanding,
   rewritePullRequest,
+  setGateStatus,
 } from './github.client.js';
 import { COMMIT_SHA } from './merge-gate.constants.js';
 import {
@@ -218,6 +219,10 @@ export async function regateMerged(
       ...pullRequestText(measured.spec, session.id, report, commitSubjects, sha, ownSubject),
     });
     assertPullRequestHead(req.repoPath, regate.prUrl, pullRequest.repo, sha);
+    // The push that moved the head left the new sha without the first gate's
+    // status; set before the re-gate is recorded, so a gh failure leaves one to
+    // retry (decision 179).
+    setGateStatus(req.repoPath, pullRequest.repo, sha, session.id);
   } catch (error) {
     throw withLedgerKept(error, ledgerKept);
   }
