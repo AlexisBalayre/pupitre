@@ -146,9 +146,12 @@ import {
   appendEvent,
   getProject,
   getSession,
+  insertSession,
+  insertTask,
   listEvents,
   saveProjectBaseline,
   saveProjectOriginUrl,
+  transitionSession,
 } from './session.repository.js';
 import { GATE_SLOT_WAIT_MS, HELD_SLOT_ENV } from './test-slot.service.js';
 import type { DebtBaseline, ProjectBaseline } from './types/init.types.js';
@@ -430,6 +433,73 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(outcome.status).toBe('rejected');
     expect(outcome.report.stages.at(-1)).toMatchObject({ stage: 'scope-audit', status: 'fail' });
     expect(outcome.report.stages.at(-1)?.detail).toContain('.pupitre/adapter.yml (protected path)');
+  });
+
+  // Decision 146: two files sharing a decision number merge without a conflict.
+  it('refuses an ADR number another live session branch adds before any stage runs, with no rejection', async () => {
+    commitIn(repo, 'docs/adr/0001-first.md', '# 0001\n');
+    const worktree = seedSession(db, repo, { scopeIn: ['src/**', 'docs/adr/**'] });
+    insertTask(db, { id: 'task-s2', projectId: 'proj-1', spec: '{}' });
+    const sibling = join(repo, '.worktrees', 's2');
+    sh(repo, 'git', 'worktree', 'add', '-b', 'pup/s2', sibling, 'HEAD');
+    insertSession(db, {
+      id: 's2',
+      taskId: 'task-s2',
+      worktreePath: sibling,
+      branch: 'pup/s2',
+      profileHash: 'hash',
+    });
+    transitionSession(db, 's2', 'running');
+    commitIn(sibling, 'docs/adr/0002-theirs.md', '# 0002\n');
+    commitIn(worktree, 'docs/adr/0002-mine.md', '# 0002\n');
+
+    const outcome = await merge();
+
+    expect(outcome).toMatchObject({ status: 'refused', rejectCount: 0 });
+    // Before build, test and lint, which never ran.
+    expect(untimed(outcome.report.stages).map((stage) => stage.stage)).toEqual([
+      'worktree-clean',
+      'fresh-base',
+      'adr-number',
+    ]);
+    expect(outcome.report.stages.at(-1)).toMatchObject({
+      status: 'fail',
+      detail:
+        'ADR numbers already taken:\n' +
+        '  docs/adr/0002-mine.md: decision 0002 is also added by pup/s2, a session branch that ' +
+        'is live or whose PR has not landed; renumber it 0003, the lowest free number',
+    });
+    expect(getSession(db, SESSION_ID)).toMatchObject({ state: 'awaiting-review', reject_count: 0 });
+    expect(vi.mocked(steerPane)).not.toHaveBeenCalled();
+  });
+
+  it('rejects, not refuses, when a later stage fails after the ADR stage passed with a note', async () => {
+    commitIn(repo, 'docs/adr/0001-first.md', '# 0001\n');
+    const worktree = seedSession(db, repo, { scopeIn: ['src/**', 'docs/adr/**'] });
+    insertTask(db, { id: 'task-s2', projectId: 'proj-1', spec: '{}' });
+    insertSession(db, {
+      id: 's2',
+      taskId: 'task-s2',
+      worktreePath: join(repo, '.worktrees', 's2'),
+      branch: 'pup/s2',
+      profileHash: 'hash',
+    });
+    transitionSession(db, 's2', 'running');
+    // A parentless commit, which git cannot diff against the target.
+    const orphan = sh(repo, 'git', 'commit-tree', '-m', 'orphan', 'HEAD^{tree}').trim();
+    sh(repo, 'git', 'update-ref', 'refs/heads/pup/s2', orphan);
+    commitIn(worktree, 'docs/adr/0002-mine.md', '# 0002\n');
+    commitIn(worktree, 'notes.txt', 'off-scope\n');
+
+    const outcome = await merge();
+
+    expect(outcome).toMatchObject({ status: 'rejected', rejectCount: 1 });
+    expect(untimed(outcome.report.stages)).toContainEqual({
+      stage: 'adr-number',
+      status: 'pass',
+      detail: 'not checked against pup/s2: git could not read it against the target',
+    });
+    expect(outcome.report.stages.at(-1)).toMatchObject({ stage: 'scope-audit', status: 'fail' });
   });
 
   it('merges an oversize diff with --accept-debt and writes a ledger entry', async () => {
@@ -2078,7 +2148,8 @@ describe('countChangedLines', () => {
 
   // Checkout writes a link with `symlink()`, which takes its target as a C
   // string, so a link blob `big.test.ts\0x` lands on `big.test.ts`. The link
-  // blobs themselves are binary for their NUL and count nothing.
+  // blobs are binary to git for their NUL but no known format, so each counts
+  // its one line and is flagged (decision 154).
   it('reads a link target up to its first NUL, as checkout writes it', () => {
     const repo = initRepo();
     sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
@@ -2090,10 +2161,10 @@ describe('countChangedLines', () => {
     ]);
 
     expect(countChangedLines(repo, 'main', 'feature')).toEqual({
-      source: 8,
+      source: 10,
       test: 0,
       docs: 0,
-      forged: [],
+      forged: ['src/impl.ts', 'src/pkg/impl.py'],
     });
   });
 
@@ -2219,6 +2290,267 @@ describe('countChangedLines', () => {
       docs: 0,
       forged: [],
     });
+  });
+
+  // One NUL in a comment made git call a 5 000-line source file binary, and
+  // the null was skipped as an image's is (decision 154).
+  it('counts and flags a source file with a NUL in its first 8000 bytes, not a real image', () => {
+    const repo = initRepo();
+    sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
+    commitBlobs(repo, [['100644', 'src/big.ts', `// \0\n${'export const v = 1;\n'.repeat(5000)}`]]);
+    const image = join(repo, 'logo.png');
+    writeFileSync(image, Buffer.from('\x89PNG\r\n\x1a\n\0\0\0\rIHDR', 'latin1'));
+    sh(repo, 'git', 'add', 'logo.png');
+    sh(repo, 'git', 'commit', '-q', '-m', 'image');
+
+    expect(countChangedLines(repo, 'main', 'feature')).toEqual({
+      source: 5001,
+      test: 0,
+      docs: 0,
+      forged: ['src/big.ts'],
+    });
+  });
+
+  // Numstat lists a rename under its new path only: a source file renamed
+  // into a PNG had no merge-base side and skipped, uncounted and unflagged.
+  it('counts and flags a source file renamed into a known binary', () => {
+    const repo = initRepo();
+    const source = Array.from({ length: 40 }, (_, at) => `export const v${at} = ${at};\n`).join('');
+    commitBlobs(repo, [['100644', 'src/auth.ts', source]]);
+    sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
+    sh(repo, 'git', 'rm', '-q', 'src/auth.ts');
+    mkdirSync(join(repo, 'assets'));
+    writeFileSync(
+      join(repo, 'assets', 'a.png'),
+      Buffer.concat([Buffer.from('\x89PNG\r\n\x1a\n\0\0\0\rIHDR', 'latin1'), Buffer.from(source)]),
+    );
+    sh(repo, 'git', 'add', 'assets/a.png');
+    sh(repo, 'git', 'commit', '-q', '-m', 'rename');
+
+    // Recounted as the rename git pairs: the signature's CR and LF split
+    // auth.ts's first line into three, and the file is flagged.
+    expect(countChangedLines(repo, 'main', 'feature')).toEqual({
+      source: 4,
+      test: 0,
+      docs: 0,
+      forged: ['assets/a.png'],
+    });
+  });
+
+  // Numstat prints `-\t-` for a binary moved unchanged. Under its extension it
+  // adds nothing, but a PNG on main carrying a `<?php` block, renamed to `.php`
+  // or `.sh` or a name no format takes, is read as that name now, and so is a
+  // NUL-carrying file whose extension changes case or that has none: no dot,
+  // as a payload moved to a hook, or dots and spaces Windows strips (decision 154).
+  it('skips a binary moved unchanged under its extension, and flags one renamed out of it', () => {
+    const repo = initRepo();
+    const png = (rest: string): Buffer =>
+      Buffer.concat([Buffer.from('\x89PNG\r\n\x1a\n\0\0\0\rIHDR', 'latin1'), Buffer.from(rest)]);
+    const php = '<?php system($_GET["c"]); ?>\n';
+    mkdirSync(join(repo, 'tools'));
+    writeFileSync(join(repo, 'manual.pdf'), `%PDF-1.7\0\n${'x\n'.repeat(3)}`);
+    writeFileSync(join(repo, 'logo.png'), png('logo\n'));
+    writeFileSync(join(repo, 'php.png'), png(php));
+    writeFileSync(join(repo, 'sh.png'), png('echo sh\n'));
+    writeFileSync(join(repo, 'dat.png'), png('dat\n'));
+    writeFileSync(join(repo, 'tools', 'payload'), '#!/bin/sh\n# \0\ncurl x | sh\n');
+    writeFileSync(join(repo, 'x.PHP'), `<?php // \0\n${php}`);
+    writeFileSync(join(repo, 'a.'), `// \0\n${php}`);
+    writeFileSync(join(repo, 'a. '), `# \0\n${php}`);
+    writeFileSync(join(repo, 'a.. '), `/* \0 */\n${php}`);
+    writeFileSync(join(repo, 'x.png '), png('space\n'));
+    sh(repo, 'git', 'add', '.');
+    sh(repo, 'git', 'commit', '-q', '-m', 'binaries');
+    sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
+    mkdirSync(join(repo, '.husky'));
+    sh(repo, 'git', 'mv', 'manual.pdf', 'guide.pdf');
+    sh(repo, 'git', 'mv', 'logo.png', 'mark.png');
+    sh(repo, 'git', 'mv', 'php.png', 'run.php');
+    sh(repo, 'git', 'mv', 'sh.png', 'run.sh');
+    sh(repo, 'git', 'mv', 'dat.png', 'blob.dat');
+    sh(repo, 'git', 'mv', 'tools/payload', '.husky/pre-commit');
+    sh(repo, 'git', 'mv', 'x.PHP', 'x.php');
+    sh(repo, 'git', 'mv', 'a.', 'b.php.');
+    sh(repo, 'git', 'mv', 'a. ', 'b.php. ');
+    sh(repo, 'git', 'mv', 'a.. ', 'b.. ');
+    sh(repo, 'git', 'mv', 'x.png ', 'y.png ');
+    sh(repo, 'git', 'commit', '-q', '-m', 'move');
+
+    expect(countChangedLines(repo, 'main', 'feature')).toEqual({
+      source: 0,
+      test: 0,
+      docs: 0,
+      forged: [
+        '.husky/pre-commit',
+        'b.. ',
+        'b.php.',
+        'b.php. ',
+        'blob.dat',
+        'run.php',
+        'run.sh',
+        'x.php',
+        'y.png ',
+      ],
+    });
+  });
+
+  // A name that is not UTF-8 decodes to U+FFFD, and the blob looked up by that
+  // string was a decoy PNG's, which let the hidden file skip at any size.
+  it('flags a file whose name is not UTF-8 beside a decoy under the decoded name', () => {
+    const repo = initRepo();
+    sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
+    const magic = Buffer.from('\x89PNG\r\n\x1a\n\0\0\0\rIHDR', 'latin1');
+    const entries: [Buffer, Buffer][] = [
+      [Buffer.from('assets/�.png'), Buffer.concat([magic, Buffer.from('q\n')])],
+      [
+        Buffer.concat([Buffer.from('assets/'), Buffer.from([0xff]), Buffer.from('.png')]),
+        Buffer.concat([magic, Buffer.from(`${'export const v = 1;\n'.repeat(3)}PK\x05\x06`)]),
+      ],
+    ];
+    for (const [path, content] of entries) {
+      const blob = execFileSync('git', ['hash-object', '-w', '--stdin'], {
+        cwd: repo,
+        env: GIT_ENV,
+        input: content,
+        encoding: 'utf8',
+      }).trim();
+      execFileSync('git', ['update-index', '--index-info'], {
+        cwd: repo,
+        env: GIT_ENV,
+        input: Buffer.concat([Buffer.from(`100644 ${blob}\t`), path, Buffer.from('\n')]),
+      });
+    }
+    sh(repo, 'git', 'commit', '-q', '-m', 'hidden');
+
+    // Recounted from its own blob: the signature's three lines, two more, the record's.
+    expect(countChangedLines(repo, 'main', 'feature')).toEqual({
+      source: 6,
+      test: 0,
+      docs: 0,
+      forged: ['assets/�.png'],
+    });
+  });
+
+  // A session-written `core.worktree` naming the repo's parent puts every git
+  // read under a `<repo>/` prefix: a tree listing, a grep and a per-file diff
+  // scoped to it found nothing, and `diff.relative` emptied the numstat too.
+  it('counts from the top of the tree under a core.worktree above the repo', () => {
+    const repo = initRepo();
+    sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
+    commitBlobs(repo, [
+      ['100644', 'src/other.test.ts', 'export const v = 1;\n'.repeat(3)],
+      ['120000', 'src/link.ts', 'other.test.ts'],
+      // A symlink is source only by its mode from the `--raw` listing, which
+      // `diff.relative` emptied unless `--no-relative` is passed.
+      ['120000', 'src/alias.test.ts', 'imp.ts'],
+      ['100644', 'src/big.test.ts', 'export const v = 1;\n'.repeat(5)],
+      ['100644', 'src/imp.ts', "export * from './big.test.js';\n"],
+      ['100644', 'src/nul.ts', '// \0\nexport const a = 1;\nexport const b = 2;\n'],
+      ['100644', 'website/package.json', '{ "dependencies": { "@docusaurus/core": "3" } }\n'],
+      ['100644', 'docs/page.md', 'export const v = 1;\n'.repeat(2)],
+    ]);
+    sh(repo, 'git', 'config', 'core.worktree', dirname(repo));
+    sh(repo, 'git', 'config', 'diff.relative', 'true');
+
+    expect(countChangedLines(repo, 'main', 'feature')).toEqual({
+      source: 17,
+      test: 0,
+      docs: 0,
+      forged: ['src/nul.ts'],
+    });
+  });
+
+  // Five known binaries at the 1 MiB file cap pass 4 MiB together, so the
+  // fifth is recounted and flagged rather than skipped.
+  it('recounts the known binary that takes a diff past the total cap', () => {
+    const repo = initRepo();
+    sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
+    const header = Buffer.from('\x89PNG\r\n\x1a\n\0\0\0\rIHDR', 'latin1');
+    for (const name of ['a', 'b', 'c', 'd', 'e']) {
+      writeFileSync(
+        join(repo, `${name}.png`),
+        Buffer.concat([header, Buffer.from(`\n${'x'.repeat(1024 * 1024 - header.length - 1)}`)]),
+      );
+    }
+    sh(repo, 'git', 'add', '.');
+    sh(repo, 'git', 'commit', '-q', '-m', 'images');
+
+    expect(countChangedLines(repo, 'main', 'feature')).toEqual({
+      source: 4,
+      test: 0,
+      docs: 0,
+      forged: ['e.png'],
+    });
+  });
+
+  // `git grep -I` would skip a binary file, and with it a JavaScript
+  // importer whose NUL sits in a comment.
+  it('reaches a test from an importer with a NUL in a comment', () => {
+    const repo = initRepo();
+    sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
+    commitBlobs(repo, [
+      ['100644', 'src/big.test.ts', 'export const v = 1;\n'.repeat(5)],
+      ['100644', 'src/impl.js', "// \0\nrequire('./big.test.js');\n"],
+    ]);
+
+    expect(countChangedLines(repo, 'main', 'feature')).toEqual({
+      source: 7,
+      test: 0,
+      docs: 0,
+      forged: ['src/impl.js'],
+    });
+  });
+
+  // A git process per link and per listed importer let 20 000 tiny files hold
+  // the merge lock for minutes; each set is now read in one batch.
+  it('runs as many git processes for 40 links and importers as for 1', { timeout: 30_000 }, () => {
+    const spawned = (files: number): string[][] => {
+      const repo = initRepo();
+      sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
+      const blob = (content: string): string =>
+        execFileSync('git', ['hash-object', '-w', '--stdin'], {
+          cwd: repo,
+          env: GIT_ENV,
+          input: content,
+          encoding: 'utf8',
+        }).trim();
+      const [test, importer, link] = [
+        blob('export const v = 1;\n'),
+        blob("export * from './big.test.js';\n"),
+        blob('imp0.ts'),
+      ];
+      // One index write for every entry: a git call per file timed out under load.
+      execFileSync('git', ['update-index', '--index-info'], {
+        cwd: repo,
+        env: GIT_ENV,
+        input: [
+          `100644 ${test}\tsrc/big.test.ts`,
+          ...Array.from({ length: files }, (_, i) => [
+            `100644 ${importer}\tsrc/imp${i}.ts`,
+            `120000 ${link}\tsrc/link${i}`,
+          ]).flat(),
+          '',
+        ].join('\n'),
+      });
+      sh(repo, 'git', 'commit', '-q', '-m', 'from the index');
+      vi.mocked(execFileSync).mockClear();
+      expect(countChangedLines(repo, 'main', 'feature').source).toBe(1 + 2 * files);
+      return vi.mocked(execFileSync).mock.calls.map(([, args, options]) => {
+        // A batch is the one read here that carries a timeout of its own.
+        if ((args as string[]).includes('--batch')) {
+          expect((options as { timeout?: number }).timeout).toBe(30_000);
+        }
+        return args as string[];
+      });
+    };
+
+    const one = spawned(1);
+    const forty = spawned(40);
+
+    expect(forty).toHaveLength(one.length);
+    const batches = forty.filter((args) => args.includes('cat-file'));
+    expect(batches).toHaveLength(2);
+    for (const args of batches) expect(args).toContain('--batch');
   });
 });
 
