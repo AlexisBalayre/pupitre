@@ -68,6 +68,7 @@ import { TerminalSessionError } from './session-lifecycle.errors.js';
 import { HELD_SLOT_ENV } from './test-slot.service.js';
 import type { ProjectBaseline } from './types/init.types.js';
 import type { LandOutcome } from './types/land.types.js';
+import type { GateStageResult } from './types/merge-gate.types.js';
 
 // Real git repos, a bare origin and a sandboxed audit per test.
 // The gate children this file runs outside a gate start a sandbox run the
@@ -901,7 +902,11 @@ describe('landSession', { timeout: 20_000 }, () => {
     /** A commit past the pin, pushed as the PR's head and merged on GitHub at it. */
     function mergeMovedHead(path = 'src/fix.ts', content = 'export const fix = 1;\n') {
       seedPrMerge();
-      const later = commitIn(worktree, path, content);
+      return mergeAt(commitIn(worktree, path, content));
+    }
+
+    /** `later`, past the pin, pushed as the PR's head and merged on GitHub at it. */
+    function mergeAt(later: string) {
       sh(repo, 'git', 'push', '-q', origin, BRANCH);
       sh(origin, 'git', 'update-ref', 'refs/pull/7/head', later);
       const merge = mergeOnGitHub(later);
@@ -1024,7 +1029,7 @@ describe('landSession', { timeout: 20_000 }, () => {
       );
       expectNothingChanged(before);
 
-      // The worst accepted is the bar, and an equal figure meets it.
+      // One accepted entry no worse is enough, and an equal figure is no worse.
       acceptOversize(651);
       expect((await remeasure()).remeasure?.passed).toBe(true);
     });
@@ -1036,35 +1041,176 @@ describe('landSession', { timeout: 20_000 }, () => {
       expect((await remeasure()).remeasure?.passed).toBe(true);
     });
 
-    // The land reads the stages itself, not only that a measurement came back.
-    it('refuses a measurement that came back with a failed stage', async () => {
+    /**
+     * One remeasure's stages stood in for: a measurement reporting `stages`,
+     * flagging `flags`, over the open ledger entries `held`.
+     */
+    function measuredAs(stages: GateStageResult[], flags: string[] = [], held: string[] = []) {
+      vi.mocked(measureBranch).mockImplementationOnce(async (_db, _req, _session, reported) => {
+        reported.push(...stages);
+        return {
+          flaggedDebt: flags.map((description) => ({ description, files: [] })),
+          openEntries: held.map((description) => ({ description })),
+        } as unknown as Awaited<ReturnType<typeof measureBranch>>;
+      });
+    }
+
+    const filed = (wording: string) => `${wording} session ${SESSION_ID}`;
+    const huge = '9'.repeat(400);
+
+    // The land reads the stages itself, not only that a measurement came back,
+    // and lands on the statuses it knows only.
+    it.each([
+      ['fail', /did not pass:\n {2}build: boom\n/],
+      ['timeout', /did not pass:\n {2}build: boom\n/],
+    ])('refuses a measurement that came back with a %s stage', async (status, refusal) => {
       mergeMovedHead();
       const before = mainSha();
-      vi.mocked(measureBranch).mockImplementationOnce(async (_db, _req, _session, stages) => {
-        stages.push({ stage: 'build', status: 'fail', detail: 'boom' });
-        return { flaggedDebt: [], openEntries: [] } as unknown as Awaited<
-          ReturnType<typeof measureBranch>
-        >;
-      });
+      measuredAs([{ stage: 'build', status: status as GateStageResult['status'], detail: 'boom' }]);
 
-      await expect(remeasure()).rejects.toThrow(/did not pass:\n {2}build: boom\n/);
+      await expect(remeasure()).rejects.toThrow(refusal);
       expectNothingChanged(before);
     });
 
-    it('refuses when the local target moved while the stages ran', async () => {
+    it.each([
+      [
+        'an accepted figure that is no finite number',
+        filed('Oversize diff (651 lines) merged from'),
+        filed(`Oversize diff (${huge} lines) merged from`),
+        'flagged past the accepted',
+      ],
+      [
+        'a flagged figure that is no finite number',
+        filed(`Oversize diff (${huge} lines) merged from`),
+        filed('Oversize diff (612 lines) merged from'),
+        'flagged, its figures unreadable',
+      ],
+      [
+        'a figure only a name supplies, in no wording the gate files',
+        filed('Nested thing src/x(10) merged from'),
+        filed('Nested thing src/x(9999) merged from'),
+        'flagged, its figures unreadable',
+      ],
+      [
+        'a figure worse, the rise it makes with another equal',
+        filed('Duplicated lines rose from 120 to 170 in'),
+        filed('Duplicated lines rose from 100 to 150 in'),
+        'flagged past the accepted',
+      ],
+    ])('refuses %s', async (_case, flag, held, refusal) => {
       mergeMovedHead();
+      const before = mainSha();
+      measuredAs([{ stage: 'build', status: 'pass' }], [flag], [held]);
+
+      await expect(remeasure()).rejects.toThrow(`${refusal}`);
+      expectNothingChanged(before);
+    });
+
+    it('lands a flag whose every figure is no worse than an accepted one', async () => {
+      const { merge } = mergeMovedHead();
+      measuredAs(
+        [{ stage: 'build', status: 'pass' }],
+        [filed('Coverage gap (patch coverage 61.5% below baseline 70%) merged from')],
+        [filed('Coverage gap (patch coverage 60.5% below baseline 70%) merged from')],
+      );
+
+      await remeasure();
+      expect(mainSha()).toBe(merge);
+    });
+
+    /** Stands in for the stages, running the real ones, then `meanwhile`. */
+    function whileMeasuring(meanwhile: () => void): void {
       const real = vi.mocked(measureBranch).getMockImplementation();
       vi.mocked(measureBranch).mockImplementationOnce(async (...args) => {
         const measured = await real?.(...args);
-        commitIn(repo, 'NOTES.md', 'moved under the remeasure\n');
+        meanwhile();
         return measured;
       });
+    }
+
+    it('refuses when the local target moved while the stages ran', async () => {
+      mergeMovedHead();
+      whileMeasuring(() => commitIn(repo, 'NOTES.md', 'moved under the remeasure\n'));
 
       await expect(remeasure()).rejects.toThrow(
         /While the remeasure ran, local main moved from [0-9a-f]{40}\. .*Nothing was landed/,
       );
       expect(landedEvents()).toEqual([]);
       expect(existsSync(worktree)).toBe(true);
+    });
+
+    // Origin moving on keeps the measured tip in its history: that tip lands.
+    it('lands the tip it fetched when origin moved on while the stages ran', async () => {
+      const { merge } = mergeMovedHead();
+      whileMeasuring(() => {
+        const next = sh(
+          origin,
+          'git',
+          '-c',
+          'user.email=gh@test',
+          '-c',
+          'user.name=github',
+          'commit-tree',
+          `${merge}^{tree}`,
+          '-p',
+          merge,
+          '-m',
+          'Another PR',
+        );
+        sh(origin, 'git', 'update-ref', 'refs/heads/main', next);
+      });
+
+      await remeasure();
+
+      expect(mainSha()).toBe(merge);
+      expect(sh(repo, 'git', 'rev-parse', 'refs/remotes/origin/main')).toBe(merge);
+      expect(JSON.parse(landedEvents()[0]?.payload ?? '{}')).toMatchObject({ sha: merge });
+    });
+
+    it('refuses when origin was rewound while the stages ran', async () => {
+      const { merge } = mergeMovedHead();
+      const before = mainSha();
+      whileMeasuring(() =>
+        sh(
+          origin,
+          'git',
+          'update-ref',
+          'refs/heads/main',
+          sh(origin, 'git', 'rev-parse', `${merge}^1`),
+        ),
+      );
+
+      await expect(remeasure()).rejects.toThrow(
+        `While the remeasure ran, origin's main no longer holds ${merge}.`,
+      );
+      expectNothingChanged(before);
+    });
+
+    // Listed with `--no-renames`, as the scope audit lists them: a file moved
+    // out of a critical area changed that area.
+    it('takes a file renamed out of a critical area as a change to that area', async () => {
+      pinned = commitIn(worktree, 'src/core/land-old.ts', 'export const old = 1;\n');
+      sh(repo, 'git', 'push', '-q', origin, BRANCH);
+      seedPrMerge();
+      sh(worktree, 'git', 'mv', 'src/core/land-old.ts', 'src/old.ts');
+      sh(
+        worktree,
+        'git',
+        '-c',
+        'user.email=l@test',
+        '-c',
+        'user.name=land',
+        'commit',
+        '-qm',
+        'out',
+      );
+      mergeAt(sh(worktree, 'git', 'rev-parse', 'HEAD'));
+      const before = mainSha();
+
+      await expect(remeasure()).rejects.toThrow(
+        'change 1 file(s) in a critical area (src/core/land-old.ts)',
+      );
+      expectNothingChanged(before);
     });
 
     it('refuses a critical-area change without --approved-by, before any stage runs', async () => {

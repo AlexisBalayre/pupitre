@@ -698,26 +698,25 @@ async function remeasureMerge(
       // see above
     }
   }
-  // Per kind, the worst figure the session's own gate filed as accepted debt.
-  const accepted = new Map<string, string>();
+  // The open entries the session's own gate filed as accepted debt, by kind.
+  const accepted = new Map<string, string[]>();
   for (const entry of measured?.openEntries ?? []) {
     const kind = debtKind(entry.description, session.id);
-    if (kind === undefined) continue;
-    const held = accepted.get(kind);
-    if (held === undefined || debtExcess(entry.description) > debtExcess(held)) {
-      accepted.set(kind, entry.description);
-    }
+    if (kind !== undefined) accepted.set(kind, [...(accepted.get(kind) ?? []), entry.description]);
   }
   const failed = [
     ...stages
-      .filter((stage) => stage.status === 'fail')
-      .map((stage) => `  ${stage.stage}: ${stage.detail ?? 'failed'}`),
+      .filter((stage) => !LANDABLE_STATUSES.has(stage.status))
+      .map((stage) => `  ${stage.stage}: ${stage.detail ?? stage.status}`),
     ...(measured?.flaggedDebt ?? []).flatMap((flag) => {
-      const held = accepted.get(debtKind(flag.description, session.id) as string);
-      if (held === undefined) return [`  flagged, never accepted: ${flag.description}`];
-      return debtExcess(flag.description) > debtExcess(held)
-        ? [`  flagged past the accepted ${held}: ${flag.description}`]
-        : [];
+      const held = accepted.get(debtKind(flag.description, session.id) as string) ?? [];
+      if (held.length === 0) return [`  flagged, never accepted: ${flag.description}`];
+      if (debtFigures(flag.description, session.id) === undefined) {
+        return [`  flagged, its figures unreadable: ${flag.description}`];
+      }
+      return held.some((entry) => noWorse(flag.description, entry, session.id))
+        ? []
+        : [`  flagged past the accepted ${held.join('; ')}: ${flag.description}`];
     }),
   ];
   if (measured === undefined || failed.length > 0) {
@@ -731,22 +730,70 @@ async function remeasureMerge(
 }
 
 /**
- * How far past its bar a flag's description says a change went, higher being
- * worse (decision 185): a duplication's rise, a coverage gap's drop below the
- * baseline, otherwise the one count its figures hold (lines, files, exports,
- * decision points). Zero for a kind with no figure, which `debtKind` alone
- * matches. Read from the wordings `debtKind`'s figures sit in.
+ * Each wording a gate flag is filed in, matched whole on the description with
+ * its ` session <id>` cut, and which way each figure it holds is worse: 1 when
+ * higher, -1 when lower (decision 185). Whole, so a path or a name the session
+ * chose cannot supply a figure. A wording with none matches on its kind alone.
  */
-function debtExcess(description: string): number {
-  const rose = /^Duplicated lines rose from (\d+) to (\d+) in session /.exec(description);
-  if (rose) return Number(rose[2]) - Number(rose[1]);
-  const below = /\(patch coverage ([\d.]+)% below baseline ([\d.]+)%\) merged from session /.exec(
-    description,
+const DEBT_WORDINGS: readonly { pattern: RegExp; worse: readonly number[] }[] = [
+  { pattern: /^Oversize diff \((\d+) lines\) merged from$/, worse: [1] },
+  { pattern: /^Text files git reports as binary \((\d+)\) merged from$/, worse: [1] },
+  { pattern: /^New unused exports \((\d+)\) merged from$/, worse: [1] },
+  { pattern: /^Complexity rise \(\+(\d+) decision points\) merged from$/, worse: [1] },
+  { pattern: /^Duplicated lines rose from (\d+) to (\d+) in$/, worse: [-1, 1] },
+  { pattern: /^Coverage unmeasured over (\d+) changed source file\(s\) in$/, worse: [1] },
+  {
+    pattern:
+      /^Coverage gap \(patch coverage (\d+(?:\.\d)?)% below baseline (\d+(?:\.\d)?)%\) merged from$/,
+    worse: [-1, 1],
+  },
+  { pattern: /^Coverage gap \(unreported files(?: and patch coverage)?\) merged from$/, worse: [] },
+  {
+    pattern: /^Nested package .+ changed with no (?:test|typecheck) script, merged from$/s,
+    worse: [],
+  },
+];
+
+/** Which statuses a remeasure lands on; any other, a future one included, refuses. */
+const LANDABLE_STATUSES: ReadonlySet<string> = new Set([
+  // As the gate passes them: a stage with no command, the untested skip.
+  'pass',
+  'skipped',
+  // Judged against the ledger, as `flaggedDebt`.
+  'flagged',
+]);
+
+/**
+ * A flag description's wording, as an index into `DEBT_WORDINGS`, and its
+ * figures; undefined when `sessionId` did not file it, it is no wording the
+ * gate files, or a figure is no finite number.
+ */
+function debtFigures(
+  description: string,
+  sessionId: string,
+): { wording: number; figures: number[] } | undefined {
+  const suffix = ` session ${sessionId}`;
+  if (!description.endsWith(suffix)) return undefined;
+  const body = description.slice(0, -suffix.length);
+  for (const [wording, { pattern }] of DEBT_WORDINGS.entries()) {
+    const match = pattern.exec(body);
+    if (match === null) continue;
+    const figures = match.slice(1).map(Number);
+    return figures.every(Number.isFinite) ? { wording, figures } : undefined;
+  }
+  return undefined;
+}
+
+/**
+ * Whether the flag `description` is no worse than the accepted `held` on every
+ * figure; never when either is unreadable or they differ in wording.
+ */
+function noWorse(description: string, held: string, sessionId: string): boolean {
+  const now = debtFigures(description, sessionId);
+  const then = debtFigures(held, sessionId);
+  if (now === undefined || then === undefined || now.wording !== then.wording) return false;
+  const { worse } = DEBT_WORDINGS[now.wording] as (typeof DEBT_WORDINGS)[number];
+  return now.figures.every(
+    (figure, i) => (figure - (then.figures[i] as number)) * (worse[i] as number) <= 0,
   );
-  if (below) return Number(below[2]) - Number(below[1]);
-  const count =
-    /^Coverage unmeasured over (\d+) changed source file\(s\) in session |\(\+?(\d+)[^()]*\) merged from session /.exec(
-      description,
-    );
-  return count ? Number(count[1] ?? count[2]) : 0;
 }

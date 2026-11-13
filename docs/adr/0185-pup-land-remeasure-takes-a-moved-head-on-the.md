@@ -13,15 +13,20 @@
     audit, diff size and the debt deltas. They run on the commit GitHub's merge made, against
     the commit that merge went onto on the pinned target, which is the base `mergedOnto` finds.
     They use a gate checkout, a sandbox run and a test slot, the same as `runMergeGate`. Only a
-    full pass lands, and the land then goes on as usual. A hard stage that fails refuses the land
-    and names the stage and its detail; the land checks the stages itself, not only that
-    `measureBranch` returned. So does a debt flag whose kind the session's own gate did not
-    already file as accepted debt: no one accepted it. A kind the session already holds open in
-    the ledger passes only up to the figure accepted: the stages measure the whole PR again, so
-    the flags the first gate filed come back, but an `Oversize diff (612 lines)` someone accepted
-    does not let 651 lines through. Worse means more lines, files, exports or decision points, a
-    larger duplication rise, or a larger patch-coverage drop below the baseline; against several
-    open entries of a kind, the worst one accepted is the bar. Equal or better passes. A refusal
+    full pass lands, and the land then goes on as usual. The land checks the stages itself, not
+    only that `measureBranch` returned: it lands on `pass`, on `skipped` as the gate passes it (no
+    command, the untested skip of decision 139), and on `flagged`, which the ledger judges. Any
+    other status refuses, a future one included, naming the stage and its detail. So does a debt
+    flag whose kind the session's own gate did not already file as accepted debt: no one
+    accepted it. A kind the session already holds open in the ledger passes only up to the
+    figures accepted: the stages measure the whole PR again, so the flags the first gate filed
+    come back, but an `Oversize diff (612 lines)` someone accepted does not let 651 lines through.
+    Each figure is compared on its own, in the direction it worsens: more lines, files, exports or
+    decision points; for duplication, a lower before or a higher after; for a coverage gap, a
+    lower patch coverage or a higher baseline. A flag passes when one open entry of its kind is
+    no worse on every figure. The figures are read from the gate's own wordings matched whole, so
+    a path or a name inside a description cannot supply one; a description in no such wording,
+    or a figure that is no finite number, on either side, refuses. A refusal
     changes nothing and records nothing: `measureBranch` only reads the store, and the debt it
     flags, the baseline it would ratchet and the event are written by the land alone, after a
     pass. The session stays merged, and the operator still has `--accept-head`.
@@ -45,7 +50,8 @@
     could land an unmeasured change to a critical area on a steer or an injected prompt.
     `--approved-by` without `--remeasure` is refused. The paths past the pin are listed with
     `gitDiffPaths`, the git the gate's scope audit runs: the safe config, the scrubbed
-    environment with replace refs off, and no external diff or textconv. The glob match is
+    environment with replace refs off, no external diff or textconv, and `--no-renames`, so a file
+    moved out of a critical area counts as a change to it. The glob match is
     case-sensitive, as the gate's is, so on a case-insensitive filesystem a path spelled in
     another case escapes it there too.
     *The event.* The `landed` event of a remeasured land records `remeasuredHead`, `pinned`, the
