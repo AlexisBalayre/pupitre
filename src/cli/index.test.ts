@@ -36,6 +36,11 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   // `pup attach` hands the terminal to tmux; here it hands it to nothing.
   attachWindow: vi.fn(() => 0),
   hasSessionWindow: vi.fn(() => true),
+  // The rescope's tmux and ps reads (decision 115), tested against both in
+  // their own suite.
+  windowSockets: vi.fn(),
+  listPanes: vi.fn(),
+  listProcesses: vi.fn(),
   // The turn watchdog's reads: a conductor window to find, a pane to read for
   // a dead turn, a nudge to type (addendum to decision 35).
   conductorPane: vi.fn(),
@@ -194,11 +199,14 @@ import {
 import {
   deadTurnError,
   launchWatcher,
+  listPanes,
+  listProcesses,
   SessionPaneMissingError,
   SteerNotDeliveredError,
   saveSessionEnv,
   steerPane,
   transcriptDir,
+  windowSockets,
 } from '../claude/session-runtime.service.js';
 import { waitForCiReview } from '../core/ci-wait.service.js';
 import {
@@ -218,7 +226,11 @@ import { projectId, projectPaths } from '../core/paths.utils.js';
 import { InvalidProfileError } from '../core/profile.errors.js';
 import {
   appendEvent,
+  ensureProject,
   getSession,
+  getTask,
+  insertSession,
+  insertTask,
   listEvents,
   transitionSession,
 } from '../core/session.repository.js';
@@ -903,6 +915,231 @@ describe('CLI commands', () => {
       expect(db.prepare('SELECT baseline FROM projects WHERE id = ?').get(projectId(repo))).toEqual(
         { baseline: null },
       );
+    });
+  });
+
+  describe('plan edit --rescope (decision 115)', () => {
+    const claimed = (repo: string, state: string, scopeIn = ['src/**']) => {
+      const { db, repoPath } = resolveProject(repo);
+      ensureProject(db, projectId(repoPath), repoPath);
+      insertTask(db, {
+        id: 't-1',
+        projectId: projectId(repoPath),
+        spec: JSON.stringify({ id: 't-1', goal: 'g', scopeIn, acceptance: ['a'] }),
+      });
+      insertSession(db, {
+        id: 's1',
+        taskId: 't-1',
+        worktreePath: join(repoPath, '.worktrees', 's1'),
+        branch: 'pup/s1',
+        profileHash: 'hash',
+      });
+      db.prepare('UPDATE sessions SET state = ? WHERE id = ?').run(state, 's1');
+      return db;
+    };
+    const rescope = (...extra: string[]) =>
+      buildProgram().parse(['plan', 'edit', 't-1', '--rescope', '--scope', 'docs/**', ...extra], {
+        from: 'user',
+      });
+    // By default no window of the task's is open, as the gate leaves a merged
+    // session's, and the caller runs under no Claude Code pup launched.
+    beforeEach(() => {
+      vi.mocked(windowSockets).mockReturnValue(['/tmp/tmux-1/default']);
+      vi.mocked(listPanes).mockReturnValue([]);
+      vi.mocked(listProcesses).mockReturnValue(new Map());
+    });
+
+    it("appends to a merged task's scope-in, and pup log shows it", () => {
+      const repo = initRepo();
+      useCwd(repo);
+      const db = claimed(repo, 'merged');
+
+      rescope();
+      buildProgram().parse(['log'], { from: 'user' });
+
+      expect(logs).toContain(
+        "Widened t-1's scope-in with docs/**; recorded on session s1; tier critical.",
+      );
+      expect(JSON.parse(getTask(db, 't-1')?.spec ?? '{}').scopeIn).toEqual(['src/**', 'docs/**']);
+      expect(listEvents(db, 's1').map((event) => event.type)).toContain('rescope');
+      expect(logs.join('\n')).toContain('session s1');
+      expect(logs.join('\n')).toContain('files: docs/**');
+    });
+
+    // The operator is inferred from absent markers, so the event keeps what
+    // was seen of the caller rather than claiming who it was.
+    const rescopeEvent = (db: ReturnType<typeof claimed>) =>
+      JSON.parse(listEvents(db, 's1').find((event) => event.type === 'rescope')?.payload ?? '{}');
+
+    it('records the caller as an inferred operator, with its tmux pane and no terminal', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      const db = claimed(repo, 'merged');
+      vi.stubEnv('TMUX_PANE', '%12');
+
+      rescope();
+
+      expect(rescopeEvent(db)).toMatchObject({
+        by: 'inferred-operator',
+        tty: null,
+        tmuxPane: '%12',
+      });
+    });
+
+    it('records the terminal on stdin, and no pane a TMUX_PANE does not name', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      const db = claimed(repo, 'merged');
+      vi.stubEnv('TMUX_PANE', 'pup-s1');
+      const real = vi.mocked(execFileSync).getMockImplementation() as typeof execFileSync;
+      vi.mocked(execFileSync).mockImplementation(((file: string, ...rest: never[]) =>
+        file === '/usr/bin/tty' ? '/dev/ttys009\n' : real(file, ...rest)) as typeof execFileSync);
+      const wasTty = process.stdin.isTTY;
+      Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true });
+      try {
+        rescope();
+      } finally {
+        Object.defineProperty(process.stdin, 'isTTY', { value: wasTty, configurable: true });
+        vi.mocked(execFileSync).mockImplementation(real);
+      }
+
+      expect(rescopeEvent(db)).toMatchObject({ tty: '/dev/ttys009', tmuxPane: null });
+    });
+
+    it('says so when every glob is already in scope, writing nothing', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      const db = claimed(repo, 'merged');
+
+      buildProgram().parse(['plan', 'edit', 't-1', '--rescope', '--scope', 'src/**'], {
+        from: 'user',
+      });
+
+      expect(logs).toContain("t-1's scope-in already holds every glob given; nothing changed.");
+      expect(listEvents(db, 's1')).toEqual([]);
+    });
+
+    it('names the tier a rescope raised', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      const db = claimed(repo, 'merged', ['docs/**']);
+      db.prepare("UPDATE sessions SET tier = 'standard', rung = 1 WHERE id = ?").run('s1');
+
+      buildProgram().parse(
+        ['plan', 'edit', 't-1', '--rescope', '--scope', 'src/core/merge-gate.service.ts'],
+        { from: 'user' },
+      );
+
+      expect(logs).toContain(
+        "Widened t-1's scope-in with src/core/merge-gate.service.ts; recorded on session s1; " +
+          'tier critical, raised from standard.',
+      );
+      expect(getSession(db, 's1')?.tier).toBe('critical');
+    });
+
+    it('refuses a glob with a wildcard in its first segment', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      const db = claimed(repo, 'merged');
+
+      buildProgram().parse(['plan', 'edit', 't-1', '--rescope', '--scope', '**'], {
+        from: 'user',
+      });
+
+      expect(errors).toContain('Rescope glob "**" has a wildcard in its first segment.');
+      expect(JSON.parse(getTask(db, 't-1')?.spec ?? '{}').scopeIn).toEqual(['src/**']);
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('refuses while the session is running', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      const db = claimed(repo, 'running');
+
+      rescope();
+
+      expect(errors).toContain('Session s1 is at work on t-1; rescope once it stops.');
+      expect(JSON.parse(getTask(db, 't-1')?.spec ?? '{}').scopeIn).toEqual(['src/**']);
+      expect(process.exitCode).toBe(1);
+    });
+
+    // `pup session done` leaves the worker's window up while it awaits review.
+    it('refuses while the session window is still open', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      const db = claimed(repo, 'awaiting-review');
+      vi.mocked(listPanes).mockReturnValue(['%3\t\tpup-s1']);
+
+      rescope();
+
+      expect(errors.join('\n')).toContain("Session s1's window is open");
+      expect(JSON.parse(getTask(db, 't-1')?.spec ?? '{}').scopeIn).toEqual(['src/**']);
+      expect(process.exitCode).toBe(1);
+    });
+
+    it.each([
+      ['a session', 'PUP_SESSION_ID', 's1'],
+      ['the conductor', 'PUP_CONDUCTOR', 'p1'],
+    ])('refuses %s', (_who, variable, value) => {
+      const repo = initRepo();
+      useCwd(repo);
+      const db = claimed(repo, 'merged');
+      vi.stubEnv(variable, value);
+
+      rescope();
+
+      expect(errors.join('\n')).toContain('operator-only');
+      expect(JSON.parse(getTask(db, 't-1')?.spec ?? '{}').scopeIn).toEqual(['src/**']);
+      expect(process.exitCode).toBe(1);
+    });
+
+    // `env -u PUP_CONDUCTOR pup plan edit ...` from the conductor's own Bash
+    // sheds the marker, not the process tree it runs in.
+    it.each([
+      ['the conductor', 'pup-conductor-p1'],
+      ['a session', 'pup-s9'],
+    ])('refuses %s by its process tree when its markers are unset', (_who, name) => {
+      const repo = initRepo();
+      useCwd(repo);
+      const db = claimed(repo, 'merged');
+      vi.mocked(listProcesses).mockReturnValue(
+        new Map([[process.ppid, { parent: 1, args: `claude --name ${name}` }]]),
+      );
+
+      rescope();
+
+      expect(errors.join('\n')).toContain(`operator-only, and this runs under ${name}`);
+      expect(JSON.parse(getTask(db, 't-1')?.spec ?? '{}').scopeIn).toEqual(['src/**']);
+      expect(listEvents(db, 's1')).toEqual([]);
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('refuses when the process tree cannot be read', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      const db = claimed(repo, 'merged');
+      vi.mocked(listProcesses).mockReturnValue(undefined);
+
+      rescope();
+
+      expect(errors.join('\n')).toContain('could not read the process tree');
+      expect(JSON.parse(getTask(db, 't-1')?.spec ?? '{}').scopeIn).toEqual(['src/**']);
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('takes no field but --scope, and needs one', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      claimed(repo, 'merged');
+
+      rescope('--goal', 'other');
+      expect(errors).toContain(
+        '--rescope takes only --scope: it appends scope-in globs and changes nothing else.',
+      );
+
+      buildProgram().parse(['plan', 'edit', 't-1', '--rescope'], { from: 'user' });
+      expect(errors).toContain('Usage: pup plan edit <task> --rescope --scope <glob...>');
+      expect(process.exitCode).toBe(1);
     });
   });
 

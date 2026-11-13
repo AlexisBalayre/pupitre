@@ -103,6 +103,7 @@ import {
   SessionNotReviewableError,
 } from './merge-gate.errors.js';
 import { SESSION_ID_PATTERN } from './paths.constants.js';
+import { skipsTestsOnUntestedChanges } from './project-config.config.js';
 import { mergeToRegate, planRegate, type RegatePlan, regateMerged } from './regate.service.js';
 import {
   endSandboxRun,
@@ -2812,10 +2813,12 @@ export async function measureBranch(
   const intactBeforeSuites = testInputsIntact();
 
   // A change no test can run or read runs no suite, and so waits for no load
-  // and takes no slot; a nested package's change always runs its suite
-  // (decision 139).
+  // and takes no slot; a nested package's change always runs its suite, and so
+  // does every change in a project that turned the skip off (decision 139).
   const untested =
-    nestedPackages.length === 0 && changesOnlyUntested(req.repoPath, targetSha, sha, changedPaths);
+    nestedPackages.length === 0 &&
+    skipsTestsOnUntestedChanges(req.repoPath) &&
+    changesOnlyUntested(req.repoPath, targetSha, sha, changedPaths);
   // A stage nothing could have measured says so, as on any other change: the
   // test stage without a test command.
   const notTested = (stage: string, measurable: boolean): GateStageResult =>

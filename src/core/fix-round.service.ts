@@ -52,6 +52,7 @@ import {
   decodeEvent,
   type EventRow,
   getSession,
+  getTask,
   listEvents,
   recordSessionRoute,
   type SessionRoute,
@@ -218,6 +219,7 @@ export async function startFixRound(db: Database, req: FixRoundRequest): Promise
   }
   const paths = projectPaths(req.repoPath, req.pathsBase);
   const route = routeOrRefuse(db, paths, session, req);
+  const specRead = getTask(db, session.task_id)?.spec;
   const recompiled = orNotStarted(() => recompileSessionProfile(db, req, session, paths));
   // Under the lock `pup merge` and `pup land` take, since both move the branch
   // and the worktree this restores; the window opens after it, as it may take
@@ -225,7 +227,7 @@ export async function startFixRound(db: Database, req: FixRoundRequest): Promise
   const roundId = await withMergeLock(req.repoPath, () => {
     assertStillPinned(db, req.repoPath, session.id, pinned);
     restoreWorktree(req.repoPath, session, head);
-    return takeFixRoundEdge(db, session.id, {
+    return takeFixRoundEdge(db, session, specRead, {
       prUrl,
       head,
       threads: threads.map((thread) => thread.id),
@@ -875,11 +877,21 @@ function assertStillPinned(
  */
 function takeFixRoundEdge(
   db: Database,
-  sessionId: string,
+  { id: sessionId, task_id: taskId, tier }: SessionRow,
+  specRead: string | undefined,
   round: Omit<EventPayloads['fix_round'], 'rejectBase'>,
 ): number {
   return orNotStarted(
     db.transaction(() => {
+      // An operator rescope landing while the round was being prepared widened
+      // the spec and raised the tier this round's hooks and route were
+      // computed without.
+      if (getTask(db, taskId)?.spec !== specRead || getSession(db, sessionId)?.tier !== tier) {
+        throw new Error(
+          `Session ${sanitizeReason(sessionId)}'s scope or tier changed while the round was ` +
+            'prepared (a rescope).',
+        );
+      }
       transitionSessionAlong(db, sessionId, FIX_ROUND_EDGE, { kind: 'fix-round' });
       const { reject_count: rejectBase } = db
         .prepare('UPDATE sessions SET tmux_target = NULL WHERE id = ? RETURNING reject_count')
