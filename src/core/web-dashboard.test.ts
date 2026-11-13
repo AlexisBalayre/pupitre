@@ -139,6 +139,7 @@ function openStream(
   frames: string[];
   next: () => Promise<string>;
   nonce: () => Promise<string>;
+  ended: (done: () => void) => void;
   close: () => void;
 }> {
   return new Promise((resolve, reject) => {
@@ -182,6 +183,7 @@ function openStream(
             : new Promise((done) => {
                 waitingNonce = done;
               }),
+        ended: (done) => res.on('end', done),
         close: () => req.destroy(),
       });
     });
@@ -356,6 +358,18 @@ describe('startWebDashboard', () => {
       expect(listLedgerEntries(db, projectId(repo))).toHaveLength(1);
     });
 
+    it('closes a stream opened before the token came back, and drops every nonce it was handed', async () => {
+      const board = await openStream(`${eventsUrl()}?sheet=debt`);
+      const key = await board.nonce();
+      const ended = new Promise<void>((resolve) => board.ended(resolve));
+
+      await get(dashboard.url, NO_SECRET);
+      await ended;
+      const reply = await post(`${origin()}/action`, { action: 'debt-close', id: '1', nonce: key });
+
+      expect(reply.status).toBe(403);
+    });
+
     it('spends the token only on a page it served, so a first load it could not answer leaves it good', async () => {
       const other = await startWebDashboard(db, repo, { pollMs: POLL_MS });
       try {
@@ -419,14 +433,13 @@ describe('startWebDashboard', () => {
       expect(reply.status).toBe(404);
     });
 
-    it('answers 500 for a store it cannot read, and ends a stream it could not fill', async () => {
+    it('serves the shell without reading the store, and ends a stream it could not fill', async () => {
       db.close();
 
       const page = await get(home('?session=s-1'));
       const stream = await get(eventsUrl());
 
-      expect(page.status).toBe(500);
-      expect(page.body).toBe('The store could not be read.');
+      expect(page.status).toBe(200);
       expect(stream.status).toBe(200);
       expect(stream.body).toBe('');
     });
@@ -1404,11 +1417,23 @@ describe('startWebDashboard', () => {
       expect(page).not.toMatch(/<form[^>]*github/i);
     });
 
-    it.each([
-      ['an id the store does not hold', 's-none'],
-      ['an id outside the minted shape', 's%20x'],
-    ])('answers 404 for %s', async (_case, sessionId) => {
-      expect((await get(viewUrl(sessionId))).status).toBe(404);
+    it('serves the same shell for an id the store does not hold, and says so on its stream', async () => {
+      seedWindow('s-1', ['running']);
+      const shell = (body: string): string =>
+        body.replace(/nonce-?="?[^"';]+/g, '').replace(/s-(1|none)/g, '');
+
+      const held = await get(viewUrl('s-1'));
+      const missing = await get(viewUrl('s-none'));
+
+      expect(missing.status).toBe(200);
+      expect(shell(missing.body)).toBe(shell(held.body));
+      expect(await readPage(viewUrl('s-none'))).toContain(
+        '<p class="hint">No session s-none in this store.</p>',
+      );
+    });
+
+    it('answers 404 for an id outside the minted shape, which names no view', async () => {
+      expect((await get(viewUrl('s%20x'))).status).toBe(404);
     });
   });
 });

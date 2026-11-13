@@ -7,7 +7,6 @@ import { CHART_CSS } from './chart.utils.js';
 import { PAGE_SHELL_CSS } from './page-shell.constants.js';
 import { PAGE_THEME_CSS } from './page-theme.constants.js';
 import { SESSION_ID_PATTERN } from './paths.constants.js';
-import { getSession } from './session.repository.js';
 import {
   ACTIONS,
   type ActionFields,
@@ -25,7 +24,7 @@ import {
   renderSessionBoard,
   renderSessionHead,
 } from './web-dashboard-session.service.js';
-import { escapeHtml, SHEETS, type SheetName } from './web-dashboard-sheet.utils.js';
+import { escapeHtml, hint, SHEETS, type SheetName } from './web-dashboard-sheet.utils.js';
 import { readTasksSheet, renderTasksSheet } from './web-dashboard-tasks.service.js';
 
 /** How often the server re-reads the store for the open streams (decision 91). */
@@ -116,7 +115,9 @@ export async function startWebDashboard(
     const now = Date.now();
     if ('session' in view) {
       const read = readSessionView(db, repoPath, view.session, now);
-      return read ? renderSessionHead(read) + renderSessionBoard(read) : '';
+      return read
+        ? renderSessionHead(read) + renderSessionBoard(read)
+        : hint(`No session ${view.session} in this store.`);
     }
     switch (view.sheet) {
       case 'debt':
@@ -234,6 +235,14 @@ export async function startWebDashboard(
     const given = req.headers[SECRET_HEADER];
     return secret !== undefined && typeof given === 'string' && matches(given, secret);
   };
+  // Cut off means cut off: the streams already open go too, and with them
+  // every nonce they were handed.
+  const revoke = (): void => {
+    secret = undefined;
+    for (const stream of streams.keys()) stream.end();
+    streams.clear();
+    nonces.clear();
+  };
   const handle = (req: IncomingMessage, res: ServerResponse) => {
     if (req.headers.host !== `${LOOPBACK}:${port}`) return refuse(res, 403, 'Forbidden.');
     const url = new URL(req.url ?? '/', `http://${LOOPBACK}:${port}`);
@@ -260,7 +269,7 @@ export async function startWebDashboard(
 
   /**
    * The page: a shell around the board its stream fills, holding nothing the
-   * store says. The load holding the url's token is handed the secret, once;
+   * store says and never reading it. The load holding the url's token is handed the secret, once;
    * the token coming back revokes it.
    */
   const handlePage = (req: IncomingMessage, res: ServerResponse, url: URL) => {
@@ -269,17 +278,15 @@ export async function startWebDashboard(
     if (given !== null) {
       if (!matches(given, token)) return refuse(res, 403, 'Forbidden.');
       if (exchanged) {
-        secret = undefined;
+        revoke();
         return refuse(res, 403, REVOKED);
       }
     }
+    // Named by the url alone: whether a session exists is the stream's to say.
     const view = viewOf(url);
     if (view === undefined) return refuse(res, 404, 'Not found.');
-    if ('session' in view && getSession(db, view.session) === undefined) {
-      return refuse(res, 404, 'No such session.');
-    }
-    // Spent only on a page that goes out, so a first load the server could
-    // not answer leaves the url good for the next.
+    // Spent only on a page that goes out, so a first load naming no view
+    // leaves the url good for the next.
     if (given !== null) {
       exchanged = true;
       secret = Buffer.from(randomBytes(32).toString('base64url'));

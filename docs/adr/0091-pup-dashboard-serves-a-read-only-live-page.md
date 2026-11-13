@@ -91,7 +91,8 @@
     the land and the fix round take no lock wait: the page refuses at once where the CLI waits.
     Where they are: a question's answers and a tell under Needs you and Conductor, a launch on
     each planned and backlog task, a close on each open ledger entry, and the rest on a session's
-    view, `?session=<id>` for a minted id the store holds (404 otherwise), linked from each
+    view, `?session=<id>` for an id in the minted shape (404 otherwise; one the store does not
+    hold is said on the stream, as the shell never reads the store), linked from each
     session, need and PR row. The view shows the attach line `pup attach <id>` with a copy button,
     the PR link, the actions the session's state admits (steer, gate and kill while it runs; fix
     round, re-gate and land once merged), and a board the stream refreshes: the state, the open
@@ -115,13 +116,15 @@
     to the origin, port and all, and gone with the tab) and takes the token out of the address bar
     and history with `history.replaceState`. No link on the page holds either. Pages loaded in
     that tab from its links read the secret back; another tab has none and says so. A first load
-    the server cannot answer, an unknown view or an unreadable store, spends nothing. The token
-    coming back a second time revokes the secret: the second load is refused, and so is every
-    later request carrying the secret, so whoever took it first, from argv or scrollback, is cut
-    off with the operator, who runs `pup dashboard` again. Every request but the page shell must
+    naming no view spends nothing. The token coming back a second time revokes the secret: the
+    second load is refused, every stream already open is ended and every nonce handed out is
+    dropped, and every later request carrying the secret is refused, so whoever took it first,
+    from argv or scrollback, is cut off, read and act alike, with the operator, who runs `pup
+    dashboard` again. Every request but the page shell must
     carry the secret, compared in constant time: the stream, which the script reads with
     `fetch`, since an `EventSource` cannot send a header, and every post. The shell itself is
-    served without it and holds nothing from the store, only the repo path and the view's name;
+    served without it, never reads the store and holds nothing from it, only the repo path and
+    the view's name, so it says not even whether a session exists;
     the board, a session's attach line and actions included, comes over the stream. Where the
     authority lives: in the tab the url opened first, in its memory and session storage, which
     no other origin can read; while the url is unopened, in the url itself, printed to the
@@ -157,9 +160,10 @@
     and gates nothing, and a tell without a message is refused before the conductor is reached;
     the first page served for the token is handed a secret, sets no cookie and strips the token
     from the address bar, a page loaded without the token is handed nothing, and the shell holds
-    nothing from the store; a first load answered 404 spends nothing; the token coming back is
-    refused and revokes the secret, after which the stream and posts carrying it are refused and
-    change nothing; the stream without the secret, with a wrong one, with the token in its place
+    nothing from the store, the same for a session the store holds and one it does not, whose
+    stream says so; a first load answered 404 spends nothing; the token coming back is refused
+    and revokes the secret, ending a stream opened before it and dropping its nonce, after which
+    the stream and posts carrying it are refused and change nothing; the stream without the secret, with a wrong one, with the token in its place
     or with only a cookie is a 403; a post without the secret, with a wrong one, with the token,
     with only a cookie, from another origin, naming no origin, or with a cross-site or same-site
     `Sec-Fetch-Site`, with a wrong, reused or lapsed nonce, or a reused confirmation is refused and
