@@ -1773,7 +1773,7 @@ export function buildProgram(): Command {
   program
     .command('dashboard')
     .description(
-      'Serve the live status page on 127.0.0.1, read-only, behind a token minted for this run',
+      'Serve the live status page on 127.0.0.1, behind a token minted for this run; it answers, steers, launches, gates and lands too',
     )
     .option('--open', 'open the page in the browser')
     .action(async (opts: { open?: boolean }) => {

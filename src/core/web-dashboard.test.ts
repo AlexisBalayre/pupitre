@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // real, per docs/conventions/testing.md.
 vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../claude/session-runtime.service.js')>()),
+  capturePane: vi.fn(() => ''),
   hasConductorWindow: vi.fn(() => false),
   conductorPane: vi.fn(() => undefined),
   readInputBoxLook: vi.fn(() => ({ state: 'empty', draft: '' })),
@@ -16,9 +17,11 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
 
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import {
+  capturePane,
   conductorPane,
   hasConductorWindow,
   readInputBoxLook,
+  SessionPaneMissingError,
 } from '../claude/session-runtime.service.js';
 import { formatDebtTransition } from './audit.service.js';
 import { appendBaselineHistory } from './baseline-history.repository.js';
@@ -33,6 +36,7 @@ import { projectId, projectPaths } from './paths.utils.js';
 import {
   appendEvent,
   ensureProject,
+  getSession,
   incrementRejectCount,
   insertSession,
   insertTask,
@@ -41,6 +45,7 @@ import {
 } from './session.repository.js';
 import { STALLED_AFTER_MS } from './session-activity.constants.js';
 import { startWebDashboard, type WebDashboard } from './web-dashboard.service.js';
+import { ACTIONS } from './web-dashboard-actions.service.js';
 import { escapeHtml } from './web-dashboard-sheet.utils.js';
 
 const POLL_MS = 300;
@@ -65,6 +70,40 @@ function get(url: string, headers: Record<string, string> = {}, method = 'GET'):
     });
     req.on('error', reject);
     req.end();
+  });
+}
+
+/** A form post over the real socket, answered as JSON when the server got that far. */
+function post(
+  url: string,
+  fields: Record<string, string>,
+  headers: Record<string, string> = {},
+): Promise<Reply & { json: () => Record<string, unknown> }> {
+  return new Promise((resolve, reject) => {
+    const req = request(
+      url,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...headers },
+      },
+      (res) => {
+        let body = '';
+        res.setEncoding('utf8');
+        res.on('data', (chunk: string) => {
+          body += chunk;
+        });
+        res.on('end', () =>
+          resolve({
+            status: res.statusCode ?? 0,
+            headers: res.headers,
+            body,
+            json: () => JSON.parse(body) as Record<string, unknown>,
+          }),
+        );
+      },
+    );
+    req.on('error', reject);
+    req.end(new URLSearchParams(fields).toString());
   });
 }
 
@@ -215,8 +254,9 @@ describe('startWebDashboard', () => {
       expect(reply.status).toBe(403);
     });
 
-    it('takes nothing but a read', async () => {
+    it('takes a post at /action only, and nothing but a post there', async () => {
       expect((await get(dashboard.url, {}, 'POST')).status).toBe(405);
+      expect((await get(`${origin()}/action${address().search}`)).status).toBe(405);
     });
 
     it('serves nothing but the page and its stream', async () => {
@@ -447,8 +487,9 @@ describe('startWebDashboard', () => {
 
       const page = (await get(dashboard.url)).body;
 
-      // The sheet links are the page's own, token and all; nothing else is a link.
-      expect(page).not.toMatch(/<a href="(?!\?token=[\w-]+&amp;sheet=\w+")/);
+      // The sheet and session-view links are the page's own, token and all;
+      // nothing else is a link.
+      expect(page).not.toMatch(/<a href="(?!\?token=[\w-]+&amp;(?:sheet=\w+|session=[\w-]+)")/);
       expect(page).not.toContain('evil.example');
       expect(page).toContain('(PR url outside the pull-request shape; inspect the store)');
       expect(page).toContain(`question: see ${PR}`);
@@ -812,6 +853,337 @@ describe('startWebDashboard', () => {
       } finally {
         stream.close();
       }
+    });
+  });
+  describe('what it does', () => {
+    const actionUrl = (search = address().search): string => `${origin()}/action${search}`;
+
+    /** The action nonce a freshly served page holds. */
+    async function pageKey(url = dashboard.url): Promise<string> {
+      const key = /let key = "([^"]+)";/.exec((await get(url)).body)?.[1];
+      if (key === undefined) throw new Error('the page holds no action nonce');
+      return key;
+    }
+
+    function seedDebt(): number {
+      insertLedgerEntry(db, {
+        projectId: projectId(repo),
+        description: 'Oversize diff (812 lines) merged from session s-pr',
+        files: ['src/a.ts'],
+        reason: 'one feature',
+        acceptedBy: 'human',
+        reviewBy: 'next sprint',
+      });
+      return listLedgerEntries(db, projectId(repo))[0]?.id ?? 0;
+    }
+
+    const isOpen = (id: number): boolean =>
+      listLedgerEntries(db, projectId(repo)).some((entry) => entry.id === id);
+
+    it.each([
+      ['no token', () => `${origin()}/action`],
+      ['a wrong token', () => `${origin()}/action?token=${'A'.repeat(43)}`],
+    ])('refuses a post with %s, and changes nothing', async (_case, url) => {
+      const id = seedDebt();
+      const key = await pageKey();
+
+      const reply = await post(url(), { action: 'debt-close', id: String(id), nonce: key });
+
+      expect(reply.status).toBe(403);
+      expect(isOpen(id)).toBe(true);
+      // The key was never read, so the page still holds a good one.
+      expect(
+        (await post(actionUrl(), { action: 'debt-close', id: String(id), nonce: key })).status,
+      ).toBe(200);
+    });
+
+    it('refuses a wrong nonce, a reused one and a used confirmation, and changes nothing', async () => {
+      const id = seedDebt();
+      const key = await pageKey();
+      const fields = { action: 'debt-close', id: String(id) };
+
+      const wrong = await post(actionUrl(), { ...fields, nonce: 'A'.repeat(43) });
+      const asked = (await post(actionUrl(), { ...fields, nonce: key })).json();
+      const reused = await post(actionUrl(), { ...fields, nonce: key });
+
+      expect(wrong.status).toBe(403);
+      expect(wrong.body).toContain('nothing was done');
+      expect(reused.status).toBe(403);
+      expect(isOpen(id)).toBe(true);
+
+      const done = (
+        await post(actionUrl(), { ...fields, nonce: String(asked.confirmNonce) })
+      ).json();
+      const again = await post(actionUrl(), { ...fields, nonce: String(asked.confirmNonce) });
+
+      expect(done).toEqual({ ok: true, message: `Closed ledger entry #${id}.` });
+      expect(again.status).toBe(403);
+    });
+
+    it('refuses a post naming another origin, and one that is not a form', async () => {
+      const id = seedDebt();
+      const key = await pageKey();
+
+      const foreign = await post(
+        actionUrl(),
+        { action: 'debt-close', id: String(id), nonce: key },
+        { Origin: 'http://attacker.example' },
+      );
+      const json = await post(actionUrl(), { nonce: key }, { 'Content-Type': 'application/json' });
+
+      expect(foreign.status).toBe(403);
+      expect(json.status).toBe(415);
+      expect(isOpen(id)).toBe(true);
+    });
+
+    it.each([
+      ['kill', { session: 's-live' }, 'Kill session s-live?'],
+      ['merge', { session: 's-live' }, 'Gate session s-live and open its pull request?'],
+      ['land', { session: 's-live' }, 'Land session s-live?'],
+      ['debt-close', { id: '1' }, 'Close ledger entry #1?'],
+    ])(
+      'asks before %s runs, and runs nothing on the first post',
+      async (action, fields, question) => {
+        seedSession('s-live', ['running']);
+        const id = seedDebt();
+
+        const answer = (
+          await post(actionUrl(), { action, ...fields, nonce: await pageKey() })
+        ).json();
+
+        expect(answer.ok).toBe(true);
+        expect(String(answer.confirm)).toContain(question);
+        expect(answer.confirmNonce).toEqual(expect.any(String));
+        expect(answer.nonce).toEqual(expect.any(String));
+        expect(getSession(db, 's-live')?.state).toBe('running');
+        expect(isOpen(id)).toBe(true);
+      },
+    );
+
+    it('refuses debt fields `pup merge` refuses before asking, and keeps the page able to act', async () => {
+      seedSession('s-live', ['running']);
+
+      const answer = (
+        await post(actionUrl(), {
+          action: 'merge',
+          session: 's-live',
+          reason: 'one feature',
+          nonce: await pageKey(),
+        })
+      ).json();
+
+      expect(answer).toEqual({
+        ok: false,
+        message: 'A debt reason and a review-by go together; nothing was gated.',
+        nonce: expect.any(String),
+      });
+    });
+
+    it('runs a confirmation for the action and fields it was minted for and no others', async () => {
+      const id = seedDebt();
+      const fields = { action: 'debt-close', id: String(id) };
+      const asked = (await post(actionUrl(), { ...fields, nonce: await pageKey() })).json();
+      const askedAgain = (
+        await post(actionUrl(), { ...fields, nonce: String(asked.nonce) })
+      ).json();
+
+      const other = (
+        await post(actionUrl(), { ...fields, id: '999', nonce: String(asked.confirmNonce) })
+      ).json();
+      const kill = (
+        await post(actionUrl(), {
+          action: 'kill',
+          session: 's-x',
+          nonce: String(askedAgain.confirmNonce),
+        })
+      ).json();
+      // Used up by the refusal: the right fields cannot ride it afterwards.
+      const late = await post(actionUrl(), { ...fields, nonce: String(asked.confirmNonce) });
+
+      const refusal = {
+        ok: false,
+        message: 'That confirmation was for another action, or came too late; nothing was done.',
+      };
+      expect(other).toEqual(refusal);
+      expect(kill).toEqual(refusal);
+      expect(late.status).toBe(403);
+      expect(isOpen(id)).toBe(true);
+    });
+
+    it("shows core's refusal as the answer, and hands the page its next nonce", async () => {
+      const first = (
+        await post(actionUrl(), {
+          action: 'steer',
+          session: 's-gone',
+          message: 'hi',
+          nonce: await pageKey(),
+        })
+      ).json();
+      const second = (
+        await post(actionUrl(), {
+          action: 'answer',
+          target: 's-gone',
+          reply: '1',
+          nonce: String(first.nonce),
+        })
+      ).json();
+
+      expect(first.ok).toBe(false);
+      expect(String(first.message)).toContain('s-gone');
+      expect(second.ok).toBe(false);
+      expect(String(second.message)).toContain('s-gone');
+      expect(second.nonce).toEqual(expect.any(String));
+    });
+
+    it("shows the ledger's refusal of an entry that is not open, once confirmed", async () => {
+      const id = seedDebt();
+      const asked = (
+        await post(actionUrl(), { action: 'debt-close', id: String(id), nonce: await pageKey() })
+      ).json();
+      const missing = (
+        await post(actionUrl(), { action: 'debt-close', id: '999', nonce: String(asked.nonce) })
+      ).json();
+      const missingDone = (
+        await post(actionUrl(), {
+          action: 'debt-close',
+          id: '999',
+          nonce: String(missing.confirmNonce),
+        })
+      ).json();
+
+      expect(missingDone).toEqual({ ok: false, message: 'No open ledger entry #999.' });
+      expect(isOpen(id)).toBe(true);
+    });
+
+    it('puts the actions on the sheets: answers, a tell, launches and closes', async () => {
+      vi.mocked(hasConductorWindow).mockReturnValue(true);
+      seedSession('s-asking', ['running']);
+      appendEvent(db, 's-asking', 'question', {
+        text: 'rebase or merge?',
+        options: ['rebase', 'merge'],
+        recommended: 1,
+      });
+      insertTask(db, {
+        id: 't-planned',
+        projectId: projectId(repo),
+        spec: JSON.stringify({ id: 't-planned', goal: 'planned work', scopeIn: ['src/**'] }),
+        origin: 'human',
+      });
+      const id = seedDebt();
+
+      const overview = (await get(dashboard.url)).body;
+      const debt = (await get(`${dashboard.url}&sheet=debt`)).body;
+      const tasks = (await get(`${dashboard.url}&sheet=tasks`)).body;
+
+      expect(overview).toContain(
+        'name="reply" value="1" class="recommended">1. rebase (recommended)',
+      );
+      expect(overview).toContain('<form class="act" data-action="tell">');
+      expect(overview).toContain(
+        '<form class="act" data-action="launch"><input type="hidden" name="task" value="t-planned">',
+      );
+      expect(overview).toContain(`session=s-asking">open</a>`);
+      expect(debt).toContain(
+        `<form class="act" data-action="debt-close"><input type="hidden" name="id" value="${id}">`,
+      );
+      expect(tasks).toContain(
+        'data-action="launch"><input type="hidden" name="task" value="t-planned">',
+      );
+    });
+  });
+
+  describe('the session view', () => {
+    const viewUrl = (sessionId: string): string => `${dashboard.url}&session=${sessionId}`;
+    const viewEvents = (sessionId: string): string =>
+      `${origin()}/events${address().search}&session=${sessionId}`;
+
+    function seedWindow(sessionId: string, path: SessionState[]): void {
+      seedSession(sessionId, path);
+      db.prepare('UPDATE sessions SET tmux_target = ? WHERE id = ?').run('%5', sessionId);
+    }
+
+    afterEach(() => {
+      vi.mocked(capturePane).mockReset();
+    });
+
+    it("shows the worker's pane escaped, with a copyable attach line and its actions", async () => {
+      seedWindow('s-1', ['running']);
+      vi.mocked(capturePane).mockReturnValue(
+        '> <script>alert(1)</script>\n\u001b[31mred\u202e & done\n',
+      );
+
+      const page = (await get(viewUrl('s-1'))).body;
+
+      expect(capturePane).toHaveBeenCalledWith({ sessionId: 's-1', paneId: '%5' });
+      expect(page).toContain(
+        '<pre class="pane">&gt; &lt;script&gt;alert(1)&lt;/script&gt;\n\uFFFD[31mred\uFFFD &amp; done\n</pre>',
+      );
+      expect(page).not.toContain('<script>alert');
+      expect(page).not.toContain('\u001b');
+      expect(page).not.toContain('\u202e');
+      expect(page).toContain('<code id="attach">pup attach s-1</code>');
+      expect(page).toContain('<button type="button" data-copy="attach">Copy</button>');
+      for (const action of ['steer', 'merge', 'kill']) {
+        expect(page).toContain(`data-action="${action}"`);
+      }
+      expect(page).toContain('name="reason"');
+      expect(page).toContain('name="reviewBy"');
+      expect(page).toContain('name="approver"');
+    });
+
+    it('refreshes the pane over its stream as the window changes', async () => {
+      seedWindow('s-1', ['running']);
+      vi.mocked(capturePane).mockReturnValue('first <b>screen</b>');
+      const stream = await openStream(viewEvents('s-1'));
+      try {
+        const first = stream.frames[0] ?? (await stream.next());
+        expect(first).toContain('first &lt;b&gt;screen&lt;/b&gt;');
+
+        const arriving = stream.next();
+        vi.mocked(capturePane).mockReturnValue('second screen');
+        const frame = await arriving;
+
+        expect(frame).toContain('<pre class="pane">second screen</pre>');
+        expect(frame).not.toContain('first');
+      } finally {
+        stream.close();
+      }
+    });
+
+    it('says the window is gone rather than failing, when tmux has no pane', async () => {
+      seedWindow('s-1', ['running']);
+      vi.mocked(capturePane).mockImplementation(() => {
+        throw new SessionPaneMissingError('s-1', '%5', 'gone');
+      });
+
+      const page = await get(viewUrl('s-1'));
+
+      expect(page.status).toBe(200);
+      expect(page.body).toContain('No live window: its pane is gone or was never recorded.');
+    });
+
+    it('links a merged session to its PR on GitHub and offers no button that merges there', async () => {
+      seedMerge('s-pr', PR);
+
+      const page = (await get(viewUrl('s-pr'))).body;
+      const forms = [...page.matchAll(/<form [^>]*data-action="([^"]+)"/g)].map((m) => m[1]);
+
+      expect(page).toContain(`<a href="${PR}" target="_blank" rel="noopener noreferrer">`);
+      expect(forms.sort()).toEqual(['fix', 'land', 'merge']);
+      expect(forms.every((action) => (ACTIONS as readonly string[]).includes(action ?? ''))).toBe(
+        true,
+      );
+      // The one merge is the gate's `--pr` re-gate, which opens or updates
+      // the PR; the PR itself is merged on GitHub, by its link.
+      expect(page).toContain('Re-gate the PR');
+      expect(page).not.toMatch(/<form[^>]*github/i);
+    });
+
+    it.each([
+      ['an id the store does not hold', 's-none'],
+      ['an id outside the minted shape', 's%20x'],
+    ])('answers 404 for %s', async (_case, sessionId) => {
+      expect((await get(viewUrl(sessionId))).status).toBe(404);
     });
   });
 });

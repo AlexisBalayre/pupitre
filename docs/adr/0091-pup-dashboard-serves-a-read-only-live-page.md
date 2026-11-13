@@ -26,9 +26,9 @@
     for its event stream, and `base-uri`, `form-action` and `frame-ancestors` all `'none'`. What
     the token does not cover: another local user or process of the operator's own can read the url
     from the terminal or, for the instant `open` runs, its argv; they already hold the store,
-    which is no worse. The page is read-only, so there is no CSRF to answer yet; the actions
-    follow as their own change with a nonce per action and confirmations, and a merge on GitHub
-    stays a link, never a button.
+    which is no worse. The page was read-only at first, with no CSRF to answer; the actions came
+    as part 2 below, with a nonce per page and confirmations, and a merge on GitHub stays a link,
+    never a button.
     What it shows is what `pup status` and `pup ui` read, off one `buildDashboardSnapshot`:
     `needsYou` first, in its order with each answer; the conductor, with its attach command;
     sessions in states other than `merged` and `killed`, grouped by state (blocked, running,
@@ -59,7 +59,7 @@
     Tests: over a real socket, the url is on 127.0.0.1 with a 43-character token that differs per
     run; no token, a wrong one, one a character short, and the stream without one are refused 403;
     a `Host` of a rebound name, of `localhost` and of another port is refused with the right token;
-    a POST is a 405; the page's CSP admits only its nonce and its own stream, with no external
+    a POST anywhere but `/action` is a 405; the page's CSP admits only its nonce and its own stream, with no external
     source on the page. For one store holding a question, a block, a review, an open PR re-gated
     once with debt, a killed session, a planned task and an overdue entry, every inbox line's reason
     and answer is on the page in sections ordered as `pup status` prints them, the states group in
@@ -70,3 +70,55 @@
     within one poll, and nothing more while the store is unchanged. `prFixRounds` counts re-gates
     and stops at a landing and at a merge without a PR. The CLI prints the url, stops the server on
     SIGINT, and refuses a session and the conductor without binding.
+
+    **Part 2: the page acts (2026-11-13).** The console's operator actions are buttons on the
+    page, each calling the core function its CLI command calls, never a shell:
+    answer a session's or the conductor's open question (`answerSessionQuestion`,
+    `answerConductorQuestion`; one click on an option of decision 93's, its number sent, or an
+    answer in words), tell the conductor (`tellConductor`), steer a session (`steerSession`, a
+    `manual` steer by `operator`), launch a backlog task (`launchTask`), kill a session
+    (`killSession`), gate it with `--pr` and optionally accept its flags as debt with a reason,
+    a review-by and an approver, `human` when left empty (`runMergeGate` with `openPr` and
+    `acceptDebt`, refused as `pup merge` refuses a reason without its review-by), start a fix
+    round (`startFixRound`), land (`landSession`, after the sandbox check `pup land` makes) and
+    close a ledger entry (`closeLedgerEntry`). The page is the operator's alone, as `pup
+    dashboard` refuses a session and the conductor, so every action runs as the operator's. A
+    merge from the page is always `--pr`: the target branch moves only through `pup land` after
+    the PR is merged on GitHub, which the page only links to; no button merges there. The gate,
+    the land and the fix round take no lock wait: the page refuses at once where the CLI waits.
+    Where they are: a question's answers and a tell under Needs you and Conductor, a launch on
+    each planned and backlog task, a close on each open ledger entry, and the rest on a session's
+    view, `?session=<id>` for a minted id the store holds (404 otherwise), linked from each
+    session, need and PR row. The view shows the attach line `pup attach <id>` with a copy button,
+    the PR link, the actions the session's state admits (steer, gate and kill while it runs; fix
+    round, re-gate and land once merged), and a board the stream refreshes: the state, the open
+    question with its answers, and the worker's pane, read by `capturePane` in
+    `src/claude/session-runtime.service.ts` at the pane pinned at launch (decision 46), with
+    control characters and direction marks replaced and markup escaped, line breaks kept. A pane
+    tmux no longer has is said in its place.
+    CSRF. Each action is a form post to `POST /action`, which still needs the token and the
+    loopback `Host`, and a form content type; a post naming another `Origin` is a 403. Every
+    page served mints an action nonce of 32 random bytes, held in the page's script. A post
+    uses it up before anything else is read, and its answer carries the next one; a nonce the
+    server never minted, or one already used, is a 403 before anything runs, and changes
+    nothing. One page holds one nonce, so it runs one action at a time; a reload mints another.
+    Confirmation rule. Kill, merge, land and debt close cannot be taken back, so the first post
+    of one runs nothing: it answers with the question to ask, naming what will run and with
+    which fields, the debt accepted included, and a confirmation nonce bound to that action and
+    those exact fields, good for five minutes and once. Only a second post carrying it runs the
+    action; one naming another action or other fields is refused and uses it up. The page asks
+    with the browser's own confirm dialog. Answer, tell, steer, launch and fix run on their first
+    post.
+    What comes back is JSON the script sets as text, never markup: the lines the CLI would print,
+    or core's refusal as core worded it, control characters replaced and lines kept, in a status
+    line under the sheet bar. The board is held back while the operator types into a field on it,
+    so a refresh does not wipe a half-typed answer. `close` waits for an action still running
+    before the store is closed.
+    Tests: per action, the core function the CLI calls is called with the CLI's arguments and its
+    refusal is what the page shows; a post without the token, with a wrong token, from another
+    origin, with a wrong or reused nonce, or a reused confirmation is refused and leaves the
+    ledger entry open; kill, merge, land and debt close each answer only a confirmation on the
+    first post and change nothing; a confirmation runs only its own action and fields. The
+    session view, tmux faked, shows a pane holding markup, ESC and a direction mark escaped, the
+    copyable attach line, and a new pane on its stream within a poll; a merged session's view links
+    its PR and offers fix, re-gate and land, no form naming GitHub.
