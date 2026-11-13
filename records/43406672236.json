@@ -1,0 +1,107 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-13T10:14:28.217Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43406672236",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43406672236",
+  "actor": "AlexisBalayre",
+  "commit_sha": "0139f4ca054f7455ea2314264df186317cdd015a",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 289,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "guards"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "guards"
+  ],
+  "reviewers_skipped": [
+    "conventions",
+    "context",
+    "maintainability",
+    "docs",
+    "spec",
+    "simplicity",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "1109-1118",
+      "description": "A branch that only deletes a real binary of a format outside BINARY_FORMATS (a .pdf, .gif, .woff2, .webp, .zip), or a PNG/JPEG over 1 MiB, now recounts its newline bytes as deleted source lines and names the file in `forged`. Before this PR it answered null. Nothing reaches the tree, so this is a false forged flag, and the bogus count can also trip the oversize flag.",
+      "status": "unresolved"
+    },
+    {
+      "file": "src/core/known-binary.utils.ts",
+      "line": "173-177",
+      "description": "A `.gitattributes` `working-tree-encoding` attribute rewrites a known-binary blob on checkout, so a blob that passes the ICO/TIFF/MKV/TTF magic and zip/phar/tar refusals is checked out as a real zip or phar, carrying uncounted compressed source past the diff-size gate.",
+      "status": "unresolved"
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "1087-1097, 1184-1200",
+      "description": "A gitlink (160000) side is read as a blob. If a branch swaps a binary file for a submodule at the same path, or a submodule for a binary file, `cat-file -s` or `git diff <blob> <commit>` throws, and the merge gate errors on every re-gate. Before this change the old code skipped that entry.",
+      "status": "unresolved"
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "1087-1097",
+      "description": "The known-binary tar check reads the raw blob, but a branch .gitattributes `text eol=crlf` or `ident` on the path rewrites its first 512 bytes at checkout, so a PNG that passes the check lands as a PHP tar phar whose uncounted entry runs.",
+      "status": "unresolved"
+    }
+  ],
+  "findings": [],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Round 7 used the importants-only budget, so conventions, docs, context, simplicity and maintainability were skipped. Spec was skipped because the PR closes no issue and gives no --spec source. Workflow-safety was skipped because the PR's diff changes no workflow file (main's merge touched pr-status.yml, but that file is outside the PR diff). The diff is about 1,850 lines, so correctness and security each ran two instances. The head since the prior record (9af5010 -> 0139f4c) is a clean merge from main with no conflict hunks in the PR's files. git-diff.client.ts and known-binary.utils.ts are unchanged, so the four prior importants are still unresolved. Reviewers mentioned two stale-prose notes that fall below the round-7 bar, and neither was recorded: ADR 0154 around line 172 still says ls-tree where the code runs cat-file -s, and the filesNaming JSDoc was already raised in an earlier round. The guards reviewer did not read scripts/adr-index.sh or ADR 0154's body. It only checked that ADR number 0154 is not already taken."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 4.743500099999999,
+  "duration_ms": 392768,
+  "num_turns": 15,
+  "tokens": {
+    "input": 16,
+    "output": 10158,
+    "cache_read": 427755,
+    "cache_creation": 59198,
+    "total": 497127
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 130,
+      "output": 119214,
+      "cache_read": 2566307,
+      "cache_creation": 315507,
+      "cost_usd": 4.6531904
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 18,
+      "output": 3211,
+      "cache_read": 118412,
+      "cache_creation": 18529,
+      "cost_usd": 0.09030969999999999
+    }
+  ],
+  "permission_denials": []
+}
