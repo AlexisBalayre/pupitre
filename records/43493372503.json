@@ -1,0 +1,165 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-13T19:40:57.272Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43493372503",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43493372503",
+  "actor": "AlexisBalayre",
+  "commit_sha": "6606a169547b1997c5939a1b51d1981f7723a67d",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 326,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs",
+    "context"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs",
+    "context"
+  ],
+  "reviewers_skipped": [
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/web-dashboard.service.ts",
+      "line": "396-402",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "Clicking or tabbing to a form's submit button wipes what the operator typed and loses the submit: the focusout flush replaces the board at mousedown whenever a stream update was held.",
+      "body": "**The hold that protects typed text throws it away at the moment the operator sends it.**\n\nOnly a focused `input` counts as typing. The flush runs on `focusout` after a 0 ms timeout:\n\n```js\nconst typing = () => board.contains(document.activeElement) && document.activeElement.matches('input');\nconst show = (next) => {\n  if (typing()) held = next; else board.innerHTML = next;\n};\nboard.addEventListener('focusout', () => setTimeout(() => {\n  if (held !== undefined && !typing()) { board.innerHTML = held; held = undefined; }\n}));\n```\n\n**Trigger:**\n1. The operator opens `?session=<id>` on a busy worker.\n2. The board includes `capturePane` output, so the pane text changes on almost every poll, and `held` is set within seconds of typing into Steer.\n3. The operator clicks **Steer**.\n4. Mousedown moves focus to the button (Chrome, Firefox) or to `body` (Safari). `focusout` fires.\n5. The timeout runs between mousedown and mouseup. `typing()` is false there, so `board.innerHTML = held` replaces the form and its button.\n6. `click` no longer lands on a connected submit button. No `submit` event fires, so the delegated listener (L444) never runs.\n\n**Result:** the typed text is gone and nothing is posted.\n- Tabbing from the field to the button fails the same way.\n- The same goes for the merge form's reason, review-by and approver fields, and for the Overview's Tell and answer-in-words forms whenever the store changes while the operator types.\n- Enter inside the field still works.\n\n**Fix direction:**\n- Also treat a board text field as typing when its `value !== defaultValue`, so moving focus to the button does not flush.\n- Flush the held board after `form.reset()` once an action succeeds.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/6606a169547b1997c5939a1b51d1981f7723a67d/src/core/web-dashboard.service.ts#L396-L402",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard-actions.service.ts",
+      "line": "263-285",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "landAction drops what `pup land` reports: a lost merge lock hides that the land happened, and an audit that kept the baseline (regression or unmeasured stage) is shown as a green success.",
+      "body": "`landAction` writes its own report for `landSession`'s outcome but leaves out the CLI's failure branches.\n\n**1. Lost merge lock.** `landSession` does all its work inside `withMergeLock`: fast-forward, teardown, the `landed` event, the peer steer and the audit. Only after that does `withMergeLock` find the lock gone and throw `MergeLockLostError(lockPath, result)` ([merge-gate.service.ts L1180](https://github.com/AlexisBalayre/pupitre/blob/6606a169547b1997c5939a1b51d1981f7723a67d/src/core/merge-gate.service.ts#L1180)).\n- `pup land` catches it, prints `Landed …` from `error.result`, then fails (`src/cli/index.ts` L2545-2588).\n- `landAction` has no catch, so the desk turns the error into `{ ok: false, message }`. The page shows only the lock text as a refusal.\n- The operator reads it as a failed land, although the target moved and the session is gone.\n- `mergeAction`, just above, handles this exact case (L223-227, L258).\n\n**2. Audit kept the baseline.** `auditProject(..., 'keep')` returns `heldOnRegression` and `unmeasured` as data.\n- `pup land` refuses on either one and exits 1, asking for `pup audit` (`printAuditOutcome`, `src/cli/index.ts` L452-468).\n- The page answers `ok: true` with \"The audit ran; the Health sheet shows its figures.\"\n\n**3. Unsteered peers.** `outcome.unsteered` is never read. Core reports those sessions only to the dashboard process's stderr (`land.service.ts` L274-279), so the page never names a session that was not told the target moved.\n\n```ts\nasync function landAction(db: Database, repoPath: string, session: string): Promise<string[]> {\n  sandboxLabel();\n  const outcome = await landSession(db, { repoPath, sessionId: session, adapters: detectAdapters(repoPath) });\n  ...\n  outcome.audit ? 'The audit ran; the Health sheet shows its figures.' : 'Audit skipped.',\n```\n\n**Fix, following `mergeAction`:**\n- Catch `MergeLockLostError` and build the lines from `error.result`.\n- Add a line for each `unsteered` session.\n- Throw the joined lines when the lock was lost, when `audit.heldOnRegression` is true, or when `audit.unmeasured` is non-empty.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/6606a169547b1997c5939a1b51d1981f7723a67d/src/core/web-dashboard-actions.service.ts#L263-L285",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard-desk.service.ts",
+      "line": "180-185",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "`settle` waits only on the actions running when it is called, but the server keeps accepting `/events` and `/action` while it waits, so an action posted during shutdown runs on after `db.close()`.",
+      "body": "`settle: () => Promise.allSettled([...running])` copies `running` at the moment it is called. Shutdown runs in this order:\n- `close()` in `web-dashboard.service.ts` (L222-228) ends the streams, then awaits `desk.settle()`.\n- Only after that does it call `closeAllConnections()` and `server.close()`.\n- On SIGINT/SIGTERM the CLI then runs `dashboard.close().then(() => db.close())` (`src/cli/index.ts` L1791-1794).\n\nThere is no closing flag and the nonces are not cleared. While `settle` waits, which can be minutes on a merge gate, `handle` keeps routing `/action` to the desk and `/events` to `openStream`, and `openStream` mints fresh nonces.\n\n**Trigger:**\n1. The operator presses Ctrl-C while a merge, fix or land runs.\n2. Another post arrives through any of three routes:\n   - the page's current nonce, which is still valid;\n   - a confirm dialog that was already open;\n   - the stream reconnecting after 2 s with a fresh nonce.\n3. That job joins `running` but not the copy `settle` awaits.\n4. The first job finishes, `close()` resolves, and `db.close()` runs while the late job is still in flight.\n\nThe late job's next store write hits a closed handle. For example, a merge gate that already pushed and opened the PR fails on its event write, so the store never records the PR. `closeAllConnections` also cuts off the page's answer.\n\n**Fix:** stop taking new work before awaiting `settle`. Set a `closing` flag that `handle` and `openStream` refuse on, and clear the nonces. Alternatively, keep looping until `running` is empty once intake has stopped.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/6606a169547b1997c5939a1b51d1981f7723a67d/src/core/web-dashboard-desk.service.ts#L180-L185\nhttps://github.com/AlexisBalayre/pupitre/blob/6606a169547b1997c5939a1b51d1981f7723a67d/src/core/web-dashboard.service.ts#L222-L228",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard-actions.service.ts",
+      "line": "238-247",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "A refused re-gate from the session view's \"Re-gate the PR\" button tells the operator to steer a merged session that has no window. It also leaves out that the PR still vouches only for the earlier pin, which `pup merge` says (it checks `outcome.regated`).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0091-pup-dashboard-serves-a-read-only-live-page.md",
+      "line": "1-23",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "ADR 0091's title and heading (L1, L6) still say \"read-only … behind a token minted per run\". Part 1's rules (L19-23, tests ~L61-63) still say every request carries the token and anything but GET is a 405. A short \"see Part 2\" pointer at those spots would stop a reader of the title or Part 1 alone from taking the url token as the authority.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard-desk.service.ts",
+      "line": "221-227",
+      "area": "context",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "On an oversized body, `readBody` calls `req.destroy()`, which destroys the socket, before the 413 is written. The page's fetch then rejects with a network error instead of showing \"Too large.\". Drain with `req.resume()`, or send the 413 with `Connection: close` before ending the socket.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard-session.service.ts",
+      "line": "96",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`renderSessionHead` takes the whole `SessionView` but only reads `session`. Taking a `DashboardSession` would drop the unused `pane` from its contract.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Not spawned: review-spec (no spec source: no closing keywords or linked issues), review-workflow-safety (no .github/workflows change), review-maintainability (off the default roster at standard depth). Two docs importants on ADR 0091 were validated down to nits and folded into one; a context nit (405 without Allow) and a simplicity nit (Buffer/string token) were dropped as having no nameable cost."
+    }
+  ],
+  "duplicates_merged": 2,
+  "comments_posted_actual": 3,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 5.245374075,
+  "duration_ms": 388882,
+  "num_turns": 22,
+  "tokens": {
+    "input": 14,
+    "output": 21791,
+    "cache_read": 367498,
+    "cache_creation": 67914,
+    "total": 457217
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 168,
+      "output": 90236,
+      "cache_read": 2992263,
+      "cache_creation": 384551,
+      "cost_usd": 4.530341599999998
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 82,
+      "output": 21894,
+      "cache_read": 560139,
+      "cache_creation": 175628,
+      "cost_usd": 0.7141879000000001
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 386,
+      "cache_read": 0,
+      "cache_creation": 5211,
+      "cost_usd": 0.0008445750000000001
+    }
+  ],
+  "permission_denials": []
+}
