@@ -1,0 +1,83 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-13T21:32:26.713Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43511360330",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43511360330",
+  "actor": "AlexisBalayre",
+  "commit_sha": "fa0962bb879ef80dda5ae2c10c04efd45698288d",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 329,
+  "action": "review",
+  "reviewers_spawned": [
+    "docs",
+    "conventions"
+  ],
+  "reviewers_returned": [
+    "docs",
+    "conventions"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "context",
+    "maintainability",
+    "spec",
+    "simplicity",
+    "guards",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "docs/adr/0165-pr-status-reads-unthreaded-importants-from-the-review-body.md",
+      "line": "20-34",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "docs/adr/README.md §amendments says a landed decision \"does not rewrite the landed text\"; this PR deletes the original `path:line`/`originalLine`/`Re:` sentences and splices the dated amendment mid-paragraph. Keep them and append the \"*The match (2026-11-13, #320).*\" paragraph after, stating it supersedes them.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.4561877999999999,
+  "duration_ms": 46735,
+  "num_turns": 9,
+  "tokens": {
+    "input": 10,
+    "output": 3355,
+    "cache_read": 185684,
+    "cache_creation": 30192,
+    "total": 219241
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 10,
+      "output": 3355,
+      "cache_read": 185684,
+      "cache_creation": 30192,
+      "cost_usd": 0.3458128
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 16,
+      "output": 3787,
+      "cache_read": 78905,
+      "cache_creation": 25833,
+      "cost_usd": 0.11037500000000003
+    }
+  ],
+  "permission_denials": []
+}
