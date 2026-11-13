@@ -1,0 +1,120 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-13T08:36:28.371Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43393999256",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43393999256",
+  "actor": "AlexisBalayre",
+  "commit_sha": "1395a03e3e00dce6235be33b99b51efbe6942528",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 290,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "guards"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "guards"
+  ],
+  "reviewers_skipped": [
+    "conventions",
+    "context",
+    "maintainability",
+    "docs",
+    "spec",
+    "simplicity",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "346-357",
+      "description": "The re-post check reads only pup's own replies. Reopening is decided over a wider set of authors (`isAnswered` uses the trail filtered to the bot, `viewerDidAuthor`, and OWNER/MEMBER/COLLABORATOR). A collaborator's or bot's comment after the marker reopens the thread, but a no-commit round at the same sha never answers it again. The thread stays unanswered and `pup ci wait` keeps naming `pup fix`.",
+      "status": "unresolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/ci-wait.service.ts",
+      "line": "292-296",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "If a fix round declines a thread, or answers it but leaves it unverified, and its push then edits that hunk, the thread leaves `openThreads` and is counted only in `outdatedThreads`. `answered` is then 0, and ci wait tells the operator to \"resolve the 1 unresolved thread(s) a push outdated, once each fix holds\". That asks them to check a fix for a finding the round declined, and the \"a fix round left open\" note is lost. Say \"once each finding is fixed or dismissed\", or count answered outdated threads in the answered note.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "363-372",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "29a17ca makes a no-commit re-run at the same sha re-answer threads (`ownReplies.at(-1)`), but the PR summary check still uses `ownComments.some(body => body.includes(marker))`. Round 1's summary at that sha already carries the marker, so round 2 posts its thread replies but never its own summary, and the PR keeps showing round 1's counts.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Round 7 budget: conventions, docs, context, simplicity and maintainability were not spawned. Spec had no source (no closing issues). Workflow-safety had nothing to check (no workflow change in the PR's own files). Since the prior review, HEAD (1395a03) only merges main and leaves the PR's 10 files unchanged, so the prior important (fix-round.service.ts:346-357, the ownReplies-only re-post skip) is still unresolved and is carried forward, not raised again."
+    },
+    {
+      "component": "guards",
+      "description": "scripts/adr-index.sh cannot run under CI, so ADR 0163's numbering and index entry were not checked mechanically."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.22202122,
+  "duration_ms": 197347,
+  "num_turns": 14,
+  "tokens": {
+    "input": 14,
+    "output": 7865,
+    "cache_read": 285458,
+    "cache_creation": 51802,
+    "total": 345139
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 96,
+      "output": 39933,
+      "cache_read": 1349008,
+      "cache_creation": 174341,
+      "cost_usd": 2.0959566
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 14,
+      "output": 2479,
+      "cache_read": 100432,
+      "cache_creation": 36313,
+      "cost_usd": 0.12564370000000002
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 110,
+      "cache_read": 1822,
+      "cache_creation": 2780,
+      "cost_usd": 0.00042092
+    }
+  ],
+  "permission_denials": []
+}
