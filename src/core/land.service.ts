@@ -29,7 +29,7 @@ import {
 } from './merge-gate.service.js';
 import { SESSION_ID_PATTERN } from './paths.constants.js';
 import { mainLandedMessage } from './profile-compiler.service.js';
-import { appendEvent, getSession, listSessions } from './session.repository.js';
+import { appendEvent, getSession, listEvents, listSessions } from './session.repository.js';
 import { steerSession } from './session-lifecycle.service.js';
 import {
   assertStillMerged,
@@ -108,6 +108,13 @@ export async function landSession(db: Database, req: LandRequest): Promise<LandO
       `${prUrl} is OPEN on GitHub with its head at ${sanitizeReason(pr.head)}, not ${sha}, ` +
         `the commit the gate pinned. Re-gate it with \`pup merge ${id} --pr\`, merge it there, ` +
         'then re-run `pup land`. Nothing was landed.',
+    );
+  }
+  if (pr.state === 'CLOSED') {
+    await recordClosedPullRequest(db, req, session.id, id, { prUrl, sha });
+    throw new Error(
+      `${prUrl} is CLOSED on GitHub, not MERGED; the close is recorded, so the ADR-number check ` +
+        'no longer counts the decisions it adds. Nothing was landed.',
     );
   }
   if (pr.state !== 'MERGED') {
@@ -295,6 +302,40 @@ export async function landSession(db: Database, req: LandRequest): Promise<LandO
       // reported and left for `pup audit`, which the operator runs (decision 84).
       const audit = await auditProject(db, req.repoPath, req.adapters, req.gateEnv, 'keep');
       return { ...outcome, audit };
+    },
+    req.wait ? MERGE_LOCK_WAIT_MS : 0,
+  );
+}
+
+/**
+ * Record that GitHub reports the session's PR closed unmerged (decision 146):
+ * the `pr_closed` event ends the PR's claim on the ADR numbers its pinned
+ * commit adds. Under the merge lock, which the gate's re-gate takes too: the
+ * PR read must still be the one the session's newest merge stands for, or the
+ * close would end the claim of a PR opened since. Recorded once per merge.
+ */
+async function recordClosedPullRequest(
+  db: Database,
+  req: LandRequest,
+  sessionId: string,
+  id: string,
+  closed: { prUrl: string; sha: string },
+): Promise<void> {
+  await withMergeLock(
+    req.repoPath,
+    () => {
+      assertStillMerged(db, sessionId, id, LAND_USE);
+      const merge = newestMerge(db, sessionId);
+      if (merge === 'landed' || merge?.prUrl !== closed.prUrl || merge.sha !== closed.sha) {
+        throw new Error(
+          `Session ${id} recorded another merge or a land while \`pup land\` waited for the ` +
+            `merge lock, so ${closed.prUrl} is no longer the PR it stands for. Nothing was landed.`,
+        );
+      }
+      const newest = listEvents(db, sessionId)
+        .reverse()
+        .find((row) => row.type === 'merge' || row.type === 'pr_closed');
+      if (newest?.type !== 'pr_closed') appendEvent(db, sessionId, 'pr_closed', closed);
     },
     req.wait ? MERGE_LOCK_WAIT_MS : 0,
   );

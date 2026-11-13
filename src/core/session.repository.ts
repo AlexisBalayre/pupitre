@@ -113,7 +113,13 @@ export interface TaskRow {
  * `retired`, which `pup retire` writes (decision 141), the three `EventType`
  * has yet to join.
  */
-type StoredEventType = EventType | 'landed' | 'fix_round' | 'retired' | 'conductor_start';
+type StoredEventType =
+  | EventType
+  | 'landed'
+  | 'fix_round'
+  | 'retired'
+  | 'pr_closed'
+  | 'conductor_start';
 
 export interface EventRow {
   id: number;

@@ -155,3 +155,22 @@
     fresh-base with no build, test or lint stage, `rejectCount` and
     `reject_count` at 0, the session still awaiting review and no steer sent. A pass with an
     unread-branch note followed by a failed scope audit is a rejection, not a refusal.
+    *Amendment (2026-11-13, follow-up to #281).* A PR closed without merging no longer counts
+    once the store records the close, and `pup retire` is not the only way to record it. Retire
+    needs a merged successor PR, so it cannot close out an abandoned PR, nor one whose decision
+    is redone in a new session under the same number while that redo still waits on this very
+    gate. So `pup land`, reading the PR `CLOSED` on GitHub, now records a `pr_closed` event
+    (`prUrl` and the pinned `sha`) and still refuses with nothing landed, its message saying the
+    close is recorded. The write is under the merge lock, after re-checking that the session is
+    still merged and that its newest merge still names that PR and sha: a re-gate while land
+    read GitHub would otherwise have its new PR's claim ended by the old PR's close. A second
+    land of the same closed PR writes nothing more. `newestMerge` skips `pr_closed`, so a PR
+    reopened and merged still lands, and `pup retire` still accepts the session afterwards. The
+    gate skips a merged session whose newest `merge`, `landed`, `retired` or `pr_closed` event
+    is `retired` or `pr_closed`; a newer `merge` event, a re-gate's, makes it count again. The
+    gate still asks GitHub nothing, so the close counts only once the operator runs `pup land`
+    on the session. A PR reopened on GitHub without a re-gate stays skipped: the store cannot
+    see the reopen, so its numbers are free to other gates until it is re-gated. The ceiling
+    above on closed PRs now holds only until that land. Tests: the stage ignores a PR peer with
+    a `pr_closed` event, even once its gated commit is pruned, and refuses a clash with one
+    whose newer merge event follows the close.
