@@ -7,6 +7,7 @@ import { CHART_CSS } from './chart.utils.js';
 import { PAGE_SHELL_CSS } from './page-shell.constants.js';
 import { PAGE_THEME_CSS } from './page-theme.constants.js';
 import { SESSION_ID_PATTERN } from './paths.constants.js';
+import { getSession } from './session.repository.js';
 import {
   ACTIONS,
   type ActionFields,
@@ -23,7 +24,6 @@ import {
   readSessionView,
   renderSessionBoard,
   renderSessionHead,
-  type SessionView,
 } from './web-dashboard-session.service.js';
 import { escapeHtml, SHEETS, type SheetName } from './web-dashboard-sheet.utils.js';
 import { readTasksSheet, renderTasksSheet } from './web-dashboard-tasks.service.js';
@@ -39,6 +39,10 @@ const PAGE_NONCE_TTL_MS = 30 * 60_000;
 const MAX_NONCES = 256;
 /** The most an action's form may carry; a steer or a tell is far below it. */
 const MAX_ACTION_BYTES = 64 * 1024;
+/** The header the page's secret travels in; no other page can make a browser send it here. */
+const SECRET_HEADER = 'x-pup-secret';
+const REVOKED =
+  'This url was opened a second time, so the page it opened first is cut off too. Run `pup dashboard` again for a new url.';
 
 /** What a page shows: a sheet, or one session's view (decision 91). */
 type View = { sheet: SheetName } | { session: string };
@@ -63,26 +67,29 @@ export interface WebDashboard {
  * behind a token minted for this run. The threat is the operator's own
  * browser: any page it has open can make it request a loopback url, and a
  * rebound DNS name can make that request same-origin. So every request must
- * name the loopback address as its Host, which a rebound name does not, and
- * carry the page's cookie, which no other origin can read or send; anything
- * else is refused before the store is read. The url's token is good for one
- * exchange: the first page served for it sets that cookie (HttpOnly,
- * SameSite=Strict, named for this port) and its script takes the token out of
- * the address bar, so the token left in history, scrollback or a browser's
- * argv opens nothing. The page loads nothing from elsewhere, its CSP
- * admits only its own nonce'd script and style and its own event stream, and
- * every store-read string on it is escaped.
+ * name the loopback address as its Host, which a rebound name does not.
+ * The page itself is a shell holding nothing from the store; what the store
+ * says, and every action, is behind a secret the page sends in its
+ * `X-Pup-Secret` header, which no other page can make the browser send
+ * without a preflight this server never answers. The url's token is good for
+ * one exchange: the first page served for it is handed the secret, which it
+ * keeps in the tab's session storage (scoped to this origin, port and all,
+ * as a cookie would not be), and takes the token out of the address bar. A
+ * second load holding the token revokes the secret, cutting off whoever took
+ * it first. The page loads nothing from elsewhere, its CSP admits only its own
+ * nonce'd script and style and its own requests, and every store-read string
+ * is escaped.
  *
  * The page is one of the sheets (decision 98), named by `?sheet=`, Overview
  * when it names none, or one session's view, named by `?session=`; each has
- * its own stream. While a stream is open the store is re-read every `pollMs`
+ * its own stream, read by `fetch` with the secret. While a stream is open the store is re-read every `pollMs`
  * for the views streams are open on, and a board that rendered differently
  * from that view's last one goes to every stream on it whole; the browser
  * never polls.
  *
- * The page acts through `POST /action`, cookie and all, from its own origin,
- * with a nonce minted per page that one post uses up and whose answer carries
- * the next; one unused for `PAGE_NONCE_TTL_MS` lapses. An
+ * The page acts through `POST /action`, secret and all, from its own origin,
+ * with a nonce its stream hands it that one post uses up and whose answer
+ * carries the next; one unused for `PAGE_NONCE_TTL_MS` lapses. An
  * irreversible action's first post only asks: it answers with a confirmation
  * nonce bound to that action and its fields, and only a second post carrying
  * it runs the action. Each action is the core call its CLI command makes.
@@ -93,13 +100,14 @@ export async function startWebDashboard(
   { pollMs = DASHBOARD_POLL_MS }: { pollMs?: number } = {},
 ): Promise<WebDashboard> {
   const token = Buffer.from(randomBytes(32).toString('base64url'));
-  const secret = Buffer.from(randomBytes(32).toString('base64url'));
+  // Minted when the token is spent, and dropped for good when it comes back.
+  let secret: Buffer | undefined;
   let exchanged = false;
   const streams = new Map<ServerResponse, View>();
   const lastBody = new Map<string, string>();
   const nonces = new Map<string, NonceGrant>();
   const running = new Set<Promise<unknown>>();
-  // Relative, so it resolves against the page; the cookie, not the url,
+  // Relative, so it resolves against the page; the secret, never the url,
   // carries the page's authority.
   const hrefOf = (sheet: SheetName): string => `?sheet=${sheet}`;
   const sessionHref = (sessionId: string): string => `?session=${encodeURIComponent(sessionId)}`;
@@ -108,7 +116,7 @@ export async function startWebDashboard(
     const now = Date.now();
     if ('session' in view) {
       const read = readSessionView(db, repoPath, view.session, now);
-      return read ? renderSessionBoard(read) : '';
+      return read ? renderSessionHead(read) + renderSessionBoard(read) : '';
     }
     switch (view.sheet) {
       case 'debt':
@@ -222,85 +230,80 @@ export async function startWebDashboard(
 
   // Set once the socket is bound; no request is read before then.
   let port = 0;
-  const cookieName = (): string => `pup-dashboard-${port}`;
+  const holdsSecret = (req: IncomingMessage): boolean => {
+    const given = req.headers[SECRET_HEADER];
+    return secret !== undefined && typeof given === 'string' && matches(given, secret);
+  };
   const handle = (req: IncomingMessage, res: ServerResponse) => {
     if (req.headers.host !== `${LOOPBACK}:${port}`) return refuse(res, 403, 'Forbidden.');
     const url = new URL(req.url ?? '/', `http://${LOOPBACK}:${port}`);
-    const opening = !matches(cookieOf(req, cookieName()), secret);
-    if (opening) {
-      const refusal = admission(req, url);
-      if (refusal !== undefined) return refuse(res, 403, refusal);
-    }
+    if (url.pathname === '/') return handlePage(req, res, url);
+    if (!holdsSecret(req)) return refuse(res, 403, exchanged && !secret ? REVOKED : 'Forbidden.');
     if (url.pathname === '/action') return handleAction(req, res);
     if (req.method !== 'GET') return refuse(res, 405, 'Only /action takes a POST.');
     const view = viewOf(url);
-    if (view === undefined) return refuse(res, 404, 'Not found.');
-    if (url.pathname === '/') {
-      // Rendered before the head goes out, so a store that cannot be read is
-      // still answered with a 500 rather than an empty 200.
-      let page: Omit<PageParts, 'nonce' | 'actionNonce'>;
-      if ('session' in view) {
-        const read = readSessionView(db, repoPath, view.session, Date.now());
-        if (read === undefined) return refuse(res, 404, 'No such session.');
-        page = sessionPage(read);
-      } else {
-        page = {
-          title: SHEET_TITLES[view.sheet],
-          current: view.sheet,
-          head: '',
-          body: render(view),
-        };
-      }
-      const nonce = randomBytes(16).toString('base64');
-      // Spent only once a page goes out with the cookie, so a first load the
-      // store could not answer leaves the url good for the next.
-      if (opening) exchanged = true;
-      res.writeHead(200, {
-        ...hardening(
-          `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; ` +
-            "connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
-        ),
-        ...(opening && {
-          'Set-Cookie': `${cookieName()}=${secret.toString()}; HttpOnly; SameSite=Strict; Path=/`,
-        }),
-        'Content-Type': 'text/html; charset=utf-8',
-      });
-      res.end(
-        renderDashboardPage(
-          repoPath,
-          { ...page, nonce, actionNonce: mint({ kind: 'page', mintedAt: Date.now() }) },
-          hrefOf,
-        ),
-      );
-      return;
-    }
-    if (url.pathname === '/events') {
-      res.writeHead(200, {
-        ...hardening(REFUSAL_CSP),
-        'Content-Type': 'text/event-stream; charset=utf-8',
-        Connection: 'keep-alive',
-      });
-      streams.set(res, view);
-      req.on('close', () => streams.delete(res));
-      publish(view, res);
-      return;
-    }
-    refuse(res, 404, 'Not found.');
+    if (url.pathname !== '/events' || view === undefined) return refuse(res, 404, 'Not found.');
+    res.writeHead(200, {
+      ...hardening(REFUSAL_CSP),
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      Connection: 'keep-alive',
+    });
+    streams.set(res, view);
+    req.on('close', () => streams.delete(res));
+    publish(view, res);
+    // Minted only for the secret's holder, so no other page can fill the
+    // map and push the operator's nonce out; each (re)connect hands a fresh one.
+    res.write(
+      `event: nonce\ndata: ${JSON.stringify(mint({ kind: 'page', mintedAt: Date.now() }))}\n\n`,
+    );
   };
 
   /**
-   * Why a request without the page's cookie is refused, or undefined for the
-   * one it is not: the first page load holding the url's token, which the page
-   * served for it trades for the cookie.
+   * The page: a shell around the board its stream fills, holding nothing the
+   * store says. The load holding the url's token is handed the secret, once;
+   * the token coming back revokes it.
    */
-  const admission = (req: IncomingMessage, url: URL): string | undefined => {
-    const given = url.searchParams.get('token') ?? undefined;
-    if (req.method !== 'GET' || url.pathname !== '/' || !matches(given, token)) {
-      return 'Forbidden.';
+  const handlePage = (req: IncomingMessage, res: ServerResponse, url: URL) => {
+    if (req.method !== 'GET') return refuse(res, 405, 'Only /action takes a POST.');
+    const given = url.searchParams.get('token');
+    if (given !== null) {
+      if (!matches(given, token)) return refuse(res, 403, 'Forbidden.');
+      if (exchanged) {
+        secret = undefined;
+        return refuse(res, 403, REVOKED);
+      }
     }
-    return exchanged
-      ? 'This url was opened already: it lets one browser in, once. Run `pup dashboard` again for a new one.'
-      : undefined;
+    const view = viewOf(url);
+    if (view === undefined) return refuse(res, 404, 'Not found.');
+    if ('session' in view && getSession(db, view.session) === undefined) {
+      return refuse(res, 404, 'No such session.');
+    }
+    // Spent only on a page that goes out, so a first load the server could
+    // not answer leaves the url good for the next.
+    if (given !== null) {
+      exchanged = true;
+      secret = Buffer.from(randomBytes(32).toString('base64url'));
+    }
+    const nonce = randomBytes(16).toString('base64');
+    res.writeHead(200, {
+      ...hardening(
+        `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; ` +
+          "connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+      ),
+      'Content-Type': 'text/html; charset=utf-8',
+    });
+    res.end(
+      renderDashboardPage(
+        repoPath,
+        {
+          title: 'session' in view ? `Session ${view.session}` : SHEET_TITLES[view.sheet],
+          current: 'sheet' in view ? view.sheet : undefined,
+          nonce,
+          secret: given === null ? undefined : secret?.toString(),
+        },
+        hrefOf,
+      ),
+    );
   };
 
   /**
@@ -436,15 +439,6 @@ function viewKey(view: View): string {
   return 'session' in view ? `session:${view.session}` : `sheet:${view.sheet}`;
 }
 
-/** The page parts a session's view fills: its head is rendered once, its board streamed. */
-function sessionPage(read: SessionView): Omit<PageParts, 'nonce' | 'actionNonce'> {
-  return {
-    title: `Session ${read.session.id}`,
-    head: renderSessionHead(read),
-    body: renderSessionBoard(read),
-  };
-}
-
 const SHEET_TITLES: Record<SheetName, string> = {
   overview: 'Overview',
   health: 'Health',
@@ -472,18 +466,8 @@ function lapsed(grant: NonceGrant, now: number): boolean {
   return now - grant.mintedAt > (grant.kind === 'confirm' ? CONFIRM_TTL_MS : PAGE_NONCE_TTL_MS);
 }
 
-/** The value of the named cookie the request carries, if any. */
-function cookieOf(req: IncomingMessage, name: string): string | undefined {
-  for (const pair of (req.headers.cookie ?? '').split(';')) {
-    const at = pair.indexOf('=');
-    if (at !== -1 && pair.slice(0, at).trim() === name) return pair.slice(at + 1).trim();
-  }
-  return undefined;
-}
-
 /** Compared in constant time, so a wrong guess learns nothing from how long it took. */
-function matches(given: string | undefined, secret: Buffer): boolean {
-  if (given === undefined) return false;
+function matches(given: string, secret: Buffer): boolean {
   const candidate = Buffer.from(given);
   return candidate.length === secret.length && timingSafeEqual(candidate, secret);
 }
@@ -516,30 +500,27 @@ interface PageParts {
   title: string;
   /** The sheet the bar marks as this page; none on a session's view. */
   current?: SheetName;
-  /** Rendered once with the page: a session's attach line and actions. */
-  head: string;
-  /** The board the stream replaces. */
-  body: string;
   /** The response's CSP nonce, for its one script and one style. */
   nonce: string;
-  /** The page's first action nonce, which its first post uses up (decision 91). */
-  actionNonce: string;
+  /** The secret, on the one page the url's token opened (decision 91). */
+  secret?: string;
 }
 
 /**
  * The page around a board. The script and the style carry the response's
  * nonce, the only source the CSP admits for either (decision 91). The script
- * swaps in the board the stream sends, which the server rendered and escaped,
- * holding it back while the operator types into a field on the board; it
- * reports whether the stream is up; and it posts each action form with the
- * page's nonce, asks before an irreversible one, and shows the answer as text.
- * It first takes the spent token out of the address bar. The sheet bar is
- * plain links, so a sheet opens as its own page with its own stream
- * (decision 98).
+ * keeps the secret it was handed in the tab's session storage and takes the
+ * spent token out of the address bar; reads the stream with the secret, and
+ * swaps in the board it sends, which the server rendered and escaped, holding
+ * it back while the operator types into a field on the board; reports whether
+ * the stream is up; and posts each action form with the secret and the nonce
+ * the stream handed it, asks before an irreversible one, and shows the answer
+ * as text. The sheet bar is plain links, so a sheet opens as its own page with
+ * its own stream, in the same tab, which keeps the secret (decision 98).
  */
 function renderDashboardPage(
   repoPath: string,
-  { title, current, head, body, nonce, actionNonce }: PageParts,
+  { title, current, nonce, secret }: PageParts,
   hrefOf: (sheet: SheetName) => string,
 ): string {
   const bar = SHEETS.map(
@@ -614,53 +595,80 @@ ${CHART_CSS}
     font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre; overflow-x: auto;
     background: var(--page); border: 1px solid var(--grid); border-radius: 6px; padding: 10px; margin: 0;
   }
-  .head { padding: 0 20px; }
-  @media (max-width: 480px) { header, main, nav.sheets, .head { padding-left: 12px; padding-right: 12px; } }
+  @media (max-width: 480px) { header, main, nav.sheets { padding-left: 12px; padding-right: 12px; } }
 </style>
 </head>
 <body>
 <header><h1>pup dashboard</h1><span class="repo">${escapeHtml(repoPath)}</span><span class="live" id="live">connecting…</span></header>
 <nav class="sheets">${bar}</nav>
 <div id="outcome" role="status" hidden></div>
-${head === '' ? '' : `<div class="head">${head}</div>`}
-<main id="board">
-${body}
-</main>
+<main id="board"></main>
 <script nonce="${nonce}">
 (() => {
-  // The token in the url was spent on this page's cookie: out of the address
-  // bar and history, and out of every url built from it below.
+  const board = document.getElementById('board');
+  const live = document.getElementById('live');
+  const outcome = document.getElementById('outcome');
+  // Kept where only this origin, port and all, can read it, and gone with
+  // the tab; the token that bought it leaves the address bar and history.
+  const handed = ${JSON.stringify(secret ?? null)};
+  if (handed !== null) sessionStorage.setItem('pup-dashboard-secret', handed);
   const here = new URL(location.href);
   if (here.searchParams.has('token')) {
     here.searchParams.delete('token');
     history.replaceState(null, '', here.pathname + here.search);
   }
-  const board = document.getElementById('board');
-  const live = document.getElementById('live');
-  const outcome = document.getElementById('outcome');
-  let key = ${JSON.stringify(actionNonce)};
+  const secret = sessionStorage.getItem('pup-dashboard-secret');
+  let key;
   let held;
   let busy = false;
-  const typing = () => board.contains(document.activeElement) && document.activeElement.matches('input');
-  const stream = new EventSource('events' + location.search);
-  stream.onopen = () => { live.textContent = 'live'; };
-  stream.onerror = () => { live.textContent = 'reconnecting…'; };
-  stream.onmessage = (event) => {
-    const next = JSON.parse(event.data);
-    if (typing()) held = next; else board.innerHTML = next;
-  };
-  board.addEventListener('focusout', () => setTimeout(() => {
-    if (held !== undefined && !typing()) { board.innerHTML = held; held = undefined; }
-  }));
   const say = (text, refused) => {
     outcome.textContent = text;
     outcome.className = refused ? 'refused' : 'done';
     outcome.hidden = false;
   };
+  const typing = () => board.contains(document.activeElement) && document.activeElement.matches('input');
+  const show = (next) => {
+    if (typing()) held = next; else board.innerHTML = next;
+  };
+  board.addEventListener('focusout', () => setTimeout(() => {
+    if (held !== undefined && !typing()) { board.innerHTML = held; held = undefined; }
+  }));
+  if (secret === null) {
+    live.textContent = 'no key';
+    return say('This tab holds no key: the url pup dashboard printed opens one tab, once, and links in that tab keep it.', true);
+  }
+  const listen = async () => {
+    try {
+      const res = await fetch('events' + location.search, { headers: { 'X-Pup-Secret': secret } });
+      if (!res.ok) {
+        live.textContent = 'refused';
+        return say(await res.text(), true);
+      }
+      live.textContent = 'live';
+      const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+      let buffer = '';
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += value;
+        let end = buffer.indexOf('\\n\\n');
+        while (end !== -1) {
+          const lines = buffer.slice(0, end).split('\\n');
+          buffer = buffer.slice(end + 2);
+          const data = JSON.parse(lines.find((line) => line.startsWith('data: ')).slice(6));
+          if (lines.includes('event: nonce')) key = data; else show(data);
+          end = buffer.indexOf('\\n\\n');
+        }
+      }
+    } catch {}
+    live.textContent = 'reconnecting…';
+    setTimeout(listen, 2000);
+  };
+  listen();
   const post = async (fields) => {
     const res = await fetch('action' + location.search, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Pup-Secret': secret },
       body: new URLSearchParams(fields),
     });
     if (!res.ok) throw new Error(await res.text());
@@ -671,6 +679,7 @@ ${body}
     if (!form) return;
     event.preventDefault();
     if (busy) return say('An action is still running; its answer comes first.', true);
+    if (key === undefined) return say('Not connected yet; nothing was done.', true);
     const fields = Object.fromEntries(new FormData(form, event.submitter));
     fields.action = form.dataset.action;
     busy = true;

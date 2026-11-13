@@ -28,8 +28,9 @@
     from the terminal or, for the instant `open` runs, its argv; they already hold the store,
     which is no worse for a page that only reads. The page was read-only at first, with no CSRF
     to answer; the actions came as part 2 below, which made the token worth more and so spends it
-    on first use for a cookie, with a nonce per page and confirmations, and a merge on GitHub
-    stays a link, never a button.
+    on first use for a secret the page sends in a header, with a nonce per page and
+    confirmations, and a merge on GitHub stays a link, never a button. Since part 2 the page
+    itself is a shell holding nothing from the store, and the board comes over the stream.
     What it shows is what `pup status` and `pup ui` read, off one `buildDashboardSnapshot`:
     `needsYou` first, in its order with each answer; the conductor, with its attach command;
     sessions in states other than `merged` and `killed`, grouped by state (blocked, running,
@@ -47,7 +48,7 @@
     `& < > " '` escaped, and the only element built from a store-read string is a link, made only
     of a url passing `PR_URL`, the check the inbox already prints by (decision 83), now exported
     from `dashboard.service.ts`. A url that fails it prints as text, or as the inbox's placeholder.
-    The page carries the first render, and `/events` is a Server-Sent Events stream: it sends the
+    The page carried the first render until part 2, and `/events` is a Server-Sent Events stream: it sends the
     board on connect, and while any stream is open the server re-reads the store every 2 s and
     sends the whole board to every stream when it rendered differently from the last, so an
     unchanged store sends nothing and the browser never polls. The script only swaps in the board
@@ -103,37 +104,42 @@
     `operator`, launch, kill, gate and land, which the CLI refuses a session and the conductor
     (`callingSession`, `callingConductor`). A url token kept as part 1 kept it, in browser history
     and session restore, terminal scrollback and `open`/`xdg-open`'s argv (`/proc/<pid>/cmdline`
-    on Linux), would hand that to any process of the operator's own that reads it, and since a
-    page load mints a nonce, nonce and confirmation would be two scripted posts. So the token is
-    good for one exchange: the first page served for a `GET /` holding it sets a cookie of 32
-    other random bytes (`HttpOnly`, `SameSite=Strict`, `Path=/`, named `pup-dashboard-<port>`
-    since a cookie is not scoped to a port), and the page's script first takes the token out of
-    the address bar and history with `history.replaceState`; no link on the page holds it. The
-    page is served, not redirected to, because a `Strict` cookie is not sent on a redirect that
-    a click on another site started, which would spend the token and lock the operator out; the
-    page's own requests are same-site whatever opened it. A first load the server cannot answer,
-    an unknown view or an unreadable store, spends nothing. From then on every request, pages, the
-    stream and posts alike, must carry that cookie, compared in constant time; the url is
-    ignored. The token opens nothing a second time: a second load holding it is told the url was
-    opened already and to run `pup dashboard` again. Where the authority lives now: the cookie,
-    in the one browser that opened the url first, which scripts cannot read and which the
-    browser sends to no other site; while the url is unopened, in the url itself, printed to the
+    on Linux), would hand that to any process of the operator's own that reads it. A cookie would
+    not do either: cookies ignore ports, so the browser sends one set by 127.0.0.1:<port> to every
+    server on 127.0.0.1, such as the dev or preview server a worker runs and asks the operator to
+    look at, which could then act with it. So the authority is a secret of 32 random bytes that
+    the page holds and sends in an `X-Pup-Secret` header, never a cookie. A page on another origin
+    cannot make the browser send that header without a CORS preflight, which this server never
+    answers. The url's token buys it once: the first page served for a `GET /` holding the token
+    has the secret written into its script, which keeps it in the tab's `sessionStorage` (scoped
+    to the origin, port and all, and gone with the tab) and takes the token out of the address bar
+    and history with `history.replaceState`. No link on the page holds either. Pages loaded in
+    that tab from its links read the secret back; another tab has none and says so. A first load
+    the server cannot answer, an unknown view or an unreadable store, spends nothing. The token
+    coming back a second time revokes the secret: the second load is refused, and so is every
+    later request carrying the secret, so whoever took it first, from argv or scrollback, is cut
+    off with the operator, who runs `pup dashboard` again. Every request but the page shell must
+    carry the secret, compared in constant time: the stream, which the script reads with
+    `fetch`, since an `EventSource` cannot send a header, and every post. The shell itself is
+    served without it and holds nothing from the store, only the repo path and the view's name;
+    the board, a session's attach line and actions included, comes over the stream. Where the
+    authority lives: in the tab the url opened first, in its memory and session storage, which
+    no other origin can read; while the url is unopened, in the url itself, printed to the
     terminal and, with `--open`, in `open`'s argv for an instant. What is left: a process of the
     operator's own that reads the url before the browser opens it wins the exchange, and the
-    operator's own load is then refused, which shows it; a local server on another port of
-    127.0.0.1 that the browser is made to visit same-site is sent the cookie, as cookies ignore
-    ports; and a process that can read the browser's cookie store already holds the operator's
-    account.
-    CSRF. Each action is a form post to `POST /action`, which needs the cookie, the loopback
+    operator's own load then revokes it, which shows it; a process that can read the browser's
+    memory or profile already holds the operator's account.
+    CSRF. Each action is a form post to `POST /action`, which needs the secret, the loopback
     `Host` and a form content type, and an `Origin` that is exactly `http://127.0.0.1:<port>`: a
     post naming another origin or none is a 403, as is one whose `Sec-Fetch-Site`, when sent, is
-    not `same-origin`. Every page served mints an action nonce of 32 random bytes, held in the
-    page's script. A post uses it up before anything else is read, and its answer carries the
-    next one; a nonce the server never minted, one already used, or a page's left unused for 30
-    minutes is a 403 before anything runs, and changes nothing. The server holds at most 256
-    nonces: each mint sweeps the lapsed ones and, past the cap, drops the oldest, whose page is
-    told to reload. One page holds one nonce, so it runs one action at a time; a reload mints
-    another.
+    not `same-origin`. Each time the stream opens it hands the page an action nonce of 32 random
+    bytes, so only the secret's holder can have one minted, and no other page can fill the map
+    and push the operator's out. A post uses it up before anything else is read, and its answer
+    carries the next one; a nonce the server never minted, one already used, or a page's left
+    unused for 30 minutes is a 403 before anything runs, and changes nothing. The server holds
+    at most 256 nonces: each mint sweeps the lapsed ones and, past the cap, drops the oldest,
+    whose page is told to reload. One page holds one nonce, so it runs one action at a time; a
+    reload mints another.
     Confirmation rule. Kill, merge, land and debt close cannot be taken back, so the first post
     of one runs nothing: it answers with the question to ask, naming what will run and with
     which fields, the debt accepted included, and a confirmation nonce bound to that action and
@@ -148,11 +154,14 @@
     before the store is closed.
     Tests: per action, the core function the CLI calls is called with the CLI's arguments and its
     refusal is what the page shows; an approver missing, blank or empty once scrubbed is refused
-    and gates nothing; the first page served for the token sets an `HttpOnly`, `SameSite=Strict`
-    cookie and strips the token from the address bar, a first load answered 404 spends nothing,
-    a second load with the token is refused, and
-    a page, the stream or a post without the cookie, with a wrong one, or with the token alone is
-    a 403; a post without the cookie, from another origin, naming no origin, or with a cross-site
+    and gates nothing, and a tell without a message is refused before the conductor is reached;
+    the first page served for the token is handed a secret, sets no cookie and strips the token
+    from the address bar, a page loaded without the token is handed nothing, and the shell holds
+    nothing from the store; a first load answered 404 spends nothing; the token coming back is
+    refused and revokes the secret, after which the stream and posts carrying it are refused and
+    change nothing; the stream without the secret, with a wrong one, with the token in its place
+    or with only a cookie is a 403; a post without the secret, with a wrong one, with the token,
+    with only a cookie, from another origin, naming no origin, or with a cross-site or same-site
     `Sec-Fetch-Site`, with a wrong, reused or lapsed nonce, or a reused confirmation is refused and
     leaves the ledger entry open; past the cap the oldest nonce is refused; kill, merge, land and debt close each answer only a confirmation on the
     first post and change nothing; a confirmation runs only its own action and fields. The

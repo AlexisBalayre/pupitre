@@ -126,7 +126,7 @@ export async function runAction(
       ];
     }
     case 'tell': {
-      if (!tellConductor(repoPath, fields.message ?? '')) {
+      if (!tellConductor(repoPath, field(fields, 'message'))) {
         throw new Error(
           "The message did not land: the conductor's input box never showed it whole, still holds " +
             'text after a second Enter, or left the screen. Look with `pup attach`.',

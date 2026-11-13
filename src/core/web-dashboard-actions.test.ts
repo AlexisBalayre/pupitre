@@ -240,6 +240,16 @@ describe('runAction', () => {
     expect(killSession).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['no message', {}],
+    ['a blank message', { message: '  ' }],
+  ])('refuses a tell with %s before the conductor is reached', async (_case, fields) => {
+    await expect(runAction(DB, REPO, 'tell', fields)).rejects.toThrow(
+      'The action needs a message; nothing was done.',
+    );
+    expect(tellConductor).not.toHaveBeenCalled();
+  });
+
   it('refuses a debt reason without its review-by, as `pup merge` does, before the gate runs', async () => {
     await expect(
       runAction(DB, REPO, 'merge', { session: 's-1', reason: 'one feature' }),

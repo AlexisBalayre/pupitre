@@ -87,8 +87,9 @@ export function renderSessionBoard({ session, pane }: SessionView): string {
 }
 
 /**
- * The part rendered once with the page: the attach line to copy, the pull
- * request as a link, and the actions the session's state admits. A merge here
+ * The head of the view, streamed with its board since the page holds nothing
+ * from the store: the attach line to copy, the pull request as a link, and
+ * the actions the session's state admits. A merge here
  * is always `--pr`, and the PR is merged on GitHub, which the page only links
  * to: no button merges there (decision 91).
  */

@@ -57,26 +57,26 @@ interface Reply {
   body: string;
 }
 
-/** The cookie the page's first load was handed; every request carries it unless it names `Cookie: ''`. */
-let cookie: string | undefined;
+/** The secret the page the url's token opened was handed; every request carries it unless it names it `''`. */
+let secret: string | undefined;
 
-/** The request's headers, the cookie included; one named as `''` is left out. */
-function withCookie(headers: Record<string, string>): Record<string, string> {
-  const all = { ...(cookie === undefined ? {} : { Cookie: cookie }), ...headers };
+/** The request's headers, the secret included; one named as `''` is left out. */
+function withSecret(headers: Record<string, string>): Record<string, string> {
+  const all = { ...(secret === undefined ? {} : { 'X-Pup-Secret': secret }), ...headers };
   return Object.fromEntries(Object.entries(all).filter(([, value]) => value !== ''));
 }
 
-const NO_COOKIE = { Cookie: '' };
+const NO_SECRET = { 'X-Pup-Secret': '' };
 
-/** The `name=value` of the cookie a reply sets. */
-function cookieSet(reply: Reply): string {
-  return String(reply.headers['set-cookie']?.[0]).split(';')[0] ?? '';
+/** The secret a page was handed, or undefined when it was handed none. */
+function handedTo(page: Reply): string | undefined {
+  return /const handed = "([^"]+)";/.exec(page.body)?.[1];
 }
 
 /** One request over the real socket, with the Host header the test names. */
 function get(url: string, headers: Record<string, string> = {}, method = 'GET'): Promise<Reply> {
   return new Promise((resolve, reject) => {
-    const req = request(url, { method, headers: withCookie(headers) }, (res) => {
+    const req = request(url, { method, headers: withSecret(headers) }, (res) => {
       let body = '';
       res.setEncoding('utf8');
       res.on('data', (chunk: string) => {
@@ -100,7 +100,7 @@ function post(
       url,
       {
         method: 'POST',
-        headers: withCookie({
+        headers: withSecret({
           'Content-Type': 'application/x-www-form-urlencoded',
           Origin: new URL(url).origin,
           ...headers,
@@ -127,42 +127,79 @@ function post(
   });
 }
 
-/** An open event stream: every `data:` frame it has received, decoded, and a way to wait for the next. */
-function openStream(url: string): Promise<{
+/**
+ * An open event stream: every board it has received, decoded, a way to wait
+ * for the next, and the action nonce it handed over.
+ */
+function openStream(
+  url: string,
+  headers: Record<string, string> = {},
+): Promise<{
+  status: number;
   frames: string[];
   next: () => Promise<string>;
+  nonce: () => Promise<string>;
   close: () => void;
 }> {
   return new Promise((resolve, reject) => {
     const frames: string[] = [];
     let waiting: ((frame: string) => void) | undefined;
+    let nonce: string | undefined;
+    let waitingNonce: ((nonce: string) => void) | undefined;
     let buffer = '';
-    const req = request(url, { headers: withCookie({}) }, (res) => {
+    const req = request(url, { headers: withSecret(headers) }, (res) => {
       res.setEncoding('utf8');
       res.on('data', (chunk: string) => {
         buffer += chunk;
         let end = buffer.indexOf('\n\n');
         while (end !== -1) {
-          const frame = JSON.parse(buffer.slice(0, end).replace(/^data: /, '')) as string;
+          const lines = buffer.slice(0, end).split('\n');
           buffer = buffer.slice(end + 2);
-          frames.push(frame);
-          waiting?.(frame);
-          waiting = undefined;
+          const data = JSON.parse(
+            String(lines.find((line) => line.startsWith('data: '))).slice(6),
+          ) as string;
+          if (lines.includes('event: nonce')) {
+            nonce = data;
+            waitingNonce?.(data);
+          } else {
+            frames.push(data);
+            waiting?.(data);
+            waiting = undefined;
+          }
           end = buffer.indexOf('\n\n');
         }
       });
       resolve({
+        status: res.statusCode ?? 0,
         frames,
         next: () =>
           new Promise((done) => {
             waiting = done;
           }),
+        nonce: () =>
+          nonce !== undefined
+            ? Promise.resolve(nonce)
+            : new Promise((done) => {
+                waitingNonce = done;
+              }),
         close: () => req.destroy(),
       });
     });
     req.on('error', reject);
     req.end();
   });
+}
+
+/** A page as the browser shows it: its shell, then the first board its stream sends. */
+async function readPage(url: string): Promise<string> {
+  const shell = await get(url);
+  const at = new URL(url);
+  const stream = await openStream(`${at.origin}/events${at.search}`);
+  try {
+    return shell.body + (stream.frames[0] ?? (await stream.next()));
+  } finally {
+    stream.close();
+  }
 }
 
 describe('startWebDashboard', () => {
@@ -175,9 +212,9 @@ describe('startWebDashboard', () => {
     db = openStore(':memory:');
     repo = tempDir('pup-web-');
     ensureProject(db, projectId(repo), repo);
-    cookie = undefined;
+    secret = undefined;
     dashboard = await startWebDashboard(db, repo, { pollMs: POLL_MS });
-    cookie = cookieSet(await get(dashboard.url));
+    secret = handedTo(await get(dashboard.url));
   });
 
   afterEach(async () => {
@@ -234,7 +271,9 @@ describe('startWebDashboard', () => {
   }
 
   const address = (): URL => new URL(dashboard.url);
-  const eventsUrl = (): string => `${address().origin}/events${address().search}`;
+  const eventsUrl = (): string => `${address().origin}/events`;
+  /** A page's url as its links make it: no token, which is spent. */
+  const home = (search = ''): string => `${address().origin}/${search}`;
   const host = (): string => address().host;
   const origin = (): string => address().origin;
 
@@ -248,83 +287,115 @@ describe('startWebDashboard', () => {
         expect(new URL(other.url).searchParams.get('token')).not.toBe(
           url.searchParams.get('token'),
         );
-        expect((await get(dashboard.url)).status).toBe(200);
+        expect((await get(home())).status).toBe(200);
       } finally {
         await other.close();
       }
     });
 
-    it("trades the url's token, once, for a cookie scripts cannot read, and takes it out of the address bar", async () => {
+    it("hands the page the url's token opened a secret, once, kept out of cookies, and takes the token out of the address bar", async () => {
       const other = await startWebDashboard(db, repo, { pollMs: POLL_MS });
-      const otherUrl = new URL(other.url);
       try {
-        const opened = await get(`${other.url}&sheet=debt`, NO_COOKIE);
-        const again = await get(other.url, NO_COOKIE);
+        const opened = await get(`${other.url}&sheet=debt`, NO_SECRET);
+        const handed = String(handedTo(opened));
 
         expect(opened.status).toBe(200);
         expect(opened.body).toContain('<title>pup dashboard — Debt</title>');
-        expect(opened.headers['set-cookie']).toEqual([
-          expect.stringMatching(
-            new RegExp(
-              `^pup-dashboard-${otherUrl.port}=[\\w-]{43}; HttpOnly; SameSite=Strict; Path=/$`,
-            ),
-          ),
-        ]);
-        expect(cookieSet(opened)).not.toContain(String(otherUrl.searchParams.get('token')));
+        expect(handed).toMatch(/^[\w-]{43}$/);
+        expect(handed).not.toBe(new URL(other.url).searchParams.get('token'));
+        expect(opened.headers['set-cookie']).toBeUndefined();
         expect(opened.body).toContain(
           "history.replaceState(null, '', here.pathname + here.search);",
         );
-        expect(again.status).toBe(403);
-        expect(again.body).toBe(
-          'This url was opened already: it lets one browser in, once. Run `pup dashboard` again for a new one.',
+        // A page loaded without the token is handed nothing.
+        expect(handedTo(await get(`${new URL(other.url).origin}/?sheet=debt`, NO_SECRET))).toBe(
+          undefined,
         );
-        const page = await get(`${otherUrl.origin}/?sheet=debt`, { Cookie: cookieSet(opened) });
-        expect(page.status).toBe(200);
-        expect(page.headers['set-cookie']).toBeUndefined();
+        const stream = await openStream(`${new URL(other.url).origin}/events`, {
+          'X-Pup-Secret': handed,
+        });
+        expect(stream.status).toBe(200);
+        stream.close();
       } finally {
         await other.close();
       }
+    });
+
+    it('serves the page as a shell holding nothing from the store', async () => {
+      seedSession('s-asking', ['running']);
+      appendEvent(db, 's-asking', 'question', { text: 'rebase or merge?' });
+
+      const shell = (await get(home(), NO_SECRET)).body;
+
+      expect(shell).not.toContain('rebase or merge?');
+      expect(shell).not.toContain('s-asking');
+      expect(await readPage(home())).toContain('rebase or merge?');
+    });
+
+    it('revokes the secret when the token comes back, cutting off the page it opened first', async () => {
+      const again = await get(dashboard.url, NO_SECRET);
+      const stream = await get(eventsUrl());
+      const id = insertLedgerEntry(db, {
+        projectId: projectId(repo),
+        description: 'd',
+        files: ['src/a.ts'],
+        reason: 'r',
+        acceptedBy: 'human',
+        reviewBy: 'q',
+      });
+      const action = await post(`${origin()}/action`, { action: 'debt-close', id: String(id) });
+
+      const revoked =
+        'This url was opened a second time, so the page it opened first is cut off too. Run `pup dashboard` again for a new url.';
+      expect(again.status).toBe(403);
+      expect(again.body).toBe(revoked);
+      expect(handedTo(again)).toBeUndefined();
+      expect(stream.status).toBe(403);
+      expect(stream.body).toBe(revoked);
+      expect(action.status).toBe(403);
+      expect(listLedgerEntries(db, projectId(repo))).toHaveLength(1);
     });
 
     it('spends the token only on a page it served, so a first load it could not answer leaves it good', async () => {
       const other = await startWebDashboard(db, repo, { pollMs: POLL_MS });
       try {
-        const missing = await get(`${other.url}&sheet=releases`, NO_COOKIE);
-        const opened = await get(other.url, NO_COOKIE);
+        const missing = await get(`${other.url}&sheet=releases`, NO_SECRET);
+        const opened = await get(other.url, NO_SECRET);
 
         expect(missing.status).toBe(404);
-        expect(missing.headers['set-cookie']).toBeUndefined();
         expect(opened.status).toBe(200);
-        expect(opened.headers['set-cookie']).toHaveLength(1);
+        expect(handedTo(opened)).toMatch(/^[\w-]{43}$/);
       } finally {
         await other.close();
       }
     });
 
     it.each([
-      ['no cookie', (url: URL) => `${url.origin}/`, () => NO_COOKIE],
-      ['the spent token alone', (url: URL) => url.href, () => NO_COOKIE],
-      ['a wrong token', (url: URL) => `${url.origin}/?token=${'A'.repeat(43)}`, () => NO_COOKIE],
-      ['a token one character short', (url: URL) => url.href.slice(0, -1), () => NO_COOKIE],
+      ['no secret', () => NO_SECRET],
+      ['a wrong secret', () => ({ 'X-Pup-Secret': 'A'.repeat(43) })],
       [
-        'no cookie on the stream',
-        (url: URL) => url.href.replace('/?', '/events?'),
-        () => NO_COOKIE,
+        'the token as the secret',
+        () => ({ 'X-Pup-Secret': String(address().searchParams.get('token')) }),
       ],
       [
-        'a wrong cookie',
-        (url: URL) => `${url.origin}/`,
-        () => ({ Cookie: `pup-dashboard-${address().port}=${'A'.repeat(43)}` }),
+        'only a cookie, as another 127.0.0.1 port could plant',
+        () => ({ 'X-Pup-Secret': '', Cookie: `pup-dashboard-${address().port}=${secret}` }),
       ],
-      [
-        "another port's cookie name",
-        (url: URL) => `${url.origin}/`,
-        () => ({ Cookie: String(cookie).replace(/-\d+=/, '-1=') }),
-      ],
-    ])('refuses a request with %s before reading the store', async (_case, target, headers) => {
-      const reply = await get(target(address()), headers());
+    ])('refuses the stream with %s before reading the store', async (_case, headers) => {
+      const reply = await get(`${eventsUrl()}?sheet=debt`, headers());
 
       expect(reply.status).toBe(403);
+      expect(reply.body).toBe('Forbidden.');
+    });
+
+    it.each([
+      ['a wrong token', (url: URL) => `${url.origin}/?token=${'A'.repeat(43)}`],
+      ['a token one character short', (url: URL) => url.href.slice(0, -1)],
+    ])('refuses a page with %s, and hands it nothing', async (_case, target) => {
+      const reply = await get(target(address()), NO_SECRET);
+
+      expect(reply.status).toBe(403);
+      expect(reply.body).toBe('Forbidden.');
     });
 
     it.each([
@@ -332,18 +403,18 @@ describe('startWebDashboard', () => {
       ['localhost', () => `localhost:${address().port}`],
       ['the right address on another port', () => '127.0.0.1:1'],
     ])('refuses %s in the Host header, token and all', async (_case, hostHeader) => {
-      const reply = await get(dashboard.url, { Host: hostHeader() });
+      const reply = await get(home(), { Host: hostHeader() });
 
       expect(reply.status).toBe(403);
     });
 
     it('takes a post at /action only, and nothing but a post there', async () => {
-      expect((await get(dashboard.url, {}, 'POST')).status).toBe(405);
-      expect((await get(`${origin()}/action${address().search}`)).status).toBe(405);
+      expect((await get(home(), {}, 'POST')).status).toBe(405);
+      expect((await get(`${origin()}/action`)).status).toBe(405);
     });
 
     it('serves nothing but the page and its stream', async () => {
-      const reply = await get(`${address().origin}/other${address().search}`);
+      const reply = await get(`${address().origin}/other`);
 
       expect(reply.status).toBe(404);
     });
@@ -351,7 +422,7 @@ describe('startWebDashboard', () => {
     it('answers 500 for a store it cannot read, and ends a stream it could not fill', async () => {
       db.close();
 
-      const page = await get(dashboard.url);
+      const page = await get(home('?session=s-1'));
       const stream = await get(eventsUrl());
 
       expect(page.status).toBe(500);
@@ -361,7 +432,7 @@ describe('startWebDashboard', () => {
     });
 
     it('serves the page under a CSP that admits only its own nonce and stream', async () => {
-      const reply = await get(dashboard.url, { Host: host() });
+      const reply = await get(home(), { Host: host() });
       const csp = String(reply.headers['content-security-policy']);
       const nonce = /'nonce-([^']+)'/.exec(csp)?.[1];
 
@@ -419,7 +490,7 @@ describe('startWebDashboard', () => {
         reviewBy: '2000-01-01',
       });
 
-      const page = (await get(dashboard.url)).body;
+      const page = await readPage(home());
       const snapshot = buildDashboardSnapshot(db, repo, Date.now());
       const at = (text: string): number => page.indexOf(escapeHtml(text));
 
@@ -453,7 +524,7 @@ describe('startWebDashboard', () => {
       // The planned task; the open ledger, overdue marked, is the Debt sheet's.
       expect(page).toContain('t-planned');
       expect(page).not.toContain('accepted by alexis');
-      const debtSheet = (await get(`${dashboard.url}&sheet=debt`)).body;
+      const debtSheet = await readPage(home('?sheet=debt'));
       expect(debtSheet).toMatch(/#1<\/span><span class="state state-blocked">overdue/);
       expect(debtSheet).toContain('accepted by alexis, review by 2000-01-01');
     });
@@ -461,7 +532,7 @@ describe('startWebDashboard', () => {
     it('puts the review in the inbox when no conductor runs to gate it', async () => {
       seedSession('s-review', ['running', 'awaiting-review']);
 
-      const page = (await get(dashboard.url)).body;
+      const page = await readPage(home());
 
       expect(page).toContain(escapeHtml('pup review s-review then pup merge s-review --pr'));
     });
@@ -474,7 +545,7 @@ describe('startWebDashboard', () => {
       // The first look starts the clock; the page's own look, a quarter-hour on, finds it held.
       buildDashboardSnapshot(db, repo, Date.now() - 15 * 60_000);
 
-      const page = (await get(dashboard.url)).body;
+      const page = await readPage(home());
       const snapshot = buildDashboardSnapshot(db, repo, Date.now());
 
       const line = page.slice(page.indexOf('need-conductor'));
@@ -489,7 +560,7 @@ describe('startWebDashboard', () => {
       seedSession('s1', ['running'], '<img src=x onerror=alert(1)>\u001b[31mred\u009b2J');
       appendEvent(db, 's1', 'question', { text: '</script><script>alert(2)</script>' });
 
-      const page = (await get(dashboard.url)).body;
+      const page = await readPage(home());
 
       expect(page).not.toContain('<img');
       expect(page).not.toContain('<script>alert');
@@ -516,7 +587,7 @@ describe('startWebDashboard', () => {
         { hook_event_name: 'Stop' },
       ]);
 
-      const page = (await get(dashboard.url)).body;
+      const page = await readPage(home());
 
       expect(page).toContain('waiting on input (Allow Bash?)');
       expect(page).toContain('idle (turn ended, no done signal)');
@@ -537,7 +608,7 @@ describe('startWebDashboard', () => {
       });
       seedSession('s-old', ['running']);
 
-      const page = (await get(dashboard.url)).body;
+      const page = await readPage(home());
 
       expect(page).toContain(
         '<div class="fact">claude-opus-5-5 xhigh, rung 2/2 after turn-death</div>',
@@ -556,7 +627,7 @@ describe('startWebDashboard', () => {
         reviewBy: '2999-01-01',
       });
 
-      const page = (await get(dashboard.url)).body;
+      const page = await readPage(home());
 
       expect(page).toContain('<span class="sid">(unminted session id)</span>');
       expect(page).not.toContain('debt #');
@@ -568,10 +639,10 @@ describe('startWebDashboard', () => {
       seedSession('s-ask', ['running']);
       appendEvent(db, 's-ask', 'question', { text: `see ${PR}` });
 
-      const page = (await get(dashboard.url)).body;
+      const page = await readPage(home());
 
       // The sheet and session-view links are the page's own, with no token:
-      // the cookie carries the page; nothing else is a link.
+      // the secret carries the page; nothing else is a link.
       expect(page).not.toMatch(/<a href="(?!\?(?:sheet=\w+|session=[\w-]+)")/);
       expect(page).not.toContain(String(address().searchParams.get('token')));
       expect(page).not.toContain('evil.example');
@@ -582,7 +653,7 @@ describe('startWebDashboard', () => {
 
   describe('the sheets', () => {
     const DAY = 86_400_000;
-    const sheetUrl = (sheet: string): string => `${dashboard.url}&sheet=${sheet}`;
+    const sheetUrl = (sheet: string): string => home(`?sheet=${sheet}`);
     // biome-ignore lint/suspicious/noControlCharactersInRegex: their absence is what is asserted
     const CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/;
 
@@ -625,20 +696,20 @@ describe('startWebDashboard', () => {
         expect(reply.body).toContain('<a href="?sheet=decisions"');
         expect(reply.body).toContain(`sheet=${sheet}" aria-current="page">${title}</a>`);
       }
-      expect((await get(dashboard.url)).body).toContain('aria-current="page">Overview</a>');
+      expect(await readPage(home())).toContain('aria-current="page">Overview</a>');
     });
 
-    it('refuses a sheet it does not have, and a sheet without the cookie', async () => {
+    it('refuses a sheet it does not have, and its stream without the secret', async () => {
       expect((await get(sheetUrl('releases'))).status).toBe(404);
-      expect((await get(`${address().origin}/?sheet=debt`, NO_COOKIE)).status).toBe(403);
+      expect((await get(`${eventsUrl()}?sheet=debt`, NO_SECRET)).status).toBe(403);
     });
 
     it('renders every sheet on an empty store with a one-line hint for each chart', async () => {
-      const overview = (await get(dashboard.url)).body;
-      const debt = (await get(sheetUrl('debt'))).body;
-      const health = (await get(sheetUrl('health'))).body;
-      const tasks = (await get(sheetUrl('tasks'))).body;
-      const decisions = (await get(sheetUrl('decisions'))).body;
+      const overview = await readPage(home());
+      const debt = await readPage(sheetUrl('debt'));
+      const health = await readPage(sheetUrl('health'));
+      const tasks = await readPage(sheetUrl('tasks'));
+      const decisions = await readPage(sheetUrl('decisions'));
 
       expect(overview).not.toContain('<svg');
       expect(overview).toContain('No goal yet — `pup brief edit` writes the Destination.');
@@ -659,12 +730,14 @@ describe('startWebDashboard', () => {
     });
 
     it("leads the Overview with the brief's Destination", async () => {
-      writeBrief('## Destination\nShip the sheets.\nThen the actions.\n\n## Priorities\nsecret\n');
+      writeBrief(
+        '## Destination\nShip the sheets.\nThen the actions.\n\n## Priorities\nnot-the-destination\n',
+      );
 
-      const page = (await get(dashboard.url)).body;
+      const page = await readPage(home());
 
       expect(page).toContain('<p class="brief">Ship the sheets.\nThen the actions.</p>');
-      expect(page).not.toContain('secret');
+      expect(page).not.toContain('not-the-destination');
     });
 
     it('shows the figures pup audit stored and pup debt lists, each with its week', async () => {
@@ -690,7 +763,7 @@ describe('startWebDashboard', () => {
         old,
       );
 
-      const page = (await get(dashboard.url)).body;
+      const page = await readPage(home());
       // `pup audit` prints each figure as the after side of its transition.
       const audited = (
         metric: 'deadExports' | 'duplicatedLines' | 'coverageRatio',
@@ -738,7 +811,7 @@ describe('startWebDashboard', () => {
         origin: 'human',
       });
 
-      const page = (await get(dashboard.url)).body;
+      const page = await readPage(home());
       const merges =
         /<figcaption>Merges per week, week starting: ([^<]*)<\/figcaption>/.exec(page)?.[1] ?? '';
 
@@ -754,7 +827,7 @@ describe('startWebDashboard', () => {
       fileDebt(`Oversize diff ${evil}`, [`src/${evil}.ts`], { reason: evil, acceptedBy: evil });
       seedSession('s-evil', ['running'], evil);
 
-      for (const page of [(await get(dashboard.url)).body, (await get(sheetUrl('debt'))).body]) {
+      for (const page of [await readPage(home()), await readPage(sheetUrl('debt'))]) {
         expect(page).not.toContain('<img');
         expect(page).not.toMatch(CONTROL);
         expect(page).toContain('&lt;img src=x onerror=alert(1)&gt;');
@@ -766,7 +839,7 @@ describe('startWebDashboard', () => {
       writeBrief(`## Destination\nShip it.\n##${' '.repeat(7950)}\u2028\n`);
 
       const started = Date.now();
-      const page = (await get(dashboard.url)).body;
+      const page = await readPage(home());
 
       expect(Date.now() - started).toBeLessThan(1000);
       expect(page).toContain('<p class="brief">Ship it.');
@@ -781,7 +854,7 @@ describe('startWebDashboard', () => {
         mkdirSync(dirname(briefPath(repo)), { recursive: true });
         plant(briefPath(repo));
 
-        const page = (await get(dashboard.url)).body;
+        const page = await readPage(home());
 
         expect(page).toContain('is not a plain file pup can read');
       },
@@ -801,12 +874,12 @@ describe('startWebDashboard', () => {
         },
       );
 
-      const overview = (await get(dashboard.url)).body;
-      for (const page of [overview, (await get(sheetUrl('debt'))).body]) {
+      const overview = await readPage(home());
+      for (const page of [overview, await readPage(sheetUrl('debt'))]) {
         expect(page).not.toContain('\u202e');
       }
       expect(overview).toContain('debt #1: Nested package src/evil\ufffdgnp.ts changed');
-      expect((await get(sheetUrl('debt'))).body).toContain('<code>src/evil\ufffdgnp.ts</code>');
+      expect(await readPage(sheetUrl('debt'))).toContain('<code>src/evil\ufffdgnp.ts</code>');
     });
 
     it('treats a figure stored as Infinity as unmeasured, and draws no NaN', async () => {
@@ -821,14 +894,14 @@ describe('startWebDashboard', () => {
         projectId(repo),
       );
 
-      const page = (await get(dashboard.url)).body;
+      const page = await readPage(home());
 
       expect(page).not.toMatch(/NaN|Infinity/);
       expect(page).toContain('<div class="k">duplicated lines</div><div class="v">—</div>');
     });
 
     it('keeps streaming every sheet while another sheet cannot be rendered', async () => {
-      const debt = await openStream(`${origin()}/events${address().search}&sheet=debt`);
+      const debt = await openStream(`${origin()}/events?sheet=debt`);
       try {
         if (debt.frames.length === 0) await debt.next();
         // A reason stored as a BLOB, which the Debt sheet cannot read as text.
@@ -854,7 +927,7 @@ describe('startWebDashboard', () => {
     });
 
     it("streams a sheet's own board, and a change to it within one poll", async () => {
-      const stream = await openStream(`${origin()}/events${address().search}&sheet=debt`);
+      const stream = await openStream(`${origin()}/events?sheet=debt`);
       try {
         const first = stream.frames[0] ?? (await stream.next());
         expect(first).toContain('No open debt — nothing to pay down.');
@@ -939,13 +1012,16 @@ describe('startWebDashboard', () => {
     });
   });
   describe('what it does', () => {
-    const actionUrl = (search = address().search): string => `${origin()}/action${search}`;
+    const actionUrl = (): string => `${origin()}/action`;
 
-    /** The action nonce a freshly served page holds. */
-    async function pageKey(url = dashboard.url): Promise<string> {
-      const key = /let key = "([^"]+)";/.exec((await get(url)).body)?.[1];
-      if (key === undefined) throw new Error('the page holds no action nonce');
-      return key;
+    /** The action nonce a freshly opened stream hands the page. */
+    async function pageKey(): Promise<string> {
+      const stream = await openStream(eventsUrl());
+      try {
+        return await stream.nonce();
+      } finally {
+        stream.close();
+      }
     }
 
     function seedDebt(): number {
@@ -964,12 +1040,17 @@ describe('startWebDashboard', () => {
       listLedgerEntries(db, projectId(repo)).some((entry) => entry.id === id);
 
     it.each([
-      ['no cookie', () => `${origin()}/action`, (): Record<string, string> => NO_COOKIE],
-      ['the spent token instead of the cookie', () => actionUrl(), () => NO_COOKIE],
+      ['no secret', () => actionUrl(), (): Record<string, string> => NO_SECRET],
+      ['a wrong secret', () => actionUrl(), () => ({ 'X-Pup-Secret': 'A'.repeat(43) })],
       [
-        'a wrong cookie',
+        'the spent token instead of the secret',
+        () => `${actionUrl()}?token=${address().searchParams.get('token')}`,
+        () => NO_SECRET,
+      ],
+      [
+        'only a cookie, as another 127.0.0.1 port could plant',
         () => actionUrl(),
-        () => ({ Cookie: `pup-dashboard-${address().port}=${'A'.repeat(43)}` }),
+        () => ({ ...NO_SECRET, Cookie: `pup-dashboard-${address().port}=${secret}` }),
       ],
       ['no Origin', () => actionUrl(), () => ({ Origin: '' })],
       [
@@ -1216,9 +1297,9 @@ describe('startWebDashboard', () => {
       });
       const id = seedDebt();
 
-      const overview = (await get(dashboard.url)).body;
-      const debt = (await get(`${dashboard.url}&sheet=debt`)).body;
-      const tasks = (await get(`${dashboard.url}&sheet=tasks`)).body;
+      const overview = await readPage(home());
+      const debt = await readPage(home('?sheet=debt'));
+      const tasks = await readPage(home('?sheet=tasks'));
 
       expect(overview).toContain(
         'name="reply" value="1" class="recommended">1. rebase (recommended)',
@@ -1238,9 +1319,8 @@ describe('startWebDashboard', () => {
   });
 
   describe('the session view', () => {
-    const viewUrl = (sessionId: string): string => `${dashboard.url}&session=${sessionId}`;
-    const viewEvents = (sessionId: string): string =>
-      `${origin()}/events${address().search}&session=${sessionId}`;
+    const viewUrl = (sessionId: string): string => home(`?session=${sessionId}`);
+    const viewEvents = (sessionId: string): string => `${origin()}/events?session=${sessionId}`;
 
     function seedWindow(sessionId: string, path: SessionState[]): void {
       seedSession(sessionId, path);
@@ -1257,7 +1337,7 @@ describe('startWebDashboard', () => {
         '> <script>alert(1)</script>\n\u001b[31mred\u202e & done\n',
       );
 
-      const page = (await get(viewUrl('s-1'))).body;
+      const page = await readPage(viewUrl('s-1'));
 
       expect(capturePane).toHaveBeenCalledWith({ sessionId: 's-1', paneId: '%5' });
       expect(page).toContain(
@@ -1301,16 +1381,16 @@ describe('startWebDashboard', () => {
         throw new SessionPaneMissingError('s-1', '%5', 'gone');
       });
 
-      const page = await get(viewUrl('s-1'));
-
-      expect(page.status).toBe(200);
-      expect(page.body).toContain('No live window: its pane is gone or was never recorded.');
+      expect((await get(viewUrl('s-1'))).status).toBe(200);
+      expect(await readPage(viewUrl('s-1'))).toContain(
+        'No live window: its pane is gone or was never recorded.',
+      );
     });
 
     it('links a merged session to its PR on GitHub and offers no button that merges there', async () => {
       seedMerge('s-pr', PR);
 
-      const page = (await get(viewUrl('s-pr'))).body;
+      const page = await readPage(viewUrl('s-pr'));
       const forms = [...page.matchAll(/<form [^>]*data-action="([^"]+)"/g)].map((m) => m[1]);
 
       expect(page).toContain(`<a href="${PR}" target="_blank" rel="noopener noreferrer">`);
