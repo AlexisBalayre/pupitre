@@ -55,7 +55,8 @@
       were skipped with no error. A failed listing
       there throws and the gate refuses: empty, the trusted set ran no nested package's own
       stages, and a session could fail it alone with an unparsable `.git/config` mended
-      before the last check. Either sha given marks the listing as the gate's. Only outside
+      before the last check. A context pinning one sha and not the other is refused before
+      any listing, since the side it leaves unpinned would be read at a movable HEAD. Only outside
       the gate, a directory with no `.git` or a repository
       with no commit yet lists as empty. The key checks' `.git/config` reads are timed out
       like a gate child, since a FIFO there would hang the gate under the merge lock.

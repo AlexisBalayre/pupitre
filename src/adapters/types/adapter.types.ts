@@ -80,7 +80,8 @@ export interface CapabilityContext {
    * a session wrote to that checkout's disk, is read from it (decision 143).
    * What that checkout commits is read at this sha too, never at its HEAD,
    * which a session can detach to another commit and restore before the gate's
-   * last check (decision 161). Absent outside the gate.
+   * last check (decision 161). Absent outside the gate; set exactly when
+   * `measureSha` is, and a context that sets one alone is refused.
    */
   configSha?: string;
   /**

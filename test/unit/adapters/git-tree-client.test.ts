@@ -80,9 +80,9 @@ describe('nestedPackageDirs', () => {
     expect(git(repo, 'ls-tree', '-r', '--name-only', sha).toString()).toBe('');
 
     expect(nestedPackageDirs(localContext(repo))).toEqual(new Set(['tools/review']));
-    expect(nestedPackageDirs({ measurePath: repo, configPath: repo, measureSha: sha })).toEqual(
-      new Set(['tools/review']),
-    );
+    expect(
+      nestedPackageDirs({ measurePath: repo, configPath: repo, measureSha: sha, configSha: sha }),
+    ).toEqual(new Set(['tools/review']));
   });
 
   it('names nothing in a directory that is no repository', () => {
@@ -112,22 +112,31 @@ describe('nestedPackageDirs', () => {
     writeFileSync(join(trusted, '.git', 'config'), '[core\n');
 
     expect(() =>
-      nestedPackageDirs({ measurePath: checkout, configPath: trusted, measureSha: cut }),
-    ).toThrow();
-    expect(() => nestedPackageDirs(localContext(trusted))).toThrow();
+      nestedPackageDirs({
+        measurePath: checkout,
+        configPath: trusted,
+        measureSha: cut,
+        configSha: cut,
+      }),
+    ).toThrow(/ls-tree/);
+    expect(() => nestedPackageDirs(localContext(trusted))).toThrow(/ls-tree/);
   });
 
-  // The trusted sha alone marks a gate: a context that pins the target branch
-  // but not the cut still refuses a failed listing rather than read it empty.
-  it('throws when the trusted listing fails under a gate that pins the target sha alone', () => {
+  // A context pinning one sha alone would list the other side at a HEAD the
+  // session can move: the cut alone reads the trusted checkout there, the
+  // target alone reads the gate's checkout through its admin dir (decision 161).
+  it.each([
+    ['the cut', 'measureSha'],
+    ['the target', 'configSha'],
+  ] as const)('refuses a gate context that pins %s alone', (_, key) => {
     const trusted = makeCheckout(['tools/review/package.json']);
-    const target = git(trusted, 'rev-parse', 'HEAD').toString().trim();
-    const checkout = makeCheckout(['tools/review/package.json']);
-    writeFileSync(join(trusted, '.git', 'config'), '[core\n');
+    const cut = git(trusted, 'rev-parse', 'HEAD').toString().trim();
+    const checkout = join(tempDir('pup-gate-'), 'checkout');
+    git(trusted, 'worktree', 'add', '-q', '--detach', '--no-checkout', checkout, cut);
 
     expect(() =>
-      nestedPackageDirs({ measurePath: checkout, configPath: trusted, configSha: target }),
-    ).toThrow(/ls-tree/);
+      nestedPackageDirs({ measurePath: checkout, configPath: trusted, [key]: cut }),
+    ).toThrow(/pins one and not the other/);
   });
 
   // A session can detach the trusted checkout's `.git/HEAD` to a commit with no
@@ -144,9 +153,7 @@ describe('nestedPackageDirs', () => {
     git(trusted, 'worktree', 'add', '-q', '--detach', '--no-checkout', checkout, target);
     git(trusted, 'checkout', '-q', '--detach', before);
     // The control: listed at its HEAD, the trusted side holds no marker.
-    expect(
-      nestedPackageDirs({ measurePath: checkout, configPath: trusted, measureSha: target }),
-    ).toEqual(new Set());
+    expect(nestedPackageDirs(localContext(trusted))).toEqual(new Set());
 
     expect(
       nestedPackageDirs({
@@ -207,7 +214,12 @@ describe('nestedPackageDirs', () => {
     if (existsSync(fired)) unlinkSync(fired);
 
     expect(
-      nestedPackageDirs({ measurePath: checkout, configPath: trusted, measureSha: cut }),
+      nestedPackageDirs({
+        measurePath: checkout,
+        configPath: trusted,
+        measureSha: cut,
+        configSha: cut,
+      }),
     ).toEqual(new Set(['tools/review']));
     expect(existsSync(fired)).toBe(false);
   });
