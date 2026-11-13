@@ -427,11 +427,16 @@ describe('rescopeTask (decision 115)', () => {
     ['.claude/hooks/scope-guard.sh', 'reaches a path the gate protects whatever the scope'],
     ['./.CLAUDE', 'reaches a path the gate protects whatever the scope'],
     ['.pupitre/adapter.yml', 'reaches a path the gate protects whatever the scope'],
-    // A protected file, matched as the glob itself and as its literal prefix.
+    // A protected file, at the top and nested, and any glob that can reach it.
     ['pup.lock', 'reaches a path the gate protects whatever the scope'],
     ['./PUP.LOCK', 'reaches a path the gate protects whatever the scope'],
     ['config/pup.lock', 'reaches a path the gate protects whatever the scope'],
     ['config/pup.lock*', 'reaches a path the gate protects whatever the scope'],
+    ['config/**', 'reaches a path the gate protects whatever the scope'],
+    ['config/*.lock', 'reaches a path the gate protects whatever the scope'],
+    ['config/pup.loc?', 'reaches a path the gate protects whatever the scope'],
+    ['Config/', 'reaches a path the gate protects whatever the scope'],
+    ['config', 'reaches a path the gate protects whatever the scope'],
     ['  ', 'is empty'],
     ['./', 'is empty'],
     ['src/\u0007x', 'contains a control character'],
@@ -471,6 +476,13 @@ describe('rescopeTask (decision 115)', () => {
     ).toMatchObject({
       added: ['./docs/**', 'src/cli/', '.claudeignore', 'docs/.claude/x'],
     });
+  });
+
+  it('takes a glob beside a protected file that can never match it', () => {
+    launched('s1', 'merged');
+    const globs = ['config/*.ts', 'config/x/**', 'config/pup.lock/', 'pup', 'pup.lockfile'];
+
+    expect(rescopeTask(db, 't-1', globs, CALLER)).toMatchObject({ added: globs });
   });
 
   // What the gate's scope-audit stage runs, on the spec it reads back.
