@@ -75,7 +75,7 @@ function holdsOf(db: Database, id: string): unknown[] {
     .map((event) => JSON.parse(event.payload));
 }
 
-describe('holdIdleCaches (decision 179)', () => {
+describe('holdIdleCaches (decision 180)', () => {
   let db: Database;
   let repo: string;
 
