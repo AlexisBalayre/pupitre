@@ -25,10 +25,15 @@ vi.mock('./git-diff.client.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./git-diff.client.js')>();
   return { ...actual, gitDiffPaths: vi.fn(actual.gitDiffPaths) };
 });
-// The real scratch git dir, so a test can fail one git call made in it.
+// The real scratch git dir, so a test can fail one git call made in it, and
+// the real stages, so a test can stand in for one remeasure's.
 vi.mock('./merge-gate.service.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./merge-gate.service.js')>();
-  return { ...actual, withScratchGitDir: vi.fn(actual.withScratchGitDir) };
+  return {
+    ...actual,
+    withScratchGitDir: vi.fn(actual.withScratchGitDir),
+    measureBranch: vi.fn(actual.measureBranch),
+  };
 });
 // The real audit, so a test can make the one after a land throw.
 vi.mock('./audit.service.js', async (importOriginal) => {
@@ -47,7 +52,7 @@ import { initProject } from './init.service.js';
 import { landSession } from './land.service.js';
 import { insertLedgerEntry } from './ledger.repository.js';
 import { MergeLockLostError } from './merge-gate.errors.js';
-import { runMergeGate, withScratchGitDir } from './merge-gate.service.js';
+import { measureBranch, runMergeGate, withScratchGitDir } from './merge-gate.service.js';
 import { projectId } from './paths.utils.js';
 import {
   appendEvent,
@@ -970,26 +975,96 @@ describe('landSession', { timeout: 20_000 }, () => {
       expect(hasTrackingRef()).toBe(false);
     });
 
-    it('refuses a flag the session never accepted, and lands one it did', async () => {
+    /** Every row of every table in the store. */
+    const storeRows = () =>
+      (
+        db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as {
+          name: string;
+        }[]
+      ).map(({ name }) => [name, db.prepare(`SELECT * FROM "${name}"`).all()]);
+
+    /** A 651-line source diff past the pin, over the oversize flag. */
+    function mergeOversizeHead(): void {
       const big = Array.from({ length: 650 }, (_, i) => `export const v${i} = ${i};\n`).join('');
       mergeMovedHead('src/big.ts', big);
-      const before = mainSha();
+    }
 
-      await expect(remeasure()).rejects.toThrow(
-        `flagged, never accepted: Oversize diff (651 lines) merged from session ${SESSION_ID}`,
-      );
-      expectNothingChanged(before);
-
-      // The kind the session's own gate filed as accepted debt, figures aside.
+    /** The session's own gate filing an oversize diff of `lines` as accepted debt. */
+    function acceptOversize(lines: number): void {
       insertLedgerEntry(db, {
         projectId: pid,
-        description: `Oversize diff (612 lines) merged from session ${SESSION_ID}`,
+        description: `Oversize diff (${lines} lines) merged from session ${SESSION_ID}`,
         files: ['src/feature.ts'],
         reason: 'r',
         acceptedBy: 'human',
         reviewBy: 'c',
       });
+    }
+
+    it('refuses a flag the session never accepted, leaving the store as it was', async () => {
+      mergeOversizeHead();
+      const before = mainSha();
+      const store = storeRows();
+
+      await expect(remeasure()).rejects.toThrow(
+        `flagged, never accepted: Oversize diff (651 lines) merged from session ${SESSION_ID}`,
+      );
+      expectNothingChanged(before);
+      expect(storeRows()).toEqual(store);
+    });
+
+    it('refuses a flag worse than the one accepted, and lands one no worse', async () => {
+      mergeOversizeHead();
+      const before = mainSha();
+      acceptOversize(612);
+
+      await expect(remeasure()).rejects.toThrow(
+        `flagged past the accepted Oversize diff (612 lines) merged from session ${SESSION_ID}: ` +
+          `Oversize diff (651 lines) merged from session ${SESSION_ID}`,
+      );
+      expectNothingChanged(before);
+
+      // The worst accepted is the bar, and an equal figure meets it.
+      acceptOversize(651);
       expect((await remeasure()).remeasure?.passed).toBe(true);
+    });
+
+    it('lands a flag better than the one accepted', async () => {
+      mergeOversizeHead();
+      acceptOversize(700);
+
+      expect((await remeasure()).remeasure?.passed).toBe(true);
+    });
+
+    // The land reads the stages itself, not only that a measurement came back.
+    it('refuses a measurement that came back with a failed stage', async () => {
+      mergeMovedHead();
+      const before = mainSha();
+      vi.mocked(measureBranch).mockImplementationOnce(async (_db, _req, _session, stages) => {
+        stages.push({ stage: 'build', status: 'fail', detail: 'boom' });
+        return { flaggedDebt: [], openEntries: [] } as unknown as Awaited<
+          ReturnType<typeof measureBranch>
+        >;
+      });
+
+      await expect(remeasure()).rejects.toThrow(/did not pass:\n {2}build: boom\n/);
+      expectNothingChanged(before);
+    });
+
+    it('refuses when the local target moved while the stages ran', async () => {
+      mergeMovedHead();
+      const real = vi.mocked(measureBranch).getMockImplementation();
+      vi.mocked(measureBranch).mockImplementationOnce(async (...args) => {
+        const measured = await real?.(...args);
+        commitIn(repo, 'NOTES.md', 'moved under the remeasure\n');
+        return measured;
+      });
+
+      await expect(remeasure()).rejects.toThrow(
+        /While the remeasure ran, local main moved from [0-9a-f]{40}\. .*Nothing was landed/,
+      );
+      expect(landedEvents()).toEqual([]);
+      expect(existsSync(worktree)).toBe(true);
     });
 
     it('refuses a critical-area change without --approved-by, before any stage runs', async () => {

@@ -278,6 +278,31 @@ export async function landSession(db: Database, req: LandRequest): Promise<LandO
       const remeasured = req.remeasure
         ? await remeasureMerge(db, req, session, { sha, head, landedOn, mergeCommit, target })
         : undefined;
+      if (remeasured !== undefined) {
+        // The stages take minutes, so what the land acts on is read again. Origin
+        // moving on keeps `originTip` in its history and changes nothing landed;
+        // origin rewound, or anything moved here, refuses.
+        assertMergeLockHeld(req.repoPath, `the land of ${prUrl} after its remeasure`);
+        const moved = [
+          ...(currentBranch(req.repoPath) === target ? [] : [`the main checkout left ${target}`]),
+          ...(resolveCommit(req.repoPath, `refs/heads/${target}`) === localSha
+            ? []
+            : [`local ${target} moved from ${localSha}`]),
+          ...(isAncestor(
+            req.repoPath,
+            originTip,
+            fetchTarget(req.repoPath, originUrl, target, localSha, undefined).tip,
+          )
+            ? []
+            : [`origin's ${target} no longer holds ${originTip}`]),
+        ];
+        if (moved.length > 0) {
+          throw new Error(
+            `While the remeasure ran, ${moved.join('; ')}. The session stays merged. Nothing ` +
+              `was landed; re-run \`pup land ${id} --remeasure\`.`,
+          );
+        }
+      }
       let fastForwarded = false;
       if (!isAncestor(req.repoPath, originTip, localSha)) {
         if (!isAncestor(req.repoPath, localSha, originTip)) {
@@ -673,23 +698,55 @@ async function remeasureMerge(
       // see above
     }
   }
-  const held = new Set(
-    (measured?.openEntries ?? []).flatMap((entry) => debtKind(entry.description, session.id) ?? []),
-  );
-  const unaccepted = (measured?.flaggedDebt ?? []).filter(
-    (flag) => !held.has(debtKind(flag.description, session.id) as string),
-  );
-  if (measured === undefined || unaccepted.length > 0) {
-    const failed = [
-      ...stages
-        .filter((stage) => stage.status === 'fail')
-        .map((stage) => `  ${stage.stage}: ${stage.detail ?? 'failed'}`),
-      ...unaccepted.map((flag) => `  flagged, never accepted: ${flag.description}`),
-    ];
+  // Per kind, the worst figure the session's own gate filed as accepted debt.
+  const accepted = new Map<string, string>();
+  for (const entry of measured?.openEntries ?? []) {
+    const kind = debtKind(entry.description, session.id);
+    if (kind === undefined) continue;
+    const held = accepted.get(kind);
+    if (held === undefined || debtExcess(entry.description) > debtExcess(held)) {
+      accepted.set(kind, entry.description);
+    }
+  }
+  const failed = [
+    ...stages
+      .filter((stage) => stage.status === 'fail')
+      .map((stage) => `  ${stage.stage}: ${stage.detail ?? 'failed'}`),
+    ...(measured?.flaggedDebt ?? []).flatMap((flag) => {
+      const held = accepted.get(debtKind(flag.description, session.id) as string);
+      if (held === undefined) return [`  flagged, never accepted: ${flag.description}`];
+      return debtExcess(flag.description) > debtExcess(held)
+        ? [`  flagged past the accepted ${held}: ${flag.description}`]
+        : [];
+    }),
+  ];
+  if (measured === undefined || failed.length > 0) {
     throw new Error(
       `The remeasure of ${mergeCommit} against ${target} at ${landedOn} did not pass:\n` +
-        `${failed.join('\n')}\nThe session stays merged. Nothing was landed.`,
+        `${failed.join('\n') || '  the stages stopped with no result'}\n` +
+        'The session stays merged. Nothing was landed.',
     );
   }
   return { sessionId: session.id, passed: true, sandbox, stages };
+}
+
+/**
+ * How far past its bar a flag's description says a change went, higher being
+ * worse (decision 185): a duplication's rise, a coverage gap's drop below the
+ * baseline, otherwise the one count its figures hold (lines, files, exports,
+ * decision points). Zero for a kind with no figure, which `debtKind` alone
+ * matches. Read from the wordings `debtKind`'s figures sit in.
+ */
+function debtExcess(description: string): number {
+  const rose = /^Duplicated lines rose from (\d+) to (\d+) in session /.exec(description);
+  if (rose) return Number(rose[2]) - Number(rose[1]);
+  const below = /\(patch coverage ([\d.]+)% below baseline ([\d.]+)%\) merged from session /.exec(
+    description,
+  );
+  if (below) return Number(below[2]) - Number(below[1]);
+  const count =
+    /^Coverage unmeasured over (\d+) changed source file\(s\) in session |\(\+?(\d+)[^()]*\) merged from session /.exec(
+      description,
+    );
+  return count ? Number(count[1] ?? count[2]) : 0;
 }

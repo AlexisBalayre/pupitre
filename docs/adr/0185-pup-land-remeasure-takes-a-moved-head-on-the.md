@@ -14,12 +14,22 @@
     the commit that merge went onto on the pinned target, which is the base `mergedOnto` finds.
     They use a gate checkout, a sandbox run and a test slot, the same as `runMergeGate`. Only a
     full pass lands, and the land then goes on as usual. A hard stage that fails refuses the land
-    and names the stage and its detail. So does a debt flag whose kind the session's own gate
-    did not already file as accepted debt: no one accepted it. A kind the session already holds
-    open in the ledger passes, since the stages measure the whole PR again, and the flags the
-    first gate filed come back with new figures. The re-gate reads the ledger the same way
-    (decision 86). A refusal changes nothing and records nothing. The session stays merged, and
-    the operator still has `--accept-head`.
+    and names the stage and its detail; the land checks the stages itself, not only that
+    `measureBranch` returned. So does a debt flag whose kind the session's own gate did not
+    already file as accepted debt: no one accepted it. A kind the session already holds open in
+    the ledger passes only up to the figure accepted: the stages measure the whole PR again, so
+    the flags the first gate filed come back, but an `Oversize diff (612 lines)` someone accepted
+    does not let 651 lines through. Worse means more lines, files, exports or decision points, a
+    larger duplication rise, or a larger patch-coverage drop below the baseline; against several
+    open entries of a kind, the worst one accepted is the bar. Equal or better passes. A refusal
+    changes nothing and records nothing: `measureBranch` only reads the store, and the debt it
+    flags, the baseline it would ratchet and the event are written by the land alone, after a
+    pass. The session stays merged, and the operator still has `--accept-head`.
+    *After the stages.* They take minutes, so the land reads again what it acts on before
+    anything moves: the merge lock must still be held, the main checkout still on the target,
+    and the local target at the commit read before. Origin's target is fetched again and must
+    still hold the tip fetched before; origin moving on changes nothing landed, while origin
+    rewound refuses. Anything moved refuses, and the operator re-runs the remeasure.
     *What it checks besides.* The PR's head ref is still read from origin and must be the head
     GitHub reports. The merge commit must still have the tree that merging that head gives
     (decision 131). The pin need not be an ancestor of the head, unlike with `--accept-head`: the
@@ -30,9 +40,14 @@
     not say that a change to the gate, git, the store or the hooks is sound. So when the commits
     past the pin (`<pin>...<head>`) change a file in a `CRITICAL_AREAS` path, the remeasure is
     refused before any stage runs, unless `--approved-by <who>` names the operator's approval.
-    The conductor may run `--remeasure`, since the gate is what vouches. It relays an approval
-    and never gives one, so it cannot name `human` (decision 75). `--approved-by` without
-    `--remeasure` is refused.
+    `--remeasure` is operator-only, as `--accept-head` is, and `pup land` is refused to sessions
+    already. `--approved-by` is a name the CLI cannot check, so a conductor that could pass one
+    could land an unmeasured change to a critical area on a steer or an injected prompt.
+    `--approved-by` without `--remeasure` is refused. The paths past the pin are listed with
+    `gitDiffPaths`, the git the gate's scope audit runs: the safe config, the scrubbed
+    environment with replace refs off, and no external diff or textconv. The glob match is
+    case-sensitive, as the gate's is, so on a case-insensitive filesystem a path spelled in
+    another case escapes it there too.
     *The event.* The `landed` event of a remeasured land records `remeasuredHead`, `pinned`, the
     passing report as `remeasure`, and `approvedBy` when one was given. An accepted land keeps
     decision 164's `acceptedHead` and `pinned`, and a land at the pin carries none of these.

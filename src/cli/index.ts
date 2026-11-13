@@ -2547,9 +2547,14 @@ export function buildProgram(): Command {
         return refuse('`pup land` is refused to sessions; the operator or the conductor runs it.');
       }
       // Vouching for commits no gate measured is the merge's power, which the
-      // conductor does not hold (decisions 47, 164).
+      // conductor does not hold (decisions 47, 164). Neither is a remeasure its
+      // to run: `--approved-by` is a name the CLI cannot check, so only the
+      // operator, who is that name or heard from it, may pass one (decision 185).
       if (opts.acceptHead !== undefined && callingConductor()) {
         return refuse('`pup land --accept-head` is operator-only.');
+      }
+      if (opts.remeasure && callingConductor()) {
+        return refuse('`pup land --remeasure` is operator-only.');
       }
       if (opts.approvedBy !== undefined && !opts.remeasure) {
         return refuse('--approved-by names who approved a remeasure; pass it with --remeasure.');
@@ -2557,13 +2562,6 @@ export function buildProgram(): Command {
       const approvedBy =
         opts.approvedBy === undefined ? undefined : sanitizeReason(opts.approvedBy);
       if (approvedBy === '') return refuse('--approved-by needs a name, such as tg:<user>.');
-      // The conductor relays the operator's approval of a critical change, it
-      // does not give one (decisions 75, 185).
-      if (callingConductor() && approvedBy?.toLowerCase() === 'human') {
-        return refuse(
-          '--approved-by names the person who approved, not `human`; use <channel>:<name>.',
-        );
-      }
       if (refusedUnsandboxed()) return;
       let outcome: LandOutcome;
       let lockLost: MergeLockLostError | undefined;

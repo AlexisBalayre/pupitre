@@ -1757,12 +1757,8 @@ describe('CLI commands', () => {
       expect(errors).toEqual([]);
     });
 
-    // The gate vouches for a remeasured head, so the conductor may run it; a
-    // critical change still needs the operator's approval, which it relays (decision 185).
-    it("hands the conductor's --remeasure and relayed --approved-by to the land, printing the stages", async () => {
-      const repo = initRepoWithAdapter();
-      useCwd(repo);
-      vi.stubEnv('PUP_CONDUCTOR', projectId(repo));
+    it("hands the operator's --remeasure and --approved-by to the land, printing the stages", async () => {
+      useCwd(initRepoWithAdapter());
       vi.mocked(landSession).mockResolvedValue({
         ...landedOutcome(),
         remeasure: {
@@ -1799,18 +1795,35 @@ describe('CLI commands', () => {
       expect(landSession).not.toHaveBeenCalled();
     });
 
-    it('refuses a conductor naming `human` as the approver, landing nothing', async () => {
+    // `--approved-by` is a name the CLI cannot check, so a remeasure is the
+    // operator's alone (decision 185).
+    it('refuses --remeasure from the conductor, landing nothing', async () => {
       const repo = initRepoWithAdapter();
       useCwd(repo);
       vi.stubEnv('PUP_CONDUCTOR', projectId(repo));
 
-      await buildProgram().parseAsync(['land', 's1', '--remeasure', '--approved-by', 'Human'], {
-        from: 'user',
-      });
+      await buildProgram().parseAsync(
+        ['land', 's1', '--remeasure', '--approved-by', 'tg:operator'],
+        { from: 'user' },
+      );
+
+      expect(errors).toEqual(['`pup land --remeasure` is operator-only.']);
+      expect(process.exitCode).toBe(1);
+      expect(landSession).not.toHaveBeenCalled();
+    });
+
+    it('refuses --remeasure from a session, landing nothing', async () => {
+      const repo = initRepoWithAdapter();
+      useCwd(repo);
+      seedOpenPr(repo);
+      vi.stubEnv('PUP_SESSION_ID', 's1');
+
+      await buildProgram().parseAsync(['land', 's1', '--remeasure'], { from: 'user' });
 
       expect(errors).toEqual([
-        '--approved-by names the person who approved, not `human`; use <channel>:<name>.',
+        '`pup land` is refused to sessions; the operator or the conductor runs it.',
       ]);
+      expect(process.exitCode).toBe(1);
       expect(landSession).not.toHaveBeenCalled();
     });
 
