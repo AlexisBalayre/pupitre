@@ -2766,6 +2766,7 @@ export async function measureBranch(
     measurePath: checkoutDir,
     configPath: req.repoPath,
     measureSha: sha,
+    configSha: targetSha,
     ...(req.gateEnv?.length ? { gateEnv: req.gateEnv } : {}),
   };
   const changedPaths = gitDiffPaths(req.repoPath, targetSha, sha);
@@ -2937,8 +2938,17 @@ export async function measureBranch(
     complexityAdapters.length > 0
       ? {
           // "Before" reads the main checkout, which the merge lock holds at
-          // the target branch — no historical checkout needed.
-          before: complexityOf(localContext(req.repoPath, req.gateEnv), complexityPaths),
+          // the target branch — no historical checkout needed. What git reads
+          // of it is pinned to the target sha, never the main checkout's HEAD,
+          // which a session can detach while this runs (decision 161).
+          before: complexityOf(
+            {
+              ...localContext(req.repoPath, req.gateEnv),
+              measureSha: targetSha,
+              configSha: targetSha,
+            },
+            complexityPaths,
+          ),
           after: complexityOf(capabilityContext, changedPaths),
         }
       : undefined;
@@ -3085,9 +3095,9 @@ export async function measureBranch(
     req.repoPath,
     targetSha,
     sha,
-    // The trusted lists are the target's, not what a session wrote to the main checkout.
-    collects &&
-      ((files) => (intact ? collects({ ...capabilityContext, configSha: targetSha }, files) : [])),
+    // The trusted lists are the target's, not what a session wrote to the main
+    // checkout: the context carries the target sha as `configSha`.
+    collects && ((files) => (intact ? collects(capabilityContext, files) : [])),
   );
   const split = `${changed.source} source + ${changed.test} test + ${changed.docs} docs changed lines`;
   const sizeFindings: string[] = [];
