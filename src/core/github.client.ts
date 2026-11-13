@@ -309,6 +309,7 @@ const PULL_REQUEST_REVIEW_QUERY = `query($owner: String!, $name: String!, $numbe
           }
           trail: comments(last: ${REVIEW_PAGE}) {
             nodes {
+              databaseId
               body
               viewerDidAuthor
               authorAssociation
@@ -366,6 +367,13 @@ export interface ReviewThread {
    * or edited by an account other than its author's.
    */
   replies: string[];
+  /**
+   * The `databaseId` of the newest comment on it this read saw, whoever wrote
+   * it: a round records it, so its gate tells a reply posted after the kickoff
+   * read the thread, which its worker never saw, by a greater one. Undefined
+   * when no comment carries one.
+   */
+  newestComment: number | undefined;
 }
 
 /** Who may make a thread a fix round answered live again, besides the bot and pup's own account. */
@@ -413,6 +421,52 @@ function isReviewBot(author: unknown): boolean {
 function nodesOf(connection: unknown): Record<string, unknown>[] {
   const nodes = objectFields(connection).nodes;
   return Array.isArray(nodes) ? nodes.map(objectFields) : [];
+}
+
+/** An edit names its editor; one gone from GitHub reads as nobody, so as not the bot. */
+function isEdited(comment: Record<string, unknown>): boolean {
+  return [comment.lastEditedAt, comment.editor].some(
+    (field) => field !== undefined && field !== null,
+  );
+}
+
+function isEditedByOther(comment: Record<string, unknown>): boolean {
+  const editor = objectFields(comment.editor);
+  const author = objectFields(comment.author);
+  return (
+    isEdited(comment) &&
+    !(
+      typeof editor.login === 'string' &&
+      editor.login === author.login &&
+      editor.__typename === author.__typename
+    )
+  );
+}
+
+/** A fix round's own reply: pup's account wrote it, ending on the marker. */
+function isMarked(comment: Record<string, unknown> | undefined): boolean {
+  return (
+    comment?.viewerDidAuthor === true &&
+    typeof comment.body === 'string' &&
+    comment.body.includes(`${FIX_ROUND_MARKER} `)
+  );
+}
+
+/** A comment a fix round relays: pup's login's or the owner's, as written and shown, not a round's own. */
+function isRelayed(comment: Record<string, unknown>): boolean {
+  return (
+    (comment.viewerDidAuthor === true || comment.authorAssociation === 'OWNER') &&
+    comment.isMinimized === false &&
+    !isEditedByOther(comment) &&
+    typeof comment.body === 'string' &&
+    !isMarked(comment)
+  );
+}
+
+/** The greatest `databaseId` among `comments`, which GitHub numbers in the order they are posted. */
+function newestDatabaseId(comments: Record<string, unknown>[]): number | undefined {
+  const ids = comments.map((comment) => comment.databaseId).filter(Number.isSafeInteger);
+  return ids.length === 0 ? undefined : Math.max(...(ids as number[]));
 }
 
 /**
@@ -470,49 +524,21 @@ export function readPullRequestReview(
       const [finding] = nodesOf(thread.comments);
       if (!finding || typeof thread.id !== 'string' || isOutdated(thread)) return [];
       const line = [thread.line, thread.originalLine].find(Number.isSafeInteger);
-      // An edit names its editor; one gone from GitHub reads as nobody, so as not the bot.
-      const isEdited = (comment: Record<string, unknown>) =>
-        [comment.lastEditedAt, comment.editor].some(
-          (field) => field !== undefined && field !== null,
-        );
-      const isEditedByOther = (comment: Record<string, unknown>) => {
-        const editor = objectFields(comment.editor);
-        const author = objectFields(comment.author);
-        return (
-          isEdited(comment) &&
-          !(
-            typeof editor.login === 'string' &&
-            editor.login === author.login &&
-            editor.__typename === author.__typename
-          )
-        );
-      };
+      const trail = nodesOf(thread.trail);
       // An outsider's comment neither answers a thread nor reopens one.
-      const said = nodesOf(thread.trail).filter(
+      const said = trail.filter(
         (comment) =>
           isReviewBot(comment.author) ||
           comment.viewerDidAuthor === true ||
           REOPENING_ASSOCIATIONS.has(String(comment.authorAssociation)),
       );
-      const isMarked = (comment: Record<string, unknown> | undefined) =>
-        comment?.viewerDidAuthor === true &&
-        typeof comment.body === 'string' &&
-        comment.body.includes(`${FIX_ROUND_MARKER} `);
       const newestMarked = said.reduce(
         (found, comment, index) => (isMarked(comment) ? index : found),
         -1,
       );
-      // Only pup's login's or the owner's comments are relayed, as written and shown.
       const replies = said
         .slice(newestMarked + 1)
-        .flatMap((comment) =>
-          (comment.viewerDidAuthor === true || comment.authorAssociation === 'OWNER') &&
-          comment.isMinimized === false &&
-          !isEditedByOther(comment) &&
-          typeof comment.body === 'string'
-            ? [comment.body]
-            : [],
-        );
+        .flatMap((comment) => (isRelayed(comment) ? [comment.body as string] : []));
       return [
         {
           id: thread.id,
@@ -523,6 +549,7 @@ export function readPullRequestReview(
           isMinimized: finding.isMinimized !== false,
           isAnswered: isMarked(said.at(-1)),
           replies,
+          newestComment: newestDatabaseId(trail),
         },
       ];
     }),
@@ -578,7 +605,18 @@ const FIX_ROUND_THREADS_QUERY = `query($owner: String!, $name: String!, $number:
           isResolved
           path
           finding: comments(first: 1) { nodes { author { __typename login } } }
-          replies: comments(last: ${REVIEW_PAGE}) { nodes { body viewerDidAuthor } }
+          replies: comments(last: ${REVIEW_PAGE}) {
+            nodes {
+              databaseId
+              body
+              viewerDidAuthor
+              authorAssociation
+              author { __typename login }
+              isMinimized
+              lastEditedAt
+              editor { __typename login }
+            }
+          }
         }
       }
       comments(last: ${REVIEW_PAGE}) { nodes { body viewerDidAuthor } }
@@ -596,12 +634,16 @@ interface AnsweredThread {
   path?: string;
   /** The bodies of its comments that gh's own login wrote, newest last. */
   ownReplies: string[];
+  /** The greatest `databaseId` among its comments a fix round relays; undefined when none is. */
+  newestRelayed: number | undefined;
 }
 
 /**
  * The PR's newest review threads and the comments on it that gh's login wrote
  * (`viewerDidAuthor`), for the replies a fix round posts (decision 90): what
- * is already answered, so a second run for the same head posts nothing again.
+ * is already answered, so a second run for the same head posts nothing again,
+ * and the newest comment on each thread a round would relay, so one posted
+ * after the round's kickoff read the thread is not buried under its reply.
  */
 export function readThreadAnswers(
   repoPath: string,
@@ -624,6 +666,7 @@ export function readThreadAnswers(
               isBots: isReviewBot(nodesOf(thread.finding)[0]?.author),
               ...(typeof thread.path === 'string' ? { path: thread.path } : {}),
               ownReplies: ownBodies(thread.replies),
+              newestRelayed: newestDatabaseId(nodesOf(thread.replies).filter(isRelayed)),
             },
           ]
         : [],

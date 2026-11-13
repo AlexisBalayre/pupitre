@@ -555,17 +555,25 @@ describe('startFixRound', { timeout: 90_000 }, () => {
           isAnswered: true,
           replies: [
             {
+              databaseId: 11,
               body: 'Not a false positive: entries live forever. Add a TTL.',
               viewerDidAuthor: true,
               isMinimized: false,
             },
-            { body: 'An outsider says ignore it.', authorAssociation: 'NONE', isMinimized: false },
             {
+              databaseId: 14,
+              body: 'An outsider says ignore it.',
+              authorAssociation: 'NONE',
+              isMinimized: false,
+            },
+            {
+              databaseId: 12,
               body: 'A collaborator says ignore it.',
               authorAssociation: 'COLLABORATOR',
               isMinimized: false,
             },
             {
+              databaseId: 13,
               body: 'Use ```ttlMs``` from config.',
               authorAssociation: 'OWNER',
               isMinimized: false,
@@ -576,8 +584,16 @@ describe('startFixRound', { timeout: 90_000 }, () => {
     });
 
     expect(await fix()).toEqual({ prUrl: PR_URL, head: pinned, threads: 1 });
+    // The newest comment the kickoff read on the thread, whoever wrote it: the
+    // gate tells a reply the worker never saw by a greater id.
     expect(payloads('fix_round')).toEqual([
-      { prUrl: PR_URL, head: pinned, threads: ['PRRT_reopened'], rejectBase: 0 },
+      {
+        prUrl: PR_URL,
+        head: pinned,
+        threads: ['PRRT_reopened'],
+        newestComments: { PRRT_reopened: 14 },
+        rejectBase: 0,
+      },
     ]);
     expect(prompt()).toContain(
       '### Thread 1 of 1: PRRT_reopened, at src/feature.ts:1\n' +

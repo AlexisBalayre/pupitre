@@ -143,12 +143,18 @@ interface ThreadAnswers {
   declined: number;
   /** Named in the round but answered nowhere in the worker's summary: left open. */
   unanswered: number;
+  /**
+   * Replied on, by a comment a round relays, after the kickoff read it: the
+   * worker never saw that reply, so nothing is posted or resolved, and the
+   * next round takes the thread with it.
+   */
+  repliedSince: number;
 }
 
 /** The one on-demand review a gated fix round asks for: CI reviews only on opening and on this comment. */
 const REVIEW_ASK = '@claude review';
 
-type ThreadVerdict = Exclude<keyof ThreadAnswers, 'prUrl' | 'sha'>;
+type ThreadVerdict = Exclude<keyof ThreadAnswers, 'prUrl' | 'sha' | 'repliedSince'>;
 
 /** One thread's answer in the worker's `pup session done` summary. */
 interface WorkerAnswer {
@@ -225,10 +231,14 @@ export async function startFixRound(db: Database, req: FixRoundRequest): Promise
   const roundId = await withMergeLock(req.repoPath, () => {
     assertStillPinned(db, req.repoPath, session.id, pinned);
     restoreWorktree(req.repoPath, session, head);
+    const newest = threads.flatMap(({ id, newestComment }) =>
+      newestComment === undefined ? [] : [[id, newestComment] as const],
+    );
     return takeFixRoundEdge(db, session.id, {
       prUrl,
       head,
       threads: threads.map((thread) => thread.id),
+      ...(newest.length > 0 ? { newestComments: Object.fromEntries(newest) } : {}),
     });
   });
   relaunchWorker(
@@ -282,7 +292,9 @@ export function ciReviewLookup(db: Database, repoPath: string): CiReviewLookup {
  * fixed and the round changed the file it is on, by content against
  * `targetSha` merged into the round's start: the worker's word alone resolves
  * nothing, and neither does a file the target changed.
- * Every other thread keeps its reply and stays open for the operator. Then
+ * Every other thread keeps its reply and stays open for the operator, but one
+ * replied on since the kickoff read it gets neither: the reply would bury
+ * what its worker never saw, so the thread is left for the next round. Then
  * one summary comment on the PR for the round. Every
  * post carries a marker naming the sha, read back first, so a second run for
  * the same head posts nothing again, and a run cut short finishes what the
@@ -304,7 +316,7 @@ export function answerFixRoundThreads(
 ): ThreadAnswers | undefined {
   const round = roundTheNewestMergeEnded(db, sessionId);
   if (round === undefined) return undefined;
-  const { prUrl, sha, head, threadIds, summaries } = round;
+  const { prUrl, sha, head, threadIds, newestComments, summaries } = round;
   assertPullRequestOf(prUrl, repo, 'No thread was answered.');
   const deadline = Date.now() + budgetMs;
   const withinBudget = <TResult>(call: (timeoutMs: number) => TResult): TResult => {
@@ -337,10 +349,16 @@ export function answerFixRoundThreads(
     unverified: 0,
     declined: 0,
     unanswered: 0,
+    repliedSince: 0,
   };
   for (const id of threadIds) {
     const thread = onGitHub.threads.find((listed) => listed.id === id);
     if (!THREAD_ID.test(id) || thread === undefined || !thread.isBots) continue;
+    const seen = newestComments.get(id);
+    if (seen !== undefined && thread.newestRelayed !== undefined && thread.newestRelayed > seen) {
+      answers.repliedSince++;
+      continue;
+    }
     const answer = workerAnswers.get(id);
     const verdict = threadVerdict(answer?.verdict, thread.path, changed);
     // Only the newest reply counts: one the operator wrote after the marker reopens the
@@ -366,7 +384,10 @@ export function answerFixRoundThreads(
       `CI fix round gated at ${sha}: ${answers.addressed} thread(s) addressed and resolved, ` +
       `${answers.unverified} answered fixed that pup could not verify, ` +
       `${answers.declined} declined and ${answers.unanswered} unanswered` +
-      (left > 0 ? ', left open for the operator.' : '.') +
+      (left > 0 ? ', left open for the operator' : '') +
+      (answers.repliedSince > 0
+        ? `; ${answers.repliedSince} replied on while the round ran, left for the next round.`
+        : '.') +
       `\n\n${REVIEW_ASK}\n\n${marker}`;
     withinBudget((timeoutMs) => commentOnPullRequest(repoPath, prUrl, repo, body, timeoutMs));
   }
@@ -405,6 +426,7 @@ function roundTheNewestMergeEnded(
       sha: string;
       head: string | undefined;
       threadIds: string[];
+      newestComments: Map<string, number>;
       summaries: string[];
     }
   | undefined {
@@ -418,7 +440,7 @@ function roundTheNewestMergeEnded(
   if (merged.type !== 'merge' || round.type !== 'other') return undefined;
   const { prUrl, sha } = merged;
   if (prUrl === undefined || sha === undefined || !COMMIT_SHA.test(sha)) return undefined;
-  const { head, threads } = round.fields;
+  const { head, threads, newestComments } = round.fields;
   const summaries = events
     .filter((row) => row.id > before.id && row.id < merge.id)
     .map(decodeEvent)
@@ -429,6 +451,12 @@ function roundTheNewestMergeEnded(
     sha,
     head: typeof head === 'string' ? head : undefined,
     threadIds: asStringArray(threads),
+    // Store text: only a whole number counts, and a round without the field compares nothing.
+    newestComments: new Map(
+      Object.entries(
+        typeof newestComments === 'object' && newestComments !== null ? newestComments : {},
+      ).filter((entry): entry is [string, number] => Number.isSafeInteger(entry[1])),
+    ),
     summaries,
   };
 }
