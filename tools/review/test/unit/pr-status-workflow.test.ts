@@ -253,9 +253,13 @@ interface Review {
   login?: string;
 }
 
-/** The slice of the github-script client the job calls, answering from fixed data. */
-function fakeGithub(pages: Thread[][], reviews: Review[] = []) {
+/**
+ * The slice of the github-script client the job calls, answering from fixed data.
+ * `accepted` puts on `review-accepted`, added after every summary review.
+ */
+function fakeGithub(pages: Thread[][], reviews: Review[] = [], accepted = false) {
   const listReviews = () => undefined;
+  const listEvents = () => undefined;
   const cursors: (string | null)[] = [];
   return {
     cursors,
@@ -268,24 +272,29 @@ function fakeGithub(pages: Thread[][], reviews: Review[] = []) {
             mergeable: true,
             mergeable_state: "clean",
             head: { sha: "head" },
-            labels: [],
+            labels: accepted ? [{ name: "review-accepted" }] : [],
           },
         }),
         listReviews,
       },
       repos: { getCombinedStatusForRef: async () => ({ data: { statuses: [] } }) },
       checks: { listForRef: () => undefined },
+      issues: { listEvents, removeLabel: async () => undefined },
     },
-    paginate: async (method: unknown) =>
-      method === listReviews
-        ? reviews.map((r) => ({
-            id: r.id,
-            body: r.body,
-            state: "COMMENTED",
-            author_association: "NONE",
-            user: { login: r.login ?? "github-actions[bot]" },
-          }))
-        : [],
+    paginate: async (method: unknown) => {
+      if (method === listEvents) {
+        return [{ event: "labeled", label: { name: "review-accepted" }, created_at: "2026-11-10T12:05:00Z" }];
+      }
+      if (method !== listReviews) return [];
+      return reviews.map((r) => ({
+        id: r.id,
+        body: r.body,
+        state: "COMMENTED",
+        author_association: "NONE",
+        submitted_at: "2026-11-10T12:00:00Z",
+        user: { login: r.login ?? "github-actions[bot]" },
+      }));
+    },
     graphql: async (_query: string, { after }: { after: string | null }) => {
       cursors.push(after);
       const page = after === null ? 0 : Number(after);
@@ -369,8 +378,8 @@ describe("botThreads", () => {
 });
 
 describe("statusOf", () => {
-  function statusOf(pages: Thread[][], reviews: Review[]) {
-    const github = fakeGithub(pages, reviews);
+  function statusOf(pages: Thread[][], reviews: Review[], accepted = false) {
+    const github = fakeGithub(pages, reviews, accepted);
     const run = inline<(number: number) => Promise<string | undefined>>("statusOf", {
       github,
       owner: "o",
@@ -381,6 +390,8 @@ describe("statusOf", () => {
       isVerdict,
       unthreadedImportants: counted,
       botThreads: botThreadsOf(github),
+      ACCEPTED: "review-accepted",
+      acceptedSince,
     });
     return run(1);
   }
@@ -427,6 +438,13 @@ describe("statusOf", () => {
         "review-open",
       );
     }
+  });
+
+  it("lets review-accepted wave the newest verdict round's importants through, but not an unknown count", async () => {
+    expect(await statusOf([], [{ id: 1, body: raising }], true)).toBe("ready");
+    const forged = `${noVerdict}\n\n1 important finding with no line in this diff to anchor to:`;
+    expect(await statusOf([], [{ id: 1, body: clean }, { id: 2, body: forged }], true)).toBe("review-open");
+    expect(await statusOf([[{ review: 5, isResolved: false }]], [{ id: 5, body: raising }], true)).toBe("review-open");
   });
 
   it("reads ready once the review that opened a resolved thread is a verdict summary, or one follows it", async () => {
