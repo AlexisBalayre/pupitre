@@ -6,13 +6,16 @@ import {
   readdirSync,
   readFileSync,
   realpathSync,
+  renameSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { assertMainCheckout, RewrittenGitDirError } from './git-diff.client.js';
 import {
   commentOnPullRequest,
   isCutOffByNode,
@@ -570,3 +573,92 @@ describe('the git gh runs', () => {
     expect(existsSync(fired)).toBe(false);
   });
 });
+
+// gh runs git in the main checkout with no `--git-dir` of pup's, so a `.git` a
+// session rewrote there would hand gh's git a decoy repo (decision 172).
+describe('gh in a main checkout whose .git a session rewrote', () => {
+  let originalPath: string | undefined;
+  beforeEach(() => {
+    originalPath = process.env.PATH;
+  });
+  afterEach(() => {
+    process.env.PATH = originalPath;
+  });
+
+  /** A main checkout pup has passed, and a gh that logs to `ran` after running `script`. */
+  function checkout(script = ''): { repo: string; ran: string; decoy: string } {
+    const repo = tempDir('pup-gh-dotgit-');
+    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repo, env: plainGitEnv() });
+    const decoy = tempDir('pup-gh-decoy-');
+    execFileSync('git', ['init', '-q', '--bare', '-b', 'main'], { cwd: decoy, env: plainGitEnv() });
+    const ran = join(tempDir('pup-gh-log-'), 'ran');
+    const ghDir = tempDir('pup-gh-bin-');
+    writeFileSync(
+      join(ghDir, 'gh'),
+      `#!/bin/sh\ncat > /dev/null\n${script}\necho ran >> ${ran}\n`,
+      { mode: 0o755 },
+    );
+    process.env.PATH = `${ghDir}:${originalPath}`;
+    assertMainCheckout(repo);
+    return { repo, ran, decoy };
+  }
+
+  const comment = (repo: string) =>
+    commentOnPullRequest(repo, 'https://github.com/o/r/pull/1', 'github.com/o/r', 'body');
+
+  it('runs gh in a checkout whose .git is untouched', () => {
+    const { repo, ran } = checkout();
+    comment(repo);
+
+    expect(readFileSync(ran, 'utf8')).toBe('ran\n');
+  });
+
+  it.each([
+    [
+      'a planted commondir',
+      (repo: string, decoy: string) => writeFileSync(join(repo, '.git', 'commondir'), `${decoy}\n`),
+      /commondir exists/,
+    ],
+    [
+      'a gitfile',
+      (repo: string, decoy: string) => {
+        renameSync(join(repo, '.git'), join(tempDir('pup-gh-aside-'), 'git'));
+        writeFileSync(join(repo, '.git'), `gitdir: ${decoy}\n`);
+      },
+      /\.git is no longer a directory/,
+    ],
+    [
+      'a symlink',
+      (repo: string, decoy: string) => {
+        renameSync(join(repo, '.git'), join(tempDir('pup-gh-aside-'), 'git'));
+        symlinkSync(decoy, join(repo, '.git'));
+      },
+      /\.git is a symlink/,
+    ],
+  ] as const)('refuses before gh runs when .git holds %s', (_, plant, refusal) => {
+    const { repo, ran, decoy } = checkout();
+    plant(repo, decoy);
+
+    expect(() => comment(repo)).toThrow(RewrittenGitDirError);
+    expect(() => comment(repo)).toThrow(refusal);
+    expect(existsSync(ran)).toBe(false);
+  });
+
+  it("refuses gh's answer when .git became a symlink while it ran", () => {
+    const decoy = tempDir('pup-gh-swap-');
+    const { repo, ran } = checkout(
+      `mv .git ${join(tempDir('pup-gh-aside-'), 'git')} && ln -s ${decoy} .git`,
+    );
+
+    expect(() => comment(repo)).toThrow(/\.git is a symlink/);
+    expect(readFileSync(ran, 'utf8')).toBe('ran\n');
+  });
+});
+
+function plainGitEnv(): NodeJS.ProcessEnv {
+  return {
+    ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_'))),
+    GIT_CONFIG_GLOBAL: '/dev/null',
+    GIT_CONFIG_SYSTEM: '/dev/null',
+  };
+}

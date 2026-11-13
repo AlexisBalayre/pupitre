@@ -39,6 +39,9 @@ export type { DiffFileStat };
  * diff and stop seeing a gitlink change. The pathspec-mode variables go too:
  * `GIT_LITERAL_PATHSPECS` (which git exports to a hook's children) turns off
  * the `:(top)` and `:(top,literal)` magic these reads rely on.
+ * Without the object-store pair: an inherited `GIT_OBJECT_DIRECTORY` or
+ * `GIT_ALTERNATE_OBJECT_DIRECTORIES` would have git read commits from a store
+ * no `.git` check ever looked at.
  */
 function scrubbedGitEnv(): NodeJS.ProcessEnv {
   const scrubbed = [
@@ -46,6 +49,8 @@ function scrubbedGitEnv(): NodeJS.ProcessEnv {
     'GIT_WORK_TREE',
     'GIT_INDEX_FILE',
     'GIT_COMMON_DIR',
+    'GIT_OBJECT_DIRECTORY',
+    'GIT_ALTERNATE_OBJECT_DIRECTORIES',
     'GIT_PREFIX',
     'GIT_LITERAL_PATHSPECS',
     'GIT_GLOB_PATHSPECS',
@@ -608,10 +613,28 @@ interface RunGitOptions {
  * must reach its parser whole — so a caller reading one value trims it.
  */
 export function runGit(cwd: string, args: string[], opts: RunGitOptions = {}): string {
-  return execFileSync('git', safeArgv(cwd, args, opts.env), {
-    ...spawnOptions(opts),
-    encoding: 'utf8',
-  });
+  const options = spawnOptions(opts);
+  return checkedAfter(cwd, options.env.GIT_DIR, () =>
+    execFileSync('git', safeArgv(cwd, args, options.env), { ...options, encoding: 'utf8' }),
+  );
+}
+
+/**
+ * `read`, a child that reads the repo at `cwd`, with `cwd`'s `.git` checked
+ * again once it ends. The check before it runs before the child reads `.git`,
+ * and a process a gate stage left behind can swap `.git` for a symlink or a
+ * gitfile, or plant a commondir, in between. The check after sees what the
+ * child may have followed, so its answer is refused rather than used, and the
+ * refusal outranks the child's own failure, which a catch could read as "no
+ * such ref". A swap put back before the check after goes unseen: only killing
+ * the stages' process group first closes that (decision 172).
+ */
+export function checkedAfter<T>(cwd: string, pinnedGitDir: string | undefined, read: () => T): T {
+  try {
+    return read();
+  } finally {
+    assertGitDirUnplanted(cwd, pinnedGitDir);
+  }
 }
 
 /**
@@ -624,13 +647,16 @@ export function runGitBytes(
   args: string[],
   opts: RunGitOptions & { input: Buffer; maxBuffer: number },
 ): Buffer {
-  return execFileSync('git', safeArgv(cwd, args, opts.env), {
-    ...spawnOptions(opts),
-    encoding: 'buffer',
-    // A Buffer: a string input is encoded with `encoding`, which `buffer` is not.
-    input: opts.input,
-    maxBuffer: opts.maxBuffer,
-  });
+  const options = spawnOptions(opts);
+  return checkedAfter(cwd, options.env.GIT_DIR, () =>
+    execFileSync('git', safeArgv(cwd, args, options.env), {
+      ...options,
+      encoding: 'buffer',
+      // A Buffer: a string input is encoded with `encoding`, which `buffer` is not.
+      input: opts.input,
+      maxBuffer: opts.maxBuffer,
+    }),
+  );
 }
 
 /**
@@ -659,12 +685,20 @@ export function rethrowIfKilled(error: unknown): void {
 const mainCheckouts = new Map<string, string>();
 
 /**
- * The device and inode of `<cwd>/.git`, whose lstat is `dotGit`, and of its
- * `objects/`. A directory swapped in for either, however complete, has others.
+ * The device, inode and birth time of `<cwd>/.git`, whose lstat is `dotGit`,
+ * and of its `objects/` and `refs/`. A directory swapped in for any of them,
+ * however complete, has others, and the birth time tells a reused inode from
+ * the one pup saw. `HEAD` and `packed-refs` are not in it: git replaces both
+ * by a rename on every update, so their inodes change with no session at all.
  */
 function gitDirIdentity(cwd: string, dotGit: Stats): string {
-  const objects = lstatIfThere(cwd, join(cwd, '.git', 'objects'));
-  return `${dotGit.dev}:${dotGit.ino} ${objects ? `${objects.dev}:${objects.ino}` : 'none'}`;
+  const of = (stat: Stats | undefined): string =>
+    stat ? `${stat.dev}:${stat.ino}:${stat.birthtimeMs}` : 'none';
+  return [
+    of(dotGit),
+    of(lstatIfThere(cwd, join(cwd, '.git', 'objects'))),
+    of(lstatIfThere(cwd, join(cwd, '.git', 'refs'))),
+  ].join(' ');
 }
 
 /** `path` as the filesystem names it, or resolved when it does not exist. */
@@ -741,18 +775,19 @@ function searchableDir(cwd: string, path: string): boolean {
  * files a session can write, or walks up to a parent repo.
  * `safe.bareRepository=explicit` refuses the first; this names the cause
  * before git runs.
- * At a main checkout, a `.git` directory or `objects/` other than the one
- * `assertMainCheckout` first found is refused: a session can move the real one
- * aside and put a decoy directory there that passes everything else.
+ * At a main checkout, a `.git` directory, `objects/` or `refs/` other than the
+ * one `assertMainCheckout` first found is refused: a session can move the real
+ * one aside and put a decoy directory there that passes everything else.
  * A spawn whose env pins `GIT_DIR`, `pinnedGitDir`, refuses a `.git`
  * directory other than that one: a worktree pup pins has a gitfile naming its
  * admin dir, and one turned into a directory is not the worktree decision 101
  * verified.
  * Checked on every spawn, because a check made once would leave a file
  * planted after it unseen. Returns the `.git` directory when there is one, for
- * `safeArgv` to name to git so that git discovers nothing.
+ * `safeArgv` to name to git so that git discovers nothing. Exported for a
+ * child that runs git in the checkout with argv of its own, `gh`.
  */
-function assertGitDirUnplanted(cwd: string, pinnedGitDir?: string): string | undefined {
+export function assertGitDirUnplanted(cwd: string, pinnedGitDir?: string): string | undefined {
   const dotGit = join(cwd, '.git');
   const stat = lstatIfThere(cwd, dotGit);
   const shown = sanitizeReason(dotGit);
@@ -773,7 +808,7 @@ function assertGitDirUnplanted(cwd: string, pinnedGitDir?: string): string | und
   if (held !== undefined && gitDirIdentity(cwd, stat) !== held) {
     refuseGitDir(
       cwd,
-      `${shown} or its objects/ is not the directory pup found there first, in this ` +
+      `${shown}, its objects/ or its refs/ is not the directory pup found there first, in this ` +
         'process. If you re-created the repo yourself, restart pup',
     );
   }
@@ -837,9 +872,11 @@ export function assertMainCheckout(repoPath: string): void {
         'a symlink there names a repo of its own',
     );
   }
-  const key = realPath(repoPath);
-  if (!mainCheckouts.has(key)) mainCheckouts.set(key, gitDirIdentity(repoPath, stat));
+  const identity = gitDirIdentity(repoPath, stat);
   assertGitDirUnplanted(repoPath);
+  // Only once the checks pass: a decoy recorded here would be the one held.
+  const key = realPath(repoPath);
+  if (!mainCheckouts.has(key)) mainCheckouts.set(key, identity);
 }
 
 /**
@@ -853,7 +890,7 @@ export function assertMainCheckout(repoPath: string): void {
  * A spawn whose `env` pins `GIT_DIR` names nothing: git's `--git-dir` would
  * override the pin, which is the admin dir decision 101 verified.
  */
-function safeArgv(cwd: string, args: string[], env: NodeJS.ProcessEnv = {}): string[] {
+function safeArgv(cwd: string, args: string[], env: NodeJS.ProcessEnv): string[] {
   const gitDir = assertGitDirUnplanted(cwd, env.GIT_DIR);
   const named =
     gitDir && env.GIT_DIR === undefined
@@ -862,7 +899,8 @@ function safeArgv(cwd: string, args: string[], env: NodeJS.ProcessEnv = {}): str
   return [...GIT_SAFE_CONFIG, '-C', cwd, ...named, ...args];
 }
 
-function spawnOptions(opts: RunGitOptions): ExecFileSyncOptions {
+/** A spawn's options, whose `env` is the one `safeArgv` must be handed. */
+function spawnOptions(opts: RunGitOptions): ExecFileSyncOptions & { env: NodeJS.ProcessEnv } {
   return {
     env: { ...scrubbedGitEnv(), ...opts.env, ...GIT_HISTORY_ENV },
     maxBuffer: GIT_MAX_BUFFER,
