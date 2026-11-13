@@ -6,6 +6,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
   rmSync,
   symlinkSync,
@@ -1081,6 +1082,64 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(outcome.status).toBe('merged');
       expect(secondGateCommands).not.toHaveBeenCalled();
       expect(secondNested).not.toHaveBeenCalled();
+    });
+  });
+
+  // The build runs session code with the checkout writable, so it can make an
+  // outer segment of a nested package's dir a link to the main checkout's own
+  // copy; the package's stage, the next child, then resolved its cwd there
+  // (decision 180).
+  describe("a nested package's cwd an earlier child redirected", () => {
+    const pkg = 'src/packages/app';
+    const nestedAdapter = (build: string): Adapter => ({
+      ...passingAdapter,
+      gateCommands: () => [
+        { stage: 'build', command: 'sh', args: ['-c', build] },
+        { stage: 'test', command: 'true', args: [] },
+        { stage: 'lint', command: 'true', args: [] },
+      ],
+      touchedNestedPackages: () => [
+        {
+          dir: pkg,
+          changedFiles: [`${pkg}/index.ts`],
+          droppedSources: [],
+          commands: [{ stage: 'test', command: 'sh', args: ['-c', 'touch ran'] }],
+          missing: [],
+        },
+      ],
+    });
+
+    beforeEach(() => {
+      commitIn(repo, `${pkg}/package.json`, '{}\n');
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, `${pkg}/index.ts`, 'export const app = 1;\n');
+    });
+
+    it("refuses the package's stage once an outer segment links out, never running in the target", async () => {
+      const target = join(realpathSync(repo), pkg);
+
+      const outcome = await merge(
+        nestedAdapter(`rm -rf src/packages && ln -s '${dirname(target)}' src/packages`),
+      );
+
+      expect(outcome.report.stages).toContainEqual(
+        expect.objectContaining({
+          stage: expect.stringContaining(pkg),
+          status: 'fail',
+          detail: expect.stringContaining(`resolves to ${target}, outside`),
+        }),
+      );
+      expect(outcome.status).not.toBe('merged');
+      expect(existsSync(join(target, 'ran'))).toBe(false);
+    });
+
+    it("runs the package's stage in its own directory when nothing linked it out", async () => {
+      const outcome = await merge(nestedAdapter('true'));
+
+      expect(outcome.report.stages).toContainEqual(
+        expect.objectContaining({ stage: expect.stringContaining(pkg), status: 'pass' }),
+      );
+      expect(outcome.status).toBe('merged');
     });
   });
 

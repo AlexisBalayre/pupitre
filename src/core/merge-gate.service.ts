@@ -2671,8 +2671,11 @@ export async function measureBranch(
       // checkout; `repoPath` is passed to scope the toolchain cache, and stays
       // read-only, which is what keeps decision 29's trusted checkout trusted
       // while the session's own code is running.
+      // `root`: a nested package's cwd an earlier child redirected out of the
+      // checkout through a link fails the stage, naming it (decision 180).
       await runGateChild(command.command, command.args, {
         cwd,
+        root: checkoutDir,
         repoPath: req.repoPath,
         ...(command.writablePaths ? { writablePaths: command.writablePaths } : {}),
         gateEnv: req.gateEnv,
