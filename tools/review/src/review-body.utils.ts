@@ -51,19 +51,16 @@ function inertFences(markdown: string): string {
     .replace(/<(?=pre\b)/gi, "<\u200b");
 }
 
-/** A carried important's description on one line, as its bullet and its thread's marker both hold it. */
-function oneLine(text: string): string {
-  return text.replace(/\s*[\r\n]+\s*/g, " ");
-}
-
 /**
  * The hidden last line of every line comment: the important the thread holds.
  * pr-status.yml leaves a carried important to the thread whose marker names its
- * file, line range and description exactly as its bullet does. `<` and `>` are
- * escaped, so no text can end the comment early.
+ * file and whole line range as its bullet does. Not its description: a carried
+ * one is the model's copy of the prior record, and a reworded copy must not hold
+ * the PR in review for good. `<` and `>` are escaped, so no path can end the
+ * comment early.
  */
-export function importantMarker(finding: Pick<Finding, "file" | "line" | "description">): string {
-  const held = JSON.stringify([finding.file, finding.line, oneLine(finding.description)]);
+export function importantMarker(finding: Pick<Finding, "file" | "line">): string {
+  const held = JSON.stringify([finding.file, finding.line]);
   return `<!-- important ${held.replace(/</g, "\\u003c").replace(/>/g, "\\u003e")} -->`;
 }
 
@@ -151,7 +148,7 @@ function carriedLines(summary: ReviewSummary): string[] {
     "",
     // One line per bullet: pr-status.yml parses the block by counting its lines.
     ...open.map((prior) =>
-      findingLine({ ...prior, description: oneLine(prior.description), area: "correctness", body: null }),
+      findingLine({ ...prior, description: prior.description.replace(/\s*[\r\n]+\s*/g, " "), area: "correctness", body: null }),
     ),
   ];
 }
