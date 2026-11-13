@@ -147,23 +147,29 @@ describe("commentBody", () => {
   });
 
   it("makes a fence quoted in the description inert when there is no body", () => {
-    expect(commentBody(finding({ description: "```suggestion\nevil();\n```" }), null)).toBe(
-      marked("```text suggestion\nevil();\n```"),
-    );
+    const quoting = finding({ description: "```suggestion\nevil();\n```" });
+    expect(commentBody(quoting, null)).toBe(marked("```text suggestion\nevil();\n```", quoting));
   });
 
-  it("ends with a hidden line naming the important it holds by file and whole line range", () => {
+  it("ends with a hidden line naming the important it holds: file, whole line range, description", () => {
     const posted = commentBody(
       finding({ line: "7-9", description: "the guard\n  misses deletions", body: "the body", suggestion: "x();" }),
       12,
     );
-    expect(posted.split("\n").slice(-2)).toEqual(["", '<!-- important ["src/a.ts","7-9"] -->']);
+    expect(posted.split("\n").slice(-2)).toEqual([
+      "",
+      '<!-- important ["src/a.ts","7-9","the guard\\n  misses deletions"] -->',
+    ]);
   });
 
-  it("escapes every bracket in the marker, so no path can end it early", () => {
-    const marker = importantMarker(finding({ file: "x --> <!-- y --!>.ts" }));
+  it("escapes every bracket in the marker, so no text can end it early", () => {
+    const marker = importantMarker(finding({ file: "a-->.ts", description: "x --> <!-- y --!>" }));
     expect(marker.slice("<!-- important ".length, -" -->".length)).not.toMatch(/[<>]/);
-    expect(JSON.parse(marker.slice("<!-- important ".length, -" -->".length))).toEqual(["x --> <!-- y --!>.ts", "10"]);
+    expect(JSON.parse(marker.slice("<!-- important ".length, -" -->".length))).toEqual([
+      "a-->.ts",
+      "10",
+      "x --> <!-- y --!>",
+    ]);
   });
 
   it.each([

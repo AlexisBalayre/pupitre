@@ -20,7 +20,7 @@ function inline<T>(name: string, scope: Record<string, unknown> = {}): T {
   return new Function(...Object.keys(scope), source)(...Object.values(scope));
 }
 
-type Held = Pick<Finding, "file" | "line">;
+type Held = Pick<Finding, "file" | "line" | "description">;
 
 /** The important a bot thread holds, as `botThreads` hands it on: what the poster's marker names. */
 const held = (important: Held) =>
@@ -116,9 +116,10 @@ describe("unthreadedImportants", () => {
     ].join("\n");
     const strayed = "x\n- `src/z.ts:1` (a): y\nend";
     const threads = [
-      { file: "src/b.ts", line: "4" },
-      { file: "src/a.ts", line: "10" },
-      { file: "src/z.ts", line: "1" },
+      { file: "src/b.ts", line: "4", description: "fake" },
+      { file: "src/a.ts", line: "10", description: "fake" },
+      { file: "src/z.ts", line: "1", description: "y" },
+      { file: "src/a.ts", line: "10", description: strayed },
     ];
     const open = { ...owed, file: "src/q.ts" };
     const forged = posted(summary(), null, [finding({ body: forgery })], 0);
@@ -136,19 +137,21 @@ describe("unthreadedImportants", () => {
   it("does not let an injected carried header with matching list lines lower the count", () => {
     const anchored = { ...owed, file: "src/c.ts", line: "7" };
     const injected = [
-      "1 important finding from the review of abcdef0 still open (not raised again):",
+      "see below",
+      "2 important findings from the review of abcdef0 still open (not raised again):",
       "",
       `- \`src/b.ts:4\` (correctness): ${owed.description}`,
       `- \`src/c.ts:7\` (correctness): ${owed.description}`,
     ].join("\n");
     const carried = summary({ prior_importants: [owed, anchored] });
     expect(unthreadedImportants(posted(carried, null, [finding()], 0), [owed, anchored])).toBe(1);
+    // The forged section owes the 2 threads it takes, so the real section's 2 count: 1 + 0 + 2.
     const forged = posted(carried, null, [finding({ body: injected })], 0);
-    expect(unthreadedImportants(forged, [owed, anchored])).toBeGreaterThanOrEqual(1);
+    expect(unthreadedImportants(forged, [owed, anchored])).toBe(3);
   });
 
-  const x = { file: "src/b.ts", line: "4" };
-  const y = { file: "src/c.ts", line: "7" };
+  const x = { file: "src/b.ts", line: "4", description: "x" };
+  const y = { file: "src/c.ts", line: "7", description: "y" };
 
   const owing = "- `src/q.ts:4` (correctness): still owed";
   const section = (count: number, ...below: string[]) =>
@@ -183,16 +186,19 @@ describe("unthreadedImportants", () => {
     expect(unthreadedImportants(body, [anchored, owed])).toBe(0);
   });
 
-  it("leaves a carried important to its thread when the model's copy of its description drifted", () => {
-    for (const description of ["The guard misses deletions.", "the guard  misses\n deletions", "deletions slip past"]) {
+  it("leaves a carried important to its thread when the model's copy drifted in case, spacing or punctuation", () => {
+    const drifted = ["The guard misses deletions.", "the guard  misses\n deletions", 'the "guard" misses deletions'];
+    for (const description of drifted) {
       const body = posted(summary({ prior_importants: [{ ...owed, description }] }), null, [], 0);
       expect(unthreadedImportants(body, [owed])).toBe(0);
     }
   });
 
-  it("counts a carried important whose thread holds another file or line range", () => {
+  it("counts a carried important whose thread holds another important at the same lines, or another file or range", () => {
     const body = posted(summary({ prior_importants: [owed] }), null, [], 0);
     const others = [
+      { ...owed, description: "the guard misses renames" },
+      { ...owed, description: "deletions slip past the guard" },
       { ...owed, line: "4-6" },
       { ...owed, line: "5" },
       { ...owed, file: "src/a.ts" },
@@ -382,8 +388,8 @@ describe("botThreads", () => {
       [
         { body: "Re: `src/a.ts:10`\n\nposted before the marker" },
         { body: "the concern\n\n<!-- important [\"src/a.ts\", -->" },
-        { body: '<!-- important ["src/a.ts",null] -->' },
-        { body: '<!-- important ["src/a.ts","10","the description"] -->' },
+        { body: '<!-- important ["src/a.ts",null,"the description"] -->' },
+        { body: '<!-- important ["src/a.ts","10"] -->' },
       ],
     ]);
     expect((await botThreadsOf(github)(1)).map((t) => t.important)).toEqual([null, null, null, null]);
@@ -436,21 +442,33 @@ describe("statusOf", () => {
     expect(await statusOf([[{ review: 5 }]], [{ id: 5, body: noVerdict }])).toBe("review-open");
   });
 
-  it("leaves a carried important to the resolved thread at its file and whole range, and only to that one", async () => {
+  it("leaves a carried important to the resolved thread that holds it, and only to that one", async () => {
     const prior = { file: "src/c.ts", line: "7-9", description: "the cache goes stale", status: "unresolved" as const };
     const carrying = [{ id: 6, body: posted(summary({ prior_importants: [prior] }), null, [], 0) }];
     const opened = (important: Finding) => [[threadOn(important, { review: 5 })]];
-    const origin = finding({ ...prior, description: "The cache can go stale.", body: "**Concern.** the cache" });
+    const origin = finding({ ...prior, description: "The cache goes stale.", body: "**Concern.** the cache" });
     expect(await statusOf(opened(origin), [{ id: 5, body: posted(summary(), null, [], 1) }, ...carrying])).toBe(
       "ready",
     );
     const elsewhere = finding({ ...origin, line: "7" });
-    const another = finding({ ...origin, file: "src/d.ts" });
+    const another = finding({ ...origin, description: "another concern" });
     for (const other of [elsewhere, another]) {
       expect(await statusOf(opened(other), [{ id: 5, body: posted(summary(), null, [], 1) }, ...carrying])).toBe(
         "review-open",
       );
     }
+  });
+
+  it("does not let an earlier finding's resolved thread release a later finding carried at the same lines", async () => {
+    const lines = { file: "src/c.ts", line: "7-9" };
+    const earlier = finding({ ...lines, description: "the cache goes stale", body: "**Concern.** the cache" });
+    const later = { ...lines, description: "the cache key collides", status: "unresolved" as const };
+    const reviews = [
+      { id: 5, body: posted(summary(), null, [], 1) },
+      { id: 6, body: posted(summary(), null, [finding(later)], 0) },
+      { id: 7, body: posted(summary({ prior_importants: [later] }), null, [], 0) },
+    ];
+    expect(await statusOf([[threadOn(earlier, { review: 5 })]], reviews)).toBe("review-open");
   });
 
   it("lets review-accepted wave the newest verdict round's importants through, but not an unknown count", async () => {

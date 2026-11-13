@@ -54,13 +54,12 @@ function inertFences(markdown: string): string {
 /**
  * The hidden last line of every line comment: the important the thread holds.
  * pr-status.yml leaves a carried important to the thread whose marker names its
- * file and whole line range as its bullet does. Not its description: a carried
- * one is the model's copy of the prior record, and a reworded copy must not hold
- * the PR in review for good. `<` and `>` are escaped, so no path can end the
- * comment early.
+ * file and whole line range, and its description in the same letters and digits,
+ * as its bullet does: an earlier finding's thread at the same lines holds no other.
+ * `<` and `>` are escaped, so no text can end the comment early.
  */
-export function importantMarker(finding: Pick<Finding, "file" | "line">): string {
-  const held = JSON.stringify([finding.file, finding.line]);
+export function importantMarker(finding: Pick<Finding, "file" | "line" | "description">): string {
+  const held = JSON.stringify([finding.file, finding.line, finding.description]);
   return `<!-- important ${held.replace(/</g, "\\u003c").replace(/>/g, "\\u003e")} -->`;
 }
 
