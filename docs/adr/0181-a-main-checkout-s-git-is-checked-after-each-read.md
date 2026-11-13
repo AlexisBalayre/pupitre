@@ -32,10 +32,12 @@
     `fatalExitCode` prints a `RewrittenGitDirError` as one line and exits 1, as it does for
     `ProjectResolutionError`. `pup project list|dormant|wake` reads no git, so it is left
     alone.
-    *The identity.* It now holds the device, inode and birth time of `.git`, `objects/` and
-    `refs/`. The device and inode are the protection: a directory swapped in has others
-    while the one pup saw still exists. The birth time adds little, since the owner can set
-    it on macOS and some Linux filesystems keep none. `HEAD` and
+    *The identity.* It now holds the device and inode of `.git`, `objects/` and `refs/`: a
+    directory swapped in has others while the one pup saw still exists, and no git
+    operation changes either. The birth time is left out: where `statx` fails (a seccomp
+    filter, an old kernel, some network filesystems) Node fills it with the ctime, which
+    git's own writes in `.git` change, so pup would refuse a repo after its own
+    `update-ref` or an operator's commit. `HEAD` and
     `packed-refs` are left out because git replaces both by rename on every ref update, so
     their inodes change with no session involved. Writes there by a gate stage are already
     denied: the gate profile denies `file-write*` (unlink and rename included) on every

@@ -691,17 +691,16 @@ export function rethrowIfKilled(error: unknown): void {
 const mainCheckouts = new Map<string, string>();
 
 /**
- * The device, inode and birth time of `<cwd>/.git`, whose lstat is `dotGit`,
- * and of its `objects/` and `refs/`. A directory swapped in for any of them,
- * however complete, has another device and inode while the one pup saw still
- * exists, and that is the protection. The birth time adds little: the owner
- * can set it on macOS, and some Linux filesystems keep none. `HEAD` and
- * `packed-refs` are not in it: git replaces both by a rename on every update,
- * so their inodes change with no session at all.
+ * The device and inode of `<cwd>/.git`, whose lstat is `dotGit`, and of its
+ * `objects/` and `refs/`. A directory swapped in for any of them, however
+ * complete, has another device and inode while the one pup saw still exists,
+ * and no git operation changes either. The birth time is not in it: where
+ * statx fails, Node fills it with the ctime, which git's own writes change.
+ * `HEAD` and `packed-refs` are not in it: git replaces both by a rename on
+ * every update, so their inodes change with no session at all.
  */
 function gitDirIdentity(cwd: string, dotGit: Stats): string {
-  const of = (stat: Stats | undefined): string =>
-    stat ? `${stat.dev}:${stat.ino}:${stat.birthtimeMs}` : 'none';
+  const of = (stat: Stats | undefined): string => (stat ? `${stat.dev}:${stat.ino}` : 'none');
   return [
     of(dotGit),
     of(lstatIfThere(cwd, join(cwd, '.git', 'objects'))),
