@@ -57,11 +57,22 @@
     only to pupitre. The proof below covers pupitre's own suite only. In another repo, a test
     command that reads a listed file is skipped wrongly on a change of only listed files.
     Examples are a test that checks an ADR index under `docs/`, `pytest --doctest-glob` over
-    Markdown, and a VitePress, MkDocs, Sphinx or MyST build run from the test script. There
-    is no per-project switch. An operator in such a repo avoids the wrong skip in one of two
-    ways. The first is to run that check from the build or lint script, which the gate still
-    runs on every change. The second is to read a `skipped: no testable file changed` test
-    stage in the gate report as untested, and run the suite by hand before `pup land`.
+    Markdown, and a VitePress, MkDocs, Sphinx or MyST build run from the test script. An
+    operator in such a repo turns the skip off for that project (see the amendment below).
+    Another option is to run that check from the build or lint script, which the gate still
+    runs on every change.
+    *Amendment (2026-11-11): a per-project switch.* Setting `skipTestsOnUntestedChanges:
+    false` in `.pupitre/project.yml` runs the full test and coverage stages on every change,
+    a change of only listed files included. Without the file, with an empty one, or with the
+    key left out, the skip stays on, as this decision first set it. The file is read from the
+    main checkout that the merge lock holds at the target branch, the same checkout
+    `.pupitre/adapter.yml` is read from (decision 29). `.pupitre/**` is a protected path, so a
+    session cannot change the setting its own gate reads. The switch can only turn the skip
+    off. The list itself stays fixed in pupitre, so a project still cannot widen it. A
+    malformed file fails the gate instead of leaving the skip on: a key other than
+    `skipTestsOnUntestedChanges`, a value that is not `true` or `false`, or a document that
+    is not a mapping. The setting is read only when no nested package was touched, since a
+    nested change already runs its suite.
     A stage that nothing could have measured keeps the reason it gives on any other change,
     because a change of only listed files does not explain why it is missing. With no test
     command, the test stage says `not measured — no command available`. With no adapter that
@@ -124,3 +135,8 @@
     `diff.relative` set. So do a gitlink on a listed path, a gitlink change the shared
     config's `diff.ignoreSubmodules=all` hides, and a rename that moves a Markdown file out
     of a nested package under `docs/`.
+    For the amendment, a single workflow change is gated under a test command that always
+    fails. With `skipTestsOnUntestedChanges: true` it merges with the test stage skipped. With
+    `false` the full test stage runs, fails, and the merge is rejected. The reader keeps the
+    skip on with no file and with an empty file, and refuses an unknown key, a value that is
+    not a boolean, and a list.

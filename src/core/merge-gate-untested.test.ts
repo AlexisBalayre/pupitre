@@ -190,6 +190,23 @@ describe('the test stage on a change no test reads (decision 139)', { timeout: 2
     expect(stages).toContainEqual(cannotMeasureCoverage);
   });
 
+  it.each([
+    { setting: 'true', status: 'merged', test: 'skipped' },
+    { setting: 'false', status: 'rejected', test: 'fail' },
+  ])(
+    'with skipTestsOnUntestedChanges: $setting, the test stage is $test',
+    async ({ setting, status, test }) => {
+      commitIn(repo, '.pupitre/project.yml', `skipTestsOnUntestedChanges: ${setting}\n`);
+      const worktree = seedSession(db, repo, { scopeIn: ['**'] });
+      commitIn(worktree, '.github/workflows/ci.yml', 'on: push\n');
+
+      const outcome = await merge(failingSuite().adapter);
+
+      expect(outcome.status).toBe(status);
+      expect(testStage(outcome.report.stages)?.status).toBe(test);
+    },
+  );
+
   it('runs the full test stage when one changed file is off the list', async () => {
     const worktree = seedSession(db, repo, { scopeIn: ['**'] });
     commitIn(worktree, '.github/workflows/ci.yml', 'on: push\n');
