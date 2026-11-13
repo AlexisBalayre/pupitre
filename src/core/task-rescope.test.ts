@@ -38,6 +38,16 @@ vi.mock('./task-spec.utils.js', async (importOriginal) => {
   return { ...actual, assertPlannableSpec: vi.fn(actual.assertPlannableSpec) };
 });
 
+// The gate's protected paths, plus a file at the top and one nested: every
+// real entry is a top-level directory, and a refusal must not rely on that.
+vi.mock('./merge-gate.constants.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./merge-gate.constants.js')>();
+  return {
+    ...actual,
+    PROTECTED_PATH_GLOBS: [...actual.PROTECTED_PATH_GLOBS, 'pup.lock', 'config/pup.lock'],
+  };
+});
+
 // What the CLI hands over of a caller it took for the operator.
 const CALLER: RescopeCaller = { by: 'inferred-operator', tty: '/dev/ttys003', tmuxPane: '%4' };
 
@@ -417,6 +427,11 @@ describe('rescopeTask (decision 115)', () => {
     ['.claude/hooks/scope-guard.sh', 'reaches a path the gate protects whatever the scope'],
     ['./.CLAUDE', 'reaches a path the gate protects whatever the scope'],
     ['.pupitre/adapter.yml', 'reaches a path the gate protects whatever the scope'],
+    // A protected file, matched as the glob itself and as its literal prefix.
+    ['pup.lock', 'reaches a path the gate protects whatever the scope'],
+    ['./PUP.LOCK', 'reaches a path the gate protects whatever the scope'],
+    ['config/pup.lock', 'reaches a path the gate protects whatever the scope'],
+    ['config/pup.lock*', 'reaches a path the gate protects whatever the scope'],
     ['  ', 'is empty'],
     ['./', 'is empty'],
     ['src/\u0007x', 'contains a control character'],

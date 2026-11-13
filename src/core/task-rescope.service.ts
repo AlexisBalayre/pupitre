@@ -53,7 +53,9 @@ const PROTECTED = PROTECTED_PATH_GLOBS.map((glob) => new RegExp(globToRegExpSour
  * cannot dress past a check in what the matcher drops. A wildcard anywhere in
  * the first segment can match every top-level directory, `.github` among
  * them; past that check the first segment is literal, so a path in it stands
- * for every path the glob can reach there.
+ * for every path the glob can reach there. A protected entry can be a file as
+ * well as a directory, so the glob itself and its literal prefix, all of it
+ * before the first wildcard, are matched against it too.
  */
 const GLOB_REFUSALS: readonly (readonly [(raw: string, form: string) => boolean, string])[] = [
   [(raw) => CONTROL_CHAR.test(raw), 'contains a control character'],
@@ -66,7 +68,10 @@ const GLOB_REFUSALS: readonly (readonly [(raw: string, form: string) => boolean,
     "reaches `.github`, whose workflows run with the repo's secrets",
   ],
   [
-    (_raw, form) => PROTECTED.some((re) => re.test(`${form.split('/')[0]}/x`)),
+    (_raw, form) =>
+      [form, form.replace(/[*?].*/s, ''), `${form.split('/')[0]}/x`].some((path) =>
+        PROTECTED.some((re) => re.test(path)),
+      ),
     `reaches a path the gate protects whatever the scope (${PROTECTED_PATH_GLOBS.join(', ')})`,
   ],
 ];
