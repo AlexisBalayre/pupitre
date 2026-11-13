@@ -2558,7 +2558,7 @@ export function buildProgram(): Command {
         opts.approvedBy === undefined ? undefined : sanitizeReason(opts.approvedBy);
       if (approvedBy === '') return refuse('--approved-by needs a name, such as tg:<user>.');
       // The conductor relays the operator's approval of a critical change, it
-      // does not give one (decisions 75, 179).
+      // does not give one (decisions 75, 185).
       if (callingConductor() && approvedBy?.toLowerCase() === 'human') {
         return refuse(
           '--approved-by names the person who approved, not `human`; use <channel>:<name>.',

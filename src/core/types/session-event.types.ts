@@ -57,7 +57,7 @@ export interface EventPayloads {
    * pin it moved past, the ends of the commits no gate measured (decision 164's
    * 2026-11-11 amendment). One landed on `--remeasure` records that head, the
    * pin, the passing report of the stages run on the merge commit, and who
-   * approved a critical-area change when one did (decision 179).
+   * approved a critical-area change when one did (decision 185).
    */
   landed: { sha: string; target: string; prUrl: string } & (
     | { acceptedHead?: never; remeasuredHead?: never; pinned?: never }

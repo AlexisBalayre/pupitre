@@ -880,7 +880,7 @@ describe('landSession', { timeout: 20_000 }, () => {
     expect(hasTrackingRef()).toBe(false);
   });
 
-  // Decision 179: a PR merged at a head past the pin lands on the gate's word,
+  // Decision 185: a PR merged at a head past the pin lands on the gate's word,
   // its stages run again on the merge commit under the lock.
   describe('--remeasure', () => {
     beforeEach(() => {

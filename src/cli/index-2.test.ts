@@ -1758,7 +1758,7 @@ describe('CLI commands', () => {
     });
 
     // The gate vouches for a remeasured head, so the conductor may run it; a
-    // critical change still needs the operator's approval, which it relays (decision 179).
+    // critical change still needs the operator's approval, which it relays (decision 185).
     it("hands the conductor's --remeasure and relayed --approved-by to the land, printing the stages", async () => {
       const repo = initRepoWithAdapter();
       useCwd(repo);

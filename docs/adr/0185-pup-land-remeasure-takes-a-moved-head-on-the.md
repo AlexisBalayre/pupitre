@@ -1,9 +1,9 @@
-# 0179. `pup land --remeasure` takes a moved head on the gate's word (2026-11-13)
+# 0185. `pup land --remeasure` takes a moved head on the gate's word (2026-11-13)
 
 - Status: accepted
 - Amends: [0164](0164-pup-land-takes-a-moved-head-on-the-operator-s-word.md)
 
-179. **`pup land --remeasure` takes a moved head on the gate's word (2026-11-13).**
+185. **`pup land --remeasure` takes a moved head on the gate's word (2026-11-13).**
     Decision 164 lets a PR that GitHub merged at a head past the pin land only on the operator's
     `--accept-head`, after they have read the commits past the pin. A session whose fix round
     pushed after the gate's pin, such as t-mw6hh1hz (#278) or t-mvry2mew (#283), then waits on

@@ -70,18 +70,18 @@ interface LandRequest {
    */
   acceptHead?: string;
   /**
-   * The gate's word for a head the PR merged at past the pin (decision 179):
+   * The gate's word for a head the PR merged at past the pin (decision 185):
    * its stages run on the merge commit under the lock, and only a pass lands.
    */
   remeasure?: boolean;
   /**
    * Who approved a remeasure whose commits past the pin touch a critical area
-   * (decision 179), scrubbed by the caller; the land event records it.
+   * (decision 185), scrubbed by the caller; the land event records it.
    */
   approvedBy?: string;
 }
 
-/** `CRITICAL_AREAS` as path matchers, for a remeasure's approval (decision 179). */
+/** `CRITICAL_AREAS` as path matchers, for a remeasure's approval (decision 185). */
 const CRITICAL_PATHS = CRITICAL_AREAS.map(globToRegExp);
 
 /**
@@ -159,7 +159,7 @@ export async function landSession(db: Database, req: LandRequest): Promise<LandO
   // merge vouches for a moved head (decision 86); after the merge only the
   // operator's `--accept-head` naming that very head does, and only for
   // commits past the pin, checked under the lock (decision 164), or the
-  // gate's stages run again on the merge commit with `--remeasure` (decision 179).
+  // gate's stages run again on the merge commit with `--remeasure` (decision 185).
   if (pr.head === undefined || !COMMIT_SHA.test(pr.head)) {
     throw new Error(`GitHub reports ${prUrl} merged with an unreadable head. Nothing was landed.`);
   }
@@ -610,7 +610,7 @@ function tearDown(
 }
 
 /**
- * `--remeasure` (decision 179): the gate's stages, `measureBranch`'s, run on
+ * `--remeasure` (decision 185): the gate's stages, `measureBranch`'s, run on
  * the commit GitHub's merge made, against the commit it went onto on the
  * pinned target, from a gate checkout of its own and under the land's lock, as
  * `runMergeGate` runs them. The commits past the pin are the ones no gate

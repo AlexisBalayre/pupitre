@@ -30,7 +30,7 @@ export interface LandOutcome {
    * Absent when every one was steered. `reason` is store and git text.
    */
   unsteered?: { sessionId: string; reason: string }[];
-  /** With `--remeasure`: the gate's stages on the merge commit, every one passed (decision 179). */
+  /** With `--remeasure`: the gate's stages on the merge commit, every one passed (decision 185). */
   remeasure?: GateReport;
   /** Absent when the land skipped it (`--no-audit`, decision 132): `pup audit` is then the operator's. */
   audit?: AuditOutcome;
