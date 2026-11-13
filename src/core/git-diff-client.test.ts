@@ -1224,6 +1224,59 @@ describe('runGit', () => {
     expect(currentBranch(repo)).toBe('main');
   });
 
+  it.each(['GIT_COMMON_DIR', 'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES'])(
+    'reads the objects of the path it is given, not an inherited %s',
+    (name) => {
+      const repo = makeRepo();
+      writeFileSync(join(repo, 'a.ts'), 'a\n');
+      commitAll(repo, 'a');
+      const other = makeRepo();
+      writeFileSync(join(other, 'b.ts'), 'b\n');
+      commitAll(other, 'b');
+      const foreign = runGit(other, ['rev-parse', 'HEAD']).trim();
+      vi.stubEnv(name, join(other, '.git', name === 'GIT_COMMON_DIR' ? '' : 'objects'));
+
+      expect(runGit(repo, ['log', '-1', '--format=%s']).trim()).toBe('a');
+      expect(() => runGit(repo, ['cat-file', '-e', foreign], { stdio: 'pipe' })).toThrow();
+    },
+  );
+
+  it('hands a spawned git no inherited GIT_SHALLOW_FILE or GIT_NAMESPACE', () => {
+    const repo = makeRepo();
+    writeFileSync(join(repo, 'a.ts'), 'a\n');
+    commitAll(repo, 'a');
+    writeFileSync(join(repo, 'a.ts'), 'b\n');
+    commitAll(repo, 'b');
+    const shallow = join(tempDir('pup-shallow-'), 'shallow');
+    writeFileSync(shallow, `${runGit(repo, ['rev-parse', 'HEAD']).trim()}\n`);
+    // The control: under the variable, plain git reads the tip as having no parent.
+    const plainCount = execFileSync('git', ['rev-list', '--count', 'HEAD'], {
+      cwd: repo,
+      encoding: 'utf8',
+      env: { ...GIT_ENV, GIT_SHALLOW_FILE: shallow },
+    });
+    expect(plainCount.trim()).toBe('1');
+    vi.stubEnv('GIT_SHALLOW_FILE', shallow);
+    vi.stubEnv('GIT_NAMESPACE', 'planted');
+
+    expect(runGit(repo, ['rev-list', '--count', 'HEAD']).trim()).toBe('2');
+    // What git hands its own children is what it was spawned with.
+    const seen = runGit(repo, ['-c', 'alias.env=!env', 'env']);
+    expect(seen).not.toMatch(/^GIT_SHALLOW_FILE=/m);
+    expect(seen).not.toMatch(/^GIT_NAMESPACE=/m);
+  });
+
+  it("keeps the operator's config location and commit identity", () => {
+    const repo = makeRepo();
+    const global = join(tempDir('pup-global-'), 'gitconfig');
+    writeFileSync(global, '[pup]\n\tmarker = kept\n');
+    vi.stubEnv('GIT_CONFIG_GLOBAL', global);
+    vi.stubEnv('GIT_AUTHOR_NAME', 'operator');
+
+    expect(runGit(repo, ['config', '--get', 'pup.marker']).trim()).toBe('kept');
+    expect(runGit(repo, ['var', 'GIT_AUTHOR_IDENT'])).toMatch(/^operator </);
+  });
+
   // Verifying a signature runs `gpg.program` as surely as signing does, and a
   // session can forge the `gpgsig` header it verifies (decision 79).
   function signatureArmedRepo(): { repo: string; fired: string } {
@@ -2583,7 +2636,7 @@ describe("a main checkout's .git a session rewrote (decision 172)", () => {
     expect(runGit(elsewhere, ['rev-parse', 'refs/heads/main']).trim()).toBe(own);
 
     expect(() => runGit(repo, ['rev-parse', 'refs/heads/main'])).toThrow(
-      /\.git or its objects\/ is not the directory pup found there first.*decision 172/s,
+      /\.git, its objects\/ or its refs\/ is not the directory pup found there first.*decision 172/s,
     );
     expect(() => assertMainCheckout(repo)).toThrow(RewrittenGitDirError);
   });
@@ -2604,6 +2657,65 @@ describe("a main checkout's .git a session rewrote (decision 172)", () => {
     rmSync(objects, { recursive: true });
     renameSync(aside, objects);
     expect(() => runGit(repo, ['rev-parse', 'HEAD'])).not.toThrow();
+  });
+
+  it('refuses a .git whose refs/ was swapped for another, at a main checkout it passed', () => {
+    const { repo, decoy } = repoAndDecoy();
+    assertMainCheckout(repo);
+    const refs = join(repo, '.git', 'refs');
+    renameSync(refs, join(tempDir('pup-aside-'), 'refs'));
+    mkdirSync(join(refs, 'heads'), { recursive: true });
+    writeFileSync(join(refs, 'heads', 'main'), `${revParse(decoy, 'refs/heads/main')}\n`);
+
+    expect(() => runGit(repo, ['rev-parse', 'refs/heads/main'])).toThrow(
+      /its refs\/ is not the directory pup found there first/,
+    );
+  });
+
+  it('holds no identity from a first check that refused', () => {
+    const { repo } = repoAndDecoy();
+    const aside = join(tempDir('pup-aside-'), 'git');
+    renameSync(join(repo, '.git'), aside);
+    sh(dirname(repo), 'cp', '-R', aside, join(repo, '.git'));
+    const decoyCommondir = join(repo, '.git', 'commondir');
+    writeFileSync(decoyCommondir, `${aside}\n`);
+    expect(() => assertMainCheckout(repo)).toThrow(/commondir exists/);
+    const decoyGitDir = join(tempDir('pup-decoy-dir-'), 'git');
+    renameSync(join(repo, '.git'), decoyGitDir);
+    renameSync(aside, join(repo, '.git'));
+
+    // The real one is what the first passing check holds, so the copy is refused.
+    expect(() => assertMainCheckout(repo)).not.toThrow();
+    renameSync(join(repo, '.git'), aside);
+    rmSync(join(decoyGitDir, 'commondir'));
+    renameSync(decoyGitDir, join(repo, '.git'));
+    expect(() => assertMainCheckout(repo)).toThrow(/is not the directory pup found there first/);
+  });
+
+  // A process a gate stage left behind can swap `.git` after the check before a
+  // spawn and before git reads it; the alias stands in for it, run by git itself.
+  it.each([
+    ['a symlink to a decoy', 'mv .git "$ASIDE" && ln -s "$DECOY" .git', /\.git is a symlink/],
+    ['a planted commondir', 'printf "%s\\n" "$DECOY" > .git/commondir', /commondir exists/],
+  ])('refuses the answer of a git read during which .git became %s', (_, swap, refusal) => {
+    const { repo, decoy } = repoAndDecoy();
+    assertMainCheckout(repo);
+    vi.stubEnv('DECOY', decoy);
+    vi.stubEnv('ASIDE', join(tempDir('pup-aside-'), 'git'));
+
+    expect(() => runGit(repo, ['-c', `alias.swap=!${swap}`, 'swap'])).toThrow(refusal);
+  });
+
+  it('refuses a git read the swap made fail, rather than its "no such ref"', () => {
+    const { repo, decoy } = repoAndDecoy();
+    assertMainCheckout(repo);
+    vi.stubEnv('DECOY', decoy);
+    vi.stubEnv('ASIDE', join(tempDir('pup-aside-'), 'git'));
+    const swap = 'mv .git "$ASIDE" && ln -s "$DECOY" .git && exit 1';
+
+    expect(() => runGit(repo, ['-c', `alias.swap=!${swap}`, 'swap'], { stdio: 'pipe' })).toThrow(
+      RewrittenGitDirError,
+    );
   });
 
   it("keeps a pinned worktree's GIT_DIR, and refuses its .git turned into a directory", () => {
