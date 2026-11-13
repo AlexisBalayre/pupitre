@@ -18,9 +18,13 @@
     command, the untested skip of decision 139), and on `flagged`, which the ledger judges. Any
     other status refuses, a future one included, naming the stage and its detail. A `skipped`
     is held to the pin. The gate, and the re-gate that re-pins, file their passing report on the
-    way to merged, just before the `merge` event naming the sha they pinned. So the report read
-    back is the last `gate_result` before the newest `merge` event naming the pin. It must go into
-    merged and have passed, or the remeasure refuses, whatever came after it. That report must
+    way to merged, just before the `merge` event naming the sha they pinned, and the lookup
+    relies on that pairing. Walking back, in event-id order, from the newest `merge` event naming
+    the pin, the first `gate_result` or `merge` it meets must be a passing report into merged.
+    An older `merge` there means this pin filed no report, and the remeasure refuses rather than
+    borrow the older pin's. So does a report that failed or went elsewhere, whatever came after
+    the pin. Events of other types are passed over, since none carries a report: the gate kills
+    the pane and removes the worktree between its report and its merge event. That report must
     list build, test and lint, which every gate run lists whether it ran or skipped them; an empty
     or partial one refuses. A stage that ran there, passing or flagged, must run again, so a
     commit past the pin that takes a script or a config away cannot turn it into a skip.

@@ -675,14 +675,19 @@ async function remeasureMerge(
     }
   }
   // The report of the gate that pinned `sha`, or of the re-gate that re-pinned
-  // it: each files it on its way to merged, the last `gate_result` before the
-  // `merge` event naming `sha`. A stage it ran must run again.
+  // it: each files it on its way to merged just before the `merge` event naming
+  // `sha`, with nothing of either type between. So the first of either before
+  // the newest such event must be that report; an older `merge` there means
+  // this one has none, and its report is never borrowed. Events are in id
+  // order. A stage the report ran must run again.
   const newestFirst = listEvents(db, session.id).map(decodeEvent).reverse();
   const pinnedAt = newestFirst.findIndex((event) => event.type === 'merge' && event.sha === sha);
   const gated =
     pinnedAt === -1
       ? undefined
-      : newestFirst.slice(pinnedAt + 1).find((event) => event.type === 'gate_result');
+      : newestFirst
+          .slice(pinnedAt + 1)
+          .find((event) => event.type === 'gate_result' || event.type === 'merge');
   const pinnedStages =
     gated?.type === 'gate_result' && gated.to === 'merged' && gated.report?.passed
       ? gated.report.stages

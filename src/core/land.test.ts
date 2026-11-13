@@ -1228,13 +1228,67 @@ describe('landSession', { timeout: 20_000 }, () => {
     it('holds the merge to the report before the pin, not a failing one after it', async () => {
       const { merge } = mergeMovedHead();
       appendEvent(db, SESSION_ID, 'gate_result', {
-        outcome: 'refused',
+        from: 'merged',
+        to: 'merged',
         report: { ...passingReport([]), passed: false },
       });
       measuredAs();
 
       await remeasure();
       expect(mainSha()).toBe(merge);
+    });
+
+    /** A `merge` event naming `sha`, as `recordMerge` writes it. */
+    const recordPin = (sha: string) =>
+      appendEvent(db, SESSION_ID, 'merge', {
+        branch: BRANCH,
+        sha,
+        target: 'main',
+        files: ['src/feature.ts'],
+        prUrl: PR_URL,
+      });
+
+    it("refuses a pin's merge with no report of its own, never borrowing an older pin's", async () => {
+      // The older pin's report and merge, then the newer pin's merge alone.
+      transitionSession(db, SESSION_ID, 'merged', { report: passingReport() });
+      recordPin('a'.repeat(40));
+      recordPin(pinned);
+      mergeAt(commitIn(worktree, 'src/fix.ts', 'export const fix = 1;\n'));
+      const before = mainSha();
+
+      await expect(remeasure()).rejects.toThrow(`${noPinReport} ${pinned}`);
+      expectNothingChanged(before);
+    });
+
+    // The gate kills the pane and removes the worktree between its report and
+    // its merge event; an event another hand writes then carries no report.
+    it('reads the report past an event of another type before the merge', async () => {
+      transitionSession(db, SESSION_ID, 'merged', { report: passingReport() });
+      appendEvent(db, SESSION_ID, 'steer', { kind: 'peer' });
+      recordPin(pinned);
+      const { merge } = mergeAt(commitIn(worktree, 'src/fix.ts', 'export const fix = 1;\n'));
+      measuredAs();
+
+      await remeasure();
+      expect(mainSha()).toBe(merge);
+    });
+
+    it('holds the merge to the report of the newest merge naming the pin', async () => {
+      mergeMovedHead(undefined, undefined, pinnedStages.slice(0, 3));
+      // A re-gate re-pinning the same sha, its report listing scope-audit.
+      appendEvent(db, SESSION_ID, 'gate_result', {
+        from: 'merged',
+        to: 'merged',
+        report: passingReport(),
+      });
+      recordPin(pinned);
+      const before = mainSha();
+      measuredAs(pinnedStages.slice(0, 3));
+
+      await expect(remeasure()).rejects.toThrow(
+        /did not pass:\n {2}scope-audit: ran at the pin, absent now\n/,
+      );
+      expectNothingChanged(before);
     });
 
     it('holds the merge to the report before the pin, not a passing one after it', async () => {
