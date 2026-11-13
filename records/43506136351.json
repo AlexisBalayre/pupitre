@@ -1,0 +1,122 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-13T21:01:57.587Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43506136351",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43506136351",
+  "actor": "AlexisBalayre",
+  "commit_sha": "77533e6f5b09553e62b872477606f1c1573a28ee",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 320,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "workflow-safety",
+    "conventions",
+    "docs",
+    "simplicity",
+    "guards",
+    "context"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "workflow-safety",
+    "conventions",
+    "docs",
+    "simplicity",
+    "guards",
+    "context"
+  ],
+  "reviewers_skipped": [
+    "maintainability",
+    "spec"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "tools/review/src/review-body.utils.ts",
+      "line": "65-68",
+      "description": "A carried important is now released only when the bullet's `[file, line, description]` exactly matches the thread's marker. The marker is built from the posted finding. The bullet is built from `prior_importants`, which the orchestrator model copies by hand from the prior record, again every round. Any drift in that copy means the thread no longer releases the important, so the PR stays `review-open` for good.",
+      "status": "resolved"
+    },
+    {
+      "file": "docs/adr/0165-pr-status-reads-unthreaded-importants-from-the-review-body.md",
+      "line": "16-23",
+      "description": "ADR 0165 still describes the removed `path:line` / `originalLine` / `Re:` thread match; the PR replaced it with the marker match, per-section release and fail-closed verdict rule.",
+      "status": "unresolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "tools/review/src/review-body.utils.ts",
+      "line": "61-64",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`importantMarker` leaves U+2028/U+2029 raw (`JSON.stringify` does not escape them), and the marker regex in pr-status.yml (`/^<!-- important (\\[.*\\]) -->$/`) cannot match them because `.` excludes those characters. A finding whose file or description holds one therefore gets no marker read, and its carried important still counts after its thread is resolved. This fails closed, so the PR stays `review-open` until someone adds `review-accepted`. Fix: also replace ` `/` ` with their `\\u` escapes in the marker; `JSON.parse` restores them.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "tools/review/test/unit/pr-status-workflow.test.ts",
+      "line": "271-272",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`restId` has a single caller, in `fakeGithub`. Inline it there as `id: 3_000_000_000 + r.id` and move the 32-bit `databaseId` note onto that line, which removes the helper.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 3.314129525000001,
+  "duration_ms": 283269,
+  "num_turns": 19,
+  "tokens": {
+    "input": 12,
+    "output": 11762,
+    "cache_read": 285725,
+    "cache_creation": 61721,
+    "total": 359220
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 110,
+      "output": 56942,
+      "cache_read": 2015671,
+      "cache_creation": 234673,
+      "cost_usd": 2.9009422000000002
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 50,
+      "output": 11589,
+      "cache_read": 254715,
+      "cache_creation": 108441,
+      "cost_usd": 0.4125639999999999
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 91,
+      "cache_read": 0,
+      "cache_creation": 4621,
+      "cost_usd": 0.000623325
+    }
+  ],
+  "permission_denials": []
+}
