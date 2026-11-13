@@ -32,7 +32,7 @@ re-run with `--accept-debt "<reason>" --review-by "<condition>"`. One reason is 
 flagged stage, so write one that fits all of them. On pass the branch is pushed and a PR opened;
 `pup status` then says `merged`, which means the PR exists, not that GitHub merged it.
 
-On pass the gate also sets a `pup-gate` success status on the sha it pinned (decision 184). The
+On pass the gate also sets a `pup-gate` success status on the sha it pinned (decision 182). The
 operator can make that status a required check on the project's target branch. GitHub then keeps
 the merge button disabled on any head pushed after the gate. This is a one-time setup per repo
 that the operator runs in their own shell. Never run it yourself: hand the operator these
@@ -56,7 +56,7 @@ gh api --method PATCH repos/OWNER/REPO/branches/TARGET/protection/required_statu
 gh api --method POST repos/OWNER/REPO/branches/TARGET/protection/enforce_admins
 ```
 
-On a branch that is not protected at all (the read returns 404), use the `PUT` in decision 184
+On a branch that is not protected at all (the read returns 404), use the `PUT` in decision 182
 instead. Only there is it safe, because it replaces any existing protection, and it turns on
 `enforce_admins` itself. `enforce_admins` is not optional. Without it, an admin can merge without
 waiting for the check, and sessions share the operator's gh login. After the setup, a target that

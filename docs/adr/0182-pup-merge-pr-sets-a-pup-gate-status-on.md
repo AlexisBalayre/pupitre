@@ -1,10 +1,10 @@
-# 0184. `pup merge --pr` sets a `pup-gate` status on the sha it pinned, and branch protection requires it (2026-11-13)
+# 0182. `pup merge --pr` sets a `pup-gate` status on the sha it pinned, and branch protection requires it (2026-11-13)
 
 - Status: accepted
 - Amends: [0026](0026-pup-merge-pr-same-gate-pull-request-instead.md)
 - Amends: [0086](0086-pup-merge-session-pr-re-gates-a-merged.md)
 
-184. **`pup merge --pr` sets a `pup-gate` status on the sha it pinned, and branch protection requires it (2026-11-13).**
+182. **`pup merge --pr` sets a `pup-gate` status on the sha it pinned, and branch protection requires it (2026-11-13).**
     *The gap.* A PR's description vouches for the sha the gate pinned (decision 82), and `pup land`
     refuses a PR GitHub merged at any other head (decision 84). Both come too late: GitHub's merge
     button reads neither. #278 and #283 were merged at heads pushed after their gate, and only
