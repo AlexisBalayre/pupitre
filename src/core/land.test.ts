@@ -46,7 +46,7 @@ import { gitDiffPaths } from './git-diff.client.js';
 import { initProject } from './init.service.js';
 import { landSession } from './land.service.js';
 import { MergeLockLostError } from './merge-gate.errors.js';
-import { runMergeGate } from './merge-gate.service.js';
+import { runMergeGate, withScratchGitDir } from './merge-gate.service.js';
 import { projectId } from './paths.utils.js';
 import {
   appendEvent,
@@ -687,6 +687,59 @@ describe('landSession', { timeout: 20_000 }, () => {
       `Fetching main from ${ORIGIN_URL} failed. Nothing was landed.`,
     );
     expectNothingChanged(before);
+  });
+
+  // A session can rename the lock away while the land fetches, letting another
+  // run take a fresh one: the land refuses before it moves a ref, not at the
+  // release (decision 88).
+  describe('a lock moved away before its moves (decision 88)', () => {
+    let errors: ReturnType<typeof vi.spyOn>;
+    beforeEach(() => {
+      errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      const lock = join(repo, '.git', 'pup-merge.lock');
+      const real = vi.mocked(withScratchGitDir).getMockImplementation() as typeof withScratchGitDir;
+      // The fetch's scratch dir, the first under the lock.
+      vi.mocked(withScratchGitDir).mockImplementation(((repoPath, prefix, fn) => {
+        if (existsSync(lock)) renameSync(lock, `${lock}.moved`);
+        return real(repoPath, prefix, fn);
+      }) as typeof withScratchGitDir);
+    });
+    afterEach(() => {
+      errors.mockRestore();
+      // Back to the real scratch dir the mock wraps.
+      vi.mocked(withScratchGitDir).mockReset();
+    });
+
+    const mergedOnGitHub = (): void => {
+      seedPrMerge();
+      const merge = mergeOnGitHub();
+      fakeGh({
+        state: 'MERGED',
+        baseRefName: 'main',
+        headRefOid: pinned,
+        mergeCommit: { oid: merge },
+      });
+    };
+
+    it('refuses the fast-forward of main, changing nothing', async () => {
+      mergedOnGitHub();
+      const before = mainSha();
+
+      await expect(land()).rejects.toThrow('the fast-forward of main was refused');
+      expectNothingChanged(before);
+      expect(hasTrackingRef()).toBe(false);
+      expect(sh(repo, 'git', 'status', '--porcelain', '--untracked-files=no')).toBe('');
+    });
+
+    it("refuses the move of origin's main tracking ref when main needs no fast-forward", async () => {
+      mergedOnGitHub();
+      sh(repo, 'git', 'pull', '-q', '--ff-only', origin, 'main');
+      const before = mainSha();
+
+      await expect(land()).rejects.toThrow("the update of origin's main tracking ref was refused");
+      expectNothingChanged(before);
+      expect(hasTrackingRef()).toBe(false);
+    });
   });
 
   // A CI fix round moved the PR's head: the PR is re-gated before it is merged,

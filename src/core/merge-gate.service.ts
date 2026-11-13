@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomBytes } from 'node:crypto';
 import {
   existsSync,
@@ -694,6 +695,12 @@ export function countChangedLines(
 /** Inside the merge lock's directory: the holder's pid, which a later run reads (decision 88). */
 const MERGE_LOCK_PID_FILE = 'pid';
 
+/**
+ * Inside the merge lock's directory: a random token fresh to each take, which
+ * the run that took it checks before every ref it moves.
+ */
+const MERGE_LOCK_TOKEN_FILE = 'token';
+
 const MERGE_LOCK_POLL_MS = 1000;
 
 /**
@@ -770,8 +777,55 @@ function directoryIdentity(path: string): LockIdentity | undefined {
   return stat?.isDirectory() ? { dev: stat.dev, ino: stat.ino } : undefined;
 }
 
+/** A take of the merge lock: the directory it made and the token it wrote there. */
+interface LockTake extends LockIdentity {
+  token: string;
+}
+
 /**
- * Remove a lock directory and the pid in it, and nothing else: it sits in the
+ * The take the running locked section holds, which `assertMergeLockHeld`
+ * checks. Per async context, not per path: two sections of one process on one
+ * lock path, which only a swapped lock lets run at once, keep a take each.
+ */
+const heldMergeLock = new AsyncLocalStorage<{ lockPath: string; take: LockTake }>();
+
+/**
+ * Whether `take` is still the lock at `lockPath`: the same directory, holding
+ * the same token. Neither alone: the directory's inode is free for the next
+ * run's `mkdir` once a session renamed it away and deleted it, and a session
+ * can read the token and copy it into a directory of its own. False when
+ * either cannot be read.
+ */
+function isTake(lockPath: string, take: LockTake): boolean {
+  try {
+    const token = readPlainFile(join(lockPath, MERGE_LOCK_TOKEN_FILE), { followLinks: false });
+    const now = directoryIdentity(lockPath);
+    return now?.dev === take.dev && now.ino === take.ino && token === take.token;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Refuse `step` unless this process still holds `repoPath`'s merge lock as it
+ * took it. Called right before each ref the locked section moves, so a run
+ * whose lock a session moved away, while another run may have taken a fresh
+ * one, refuses before acting rather than finding out at the release
+ * (decision 88).
+ */
+export function assertMergeLockHeld(repoPath: string, step: string): void {
+  const lockPath = join(repoPath, '.git', MERGE_LOCK_DIRNAME);
+  const held = heldMergeLock.getStore();
+  if (held?.lockPath === lockPath && isTake(lockPath, held.take)) return;
+  throw new Error(
+    `The merge lock at ${lockPath} is no longer the one this run took, so another merge or ` +
+      `land may be running: ${step} was refused, and nothing was moved by it. Check the target ` +
+      'branch and `pup status`, and treat a session that moved the lock as compromised.',
+  );
+}
+
+/**
+ * Remove a lock directory and the pid and token in it, and nothing else: it sits in the
  * `.git` a session can write, so anything else found there is left and named
  * rather than removed with it, and so is a directory that is no longer
  * `identity`, a link or another directory a session swapped in, whose pid
@@ -805,6 +859,7 @@ function removeLockDir(dir: string, identity: LockIdentity): boolean {
   }
   try {
     rmSync(join(dir, MERGE_LOCK_PID_FILE), { force: true });
+    rmSync(join(dir, MERGE_LOCK_TOKEN_FILE), { force: true });
     rmdirSync(dir);
   } catch (error) {
     console.error(
@@ -880,12 +935,12 @@ function reclaimMergeLock(lockPath: string, dead: number): boolean {
 
 /**
  * Try the merge lock once: a directory, which only one `mkdir` can make,
- * holding the taker's pid. Answers the directory's identity once it is taken,
- * the pid holding it, or null for a lock with no pid to read; a lock whose pid
- * is dead is reclaimed and tried again, and a dead pid is answered only while
- * another run is reclaiming it (decision 88).
+ * holding the taker's pid and a token fresh to the take. Answers the take once
+ * it is made, the pid holding the lock, or null for a lock with no pid to
+ * read; a lock whose pid is dead is reclaimed and tried again, and a dead pid
+ * is answered only while another run is reclaiming it (decision 88).
  */
-function tryMergeLock(lockPath: string): LockIdentity | number | null {
+function tryMergeLock(lockPath: string): LockTake | number | null {
   for (;;) {
     let failed: string | undefined;
     try {
@@ -898,7 +953,11 @@ function tryMergeLock(lockPath: string): LockIdentity | number | null {
       // every later step checks it is still this directory.
       const identity = directoryIdentity(lockPath);
       if (!identity) return null;
+      const token = randomBytes(16).toString('hex');
       try {
+        // The token before the pid: a reader takes a lock with no pid yet for
+        // one being taken, so the take is never seen whole without its token.
+        writeFileSync(join(lockPath, MERGE_LOCK_TOKEN_FILE), token, { flag: 'wx' });
         writeFileSync(join(lockPath, MERGE_LOCK_PID_FILE), `${process.pid}\n`, { flag: 'wx' });
       } catch (error) {
         // Taken but not recorded: undone, since a lock with no pid refuses every later run.
@@ -906,7 +965,7 @@ function tryMergeLock(lockPath: string): LockIdentity | number | null {
         throw error;
       }
       const now = directoryIdentity(lockPath);
-      if (now?.dev === identity.dev && now.ino === identity.ino) return identity;
+      if (now?.dev === identity.dev && now.ino === identity.ino) return { ...identity, token };
       console.error(
         `${lockPath} was replaced while pup took it, so its pid may have been written through ` +
           'what replaced it; nothing was taken. Treat a session that replaced it as compromised.',
@@ -953,11 +1012,13 @@ function heldBy(lockPath: string, holder: number): MergeLockHeldError {
  * run, and one a live run holds is waited for up to `maxWaitMs`, printing one
  * line when the wait starts, and by default not at all (decision 88). `fn` is
  * told whether the take waited: anything read before the wait may have changed
- * under the run that held the lock meanwhile. A lock found gone or replaced at
- * the release throws `MergeLockLostError` with `fn`'s result, or is printed
- * beside `fn`'s error, whatever error the release met; only a lock still the
- * take's own directory that cannot be moved is printed and the result
- * returned. A release error never replaces what `fn` did.
+ * under the run that held the lock meanwhile. While `fn` runs, the section
+ * checks the take with `assertMergeLockHeld` before each ref it moves. A lock
+ * found gone or replaced at the release, another directory or one holding
+ * another token, is left where it is and throws `MergeLockLostError` with
+ * `fn`'s result, or is printed beside `fn`'s error, whatever error the release
+ * met; only a lock still the take that cannot be moved is printed and the
+ * result returned. A release error never replaces what `fn` did.
  */
 export async function withMergeLock<TResult>(
   repoPath: string,
@@ -973,11 +1034,11 @@ export async function withMergeLock<TResult>(
   // Waited for with node's default disposition, so a Ctrl-C ends the wait;
   // the listeners go on in the same tick as the take, leaving no turn of the
   // event loop between them.
-  let identity: LockIdentity | undefined;
+  let take: LockTake | undefined;
   for (;;) {
     const holder = tryMergeLock(lockPath);
     if (holder !== null && typeof holder === 'object') {
-      identity = holder;
+      take = holder;
       break;
     }
     const now = Date.now();
@@ -1004,24 +1065,23 @@ export async function withMergeLock<TResult>(
   }
   const stayAlive = (): void => undefined;
   for (const signal of LOCK_SIGNALS) process.on(signal, stayAlive);
-  const taken = identity;
+  const taken = take;
   /** Release the lock; false when it was no longer the one this run took. */
   const release = (): boolean => {
     // The lock goes first: a signal between the two would otherwise meet
     // node's default disposition with the lock still on disk.
     try {
+      // Checked before the move: a lock that is no longer this take is another
+      // run's, or a session's, and is left on its path rather than moved from
+      // under the run holding it. Only the rename's own window is then left for
+      // a swap that a moved-aside lock too faulty to read would hide.
+      if (!isTake(lockPath, taken)) return false;
       return dropMergeLock(lockPath, 'released', taken);
     } catch (error) {
-      // Whatever failed, the lock counts as this run's only while the take's
-      // own directory is still at the path: one moved away, even with another
-      // run's lock now there, is lost, and so is one that cannot be read.
-      let now: LockIdentity | undefined;
-      try {
-        now = directoryIdentity(lockPath);
-      } catch {
-        now = undefined;
-      }
-      if (now?.dev !== taken.dev || now.ino !== taken.ino) return false;
+      // Whatever failed, the lock counts as this run's only while the take is
+      // still at the path: one moved away, even with another run's lock now
+      // there, is lost, and so is one that cannot be read.
+      if (!isTake(lockPath, taken)) return false;
       // Printed, never thrown, since `fn` has done what it did, and the lock
       // left in place names this pid, which a later run reclaims once this
       // process has exited (decision 88).
@@ -1036,7 +1096,7 @@ export async function withMergeLock<TResult>(
   };
   let result: TResult;
   try {
-    result = await fn(waited);
+    result = await heldMergeLock.run({ lockPath, take: taken }, () => fn(waited));
   } catch (error) {
     // The section's own error still wins; the lost lock is said beside it.
     if (!release()) console.error(new MergeLockLostError(lockPath, undefined).message);
@@ -1536,6 +1596,7 @@ export function fastForward(
   // Before the checkout is touched, not only at the compare-and-swap after it
   // (decision 80).
   assertTargetAt(repoPath, target, targetSha);
+  assertMergeLockHeld(repoPath, `the fast-forward of ${shown}`);
   // `--work-tree` because `core.worktree` sits in the shared config and would
   // aim the checkout's writes wherever a session chose; `submodule.recurse` is
   // pinned off in `GIT_SAFE_CONFIG`, and the flag here says so again; and
@@ -1563,6 +1624,9 @@ export function fastForward(
     );
   }
   try {
+    // Again after the checkout, which a large tree makes long: a lock lost
+    // meanwhile puts the checkout back below, like a refused swap.
+    assertMergeLockHeld(repoPath, `the fast-forward of ${shown}`);
     checkout([
       'update-ref',
       '--no-deref',
@@ -1842,6 +1906,9 @@ async function mergeTargetInto(
   } catch (error) {
     rethrowIfKilled(error);
   }
+  // Thrown to the operator, never returned for the worker: no fix of theirs
+  // gives the run its lock back.
+  assertMergeLockHeld(repoPath, `the merge of ${shown} into ${branch}`);
   try {
     swapBranch(`pup merge: merge ${target}`, merged, branchSha);
   } catch (error) {
@@ -1994,6 +2061,8 @@ async function gateAndMerge(
       timedSince(started, { stage: 'fresh-base', status: 'pass', detail: `auto-merged ${target}` }),
     );
   } else {
+    // Before the try, so a lost lock goes to the operator, not to the worker.
+    assertMergeLockHeld(req.repoPath, `the rebase of ${session.branch} onto ${target}`);
     try {
       // The strategy named, not left to `pull.twohead`: git's sequencer takes
       // the first value it reads, a session's local one before the `-c` pin,
@@ -3254,6 +3323,7 @@ function pushBranch(
     }
   })();
   withScratchGitDir(repoPath, 'pup-push-', (git) => {
+    assertMergeLockHeld(repoPath, `the push of ${branch}`);
     // Unlike the other git calls here this gets a timeout: a stalled push would
     // otherwise hang while holding the merge lock. Hooks are off for the same
     // reason they are everywhere else in the gate (decision 28).

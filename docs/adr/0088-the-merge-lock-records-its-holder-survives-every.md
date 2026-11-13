@@ -193,3 +193,47 @@
     outcome; the conductor context forbids the load loops and the lock hand-offs.
     *Amended by decision 134:* the load wait runs only while another process holds a test slot
     or waits for one as a gate, and ends as soon as none does.
+    *The holder token, checked before every ref move (amended 2026-11-13).* The release check
+    above finds a lost lock only after the section has moved main, pushed or landed, and the
+    directory's identity alone misses two swaps: a lock renamed away and deleted frees its inode,
+    which the next run's `mkdir` can reuse, and a release whose moved-aside directory meets EIO
+    reports clean without reading whose it was. The rules:
+    - Each take writes `token`, 16 random bytes in hex, beside its pid: created exclusively, before
+      the pid, so a reader never sees a whole take without one. A take is the directory's identity
+      and its token, and the lock is the take's only while both match. Neither alone is enough: the
+      inode can be reused, and a session can read the token and copy it into a directory of its
+      own. Release and undo remove the token with the pid.
+    - `assertMergeLockHeld(repoPath, step)` refuses `step` unless the lock at the path is still the
+      running section's take. The take is held per async context (`AsyncLocalStorage`), not per
+      path, so two sections of one process on one path, which only a swapped lock lets run at once,
+      keep a take each. Outside a locked section, or inside one on another repo, it refuses. It runs
+      right before every ref move under the lock: the gate's fast-forward of the target, before the
+      checkout and again before its `update-ref` (a refusal there puts the checkout back, like a
+      refused compare-and-swap); the `--pr` push (not the tracking ref written after it, which
+      only records what was pushed, and left stale would fail the next push's lease); the fresh-base rebase and the fresh-base merge
+      of the target into an open PR's branch, both thrown to the operator, never returned for the
+      worker; and `pup land`'s fast-forward and its update of the origin tracking ref. A refusal
+      moves nothing, and the run fails with it, the lost lock printed beside it at the release, so
+      only a lock lost after the last move still ends in `MergeLockLostError` carrying the outcome.
+    - The release checks the take on the lock path before it moves anything. A lock that is no
+      longer the take is left on its path, not moved aside from under the run that holds it, and
+      the release reports it lost. The EIO allowance on the moved-aside directory then covers only
+      a swap inside the rename itself.
+    A rename away and back that completes between two checks is still invisible: the directory
+    and its token are the take's again, and no state on the path can tell. It no longer defeats
+    mutual exclusion at the moves, since while another run held the path every check of the first
+    refused, and the compare-and-swap on each ref catches what that run moved meanwhile. The check
+    and the move after it remain two calls, the window the identity checks above already name. The
+    branch deletes of teardown, after the merge or land, stay unchecked: each is a compare-and-swap
+    on the pinned sha. `pup fix` and `pup retire` run under the lock with no check of their own.
+    Tests: each take writes a fresh 32-hex token and the check passes while it holds; the check
+    refuses outside a section and inside one on another repo; a directory holding another take's
+    token and pid (a reused inode) refuses, and is left on its path at the release; a directory
+    holding a copy of the token refuses; with the lock renamed away, another take made and the
+    first put back, each run refuses whenever the path is not its take and the second's release
+    leaves the first's lock in place; a lock replaced under its section is left on its path at the
+    release even when the moved-aside read would meet EIO; a lock moved during the stages refuses
+    the gate's fast-forward, its auto-rebase, the `--pr` push and the fresh-base merge into an open
+    PR's branch with nothing moved, pushed or opened; one moved after the fast-forward still fails
+    with the merged outcome; a land whose lock moved while it fetched refuses its fast-forward, and
+    with main already at origin's tip refuses the tracking ref, changing nothing.
