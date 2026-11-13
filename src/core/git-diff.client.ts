@@ -362,16 +362,15 @@ export class SharedWorktreeKeyError extends Error {
  * besides (`--no-relative`, `--full-tree`, `:(top)`), for a key a live session
  * sets after the check. Read from `/`, so an empty key cannot stop the read.
  * Exit 1 is git's "no such key"; any other failure is a file git cannot read,
- * which every later call would trip on too, so it refuses as well. Timed out
- * like a gate child, since the gate asks under the merge lock and a session can
- * swap the file for a FIFO no read returns from.
+ * which every later call would trip on too, so it refuses as well. A FIFO
+ * swapped in for the file is cut off by `runGit`'s deadline.
  */
 export function assertNoSharedWorktreeKey(repoPath: string): void {
   try {
     runGit(
       '/',
       ['config', '--file', join(repoPath, '.git', 'config'), '--get-all', 'core.worktree'],
-      { stdio: ['ignore', 'pipe', 'ignore'], timeout: GATE_COMMAND_TIMEOUT_MS },
+      { stdio: ['ignore', 'pipe', 'ignore'] },
     );
   } catch (error) {
     rethrowIfKilled(error);
@@ -404,11 +403,7 @@ function worktreeConfigState(
         '--get',
         'extensions.worktreeConfig',
       ],
-      {
-        env: env ? { ...env } : undefined,
-        stdio: ['ignore', 'pipe', 'ignore'],
-        timeout: GATE_COMMAND_TIMEOUT_MS,
-      },
+      { env: env ? { ...env } : undefined, stdio: ['ignore', 'pipe', 'ignore'] },
     );
     return value.trim() === 'false' ? 'off' : 'on';
   } catch (error) {
@@ -544,10 +539,15 @@ export const GIT_SAFE_CONFIG = [
  * itself would open, and print git's deprecation hint on every call.
  * `GIT_NO_REPLACE_OBJECTS` repeats `core.useReplaceRefs=false` for a child
  * that takes no argv of pup's, `gh`'s git, as `pinnedGitEnv` hands it on.
+ * `<common>/shallow` cuts a listed commit's parents off the way a graft does,
+ * and only `GIT_SHALLOW_FILE` moves where git reads it from, so it names a
+ * path that cannot exist too. The cost: a real shallow clone reads as whole,
+ * and a walk past its edge fails on the parent it lacks.
  */
 const GIT_HISTORY_ENV = {
   GIT_NO_REPLACE_OBJECTS: '1',
   GIT_GRAFT_FILE: '/dev/null/no-grafts',
+  GIT_SHALLOW_FILE: '/dev/null/no-shallow',
 } as const;
 
 /**
@@ -605,6 +605,7 @@ export const GIT_MAX_BUFFER = 64 * 1024 * 1024;
 /**
  * What a call site may add to a git spawn. `env` is laid over the scrubbed
  * environment rather than replacing it, so a caller names only what it adds.
+ * `timeout` replaces `spawnOptions`' deadline.
  */
 interface RunGitOptions {
   env?: NodeJS.ProcessEnv;
@@ -912,13 +913,21 @@ function safeArgv(cwd: string, args: string[], env: NodeJS.ProcessEnv): string[]
   return [...GIT_SAFE_CONFIG, '-C', cwd, ...named, ...args];
 }
 
-/** A spawn's options, whose `env` is the one `safeArgv` must be handed. */
+/**
+ * A spawn's options, whose `env` is the one `safeArgv` must be handed. Every
+ * child gets a deadline: a gate command's, unless the caller names its own.
+ * Git opens `<common>/config` before any command runs, and a session can
+ * swap it for a FIFO that no open returns from. Node waits in the spawn, where
+ * `withMergeLock`'s signal listeners cannot run, so a signal sent to pup alone
+ * never ends the wait and the lock stays held. At the deadline the child is
+ * killed and the call throws, as decision 124's hooks are bounded (decision 89).
+ */
 function spawnOptions(opts: RunGitOptions): ExecFileSyncOptions & { env: NodeJS.ProcessEnv } {
   return {
     env: { ...scrubbedGitEnv(), ...opts.env, ...GIT_HISTORY_ENV },
     maxBuffer: GIT_MAX_BUFFER,
     stdio: opts.stdio,
-    timeout: opts.timeout,
+    timeout: opts.timeout ?? GATE_COMMAND_TIMEOUT_MS,
   };
 }
 
@@ -1301,7 +1310,7 @@ export class ArmedGitDriverError extends Error {
     const rest = armed.length - ARMED_NAMES_SHOWN;
     super(
       `Refusing to run git in ${gitPath}: a filter or merge driver is armed, or a config ` +
-        `include could arm one, and git would run it with your environment —${shown}${rest > 0 ? ` +${rest} more` : ''}. ` +
+        `include could arm one, and git would run it with your environment — ${shown}${rest > 0 ? ` +${rest} more` : ''}. ` +
         'These live in the untracked $GIT_COMMON_DIR, so no diff and no scope audit shows ' +
         'them. Clear them (`git config --unset <key>`, `rm .git/info/attributes`) and retry, ' +
         'and treat a session that wrote them as compromised.',

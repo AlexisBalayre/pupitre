@@ -1241,7 +1241,7 @@ describe('runGit', () => {
     },
   );
 
-  it('hands a spawned git no inherited GIT_SHALLOW_FILE or GIT_NAMESPACE', () => {
+  it("hands a spawned git pup's own GIT_SHALLOW_FILE, and no inherited GIT_NAMESPACE or GIT_REPLACE_REF_BASE", () => {
     const repo = makeRepo();
     writeFileSync(join(repo, 'a.ts'), 'a\n');
     commitAll(repo, 'a');
@@ -1258,12 +1258,14 @@ describe('runGit', () => {
     expect(plainCount.trim()).toBe('1');
     vi.stubEnv('GIT_SHALLOW_FILE', shallow);
     vi.stubEnv('GIT_NAMESPACE', 'planted');
+    vi.stubEnv('GIT_REPLACE_REF_BASE', 'refs/planted/');
 
     expect(runGit(repo, ['rev-list', '--count', 'HEAD']).trim()).toBe('2');
     // What git hands its own children is what it was spawned with.
     const seen = runGit(repo, ['-c', 'alias.env=!env', 'env']);
-    expect(seen).not.toMatch(/^GIT_SHALLOW_FILE=/m);
+    expect(seen).toMatch(/^GIT_SHALLOW_FILE=\/dev\/null\/no-shallow$/m);
     expect(seen).not.toMatch(/^GIT_NAMESPACE=/m);
+    expect(seen).not.toMatch(/^GIT_REPLACE_REF_BASE=/m);
   });
 
   it("keeps the operator's config location and commit identity", () => {
@@ -2157,6 +2159,24 @@ describe('history a session can rewrite in the shared git dir (decision 89)', ()
     expect(base).toBe(revParse(repo, 'main~1'));
   });
 
+  // Listed in `<common>/shallow`, the branch tip reads as a root commit: the
+  // subjects the gate reads off the branch would lose every commit under it.
+  it('reads the parents a planted shallow file cuts off', () => {
+    const { repo } = forkedRepo();
+    writeFileSync(join(repo, '.git', 'shallow'), `${revParse(repo, 'feature')}\n`);
+    const plainSubjects = execFileSync('git', ['log', '--format=%s', 'main..feature'], {
+      cwd: repo,
+      encoding: 'utf8',
+      env: GIT_ENV,
+    });
+    expect(plainSubjects.split('\n').filter(Boolean)).toEqual(['y']);
+
+    const subjects = runGit(repo, ['log', '--format=%s', 'main..feature']);
+
+    expect(subjects.split('\n').filter(Boolean)).toEqual(['y', 'x']);
+    expect(gitDiffPaths(repo, 'main', 'feature')).toEqual(['x.ts', 'y.ts']);
+  });
+
   it('reads the tree a forged commit-graph names in place of the tip’s own', () => {
     const { repo } = forkedRepo();
     sh(repo, 'git', 'commit-graph', 'write', '--reachable');
@@ -2186,6 +2206,22 @@ describe('history a session can rewrite in the shared git dir (decision 89)', ()
       'y.ts',
       '',
     ]);
+    // GIT_TEST_COMMIT_GRAPH, which git's own suite sets, loads the graph
+    // whatever `core.commitGraph` says, so pup's git must never inherit it.
+    const testVarTree = execFileSync(
+      'git',
+      ['-c', 'core.commitGraph=false', 'log', '-1', '--format=%T', 'feature'],
+      { cwd: repo, encoding: 'utf8', env: { ...GIT_ENV, GIT_TEST_COMMIT_GRAPH: '1' } },
+    ).trim();
+    expect(testVarTree).toBe(baseTree.toString('hex'));
+    vi.stubEnv('GIT_TEST_COMMIT_GRAPH', '1');
+    try {
+      expect(runGit(repo, ['log', '-1', '--format=%T', 'feature']).trim()).toBe(
+        tipTree.toString('hex'),
+      );
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });
 
@@ -2208,7 +2244,7 @@ describe('armedGitDrivers: includes and empty driver names (decision 89)', () =>
 
     expect(armedGitDrivers(repo)).toEqual(['include.path']);
     expect(() => assertNoArmedGitDrivers(repo)).toThrow(
-      /a config include could arm one.*include\.path/,
+      /a config include could arm one.* — include\.path\. /,
     );
   });
 

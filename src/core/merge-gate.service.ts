@@ -3434,18 +3434,15 @@ function pushBranch(
   })();
   withScratchGitDir(repoPath, 'pup-push-', (git) => {
     assertMergeLockHeld(repoPath, `the push of ${branch}`);
-    // Unlike the other git calls here this gets a timeout: a stalled push would
-    // otherwise hang while holding the merge lock. Hooks are off for the same
-    // reason they are everywhere else in the gate (decision 28).
-    git(
-      [
-        'push',
-        ...(leased ? [`--force-with-lease=refs/heads/${branch}:${leased}`] : []),
-        originUrl,
-        `${tip}:refs/heads/${branch}`,
-      ],
-      { timeout: GATE_COMMAND_TIMEOUT_MS },
-    );
+    // A stalled push ends at `runGit`'s deadline rather than hang holding the
+    // merge lock. Hooks are off for the same reason they are everywhere else in
+    // the gate (decision 28).
+    git([
+      'push',
+      ...(leased ? [`--force-with-lease=refs/heads/${branch}:${leased}`] : []),
+      originUrl,
+      `${tip}:refs/heads/${branch}`,
+    ]);
   });
   // `--no-deref`, like the gate's other ref writes: a tracking ref a session
   // turned into a symref must not move the branch it points at.

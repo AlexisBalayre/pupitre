@@ -27,6 +27,19 @@ vi.mock('node:child_process', async (importOriginal) => {
   };
 });
 
+// Shortened by the test of a fifo swapped in for `.git/config` under the lock,
+// whose git child only the deadline ends.
+const gateTimeout = vi.hoisted(() => ({ ms: undefined as number | undefined }));
+vi.mock('./merge-gate.constants.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./merge-gate.constants.js')>();
+  return {
+    ...actual,
+    get GATE_COMMAND_TIMEOUT_MS() {
+      return gateTimeout.ms ?? actual.GATE_COMMAND_TIMEOUT_MS;
+    },
+  };
+});
+
 // Set by the tests of a session racing the gate: it clears the key right
 // before each of the gate's checks (of the shared config's key and of
 // per-worktree config) and sets it again right after, so every git call after
@@ -113,6 +126,7 @@ describe('the merge gate under a shared-config core.worktree and diff.relative',
 
   afterEach(() => {
     keyRace.around = undefined;
+    gateTimeout.ms = undefined;
     vi.unstubAllEnvs();
   });
 
@@ -601,6 +615,60 @@ describe('the merge gate under a shared-config core.worktree and diff.relative',
       expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
     },
   );
+
+  // Git opens `.git/config` before any command runs, so a fifo swapped in for
+  // it blocks every git child, under the merge lock too, where node waits in
+  // the spawn and no signal it handles gets it out. Swapped in after the gate's
+  // last check of the file, it blocks the re-read of the checked-out branch,
+  // which the deadline kills; the lock goes with the run (decision 89).
+  it('kills a git child a fifo at .git/config blocks under the merge lock, and releases the lock', async () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+    seedDebtBaseline({ deadExports: [], duplicatedLines: 0 });
+    const mainTip = sh(repo, 'git', 'rev-parse', 'main');
+    const config = join(repo, '.git', 'config');
+    const kept = readFileSync(config, 'utf8');
+    let stagesRan = false;
+    const adapter = debtAdapter({
+      deadCode: () => {
+        stagesRan = true;
+        return [];
+      },
+    });
+    const planted = { writer: undefined as ReturnType<typeof spawn> | undefined };
+    keyRace.around = <T>(name: string, check: () => T): T => {
+      const checked = check();
+      if (name === 'per-worktree' && stagesRan && !planted.writer) {
+        rmSync(config);
+        execFileSync('mkfifo', [config]);
+        // Serves an empty config after a while, so a git with no deadline
+        // goes on to merge and fails this test rather than hang the run.
+        planted.writer = spawn(
+          'sh',
+          ['-c', 'sleep 8; while [ -p "$0" ]; do : > "$0"; done', config],
+          { stdio: 'ignore' },
+        );
+        gateTimeout.ms = 2_000;
+      }
+      return checked;
+    };
+
+    try {
+      await expect(merge(adapter)).rejects.toThrow(/ETIMEDOUT/);
+    } finally {
+      planted.writer?.kill('SIGKILL');
+      rmSync(config, { force: true });
+      writeFileSync(config, kept);
+    }
+
+    expect(planted.writer).toBeDefined();
+    expect(existsSync(join(repo, '.git', 'pup-merge.lock'))).toBe(false);
+    expect(sh(repo, 'git', 'rev-parse', 'main')).toBe(mainTip);
+    expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+    keyRace.around = undefined;
+    gateTimeout.ms = undefined;
+    expect((await merge(adapter)).status).toBe('merged');
+  });
 
   // Under git's default rename detection `--name-only` lists a rename's new
   // path alone, and the deletion of an out-of-scope file passed the audit.
