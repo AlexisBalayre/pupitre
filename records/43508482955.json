@@ -1,0 +1,227 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-13T21:18:17.729Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43508482955",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43508482955",
+  "actor": "AlexisBalayre",
+  "commit_sha": "4ddcdd91d2c1f2633ac662c6c6bd4ab450ca760f",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 319,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/github.client.ts",
+      "line": "508",
+      "description": "Replies are relayed as 'the operator's view' based on viewerDidAuthor or OWNER. Every session uses the operator's own gh login, so any session can post a thread reply that the next round's worker is told is the operator's word. The same reply also reopens the thread, which sends the conductor's loop to `pup fix`.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/github.client.ts",
+      "line": "496-514",
+      "description": "A reply the operator posts on a thread while a fix round that took that thread is running is never relayed. When that round's gate runs, it posts the round's marked reply after the operator's reply. The relay window starts at the newest marked reply, so it skips the operator's reply. The thread then reads as answered, and nothing shows that the worker never saw the reply.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "359-363",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "When the gate skips a thread because a relay-eligible reply came in during the round, it posts nothing on the thread and does not resolve it. The summary comment and the `ThreadAnswers` doc promise that the next round takes it. The next round never does if the round's own pushed commits changed the commented line, because GitHub then marks the thread outdated. `readPullRequestReview` drops outdated threads from `openThreads` (github.client.ts:535), and `reviewVerdict` only counts them as \"a push outdated that nobody resolved (no round takes one...)\". Trigger: the operator replies on thread T after `pup fix`, and the worker fixes T by editing the line T is anchored to, which is the usual way a finding gets fixed. The gate pushes, T goes outdated, and the PR comment says \"1 replied on while the round ran, left for the next round\". No round ever relays that reply. The worker's `fixed` answer, which would have resolved T as `addressed`, is also dropped without a trace.",
+      "body": "**The `repliedSince` skip assumes the skipped thread comes back on the next `pup fix`. In the common case it doesn't.**\n\n```ts\nif (seen !== undefined && thread.newestRelayed !== undefined && thread.newestRelayed > seen) {\n  answers.repliedSince++;\n  continue;\n}\n```\n\nThe round's summary comment ([L390-L392](https://github.com/AlexisBalayre/pupitre/blob/4ddcdd91d2c1f2633ac662c6c6bd4ab450ca760f/src/core/fix-round.service.ts#L390-L392)) promises `` `; ${answers.repliedSince} replied on while the round ran, left for the next round.` ``. The `ThreadAnswers.repliedSince` doc (L147-152) and the `answerFixRoundThreads` JSDoc (L297-299) say the same.\n\n**Why the next round never sees it:**\n- The gate pushes the round's commit before it answers threads: `pushBranch` and `assertPullRequestHead` run at merge-gate.service.ts:2230-2240, and `replyOnFixRoundThreads` runs after them at 2313.\n- When the worker fixed the finding by editing the line the thread is anchored to (the usual fix), GitHub marks the thread `isOutdated`.\n- On the next `pup fix`, `readPullRequestReview` drops outdated threads from `openThreads`: `if (!finding || typeof thread.id !== 'string' || isOutdated(thread)) return [];` ([github.client.ts#L535](https://github.com/AlexisBalayre/pupitre/blob/4ddcdd91d2c1f2633ac662c6c6bd4ab450ca760f/src/core/github.client.ts#L535)).\n- After that, `reviewVerdict` and `pup ci wait` only describe it as one \"a push outdated that nobody resolved (no round takes one ...)\".\n\n**Result:**\n- No round ever relays the operator's mid-round reply, and the PR comment saying it was \"left for the next round\" is false.\n- This is also a regression for the `addressed` case. Before this PR, the gate replied on that thread and resolved it. Now the worker's `fixed` reason is posted nowhere, and the thread stays open.\n- The gate's terminal summary (merge-gate.service.ts:2367-2371) doesn't report `repliedSince` either.\n\n**Possible fixes:**\n- Count a thread as `repliedSince` only when it will still be live for the next round. For example, skip only when the round didn't change `thread.path`, or re-read `isOutdated` before deciding.\n- Or keep the skip, but change the summary comment and the outdated advice so they name these threads as ones the operator must read, because a reply on each went unrelayed.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/4ddcdd91d2c1f2633ac662c6c6bd4ab450ca760f/src/core/fix-round.service.ts#L356-L393",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/github.client.ts",
+      "line": "284-286",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "`THREAD_COMMENT_FIELDS` now asks every thread comment for `databaseId`, which is a GraphQL `Int` (32-bit signed). By late 2026, new pull request review comment ids are most likely above 2^31 (2147483647); GitHub added `fullDatabaseId: BigInt` on comment types for this reason. Trigger: any PR whose thread comments were posted recently. There are two possible results, and I can't settle statically which one GitHub gives:\n- **GitHub returns an `errors` entry for the overflowing field.** `gh api graphql` then exits non-zero, so `ghJson`'s `execFileSync` throws. Both `readPullRequestReview` and `readThreadAnswers` fail on every such PR. `pup fix` refuses, the inbox lookup goes blank, and the gate's `answerFixRoundThreads` throws. These queries worked before this PR, which is what makes this a regression.\n- **GitHub returns `null`.** `newestDatabaseId` filters out every new id with `Number.isSafeInteger`, so it returns `undefined` or a stale older id. The kickoff then records no `newestComments`, or a low one. If it records nothing, `repliedSince` never fires and the gate quietly goes back to burying replies posted mid-round. If it records a stale low id, comparing it with the newer ids is meaningless.\n\nThe unit fixtures use ids like 11–22, so no test hits this.",
+      "body": "**`THREAD_COMMENT_FIELDS` now reads `databaseId` on every review-thread comment, in both `PULL_REQUEST_REVIEW_QUERY` and `FIX_ROUND_THREADS_QUERY`:**\n\n```ts\nconst THREAD_COMMENT_FIELDS = `databaseId body viewerDidAuthor authorAssociation\n  author { __typename login } isMinimized lastEditedAt editor { __typename login }`;\n```\n\nNo query in `src/` asked for `databaseId` before this PR.\n\n**Why it may not fit.** GraphQL's `databaseId` is a 32-bit signed `Int`. GitHub added `fullDatabaseId: BigInt` to comment types because comment primary keys are passing 2^31. This repo's own ids are already past it:\n- this PR's issue comment is `issuecomment-6865023174`;\n- its review node id `PRR_kwDOTgOqVs8AAAABXymW3g` decodes to about 5.9e9.\n\nPull request review comment ids posted now are very likely above 2^31 as well.\n\n**What GitHub then does.** For a comment like that, GitHub does one of two things:\n- **Returns an `errors` entry.** `gh api graphql` exits non-zero, so `ghJson` throws. `pup fix`, the inbox lookup and the gate's `answerFixRoundThreads` all fail on that PR. This is a regression, because these queries didn't ask for the field before.\n- **Returns `null`.** `newestDatabaseId` drops it (`filter(Number.isSafeInteger)`), so the kickoff records no `newestComments`, or a stale one, and `repliedSince` silently stops working.\n\nThe test fixtures use small ids (11–22), so neither case is covered.\n\n**Possible fix.** Query `fullDatabaseId` instead. It comes back as a decimal string, so parse and compare it as a `BigInt` in `newestDatabaseId` (store it as a string in the event). Alternatively, order comments by `createdAt`.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/4ddcdd91d2c1f2633ac662c6c6bd4ab450ca760f/src/core/github.client.ts#L284-L286\nhttps://github.com/AlexisBalayre/pupitre/blob/4ddcdd91d2c1f2633ac662c6c6bd4ab450ca760f/src/core/github.client.ts#L476-L480",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/github.client.ts",
+      "line": "670",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The gate skips a thread only when `newestRelayed > seen`, and it compares `databaseId`s. Editing or un-hiding a comment doesn't change its `databaseId`, so neither change is ever detected.\n- **Trigger:** the brief quoted a reply, \"use X\", and while the round runs the operator edits it to \"don't use X\". Or the operator un-hides a reply that was hidden when the kickoff ran.\n- **Why the gate misses it:** the comment is still relayed (an edit by its own author doesn't count as `isEditedByOther`), and its id is still at or below `seen`. The gate therefore answers the thread and posts its marked reply under it.\n- **Result:** the thread now reads `isAnswered`, and the next `pup fix` skips it, because `newestMarked` cuts `replies` to comments after the marked reply. The changed text never reaches a worker, which is the burial the `repliedSince` fix was meant to stop.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "236",
+      "area": "simplicity",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "In `startFixRound`, the `newest` variable and the `newest.length > 0 ? { newestComments: ... } : {}` spread can become a plain `newestComments: Object.fromEntries(threads.flatMap(...))`. `roundTheNewestMergeEnded` already reads a missing field and `{}` the same way.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/github.client.ts",
+      "line": "385-391",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`ReviewThread.newestComment` (newest id over all comments) and `AnsweredThread.newestRelayed` (newest id over relayed comments) are two concepts compared against each other. Computing the kickoff value over `trail.filter(isRelayed)` would make them one, and would drop the \"whoever wrote it\" caveat. New replies are detected the same way either way.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "147-158",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`repliedSince` is a counter, not a verdict. Its only reader is the summary text built in the same function, so a local `let repliedSince = 0` in `answerFixRoundThreads` would drop the `ThreadAnswers` field, its docstring and the extra `ThreadVerdict` `Exclude` entry. Check first that no caller reads it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0090-pup-fix-session-hands-the-ci-review-s.md",
+      "line": "253-285",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "ADR 0090 says \"the marker needs no store event, so the event types are untouched\", and ADR 0163 says the worker has \"no sign\" of an earlier decline. This PR adds `newestComments` to the `fix_round` event and relays replies to the worker, but amends neither ADR. AGENTS.md says ADRs win over code, so they now describe behaviour the code no longer has.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/github.client.ts",
+      "line": "456-463",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The `isMarked` JSDoc says the reply is \"ending on the marker\", but the code is `comment.body.includes(`${FIX_ROUND_MARKER} `)`, which matches the marker anywhere in the body. Now that `isRelayed` uses it, a reply from pup's login that quotes the marker mid-body is silently not relayed. Reword to \"its body carries the marker\".",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/github.client.ts",
+      "line": "436",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The comment on the generic `isEdited` helper, \"one gone from GitHub reads as nobody, so as not the bot\", only holds at the finding call site. The other caller, `isEditedByOther` (for relayed replies), has nothing to do with the bot. Move the \"not the bot\" clause to the finding call site.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "1096-1099",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The brief says a quoted reply was posted \"since a round last answered it\". For a thread no round has answered, the window starts at the finding (`newestMarked` is -1), so the sentence describes a round that never happened. Use \"since a round's last reply, or since the finding if none replied\".",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "1060-1062",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "In the `fixRoundBrief` JSDoc, \"GitHub cannot tell the operator's hand in one\" has no clear referent (one reply? one session?). It also restates the brief paragraph and the `ReviewThread.replies` JSDoc. A shorter \"replies are fenced and framed as data, since a session posts as the operator's login\" is enough.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "2367-2371",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "pre-existing",
+      "description": "The new `repliedSince` count now reaches this line, and the line does not report it: `` `Answered the fix round's threads on ${answers.prUrl}: ${answers.addressed} addressed and resolved, ... ${answers.declined} declined, ${answers.unanswered} unanswered.` ``. Trigger: a round with any thread skipped as `repliedSince`. The operator's terminal shows counts that add up to fewer threads than the round took, with nothing saying some were left unreplied and unresolved. Only the PR comment says so. Adding the `repliedSince` count to this line, as the PR comment now does, would close the gap.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 1,
+  "comments_posted_actual": 2,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 3.946947199999999,
+  "duration_ms": 351389,
+  "num_turns": 21,
+  "tokens": {
+    "input": 16,
+    "output": 22981,
+    "cache_read": 457005,
+    "cache_creation": 73672,
+    "total": 553674
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 136,
+      "output": 79546,
+      "cache_read": 1644180,
+      "cache_creation": 283148,
+      "cost_usd": 3.557055999999999
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 40,
+      "output": 11580,
+      "cache_read": 321690,
+      "cache_creation": 96382,
+      "cost_usd": 0.38900399999999996
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 418,
+      "cache_read": 0,
+      "cache_creation": 5424,
+      "cost_usd": 0.0008872
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "gh pr view 319 --repo AlexisBalayre/pupitre --json comments,reviews --jq '[.comments[].url, .reviews[].id] | .[:10]'"
+    }
+  ]
+}
