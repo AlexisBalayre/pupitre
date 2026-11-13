@@ -12,9 +12,10 @@
     the compiler reads it itself, so every launch path picks it up by the same rule, with no
     migration and no caller change. A setting the operator turns on for one ticket and off again
     is better served by a file than by a schema change.
-    *Read at compile time.* Turning a step on reaches the next launch, and the next respawn of a
-    running task, never a window already running. The kickoff it changes is hashed, so turning it
-    on or off marks the live sessions' profiles stale, as a brief edit does. It changes no gate.
+    *Read at compile time.* Turning a step on reaches the next launch or fix round, never a window
+    already running: a respawn resends the stored context and recompiles nothing. The kickoff it
+    changes is hashed, so turning it on or off marks the live sessions' profiles stale, as a brief
+    edit does. It changes no gate.
     *The shift-left kickoff.* When on, a worker's kickoff gains a "Reviewers will check" section
     below the session protocol: one checklist per correctness, docs and conventions reviewer and
     decision 174's failing-scenario rule. Each checklist is read at compile time from the
