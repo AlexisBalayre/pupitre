@@ -2799,6 +2799,50 @@ describe('CLI commands', () => {
       expect(waitForCiReview).not.toHaveBeenCalled();
     });
   });
+
+  // A stage that fails refuses the gate before any debt is weighed (decision
+  // 146): --accept-debt cannot get it through, only the session's fix can.
+  describe('merge refused by a failed stage', () => {
+    function refusedOn(stage: string): void {
+      vi.mocked(runMergeGate).mockResolvedValue({
+        status: 'refused',
+        report: {
+          sessionId: 's1',
+          passed: false,
+          sandbox: 'sandbox-exec (macOS)',
+          stages: [{ stage, status: 'fail', detail: 'taken' }],
+        },
+        rejectCount: 0,
+      });
+    }
+
+    it('tells the operator to steer the session to renumber its ADR, not to accept debt', async () => {
+      useCwd(initRepoWithAdapter());
+      refusedOn('adr-number');
+
+      await buildProgram().parseAsync(['merge', 's1'], { from: 'user' });
+
+      expect(logs).toContain(
+        'Merge refused: adr-number failed, which --accept-debt does not cover. Steer the ' +
+          'session to renumber its ADR as the report says: `pup steer s1 "..."`.',
+      );
+      expect(logs.join('\n')).not.toContain('Re-run with --accept-debt');
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('tells the operator to steer the session to fix any other failed stage', async () => {
+      useCwd(initRepoWithAdapter());
+      refusedOn('worktree-clean');
+
+      await buildProgram().parseAsync(['merge', 's1'], { from: 'user' });
+
+      expect(logs).toContain(
+        'Merge refused: worktree-clean failed, which --accept-debt does not cover. Steer the ' +
+          'session to fix it: `pup steer s1 "..."`.',
+      );
+      expect(process.exitCode).toBe(1);
+    });
+  });
 });
 
 // `npm link` installs `bin/pup` as a symlink; `process.argv[1]` is that link

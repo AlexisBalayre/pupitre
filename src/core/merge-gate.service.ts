@@ -36,10 +36,12 @@ import {
   killSession as killTmux,
   SteerNotDeliveredError,
 } from '../claude/session-runtime.service.js';
+import { ADR_NUMBER_STAGE, adrNumberStage } from './adr-number.service.js';
 import { patchCoverage } from './coverage.utils.js';
 import { judgeDebt, measureCoverage, measureStaticDebt, quotePath } from './debt.service.js';
 import { draftDecisionRecord } from './decision-record.service.js';
 import { answerFixRoundThreads } from './fix-round.service.js';
+import { readBlobs } from './git-blobs.client.js';
 import {
   ArmedGitDriverError,
   armedGitDrivers,
@@ -47,6 +49,8 @@ import {
   assertNoArmedGitDrivers,
   assertNoSharedWorktreeKey,
   assertNoWorktreeConfig,
+  BINARY_FREE_MAX_BYTES,
+  BINARY_FREE_TOTAL_MAX_BYTES,
   checkoutPinned,
   currentBranch,
   gitDiffAddedLines,
@@ -345,9 +349,11 @@ type DiffSizeKind = 'source' | 'test' | 'docs';
 /**
  * What the branch's tree tells the diff-size split beyond a path's own name
  * (decision 110): whether a symlink can reach the path, and whether a
- * Docusaurus config compiles the Markdown under `docs/`.
+ * Docusaurus config compiles the Markdown under `docs/`. And every blob's oid
+ * and size by path, so the reach checks read blobs in one batch (decision 154).
  */
 interface BranchTree {
+  blobs: Map<string, { oid: string; size: number }>;
   linked: (path: string) => boolean;
   markdownIsCode: boolean;
 }
@@ -403,7 +409,8 @@ function dependenciesNameDocusaurus(repoPath: string, branch: string): boolean {
  * The branch's tree as the split reads it. A symlink reaches the path it lands
  * on and everything under it, read from its blob lexically from the link's
  * directory and compared folded; `git grep` never reads a link's blob, so this
- * is the one place a link is seen. The blob is read up to its first NUL, as
+ * is the one place a link is seen, every link's blob read in one batch
+ * (decision 154). The blob is read up to its first NUL, as
  * checkout writes the link with `symlink()`, which takes a C string. One whose
  * target is absolute, lands outside the repo, or has a `..` after a named
  * segment, which climbs from wherever that segment resolves and no lexical
@@ -411,26 +418,37 @@ function dependenciesNameDocusaurus(repoPath: string, branch: string): boolean {
  * path or target holds a character outside ASCII. A link named as a dependency
  * file may name Docusaurus where no grep reads it, and a file named outside
  * ASCII may be a config or dependency file no case-insensitive match finds.
- * Listed `--full-tree`, for the reason `targetHolds` is.
+ * Every read here and in `filesNaming` is taken from the top of the tree
+ * (`--full-tree`, `--full-name`, `:(top)`): a session-written `core.worktree`
+ * naming a directory above the repo puts git under a prefix, and a read
+ * scoped to it lists nothing (decision 154).
  */
 function readBranchTree(repoPath: string, branch: string): BranchTree {
+  const blobs = new Map<string, { oid: string; size: number }>();
+  const links: { path: string; oid: string; size: number }[] = [];
   const landings: string[] = [];
   let anywhere = false;
   let markdownIsCode = dependenciesNameDocusaurus(repoPath, branch);
-  for (const entry of runGit(repoPath, ['ls-tree', '-r', '-z', '--full-tree', branch]).split(
+  for (const entry of runGit(repoPath, ['ls-tree', '-r', '-l', '-z', '--full-tree', branch]).split(
     '\0',
   )) {
     if (!entry) continue;
-    // "<mode> <type> <oid>\t<path>": the path is everything after the first tab.
+    // "<mode> <type> <oid> <padded size>\t<path>": the path is everything after the first tab.
     const tab = entry.indexOf('\t');
-    const [mode, , oid = ''] = entry.slice(0, tab).split(' ');
+    const [mode, type, oid = '', size] = entry.slice(0, tab).split(/ +/);
     const path = entry.slice(tab + 1);
+    const blob = { oid, size: Number(size) };
+    if (type === 'blob') blobs.set(path, blob);
     markdownIsCode ||= DIFF_SIZE_DOCUSAURUS_CONFIG.test(path) || NON_ASCII.test(basename(path));
     if (mode !== '120000') continue;
     markdownIsCode ||= DIFF_SIZE_DEPENDENCY_FILES.some(
       (name) => folded(name) === folded(basename(path)),
     );
-    const [target = ''] = runGit(repoPath, ['cat-file', 'blob', oid]).split('\0', 1);
+    links.push({ path, ...blob });
+  }
+  const contents = readBlobs(repoPath, links);
+  for (const [index, { path }] of links.entries()) {
+    const [target = ''] = String(contents[index]).split('\0', 1);
     const segments = target.split('/').filter((segment) => segment !== '' && segment !== '.');
     const firstName = segments.findIndex((segment) => segment !== '..');
     const lands = join(dirname(path), target).replace(/\/+$/, '');
@@ -444,6 +462,7 @@ function readBranchTree(repoPath: string, branch: string): BranchTree {
     landings.push(folded(lands));
   }
   return {
+    blobs,
     linked: (path) => {
       const key = folded(path);
       return (
@@ -518,9 +537,12 @@ const NAME_TOKEN = /[\w.$+@-]+/g;
  * direction. Every file `git grep` lists is read but those `skip` names,
  * whatever its extension, since a Vue component, a Vite `index.html`, a
  * `package.json` or a serverless config loads a module as well as code does.
- * It is read with `core.precomposeUnicode` pinned off, as decision 114 pins
- * the gate's other per-file reads: on macOS an NFD path read as its NFC
- * sibling. A file costs one pass over its text and one lookup per distinct
+ * The listed files are read in one `cat-file --batch` by the oid `blobs`
+ * holds for each path (decision 154), never by `<rev>:<path>`, which on macOS
+ * `core.precomposeUnicode` rewrites from NFD to an NFC sibling (decision 114);
+ * a listed path the tree does not hold refuses. Grep keeps listing binary
+ * files: `-I` would skip a JavaScript importer with a NUL in a comment. A
+ * file costs one pass over its text and one lookup per distinct
  * name it spells, however many tokens repeat a name or targets share it. Grep
  * runs with colour pinned off: `color.grep=always` in the shared config would
  * wrap each path in escapes, and a listing entry that does not start with the
@@ -533,6 +555,7 @@ const NAME_TOKEN = /[\w.$+@-]+/g;
 function filesNaming(
   repoPath: string,
   branch: string,
+  blobs: BranchTree['blobs'],
   targets: string[],
   skip: (path: string) => boolean,
 ): Map<string, Set<string>> {
@@ -570,6 +593,7 @@ function filesNaming(
     if ((error as { status?: number }).status !== 1) throw error;
   }
   const prefix = `${branch}:`;
+  const importers: { path: string; oid: string; size: number }[] = [];
   for (const entry of listing.split('\0')) {
     if (!entry) continue;
     if (!entry.startsWith(prefix)) {
@@ -577,17 +601,18 @@ function filesNaming(
     }
     const importer = entry.slice(prefix.length);
     if (skip(importer)) continue;
-    if (importer.includes('\ufffd')) {
+    const blob = blobs.get(importer);
+    // A name decoded with U+FFFD may be a decoy's, and one the tree does not
+    // hold has no blob: either importer is read as naming every target.
+    if (importer.includes('\ufffd') || !blob) {
       named.set(importer, new Set(targets.filter((target) => target !== importer)));
       continue;
     }
-    const text = runGit(repoPath, [
-      '-c',
-      'core.precomposeUnicode=false',
-      'cat-file',
-      'blob',
-      `${branch}:${importer}`,
-    ]);
+    importers.push({ path: importer, ...blob });
+  }
+  const contents = readBlobs(repoPath, importers);
+  for (const [index, { path: importer }] of importers.entries()) {
+    const text = String(contents[index]);
     const names = new Set<string>();
     for (const [token] of folded(text).matchAll(NAME_TOKEN)) {
       for (
@@ -618,6 +643,7 @@ function filesNaming(
 function reachableTestFiles(
   repoPath: string,
   branch: string,
+  blobs: BranchTree['blobs'],
   tests: string[],
   kindOf: (path: string) => DiffSizeKind,
 ): Set<string> {
@@ -628,7 +654,7 @@ function reachableTestFiles(
   let round = tests;
   while (round.length > 0) {
     const next: string[] = [];
-    const naming = filesNaming(repoPath, branch, round, (path) => kindOf(path) === 'docs');
+    const naming = filesNaming(repoPath, branch, blobs, round, (path) => kindOf(path) === 'docs');
     for (const [importer, named] of naming) {
       if (kindOf(importer) !== 'test') {
         for (const test of named) reached.add(test);
@@ -658,7 +684,9 @@ function reachableTestFiles(
  * split into source, test files and prose under `docs/` (decision 110). A null numstat is
  * a measurement, not a skip: a file git reports as binary whose content is
  * text is recounted from its patch and named in `forged`, because git was told
- * to call it binary by something no diff shows (decision 53).
+ * to call it binary by something no diff shows (decision 53). Known binaries
+ * skip from one budget of `BINARY_FREE_TOTAL_MAX_BYTES`, so the file that
+ * would go past it is recounted and flagged too (decision 154).
  */
 export function countChangedLines(
   repoPath: string,
@@ -667,6 +695,7 @@ export function countChangedLines(
 ): { source: number; test: number; docs: number; forged: string[] } {
   const counts = { source: 0, test: 0, docs: 0 };
   const forged: string[] = [];
+  const binaryBudget = { bytes: BINARY_FREE_TOTAL_MAX_BYTES };
   const raw = rawDiffEntries(repoPath, target, branch);
   const tree = readBranchTree(repoPath, branch);
   const kindOf = (path: string): DiffSizeKind => diffSizeKind(path, raw.get(path), tree);
@@ -675,7 +704,7 @@ export function countChangedLines(
   );
   const kinds = new Map(stats.map((stat) => [stat.path, kindOf(stat.path)]));
   const tests = [...kinds].filter(([, kind]) => kind === 'test').map(([path]) => path);
-  for (const path of reachableTestFiles(repoPath, branch, tests, kindOf)) {
+  for (const path of reachableTestFiles(repoPath, branch, tree.blobs, tests, kindOf)) {
     kinds.set(path, 'source');
   }
   for (const stat of stats) {
@@ -684,7 +713,7 @@ export function countChangedLines(
       counts[kind] += stat.added + stat.deleted;
       continue;
     }
-    const recount = gitDiffBinaryRecount(repoPath, target, branch, stat.path);
+    const recount = gitDiffBinaryRecount(repoPath, stat, binaryBudget);
     if (!recount) continue;
     counts[kind] += recount.added + recount.deleted;
     forged.push(stat.path);
@@ -2121,7 +2150,10 @@ async function gateAndMerge(
   }
 
   const measured = await measureBranch(db, req, session, stages, checkoutDir, targetSha, sha);
-  if (!measured) return failed();
+  if (!measured) {
+    const adrNumber = stages.find((stage) => stage.stage === ADR_NUMBER_STAGE);
+    return adrNumber?.status === 'fail' ? refuseGate(db, session, sandbox, stages) : failed();
+  }
   const { changedPaths, flaggedDebt, debtCandidates, spec, project, baseline } = measured;
 
   if (flaggedDebt.length > 0 && !req.acceptDebt) return refuseGate(db, session, sandbox, stages);
@@ -2578,10 +2610,10 @@ function changesOnlyUntested(
 
 /**
  * The stages every gate run measures on the pinned sha, from the gate's
- * checkout (decision 81): build, test and lint, a touched nested package's own
- * scripts, the scope audit, the diff size and the debt deltas. Undefined once a
- * hard stage has recorded its failure in `stages`; the caller decides what a
- * failure does to the session.
+ * checkout (decision 81): the ADR numbers it adds (decision 146), build, test
+ * and lint, a touched nested package's own scripts, the scope audit, the diff
+ * size and the debt deltas. Undefined once a hard stage has recorded its
+ * failure in `stages`; the caller decides what a failure does to the session.
  */
 export async function measureBranch(
   db: Database,
@@ -2671,6 +2703,12 @@ export async function measureBranch(
         `on the re-run: ${failingTestNames(rerun)}\n${commandFailureDetail(rerun)}`,
     });
   };
+
+  // Before the checkout and every stage: a taken decision number is the
+  // worker's to renumber, refused without a rejection (decision 146).
+  const adrNumber = adrNumberStage(db, req.repoPath, session.id, targetSha, sha);
+  if (adrNumber) stages.push(adrNumber);
+  if (adrNumber?.status === 'fail') return undefined;
 
   // One repo has one build, one test and one lint, and the runner that answers
   // for them is the one whose stack detected first (decision 22, which decision
@@ -3006,7 +3044,10 @@ export async function measureBranch(
     sizeFindings.push(`source exceeds the ${DIFF_SIZE_FLAG_LINES}-line flag`);
   }
   // Flagged at any size: the count is honest again once recounted, but a text
-  // file git was told to call binary is a write nobody reviewed (decision 53).
+  // file git was told to call binary is a write nobody reviewed (decision 53),
+  // and so is a binary no known format or size lets go uncounted (decision
+  // 154). The description keeps its wording, so a re-gate still reads an entry
+  // filed before decision 154 as the same kind.
   if (changed.forged.length > 0) {
     const forged = [...changed.forged].sort();
     const quoted = forged.slice(0, DEBT_DETAIL_SAMPLES).map(quotePath).join(', ');
@@ -3016,7 +3057,9 @@ export async function measureBranch(
       files: forged,
     });
     sizeFindings.push(
-      `counts ${forged.length} text file(s) git reports as binary, recounted from the patch: ` +
+      `counts ${forged.length} file(s) git reports as binary that are no known binary format ` +
+        `within ${BINARY_FREE_MAX_BYTES / 1024 / 1024} MiB a file and ` +
+        `${BINARY_FREE_TOTAL_MAX_BYTES / 1024 / 1024} MiB a diff, recounted from the patch: ` +
         `${quoted}${ellipsis}`,
     );
   }
