@@ -32,7 +32,7 @@ re-run with `--accept-debt "<reason>" --review-by "<condition>"`. One reason is 
 flagged stage, so write one that fits all of them. On pass the branch is pushed and a PR opened;
 `pup status` then says `merged`, which means the PR exists, not that GitHub merged it.
 
-On pass the gate also sets a `pup-gate` success status on the sha it pinned (decision 179). Once
+On pass the gate also sets a `pup-gate` success status on the sha it pinned (decision 184). Once
 per repo, make that status a required check on the target. GitHub then keeps the merge button
 disabled on any head pushed after the gate:
 
@@ -42,7 +42,7 @@ gh api --method POST repos/OWNER/REPO/branches/main/protection/required_status_c
 ```
 
 That command adds the check to a branch that already requires status checks. For a branch with no
-protection, use the `PUT` in decision 179, which replaces any protection the branch has. When a PR
+protection, use the `PUT` in decision 184, which replaces any protection the branch has. When a PR
 shows `pup-gate` as expected, its head moved after the gate: re-gate it with
 `pup merge <task> --pr`. Never set the status by hand.
 

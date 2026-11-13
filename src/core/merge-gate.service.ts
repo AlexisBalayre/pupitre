@@ -2240,7 +2240,7 @@ async function gateAndMerge(
       // can push the branch between our push and the PR call (decision 82).
       assertPullRequestHead(req.repoPath, prUrl, pullRequest.repo, sha);
       // Before the session moves, so a gh failure here leaves a run to retry
-      // (decisions 27, 179).
+      // (decisions 27, 184).
       setGateStatus(req.repoPath, pullRequest.repo, sha, session.id);
     } catch (error) {
       throw withLedgerKept(error, ledgerKept);

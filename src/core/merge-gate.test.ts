@@ -1237,7 +1237,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     ['opens', []],
     ['reuses', [openPrOnMain]],
   ])(
-    'with openPr sets a pup-gate success status on the pinned sha when it %s a PR (decision 179)',
+    'with openPr sets a pup-gate success status on the pinned sha when it %s a PR (decision 184)',
     async (_label, openPrs) => {
       const worktree = seedSession(db, repo);
       commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
@@ -1463,7 +1463,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         report: { passed: true },
       });
       // Adopted and rewritten, then read back at the new pin and vouched for
-      // with pup-gate there (decision 179); nothing pushed.
+      // with pup-gate there (decision 184); nothing pushed.
       expect(prEdits()).toBe(2);
       expect(ghCalls().slice(-2)).toEqual([
         `pr view ${PR_URL} --repo github.com/owner/repo --json headRefOid`,
@@ -1477,7 +1477,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     const statusOn = (sha: string) =>
       `api --method POST --hostname github.com repos/owner/repo/statuses/${sha} --input -`;
 
-    it('sets pup-gate on the pushed head, which the first gate left without one (decision 179)', async () => {
+    it('sets pup-gate on the pushed head, which the first gate left without one (decision 184)', async () => {
       const tip = await gateThenFix();
       const payloads = `${ghLog}.payloads`;
       // The first gate vouched for its own pin, and the push moved the head off it.

@@ -228,7 +228,7 @@ const STATUS_DESCRIPTION_MAX = 140;
  * PR's head was read back at it. A status belongs to the commit, not to the
  * PR, so a push after the gate leaves the new head without one, and a branch
  * protection requiring `pup-gate` holds the merge button until a re-gate sets
- * it there (decision 179). The payload goes over stdin, as a PR's body does.
+ * it there (decision 184). The payload goes over stdin, as a PR's body does.
  */
 export function setGateStatus(
   repoPath: string,
