@@ -125,7 +125,7 @@ export const OPERATOR_QUESTIONS = [
  * against no session: it leads the needs-you inbox while the conductor runs,
  * until `pup answer conductor` or the conductor's next start closes it. Stored as asked and scrubbed by each
  * reader, as a session's question is (decision 29). Sealed with `run`, the
- * token the caller's window carries: refused unless it is the running
+ * token the caller's environment carries: refused unless it is the running
  * conductor's, so a stale window or a caller holding no token stores nothing.
  * Returns the question's event id.
  */
@@ -152,6 +152,15 @@ export function markConductorQuestion(
  * the running conductor's token. A question row a session wrote into the
  * store, one an earlier run asked, or a sealed row copied to another id is
  * passed over, and none is open while no conductor runs.
+ *
+ * What the seal does not stop:
+ * - A same-user session that reaches the conductor's tmux server can read or
+ *   replace the token, and seal a question of its own (`conductorRun`). It
+ *   could already type into the conductor's pane there.
+ * - A session that can write the store can delete rows: the run's newer
+ *   question, or the answer that closed an older one. That reopens an older
+ *   question the same run sealed, in its own words. Answering it sends the
+ *   conductor an answer to a question it asked earlier and may have moved past.
  */
 export function openConductorQuestion(db: Database, repoPath: string): QuestionEvent | undefined {
   const run = conductorRun(projectId(repoPath));

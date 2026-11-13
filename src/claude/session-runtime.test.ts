@@ -21,12 +21,26 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // Every other execFileSync call — git, in particular — still runs for real.
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>();
+  // The run token each socket's server was started with: a starting client's
+  // environment is the server's global one, which `show-environment -g` reads.
+  const serverRuns = new Map<string, string>();
   const fakeExecFileSync = vi.fn((file: string, args?: readonly string[], options?: unknown) => {
     // new-session is asked to print the pane it opened (-P -F '#{pane_id}').
     // tmux's own `-L <socket>` comes before the command, so the conductor's
     // calls carry two arguments the default server's do not (decision 47).
     if (file === 'tmux') {
-      return (args?.[0] === '-L' ? args[2] : args?.[0]) === 'new-session' ? '%7\n' : '';
+      const socket = args?.[0] === '-L' ? (args[1] ?? '') : '';
+      const command = args?.[0] === '-L' ? args[2] : args?.[0];
+      if (command === 'kill-server') serverRuns.delete(socket);
+      if (command === 'new-session') {
+        const run = (options as { env?: NodeJS.ProcessEnv } | undefined)?.env?.PUP_CONDUCTOR_RUN;
+        if (run !== undefined && !serverRuns.has(socket)) serverRuns.set(socket, run);
+        return '%7\n';
+      }
+      const run = serverRuns.get(socket);
+      return command === 'show-environment' && run !== undefined
+        ? `PUP_CONDUCTOR_RUN=${run}\n`
+        : '';
     }
     if (file === 'which') return `/fake/bin/${args?.[0]}\n`;
     return (actual.execFileSync as (...callArgs: unknown[]) => unknown)(file, args, options);
@@ -1299,7 +1313,7 @@ case "$1" in
     cp "$buffer" "$box"; rm -f "$buffer"; cat "$box" >> "$typed"; echo >> "$typed" ;;
   delete-buffer) rm -f "$buffer" ;;
   show-environment)
-    grep "^$4=" "$server/env" 2>/dev/null || { echo "unknown variable: $4" >&2; exit 1; } ;;
+    grep "^$3=" "$server/env" 2>/dev/null || { echo "unknown variable: $3" >&2; exit 1; } ;;
   list-panes)
     if [ -n "$all" ] || [ ! -f "$server/window" ]; then sed 's/^/%/' "$server/panes"
     else sed 's/^/%/' "$server/window"; fi ;;
@@ -1972,20 +1986,20 @@ describe('steerPane with a fake tmux on PATH', () => {
     });
   });
 
-  // The token that seals the conductor's questions is read from its window, on
+  // The token that seals the conductor's questions is read from its server, on
   // its own socket, never from a file or the store a session can write.
   describe('conductorRun', () => {
     const SOCKET = 'pup-conductor-proj-1';
 
-    it("reads the run token the conductor's window carries, on its own socket", () => {
+    it("reads the run token the conductor's server was started with, on its own socket", () => {
       serverWithPane(SOCKET, 5);
       writeFileSync(join(state, SOCKET, 'env'), 'PUP_CONDUCTOR_RUN=abc123\n');
 
       expect(conductorRun('proj-1')).toBe('abc123');
-      expect(argvLog()).toContain(`-L ${SOCKET} show-environment -t =${SOCKET}: PUP_CONDUCTOR_RUN`);
+      expect(argvLog()).toContain(`-L ${SOCKET} show-environment -g PUP_CONDUCTOR_RUN`);
     });
 
-    it('answers undefined when no conductor is up, or its window carries no token', () => {
+    it('answers undefined when no conductor is up, or its server holds no token', () => {
       expect(conductorRun('proj-1')).toBeUndefined();
       serverWithPane(SOCKET, 5);
       expect(conductorRun('proj-1')).toBeUndefined();
@@ -2019,7 +2033,7 @@ describe('launchConductor', () => {
     ]);
     expect(conductorName('proj-1')).toBe('pup-conductor-proj-1');
     const tmuxCalls = vi.mocked(execFileSync).mock.calls.filter(([file]) => file === 'tmux');
-    expect(tmuxCalls).toHaveLength(3);
+    expect(tmuxCalls).toHaveLength(4);
     // The whole server first, not just the window wearing the name: a session
     // that pre-started a server on this label would own its global
     // environment, and the conductor's claude would inherit it at spawn. Then
@@ -2040,8 +2054,19 @@ describe('launchConductor', () => {
     // Marked as the conductor, never as a session: the guards tell the two
     // apart by which variable is set (decision 47).
     expect(spawn).toContain('PUP_CONDUCTOR=proj-1');
-    // The run's token, on this window alone: what seals its questions.
-    expect(spawn).toContain('PUP_CONDUCTOR_RUN=run-1');
+    // The run's token, what seals its questions: in the environment of the
+    // client that starts the server, never on tmux's argv, which every user's
+    // `ps` shows. Then read back, to check it landed on that server.
+    expect(spawn.some((arg) => String(arg).includes('PUP_CONDUCTOR_RUN'))).toBe(false);
+    const spawnEnv = (tmuxCalls[2]?.[2] as { env?: NodeJS.ProcessEnv } | undefined)?.env;
+    expect(spawnEnv?.PUP_CONDUCTOR_RUN).toBe('run-1');
+    expect(tmuxCalls[3]?.[1]).toEqual([
+      '-L',
+      SOCKET,
+      'show-environment',
+      '-g',
+      'PUP_CONDUCTOR_RUN',
+    ]);
     expect(spawn.some((arg) => String(arg).startsWith('PUP_SESSION_ID='))).toBe(false);
     // Not niced like a session's: the gate it runs inherits its priority, and
     // must keep the CPU over every worker's suite (decision 94).
@@ -2076,6 +2101,68 @@ describe('launchConductor', () => {
     expect(readProjects(join(configDir, '.claude.json'))[CONDUCTOR.repoPath]).toEqual({
       hasTrustDialogAccepted: true,
     });
+  });
+
+  // A server another client started between the kill and the spawn keeps that
+  // client's global environment: the token never reaches it, and the window
+  // there is not one this launch can stand behind.
+  it('kills the server and fails when the token did not land on it', () => {
+    const original = vi.mocked(execFileSync).getMockImplementation();
+    vi.mocked(execFileSync).mockImplementation((file, args, options) =>
+      file === 'tmux' && args?.[2] === 'show-environment'
+        ? 'PUP_CONDUCTOR_RUN=someone-elses\n'
+        : ((original as (...callArgs: unknown[]) => unknown)(file, args, options) as string),
+    );
+    try {
+      expect(() => launchConductor(CONDUCTOR)).toThrow(
+        /started by something other than this launch/,
+      );
+    } finally {
+      vi.mocked(execFileSync).mockImplementation(original as never);
+    }
+    const tmuxCalls = vi.mocked(execFileSync).mock.calls.filter(([file]) => file === 'tmux');
+    expect(tmuxCalls.at(-1)?.[1]).toEqual(['-L', SOCKET, 'kill-server']);
+  });
+
+  // What the fake cannot show: that a starting client's environment becomes
+  // the server's global one and the window's own, against the installed tmux.
+  it('hands the window the token through the server, with none of it on argv', async (ctx) => {
+    vi.stubEnv('TMUX', undefined);
+    launchConductor(CONDUCTOR);
+    const [, spawn = [], options] =
+      vi
+        .mocked(execFileSync)
+        .mock.calls.find(([file, args]) => file === 'tmux' && args?.includes('new-session')) ?? [];
+    const env = (options as { env: NodeJS.ProcessEnv }).env;
+    const { spawnSync: realSpawnSync } =
+      await vi.importActual<typeof import('node:child_process')>('node:child_process');
+    const dir = tempDir('x');
+    const socket = join(dir, 's');
+    const out = join(dir, 'run');
+    const tmuxHere = (args: readonly string[]) =>
+      realSpawnSync('tmux', ['-S', socket, ...args], { encoding: 'utf8', env });
+
+    try {
+      const started = tmuxHere([
+        ...spawn.slice(2, spawn.indexOf(FAKE_CLAUDE_BIN)),
+        'sh',
+        '-c',
+        `printf %s "$PUP_CONDUCTOR_RUN" > ${out}.tmp && mv ${out}.tmp ${out}; sleep 30`,
+      ]);
+      if (/not permitted|permission denied/i.test(started.stderr ?? '')) {
+        ctx.skip(`no tmux socket here: ${started.stderr.trim()}`);
+      }
+      expect(started.status).toBe(0);
+      expect(tmuxHere(['show-environment', '-g', 'PUP_CONDUCTOR_RUN']).stdout).toBe(
+        'PUP_CONDUCTOR_RUN=run-1\n',
+      );
+      for (let tries = 0; tries < 50 && !existsSync(out); tries++) {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+      }
+      expect(readFileSync(out, 'utf8')).toBe('run-1');
+    } finally {
+      tmuxHere(['kill-server']);
+    }
   });
 
   it('passes the conductor its own model and effort', () => {
