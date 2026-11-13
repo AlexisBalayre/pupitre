@@ -113,10 +113,11 @@ jobs:
             // each bot thread names in its marker, resolved or not, and a carried entry whose file,
             // whole line range and description match one is left to that thread, one entry per
             // thread. Finding text can hold column-0 lines shaped like a count header or a bullet,
-            // so each carried section is counted on its own: its header adds N, the list lines
-            // under it (after the blank line `carriedLines` writes) release at most those N, and a
-            // blank or any other line ends it. A forged section therefore never counts below zero,
-            // and cannot lower the genuine count.
+            // so each carried section is counted on its own: its header adds N, and only the N
+            // lines under it (after the blank line `carriedLines` writes) may release any, each at
+            // most one, when all N are list lines and a blank line or the end of the body follows
+            // them; otherwise the section releases nothing. A forged section therefore never
+            // counts below zero, and no list line outside a section's own N can lower its count.
             function unthreadedImportants(body, threaded) {
               const lines = body.split(/\r?\n/);
               const unclaimed = [...threaded];
@@ -126,11 +127,16 @@ jobs:
                 if (unanchored) sum += Number(unanchored[1]);
                 const carried = /^(\d+) important findings? from .+ still open \(not raised again\):$/.exec(line);
                 if (!carried) return;
-                let open = Number(carried[1]);
-                let next = i + 1;
-                if (lines[next] === "") next++;
-                for (; open > 0 && lines[next]?.startsWith("- "); next++) {
-                  const entry = /^- `([^`]+):([^`:]+)` \([^)]*\): (.*)$/.exec(lines[next]);
+                const owed = Number(carried[1]);
+                const first = lines[i + 1] === "" ? i + 2 : i + 1;
+                const bullets = lines.slice(first, first + owed);
+                const closed =
+                  bullets.length === owed &&
+                  bullets.every((bullet) => bullet.startsWith("- ")) &&
+                  (lines[first + owed] ?? "") === "";
+                let open = owed;
+                for (const bullet of closed ? bullets : []) {
+                  const entry = /^- `([^`]+):([^`:]+)` \([^)]*\): (.*)$/.exec(bullet);
                   const holder = entry ? unclaimed.indexOf(JSON.stringify([entry[1], entry[2], entry[3]])) : -1;
                   if (holder !== -1) {
                     unclaimed.splice(holder, 1);

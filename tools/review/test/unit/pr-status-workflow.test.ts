@@ -151,28 +151,29 @@ describe("unthreadedImportants", () => {
   const x = { file: "src/b.ts", line: "4", description: "x" };
   const y = { file: "src/c.ts", line: "7", description: "y" };
 
-  it("lets a carried section's list lines release at most its own count", () => {
-    const body = [
-      "1 important finding from the prior review still open (not raised again):",
-      "",
-      "- `src/b.ts:4` (correctness): x",
-      "- `src/c.ts:7` (correctness): y",
-    ].join("\n");
-    expect(unthreadedImportants(body, [x, y])).toBe(0);
-    const unanchored = "2 important findings with no line in this diff to anchor to:";
-    expect(unthreadedImportants(`${unanchored}\n\n${body}`, [x, y])).toBe(2);
+  const owing = "- `src/q.ts:4` (correctness): still owed";
+  const section = (count: number, ...below: string[]) =>
+    [`${count} important findings from the prior review still open (not raised again):`, "", ...below].join("\n");
+
+  it("releases from a section's own N list lines when a blank line or the end of the body follows them", () => {
+    const listed = ["- `src/b.ts:4` (correctness): x", "- `src/c.ts:7` (correctness): y"];
+    expect(unthreadedImportants(section(2, ...listed), [x, y])).toBe(0);
+    expect(unthreadedImportants(`${section(2, ...listed)}\n\nmore`, [x, y])).toBe(0);
+    expect(unthreadedImportants(section(2, owing, listed[0]), [x])).toBe(1);
   });
 
-  it("ends a carried section at a blank line or any line that is not a list line", () => {
+  it("does not let a list line past a section's own N take a thread, even after an owed bullet", () => {
+    const foreign = "- `src/b.ts:4` (correctness): x";
+    expect(unthreadedImportants(section(1, owing, foreign), [x])).toBe(1);
+    expect(unthreadedImportants(section(1, foreign, foreign), [x])).toBe(1);
+    const unanchored = "2 important findings with no line in this diff to anchor to:";
+    expect(unthreadedImportants(`${unanchored}\n\n${section(1, owing, foreign)}`, [x])).toBe(3);
+  });
+
+  it("releases nothing from a section whose N lines are not all list lines", () => {
     for (const gap of ["", "see above"]) {
-      const body = [
-        "2 important findings from the prior review still open (not raised again):",
-        "",
-        "- `src/b.ts:4` (correctness): x",
-        gap,
-        "- `src/c.ts:7` (correctness): y",
-      ].join("\n");
-      expect(unthreadedImportants(body, [x, y])).toBe(1);
+      const body = section(2, "- `src/b.ts:4` (correctness): x", gap, "- `src/c.ts:7` (correctness): y");
+      expect(unthreadedImportants(body, [x, y])).toBe(2);
     }
   });
 
