@@ -6,7 +6,7 @@ const STAGES = ['plan', 'merge lock', 'build'] as const;
 /** A stream that keeps what it is handed, on a terminal or off one. */
 function capture(isTTY: boolean) {
   const chunks: string[] = [];
-  return { isTTY, write: (chunk: string) => chunks.push(chunk), chunks };
+  return { isTTY, write: (chunk: string | Uint8Array) => chunks.push(String(chunk)), chunks };
 }
 
 describe('formatElapsed', () => {
@@ -71,10 +71,39 @@ describe('stageProgress', () => {
     expect(stream.chunks).toEqual([
       '\r\u001b[2Kstage 3/3, build, 0s',
       '\r\u001b[2Kstage 3/3, build, 1s',
-      '\r\u001b[2Ka line of its own\n',
+      '\r\u001b[2K',
+      'a line of its own\n',
       '\r\u001b[2Kstage 3/3, build, 1s',
       '\r\u001b[2K',
     ]);
+  });
+
+  it('steps aside on a terminal for a write it was not handed, then gives the stream back', () => {
+    const stream = capture(true);
+    const own = stream.write;
+    const progress = stageProgress(STAGES, stream, now);
+
+    progress.stage('build');
+    stream.write('a printer that knows nothing of the line\n');
+    stream.write('half a row');
+    vi.advanceTimersByTime(1_000);
+    stream.write(' and its end\n');
+    progress.end();
+    stream.write('after the end\n');
+
+    expect(stream.chunks).toEqual([
+      '\r\u001b[2Kstage 3/3, build, 0s',
+      '\r\u001b[2K',
+      'a printer that knows nothing of the line\n',
+      '\r\u001b[2Kstage 3/3, build, 0s',
+      '\r\u001b[2K',
+      'half a row',
+      ' and its end\n',
+      '\r\u001b[2Kstage 3/3, build, 0s',
+      '\r\u001b[2K',
+      'after the end\n',
+    ]);
+    expect(stream.write).toBe(own);
   });
 
   it('writes nothing on a terminal until a stage is shown, but a note', () => {

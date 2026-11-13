@@ -421,6 +421,19 @@ function printPushTargetLine(db: Database, id: string): void {
  * that reports it from dying with the capture, where a first record would land
  * with no output at all.
  */
+async function withPushTargetLine<TResult>(
+  db: Database,
+  repoPath: string,
+  run: () => TResult | Promise<TResult>,
+): Promise<TResult> {
+  try {
+    return await run();
+  } catch (error) {
+    printPushTargetLine(db, projectId(repoPath));
+    throw error;
+  }
+}
+
 /**
  * `running` once it settles, with the status line cleared first, so the
  * outcome or refusal printed next starts on a line of its own (decision 184).
@@ -433,19 +446,6 @@ async function settled<TResult>(
     return await running;
   } finally {
     progress.end();
-  }
-}
-
-async function withPushTargetLine<TResult>(
-  db: Database,
-  repoPath: string,
-  run: () => TResult | Promise<TResult>,
-): Promise<TResult> {
-  try {
-    return await run();
-  } catch (error) {
-    printPushTargetLine(db, projectId(repoPath));
-    throw error;
   }
 }
 

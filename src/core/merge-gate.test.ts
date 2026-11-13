@@ -3343,6 +3343,32 @@ describe('withMergeLock', () => {
       expect(readFileSync(elsewhere, 'utf8')).toBe('kept');
       expect(existsSync(join(repo, '.git', 'pup-merge.lock'))).toBe(false);
     });
+
+    it('writes no status into what a session swapped in for the lock path', async () => {
+      const repo = lockedRepo();
+      const lock = join(repo, '.git', 'pup-merge.lock');
+      const elsewhere = tempDir('pup-status-elsewhere-');
+      writeFileSync(join(elsewhere, 'status'), 'kept');
+      const progress = stageProgress(['build'], { write: () => undefined });
+
+      const locked = withMergeLock(
+        repo,
+        () => {
+          renameSync(lock, `${lock}.moved`);
+          symlinkSync(elsewhere, lock);
+          progress.stage('build');
+        },
+        0,
+        progress,
+      );
+
+      await expect(locked).rejects.toThrow(MergeLockLostError);
+      expect(readdirSync(elsewhere)).toEqual(['status']);
+      expect(readFileSync(join(elsewhere, 'status'), 'utf8')).toBe('kept');
+      expect(JSON.parse(readFileSync(join(`${lock}.moved`, 'status'), 'utf8')).stage).toBe(
+        'stage 1/1, build',
+      );
+    });
   });
 });
 

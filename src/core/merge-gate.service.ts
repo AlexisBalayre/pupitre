@@ -1,10 +1,12 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomBytes } from 'node:crypto';
 import {
+  closeSync,
   existsSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readdirSync,
   readlinkSync,
   realpathSync,
@@ -13,6 +15,7 @@ import {
   rmSync,
   symlinkSync,
   writeFileSync,
+  writeSync,
 } from 'node:fs';
 import { availableParallelism, homedir, loadavg, tmpdir } from 'node:os';
 import { basename, dirname, extname, join, resolve } from 'node:path';
@@ -880,24 +883,22 @@ function mergeLockStatus(lockPath: string): MergeLockStatus | undefined {
 }
 
 /**
- * Record the status in the lock this run took, best effort since only a
- * waiter's line reads it. Only while the path is still the take's own
- * directory, and staged under a fresh name then renamed over, so nothing is
- * ever written through a link or into a file a session put there.
+ * Record the status in the file the take made, through the descriptor it
+ * kept, never the lock's path: a session can swap that path for a link, and a
+ * later run's lock can reuse the inode of one a session moved away, so a
+ * write by path could land in a file or a lock that is not this take's.
+ * Written over from the start and never shrunk, the old text past the new
+ * becoming spaces, which JSON allows; a waiter that reads mid-write finds no
+ * status and names only the pid. Best effort, since only a waiter's line
+ * reads it. Answers the file's length, which the next write pads to.
  */
-function writeMergeLockStatus(
-  lockPath: string,
-  identity: LockIdentity,
-  status: MergeLockStatus,
-): void {
-  const staged = join(lockPath, `${MERGE_LOCK_STATUS_FILE}.${randomBytes(8).toString('hex')}`);
+function writeMergeLockStatus(fd: number, status: MergeLockStatus, length: number): number {
+  const text = JSON.stringify(status).padEnd(length);
   try {
-    const now = directoryIdentity(lockPath);
-    if (now?.dev !== identity.dev || now.ino !== identity.ino) return;
-    writeFileSync(staged, JSON.stringify(status), { flag: 'wx', mode: 0o600 });
-    renameSync(staged, join(lockPath, MERGE_LOCK_STATUS_FILE));
+    writeSync(fd, text, 0);
+    return text.length;
   } catch {
-    rmSync(staged, { force: true });
+    return length;
   }
 }
 
@@ -930,9 +931,13 @@ function directoryIdentity(path: string): LockIdentity | undefined {
   return stat?.isDirectory() ? { dev: stat.dev, ino: stat.ino } : undefined;
 }
 
-/** A take of the merge lock: the directory it made and the token it wrote there. */
+/**
+ * A take of the merge lock: the directory it made, the token it wrote there,
+ * and the status file it made there, held open.
+ */
 interface LockTake extends LockIdentity {
   token: string;
+  statusFd: number;
 }
 
 /**
@@ -1089,7 +1094,8 @@ function reclaimMergeLock(lockPath: string, dead: number): boolean {
 
 /**
  * Try the merge lock once: a directory, which only one `mkdir` can make,
- * holding the taker's pid and a token fresh to the take. Answers the take once
+ * holding the taker's pid, a token fresh to the take and the status file the
+ * taker keeps open (decision 184). Answers the take once
  * it is made, the pid holding the lock, or null for a lock with no pid to
  * read; a lock whose pid is dead is reclaimed and tried again, and a dead pid
  * is answered only while another run is reclaiming it (decision 88).
@@ -1108,18 +1114,23 @@ function tryMergeLock(lockPath: string): LockTake | number | null {
       const identity = directoryIdentity(lockPath);
       if (!identity) return null;
       const token = randomBytes(16).toString('hex');
+      let statusFd: number;
       try {
         // The token before the pid: a reader takes a lock with no pid yet for
         // one being taken, so the take is never seen whole without its token.
         writeFileSync(join(lockPath, MERGE_LOCK_TOKEN_FILE), token, { flag: 'wx' });
         writeFileSync(join(lockPath, MERGE_LOCK_PID_FILE), `${process.pid}\n`, { flag: 'wx' });
+        statusFd = openSync(join(lockPath, MERGE_LOCK_STATUS_FILE), 'wx', 0o600);
       } catch (error) {
         // Taken but not recorded: undone, since a lock with no pid refuses every later run.
         removeLockDir(lockPath, identity);
         throw error;
       }
       const now = directoryIdentity(lockPath);
-      if (now?.dev === identity.dev && now.ino === identity.ino) return { ...identity, token };
+      if (now?.dev === identity.dev && now.ino === identity.ino) {
+        return { ...identity, token, statusFd };
+      }
+      closeSync(statusFd);
       console.error(
         `${lockPath} was replaced while pup took it, so its pid may have been written through ` +
           'what replaced it; nothing was taken. Treat a session that replaced it as compromised.',
@@ -1226,12 +1237,14 @@ export async function withMergeLock<TResult>(
   for (const signal of LOCK_SIGNALS) process.on(signal, stayAlive);
   const taken = take;
   const held = { command: ['pup', ...process.argv.slice(2)].join(' '), since: Date.now() };
-  const unwatch = progress.watch((stage) =>
-    writeMergeLockStatus(lockPath, taken, { ...held, stage }),
-  );
+  let statusLength = 0;
+  const unwatch = progress.watch((stage) => {
+    statusLength = writeMergeLockStatus(taken.statusFd, { ...held, stage }, statusLength);
+  });
   /** Release the lock; false when it was no longer the one this run took. */
   const release = (): boolean => {
     unwatch();
+    closeSync(taken.statusFd);
     // The lock goes first: a signal between the two would otherwise meet
     // node's default disposition with the lock still on disk.
     try {

@@ -1,9 +1,11 @@
 /**
  * The one status line a long-running command keeps on stderr (decision 184):
  * `stage N/M, <name>, <elapsed>`, the elapsed time counted from the command's
- * start. On a terminal it is rewritten in place and ticks; off one each stage
- * change is a plain line with no cursor control, so a conductor or a hook
- * reading the output reads text, and stdout is left as it was.
+ * start. On a terminal it is rewritten in place and ticks, and steps aside for
+ * every other write to its stream while it is up, so a printer that knows
+ * nothing of it never lands on its row; off one each stage change is a plain
+ * line with no cursor control, so a conductor or a hook reading the output
+ * reads text, and stdout is left as it was.
  */
 
 /** The stage every command that takes the merge lock shows while it waits for it. */
@@ -48,8 +50,12 @@ export const CI_WAIT_STAGES = ['find PR', 'wait for review'] as const;
 /** Where the line goes: stderr, or a test's stand-in. */
 interface ProgressStream {
   isTTY?: boolean;
-  write(chunk: string): unknown;
+  write(chunk: string | Uint8Array, ...rest: never[]): unknown;
 }
+
+/** Whether `chunk` ends its row, so a line drawn after it starts a row of its own. */
+const endsRow = (chunk: string | Uint8Array): boolean =>
+  typeof chunk === 'string' ? chunk.endsWith('\n') : chunk[chunk.length - 1] === 0x0a;
 
 export interface StageProgress {
   /**
@@ -100,7 +106,10 @@ export function formatElapsed(ms: number): string {
 /**
  * The status line over `names`, the command's stages in the order they run;
  * a stage that does not run is skipped over, never shown. Its clock starts
- * now.
+ * now. On a terminal, from the first stage to `end`, the stream's `write` is
+ * wrapped: the line is cleared before any other write and drawn again once
+ * that write has ended its row, so `console.error` from code that is handed
+ * no progress prints a line of its own as `note` does.
  */
 export function stageProgress(
   names: readonly string[],
@@ -109,15 +118,27 @@ export function stageProgress(
 ): StageProgress {
   const started = now();
   const tty = stream.isTTY === true;
+  const write = stream.write;
   const listeners = new Set<(label: string) => void>();
   let label = '';
   let shown = false;
+  /** Another write left its row unfinished: the line waits until that row ends. */
+  let open = false;
   let ticker: ReturnType<typeof setInterval> | undefined;
 
   const line = (): string => `${label}, ${formatElapsed(now() - started)}`;
   const draw = (): void => {
+    if (open) return;
     shown = true;
-    stream.write(`${CLEAR_LINE}${line()}`);
+    write.call(stream, `${CLEAR_LINE}${line()}`);
+  };
+  const aside: ProgressStream['write'] = (chunk, ...rest) => {
+    if (shown) write.call(stream, CLEAR_LINE);
+    shown = false;
+    const written = write.call(stream, chunk, ...rest);
+    if (chunk.length > 0) open = !endsRow(chunk);
+    draw();
+    return written;
   };
 
   return {
@@ -134,20 +155,16 @@ export function stageProgress(
         stream.write(`${line()}\n`);
         return;
       }
-      draw();
       if (!ticker) {
+        stream.write = aside;
         ticker = setInterval(draw, TICK_MS);
         // A status line never keeps the command alive.
         ticker.unref();
       }
+      draw();
     },
     note(text) {
-      if (!tty || !shown) {
-        stream.write(`${text}\n`);
-        return;
-      }
-      stream.write(`${CLEAR_LINE}${text}\n`);
-      draw();
+      stream.write(`${text}\n`);
     },
     watch(listener) {
       listeners.add(listener);
@@ -157,10 +174,14 @@ export function stageProgress(
       };
     },
     end() {
-      if (ticker) clearInterval(ticker);
+      if (ticker) {
+        clearInterval(ticker);
+        stream.write = write;
+      }
       ticker = undefined;
-      if (tty && shown) stream.write(CLEAR_LINE);
+      if (shown) write.call(stream, CLEAR_LINE);
       shown = false;
+      open = false;
     },
   };
 }

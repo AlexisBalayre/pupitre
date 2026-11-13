@@ -262,7 +262,7 @@ describe('waitForCiReview', { timeout: 20_000 }, () => {
   it('shows its stages off a terminal as one plain line each, the digest unchanged', async () => {
     githubAnswers({ reviewedOn: null, status: null }, {});
     const lines: string[] = [];
-    const progress = stageProgress(CI_WAIT_STAGES, { write: (chunk) => lines.push(chunk) });
+    const progress = stageProgress(CI_WAIT_STAGES, { write: (chunk) => lines.push(String(chunk)) });
 
     const outcome = await waitForCiReview(
       db,

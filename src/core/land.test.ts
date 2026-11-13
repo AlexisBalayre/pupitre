@@ -774,7 +774,7 @@ describe('landSession', { timeout: 20_000 }, () => {
     await landSession(
       db,
       { repoPath: repo, sessionId: SESSION_ID, adapters: [passingAdapter] },
-      stageProgress(LAND_STAGES, { write: (chunk) => lines.push(chunk) }),
+      stageProgress(LAND_STAGES, { write: (chunk) => lines.push(String(chunk)) }),
     );
 
     expect(lines.map((line) => line.replace(/, \d+s\n$/, ''))).toEqual([
