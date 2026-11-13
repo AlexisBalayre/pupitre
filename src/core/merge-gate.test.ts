@@ -3244,7 +3244,7 @@ describe('withMergeLock', () => {
       );
     });
 
-    // Decision 184: a waiter says what it waits on, and again when that moves.
+    // Decision 182: a waiter says what it waits on, and again when that moves.
     it("names the holder's command, how long it has held the lock and its stage, again when the stage moves", async () => {
       const since = Date.now() - 125_000;
       const holding = (stage: string): void =>
@@ -3289,7 +3289,7 @@ describe('withMergeLock', () => {
     });
   });
 
-  describe("the holder's status (decision 184)", () => {
+  describe("the holder's status (decision 182)", () => {
     it('records its command, when it took the lock and its stage, and removes them with the lock', async () => {
       const repo = lockedRepo();
       const lock = join(repo, '.git', 'pup-merge.lock');

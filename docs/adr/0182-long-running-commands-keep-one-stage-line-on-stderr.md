@@ -1,8 +1,8 @@
-# 0184. Long-running commands keep one stage line on stderr, and the merge lock says who holds it (2026-11-11)
+# 0182. Long-running commands keep one stage line on stderr, and the merge lock says who holds it (2026-11-11)
 
 - Status: accepted
 
-184. **Long-running commands keep one stage line on stderr, and the merge lock says who holds it (2026-11-11).**
+182. **Long-running commands keep one stage line on stderr, and the merge lock says who holds it (2026-11-11).**
     *The line.* `pup land`, `merge`, `audit`, `fix`, `respawn` and `ci wait` keep a status line on
     stderr, `stage N/M, <name>, <elapsed>`. The elapsed time counts from the command's start. Each
     command's stages are a fixed list in `progress.utils.ts`, in the order they run. A stage that
