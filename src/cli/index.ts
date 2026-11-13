@@ -151,6 +151,7 @@ import {
   steerSession,
 } from '../core/session-lifecycle.service.js';
 import { retireSession } from '../core/session-retire.service.js';
+import { launchedAncestor, rescopeTask } from '../core/task-rescope.service.js';
 import {
   describeSlotWait,
   runSessionTest,
@@ -165,7 +166,11 @@ import type { DebtBaseline, InitReport } from '../core/types/init.types.js';
 import type { LandOutcome } from '../core/types/land.types.js';
 import type { GateReport, MergeOutcome } from '../core/types/merge-gate.types.js';
 import type { TaskId, TaskSpec } from '../core/types/profile.types.js';
-import type { AskOptions, StoredGateStage } from '../core/types/session-event.types.js';
+import type {
+  AskOptions,
+  RescopeCaller,
+  StoredGateStage,
+} from '../core/types/session-event.types.js';
 import type { NewSessionRequest, RouteOverride } from '../core/types/session-lifecycle.types.js';
 import type { RetireOutcome } from '../core/types/session-retire.types.js';
 import {
@@ -898,6 +903,95 @@ interface PlanOptions {
   accept?: string[];
   goal?: string;
   tier?: string;
+  rescope?: boolean;
+}
+
+/**
+ * `pup plan edit <task> --rescope --scope <glob...>` (decision 115). The
+ * caller already refused a session; the conductor is refused here, because a
+ * scope a gate-failing agent widens for itself is no scope at all. Both are
+ * refused again by the process tree, which a caller that unset its markers
+ * and left its worktree still runs under. Only `--scope` rides along: a
+ * rescope appends globs and changes nothing else.
+ */
+function rescopeOrRefuse(db: Database, target: string, opts: PlanOptions): void {
+  if (callingConductor()) {
+    refuse(
+      '`pup plan edit --rescope` is operator-only; the conductor cannot widen a claimed task.',
+    );
+    return;
+  }
+  const ancestor = launchedAncestor();
+  if (ancestor?.kind === 'launched') {
+    refuse(
+      `\`pup plan edit --rescope\` is operator-only, and this runs under ${sanitizeReason(ancestor.name)}, ` +
+        'a Claude Code pup launched, whatever its environment says; run it from your own shell.',
+    );
+    return;
+  }
+  if (ancestor?.kind === 'unreadable') {
+    refuse(
+      '`pup plan edit --rescope` could not read the process tree (`ps` failed), so it cannot ' +
+        'tell this caller from a session or the conductor; nothing changed.',
+    );
+    return;
+  }
+  if ([opts.goal, opts.scopeOut, opts.accept, opts.tier].some((field) => field !== undefined)) {
+    refuse('--rescope takes only --scope: it appends scope-in globs and changes nothing else.');
+    return;
+  }
+  if (!opts.scope) {
+    refuse('Usage: pup plan edit <task> --rescope --scope <glob...>');
+    return;
+  }
+  try {
+    console.log(rescopedLine(target, rescopeTask(db, target, opts.scope, rescopeCaller())));
+  } catch (error) {
+    if (!(error instanceof InvalidProfileError)) throw error;
+    // Store text: a refusal can name a session id read back from the store.
+    refuse(sanitizeLines(error.message));
+  }
+}
+
+/**
+ * What a rescope records of its caller (decision 115): the operator, inferred
+ * from the session and conductor markers being absent, and the terminal and
+ * tmux pane the command ran on, each only in the shape a real one has.
+ */
+function rescopeCaller(): RescopeCaller {
+  const pane = process.env.TMUX_PANE;
+  return {
+    by: 'inferred-operator',
+    tty: callerTty(),
+    tmuxPane: pane !== undefined && /^%\d+$/.test(pane) ? pane : null,
+  };
+}
+
+/** The terminal device on stdin, from the system's own `tty`; null when there is none. */
+function callerTty(): string | null {
+  if (!process.stdin.isTTY) return null;
+  try {
+    const name = execFileSync('/usr/bin/tty', [], {
+      encoding: 'utf8',
+      stdio: ['inherit', 'pipe', 'ignore'],
+      timeout: 2000,
+    }).trim();
+    return /^\/dev\/[\w./-]+$/.test(name) ? name : null;
+  } catch {
+    return null;
+  }
+}
+
+/** What a rescope that went through says: the globs it appended and the tier it leaves. */
+function rescopedLine(target: string, outcome: ReturnType<typeof rescopeTask>): string {
+  if (outcome.added.length === 0) {
+    return `${target}'s scope-in already holds every glob given; nothing changed.`;
+  }
+  return (
+    `Widened ${target}'s scope-in with ${sanitizeReason(outcome.added.join(', '))}; ` +
+    `recorded on session ${sanitizeReason(outcome.sessionId)}; tier ${outcome.tier}` +
+    `${outcome.raised ? ', raised from standard' : ''}.`
+  );
 }
 
 /**
@@ -1056,6 +1150,7 @@ export function buildProgram(): Command {
     .option('--accept <criterion...>', 'acceptance criteria')
     .option('--goal <goal>', 'replacement goal (edit)')
     .option('--tier <tier>', 'critical|standard, over the tier the scope-in implies (add, edit)')
+    .option('--rescope', "append --scope globs to a claimed task's scope-in (edit, operator only)")
     .action((action: string | undefined, target: string | undefined, opts: PlanOptions) => {
       const { repoPath, db } = project();
       const verb = action ?? 'list';
@@ -1136,6 +1231,7 @@ export function buildProgram(): Command {
           if (!target) {
             return refuse('Usage: pup plan edit <task> [--goal ...] [--scope ...]');
           }
+          if (opts.rescope) return rescopeOrRefuse(db, target, opts);
           let outcome: ReturnType<typeof editTaskSpec>;
           try {
             outcome = editTaskSpec(db, target, {

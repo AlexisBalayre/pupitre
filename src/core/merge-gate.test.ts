@@ -117,6 +117,7 @@ import {
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import { formatDuration } from '../adapters/capability.utils.js';
 import type { Adapter, CapabilityContext } from '../adapters/types/adapter.types.js';
+import { typescriptAdapter } from '../adapters/typescript.adapter.js';
 import { killSession, steerPane } from '../claude/session-runtime.service.js';
 import { runUtility } from '../claude/utility.service.js';
 import { openStore } from './db.client.js';
@@ -636,6 +637,97 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(stage?.detail).toContain(
       '601 source + 50 test + 0 docs changed lines: source exceeds the 600-line flag',
     );
+  });
+
+  // Decision 143: where the test stage's adapter says what its runner
+  // collects, that is what counts as test, and no other adapter is asked.
+  it('counts every file as source where only the branch config cannot be read', async () => {
+    commitIn(repo, 'package.json', JSON.stringify({ scripts: { test: 'vitest run' } }));
+    commitIn(
+      repo,
+      'vitest.config.ts',
+      "export default { test: { include: ['src/**/*.test.ts'] } };\n",
+    );
+    const worktree = seedSession(db, repo, { scopeIn: ['src/**', 'vitest.config.ts'] });
+    commitIn(
+      worktree,
+      'vitest.config.ts',
+      "import { defineConfig } from './shared.js';\n" +
+        "export default defineConfig({ test: { include: ['src/**/*.test.ts'] } });\n",
+    );
+    commitIn(worktree, 'src/a.test.ts', 'x\n'.repeat(3));
+
+    const outcome = await merge({ ...passingAdapter, testFiles: typescriptAdapter.testFiles });
+
+    expect(untimed(outcome.report.stages)).toContainEqual({
+      stage: 'diff-size',
+      status: 'pass',
+      detail: '6 source + 0 test + 0 docs changed lines',
+    });
+  });
+
+  it('counts a .test.ts outside the trusted vitest include as source', async () => {
+    commitIn(repo, 'package.json', JSON.stringify({ scripts: { test: 'vitest run' } }));
+    commitIn(
+      repo,
+      'vitest.config.ts',
+      "export default { test: { include: ['src/**/*.test.ts'] } };\n",
+    );
+    const worktree = seedSession(db, repo, { scopeIn: ['src/**', 'scripts/**'] });
+    commitIn(worktree, 'src/a.test.ts', 'x\n'.repeat(3));
+    commitIn(worktree, 'scripts/x.test.ts', 'x\n'.repeat(5));
+    const claimsEverything: Adapter = { ...passingAdapter, testFiles: (_, files) => files };
+
+    const outcome = await merge([
+      {
+        ...passingAdapter,
+        testFiles: typescriptAdapter.testFiles,
+        testInputsIntact: typescriptAdapter.testInputsIntact,
+      },
+      claimsEverything,
+    ]);
+
+    expect(untimed(outcome.report.stages)).toContainEqual({
+      stage: 'diff-size',
+      status: 'pass',
+      detail: '5 source + 3 test + 0 docs changed lines',
+    });
+  });
+
+  // The test run reads the checkout's disk after the branch's build ran there;
+  // the split reads the pinned sha. Where they part, no file counts as test.
+  it.each([
+    [
+      'the build narrows the config and the test stage restores it',
+      "cp vitest.config.ts saved.txt && printf '// narrowed\\n' >> vitest.config.ts",
+      'mv saved.txt vitest.config.ts',
+    ],
+    ['the build adds an .npmrc', "printf 'script-shell=/bin/sh\\n' > .npmrc", 'true'],
+  ])('counts every file as source where %s', async (_, build, test) => {
+    commitIn(repo, 'package.json', JSON.stringify({ scripts: { test: 'vitest run' } }));
+    commitIn(
+      repo,
+      'vitest.config.ts',
+      "export default { test: { include: ['src/**/*.test.ts'] } };\n",
+    );
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/a.test.ts', 'x\n'.repeat(3));
+
+    const outcome = await merge({
+      ...passingAdapter,
+      gateCommands: () => [
+        { stage: 'build', command: 'sh', args: ['-c', build] },
+        { stage: 'test', command: 'sh', args: ['-c', test] },
+      ],
+      testFiles: typescriptAdapter.testFiles,
+      testInputsIntact: typescriptAdapter.testInputsIntact,
+    });
+
+    expect(untimed(outcome.report.stages)).toContainEqual({
+      stage: 'diff-size',
+      status: 'pass',
+      detail: '3 source + 0 test + 0 docs changed lines',
+    });
   });
 
   it('refuses to run while another merge holds the lock', async () => {
@@ -1950,6 +2042,85 @@ describe('countChangedLines', () => {
     }
     sh(repo, 'git', 'commit', '-q', '-m', 'from the index');
   }
+
+  // A runner's answer replaces the spelling (decision 143), and a collected
+  // test is named without whatever extension it has, not `.ts` alone.
+  it('counts a collected test production code imports as source', () => {
+    const repo = initRepo();
+    sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
+    commitBlobs(repo, [
+      ['100644', 'src/big.spec.tsx', 'export const X = 1;\n'.repeat(5)],
+      ['100644', 'src/kept.spec.tsx', 'it("k", () => {});\n'.repeat(2)],
+      ['100644', 'src/main.ts', "import { X } from './big.spec.js';\n"],
+      ['100644', 'src/a.test.ts', 'x\n'],
+    ]);
+    const collects = (files: string[]) => files.filter((file) => file.endsWith('.spec.tsx'));
+
+    expect(countChangedLines(repo, 'main', 'feature', collects)).toEqual({
+      source: 7,
+      test: 2,
+      docs: 0,
+      forged: [],
+    });
+  });
+
+  // APFS checks `src/big.test.ts` out into `Src/`, where a case-sensitive
+  // include does not see it, and `src/fixtures/` into a `Fixtures/` an exclude names.
+  it('counts a collected test as source where its directory folds onto another spelling', () => {
+    const repo = initRepo();
+    sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
+    commitBlobs(repo, [
+      ['100644', 'Src/zzz.txt', 'z\n'],
+      ['100644', 'src/big.test.ts', 'export const X = 1;\n'.repeat(5)],
+      ['100644', 'lib/Fixtures/zzz.txt', 'z\n'],
+      ['100644', 'lib/fixtures/c.test.ts', 'x\n'.repeat(2)],
+      ['100644', 'lib/a.test.ts', 'x\n'.repeat(3)],
+    ]);
+    const collects = (files: string[]) => files.filter((file) => file.endsWith('.test.ts'));
+
+    expect(countChangedLines(repo, 'main', 'feature', collects)).toEqual({
+      source: 9,
+      test: 3,
+      docs: 0,
+      forged: [],
+    });
+  });
+
+  it('counts a deleted test the runner collected as test', () => {
+    const repo = initRepo();
+    commitIn(repo, 'src/old.spec.ts', 'it("o", () => {});\n'.repeat(7));
+    sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
+    sh(repo, 'git', 'rm', '-q', 'src/old.spec.ts');
+    sh(repo, 'git', 'commit', '-q', '-m', 'drop the old test');
+    const collects = (files: string[]) => files.filter((file) => file.endsWith('.spec.ts'));
+
+    expect(countChangedLines(repo, 'main', 'feature', collects)).toEqual({
+      source: 0,
+      test: 7,
+      docs: 0,
+      forged: [],
+    });
+  });
+
+  it('counts a file renamed onto a collected name from one the runner does not collect as source', () => {
+    const repo = initRepo();
+    commitIn(repo, 'src/payments.ts', 'export const RATE = 1;\n'.repeat(20));
+    sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
+    sh(repo, 'git', 'mv', 'src/payments.ts', 'src/payments.spec.ts');
+    commitIn(
+      repo,
+      'src/payments.spec.ts',
+      `${'export const RATE = 1;\n'.repeat(20)}${'export const FEE = 2;\n'.repeat(5)}`,
+    );
+    const collects = (files: string[]) => files.filter((file) => file.endsWith('.spec.ts'));
+
+    expect(countChangedLines(repo, 'main', 'feature', collects)).toEqual({
+      source: 5,
+      test: 0,
+      docs: 0,
+      forged: [],
+    });
+  });
 
   // On macOS `core.precomposeUnicode`, which `git init` turns on and a session
   // can write into the shared config, rewrites an NFD `<rev>:<path>` to NFC,

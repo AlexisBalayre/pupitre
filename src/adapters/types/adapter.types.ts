@@ -75,6 +75,12 @@ export interface CapabilityContext {
    */
   measureSha?: string;
   /**
+   * The commit `configPath` holds, when it is the gate's trusted checkout: the
+   * target the merge lock holds it at. What must be the target's, not whatever
+   * a session wrote to that checkout's disk, is read from it (decision 143).
+   */
+  configSha?: string;
+  /**
    * Env names the operator allowed into capability children with `--gate-env`
    * (decision 36). Optional because absence narrows the child's environment
    * rather than widening it — the safe direction for a caller that forgets,
@@ -170,9 +176,32 @@ export interface Adapter {
    */
   coverableFiles?(ctx: CapabilityContext, files: string[]): string[];
   /**
+   * Which of `files` this adapter's test stage collects as test modules, read
+   * from the runner's config in both checkouts and by path alone, so a path a
+   * rename left behind is answered too. The diff-size split counts only these
+   * as test; without it the gate keeps the `*.test.ts` spelling (decision 143).
+   */
+  testFiles?(ctx: CapabilityContext, files: string[]): string[];
+  /**
+   * Whether the measured checkout's disk still holds what `testFiles` reads of
+   * the pinned commit: the test stage's run read the disk, which the branch's
+   * own build and stages ran in. Asked after the build and again before the
+   * split; a `false` either time counts no file as test (decision 143).
+   */
+  testInputsIntact?(ctx: CapabilityContext): boolean;
+  /**
    * The nested packages `files` touch, which every capability above leaves
    * out: the gate runs their own scripts and names what was dropped
    * (decisions 29, 59). An adapter without it has no nested packages.
    */
   touchedNestedPackages?(ctx: CapabilityContext, files: string[]): NestedPackage[];
 }
+
+/**
+ * The entries at a checkout's root, by lower-cased name, each read when asked.
+ * A case-insensitive disk opens `Vitest.config.ts` for `vitest.config.ts` and
+ * a case-sensitive one does not, so which file a tool opens there depends on
+ * the disk: a name not in lower case, or two that fold to one, is not read and
+ * throws when asked. A root holding a name outside ASCII is not read at all.
+ */
+export type RootFiles = Map<string, () => string>;

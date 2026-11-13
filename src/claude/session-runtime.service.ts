@@ -193,9 +193,11 @@ function onSocket(socket: string | undefined, args: string[]): string[] {
  * - `PUP_CONDUCTOR` and `PUP_SESSION_ID` say what a window IS; leaked into a
  *   server's global environment they make every later window read as their
  *   caller to every guard.
- * - `CLAUDE*` carries the agent's own credentials — `CLAUDE_CODE_MESSAGING_SOCKET`
+ * - `*CLAUDE*` carries the agent's own credentials — `CLAUDE_CODE_MESSAGING_SOCKET`
  *   and `_TOKEN` are the peer channel, so a session that read them back could
- *   speak on it AS the conductor, past the tier entirely. `ANTHROPIC_*` is the
+ *   speak on it AS the conductor, past the tier entirely — and its settings,
+ *   `ENABLE_CLAUDEAI_MCP_SERVERS` among them, none of which is the server's to
+ *   hand every later window. `ANTHROPIC_*` is the
  *   API key family for the same reason.
  * - `NODE_OPTIONS` is code execution: `--require` in a server's environment runs
  *   in every node process a window later starts.
@@ -211,7 +213,7 @@ const NOT_INHERITED = [
   /^TMUX$/,
   /^PUP_CONDUCTOR$/,
   /^PUP_SESSION_ID$/,
-  /^CLAUDE/,
+  /CLAUDE/,
   /^ANTHROPIC_/,
   /^NODE_OPTIONS$/,
 ];
@@ -285,24 +287,12 @@ export function saveSessionEnv(repoPath: string, names: string[]): void {
  * against the allowlist again, and one off it is dropped, never handed on.
  */
 export function readSessionEnv(repoPath: string): string[] {
-  let fd: number;
-  try {
-    fd = openSync(
-      sessionEnvFile(repoPath),
-      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
-    );
-  } catch {
-    return [];
-  }
+  const text = readSessionWritable(sessionEnvFile(repoPath), SESSION_ENV_FILE_MAX_BYTES);
   let stored: unknown;
   try {
-    const stat = fstatSync(fd);
-    if (!stat.isFile() || stat.size > SESSION_ENV_FILE_MAX_BYTES) return [];
-    stored = JSON.parse(readFileSync(fd, 'utf8'));
+    stored = JSON.parse(text ?? '');
   } catch {
     return [];
-  } finally {
-    closeSync(fd);
   }
   return Array.isArray(stored)
     ? stored.filter(
@@ -310,6 +300,29 @@ export function readSessionEnv(repoPath: string): string[] {
           typeof name === 'string' && refusedSessionEnv([name]) === undefined,
       )
     : [];
+}
+
+/**
+ * A file any session can write, read like a pointer a session wrote: no
+ * symlink followed, no fifo blocked on, a regular file of at most `maxBytes`;
+ * undefined for anything else, a missing file included.
+ */
+function readSessionWritable(file: string, maxBytes: number): string | undefined {
+  let fd: number;
+  try {
+    fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  } catch {
+    return undefined;
+  }
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.size > maxBytes) return undefined;
+    return readFileSync(fd, 'utf8');
+  } catch {
+    return undefined;
+  } finally {
+    closeSync(fd);
+  }
 }
 
 /**
@@ -691,7 +704,9 @@ function mainRepoRoot(worktreePath: string): string[] {
  * load it. The compiled `--settings` file still applies (separate source).
  * The display name is the tmux name: it is what a peer session sees in
  * ListAgents and addresses with SendMessage, so the conductor reaches a
- * session by the same `pup-<id>` the operator attaches to (decision 47).
+ * session by the same `pup-<id>` the operator attaches to (decision 47). The
+ * rescope's window probe finds a renamed window by the `--name <tmux name>`
+ * pair in its pane's start command (decision 115), so the pair stays adjacent.
  *
  * `--mcp-config` adds the code graph without `--strict-mcp-config`: strict mode
  * would drop the operator's own MCP servers, and sessions inherit user config
@@ -824,6 +839,7 @@ function spawnClaudeWindow(opts: ClaudeWindowOptions): SessionPane {
  * id is minted here, once, and nothing later re-derives it from the session.
  */
 export function launchSession(opts: LaunchOptions): SessionPane {
+  recordWindowSocket(opts.repoPath, opts.sessionId);
   return spawnClaudeWindow({
     sessionId: opts.sessionId,
     cwd: opts.worktreePath,
@@ -991,6 +1007,157 @@ export function hasConductorWindow(repoProjectId: string): boolean {
 /** Whether the session's window is up on the default server, where every session's lives. */
 export function hasSessionWindow(sessionId: string): boolean {
   return hasWindow(tmuxName(sessionId));
+}
+
+/**
+ * Where a rescope's probes look tmux and `ps` up, in place of the caller's
+ * PATH: a worker cannot name a fake one through its environment (decision
+ * 115). The package managers' fixed prefixes come after the system's, so each
+ * is reached only where none before it holds the tool: MacPorts, NixOS,
+ * multi-user Nix and Linuxbrew. Nothing under a home directory, which a worker
+ * can write.
+ */
+export const PROBE_PATH = [
+  '/opt/homebrew/bin',
+  '/usr/local/bin',
+  '/usr/bin',
+  '/bin',
+  '/opt/local/bin',
+  '/run/current-system/sw/bin',
+  '/nix/var/nix/profiles/default/bin',
+  '/home/linuxbrew/.linuxbrew/bin',
+].join(':');
+
+/**
+ * Past this a probe counts as unanswered. A rescope runs it inside the store's
+ * write lock, so a listener at the socket that never replies must not hold it.
+ */
+const PROBE_TIMEOUT_MS = 2000;
+
+/** The default server's socket for a client whose `TMUX_TMPDIR` is `dir`; empty is unset. */
+function defaultSocketIn(dir: string | undefined): string {
+  return join(dir || '/tmp', `tmux-${process.getuid?.()}`, 'default');
+}
+
+/** Where a session's launch records the socket its window opened on (decision 115). */
+function socketRecordFile(repoPath: string, sessionId: string): string {
+  return join(projectPaths(repoPath).sessionDir(sessionId), 'tmux-socket');
+}
+
+/**
+ * Record the socket the session's window is about to open on: the default
+ * server under the launching shell's `TMUX_TMPDIR`, which the launch hands
+ * tmux (decision 47). Written by the operator's or the conductor's `pup`
+ * before the window exists, so the session never wrote it; a probe reads it
+ * rather than its own caller's `TMUX_TMPDIR`, which a caller can unset.
+ * Written beside and renamed over, so a probe never reads half a path.
+ */
+function recordWindowSocket(repoPath: string, sessionId: string): void {
+  const file = socketRecordFile(repoPath, sessionId);
+  mkdirSync(dirname(file), { recursive: true });
+  const staged = `${file}.${randomUUID()}.tmp`;
+  writeFileSync(staged, defaultSocketIn(process.env.TMUX_TMPDIR));
+  renameSync(staged, file);
+}
+
+/**
+ * A default server's socket path as a launch writes one: absolute, each
+ * directory free of C0 controls and DEL, ending in this user's `tmux-<uid>`.
+ */
+const LAUNCH_SOCKET = new RegExp(
+  `^(?:/[^/\\u0000-\\u001f\\u007f]*)*/tmux-${process.getuid?.()}/default$`,
+);
+
+/** Far past any socket path tmux can bind: a Unix socket path is at most 104 bytes. */
+const SOCKET_RECORD_MAX_BYTES = 1024;
+
+/**
+ * The socket the session's launch recorded, or undefined when there is none
+ * to read: a launch from before the record, a removed session dir, or a file
+ * that is not a socket path as a launch writes one. The session can write
+ * the file, so it is read as one it wrote.
+ */
+function recordedSocket(repoPath: string, sessionId: string): string | undefined {
+  const text = readSessionWritable(socketRecordFile(repoPath, sessionId), SOCKET_RECORD_MAX_BYTES);
+  return LAUNCH_SOCKET.exec(text ?? '')?.[0];
+}
+
+/**
+ * The sockets the windows of `sessionIds` can be on: the default server's at
+ * tmux's built-in `/tmp` and under the caller's `TMUX_TMPDIR`, and each socket
+ * a window's launch recorded. The caller's alone would miss a window on the
+ * operator's socket whenever the caller unset `TMUX_TMPDIR`.
+ */
+export function windowSockets(repoPath: string, sessionIds: readonly string[]): string[] {
+  const recorded = sessionIds.flatMap((sessionId) => recordedSocket(repoPath, sessionId) ?? []);
+  return [
+    ...new Set([defaultSocketIn('/tmp'), defaultSocketIn(process.env.TMUX_TMPDIR), ...recorded]),
+  ];
+}
+
+/**
+ * One line per pane. The session name is last because it is the one field a
+ * worker can set: a tab or a newline in it (tmux before 3.3 prints them raw)
+ * can add lines, never move the start command out of its own.
+ */
+const PANE_FORMAT = '#{pane_id}\t#{pane_start_command}\t#{session_name}';
+
+/** Far past any line tmux writes for why it failed; the refusal quotes this much. */
+const PROBE_FAILURE_MAX_CHARS = 200;
+
+/** Why a server's panes could not be listed: no tmux on `PROBE_PATH`, or what tmux said. */
+type ProbeFailure = { noTmux: true } | { noTmux: false; detail: string };
+
+/**
+ * Every pane on the server at `socket`, as `PANE_FORMAT` lines, or why there
+ * are none to read: a server that is not running or did not answer in time
+ * included. Unlike `tmuxProbe` it hands tmux none of the caller's environment,
+ * so a worker can neither name a fake tmux nor hang the caller.
+ */
+export function listPanes(socket: string): string[] | ProbeFailure {
+  try {
+    return execFileSync('tmux', ['-S', socket, 'list-panes', '-a', '-F', PANE_FORMAT], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { PATH: PROBE_PATH },
+      timeout: PROBE_TIMEOUT_MS,
+    }).split('\n');
+  } catch (error) {
+    const { code, stderr } = error as { code?: unknown; stderr?: unknown };
+    if (code === 'ENOENT') return { noTmux: true };
+    const said = typeof stderr === 'string' ? stderr.trim().split('\n')[0] : '';
+    const detail =
+      code === 'ETIMEDOUT' ? `no answer in ${PROBE_TIMEOUT_MS} ms` : said || 'tmux failed';
+    return { noTmux: false, detail: detail.slice(0, PROBE_FAILURE_MAX_CHARS) };
+  }
+}
+
+/** Far past `ps` over every process on a busy machine: Node's default 1 MiB is not. */
+const PROCESS_TABLE_MAX_BYTES = 64 * 1024 * 1024;
+
+/**
+ * Each process's parent pid and arguments, from one `ps` over every process,
+ * or undefined when `ps` failed. Run like `listPanes`: on `PROBE_PATH`, with
+ * none of the caller's environment and a timeout.
+ */
+export function listProcesses(): Map<number, { parent: number; args: string }> | undefined {
+  let listed: string;
+  try {
+    listed = execFileSync('ps', ['-ww', '-A', '-o', 'pid=', '-o', 'ppid=', '-o', 'args='], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { PATH: PROBE_PATH },
+      timeout: PROBE_TIMEOUT_MS,
+      maxBuffer: PROCESS_TABLE_MAX_BYTES,
+    });
+  } catch {
+    return undefined;
+  }
+  const table = new Map<number, { parent: number; args: string }>();
+  for (const [, pid, parent, args = ''] of listed.matchAll(/^[ \t]*(\d+)[ \t]+(\d+) ?(.*)$/gm)) {
+    table.set(Number(pid), { parent: Number(parent), args });
+  }
+  return table;
 }
 
 /**

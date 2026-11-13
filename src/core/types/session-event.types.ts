@@ -15,6 +15,21 @@ export interface TransitionPayload {
 }
 
 /**
+ * What the CLI saw of a rescope's caller (decision 115). It takes the caller
+ * for the operator from what is absent: no session's worktree holds the cwd,
+ * and neither `PUP_SESSION_ID` nor `PUP_CONDUCTOR` is set. A worker can shed
+ * each of those, so the operator is inferred, never confirmed; the terminal
+ * the command ran on is kept beside the inference for an audit to weigh.
+ */
+export interface RescopeCaller {
+  by: 'inferred-operator';
+  /** The caller's terminal device, null when stdin is not one. */
+  tty: string | null;
+  /** The pane `TMUX_PANE` names, null when it is unset or not a pane id. */
+  tmuxPane: string | null;
+}
+
+/**
  * The payload `appendEvent` writes for each event type. `tool_call`,
  * `scope_violation` and `config_drift` have no writer in pup: the session's
  * hooks append them to its events file, never to the store.
@@ -68,6 +83,12 @@ export interface EventPayloads {
     rejectBase: number;
     newestComments?: Record<string, number>;
   };
+  /**
+   * `pup plan edit --rescope` widened the session's task (decision 115): the
+   * globs it appended to scope-in, what was seen of the caller, the tier the
+   * session's next window runs on, and whether the rescope raised it to critical.
+   */
+  rescope: { task: string; added: string[]; tier: string; raised: boolean } & RescopeCaller;
   steer: { kind: string; by?: string; delivered?: boolean };
   interrupt: { steered: boolean };
   session_done: { summary: string };

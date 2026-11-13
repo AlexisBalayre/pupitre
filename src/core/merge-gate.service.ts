@@ -15,7 +15,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { availableParallelism, homedir, loadavg, tmpdir } from 'node:os';
-import { basename, dirname, join, resolve } from 'node:path';
+import { basename, dirname, extname, join, resolve } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import {
   failureSummary,
@@ -103,6 +103,7 @@ import {
   SessionNotReviewableError,
 } from './merge-gate.errors.js';
 import { SESSION_ID_PATTERN } from './paths.constants.js';
+import { skipsTestsOnUntestedChanges } from './project-config.config.js';
 import { mergeToRegate, planRegate, type RegatePlan, regateMerged } from './regate.service.js';
 import {
   endSandboxRun,
@@ -348,13 +349,17 @@ type DiffSizeKind = 'source' | 'test' | 'docs';
 
 /**
  * What the branch's tree tells the diff-size split beyond a path's own name
- * (decision 110): whether a symlink can reach the path, and whether a
- * Docusaurus config compiles the Markdown under `docs/`. And every blob's oid
- * and size by path, so the reach checks read blobs in one batch (decision 154).
+ * (decision 110): every path on it, whether a symlink can reach the path,
+ * whether the tree also holds the path, or one of its directories, in another
+ * ASCII case, and whether a Docusaurus config compiles the Markdown under
+ * `docs/`. And every blob's oid and size by path, so the reach checks read
+ * blobs in one batch (decision 154).
  */
 interface BranchTree {
+  paths: string[];
   blobs: Map<string, { oid: string; size: number }>;
   linked: (path: string) => boolean;
+  foldsOntoAnother: (path: string) => boolean;
   markdownIsCode: boolean;
 }
 
@@ -424,6 +429,7 @@ function dependenciesNameDocusaurus(repoPath: string, branch: string): boolean {
  * scoped to it lists nothing (decision 154).
  */
 function readBranchTree(repoPath: string, branch: string): BranchTree {
+  const paths: string[] = [];
   const blobs = new Map<string, { oid: string; size: number }>();
   const links: { path: string; oid: string; size: number }[] = [];
   const landings: string[] = [];
@@ -437,6 +443,7 @@ function readBranchTree(repoPath: string, branch: string): BranchTree {
     const tab = entry.indexOf('\t');
     const [mode, type, oid = '', size] = entry.slice(0, tab).split(/ +/);
     const path = entry.slice(tab + 1);
+    paths.push(path);
     const blob = { oid, size: Number(size) };
     if (type === 'blob') blobs.set(path, blob);
     markdownIsCode ||= DIFF_SIZE_DOCUSAURUS_CONFIG.test(path) || NON_ASCII.test(basename(path));
@@ -461,7 +468,16 @@ function readBranchTree(repoPath: string, branch: string): BranchTree {
       lands.startsWith('../');
     landings.push(folded(lands));
   }
+  // Every spelling of each path and directory in the tree, by its folded form.
+  const spellings = new Map<string, Set<string>>();
+  const prefixes = (path: string): string[] =>
+    path.split('/').map((_, i, segments) => segments.slice(0, i + 1).join('/'));
+  for (const prefix of paths.flatMap(prefixes)) {
+    const key = folded(prefix);
+    spellings.set(key, (spellings.get(key) ?? new Set()).add(prefix));
+  }
   return {
+    paths,
     blobs,
     linked: (path) => {
       const key = folded(path);
@@ -470,6 +486,10 @@ function readBranchTree(repoPath: string, branch: string): BranchTree {
         landings.some((lands) => lands === '.' || key === lands || key.startsWith(`${lands}/`))
       );
     },
+    foldsOntoAnother: (path) =>
+      prefixes(path).some((prefix) =>
+        [...(spellings.get(folded(prefix)) ?? [])].some((spelling) => spelling !== prefix),
+      ),
     markdownIsCode,
   };
 }
@@ -487,15 +507,22 @@ const UNSPELLABLE_NAME = /[^\w.$+@-]/;
  * Which part of the diff-size split a path counts toward (decision 110). A
  * symlink is source wherever it sits, and so is any path one can reach and any
  * path holding a character outside ASCII, which a link spelled in ASCII may
- * reach through the filesystem's folding. A test is only the trusted suffix
- * under a name a token can spell, and never a file renamed onto it from a name
- * that was not one, which would carry production code in under the test count.
- * `.md` under `docs/` is code where a Docusaurus config compiles it.
+ * reach through the filesystem's folding. A test is only a path the test
+ * stage's runner collects, or the trusted suffix where its adapter cannot say
+ * (`collected` undefined, decision 143), under a name a token can spell, at a
+ * path the tree holds in no other ASCII case, itself or through a directory,
+ * and never a file renamed onto it from a name that was not one, which would
+ * carry production code in under the test count. APFS folds case (decision
+ * 78), so checkout writes `src/big.test.ts` into a `Src/` the tree also holds,
+ * where the runner's case-sensitive patterns see `Src/big.test.ts`, which none
+ * may collect. `.md` under `docs/` is code where a
+ * Docusaurus config compiles it.
  */
 function diffSizeKind(
   path: string,
   entry: RawDiffEntry | undefined,
   tree: BranchTree,
+  collected: Set<string> | undefined,
 ): DiffSizeKind {
   if (entry?.mode === '120000' || NON_ASCII.test(path) || tree.linked(path)) return 'source';
   if (
@@ -506,14 +533,21 @@ function diffSizeKind(
     return 'docs';
   }
   const isTest = (candidate: string): boolean =>
-    candidate.endsWith(DIFF_SIZE_TEST_SUFFIX) && !UNSPELLABLE_NAME.test(basename(candidate));
+    (collected ? collected.has(candidate) : candidate.endsWith(DIFF_SIZE_TEST_SUFFIX)) &&
+    !UNSPELLABLE_NAME.test(basename(candidate)) &&
+    !tree.foldsOntoAnother(candidate);
   if (isTest(path) && (entry?.renamedFrom === undefined || isTest(entry.renamedFrom))) {
     return 'test';
   }
   return 'source';
 }
 
-const testStem = (path: string): string => basename(path).slice(0, -'.ts'.length);
+/** A test's name as a specifier spells it: its file name without the extension. */
+const testStem = (path: string): string => {
+  const name = basename(path);
+  const extension = extname(name);
+  return extension ? name.slice(0, -extension.length) : name;
+};
 
 /**
  * A run of the characters a name may hold. Every other character ends one, so
@@ -681,7 +715,11 @@ function reachableTestFiles(
 
 /**
  * Adds + deletes across the branch diff, excluding lockfiles and binary files,
- * split into source, test files and prose under `docs/` (decision 110). A null numstat is
+ * split into source, test files and prose under `docs/` (decision 110).
+ * `testFiles` is the test stage's adapter saying which paths its runner
+ * collects (decision 143), asked once for every path on the branch, every
+ * changed path, deletions included, and every path a rename left; without it
+ * a test is the `*.test.ts` spelling. A null numstat is
  * a measurement, not a skip: a file git reports as binary whose content is
  * text is recounted from its patch and named in `forged`, because git was told
  * to call it binary by something no diff shows (decision 53). Known binaries
@@ -692,16 +730,24 @@ export function countChangedLines(
   repoPath: string,
   target: string,
   branch: string,
+  testFiles?: (files: string[]) => string[],
 ): { source: number; test: number; docs: number; forged: string[] } {
   const counts = { source: 0, test: 0, docs: 0 };
   const forged: string[] = [];
   const binaryBudget = { bytes: BINARY_FREE_TOTAL_MAX_BYTES };
   const raw = rawDiffEntries(repoPath, target, branch);
   const tree = readBranchTree(repoPath, branch);
-  const kindOf = (path: string): DiffSizeKind => diffSizeKind(path, raw.get(path), tree);
   const stats = gitDiffNumstat(repoPath, target, branch).filter(
     (stat) => !LOCKFILE_NAMES.includes(stat.path),
   );
+  // A deleted test is on no branch path but still a test the runner collected.
+  const asked = new Set([
+    ...tree.paths,
+    ...stats.map((stat) => stat.path),
+    ...[...raw.values()].flatMap((entry) => entry.renamedFrom ?? []),
+  ]);
+  const collected = testFiles && new Set(testFiles([...asked]));
+  const kindOf = (path: string): DiffSizeKind => diffSizeKind(path, raw.get(path), tree, collected);
   const kinds = new Map(stats.map((stat) => [stat.path, kindOf(stat.path)]));
   const tests = [...kinds].filter(([, kind]) => kind === 'test').map(([path]) => path);
   for (const path of reachableTestFiles(repoPath, branch, tree.blobs, tests, kindOf)) {
@@ -2585,26 +2631,11 @@ function changesOnlyUntested(
   const checked = [...new Set(paths)];
   if (!checked.every(listed)) return false;
   const tree = readBranchTree(repoPath, branch);
-  // Every spelling of each path and directory in the branch's tree, by its folded form.
-  const spellings = new Map<string, Set<string>>();
-  const prefixes = (path: string): string[] =>
-    path.split('/').map((_, i, segments) => segments.slice(0, i + 1).join('/'));
-  const names = runGit(repoPath, ['ls-tree', '-r', '-z', '--full-tree', '--name-only', branch]);
-  for (const path of names.split('\0')) {
-    for (const prefix of path ? prefixes(path) : []) {
-      const key = folded(prefix);
-      spellings.set(key, (spellings.get(key) ?? new Set()).add(prefix));
-    }
-  }
-  const foldsOntoAnother = (path: string): boolean =>
-    prefixes(path).some((prefix) =>
-      [...(spellings.get(folded(prefix)) ?? [])].some((spelling) => spelling !== prefix),
-    );
   return checked.every(
     (path) =>
       !tree.linked(path) &&
       !(tree.markdownIsCode && path.endsWith('.md')) &&
-      !foldsOntoAnother(path),
+      !tree.foldsOntoAnother(path),
   );
 }
 
@@ -2775,12 +2806,19 @@ export async function measureBranch(
   const built = build ? await commandStage('build', build, checkoutDir) : notMeasured('build');
   stages.push(built);
   if (built.status === 'fail') return undefined;
+  // The build ran the branch's code in the checkout, and the test run reads
+  // what it left there, so the runner's inputs are checked against the pinned
+  // sha now, before any suite, and again before the split (decision 143).
+  const testInputsIntact = () => primary?.testInputsIntact?.(capabilityContext) ?? true;
+  const intactBeforeSuites = testInputsIntact();
 
   // A change no test can run or read runs no suite, and so waits for no load
-  // and takes no slot; a nested package's change always runs its suite
-  // (decision 139).
+  // and takes no slot; a nested package's change always runs its suite, and so
+  // does every change in a project that turned the skip off (decision 139).
   const untested =
-    nestedPackages.length === 0 && changesOnlyUntested(req.repoPath, targetSha, sha, changedPaths);
+    nestedPackages.length === 0 &&
+    skipsTestsOnUntestedChanges(req.repoPath) &&
+    changesOnlyUntested(req.repoPath, targetSha, sha, changedPaths);
   // A stage nothing could have measured says so, as on any other change: the
   // test stage without a test command.
   const notTested = (stage: string, measurable: boolean): GateStageResult =>
@@ -3031,7 +3069,19 @@ export async function measureBranch(
     : undefined;
 
   started = Date.now();
-  const changed = countChangedLines(req.repoPath, targetSha, sha);
+  // The primary adapter's runner is the one the test stage ran, so it alone
+  // says which changed files are tests, and none where the checkout's runner
+  // inputs left the pinned sha's at either check (decision 143).
+  const collects = primary?.testFiles;
+  const intact = intactBeforeSuites && testInputsIntact();
+  const changed = countChangedLines(
+    req.repoPath,
+    targetSha,
+    sha,
+    // The trusted lists are the target's, not what a session wrote to the main checkout.
+    collects &&
+      ((files) => (intact ? collects({ ...capabilityContext, configSha: targetSha }, files) : [])),
+  );
   const split = `${changed.source} source + ${changed.test} test + ${changed.docs} docs changed lines`;
   const sizeFindings: string[] = [];
   if (changed.source > DIFF_SIZE_FLAG_LINES) {
