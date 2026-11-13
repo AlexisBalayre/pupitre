@@ -6,19 +6,23 @@ import {
   readdirSync,
   readFileSync,
   realpathSync,
+  renameSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { assertMainCheckout, RewrittenGitDirError } from './git-diff.client.js';
 import {
   commentOnPullRequest,
   isCutOffByNode,
   originRepoSlug,
   readPullRequestReview,
   replyToReviewThread,
+  setGateStatus,
 } from './github.client.js';
 
 // The file's temp dirs, its children's included, go to a TMPDIR of its own,
@@ -506,6 +510,79 @@ describe('isCutOffByNode', () => {
   });
 });
 
+describe('setGateStatus', () => {
+  let ghDir: string;
+  let originalPath: string | undefined;
+  const SHA = 'd'.repeat(40);
+
+  beforeEach(() => {
+    ghDir = tempDir('pup-status-gh-');
+    originalPath = process.env.PATH;
+    process.env.PATH = `${ghDir}:${originalPath}`;
+    // Logs its argv one per line and what it read on stdin; `exit` set by the test.
+    writeFileSync(
+      join(ghDir, 'gh'),
+      `#!/bin/sh\nprintf '%s\\n' "$@" > ${ghDir}/argv\ncat > ${ghDir}/stdin\nexit $(cat ${ghDir}/exit 2>/dev/null || echo 0)\n`,
+      { mode: 0o755 },
+    );
+  });
+
+  afterEach(() => {
+    process.env.PATH = originalPath;
+  });
+
+  it("posts pup-gate success on the sha in origin's host and repo, naming the session and run", () => {
+    setGateStatus(ghDir, 'ghe.example.com/owner/repo', SHA, 't-abc-1');
+
+    expect(readFileSync(join(ghDir, 'argv'), 'utf8').trim().split('\n')).toEqual([
+      'api',
+      '--method',
+      'POST',
+      '--hostname',
+      'ghe.example.com',
+      `repos/owner/repo/statuses/${SHA}`,
+      '--input',
+      '-',
+    ]);
+    const payload = JSON.parse(readFileSync(join(ghDir, 'stdin'), 'utf8')) as Record<
+      string,
+      string
+    >;
+    expect(payload).toEqual({
+      state: 'success',
+      context: 'pup-gate',
+      description: expect.stringMatching(
+        /^Session t-abc-1 passed the pup merge --pr run of \d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/,
+      ),
+    });
+  });
+
+  it("cuts the description to GitHub's 140 characters", () => {
+    setGateStatus(ghDir, 'github.com/owner/repo', SHA, 's'.repeat(200));
+
+    const payload = JSON.parse(readFileSync(join(ghDir, 'stdin'), 'utf8')) as Record<
+      string,
+      string
+    >;
+    expect(payload.description).toHaveLength(140);
+  });
+
+  it('throws when gh refuses the status', () => {
+    writeFileSync(join(ghDir, 'exit'), '1');
+
+    expect(() => setGateStatus(ghDir, 'github.com/owner/repo', SHA, 't-abc-1')).toThrow(
+      `repos/owner/repo/statuses/${SHA}`,
+    );
+  });
+
+  it('refuses a repo with no owner or name before asking gh', () => {
+    expect(() => setGateStatus(ghDir, 'github.com/owner', SHA, 't-abc-1')).toThrow(
+      'Cannot read a GitHub repo from github.com/owner.',
+    );
+    expect(existsSync(join(ghDir, 'argv'))).toBe(false);
+  });
+});
+
 describe('replyToReviewThread', () => {
   it('refuses a repo with no host before asking gh', () => {
     expect(() => replyToReviewThread('/nowhere', '/owner/repo', 'PRRT_1', 'body')).toThrow(
@@ -569,4 +646,116 @@ describe('the git gh runs', () => {
 
     expect(existsSync(fired)).toBe(false);
   });
+
+  it('hands gh no inherited GIT_SHALLOW_FILE or GIT_NAMESPACE', () => {
+    const repo = tempDir('pup-gh-env-');
+    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repo, env: plainEnv });
+    const seen = join(tempDir('pup-gh-env-log-'), 'env');
+    const ghDir = tempDir('pup-gh-env-bin-');
+    writeFileSync(join(ghDir, 'gh'), `#!/bin/sh\ncat > /dev/null\nenv > ${seen}\n`, {
+      mode: 0o755,
+    });
+    process.env.PATH = `${ghDir}:${originalPath}`;
+    vi.stubEnv('GIT_SHALLOW_FILE', join(repo, 'planted-shallow'));
+    vi.stubEnv('GIT_NAMESPACE', 'planted');
+    try {
+      commentOnPullRequest(repo, 'https://github.com/o/r/pull/1', 'github.com/o/r', 'body');
+    } finally {
+      vi.unstubAllEnvs();
+    }
+
+    const env = readFileSync(seen, 'utf8');
+    expect(env).toMatch(/^PATH=/m);
+    expect(env).not.toMatch(/^GIT_SHALLOW_FILE=/m);
+    expect(env).not.toMatch(/^GIT_NAMESPACE=/m);
+  });
 });
+
+// gh runs git in the main checkout with no `--git-dir` of pup's, so a `.git` a
+// session rewrote there would hand gh's git a decoy repo (decision 172).
+describe('gh in a main checkout whose .git a session rewrote', () => {
+  let originalPath: string | undefined;
+  beforeEach(() => {
+    originalPath = process.env.PATH;
+  });
+  afterEach(() => {
+    process.env.PATH = originalPath;
+  });
+
+  /** A main checkout pup has passed, and a gh that logs to `ran` after running `script`. */
+  function checkout(script = ''): { repo: string; ran: string; decoy: string } {
+    const repo = tempDir('pup-gh-dotgit-');
+    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repo, env: plainGitEnv() });
+    const decoy = tempDir('pup-gh-decoy-');
+    execFileSync('git', ['init', '-q', '--bare', '-b', 'main'], { cwd: decoy, env: plainGitEnv() });
+    const ran = join(tempDir('pup-gh-log-'), 'ran');
+    const ghDir = tempDir('pup-gh-bin-');
+    writeFileSync(
+      join(ghDir, 'gh'),
+      `#!/bin/sh\ncat > /dev/null\n${script}\necho ran >> ${ran}\n`,
+      { mode: 0o755 },
+    );
+    process.env.PATH = `${ghDir}:${originalPath}`;
+    assertMainCheckout(repo);
+    return { repo, ran, decoy };
+  }
+
+  const comment = (repo: string) =>
+    commentOnPullRequest(repo, 'https://github.com/o/r/pull/1', 'github.com/o/r', 'body');
+
+  it('runs gh in a checkout whose .git is untouched', () => {
+    const { repo, ran } = checkout();
+    comment(repo);
+
+    expect(readFileSync(ran, 'utf8')).toBe('ran\n');
+  });
+
+  it.each([
+    [
+      'a planted commondir',
+      (repo: string, decoy: string) => writeFileSync(join(repo, '.git', 'commondir'), `${decoy}\n`),
+      /commondir exists/,
+    ],
+    [
+      'a gitfile',
+      (repo: string, decoy: string) => {
+        renameSync(join(repo, '.git'), join(tempDir('pup-gh-aside-'), 'git'));
+        writeFileSync(join(repo, '.git'), `gitdir: ${decoy}\n`);
+      },
+      /\.git is no longer a directory/,
+    ],
+    [
+      'a symlink',
+      (repo: string, decoy: string) => {
+        renameSync(join(repo, '.git'), join(tempDir('pup-gh-aside-'), 'git'));
+        symlinkSync(decoy, join(repo, '.git'));
+      },
+      /\.git is a symlink/,
+    ],
+  ] as const)('refuses before gh runs when .git holds %s', (_, plant, refusal) => {
+    const { repo, ran, decoy } = checkout();
+    plant(repo, decoy);
+
+    expect(() => comment(repo)).toThrow(RewrittenGitDirError);
+    expect(() => comment(repo)).toThrow(refusal);
+    expect(existsSync(ran)).toBe(false);
+  });
+
+  it("refuses gh's answer when .git became a symlink while it ran", () => {
+    const decoy = tempDir('pup-gh-swap-');
+    const { repo, ran } = checkout(
+      `mv .git ${join(tempDir('pup-gh-aside-'), 'git')} && ln -s ${decoy} .git`,
+    );
+
+    expect(() => comment(repo)).toThrow(/\.git is a symlink/);
+    expect(readFileSync(ran, 'utf8')).toBe('ran\n');
+  });
+});
+
+function plainGitEnv(): NodeJS.ProcessEnv {
+  return {
+    ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_'))),
+    GIT_CONFIG_GLOBAL: '/dev/null',
+    GIT_CONFIG_SYSTEM: '/dev/null',
+  };
+}

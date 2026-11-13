@@ -1,5 +1,12 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { dirname, join } from 'node:path';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import Database from 'better-sqlite3';
@@ -219,7 +226,7 @@ import {
 } from '../core/conductor.service.js';
 import { DEFAULT_BASE_PROFILE } from '../core/default-profile.constants.js';
 import { startFixRound } from '../core/fix-round.service.js';
-import { gitDiffPaths } from '../core/git-diff.client.js';
+import { gitDiffPaths, RewrittenGitDirError } from '../core/git-diff.client.js';
 import { intentTemplate } from '../core/intent.service.js';
 import { runMergeGate } from '../core/merge-gate.service.js';
 import { projectId, projectPaths } from '../core/paths.utils.js';
@@ -251,7 +258,7 @@ import {
 } from '../core/session-lifecycle.service.js';
 import { RESUME_MESSAGE } from '../core/turn-watchdog.service.js';
 import { UsageLimitReachedError } from '../core/usage-limits.service.js';
-import { buildProgram } from './index.js';
+import { buildProgram, fatalExitCode } from './index.js';
 import { ProjectResolutionError, resolveProject } from './project.utils.js';
 import { Radar } from './ui/radar.component.js';
 
@@ -2842,6 +2849,74 @@ describe('CLI commands', () => {
       );
       expect(process.exitCode).toBe(1);
     });
+  });
+
+  // Every path a command takes to a project's repo holds it as a main checkout
+  // before reading it, so a `.git` a session swapped refuses the command
+  // (decisions 172, 181).
+  describe("a project whose main checkout's .git a session rewrote", () => {
+    /** A registered repo whose `.git` is now `swap`'s, naming a bare decoy. */
+    function rewritten(swap: (dotGit: string, decoy: string) => void): {
+      repo: string;
+      id: string;
+    } {
+      const repo = initRepo();
+      const id = registerProject(repo);
+      const decoy = tempDir('pup-cli-decoy-');
+      execFileSync('git', ['init', '-q', '--bare', '-b', 'main'], { cwd: decoy, env: GIT_ENV });
+      renameSync(join(repo, '.git'), join(tempDir('pup-cli-aside-'), 'git'));
+      swap(join(repo, '.git'), decoy);
+      return { repo, id };
+    }
+
+    const swaps = {
+      'a gitfile': (dotGit: string, decoy: string) => writeFileSync(dotGit, `gitdir: ${decoy}\n`),
+      'a symlink': (dotGit: string, decoy: string) => symlinkSync(decoy, dotGit),
+    };
+    /** Each command, and whether it runs from inside the repo or from outside any. */
+    const commands: Record<string, { argv: (id: string) => string[]; isInside: boolean }> = {
+      '--project <id> status': { argv: (id) => ['--project', id, 'status'], isInside: false },
+      'status in the repo': { argv: () => ['status'], isInside: true },
+      'ui in the repo': { argv: () => ['ui'], isInside: true },
+      'status --all': { argv: () => ['status', '--all'], isInside: false },
+      'ui --all': { argv: () => ['ui', '--all'], isInside: false },
+    };
+
+    it.each(
+      Object.keys(commands).flatMap((command) =>
+        Object.keys(swaps).map((swap) => [command, swap] as const),
+      ),
+    )('refuses %s once .git is %s, and exits 1 with the reason', async (command, swap) => {
+      const { argv, isInside } = commands[command] as (typeof commands)[string];
+      const { repo, id } = rewritten(swaps[swap as keyof typeof swaps]);
+      useCwd(isInside ? repo : tempDir('pup-cli-noproj-'));
+
+      let thrown: unknown;
+      try {
+        await buildProgram().parseAsync(argv(id), { from: 'user' });
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown).toBeInstanceOf(RewrittenGitDirError);
+      expect((thrown as Error).message).toMatch(/decision 172/);
+      expect(fatalExitCode(thrown)).toBe(1);
+      expect(errors).toEqual([(thrown as Error).message]);
+      expect(logs).toEqual([]);
+    });
+
+    it.each(Object.keys(commands))(
+      'runs %s on a main checkout that is untouched',
+      async (command) => {
+        const { argv, isInside } = commands[command] as (typeof commands)[string];
+        const repo = initRepo();
+        const id = registerProject(repo);
+        useCwd(isInside ? repo : tempDir('pup-cli-noproj-'));
+
+        await expect(buildProgram().parseAsync(argv(id), { from: 'user' })).resolves.toBeDefined();
+        expect(logs).not.toEqual([]);
+      },
+    );
   });
 });
 

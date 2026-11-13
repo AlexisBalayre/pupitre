@@ -61,6 +61,7 @@ import {
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import { nestedPackageDirs } from '../adapters/git-tree.client.js';
 import type { Adapter, CapabilityContext } from '../adapters/types/adapter.types.js';
+import { typescriptAdapter } from '../adapters/typescript.adapter.js';
 import { openStore } from './db.client.js';
 import { SharedWorktreeKeyError, WorktreeConfigError } from './git-diff.client.js';
 import { listLedgerEntries } from './ledger.repository.js';
@@ -444,21 +445,80 @@ describe('the merge gate under a shared-config core.worktree and diff.relative',
     commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
     const config = join(repo, '.git', 'config');
     const adapter = debtAdapter({
-      touchedNestedPackages: (ctx: CapabilityContext) => {
+      touchedNestedPackages: (ctx: CapabilityContext, files: string[]) => {
         const kept = readFileSync(config, 'utf8');
         writeFileSync(config, '[core\n');
         try {
-          nestedPackageDirs(ctx);
-          return [];
+          return typescriptAdapter.touchedNestedPackages?.(ctx, files) ?? [];
         } finally {
           writeFileSync(config, kept);
         }
       },
     });
 
-    await expect(merge(adapter)).rejects.toThrow();
+    await expect(merge(adapter)).rejects.toThrow(/Command failed: git .* ls-tree --full-tree/);
     expect(vi.mocked(spawn)).not.toHaveBeenCalled();
     expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+  });
+
+  // A session can detach the main checkout's `.git/HEAD` to a commit with no
+  // nested package.json while the listing runs and restore it before the
+  // gate's last check: listed at HEAD, the trusted set was empty and every
+  // nested package's stages were skipped with no error.
+  it('runs every nested package stage with HEAD moved during the nested listing', async () => {
+    const withoutPackage = sh(repo, 'git', 'rev-parse', 'HEAD').trim();
+    commitIn(repo, 'tools/review/package.json', '{}\n');
+    const worktree = seedSession(db, repo, { scopeIn: ['**'] });
+    commitIn(worktree, 'tools/review/src/x.ts', 'export const x = 1;\n');
+    const head = join(repo, '.git', 'HEAD');
+    const adapter = debtAdapter({
+      touchedNestedPackages: (ctx: CapabilityContext, files: string[]) => {
+        const kept = readFileSync(head, 'utf8');
+        writeFileSync(head, `${withoutPackage}\n`);
+        try {
+          return typescriptAdapter.touchedNestedPackages?.(ctx, files) ?? [];
+        } finally {
+          writeFileSync(head, kept);
+        }
+      },
+    });
+
+    const outcome = await merge(adapter);
+
+    expect(stage(outcome, 'test (tools/review)')?.status).toBe('flagged');
+    expect(stage(outcome, 'typecheck (tools/review)')?.status).toBe('flagged');
+  });
+
+  // Complexity's "before" side reads the main checkout: listed at its HEAD, a
+  // session that detaches it while the side runs changes which nested files
+  // the target's measure leaves out, while the "after" side is pinned.
+  it('lists nested packages at the target sha on both complexity sides with HEAD moved', async () => {
+    const withoutPackage = sh(repo, 'git', 'rev-parse', 'HEAD').trim();
+    commitIn(repo, 'tools/review/package.json', '{}\n');
+    const worktree = seedSession(db, repo, { scopeIn: ['**'] });
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+    const head = join(repo, '.git', 'HEAD');
+    const listed: { measurePath: string; nested: Set<string> }[] = [];
+    const adapter = debtAdapter({
+      complexity: (ctx: CapabilityContext) => {
+        const kept = readFileSync(head, 'utf8');
+        writeFileSync(head, `${withoutPackage}\n`);
+        try {
+          listed.push({ measurePath: ctx.measurePath, nested: nestedPackageDirs(ctx) });
+          return [];
+        } finally {
+          writeFileSync(head, kept);
+        }
+      },
+    });
+
+    await merge(adapter);
+
+    expect(listed).toHaveLength(2);
+    expect(listed.find((side) => side.measurePath === repo)?.nested).toEqual(
+      new Set(['tools/review']),
+    );
+    for (const side of listed) expect(side.nested).toEqual(new Set(['tools/review']));
   });
 
   /** A stage that sets the key while it runs, after every check before the stages. */

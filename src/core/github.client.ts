@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { pinnedGitEnv } from './git-diff.client.js';
+import { assertGitDirUnplanted, checkedAfter, pinnedGitEnv } from './git-diff.client.js';
 import type { NewPullRequest, PullRequestRef } from './types/github.types.js';
 
 // GitHub interaction goes through the operator's `gh` CLI and its normal
@@ -58,25 +58,40 @@ function ghWithBody(
   body: string,
   timeout = GH_COMMAND_TIMEOUT_MS,
 ): string {
-  return execFileSync('gh', args, {
-    cwd: repoPath,
-    encoding: 'utf8',
-    input: body,
-    timeout,
-    stdio: ['pipe', 'pipe', 'pipe'],
-    env: pinnedGitEnv(),
-  });
+  return ghInCheckout(repoPath, () =>
+    execFileSync('gh', args, {
+      cwd: repoPath,
+      encoding: 'utf8',
+      input: body,
+      timeout,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: pinnedGitEnv(),
+    }),
+  );
+}
+
+/**
+ * `spawn`, a gh run in `repoPath`, between the checks `runGit` makes around its
+ * own spawns: gh runs git there with no `--git-dir` of pup's, so a commondir,
+ * a gitfile or a symlink planted at the main checkout would hand gh's git a
+ * remote and a branch the session chose (decision 172).
+ */
+function ghInCheckout<T>(repoPath: string, spawn: () => T): T {
+  assertGitDirUnplanted(repoPath);
+  return checkedAfter(repoPath, undefined, spawn);
 }
 
 function ghJson(repoPath: string, args: string[], timeout = GH_COMMAND_TIMEOUT_MS): unknown {
-  const output = execFileSync('gh', args, {
-    cwd: repoPath,
-    encoding: 'utf8',
-    timeout,
-    maxBuffer: GH_MAX_BUFFER,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    env: pinnedGitEnv(),
-  });
+  const output = ghInCheckout(repoPath, () =>
+    execFileSync('gh', args, {
+      cwd: repoPath,
+      encoding: 'utf8',
+      timeout,
+      maxBuffer: GH_MAX_BUFFER,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: pinnedGitEnv(),
+    }),
+  );
   try {
     return JSON.parse(output);
   } catch {
@@ -216,6 +231,47 @@ export function assertPullRequestHead(
         'fix the PR, then re-run.',
     );
   }
+}
+
+/** The commit status a passed `pup merge --pr` sets, which branch protection can require. */
+const GATE_STATUS_CONTEXT = 'pup-gate';
+/** GitHub's cap on a commit status description. */
+const STATUS_DESCRIPTION_MAX = 140;
+
+/**
+ * Set `pup-gate` to success on `sha` in `repo` (its `host/owner/name`), once the
+ * PR's head was read back at it. A status belongs to the commit, not to the
+ * PR, so a push after the gate leaves the new head without one, and a branch
+ * protection requiring `pup-gate` holds the merge button until a re-gate sets
+ * it there (decision 182). The payload goes over stdin, as a PR's body does.
+ */
+export function setGateStatus(
+  repoPath: string,
+  repo: string,
+  sha: string,
+  sessionId: string,
+): void {
+  const [host, owner, name] = repo.split('/');
+  if (!host || !owner || !name) throw new Error(`Cannot read a GitHub repo from ${repo}.`);
+  const description = `Session ${sessionId} passed the pup merge --pr run of ${new Date().toISOString()}`;
+  ghWithBody(
+    repoPath,
+    [
+      'api',
+      '--method',
+      'POST',
+      '--hostname',
+      host,
+      `repos/${owner}/${name}/statuses/${sha}`,
+      '--input',
+      '-',
+    ],
+    JSON.stringify({
+      state: 'success',
+      context: GATE_STATUS_CONTEXT,
+      description: description.slice(0, STATUS_DESCRIPTION_MAX),
+    }),
+  );
 }
 
 /**

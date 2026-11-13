@@ -49,10 +49,11 @@ export interface CompileInput {
   task: TaskSpec;
   sessionId: SessionId;
   /**
-   * The repository the session belongs to. Only the project brief is read
-   * through it: the compiler locates `~/.pupitre/<id>/brief.md` itself rather
-   * than take the text from its caller, so a session and the conductor pick up
-   * the same file by the same rule (decision 57).
+   * The repository the session belongs to. The compiler locates
+   * `~/.pupitre/<id>/brief.md` through it rather than take the text from its
+   * caller, so a session and the conductor pick up the same file by the same
+   * rule (decision 57). The shift-left kickoff's setting and the reviewer agent
+   * files it quotes are found the same way (decision 178).
    */
   repoPath: string;
   /** Absolute path of the session's git worktree — scope enforcement is relative to it. */
