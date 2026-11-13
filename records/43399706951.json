@@ -1,0 +1,114 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-13T09:20:02.858Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43399706951",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43399706951",
+  "actor": "AlexisBalayre",
+  "commit_sha": "fa92d9b9c044a347b48841cabebaebb62c3b0c0a",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 201,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "guards"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "guards"
+  ],
+  "reviewers_skipped": [
+    "conventions",
+    "context",
+    "maintainability",
+    "docs",
+    "spec",
+    "simplicity",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "1008-1025, 1139-1157",
+      "description": "`listProcesses` finds `ps` on `PROBE_PATH`, which lists `/opt/homebrew/bin` and `/usr/local/bin` before `/usr/bin` and `/bin`, and the operator's uid can write both. The conductor can plant a `ps` there that prints nothing. `launchedAncestor()` then finds no ancestor, and `env -u PUP_CONDUCTOR pup plan edit … --rescope` from the conductor's own Bash succeeds and is recorded as the inferred operator, which is the very case ADR 0115 says is refused.",
+      "status": "unresolved"
+    },
+    {
+      "file": "src/core/session.repository.ts",
+      "line": "348-355",
+      "description": "A rescope of a blocked session (or of an awaiting-review one the gate then parks) never reaches the worker's hooks. The only way to resume it, `pup unblock` then `pup kill --respawn`, relaunches from the launch-time compiled settings.json, scope-in.pat and context.md. Edits to the newly added globs stay BLOCKED even though the rescope reported success.",
+      "status": "unresolved"
+    },
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "1117",
+      "description": "`listPanes` runs tmux with an environment holding only `PATH`, so tmux turns the tab separators in `PANE_FORMAT` into `_`; `listedPane` then never matches, and a rescope goes through while the session's window is open.",
+      "status": "unresolved"
+    }
+  ],
+  "findings": [],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Round 7 budget: spawned only correctness (2 instances), security (2 instances) and guards. Conventions, docs, context, simplicity and maintainability were skipped under the round budget. Workflow-safety was skipped because the PR diff changes no `.github/workflows` file, and spec because no closing issue or spec source exists."
+    },
+    {
+      "component": "consolidator",
+      "description": "Not spawned: no reviewer returned a finding, so there was nothing to group."
+    },
+    {
+      "component": "orchestrator",
+      "description": "Since the prior record (7c042e1), the head (fa92d9b) only merges main. All three prior importants are still in place at head: `listProcesses` and `listPanes` still run on `PROBE_PATH` with env `{ PATH }` and no `-u` (session-runtime.service.ts:1117, 1144). RESCOPABLE_STATES is still ['awaiting-review','merged'], so an awaiting-review session that is rescoped and later parked blocked still relaunches from its launch-time hooks."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 4.532887999999999,
+  "duration_ms": 269950,
+  "num_turns": 14,
+  "tokens": {
+    "input": 12,
+    "output": 7730,
+    "cache_read": 310984,
+    "cache_creation": 62646,
+    "total": 381372
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 212,
+      "output": 76394,
+      "cache_read": 4456201,
+      "cache_creation": 357561,
+      "cost_usd": 4.3957112
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 20,
+      "output": 3293,
+      "cache_read": 181118,
+      "cache_creation": 34438,
+      "cost_usd": 0.1371768
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "bash scripts/adr-index.sh"
+    }
+  ]
+}
