@@ -83,8 +83,9 @@
     a review-by and an approver, the field holding `human` until the operator names someone else
     and refused when it is empty once scrubbed, as `--approved-by` is (`runMergeGate` with `openPr`
     and `acceptDebt`, refused as `pup merge` refuses a reason without its review-by), start a fix
-    round (`startFixRound`), land (`landSession`, after the sandbox check `pup land` makes) and
-    close a ledger entry (`closeLedgerEntry`). The page is the operator's alone, as `pup
+    round (`startFixRound`), land (`landSession`, after the sandbox check `pup land` makes,
+    naming each peer it could not steer, and refused after saying what it did where `pup land`
+    fails: a merge lock lost under it, or an audit that kept the baseline) and close a ledger entry (`closeLedgerEntry`). The page is the operator's alone, as `pup
     dashboard` refuses a session and the conductor, so every action runs as the operator's. A
     merge from the page is always `--pr`: the target branch moves only through `pup land` after
     the PR is merged on GitHub, which the page only links to; no button merges there. The gate,
@@ -155,9 +156,11 @@
     post.
     What comes back is JSON the script sets as text, never markup: the lines the CLI would print,
     or core's refusal as core worded it, control characters replaced and lines kept, in a status
-    line under the sheet bar. The board is held back while the operator types into a field on it,
-    so a refresh does not wipe a half-typed answer. `close` waits for an action still running
-    before the store is closed.
+    line under the sheet bar. The board is held back while a field on it has focus or holds text
+    not yet sent, so neither a refresh nor focus moving to the field's button wipes a half-typed
+    answer; it is swapped in once that text is sent. `close` first stops taking requests in, every
+    nonce dropped, then waits until every post still running has been answered, and only then is
+    the store closed.
     Tests: per action, the core function the CLI calls is called with the CLI's arguments and its
     refusal is what the page shows; an approver missing, blank or empty once scrubbed is refused
     and gates nothing, and a tell without a message is refused before the conductor is reached;
@@ -171,7 +174,10 @@
     with only a cookie, from another origin, naming no origin, or with a cross-site or same-site
     `Sec-Fetch-Site`, with a wrong, reused or lapsed nonce, or a reused confirmation is refused and
     leaves the ledger entry open; past the cap the oldest nonce is refused; kill, merge, land and debt close each answer only a confirmation on the
-    first post and change nothing; a confirmation runs only its own action and fields. The
+    first post and change nothing; a confirmation runs only its own action and fields; once
+    closing, a post with a good nonce and a new stream are refused while the action already
+    running is answered before `close` resolves; a land that lost its lock or kept the baseline is
+    refused after the lines saying what it did. The
     session view, tmux faked, shows a pane holding markup, ESC and a direction mark escaped, the
     copyable attach line, and a new pane on its stream within a poll; a merged session's view links
     its PR and offers fix, re-gate and land, no form naming GitHub.

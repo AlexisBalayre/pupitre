@@ -14,6 +14,11 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   conductorPane: vi.fn(() => undefined),
   readInputBoxLook: vi.fn(() => ({ state: 'empty', draft: '' })),
 }));
+// Real unless a test holds one action open, to see what a shutdown does meanwhile.
+vi.mock('./web-dashboard-actions.service.js', async (importOriginal) => {
+  const real = await importOriginal<typeof import('./web-dashboard-actions.service.js')>();
+  return { ...real, runAction: vi.fn(real.runAction) };
+});
 
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import {
@@ -45,7 +50,7 @@ import {
 } from './session.repository.js';
 import { STALLED_AFTER_MS } from './session-activity.constants.js';
 import { startWebDashboard, type WebDashboard } from './web-dashboard.service.js';
-import { ACTIONS } from './web-dashboard-actions.service.js';
+import { ACTIONS, runAction } from './web-dashboard-actions.service.js';
 import { escapeHtml } from './web-dashboard-sheet.utils.js';
 
 const POLL_MS = 300;
@@ -1153,6 +1158,45 @@ describe('startWebDashboard', () => {
         expect(isOpen(id)).toBe(true);
       },
     );
+
+    it('takes nothing new in once closing, and closes only after the action still running', async () => {
+      let finish = (_lines: string[]): void => {};
+      let started = (): void => {};
+      const running = new Promise<void>((done) => {
+        started = done;
+      });
+      vi.mocked(runAction).mockImplementationOnce(
+        () =>
+          new Promise((done) => {
+            finish = done;
+            started();
+          }),
+      );
+      const late = await pageKey();
+      const first = post(actionUrl(), { action: 'tell', message: 'hi', nonce: await pageKey() });
+      await running;
+      const calls = vi.mocked(runAction).mock.calls.length;
+
+      let closed = false;
+      const closing = dashboard.close().then(() => {
+        closed = true;
+      });
+      try {
+        const refused = await post(actionUrl(), { action: 'tell', message: 'late', nonce: late });
+        const stream = await get(eventsUrl());
+
+        expect(refused.status).toBe(503);
+        expect(refused.body).toContain('nothing was done');
+        expect(stream.status).toBe(503);
+        expect(vi.mocked(runAction).mock.calls.length).toBe(calls);
+        expect(closed).toBe(false);
+      } finally {
+        finish(['Told the conductor; the message landed.']);
+      }
+      expect((await first).json()).toMatchObject({ ok: true });
+      await closing;
+      expect(closed).toBe(true);
+    });
 
     it('refuses debt fields `pup merge` refuses before asking, and keeps the page able to act', async () => {
       seedSession('s-live', ['running']);

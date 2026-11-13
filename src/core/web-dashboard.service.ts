@@ -133,8 +133,12 @@ export async function startWebDashboard(
 
   // Set once the socket is bound; no request is read before then.
   let port = 0;
+  // Set by `close`: from then on nothing new is taken in, so the store it is
+  // about to hand back outlives every action that reached it.
+  let closing = false;
   const handle = (req: IncomingMessage, res: ServerResponse) => {
     if (req.headers.host !== `${LOOPBACK}:${port}`) return refuse(res, 403, 'Forbidden.');
+    if (closing) return refuse(res, 503, 'The dashboard is closing; nothing was done.');
     const url = new URL(req.url ?? '/', `http://${LOOPBACK}:${port}`);
     if (url.pathname === '/') return handlePage(req, res, url);
     if (!access.holds(req)) return refuse(res, 403, access.refusal());
@@ -217,11 +221,15 @@ export async function startWebDashboard(
 
   return {
     url: `http://${LOOPBACK}:${port}/?token=${access.token}`,
-    // An action still running finishes first: the gate's own cleanup runs
-    // under its lock, and the caller closes the store once this resolves.
+    // Intake stops first, every nonce with it, then an action still running
+    // finishes: the gate's own cleanup runs under its lock, and the caller
+    // closes the store once this resolves.
     close: async () => {
+      closing = true;
       clearInterval(poll);
       for (const stream of streams.keys()) stream.end();
+      streams.clear();
+      desk.clear();
       await desk.settle();
       server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -393,13 +401,18 @@ ${CHART_CSS}
     outcome.className = refused ? 'refused' : 'done';
     outcome.hidden = false;
   };
-  const typing = () => board.contains(document.activeElement) && document.activeElement.matches('input');
+  // A field in focus, or one holding text not yet sent: focus leaving it for
+  // its button must not swap the form out from under the click.
+  const typing = () =>
+    (board.contains(document.activeElement) && document.activeElement.matches('input')) ||
+    [...board.querySelectorAll('input:not([type="hidden"])')].some((field) => field.value !== field.defaultValue);
   const show = (next) => {
     if (typing()) held = next; else board.innerHTML = next;
   };
-  board.addEventListener('focusout', () => setTimeout(() => {
+  const flush = () => {
     if (held !== undefined && !typing()) { board.innerHTML = held; held = undefined; }
-  }));
+  };
+  board.addEventListener('focusout', () => setTimeout(flush));
   if (secret === null) {
     live.textContent = 'no key';
     return say('This tab holds no key: the url pup dashboard printed opens one tab, once, and links in that tab keep it.', true);
@@ -459,7 +472,10 @@ ${CHART_CSS}
         answer = await post({ ...fields, nonce: answer.confirmNonce });
       }
       say(answer.message, !answer.ok);
-      if (answer.ok) form.reset();
+      if (answer.ok) {
+        form.reset();
+        flush();
+      }
     } catch (error) {
       say(error.message, true);
     } finally {

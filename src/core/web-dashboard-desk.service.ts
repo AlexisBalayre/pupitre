@@ -54,7 +54,7 @@ interface ActionDesk {
   clear: () => void;
   /** A request to `/action` that carries the secret, from a page served at `origin`. */
   handle: (req: IncomingMessage, res: ServerResponse, origin: string) => void;
-  /** Settles once every action still running has finished. */
+  /** Settles once every post still running has been answered. */
   settle: () => Promise<unknown>;
 }
 
@@ -75,19 +75,12 @@ export function createActionDesk(db: Database, repoPath: string): ActionDesk {
     nonces.set(nonce, grant);
     return nonce;
   };
-  /** The action's answer, once it ran; held by `settle` so the store outlives it. */
-  const run = async (action: ActionName, fields: ActionFields): Promise<ActionAnswer> => {
-    const job = runAction(db, repoPath, action, fields).then(
+  /** The action's answer, once it ran. */
+  const run = (action: ActionName, fields: ActionFields): Promise<ActionAnswer> =>
+    runAction(db, repoPath, action, fields).then(
       (lines) => ({ ok: true, message: lines.join('\n') }),
       (error: unknown) => ({ ok: false, message: scrubbed(error) }),
     );
-    running.add(job);
-    try {
-      return await job;
-    } finally {
-      running.delete(job);
-    }
-  };
   // An irreversible action's first post runs nothing: it is asked only about
   // what could run, so fields the action would refuse, a debt reason without
   // its review-by, are refused here instead.
@@ -154,7 +147,9 @@ export function createActionDesk(db: Database, repoPath: string): ActionDesk {
     if (!String(req.headers['content-type']).startsWith('application/x-www-form-urlencoded')) {
       return refuse(res, 415, 'A form post only.');
     }
-    void readBody(req)
+    // Held by `settle` until the answer is written, so neither the store nor
+    // the connection goes before it.
+    const answered = readBody(req)
       .then(async (body) => {
         if (body === undefined) return refuse(res, 413, 'Too large.');
         const answer = await act(new URLSearchParams(body));
@@ -174,14 +169,19 @@ export function createActionDesk(db: Database, repoPath: string): ActionDesk {
       // A post the client gave up on mid-body: answered if anything can be.
       .catch(() =>
         res.headersSent ? res.end() : refuse(res, 500, 'The action could not be read.'),
-      );
+      )
+      .finally(() => running.delete(answered));
+    running.add(answered);
   };
 
   return {
     mint: () => mint({ kind: 'page', mintedAt: Date.now() }),
     clear: () => nonces.clear(),
     handle,
-    settle: () => Promise.allSettled([...running]),
+    // Until none is left, not only those running when it was called.
+    settle: async () => {
+      while (running.size > 0) await Promise.allSettled([...running]);
+    },
   };
 }
 
