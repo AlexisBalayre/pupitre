@@ -80,10 +80,15 @@
     messages to the worker's context.
     A hold's turn can die like any other (decision 35's addendum). It then ends on the API error
     the watchdog resumes, and that resume would tell a worker waiting on its question to finish
-    the task without the answer. So the watchdog leaves a dead turn alone when the newest prompt
-    recorded for the session is a hold: the turn that died is the hold's. The question stays in
-    Needs-you. The operator's answer is the next prompt, and a turn that dies after it is resumed
-    as before.
+    the task without the answer. The newest recorded prompt alone cannot say the turn that died
+    is the hold's: the operator may answer by typing into the window by hand, and `pup unblock`
+    types nothing (decision 7), so neither records a prompt. The file can, since a dead turn
+    fires no hook while a hold whose turn ended has a Stop after it. So the watchdog leaves a
+    dead turn alone only when the newest prompt recorded is a hold made at or after the file's
+    mtime, compared at the whole second as above. The question stays in Needs-you. A turn that
+    dies after the hold's turn ended is resumed as before, whoever prompted it. One edge stays
+    open: a hold's turn that reaches a tool before it dies moves the file and is resumed. The
+    hold's text asks the worker to run no tool, which keeps that edge narrow.
     Rejected: respawning a window that will idle past the hour on a fresh one. The wake time is
     not known, so a respawn cannot be timed to it. A fresh window pays the first-request floor
     (about 22k tokens for a worker) plus everything it reads again to rebuild its context, and it

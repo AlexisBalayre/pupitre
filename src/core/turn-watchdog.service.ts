@@ -117,8 +117,17 @@ function resumeSession(
   if (!row) return undefined;
   // A hold's dead turn is left as it is (decision 179). The window was waiting
   // on someone else, and a resume would tell it to finish the task without the
-  // answer it asked for. Its question stays open until the operator answers.
-  if (lastPrompt(listEvents(db, sessionId).reverse())?.type === 'cache_hold') return undefined;
+  // answer it asked for. Only a hold no hook has followed is that turn: a dead
+  // turn moves no file, while a hold whose turn ended has a Stop after it, and
+  // a turn dead since then was prompted by someone, perhaps the operator typing
+  // into the window by hand, which records no prompt. `created_at` keeps whole
+  // seconds, so a hold inside the file's last second counts as after it.
+  const prompt = lastPrompt(listEvents(db, sessionId).reverse());
+  if (
+    prompt?.type === 'cache_hold' &&
+    Date.parse(toIsoUtc(prompt.created_at)) >= Math.floor(Date.parse(stalledAt) / 1000) * 1000
+  )
+    return undefined;
   // Stamp AND age: a resume answers this stall for one stall window, not for
   // good. Through an outage the resumed turn dies again at once, no hook
   // fires and the stamp never moves — a stamp alone would leave the session

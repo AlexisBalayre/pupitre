@@ -155,6 +155,18 @@ describe('sweepDeadTurns', () => {
       expect(sweepDeadTurns(db, repo, now())).toEqual([{ id: 's1', reason: API_ERROR }]);
     });
 
+    // A hold whose turn ended has a Stop after it, so the turn that died later
+    // was prompted by someone else. The operator typing an answer into the
+    // window by hand records no prompt, and that turn is resumed like any other.
+    it('is resumed when the events file moved after the hold, though no prompt followed it', () => {
+      appendEvent(db, 's1', 'question', { text: 'which ADR number?' });
+      appendEvent(db, 's1', 'cache_hold', { idleMs: 3_000_000 });
+      db.prepare("UPDATE events SET created_at = datetime('now', '-2 hours')").run();
+
+      expect(sweepDeadTurns(db, repo, now())).toEqual([{ id: 's1', reason: API_ERROR }]);
+      expect(steerPane).toHaveBeenCalledWith({ sessionId: 's1', paneId: '%7' }, RESUME_MESSAGE);
+    });
+
     // The operator put the project to sleep; a resume would be the watcher
     // waking it (decision 62). Its conductor pane is not even read.
     it('is left alone while its project is dormant, and resumed once it is woken', () => {
