@@ -1,0 +1,157 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-13T17:17:55.140Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43469966314",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43469966314",
+  "actor": "AlexisBalayre",
+  "commit_sha": "7201627eb3cb2b3500c37c4e043bd696bfe6e8c5",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 321,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/cache-hold.service.ts",
+      "line": "118-123",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "Only a moved events-file mtime stops the next hold, and a hold moves it only when its turn's Stop hook fires. A hold whose turn dies (API error, no Stop) or runs past one sweep is typed again every 15 s, which can spend all eight holds in about two minutes.",
+      "body": "**Concern.** After a hold is submitted, only the events file's mtime keeps the next sweep from holding the same window again. The worker profile appends to that file only on `PostToolUse`, `Stop` and `Notification` (`src/core/profile-compiler.service.ts` L1163-1171). It has no `UserPromptSubmit` entry, and `pasteIntoPane`/`submitPane` only send tmux keys. So the mtime stays put until the hold's own turn fires a hook.\n\nOn the next sweep (`WATCH_INTERVAL_MS` = 15 s, `src/core/overlap.service.ts` L12), every check in `holdDue` passes again:\n- `idleMs` is unchanged and still inside [50, 58) min.\n- `trailingHolds` is 1, which is below `CACHE_HOLD_LIMIT`. The recorded `cache_hold` is never compared with the mtime.\n- The tail still ends on the earlier Stop, so `classifySessionActivity` says `idle`.\n- `readInputBox` returns `'empty'`, both while a turn runs and after a turn dies.\n\n**Triggers.**\n1. The hold's turn dies with an API error. A dead turn fires no Stop (`turn-watchdog.service.ts` L30-35). An `awaiting-review` window then gets a hold typed every 15 s until the cap is spent, which takes about two minutes.\n2. The hold's turn takes longer than one sweep interval. A second hold queues behind the first, and the cap is counted twice for one refresh.\n\nThe catch comment at L94-95 (\"A hold typed but left unrecorded moved the events file\") rests on the same wrong assumption. `src/cli/index.ts` L1976-1977 says the events file only moves on the next hook. No test sweeps twice over an unchanged mtime.\n\n**Fix.** Treat a hold whose `cache_hold` row is at or after the file's mtime as still unanswered:\n\n```ts\nconst [newest] = events;\nif (newest?.type === 'cache_hold' && Date.parse(toIsoUtc(newest.created_at)) >= stat.mtimeMs) return undefined;\n```\n\nThis needs `toIsoUtc` from `./report-data.utils.js`. Add a repeat-sweep test with it.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/7201627eb3cb2b3500c37c4e043bd696bfe6e8c5/src/core/cache-hold.service.ts#L118-L123",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/cache-hold.service.ts",
+      "line": "116-123",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "A hold is typed into a turn that is already running, because typing a prompt never moves the events file. Three cases: the hold's own turn, a just-recorded steer or peer message, or a resume from the same sweep.",
+      "body": "**Concern.** `holdDue` takes \"the hook events show the turn ended\" as proven when the file's mtime is in the window and the tail ends on a Stop. Only the PostToolUse, Stop and Notification hooks write that file (`profile-compiler.service.ts` L1163-1171). A turn that has started therefore writes nothing until its first tool finishes or it stops.\n\nThe input box is still drawn while a turn runs, which is why `steerPane` can steer mid-turn (`session-runtime.service.ts` L1233). So `readInputBox` returns `'empty'` (see `inputBoxState` in `src/claude/pane.utils.ts` L158-167), and the paste plus Enter queues into that turn.\n\n**A just-recorded steer or peer message (the main case).** An `awaiting-review` worker has been quiet for 52 minutes. A conductor `pup steer` or a peer message (`recordSteerMessage`) wakes it, and it starts a long `pnpm test`. A steer only adds a DB row. It does not move the file, and it resets `trailingHolds` to 0. `awaiting-review` needs no open question. So any 15 s sweep before that tool's PostToolUse queues \"Run no tool; reply with the single word held and end your turn\" into the real working turn.\n\n**The same sweep's resume.** `sweepDeadTurns` runs `resumeSession` and then `holdIdleCaches` with the same `now` (`turn-watchdog.service.ts` L92-96). A file quiet for 50 to 58 minutes is past the stall threshold. So a `running` worker with an open question can be resumed and then held straight away, when its dead turn wrote no hook events.\n\nThis breaks ADR 0179's promise that a hold \"is made only when the hook events show the turn ended\" (`docs/adr/0179-…md` L27).\n\n**Fix.** Also skip when something that types into the pane was recorded after the file last moved. `events` is already newest-first here:\n\n```ts\nconst typed = events.find((e) => ['steer', 'answer', 'interrupt', 'cache_hold'].includes(e.type));\nif (typed && Date.parse(toIsoUtc(typed.created_at)) >= stat.mtimeMs) return undefined;\n```\n\nThis also closes the previous finding's re-hold path.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/7201627eb3cb2b3500c37c4e043bd696bfe6e8c5/src/core/cache-hold.service.ts#L116-L123",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/turn-watchdog.service.ts",
+      "line": "92-96",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "A hold whose turn dies on an API error turns a worker waiting on an open question into a watchdog resume target. The watchdog then types RESUME_MESSAGE (\"Continue the task ... run pup session done\") while the question is still open.",
+      "body": "**Concern.** Before this PR, a `running` worker whose ask turn ended normally could not show a dead turn: nothing typed into its pane, so `deadTurnError` found no API-error line and `resumeSession` left it alone. `holdIdleCaches` now starts a turn in exactly those panes.\n\nSuppose that hold turn dies (DNS outage, lost connection; the failure the watchdog exists for):\n1. No Stop fires, and the session stalls (`findStalledSessions` lists `running` rows quiet 10 min or more).\n2. No `turn_died` exists for that `stalledAt`. Nothing was recorded at the earlier 10-minute mark, because that turn ended cleanly.\n3. The pane now ends on the API-error line, so the next sweep's `resumeSession` (L108-155) types `RESUME_MESSAGE`: \"Continue the task from where you stopped and run pup session done when the acceptance criteria are met.\"\n\n`resumeSession` never reads `openQuestion`. Its steer is recorded `by: 'watch'`, and `openQuestion` (`session.repository.ts` L713) ignores any steer whose `by` is not `'operator'`. So the question stays open in Needs-you while the worker is told to finish without the answer it asked for.\n\nThis contradicts ADR 0179's statement that only the operator answers a question a hold leaves open. The ADR's amendment of 0035 covers only the stall age resetting, not this new resume path. Fixing the re-hold check in `holdDue` does not prevent it, because one dead hold is enough.\n\n**Fix.** In `resumeSession`, do not resume a dead turn that belongs to a hold. For example, skip (or record a `turn_died` and type nothing) when the newest `cache_hold`/`steer` event is a `cache_hold`, or when the session has an open question.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/7201627eb3cb2b3500c37c4e043bd696bfe6e8c5/src/core/turn-watchdog.service.ts#L92-L96",
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0179-pup-watch-holds-a-waiting-worker-s-prompt-cache.md",
+      "line": "4",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "ADR 0179 declares `Amends: 0035`, but 0035's header still lists only `Amended by: 0103`, so a reader of 0035 won't learn that a hold now restarts the stall age; add the `Amended by: [0179](…)` back-link as sibling pairs like 0078→0036 do.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/cache-hold.service.ts",
+      "line": "18-29, 47-53",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The file header and the CACHE_HOLD_LIMIT JSDoc restate ADR 0179's cost figures: the retro date, 93 re-caches, about 84 USD, and the 0.1× vs 2× arithmetic. These copies go stale when either side changes. Cut the header to a pointer to decision 179, and keep only the \"cost control, not a boundary\" WHY on the limit.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/cache-hold.service.ts",
+      "line": "120-122",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "holdDue loads and reverses the session's whole event list before the cheaper openQuestion early return; moving the running/open-question check above `listEvents` skips that load for running sessions with no question.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/cache-hold.service.ts",
+      "line": "134-136",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "readTail's short-read loop (`-1` sentinel, running offset) guards a case a regular file only hits when it shrinks mid-read, which just yields a shorter tail the classifier tolerates; a single `readSync(fd, buffer, 0, buffer.length, start)` would do, or a comment should name the case the loop covers.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 3,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 4.422172975,
+  "duration_ms": 425976,
+  "num_turns": 17,
+  "tokens": {
+    "input": 12,
+    "output": 17837,
+    "cache_read": 282930,
+    "cache_creation": 60164,
+    "total": 360943
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 174,
+      "output": 79984,
+      "cache_read": 3105942,
+      "cache_creation": 321889,
+      "cost_usd": 4.011501399999998
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 50,
+      "output": 10873,
+      "cache_read": 434120,
+      "cache_creation": 103040,
+      "cost_usd": 0.409842
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 414,
+      "cache_read": 0,
+      "cache_creation": 4979,
+      "cost_usd": 0.0008295749999999999
+    }
+  ],
+  "permission_denials": []
+}
