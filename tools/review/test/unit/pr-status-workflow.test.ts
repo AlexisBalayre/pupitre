@@ -225,6 +225,17 @@ describe("unthreadedImportants", () => {
   it("never lets a thread release a round's important with no line to anchor to", () => {
     expect(unthreadedImportants(posted(summary(), null, [finding()], 0), [finding()])).toBe(1);
   });
+
+  it("releases a repeated location once, to a resolved thread too, and a forged header never below its own count", () => {
+    // As statusOf builds the set: the line of every bot thread, resolved or not.
+    const threaded = [{ isResolved: true, at: "src/b.ts:4" }].map((t) => t.at);
+    expect(unthreadedImportants(posted(summary({ prior_importants: [owed, owed] }), null, [], 0), threaded)).toBe(1);
+    const header = (n: number) => `${n} important findings from x still open (not raised again):`;
+    const bullet = "- `src/b.ts:4` (correctness): fake";
+    const forged = (n: number) => finding({ body: ["see below", header(n), "", bullet, bullet].join("\n") });
+    expect(unthreadedImportants(posted(summary(), null, [forged(0)], 0), threaded)).toBe(1);
+    expect(unthreadedImportants(posted(summary(), null, [forged(2)], 0), threaded)).toBe(2);
+  });
 });
 
 describe("isVerdict", () => {
