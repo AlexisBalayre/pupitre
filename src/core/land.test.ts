@@ -68,7 +68,7 @@ import { TerminalSessionError } from './session-lifecycle.errors.js';
 import { HELD_SLOT_ENV } from './test-slot.service.js';
 import type { ProjectBaseline } from './types/init.types.js';
 import type { LandOutcome } from './types/land.types.js';
-import type { GateStageResult } from './types/merge-gate.types.js';
+import type { GateReport, GateStageResult } from './types/merge-gate.types.js';
 
 // Real git repos, a bare origin and a sandboxed audit per test.
 // The gate children this file runs outside a gate start a sandbox run the
@@ -145,8 +145,9 @@ describe('landSession', { timeout: 20_000 }, () => {
   });
 
   /** What the gate's `--pr` merge leaves: the session merged, its PR on the event. */
-  function seedPrMerge(prUrl: string | null = PR_URL): void {
-    transitionSession(db, SESSION_ID, 'merged');
+  function seedPrMerge(prUrl: string | null = PR_URL, report?: GateReport): void {
+    // The gate files its report on the way to merged, before the merge event.
+    transitionSession(db, SESSION_ID, 'merged', report === undefined ? undefined : { report });
     appendEvent(db, SESSION_ID, 'merge', {
       branch: BRANCH,
       sha: pinned,
@@ -904,15 +905,24 @@ describe('landSession', { timeout: 20_000 }, () => {
       (stage) => ({ stage, status: 'pass' }),
     );
 
-    /** A commit past the pin, pushed as the PR's head and merged on GitHub at it. */
-    function mergeMovedHead(path = 'src/fix.ts', content = 'export const fix = 1;\n') {
-      seedPrMerge();
-      // The passing report the gate files on its way to merged.
-      appendEvent(db, SESSION_ID, 'gate_result', {
-        from: 'merged',
-        to: 'merged',
-        report: { sessionId: SESSION_ID, passed: true, sandbox: 'none', stages: pinnedStages },
-      });
+    /** A passing gate report of `stages`. */
+    const passingReport = (stages: GateStageResult[] = pinnedStages): GateReport => ({
+      sessionId: SESSION_ID,
+      passed: true,
+      sandbox: 'none',
+      stages,
+    });
+
+    /**
+     * A commit past the pin, pushed as the PR's head and merged on GitHub at
+     * it, the pin's gate having run `stages`.
+     */
+    function mergeMovedHead(
+      path = 'src/fix.ts',
+      content = 'export const fix = 1;\n',
+      stages = pinnedStages,
+    ) {
+      seedPrMerge(PR_URL, passingReport(stages));
       return mergeAt(commitIn(worktree, path, content));
     }
 
@@ -1117,8 +1127,14 @@ describe('landSession', { timeout: 20_000 }, () => {
       ],
       // The gate's own wordings with no figure: every other word is the kind.
       [
-        'a nested package and script other than the one accepted',
-        filed('Nested package packages/b changed with no typecheck script, merged from'),
+        'another nested package missing the script accepted',
+        filed('Nested package packages/b changed with no test script, merged from'),
+        filed('Nested package packages/a changed with no test script, merged from'),
+        'flagged, never accepted',
+      ],
+      [
+        'the nested package accepted missing another script',
+        filed('Nested package packages/a changed with no typecheck script, merged from'),
         filed('Nested package packages/a changed with no test script, merged from'),
         'flagged, never accepted',
       ],
@@ -1180,13 +1196,94 @@ describe('landSession', { timeout: 20_000 }, () => {
       expectNothingChanged(before);
     });
 
+    it('refuses a stage flagged at the pin that the remeasure did not run', async () => {
+      mergeMovedHead(undefined, undefined, [
+        ...pinnedStages,
+        { stage: 'diff-size', status: 'flagged' },
+      ]);
+      const before = mainSha();
+      measuredAs(pinnedStages);
+
+      await expect(remeasure()).rejects.toThrow(
+        /did not pass:\n {2}diff-size: ran at the pin, absent now\n/,
+      );
+      expectNothingChanged(before);
+    });
+
+    const noPinReport = `No passing gate report into merged is recorded right before the merge of`;
+
     it('refuses with no passing gate report recorded for the pin', async () => {
       seedPrMerge();
       mergeAt(commitIn(worktree, 'src/fix.ts', 'export const fix = 1;\n'));
       const before = mainSha();
 
       await expect(remeasure()).rejects.toThrow(
-        `No passing gate report is recorded for ${pinned}, the commit the gate pinned`,
+        `${noPinReport} ${pinned}, the commit the gate pinned`,
+      );
+      expectNothingChanged(before);
+    });
+
+    // The report is the last `gate_result` before the merge event naming the
+    // pin: what came after it measured something else, or nothing.
+    it('holds the merge to the report before the pin, not a failing one after it', async () => {
+      const { merge } = mergeMovedHead();
+      appendEvent(db, SESSION_ID, 'gate_result', {
+        outcome: 'refused',
+        report: { ...passingReport([]), passed: false },
+      });
+      measuredAs();
+
+      await remeasure();
+      expect(mainSha()).toBe(merge);
+    });
+
+    it('holds the merge to the report before the pin, not a passing one after it', async () => {
+      mergeMovedHead();
+      appendEvent(db, SESSION_ID, 'gate_result', {
+        from: 'merged',
+        to: 'merged',
+        report: passingReport(pinnedStages.filter(({ stage }) => stage !== 'scope-audit')),
+      });
+      const before = mainSha();
+      measuredAs(pinnedStages.filter(({ stage }) => stage !== 'scope-audit'));
+
+      await expect(remeasure()).rejects.toThrow(
+        /did not pass:\n {2}scope-audit: ran at the pin, absent now\n/,
+      );
+      expectNothingChanged(before);
+    });
+
+    it('refuses when the report before the pin went into a state other than merged', async () => {
+      transitionSession(db, SESSION_ID, 'merged', { report: passingReport() });
+      appendEvent(db, SESSION_ID, 'gate_result', {
+        from: 'merged',
+        to: 'blocked',
+        report: passingReport(),
+      });
+      appendEvent(db, SESSION_ID, 'merge', {
+        branch: BRANCH,
+        sha: pinned,
+        target: 'main',
+        files: ['src/feature.ts'],
+        prUrl: PR_URL,
+      });
+      mergeAt(commitIn(worktree, 'src/fix.ts', 'export const fix = 1;\n'));
+      const before = mainSha();
+
+      await expect(remeasure()).rejects.toThrow(`${noPinReport} ${pinned}`);
+      expectNothingChanged(before);
+    });
+
+    it.each([
+      ['an empty', [], 'build, test, lint'],
+      ['a partial', pinnedStages.filter(({ stage }) => stage !== 'test'), 'test'],
+    ])('refuses %s pin report', async (_case, stages, unlisted) => {
+      mergeMovedHead(undefined, undefined, stages);
+      const before = mainSha();
+
+      await expect(remeasure()).rejects.toThrow(
+        `The gate report recorded for ${pinned}, the commit the gate pinned, lists no ` +
+          `${unlisted} stage`,
       );
       expectNothingChanged(before);
     });

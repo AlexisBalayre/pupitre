@@ -17,10 +17,16 @@
     only that `measureBranch` returned: it lands on `pass`, on `skipped` as the gate passes it (no
     command, the untested skip of decision 139), and on `flagged`, which the ledger judges. Any
     other status refuses, a future one included, naming the stage and its detail. A `skipped`
-    is held to the pin: the passing report the pin's gate (or the re-gate that re-pinned it)
-    filed on its way to merged is read back, and a stage that ran there, passing or flagged,
-    must run again, so a commit past the pin that takes a script or a config away cannot turn it
-    into a skip. With no such report recorded, the remeasure refuses. A `flagged` stage must
+    is held to the pin. The gate, and the re-gate that re-pins, file their passing report on the
+    way to merged, just before the `merge` event naming the sha they pinned. So the report read
+    back is the last `gate_result` before the newest `merge` event naming the pin. It must go into
+    merged and have passed, or the remeasure refuses, whatever came after it. That report must
+    list build, test and lint, which every gate run lists whether it ran or skipped them; an empty
+    or partial one refuses. A stage that ran there, passing or flagged, must run again, so a
+    commit past the pin that takes a script or a config away cannot turn it into a skip.
+    *What it does not catch.* Stages are matched by name and status only. A commit past the pin
+    that replaces a script with a no-op gets `pass` from that stage, as it would at the gate,
+    which trusts the session's scripts the same way. A `flagged` stage must
     have filed debt: each wording below names the stage that files it, and a flagged stage with
     no flag of its own refuses. So does a debt
     flag whose kind the session's own gate did not already file as accepted debt: no one

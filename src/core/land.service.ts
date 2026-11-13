@@ -674,18 +674,36 @@ async function remeasureMerge(
       );
     }
   }
-  // The passing report the pin's gate, or the re-gate that re-pinned it, filed
-  // on its way to merged: a stage it ran must run again.
-  const pinnedReport = listEvents(db, session.id)
-    .map(decodeEvent)
-    .reverse()
-    .find((event) => event.type === 'gate_result' && event.to === 'merged' && event.report?.passed);
+  // The report of the gate that pinned `sha`, or of the re-gate that re-pinned
+  // it: each files it on its way to merged, the last `gate_result` before the
+  // `merge` event naming `sha`. A stage it ran must run again.
+  const newestFirst = listEvents(db, session.id).map(decodeEvent).reverse();
+  const pinnedAt = newestFirst.findIndex((event) => event.type === 'merge' && event.sha === sha);
+  const gated =
+    pinnedAt === -1
+      ? undefined
+      : newestFirst.slice(pinnedAt + 1).find((event) => event.type === 'gate_result');
   const pinnedStages =
-    pinnedReport?.type === 'gate_result' ? pinnedReport.report?.stages : undefined;
+    gated?.type === 'gate_result' && gated.to === 'merged' && gated.report?.passed
+      ? gated.report.stages
+      : undefined;
   if (pinnedStages === undefined) {
     throw new Error(
-      `No passing gate report is recorded for ${sha}, the commit the gate pinned, so a remeasure ` +
-        'has no stages to hold the merge to. Nothing was landed.',
+      `No passing gate report into merged is recorded right before the merge of ${sha}, the ` +
+        'commit the gate pinned, so a remeasure has no stages to hold the merge to. Nothing was ' +
+        'landed.',
+    );
+  }
+  // Every gate run lists these three, run or skipped: a report without one is
+  // no full run's, and would hold the merge to nothing there.
+  const unlisted = ['build', 'test', 'lint'].filter(
+    (name) => !pinnedStages.some(({ stage }) => stage === name),
+  );
+  if (unlisted.length > 0) {
+    throw new Error(
+      `The gate report recorded for ${sha}, the commit the gate pinned, lists no ` +
+        `${unlisted.join(', ')} stage, so a remeasure cannot hold the merge to it. Nothing was ` +
+        'landed.',
     );
   }
   const sandbox = sandboxLabel();
