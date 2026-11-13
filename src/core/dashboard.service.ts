@@ -39,6 +39,8 @@ import {
   listEvents,
   listSessions,
   listTasks,
+  openQuestion,
+  type QuestionEvent,
   type SessionRow,
   type TaskRow,
   taskSpecForDisplay,
@@ -54,6 +56,7 @@ import type {
   DashboardEvent,
   DashboardGate,
   DashboardNeed,
+  DashboardQuestion,
   DashboardRoute,
   DashboardSession,
   DashboardSnapshot,
@@ -103,21 +106,24 @@ export function buildDashboardSnapshot(
   });
   const beat = getWatcherBeat(db, pid);
   const baseline = baselineOf(db, pid);
-  const running = isConductorRunning(repoPath);
-  const blocked = running ? conductorBlock(repoPath, now) : undefined;
+  const conductorRunning = isConductorRunning(repoPath);
+  // Like a session's: a question only the running conductor can be answered on.
+  const conductorAsked = conductorRunning ? dashboardQuestion(openQuestion(db, null)) : undefined;
+  const blocked = conductorRunning ? conductorBlock(repoPath, now) : undefined;
   return {
     projectId: pid,
     repoPath,
     ...(baseline ? { baseline } : {}),
     conductor: {
-      running,
+      running: conductorRunning,
       name: conductorName(pid),
       attachCommand: attachCommand({ conductorOf: pid }),
+      ...(conductorAsked ? { question: conductorAsked } : {}),
       ...(blocked ? { blocked } : {}),
     },
     // `listSessions` returns oldest first and `sort` is stable, so the tie
     // between two sessions that both need a human stays in creation order.
-    sessions: sessions.sort((a, b) => Number(sortsFirst(b)) - Number(sortsFirst(a))),
+    sessions: sessions.sort((a, b) => sortRank(b) - sortRank(a)),
     backlog: listBacklogTasks(db, pid).map((task) => {
       const spec = taskSpecForDisplay(task);
       return {
@@ -407,13 +413,15 @@ export function goalHeadline(goal: string | undefined): string {
 }
 
 /**
- * What sorts to the top of the list: a session that has stopped for good.
- * Deliberately narrower than `needsHuman`, which also counts awaiting-input —
- * hoisting a five-second permission ask above a blocked session would bury the
- * row the operator actually has to act on.
+ * How far up the list a session sorts: an open question first, since it idles
+ * a worker that waits on the operator's one keystroke (decision 93), then a
+ * session that has stopped for good. Deliberately narrower than `needsHuman`,
+ * which also counts awaiting-input — hoisting a five-second permission ask
+ * above a blocked session would bury the row the operator actually has to act on.
  */
-function sortsFirst(session: DashboardSession): boolean {
-  return session.state === 'blocked' || session.stalledAgeMs !== undefined;
+function sortRank(session: DashboardSession): number {
+  if (session.question !== undefined) return 2;
+  return session.state === 'blocked' || session.stalledAgeMs !== undefined ? 1 : 0;
 }
 
 /**
@@ -465,7 +473,22 @@ export type CiReviewLookup = (session: Pick<DashboardSession, 'id'>) => CiReview
  */
 export function needsYou(snapshot: DashboardSnapshot, ciReview?: CiReviewLookup): DashboardNeed[] {
   const gating = snapshot.conductor.running;
+  const asked = snapshot.conductor.question;
+  // The conductor's own question leads its kind: it holds the whole fleet.
+  const conductor: DashboardNeed[] = asked
+    ? [
+        {
+          kind: 'question',
+          sessionId: CONDUCTOR_TARGET,
+          label: CONDUCTOR_TARGET,
+          reason: questionReason(asked),
+          answer: answerCommand(CONDUCTOR_TARGET, asked),
+          ...questionOptions(asked),
+        },
+      ]
+    : [];
   const needs = [
+    ...conductor,
     ...conductorNeed(snapshot.conductor),
     ...snapshot.sessions.flatMap((session) => needOf(session, gating, ciReview) ?? []),
   ];
@@ -501,6 +524,31 @@ function conductorNeed(conductor: DashboardSnapshot['conductor']): DashboardNeed
 const SYMBOLS = /(?![\0-\x7F])[\p{Sm}\p{So}]/gu;
 const UNMINTED_ID = '(session id outside the minted shape; inspect the store)';
 
+/** What `pup answer` takes for the conductor's question, and how the inbox labels it. */
+export const CONDUCTOR_TARGET = 'conductor';
+
+function questionReason(question: DashboardQuestion): string {
+  return `question: ${question.text.replace(SYMBOLS, '-')}`;
+}
+
+/** The command that answers a question (decision 93): a number with options, words always. */
+function answerCommand(target: string, question: DashboardQuestion): string {
+  const words = `pup answer ${target} "..."`;
+  return question.options.length > 0 ? `pup answer ${target} <n>, or ${words}` : words;
+}
+
+/** A question's options for the inbox to number, their arrows not the line's (decision 29). */
+function questionOptions(
+  question: DashboardQuestion,
+): Pick<DashboardNeed, 'options' | 'recommended'> {
+  if (question.options.length === 0) return {};
+  const { recommended } = question;
+  return {
+    options: question.options.map((option) => option.replace(SYMBOLS, '-')),
+    ...(recommended === undefined ? {} : { recommended }),
+  };
+}
+
 function needOf(
   session: DashboardSession,
   gating: boolean,
@@ -520,8 +568,11 @@ function needOf(
   // (decision 29).
   const command = (text: string): string => (session.isMintedId ? text : UNMINTED_ID);
   if (session.question !== undefined) {
-    const asked = session.question.replace(SYMBOLS, '-');
-    return need('question', `question: ${asked}`, command(`pup steer ${id} "..."`));
+    const asked = session.question;
+    return {
+      ...need('question', questionReason(asked), command(answerCommand(id, asked))),
+      ...questionOptions(asked),
+    };
   }
   if (session.state === 'blocked') {
     return need(
@@ -762,7 +813,8 @@ function dashboardSession(
   const lastSteer = newestSteer(events);
   // Like activity: a question is a running session's. Killed or merged, nothing
   // can answer it (steers refuse terminal sessions), so it must not outlive it.
-  const question = row.state === 'running' ? openQuestion(events) : undefined;
+  const question =
+    row.state === 'running' ? dashboardQuestion(openQuestion(db, row.id)) : undefined;
   const pr = row.state === 'merged' ? openPullRequest(events) : undefined;
   const openPr = pr && !isLanded(pr.target, pr.sha) ? { url: pr.url } : undefined;
   const lastGate = newestGate(events);
@@ -776,7 +828,9 @@ function dashboardSession(
     // not always the caller's own: all three print as stored, and no CHECK
     // constraint holds `state` to its type, so it is scrubbed like the others.
     id: sanitizeReason(row.id),
-    isMintedId: SESSION_ID_PATTERN.test(row.id),
+    // `conductor` is `pup answer`'s name for the conductor's question (decision
+    // 93): a row by that name would print a command that answers the conductor.
+    isMintedId: SESSION_ID_PATTERN.test(row.id) && row.id !== CONDUCTOR_TARGET,
     state: sanitizeReason(row.state) as SessionState,
     branch: sanitizeReason(row.branch),
     taskId: row.task_id,
@@ -799,8 +853,12 @@ function dashboardSession(
     ...(gateRefused ? { gateRefused } : {}),
     ...(route ? { route } : {}),
     recentEvents: events.slice(0, RECENT_EVENT_COUNT).reverse().map(dashboardEvent),
+    // An open question idles the worker as surely as a block (decision 93).
     needsHuman:
-      row.state === 'blocked' || stalledAgeMs !== undefined || activity?.kind === 'awaiting-input',
+      question !== undefined ||
+      row.state === 'blocked' ||
+      stalledAgeMs !== undefined ||
+      activity?.kind === 'awaiting-input',
   };
 }
 
@@ -829,20 +887,19 @@ function newestDeadTurn(newestFirst: EventRow[], stalledAt: string): DashboardDe
 }
 
 /**
- * The question a session asked with `pup session ask` and nobody has answered
- * yet (decision 76): the newest `question` event, unless a `steer` came after
- * it — a steer is the answer, whoever sent it and however it was delivered.
- * Derived off the store like a stall, so both surfaces read one answer.
+ * An open question as the readers print it (decisions 76, 93), or nothing for
+ * one whose text scrubs away. Session-written text bound for the operator's
+ * terminal, the options too (decision 29); a recommendation that names no
+ * option is dropped rather than marking nothing.
  */
-function openQuestion(newestFirst: EventRow[]): string | undefined {
-  for (const row of newestFirst) {
-    const event = decodeEvent(row);
-    if (event.type === 'steer') return undefined;
-    if (event.type !== 'question') continue;
-    // Session-written text bound for the operator's terminal (decision 29).
-    return event.text === undefined ? undefined : sanitizeReason(event.text) || undefined;
-  }
-  return undefined;
+function dashboardQuestion(asked: QuestionEvent | undefined): DashboardQuestion | undefined {
+  const text = asked?.text === undefined ? '' : sanitizeReason(asked.text);
+  if (!asked || !text) return undefined;
+  const options = asked.options.map(sanitizeReason);
+  const { recommended } = asked;
+  const isRecommendedInRange =
+    recommended !== undefined && recommended >= 1 && recommended <= options.length;
+  return { text, options, ...(isRecommendedInRange ? { recommended } : {}) };
 }
 
 /**

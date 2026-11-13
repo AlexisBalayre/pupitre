@@ -577,7 +577,7 @@ describe('dashboard components', () => {
           row: {
             kind: 'session',
             session: sessionFixture({
-              question: '[2Jrebase or merge?',
+              question: { text: '[2Jrebase or merge?', options: [] },
               recentEvents: [
                 { type: 'question', at: '2026-09-13T09:00:00.000Z', detail: '[2Jrebase or merge?' },
               ],
@@ -588,6 +588,29 @@ describe('dashboard components', () => {
 
       expect(frame).toMatch(/^│question\s*│\n│ {2}\[2Jrebase or merge\?\s*│$/m);
       expect(frame.indexOf('question')).toBeLessThan(frame.indexOf('last gate'));
+    });
+
+    // Decision 93: the options numbered as the number keys pick them, the
+    // recommended one marked.
+    it('numbers the options of an open question and marks the recommended one', () => {
+      const frame = frameOf(
+        createElement(Detail, {
+          row: {
+            kind: 'session',
+            session: sessionFixture({
+              question: {
+                text: 'rebase or merge?',
+                options: ['rebase onto main', 'merge main in'],
+                recommended: 2,
+              },
+            }),
+          },
+        }),
+      );
+
+      expect(frame).toMatch(/│ {2}1\. rebase onto main\s*│/);
+      expect(frame).toMatch(/│ {2}2\. merge main in \(recommended\)\s*│/);
+      expect(frame).toContain('press 1-2 to answer');
     });
 
     it('draws no question once a steer has answered it', () => {

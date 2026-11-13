@@ -334,7 +334,7 @@ function sessionsSection(view: OverviewView): string {
 
 function sessionRow(session: DashboardSession, openDebt: WebDebtEntry[]): string {
   const facts = [
-    session.question === undefined ? '' : `question: ${session.question}`,
+    session.question === undefined ? '' : `question: ${session.question.text}`,
     activityText(session),
     routeLabel(session),
     session.rejectCount > 0 ? `${session.rejectCount} rejections` : '',

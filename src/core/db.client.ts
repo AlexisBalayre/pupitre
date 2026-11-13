@@ -21,6 +21,7 @@ export type EventType =
   | 'config_drift'
   | 'session_done'
   | 'question'
+  | 'answer'
   | 'handoff_ready'
   | 'respawn'
   | 'scope_overlap'
