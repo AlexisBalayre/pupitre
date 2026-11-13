@@ -1,0 +1,168 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-13T18:02:25.147Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43477548107",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43477548107",
+  "actor": "AlexisBalayre",
+  "commit_sha": "43d1425cacbad24cb777fe512c6c2a857000be72",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 324,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "702-710",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "`gitDirIdentity` now includes `birthtimeMs`. On a Linux host where Node falls back to ctime for birth time, any ordinary write inside `.git` changes the held identity, and pup then refuses every later git spawn in the main checkout as a swapped repo.",
+      "body": "**Birth time in the held identity can make pup refuse a repo after its own git writes.**\n\nThe identity string now carries `stat.birthtimeMs` for `.git`, `objects/` and `refs/`:\n\n```ts\nconst of = (stat: Stats | undefined): string =>\n  stat ? `${stat.dev}:${stat.ino}:${stat.birthtimeMs}` : 'none';\n```\n\nNode's `fs.Stats` docs say that where birth time is unavailable, `birthtime` \"may instead hold either the ctime or 1970-01-01\". On Linux, libuv tries `statx` first. When that fails with EPERM, ENOSYS, EINVAL or EOPNOTSUPP (for example under a seccomp filter that blocks `statx` in older Docker, on a pre-4.11 kernel, or on some network filesystems), it falls back to `lstat` and copies `st_ctim` into the birth time. These details come from pinned-version knowledge, so confidence is medium.\n\nA directory's ctime changes whenever an entry inside it is created, renamed or removed. That happens on ordinary git activity:\n- `index.lock` → `index` and `packed-refs.lock` in `.git`\n- a new loose-object fan-out directory in `objects/`\n- a new namespace under `refs/`\n\n**Trigger.** Two concrete paths:\n- **pup's own write.** `deleteBranchAt` (merge-gate.service.ts:1642) runs `update-ref -d` in a held main checkout and touches `packed-refs.lock`. The new `checkedAfter` then throws `RewrittenGitDirError`. `deleteBranchAt`'s catch swallows it, and every later `runGit` on that repo in the process is refused.\n- **The operator's write.** With a long-running `pup ui`, any `git commit` or `git status` the operator runs in the main checkout changes `.git`'s ctime, and pup's next spawn is refused with \"restart pup\".\n\nBefore this PR the identity was dev:ino only, which no git operation changes. The JSDoc above it and ADR 0181 both say the birth time \"adds little\", so this is a hard break on such hosts (Linux is a supported gate host per ADR 0078) in exchange for little protection.\n\nThe fix: drop the birth time. Also drop the birth-time sentences in the JSDoc at L694-698 and in ADR 0181's *The identity* paragraph.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/43d1425cacbad24cb777fe512c6c2a857000be72/src/core/git-diff.client.ts#L702-L710",
+      "suggestion": "  const of = (stat: Stats | undefined): string => (stat ? `${stat.dev}:${stat.ino}` : 'none');"
+    },
+    {
+      "file": "src/core/github.client.ts",
+      "line": "79-82",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "ghInCheckout now throws RewrittenGitDirError out of readPullRequestReview, but waitForCiReview's catch-all (ci-wait.service.ts:114-118) treats it as one more wait. pup ci wait therefore keeps polling a refused checkout until --timeout, instead of stopping at once on the refusal. Rethrow RewrittenGitDirError there.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "48-65",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new GIT_* allowlist keeps GIT_SSL_CAINFO/CAPATH but drops git's other HTTP transport variables (GIT_SSL_CERT, GIT_SSL_KEY, GIT_SSL_NO_VERIFY, GIT_PROXY_SSL_*, GIT_HTTP_PROXY_AUTHMETHOD). Before, these were inherited, so an operator whose HTTPS remote relies on them now sees pushBranch's git push fail with an SSL or auth error.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "909",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "heldFleet re-implements in src/cli which fleet projects are read (repoExists && isOwnPath && awake-or-shown-dormant), a rule src/core/fleet.service.ts already owns through awakeFleet and fleetRefusal. AGENTS.md says \"src/cli/ stays thin; logic lives in src/core/\", and the two copies can now drift apart, so heldFleet would check the wrong set.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/github.client.ts",
+      "line": "62",
+      "area": "guards",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "ADR 181 says every gh spawn is checked before and after through ghInCheckout, but no source-scan guard like decision 172's childProcessUses test covers github.client.ts. A new execFileSync('gh', …) that skips ghInCheckout would therefore pass CI.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "868-871",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "assertMainCheckout's JSDoc still says the first call records the identity of \".git and objects/\". The identity now covers refs/ too, and it is recorded only once the checks pass.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "638",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new generics checkedAfter<T> (git-diff.client.ts:638) and ghInCheckout<T> (github.client.ts:79) use a bare T, while general.md says \"Generics are descriptive — TConfig, TResponse. Never bare T / U\".",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 2,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 5.1210388999999985,
+  "duration_ms": 371495,
+  "num_turns": 18,
+  "tokens": {
+    "input": 18,
+    "output": 15013,
+    "cache_read": 439451,
+    "cache_creation": 64256,
+    "total": 518738
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 206,
+      "output": 90572,
+      "cache_read": 4193217,
+      "cache_creation": 352236,
+      "cost_usd": 4.604855399999997
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 60,
+      "output": 14993,
+      "cache_read": 572693,
+      "cache_creation": 123224,
+      "cost_usd": 0.5153792999999999
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 310,
+      "cache_read": 0,
+      "cache_creation": 5192,
+      "cost_usd": 0.0008041999999999999
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "git -C /home/runner/work/pupitre/pupitre diff 28a3be66954c88ba0dd7ab0b0dcd76af62a0f4bb..HEAD --stat"
+    },
+    {
+      "tool": "Bash",
+      "input": "git -C /home/runner/work/pupitre/pupitre diff 28a3be66954c88ba0dd7ab0b0dcd76af62a0f4bb..HEAD -- src/core/github.client.ts src/cli/index.ts"
+    }
+  ]
+}
