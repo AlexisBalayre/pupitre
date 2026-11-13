@@ -66,6 +66,7 @@ import { IntentRefusedError } from '../core/errors/intent.errors.js';
 import { ciReviewLookup, type FixRoundOutcome, startFixRound } from '../core/fix-round.service.js';
 import { fleetReading, readFleet } from '../core/fleet.service.js';
 import { parseGateEnv } from '../core/gate-env.utils.js';
+import { assertMainCheckout, RewrittenGitDirError } from '../core/git-diff.client.js';
 import { initProject } from '../core/init.service.js';
 import { acceptIntent, createIntent, listIntents, readIntent } from '../core/intent.service.js';
 import { landSession } from '../core/land.service.js';
@@ -172,6 +173,7 @@ import { sweepDeadTurns } from '../core/turn-watchdog.service.js';
 import type { AuditOutcome } from '../core/types/audit.types.js';
 import type { ConductorHandle } from '../core/types/conductor.types.js';
 import type { DashboardSnapshot } from '../core/types/dashboard.types.js';
+import type { RegisteredProject } from '../core/types/fleet.types.js';
 import type { DebtBaseline, InitReport } from '../core/types/init.types.js';
 import type { LandOutcome } from '../core/types/land.types.js';
 import type { GateReport, MergeOutcome } from '../core/types/merge-gate.types.js';
@@ -903,6 +905,42 @@ function ownSession(db: Database, command: string): string | undefined {
   return declared;
 }
 
+/**
+ * `project` held as a main checkout before any command reads it, its store
+ * closed when that refuses. A `.git` a session swapped for a gitfile, a
+ * symlink or a decoy, or one holding a commondir, would otherwise answer every
+ * ref the command reads, and git and gh there hold the same rule from then on
+ * (decisions 172, 181). Every path a command takes to one project's repo goes
+ * through here: `project()`, and the repo around cwd `pup status` and `pup ui`
+ * read without it.
+ */
+function held(project: ResolvedProject): ResolvedProject {
+  try {
+    assertMainCheckout(project.repoPath);
+  } catch (error) {
+    project.db.close();
+    throw error;
+  }
+  return project;
+}
+
+/**
+ * Every registered project, each one a fleet view reads held first, as `held`
+ * holds one: each reading runs git in its repo. A project the view passes over
+ * (its repo missing or not its own path, or dormant and not shown) is never
+ * read, so it is not checked. One that refuses stops the view, as it stops a
+ * command run in that repo.
+ */
+function heldFleet(shouldShowDormant: boolean): RegisteredProject[] {
+  const registered = fleetProjects();
+  for (const project of registered) {
+    const isRead =
+      project.repoExists && project.isOwnPath && (shouldShowDormant || project.dormantAt === null);
+    if (isRead) assertMainCheckout(project.repoPath);
+  }
+  return registered;
+}
+
 function operatorOnlyProject(): ProjectResolutionError {
   return new ProjectResolutionError(
     'Reaching another project is operator-only; a session controls only the project it runs in.',
@@ -1047,13 +1085,13 @@ export function buildProgram(): Command {
    * asks `callingSession` and a session is unknown — so both are refused for
    * a session here, by the variable first and by its own store's rows second
    * (decision 43).
+   * The repo it hands over is `held` (decision 181).
    */
   const project = (): ResolvedProject => {
     const selected = program.opts().project as string | undefined;
     const own = enclosingProject(process.cwd());
-    if (own && selected === undefined) return own;
-    refuseUnlessOperator(own);
-    return resolveProject(process.cwd(), selected);
+    if (!own || selected !== undefined) refuseUnlessOperator(own);
+    return held(own && selected === undefined ? own : resolveProject(process.cwd(), selected));
   };
 
   /**
@@ -1702,22 +1740,13 @@ export function buildProgram(): Command {
       // project's full table and so wins over `--all` (decision 60).
       const selected = program.opts().project as string | undefined;
       const own = selected === undefined ? enclosingProject(process.cwd()) : undefined;
-      if (own && !opts.all) {
-        printDashboard(
-          own.db,
-          own.repoPath,
-          buildDashboardSnapshot(own.db, own.repoPath, Date.now()),
-          shouldShowHistory,
-          ciReviewLookup(own.db, own.repoPath),
-        );
-        return;
-      }
-      if (selected === undefined) {
+      const isSingleProject = selected !== undefined || (own !== undefined && !opts.all);
+      if (!isSingleProject) {
         refuseUnlessOperator(own);
         printFleet(opts.dormant === true);
         return;
       }
-      const { repoPath, db } = project();
+      const { repoPath, db } = own ? held(own) : project();
       printDashboard(
         db,
         repoPath,
@@ -1748,13 +1777,13 @@ export function buildProgram(): Command {
       // a reasonable thing to have typed, not an error (decision 52).
       if (!process.stdout.isTTY) {
         if (!isSingleProject) return printFleet(opts.dormant === true);
-        const { repoPath, db } = own ?? project();
+        const { repoPath, db } = own ? held(own) : project();
         printDashboard(db, repoPath, buildDashboardSnapshot(db, repoPath, Date.now()), false);
         return;
       }
       let props: AppProps;
       if (isSingleProject) {
-        const { repoPath, db } = own ?? project();
+        const { repoPath, db } = own ? held(own) : project();
         // The store and repo the keys write through.
         const deps: ActionDeps = { db, repoPath, pupBin };
         const readOnlyReason = uiReadOnlyReason(db);
@@ -1770,7 +1799,7 @@ export function buildProgram(): Command {
         // Only the operator gets here, refused above like `pup status --all`,
         // so the fleet is always driven and always shown the attach command.
         props = {
-          read: fleetReading(fleetProjects(), opts.dormant === true, pupBin),
+          read: fleetReading(heldFleet(opts.dormant === true), opts.dormant === true, pupBin),
           showAttach: true,
         };
       }
@@ -1833,7 +1862,9 @@ export function buildProgram(): Command {
 
   /** `pup status`'s fleet view, and a piped `pup ui --all`'s (decisions 60, 65). */
   function printFleet(shouldShowDormant: boolean): void {
-    for (const line of fleetLines(readFleet(fleetProjects(), Date.now(), shouldShowDormant))) {
+    for (const line of fleetLines(
+      readFleet(heldFleet(shouldShowDormant), Date.now(), shouldShowDormant),
+    )) {
       console.log(line);
     }
   }
@@ -3160,7 +3191,8 @@ function isMainModule(): boolean {
  */
 export function fatalExitCode(error: unknown): number {
   if (error instanceof CommanderError) return error.exitCode;
-  if (error instanceof ProjectResolutionError) {
+  // A rewritten `.git` is the operator's to inspect, as its message says.
+  if (error instanceof ProjectResolutionError || error instanceof RewrittenGitDirError) {
     console.error(error.message);
     return 1;
   }
