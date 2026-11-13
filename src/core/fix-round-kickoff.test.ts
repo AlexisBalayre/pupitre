@@ -170,7 +170,7 @@ describe('startFixRound', { timeout: 90_000 }, () => {
         '  case "$*" in',
         // One line per mutation, so a test counts the replies and resolves.
         `    *mutation*) printf '%s' "$*" | tr '\\n' ' ' >> ${ghDir}/mutations; printf '\\n' >> ${ghDir}/mutations; echo '{"data":{}}'; exit 0;;`,
-        `    *viewerDidAuthor*) [ -f ${ghDir}/answers-fail ] && exit 1; [ -f ${ghDir}/answers-slow ] && exec sleep 5; cat ${ghDir}/answers.json 2>/dev/null || echo '{}'; exit 0;;`,
+        `    *replies:*) [ -f ${ghDir}/answers-fail ] && exit 1; [ -f ${ghDir}/answers-slow ] && exec sleep 5; cat ${ghDir}/answers.json 2>/dev/null || echo '{}'; exit 0;;`,
         '  esac',
         `  cat ${ghDir}/review.json; exit 0`,
         'fi',
@@ -213,11 +213,11 @@ describe('startFixRound', { timeout: 90_000 }, () => {
       state: string;
       description: string;
     } | null,
-    threads = [] as ThreadSeed[],
-    /** Threads the newest review opened that are older than the page read. */
+    /** `isAnswered`: its last comment is a fix round's own marked reply. */
+    threads = [] as (ThreadSeed & { isOutdated?: boolean; isAnswered?: boolean })[],
+    /** Threads older than the page read. */
     unread = 0,
   } = {}): void {
-    const opened = threads.filter((thread) => !thread.earlier).length + unread;
     const answer = {
       data: {
         repository: {
@@ -241,12 +241,7 @@ describe('startFixRound', { timeout: 90_000 }, () => {
                   ? []
                   : [
                       { id: 'PRR_earlier', author: BOT, commit: { oid: OTHER_SHA } },
-                      {
-                        id: 'PRR_newest',
-                        author: BOT,
-                        commit: { oid: reviewedOn },
-                        comments: { totalCount: opened },
-                      },
+                      { id: 'PRR_newest', author: BOT, commit: { oid: reviewedOn } },
                     ]),
               ],
             },
@@ -255,6 +250,7 @@ describe('startFixRound', { timeout: 90_000 }, () => {
               nodes: threads.map((thread) => ({
                 id: thread.id,
                 isResolved: thread.isResolved ?? false,
+                isOutdated: thread.isOutdated ?? false,
                 path: thread.path === undefined ? 'src/feature.ts' : thread.path,
                 line: thread.line === undefined ? 1 : thread.line,
                 originalLine: thread.originalLine ?? 1,
@@ -262,12 +258,25 @@ describe('startFixRound', { timeout: 90_000 }, () => {
                   nodes: [
                     {
                       author: thread.author ?? BOT,
-                      pullRequestReview: { id: thread.earlier ? 'PRR_earlier' : 'PRR_newest' },
                       body: thread.body,
                       lastEditedAt: thread.editor === undefined ? null : '2026-10-18T09:00:00Z',
                       editor: thread.editor ?? null,
                       isMinimized: thread.isMinimized ?? false,
                     },
+                  ],
+                },
+                trail: {
+                  nodes: [
+                    { author: thread.author ?? BOT, body: thread.body },
+                    ...(thread.isAnswered
+                      ? [
+                          {
+                            body: `Declined.\n\n<!-- pup fix-round ${OTHER_SHA} -->`,
+                            viewerDidAuthor: true,
+                            authorAssociation: 'OWNER',
+                          },
+                        ]
+                      : []),
                   ],
                 },
               })),
@@ -440,7 +449,7 @@ describe('startFixRound', { timeout: 90_000 }, () => {
         },
         { id: 'PRRT_resolved', body: 'Already answered.', isResolved: true },
         { id: 'PRRT_human', body: 'A human note.', author: { __typename: 'User', login: 'a' } },
-        { id: 'PRRT_stale', body: 'From an earlier round.', earlier: true },
+        { id: 'PRRT_stale', body: 'A line a later push changed.', isOutdated: true },
       ],
     });
     vi.mocked(killSession).mockClear();
@@ -498,6 +507,30 @@ describe('startFixRound', { timeout: 90_000 }, () => {
     const log = ghCalls().join('\n');
     expect(log).toContain('api graphql --hostname github.com -f query=query(');
     expect(log).toMatch(/\} -f owner=owner -f name=repo -F number=7$/m);
+  });
+
+  // On #284, a run's clean status hid a thread an earlier run left open on the
+  // same head: every unresolved, non-outdated thread is handed to the round,
+  // but one an earlier round answered and left open is the operator's.
+  it('hands a thread left open on the head to a round even under a clean status', async () => {
+    await gateWithPr();
+    recordSessionRoute(db, SESSION_ID, routeAt(0));
+    reviewOnGitHub({
+      status: { state: 'SUCCESS', description: 'no blocking issues' },
+      threads: [
+        { id: 'PRRT_left', body: 'Still open from an earlier run.' },
+        { id: 'PRRT_moved', body: 'A line a later push changed.', isOutdated: true },
+        { id: 'PRRT_declined', body: 'A round declined it.', isAnswered: true },
+      ],
+    });
+
+    expect(await fix()).toEqual({ prUrl: PR_URL, head: pinned, threads: 1 });
+    expect(payloads('fix_round')).toEqual([
+      { prUrl: PR_URL, head: pinned, threads: ['PRRT_left'], rejectBase: 0 },
+    ]);
+    expect(prompt()).toContain('### Thread 1 of 1: PRRT_left, at src/feature.ts:1');
+    expect(prompt()).not.toContain('PRRT_moved');
+    expect(prompt()).not.toContain('PRRT_declined');
   });
 
   it.each<[string, Parameters<typeof reviewOnGitHub>[0], RegExp]>([
@@ -587,15 +620,36 @@ describe('startFixRound', { timeout: 90_000 }, () => {
       /Thread PRRT_ghost .* was edited after the review bot posted it/,
     ],
     [
-      'no open thread, only resolved and earlier rounds’',
+      'no open thread, only resolved and outdated ones',
       {
         status: { state: 'FAILURE', description: 'the review could not be posted' },
         threads: [
           { id: 'PRRT_done', body: 'fixed', isResolved: true },
-          { id: 'PRRT_old', body: 'old', earlier: true },
+          { id: 'PRRT_old', body: 'old', isOutdated: true },
         ],
       },
       /opened no thread on .*set its status to FAILURE \(the review could not be posted\), not a clean review/,
+    ],
+    [
+      'only threads a fix round answered and left open',
+      {
+        status: { state: 'SUCCESS', description: 'no blocking issues' },
+        threads: [{ id: 'PRRT_declined', body: 'A false positive.', isAnswered: true }],
+      },
+      /The CI review's unresolved threads on .* are the operator's: 1 a fix round answered and left open \(resolve each once its answer holds, or reply on it as the operator, so a comment follows the round's reply, and re-run pup fix to take it again; the worker sees only the bot's finding, not your reply\)\. No fix round was started\./,
+    ],
+    // A push that outdates a thread answers nothing (decision 163): a clean
+    // status with one standing is not clean.
+    [
+      'only an answered thread and one a push outdated that nobody resolved, under a clean status',
+      {
+        status: { state: 'SUCCESS', description: 'no blocking issues' },
+        threads: [
+          { id: 'PRRT_moved', body: 'A line a later push changed.', isOutdated: true },
+          { id: 'PRRT_declined', body: 'A false positive.', isAnswered: true },
+        ],
+      },
+      /The CI review's unresolved threads on .* are the operator's: 1 a fix round answered and left open \(.*\) and 1 a push outdated that nobody resolved \(no round takes one, as the code it quotes moved: resolve each once the fix holds\)\. No fix round was started\./,
     ],
     [
       'no open thread and findings with no line to anchor to',

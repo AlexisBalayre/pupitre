@@ -105,7 +105,7 @@ describe('the plan usage hold (decision 156)', () => {
     });
 
     expect(usageStatusLine(readUsage(REPO, NOW), NOW)).toBe(
-      'usage: 5h unknown, 7d 95% (resets 2026-11-08 13:00 UTC); read 0m ago',
+      'usage: 7d 95% (resets 2026-11-08 13:00 UTC); read 0m ago',
     );
     // The 7-day window still holds, with a one-line refusal rather than a RangeError.
     expect(() => assertUsageRoom(REPO, NOW)).toThrow(UsageLimitReachedError);
@@ -113,7 +113,7 @@ describe('the plan usage hold (decision 156)', () => {
 
     writeReading({ five_hour: { used_percentage: 99, resets_at: 1e13 } }, 45 * 60_000);
     expect(usageStatusLine(readUsage(REPO, NOW), NOW)).toBe(
-      'usage: 5h unknown, 7d unknown; read 45m ago, stale: holds nothing',
+      'usage: 7d unknown; read 45m ago, stale: holds nothing',
     );
     expect(() => assertUsageRoom(REPO, NOW)).not.toThrow();
   });
@@ -156,8 +156,15 @@ describe('the plan usage hold (decision 156)', () => {
     writeReading({ seven_day: windows(0, 95).seven_day }, 45 * 60_000);
 
     expect(usageStatusLine(readUsage(REPO, NOW), NOW)).toBe(
-      'usage: 5h unknown, 7d 95% (resets 2026-11-09 13:00 UTC); read 45m ago, stale: holds nothing',
+      'usage: 7d 95% (resets 2026-11-09 13:00 UTC); read 45m ago, stale: holds nothing',
     );
+  });
+
+  it('never holds nor shows a 5-hour window the plan does not report', () => {
+    writeReading({ seven_day: windows(0, 50).seven_day });
+
+    expect(() => assertUsageRoom(REPO, NOW)).not.toThrow();
+    expect(usageStatusLine(readUsage(REPO, NOW), NOW)).not.toMatch(/5h/);
   });
 
   it('has no line without a reading', () => {

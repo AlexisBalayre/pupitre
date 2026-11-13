@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import type { DashboardSession } from '../../core/types/dashboard.types.js';
-import { activityLabel, sessionLine } from './dashboard-text.utils.js';
+import type { DashboardNeed, DashboardSession } from '../../core/types/dashboard.types.js';
+import { activityLabel, needLines, sessionLine } from './dashboard-text.utils.js';
 
 /** A running session with nothing to say, for the one label under test to fill in. */
 function sessionFixture(overrides: Partial<DashboardSession> = {}): DashboardSession {
@@ -105,5 +105,40 @@ describe('activityLabel', () => {
 
   it('is empty for a session that has fired no hook to classify', () => {
     expect(activityLabel(sessionFixture())).toBe('');
+  });
+});
+
+// Decision 93: a question's inbox entry, then its options numbered as `pup
+// answer` reads the number, the recommended one marked.
+describe('needLines', () => {
+  const question: DashboardNeed = {
+    kind: 'question',
+    sessionId: 's1',
+    label: 's1',
+    reason: 'question: rebase or merge?',
+    answer: 'pup answer s1 <n>, or pup answer s1 "..."',
+    options: ['rebase onto main', 'merge main in'],
+    recommended: 2,
+  };
+
+  it('numbers the options under the line and marks the recommended one', () => {
+    expect(needLines(question)).toEqual([
+      's1  question: rebase or merge?  → pup answer s1 <n>, or pup answer s1 "..."',
+      '    1. rebase onto main',
+      '    2. merge main in  (recommended)',
+    ]);
+  });
+
+  it('is the line alone for a need with no options', () => {
+    const { options: _options, recommended: _recommended, ...plain } = question;
+    expect(needLines(plain)).toHaveLength(1);
+  });
+
+  // The need is built from a session's words: a control character never
+  // reaches the terminal, whichever surface built the need.
+  it('scrubs control characters out of an option', () => {
+    const [, first] = needLines({ ...question, options: ['\u001b[2Jok\u0007; $(whoami)'] });
+
+    expect(first).toBe('    1. [2Jok ; $(whoami)');
   });
 });

@@ -37,6 +37,7 @@ import {
   ConductorTellRefusedError,
   DEFAULT_MAX_SESSIONS,
   isConductorRunning,
+  markConductorQuestion,
   NO_CONDUCTOR_RUNNING,
   startConductor,
   stopConductor,
@@ -46,6 +47,7 @@ import {
   blockedReason,
   buildDashboardSnapshot,
   type CiReviewLookup,
+  CONDUCTOR_TARGET,
   findStalledSessions,
   goalHeadline,
   needsYou,
@@ -93,6 +95,7 @@ import {
   UndeclaredSandboxError,
 } from '../core/sandbox.utils.js';
 import {
+  appendEvent,
   dropTask,
   editTaskSpec,
   findSessionByWorktree,
@@ -101,6 +104,7 @@ import {
   getTask,
   listBacklogTasks,
   listSessions,
+  MAX_QUESTION_OPTIONS,
   MalformedTaskSpecError,
   taskSpecForDisplay,
   transitionSession,
@@ -120,6 +124,7 @@ import {
 import {
   isRefusedSteer,
   LaunchRolledBackError,
+  QuestionRefusedError,
   TaskAlreadyClaimedError,
   TerminalSessionError,
   TopRungReachedError,
@@ -127,6 +132,10 @@ import {
   UnknownTaskError,
 } from '../core/session-lifecycle.errors.js';
 import {
+  answerConductorQuestion,
+  answerSessionQuestion,
+  askedQuestion,
+  conductorQuestion,
   createSession,
   interruptSession,
   killedFixRoundMessage,
@@ -155,7 +164,7 @@ import type { DebtBaseline, InitReport } from '../core/types/init.types.js';
 import type { LandOutcome } from '../core/types/land.types.js';
 import type { GateReport, MergeOutcome } from '../core/types/merge-gate.types.js';
 import type { TaskId, TaskSpec } from '../core/types/profile.types.js';
-import type { StoredGateStage } from '../core/types/session-event.types.js';
+import type { AskOptions, StoredGateStage } from '../core/types/session-event.types.js';
 import type { NewSessionRequest, RouteOverride } from '../core/types/session-lifecycle.types.js';
 import type { RetireOutcome } from '../core/types/session-retire.types.js';
 import {
@@ -180,11 +189,12 @@ import { App, type AppProps } from './ui/app.component.js';
 import {
   fleetLines,
   goalColumn,
-  needLine,
+  needLines,
   originMarker,
   sessionLine,
   trailing,
 } from './ui/dashboard-text.utils.js';
+import { askedLines } from './ui/question.utils.js';
 
 /**
  * A multi-line string scrubbed line by line, for the three surfaces that hand
@@ -613,6 +623,27 @@ function tellOrRefuse(repoPath: string, message: string): void {
 }
 
 /**
+ * Run an ask or an answer and print what it says (decision 93): the refusals
+ * core throws are the operator's to read, a steer's and a tell's among them,
+ * and anything else is a bug and is rethrown.
+ */
+function questionOrRefuse(act: () => string[]): void {
+  let lines: string[];
+  try {
+    lines = act();
+  } catch (error) {
+    const isRefusal =
+      error instanceof QuestionRefusedError ||
+      error instanceof ConductorTellRefusedError ||
+      isSteerRefusal(error);
+    if (!isRefusal) throw error;
+    refuse(error.message);
+    return;
+  }
+  for (const line of lines) console.log(line);
+}
+
+/**
  * Refuse the command the caller may not run, or the one it asked for that
  * cannot be done: the reason on stderr and a failing exit code, never a throw.
  * Every guard below reads `return refuse(…)`, so a refusal is one line and
@@ -847,7 +878,7 @@ function operatorOnlyProject(): ProjectResolutionError {
   );
 }
 
-interface ConductorOptions {
+interface ConductorOptions extends AskOptions {
   model?: string;
   effort?: string;
   workerModel?: string;
@@ -1194,7 +1225,7 @@ export function buildProgram(): Command {
   program
     .command('conductor [action] [message]')
     .description(
-      'Start a Claude session that plans, launches, steers and reports on sessions, or type a message into it (start|stop|tell <message>)',
+      'Start a Claude session that plans, launches, steers and reports on sessions, or type a message into it (start|stop|tell <message>); the conductor asks the operator with ask <question>',
     )
     .option('--model <model>', 'claude model for the conductor itself (default claude-opus-5-5)')
     .option('--effort <effort>', 'effort for the conductor itself (default high)')
@@ -1206,9 +1237,27 @@ export function buildProgram(): Command {
       '--max-sessions <n>',
       `most live sessions any launch may reach, stored for the project (default ${DEFAULT_MAX_SESSIONS})`,
     )
+    .option('--option <text...>', `ask: an answer to offer, up to ${MAX_QUESTION_OPTIONS}`)
+    .option('--recommend <n>', 'ask: the number of the option the conductor would pick')
     .action((action: string | undefined, message: string | undefined, opts: ConductorOptions) => {
       const { repoPath, db } = project();
       const verb = action ?? 'start';
+      // The conductor's own: it raises every operator decision this way rather
+      // than as prose in its pane (decision 93). A session, or the operator,
+      // has its own way to ask or to tell.
+      if (verb === 'ask') {
+        if (callingSession(db) || callingConductor() !== projectId(repoPath)) {
+          return refuse('`pup conductor ask` is for the conductor only.');
+        }
+        return questionOrRefuse(() => {
+          const asked = conductorQuestion(message, opts);
+          markConductorQuestion(db, asked);
+          return askedLines('The conductor', asked);
+        });
+      }
+      if (opts.option !== undefined || opts.recommend !== undefined) {
+        return refuse('Only `pup conductor ask` takes --option and --recommend.');
+      }
       // The conductor holds every operator power but the merge, so only the
       // operator starts one — a session or a conductor minting a conductor
       // would be a session launching sessions under another name (decision 47).
@@ -1227,7 +1276,7 @@ export function buildProgram(): Command {
         return;
       }
       if (verb !== 'start') {
-        return refuse(`Unknown conductor action \`${action}\` (expected start|stop|tell).`);
+        return refuse(`Unknown conductor action \`${action}\` (expected start|stop|tell|ask).`);
       }
       const maxSessions = Number(opts.maxSessions ?? DEFAULT_MAX_SESSIONS);
       if (!Number.isInteger(maxSessions) || maxSessions < 1) {
@@ -1254,6 +1303,8 @@ export function buildProgram(): Command {
         // the conductor's whole footprint, so killing it is the whole rollback.
         return reportRolledBack(error, 'Re-run `pup conductor`.');
       }
+      // The new run's start ends the last run's question (decision 93).
+      appendEvent(db, null, 'conductor_start', { name: handle.name });
       // Scrubbed like every other named field a print interpolates, rather
       // than allowlisted as another derivation of the repo path: `handle.name`
       // is a local, and chasing its provenance per line is the carve-out
@@ -1696,7 +1747,7 @@ export function buildProgram(): Command {
     );
     if (needs.length > 0) {
       console.log('Needs you');
-      for (const need of needs) console.log(`  ${needLine(need)}`);
+      for (const line of needs.flatMap(needLines)) console.log(`  ${line}`);
     }
     for (const entry of snapshot.overdueDebt) {
       console.log(
@@ -1725,7 +1776,7 @@ export function buildProgram(): Command {
       return;
     }
     for (const session of sessions) {
-      const question = session.question === undefined ? '' : `question: ${session.question}`;
+      const question = session.question === undefined ? '' : `question: ${session.question.text}`;
       console.log(`${sessionLine(session)}${trailing(question)}`);
     }
     // Planned tasks share the session table's columns under `planned`, the
@@ -1904,6 +1955,26 @@ export function buildProgram(): Command {
         () => steerSession(db, session, message, { kind: 'manual', by }),
         `Steered session ${session}.`,
       );
+    });
+
+  program
+    .command('answer <target> <reply>')
+    .description(
+      "Answer a session's open question, or the conductor's (target `conductor`): an option's number, or words (operator only)",
+    )
+    .action((target: string, reply: string) => {
+      const { repoPath, db } = project();
+      // The asker waits on the operator's decision: a session or the conductor
+      // answering it would decide in the operator's name (decision 93).
+      if (callingSession(db) || callingConductor()) return refuse('`pup answer` is operator-only.');
+      if (target === CONDUCTOR_TARGET) {
+        return questionOrRefuse(() => [
+          `Answered the conductor: ${sanitizeReason(answerConductorQuestion(db, repoPath, reply).text)}`,
+        ]);
+      }
+      questionOrRefuse(() => [
+        `Answered session ${sanitizeReason(target)}: ${sanitizeReason(answerSessionQuestion(db, target, reply).text)}`,
+      ]);
     });
 
   program
@@ -2808,15 +2879,19 @@ export function buildProgram(): Command {
   session
     .command('ask <question>')
     .description(
-      'Ask the operator a question and stay running; a steer answers it (run by the agent)',
+      'Ask the operator a question and stay running; `pup answer` or a steer answers it (run by the agent)',
     )
-    .action((question: string) => {
+    .option('--option <text...>', `an answer to offer, up to ${MAX_QUESTION_OPTIONS}`)
+    .option('--recommend <n>', 'the number of the option you would pick')
+    .action((question: string, opts: AskOptions) => {
       const { db } = project();
       const sessionId = ownSession(db, 'ask');
       if (!sessionId) return;
-      if (!question.trim()) return refuse('pup session ask needs the question itself.');
-      markSessionQuestion(db, sessionId, question);
-      console.log(`Session ${sanitizeReason(sessionId)} asked: ${sanitizeReason(question)}`);
+      questionOrRefuse(() => {
+        const asked = askedQuestion('pup session ask', question, opts);
+        markSessionQuestion(db, sessionId, asked);
+        return askedLines(`Session ${sanitizeReason(sessionId)}`, asked);
+      });
     });
   session
     .command('test [args...]')

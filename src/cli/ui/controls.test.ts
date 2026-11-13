@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // that the key reaches the right one with the row under the cursor. Splitting
 // them is what keeps a rebind from passing because the action still works.
 vi.mock('./actions.service.js', () => ({
+  answerSelected: vi.fn(() => ({ message: 'Answered.' })),
   attachTo: vi.fn(() => ({ message: 'Detached from pup-s-run-1.' })),
   conductorAttachTarget: vi.fn(() => ({
     label: 'conductor-window',
@@ -36,6 +37,7 @@ vi.mock('./actions.service.js', () => ({
 import type { DashboardSession, DashboardSnapshot } from '../../core/types/dashboard.types.js';
 import {
   type ActionDeps,
+  answerSelected,
   attachTo,
   conductorAttachTarget,
   interruptSelected,
@@ -177,6 +179,84 @@ describe('dashboard controls', () => {
       await press(instance, 's', 'a', 'b', BACKSPACE, 'c', ENTER);
 
       expect(steerSelected).toHaveBeenCalledWith(DEPS, 's-run-1', 'ac');
+      instance.unmount();
+    });
+
+    // Decision 93: one keystroke answers the selected session's open question.
+    it("answers the selected session's open question with the option a number picks", async () => {
+      const asking = sessionFixture({
+        question: { text: 'which?', options: ['rebase', 'merge'], recommended: 1 },
+      });
+      const instance = mount(snapshotFixture({ sessions: [asking] }));
+
+      await press(instance, '2');
+
+      expect(answerSelected).toHaveBeenCalledWith(DEPS, 's-run-1', '2');
+      expect(instance.lastFrame()).toContain('Answered.');
+      instance.unmount();
+    });
+
+    it('answers nothing on a number key when no question with options is open', async () => {
+      const instance = mount();
+
+      await press(instance, '1');
+      expect(instance.lastFrame()).toContain('s-run-1 has no open question.');
+
+      instance.unmount();
+      const words = mount(
+        snapshotFixture({
+          sessions: [sessionFixture({ question: { text: 'why?', options: [] } })],
+        }),
+      );
+      await press(words, '1');
+
+      expect(words.lastFrame()).toContain('offers no options');
+      expect(answerSelected).not.toHaveBeenCalled();
+      words.unmount();
+    });
+
+    it('keeps the cursor on the session it moved to when a refresh re-sorts the rows', async () => {
+      const reading = [sessionFixture({ id: 's-a' }), sessionFixture({ id: 's-b' })];
+      const instance = render(
+        createElement(App, {
+          read: () => readingOf(snapshotFixture({ sessions: reading })),
+          showAttach: true,
+        }),
+      );
+      await press(instance, '\u001B[B');
+
+      reading.unshift(
+        sessionFixture({ id: 's-c', question: { text: 'which?', options: ['x', 'y'] } }),
+      );
+      await press(instance, 'r', '1');
+
+      expect(answerSelected).not.toHaveBeenCalled();
+      expect(instance.lastFrame()).toContain('s-b has no open question.');
+      instance.unmount();
+    });
+
+    it('answers nothing on a number key for a session whose id is not a minted one', async () => {
+      const instance = mount(
+        snapshotFixture({
+          sessions: [
+            sessionFixture({ isMintedId: false, question: { text: 'q?', options: ['x'] } }),
+          ],
+        }),
+      );
+
+      await press(instance, '1');
+
+      expect(answerSelected).not.toHaveBeenCalled();
+      instance.unmount();
+    });
+
+    it('answers nothing on a number key with the cursor on a planned task', async () => {
+      const instance = mount(snapshotFixture({ sessions: [] }));
+
+      await press(instance, '1');
+
+      expect(instance.lastFrame()).toContain('Nothing to answer: the cursor is not on a session.');
+      expect(answerSelected).not.toHaveBeenCalled();
       instance.unmount();
     });
 
@@ -700,12 +780,20 @@ describe('dashboard controls', () => {
       instance.unmount();
     });
 
-    it.each([['s'], ['i'], ['k'], ['u'], ['R'], ['a'], ['A'], ['c'], ['m'], ['l']])(
+    it.each([['s'], ['i'], ['k'], ['u'], ['R'], ['a'], ['A'], ['c'], ['m'], ['l'], ['1'], ['2']])(
       'does nothing on `%s`',
       async (key) => {
         // With the conductor up, so `A` is refused for the tier rather than
-        // for having no window to attach to.
-        const running = snapshotFixture();
+        // for having no window to attach to; and the session asking with
+        // options, so a number key would have something to answer in the
+        // operator's name (decision 93).
+        const running = snapshotFixture({
+          sessions: [
+            sessionFixture({
+              question: { text: 'which?', options: ['rebase', 'merge'], recommended: 1 },
+            }),
+          ],
+        });
         running.conductor.running = true;
         const instance = mount(running, REASON);
 
@@ -721,6 +809,7 @@ describe('dashboard controls', () => {
           toggleConductor,
           runMerge,
           launchSelected,
+          answerSelected,
         ]) {
           expect(action).not.toHaveBeenCalled();
         }

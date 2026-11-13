@@ -9,7 +9,7 @@ import {
 import { startConductor, stopConductor } from '../../core/conductor.service.js';
 import { blockedReason } from '../../core/dashboard.service.js';
 import { DEFAULT_BASE_PROFILE } from '../../core/default-profile.constants.js';
-import { getSession, transitionSession } from '../../core/session.repository.js';
+import { appendEvent, getSession, transitionSession } from '../../core/session.repository.js';
 import {
   isHandoffReady,
   requestHandoff,
@@ -17,6 +17,7 @@ import {
 } from '../../core/session-handoff.service.js';
 import { LaunchRolledBackError } from '../../core/session-lifecycle.errors.js';
 import {
+  answerSessionQuestion,
   interruptSession,
   killedFixRoundMessage,
   killSession,
@@ -114,15 +115,26 @@ export function launchSelected(deps: ActionDeps, taskId: string, model: string):
 }
 
 /**
- * `pup steer`: type a correction into the session's launch pane, and record it.
- * No sender rides with it, where `pup steer` names one: this screen has no
- * reading of who is at it, and a record naming the operator on a guess would
- * be worse than one naming nobody.
+ * `pup steer`: type a correction into the session's launch pane, and record it
+ * as the operator's. `pup ui` is read-only to a session and to the conductor,
+ * the same reading `pup steer` names its sender by, so a steer from here is the
+ * operator's, and like theirs it answers an open question (decision 93).
  */
 export function steerSelected(deps: ActionDeps, sessionId: string, message: string): ActionResult {
   return attempt(() => {
-    steerSession(deps.db, sessionId, message, { kind: 'manual' });
+    steerSession(deps.db, sessionId, message, { kind: 'manual', by: 'operator' });
     return `Steered ${sessionId}.`;
+  });
+}
+
+/**
+ * `pup answer` with an option's number: the session's open question answered
+ * in its pane, prefixed by the question, and closed (decision 93).
+ */
+export function answerSelected(deps: ActionDeps, sessionId: string, option: string): ActionResult {
+  return attempt(() => {
+    const answer = answerSessionQuestion(deps.db, sessionId, option);
+    return `Answered ${sessionId}: ${answer.text}`;
   });
 }
 
@@ -248,6 +260,8 @@ export function toggleConductor(
         ...(models.model ? { model: models.model } : {}),
         ...(models.workerModel ? { workerModel: models.workerModel } : {}),
       });
+      // The new run's start ends the last run's question, as the CLI's does (decision 93).
+      appendEvent(deps.db, null, 'conductor_start', { name: handle.name });
       const radar = handle.radarTarget
         ? ` Conflict radar started with it (tmux: ${handle.radarTarget}).`
         : '';
