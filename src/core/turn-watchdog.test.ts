@@ -24,6 +24,7 @@ import {
 import { openStore } from './db.client.js';
 import { projectId, projectPaths } from './paths.utils.js';
 import {
+  appendEvent,
   ensureProject,
   insertSession,
   insertTask,
@@ -137,6 +138,21 @@ describe('sweepDeadTurns', () => {
         { reason: API_ERROR, stalledAt: stallStampOf(repo, 's1') },
       ]);
       expect(eventsOfType(db, 's1', 'steer')).toEqual([{ kind: 'resume', by: 'watch' }]);
+    });
+
+    // Decision 179: a hold is typed into a worker waiting on its question, and
+    // a resume would tell it to finish without the answer it asked for.
+    it("is left alone when the turn that died was a cache hold's, until a later prompt", () => {
+      appendEvent(db, 's1', 'question', { text: 'which ADR number?' });
+      appendEvent(db, 's1', 'cache_hold', { idleMs: 3_000_000 });
+
+      expect(sweepDeadTurns(db, repo, now())).toEqual([]);
+      expect(deadTurnError).not.toHaveBeenCalled();
+      expect(steerPane).not.toHaveBeenCalled();
+      expect(eventsOfType(db, 's1', 'turn_died')).toEqual([]);
+
+      appendEvent(db, 's1', 'steer', { kind: 'answer', by: 'operator' });
+      expect(sweepDeadTurns(db, repo, now())).toEqual([{ id: 's1', reason: API_ERROR }]);
     });
 
     // The operator put the project to sleep; a resume would be the watcher

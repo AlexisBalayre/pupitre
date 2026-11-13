@@ -9,13 +9,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../claude/session-runtime.service.js')>()),
   conductorPane: vi.fn(() => undefined),
+  deadTurnError: vi.fn(() => undefined),
+  steerPane: vi.fn(),
   readInputBox: vi.fn(() => 'empty'),
   pasteIntoPane: vi.fn(() => true),
   submitPane: vi.fn(),
 }));
 
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
-import { pasteIntoPane, readInputBox, submitPane } from '../claude/session-runtime.service.js';
+import {
+  deadTurnError,
+  pasteIntoPane,
+  readInputBox,
+  steerPane,
+  submitPane,
+} from '../claude/session-runtime.service.js';
 import {
   CACHE_HOLD_AFTER_MS,
   CACHE_HOLD_EVENTS_TAIL_BYTES,
@@ -87,6 +95,7 @@ describe('holdIdleCaches (decision 179)', () => {
     db = openStore(':memory:');
     repo = tempDir('pup-cache-hold-');
     vi.clearAllMocks();
+    vi.mocked(deadTurnError).mockReturnValue(undefined);
     vi.mocked(readInputBox).mockReturnValue('empty');
     vi.mocked(pasteIntoPane).mockReturnValue(true);
   });
@@ -189,6 +198,8 @@ describe('holdIdleCaches (decision 179)', () => {
     for (let hold = 0; hold < CACHE_HOLD_LIMIT; hold++) {
       appendEvent(db, 's1', 'cache_hold', { idleMs: HOLD_AGE_MS });
     }
+    // Each hold's turn moved the events file after it.
+    db.prepare("UPDATE events SET created_at = datetime('now', '-2 hours')").run();
 
     expect(holdIdleCaches(db, repo, Date.now())).toEqual([]);
 
@@ -196,6 +207,51 @@ describe('holdIdleCaches (decision 179)', () => {
     transitionSession(db, 's1', 'running');
     transitionSession(db, 's1', 'awaiting-review');
     expect(holdIdleCaches(db, repo, Date.now())).toEqual(['s1']);
+  });
+
+  it('holds a window once until the turn it started moves the events file', () => {
+    seedSession(db, repo, 's1', 'awaiting-review');
+    seedEventsFile(repo, 's1', HOLD_AGE_MS);
+
+    expect(holdIdleCaches(db, repo, Date.now())).toEqual(['s1']);
+    // The hold's turn has fired no hook yet, or died without one.
+    expect(holdIdleCaches(db, repo, Date.now() + 60_000)).toEqual([]);
+    expect(pasteIntoPane).toHaveBeenCalledTimes(1);
+
+    // Its Stop moves the file, and the next quiet stretch is held again.
+    const stop = new Date(Date.now() + 2_000);
+    utimesSync(projectPaths(repo).eventsFile('s1'), stop, stop);
+    expect(holdIdleCaches(db, repo, stop.getTime() + HOLD_AGE_MS)).toEqual(['s1']);
+  });
+
+  it('types nothing into a turn a prompt started that no hook has shown yet', () => {
+    for (const id of ['steered', 'respawned', 'earlier']) {
+      seedSession(db, repo, id, 'awaiting-review');
+      seedEventsFile(repo, id, HOLD_AGE_MS);
+    }
+    appendEvent(db, 'steered', 'steer', { kind: 'message', by: 'pup-t-peer' });
+    appendEvent(db, 'respawned', 'respawn', { delivered: true });
+    // A steer whose turn moved the events file after it.
+    appendEvent(db, 'earlier', 'steer', { kind: 'message', by: 'pup-t-peer' });
+    db.prepare(
+      "UPDATE events SET created_at = datetime('now', '-2 hours') WHERE session_id = 'earlier'",
+    ).run();
+
+    expect(holdIdleCaches(db, repo, Date.now())).toEqual(['earlier']);
+    expect(readInputBox).toHaveBeenCalledTimes(1);
+  });
+
+  it('is not held by the sweep that resumed its dead turn', () => {
+    const deadTurn = '⏺ API Error: Connection lost while your computer was asleep';
+    seedSession(db, repo, 's1', 'running');
+    seedEventsFile(repo, 's1', HOLD_AGE_MS);
+    appendEvent(db, 's1', 'question', { text: 'which ADR number?' });
+    vi.mocked(deadTurnError).mockReturnValue(deadTurn);
+
+    expect(sweepDeadTurns(db, repo, Date.now())).toEqual([{ id: 's1', reason: deadTurn }]);
+    expect(steerPane).toHaveBeenCalledTimes(1);
+    expect(pasteIntoPane).not.toHaveBeenCalled();
+    expect(holdsOf(db, 's1')).toEqual([]);
   });
 
   it('runs on the watcher sweep, and never in a dormant project', () => {

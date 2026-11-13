@@ -7,7 +7,7 @@ import {
   SessionPaneMissingError,
   steerPane,
 } from '../claude/session-runtime.service.js';
-import { holdIdleCaches } from './cache-hold.service.js';
+import { holdIdleCaches, lastPrompt } from './cache-hold.service.js';
 import { findStalledSessions } from './dashboard.service.js';
 import { projectId } from './paths.utils.js';
 import { toIsoUtc } from './report-data.utils.js';
@@ -115,6 +115,10 @@ function resumeSession(
   // The sweep listed this session a moment ago, so the row is here unless it
   // was killed or cleaned up mid-sweep.
   if (!row) return undefined;
+  // A hold's dead turn is left as it is (decision 179). The window was waiting
+  // on someone else, and a resume would tell it to finish the task without the
+  // answer it asked for. Its question stays open until the operator answers.
+  if (lastPrompt(listEvents(db, sessionId).reverse())?.type === 'cache_hold') return undefined;
   // Stamp AND age: a resume answers this stall for one stall window, not for
   // good. Through an outage the resumed turn dies again at once, no hook
   // fires and the stamp never moves — a stamp alone would leave the session

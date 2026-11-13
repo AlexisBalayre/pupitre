@@ -4,6 +4,7 @@ import type { Database } from 'better-sqlite3';
 import { pasteIntoPane, readInputBox, submitPane } from '../claude/session-runtime.service.js';
 import { SESSION_ID_PATTERN } from './paths.constants.js';
 import { projectPaths } from './paths.utils.js';
+import { toIsoUtc } from './report-data.utils.js';
 import {
   appendEvent,
   type EventRow,
@@ -62,6 +63,14 @@ export const CACHE_HOLD_LIMIT = 8;
 export const CACHE_HOLD_EVENTS_TAIL_BYTES = 1 << 20;
 
 /**
+ * The events that give a session's window a prompt. A steer covers an answer,
+ * an interrupt's message, a peer's message, a kickoff and the watchdog's
+ * resume, all recorded as steers; a respawn's kickoff is recorded as the
+ * respawn.
+ */
+const PROMPT_EVENTS: ReadonlySet<string> = new Set(['steer', 'respawn', 'cache_hold']);
+
+/**
  * Hold every worker window that is waiting on someone else and whose cache is
  * about to lapse: `awaiting-review` (the gate or a review answers it), and
  * `running` with a question nobody has answered (decision 76). A running
@@ -70,12 +79,13 @@ export const CACHE_HOLD_EVENTS_TAIL_BYTES = 1 << 20;
  * turn, kept from tools by its wording alone, and a parked session is to take
  * no turn until a human unblocks it.
  *
- * Only a turn that has ended is held, and only into an empty input box: a
- * draft in the box is the operator's, and a hold must never clear it. Each
- * hold is recorded as a `cache_hold` event, never a `steer`, so it neither
- * answers an open question nor shows as the window's last steer. Best effort:
- * a window that refuses the paste is tried again on the next sweep while the
- * hold window lasts. Returns the ids held, for a test to read.
+ * Only a turn the hooks show ended, with no prompt recorded since, is held,
+ * and only into an empty input box: a draft in the box is the operator's, and
+ * a hold must never clear it. Each hold is recorded as a `cache_hold` event,
+ * never a `steer`, so it neither answers an open question nor shows as the
+ * window's last steer. Best effort: a window that refuses the paste is tried
+ * again on the next sweep while the hold window lasts. Returns the ids held,
+ * for a test to read.
  */
 export function holdIdleCaches(db: Database, repoPath: string, now: number): string[] {
   const paths = projectPaths(repoPath);
@@ -91,8 +101,10 @@ export function holdIdleCaches(db: Database, repoPath: string, now: number): str
       // The events file and the pane are the session's to break: a file gone
       // or replaced, a pane tmux cannot reach, or a store write refused skips
       // this window's hold, never the sweep's other holds, resumes and nudge.
-      // A hold typed but left unrecorded moved the events file, so the next
-      // sweep finds the window quiet for minutes, not due again.
+      // A hold typed but left unrecorded is typed again by the next sweep if
+      // its turn has not moved the events file by then: a duplicate queued
+      // behind the first, the cost the watchdog's resume accepts for the same
+      // gap.
     }
   }
   return held;
@@ -119,6 +131,14 @@ function holdDue(
     if (idleMs < CACHE_HOLD_AFTER_MS || idleMs >= CACHE_HOLD_UNTIL_MS) return undefined;
     const events = listEvents(db, row.id).reverse();
     if (row.state === 'running' && openQuestion(db, row.id) === undefined) return undefined;
+    // No hook fires on a submitted prompt, so a turn a prompt started moves the
+    // file only at its first tool or its end. Prompted since the file last
+    // moved, the window is at work or its turn died, and the tail cannot say
+    // which. `created_at` keeps whole seconds, so a prompt inside the file's
+    // last second counts as after it.
+    const prompt = lastPrompt(events);
+    if (prompt && Date.parse(toIsoUtc(prompt.created_at)) >= Math.floor(stat.mtimeMs / 1000) * 1000)
+      return undefined;
     if (trailingHolds(events) >= CACHE_HOLD_LIMIT) return undefined;
     return classifySessionActivity(readTail(fd, stat.size)).kind === 'idle' ? idleMs : undefined;
   } finally {
@@ -138,6 +158,11 @@ function readTail(fd: number, size: number): string {
   if (start === 0) return text;
   const torn = text.indexOf('\n');
   return torn === -1 ? '' : text.slice(torn + 1);
+}
+
+/** The newest event that gave the session's window a prompt, from its events newest first. */
+export function lastPrompt(newestFirst: EventRow[]): EventRow | undefined {
+  return newestFirst.find((event) => PROMPT_EVENTS.has(event.type));
 }
 
 /** The holds since anything else was recorded for the session, newest first. */

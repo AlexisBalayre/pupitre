@@ -25,7 +25,15 @@
     58 (`CACHE_HOLD_UNTIL_MS`), since by then the cache may have gone and a hold would pay the
     write it exists to avoid. The eight minutes between cover a slow sweep and a paste. The hold
     is made only when the hook events show the turn ended, and only into an empty input box: a
-    draft is the operator's, and a hold must never clear or send it. It is pasted and submitted
+    draft is the operator's, and a hold must never clear or send it. The hook events alone cannot
+    show a turn that has just started. The worker profile has no hook on a submitted prompt, so a
+    turn started by a steer, a respawn or an earlier hold moves the file only at its first tool
+    or at its end. Until then the tail still ends on the last Stop. The input box is drawn while
+    a turn runs, so it reads empty too. A hold is therefore refused while a prompt (`steer`,
+    `respawn` or `cache_hold`) is recorded at or after the file's mtime, compared to the whole
+    second `created_at` keeps. That keeps a hold out of a turn that a steer, a peer's message or
+    the same sweep's resume has just started. It also stops a hold being typed again every sweep
+    while the last hold's turn runs, or after that turn died. It is pasted and submitted
     like a steer (decision 45). A box that refuses the paste is cleared, nothing is recorded, and
     the next sweep tries again while the window lasts. The text (`CACHE_HOLD_MESSAGE`) tells the
     worker that nothing changed and that this answers nothing it asked, and asks it to run no
@@ -45,7 +53,9 @@
     a big file outright would leave the longest, dearest windows unheld. Reading newest first
     needs only the turn that ended. One session's failure, whether a link, a directory, a fifo,
     a pane tmux cannot reach or a refused store write, skips only that window's hold. It never
-    stops the rest of the sweep.
+    stops the rest of the sweep. A store write refused after the paste leaves a hold typed but
+    unrecorded. The next sweep can then type it again before the first hold's turn moves the
+    file, queueing a duplicate behind it. The watchdog's resume accepts the same gap.
     A hold is recorded as a `cache_hold` event with the idle it ended, never as a `steer`.
     `openQuestion` does not read it, so a question stays open and in Needs-you until the
     operator answers it (decision 93), and the window's last steer stays one that was actually
@@ -68,6 +78,12 @@
     Its stall age starts again after each hold, about every 51 minutes. The question itself
     stays in Needs-you, which is where the operator acts on it. Each hold also adds two short
     messages to the worker's context.
+    A hold's turn can die like any other (decision 35's addendum). It then ends on the API error
+    the watchdog resumes, and that resume would tell a worker waiting on its question to finish
+    the task without the answer. So the watchdog leaves a dead turn alone when the newest prompt
+    recorded for the session is a hold: the turn that died is the hold's. The question stays in
+    Needs-you. The operator's answer is the next prompt, and a turn that dies after it is resumed
+    as before.
     Rejected: respawning a window that will idle past the hour on a fresh one. The wake time is
     not known, so a respawn cannot be timed to it. A fresh window pays the first-request floor
     (about 22k tokens for a worker) plus everything it reads again to rebuild its context, and it
