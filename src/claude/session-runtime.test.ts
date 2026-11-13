@@ -871,9 +871,8 @@ describe('launchSession', () => {
   // the server a client starts, and that a value ending in ';' is not read as
   // the end of tmux's command. The launch's own argv and client environment,
   // run against the installed tmux, on a socket of this test's own. The
-  // launching shell is the test's own too: a Claude session running the suite
-  // carries its CLAUDE* names, and ENABLE_CLAUDEAI_MCP_SERVERS, which the scrub
-  // rightly keeps, into this run.
+  // launching shell is the test's own too, so the suite reads the same inside a
+  // Claude session, which carries its CLAUDE names into this run, as outside.
   it.for([
     [
       'inside a Claude session',
@@ -942,7 +941,7 @@ describe('launchSession', () => {
         );
         const global = tmuxHere(['show-environment', '-g']).stdout;
         expect(global).toContain('PATH=');
-        expect(global.split('\n').filter((line) => /^-?CLAUDE/.test(line))).toEqual([]);
+        expect(global).not.toMatch(/CLAUDE/);
       } finally {
         tmuxHere(['kill-server']);
       }

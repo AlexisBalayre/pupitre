@@ -193,9 +193,11 @@ function onSocket(socket: string | undefined, args: string[]): string[] {
  * - `PUP_CONDUCTOR` and `PUP_SESSION_ID` say what a window IS; leaked into a
  *   server's global environment they make every later window read as their
  *   caller to every guard.
- * - `CLAUDE*` carries the agent's own credentials — `CLAUDE_CODE_MESSAGING_SOCKET`
+ * - `*CLAUDE*` carries the agent's own credentials — `CLAUDE_CODE_MESSAGING_SOCKET`
  *   and `_TOKEN` are the peer channel, so a session that read them back could
- *   speak on it AS the conductor, past the tier entirely. `ANTHROPIC_*` is the
+ *   speak on it AS the conductor, past the tier entirely — and its settings,
+ *   `ENABLE_CLAUDEAI_MCP_SERVERS` among them, none of which is the server's to
+ *   hand every later window. `ANTHROPIC_*` is the
  *   API key family for the same reason.
  * - `NODE_OPTIONS` is code execution: `--require` in a server's environment runs
  *   in every node process a window later starts.
@@ -211,7 +213,7 @@ const NOT_INHERITED = [
   /^TMUX$/,
   /^PUP_CONDUCTOR$/,
   /^PUP_SESSION_ID$/,
-  /^CLAUDE/,
+  /CLAUDE/,
   /^ANTHROPIC_/,
   /^NODE_OPTIONS$/,
 ];
