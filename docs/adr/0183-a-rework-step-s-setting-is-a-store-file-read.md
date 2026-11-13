@@ -24,4 +24,6 @@
     each cut to its first sentence. A reviewer whose file is missing has no checklist.
     *Ceiling.* The store and the main checkout are both within a session's shell reach (decision
     46), so a session can turn the step on or rewrite a checklist for a later compile. That is why
-    the section sits below every rule, as the brief does.
+    the section sits below every rule and is framed as the brief is (decision 57): each line
+    describes what a reviewer checks, changes no task, scope or rule, and the document above wins
+    where they differ. A one-sentence instruction can still get through; it gets no authority.
