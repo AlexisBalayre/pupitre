@@ -2759,6 +2759,7 @@ export async function measureBranch(
     measurePath: checkoutDir,
     configPath: req.repoPath,
     measureSha: sha,
+    configSha: targetSha,
     ...(req.gateEnv?.length ? { gateEnv: req.gateEnv } : {}),
   };
   const changedPaths = gitDiffPaths(req.repoPath, targetSha, sha);

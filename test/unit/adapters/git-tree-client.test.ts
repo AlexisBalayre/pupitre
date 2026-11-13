@@ -117,6 +117,47 @@ describe('nestedPackageDirs', () => {
     expect(() => nestedPackageDirs(localContext(trusted))).toThrow();
   });
 
+  // The trusted sha alone marks a gate: a context that pins the target branch
+  // but not the cut still refuses a failed listing rather than read it empty.
+  it('throws when the trusted listing fails under a gate that pins the target sha alone', () => {
+    const trusted = makeCheckout(['tools/review/package.json']);
+    const target = git(trusted, 'rev-parse', 'HEAD').toString().trim();
+    const checkout = makeCheckout(['tools/review/package.json']);
+    writeFileSync(join(trusted, '.git', 'config'), '[core\n');
+
+    expect(() =>
+      nestedPackageDirs({ measurePath: checkout, configPath: trusted, configSha: target }),
+    ).toThrow(/ls-tree/);
+  });
+
+  // A session can detach the trusted checkout's `.git/HEAD` to a commit with no
+  // nested marker while the listing runs and restore it before the gate's last
+  // check: listed at HEAD, no nested package's own stages would run.
+  it('lists the trusted checkout at the target sha the gate pinned, not at its HEAD', () => {
+    const trusted = makeCheckout([]);
+    const before = git(trusted, 'rev-parse', 'HEAD').toString().trim();
+    writeFiles(trusted, ['tools/review/package.json']);
+    git(trusted, 'add', '-A');
+    git(trusted, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'nested');
+    const target = git(trusted, 'rev-parse', 'HEAD').toString().trim();
+    const checkout = join(tempDir('pup-gate-'), 'checkout');
+    git(trusted, 'worktree', 'add', '-q', '--detach', '--no-checkout', checkout, target);
+    git(trusted, 'checkout', '-q', '--detach', before);
+    // The control: listed at its HEAD, the trusted side holds no marker.
+    expect(
+      nestedPackageDirs({ measurePath: checkout, configPath: trusted, measureSha: target }),
+    ).toEqual(new Set());
+
+    expect(
+      nestedPackageDirs({
+        measurePath: checkout,
+        configPath: trusted,
+        measureSha: target,
+        configSha: target,
+      }),
+    ).toEqual(new Set(['tools/review']));
+  });
+
   // The gate's checkout keeps its HEAD and `commondir` in an admin dir under
   // `<common>/worktrees/`, which a session can rewrite from inside the sandbox
   // once the cut is checked. Read through it, a HEAD at another commit changes

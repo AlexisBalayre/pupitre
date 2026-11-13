@@ -78,6 +78,9 @@ export interface CapabilityContext {
    * The commit `configPath` holds, when it is the gate's trusted checkout: the
    * target the merge lock holds it at. What must be the target's, not whatever
    * a session wrote to that checkout's disk, is read from it (decision 143).
+   * What that checkout commits is read at this sha too, never at its HEAD,
+   * which a session can detach to another commit and restore before the gate's
+   * last check (decision 161). Absent outside the gate.
    */
   configSha?: string;
   /**
