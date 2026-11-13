@@ -1215,6 +1215,98 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(ghCalls()).not.toContainEqual(expect.stringContaining('pr create'));
   });
 
+  /** `fakeGh`, but keeping what each `gh api` call reads on stdin in `payloads`, newest last. */
+  const keepingApiPayloads = (script: string, payloads: string): string =>
+    script.replace(
+      'cat >/dev/null',
+      `if [ "$1" = "api" ]; then cat >> ${payloads}; echo >> ${payloads}; exit 0; fi\ncat >/dev/null`,
+    );
+
+  /** The `gh api` calls that set a commit status, and the statuses they set. */
+  const statusesSet = (payloads: string) => ({
+    calls: ghCalls().filter((call) => call.startsWith('api ') && call.includes('/statuses/')),
+    payloads: existsSync(payloads)
+      ? readFileSync(payloads, 'utf8')
+          .split('\n')
+          .filter(Boolean)
+          .map((line) => JSON.parse(line) as Record<string, string>)
+      : [],
+  });
+
+  it.each([
+    ['opens', []],
+    ['reuses', [openPrOnMain]],
+  ])(
+    'with openPr sets a pup-gate success status on the pinned sha when it %s a PR (decision 182)',
+    async (_label, openPrs) => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      const bare = addOrigin();
+      const payloads = `${ghLog}.payloads`;
+
+      const outcome = await withFakeGh(keepingApiPayloads(fakeGh(openPrs), payloads), () =>
+        runMergeGate(db, {
+          repoPath: repo,
+          sessionId: SESSION_ID,
+          adapters: [passingAdapter],
+          openPr: true,
+        }),
+      );
+
+      expect(outcome.status).toBe('merged');
+      const pinned = listEvents(db, SESSION_ID)
+        .filter((row) => row.type === 'merge')
+        .map((row) => (JSON.parse(row.payload) as { sha: string }).sha);
+      expect(pinned).toEqual([sh(bare, 'git', 'rev-parse', BRANCH).trim()]);
+      const { calls, payloads: set } = statusesSet(payloads);
+      expect(calls).toEqual([
+        `api --method POST --hostname github.com repos/owner/repo/statuses/${pinned[0]} --input -`,
+      ]);
+      expect(set).toHaveLength(1);
+      expect(set[0]).toMatchObject({ state: 'success', context: 'pup-gate' });
+      expect(set[0]?.description).toMatch(
+        new RegExp(`^Session ${SESSION_ID} passed the pup merge --pr run of \\d{4}-\\d\\d-\\d\\dT`),
+      );
+      // Only once GitHub reported the PR's head at the pin.
+      const view = ghCalls().findIndex((call) => call.startsWith('pr view'));
+      expect(view).toBeGreaterThan(-1);
+      expect(ghCalls().indexOf(calls[0] as string)).toBeGreaterThan(view);
+    },
+  );
+
+  it('with openPr leaves the session to retry when gh cannot set the status, and the retry sets it', async () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+    addOrigin();
+    const statusRefused = fakeGh([]).replace(
+      'cat >/dev/null',
+      'if [ "$1" = "api" ]; then exit 1; fi\ncat >/dev/null',
+    );
+    const request = {
+      repoPath: repo,
+      sessionId: SESSION_ID,
+      adapters: [passingAdapter],
+      openPr: true,
+    };
+
+    await expect(withFakeGh(statusRefused, () => runMergeGate(db, request))).rejects.toThrow(
+      /gh api --method POST .*\/statuses\//,
+    );
+    expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+    expect(listEvents(db, SESSION_ID).some((row) => row.type === 'merge')).toBe(false);
+
+    const payloads = `${ghLog}.payloads`;
+    const retried = await withFakeGh(keepingApiPayloads(fakeGh([openPrOnMain]), payloads), () =>
+      runMergeGate(db, request),
+    );
+
+    expect(retried.status).toBe('merged');
+    expect(retried.prWasAdopted).toBe(true);
+    expect(statusesSet(payloads).payloads).toEqual([
+      expect.objectContaining({ state: 'success', context: 'pup-gate' }),
+    ]);
+  });
+
   it('with openPr refuses a same-named PR from a fork, before pushing', async () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
@@ -1370,14 +1462,63 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         to: 'merged',
         report: { passed: true },
       });
-      // Adopted and rewritten, then read back at the new pin; nothing pushed.
+      // Adopted and rewritten, then read back at the new pin and vouched for
+      // with pup-gate there (decision 182); nothing pushed.
       expect(prEdits()).toBe(2);
-      expect(ghCalls().at(-1)).toBe(
+      expect(ghCalls().slice(-2)).toEqual([
         `pr view ${PR_URL} --repo github.com/owner/repo --json headRefOid`,
-      );
+        `api --method POST --hostname github.com repos/owner/repo/statuses/${tip} --input -`,
+      ]);
       expect(sh(bare, 'git', 'rev-parse', BRANCH).trim()).toBe(tip);
       expect(vi.mocked(runUtility).mock.calls.length).toBe(drafts);
       expect(killSession).toHaveBeenCalledTimes(1);
+    });
+
+    const statusOn = (sha: string) =>
+      `api --method POST --hostname github.com repos/owner/repo/statuses/${sha} --input -`;
+
+    it('sets pup-gate on the pushed head, which the first gate left without one (decision 182)', async () => {
+      const tip = await gateThenFix();
+      const payloads = `${ghLog}.payloads`;
+      // The first gate vouched for its own pin, and the push moved the head off it.
+      expect(statusesSet(payloads).calls).toEqual([statusOn(pinned)]);
+      expect(tip).not.toBe(pinned);
+
+      const outcome = await regate(
+        [fixChecking],
+        keepingApiPayloads(fakeGh([openPrOnMain]), payloads),
+      );
+
+      expect(outcome.status).toBe('merged');
+      expect(statusesSet(payloads).calls).toEqual([statusOn(pinned), statusOn(tip)]);
+      expect(statusesSet(payloads).payloads).toEqual([
+        {
+          state: 'success',
+          context: 'pup-gate',
+          description: expect.stringMatching(
+            new RegExp(`^Session ${SESSION_ID} passed the pup merge --pr run of \\d{4}-`),
+          ),
+        },
+      ]);
+    });
+
+    it('records no re-gate when gh cannot set the status, so a retry sets it', async () => {
+      const tip = await gateThenFix();
+      const statusRefused = fakeGh([openPrOnMain]).replace(
+        'cat >/dev/null',
+        'if [ "$1" = "api" ]; then exit 1; fi\ncat >/dev/null',
+      );
+
+      await expect(regate([fixChecking], statusRefused)).rejects.toThrow(
+        `repos/owner/repo/statuses/${tip}`,
+      );
+      expect(merges().map((merge) => merge.sha)).toEqual([pinned]);
+
+      const outcome = await regate([fixChecking]);
+
+      expect(outcome.status).toBe('merged');
+      expect(merges().map((merge) => merge.sha)).toEqual([pinned, tip]);
+      expect(ghCalls().at(-1)).toBe(statusOn(tip));
     });
 
     /** Run a re-gate expected to refuse, and assert it wrote nothing. */
@@ -1568,6 +1709,9 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(listEvents(db, SESSION_ID)).toHaveLength(events);
       expect(merges().at(-1)?.sha).toBe(pinned);
       expect(getSession(db, SESSION_ID)?.state).toBe('merged');
+      // Neither the head the gate measured nor the one GitHub reported gets pup-gate.
+      expect(ghCalls()).not.toContainEqual(statusOn(tip));
+      expect(ghCalls()).not.toContainEqual(statusOn(elsewhere));
     });
 
     it('refuses a new head failing a hard stage, keeping the earlier merge event newest', async () => {

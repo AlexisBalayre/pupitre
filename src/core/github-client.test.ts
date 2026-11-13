@@ -22,6 +22,7 @@ import {
   originRepoSlug,
   readPullRequestReview,
   replyToReviewThread,
+  setGateStatus,
 } from './github.client.js';
 
 // The file's temp dirs, its children's included, go to a TMPDIR of its own,
@@ -506,6 +507,79 @@ describe('isCutOffByNode', () => {
     expect(isCutOffByNode(interrupted)).toBe(false);
     expect(isCutOffByNode(failed)).toBe(false);
     expect(isCutOffByNode(new Error('plain'))).toBe(false);
+  });
+});
+
+describe('setGateStatus', () => {
+  let ghDir: string;
+  let originalPath: string | undefined;
+  const SHA = 'd'.repeat(40);
+
+  beforeEach(() => {
+    ghDir = tempDir('pup-status-gh-');
+    originalPath = process.env.PATH;
+    process.env.PATH = `${ghDir}:${originalPath}`;
+    // Logs its argv one per line and what it read on stdin; `exit` set by the test.
+    writeFileSync(
+      join(ghDir, 'gh'),
+      `#!/bin/sh\nprintf '%s\\n' "$@" > ${ghDir}/argv\ncat > ${ghDir}/stdin\nexit $(cat ${ghDir}/exit 2>/dev/null || echo 0)\n`,
+      { mode: 0o755 },
+    );
+  });
+
+  afterEach(() => {
+    process.env.PATH = originalPath;
+  });
+
+  it("posts pup-gate success on the sha in origin's host and repo, naming the session and run", () => {
+    setGateStatus(ghDir, 'ghe.example.com/owner/repo', SHA, 't-abc-1');
+
+    expect(readFileSync(join(ghDir, 'argv'), 'utf8').trim().split('\n')).toEqual([
+      'api',
+      '--method',
+      'POST',
+      '--hostname',
+      'ghe.example.com',
+      `repos/owner/repo/statuses/${SHA}`,
+      '--input',
+      '-',
+    ]);
+    const payload = JSON.parse(readFileSync(join(ghDir, 'stdin'), 'utf8')) as Record<
+      string,
+      string
+    >;
+    expect(payload).toEqual({
+      state: 'success',
+      context: 'pup-gate',
+      description: expect.stringMatching(
+        /^Session t-abc-1 passed the pup merge --pr run of \d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/,
+      ),
+    });
+  });
+
+  it("cuts the description to GitHub's 140 characters", () => {
+    setGateStatus(ghDir, 'github.com/owner/repo', SHA, 's'.repeat(200));
+
+    const payload = JSON.parse(readFileSync(join(ghDir, 'stdin'), 'utf8')) as Record<
+      string,
+      string
+    >;
+    expect(payload.description).toHaveLength(140);
+  });
+
+  it('throws when gh refuses the status', () => {
+    writeFileSync(join(ghDir, 'exit'), '1');
+
+    expect(() => setGateStatus(ghDir, 'github.com/owner/repo', SHA, 't-abc-1')).toThrow(
+      `repos/owner/repo/statuses/${SHA}`,
+    );
+  });
+
+  it('refuses a repo with no owner or name before asking gh', () => {
+    expect(() => setGateStatus(ghDir, 'github.com/owner', SHA, 't-abc-1')).toThrow(
+      'Cannot read a GitHub repo from github.com/owner.',
+    );
+    expect(existsSync(join(ghDir, 'argv'))).toBe(false);
   });
 });
 
