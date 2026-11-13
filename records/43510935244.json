@@ -1,0 +1,113 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-13T21:31:58.736Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43510935244",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43510935244",
+  "actor": "AlexisBalayre",
+  "commit_sha": "1d37826235a9ea407dc3c9c82afac95f0ac9d7db",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 323,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "489-495",
+      "description": "Text a session can write reaches every later worker's kickoff below the Session protocol. Unlike the brief and the file list, it has no line saying it is not an instruction. Instead pup's own intro tells the worker to \"Check your diff against them before `pup session done`\", so injected lines read as requirements pup endorses.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "docs/adr/0183-a-rework-step-s-setting-is-a-store-file-read.md",
+      "line": "15-16",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "ADR 0183 says turning a step on reaches \"the next respawn of a running task\", but a respawn never recompiles. `relaunchWindow` resends the stored `context.md` (src/core/session-handoff.service.ts:301), and line 258 says \"nothing is recompiled here\" so the profile hash does not move. So a session respawned after the operator writes `on` still gets a kickoff with no \"Reviewers will check\" section. Only a new launch or a fix round (`recompileSessionProfile`) picks the setting up. Say \"the next launch or fix round\" instead.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "433-435, 463",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "On this repo's own review-correctness.md, `firstSentence` cuts each `**Title.** body` paragraph at the closing bold. The Correctness checklist is therefore three bare headers, and one of them (\"**Test adequacy, on a fix.**\") states no check at all. The lead filter keeps only bold-led paragraphs, so it drops the file's highest-weight check, the non-bold paragraph about a check that passes when it should fail. The test only asserts `### Correctness\\n- \\S`, so it cannot tell these headers from real checklist lines.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Skipped review-context: the only infra-like surface is a store-file setting, and ADR 0183 already covers it. Skipped review-maintainability: not on the default roster. Skipped review-spec: no closing issues and no --spec. Skipped review-workflow-safety: no change under .github/workflows. Did not spawn the consolidator: there were no important findings and the two remaining nits have different root causes, so I deduplicated them inline. Dropped two simplicity nits: inlining `firstSentence` and inlining `FAILING_SCENARIO_RULE`. The reviewer itself said both cost little or nothing to keep."
+    },
+    {
+      "component": "security",
+      "description": "`scripts/adr-index.sh` is unavailable under CI, so the reviewer found ADRs by Glob. A three-digit pattern missed ADRs 0024-0030, so it did not read those threat-model decisions directly."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.9312059000000001,
+  "duration_ms": 157808,
+  "num_turns": 15,
+  "tokens": {
+    "input": 12,
+    "output": 8572,
+    "cache_read": 292026,
+    "cache_creation": 52232,
+    "total": 352842
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 74,
+      "output": 29848,
+      "cache_read": 1061465,
+      "cache_creation": 135203,
+      "cost_usd": 1.6422600000000003
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 36,
+      "output": 7341,
+      "cache_read": 260639,
+      "cache_creation": 75760,
+      "cost_usd": 0.2889459
+    }
+  ],
+  "permission_denials": []
+}
