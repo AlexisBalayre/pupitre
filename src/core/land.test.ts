@@ -759,7 +759,7 @@ describe('landSession', { timeout: 20_000 }, () => {
   });
 
   // Decision 164's 2026-11-11 amendment: the event names the commits only the operator's word vouched for.
-  // Decision 182: one plain line per stage off a terminal, the lock's included.
+  // Decision 184: one plain line per stage off a terminal, the lock's included.
   it('shows each stage it runs, in order, on its status line', async () => {
     seedPrMerge();
     const merge = mergeOnGitHub();

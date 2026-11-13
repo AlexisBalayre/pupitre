@@ -778,7 +778,7 @@ const MERGE_LOCK_PID_FILE = 'pid';
 
 /**
  * Beside the pid: what the holder runs, since when, and its stage, which a
- * waiter prints and nothing decides on (decision 182).
+ * waiter prints and nothing decides on (decision 184).
  */
 const MERGE_LOCK_STATUS_FILE = 'status';
 
@@ -1166,7 +1166,7 @@ function heldBy(lockPath: string, holder: number): MergeLockHeldError {
  * run, and one a live run holds is waited for up to `maxWaitMs`, printing one
  * line when the wait starts and one whenever the holder or its stage changes,
  * and by default not at all (decision 88). While held, the lock records this
- * run's command, since when, and `progress`'s stage (decision 182). `fn` is
+ * run's command, since when, and `progress`'s stage (decision 184). `fn` is
  * told whether the take waited: anything read before the wait may have changed
  * under the run that held the lock meanwhile. While `fn` runs, the section
  * checks the take with `assertMergeLockHeld` before each ref it moves. A lock

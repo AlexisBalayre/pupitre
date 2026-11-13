@@ -421,7 +421,7 @@ function printPushTargetLine(db: Database, id: string): void {
  */
 /**
  * `running` once it settles, with the status line cleared first, so the
- * outcome or refusal printed next starts on a line of its own (decision 182).
+ * outcome or refusal printed next starts on a line of its own (decision 184).
  */
 async function settled<TResult>(
   progress: StageProgress,

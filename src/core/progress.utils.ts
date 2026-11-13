@@ -1,5 +1,5 @@
 /**
- * The one status line a long-running command keeps on stderr (decision 182):
+ * The one status line a long-running command keeps on stderr (decision 184):
  * `stage N/M, <name>, <elapsed>`, the elapsed time counted from the command's
  * start. On a terminal it is rewritten in place and ticks; off one each stage
  * change is a plain line with no cursor control, so a conductor or a hook

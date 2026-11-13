@@ -258,7 +258,7 @@ describe('waitForCiReview', { timeout: 20_000 }, () => {
     );
   });
 
-  // Decision 182: the stages go to stderr, and the digest stays the one line.
+  // Decision 184: the stages go to stderr, and the digest stays the one line.
   it('shows its stages off a terminal as one plain line each, the digest unchanged', async () => {
     githubAnswers({ reviewedOn: null, status: null }, {});
     const lines: string[] = [];
