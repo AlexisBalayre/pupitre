@@ -475,7 +475,10 @@ function buildContextMarkdown(
       '  (if `pup` is not found, run `node "$PUP_BIN" session done "<one-line summary>"`).\n' +
       '- If you are blocked on something only a human can decide, run ' +
       '`pup session ask "<question>"` and end your turn; a steer answers it. ' +
-      'pup cannot answer a selector or a plan approval.\n' +
+      'pup cannot answer a selector or a plan approval. When the answer is a choice, always ' +
+      'offer it as options with your recommendation, so the operator answers with one key: ' +
+      '`pup session ask "<question>" --option "<answer>" --option "<answer>" --recommend <n>` ' +
+      '(up to 4 options; n is the one you would pick).\n' +
       '- Peer sessions may share your files: those under Peers above, and any a steer names ' +
       'as joining later. Before editing a shared file, message the peer what you will change ' +
       '(the function or section) and agree who does what. If you change a shared signature or ' +

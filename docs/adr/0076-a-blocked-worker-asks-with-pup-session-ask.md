@@ -2,6 +2,7 @@
 
 - Status: accepted
 - Amends: [0074](0074-a-worker-is-kept-off-the-screens-pup.md)
+- Amended by: [0093](0093-a-question-offers-numbered-options-and-pup-answer.md)
 
 76. **A blocked worker asks with `pup session ask "<question>"`, and a steer answers it
     (2026-10-06, amends decision 74).** From the Copiste grilling. Decision 74 took away the

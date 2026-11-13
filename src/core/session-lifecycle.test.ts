@@ -30,6 +30,14 @@ vi.mock('./profile-compiler.service.js', async (importOriginal) => {
   return { ...actual, snapshotUserConfigHash: vi.fn(actual.snapshotUserConfigHash) };
 });
 
+// The conductor's window only: an answer to its question is a tell, whose
+// typing conductor.test.ts covers (decision 93).
+vi.mock('./conductor.service.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./conductor.service.js')>()),
+  isConductorRunning: vi.fn(() => true),
+  tellConductor: vi.fn(() => true),
+}));
+
 // The machine's memory reading only: a launch test must not depend on how
 // much the machine running it has free (decision 96).
 vi.mock('./test-slot.service.js', async (importOriginal) => ({
@@ -49,6 +57,7 @@ import {
   transcriptDir,
 } from '../claude/session-runtime.service.js';
 import { briefPath } from './brief.service.js';
+import { isConductorRunning, TELL_MAX_CHARS, tellConductor } from './conductor.service.js';
 import { openStore } from './db.client.js';
 import { DEFAULT_BASE_PROFILE } from './default-profile.constants.js';
 import {
@@ -69,11 +78,13 @@ import {
   insertTask,
   listBacklogTasks,
   listEvents,
+  openQuestion,
   type SessionRow,
   transitionSession,
 } from './session.repository.js';
 import {
   LaunchRolledBackError,
+  QuestionRefusedError,
   TaskAlreadyClaimedError,
   TerminalSessionError,
   TopRungReachedError,
@@ -81,6 +92,10 @@ import {
   UnknownTaskError,
 } from './session-lifecycle.errors.js';
 import {
+  answerConductorQuestion,
+  answerSessionQuestion,
+  askedQuestion,
+  conductorQuestion,
   createSession,
   fixRoundRoute,
   interruptSession,
@@ -1628,10 +1643,348 @@ describe('steer, interrupt and kill by session id', () => {
   // Decision 76: asking is not finishing. The worker ends its turn and the
   // next steer answers, so the row stays where a steer can reach it.
   it('records a question with its text and leaves the session running', () => {
-    markSessionQuestion(db, 's-1', 'rebase onto main or merge it?');
+    markSessionQuestion(db, 's-1', { text: 'rebase onto main or merge it?' });
 
     expect(events('question')).toEqual([{ text: 'rebase onto main or merge it?' }]);
     expect(getSession(db, 's-1')?.state).toBe('running');
+  });
+
+  it('records the options a question offers and the one it recommends', () => {
+    markSessionQuestion(db, 's-1', {
+      text: 'which?',
+      options: ['rebase', 'merge'],
+      recommended: 2,
+    });
+
+    expect(events('question')).toEqual([
+      { text: 'which?', options: ['rebase', 'merge'], recommended: 2 },
+    ]);
+  });
+});
+
+// Decision 93: what `pup session ask` and `pup conductor ask` store, refused
+// before anything is stored when it is not a question the operator can answer
+// with one key.
+describe('askedQuestion', () => {
+  const ask = (text: string | undefined, option?: string[], recommend?: string) =>
+    askedQuestion('pup session ask', text, {
+      ...(option ? { option } : {}),
+      ...(recommend === undefined ? {} : { recommend }),
+    });
+
+  it('stores the bare text when no options are offered', () => {
+    expect(ask('rebase or merge?')).toEqual({ text: 'rebase or merge?' });
+  });
+
+  it('stores the options and the recommended one by its number', () => {
+    expect(ask('which?', ['rebase', 'merge'], '2')).toEqual({
+      text: 'which?',
+      options: ['rebase', 'merge'],
+      recommended: 2,
+    });
+  });
+
+  it('stores options with no recommendation', () => {
+    expect(ask('which?', ['rebase', 'merge'])).toEqual({
+      text: 'which?',
+      options: ['rebase', 'merge'],
+    });
+  });
+
+  it.each([
+    ['no question', undefined, undefined, undefined, 'pup session ask needs the question itself.'],
+    ['a blank question', '  ', undefined, undefined, 'pup session ask needs the question itself.'],
+    ['five options', 'which?', ['a', 'b', 'c', 'd', 'e'], undefined, /at most 4 options/],
+    ['a blank option', 'which?', ['a', ' '], undefined, 'Every --option needs its text.'],
+    ['a recommendation past them', 'which?', ['a', 'b'], '3', /one of the 2 options, from 1/],
+    ['a recommendation of 0', 'which?', ['a', 'b'], '0', /one of the 2 options/],
+    ['a recommendation in words', 'which?', ['a', 'b'], 'two', /one of the 2 options/],
+    ['a recommendation with no options', 'which?', undefined, '1', /one of the 0 options/],
+  ])('refuses %s', (_, text, option, recommend, message) => {
+    expect(() => ask(text, option, recommend)).toThrow(QuestionRefusedError);
+    expect(() => ask(text, option, recommend)).toThrow(message);
+  });
+});
+
+// Decision 93: `pup answer conductor` quotes the question whole in a tell, so
+// a question no answer could reach the conductor through is refused at the
+// ask, while the conductor can still reword it.
+describe('conductorQuestion', () => {
+  const FRAME = 'Answer to your question "": '.length;
+  const WORDS_ROOM = 200;
+
+  it('stores a question every answer to fits a tell', () => {
+    expect(
+      conductorQuestion('accept the debt?', { option: ['yes', 'no'], recommend: '2' }),
+    ).toEqual({ text: 'accept the debt?', options: ['yes', 'no'], recommended: 2 });
+  });
+
+  it('stores a question that leaves exactly the room for an answer in words', () => {
+    const text = 'q'.repeat(TELL_MAX_CHARS - FRAME - WORDS_ROOM);
+
+    expect(conductorQuestion(text, {})).toEqual({ text });
+  });
+
+  it.each([
+    ['a question too long for an answer in words', 'q'.repeat(TELL_MAX_CHARS - FRAME - 199), []],
+    ['a short question with an option too long to pick', 'which?', ['yes', 'o'.repeat(780)]],
+  ])('refuses %s', (_, text, option) => {
+    expect(() => conductorQuestion(text, { option })).toThrow(QuestionRefusedError);
+    expect(() => conductorQuestion(text, { option })).toThrow(/Nothing was stored/);
+  });
+
+  it('measures the question as the answer quotes it, folded to one line', () => {
+    const text = `${'q'.repeat(TELL_MAX_CHARS - FRAME - WORDS_ROOM)}\n\n\n\n`;
+
+    expect(conductorQuestion(text, {})).toEqual({ text });
+  });
+
+  it("refuses what askedQuestion refuses, in the conductor's command", () => {
+    expect(() => conductorQuestion(' ', {})).toThrow(
+      'pup conductor ask needs the question itself.',
+    );
+  });
+});
+
+// Decision 93: a question answered with one keystroke. `pup answer` steers the
+// asker with the question in front of the answer and records the answer, which
+// closes the question; the conductor's goes by a tell instead.
+describe('answering an open question', () => {
+  let db: Database;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    db = openStore(':memory:');
+    ensureProject(db, 'proj-1', REPO);
+    insertTask(db, { id: 't-1', projectId: 'proj-1', spec: '{}' });
+    insertSession(db, {
+      id: 's-1',
+      taskId: 't-1',
+      worktreePath: `${REPO}/.worktrees/s-1`,
+      branch: 'pup/s-1',
+      profileHash: 'hash',
+      tmuxTarget: '%7',
+    });
+    transitionSession(db, 's-1', 'running');
+    markSessionQuestion(db, 's-1', {
+      text: 'rebase or merge?',
+      options: ['rebase onto main', 'merge main in'],
+      recommended: 1,
+    });
+  });
+
+  const answers = (sessionId: string | null): unknown[] =>
+    (
+      db
+        .prepare("SELECT payload FROM events WHERE session_id IS ? AND type = 'answer'")
+        .all(sessionId) as { payload: string }[]
+    ).map((row) => JSON.parse(row.payload));
+
+  it('steers the picked option, prefixed by the question, and closes it', () => {
+    answerSessionQuestion(db, 's-1', '2');
+
+    expect(steerPane).toHaveBeenCalledWith(
+      { sessionId: 's-1', paneId: '%7' },
+      'Answer to your question "rebase or merge?": option 2, merge main in',
+    );
+    expect(answers('s-1')).toEqual([
+      { question: 'rebase or merge?', text: 'merge main in', option: 2 },
+    ]);
+    expect(openQuestion(db, 's-1')).toBeUndefined();
+  });
+
+  it('sends any other text as a free answer', () => {
+    answerSessionQuestion(db, 's-1', '  neither: wait for #281  ');
+
+    expect(steerPane).toHaveBeenCalledWith(
+      { sessionId: 's-1', paneId: '%7' },
+      'Answer to your question "rebase or merge?": neither: wait for #281',
+    );
+    expect(answers('s-1')).toEqual([
+      { question: 'rebase or merge?', text: 'neither: wait for #281' },
+    ]);
+  });
+
+  it('refuses a blank reply and types nothing', () => {
+    expect(() => answerSessionQuestion(db, 's-1', '   ')).toThrow(
+      'Nothing to answer with: give an option number or words.',
+    );
+    expect(steerPane).not.toHaveBeenCalled();
+    expect(openQuestion(db, 's-1')).toBeDefined();
+  });
+
+  it.each(['3', '0'])('refuses option %s, past the options, and types nothing', (reply) => {
+    expect(() => answerSessionQuestion(db, 's-1', reply)).toThrow(QuestionRefusedError);
+    expect(steerPane).not.toHaveBeenCalled();
+    expect(answers('s-1')).toEqual([]);
+    expect(openQuestion(db, 's-1')).toBeDefined();
+  });
+
+  it('takes a number as words when the question offers no options', () => {
+    markSessionQuestion(db, 's-1', { text: 'how many retries?' });
+
+    answerSessionQuestion(db, 's-1', '3');
+
+    expect(answers('s-1')).toEqual([{ question: 'how many retries?', text: '3' }]);
+  });
+
+  it('refuses a session whose question a steer already answered', () => {
+    appendEvent(db, 's-1', 'steer', { kind: 'manual', by: 'operator' });
+
+    expect(() => answerSessionQuestion(db, 's-1', '1')).toThrow(/no open question/);
+    expect(steerPane).not.toHaveBeenCalled();
+  });
+
+  // Only the operator's steer closes it: after anyone else's, the operator
+  // can still answer it, and the answer is typed and recorded.
+  it.each([
+    ['the conductor', { kind: 'message', by: 'conductor' }],
+    ['a peer', { kind: 'peer-joined', by: 's-2' }],
+    ['the watchdog', { kind: 'resume', by: 'watch' }],
+    ['nobody named', { kind: 'message' }],
+  ])('still answers it after a steer from %s', (_, steer) => {
+    appendEvent(db, 's-1', 'steer', steer);
+
+    answerSessionQuestion(db, 's-1', '1');
+
+    expect(steerPane).toHaveBeenCalledWith(
+      { sessionId: 's-1', paneId: '%7' },
+      'Answer to your question "rebase or merge?": option 1, rebase onto main',
+    );
+    expect(answers('s-1')).toEqual([
+      { question: 'rebase or merge?', text: 'rebase onto main', option: 1 },
+    ]);
+    expect(openQuestion(db, 's-1')).toBeUndefined();
+  });
+
+  it('refuses a session that has stopped', () => {
+    transitionSession(db, 's-1', 'killed');
+
+    expect(() => answerSessionQuestion(db, 's-1', '1')).toThrow(TerminalSessionError);
+  });
+
+  // A question belongs to the run it was asked in: the agent a fresh window
+  // or a return to running puts there never asked it (decision 93).
+  it.each([
+    ['a CI fix round', 'fix_round', { prUrl: 'u', head: 'h', threads: [], rejectBase: 0 }],
+    ['a handoff respawn', 'respawn', { delivered: true }],
+    ['`pup session done`', 'session_done', { summary: 'done' }],
+    ['a return to running', 'gate_result', { from: 'blocked', to: 'running' }],
+  ] as const)('ends the question at %s', (_, type, payload) => {
+    appendEvent(db, 's-1', type, payload as never);
+
+    expect(openQuestion(db, 's-1')).toBeUndefined();
+    expect(() => answerSessionQuestion(db, 's-1', '1')).toThrow(/no open question/);
+  });
+
+  it('keeps the question through a block, and ends it at the unblock', () => {
+    transitionSession(db, 's-1', 'blocked');
+    expect(openQuestion(db, 's-1')).toBeDefined();
+
+    transitionSession(db, 's-1', 'running', { kind: 'operator-unblock' });
+
+    expect(openQuestion(db, 's-1')).toBeUndefined();
+  });
+
+  it('delivers a long answer and a long question whole', () => {
+    const question = `${'why '.repeat(100)}?`;
+    const reply = 'because '.repeat(80).trim();
+    markSessionQuestion(db, 's-1', { text: question });
+
+    answerSessionQuestion(db, 's-1', reply);
+
+    expect(steerPane).toHaveBeenCalledWith(
+      { sessionId: 's-1', paneId: '%7' },
+      `Answer to your question "${question}": ${reply}`,
+    );
+    expect(answers('s-1')).toEqual([{ question, text: reply }]);
+  });
+
+  it('records no answer when the paste was refused, so the question stays open', () => {
+    vi.mocked(steerPane).mockImplementationOnce(() => {
+      throw new SteerNotDeliveredError('s-1', 12);
+    });
+
+    expect(() => answerSessionQuestion(db, 's-1', '1')).toThrow(SteerNotDeliveredError);
+    expect(answers('s-1')).toEqual([]);
+    expect(openQuestion(db, 's-1')).toBeDefined();
+  });
+
+  // The question and its options are session-written, and the answer is typed
+  // into a pane: no control character rides along (decision 29).
+  it('scrubs control characters out of what it types', () => {
+    markSessionQuestion(db, 's-1', {
+      text: '\u001b[2Jwhich?',
+      options: ['ok\u0007\u001b]0;x', 'no'],
+    });
+
+    answerSessionQuestion(db, 's-1', '1');
+
+    const typed = String(vi.mocked(steerPane).mock.calls.at(-1)?.[1]);
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: asserting their absence
+    expect(typed).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+  });
+
+  describe("the conductor's question", () => {
+    beforeEach(() => {
+      appendEvent(db, null, 'question', { text: 'accept the debt?', options: ['yes', 'no'] });
+    });
+
+    it('tells the conductor the answer, prefixed by its question, and closes it', () => {
+      const answer = answerConductorQuestion(db, REPO, '1');
+
+      expect(tellConductor).toHaveBeenCalledWith(
+        REPO,
+        'Answer to your question "accept the debt?": option 1, yes',
+      );
+      expect(answer).toEqual({ question: 'accept the debt?', text: 'yes', option: 1 });
+      expect(answers(null)).toEqual([{ question: 'accept the debt?', text: 'yes', option: 1 }]);
+      expect(openQuestion(db, null)).toBeUndefined();
+      // A session's question is its own: the conductor's answer leaves it open.
+      expect(openQuestion(db, 's-1')).toBeDefined();
+    });
+
+    it('refuses, leaving the question open, when the tell did not land', () => {
+      vi.mocked(tellConductor).mockReturnValueOnce(false);
+
+      expect(() => answerConductorQuestion(db, REPO, 'no')).toThrow(/did not land/);
+      expect(answers(null)).toEqual([]);
+      expect(openQuestion(db, null)).toBeDefined();
+    });
+
+    it("ends the previous run's question when the conductor starts again", () => {
+      appendEvent(db, null, 'conductor_start', { name: 'pup-conductor-x' });
+
+      expect(openQuestion(db, null)).toBeUndefined();
+      expect(() => answerConductorQuestion(db, REPO, '1')).toThrow(/no open question/);
+      expect(tellConductor).not.toHaveBeenCalled();
+    });
+
+    it('refuses when no conductor runs, telling nothing', () => {
+      vi.mocked(isConductorRunning).mockReturnValueOnce(false);
+
+      expect(() => answerConductorQuestion(db, REPO, '1')).toThrow(QuestionRefusedError);
+      expect(tellConductor).not.toHaveBeenCalled();
+    });
+
+    // The question is store-written and the tell types into the conductor's
+    // pane: no control character rides along (decision 29).
+    it.each([
+      ['an option', '1'],
+      ['words', 'yes\u001b[2J\u0007 go'],
+    ])('scrubs control characters out of what it tells, answered with %s', (_, reply) => {
+      appendEvent(db, null, 'question', {
+        text: '\u001b]0;pwned\u0007accept\u009b the debt?',
+        options: ['yes\u001b[31m\n$(whoami)', 'no\u0000'],
+      });
+
+      answerConductorQuestion(db, REPO, reply);
+
+      const told = String(vi.mocked(tellConductor).mock.calls.at(-1)?.[1]);
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: asserting their absence
+      expect(told).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+      expect(told).toContain('accept');
+    });
   });
 });
 

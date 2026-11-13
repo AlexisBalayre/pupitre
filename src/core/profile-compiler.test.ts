@@ -701,6 +701,21 @@ describe('worker search delegation (decision 152)', () => {
   });
 });
 
+// Decision 93: a question whose answer is a choice comes with its options and a
+// recommendation, so the operator answers it with one key.
+describe('the protocol asks with options (decision 93)', () => {
+  it('tells the worker to offer options and its recommendation when the answer is a choice', () => {
+    const compiled = ProfileCompiler.compileProfile(makeInput());
+
+    expect(compiled.contextMarkdown).toContain(
+      'When the answer is a choice, always offer it as options with your recommendation, so ' +
+        'the operator answers with one key: `pup session ask "<question>" --option "<answer>" ' +
+        '--option "<answer>" --recommend <n>` (up to 4 options; n is the one you would pick).',
+    );
+    expect(compiled.tokenEstimate).toBeLessThanOrEqual(compiled.contextBudget);
+  });
+});
+
 describe('the status line records the plan usage (decision 156)', () => {
   const SAMPLE = {
     model: { display_name: 'Opus' },

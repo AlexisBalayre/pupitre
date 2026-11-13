@@ -16,6 +16,7 @@ vi.mock('node:child_process', async (importOriginal) => ({
   spawnSync: vi.fn(() => ({ status: 0 })),
 }));
 vi.mock('../../core/session-lifecycle.service.js', () => ({
+  answerSessionQuestion: vi.fn(() => ({ question: 'which?', text: 'merge', option: 2 })),
   interruptSession: vi.fn(),
   killSession: vi.fn(),
   launchTask: vi.fn(() => 's-launched-1'),
@@ -38,10 +39,12 @@ import { SteerNotDeliveredError, saveSessionEnv } from '../../claude/session-run
 import { startConductor, stopConductor } from '../../core/conductor.service.js';
 import { openStore } from '../../core/db.client.js';
 import {
+  appendEvent,
   ensureProject,
   getSession,
   insertSession,
   insertTask,
+  openQuestion,
   transitionSession,
 } from '../../core/session.repository.js';
 import {
@@ -51,6 +54,7 @@ import {
 } from '../../core/session-handoff.service.js';
 import { LaunchRolledBackError } from '../../core/session-lifecycle.errors.js';
 import {
+  answerSessionQuestion,
   interruptSession,
   killSession,
   launchTask,
@@ -59,6 +63,7 @@ import {
 import type { DashboardSnapshot } from '../../core/types/dashboard.types.js';
 import {
   type ActionDeps,
+  answerSelected,
   attachTo,
   conductorAttachTarget,
   interruptSelected,
@@ -167,13 +172,35 @@ describe('dashboard actions', () => {
   // The record is `steerSession`'s own (src/core/session-lifecycle.test.ts),
   // so this key and `pup steer` cannot drift apart over what a steer leaves
   // behind, or over which sessions refuse one.
+  // The screen is read-only to a session and the conductor, so the steer is
+  // the operator's, and answers an open question as theirs does (decision 93).
   it('steers through `steerSession`, as `pup steer` does', () => {
     const result = steerSelected(deps, SESSION, 'read docs/05 first');
 
     expect(steerSession).toHaveBeenCalledWith(db, SESSION, 'read docs/05 first', {
       kind: 'manual',
+      by: 'operator',
     });
     expect(result.message).toContain(SESSION);
+  });
+
+  // Decision 93: the number key and `pup answer` answer through one function,
+  // so they cannot drift over what an answer types or records.
+  it('answers through `answerSessionQuestion`, as `pup answer` does', () => {
+    expect(answerSelected(deps, SESSION, '2')).toEqual({ message: `Answered ${SESSION}: merge` });
+
+    expect(answerSessionQuestion).toHaveBeenCalledWith(db, SESSION, '2');
+  });
+
+  it('reports a refused answer as a line', () => {
+    vi.mocked(answerSessionQuestion).mockImplementationOnce(() => {
+      throw new Error('The question offers 2 options; answer 1 to 2, or in words.');
+    });
+
+    expect(answerSelected(deps, SESSION, '3')).toEqual({
+      message: 'The question offers 2 options; answer 1 to 2, or in words.',
+      failed: true,
+    });
   });
 
   it('interrupts through `interruptSession`, with no message behind it', () => {
@@ -365,6 +392,16 @@ describe('dashboard actions', () => {
         workerModel: 'sonnet',
       });
       expect(result.message).toBe('Conductor running (tmux: pup-conductor-x).');
+    });
+
+    // As `pup conductor start` does: the new run never asked the last run's
+    // question, so the start ends it (decision 93).
+    it("ends the last run's question", () => {
+      appendEvent(db, null, 'question', { text: 'accept the debt?', options: ['yes', 'no'] });
+
+      toggleConductor(deps, false, { model: '', workerModel: '' });
+
+      expect(openQuestion(db, null)).toBeUndefined();
     });
 
     // The radar is `startConductor`'s to bring up, by the store's beat
