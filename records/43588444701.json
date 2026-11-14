@@ -1,0 +1,152 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-14T11:14:34.767Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43588444701",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43588444701",
+  "actor": "AlexisBalayre",
+  "commit_sha": "070495b005e9f631c0657d46b7b88753c17c2768",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 325,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "2945-2951",
+      "description": "Several stderr printers that run while the TTY status line is drawn still call console.error instead of progress.note. Their text lands on the end of the unterminated status line and stays there, e.g. every `pup fix` on a machine without codegraph prints `stage 5/5, open window, 3sNo \\`codegraph\\` outside the repo on PATH: ...`.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1348-1350",
+      "description": "A re-gate (`pup merge` of a merged session whose PR head moved, decision 86) does not get `progress`. The status line stays at `stage 2/9, merge lock` through the whole build and test run, waiters are told the holder is `at stage 2/9, merge lock`, and measureBranch's slot-wait notes go to plain console.error and tear the line.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "888-902",
+      "description": "writeMergeLockStatus checks the lock directory's identity and then writes and renames by path. A session that swaps `.git/pup-merge.lock` for a link in that window makes pup create `status.<hex>` and replace any `status` file in the linked directory. And because the check never reads the token, an inode the next `mkdir` reuses lets a run whose lock was moved away overwrite another holder's status.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "416-437",
+      "description": "The new `settled()` helper was inserted between `withPushTargetLine`'s existing JSDoc and the function itself, so that doc now sits as a stray block above `settled`'s own doc and `withPushTargetLine` has none.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1246-1248",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "`closeSync(taken.statusFd)` runs outside `release()`'s try/finally, so a close error skips the lock release, leaves the stayAlive signal listeners installed, and replaces `fn`'s outcome, against withMergeLock's \"A release error never replaces what `fn` did\".",
+      "body": "**Concern.** The status writes are best effort: `writeMergeLockStatus` swallows its own errors. But the close of the same fd is unguarded, and it runs before `release()`'s `try … finally`:\n\n```ts\nconst release = (): boolean => {\n  unwatch();\n  closeSync(taken.statusFd);\n  // The lock goes first: ...\n  try {\n    if (!isTake(lockPath, taken)) return false;\n    return dropMergeLock(lockPath, 'released', taken);\n  } catch (error) {\n    ...\n  } finally {\n    for (const signal of LOCK_SIGNALS) process.off(signal, stayAlive);\n  }\n};\n```\n\n**Trigger.** The repo's `.git` is on NFS or a FUSE mount, and the quota is full or the server hits an I/O error. Every take writes the status at least once, because `watch` calls its listener right away. On NFS, `close(2)` flushes dirty pages and returns the deferred write error (EDQUOT, ENOSPC, EIO), and `fs.closeSync` throws it.\n\n**Result.**\n- The rename never runs, so the lock stays on disk.\n- The `finally` never runs, so the `stayAlive` SIGINT/SIGHUP listeners stay installed and Ctrl-C does nothing for the rest of the process.\n- On the success path, `if (!release()) throw …` throws the close error in place of `return result`. A `pup merge` that already fast-forwarded the target reports a failure.\n- On the error path, the close error replaces `fn`'s own error.\n\nThis breaks the doc at L1189: \"A release error never replaces what `fn` did.\" The same unguarded `closeSync` is in `tryMergeLock`'s replaced-while-taking branch (L1134). Nothing is stranded there, but a throw replaces the \"was replaced\" message and the `null` return.\n\n**Fix.** Ignore close errors as the status writes do. Don't just move the close inside the existing `try`: its catch would then print \"Could not release\" and return true without dropping the lock.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/070495b005e9f631c0657d46b7b88753c17c2768/src/core/merge-gate.service.ts#L1246-L1274\n\nhttps://github.com/AlexisBalayre/pupitre/blob/070495b005e9f631c0657d46b7b88753c17c2768/src/core/merge-gate.service.ts#L1130-L1139",
+      "suggestion": "  const release = (): boolean => {\n    unwatch();\n    try {\n      closeSync(taken.statusFd);\n    } catch {\n      // Best effort, as every status write is: only a waiter's line reads it.\n    }"
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "2309-2314",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "On a terminal, the status line stops ticking for up to 45s during `pup respawn`'s `relaunch` stage, though ADR 184 says it ticks once a second. `respawnSession` reaches `waitUntilReady`, a synchronous `syncSleep` loop bounded by READY_TIMEOUT_MS = 45_000, which blocks the unref'd setInterval. So a slow Claude TUI leaves `stage 3/3, relaunch, 1s` frozen and looking hung. `awaitHandoffReady` avoids this by calling `progress.stage(...)` on every poll; the relaunch path needs a redraw hook, or the ADR should say the time freezes there.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "906-910",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `describeLockWait` JSDoc says \"Store text a session can write, so each is scrubbed\", but `command` and `stage` come from the `status` file under `.git`, not the store. A reader who trusts \"Store text\" could treat them as database-sourced and drop the sanitizeReason calls. Suggested wording: \"Read from a file under `.git` a session can write, so each field is scrubbed.\"",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land.test.ts",
+      "line": "761-763",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The new decision-184 stage-line test was inserted between the \"Decision 164's 2026-11-11 amendment…\" comment and the test that comment describes ('records the accepted head and the pin on the landed event', ~L791). The decision-164 comment now heads the wrong test. Move it down to just above that test.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 3.9931228750000014,
+  "duration_ms": 408137,
+  "num_turns": 20,
+  "tokens": {
+    "input": 14,
+    "output": 15336,
+    "cache_read": 449815,
+    "cache_creation": 76745,
+    "total": 541910
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 140,
+      "output": 66112,
+      "cache_read": 2889117,
+      "cache_creation": 269708,
+      "cost_usd": 3.4793984000000004
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 58,
+      "output": 13752,
+      "cache_read": 514384,
+      "cache_creation": 129595,
+      "cost_usd": 0.5130619000000001
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 130,
+      "cache_read": 0,
+      "cache_creation": 4779,
+      "cost_usd": 0.000662575
+    }
+  ],
+  "permission_denials": []
+}
