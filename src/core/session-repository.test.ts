@@ -567,6 +567,57 @@ describe('task spec decoding', () => {
     it('refuses a task that is not stored', () => {
       expect(() => readTaskSpec(db, 't-gone')).toThrow(MalformedTaskSpecError);
     });
+
+    describe('a ticket (decision 187)', () => {
+      const ticket = {
+        ref: '#412',
+        type: 'feature',
+        labels: ['ready', 'design-approved'],
+        triggers: [],
+        design: 'Store the ticket on the spec.',
+        criteria: ['the kickoff quotes it'],
+      };
+
+      it('reads an approved ticket back whole', () => {
+        stored(JSON.stringify({ ...valid, ticket }));
+
+        expect(readTaskSpec(db, 't-1').ticket).toEqual(ticket);
+      });
+
+      it.each([
+        ['null', null],
+        ['a list', [ticket]],
+        ['no ref', { ...ticket, ref: undefined }],
+        ['a type that is not text', { ...ticket, type: 1 }],
+        ['labels that are not a list', { ...ticket, labels: 'design-approved' }],
+        ['no triggers', { ...ticket, triggers: undefined }],
+        ['a criterion that is not text', { ...ticket, criteria: [1] }],
+        ['a design note that is not text', { ...ticket, design: ['note'] }],
+      ])('refuses a ticket with %s, naming the task', (_, bad) => {
+        stored(JSON.stringify({ ...valid, ticket: bad }));
+
+        const read = () => readTaskSpec(db, 't-1');
+        expect(read).toThrow(MalformedTaskSpecError);
+        expect(read).toThrow('Task t-1 has an unusable spec: its ticket needs a ref, a type,');
+      });
+
+      // A row intake wrote before the operator's label, or one whose label a
+      // later write dropped: the launch, the gate and the review all refuse it.
+      it('refuses a feature ticket without the design-approved label, naming the task', () => {
+        stored(JSON.stringify({ ...valid, ticket: { ...ticket, labels: ['ready'] } }));
+
+        expect(() => readTaskSpec(db, 't-1')).toThrow(
+          'Task t-1 has an unusable spec: Ticket #412 has no design-approved label',
+        );
+      });
+
+      it('keeps the ticket through an edit', () => {
+        stored(JSON.stringify({ ...valid, ticket }));
+
+        expect(editTaskSpec(db, 't-1', { goal: 'sharper' })).toBe('updated');
+        expect(readTaskSpec(db, 't-1').ticket).toEqual(ticket);
+      });
+    });
   });
 
   describe('taskSpecForDisplay', () => {
