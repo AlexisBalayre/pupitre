@@ -7,8 +7,9 @@ import {
   SessionPaneMissingError,
   steerPane,
 } from '../claude/session-runtime.service.js';
+import { holdIdleCaches, isHoldTurnOpen, lastPrompt } from './cache-hold.service.js';
 import { findStalledSessions } from './dashboard.service.js';
-import { projectId } from './paths.utils.js';
+import { projectId, projectPaths } from './paths.utils.js';
 import { toIsoUtc } from './report-data.utils.js';
 import {
   appendEvent,
@@ -79,15 +80,27 @@ interface ResumedTurn {
  * A dormant project is passed over whole (decision 62): the operator put it
  * to sleep, and a resume typed into it would be the watcher waking it.
  *
+ * The same pass holds the cache of every worker waiting on someone else
+ * before its hour runs out (decision 179). A hold is no recovery: it is
+ * recorded in the store and not returned.
+ *
  * Returns what it acted on, one entry per pane, for `pup watch` to print.
  */
 export function sweepDeadTurns(db: Database, repoPath: string, now: number): ResumedTurn[] {
   const resumed: ResumedTurn[] = [];
   if (isProjectDormant(db, projectId(repoPath))) return resumed;
+  const paths = projectPaths(repoPath);
   for (const stalled of findStalledSessions(db, repoPath, now)) {
-    const entry = resumeSession(db, stalled.id, stalled.stalledAt, now);
+    const entry = resumeSession(
+      db,
+      stalled.id,
+      stalled.stalledAt,
+      paths.eventsFile(stalled.id),
+      now,
+    );
     if (entry) resumed.push(entry);
   }
+  holdIdleCaches(db, repoPath, now);
   const nudged = nudgeConductor(db, repoPath, now);
   if (nudged) resumed.push(nudged);
   return resumed;
@@ -96,19 +109,30 @@ export function sweepDeadTurns(db: Database, repoPath: string, now: number): Res
 /**
  * Resume one stalled session, or leave it alone. Everything this reads from
  * the pane is a question about recovery: is there a pane to read, is the turn
- * dead, has this stall already been answered. `stalledAt` is the stall's name,
- * handed over by the sweep that found it.
+ * dead, has this stall already been answered. `stalledAt` is the stall's name
+ * and `eventsFile` the file it was read off, both handed over by the sweep that
+ * found it.
  */
 function resumeSession(
   db: Database,
   sessionId: string,
   stalledAt: string,
+  eventsFile: string,
   now: number,
 ): ResumedTurn | undefined {
   const row = getSession(db, sessionId);
   // The sweep listed this session a moment ago, so the row is here unless it
   // was killed or cleaned up mid-sweep.
   if (!row) return undefined;
+  // A hold's dead turn is left as it is (decision 179). The window was waiting
+  // on someone else, and a resume would tell it to finish the task without the
+  // answer it asked for. Only a hold with no Stop after it is that turn: a hold
+  // whose turn ended has one, and a turn dead since then was prompted by
+  // someone, perhaps the operator typing into the window by hand, which records
+  // no prompt. The file's mtime cannot say which, since Claude Code sends its
+  // idle prompt a minute after a dead turn as after one that ended.
+  const prompt = lastPrompt(listEvents(db, sessionId).reverse());
+  if (prompt?.type === 'cache_hold' && isHoldTurnOpen(eventsFile, prompt)) return undefined;
   // Stamp AND age: a resume answers this stall for one stall window, not for
   // good. Through an outage the resumed turn dies again at once, no hook
   // fires and the stamp never moves — a stamp alone would leave the session

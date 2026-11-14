@@ -1,4 +1,4 @@
-import { mkdirSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -24,6 +24,7 @@ import {
 import { openStore } from './db.client.js';
 import { projectId, projectPaths } from './paths.utils.js';
 import {
+  appendEvent,
   ensureProject,
   insertSession,
   insertTask,
@@ -41,6 +42,9 @@ import {
 
 const API_ERROR = '⏺ API Error: Connection lost while your computer was asleep';
 const STALL_AGE_MS = STALLED_AFTER_MS + 60_000;
+const STOP = { hook_event_name: 'Stop' };
+const TOOL = { hook_event_name: 'PostToolUse', tool_name: 'Bash' };
+const IDLE_PROMPT = { hook_event_name: 'Notification', notification_type: 'idle_prompt' };
 
 /**
  * Wall-clock time, not a fixed instant: the conductor's cooldown compares the
@@ -83,6 +87,22 @@ function seedEventsFile(repo: string, sessionId: string, ageMs: number): void {
   writeFileSync(paths.eventsFile(sessionId), `${JSON.stringify({ hook_event_name: 'Stop' })}\n`);
   const at = new Date(now() - ageMs);
   utimesSync(paths.eventsFile(sessionId), at, at);
+}
+
+/** More hook events on disk, the file's mtime aged by `ageMs` again. */
+function appendHookEvents(repo: string, sessionId: string, events: object[], ageMs: number): void {
+  const eventsFile = projectPaths(repo).eventsFile(sessionId);
+  appendFileSync(eventsFile, events.map((event) => `${JSON.stringify(event)}\n`).join(''));
+  const at = new Date(now() - ageMs);
+  utimesSync(eventsFile, at, at);
+}
+
+/** A cache hold recorded as `holdIdleCaches` records one: its turn writes past the file as it is. */
+function recordHold(db: Database, repo: string, sessionId: string): void {
+  appendEvent(db, sessionId, 'cache_hold', {
+    idleMs: 3_000_000,
+    eventsBytes: statSync(projectPaths(repo).eventsFile(sessionId)).size,
+  });
 }
 
 /** The stall stamp the watchdog files a dead turn under: the events file's mtime. */
@@ -137,6 +157,53 @@ describe('sweepDeadTurns', () => {
         { reason: API_ERROR, stalledAt: stallStampOf(repo, 's1') },
       ]);
       expect(eventsOfType(db, 's1', 'steer')).toEqual([{ kind: 'resume', by: 'watch' }]);
+    });
+
+    describe('after a cache hold (decision 179)', () => {
+      beforeEach(() => {
+        appendEvent(db, 's1', 'question', { text: 'which ADR number?' });
+        recordHold(db, repo, 's1');
+        // Typed a minute before the idle prompt the stall is stamped with.
+        db.prepare("UPDATE events SET created_at = datetime('now', '-12 minutes')").run();
+      });
+
+      // The hold went to a worker waiting on its question, and a resume would
+      // tell it to finish without the answer it asked for. Its dead turn fired
+      // no Stop, only the idle prompt Claude Code sends a minute after.
+      it("is left alone when the turn that died was the hold's, until a later prompt", () => {
+        appendHookEvents(repo, 's1', [IDLE_PROMPT], STALL_AGE_MS);
+
+        expect(sweepDeadTurns(db, repo, now())).toEqual([]);
+        expect(deadTurnError).not.toHaveBeenCalled();
+        expect(steerPane).not.toHaveBeenCalled();
+        expect(eventsOfType(db, 's1', 'turn_died')).toEqual([]);
+
+        appendEvent(db, 's1', 'steer', { kind: 'answer', by: 'operator' });
+        expect(sweepDeadTurns(db, repo, now())).toEqual([{ id: 's1', reason: API_ERROR }]);
+      });
+
+      it("is left alone when the hold's turn ran a tool before it died", () => {
+        appendHookEvents(repo, 's1', [TOOL, IDLE_PROMPT], STALL_AGE_MS);
+
+        expect(sweepDeadTurns(db, repo, now())).toEqual([]);
+        expect(steerPane).not.toHaveBeenCalled();
+      });
+
+      // The hold's turn ended with a Stop, so the turn that died later was
+      // prompted by someone else. The operator typing an answer into the window
+      // by hand records no prompt, and that turn is resumed like any other.
+      it("is resumed when a Stop shows the hold's turn ended, though no prompt followed it", () => {
+        appendHookEvents(repo, 's1', [STOP, IDLE_PROMPT, IDLE_PROMPT], STALL_AGE_MS);
+
+        expect(sweepDeadTurns(db, repo, now())).toEqual([{ id: 's1', reason: API_ERROR }]);
+        expect(steerPane).toHaveBeenCalledWith({ sessionId: 's1', paneId: '%7' }, RESUME_MESSAGE);
+      });
+
+      it('is resumed when the events file is shorter than at the hold, as one replaced is', () => {
+        appendEvent(db, 's1', 'cache_hold', { idleMs: 3_000_000, eventsBytes: 1_000 });
+
+        expect(sweepDeadTurns(db, repo, now())).toEqual([{ id: 's1', reason: API_ERROR }]);
+      });
     });
 
     // The operator put the project to sleep; a resume would be the watcher
