@@ -1558,6 +1558,18 @@ describe('startWebDashboard', () => {
       expect(capturePane).not.toHaveBeenCalled();
     });
 
+    it('reads no pane for a merged session, whose kept pane id can name another window', async () => {
+      seedMerge('s-m', PR);
+      db.prepare('UPDATE sessions SET tmux_target = ? WHERE id = ?').run('%7', 's-m');
+      vi.mocked(capturePane).mockReturnValue('the operator shell');
+
+      const page = await readPage(viewUrl('s-m'));
+
+      expect(page).toContain('No window: the session merged and its window closed.');
+      expect(page).not.toContain('the operator shell');
+      expect(capturePane).not.toHaveBeenCalled();
+    });
+
     it('links a merged session to its PR on GitHub and offers no button that merges there', async () => {
       seedMerge('s-pr', PR);
 

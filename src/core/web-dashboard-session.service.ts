@@ -42,6 +42,10 @@ export function readSessionView(
 function readPane(db: Database, sessionId: string): SessionView['pane'] {
   const row = getSession(db, sessionId);
   if (!row || row.state === 'killed') return { hint: 'No window: the session was killed.' };
+  // Its window closed at the merge, and the pane id it kept can name another
+  // window once tmux restarts (a fix round runs as `running`, with its own pane).
+  if (row.state === 'merged')
+    return { hint: 'No window: the session merged and its window closed.' };
   try {
     return { text: capturePane(sessionPane(row)) };
   } catch (error) {
