@@ -286,7 +286,7 @@ function reviewDigest(
     if (answered > 0) {
       leftToOperator.push(
         `resolve the ${answered} thread(s) a fix round left open, or reply on one as the operator ` +
-          "and re-run pup fix to take it again; the worker sees only the bot's finding, not your reply",
+          'and re-run pup fix to take it again; the worker gets your reply with the finding',
       );
     }
     if (outdated > 0) {
