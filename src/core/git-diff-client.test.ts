@@ -31,6 +31,7 @@ import {
   gitDiffBinaryRecount,
   gitDiffNumstat,
   gitDiffPaths,
+  pinnedGitEnv,
   RewrittenGitDirError,
   rethrowIfKilled,
   runGit,
@@ -1241,7 +1242,7 @@ describe('runGit', () => {
     },
   );
 
-  it('hands a spawned git no inherited GIT_SHALLOW_FILE or GIT_NAMESPACE', () => {
+  it("hands a spawned git pup's own GIT_SHALLOW_FILE, and no inherited GIT_NAMESPACE or GIT_REPLACE_REF_BASE", () => {
     const repo = makeRepo();
     writeFileSync(join(repo, 'a.ts'), 'a\n');
     commitAll(repo, 'a');
@@ -1258,12 +1259,14 @@ describe('runGit', () => {
     expect(plainCount.trim()).toBe('1');
     vi.stubEnv('GIT_SHALLOW_FILE', shallow);
     vi.stubEnv('GIT_NAMESPACE', 'planted');
+    vi.stubEnv('GIT_REPLACE_REF_BASE', 'refs/planted/');
 
     expect(runGit(repo, ['rev-list', '--count', 'HEAD']).trim()).toBe('2');
     // What git hands its own children is what it was spawned with.
     const seen = runGit(repo, ['-c', 'alias.env=!env', 'env']);
-    expect(seen).not.toMatch(/^GIT_SHALLOW_FILE=/m);
+    expect(seen).toMatch(/^GIT_SHALLOW_FILE=\/dev\/null\/no-shallow$/m);
     expect(seen).not.toMatch(/^GIT_NAMESPACE=/m);
+    expect(seen).not.toMatch(/^GIT_REPLACE_REF_BASE=/m);
   });
 
   it("keeps the operator's config location and commit identity", () => {
@@ -2157,6 +2160,24 @@ describe('history a session can rewrite in the shared git dir (decision 89)', ()
     expect(base).toBe(revParse(repo, 'main~1'));
   });
 
+  // Listed in `<common>/shallow`, the branch tip reads as a root commit: the
+  // subjects the gate reads off the branch would lose every commit under it.
+  it('reads the parents a planted shallow file cuts off', () => {
+    const { repo } = forkedRepo();
+    writeFileSync(join(repo, '.git', 'shallow'), `${revParse(repo, 'feature')}\n`);
+    const plainSubjects = execFileSync('git', ['log', '--format=%s', 'main..feature'], {
+      cwd: repo,
+      encoding: 'utf8',
+      env: GIT_ENV,
+    });
+    expect(plainSubjects.split('\n').filter(Boolean)).toEqual(['y']);
+
+    const subjects = runGit(repo, ['log', '--format=%s', 'main..feature']);
+
+    expect(subjects.split('\n').filter(Boolean)).toEqual(['y', 'x']);
+    expect(gitDiffPaths(repo, 'main', 'feature')).toEqual(['x.ts', 'y.ts']);
+  });
+
   it('reads the tree a forged commit-graph names in place of the tip’s own', () => {
     const { repo } = forkedRepo();
     sh(repo, 'git', 'commit-graph', 'write', '--reachable');
@@ -2186,6 +2207,115 @@ describe('history a session can rewrite in the shared git dir (decision 89)', ()
       'y.ts',
       '',
     ]);
+    // GIT_TEST_COMMIT_GRAPH, which git's own suite sets, loads the graph
+    // whatever `core.commitGraph` says, so pup's git must never inherit it.
+    const testVarTree = execFileSync(
+      'git',
+      ['-c', 'core.commitGraph=false', 'log', '-1', '--format=%T', 'feature'],
+      { cwd: repo, encoding: 'utf8', env: { ...GIT_ENV, GIT_TEST_COMMIT_GRAPH: '1' } },
+    ).trim();
+    expect(testVarTree).toBe(baseTree.toString('hex'));
+    vi.stubEnv('GIT_TEST_COMMIT_GRAPH', '1');
+    try {
+      expect(runGit(repo, ['log', '-1', '--format=%T', 'feature']).trim()).toBe(
+        tipTree.toString('hex'),
+      );
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+});
+
+// The shared config can name a promisor remote, with an `uploadpack` of the
+// session's and a `protocol.file.allow` that lets it through, and a session
+// can delete an object: a read that meets the gap fetches it, running that
+// command with pup's environment (decision 89).
+describe('a promisor remote a session names in the shared config (decision 89)', () => {
+  function promisorRepo(): { repo: string; blob: string; fired: string } {
+    const repo = makeRepo();
+    writeFileSync(join(repo, 'a.ts'), 'hello\n');
+    commitAll(repo, 'base');
+    const blob = revParse(repo, 'HEAD:a.ts');
+    const fired = join(repo, '.git', 'fired');
+    const uploadPack = join(repo, '.git', 'planted-upload-pack');
+    writeFileSync(uploadPack, `#!/bin/sh\necho fetched >> '${fired}'\nexit 1\n`, { mode: 0o755 });
+    for (const [key, value] of [
+      ['core.repositoryformatversion', '1'],
+      ['extensions.partialClone', 'planted'],
+      ['remote.planted.url', repo],
+      ['remote.planted.promisor', 'true'],
+      ['remote.planted.uploadpack', uploadPack],
+      ['protocol.file.allow', 'always'],
+    ] as const) {
+      sh(repo, 'git', 'config', key, value);
+    }
+    rmSync(join(repo, '.git', 'objects', blob.slice(0, 2), blob.slice(2)));
+    return { repo, blob, fired };
+  }
+
+  /** A read of `blob` by a git that takes no argv of pup's, under `env`. */
+  const readBlob = (repo: string, blob: string, env: NodeJS.ProcessEnv) => () =>
+    execFileSync('git', ['cat-file', '-p', blob], { cwd: repo, env, stdio: 'pipe' });
+
+  it('runs in a repo where a plain git read fetches through the planted remote', () => {
+    const { repo, blob, fired } = promisorRepo();
+
+    expect(readBlob(repo, blob, GIT_ENV)).toThrow();
+    expect(readFileSync(fired, 'utf8')).toContain('fetched');
+  });
+
+  it('reads no missing object through it, and reaches it by no transport', () => {
+    const { repo, blob, fired } = promisorRepo();
+
+    expect(() => runGit(repo, ['cat-file', '-p', blob], { stdio: 'pipe' })).toThrow();
+    expect(() => runGit(repo, ['fetch', 'planted'], { stdio: 'pipe' })).toThrow(
+      /transport 'file' not allowed/,
+    );
+    expect(existsSync(fired)).toBe(false);
+  });
+
+  // A list of transport names misses the `ftp` git ships and any helper on
+  // PATH: git allows a transport it has no rule for, even past a planted
+  // `protocol.allow=never`. The helper here would record its run.
+  it('reaches it by no ftp URL and no remote helper either', () => {
+    const { repo, fired } = promisorRepo();
+    const bin = tempDir('pup-helper-');
+    writeFileSync(join(bin, 'git-remote-planted'), `#!/bin/sh\necho helper >> '${fired}'\n`, {
+      mode: 0o755,
+    });
+    vi.stubEnv('PATH', `${bin}:${process.env.PATH}`);
+    for (const [key, value] of [
+      ['remote.ftp.url', 'ftp://127.0.0.1:1/r'],
+      ['remote.helper.url', 'planted::r'],
+      ['protocol.allow', 'never'],
+      ['protocol.ftp.allow', 'always'],
+    ] as const) {
+      sh(repo, 'git', 'config', key, value);
+    }
+
+    try {
+      expect(() => runGit(repo, ['fetch', 'ftp'], { stdio: 'pipe' })).toThrow(
+        /transport 'ftp' not allowed/,
+      );
+      expect(() => runGit(repo, ['fetch', 'helper'], { stdio: 'pipe' })).toThrow(
+        /transport 'planted' not allowed/,
+      );
+      expect(existsSync(fired)).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  // gh's git takes no argv of pup's, so both pins reach it through the env;
+  // each is shown on its own by taking the other away.
+  it("keeps gh's git from fetching through it, by either pin alone", () => {
+    const { repo, blob, fired } = promisorRepo();
+    const transportsOff = { ...pinnedGitEnv(), GIT_NO_LAZY_FETCH: undefined };
+    const lazyFetchOff = { ...pinnedGitEnv(), GIT_ALLOW_PROTOCOL: undefined };
+
+    expect(readBlob(repo, blob, transportsOff)).toThrow(/transport 'file' not allowed/);
+    expect(readBlob(repo, blob, lazyFetchOff)).toThrow();
+    expect(existsSync(fired)).toBe(false);
   });
 });
 
@@ -2208,7 +2338,7 @@ describe('armedGitDrivers: includes and empty driver names (decision 89)', () =>
 
     expect(armedGitDrivers(repo)).toEqual(['include.path']);
     expect(() => assertNoArmedGitDrivers(repo)).toThrow(
-      /a config include could arm one.*include\.path/,
+      /a config include could arm one.* — include\.path\. /,
     );
   });
 
