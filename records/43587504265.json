@@ -1,0 +1,132 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-14T11:00:57.202Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43587504265",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43587504265",
+  "actor": "AlexisBalayre",
+  "commit_sha": "6b50bdaf1c9e7fa3558d9940b280e99031c04823",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 330,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1525-1540",
+      "description": "`refuseUninstalled` refuses any nested package that declares dependencies but has no `node_modules` of its own in the main checkout. That includes npm and yarn-v1 workspace members whose dependencies are hoisted to the root `node_modules`. The gate links that root directory into the checkout (`linkEnvironment(..., '.')`), and those stages used to pass. Now every merge touching such a member is refused as an operator error, and the install command it suggests does not create a member `node_modules`.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1519-1524",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "`resolvesAbove` accepts a dependency found in `node_modules` folders the gate checkout never gets. These are intermediate folders, and the root's for a package with its own lockfile. In those layouts the refusal is skipped and the stage fails on a missing runner, which reads as the branch's fault.",
+      "body": "**`resolvesAbove` counts `node_modules` folders the gate never links.**\n\n`resolvesAbove` walks every ancestor of `pkg.dir` in the main checkout:\n\n```ts\nfor (let rel = dirname(dir); ; rel = dirname(rel)) {\n  if (existsSync(join(repoPath, rel, GATE_ENVIRONMENT_DIR, dependency))) return true;\n  if (rel === '.') return false;\n}\n```\n\n`measureBranch` only links `'.'` and the touched packages' own folders (`for (const rel of ['.', ...nestedPackages.map((pkg) => pkg.dir)])`). The checkout lives in a temp `pup-gate-*` folder, so walking up from it never reaches the main checkout. Two layouts get past the new check and still fail the way this PR set out to prevent:\n\n1. **A standalone package with its own lockfile.** This is the layout the PR targets. `linkEnvironment`'s doc says such a package \"resolves from its own directory\". `resolvesAbove` matches by name only, so a never-installed `tools/x` with `pnpm-lock.yaml` whose devDependencies (say `vitest`, `typescript`) are also root deps is not refused. `pnpm run` in a non-workspace package puts only the package's own `node_modules/.bin` on PATH, so the stage fails with `vitest: not found` (medium: pnpm internals). In this repo, `tools/review` is one dependency away from this: every dependency it declares except `zod` is also a direct root dependency.\n2. **A dependency in an intermediate folder.** Take `tools/` as an installed yarn workspace root with `tools/review` as a member. `touchedNestedPackages` gives each file to the innermost package only (`typescript.adapter.ts:566-570`), so `tools/node_modules` is never linked. Yet `resolvesAbove` returns true at `rel = 'tools'`.\n\nThe function's own JSDoc says \"the gate links the root's\", so it means to count only the root. Neither layout has a test.\n\n**Suggested direction:** count only the root (`rel === '.'`), and skip the hoisting allowance entirely when `pkg.dir` holds its own lockfile (`pnpm-lock.yaml`, `yarn.lock`, `package-lock.json`). Only workspace members hoist, and a member has no lockfile of its own.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/6b50bdaf1c9e7fa3558d9940b280e99031c04823/src/core/merge-gate.service.ts#L1519-L1524\nhttps://github.com/AlexisBalayre/pupitre/blob/6b50bdaf1c9e7fa3558d9940b280e99031c04823/src/core/merge-gate.service.ts#L1544-L1545",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1547-1552",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The install command in the refusal comes from `packageManager(<repo>/<pkg.dir>)`, which only looks for a lockfile in the package's own folder. Every yarn or pnpm workspace member therefore gets told to run `npm --prefix <dir> install`, which is the wrong tool and the wrong folder.",
+      "body": "**A refused workspace member is told to install with npm in the member folder.**\n\n```ts\nconst flag = INSTALL_DIR_FLAG[command.command] ?? '--prefix';\n... `Install it with \\`${shellWord(command.command)} ${flag} ${shellWord(dir)} install\\`` ...\n```\n\n`command.command` is set by `packageManager(join(ctx.configPath, dir))` (`src/adapters/typescript.adapter.ts:170-174`, used at 578/586). That function only looks for `pnpm-lock.yaml` or `yarn.lock` in the member's own folder and otherwise returns `'npm'`. A workspace member keeps its lockfile at the workspace root, so every pnpm or yarn-v1 member resolves to `npm`. That was harmless while the value only ran `npm run <stage>`. This PR is the first to turn it into install advice.\n\n**Trigger:** a pnpm or yarn workspace gains a member whose dependencies have not been installed in the main checkout yet, for example a new member added since the last `pnpm install`. The member has no `node_modules`, and `resolvesAbove` finds nothing at the root, because pnpm keeps member dependencies under `.pnpm` (medium: pnpm hoisting defaults). The gate then says \"Install it with `npm --prefix tools/review install`\":\n\n- **pnpm:** npm rejects `workspace:` dependency specifiers, so the command fails.\n- **yarn v1:** it writes a stray `package-lock.json` and an npm-built `node_modules` into the member, in the trusted checkout. That folder then satisfies the `existsSync(join(repoPath, pkg.dir, 'node_modules'))` early return, so later gate runs pass on an environment the repo doesn't use.\n\nThe per-manager `INSTALL_DIR_FLAG` table shows the message was meant to name the right tool. Its `yarn` and `pnpm` entries are only ever reached by standalone packages, and no test covers a refused workspace member.\n\n**Suggested direction:** find the lockfile by walking up from `pkg.dir` to the root, and have the advice name that tool and that folder.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/6b50bdaf1c9e7fa3558d9940b280e99031c04823/src/core/merge-gate.service.ts#L1547-L1552\nhttps://github.com/AlexisBalayre/pupitre/blob/6b50bdaf1c9e7fa3558d9940b280e99031c04823/src/adapters/typescript.adapter.ts#L170-L174",
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0059-a-nested-package-s-own-runner-is-a.md",
+      "line": "109-111",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "ADR 0059's Ceilings paragraph still says an uninstalled nested package \"fails its stage\". The gate now refuses before any stage runs and names an install command, so the paragraph needs a one-line pointer to the new refusal.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "2841-2843",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The added sentence \"A package with no environment to link is refused before anything is linked.\" restates the next line and `refuseUninstalled`'s JSDoc. Drop it.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 2,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.3689063749999995,
+  "duration_ms": 317445,
+  "num_turns": 17,
+  "tokens": {
+    "input": 14,
+    "output": 13356,
+    "cache_read": 331653,
+    "cache_creation": 54859,
+    "total": 399882
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 100,
+      "output": 45997,
+      "cache_read": 1094923,
+      "cache_creation": 158754,
+      "cost_usd": 2.0976716000000004
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 38,
+      "output": 8000,
+      "cache_read": 219882,
+      "cache_creation": 67381,
+      "cost_usd": 0.2705167
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 217,
+      "cache_read": 0,
+      "cache_creation": 4875,
+      "cost_usd": 0.000718075
+    }
+  ],
+  "permission_denials": []
+}
