@@ -1313,6 +1313,42 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       );
     });
 
+    // A manager installing a package with no dependencies writes its lockfile
+    // and no node_modules, so there is no install to ask for.
+    it('runs a package with its own lockfile and no dependencies', async () => {
+      commitNestedPackage({ test: 'true', typecheck: 'true' });
+      commitIn(repo, 'tools/review/package-lock.json', '{}\n');
+      const worktree = seedSession(db, repo, NESTED_SCOPE);
+      commitIn(worktree, 'tools/review/src/r.ts', 'export const r = 1;\n');
+
+      expect((await merge(nestedAdapter())).status).toBe('merged');
+    });
+
+    // A workspace rooted below the repo root hoists its members' dependencies
+    // into its own node_modules, which the gate links beside the member's.
+    it('runs a member whose dependencies are hoisted to a workspace root below the repo root', async () => {
+      commitIn(
+        repo,
+        'tools/review/package.json',
+        JSON.stringify({ name: 'review', private: true, workspaces: ['packages/*'] }),
+      );
+      commitIn(repo, 'tools/review/package-lock.json', '{}\n');
+      commitIn(
+        repo,
+        'tools/review/packages/a/package.json',
+        JSON.stringify({
+          name: 'a',
+          scripts: { test: 'test -d ../../node_modules/vitest', typecheck: 'true' },
+          devDependencies: { vitest: '^3.0.0' },
+        }),
+      );
+      mkdirSync(join(repo, 'tools', 'review', 'node_modules', 'vitest'), { recursive: true });
+      const worktree = seedSession(db, repo, NESTED_SCOPE);
+      commitIn(worktree, 'tools/review/packages/a/src/a.ts', 'export const a = 1;\n');
+
+      expect((await merge(nestedAdapter())).status).toBe('merged');
+    });
+
     it("refuses the merge when the package's own test script fails", async () => {
       commitNestedPackage({ test: 'echo nested-test-ran; exit 3', typecheck: 'true' });
       const worktree = seedSession(db, repo, NESTED_SCOPE);

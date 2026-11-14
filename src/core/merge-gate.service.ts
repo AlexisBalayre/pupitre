@@ -1542,7 +1542,7 @@ function nearestLockfile(
  * Refuse a nested package whose stages would run with no environment: one
  * the trusted manifest gives a dependency that resolves from no
  * `node_modules` the gate links, the package's own or, for a workspace
- * member, the root's, and the pinned tree commits none either.
+ * member, its workspace root's, and the pinned tree commits none either.
  * `linkEnvironment` would link nothing, and the stage would fail on a runner
  * it cannot find, which reads as the branch's fault. It throws, like a
  * timeout under load: the operator installs, with the manager and in the
@@ -1557,13 +1557,17 @@ function refuseUninstalled(repoPath: string, checkout: string, pkg: NestedPackag
   const manifest: { dependencies?: object; devDependencies?: object } = JSON.parse(
     readPlainFile(join(repoPath, pkg.dir, 'package.json')),
   );
-  const declared = { ...manifest.dependencies, ...manifest.devDependencies };
+  const declared = Object.keys({ ...manifest.dependencies, ...manifest.devDependencies });
+  // Nothing to install: a manager writes the lockfile and no `node_modules`.
+  if (declared.length === 0) return;
   const lock = nearestLockfile(repoPath, pkg.dir);
-  // Only a member, with no lockfile of its own, has its dependencies hoisted,
-  // and of the directories above it the gate links the root's alone.
+  // Only a member, with no lockfile of its own, has its dependencies hoisted:
+  // to the workspace root holding its lockfile, the repo root when none
+  // does, and the gate links that root's environment too.
+  const root = lock?.dir ?? '.';
   if (
-    lock?.dir !== pkg.dir &&
-    Object.keys(declared).every((name) => existsSync(join(repoPath, GATE_ENVIRONMENT_DIR, name)))
+    root !== pkg.dir &&
+    declared.every((name) => existsSync(join(repoPath, root, GATE_ENVIRONMENT_DIR, name)))
   ) {
     return;
   }
@@ -2863,9 +2867,14 @@ export async function measureBranch(
   // Every environment before any stage: a stage runs session code with the
   // checkout writable, so a link made after it could follow a swapped-in
   // parent out of the checkout (decision 81). A package with no environment
-  // to link is refused before anything is linked.
+  // to link is refused before anything is linked. A member's workspace root,
+  // where its nearest lockfile sits, is linked too: its dependencies are
+  // hoisted there.
   for (const pkg of nestedPackages) refuseUninstalled(req.repoPath, checkoutDir, pkg);
-  for (const rel of ['.', ...nestedPackages.map((pkg) => pkg.dir)]) {
+  const workspaceRoots = nestedPackages.map(
+    (pkg) => nearestLockfile(req.repoPath, pkg.dir)?.dir ?? '.',
+  );
+  for (const rel of new Set(['.', ...workspaceRoots, ...nestedPackages.map((pkg) => pkg.dir)])) {
     linkEnvironment(req.repoPath, checkoutDir, rel);
   }
   // Resolved from the trusted main checkout, not the session's worktree: a
