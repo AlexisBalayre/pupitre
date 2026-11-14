@@ -141,6 +141,7 @@ import {
   runMergeGate as runGate,
   waitForLoad,
   withMergeLock,
+  withScratchGitDir,
 } from './merge-gate.service.js';
 import { GateInterruptedError, UndeclaredSandboxError } from './sandbox.utils.js';
 import {
@@ -2867,6 +2868,38 @@ describe('firstOwnSubject (decision 137)', () => {
     const read = vi.mocked(execFileSync).mock.calls.at(-1)?.[1] as string[];
     expect(read.join(' ')).toContain('-c core.useReplaceRefs=false');
     expect(read.join(' ')).toContain('-c core.commitGraph=false log --reverse --no-merges');
+  });
+});
+
+// The scratch dir borrows the repo's objects, whose `info/alternates` a
+// session can write. A fetch starts `git for-each-ref` in each alternate's
+// repo, with the `-c` pins unset and that repo's config read. Before Git 2.44
+// a dangling ref there could lazily fetch through a remote that config names
+// (decision 89).
+describe('withScratchGitDir under a planted alternates (decision 89)', () => {
+  it("starts no git in the alternate's repo, so its dangling ref fails no fetch", () => {
+    const repo = initRepo();
+    const origin = initRepo();
+    commitIn(origin, 'src/next.ts', 'export const next = 2;\n');
+    const planted = tempDir('pup-planted-');
+    sh(planted, 'git', 'init', '-q', '--bare');
+    writeFileSync(join(planted, 'refs', 'heads', 'dangling'), `${'1'.repeat(40)}\n`);
+    writeFileSync(
+      join(repo, '.git', 'objects', 'info', 'alternates'),
+      `${join(planted, 'objects')}\n`,
+    );
+    const trace = join(tempDir('pup-trace-'), 'trace');
+
+    expect(() => sh(repo, 'git', 'fetch', '-q', origin, 'main')).toThrow();
+    const fetched = withScratchGitDir(repo, 'pup-test-', (git) => {
+      git(['fetch', '--quiet', '--no-tags', origin, '+refs/heads/main:refs/heads/origin'], {
+        stdio: 'pipe',
+        env: { GIT_TRACE: trace },
+      });
+      return git(['rev-parse', 'refs/heads/origin']).trim();
+    });
+    expect(fetched).toBe(sh(origin, 'git', 'rev-parse', 'HEAD').trim());
+    expect(readFileSync(trace, 'utf8')).not.toContain('for-each-ref');
   });
 });
 

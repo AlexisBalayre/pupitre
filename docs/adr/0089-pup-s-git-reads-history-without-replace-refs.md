@@ -118,10 +118,23 @@
     `edit`, `create` and `comment`, which read GitHub's API, so its git never needs a
     transport. The two gits that reach a remote on purpose, the gate's push and `pup land`'s
     fetch, run in `withScratchGitDir`, whose runner passes `reachesRemote` and keeps the
-    transports. Its scratch git dir reads no config a session can write, so it reaches only
-    the URL it is handed, and it still pins `ext` off and keeps the lazy-fetch pin. *Cost:* a
-    main checkout that really is a partial clone fails on a missing object rather than
-    fetching it.
+    transports. Its scratch git dir reads no config a session can write. It borrows the
+    repo's object store, though, whose `info/alternates` a session can write. For each
+    alternate that is a repo, a fetch, and the `rev-list --alternate-refs` of its
+    connectivity check, start `git --git-dir=<alternate's repo> for-each-ref`, first
+    unsetting `GIT_CONFIG_PARAMETERS` and `GIT_CONFIG_COUNT`. That git read the session's
+    config with none of the `-c` pins and no transport pin. Before Git 2.44 a dangling ref
+    there could lazily fetch from a promisor remote that config names (CI review on PR
+    #333). Verified on Git 2.54: the child starts with both variables unset, and a dangling
+    ref there fails the fetch. The lazy fetch was not reproduced, for Git 2.54 printed the
+    ref without reading its object. The runner now passes `-c core.alternateRefsCommand=true`.
+    The scratch git reads that key itself, and hands it to its `rev-list` as
+    `GIT_CONFIG_PARAMETERS`, so each runs `true`, which prints no ref, in place of that git.
+    Neither the scratch git nor any git it starts then reads a config a session can write,
+    so it reaches only the URL it is handed. It still pins `ext` off and keeps the lazy-fetch
+    pin. *Cost:* a main checkout that really is a partial clone fails on a missing object
+    rather than fetching it. A fetch no longer offers an alternate's refs as haves, so for a
+    clone made with `--reference` it may receive objects the alternate already holds.
     *Ceilings.* The session hooks' `safe_git` and codegraph's git get `core.commitGraph=false`
     through `GIT_SAFE_CONFIG` but neither `GIT_HISTORY_ENV` nor the transport pins, so grafts
     and a shallow file still bend what they read and a planted promisor remote can still be
@@ -168,5 +181,7 @@
     transport through, and which lacks a blob, plain git's `cat-file -p` of the blob runs
     the command. `runGit`'s read of it and its `fetch` of that remote run nothing, the fetch
     refused as "transport 'file' not allowed". gh's git under `pinnedGitEnv` runs nothing
-    with either pin taken away, the lazy-fetch pin or the env config. Each fails with its
-    fix removed.
+    with either pin taken away, the lazy-fetch pin or the env config. In `merge-gate.test.ts`,
+    under a planted `objects/info/alternates` naming a bare repo with a dangling ref, a plain
+    `git fetch` in the repo fails, while `withScratchGitDir`'s fetch succeeds and its
+    `GIT_TRACE` names no `for-each-ref`. Each fails with its fix removed.

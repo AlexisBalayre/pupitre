@@ -626,7 +626,8 @@ export const GIT_MAX_BUFFER = 64 * 1024 * 1024;
  * environment rather than replacing it, so a caller names only what it adds.
  * `timeout` replaces `spawnOptions`' deadline. `reachesRemote` leaves the
  * transports to the operator's config rather than pinning them off. Only
- * `withScratchGitDir` sets it, whose git reads no config a session can write.
+ * `withScratchGitDir` sets it. Neither its git nor any git that git starts
+ * reads a config a session can write, once it pins `core.alternateRefsCommand`.
  */
 interface RunGitOptions {
   env?: NodeJS.ProcessEnv;
