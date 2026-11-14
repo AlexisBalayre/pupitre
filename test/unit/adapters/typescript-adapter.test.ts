@@ -470,7 +470,12 @@ describe('typescriptAdapter.testFiles', () => {
     sh(repo, 'git', '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qam', 'narrow');
     const narrowed = sh(repo, 'git', 'rev-parse', 'HEAD');
     sh(repo, 'git', 'reset', '-q', '--hard', sha);
-    const ctx = { configPath: repo, measurePath: makeRepo(trusted), measureSha: narrowed };
+    const ctx = {
+      configPath: repo,
+      configSha: sha,
+      measurePath: makeRepo(trusted),
+      measureSha: narrowed,
+    };
 
     expect(typescriptAdapter.testFiles?.(ctx, ['src/a.test.ts', 'src/big.test.ts'])).toEqual([
       'src/a.test.ts',

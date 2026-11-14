@@ -73,6 +73,7 @@ import {
   findOpenPullRequest,
   originRepoSlug,
   rewritePullRequest,
+  setGateStatus,
 } from './github.client.js';
 import { globToRegExp } from './glob.utils.js';
 import { readOriginUrl } from './init.service.js';
@@ -2359,6 +2360,9 @@ async function gateAndMerge(
       // The body vouches for `sha`; a session holding the operator's gh login
       // can push the branch between our push and the PR call (decision 82).
       assertPullRequestHead(req.repoPath, prUrl, pullRequest.repo, sha);
+      // Before the session moves, so a gh failure here leaves a run to retry
+      // (decisions 27, 182).
+      setGateStatus(req.repoPath, pullRequest.repo, sha, session.id);
     } catch (error) {
       throw withLedgerKept(error, ledgerKept);
     }
@@ -2789,8 +2793,11 @@ export async function measureBranch(
       // checkout; `repoPath` is passed to scope the toolchain cache, and stays
       // read-only, which is what keeps decision 29's trusted checkout trusted
       // while the session's own code is running.
+      // `root`: a nested package's cwd an earlier child redirected out of the
+      // checkout through a link fails the stage, naming it (decision 180).
       await runGateChild(command.command, command.args, {
         cwd,
+        root: checkoutDir,
         repoPath: req.repoPath,
         ...(command.writablePaths ? { writablePaths: command.writablePaths } : {}),
         gateEnv: req.gateEnv,
@@ -2881,6 +2888,7 @@ export async function measureBranch(
     measurePath: checkoutDir,
     configPath: req.repoPath,
     measureSha: sha,
+    configSha: targetSha,
     ...(req.gateEnv?.length ? { gateEnv: req.gateEnv } : {}),
   };
   const changedPaths = gitDiffPaths(req.repoPath, targetSha, sha);
@@ -3054,8 +3062,17 @@ export async function measureBranch(
     complexityAdapters.length > 0
       ? {
           // "Before" reads the main checkout, which the merge lock holds at
-          // the target branch — no historical checkout needed.
-          before: complexityOf(localContext(req.repoPath, req.gateEnv), complexityPaths),
+          // the target branch — no historical checkout needed. What git reads
+          // of it is pinned to the target sha, never the main checkout's HEAD,
+          // which a session can detach while this runs (decision 161).
+          before: complexityOf(
+            {
+              ...localContext(req.repoPath, req.gateEnv),
+              measureSha: targetSha,
+              configSha: targetSha,
+            },
+            complexityPaths,
+          ),
           after: complexityOf(capabilityContext, changedPaths),
         }
       : undefined;
@@ -3204,9 +3221,9 @@ export async function measureBranch(
     req.repoPath,
     targetSha,
     sha,
-    // The trusted lists are the target's, not what a session wrote to the main checkout.
-    collects &&
-      ((files) => (intact ? collects({ ...capabilityContext, configSha: targetSha }, files) : [])),
+    // The trusted lists are the target's, not what a session wrote to the main
+    // checkout: the context carries the target sha as `configSha`.
+    collects && ((files) => (intact ? collects(capabilityContext, files) : [])),
   );
   const split = `${changed.source} source + ${changed.test} test + ${changed.docs} docs changed lines`;
   const sizeFindings: string[] = [];
