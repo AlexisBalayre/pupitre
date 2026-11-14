@@ -227,3 +227,28 @@
     window, refuses a conductor or a session the process tree finds with its markers unset
     and a process tree it cannot read, writing nothing, and records the tty and
     `TMUX_PANE` it saw, dropping a pane that is not one.
+    *Amendment (2026-11-13): the rescope refuses the paths that set up a worker's own
+    confinement and every glob metacharacter pup's matcher reads literally.* Two parts of
+    *The globs* above change. First, `.husky` (any path under it, in any case) and
+    `scripts/pre-commit` are refused beside `.claude` (refused already, as a protected path)
+    and `.github`. They are the git hooks that check a worker's own commits, so a session
+    whose scope a rescope widens onto them could rewrite the checks it then commits under;
+    an operator who means a task to change them edits them outside a rescope. Since the
+    first segment is literal past the wildcard check, `.husky` is refused as a first
+    segment. `scripts/pre-commit` sits under a directory other files share, so a glob is
+    refused when it matches the path in any case (`scripts/**`, `scripts/*`,
+    `scripts/pre-*`) or names a directory above it, bare or with a trailing `/`
+    (`scripts`, `scripts/`), which the edit hooks read as everything beneath it;
+    `scripts/adr-index.sh`, `scripts/pre-commit.md` and `docs/scripts/pre-commit` pass.
+    The sentence that git hook directories are code an operator may mean a task to change
+    no longer holds for these two. Second, a glob holding `[`, `]`, `{`, `}` or `\` is
+    refused outright. pup's matcher escapes them, so they were no bypass there, but a
+    matcher that reads globs gitignore- or bash-style takes `[.]github/**` and
+    `\.github/**` for `.github/**` and `{docs,.github}/**` for both directories, and a
+    scope stored with them would widen past what the operator meant wherever such a
+    matcher reads it. Refusing them costs nothing a rescope needs: it names paths, and no
+    path in this repo holds one. *Tests.* The refusal table in `task-rescope.test.ts`
+    gains `.husky` in any case and form, `scripts/pre-commit` and the globs that reach it,
+    and each metacharacter alone and in the three `.github` forms the rescope used to take,
+    which it now refuses; the plain-path test takes the near misses named above,
+    `.huskyrc` and `docs/.husky/x` among them.
