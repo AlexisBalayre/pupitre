@@ -4,6 +4,7 @@ import { barChart, type ChartDatum } from './chart.utils.js';
 import { listLedgerEntries, listOverdueLedgerEntries } from './ledger.repository.js';
 import { projectId } from './paths.utils.js';
 import { asStringArray, parseJsonOr, toIsoUtc } from './report-data.utils.js';
+import { actionButton } from './web-dashboard-actions.service.js';
 import { DAY_MS, escapeHtml, hint, oneLine, section } from './web-dashboard-sheet.utils.js';
 
 /** One open ledger entry as the Debt sheet reads it, every string already through `oneLine`. */
@@ -206,8 +207,14 @@ function entryLines(entry: DebtSheetEntry): string {
     `<div class="desc"><span class="sid">#${escapeHtml(entry.id)}</span> ${escapeHtml(entry.description)}` +
     `${entry.overdue ? ' <span class="state state-blocked">overdue</span>' : ''}</div>` +
     `<div class="fact">${escapeHtml(`reason: ${entry.reason}`)}</div>` +
-    `<div class="fact">${escapeHtml(`review by ${entry.reviewBy}, accepted by ${entry.acceptedBy}, held ${days(entry.ageDays)}`)}</div>`
+    `<div class="fact">${escapeHtml(`review by ${entry.reviewBy}, accepted by ${entry.acceptedBy}, held ${days(entry.ageDays)}`)}</div>` +
+    closeButton(entry)
   );
+}
+
+/** `pup debt close <id>`, which the page asks to confirm before it runs (decision 91). */
+function closeButton(entry: DebtSheetEntry): string {
+  return actionButton('debt-close', { id: entry.id }, `Close #${entry.id}`);
 }
 
 function ledgerList(entries: DebtSheetEntry[]): string {
@@ -216,7 +223,8 @@ function ledgerList(entries: DebtSheetEntry[]): string {
       `<li class="entry${entry.overdue ? ' overdue' : ''}"><div class="meta"><span class="sid">#${escapeHtml(entry.id)}</span>` +
       `${entry.overdue ? '<span class="state state-blocked">overdue</span>' : ''}</div>` +
       `<div class="desc">${escapeHtml(entry.description)}</div>` +
-      `<div class="fact">accepted by ${escapeHtml(entry.acceptedBy)}, review by ${escapeHtml(entry.reviewBy)}</div></li>`,
+      `<div class="fact">accepted by ${escapeHtml(entry.acceptedBy)}, review by ${escapeHtml(entry.reviewBy)}</div>` +
+      `${closeButton(entry)}</li>`,
   );
   return `<details><summary>${escapeHtml(`${entries.length} open, oldest first`)}</summary><ul class="rows">${rows.join('')}</ul></details>`;
 }

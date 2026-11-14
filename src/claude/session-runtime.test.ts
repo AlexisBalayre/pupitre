@@ -64,6 +64,7 @@ import {
   attachCommand,
   attachWindow,
   ConfigDirRefusedError,
+  capturePane,
   claudeUserDir,
   conductorName,
   conductorPane,
@@ -1022,12 +1023,24 @@ describe('interruptPane', () => {
     expect((options as { env?: NodeJS.ProcessEnv }).env?.TMUX).toBeUndefined();
   });
 
+  // The dashboard's session view reads the window through this (decision 91):
+  // plain text, no styling escapes, from the pinned pane alone.
+  it('captures the pane as plain text, addressed to its pane id', () => {
+    vi.mocked(execFileSync).mockReturnValueOnce('> working\n' as never);
+
+    expect(capturePane(PANE)).toBe('> working\n');
+    expect(vi.mocked(execFileSync).mock.calls.map(([, args]) => args)).toEqual([
+      ['capture-pane', '-p', '-t', '%7'],
+    ]);
+  });
+
   it('refuses a recorded target that is not a pane id before touching tmux', () => {
     // A row from before panes were pinned holds the session NAME, which tmux
     // would resolve to the active pane — the hole this closes. Nothing is sent.
     const legacy: SessionPane = { sessionId: 's-1', paneId: 'pup-s-1' };
 
     expect(() => interruptPane(legacy)).toThrow(SessionPaneMissingError);
+    expect(() => capturePane(legacy)).toThrow(SessionPaneMissingError);
     expect(() => steerPane(legacy, 'do X')).toThrow(
       'Session s-1 recorded "pup-s-1" as its pane, which is not a tmux pane id (it was ' +
         'launched before panes were pinned); nothing was sent. Respawn it: ' +
