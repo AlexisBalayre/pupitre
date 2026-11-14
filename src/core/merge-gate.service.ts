@@ -1508,6 +1508,75 @@ function linkEnvironment(repoPath: string, checkout: string, rel: string): void 
   }
 }
 
+const NPM = { name: 'npm', lockfile: 'package-lock.json', dirFlag: '--prefix' };
+
+/**
+ * Each package manager the adapter resolves, in its order: the lockfile it
+ * writes, and how it names the directory to install in.
+ */
+const PACKAGE_MANAGERS = [
+  { name: 'pnpm', lockfile: 'pnpm-lock.yaml', dirFlag: '--dir' },
+  { name: 'yarn', lockfile: 'yarn.lock', dirFlag: '--cwd' },
+  NPM,
+];
+
+/**
+ * The nearest directory at or above `dir`, up to the root, that holds a
+ * lockfile in the main checkout, and the manager that wrote it. A workspace
+ * member keeps none of its own: it installs with its workspace root.
+ */
+function nearestLockfile(
+  repoPath: string,
+  dir: string,
+): { dir: string; manager: typeof NPM } | undefined {
+  for (let rel = dir; ; rel = dirname(rel)) {
+    const manager = PACKAGE_MANAGERS.find(({ lockfile }) =>
+      existsSync(join(repoPath, rel, lockfile)),
+    );
+    if (manager) return { dir: rel, manager };
+    if (rel === '.') return undefined;
+  }
+}
+
+/**
+ * Refuse a nested package whose stages would run with no environment: one
+ * the trusted manifest gives a dependency that resolves from no
+ * `node_modules` the gate links, the package's own or, for a workspace
+ * member, the root's, and the pinned tree commits none either.
+ * `linkEnvironment` would link nothing, and the stage would fail on a runner
+ * it cannot find, which reads as the branch's fault. It throws, like a
+ * timeout under load: the operator installs, with the manager and in the
+ * directory the nearest lockfile names, and the session has nothing to fix
+ * (decision 138).
+ */
+function refuseUninstalled(repoPath: string, checkout: string, pkg: NestedPackage): void {
+  if (pkg.commands.length === 0) return;
+  if (existsSync(join(repoPath, pkg.dir, GATE_ENVIRONMENT_DIR))) return;
+  if (lstatSync(join(checkout, pkg.dir, GATE_ENVIRONMENT_DIR), { throwIfNoEntry: false })) return;
+  // Parsed without a guard: the adapter read `commands` from this same file.
+  const manifest: { dependencies?: object; devDependencies?: object } = JSON.parse(
+    readPlainFile(join(repoPath, pkg.dir, 'package.json')),
+  );
+  const declared = { ...manifest.dependencies, ...manifest.devDependencies };
+  const lock = nearestLockfile(repoPath, pkg.dir);
+  // Only a member, with no lockfile of its own, has its dependencies hoisted,
+  // and of the directories above it the gate links the root's alone.
+  if (
+    lock?.dir !== pkg.dir &&
+    Object.keys(declared).every((name) => existsSync(join(repoPath, GATE_ENVIRONMENT_DIR, name)))
+  ) {
+    return;
+  }
+  // No lockfile anywhere: npm in the package itself, as the adapter runs it.
+  const { dir, manager } = lock ?? { dir: pkg.dir, manager: NPM };
+  throw new Error(
+    `${quotePath(pkg.dir)} has no ${GATE_ENVIRONMENT_DIR} in the main checkout, so its ` +
+      `${pkg.commands.map((c) => c.stage).join(' and ')} stages cannot find their tools; ` +
+      `nothing was merged. Install it with \`${manager.name} ${manager.dirFlag} ` +
+      `${shellWord(quotePath(dir))} install\` in ${shellWord(repoPath)}, then merge again.`,
+  );
+}
+
 /**
  * Remove the gate's checkout and its registration. A plain removal rather than
  * `worktree remove`, which refuses a checkout that was never cut; the prune
@@ -2793,7 +2862,9 @@ export async function measureBranch(
     ]) ?? [];
   // Every environment before any stage: a stage runs session code with the
   // checkout writable, so a link made after it could follow a swapped-in
-  // parent out of the checkout (decision 81).
+  // parent out of the checkout (decision 81). A package with no environment
+  // to link is refused before anything is linked.
+  for (const pkg of nestedPackages) refuseUninstalled(req.repoPath, checkoutDir, pkg);
   for (const rel of ['.', ...nestedPackages.map((pkg) => pkg.dir)]) {
     linkEnvironment(req.repoPath, checkoutDir, rel);
   }
