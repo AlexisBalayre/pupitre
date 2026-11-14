@@ -18,6 +18,7 @@ import {
   pushTarget,
 } from './merge-gate.service.js';
 import { projectId } from './paths.utils.js';
+import { NO_PROGRESS, type StageProgress } from './progress.utils.js';
 import { getSession, getTask, listSessions, type SessionRow } from './session.repository.js';
 
 const CI_WAIT_USE: OriginUse = { command: '`pup ci wait`', untouched: 'Nothing was waited for.' };
@@ -88,10 +89,16 @@ interface CiWaitOutcome {
  * its final `SUCCESS` status, its `FAILURE` on the head, the preflight's
  * comment-only skip on it, a head no longer the gate's pin, or a PR no longer
  * open. A status the owner asked `@claude review` past is the run's before,
- * so it finishes nothing. Nothing prints while it waits; a gh read that fails
+ * so it finishes nothing. Nothing but `progress` prints while it waits, on
+ * stderr, so the digest stays the one line on stdout; a gh read that fails
  * is one more wait, and the timeout's line names the last thing seen.
  */
-export async function waitForCiReview(db: Database, req: CiWaitRequest): Promise<CiWaitOutcome> {
+export async function waitForCiReview(
+  db: Database,
+  req: CiWaitRequest,
+  progress: StageProgress = NO_PROGRESS,
+): Promise<CiWaitOutcome> {
+  progress.stage('find PR');
   const { session, prUrl, pinned, repo } = pullRequestToWaitOn(db, req.repoPath, req.target);
   assertGhAvailable(CI_WAIT_USE.command);
   const clock = req.clock ?? REAL_CLOCK;
@@ -100,6 +107,7 @@ export async function waitForCiReview(db: Database, req: CiWaitRequest): Promise
   const id = session.id;
   const deadline = clock.now() + req.timeoutMs;
   let lastSeen = 'GitHub was not read';
+  progress.stage('wait for review');
   for (;;) {
     try {
       const review = readPullRequestReview(

@@ -13,6 +13,7 @@ import { codegraphBinary, prepareGraph } from './codegraph.client.js';
 import { verifiedWorktreeGitEnv, type WorktreeGitEnv } from './git-diff.client.js';
 import { assertMintedRow } from './merge-gate.service.js';
 import { type ProjectPaths, projectPaths } from './paths.utils.js';
+import { NO_PROGRESS, type StageProgress } from './progress.utils.js';
 import { routeFor } from './routing.utils.js';
 import {
   appendEvent,
@@ -173,9 +174,13 @@ export function awaitHandoffReady(
   sessionId: string,
   timeoutMs = HANDOFF_WAIT_DEFAULT_MS,
   pathsBase?: string,
+  progress: StageProgress = NO_PROGRESS,
 ): boolean {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
+    // Every poll: the wait blocks the event loop, so the status line's own
+    // ticking never runs and this redraws it.
+    progress.stage('wait for handoff');
     if (isHandoffReady(db, repoPath, sessionId, pathsBase)) return true;
     syncSleep(HANDOFF_POLL_MS);
   }
