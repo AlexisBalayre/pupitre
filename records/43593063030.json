@@ -1,0 +1,128 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-14T12:11:19.745Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43593063030",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43593063030",
+  "actor": "AlexisBalayre",
+  "commit_sha": "8d45bde62cd071b0f4a44b846719ff0cb202e432",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 330,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1519-1524",
+      "description": "`resolvesAbove` accepts a dependency found in `node_modules` folders the gate checkout never gets. These are intermediate folders, and the root's for a package with its own lockfile. In those layouts the refusal is skipped and the stage fails on a missing runner, which reads as the branch's fault.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1547-1552",
+      "description": "The install command in the refusal comes from `packageManager(<repo>/<pkg.dir>)`, which only looks for a lockfile in the package's own folder. Every yarn or pnpm workspace member therefore gets told to run `npm --prefix <dir> install`, which is the wrong tool and the wrong folder.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1560-1569",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "A nested package with no dependencies but with its own lockfile is refused on every merge, and the install the message names never clears it. It ran fine before this change.",
+      "body": "**A package with no dependencies and its own lockfile is now always refused.**\n\nThe JSDoc says the refusal is for a package \"the trusted manifest gives a dependency\". But the code only lets a package through on the hoisted-member branch, and it skips that branch whenever the package holds its own lockfile (`lock.dir === pkg.dir`). A package with an empty `declared` set therefore falls through to the `throw`:\n\n```ts\nconst declared = { ...manifest.dependencies, ...manifest.devDependencies };\nconst lock = nearestLockfile(repoPath, pkg.dir);\nif (\n  lock?.dir !== pkg.dir &&\n  Object.keys(declared).every((name) => existsSync(join(repoPath, GATE_ENVIRONMENT_DIR, name)))\n) {\n  return;\n}\n```\n\n**Trigger:** `tools/x/package.json` is `{\"scripts\":{\"test\":\"node --test\"}}` with a committed `tools/x/package-lock.json`.\n\n- The adapter gives it a `test` command, because commands come only from scripts (`typescript.adapter.ts:577-586`). So the `pkg.commands.length === 0` return doesn't fire.\n- `npm install` on a manifest with no dependencies writes the lockfile but creates no `node_modules` (medium: npm behaviour).\n- A branch touching `tools/x/` throws \"Install it with `npm --prefix tools/x install`\". Running that install changes nothing, so every later merge is refused the same way.\n\nBefore this PR, `linkEnvironment` returned quietly and `node --test` passed. When no lockfile exists anywhere, the empty `every` returns true and the package passes. So only the own-lockfile case breaks, and no test covers it: every refusal test declares `vitest`.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/8d45bde62cd071b0f4a44b846719ff0cb202e432/src/core/merge-gate.service.ts#L1560-L1569",
+      "suggestion": "  const declared = Object.keys({ ...manifest.dependencies, ...manifest.devDependencies });\n  if (declared.length === 0) return;\n  const lock = nearestLockfile(repoPath, pkg.dir);\n  // Only a member, with no lockfile of its own, has its dependencies hoisted,\n  // and of the directories above it the gate links the root's alone.\n  if (\n    lock?.dir !== pkg.dir &&\n    declared.every((name) => existsSync(join(repoPath, GATE_ENVIRONMENT_DIR, name)))\n  ) {\n    return;\n  }"
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1561-1576",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "When the nearest lockfile sits in an intermediate directory (a workspace rooted below the repo root), the code still looks only in the repo root's `node_modules` and tells the operator to install in that intermediate directory. That install can never clear the refusal. It also newly refuses a branch that used to pass.",
+      "body": "**A member of a workspace rooted below the repo root gets an install command that can never clear the refusal.**\n\n`nearestLockfile` finds the member's real workspace root, and the error message names it. The hoisting check, though, only looks in `<repoPath>/node_modules`:\n\n```ts\nconst lock = nearestLockfile(repoPath, pkg.dir);\n// ... of the directories above it the gate links the root's alone.\nif (\n  lock?.dir !== pkg.dir &&\n  Object.keys(declared).every((name) => existsSync(join(repoPath, GATE_ENVIRONMENT_DIR, name)))\n```\n\nThe adapter supports nested packages inside nested packages on purpose (`committedPackageDirs`, and `touchedNestedPackages`' \"The innermost package owns the file\", `typescript.adapter.ts:566-570`).\n\n**Trigger:** `tools/review` is an npm or yarn-v1 workspace root, with its own `package-lock.json` and `workspaces: [\"packages/*\"]`. It is installed, so the dependencies of `tools/review/packages/a` are hoisted into `tools/review/node_modules`.\n\n- A branch touching `packages/a` gives `lock.dir = 'tools/review'`. The repo root's `node_modules` lacks the deps, so the gate throws \"Install it with `npm --prefix tools/review install`\".\n- That install is already done, so every retry is refused the same way.\n\n**Regression:** the branch may also touch a file owned by `tools/review` itself. Before this PR, `linkEnvironment` linked `tools/review/node_modules` into the checkout, and resolution from `packages/a` walked up into it, so the stage could pass. Now the refusal loop runs before any link and blocks the merge.\n\n**Possible direction:** check `join(repoPath, lock.dir, GATE_ENVIRONMENT_DIR, name)` and make sure the gate links `lock.dir`'s environment too. Or, if this layout is out of scope, have the advice stop naming an install that cannot help.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/8d45bde62cd071b0f4a44b846719ff0cb202e432/src/core/merge-gate.service.ts#L1561-L1576",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1574",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The message always says \"stages\", even for a package whose trusted manifest declares only one of `test` or `typecheck`. Such a package gets \"so its test stages cannot find their tools\". Pick the singular or plural from `pkg.commands.length`.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 1,
+  "comments_posted_actual": 2,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.4865055750000002,
+  "duration_ms": 302340,
+  "num_turns": 19,
+  "tokens": {
+    "input": 20,
+    "output": 12677,
+    "cache_read": 482668,
+    "cache_creation": 57066,
+    "total": 552431
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 116,
+      "output": 41927,
+      "cache_read": 1451339,
+      "cache_creation": 175710,
+      "cost_usd": 2.1790197999999994
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 32,
+      "output": 6508,
+      "cache_read": 201792,
+      "cache_creation": 88601,
+      "cost_usd": 0.30682570000000003
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 130,
+      "cache_read": 0,
+      "cache_creation": 4759,
+      "cost_usd": 0.000660075
+    }
+  ],
+  "permission_denials": []
+}
