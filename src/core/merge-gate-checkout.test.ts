@@ -1252,6 +1252,67 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect((await merge(nestedAdapter())).status).toBe('merged');
     });
 
+    // A package with a lockfile of its own installs on its own; a root that
+    // happens to declare the same names is not where its runner resolves.
+    it('refuses a package with its own lockfile whose dependencies only the root has', async () => {
+      commitIn(
+        repo,
+        'tools/review/package.json',
+        JSON.stringify({
+          scripts: { test: 'true', typecheck: 'true' },
+          devDependencies: { vitest: '^3.0.0' },
+        }),
+      );
+      commitIn(repo, 'tools/review/pnpm-lock.yaml', "lockfileVersion: '9.0'\n");
+      mkdirSync(join(repo, 'node_modules', 'vitest'), { recursive: true });
+      const worktree = seedSession(db, repo, NESTED_SCOPE);
+      commitIn(worktree, 'tools/review/src/r.ts', 'export const r = 1;\n');
+
+      await expect(merge(nestedAdapter())).rejects.toThrow(
+        /tools\/review has no node_modules.*`pnpm --dir tools\/review install`/,
+      );
+    });
+
+    // Of the directories above a package the gate links the root's alone, so a
+    // dependency found in between resolves from nothing in the checkout.
+    it("refuses a member whose dependencies only an intermediate directory's node_modules has", async () => {
+      commitIn(
+        repo,
+        'tools/review/package.json',
+        JSON.stringify({
+          scripts: { test: 'true', typecheck: 'true' },
+          devDependencies: { vitest: '^3.0.0' },
+        }),
+      );
+      mkdirSync(join(repo, 'tools', 'node_modules', 'vitest'), { recursive: true });
+      const worktree = seedSession(db, repo, NESTED_SCOPE);
+      commitIn(worktree, 'tools/review/src/r.ts', 'export const r = 1;\n');
+
+      await expect(merge(nestedAdapter())).rejects.toThrow(
+        /tools\/review has no node_modules.*`npm --prefix tools\/review install`/,
+      );
+    });
+
+    // A member keeps no lockfile of its own, so its install is the workspace
+    // root's, with the manager whose lockfile the root holds.
+    it("names the workspace root's manager and directory to install a refused member", async () => {
+      commitIn(
+        repo,
+        'tools/review/package.json',
+        JSON.stringify({
+          scripts: { test: 'true', typecheck: 'true' },
+          devDependencies: { vitest: '^3.0.0' },
+        }),
+      );
+      commitIn(repo, 'pnpm-lock.yaml', "lockfileVersion: '9.0'\n");
+      const worktree = seedSession(db, repo, NESTED_SCOPE);
+      commitIn(worktree, 'tools/review/src/r.ts', 'export const r = 1;\n');
+
+      await expect(merge(nestedAdapter())).rejects.toThrow(
+        /tools\/review has no node_modules.*`pnpm --dir \. install`/,
+      );
+    });
+
     it("refuses the merge when the package's own test script fails", async () => {
       commitNestedPackage({ test: 'echo nested-test-ran; exit 3', typecheck: 'true' });
       const worktree = seedSession(db, repo, NESTED_SCOPE);
