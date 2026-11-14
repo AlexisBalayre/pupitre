@@ -3428,7 +3428,9 @@ function pushBranch(
       return runGit(repoPath, ['rev-parse', '--verify', tracking], {
         stdio: ['ignore', 'pipe', 'pipe'],
       }).trim();
-    } catch {
+    } catch (error) {
+      // A git the deadline killed gave no answer, so it is not a first push.
+      rethrowIfKilled(error);
       return undefined;
     }
   })();
@@ -3457,7 +3459,10 @@ function pushBranch(
  * (decision 54). `fn`'s runner is `--git-dir` the scratch dir, with
  * `GIT_OBJECT_DIRECTORY` set, so what it writes lands in the repo's objects.
  * Auto maintenance is off: a fetch run here would otherwise gc the repo's
- * object store by reachability from the scratch dir's two refs alone.
+ * object store by reachability from the scratch dir's two refs alone. The
+ * runner `reachesRemote`, the one git pup runs with its transports left to
+ * the operator's config: with no config of a session's to name a remote,
+ * it reaches only the URL it is handed (decision 89).
  */
 export function withScratchGitDir<TResult>(
   repoPath: string,
@@ -3495,6 +3500,7 @@ export function withScratchGitDir<TResult>(
         {
           ...opts,
           env: { ...opts.env, GIT_OBJECT_DIRECTORY: objects },
+          reachesRemote: true,
         },
       ),
     );

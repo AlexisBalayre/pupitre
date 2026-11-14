@@ -542,24 +542,42 @@ export const GIT_SAFE_CONFIG = [
  * `<common>/shallow` cuts a listed commit's parents off the way a graft does,
  * and only `GIT_SHALLOW_FILE` moves where git reads it from, so it names a
  * path that cannot exist too. The cost: a real shallow clone reads as whole,
- * and a walk past its edge fails on the parent it lacks.
+ * and a walk past its edge fails on the parent it lacks. `GIT_NO_LAZY_FETCH`
+ * keeps a missing object missing: a promisor remote a session names in the
+ * shared config would otherwise be fetched from, which runs its transport
+ * with pup's environment. A real partial clone fails on the object instead.
  */
 const GIT_HISTORY_ENV = {
   GIT_NO_REPLACE_OBJECTS: '1',
   GIT_GRAFT_FILE: '/dev/null/no-grafts',
   GIT_SHALLOW_FILE: '/dev/null/no-shallow',
+  GIT_NO_LAZY_FETCH: '1',
 } as const;
+
+/**
+ * Every transport git ships, pinned off for each git child but one that
+ * pushes or fetches on purpose (`RunGitOptions.reachesRemote`). They back
+ * `GIT_NO_LAZY_FETCH` up for a git that ignores it: a promisor remote's
+ * `uploadpack` is a command of the session's choosing. Each transport is
+ * named, since a bare `protocol.allow` is only the fallback a planted
+ * `protocol.<name>.allow` overrides (decision 89).
+ */
+const NO_TRANSPORT_CONFIG = ['ext', 'fd', 'file', 'git', 'http', 'https', 'ssh'].flatMap((name) => [
+  '-c',
+  `protocol.${name}.allow=never`,
+]);
 
 /**
  * `runGit`'s whole pin as environment alone, for a program that runs git with
  * argv of its own: `scrubbedGitEnv`, `GIT_HISTORY_ENV`, and `GIT_SAFE_CONFIG`
- * as command-scope config, which outranks the repo's config the way a `-c`
- * does. `gh` runs git in the main checkout, whose config a session can write,
- * so a `core.fsmonitor` armed there would otherwise run on gh's first `git
- * status` (decision 89).
+ * with every transport pinned off as command-scope config, which outranks the
+ * repo's config the way a `-c` does. `gh` runs git in the main checkout, whose
+ * config a session can write, so a `core.fsmonitor` armed there would
+ * otherwise run on gh's first `git status` (decision 89). gh is always handed
+ * `--head`, so its git never pushes.
  */
 export function pinnedGitEnv(): NodeJS.ProcessEnv {
-  const entries = GIT_SAFE_CONFIG.filter((arg) => arg !== '-c');
+  const entries = [...GIT_SAFE_CONFIG, ...NO_TRANSPORT_CONFIG].filter((arg) => arg !== '-c');
   const env: NodeJS.ProcessEnv = {
     ...scrubbedGitEnv(),
     ...GIT_HISTORY_ENV,
@@ -605,12 +623,15 @@ export const GIT_MAX_BUFFER = 64 * 1024 * 1024;
 /**
  * What a call site may add to a git spawn. `env` is laid over the scrubbed
  * environment rather than replacing it, so a caller names only what it adds.
- * `timeout` replaces `spawnOptions`' deadline.
+ * `timeout` replaces `spawnOptions`' deadline. `reachesRemote` leaves the
+ * transports to the operator's config rather than pinning them off. Only
+ * `withScratchGitDir` sets it, whose git reads no config a session can write.
  */
 interface RunGitOptions {
   env?: NodeJS.ProcessEnv;
   stdio?: ExecFileSyncOptions['stdio'];
   timeout?: number;
+  reachesRemote?: boolean;
 }
 
 /**
@@ -622,7 +643,10 @@ interface RunGitOptions {
 export function runGit(cwd: string, args: string[], opts: RunGitOptions = {}): string {
   const options = spawnOptions(opts);
   return checkedAfter(cwd, options.env.GIT_DIR, () =>
-    execFileSync('git', safeArgv(cwd, args, options.env), { ...options, encoding: 'utf8' }),
+    execFileSync('git', safeArgv(cwd, args, options.env, opts.reachesRemote), {
+      ...options,
+      encoding: 'utf8',
+    }),
   );
 }
 
@@ -656,7 +680,7 @@ export function runGitBytes(
 ): Buffer {
   const options = spawnOptions(opts);
   return checkedAfter(cwd, options.env.GIT_DIR, () =>
-    execFileSync('git', safeArgv(cwd, args, options.env), {
+    execFileSync('git', safeArgv(cwd, args, options.env, opts.reachesRemote), {
       ...options,
       encoding: 'buffer',
       // A Buffer: a string input is encoded with `encoding`, which `buffer` is not.
@@ -902,15 +926,22 @@ export function assertMainCheckout(repoPath: string): void {
  * fall back to a bare repo planted in the checkout, or a parent repo. A
  * gitfile, a worktree's, is left to git to read, pinned or not (decision 172).
  * A spawn whose `env` pins `GIT_DIR` names nothing: git's `--git-dir` would
- * override the pin, which is the admin dir decision 101 verified.
+ * override the pin, which is the admin dir decision 101 verified. Every
+ * transport is pinned off unless the spawn `reachesRemote`.
  */
-function safeArgv(cwd: string, args: string[], env: NodeJS.ProcessEnv): string[] {
+function safeArgv(
+  cwd: string,
+  args: string[],
+  env: NodeJS.ProcessEnv,
+  reachesRemote: boolean | undefined,
+): string[] {
   const gitDir = assertGitDirUnplanted(cwd, env.GIT_DIR);
   const named =
     gitDir && env.GIT_DIR === undefined
       ? [`--git-dir=${gitDir}`, `--work-tree=${resolve(cwd)}`]
       : [];
-  return [...GIT_SAFE_CONFIG, '-C', cwd, ...named, ...args];
+  const transports = reachesRemote ? [] : NO_TRANSPORT_CONFIG;
+  return [...GIT_SAFE_CONFIG, ...transports, '-C', cwd, ...named, ...args];
 }
 
 /**

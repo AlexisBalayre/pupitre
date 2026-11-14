@@ -243,7 +243,8 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
    * tests can assert on the wiring. `pr view` reports the PR's head as `head`,
    * or else as whatever the branch holds in the repo its `--repo` names, read
    * from outside the repo so only the operator's global rewrite applies, and
-   * the PR as `state` onto main.
+   * the PR as `state` onto main. GitHub reads that head, not a git under pup's
+   * pin, so the read drops the transports `pinnedGitEnv` turns off.
    */
   const fakeGh = (openPrs: unknown[], head?: string, state = 'OPEN'): string =>
     [
@@ -253,7 +254,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       `if [ "$2" = "list" ]; then echo '${JSON.stringify(openPrs)}'; exit 0; fi`,
       'if [ "$2" = "view" ]; then',
       head === undefined
-        ? `  head=$(cd / && git ls-remote "git@\${5%%/*}:\${5#*/}.git" refs/heads/${BRANCH} | cut -f1)`
+        ? `  head=$(cd / && GIT_CONFIG_COUNT=0 git ls-remote "git@\${5%%/*}:\${5#*/}.git" refs/heads/${BRANCH} | cut -f1)`
         : `  head=${head}`,
       `  printf '{"headRefOid":"%s","state":"${state}","baseRefName":"main"}\\n' "$head"; exit 0`,
       'fi',

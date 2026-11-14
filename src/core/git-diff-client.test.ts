@@ -31,6 +31,7 @@ import {
   gitDiffBinaryRecount,
   gitDiffNumstat,
   gitDiffPaths,
+  pinnedGitEnv,
   RewrittenGitDirError,
   rethrowIfKilled,
   runGit,
@@ -2222,6 +2223,67 @@ describe('history a session can rewrite in the shared git dir (decision 89)', ()
     } finally {
       vi.unstubAllEnvs();
     }
+  });
+});
+
+// The shared config can name a promisor remote, with an `uploadpack` of the
+// session's and a `protocol.file.allow` that lets it through, and a session
+// can delete an object: a read that meets the gap fetches it, running that
+// command with pup's environment (decision 89).
+describe('a promisor remote a session names in the shared config (decision 89)', () => {
+  function promisorRepo(): { repo: string; blob: string; fired: string } {
+    const repo = makeRepo();
+    writeFileSync(join(repo, 'a.ts'), 'hello\n');
+    commitAll(repo, 'base');
+    const blob = revParse(repo, 'HEAD:a.ts');
+    const fired = join(repo, '.git', 'fired');
+    const uploadPack = join(repo, '.git', 'planted-upload-pack');
+    writeFileSync(uploadPack, `#!/bin/sh\necho fetched >> '${fired}'\nexit 1\n`, { mode: 0o755 });
+    for (const [key, value] of [
+      ['core.repositoryformatversion', '1'],
+      ['extensions.partialClone', 'planted'],
+      ['remote.planted.url', repo],
+      ['remote.planted.promisor', 'true'],
+      ['remote.planted.uploadpack', uploadPack],
+      ['protocol.file.allow', 'always'],
+    ] as const) {
+      sh(repo, 'git', 'config', key, value);
+    }
+    rmSync(join(repo, '.git', 'objects', blob.slice(0, 2), blob.slice(2)));
+    return { repo, blob, fired };
+  }
+
+  /** A read of `blob` by a git that takes no argv of pup's, under `env`. */
+  const readBlob = (repo: string, blob: string, env: NodeJS.ProcessEnv) => () =>
+    execFileSync('git', ['cat-file', '-p', blob], { cwd: repo, env, stdio: 'pipe' });
+
+  it('runs in a repo where a plain git read fetches through the planted remote', () => {
+    const { repo, blob, fired } = promisorRepo();
+
+    expect(readBlob(repo, blob, GIT_ENV)).toThrow();
+    expect(readFileSync(fired, 'utf8')).toContain('fetched');
+  });
+
+  it('reads no missing object through it, and reaches it by no transport', () => {
+    const { repo, blob, fired } = promisorRepo();
+
+    expect(() => runGit(repo, ['cat-file', '-p', blob], { stdio: 'pipe' })).toThrow();
+    expect(() => runGit(repo, ['fetch', 'planted'], { stdio: 'pipe' })).toThrow(
+      /transport 'file' not allowed/,
+    );
+    expect(existsSync(fired)).toBe(false);
+  });
+
+  // gh's git takes no argv of pup's, so both pins reach it through the env;
+  // each is shown on its own by taking the other away.
+  it("keeps gh's git from fetching through it, by either pin alone", () => {
+    const { repo, blob, fired } = promisorRepo();
+    const transportsOff = { ...pinnedGitEnv(), GIT_NO_LAZY_FETCH: undefined };
+    const lazyFetchOff = { ...pinnedGitEnv(), GIT_CONFIG_COUNT: '0' };
+
+    expect(readBlob(repo, blob, transportsOff)).toThrow(/transport 'file' not allowed/);
+    expect(readBlob(repo, blob, lazyFetchOff)).toThrow();
+    expect(existsSync(fired)).toBe(false);
   });
 });
 

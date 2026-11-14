@@ -71,8 +71,10 @@
     `spawnOptions` now gives every `runGit` and `runGitBytes` child a deadline,
     `GATE_COMMAND_TIMEOUT_MS`, unless the call names its own, much as decision 124 bounds
     every hook's git. At the deadline node kills the child with SIGTERM. The call throws
-    `ETIMEDOUT`, which `rethrowIfKilled` rethrows rather than reads as an answer, so the run
-    fails and `withMergeLock` releases the lock. The same value, named explicitly in
+    `ETIMEDOUT`. A caller that lets that through, or whose catch passes it to
+    `rethrowIfKilled`, which rethrows a killed git rather than read it as an answer, fails
+    the run, and `withMergeLock` releases the lock. The push's lease read, which took any
+    failure for a first push, now passes it through `rethrowIfKilled`. The same value, named explicitly in
     `assertNoSharedWorktreeKey`, `worktreeConfigState` and the gate's push, is now the
     default there. `pup land`, `pup init` and the nested-package listing still name it
     explicitly, in files outside this change. Twenty-five minutes is long for a one-line
@@ -94,9 +96,35 @@
     `runGitBytes` and gh start from. The tests below now guard the first and the third.
     *Refusal text.* `ArmedGitDriverError` had lost the space between its dash and the list
     of what is armed. It is back.
+    *Lazy fetch and transports.* The shared config can make the repo a partial clone of a
+    remote a session names: `extensions.partialClone`, `remote.<r>.promisor` and an
+    `uploadpack` of the session's, with `protocol.file.allow=always`. Once the session
+    deletes a loose object, any read that meets the gap fetches it, which runs that
+    `uploadpack` with pup's environment, under the merge lock when the gate is the reader
+    (verified on Git 2.54 with a plain `cat-file -p`). `GIT_HISTORY_ENV` now pins
+    `GIT_NO_LAZY_FETCH=1`, and `runGit` and `runGitBytes` pin `protocol.<t>.allow=never` for
+    `ext`, `fd`, `file`, `git`, `http`, `https` and `ssh`, outranking a planted
+    `protocol.<t>.allow`. A bare `protocol.allow=never` would not: it is only the fallback a
+    per-transport key overrides. Either pin alone stops the fetch, and the transports also
+    stop an explicit `git fetch <r>` and a git too old to know `GIT_NO_LAZY_FETCH`. gh's git
+    takes both through `pinnedGitEnv`. pup hands gh `--head` and runs only `pr view`, `list`,
+    `edit`, `create` and `comment`, which read GitHub's API, so its git never needs a
+    transport. The two gits that reach a remote on purpose, the gate's push and `pup land`'s
+    fetch, run in `withScratchGitDir`, whose runner passes `reachesRemote` and keeps the
+    transports. Its scratch git dir reads no config a session can write, so it reaches only
+    the URL it is handed, and it still pins `ext` off and keeps the lazy-fetch pin. *Cost:* a
+    main checkout that really is a partial clone fails on a missing object rather than
+    fetching it.
     *Ceilings.* The session hooks' `safe_git` and codegraph's git get `core.commitGraph=false`
-    through `GIT_SAFE_CONFIG` but not `GIT_HISTORY_ENV`, so grafts and a shallow file still
-    bend what they read. Both are outside this decision's files.
+    through `GIT_SAFE_CONFIG` but neither `GIT_HISTORY_ENV` nor the transport pins, so grafts
+    and a shallow file still bend what they read and a planted promisor remote can still be
+    fetched from. Both are outside this decision's files. `dashboard.service.ts` names its own
+    copy of the transport pins and `GIT_NO_LAZY_FETCH`, now redundant under `runGit`; it is
+    outside this change too.
+    A catch that neither rethrows nor passes the error to `rethrowIfKilled` still reads a git
+    the deadline killed as its failure answer. The gate then runs its next git, which a
+    session can block the same way, so the lock is held for one deadline per such read, not
+    one in all.
     `pinnedGitEnv` cannot disarm a `filter.<x>.clean` that `info/attributes` selects, for a
     filter has no `-c` disarm, so gh's index refresh would run it; only
     `assertNoArmedGitDrivers` guards against that.
@@ -126,5 +154,10 @@
     both files. Under an inherited `GIT_TEST_COMMIT_GRAPH=1`, plain git with
     `-c core.commitGraph=false` reads the forged graph's tree, while `runGit` reads the real
     one. A spawned git is handed `GIT_SHALLOW_FILE=/dev/null/no-shallow` and no inherited
-    `GIT_REPLACE_REF_BASE`. The `include.path` refusal reads `— include.path.`. Each fails
-    with its fix removed.
+    `GIT_REPLACE_REF_BASE`. The `include.path` refusal reads `— include.path.`. In a repo
+    whose config names a promisor remote with a planted `uploadpack` and lets the `file`
+    transport through, and which lacks a blob, plain git's `cat-file -p` of the blob runs
+    the command. `runGit`'s read of it and its `fetch` of that remote run nothing, the fetch
+    refused as "transport 'file' not allowed". gh's git under `pinnedGitEnv` runs nothing
+    with either pin taken away, the lazy-fetch pin or the env config. Each fails with its
+    fix removed.
