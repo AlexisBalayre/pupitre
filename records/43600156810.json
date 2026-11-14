@@ -1,0 +1,105 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-14T13:35:46.605Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43600156810",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43600156810",
+  "actor": "AlexisBalayre",
+  "commit_sha": "2586aac4493e0b26ee8a5cff847e6b44e2e6dea1",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 325,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1246-1248",
+      "description": "`closeSync(taken.statusFd)` runs outside `release()`'s try/finally, so a close error skips the lock release, leaves the stayAlive signal listeners installed, and replaces `fn`'s outcome, against withMergeLock's \"A release error never replaces what `fn` did\".",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/progress.test.ts",
+      "line": "1",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "This test file covers `progress.utils.ts` but is named `progress.test.ts`. Its `src/core` siblings name a utils file's test `<subject>-utils.test.ts`, for example `paths-utils.test.ts`, `glob-utils.test.ts` and `gate-env-utils.test.ts`. Anyone who looks for a source file's test by that pattern searches for `progress-utils.test.ts` and finds nothing. Renaming it to `progress-utils.test.ts` would fix that.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "docs",
+      "description": "The docs reviewer read only the ADR, src/core/progress.utils.ts and the lock-status code in src/core/merge-gate.service.ts. It did not check the prose in src/cli/index.ts, the other src/core/*.service.ts files or the test comments."
+    },
+    {
+      "component": "orchestrator",
+      "description": "I did not spawn the consolidator: the reviewers returned a single finding, so there was nothing to group."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.7806837,
+  "duration_ms": 230691,
+  "num_turns": 14,
+  "tokens": {
+    "input": 10,
+    "output": 9442,
+    "cache_read": 230723,
+    "cache_creation": 54278,
+    "total": 294453
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 108,
+      "output": 44713,
+      "cache_read": 1854050,
+      "cache_creation": 205829,
+      "cost_usd": 2.4574809999999996
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 50,
+      "output": 8990,
+      "cache_read": 324477,
+      "cache_creation": 80302,
+      "cost_usd": 0.32320269999999995
+    }
+  ],
+  "permission_denials": []
+}
