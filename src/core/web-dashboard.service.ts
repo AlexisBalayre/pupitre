@@ -287,10 +287,10 @@ interface PageParts {
  * keeps the secret it was handed in the tab's session storage and takes the
  * spent token out of the address bar; reads the stream with the secret, and
  * swaps in the board it sends, which the server rendered and escaped, holding
- * it back while the operator types into a field on the board; reports whether
- * the stream is up; and posts each action form with the secret and the nonce
- * the stream handed it, asks before an irreversible one, and shows the answer
- * as text. The sheet bar is plain links, so a sheet opens as its own page with
+ * it back while the operator types into a field on the board and saying so;
+ * reports whether the stream is up; and posts each action form with the
+ * secret and the nonce the stream handed it, asks before an irreversible one,
+ * and shows the answer as text. The sheet bar is plain links, so a sheet opens as its own page with
  * its own stream, in the same tab, which keeps the secret (decision 98).
  */
 function renderDashboardPage(
@@ -336,6 +336,7 @@ ${CHART_CSS}
   table.moves th, table.moves td { padding: 6px 8px; border-bottom: 1px solid var(--grid); vertical-align: top; }
   table.moves td .hint { margin: 0; }
   header .live { margin-left: auto; color: var(--muted); font-size: 12px; }
+  header .held { color: var(--debt-3); font-size: 12px; }
   ul.rows { list-style: none; padding: 0; }
   ul.rows > li {
     background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
@@ -374,7 +375,7 @@ ${CHART_CSS}
 </style>
 </head>
 <body>
-<header><h1>pup dashboard</h1><span class="repo">${escapeHtml(repoPath)}</span><span class="live" id="live">connecting…</span></header>
+<header><h1>pup dashboard</h1><span class="repo">${escapeHtml(repoPath)}</span><span class="live" id="live">connecting…</span><span class="held" id="holding" hidden>held: a field has focus or unsent text</span></header>
 <nav class="sheets">${bar}</nav>
 <div id="outcome" role="status" hidden></div>
 <main id="board"></main>
@@ -383,6 +384,7 @@ ${CHART_CSS}
   const board = document.getElementById('board');
   const live = document.getElementById('live');
   const outcome = document.getElementById('outcome');
+  const holding = document.getElementById('holding');
   // Kept where only this origin, port and all, can read it, and gone with
   // the tab; the token that bought it leaves the address bar and history.
   const handed = ${JSON.stringify(secret ?? null)};
@@ -402,15 +404,23 @@ ${CHART_CSS}
     outcome.hidden = false;
   };
   // A field in focus, or one holding text not yet sent: focus leaving it for
-  // its button must not swap the form out from under the click.
+  // its button must not swap the form out from under the click. A field the
+  // window took focus from, the operator gone to the terminal, is not in use.
   const typing = () =>
-    (board.contains(document.activeElement) && document.activeElement.matches('input')) ||
+    (document.hasFocus() && board.contains(document.activeElement) && document.activeElement.matches('input')) ||
     [...board.querySelectorAll('input:not([type="hidden"])')].some((field) => field.value !== field.defaultValue);
-  const show = (next) => {
-    if (typing()) held = next; else board.innerHTML = next;
-  };
+  // A board held back is said beside 'live', so a page kept stale is never taken for a live one.
   const flush = () => {
-    if (held !== undefined && !typing()) { board.innerHTML = held; held = undefined; }
+    if (held === undefined) return;
+    const waiting = typing();
+    holding.hidden = !waiting;
+    if (waiting) return;
+    board.innerHTML = held;
+    held = undefined;
+  };
+  const show = (next) => {
+    held = next;
+    flush();
   };
   board.addEventListener('focusout', () => setTimeout(flush));
   if (secret === null) {
@@ -467,13 +477,24 @@ ${CHART_CSS}
     try {
       let answer = await post({ ...fields, nonce: key });
       if (answer.nonce) key = answer.nonce;
-      if (answer.confirm !== undefined) {
+      const irreversible = answer.confirm !== undefined;
+      if (irreversible) {
         if (!window.confirm(answer.confirm)) return say('Not confirmed; nothing was done.', false);
         answer = await post({ ...fields, nonce: answer.confirmNonce });
       }
       say(answer.message, !answer.ok);
       if (answer.ok) {
-        form.reset();
+        // What was sent is moot, and so are its block's other forms of the
+        // same action (a question's options and its answer in words), or all
+        // of its block's after an action that cannot be taken back. Focus
+        // leaves the form too: a send made with Enter keeps it there, holding
+        // the board.
+        const block = form.closest('li, section') ?? form;
+        const moot = block.querySelectorAll(
+          irreversible ? 'form' : 'form[data-action="' + form.dataset.action + '"]',
+        );
+        for (const sent of [form, ...moot]) sent.reset();
+        if (form.contains(document.activeElement)) document.activeElement.blur();
         flush();
       }
     } catch (error) {

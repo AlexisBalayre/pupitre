@@ -16,7 +16,7 @@ vi.mock('./ledger.repository.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./ledger.repository.js')>()),
   closeLedgerEntry: vi.fn(),
 }));
-vi.mock('./merge-gate.service.js', () => ({ runMergeGate: vi.fn() }));
+vi.mock('./merge-gate.service.js', () => ({ newestMerge: vi.fn(), runMergeGate: vi.fn() }));
 vi.mock('./sandbox.utils.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./sandbox.utils.js')>()),
   sandboxLabel: vi.fn(() => 'seatbelt'),
@@ -37,7 +37,7 @@ import { startFixRound } from './fix-round.service.js';
 import { landSession } from './land.service.js';
 import { closeLedgerEntry } from './ledger.repository.js';
 import { MergeLockLostError } from './merge-gate.errors.js';
-import { runMergeGate } from './merge-gate.service.js';
+import { newestMerge, runMergeGate } from './merge-gate.service.js';
 import { sandboxLabel, UndeclaredSandboxError } from './sandbox.utils.js';
 import {
   answerConductorQuestion,
@@ -411,6 +411,28 @@ describe('runAction', () => {
 
     await expect(runAction(DB, REPO, 'land', { session: 's-1' })).resolves.toContain(
       'Could not tell s- [31mpeer that main moved: pane gone. Steer it to take main in.',
+    );
+  });
+
+  it('says a land that threw past its landed event landed, then its error, then where its peers went', async () => {
+    vi.mocked(newestMerge).mockReturnValueOnce(undefined).mockReturnValueOnce('landed');
+    vi.mocked(landSession).mockRejectedValueOnce(new Error('No adapter measured the baseline.'));
+
+    await expect(runAction(DB, REPO, 'land', { session: 's-1' })).rejects.toThrow(
+      /^Landed s-1: the target holds its merge and the land is recorded, so a re-run refuses it\. What came after it failed:\nNo adapter measured the baseline\.\n.*the terminal running `pup dashboard`.*`pup audit`\.$/,
+    );
+  });
+
+  // Each newest merge the action reads, in order: a session landed before is not read again.
+  it.each([
+    ['landed before it ran', ['landed']],
+    ['refused before landing', [undefined, undefined]],
+  ] as const)('passes a land refusal for a session %s as core worded it', async (_case, reads) => {
+    for (const read of reads) vi.mocked(newestMerge).mockReturnValueOnce(read);
+    vi.mocked(landSession).mockRejectedValueOnce(new Error('Session s-1 cannot land.'));
+
+    await expect(runAction(DB, REPO, 'land', { session: 's-1' })).rejects.toThrow(
+      /^Session s-1 cannot land\.$/,
     );
   });
 

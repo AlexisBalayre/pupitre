@@ -10,7 +10,7 @@ import { startFixRound } from './fix-round.service.js';
 import { landSession } from './land.service.js';
 import { closeLedgerEntry } from './ledger.repository.js';
 import { MergeLockLostError } from './merge-gate.errors.js';
-import { runMergeGate } from './merge-gate.service.js';
+import { newestMerge, runMergeGate } from './merge-gate.service.js';
 import { sandboxLabel } from './sandbox.utils.js';
 import {
   answerConductorQuestion,
@@ -265,10 +265,15 @@ async function mergeAction(
  * `pup land <session>`: asked of the sandbox first, as the CLI asks before it
  * lands. What the land did is said whole, each peer it could not steer named,
  * and then refused where `pup land` fails: a lock lost under it (decision 88),
- * or an audit that kept the baseline.
+ * or an audit that kept the baseline. A land that throws past its `landed`
+ * event, in the audit or killed during the steers, is said to have landed
+ * before its error: core then returns no outcome, and names the peers it could
+ * not steer only on the dashboard's stderr (decision 99), which the refusal
+ * points to.
  */
 async function landAction(db: Database, repoPath: string, session: string): Promise<string[]> {
   sandboxLabel();
+  const landedBefore = newestMerge(db, session) === 'landed';
   let outcome: LandOutcome;
   let lost = '';
   try {
@@ -278,9 +283,22 @@ async function landAction(db: Database, repoPath: string, session: string): Prom
       adapters: detectAdapters(repoPath),
     });
   } catch (error) {
-    if (!(error instanceof MergeLockLostError)) throw error;
-    outcome = error.result as LandOutcome;
-    lost = error.message;
+    if (error instanceof MergeLockLostError) {
+      outcome = error.result as LandOutcome;
+      lost = error.message;
+    } else if (!landedBefore && newestMerge(db, session) === 'landed') {
+      throw new Error(
+        [
+          `Landed ${sanitizeReason(session)}: the target holds its merge and the land is recorded, ` +
+            'so a re-run refuses it. What came after it failed:',
+          error instanceof Error ? error.message : String(error),
+          'A running session the land could not tell that the target moved is named in the ' +
+            'terminal running `pup dashboard`; steer each to take the target in. Then run `pup audit`.',
+        ].join('\n'),
+      );
+    } else {
+      throw error;
+    }
   }
   const target = sanitizeReason(outcome.target);
   const audit = outcome.audit;

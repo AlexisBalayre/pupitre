@@ -156,9 +156,18 @@
     post.
     What comes back is JSON the script sets as text, never markup: the lines the CLI would print,
     or core's refusal as core worded it, control characters replaced and lines kept, in a status
-    line under the sheet bar. The board is held back while a field on it has focus or holds text
-    not yet sent, so neither a refresh nor focus moving to the field's button wipes a half-typed
-    answer; it is swapped in once that text is sent. `close` first stops taking requests in, every
+    line under the sheet bar. The board is held back while a field on it has focus, in a window
+    that has it, or holds text not yet sent, so neither a refresh nor focus moving to the field's
+    button wipes a half-typed answer; while it is held the header says so beside `live`, so a
+    stale page is never read as a live one. It is swapped in once that text is sent: a send that
+    succeeded resets its form and its block's other forms of the same action, a question's options
+    and its answer in words, or all of its block's forms after an action that cannot be taken
+    back, and takes focus out of the form, which a send made with Enter leaves there. Text left in
+    a field the action did not make moot keeps the board held, said in the header, until it is
+    sent or cleared. A land that throws past its `landed` event, in its audit or killed during
+    its steers, returns no outcome: the page says the session landed, then the error, and points
+    to the terminal running `pup dashboard`, where core names each peer it could not steer
+    (decision 99). `close` first stops taking requests in, every
     nonce dropped, then waits until every post still running has been answered, and only then is
     the store closed.
     Tests: per action, the core function the CLI calls is called with the CLI's arguments and its
@@ -177,7 +186,8 @@
     first post and change nothing; a confirmation runs only its own action and fields; once
     closing, a post with a good nonce and a new stream are refused while the action already
     running is answered before `close` resolves; a land that lost its lock or kept the baseline is
-    refused after the lines saying what it did. The
+    refused after the lines saying what it did, and one that threw past its `landed` event after
+    saying it landed, while a refusal of a session landed before passes as core worded it. The
     session view, tmux faked, shows a pane holding markup, ESC and a direction mark escaped, the
     copyable attach line, and a new pane on its stream within a poll; a merged session's view links
     its PR and offers fix, re-gate and land, no form naming GitHub.
