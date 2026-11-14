@@ -1,0 +1,97 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-14T10:41:12.723Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43586281634",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43586281634",
+  "actor": "AlexisBalayre",
+  "commit_sha": "d3f87d516830baed63d04f4a92aeb3443363467b",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 334,
+  "action": "review",
+  "reviewers_spawned": [
+    "docs",
+    "conventions"
+  ],
+  "reviewers_returned": [
+    "docs",
+    "conventions"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "context",
+    "maintainability",
+    "spec",
+    "simplicity",
+    "guards",
+    "workflow-safety"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "924d5ab00ab87ced233265fbad2c83a4520eac05",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "docs/adr/0183-a-rework-step-s-setting-is-a-store-file-read.md",
+      "line": "15-18",
+      "description": "The PR rewrites decision 0183's landed sentence in place instead of appending an amendment.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "conventions",
+      "description": "The reviewer reported its `git diff <merge_base>..HEAD -- docs/adr/0165-...` call as blocked, so it did not compare 0183's amendment form against 0165's. 0165 is outside this round's delta, which touches only 0183. The reviewer checked the form against README.md and the amendments in other ADRs instead."
+    },
+    {
+      "component": "orchestrator",
+      "description": "Skipped the review-consolidator because the reviewers returned no findings. Skipped correctness, security, context, simplicity, guards, workflow-safety, maintainability and spec: the delta is three lines of ADR prose with no logic, trust boundary, workflow or spec source."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.45740499999999995,
+  "duration_ms": 58297,
+  "num_turns": 9,
+  "tokens": {
+    "input": 10,
+    "output": 3072,
+    "cache_read": 193522,
+    "cache_creation": 31910,
+    "total": 228514
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 10,
+      "output": 3072,
+      "cache_read": 193522,
+      "cache_creation": 31910,
+      "cost_usd": 0.35546439999999996
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 16,
+      "output": 3103,
+      "cache_read": 66636,
+      "cache_creation": 25686,
+      "cost_usd": 0.10194059999999999
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "git -C /home/runner/work/pupitre/pupitre diff ee7c5b36517e2c02a0b2955b27b3e6c4bdbde0ee..HEAD -- docs/adr/0183-a-rework-step-s-setting-is-a-store-file-read.md docs/adr/0165-pr-status-reads-unthreaded-i"
+    },
+    {
+      "tool": "Bash",
+      "input": "git -C /home/runner/work/pupitre/pupitre diff ee7c5b36517e2c02a0b2955b27b3e6c4bdbde0ee..HEAD -- docs/adr/0183-a-rework-step-s-setting-is-a-store-file-read.md docs/adr/0165-pr-status-reads-unthreaded-i"
+    }
+  ]
+}
