@@ -242,3 +242,21 @@
     PR's branch with nothing moved, pushed or opened; one moved after the fast-forward still fails
     with the merged outcome; a land whose lock moved while it fetched refuses its fast-forward, and
     with main already at origin's tip refuses the tracking ref, changing nothing.
+    *`pup fix` waits for a live holder too (amended 2026-11-14).* `pup fix` refused at once on a
+    held lock, so behind a queue of gates, or during a land's audit, a fix round never started
+    unless the operator retried by hand. It now takes the lock through the same `withMergeLock`
+    wait, bounded by `MERGE_LOCK_WAIT_MS` and printing the same one line, with no flag: like `pup
+    retire`, its only caller is the CLI. Every refusal it makes before the lock (a session not
+    merged, a PR not open or moved past the pin, a clean review, no thread) still comes at once,
+    before any wait, and so do the refusals no wait cures: a lock with no pid after its second,
+    and one whose path cannot be made. Under the lock it now asks again that the session is still
+    merged, before it restores the worktree: the run it waited for may have been another `pup
+    fix` that started its round, whose live worktree the restore would otherwise name for
+    removal, or a `pup retire` whose deleted branch the restore would bring back. The checks it
+    already made there stay: the newest merge still the pinned one and not landed, and the task's
+    spec and tier unchanged. The review read before the wait is not read again: a thread resolved
+    meanwhile still reaches the worker, as one resolved during the kickoff always could.
+    Tests: a `pup fix` started while a live pid holds the lock waits, prints one line and starts
+    its round once the lock is released; one whose session the holder took out of merged refuses
+    under the lock with nothing written and no worktree restored; one finding a lock with no pid
+    refuses with nothing written and leaves the lock.
