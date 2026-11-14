@@ -1,0 +1,102 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-14T11:21:35.893Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43588944582",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43588944582",
+  "actor": "AlexisBalayre",
+  "commit_sha": "5012cb2f2a36e2eba87cf4ebe00e44fd6ebc9047",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 321,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "guards"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "guards"
+  ],
+  "reviewers_skipped": [
+    "conventions",
+    "context",
+    "maintainability",
+    "docs",
+    "spec",
+    "simplicity",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/cache-hold.service.ts",
+      "line": "179-184",
+      "description": "`typeHold` presses Enter once and returns true without checking that the hold was sent. The `cache_hold` event is then written whether or not the turn ever started.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/turn-watchdog.service.ts",
+      "line": "118-130",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The new guard in `resumeSession` only works if a dead turn writes nothing to the events file. ADR 0103 records that Claude Code's `idle_prompt` Notification also fires when a turn ends without a Stop. If it fires after an API-error death too, the file's mtime moves past the hold and the watchdog resumes the hold's dead turn anyway.",
+      "body": "**Concern.** The new early return skips a resume only when the newest prompt is a `cache_hold` recorded at or after `stalledAt`. `stalledAt` is just the events file's mtime: `findStalledSessions` (`src/core/dashboard.service.ts` ~L253-265) never reads the file's contents.\n\n```ts\nconst prompt = lastPrompt(listEvents(db, sessionId).reverse());\nif (\n  prompt?.type === 'cache_hold' &&\n  Date.parse(toIsoUtc(prompt.created_at)) >= Math.floor(Date.parse(stalledAt) / 1000) * 1000\n)\n  return undefined;\n```\n\nThat relies on \"a dead turn moves no file\" (the code comment here, and ADR 0179 L91-92). The repo's own records don't establish that:\n- ADR 0103 L15-16: Claude Code sends `idle_prompt` about a minute after a turn ends, and \"an idle prompt with no Stop before it, as after a turn interrupted with Escape, also ends the turn\". So the idle notice is tied to the box going idle, not to a Stop.\n- ADR 0179 L22-23 itself says the mtime \"trails the last request by the idle notice Claude Code fires a minute after a turn ends.\"\n- The profile compiler sends every Notification to the events file (`src/core/profile-compiler.service.ts` ~L1327).\n- ADR 0035's addendum records only that no Stop fires on a dead turn. It does not say no hook at all fires.\n\n**Trigger.**\n1. A running worker with an open question is held at T. The hold is recorded at about T+1s.\n2. The hold's turn dies on an API error.\n3. About 60s later an `idle_prompt` line is written, so the mtime is about T+60s.\n4. Ten minutes later the session is flagged with `stalledAt` ≈ T+60s. The hold is now older than the stall, so the guard is skipped, and `RESUME_MESSAGE` (\"Continue the task … run pup session done\") goes to a worker that is waiting for an answer. ADR 0179 L87-89 names that as the harm this guard exists to prevent.\n\nThe gap is new to this PR: before it, an idle notice only moved the stall clock by about a minute. The test (\"is left alone when the turn that died was a cache hold's\" in `turn-watchdog.test.ts`) gives the file an mtime before the hold, so it assumes this case rather than testing it.\n\n**Fix.** Check a live session's `events.jsonl` after a forced API error. If an `idle_prompt` line follows the error, key the guard on the tail's shape rather than on mtime alone. After a dead hold turn, the newest lines are an `idle_prompt` with no Stop or PostToolUse since the hold, while a hold that ended normally leaves a Stop then an idle notice. Seed that tail in the test. If no line follows, record that observation in ADR 0179 so the assumption is on file.\n\n<https://github.com/AlexisBalayre/pupitre/blob/5012cb2f2a36e2eba87cf4ebe00e44fd6ebc9047/src/core/turn-watchdog.service.ts#L118-L130>",
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Round 4 budget: conventions, docs and simplicity were not spawned (their gates held: new file, JSDoc/ADR prose). Context, maintainability, spec (no closing keyword or linked issue) and workflow-safety (no workflow change) were not spawned either."
+    },
+    {
+      "component": "orchestrator",
+      "description": "Only one finding came back from the reviewers, so I deduplicated inline and spawned no review-consolidator. Security ran as a single instance despite 734 total changed lines: only 216 are source lines, and the trust surface is one file."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 3.9000739000000006,
+  "duration_ms": 464648,
+  "num_turns": 11,
+  "tokens": {
+    "input": 12,
+    "output": 8854,
+    "cache_read": 276824,
+    "cache_creation": 48737,
+    "total": 334427
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 186,
+      "output": 70490,
+      "cache_read": 4070061,
+      "cache_creation": 276300,
+      "cost_usd": 3.752267200000001
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 14,
+      "output": 3494,
+      "cache_read": 135412,
+      "cache_creation": 39719,
+      "cost_usd": 0.1478067
+    }
+  ],
+  "permission_denials": []
+}
