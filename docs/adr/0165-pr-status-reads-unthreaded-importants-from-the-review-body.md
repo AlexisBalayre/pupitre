@@ -17,21 +17,24 @@
     record, including the ones its round anchored inline. Those keep their bot thread. Once the
     operator resolves that thread to accept a declined finding, the code at head is unchanged, so
     every later round lists the finding again. Counted from the body alone, it would hold the PR
-    in review for good. So a carried entry that matches a bot thread, resolved or not, is left to
-    that thread. *The match (2026-11-13, #320).* Each line comment ends with a hidden marker,
-    `<!-- important [file, line, description] -->`, written by the poster from the finding. A
-    carried entry matches a thread whose marker names the same file, the same whole line range,
-    and the same description compared on letters and digits only, because the carried bullet is
-    the model's copy of the prior record: a dropped period or a collapsed space still matches, a
-    rewording does not. Each thread releases at most one entry, so an earlier finding's resolved
-    thread at the same lines releases no other. This replaces the first rule, which matched on
-    `path:line` through the thread's `originalLine` or its `Re: path:line` prefix. Each carried
-    section is counted on its own: its header adds N, and only the N list lines under it may
-    release any; a section that is not N list lines followed by a blank line or the end of the
-    body releases nothing, so finding text shaped like a header or a bullet cannot lower the
-    count. A carried entry that matches no thread still counts, and so does one under a thread
-    posted before the marker existed. A review whose opening line cannot be read as a verdict or
-    as the no-verdict notice counts as a verdict.
+    in review for good. So a carried entry whose `path:line` matches a bot thread, resolved or
+    not, is left to that thread. A thread's line is its `originalLine`, or the line in its
+    `Re: path:line` prefix when the poster pulled the comment to the nearest diff line. A carried
+    entry that names no line, or matches no thread, still counts.
+    *The match (2026-11-13, #320).* This supersedes the `path:line` match above: a carried entry is
+    left to a bot thread, resolved or not, only when it matches the thread's marker. Each line
+    comment ends with a hidden marker, `<!-- important [file, line, description] -->`, written by
+    the poster from the finding. A carried entry matches a thread whose marker names the same file,
+    the same whole line range, and the same description compared on letters and digits only, because
+    the carried bullet is the model's copy of the prior record: a dropped period or a collapsed
+    space still matches, a rewording does not. Each thread releases at most one entry, so an earlier
+    finding's resolved thread at the same lines releases no other. Each carried section is counted
+    on its own: its header adds N, and only the N list lines under it may release any; a section
+    that is not N list lines followed by a blank line or the end of the body releases nothing, so
+    finding text shaped like a header or a bullet cannot lower the count. A carried entry that
+    matches no thread still counts, and so does one under a thread posted before the marker existed.
+    A review whose opening line cannot be read as a verdict or as the no-verdict notice counts as a
+    verdict.
     *The operator's override (2026-11-11).* An unanchored important the operator declines has no
     thread to resolve, and the next round carries it, so every later summary counts it. The
     operator adds the `review-accepted` label instead. Only someone with triage access can label a
