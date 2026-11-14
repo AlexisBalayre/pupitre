@@ -2851,6 +2851,43 @@ describe('CLI commands', () => {
     });
   });
 
+  describe('review of a task launched from a ticket (decision 187)', () => {
+    it("prints the ticket's slice criteria, scrubbed, before the diff", () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedSession(repo, 's-ticket');
+      const { db } = resolveProject(repo);
+      db.prepare('UPDATE tasks SET spec = ?').run(
+        JSON.stringify({
+          goal: 'g',
+          scopeIn: ['**'],
+          acceptance: ['a'],
+          ticket: {
+            ref: '#412',
+            type: 'feature',
+            labels: ['design-approved'],
+            triggers: [],
+            criteria: ['\u001b[2Jthe kickoff quotes the design', 'review prints this'],
+          },
+        }),
+      );
+      transitionSession(db, 's-ticket', 'running');
+      transitionSession(db, 's-ticket', 'awaiting-review');
+      db.close();
+
+      buildProgram().parse(['review', 's-ticket'], { from: 'user' });
+
+      const criteria = logs.indexOf('ticket #412 slice criteria:');
+      expect(logs.slice(criteria, criteria + 3)).toEqual([
+        'ticket #412 slice criteria:',
+        '  - [2Jthe kickoff quotes the design',
+        '  - review prints this',
+      ]);
+      expect(criteria).toBeGreaterThan(logs.findIndex((line) => line.startsWith('acceptance:')));
+      expect(criteria).toBeLessThan(logs.indexOf('files:'));
+    });
+  });
+
   // Every path a command takes to a project's repo holds it as a main checkout
   // before reading it, so a `.git` a session swapped refuses the command
   // (decisions 172, 181).
