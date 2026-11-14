@@ -1,0 +1,111 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-14T14:12:33.272Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43603109835",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43603109835",
+  "actor": "AlexisBalayre",
+  "commit_sha": "4428964be8cea8acdf5244120eb41aa57f2f5263",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 330,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "guards"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "guards"
+  ],
+  "reviewers_skipped": [
+    "conventions",
+    "context",
+    "maintainability",
+    "docs",
+    "spec",
+    "simplicity",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1560-1569",
+      "description": "A nested package with no dependencies but with its own lockfile is refused on every merge, and the install the message names never clears it. It ran fine before this change.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1561-1576",
+      "description": "When the nearest lockfile sits in an intermediate directory (a workspace rooted below the repo root), the code still looks only in the repo root's `node_modules` and tells the operator to install in that intermediate directory. That install can never clear the refusal. It also newly refuses a branch that used to pass.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1680-1698",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "A nested package with its own yarn.lock and a committed Yarn Plug'n'Play runtime (Yarn Berry zero-install) has no node_modules by design. Before this PR its stages ran and it merged. Now the gate refuses it on every attempt, and the install it suggests never creates a node_modules, so the refusal can never clear.",
+      "body": "**A Yarn Plug'n'Play package is now refused on every merge, and the suggested install can never clear the refusal.**\n\n`refuseUninstalled` treats \"no `node_modules` anywhere\" as \"not installed\". Plug'n'Play never creates a `node_modules`: packages resolve through `.pnp.cjs` from `.yarn/cache`, and a zero-install repo commits both. The project treats Plug'n'Play as supported. ADR 0143 (lines 107-112) says a `.pnp.*` repo only loses the diff-size split. ADR 0095 (lines 23-24) handles a Plug'n'Play install, and the adapter has `PNP_RUNTIME` handling (`typescript.adapter.ts:238-243`). No ceiling excludes nested Plug'n'Play packages.\n\n**Trigger:** `tools/x` commits `package.json` with `devDependencies` and `test`/`typecheck` scripts, plus `yarn.lock`, `.pnp.cjs` and `.yarn/cache`. A session changes `tools/x/src/a.ts`.\n- `touchedNestedPackages` resolves the package's manager to `yarn` (`typescript.adapter.ts:576-586`), so the commands are `yarn run test` and `yarn run typecheck`.\n- Before this PR, `linkEnvironment` linked nothing. The stages ran in the checkout, Yarn loaded the committed `.pnp.cjs`, and the branch merged.\n- At head, none of the early returns fire:\n  - line 1671 finds no `node_modules` in the main checkout, and line 1672 finds none in the checkout;\n  - `declared` is not empty;\n  - `lock` is `{ dir: 'tools/x', manager: yarn }`, so `root === pkg.dir` and the hoisted check is skipped.\n- The gate then throws \"Install it with `yarn --cwd tools/x install`\". That install still creates no `node_modules`, so every later merge that touches `tools/x` is refused the same way, and neither the operator nor the session can fix it.\n\nThe same path also catches a member of a root Plug'n'Play workspace (root `yarn.lock` and `.pnp.cjs`, no root `node_modules`). The hoisted check finds nothing under the root, and the advice names `yarn --cwd . install`, which doesn't help either.\n\n(Medium confidence: the Yarn behaviour comes from knowledge of Yarn, not from reading its source in-tree.)\n\nhttps://github.com/AlexisBalayre/pupitre/blob/4428964be8cea8acdf5244120eb41aa57f2f5263/src/core/merge-gate.service.ts#L1680-L1698\n\n**Fix:** skip the refusal when the nearest lockfile's directory holds a Plug'n'Play runtime in the checkout. The stages then resolve through it, as they did before this PR.",
+      "suggestion": "  const lock = nearestLockfile(repoPath, pkg.dir);\n  // Plug'n'Play resolves from its runtime and cache, never a `node_modules`.\n  if (lock && existsSync(join(checkout, lock.dir, '.pnp.cjs'))) return;"
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Round 4 budget: spawned only correctness, security and guards. conventions, docs, simplicity, context and maintainability were skipped. spec had no source and workflow-safety had no workflow change. The consolidator was skipped because a single finding has nothing to group."
+    },
+    {
+      "component": "guards",
+      "description": "`gh pr diff 330` was denied for the guards reviewer. It fell back to `git diff <merge_base>..HEAD` on the service file and only searched the test file for source-scanning patterns."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.0334436,
+  "duration_ms": 327027,
+  "num_turns": 12,
+  "tokens": {
+    "input": 16,
+    "output": 7633,
+    "cache_read": 345829,
+    "cache_creation": 49165,
+    "total": 402643
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 78,
+      "output": 36440,
+      "cache_read": 1037074,
+      "cache_creation": 167686,
+      "cost_usd": 1.9224518
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 18,
+      "output": 3512,
+      "cache_read": 104233,
+      "cache_creation": 26165,
+      "cost_usd": 0.11099180000000003
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "gh pr diff 330 -- src/core/merge-gate.service.ts"
+    }
+  ]
+}
