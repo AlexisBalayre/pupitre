@@ -94,9 +94,12 @@ export function holdIdleCaches(db: Database, repoPath: string, now: number): str
   for (const row of listSessions(db, ['awaiting-review', 'running'])) {
     if (!SESSION_ID_PATTERN.test(row.id)) continue;
     try {
-      const idleMs = holdDue(db, row, paths.eventsFile(row.id), now);
-      if (idleMs === undefined || !typeHold(row)) continue;
-      appendEvent(db, row.id, 'cache_hold', { idleMs: Math.round(idleMs) });
+      const due = holdDue(db, row, paths.eventsFile(row.id), now);
+      if (due === undefined || !typeHold(row)) continue;
+      appendEvent(db, row.id, 'cache_hold', {
+        idleMs: Math.round(due.idleMs),
+        eventsBytes: due.eventsBytes,
+      });
       held.push(row.id);
     } catch {
       // The events file and the pane are the session's to break: a file gone
@@ -112,18 +115,19 @@ export function holdIdleCaches(db: Database, repoPath: string, now: number): str
 }
 
 /**
- * How long the session's events file has been quiet, when its window is due a
- * hold. The file is the session's to write, so it is opened as one it may have
- * replaced: no link followed and no fifo blocked on, a regular file only, its
- * mtime read off the descriptor opened, and only its tail read. Throws when it
- * cannot be opened, as a link cannot.
+ * How long the session's events file has been quiet, and its size, where the
+ * hold's turn starts writing, when its window is due a hold. The file is the
+ * session's to write, so it is opened as one it may have replaced: no link
+ * followed and no fifo blocked on, a regular file only, its mtime read off the
+ * descriptor opened, and only its tail read. Throws when it cannot be opened,
+ * as a link cannot.
  */
 function holdDue(
   db: Database,
   row: SessionRow,
   eventsFile: string,
   now: number,
-): number | undefined {
+): { idleMs: number; eventsBytes: number } | undefined {
   const fd = openSync(eventsFile, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     const stat = fstatSync(fd);
@@ -141,7 +145,9 @@ function holdDue(
     if (prompt && Date.parse(toIsoUtc(prompt.created_at)) >= Math.floor(stat.mtimeMs / 1000) * 1000)
       return undefined;
     if (trailingHolds(events) >= CACHE_HOLD_LIMIT) return undefined;
-    return classifySessionActivity(readTail(fd, stat.size)).kind === 'idle' ? idleMs : undefined;
+    return classifySessionActivity(readTail(fd, stat.size)).kind === 'idle'
+      ? { idleMs, eventsBytes: stat.size }
+      : undefined;
   } finally {
     closeSync(fd);
   }
@@ -150,15 +156,76 @@ function holdDue(
 /** The file's last `CACHE_HOLD_EVENTS_TAIL_BYTES` at most, less the line the cut tore. */
 function readTail(fd: number, size: number): string {
   const start = Math.max(0, size - CACHE_HOLD_EVENTS_TAIL_BYTES);
-  const buffer = Buffer.alloc(size - start);
+  const text = readRange(fd, start, size);
+  if (start === 0) return text;
+  const torn = text.indexOf('\n');
+  return torn === -1 ? '' : text.slice(torn + 1);
+}
+
+/** The file's bytes from `start` up to `end`, as far as they can be read. */
+function readRange(fd: number, start: number, end: number): string {
+  const buffer = Buffer.alloc(end - start);
   let length = 0;
   for (let read = -1; read !== 0 && length < buffer.length; length += read) {
     read = readSync(fd, buffer, length, buffer.length - length, start + length);
   }
-  const text = buffer.toString('utf8', 0, length);
-  if (start === 0) return text;
-  const torn = text.indexOf('\n');
-  return torn === -1 ? '' : text.slice(torn + 1);
+  return buffer.toString('utf8', 0, length);
+}
+
+/**
+ * Whether the window's turn is still the one `hold` started: no Stop in the
+ * events file past the size it had when the hold was typed. A dead turn fires
+ * no Stop, but Claude Code still sends its idle prompt a minute later, so the
+ * file's mtime cannot tell a hold's dead turn from one that ended (decision
+ * 179). Read like the hold reads the file, as one the session may have
+ * replaced. False whenever the file cannot say: it cannot be opened, is no
+ * regular file, is shorter than at the hold, or has more past the hold than
+ * `CACHE_HOLD_EVENTS_TAIL_BYTES`, which no turn that ran no tool writes.
+ */
+export function isHoldTurnOpen(eventsFile: string, hold: EventRow): boolean {
+  const from = holdEventsBytes(hold);
+  if (from === undefined) return false;
+  let fd: number;
+  try {
+    fd = openSync(eventsFile, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  } catch {
+    return false;
+  }
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.size < from || stat.size - from > CACHE_HOLD_EVENTS_TAIL_BYTES)
+      return false;
+    return !readRange(fd, from, stat.size).split('\n').some(isStopLine);
+  } catch {
+    return false;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/** The events file's size a hold recorded, when its payload holds one. */
+function holdEventsBytes(hold: EventRow): number | undefined {
+  try {
+    const { eventsBytes } = JSON.parse(hold.payload) as { eventsBytes?: unknown };
+    return Number.isSafeInteger(eventsBytes) && (eventsBytes as number) >= 0
+      ? (eventsBytes as number)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isStopLine(line: string): boolean {
+  try {
+    const event: unknown = JSON.parse(line);
+    return (
+      typeof event === 'object' &&
+      event !== null &&
+      (event as { hook_event_name?: unknown }).hook_event_name === 'Stop'
+    );
+  } catch {
+    return false;
+  }
 }
 
 /** The newest event that gave the session's window a prompt, from its events newest first. */

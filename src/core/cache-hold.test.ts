@@ -1,5 +1,14 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import {
+  appendFileSync,
+  mkdirSync,
+  renameSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -49,6 +58,7 @@ import { sweepDeadTurns } from './turn-watchdog.service.js';
 const HOLD_AGE_MS = CACHE_HOLD_AFTER_MS + 2 * 60_000;
 const STOP = { hook_event_name: 'Stop' };
 const TOOL = { hook_event_name: 'PostToolUse', tool_name: 'Bash' };
+const IDLE_PROMPT = { hook_event_name: 'Notification', notification_type: 'idle_prompt' };
 
 /** A session in `state`, with the pane its launch recorded. */
 function seedSession(db: Database, repo: string, id: string, state: SessionState): void {
@@ -114,8 +124,10 @@ describe('holdIdleCaches (decision 179)', () => {
     const pane = { sessionId: 's1', paneId: '%7' };
     expect(pasteIntoPane).toHaveBeenCalledWith(pane, CACHE_HOLD_MESSAGE);
     expect(submitPane).toHaveBeenCalledWith(pane);
-    const [hold] = holdsOf(db, 's1') as { idleMs: number }[];
+    const [hold] = holdsOf(db, 's1') as { idleMs: number; eventsBytes: number }[];
     expect(hold?.idleMs).toBeGreaterThanOrEqual(CACHE_HOLD_AFTER_MS);
+    // Where the hold's turn starts writing: the file as it stood when it was typed.
+    expect(hold?.eventsBytes).toBe(statSync(projectPaths(repo).eventsFile('s1')).size);
     expect(listEvents(db, 's1').filter((event) => event.type === 'steer')).toEqual([]);
   });
 
@@ -230,7 +242,7 @@ describe('holdIdleCaches (decision 179)', () => {
     seedSession(db, repo, 's1', 'awaiting-review');
     seedEventsFile(repo, 's1', HOLD_AGE_MS);
     for (let hold = 0; hold < CACHE_HOLD_LIMIT; hold++) {
-      appendEvent(db, 's1', 'cache_hold', { idleMs: HOLD_AGE_MS });
+      appendEvent(db, 's1', 'cache_hold', { idleMs: HOLD_AGE_MS, eventsBytes: 0 });
     }
     // Each hold's turn moved the events file after it.
     db.prepare("UPDATE events SET created_at = datetime('now', '-2 hours')").run();
@@ -286,6 +298,25 @@ describe('holdIdleCaches (decision 179)', () => {
     expect(steerPane).toHaveBeenCalledTimes(1);
     expect(pasteIntoPane).not.toHaveBeenCalled();
     expect(holdsOf(db, 's1')).toEqual([]);
+  });
+
+  // A dead turn fires no Stop, but Claude Code sends its idle prompt a minute
+  // later all the same, so the stall is stamped after the hold.
+  it("leaves the hold's dead turn to the operator, though its idle prompt moved the events file", () => {
+    seedSession(db, repo, 's1', 'running');
+    seedEventsFile(repo, 's1', HOLD_AGE_MS);
+    appendEvent(db, 's1', 'question', { text: 'which ADR number?' });
+    expect(holdIdleCaches(db, repo, Date.now())).toEqual(['s1']);
+    db.prepare("UPDATE events SET created_at = datetime('now', '-12 minutes')").run();
+    const eventsFile = projectPaths(repo).eventsFile('s1');
+    appendFileSync(eventsFile, `${JSON.stringify(IDLE_PROMPT)}\n`);
+    const idle = new Date(Date.now() - 11 * 60_000);
+    utimesSync(eventsFile, idle, idle);
+    vi.mocked(deadTurnError).mockReturnValue('⏺ API Error: Connection lost');
+
+    expect(sweepDeadTurns(db, repo, Date.now())).toEqual([]);
+    expect(steerPane).not.toHaveBeenCalled();
+    expect(openQuestion(db, 's1')?.text).toBe('which ADR number?');
   });
 
   it('runs on the watcher sweep, and never in a dormant project', () => {

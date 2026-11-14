@@ -33,7 +33,8 @@
     `respawn` or `cache_hold`) is recorded at or after the file's mtime, compared to the whole
     second `created_at` keeps. That keeps a hold out of a turn that a steer, a peer's message or
     the same sweep's resume has just started. It also stops a hold being typed again every sweep
-    while the last hold's turn runs, or after that turn died. It is pasted and submitted
+    while the last hold's turn runs, or in the minute after that turn died, before the idle
+    notice (below) moves the file and the 50 minutes start again. It is pasted and submitted
     like a steer (decision 45). A box that refuses the paste is cleared, nothing is recorded, and
     the next sweep tries again while the window lasts. Enter can land while the UI still folds
     the paste, so a box that still holds text after it gets one Enter more, as a tell's does
@@ -62,7 +63,8 @@
     stops the rest of the sweep. A store write refused after the paste leaves a hold typed but
     unrecorded. The next sweep can then type it again before the first hold's turn moves the
     file, queueing a duplicate behind it. The watchdog's resume accepts the same gap.
-    A hold is recorded as a `cache_hold` event with the idle it ended, never as a `steer`.
+    A hold is recorded as a `cache_hold` event with the idle it ended and the events file's size
+    (below), never as a `steer`.
     `openQuestion` does not read it, so a question stays open and in Needs-you until the
     operator answers it (decision 93), and the window's last steer stays one that was actually
     sent to it.
@@ -88,13 +90,28 @@
     the watchdog resumes, and that resume would tell a worker waiting on its question to finish
     the task without the answer. The newest recorded prompt alone cannot say the turn that died
     is the hold's: the operator may answer by typing into the window by hand, and `pup unblock`
-    types nothing (decision 7), so neither records a prompt. The file can, since a dead turn
-    fires no hook while a hold whose turn ended has a Stop after it. So the watchdog leaves a
-    dead turn alone only when the newest prompt recorded is a hold made at or after the file's
-    mtime, compared at the whole second as above. The question stays in Needs-you. A turn that
-    dies after the hold's turn ended is resumed as before, whoever prompted it. One edge stays
-    open: a hold's turn that reaches a tool before it dies moves the file and is resumed. The
-    hold's text asks the worker to run no tool, which keeps that edge narrow.
+    types nothing (decision 7), so neither records a prompt. Nor can the file's mtime. A dead
+    turn fires no Stop, but Claude Code still sends its idle notice about a minute later, unless
+    a new prompt comes first. This was checked on 2026-11-14 against the machine's worker
+    transcripts and events files. Of 19 worker turns that died on an API error, 15 had an
+    `idle_prompt` with no Stop before it as the next line of their events file. The other 4 got
+    their next prompt within 25 seconds of the error. So decision 35's addendum, which says the
+    file stops dead, holds only from that notice on: a dead turn moves the file once, a minute
+    after it dies. A hold whose turn died and a hold whose turn ended both leave the mtime about
+    a minute after the hold. What tells them apart is a Stop. The hold records the events file's
+    size as it stood when the hold was typed (`eventsBytes`), the offset where its turn's hooks
+    start, and the watchdog (`isHoldTurnOpen`) leaves a dead turn alone only when the newest
+    prompt recorded is a hold and no Stop follows that offset. The question stays in Needs-you.
+    A turn that dies after the hold's turn ended has the hold's Stop before it, so it is resumed
+    as before, whoever prompted it. A hold's turn that ran a tool before it died has no Stop
+    either, so it is left alone too. The watchdog reads the file as the hold does: no link
+    followed, no blocking, a regular file only, and no more than `CACHE_HOLD_EVENTS_TAIL_BYTES`
+    past the offset. A file it cannot open, one shorter than the offset (replaced), and one with
+    more than that past the offset (moved on, since a turn that ran no tool writes a line or
+    two) cannot be read as the hold's turn, so they are resumed. One edge stays open: if the
+    operator types into the hold's dead window by hand and that turn dies too, no Stop separates
+    it from the hold's, and it is left alone. Its question is still in Needs-you, and the
+    operator who typed it is at the window.
     Rejected: respawning a window that will idle past the hour on a fresh one. The wake time is
     not known, so a respawn cannot be timed to it. A fresh window pays the first-request floor
     (about 22k tokens for a worker) plus everything it reads again to rebuild its context, and it

@@ -106,8 +106,12 @@ export interface EventPayloads {
   utility_call: { kind: string; ok: boolean; detail?: string };
   /** `stalledAt` for a session's dead turn, `target` for the conductor's (decision 47). */
   turn_died: { reason: string; refusal?: string } & ({ stalledAt: string } | { target: string });
-  /** The watcher held an idle worker's prompt cache, its events file quiet `idleMs` (decision 179). */
-  cache_hold: { idleMs: number };
+  /**
+   * The watcher held an idle worker's prompt cache, its events file quiet
+   * `idleMs` and `eventsBytes` long, where the hold's turn starts writing
+   * (decision 179).
+   */
+  cache_hold: { idleMs: number; eventsBytes: number };
   tool_call: Record<string, unknown>;
   scope_violation: { path: string; reason?: string; command?: string };
   config_drift: Record<string, unknown>;
