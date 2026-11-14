@@ -3428,24 +3428,23 @@ function pushBranch(
       return runGit(repoPath, ['rev-parse', '--verify', tracking], {
         stdio: ['ignore', 'pipe', 'pipe'],
       }).trim();
-    } catch {
+    } catch (error) {
+      // A git the deadline killed gave no answer, so it is not a first push.
+      rethrowIfKilled(error);
       return undefined;
     }
   })();
   withScratchGitDir(repoPath, 'pup-push-', (git) => {
     assertMergeLockHeld(repoPath, `the push of ${branch}`);
-    // Unlike the other git calls here this gets a timeout: a stalled push would
-    // otherwise hang while holding the merge lock. Hooks are off for the same
-    // reason they are everywhere else in the gate (decision 28).
-    git(
-      [
-        'push',
-        ...(leased ? [`--force-with-lease=refs/heads/${branch}:${leased}`] : []),
-        originUrl,
-        `${tip}:refs/heads/${branch}`,
-      ],
-      { timeout: GATE_COMMAND_TIMEOUT_MS },
-    );
+    // A stalled push ends at `runGit`'s deadline rather than hang holding the
+    // merge lock. Hooks are off for the same reason they are everywhere else in
+    // the gate (decision 28).
+    git([
+      'push',
+      ...(leased ? [`--force-with-lease=refs/heads/${branch}:${leased}`] : []),
+      originUrl,
+      `${tip}:refs/heads/${branch}`,
+    ]);
   });
   // `--no-deref`, like the gate's other ref writes: a tracking ref a session
   // turned into a symref must not move the branch it points at.
@@ -3460,7 +3459,14 @@ function pushBranch(
  * (decision 54). `fn`'s runner is `--git-dir` the scratch dir, with
  * `GIT_OBJECT_DIRECTORY` set, so what it writes lands in the repo's objects.
  * Auto maintenance is off: a fetch run here would otherwise gc the repo's
- * object store by reachability from the scratch dir's two refs alone.
+ * object store by reachability from the scratch dir's two refs alone. The
+ * borrowed store's `info/alternates` is a session's to write, and a fetch
+ * starts `git for-each-ref` in each alternate's repo, under that repo's config
+ * with the `-c` pins unset. `core.alternateRefsCommand=true` runs `true` in its
+ * place. Neither the scratch git nor any git it starts then reads a config a
+ * session can write. The runner `reachesRemote`, the one git pup runs with its
+ * transports left to the operator's config: with no config of a session's to
+ * name a remote, it reaches only the URL it is handed (decision 89).
  */
 export function withScratchGitDir<TResult>(
   repoPath: string,
@@ -3486,11 +3492,14 @@ export function withScratchGitDir<TResult>(
           'maintenance.auto=false',
           // A commit graph written from this dir's reachability is a stale
           // cache in the repo's objects/info; the ext protocol is decided
-          // here and not by the operator's global config.
+          // here and not by the operator's global config. The scratch git
+          // reads `core.alternateRefsCommand` itself, so no unset drops it.
           '-c',
           'fetch.writeCommitGraph=false',
           '-c',
           'protocol.ext.allow=never',
+          '-c',
+          'core.alternateRefsCommand=true',
           '--git-dir',
           scratch,
           ...args,
@@ -3498,6 +3507,7 @@ export function withScratchGitDir<TResult>(
         {
           ...opts,
           env: { ...opts.env, GIT_OBJECT_DIRECTORY: objects },
+          reachesRemote: true,
         },
       ),
     );

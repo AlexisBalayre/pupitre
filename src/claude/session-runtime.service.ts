@@ -1393,8 +1393,13 @@ export function kickoff(pane: SessionPane, prompt: string): boolean {
   return true;
 }
 
-/** The pane as plain text, for the markers that carry no styling of their own. */
-function capturePane(pane: SessionPane): string {
+/**
+ * The pane as plain text, for the markers that carry no styling of their own,
+ * and for the dashboard's session view, which shows what the worker's window
+ * shows (decision 91). Read-only, and addressed to the pinned pane like every
+ * look at it.
+ */
+export function capturePane(pane: SessionPane): string {
   return tmuxAt(pane, ['capture-pane', '-p', '-t', paneTarget(pane)]);
 }
 

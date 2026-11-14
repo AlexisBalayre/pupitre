@@ -80,12 +80,13 @@
     - A first check that refused holds no identity.
     - An inherited `GIT_COMMON_DIR`, `GIT_OBJECT_DIRECTORY` or
       `GIT_ALTERNATE_OBJECT_DIRECTORIES` does not change what `runGit` reads.
-    - An inherited `GIT_SHALLOW_FILE` does not change the parents `runGit` reads, and
-      neither it nor `GIT_NAMESPACE` reaches the git it spawns. `GIT_CONFIG_GLOBAL` and
+    - An inherited `GIT_SHALLOW_FILE` does not change the parents `runGit` reads, and the
+      git it spawns is handed pup's own pin in its place (decision 89). No inherited
+      `GIT_NAMESPACE` or `GIT_REPLACE_REF_BASE` reaches that git. `GIT_CONFIG_GLOBAL` and
       `GIT_AUTHOR_NAME` still do.
     In `github-client.test.ts`, gh is refused before it runs on a planted commondir, a
     gitfile or a symlink, and its answer is refused when `.git` became a symlink while it
-    ran. gh is spawned with neither `GIT_SHALLOW_FILE` nor `GIT_NAMESPACE`. In `index.test.ts`, `--project <id> status` on a registered repo whose `.git`
+    ran. gh is spawned with pup's `GIT_SHALLOW_FILE` pin rather than the inherited one, and with no `GIT_NAMESPACE`. In `index.test.ts`, `--project <id> status` on a registered repo whose `.git`
     became a gitfile or a symlink throws the refusal, which `fatalExitCode` prints and exits
     1 on. So does `pup status` or `pup ui` run inside a repo whose `.git` became a
     gitfile, and `pup status --all` or `pup ui --all` over a registered one. An untouched

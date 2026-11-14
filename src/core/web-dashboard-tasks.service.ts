@@ -14,6 +14,7 @@ import {
   taskSpecForDisplay,
 } from './session.repository.js';
 import { holdingStates } from './session-state.utils.js';
+import { actionButton } from './web-dashboard-actions.service.js';
 import {
   DAY_MS,
   escapeHtml,
@@ -340,6 +341,7 @@ function backlogSection({ backlog, overlapError }: TasksView): string {
         (overlapError === undefined
           ? `<div class="fact">${escapeHtml(overlapText(task))}</div>`
           : '') +
+        actionButton('launch', { task: task.id }, 'Launch') +
         '</li>',
     );
     return (
