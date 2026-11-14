@@ -1,0 +1,140 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-14T09:48:10.560Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43581903360",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43581903360",
+  "actor": "AlexisBalayre",
+  "commit_sha": "bdb7561d0dc412f193d58e8384c9dbec3d1b19a0",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 332,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "266-273",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`quoted()` strips only C0/C1 controls (`CONTROL_CHARS`), so invisible Unicode in ticket text reaches the kickoff unseen by the operator who approved the design: tag characters U+E0000–E007F, zero-width characters and U+FEFF, and bidi overrides. Nothing writes a `ticket` yet, so this becomes reachable once step 4's intake copies issue text in. The quote and its framing still hold; what fails is the operator's check, because the kickoff holds text nobody saw. Other prompt paths already strip these characters with `[\\p{Cf}\\p{Default_Ignorable_Code_Point}]` (see `FORMAT_CHARS` in fix-round.service.ts and `INVISIBLE_OR_BREAKING` in this file).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "2336-2337",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`pup review` prints each slice criterion through `sanitizeReason`, which keeps only the first 300 characters and adds no marker. `assertTicketBounds` allows criteria up to 500 characters, so a 450-character criterion appears in full in the kickoff but cut short in the review. That contradicts decision 187's \"refused, never cut\". It is unreachable until intake writes tickets. Fix options: strip control characters without truncating, append an ellipsis when cut, or lower the criteria cap to 300.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session.repository.ts",
+      "line": "526-543",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`editTaskSpec` copies the stored ticket into the edited spec unchanged and then runs `assertPlannableSpec`. A stored row whose ticket fails the new checks (no `design-approved` label, a bad ref, or a field over a cap) is therefore refused on every `pup plan edit`, even a goal-only fix, and no command can change the ticket. That contradicts the function's doc, which says edit is how a failing row gets repaired. It is unreachable until step 4's intake writes tickets. Either update the doc to say re-intake repairs a ticket, or let intake refresh the ticket copy.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "2332-2337",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`pup review` now prints the ticket ref and criteria, which come from the tracker, through `sanitizeReason`. That function removes C0/C1 controls but keeps bidi and zero-width format characters, so a criterion containing U+202E shows reordered in the reviewer's terminal. The merge gate already strips `INVISIBLE_FORMAT_CHARS` before calling `sanitizeReason` (merge-gate.service.ts:3536-3541). It is unreachable until intake writes tickets.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Skipped review-spec: the PR closes no issue and no --spec was given; its Goal/Acceptance body was passed to reviewers as intent. Skipped review-context (no infra/protocol surface touched), review-workflow-safety (no workflow change), and review-maintainability (off the default roster). Security ran as one instance even though the diff is 557 lines, because only 188 of them are source and the trust-boundary surface is two small functions."
+    },
+    {
+      "component": "orchestrator",
+      "description": "Downgraded the security reviewer's 'invisible Unicode in quoted()' finding from important to nit under §6: the reviewer itself conceded that no code writes `ticket` until step 4's intake exists, so the trigger is not reachable yet. Reclassified the bidi-in-`pup review` finding from pre-existing to nit, because the PR newly routes tracker text to that sink. Dropped two simplicity nits: one voided itself because the reviewer conceded the deliberate unknown-type tolerance justifies the cap; the other had no concrete cost ('clear as written')."
+    },
+    {
+      "component": "conventions",
+      "description": "The rule injection showed only `@` references, not the doc text, so the reviewer read general.md and testing.md directly in order to quote them."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.459974879999999,
+  "duration_ms": 232356,
+  "num_turns": 15,
+  "tokens": {
+    "input": 12,
+    "output": 11624,
+    "cache_read": 279735,
+    "cache_creation": 51392,
+    "total": 342763
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 108,
+      "output": 40349,
+      "cache_read": 1544623,
+      "cache_creation": 164991,
+      "cost_usd": 2.0954676
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 60,
+      "output": 12219,
+      "cache_read": 426100,
+      "cache_creation": 79599,
+      "cost_usd": 0.36391750000000006
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 411,
+      "cache_read": 1933,
+      "cache_creation": 2918,
+      "cost_usd": 0.00058978
+    }
+  ],
+  "permission_denials": []
+}
