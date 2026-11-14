@@ -209,15 +209,21 @@ function escapeSbpl(value: string): string {
  * scratch and came back aimed at a git dir the child wrote. What the walk
  * cannot see into is sealed whole, and `.worktrees`, where pup adds more while
  * the child runs, is not writable at all.
+ *
+ * With a `root`, a checkout grant must resolve to a path under it, or the
+ * profile is refused: see `grantWithin` (decision 180).
  */
 export function writeProfile(
   policyDir: string,
   writablePaths: string[],
   scratchPaths: string[] = [],
   outputPaths: string[] = [],
+  root?: string,
 ): string {
   const profilePath = join(policyDir, 'gate-child.sb');
-  const pinnedCheckouts = [...new Set(writablePaths.map(grantPath))];
+  const pinnedCheckouts = [
+    ...new Set(writablePaths.map((path) => (root ? grantWithin(path, root) : grantPath(path)))),
+  ];
   const outputs = outputPaths.map(grantPath);
   for (const output of outputs) {
     const { pinned, sealed } = nestedRepoPaths(output);
@@ -350,6 +356,27 @@ function grantPath(path: string): string {
     );
   }
   return join(resolvePath(dirname(path)), name);
+}
+
+/**
+ * `grantPath(path)`, refused unless it is `root` or under it, both resolved
+ * (decision 180). A nested package's stage cwd is a path under the gate's
+ * checkout, and an earlier child with the checkout writable can make an outer
+ * segment of it a link, aimed at the main checkout's own copy of the inner
+ * name. `grantPath` follows the parent, so the next child's grant would be that
+ * target. Checked on the very string the grant is made of, so a link swapped
+ * in after the check changes nothing: what the profile names is what was
+ * checked.
+ */
+export function grantWithin(path: string, root: string): string {
+  const granted = grantPath(path);
+  const resolvedRoot = resolvePath(root);
+  if (granted !== resolvedRoot && !granted.startsWith(`${resolvedRoot}${sep}`)) {
+    throw new Error(
+      `Refusing to grant ${path}: it resolves to ${granted}, outside ${resolvedRoot}.`,
+    );
+  }
+  return granted;
 }
 
 /**

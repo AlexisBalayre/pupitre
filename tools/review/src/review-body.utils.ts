@@ -51,6 +51,18 @@ function inertFences(markdown: string): string {
     .replace(/<(?=pre\b)/gi, "<\u200b");
 }
 
+/**
+ * The hidden last line of every line comment: the important the thread holds.
+ * pr-status.yml leaves a carried important to the thread whose marker names its
+ * file and whole line range, and its description in the same letters and digits,
+ * as its bullet does: an earlier finding's thread at the same lines holds no other.
+ * `<` and `>` are escaped, so no text can end the comment early.
+ */
+export function importantMarker(finding: Pick<Finding, "file" | "line" | "description">): string {
+  const held = JSON.stringify([finding.file, finding.line, finding.description]);
+  return `<!-- important ${held.replace(/</g, "\\u003c").replace(/>/g, "\\u003e")} -->`;
+}
+
 export function commentBody(finding: Finding, relocatedFrom: number | null): string {
   const parts: string[] = [];
   if (relocatedFrom !== null) parts.push(inertFences(`Re: \`${finding.file}:${relocatedFrom}\``), "");
@@ -65,6 +77,7 @@ export function commentBody(finding: Finding, relocatedFrom: number | null): str
     // text, inert fence.
     parts.push("", relocatedFrom === null ? `${fence}suggestion` : fence, finding.suggestion, fence);
   }
+  parts.push("", importantMarker(finding));
   return parts.join("\n");
 }
 
