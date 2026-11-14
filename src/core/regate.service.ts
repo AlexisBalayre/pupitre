@@ -27,6 +27,7 @@ import {
   withLedgerKept,
 } from './merge-gate.service.js';
 import { appendEvent, type SessionRow } from './session.repository.js';
+import { taskRescopes } from './task-rescope.service.js';
 import type { PullRequestRef } from './types/github.types.js';
 import type {
   GateReport,
@@ -216,7 +217,17 @@ export async function regateMerged(
   try {
     rewritePullRequest(req.repoPath, regate.prUrl, {
       ...pullRequest,
-      ...pullRequestText(measured.spec, session.id, report, commitSubjects, sha, ownSubject),
+      // The rewrite replaces the whole body: the rescopes the first gate
+      // listed are read again, with any taken since (decision 188).
+      ...pullRequestText(
+        measured.spec,
+        session.id,
+        report,
+        commitSubjects,
+        sha,
+        ownSubject,
+        taskRescopes(db, session.task_id),
+      ),
     });
     assertPullRequestHead(req.repoPath, regate.prUrl, pullRequest.repo, sha);
     // The push that moved the head left the new sha without the first gate's

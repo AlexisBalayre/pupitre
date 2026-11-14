@@ -65,6 +65,11 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
     .refusedSessionEnv,
   saveSessionEnv: (await importOriginal<typeof import('../claude/session-runtime.service.js')>())
     .saveSessionEnv,
+  // The `ps` table and the launches' pane pids an operator-only command walks
+  // (decision 188): this suite runs under a session's Claude Code while
+  // dogfooding, so by default the caller runs under no window pup opened.
+  listProcesses: vi.fn(() => new Map()),
+  recordedPanePids: vi.fn(() => new Map()),
 }));
 // `render` takes over the terminal and never returns until the operator quits,
 // which is the one boundary `pup ui` has; the dashboard it would draw is tested

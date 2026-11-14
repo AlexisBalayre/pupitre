@@ -68,6 +68,11 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
     .refusedSessionEnv,
   saveSessionEnv: (await importOriginal<typeof import('../claude/session-runtime.service.js')>())
     .saveSessionEnv,
+  // The `ps` table and the launches' pane pids an operator-only command walks
+  // (decision 188): this suite runs under a session's Claude Code while
+  // dogfooding, so by default the caller runs under no window pup opened.
+  listProcesses: vi.fn(() => new Map()),
+  recordedPanePids: vi.fn(() => new Map()),
 }));
 // `render` takes over the terminal and never returns until the operator quits,
 // which is the one boundary `pup ui` has; the dashboard it would draw is tested
@@ -180,6 +185,8 @@ import {
 } from '@test/helpers/cli-index.mock.js';
 import { render } from 'ink';
 import {
+  listProcesses,
+  recordedPanePids,
   SessionPaneMissingError,
   SteerNotDeliveredError,
 } from '../claude/session-runtime.service.js';
@@ -1139,6 +1146,57 @@ describe('CLI commands', () => {
       else expect(mountedProps().readOnlyReason).toContain(reason);
     });
 
+    // The markers are the caller's word: emptied or unset, the process tree
+    // the caller runs in still holds the pane pid a launch recorded, and its
+    // title need not carry the launch's `--name` (decision 188).
+    // `window` names the window each project's store recorded pid 700 for, if any.
+    const underPane = (window: (repoPath: string) => string | undefined) => {
+      vi.mocked(listProcesses).mockReturnValue(
+        new Map([
+          [process.ppid, { parent: 700, args: '/bin/zsh -c pup ui' }],
+          [700, { parent: 1, args: 'claude' }],
+        ]),
+      );
+      vi.mocked(recordedPanePids).mockImplementation((repoPath) => {
+        const recorded = window(repoPath);
+        return new Map(recorded === undefined ? [] : [[700, recorded]]);
+      });
+    };
+
+    it.each([
+      ['emptied', ''],
+      ['unset', undefined],
+    ])('drives nothing under a recorded pane, its markers %s', (_how, value) => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedSession(repo, 's1');
+      vi.stubEnv('PUP_SESSION_ID', value);
+      vi.stubEnv('PUP_CONDUCTOR', value);
+      underPane((repoPath) => `pup-conductor-${projectId(repoPath)}`);
+      stubRender();
+
+      runUi(true);
+
+      expect(mountedProps().readOnlyReason).toBe(
+        `read-only: this runs under process 700, the pane pup recorded for ` +
+          `pup-conductor-${projectId(repo)}'s window, whatever its environment says (decision 188).`,
+      );
+    });
+
+    it('drives nothing when the process tree cannot be read', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      vi.mocked(listProcesses).mockReturnValue(undefined);
+      stubRender();
+
+      runUi(true);
+
+      expect(mountedProps().readOnlyReason).toBe(
+        'read-only: the process tree could not be read (`ps` failed), so this caller cannot be ' +
+          'told from a session or the conductor (decision 188).',
+      );
+    });
+
     // Ink restores the primary screen when it unmounts, so a signal that would
     // otherwise end the process has to reach unmount first — else the operator
     // is left on the alternate buffer with their scrollback hidden.
@@ -1209,6 +1267,26 @@ describe('CLI commands', () => {
         expect(mountedProps()).toMatchObject({ showAttach: true });
         expect(mountedProps().readOnlyReason).toBeUndefined();
         expect(mountedProps().read().unreadable).toEqual([]);
+      });
+
+      // Each store the fleet reads is asked for the panes its launches
+      // recorded, as its own dashboard would ask it (decision 188).
+      it("drives nothing under a pane one project's launch recorded", () => {
+        const repoA = initRepo();
+        const repoB = initRepo();
+        seedSession(repoA, 's-a');
+        seedSession(repoB, 's-b');
+        useCwd(tempDir('pup-cli-noproj-'));
+        underPane((repoPath) => (repoPath === repoB ? 'pup-s-b' : undefined));
+        stubRender();
+
+        runUi(true);
+
+        expect(mountedProps().readOnlyReason).toBe(
+          "read-only: this runs under process 700, the pane pup recorded for pup-s-b's window, " +
+            'whatever its environment says (decision 188).',
+        );
+        expect(mountedProps()).toMatchObject({ showAttach: true });
       });
 
       it('reads the fleet from inside a repo with --all, and only that repo without it', () => {

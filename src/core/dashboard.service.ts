@@ -50,6 +50,7 @@ import {
   formatStaleAge,
   isSessionStalled,
 } from './session-activity.utils.js';
+import { taskRescopes } from './task-rescope.service.js';
 import type {
   DashboardBaseline,
   DashboardDeadTurn,
@@ -555,11 +556,14 @@ function needOf(
   ciReview?: CiReviewLookup,
 ): DashboardNeed | undefined {
   const { id } = session;
+  const widened = widenedClause(session.rescoped);
   const need = (kind: DashboardNeed['kind'], reason: string, answer: string): DashboardNeed => ({
     kind,
     sessionId: id,
     label: session.isMintedId ? id : UNMINTED_ID,
-    reason,
+    // The merge is the operator's to judge against the scope it was gated
+    // on, which is wider than the plan they approved (decision 188).
+    reason: kind === 'awaiting-review' || kind === 'pr-open' ? `${reason}${widened}` : reason,
     answer,
   });
   // The answer is what the conductor acts on, and the session row is
@@ -649,6 +653,17 @@ function needOf(
     );
   }
   return undefined;
+}
+
+/** The inbox shows this many of the globs a rescope added, then counts the rest. */
+const WIDENED_GLOBS_SHOWN = 3;
+
+/** What a merge line adds for a claim widened after launch; empty for none. */
+function widenedClause(rescoped: string[] | undefined): string {
+  if (rescoped === undefined || rescoped.length === 0) return '';
+  const shown = rescoped.slice(0, WIDENED_GLOBS_SHOWN).map((glob) => `+${glob}`);
+  const rest = rescoped.length - shown.length;
+  return `; scope widened after launch: ${shown.join(', ')}${rest > 0 ? ` (+${rest} more)` : ''}`;
 }
 
 /**
@@ -823,6 +838,7 @@ function dashboardSession(
   // stall the session has worked its way out of since.
   const deadTurn = stall && newestDeadTurn(events, stall.stalledAt);
   const route = dashboardRoute(row, topReached);
+  const rescoped = taskRescopes(db, row.task_id).flatMap((rescope) => rescope.added);
   return {
     // The store is session-writable and, since the fleet view (decision 60),
     // not always the caller's own: all three print as stored, and no CHECK
@@ -840,6 +856,7 @@ function dashboardSession(
     // hand — which is a row to render, not a reason to drop the session.
     origin: sanitizeReason(task?.origin ?? 'unknown'),
     scope: asStringArray(spec.scopeIn).map(sanitizeReason),
+    ...(rescoped.length > 0 ? { rescoped: rescoped.map(sanitizeReason) } : {}),
     acceptance: asStringArray(spec.acceptance).map(sanitizeReason),
     rejectCount: row.reject_count,
     ...(activity ? { activity } : {}),

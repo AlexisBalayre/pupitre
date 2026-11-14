@@ -43,11 +43,13 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   // `pup attach` hands the terminal to tmux; here it hands it to nothing.
   attachWindow: vi.fn(() => 0),
   hasSessionWindow: vi.fn(() => true),
-  // The rescope's tmux and ps reads (decision 115), tested against both in
-  // their own suite.
+  // The rescope's tmux and ps reads (decision 115) and the pane pids the
+  // operator guard matches (decision 188), tested against both in their own
+  // suite.
   windowSockets: vi.fn(),
   listPanes: vi.fn(),
   listProcesses: vi.fn(),
+  recordedPanePids: vi.fn(),
   // The turn watchdog's reads: a conductor window to find, a pane to read for
   // a dead turn, a nudge to type (addendum to decision 35).
   conductorPane: vi.fn(),
@@ -208,6 +210,7 @@ import {
   launchWatcher,
   listPanes,
   listProcesses,
+  recordedPanePids,
   SessionPaneMissingError,
   SteerNotDeliveredError,
   saveSessionEnv,
@@ -244,6 +247,7 @@ import {
 import { STALLED_AFTER_MS } from '../core/session-activity.constants.js';
 import {
   hardRespawnSession,
+  isHandoffReady,
   requestHandoff,
   respawnSession,
 } from '../core/session-handoff.service.js';
@@ -303,6 +307,11 @@ describe('CLI commands', () => {
         delete process.env[key];
       }
     }
+    // The real tree runs under this session's own Claude Code while
+    // dogfooding, which every operator-only command it guards would refuse:
+    // by default the caller runs under no window pup opened (decision 188).
+    vi.mocked(listProcesses).mockReturnValue(new Map());
+    vi.mocked(recordedPanePids).mockReturnValue(new Map());
   });
 
   afterEach(() => {
@@ -925,25 +934,27 @@ describe('CLI commands', () => {
     });
   });
 
+  // Task t-1, claimed by session s1 in `state`.
+  const claimed = (repo: string, state: string, scopeIn = ['src/**']) => {
+    const { db, repoPath } = resolveProject(repo);
+    ensureProject(db, projectId(repoPath), repoPath);
+    insertTask(db, {
+      id: 't-1',
+      projectId: projectId(repoPath),
+      spec: JSON.stringify({ id: 't-1', goal: 'g', scopeIn, acceptance: ['a'] }),
+    });
+    insertSession(db, {
+      id: 's1',
+      taskId: 't-1',
+      worktreePath: join(repoPath, '.worktrees', 's1'),
+      branch: 'pup/s1',
+      profileHash: 'hash',
+    });
+    db.prepare('UPDATE sessions SET state = ? WHERE id = ?').run(state, 's1');
+    return db;
+  };
+
   describe('plan edit --rescope (decision 115)', () => {
-    const claimed = (repo: string, state: string, scopeIn = ['src/**']) => {
-      const { db, repoPath } = resolveProject(repo);
-      ensureProject(db, projectId(repoPath), repoPath);
-      insertTask(db, {
-        id: 't-1',
-        projectId: projectId(repoPath),
-        spec: JSON.stringify({ id: 't-1', goal: 'g', scopeIn, acceptance: ['a'] }),
-      });
-      insertSession(db, {
-        id: 's1',
-        taskId: 't-1',
-        worktreePath: join(repoPath, '.worktrees', 's1'),
-        branch: 'pup/s1',
-        profileHash: 'hash',
-      });
-      db.prepare('UPDATE sessions SET state = ? WHERE id = ?').run(state, 's1');
-      return db;
-    };
     const rescope = (...extra: string[]) =>
       buildProgram().parse(['plan', 'edit', 't-1', '--rescope', '--scope', 'docs/**', ...extra], {
         from: 'user',
@@ -1147,6 +1158,180 @@ describe('CLI commands', () => {
       buildProgram().parse(['plan', 'edit', 't-1', '--rescope'], { from: 'user' });
       expect(errors).toContain('Usage: pup plan edit <task> --rescope --scope <glob...>');
       expect(process.exitCode).toBe(1);
+    });
+
+    // A launch's overlap check on the added globs (decision 188): shown and
+    // recorded, never refused.
+    it('prints each live session of another task the added globs share files with', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      mkdirSync(join(repo, 'docs'), { recursive: true });
+      writeFileSync(join(repo, 'docs', 'a.md'), 'a');
+      writeFileSync(join(repo, 'docs', 'b.md'), 'b');
+      execFileSync('git', ['-C', repo, 'add', 'docs'], { env: GIT_ENV });
+      const db = claimed(repo, 'merged');
+      const { repoPath } = resolveProject(repo);
+      insertTask(db, {
+        id: 't-2',
+        projectId: projectId(repoPath),
+        spec: JSON.stringify({ id: 't-2', goal: 'g', scopeIn: ['docs/**'], acceptance: ['a'] }),
+      });
+      insertSession(db, {
+        id: 's2',
+        taskId: 't-2',
+        worktreePath: join(repoPath, '.worktrees', 's2'),
+        branch: 'pup/s2',
+        profileHash: 'hash',
+      });
+      db.prepare("UPDATE sessions SET state = 'running' WHERE id = 's2'").run();
+
+      rescope();
+
+      expect(logs).toContain(
+        "Widened t-1's scope-in with docs/**; recorded on session s1; tier critical.\n" +
+          'OVERLAP  s2  docs/a.md (+1 more)\n' +
+          'Recorded as overlaps; the next fix round introduces the workers.',
+      );
+      expect(listEvents(db, 's1').map((event) => event.type)).toEqual(['rescope', 'scope_overlap']);
+      expect(process.exitCode).toBeUndefined();
+    });
+  });
+
+  // The markers are the caller's word: emptied or unset, the process tree the
+  // caller runs in still holds the pane pid a launch recorded (decision 188).
+  describe('operator-only commands under a window pup opened (decision 188)', () => {
+    const PANE_PID = 700;
+    const COMMANDS = [
+      {
+        command: '`pup plan edit --rescope`',
+        args: ['plan', 'edit', 't-1', '--rescope', '--scope', 'docs/**'],
+        seed: (repo: string) => claimed(repo, 'merged').close(),
+        changed: (db: Database.Database) =>
+          JSON.parse(getTask(db, 't-1')?.spec ?? '{}').scopeIn.includes('docs/**'),
+      },
+      {
+        command: '`pup respawn`',
+        args: ['respawn', 's1'],
+        seed: (repo: string) => seedSession(repo, 's1'),
+        changed: () => vi.mocked(respawnSession).mock.calls.length > 0,
+      },
+      {
+        command: '`pup unblock`',
+        args: ['unblock', 's1'],
+        seed: (repo: string) => seedBlockedSession(repo, 's1', 'reject cap of 2 reached'),
+        changed: (db: Database.Database) => getSession(db, 's1')?.state === 'running',
+      },
+      {
+        command: '`pup kill --respawn`',
+        args: ['kill', 's1', '--respawn'],
+        seed: (repo: string) => seedSession(repo, 's1'),
+        changed: () =>
+          vi.mocked(hardRespawnSession).mock.calls.length > 0 ||
+          vi.mocked(killSession).mock.calls.length > 0,
+      },
+    ];
+    const WINDOWS = [
+      ['a session', () => 'pup-s9'],
+      ['the conductor', (repoPath: string) => `pup-conductor-${projectId(repoPath)}`],
+    ] as const;
+    const MARKERS = [
+      ['emptied', ''],
+      ['unset', undefined],
+    ] as const;
+    const cases = COMMANDS.flatMap((entry) =>
+      WINDOWS.flatMap(([who, window]) =>
+        MARKERS.map(([how, value]) => ({ ...entry, who, window, how, value })),
+      ),
+    );
+
+    beforeEach(() => {
+      vi.mocked(windowSockets).mockReturnValue(['/tmp/tmux-1/default']);
+      vi.mocked(listPanes).mockReturnValue([]);
+      vi.mocked(isHandoffReady).mockReturnValue(true);
+      // The caller's shell, under the process a launch recorded as its pane's,
+      // whose title carries no `--name`: only the pid names the window.
+      vi.mocked(listProcesses).mockReturnValue(
+        new Map([
+          [process.ppid, { parent: PANE_PID, args: '/bin/zsh -c pup' }],
+          [PANE_PID, { parent: 1, args: 'claude' }],
+        ]),
+      );
+    });
+
+    it.each(cases)(
+      'refuses $command under $who window, its markers $how',
+      ({ command, args, seed, changed, window, value }) => {
+        const repo = initRepo();
+        useCwd(repo);
+        seed(repo);
+        const { db, repoPath } = resolveProject(repo);
+        vi.mocked(recordedPanePids).mockReturnValue(new Map([[PANE_PID, window(repoPath)]]));
+        vi.stubEnv('PUP_SESSION_ID', value);
+        vi.stubEnv('PUP_CONDUCTOR', value);
+
+        buildProgram().parse(args, { from: 'user' });
+
+        expect(errors).toEqual([
+          `${command} is operator-only, and this runs under process ${PANE_PID}, the pane pup ` +
+            `recorded for ${window(repoPath)}'s window, whatever its environment says; run it ` +
+            'from your own shell.',
+        ]);
+        expect(process.exitCode).toBe(1);
+        expect(changed(db)).toBe(false);
+        expect(vi.mocked(recordedPanePids)).toHaveBeenCalledWith(repoPath, expect.any(Array));
+        db.close();
+      },
+    );
+
+    it.each(COMMANDS)(
+      'lets the operator run $command under no recorded pane',
+      ({ args, seed, changed }) => {
+        const repo = initRepo();
+        useCwd(repo);
+        seed(repo);
+        vi.mocked(recordedPanePids).mockReturnValue(new Map([[PANE_PID + 1, 'pup-s9']]));
+
+        buildProgram().parse(args, { from: 'user' });
+
+        const { db } = resolveProject(repo);
+        expect(errors).toEqual([]);
+        expect(changed(db)).toBe(true);
+        db.close();
+      },
+    );
+
+    it.each(COMMANDS)(
+      'refuses $command when the process tree cannot be read',
+      ({ command, args, seed, changed }) => {
+        const repo = initRepo();
+        useCwd(repo);
+        seed(repo);
+        vi.mocked(listProcesses).mockReturnValue(undefined);
+
+        buildProgram().parse(args, { from: 'user' });
+
+        const { db } = resolveProject(repo);
+        expect(errors).toEqual([
+          `${command} could not read the process tree (\`ps\` failed), so it cannot tell this ` +
+            'caller from a session or the conductor; nothing changed.',
+        ]);
+        expect(changed(db)).toBe(false);
+        db.close();
+      },
+    );
+
+    // The plain kill is the conductor's to run, from its own window.
+    it('leaves the plain kill to a caller under a recorded pane', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedSession(repo, 's1');
+      vi.mocked(recordedPanePids).mockReturnValue(new Map([[PANE_PID, 'pup-s9']]));
+
+      buildProgram().parse(['kill', 's1'], { from: 'user' });
+
+      expect(errors).toEqual([]);
+      expect(killSession).toHaveBeenCalledTimes(1);
+      expect(listProcesses).not.toHaveBeenCalled();
     });
   });
 

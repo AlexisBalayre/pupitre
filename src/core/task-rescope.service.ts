@@ -1,9 +1,7 @@
-import { basename } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import type { Tier } from '../claude/model-ladder.constants.js';
 import {
   listPanes,
-  listProcesses,
   PROBE_PATH,
   windowLabel,
   windowSockets,
@@ -11,7 +9,9 @@ import {
 import { insertDecisionRecord } from './decision-record.repository.js';
 import { globToRegExpSource } from './glob.utils.js';
 import { PROTECTED_PATH_GLOBS } from './merge-gate.constants.js';
+import { scopeConflicts } from './overlap.service.js';
 import { InvalidProfileError } from './profile.errors.js';
+import { asStringArray, parseJsonOr } from './report-data.utils.js';
 import { asTier, taskTier, tierForScope } from './routing.utils.js';
 import {
   appendEvent,
@@ -26,14 +26,20 @@ import {
   workingSession,
 } from './session.repository.js';
 import { assertPlannableSpec } from './task-spec.utils.js';
+import type { ScopeConflict } from './types/overlap.types.js';
 import type { RescopeCaller } from './types/session-event.types.js';
 
-/** What a rescope did: the globs it appended, none when all were there, and the tier it leaves. */
+/**
+ * What a rescope did: the globs it appended, none when all were there, the
+ * tier it leaves, and the live sessions of other tasks the added globs share
+ * files with.
+ */
 interface Rescoped {
   sessionId: string;
   added: string[];
   tier: Tier;
   raised: boolean;
+  overlaps: ScopeConflict[];
 }
 
 /** Any C0 control, DEL or C1 control: none belongs in a path. */
@@ -167,43 +173,6 @@ function openWindowRefusal(taskId: string, open: OpenWindow): InvalidProfileErro
   }
 }
 
-/** The tmux name a pup launch passed as `--name` (`launchArgs`), if `args` carries one. */
-function launchedName(args: string): string | undefined {
-  const words = args.split(' ');
-  const at = words.indexOf('--name');
-  const name = at === -1 ? undefined : words[at + 1];
-  return name?.startsWith('pup-') ? name : undefined;
-}
-
-/** The Claude Code pup launched that a process runs under, or why that could not be read. */
-type LaunchedAncestor = { kind: 'launched'; name: string } | { kind: 'unreadable' };
-
-/**
- * Whether this process runs under a Claude Code pup launched, a session's
- * window or a conductor's, read from the process tree rather than from an
- * environment or a cwd the caller sets (decision 115): each process from this
- * one's parent up is looked for the `--name pup-<...>` its launch passed.
- * A tmux process is passed over: a server lists the command that started it,
- * which can be a launch's, and the operator's own panes run under it. A `ps`
- * that failed is `unreadable`, which a rescope refuses. A process that left
- * the tree (a double fork, `setsid`, a job a tmux server or launchd started)
- * is under none, the ceiling decision 115 names.
- */
-export function launchedAncestor(): LaunchedAncestor | undefined {
-  const table = listProcesses();
-  if (table === undefined) return { kind: 'unreadable' };
-  const seen = new Set<number>();
-  for (let pid = process.ppid; pid > 1 && !seen.has(pid); pid = table.get(pid)?.parent ?? 0) {
-    seen.add(pid);
-    const args = table.get(pid)?.args ?? '';
-    const name = basename(args.split(' ')[0] ?? '').startsWith('tmux')
-      ? undefined
-      : launchedName(args);
-    if (name !== undefined) return { kind: 'launched', name };
-  }
-  return undefined;
-}
-
 /** The tier the session's next window routes on, as `sessionWindowRoute` reads it. */
 function routedTier(db: Database, taskId: string, sessionId: string, scopeIn: string[]): Tier {
   return (
@@ -219,13 +188,16 @@ function routedTier(db: Database, taskId: string, sessionId: string, scopeIn: st
  * write's own guard decides, or may still have a window open, whose hooks
  * hold the old scope: one a default tmux server lists, or any at all when one
  * does not answer. Once it has stopped, the gate, `pup review` and the next
- * `pup fix` all read the widened spec. The read, the checks, the write, the
- * tier raise, the `rescope` event on the claiming session and the decision
- * record `pup log` lists are one immediate transaction: no other writer lands
- * between the read and the write, and a refusal after the write rolls it
- * back. The CLI refuses a session and the conductor before this runs, and
- * hands over what it saw of the caller it took for the operator, which the
- * event records as seen, not as confirmed.
+ * `pup fix` all read the widened spec. The added globs go through a launch's
+ * overlap check against every live session of another task (decision 99):
+ * what they share is recorded and returned, never refused, and the next fix
+ * round introduces the workers. The read, the checks, the write, the tier
+ * raise, the `rescope` event on the claiming session, its overlaps and the
+ * decision record `pup log` lists are one immediate transaction: no other
+ * writer lands between the read and the write, and a refusal after the write
+ * rolls it back. The CLI refuses a session and the conductor before this
+ * runs, and hands over what it saw of the caller it took for the operator,
+ * which the event records as seen, not as confirmed (decision 188).
  */
 export function rescopeTask(
   db: Database,
@@ -252,6 +224,7 @@ export function rescopeTask(
           added,
           tier: routedTier(db, taskId, sessionId, spec.scopeIn),
           raised: false,
+          overlaps: [],
         };
       }
       const widened = { ...spec, scopeIn: [...spec.scopeIn, ...added] };
@@ -261,11 +234,15 @@ export function rescopeTask(
           `Session ${workingSession(db, taskId)} is at work on ${taskId}; rescope once it stops.`,
         );
       }
-      const open = mayHaveOpenWindow(
-        getProject(db, task.project_id)?.repo_path ?? '',
-        listTaskSessions(db, taskId).map((row) => row.id),
-      );
+      const repoPath = getProject(db, task.project_id)?.repo_path ?? '';
+      const taskSessions = listTaskSessions(db, taskId).map((row) => row.id);
+      const open = mayHaveOpenWindow(repoPath, taskSessions);
       if (open !== undefined) throw openWindowRefusal(taskId, open);
+      // The task's own sessions hold its scope already: only another task's
+      // session is an overlap.
+      const overlaps = scopeConflicts(db, repoPath, added, widened.scopeOut).filter(
+        (conflict) => !taskSessions.includes(conflict.sessionId),
+      );
       // The task's row and the session's each from its own stored tier: a
       // relaunch routes from the task's, a fix round from the session's.
       // Raised on what the rescope adds, never on the old globs: a task the
@@ -273,6 +250,15 @@ export function rescopeTask(
       const raised = tierForScope(added) === 'critical' && raiseToCritical(db, taskId, sessionId);
       const tier = routedTier(db, taskId, sessionId, widened.scopeIn);
       appendEvent(db, sessionId, 'rescope', { task: taskId, added, tier, raised, ...caller });
+      if (overlaps.length > 0) {
+        appendEvent(db, sessionId, 'scope_overlap', {
+          via: 'rescope',
+          accepted: overlaps.map((conflict) => ({
+            session: conflict.sessionId,
+            files: conflict.files,
+          })),
+        });
+      }
       insertDecisionRecord(db, {
         sessionId,
         summary:
@@ -280,7 +266,53 @@ export function rescopeTask(
           `scope-in after launch, adding ${added.join(', ')}.`,
         files: added,
       });
-      return { sessionId, added, tier, raised };
+      return { sessionId, added, tier, raised, overlaps };
     })
     .immediate();
+}
+
+/** A rescope as the gate's PR body and the needs-you inbox show it. */
+export interface TaskRescope {
+  /** When it was recorded, as the store holds it. */
+  at: string;
+  sessionId: string;
+  added: string[];
+  tier: string;
+  raised: boolean;
+  /** What was seen of the caller (decision 115): evidence, not proof. */
+  by: string;
+  tty: string | null;
+  tmuxPane: string | null;
+}
+
+/**
+ * Every rescope on `taskId`, oldest first, read off the `rescope` events of
+ * the sessions that ran it (decision 188), so a relaunch after a kill still
+ * shows the rescopes its predecessor's claim took. The store is
+ * session-writable: each field is taken only in the type a rescope writes,
+ * and the caller scrubs the text before it prints.
+ */
+export function taskRescopes(db: Database, taskId: string): TaskRescope[] {
+  const rows = db
+    .prepare(
+      `SELECT events.session_id, events.payload, events.created_at FROM events
+       JOIN sessions ON sessions.id = events.session_id
+       WHERE sessions.task_id = ? AND events.type = 'rescope' ORDER BY events.id`,
+    )
+    .all(taskId) as { session_id: string; payload: string; created_at: string }[];
+  return rows.map((row) => {
+    const fields = parseJsonOr<Record<string, unknown>>(row.payload, {});
+    const text = (key: string): string | null =>
+      typeof fields[key] === 'string' ? (fields[key] as string) : null;
+    return {
+      at: row.created_at,
+      sessionId: row.session_id,
+      added: asStringArray(fields.added),
+      tier: text('tier') ?? 'unknown',
+      raised: fields.raised === true,
+      by: text('by') ?? 'unknown',
+      tty: text('tty'),
+      tmuxPane: text('tmuxPane'),
+    };
+  });
 }

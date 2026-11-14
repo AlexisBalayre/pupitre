@@ -22,11 +22,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>();
   const fakeExecFileSync = vi.fn((file: string, args?: readonly string[], options?: unknown) => {
-    // new-session is asked to print the pane it opened (-P -F '#{pane_id}').
+    // new-session is asked to print the pane it opened and the pid it runs
+    // (-P -F '#{pane_id} #{pane_pid}').
     // tmux's own `-L <socket>` comes before the command, so the conductor's
     // calls carry two arguments the default server's do not (decision 47).
     if (file === 'tmux') {
-      return (args?.[0] === '-L' ? args[2] : args?.[0]) === 'new-session' ? '%7\n' : '';
+      return (args?.[0] === '-L' ? args[2] : args?.[0]) === 'new-session' ? '%7 4242\n' : '';
     }
     if (file === 'which') return `/fake/bin/${args?.[0]}\n`;
     return (actual.execFileSync as (...callArgs: unknown[]) => unknown)(file, args, options);
@@ -86,6 +87,7 @@ import {
   readInputBox,
   readInputBoxLook,
   readSessionEnv,
+  recordedPanePids,
   refusedSessionEnv,
   resolveWindowEnv,
   type SessionPane,
@@ -313,7 +315,7 @@ const WINDOW_GIT_CONFIG_ARGS = [
 ].flatMap((pair) => ['-e', pair]);
 
 function spawnPrefix(name: string): string[] {
-  return ['new-session', '-d', '-P', '-F', '#{pane_id}', '-s', name];
+  return ['new-session', '-d', '-P', '-F', '#{pane_id} #{pane_pid}', '-s', name];
 }
 
 describe('refusedSessionEnv, saveSessionEnv and readSessionEnv', () => {
@@ -964,20 +966,100 @@ describe('launchSession', () => {
     },
   );
 
-  it('fails the launch when tmux prints anything but a pane id', () => {
-    // The id is checked where it is minted: every later command trusts it,
-    // and a launch is the one place a bad one can fail loudly rather than late.
+  it.each([
+    ['nothing', ''],
+    ['a pane id alone', '%7'],
+    ['a pid that is not one', '%7 07'],
+    ['a pid before the id', '4242 %7'],
+  ])('fails the launch when tmux prints %s rather than a pane id and its pid', (_what, printed) => {
+    // Both are checked where they are minted: every later command trusts the
+    // id, the operator guard matches the pid, and a launch is the one place a
+    // bad one can fail loudly rather than late.
     const original = vi.mocked(execFileSync).getMockImplementation();
     vi.mocked(execFileSync).mockImplementation((file, args, options) =>
       file === 'tmux' && args?.[0] === 'new-session'
-        ? ''
+        ? printed
         : ((original as (...callArgs: unknown[]) => unknown)(file, args, options) as string),
     );
     try {
-      expect(() => launchSession(opts)).toThrow('tmux new-session printed "", not a pane id.');
+      expect(() => launchSession(opts)).toThrow(
+        `tmux new-session printed ${JSON.stringify(printed)}, not a pane id and its pid.`,
+      );
+      expect(recordedPanePids(repo, ['s-1'])).toEqual(new Map());
     } finally {
       vi.mocked(execFileSync).mockImplementation(original as never);
     }
+  });
+
+  it('records the pid its pane runs, which names the window', () => {
+    launchSession(opts);
+
+    expect(readFileSync(join(projectPaths(repo).sessionDir('s-1'), 'pane-pid'), 'utf8')).toBe(
+      '4242',
+    );
+    expect(recordedPanePids(repo, ['s-1'])).toEqual(new Map([[4242, 'pup-s-1']]));
+  });
+});
+
+describe('recordedPanePids (decision 188)', () => {
+  const REPO = '/tmp/pane-pid-repo';
+
+  beforeEach(() => {
+    vi.stubEnv('HOME', tempDir('pup-pane-pid-home-'));
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  function record(file: string, text: string): void {
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, text);
+  }
+
+  it("names each session's window and the conductor's by the pid their launch recorded", () => {
+    record(join(projectPaths(REPO).sessionDir('s1'), 'pane-pid'), '101');
+    record(join(projectPaths(REPO).sessionDir('s2'), 'pane-pid'), '202');
+    record(join(projectPaths(REPO).root, 'conductor', 'pane-pid'), '303');
+
+    expect(recordedPanePids(REPO, ['s1', 's2', 's3'])).toEqual(
+      new Map([
+        [101, 'pup-s1'],
+        [202, 'pup-s2'],
+        [303, `pup-conductor-${projectId(REPO)}`],
+      ]),
+    );
+  });
+
+  // Only the sessions the caller names: which windows may still be up is its to say.
+  it('reads no session it was not asked about', () => {
+    record(join(projectPaths(REPO).sessionDir('s1'), 'pane-pid'), '101');
+
+    expect(recordedPanePids(REPO, [])).toEqual(new Map());
+  });
+
+  it.each([
+    ['zero', '0'],
+    ['a leading zero', '0101'],
+    ['a sign', '-101'],
+    ['a trailing newline', '101\n'],
+    ['a space', ' 101'],
+    ['text', 'pid'],
+  ])('reads a record holding %s as none', (_what, text) => {
+    record(join(projectPaths(REPO).sessionDir('s1'), 'pane-pid'), text);
+
+    expect(recordedPanePids(REPO, ['s1'])).toEqual(new Map());
+  });
+
+  // The window can write its own record: it is read as one it wrote.
+  it('follows no symlink to a record', () => {
+    const elsewhere = join(tempDir('pup-pane-pid-target-'), 'pid');
+    writeFileSync(elsewhere, '101');
+    const file = join(projectPaths(REPO).sessionDir('s1'), 'pane-pid');
+    mkdirSync(dirname(file), { recursive: true });
+    symlinkSync(elsewhere, file);
+
+    expect(recordedPanePids(REPO, ['s1'])).toEqual(new Map());
   });
 });
 
@@ -2193,6 +2275,26 @@ describe('launchConductor', () => {
     route: CONDUCTOR_ROUTE,
   };
   const SOCKET = 'pup-conductor-proj-1';
+
+  // The launch records its pane's pid under ~/.pupitre: a throwaway one here.
+  beforeEach(() => {
+    vi.stubEnv('HOME', tempDir('pup-conductor-home-'));
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("records the pid its pane runs beside the conductor's state, which names its window", () => {
+    launchConductor(CONDUCTOR);
+
+    expect(
+      readFileSync(join(projectPaths(CONDUCTOR.repoPath).root, 'conductor', 'pane-pid'), 'utf8'),
+    ).toBe('4242');
+    expect(recordedPanePids(CONDUCTOR.repoPath, [])).toEqual(
+      new Map([[4242, `pup-conductor-${projectId(CONDUCTOR.repoPath)}`]]),
+    );
+  });
 
   it("spawns the window on the conductor's own socket, in the main checkout, marked as the conductor", () => {
     const pane = launchConductor(CONDUCTOR);
