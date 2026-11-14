@@ -1,0 +1,129 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-14T10:00:21.077Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43582629015",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43582629015",
+  "actor": "AlexisBalayre",
+  "commit_sha": "1d2718b95bcd3b822e6960905faf84cbaee2f9f5",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 333,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "557-568",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "`NO_TRANSPORT_CONFIG` is documented as \"Every transport git ships\" but omits the shipped `ftp`/`ftps` curl helpers, which fall back to the `user` policy (allowed, since `scrubbedGitEnv` drops `GIT_PROTOCOL_FROM_USER`); on Git < 2.44, which ignores `GIT_NO_LAZY_FETCH`, a planted promisor remote at `ftp://` is still lazily fetched under the merge lock.",
+      "body": "**The transport pins skip git's shipped `ftp`/`ftps` helpers, so on Git < 2.44 a planted promisor remote still gets fetched from**\n\n`NO_TRANSPORT_CONFIG` says it covers \"Every transport git ships\", but it lists only `ext`, `fd`, `file`, `git`, `http`, `https` and `ssh`:\n\nhttps://github.com/AlexisBalayre/pupitre/blob/1d2718b95bcd3b822e6960905faf84cbaee2f9f5/src/core/git-diff.client.ts#L557-L568\n\nGit also installs `git-remote-ftp` and `git-remote-ftps`, which are aliases of the curl helper. For a transport with no `protocol.<name>.allow` key, `transport_check_allowed` falls back to `protocol.allow`. If that is unset too, it uses the built-in policy, and for anything outside http/https/git/ssh/ext that policy is `user`. `user` allows the transport whenever `GIT_PROTOCOL_FROM_USER` is unset. `scrubbedGitEnv`'s allowlist (`INHERITED_GIT_VARS`, L48-65) always drops that variable, and nothing in `src/` sets `protocol.allow` or `GIT_ALLOW_PROTOCOL`.\n\n`GIT_NO_LAZY_FETCH` is honoured only from Git 2.44 (ADR 0083). Several ADRs reproduce on Apple Git 2.39.5, and on that git the transport pins are the only backstop. A session can put `extensions.partialClone`, `remote.x.promisor=true` and `remote.x.url=ftp://<host>/r` into `<common>/config` and then delete a loose object. The gate's next read of that object then fetches it lazily over FTP, under the merge lock, with the operator's environment and network position. The result is an outbound connection to a host the session chooses, and objects it serves land in the repo. No command runs, unlike the `uploadpack` vector. `pinnedGitEnv` builds from the same list, so gh's git has the same gap.\n\nADR 0089 claims the opposite at [L105-L109](https://github.com/AlexisBalayre/pupitre/blob/1d2718b95bcd3b822e6960905faf84cbaee2f9f5/docs/adr/0089-pup-s-git-reads-history-without-replace-refs.md#L105-L109): \"the transports also stop … a git too old to know `GIT_NO_LAZY_FETCH`\".\n\n**Fix:** add `'ftp', 'ftps'` to the list. Third-party `git-remote-<x>` helpers, reached through `<x>::` or `remote.<r>.vcs`, also default to `user`. For a complete pin, set `GIT_ALLOW_PROTOCOL` in the env of every spawn that doesn't `reachesRemote`, and in `pinnedGitEnv`, to a value that names no real protocol. When that variable is set, git treats it as the whole allowlist and ignores `protocol.*.allow`. Then update the docstring and the ADR sentence to match.\n\n_(Git-internals claims are from pinned-version knowledge; static review, not reproduced.)_",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "579-582",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "pinnedGitEnv's doc says \"gh is always handed `--head`, so its git never pushes\", but only `pr list` and `pr create` pass `--head`; `pr view`/`edit`/`comment` pass a URL. The real reason is that every gh call pup makes reads GitHub's API and needs no git transport. Reword it to say so, as ADR 0089 does.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/adr-number.service.ts",
+      "line": "233-237",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "readPeer's JSDoc still says an undiffable peer is refused because a session could cut its history with the shared `shallow` file. The new GIT_SHALLOW_FILE pin closes that path, and the new test shows such a commit now reads as a clash. Swap in the remaining reason ADR 0146 now names (a deleted loose object, or a real shallow clone's edge).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0146-the-gate-refuses-an-adr-number-the-target-or.md",
+      "line": "40-46",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "This PR rewrites text that had already landed in ADRs 0089 (the Ceilings paragraph), 0146 and 0181. docs/adr/README.md §Reading and writing says a later change appends a dated amendment citing its PR, or adds an `Amends:` decision, and \"does not rewrite the landed text\". 0089's new Follow-up block is also undated and doesn't cite the PR.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 5.47824895,
+  "duration_ms": 398205,
+  "num_turns": 18,
+  "tokens": {
+    "input": 16,
+    "output": 17111,
+    "cache_read": 455283,
+    "cache_creation": 64872,
+    "total": 537282
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 216,
+      "output": 96598,
+      "cache_read": 4750066,
+      "cache_creation": 393189,
+      "cost_usd": 5.0433981999999995
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 46,
+      "output": 11488,
+      "cache_read": 376278,
+      "cache_creation": 112587,
+      "cost_usd": 0.4340673
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 316,
+      "cache_read": 0,
+      "cache_creation": 5002,
+      "cost_usd": 0.00078345
+    }
+  ],
+  "permission_denials": []
+}
