@@ -1,0 +1,155 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-14T11:10:49.737Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43587944526",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43587944526",
+  "actor": "AlexisBalayre",
+  "commit_sha": "7eae04458d5191da16a17e9c59acfdcee31dc584",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 333,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "557-568",
+      "description": "`NO_TRANSPORT_CONFIG` is documented as \"Every transport git ships\" but omits the shipped `ftp`/`ftps` curl helpers, which fall back to the `user` policy (allowed, since `scrubbedGitEnv` drops `GIT_PROTOCOL_FROM_USER`); on Git < 2.44, which ignores `GIT_NO_LAZY_FETCH`, a planted promisor remote at `ftp://` is still lazily fetched under the merge lock.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "3462-3505",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The scratch runner's fetch drops GIT_ALLOW_PROTOCOL because it supposedly 'reads no config a session can write'. But it borrows <common>/objects, and a session can plant info/alternates there. During `pup land`'s fetch, git's fetch-pack then starts `git --git-dir=<session repo> for-each-ref`, which reads that repo's config. Before that child starts, git strips GIT_CONFIG_PARAMETERS and GIT_CONFIG_COUNT from its environment, so the `-c` pins and protocol.ext.allow=never are gone, and it has no transport pin either. On Git before 2.44, which ignores GIT_NO_LAZY_FETCH, a ref there pointing at a missing object triggers a lazy fetch from the session's promisor remote. That fetch runs core.sshCommand (or an allowed file/ftp/helper transport) with the operator's environment.",
+      "body": "**The `reachesRemote` exemption rests on a premise that a planted `alternates` file breaks**\n\nThis PR turns transports off for every git child except `withScratchGitDir`'s runner. The reason it gives is that the scratch git \"reads no config a session can write\", so \"it reaches only the URL it is handed\". That reason is stated in three places:\n\n- the runner's JSDoc and `reachesRemote: true`: https://github.com/AlexisBalayre/pupitre/blob/7eae04458d5191da16a17e9c59acfdcee31dc584/src/core/merge-gate.service.ts#L3462-L3505\n- `RunGitOptions.reachesRemote`: https://github.com/AlexisBalayre/pupitre/blob/7eae04458d5191da16a17e9c59acfdcee31dc584/src/core/git-diff.client.ts#L627-L629\n- ADR 0089\n\nThe scratch git itself does read no session config. A child it starts does. The runner sets `GIT_OBJECT_DIRECTORY` to `<common>/objects` (L3472-3477, L3502), and a session can write that directory.\n\n1. The session writes `<common>/objects/info/alternates` pointing at `<dir>/objects`. It then makes `<dir>` a repo: a loose ref names a sha that doesn't exist, and its `config` sets `extensions.partialClone=r`, `remote.r.promisor=true`, `remote.r.url=ssh://x/y` and `core.sshCommand=<payload>`. Nothing in `src/` checks for `objects/info/alternates`.\n2. The operator runs `pup land`. `fetchTarget` (`land.service.ts` L394-410) fetches a tip that isn't local yet, so negotiation starts.\n3. fetch-pack calls `for_each_cached_alternate`, which runs `git --git-dir=<dir> for-each-ref`. Git starts that child with `local_repo_env` unset, which drops `GIT_CONFIG_PARAMETERS` and `GIT_CONFIG_COUNT`. The `-c` pins, including `protocol.ext.allow=never`, never reach it. `GIT_ALLOW_PROTOCOL` would have been inherited, but this runner never sets it.\n4. On Git 2.38 to 2.43, which pup supports (decision 172) and which ignore `GIT_NO_LAZY_FETCH`, iterating refs checks the dangling ref's object. That check lazily fetches from the promisor, so `core.sshCommand` runs with pup's environment.\n\nThe exposure predates this PR, since the scratch runner had no transport pin before it either. What this PR adds is the safety claim, and the new ADR 0089 ceilings list leaves this path out. As written, a reader concludes the lazy-fetch hole is closed for every git pup runs.\n\n**Fix:** keep the scratch git from starting the alternate-refs child. One way is `-c core.alternateRefsCommand=true` in the runner's argv: the parent reads that key itself, so `local_repo_env` can't strip it. Another is to refuse when `<common>/objects/info/alternates` exists. Either way, correct the \"reads no config a session can write\" wording in all three places, or record this path as a ceiling in ADR 0089.\n\n_(Git-internals links come from knowledge of pinned Git versions. This was a static review and the chain was not reproduced.)_",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff-client.test.ts",
+      "line": "2313-2318",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The \"either pin alone\" test case assumes `GIT_NO_LAZY_FETCH` alone stops the lazy fetch. But this file's own `NO_TRANSPORT_ENV` JSDoc and ADR 0089 both say Git < 2.44 ignores it, so on such a git the planted `uploadpack` runs and the test fails. Guard that case with the existing `gitAtLeast(2, 44)` helper.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land.service.ts",
+      "line": "408",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`spawnOptions` now defaults every runGit child to `GATE_COMMAND_TIMEOUT_MS`, and this PR drops that explicit value elsewhere. The same value is still passed at land.service.ts:408/437/478 and init.service.ts:71. init's comment \"Timed out like every other child pup runs\" now describes the default, not anything that call does. Drop the redundant `timeout` keys.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.test.ts",
+      "line": "283",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The same new fake-gh fragment (`unset GIT_ALLOW_PROTOCOL && GIT_CONFIG_COUNT=0 git ls-remote ...`) and its doc comment are copied into the four `fakeGh` helpers in merge-gate, merge-gate-regate, merge-gate-checkout and merge-gate-open-pr tests. The next env pin means four edits again. A shared test helper would make it one.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1623-1630",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "pre-existing",
+      "description": "`commitsPastPin`'s catch has no `rethrowIfKilled`. With runGit's new default deadline, a `rev-parse` killed by a FIFO at `.git/config` reads as 0 commits past the pin, so `recordMerge` silently drops the 'left behind' warning. Add `rethrowIfKilled(error)` before `return 0`, as `resolveCommitIfPresent` does.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "conventions",
+      "description": "The conventions reviewer read the diffs only through Bash, so no .claude/rules injection fired, and it did not Read docs/conventions/*.md. Its audit rested on AGENTS.md and sibling patterns. It returned no findings and quoted no convention rules."
+    },
+    {
+      "component": "orchestrator",
+      "description": "Dropped one simplicity nit at consolidation (duplicated gateTimeout reset in merge-gate-shared-config.test.ts afterEach): the reviewer itself called it harmless insurance, with no cost. Retagged nothing. The one important's validator recommended `pre-existing` for the exploit chain, since the exposure predates the PR. It stays `important` because the PR adds the false safety premise (JSDoc, RunGitOptions, ADR 0089) and a ceilings list that omits the path; the body says the exposure itself predates the PR."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 6.590829300000003,
+  "duration_ms": 562658,
+  "num_turns": 20,
+  "tokens": {
+    "input": 20,
+    "output": 18574,
+    "cache_read": 515019,
+    "cache_creation": 66133,
+    "total": 599746
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 228,
+      "output": 123130,
+      "cache_read": 6090304,
+      "cache_creation": 464413,
+      "cost_usd": 6.202036800000003
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 44,
+      "output": 9418,
+      "cache_read": 301908,
+      "cache_creation": 105407,
+      "cost_usd": 0.38797629999999994
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 375,
+      "cache_read": 0,
+      "cache_creation": 5028,
+      "cost_usd": 0.0008162
+    }
+  ],
+  "permission_denials": []
+}
