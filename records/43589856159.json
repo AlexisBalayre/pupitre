@@ -1,0 +1,182 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-14T11:33:37.312Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43589856159",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43589856159",
+  "actor": "AlexisBalayre",
+  "commit_sha": "f110125632a488a8dbf01321bdc1408adc252639",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 326,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs",
+    "context"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs",
+    "context"
+  ],
+  "reviewers_skipped": [
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/web-dashboard.service.ts",
+      "line": "406-414, 475-478",
+      "description": "When a text answer, steer or tell is sent with the Enter key, the board is not swapped in after the action succeeds. Enter submits without moving focus, so the field just sent stays `document.activeElement`. After `form.reset()`, `flush()` calls `typing()`, whose first clause is still true, and the swap does nothing. The board stays stale until the operator clicks somewhere else. Until then, the answered question and its form stay on screen, still focused.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/web-dashboard.service.ts",
+      "line": "406-415, 427",
+      "description": "Text typed into one field and then dropped can freeze the board indefinitely, and nothing on the page shows it. The status keeps saying `live`. Two triggers. (a) Text is typed into one form, then the operator acts through another form (typed in 'answer in words', then clicked an option button; typed a steer, then Kill). `form.reset()` resets only the submitted form, so the dropped field keeps `typing()` true. (b) Focus is left in any board input while the operator switches to the terminal. The input stays `activeElement` when the window loses focus, so the `focusout` flush finds `typing()` true. Every board that arrives after that goes to `held`: the session pane stops updating and new needs never show on the Overview. Meanwhile the header still says `live`, and a question already answered still shows its buttons.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/web-dashboard-actions.service.ts",
+      "line": "270-284",
+      "description": "When a land succeeds but its audit then throws, the page shows only the audit's error. It never says the session landed, and never names the peers the land could not steer.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/web-dashboard-session.service.ts",
+      "line": "42-53",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "readPane captures the pane recorded for a merged session. That window was closed at merge but its pane id is kept, so after a tmux restart the view can show another window's text, including the operator's own, as this session's Window.",
+      "body": "**After a tmux restart, a merged session's view can show another pane's screen as this session's window.**\n\n`readPane` returns a hint only for `killed`. Every other state captures `row.tmux_target`:\n\n```ts\nif (!row || row.state === 'killed') return { hint: 'No window: the session was killed.' };\ntry {\n  return { text: capturePane(sessionPane(row)) };\n```\n\nA merged session's window is closed at the merge. `merge-gate.service.ts` L2275 moves the session to `merged`, and L2284 calls `killTmux(session.id, session.tmux_target)`. Nothing clears `tmux_target` afterwards: only launch, kill (which sets it to NULL), handoff and fix rounds write it. `sessionPane` sets no socket, so `capture-pane` runs on the default server, which the operator's own shells share (`session-runtime.service.ts` L91-95).\n\nThe repo already treats a pane id kept like this as unsafe:\n- `session-retire.service.ts` L164-170: \"a tmux server restarted since reissues pane ids from %0 ... the operator's own included\"\n- `fix-round.service.ts` L961-963 says the same.\n\nBefore this PR, nothing read a merged row's pane. This view is the first thing that does.\n\n**Trigger:**\n1. Session A is gated with `--pr`. Its window closes, and its pane id `%7` is kept.\n2. The tmux server restarts, for example after a reboot or when its last session ends.\n3. New windows reuse ids from `%0`, so `%7` now names another pane, possibly the operator's own shell.\n4. The operator opens A's view from \"Open pull requests\", or stays on the view after Land. A landed or retired session is still in state `merged`.\n5. The \"Window\" section shows that other pane's screen as A's worker window and keeps refreshing it.\n\nNo test covers this. The pane tests in `web-dashboard.test.ts` only use `running` sessions. During a fix round the state is `running` with a fresh pane, so skipping `merged` never hides a live window.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/f110125632a488a8dbf01321bdc1408adc252639/src/core/web-dashboard-session.service.ts#L42-L53",
+      "suggestion": "function readPane(db: Database, sessionId: string): SessionView['pane'] {\n  const row = getSession(db, sessionId);\n  if (!row || row.state === 'killed') return { hint: 'No window: the session was killed.' };\n  // Its window closed at the merge, and the pane id it kept can name another\n  // window once tmux restarts (a fix round runs as `running`, with its own pane).\n  if (row.state === 'merged') return { hint: 'No window: the session merged and its window closed.' };\n  try {\n    return { text: capturePane(sessionPane(row)) };\n  } catch (error) {\n    if (error instanceof SessionPaneMissingError) {\n      return { hint: 'No live window: its pane is gone or was never recorded.' };\n    }\n    return { hint: 'The pane could not be read right now.' };\n  }\n}"
+    },
+    {
+      "file": "src/core/web-dashboard-session.service.ts",
+      "line": "110-118",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "A merged session whose PR has landed, was retired or was a local merge (`session.openPr === undefined`) still gets 'Start a fix round', 'Re-gate the PR' and 'Land'. Core refuses all three (fix-round L559, regate mergeToRegate L63/L66, land L168). This is what the operator sees on the view right after a successful Land.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard.service.ts",
+      "line": "418",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "On the session view the pane is part of the streamed board. While a worker is busy, its status line changes `capturePane` on nearly every poll, so `flush()` replaces the board about every 2 s. Text the operator selects in the pane to copy disappears within 2 s, and a wide pane scrolled right snaps back to the left. Holding the board while a selection sits inside it, or updating only the pane's `textContent`, would avoid this.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0091-pup-dashboard-serves-a-read-only-live-page.md",
+      "line": null,
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The ADR line \"A first load naming no view spends nothing\" and the comment on `spend` (web-dashboard-access.service.ts L47-48) are wrong for the bare url. A plain `/?token=…` names the Overview and spends the token. Only a load refused with 404 spends nothing. Say \"a first load answered 404\" in both places, so nobody opens the bare url thinking the token is still unspent.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard-actions.service.ts",
+      "line": "28-48",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`ACTIONS` and `CONFIRMED_ACTIONS` are `as const` arrays with literal unions derived from them, so `runAction` and `confirmationText` switch on bare strings. general.md §Code layout says: \"A closed set of values ... is a `string` `enum` in the area's `enums/` folder, never a literal union, an `as const` object or bare strings compared at the use site.\"",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard-desk.service.ts",
+      "line": "145",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The refusal text `'Forbidden.'` is a bare literal here and at web-dashboard.service.ts L140, though web-dashboard-access.service.ts already holds it as `FORBIDDEN`. Exporting that constant and using it at both sites keeps the three refusals from drifting apart.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Not spawned: review-spec (no closing keywords or linked issues), review-workflow-safety (no .github/workflows change), review-maintainability (off the default roster at standard depth). Dropped at consolidation for failing the finding bar (each conceded no reachable trigger or consequence): two context nits, a missing Allow header on the 405s and a case-sensitive Content-Type check."
+    },
+    {
+      "component": "conventions",
+      "description": "Partial coverage: the reviewer did not read web-dashboard.service.ts, web-dashboard-desk.service.ts, web-dashboard-session.service.ts, the overview diff, the ADR or the tests for convention drift."
+    },
+    {
+      "component": "simplicity",
+      "description": "Partial coverage: the reviewer did not read web-dashboard-desk.service.ts in full or the web-dashboard.service.ts changes beyond grep hits."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 5.565222574999999,
+  "duration_ms": 517523,
+  "num_turns": 24,
+  "tokens": {
+    "input": 20,
+    "output": 17667,
+    "cache_read": 550019,
+    "cache_creation": 73589,
+    "total": 641295
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 204,
+      "output": 97197,
+      "cache_read": 4833172,
+      "cache_creation": 387504,
+      "cost_usd": 5.0696774
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 56,
+      "output": 13129,
+      "cache_read": 346561,
+      "cache_creation": 131508,
+      "cost_usd": 0.49482809999999994
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 186,
+      "cache_read": 0,
+      "cache_creation": 4991,
+      "cost_usd": 0.000717075
+    }
+  ],
+  "permission_denials": []
+}
