@@ -6,7 +6,7 @@ import { InvalidProfileError } from './profile.errors.js';
 import { asStringArray, parseJsonOr } from './report-data.utils.js';
 import { canTransition, claimedStates } from './session-state.utils.js';
 import { assertPlannableSpec } from './task-spec.utils.js';
-import type { TaskId, TaskSpec } from './types/profile.types.js';
+import type { TaskId, TaskSpec, TaskTicket } from './types/profile.types.js';
 import type {
   EventPayloads,
   SessionEvent,
@@ -429,6 +429,20 @@ function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === 'string');
 }
 
+/** A stored ticket's shape (decision 187), so a bad one is a refusal, not a TypeError. */
+function isTaskTicket(value: unknown): value is TaskTicket {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const ticket = value as Partial<Record<keyof TaskTicket, unknown>>;
+  return (
+    typeof ticket.ref === 'string' &&
+    typeof ticket.type === 'string' &&
+    isStringArray(ticket.labels) &&
+    isStringArray(ticket.triggers) &&
+    isStringArray(ticket.criteria) &&
+    (ticket.design === undefined || typeof ticket.design === 'string')
+  );
+}
+
 /**
  * The spec as stored, shape-checked only (decision 68). The row key wins over
  * the blob: identity comes from the trusted primary key, the spec is
@@ -451,6 +465,12 @@ function decodeTaskSpec(row: TaskRow): TaskSpec {
     if (spec[field] !== undefined && !isStringArray(spec[field])) {
       throw new MalformedTaskSpecError(row.id, `its ${field} is not a list of globs.`);
     }
+  }
+  if (spec.ticket !== undefined && !isTaskTicket(spec.ticket)) {
+    throw new MalformedTaskSpecError(
+      row.id,
+      'its ticket needs a ref, a type, lists of labels, triggers and criteria, and a design note or none.',
+    );
   }
   const decoded = value as Partial<TaskSpec>;
   return {

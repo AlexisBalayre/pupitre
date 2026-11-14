@@ -8,7 +8,6 @@ import {
 } from '../claude/session-runtime.service.js';
 import { openStore } from './db.client.js';
 import { listDecisionRecords } from './decision-record.repository.js';
-import { globToRegExp } from './glob.utils.js';
 import { InvalidProfileError } from './profile.errors.js';
 import { auditScope } from './scope-audit.utils.js';
 import {
@@ -417,6 +416,29 @@ describe('rescopeTask (decision 115)', () => {
     ['.claude/hooks/scope-guard.sh', 'reaches a path the gate protects whatever the scope'],
     ['./.CLAUDE', 'reaches a path the gate protects whatever the scope'],
     ['.pupitre/adapter.yml', 'reaches a path the gate protects whatever the scope'],
+    // The git hooks that check a worker's own commits, in any case.
+    ['.husky/**', 'reaches `.husky`'],
+    ['.husky/pre-commit', 'reaches `.husky`'],
+    ['./.HUSKY', 'reaches `.husky`'],
+    ['.husky/', 'reaches `.husky`'],
+    ['scripts/pre-commit', 'reaches `scripts/pre-commit`'],
+    ['./Scripts/Pre-Commit', 'reaches `scripts/pre-commit`'],
+    ['scripts/**', 'reaches `scripts/pre-commit`'],
+    ['scripts/*', 'reaches `scripts/pre-commit`'],
+    ['scripts/pre-*', 'reaches `scripts/pre-commit`'],
+    ['scripts/pre-comm?t', 'reaches `scripts/pre-commit`'],
+    ['scripts', 'reaches `scripts/pre-commit`'],
+    ['scripts/', 'reaches `scripts/pre-commit`'],
+    // pup's matcher reads these literally; a gitignore- or bash-style one
+    // reads a class, a set or an escape, which could reach `.github`.
+    ['[.]github/**', 'holds `[`, `]`, `{`, `}` or `\\`'],
+    ['{docs,.github}/**', 'holds `[`, `]`, `{`, `}` or `\\`'],
+    ['\\.github/**', 'holds `[`, `]`, `{`, `}` or `\\`'],
+    ['docs/[a-z]*.md', 'holds `[`, `]`, `{`, `}` or `\\`'],
+    ['docs/x]', 'holds `[`, `]`, `{`, `}` or `\\`'],
+    ['docs/{a', 'holds `[`, `]`, `{`, `}` or `\\`'],
+    ['docs/a}', 'holds `[`, `]`, `{`, `}` or `\\`'],
+    ['docs\\x', 'holds `[`, `]`, `{`, `}` or `\\`'],
     ['  ', 'is empty'],
     ['./', 'is empty'],
     ['src/\u0007x', 'contains a control character'],
@@ -430,32 +452,21 @@ describe('rescopeTask (decision 115)', () => {
     expect(readTaskSpec(db, 't-1').scopeIn).toEqual(['src/core/**']);
   });
 
-  // The matcher escapes `[]`, `{}` and `\`, so each of these names a literal
-  // path: the table takes it, and it never matches anything under `.github`.
-  it.each(['[.]github/**', '{docs,.github}/**', '\\.github/**'])(
-    'takes %j as a literal path that never reaches .github',
-    (glob) => {
-      launched('s1', 'merged');
-
-      expect(rescopeTask(db, 't-1', [glob], CALLER)).toMatchObject({ added: [glob] });
-
-      const workflows = ['.github/x', '.github/workflows/ci.yml'];
-      expect(workflows.filter((path) => globToRegExp(glob).test(path))).toEqual([]);
-      const spec = readTaskSpec(db, 't-1');
-      expect(auditScope(workflows, spec.scopeIn, spec.scopeOut).map((v) => v.path)).toEqual(
-        workflows,
-      );
-    },
-  );
-
   it('takes a glob the matcher reads as a plain path', () => {
     launched('s1', 'merged');
+    const globs = [
+      './docs/**',
+      'src/cli/',
+      '.claudeignore',
+      'docs/.claude/x',
+      '.huskyrc',
+      'docs/.husky/x',
+      'scripts/adr-index.sh',
+      'scripts/pre-commit.md',
+      'docs/scripts/pre-commit',
+    ];
 
-    expect(
-      rescopeTask(db, 't-1', ['./docs/**', 'src/cli/', '.claudeignore', 'docs/.claude/x'], CALLER),
-    ).toMatchObject({
-      added: ['./docs/**', 'src/cli/', '.claudeignore', 'docs/.claude/x'],
-    });
+    expect(rescopeTask(db, 't-1', globs, CALLER)).toMatchObject({ added: globs });
   });
 
   // What the gate's scope-audit stage runs, on the spec it reads back.
