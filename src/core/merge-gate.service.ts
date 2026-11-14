@@ -1512,9 +1512,22 @@ function linkEnvironment(repoPath: string, checkout: string, rel: string): void 
 const INSTALL_DIR_FLAG: Record<string, string> = { pnpm: '--dir', yarn: '--cwd', npm: '--prefix' };
 
 /**
+ * Whether `dependency` resolves, in the main checkout, from a `node_modules`
+ * in some directory above `dir`, up to the root. An npm or yarn-v1 workspace
+ * member has its dependencies hoisted there, and the gate links the root's.
+ */
+function resolvesAbove(repoPath: string, dir: string, dependency: string): boolean {
+  for (let rel = dirname(dir); ; rel = dirname(rel)) {
+    if (existsSync(join(repoPath, rel, GATE_ENVIRONMENT_DIR, dependency))) return true;
+    if (rel === '.') return false;
+  }
+}
+
+/**
  * Refuse a nested package whose stages would run with no environment: one
- * the trusted manifest gives dependencies, which neither the main checkout
- * has installed nor the pinned tree commits. `linkEnvironment` would link
+ * the trusted manifest gives a dependency that resolves from no
+ * `node_modules` the main checkout has installed, in the package or above
+ * it, and the pinned tree commits none either. `linkEnvironment` would link
  * nothing, and the stage would fail on a runner it cannot find, which reads
  * as the branch's fault. It throws, like a timeout under load: the operator
  * installs, the session has nothing to fix (decision 138).
@@ -1529,7 +1542,7 @@ function refuseUninstalled(repoPath: string, checkout: string, pkg: NestedPackag
     readPlainFile(join(repoPath, pkg.dir, 'package.json')),
   );
   const declared = { ...manifest.dependencies, ...manifest.devDependencies };
-  if (Object.keys(declared).length === 0) return;
+  if (Object.keys(declared).every((name) => resolvesAbove(repoPath, pkg.dir, name))) return;
   const dir = quotePath(pkg.dir);
   const flag = INSTALL_DIR_FLAG[command.command] ?? '--prefix';
   throw new Error(

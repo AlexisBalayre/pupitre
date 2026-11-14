@@ -1234,6 +1234,24 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(sh(repo, 'git', 'log', '--oneline', 'main')).not.toContain('tools/review/src/r.ts');
     });
 
+    // An npm or yarn-v1 workspace member has its dependencies hoisted to the
+    // root's node_modules, which the gate links; its stages find them there.
+    it('runs a workspace member whose dependencies are hoisted to the root', async () => {
+      commitIn(
+        repo,
+        'tools/review/package.json',
+        JSON.stringify({
+          scripts: { test: 'test -d ../../node_modules/vitest', typecheck: 'true' },
+          devDependencies: { vitest: '^3.0.0' },
+        }),
+      );
+      mkdirSync(join(repo, 'node_modules', 'vitest'), { recursive: true });
+      const worktree = seedSession(db, repo, NESTED_SCOPE);
+      commitIn(worktree, 'tools/review/src/r.ts', 'export const r = 1;\n');
+
+      expect((await merge(nestedAdapter())).status).toBe('merged');
+    });
+
     it("refuses the merge when the package's own test script fails", async () => {
       commitNestedPackage({ test: 'echo nested-test-ran; exit 3', typecheck: 'true' });
       const worktree = seedSession(db, repo, NESTED_SCOPE);
