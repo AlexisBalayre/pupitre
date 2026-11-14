@@ -85,6 +85,16 @@ import { projectId, projectPaths } from '../core/paths.utils.js';
 import { InvalidProfileError } from '../core/profile.errors.js';
 import { UnknownProfileError } from '../core/profile-store.errors.js';
 import { getProfileLayer, listProfileLayers } from '../core/profile-store.service.js';
+import {
+  AUDIT_STAGES,
+  CI_WAIT_STAGES,
+  FIX_STAGES,
+  LAND_STAGES,
+  MERGE_STAGES,
+  RESPAWN_STAGES,
+  type StageProgress,
+  stageProgress,
+} from '../core/progress.utils.js';
 import { listProjects, putProjectToSleep, wakeProject } from '../core/project.service.js';
 import { renderReportHtml } from '../core/report.service.js';
 import { buildRetro, retroWindowStart, writeRetro } from '../core/retro.service.js';
@@ -421,6 +431,21 @@ async function withPushTargetLine<TResult>(
   } catch (error) {
     printPushTargetLine(db, projectId(repoPath));
     throw error;
+  }
+}
+
+/**
+ * `running` once it settles, with the status line cleared first, so the
+ * outcome or refusal printed next starts on a line of its own (decision 184).
+ */
+async function settled<TResult>(
+  progress: StageProgress,
+  running: TResult | Promise<TResult>,
+): Promise<TResult> {
+  try {
+    return await running;
+  } finally {
+    progress.end();
   }
 }
 
@@ -2257,22 +2282,38 @@ export function buildProgram(): Command {
       if (windowEnv === undefined) return;
       // Both the handoff request and the relaunch kickoff are steers, and
       // either can be refused as never having landed whole.
+      const progress = stageProgress(RESPAWN_STAGES);
       try {
         if (!isHandoffReady(db, repoPath, session)) {
+          progress.stage('request handoff');
           const handoffPath = requestHandoff(db, repoPath, session);
+          // Cleared first: this line is stdout's, which the status line must not run into.
+          progress.end();
           console.log(`Handoff requested; waiting for the session to write ${handoffPath} …`);
-          if (!awaitHandoffReady(db, repoPath, session, Number(opts.wait) * 1000)) {
+          const ready = awaitHandoffReady(
+            db,
+            repoPath,
+            session,
+            Number(opts.wait) * 1000,
+            undefined,
+            progress,
+          );
+          progress.end();
+          if (!ready) {
             return refuse(
               `Session ${session} has not signalled handoff-done yet (steers queue until its ` +
                 'current turn ends). Re-run `pup respawn` to ask again and keep waiting.',
             );
           }
         }
+        progress.stage('relaunch');
         respawnSession(db, repoPath, session, windowEnv, undefined, {
           model: opts.model,
           effort: opts.effort,
         });
+        progress.end();
       } catch (error) {
+        progress.end();
         if (error instanceof TopRungReachedError) return refuse(error.message);
         if (!isRefusedSteer(error)) throw error;
         console.error(error.message);
@@ -2441,23 +2482,31 @@ export function buildProgram(): Command {
         // No signal handler here: under its lock the gate outlives a Ctrl-C
         // and the SIGTERM `pup ui`'s `q` sends this child, stops every stage
         // child and removes the lock in its own `finally` (decision 95).
+        const progress = stageProgress(MERGE_STAGES);
         try {
-          outcome = await runMergeGate(db, {
-            repoPath,
-            sessionId: session,
-            adapters,
-            acceptDebt:
-              opts.acceptDebt && opts.reviewBy
-                ? {
-                    reason: opts.acceptDebt,
-                    reviewBy: opts.reviewBy,
-                    acceptedBy: approvedBy ?? 'human',
-                  }
-                : undefined,
-            openPr: opts.pr,
-            gateEnv: parseGateEnv(opts.gateEnv),
-            wait: true,
-          });
+          outcome = await settled(
+            progress,
+            runMergeGate(
+              db,
+              {
+                repoPath,
+                sessionId: session,
+                adapters,
+                acceptDebt:
+                  opts.acceptDebt && opts.reviewBy
+                    ? {
+                        reason: opts.acceptDebt,
+                        reviewBy: opts.reviewBy,
+                        acceptedBy: approvedBy ?? 'human',
+                      }
+                    : undefined,
+                openPr: opts.pr,
+                gateEnv: parseGateEnv(opts.gateEnv),
+                wait: true,
+              },
+              progress,
+            ),
+          );
         } catch (error) {
           if (error instanceof GateInterruptedError) throw error;
           // The gate ran whole but unprotected: what it did is printed, then
@@ -2583,15 +2632,23 @@ export function buildProgram(): Command {
       let outcome: LandOutcome;
       let lockLost: MergeLockLostError | undefined;
       try {
-        outcome = await landSession(db, {
-          repoPath,
-          sessionId: session,
-          adapters: detectAdapters(repoPath),
-          gateEnv: parseGateEnv(opts.gateEnv),
-          wait: true,
-          audit: opts.audit,
-          acceptHead: opts.acceptHead,
-        });
+        const progress = stageProgress(LAND_STAGES);
+        outcome = await settled(
+          progress,
+          landSession(
+            db,
+            {
+              repoPath,
+              sessionId: session,
+              adapters: detectAdapters(repoPath),
+              gateEnv: parseGateEnv(opts.gateEnv),
+              wait: true,
+              audit: opts.audit,
+              acceptHead: opts.acceptHead,
+            },
+            progress,
+          ),
+        );
       } catch (error) {
         if (error instanceof GateInterruptedError) throw error;
         // Landed and steered, and a re-run refuses it, but unprotected:
@@ -2684,14 +2741,22 @@ export function buildProgram(): Command {
       }
       let outcome: FixRoundOutcome;
       try {
-        outcome = await startFixRound(db, {
-          repoPath,
-          base: DEFAULT_BASE_PROFILE,
-          windowEnv: resolveWindowEnv(repoPath),
-          sessionId: session,
-          override: { model: opts.model, effort: opts.effort },
-          overrideVia: callingConductor() ? 'conductor' : 'operator',
-        });
+        const progress = stageProgress(FIX_STAGES);
+        outcome = await settled(
+          progress,
+          startFixRound(
+            db,
+            {
+              repoPath,
+              base: DEFAULT_BASE_PROFILE,
+              windowEnv: resolveWindowEnv(repoPath),
+              sessionId: session,
+              override: { model: opts.model, effort: opts.effort },
+              overrideVia: callingConductor() ? 'conductor' : 'operator',
+            },
+            progress,
+          ),
+        );
       } catch (error) {
         if (error instanceof LaunchRolledBackError) {
           return reportRolledBack(error, `Re-run \`pup fix ${sanitizeReason(session)}\`.`);
@@ -2727,11 +2792,11 @@ export function buildProgram(): Command {
         return refuse('--timeout takes a positive number of minutes.');
       }
       try {
-        const outcome = await waitForCiReview(db, {
-          repoPath,
-          target,
-          timeoutMs: minutes * 60_000,
-        });
+        const progress = stageProgress(CI_WAIT_STAGES);
+        const outcome = await settled(
+          progress,
+          waitForCiReview(db, { repoPath, target, timeoutMs: minutes * 60_000 }, progress),
+        );
         console.log(outcome.line);
         if (!outcome.finished) process.exitCode = 1;
       } catch (error) {
@@ -2915,9 +2980,20 @@ export function buildProgram(): Command {
         return refuse('`pup audit` is operator-only; sessions cannot move the baseline.');
       }
       if (refusedUnsandboxed()) return;
+      const progress = stageProgress(AUDIT_STAGES);
       const report = await withPushTargetLine(db, repoPath, () =>
         runOrReportNoAdapter(() =>
-          auditProject(db, repoPath, detectAdapters(repoPath), parseGateEnv(opts.gateEnv)),
+          settled(
+            progress,
+            auditProject(
+              db,
+              repoPath,
+              detectAdapters(repoPath),
+              parseGateEnv(opts.gateEnv),
+              'refresh',
+              progress,
+            ),
+          ),
         ),
       );
       if (!report) return;

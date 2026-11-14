@@ -44,6 +44,7 @@ import {
   withMergeLock,
 } from './merge-gate.service.js';
 import { type ProjectPaths, projectPaths } from './paths.utils.js';
+import { NO_PROGRESS, type StageProgress } from './progress.utils.js';
 import { asStringArray } from './report-data.utils.js';
 import { routeFor } from './routing.utils.js';
 import {
@@ -192,7 +193,11 @@ interface StoredPullRequest {
  * with the task's context and the threads, framed as reviewer data. A kickoff
  * that never lands is undone, so `pup fix` can be run again.
  */
-export async function startFixRound(db: Database, req: FixRoundRequest): Promise<FixRoundOutcome> {
+export async function startFixRound(
+  db: Database,
+  req: FixRoundRequest,
+  progress: StageProgress = NO_PROGRESS,
+): Promise<FixRoundOutcome> {
   const session = getSession(db, req.sessionId);
   const id = sanitizeReason(req.sessionId);
   if (!session) throw new Error(`No session ${id}. ${NOT_STARTED}`);
@@ -205,6 +210,7 @@ export async function startFixRound(db: Database, req: FixRoundRequest): Promise
   assertMintedRow(req.repoPath, session, NOT_STARTED);
   const stored = storedPullRequest(db, req.repoPath, session);
   assertGhAvailable(FIX_USE.command);
+  progress.stage('read review');
   const review = orNotStarted(() => readPullRequestReview(req.repoPath, stored.prUrl, stored.repo));
   const verdict = reviewVerdict(session.id, stored, review);
   if ('refusal' in verdict) throw new Error(`${verdict.refusal} ${NOT_STARTED}`);
@@ -220,19 +226,27 @@ export async function startFixRound(db: Database, req: FixRoundRequest): Promise
   const paths = projectPaths(req.repoPath, req.pathsBase);
   const route = routeOrRefuse(db, paths, session, req);
   const specRead = getTask(db, session.task_id)?.spec;
+  progress.stage('compile profile');
   const recompiled = orNotStarted(() => recompileSessionProfile(db, req, session, paths));
   // Under the lock `pup merge` and `pup land` take, since both move the branch
   // and the worktree this restores; the window opens after it, as it may take
   // a while to become ready.
-  const roundId = await withMergeLock(req.repoPath, () => {
-    assertStillPinned(db, req.repoPath, session.id, pinned);
-    restoreWorktree(req.repoPath, session, head);
-    return takeFixRoundEdge(db, session, specRead, {
-      prUrl,
-      head,
-      threads: threads.map((thread) => thread.id),
-    });
-  });
+  const roundId = await withMergeLock(
+    req.repoPath,
+    () => {
+      progress.stage('restore worktree');
+      assertStillPinned(db, req.repoPath, session.id, pinned);
+      restoreWorktree(req.repoPath, session, head);
+      return takeFixRoundEdge(db, session, specRead, {
+        prUrl,
+        head,
+        threads: threads.map((thread) => thread.id),
+      });
+    },
+    0,
+    progress,
+  );
+  progress.stage('open window');
   relaunchWorker(
     db,
     req,
