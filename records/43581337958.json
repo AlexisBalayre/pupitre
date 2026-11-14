@@ -1,0 +1,188 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-14T09:44:58.509Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43581337958",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43581337958",
+  "actor": "AlexisBalayre",
+  "commit_sha": "2cb35b3446b8c8d084edc11f54bb1c8203af93fa",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 326,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs",
+    "context"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs",
+    "context"
+  ],
+  "reviewers_skipped": [
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/web-dashboard.service.ts",
+      "line": "396-402",
+      "description": "Clicking or tabbing to a form's submit button wipes what the operator typed and loses the submit: the focusout flush replaces the board at mousedown whenever a stream update was held.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/web-dashboard-actions.service.ts",
+      "line": "263-285",
+      "description": "landAction drops what `pup land` reports: a lost merge lock hides that the land happened, and an audit that kept the baseline (regression or unmeasured stage) is shown as a green success.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/web-dashboard-desk.service.ts",
+      "line": "180-185",
+      "description": "`settle` waits only on the actions running when it is called, but the server keeps accepting `/events` and `/action` while it waits, so an action posted during shutdown runs on after `db.close()`.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/web-dashboard.service.ts",
+      "line": "406-414, 475-478",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "When a text answer, steer or tell is sent with the Enter key, the board is not swapped in after the action succeeds. Enter submits without moving focus, so the field just sent stays `document.activeElement`. After `form.reset()`, `flush()` calls `typing()`, whose first clause is still true, and the swap does nothing. The board stays stale until the operator clicks somewhere else. Until then, the answered question and its form stay on screen, still focused.",
+      "body": "**The board is not swapped in after a send made with Enter.**\n\nADR 0091 says the held board \"is swapped in once that text is sent\". That only happens once focus has left the field. Enter is the natural way to send a one-line answer, steer or tell, and it submits the form without moving focus:\n\n```js\nconst typing = () =>\n  (board.contains(document.activeElement) && document.activeElement.matches('input')) || ...\n...\nif (answer.ok) {\n  form.reset();\n  flush();\n}\n```\n\nNothing in the submit handler disables, blurs or replaces the form. After `form.reset()` the `value !== defaultValue` clause is false, but the first clause, a focused board input, is still true. So `flush()` does nothing, and every new frame from the stream goes back into `held`.\n\n**Trigger:** on the Overview, type an answer in words to a question and press Enter. The outcome line says the action succeeded, but the question and its form stay on the page until the operator clicks elsewhere. The session view's gate form (three text inputs) has the same path.\n\n**Fix:** take focus out of the form that was just sent before flushing. The board is about to replace that form anyway.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/2cb35b3446b8c8d084edc11f54bb1c8203af93fa/src/core/web-dashboard.service.ts#L406-L414\nhttps://github.com/AlexisBalayre/pupitre/blob/2cb35b3446b8c8d084edc11f54bb1c8203af93fa/src/core/web-dashboard.service.ts#L475-L478",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard.service.ts",
+      "line": "406-415, 427",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "Text typed into one field and then dropped can freeze the board indefinitely, and nothing on the page shows it. The status keeps saying `live`. Two triggers. (a) Text is typed into one form, then the operator acts through another form (typed in 'answer in words', then clicked an option button; typed a steer, then Kill). `form.reset()` resets only the submitted form, so the dropped field keeps `typing()` true. (b) Focus is left in any board input while the operator switches to the terminal. The input stays `activeElement` when the window loses focus, so the `focusout` flush finds `typing()` true. Every board that arrives after that goes to `held`: the session pane stops updating and new needs never show on the Overview. Meanwhile the header still says `live`, and a question already answered still shows its buttons.",
+      "body": "**A held board can stay frozen indefinitely, and the page still says `live`.**\n\n`show` puts every incoming board into `held` while `typing()` is true. Only two things call `flush`: a `focusout` inside the board, and a successful send of a form.\n\n```js\nconst show = (next) => {\n  if (typing()) held = next; else board.innerHTML = next;\n};\n...\nlive.textContent = 'live';\n```\n\nTwo ordinary paths leave `typing()` true with nothing left to clear it:\n\n1. **Text dropped in a sibling form.** `answerForms` emits the option buttons and the \"answer in words\" field as separate forms (`web-dashboard-actions.service.ts` L360-391).\n   - Type in the words field, then click an option. Or type a steer, then click Kill.\n   - The action succeeds, but `form.reset()` resets only the submitted form. The dropped field still differs from its `defaultValue`, so `flush()` does nothing.\n   - The question is gone server-side, but the page keeps it with its buttons. A killed session still shows Steer and Kill.\n2. **Focus parked in a field.** Click into Tell or Steer, then switch to the terminal.\n   - The window losing focus fires `focusout`, but `document.activeElement` stays the input. The scheduled `flush` therefore finds `typing()` true.\n   - Coming back fires focus, not `focusout`, so the board stays as it was when the operator left.\n\nThe ADR intends the hold (L159-161) but assumes the text eventually gets sent. In both cases the header keeps saying `live`. On the session view, the pane stops updating. On the Overview, new questions and blocks never appear, and the operator has no sign the page is stale.\n\n**Fix direction:** make the hold visible. For example, `show` sets a marker such as \"held: a field has unsent text\" next to `live`, and `flush` clears it. The success branch could also reset the other forms of the same need or session block.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/2cb35b3446b8c8d084edc11f54bb1c8203af93fa/src/core/web-dashboard.service.ts#L406-L415\nhttps://github.com/AlexisBalayre/pupitre/blob/2cb35b3446b8c8d084edc11f54bb1c8203af93fa/src/core/web-dashboard.service.ts#L427",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard-actions.service.ts",
+      "line": "270-284",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "When a land succeeds but its audit then throws, the page shows only the audit's error. It never says the session landed, and never names the peers the land could not steer.",
+      "body": "**A land whose audit throws reads on the page as a refused land, and the unsteered peers are lost.**\n\n`landSession` (`land.service.ts` L243-296) does the following inside `withMergeLock`, all before the audit runs:\n- writes the `landed` event;\n- fast-forwards the target;\n- tears down the worktree;\n- steers overlapping peers.\n\nThen it calls `auditProject`, which does not catch. `measureBaseline` throws `NoAdapterError` or `BrokenToolchainError` (`init.service.ts` L214, L341), and a kill or timeout during the stages propagates too.\n\nCore names unsteered peers with `console.error` before the audit, \"so a failed audit cannot lose them (decision 99)\" (L270-279). From the dashboard, that output goes to the terminal running `pup dashboard`, not to the page. `landAction` rethrows every error that is not `MergeLockLostError`:\n\n```ts\n} catch (error) {\n  if (!(error instanceof MergeLockLostError)) throw error;\n```\n\nSo the desk returns `{ ok: false, message: <the audit's error> }`, and the lines at L303-319 (\"Landed …\", one per `unsteered` peer) are never built. The operator reads a land that happened as refused. A retry gets \"already landed\", and the peers that need a manual steer are named nowhere the operator looks. This breaks `landAction`'s own docblock (L264-269: \"each peer it could not steer named\").\n\n`pup land` also skips the \"Landed\" line on an audit throw. But its user sees the stderr peer list in their own terminal (`src/cli/index.ts` L2588-2597), so losing the peers is specific to the page.\n\n**Fix direction:**\n- Have core throw an error that carries the outcome when the audit fails, as `MergeLockLostError` carries `result`. `landAction` can then print the land's lines and refuse.\n- At minimum, on a non-lock error check whether the session is now `landed` and say so before the error.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/2cb35b3446b8c8d084edc11f54bb1c8203af93fa/src/core/web-dashboard-actions.service.ts#L270-L284\nhttps://github.com/AlexisBalayre/pupitre/blob/2cb35b3446b8c8d084edc11f54bb1c8203af93fa/src/core/land.service.ts#L270-L297",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard-actions.service.ts",
+      "line": "91-92",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The session view offers Kill on a session in a CI fix round, and its confirmation says \"Its window closes and its task goes back to the backlog.\" For that session `killSession` returns it to `merged` with its task still claimed, its PR open and a worktree left to remove (session-lifecycle.service.ts L1062-1072). The operator confirms a description of something else.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "1818",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`pup dashboard` still prints \"Anyone holding this url reads the page\". Since this PR, whoever opens the url first gets the secret that kills, gates and lands, so the only warning the operator sees understates what the url grants. The description at L1805 was updated; this line was not.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard.service.ts",
+      "line": "409-411",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`typing()` holds the board only for text fields, so button-only forms get no protection from a board swap. These are the option answers, Launch and fix, and none of them asks for confirmation. If a store change adds a row above another on the Overview, the board can swap between aim and click. The click then answers another session's question, or launches another task, without the operator choosing it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard-actions.service.ts",
+      "line": "39-55",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`ActionName`, `ConfirmedAction` and `ActionFields` are exported types declared inline in a service file, against general.md §Type separation (\"Never inline an exported or reused type/interface in a *.service.ts\"). The test and the desk already import them, so moving them later touches every importer. Sibling dashboard services do the same.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Not spawned: review-spec (no spec source: no closing keywords or linked issues), review-workflow-safety (no .github/workflows change), review-maintainability (off the default roster at standard depth). Dropped before validation: a correctness nit on kill-message wording, which conceded no behavioral difference; a simplicity nit claiming CONFIRMED_ACTIONS is only read in-file, though web-dashboard-actions.test.ts imports it. The consolidator grouped the two held-board importants; per protocol they were kept and validated separately, so nothing was merged. The correctness reviewer tagged the CLI url warning pre-existing; it was retagged as a docs nit because the PR's change falsified it. The suggested blur() fix for the Enter-submit important was confirmed by its validator but withheld as a committable suggestion, since the anchor spans two hunks; the fix is described in the body."
+    },
+    {
+      "component": "conventions",
+      "description": "The reviewer reported that conventions docs were not injected and read general.md directly. It checked only the type-separation rule, not naming.md or testing.md, against the diff."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 3,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 5.503258500000004,
+  "duration_ms": 477188,
+  "num_turns": 23,
+  "tokens": {
+    "input": 12,
+    "output": 21096,
+    "cache_read": 324886,
+    "cache_creation": 72889,
+    "total": 418883
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 196,
+      "output": 98118,
+      "cache_read": 4068089,
+      "cache_creation": 406339,
+      "cost_usd": 5.027123800000004
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 62,
+      "output": 14290,
+      "cache_read": 401295,
+      "cache_creation": 116788,
+      "cost_usd": 0.4751235
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 754,
+      "cache_read": 0,
+      "cache_creation": 5072,
+      "cost_usd": 0.0010112
+    }
+  ],
+  "permission_denials": []
+}
