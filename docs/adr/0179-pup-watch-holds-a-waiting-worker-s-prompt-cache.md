@@ -35,7 +35,13 @@
     the same sweep's resume has just started. It also stops a hold being typed again every sweep
     while the last hold's turn runs, or after that turn died. It is pasted and submitted
     like a steer (decision 45). A box that refuses the paste is cleared, nothing is recorded, and
-    the next sweep tries again while the window lasts. The text (`CACHE_HOLD_MESSAGE`) tells the
+    the next sweep tries again while the window lasts. Enter can land while the UI still folds
+    the paste, so a box that still holds text after it gets one Enter more, as a tell's does
+    (decision 85). A box gone from the screen gets none, since Enter there picks a dialog's
+    option, and counts as sent, as it does for a steer. A hold still in the box after the second
+    Enter is not recorded. Recorded, it would refuse every later hold of the window while its
+    cache lapsed. It stays in the box, where an operator who attaches finds it, until they or a
+    steer clear it. The window is held again once its box is empty. The text (`CACHE_HOLD_MESSAGE`) tells the
     worker that nothing changed and that this answers nothing it asked, and asks it to run no
     tool and reply `held`.
     The look at the box, the paste and the Enter are three tmux calls, not one step, the race a

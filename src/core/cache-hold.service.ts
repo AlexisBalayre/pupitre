@@ -84,8 +84,9 @@ const PROMPT_EVENTS: ReadonlySet<string> = new Set(['steer', 'respawn', 'cache_h
  * a hold must never clear it. Each hold is recorded as a `cache_hold` event,
  * never a `steer`, so it neither answers an open question nor shows as the
  * window's last steer. Best effort: a window that refuses the paste is tried
- * again on the next sweep while the hold window lasts. Returns the ids held,
- * for a test to read.
+ * again on the next sweep while the hold window lasts, and a hold still in the
+ * box after its second Enter is not recorded, so the next sweep holds the
+ * window once its box is empty again. Returns the ids held, for a test to read.
  */
 export function holdIdleCaches(db: Database, repoPath: string, now: number): string[] {
   const paths = projectPaths(repoPath);
@@ -174,11 +175,18 @@ function trailingHolds(newestFirst: EventRow[]): number {
 /**
  * Type the hold into an empty box and submit it; false, with nothing typed,
  * when the box is absent or holds text, and with the box cleared when the
- * paste never landed whole (decision 45).
+ * paste never landed whole (decision 45). Enter can land while the UI still
+ * folds the paste, so a box that holds text after it gets one Enter more, as a
+ * tell's does (decision 85), and one that holds it still is false: the hold
+ * never ran, and recording it would refuse every later hold of the window.
+ * Enter is never pressed into a box gone from the screen, where it picks a
+ * dialog's option.
  */
 function typeHold(row: SessionRow): boolean {
   const pane = sessionPane(row);
   if (readInputBox(pane) !== 'empty' || !pasteIntoPane(pane, CACHE_HOLD_MESSAGE)) return false;
   submitPane(pane);
-  return true;
+  if (readInputBox(pane) !== 'holds') return true;
+  submitPane(pane);
+  return readInputBox(pane) !== 'holds';
 }

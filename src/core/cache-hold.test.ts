@@ -192,6 +192,40 @@ describe('holdIdleCaches (decision 179)', () => {
     expect(holdsOf(db, 's1')).toEqual([]);
   });
 
+  it('presses Enter once more when the first left the hold in the box, and records the hold it sent', () => {
+    seedSession(db, repo, 's1', 'awaiting-review');
+    seedEventsFile(repo, 's1', HOLD_AGE_MS);
+    vi.mocked(readInputBox).mockReturnValueOnce('empty').mockReturnValueOnce('holds');
+
+    expect(holdIdleCaches(db, repo, Date.now())).toEqual(['s1']);
+    expect(submitPane).toHaveBeenCalledTimes(2);
+    expect(holdsOf(db, 's1')).toHaveLength(1);
+  });
+
+  it('records no hold still in the box after its second Enter, so the next sweep holds again', () => {
+    seedSession(db, repo, 's1', 'awaiting-review');
+    seedEventsFile(repo, 's1', HOLD_AGE_MS);
+    vi.mocked(readInputBox)
+      .mockReturnValueOnce('empty')
+      .mockReturnValueOnce('holds')
+      .mockReturnValueOnce('holds');
+
+    expect(holdIdleCaches(db, repo, Date.now())).toEqual([]);
+    expect(submitPane).toHaveBeenCalledTimes(2);
+    expect(holdsOf(db, 's1')).toEqual([]);
+
+    expect(holdIdleCaches(db, repo, Date.now())).toEqual(['s1']);
+  });
+
+  it('presses no second Enter into a box gone from the screen', () => {
+    seedSession(db, repo, 's1', 'awaiting-review');
+    seedEventsFile(repo, 's1', HOLD_AGE_MS);
+    vi.mocked(readInputBox).mockReturnValueOnce('empty').mockReturnValueOnce('absent');
+
+    expect(holdIdleCaches(db, repo, Date.now())).toEqual(['s1']);
+    expect(submitPane).toHaveBeenCalledTimes(1);
+  });
+
   it(`lets a window lapse after ${CACHE_HOLD_LIMIT} holds in a row, until something else is recorded`, () => {
     seedSession(db, repo, 's1', 'awaiting-review');
     seedEventsFile(repo, 's1', HOLD_AGE_MS);
@@ -238,7 +272,7 @@ describe('holdIdleCaches (decision 179)', () => {
     ).run();
 
     expect(holdIdleCaches(db, repo, Date.now())).toEqual(['earlier']);
-    expect(readInputBox).toHaveBeenCalledTimes(1);
+    expect(pasteIntoPane).toHaveBeenCalledTimes(1);
   });
 
   it('is not held by the sweep that resumed its dead turn', () => {
@@ -287,7 +321,7 @@ describe('holdIdleCaches (decision 179)', () => {
       });
 
       expect(holdIdleCaches(db, repo, Date.now())).toEqual(['good']);
-      expect(readInputBox).toHaveBeenCalledTimes(1);
+      expect(pasteIntoPane).toHaveBeenCalledTimes(1);
     });
 
     it('never follows a link, even to a file that would be held', () => {
@@ -298,7 +332,7 @@ describe('holdIdleCaches (decision 179)', () => {
       });
 
       expect(holdIdleCaches(db, repo, Date.now())).toEqual(['good']);
-      expect(readInputBox).toHaveBeenCalledTimes(1);
+      expect(pasteIntoPane).toHaveBeenCalledTimes(1);
     });
 
     it('never blocks on a fifo', () => {
@@ -308,7 +342,7 @@ describe('holdIdleCaches (decision 179)', () => {
       });
 
       expect(holdIdleCaches(db, repo, Date.now())).toEqual(['good']);
-      expect(readInputBox).toHaveBeenCalledTimes(1);
+      expect(pasteIntoPane).toHaveBeenCalledTimes(1);
     });
   });
 
