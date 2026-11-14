@@ -197,6 +197,7 @@ describe('readPullRequestReview', () => {
           isEditedByOther: false,
           isMinimized: false,
           isAnswered: false,
+          replies: [],
         },
         {
           id: 'PRRT_moved',
@@ -206,6 +207,7 @@ describe('readPullRequestReview', () => {
           isEditedByOther: false,
           isMinimized: false,
           isAnswered: false,
+          replies: [],
         },
       ],
     });
@@ -314,6 +316,139 @@ describe('readPullRequestReview', () => {
       PRRT_quoted_member: false,
       PRRT_unread: false,
       PRRT_bare: false,
+    });
+  });
+
+  describe('the replies a round takes with a finding', () => {
+    const SOMEONE = { __typename: 'User', login: 'someone' };
+    const marked = (sha: string) => ({
+      body: `Declined.\n\n<!-- pup fix-round ${sha} -->`,
+      viewerDidAuthor: true,
+      authorAssociation: 'OWNER',
+      isMinimized: false,
+    });
+    const by = (authorAssociation: unknown, body: unknown, fields: object = {}) => ({
+      author: SOMEONE,
+      body,
+      viewerDidAuthor: false,
+      authorAssociation,
+      isMinimized: false,
+      lastEditedAt: null,
+      editor: null,
+      ...fields,
+    });
+    const finding = { author: BOT, body: 'finding', authorAssociation: 'NONE', isMinimized: false };
+    const trail = (id: string, ...comments: unknown[]) =>
+      thread({ id, trail: { nodes: [finding, ...comments] } });
+    const repliesOf = (...nodes: unknown[]) => {
+      ghAnswers({
+        state: 'OPEN',
+        headRefOid: HEAD,
+        reviews: { nodes: [review()] },
+        reviewThreads: { pageInfo: { hasPreviousPage: false }, nodes },
+      });
+      return Object.fromEntries(read().openThreads.map((open) => [open.id, open.replies]));
+    };
+
+    // What the operator said since the round's newest reply goes to the next
+    // round with the finding. A member or collaborator may reopen a thread but
+    // proves no write access, so neither is relayed, nor is the bot or an outsider.
+    it("reads the operator's replies since the newest marked one", () => {
+      expect(
+        repliesOf(
+          trail(
+            'PRRT_reopened',
+            by('OWNER', 'Before the first round.'),
+            marked('d'.repeat(40)),
+            by('OWNER', 'Before the newest round.'),
+            marked('e'.repeat(40)),
+            by('NONE', 'Not a false positive.', { viewerDidAuthor: true }),
+            by('NONE', 'An outsider.'),
+            finding,
+            by('MEMBER', 'A member.'),
+            by('COLLABORATOR', 'A collaborator.'),
+            by('OWNER', 'Add a TTL.'),
+            by('OWNER', 7),
+          ),
+          trail('PRRT_unanswered', by('OWNER', 'Fix this one first.')),
+          trail('PRRT_answered', marked('d'.repeat(40))),
+        ),
+      ).toEqual({
+        PRRT_reopened: ['Not a false positive.', 'Add a TTL.'],
+        PRRT_unanswered: ['Fix this one first.'],
+        PRRT_answered: [],
+      });
+    });
+
+    // A comment hidden on GitHub is out of the operator's view; a field outside
+    // its shape reads as hidden, as a finding's does.
+    it('drops a reply hidden on GitHub', () => {
+      expect(
+        repliesOf(
+          trail(
+            'PRRT_hidden',
+            by('OWNER', 'Shown.'),
+            by('OWNER', 'Hidden.', { isMinimized: true }),
+            by('OWNER', 'Unread.', { isMinimized: undefined }),
+            by('NONE', 'Hidden, by hand.', { viewerDidAuthor: true, isMinimized: true }),
+          ),
+        ),
+      ).toEqual({ PRRT_hidden: ['Shown.'] });
+    });
+
+    // Anyone with write access can edit another's comment: an edit by another
+    // account, or by one gone from GitHub, leaves it no longer the operator's.
+    it('drops a reply an account other than its author edited', () => {
+      const edited = (body: string, editor: unknown) =>
+        by('OWNER', body, { lastEditedAt: '2026-10-18T09:00:00Z', editor });
+      expect(
+        repliesOf(
+          trail(
+            'PRRT_edited',
+            edited('Edited by its author.', SOMEONE),
+            edited('Edited by another.', { __typename: 'User', login: 'alexis' }),
+            edited('Edited by a bot of the same login.', { __typename: 'Bot', login: 'someone' }),
+            edited('Edited by one gone.', null),
+            by('OWNER', 'Edited, its editor unread.', { editor: SOMEONE, author: null }),
+          ),
+        ),
+      ).toEqual({ PRRT_edited: ['Edited by its author.'] });
+    });
+
+    // Comment ids are past what the 32-bit `databaseId` is typed to hold, so the
+    // read takes `fullDatabaseId`, a decimal string, and compares it as a BigInt:
+    // as text 9999999999 would pass 10000000000, and past 2^53 two numbers round
+    // into one.
+    it("records the newest comment's full id, whoever wrote it", () => {
+      ghAnswers({
+        state: 'OPEN',
+        headRefOid: HEAD,
+        reviews: { nodes: [review()] },
+        reviewThreads: {
+          pageInfo: { hasPreviousPage: false },
+          nodes: [
+            trail(
+              'PRRT_text',
+              by('OWNER', 'Older.', { fullDatabaseId: '9999999999' }),
+              by('NONE', 'An outsider, newest.', { fullDatabaseId: '10000000000' }),
+            ),
+            trail(
+              'PRRT_past',
+              by('OWNER', 'Older.', { fullDatabaseId: '18014398509481984' }),
+              by('OWNER', 'Newest.', { fullDatabaseId: '18014398509481985' }),
+              by('OWNER', 'A number, not the string GitHub sends.', { fullDatabaseId: 2 ** 60 }),
+              by('OWNER', 'No id.', { fullDatabaseId: '9e99' }),
+            ),
+            trail('PRRT_none', by('OWNER', 'No id.')),
+          ],
+        },
+      });
+
+      expect(read().openThreads.map(({ id, newestComment }) => [id, newestComment])).toEqual([
+        ['PRRT_text', '10000000000'],
+        ['PRRT_past', '18014398509481985'],
+        ['PRRT_none', undefined],
+      ]);
     });
   });
 
