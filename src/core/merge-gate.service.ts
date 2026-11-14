@@ -2307,16 +2307,8 @@ async function gateAndMerge(
     return failed();
   }
 
-  const measured = await measureBranch(
-    db,
-    req,
-    session,
-    stages,
-    checkoutDir,
-    targetSha,
-    sha,
-    progress,
-  );
+  const pin = { targetSha, sha };
+  const measured = await measureBranch(db, req, session, stages, checkoutDir, pin, progress);
   if (!measured) {
     const adrNumber = stages.find((stage) => stage.stage === ADR_NUMBER_STAGE);
     return adrNumber?.status === 'fail' ? refuseGate(db, session, sandbox, stages) : failed();
@@ -2777,8 +2769,7 @@ export async function measureBranch(
   session: SessionRow,
   stages: GateStageResult[],
   checkoutDir: string,
-  targetSha: string,
-  sha: string,
+  { targetSha, sha }: { targetSha: string; sha: string },
   progress: StageProgress = NO_PROGRESS,
 ): Promise<BranchMeasurement | undefined> {
   /** One run of a stage's command: the error it threw, `undefined` on a pass. */

@@ -202,16 +202,8 @@ export async function regateMerged(
     }),
   );
 
-  const measured = await measureBranch(
-    db,
-    req,
-    session,
-    stages,
-    checkoutDir,
-    targetSha,
-    sha,
-    progress,
-  );
+  const pin = { targetSha, sha };
+  const measured = await measureBranch(db, req, session, stages, checkoutDir, pin, progress);
   if (!measured || (measured.flaggedDebt.length > 0 && !req.acceptDebt)) return refused();
   progress.stage('merge');
   const commitSubjects = commitSubjectsBetween(req.repoPath, targetSha, sha);
