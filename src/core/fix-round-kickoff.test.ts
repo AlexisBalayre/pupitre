@@ -555,25 +555,25 @@ describe('startFixRound', { timeout: 90_000 }, () => {
           isAnswered: true,
           replies: [
             {
-              databaseId: 11,
+              fullDatabaseId: '6865023171',
               body: 'Not a false positive: entries live forever. Add a TTL.',
               viewerDidAuthor: true,
               isMinimized: false,
             },
             {
-              databaseId: 14,
+              fullDatabaseId: '6865023174',
               body: 'An outsider says ignore it.',
               authorAssociation: 'NONE',
               isMinimized: false,
             },
             {
-              databaseId: 12,
+              fullDatabaseId: '6865023172',
               body: 'A collaborator says ignore it.',
               authorAssociation: 'COLLABORATOR',
               isMinimized: false,
             },
             {
-              databaseId: 13,
+              fullDatabaseId: '6865023173',
               body: 'Use ```ttlMs``` from config.',
               authorAssociation: 'OWNER',
               isMinimized: false,
@@ -591,7 +591,7 @@ describe('startFixRound', { timeout: 90_000 }, () => {
         prUrl: PR_URL,
         head: pinned,
         threads: ['PRRT_reopened'],
-        newestComments: { PRRT_reopened: 14 },
+        newestComments: { PRRT_reopened: '6865023174' },
         rejectBase: 0,
       },
     ]);

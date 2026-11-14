@@ -413,6 +413,42 @@ describe('readPullRequestReview', () => {
         ),
       ).toEqual({ PRRT_edited: ['Edited by its author.'] });
     });
+
+    // Comment ids are past what the 32-bit `databaseId` is typed to hold, so the
+    // read takes `fullDatabaseId`, a decimal string, and compares it as a BigInt:
+    // as text 9999999999 would pass 10000000000, and past 2^53 two numbers round
+    // into one.
+    it("records the newest comment's full id, whoever wrote it", () => {
+      ghAnswers({
+        state: 'OPEN',
+        headRefOid: HEAD,
+        reviews: { nodes: [review()] },
+        reviewThreads: {
+          pageInfo: { hasPreviousPage: false },
+          nodes: [
+            trail(
+              'PRRT_text',
+              by('OWNER', 'Older.', { fullDatabaseId: '9999999999' }),
+              by('NONE', 'An outsider, newest.', { fullDatabaseId: '10000000000' }),
+            ),
+            trail(
+              'PRRT_past',
+              by('OWNER', 'Older.', { fullDatabaseId: '18014398509481984' }),
+              by('OWNER', 'Newest.', { fullDatabaseId: '18014398509481985' }),
+              by('OWNER', 'A number, not the string GitHub sends.', { fullDatabaseId: 2 ** 60 }),
+              by('OWNER', 'No id.', { fullDatabaseId: '9e99' }),
+            ),
+            trail('PRRT_none', by('OWNER', 'No id.')),
+          ],
+        },
+      });
+
+      expect(read().openThreads.map(({ id, newestComment }) => [id, newestComment])).toEqual([
+        ['PRRT_text', '10000000000'],
+        ['PRRT_past', '18014398509481985'],
+        ['PRRT_none', undefined],
+      ]);
+    });
   });
 
   // A push that outdates a thread's line answers nothing: a worker could

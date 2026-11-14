@@ -72,16 +72,16 @@ export interface EventPayloads {
    * (decision 90): the head the bot reviewed, the ids of the open threads the
    * kickoff listed, and the session's rejection count as the round started,
    * which the gate's cap counts the round's rejections from. `newestComments`
-   * maps each thread to the `databaseId` of the newest comment the kickoff read
-   * on it, so the gate leaves a thread with a reply posted since for the next
-   * round; absent when no thread's comments carried one.
+   * maps each thread to the `fullDatabaseId`, a decimal string, of the newest
+   * comment the kickoff read on it, so the gate never buries or resolves a
+   * reply posted since; absent when no thread's comments carried one.
    */
   fix_round: {
     prUrl: string;
     head: string;
     threads: string[];
     rejectBase: number;
-    newestComments?: Record<string, number>;
+    newestComments?: Record<string, string>;
   };
   /**
    * `pup plan edit --rescope` widened the session's task (decision 115): the

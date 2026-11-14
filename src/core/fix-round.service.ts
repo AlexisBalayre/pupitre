@@ -19,6 +19,7 @@ import {
 } from './git-diff.client.js';
 import {
   assertGhAvailable,
+  COMMENT_ID,
   commentOnPullRequest,
   fixRoundMarker,
   isCutOffByNode,
@@ -145,17 +146,24 @@ interface ThreadAnswers {
   /** Named in the round but answered nowhere in the worker's summary: left open. */
   unanswered: number;
   /**
-   * Replied on, by a comment a round relays, after the kickoff read it: the
-   * worker never saw that reply, so nothing is posted or resolved, and the
-   * next round takes the thread with it.
+   * Replied on, by a comment a round relays, after the kickoff read it, on a
+   * file the round's push left as it was: the worker never saw that reply, so
+   * nothing is posted or resolved, and the next round takes the thread with it.
    */
   repliedSince: number;
+  /**
+   * Replied on so too, but on a file the push changed, or one git could not
+   * tell: GitHub may outdate the thread, and no round takes an outdated one,
+   * so the worker's answer is posted, saying the reply never reached it, and
+   * nothing is resolved, for the operator to read the reply.
+   */
+  unrelayed: number;
 }
 
 /** The one on-demand review a gated fix round asks for: CI reviews only on opening and on this comment. */
 const REVIEW_ASK = '@claude review';
 
-type ThreadVerdict = Exclude<keyof ThreadAnswers, 'prUrl' | 'sha' | 'repliedSince'>;
+type ThreadVerdict = Exclude<keyof ThreadAnswers, 'prUrl' | 'sha' | 'repliedSince' | 'unrelayed'>;
 
 /** One thread's answer in the worker's `pup session done` summary. */
 interface WorkerAnswer {
@@ -174,6 +182,11 @@ const REPLIES: Record<ThreadVerdict, (sha: string, reason: string, path: string)
   unanswered: (sha) =>
     `The fix round gated at ${sha} gave no answer for this thread; left open for the operator.`,
 };
+
+/** What an `unrelayed` thread's reply adds after its verdict's: why nothing resolves it. */
+const UNRELAYED_NOTE =
+  'A reply posted here after the round read this thread never reached its worker, so pup ' +
+  'resolves nothing: left open for the operator.';
 
 /** The PR a merged session's newest merge opened, as the store and origin vouch for it. */
 interface StoredPullRequest {
@@ -294,10 +307,12 @@ export function ciReviewLookup(db: Database, repoPath: string): CiReviewLookup {
  * fixed and the round changed the file it is on, by content against
  * `targetSha` merged into the round's start: the worker's word alone resolves
  * nothing, and neither does a file the target changed.
- * Every other thread keeps its reply and stays open for the operator, but one
- * replied on since the kickoff read it gets neither: the reply would bury
- * what its worker never saw, so the thread is left for the next round. Then
- * one summary comment on the PR for the round. Every
+ * Every other thread keeps its reply and stays open for the operator. One
+ * replied on since the kickoff read it is never resolved, as its worker never
+ * saw that reply, and on a file the push left as it was, it gets no reply
+ * either, which would bury what the next round takes it with. On a file the
+ * push changed, GitHub may outdate it past any round's reach, so the worker's
+ * answer is posted, saying so. Then one summary comment on the PR for the round. Every
  * post carries a marker naming the sha, read back first, so a second run for
  * the same head posts nothing again, and a run cut short finishes what the
  * first left. Only a thread GitHub still lists on this PR with the bot's
@@ -339,7 +354,7 @@ export function answerFixRoundThreads(
     }
   };
   const onGitHub = withinBudget((timeoutMs) => readThreadAnswers(repoPath, prUrl, repo, timeoutMs));
-  const changed = withinBudget((timeoutMs) =>
+  const { byRound, byPush } = withinBudget((timeoutMs) =>
     filesTheRoundChanged(repoPath, head, sha, targetSha, timeoutMs),
   );
   const marker = fixRoundMarker(sha);
@@ -352,17 +367,24 @@ export function answerFixRoundThreads(
     declined: 0,
     unanswered: 0,
     repliedSince: 0,
+    unrelayed: 0,
   };
   for (const id of threadIds) {
     const thread = onGitHub.threads.find((listed) => listed.id === id);
     if (!THREAD_ID.test(id) || thread === undefined || !thread.isBots) continue;
     const seen = newestComments.get(id);
-    if (seen !== undefined && thread.newestRelayed !== undefined && thread.newestRelayed > seen) {
+    const isRepliedSince =
+      seen !== undefined &&
+      thread.newestRelayed !== undefined &&
+      BigInt(thread.newestRelayed) > BigInt(seen);
+    // A push that changed the thread's file may outdate it, and the next round takes no
+    // outdated thread: only one the push left as it was is sure to come back.
+    if (isRepliedSince && thread.path !== undefined && byPush?.has(thread.path) === false) {
       answers.repliedSince++;
       continue;
     }
     const answer = workerAnswers.get(id);
-    const verdict = threadVerdict(answer?.verdict, thread.path, changed);
+    const verdict = threadVerdict(answer?.verdict, thread.path, byRound);
     // Only the newest reply counts: one the operator wrote after the marker reopens the
     // thread, so a no-commit re-run at the same sha answers it again.
     if (!thread.ownReplies.at(-1)?.includes(marker)) {
@@ -371,9 +393,14 @@ export function answerFixRoundThreads(
         codeSpan(answer?.reason ?? ''),
         codeSpan(thread.path ?? 'no file'),
       );
+      const note = isRepliedSince ? `\n\n${UNRELAYED_NOTE}` : '';
       withinBudget((timeoutMs) =>
-        replyToReviewThread(repoPath, repo, id, `${said}\n\n${marker}`, timeoutMs),
+        replyToReviewThread(repoPath, repo, id, `${said}${note}\n\n${marker}`, timeoutMs),
       );
+    }
+    if (isRepliedSince) {
+      answers.unrelayed++;
+      continue;
     }
     if (verdict === 'addressed' && !thread.isResolved) {
       withinBudget((timeoutMs) => resolveReviewThread(repoPath, repo, id, timeoutMs));
@@ -382,15 +409,24 @@ export function answerFixRoundThreads(
   }
   if (!onGitHub.ownComments.some((body) => body.includes(marker))) {
     const left = answers.unverified + answers.declined + answers.unanswered;
+    const since = [
+      ...(answers.repliedSince > 0
+        ? [`${answers.repliedSince} replied on while the round ran, left for the next round`]
+        : []),
+      ...(answers.unrelayed > 0
+        ? [
+            `${answers.unrelayed} replied on while the round ran, which its push may outdate, ` +
+              'answered and left open for the operator to read the reply no round relayed',
+          ]
+        : []),
+    ];
     const body =
       `CI fix round gated at ${sha}: ${answers.addressed} thread(s) addressed and resolved, ` +
       `${answers.unverified} answered fixed that pup could not verify, ` +
       `${answers.declined} declined and ${answers.unanswered} unanswered` +
       (left > 0 ? ', left open for the operator' : '') +
-      (answers.repliedSince > 0
-        ? `; ${answers.repliedSince} replied on while the round ran, left for the next round.`
-        : '.') +
-      `\n\n${REVIEW_ASK}\n\n${marker}`;
+      since.map((said) => `; ${said}`).join('') +
+      `.\n\n${REVIEW_ASK}\n\n${marker}`;
     withinBudget((timeoutMs) => commentOnPullRequest(repoPath, prUrl, repo, body, timeoutMs));
   }
   return answers;
@@ -428,7 +464,7 @@ function roundTheNewestMergeEnded(
       sha: string;
       head: string | undefined;
       threadIds: string[];
-      newestComments: Map<string, number>;
+      newestComments: Map<string, string>;
       summaries: string[];
     }
   | undefined {
@@ -453,11 +489,15 @@ function roundTheNewestMergeEnded(
     sha,
     head: typeof head === 'string' ? head : undefined,
     threadIds: asStringArray(threads),
-    // Store text: only a whole number counts, and a round without the field compares nothing.
+    // Store text: only an id GitHub could have sent counts, and a round without the field
+    // compares nothing.
     newestComments: new Map(
       Object.entries(
         typeof newestComments === 'object' && newestComments !== null ? newestComments : {},
-      ).filter((entry): entry is [string, number] => Number.isSafeInteger(entry[1])),
+      ).filter(
+        (entry): entry is [string, string] =>
+          typeof entry[1] === 'string' && COMMENT_ID.test(entry[1]),
+      ),
     ),
     summaries,
   };
@@ -469,8 +509,11 @@ function roundTheNewestMergeEnded(
  * merges it. A file only the target changed, a change of the target's the
  * worker took in by hand, a change the round made and then reverted, and a PR
  * commit a rebase or an amend gave a new sha all read the same on both sides.
- * None when the start is unknown, that merge conflicts or git cannot answer:
- * nothing is then resolved.
+ * With them `byPush`, the files that differ between `head` and the pin, the
+ * target's among them: the push changed each, which may outdate a thread on
+ * it. `byRound` is empty and `byPush` undefined when the start is unknown,
+ * that merge conflicts or git cannot answer: nothing is then resolved, and
+ * no thread is sure to outlive the push.
  */
 function filesTheRoundChanged(
   repoPath: string,
@@ -478,10 +521,11 @@ function filesTheRoundChanged(
   pin: string,
   targetSha: string,
   timeoutMs: number,
-): Set<string> {
+): { byRound: Set<string>; byPush: Set<string> | undefined } {
+  const unread = { byRound: new Set<string>(), byPush: undefined };
   // Store and gate text, handed to git as revisions: each must be a sha.
   if (head === undefined || ![head, pin, targetSha].every((rev) => COMMIT_SHA.test(rev))) {
-    return new Set();
+    return unread;
   }
   const deadline = Date.now() + timeoutMs;
   const git = (args: string[]): string =>
@@ -494,9 +538,8 @@ function filesTheRoundChanged(
   // An armed one is refused, never read as no change: it is the operator's
   // alarm (decision 50), and no thread is answered past it.
   assertNoArmedGitDrivers(repoPath);
-  try {
-    const [start = ''] = git(['merge-tree', '--write-tree', head, targetSha]).split('\n');
-    return new Set(
+  const differing = (from: string): Set<string> =>
+    new Set(
       git([
         'diff',
         '--no-ext-diff',
@@ -504,17 +547,20 @@ function filesTheRoundChanged(
         '--no-renames',
         '--name-only',
         '-z',
-        start,
+        from,
         pin,
         '--',
       ])
         .split('\0')
         .filter(Boolean),
     );
+  try {
+    const [start = ''] = git(['merge-tree', '--write-tree', head, targetSha]).split('\n');
+    return { byRound: differing(start), byPush: differing(head) };
   } catch (error) {
     if (isCutOffByNode(error)) throw error;
     rethrowIfKilled(error);
-    return new Set();
+    return unread;
   }
 }
 

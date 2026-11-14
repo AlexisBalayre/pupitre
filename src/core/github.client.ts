@@ -282,8 +282,14 @@ const REVIEW_STATUS_CONTEXT = 'claude-review';
 const REVIEW_PAGE = 100;
 
 /** What each read of a thread's comments asks of one: what `isRelayed` and `isMarked` judge it by. */
-const THREAD_COMMENT_FIELDS = `databaseId body viewerDidAuthor authorAssociation
+const THREAD_COMMENT_FIELDS = `fullDatabaseId body viewerDidAuthor authorAssociation
   author { __typename login } isMinimized lastEditedAt editor { __typename login }`;
+
+/**
+ * A comment's `fullDatabaseId`, GitHub's BigInt, which it sends as a decimal
+ * string: comment ids are past what the 32-bit `databaseId` is typed to hold.
+ */
+export const COMMENT_ID = /^\d{1,30}$/;
 
 const PULL_REQUEST_REVIEW_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
@@ -378,12 +384,12 @@ export interface ReviewThread {
    */
   replies: string[];
   /**
-   * The `databaseId` of the newest comment on it this read saw, whoever wrote
-   * it: a round records it, so its gate tells a reply posted after the kickoff
-   * read the thread, which its worker never saw, by a greater one. Undefined
-   * when no comment carries one.
+   * The `fullDatabaseId` of the newest comment on it this read saw, whoever
+   * wrote it: a round records it, so its gate tells a reply posted after the
+   * kickoff read the thread, which its worker never saw, by a greater one.
+   * Undefined when no comment carries one.
    */
-  newestComment: number | undefined;
+  newestComment: string | undefined;
 }
 
 /** Who may make a thread a fix round answered live again, besides the bot and pup's own account. */
@@ -473,10 +479,19 @@ function isRelayed(comment: Record<string, unknown>): boolean {
   );
 }
 
-/** The greatest `databaseId` among `comments`, which GitHub numbers in the order they are posted. */
-function newestDatabaseId(comments: Record<string, unknown>[]): number | undefined {
-  const ids = comments.map((comment) => comment.databaseId).filter(Number.isSafeInteger);
-  return ids.length === 0 ? undefined : Math.max(...(ids as number[]));
+/**
+ * The greatest `fullDatabaseId` among `comments`, which GitHub numbers in the
+ * order they are posted, compared as the BigInt it is: past 2^53 a number
+ * would round two ids into one.
+ */
+function newestDatabaseId(comments: Record<string, unknown>[]): string | undefined {
+  return comments
+    .map((comment) => comment.fullDatabaseId)
+    .filter((id): id is string => typeof id === 'string' && COMMENT_ID.test(id))
+    .reduce<string | undefined>(
+      (newest, id) => (newest === undefined || BigInt(id) > BigInt(newest) ? id : newest),
+      undefined,
+    );
 }
 
 /**
@@ -635,8 +650,8 @@ interface AnsweredThread {
   path?: string;
   /** The bodies of its comments that gh's own login wrote, newest last. */
   ownReplies: string[];
-  /** The greatest `databaseId` among its comments a fix round relays; undefined when none is. */
-  newestRelayed: number | undefined;
+  /** The greatest `fullDatabaseId` among its comments a fix round relays; undefined when none is. */
+  newestRelayed: string | undefined;
 }
 
 /**
