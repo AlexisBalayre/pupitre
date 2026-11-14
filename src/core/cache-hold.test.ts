@@ -40,11 +40,13 @@ import {
   CACHE_HOLD_MESSAGE,
   CACHE_HOLD_UNTIL_MS,
   holdIdleCaches,
+  isHoldTurnOpen,
 } from './cache-hold.service.js';
 import { openStore, type SessionState } from './db.client.js';
 import { projectId, projectPaths } from './paths.utils.js';
 import {
   appendEvent,
+  type EventRow,
   ensureProject,
   insertSession,
   insertTask,
@@ -374,6 +376,54 @@ describe('holdIdleCaches (decision 179)', () => {
 
       expect(holdIdleCaches(db, repo, Date.now())).toEqual(['good']);
       expect(pasteIntoPane).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // The watchdog's question: is the dead turn the hold's, with no Stop past the
+  // size the hold recorded? Anything the file or the payload cannot answer is no.
+  describe("reading a hold's turn off the events file", () => {
+    let eventsFile: string;
+
+    beforeEach(() => {
+      seedSession(db, repo, 's1', 'running');
+      seedEventsFile(repo, 's1', HOLD_AGE_MS);
+      eventsFile = projectPaths(repo).eventsFile('s1');
+      appendEvent(db, 's1', 'cache_hold', {
+        idleMs: HOLD_AGE_MS,
+        eventsBytes: statSync(eventsFile).size,
+      });
+      // The hold's turn died: its idle prompt, and no Stop.
+      appendFileSync(eventsFile, `${JSON.stringify(IDLE_PROMPT)}\n`);
+    });
+
+    function holdRow(): EventRow {
+      const [hold] = listEvents(db, 's1').filter((event) => event.type === 'cache_hold');
+      if (!hold) throw new Error('no hold recorded');
+      return hold;
+    }
+
+    it("never follows a link, even to a file whose turn is the hold's", () => {
+      expect(isHoldTurnOpen(eventsFile, holdRow())).toBe(true);
+
+      const target = `${eventsFile}.real`;
+      renameSync(eventsFile, target);
+      symlinkSync(target, eventsFile);
+
+      expect(isHoldTurnOpen(eventsFile, holdRow())).toBe(false);
+    });
+
+    it("reads no turn as the hold's when its payload holds no size it can read", () => {
+      expect(isHoldTurnOpen(eventsFile, holdRow())).toBe(true);
+
+      for (const payload of [
+        'not json',
+        'null',
+        JSON.stringify({ idleMs: HOLD_AGE_MS }),
+        JSON.stringify({ idleMs: HOLD_AGE_MS, eventsBytes: -1 }),
+      ]) {
+        db.prepare("UPDATE events SET payload = ? WHERE type = 'cache_hold'").run(payload);
+        expect(isHoldTurnOpen(eventsFile, holdRow())).toBe(false);
+      }
     });
   });
 

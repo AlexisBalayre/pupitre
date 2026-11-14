@@ -180,7 +180,9 @@ function readRange(fd: number, start: number, end: number): string {
  * 179). Read like the hold reads the file, as one the session may have
  * replaced. False whenever the file cannot say: it cannot be opened, is no
  * regular file, is shorter than at the hold, or has more past the hold than
- * `CACHE_HOLD_EVENTS_TAIL_BYTES`, which no turn that ran no tool writes.
+ * `CACHE_HOLD_EVENTS_TAIL_BYTES`, which no turn that ran no tool writes. A
+ * regular file opened is read to the end it had, so only an I/O error throws,
+ * as the stall rule's own stat of the file does.
  */
 export function isHoldTurnOpen(eventsFile: string, hold: EventRow): boolean {
   const from = holdEventsBytes(hold);
@@ -196,8 +198,6 @@ export function isHoldTurnOpen(eventsFile: string, hold: EventRow): boolean {
     if (!stat.isFile() || stat.size < from || stat.size - from > CACHE_HOLD_EVENTS_TAIL_BYTES)
       return false;
     return !readRange(fd, from, stat.size).split('\n').some(isStopLine);
-  } catch {
-    return false;
   } finally {
     closeSync(fd);
   }
