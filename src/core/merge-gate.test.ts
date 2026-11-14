@@ -1,6 +1,7 @@
 import { execFileSync, spawn } from 'node:child_process';
 import {
   chmodSync,
+  closeSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -37,11 +38,13 @@ vi.mock('node:child_process', async (importOriginal) => {
 });
 
 // The real rmSync, wrapped so a test can make the gate checkout's removal fail,
-// and the real writeFileSync, so one can fail the merge lock's pid write.
+// the real writeFileSync, so one can fail the merge lock's pid write, and the
+// real closeSync, so one can fail the close of the lock's status file.
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();
   return {
     ...actual,
+    closeSync: vi.fn(actual.closeSync),
     lstatSync: vi.fn(actual.lstatSync),
     rmSync: vi.fn(actual.rmSync),
     writeFileSync: vi.fn(actual.writeFileSync),
@@ -3131,6 +3134,22 @@ describe('withMergeLock', () => {
     afterEach(() => {
       errors.mockRestore();
       expect(signals.map((signal) => process.listeners(signal))).toEqual(before);
+    });
+
+    // On NFS a close returns the deferred error of a write before it: the
+    // status is best effort, so its close keeps neither the lock nor the
+    // signal listeners, and never replaces what the section did.
+    it('returns the result and drops the lock when closing its status file fails', async () => {
+      vi.mocked(closeSync).mockImplementationOnce(() => {
+        throw Object.assign(new Error('EIO: i/o error, close'), { code: 'EIO' });
+      });
+
+      const result = await withMergeLock(repo, () => 'merged');
+
+      expect(result).toBe('merged');
+      expect(closeSync).toHaveBeenCalled();
+      expect(existsSync(lock)).toBe(false);
+      expect(errors).not.toHaveBeenCalled();
     });
 
     it('fails on a lock moved away under it, carrying what the section returned', async () => {

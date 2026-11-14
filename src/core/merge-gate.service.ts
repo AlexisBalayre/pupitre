@@ -1131,7 +1131,11 @@ function tryMergeLock(lockPath: string): LockTake | number | null {
       if (now?.dev === identity.dev && now.ino === identity.ino) {
         return { ...identity, token, statusFd };
       }
-      closeSync(statusFd);
+      try {
+        closeSync(statusFd);
+      } catch {
+        // Best effort: nothing was taken, which is what this branch says.
+      }
       console.error(
         `${lockPath} was replaced while pup took it, so its pid may have been written through ` +
           'what replaced it; nothing was taken. Treat a session that replaced it as compromised.',
@@ -1245,7 +1249,12 @@ export async function withMergeLock<TResult>(
   /** Release the lock; false when it was no longer the one this run took. */
   const release = (): boolean => {
     unwatch();
-    closeSync(taken.statusFd);
+    try {
+      closeSync(taken.statusFd);
+    } catch {
+      // Best effort, as every status write is: only a waiter's line reads it,
+      // and a deferred write error a close can return must not keep the lock.
+    }
     // The lock goes first: a signal between the two would otherwise meet
     // node's default disposition with the lock still on disk.
     try {
