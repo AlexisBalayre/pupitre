@@ -141,6 +141,7 @@ import {
   runMergeGate as runGate,
   waitForLoad,
   withMergeLock,
+  withScratchGitDir,
 } from './merge-gate.service.js';
 import { GateInterruptedError, UndeclaredSandboxError } from './sandbox.utils.js';
 import {
@@ -270,7 +271,8 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
    * tests can assert on the wiring. `pr view` reports the PR's head as `head`,
    * or else as whatever the branch holds in the repo its `--repo` names, read
    * from outside the repo so only the operator's global rewrite applies, and
-   * the PR as `state` onto main.
+   * the PR as `state` onto main. GitHub reads that head, not a git under pup's
+   * pin, so the read drops the transports `pinnedGitEnv` turns off.
    */
   const fakeGh = (openPrs: unknown[], head?: string, state = 'OPEN'): string =>
     [
@@ -280,7 +282,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       `if [ "$2" = "list" ]; then echo '${JSON.stringify(openPrs)}'; exit 0; fi`,
       'if [ "$2" = "view" ]; then',
       head === undefined
-        ? `  head=$(cd / && git ls-remote "git@\${5%%/*}:\${5#*/}.git" refs/heads/${BRANCH} | cut -f1)`
+        ? `  head=$(cd / && unset GIT_ALLOW_PROTOCOL && GIT_CONFIG_COUNT=0 git ls-remote "git@\${5%%/*}:\${5#*/}.git" refs/heads/${BRANCH} | cut -f1)`
         : `  head=${head}`,
       `  printf '{"headRefOid":"%s","state":"${state}","baseRefName":"main"}\\n' "$head"; exit 0`,
       'fi',
@@ -2866,6 +2868,38 @@ describe('firstOwnSubject (decision 137)', () => {
     const read = vi.mocked(execFileSync).mock.calls.at(-1)?.[1] as string[];
     expect(read.join(' ')).toContain('-c core.useReplaceRefs=false');
     expect(read.join(' ')).toContain('-c core.commitGraph=false log --reverse --no-merges');
+  });
+});
+
+// The scratch dir borrows the repo's objects, whose `info/alternates` a
+// session can write. A fetch starts `git for-each-ref` in each alternate's
+// repo, with the `-c` pins unset and that repo's config read. Before Git 2.44
+// a dangling ref there could lazily fetch through a remote that config names
+// (decision 89).
+describe('withScratchGitDir under a planted alternates (decision 89)', () => {
+  it("starts no git in the alternate's repo, so its dangling ref fails no fetch", () => {
+    const repo = initRepo();
+    const origin = initRepo();
+    commitIn(origin, 'src/next.ts', 'export const next = 2;\n');
+    const planted = tempDir('pup-planted-');
+    sh(planted, 'git', 'init', '-q', '--bare');
+    writeFileSync(join(planted, 'refs', 'heads', 'dangling'), `${'1'.repeat(40)}\n`);
+    writeFileSync(
+      join(repo, '.git', 'objects', 'info', 'alternates'),
+      `${join(planted, 'objects')}\n`,
+    );
+    const trace = join(tempDir('pup-trace-'), 'trace');
+
+    expect(() => sh(repo, 'git', 'fetch', '-q', origin, 'main')).toThrow();
+    const fetched = withScratchGitDir(repo, 'pup-test-', (git) => {
+      git(['fetch', '--quiet', '--no-tags', origin, '+refs/heads/main:refs/heads/origin'], {
+        stdio: 'pipe',
+        env: { GIT_TRACE: trace },
+      });
+      return git(['rev-parse', 'refs/heads/origin']).trim();
+    });
+    expect(fetched).toBe(sh(origin, 'git', 'rev-parse', 'HEAD').trim());
+    expect(readFileSync(trace, 'utf8')).not.toContain('for-each-ref');
   });
 });
 

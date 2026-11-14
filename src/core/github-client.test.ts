@@ -782,7 +782,7 @@ describe('the git gh runs', () => {
     expect(existsSync(fired)).toBe(false);
   });
 
-  it('hands gh no inherited GIT_SHALLOW_FILE or GIT_NAMESPACE', () => {
+  it("hands gh pup's GIT_SHALLOW_FILE pin in place of an inherited one, and no GIT_NAMESPACE", () => {
     const repo = tempDir('pup-gh-env-');
     execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repo, env: plainEnv });
     const seen = join(tempDir('pup-gh-env-log-'), 'env');
@@ -801,7 +801,7 @@ describe('the git gh runs', () => {
 
     const env = readFileSync(seen, 'utf8');
     expect(env).toMatch(/^PATH=/m);
-    expect(env).not.toMatch(/^GIT_SHALLOW_FILE=/m);
+    expect(env).toMatch(/^GIT_SHALLOW_FILE=\/dev\/null\/no-shallow$/m);
     expect(env).not.toMatch(/^GIT_NAMESPACE=/m);
   });
 });
