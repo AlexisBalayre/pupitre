@@ -1,0 +1,125 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-14T12:24:26.222Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43594019879",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43594019879",
+  "actor": "AlexisBalayre",
+  "commit_sha": "af41024927a0946e0dfd210dcc872fb8822d430f",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 333,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "3462-3505",
+      "description": "The scratch runner's fetch drops GIT_ALLOW_PROTOCOL because it supposedly 'reads no config a session can write'. But it borrows <common>/objects, and a session can plant info/alternates there. During `pup land`'s fetch, git's fetch-pack then starts `git --git-dir=<session repo> for-each-ref`, which reads that repo's config. Before that child starts, git strips GIT_CONFIG_PARAMETERS and GIT_CONFIG_COUNT from its environment, so the `-c` pins and protocol.ext.allow=never are gone, and it has no transport pin either. On Git before 2.44, which ignores GIT_NO_LAZY_FETCH, a ref there pointing at a missing object triggers a lazy fetch from the session's promisor remote. That fetch runs core.sshCommand (or an allowed file/ftp/helper transport) with the operator's environment.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "624-632",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `RunGitOptions` JSDoc ends \"Neither its git nor any git that git starts reads a config a session can write, once it pins `core.alternateRefsCommand`\". Coming right after \"Only `withScratchGitDir` sets it\", it reads as a guarantee of the `reachesRemote` option itself, when it only holds for `withScratchGitDir`'s runner (scratch git dir plus the alternate-refs pin). A future caller could take setting `reachesRemote` as safe for any git. Point to `withScratchGitDir`'s JSDoc, which already states it correctly, instead of repeating the claim here.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "624-637",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`reachesRemote` adds a boolean to the shared `RunGitOptions`, read through a ternary in `spawnOptions`, and it has one setter (`withScratchGitDir`). Put `NO_TRANSPORT_ENV` before `...opts.env` in `spawnOptions` and have `withScratchGitDir` pass `GIT_ALLOW_PROTOCOL: undefined` in its env, which `execFileSync` drops. That removes the field, the ternary and its JSDoc paragraph. Keep the option if you want the opt-out greppable by name.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Dropped one simplicity nit at consolidation. It asked to revert two \"unrelated\" hunks: the em-dash space in ArmedGitDriverError, which is goal (4) of the PR body, and a reflow of runGit's execFileSync call, which is the formatter's call. Neither had a cost. Skipped context, maintainability, spec (no closing issue or spec source) and workflow-safety (no workflow change)."
+    },
+    {
+      "component": "conventions",
+      "description": "The conventions reviewer read general.md, naming.md and testing.md but left out docs/adr/README.md, the three ADR diffs, and four of the test diffs. The ADR-amendment rule had already been posted in round 1, so this round's ADR coverage for conventions is partial."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 6.002809999999999,
+  "duration_ms": 411696,
+  "num_turns": 17,
+  "tokens": {
+    "input": 10,
+    "output": 14401,
+    "cache_read": 245830,
+    "cache_creation": 66590,
+    "total": 326831
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 212,
+      "output": 122958,
+      "cache_read": 5211419,
+      "cache_creation": 397083,
+      "cost_usd": 5.687476799999999
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 34,
+      "output": 7333,
+      "cache_read": 199735,
+      "cache_creation": 88472,
+      "cost_usd": 0.3145515
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 379,
+      "cache_read": 0,
+      "cache_creation": 4736,
+      "cost_usd": 0.0007817
+    }
+  ],
+  "permission_denials": []
+}
