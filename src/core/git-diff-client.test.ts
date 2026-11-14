@@ -2274,12 +2274,44 @@ describe('a promisor remote a session names in the shared config (decision 89)',
     expect(existsSync(fired)).toBe(false);
   });
 
+  // A list of transport names misses the `ftp` git ships and any helper on
+  // PATH: git allows a transport it has no rule for, even past a planted
+  // `protocol.allow=never`. The helper here would record its run.
+  it('reaches it by no ftp URL and no remote helper either', () => {
+    const { repo, fired } = promisorRepo();
+    const bin = tempDir('pup-helper-');
+    writeFileSync(join(bin, 'git-remote-planted'), `#!/bin/sh\necho helper >> '${fired}'\n`, {
+      mode: 0o755,
+    });
+    vi.stubEnv('PATH', `${bin}:${process.env.PATH}`);
+    for (const [key, value] of [
+      ['remote.ftp.url', 'ftp://127.0.0.1:1/r'],
+      ['remote.helper.url', 'planted::r'],
+      ['protocol.allow', 'never'],
+      ['protocol.ftp.allow', 'always'],
+    ] as const) {
+      sh(repo, 'git', 'config', key, value);
+    }
+
+    try {
+      expect(() => runGit(repo, ['fetch', 'ftp'], { stdio: 'pipe' })).toThrow(
+        /transport 'ftp' not allowed/,
+      );
+      expect(() => runGit(repo, ['fetch', 'helper'], { stdio: 'pipe' })).toThrow(
+        /transport 'planted' not allowed/,
+      );
+      expect(existsSync(fired)).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   // gh's git takes no argv of pup's, so both pins reach it through the env;
   // each is shown on its own by taking the other away.
   it("keeps gh's git from fetching through it, by either pin alone", () => {
     const { repo, blob, fired } = promisorRepo();
     const transportsOff = { ...pinnedGitEnv(), GIT_NO_LAZY_FETCH: undefined };
-    const lazyFetchOff = { ...pinnedGitEnv(), GIT_CONFIG_COUNT: '0' };
+    const lazyFetchOff = { ...pinnedGitEnv(), GIT_ALLOW_PROTOCOL: undefined };
 
     expect(readBlob(repo, blob, transportsOff)).toThrow(/transport 'file' not allowed/);
     expect(readBlob(repo, blob, lazyFetchOff)).toThrow();

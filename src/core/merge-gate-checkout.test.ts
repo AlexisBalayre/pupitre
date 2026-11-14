@@ -243,7 +243,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       `if [ "$2" = "list" ]; then echo '${JSON.stringify(openPrs)}'; exit 0; fi`,
       'if [ "$2" = "view" ]; then',
       head === undefined
-        ? `  head=$(cd / && GIT_CONFIG_COUNT=0 git ls-remote "git@\${5%%/*}:\${5#*/}.git" refs/heads/${BRANCH} | cut -f1)`
+        ? `  head=$(cd / && unset GIT_ALLOW_PROTOCOL && GIT_CONFIG_COUNT=0 git ls-remote "git@\${5%%/*}:\${5#*/}.git" refs/heads/${BRANCH} | cut -f1)`
         : `  head=${head}`,
       `  printf '{"headRefOid":"%s","state":"${state}","baseRefName":"main"}\\n' "$head"; exit 0`,
       'fi',

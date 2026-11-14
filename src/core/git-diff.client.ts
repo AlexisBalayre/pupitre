@@ -555,32 +555,33 @@ const GIT_HISTORY_ENV = {
 } as const;
 
 /**
- * Every transport git ships, pinned off for each git child but one that
- * pushes or fetches on purpose (`RunGitOptions.reachesRemote`). They back
- * `GIT_NO_LAZY_FETCH` up for a git that ignores it: a promisor remote's
- * `uploadpack` is a command of the session's choosing. Each transport is
- * named, since a bare `protocol.allow` is only the fallback a planted
- * `protocol.<name>.allow` overrides (decision 89).
+ * Every transport pinned off, for each git child but one that pushes or
+ * fetches on purpose (`RunGitOptions.reachesRemote`). It backs
+ * `GIT_NO_LAZY_FETCH` up for a git that ignores it (before 2.44): a promisor
+ * remote's `uploadpack` is a command of the session's choosing, and its URL a
+ * host of the session's choosing. Once set, `GIT_ALLOW_PROTOCOL` is the whole
+ * allowlist and git reads no `protocol.*.allow` key, so a planted one cannot
+ * re-open a transport. `none` names no transport, so this pin covers what a
+ * list of names would miss: the shipped `ftp` and `ftps`, and any
+ * `git-remote-<x>` helper on PATH, which git otherwise allows (decision 89).
  */
-const NO_TRANSPORT_CONFIG = ['ext', 'fd', 'file', 'git', 'http', 'https', 'ssh'].flatMap((name) => [
-  '-c',
-  `protocol.${name}.allow=never`,
-]);
+const NO_TRANSPORT_ENV = { GIT_ALLOW_PROTOCOL: 'none' } as const;
 
 /**
  * `runGit`'s whole pin as environment alone, for a program that runs git with
- * argv of its own: `scrubbedGitEnv`, `GIT_HISTORY_ENV`, and `GIT_SAFE_CONFIG`
- * with every transport pinned off as command-scope config, which outranks the
+ * argv of its own: `scrubbedGitEnv`, `GIT_HISTORY_ENV`, `NO_TRANSPORT_ENV`, and
+ * `GIT_SAFE_CONFIG` as command-scope config, which outranks the
  * repo's config the way a `-c` does. `gh` runs git in the main checkout, whose
  * config a session can write, so a `core.fsmonitor` armed there would
  * otherwise run on gh's first `git status` (decision 89). gh is always handed
  * `--head`, so its git never pushes.
  */
 export function pinnedGitEnv(): NodeJS.ProcessEnv {
-  const entries = [...GIT_SAFE_CONFIG, ...NO_TRANSPORT_CONFIG].filter((arg) => arg !== '-c');
+  const entries = GIT_SAFE_CONFIG.filter((arg) => arg !== '-c');
   const env: NodeJS.ProcessEnv = {
     ...scrubbedGitEnv(),
     ...GIT_HISTORY_ENV,
+    ...NO_TRANSPORT_ENV,
     GIT_CONFIG_COUNT: String(entries.length),
   };
   entries.forEach((entry, index) => {
@@ -643,7 +644,7 @@ interface RunGitOptions {
 export function runGit(cwd: string, args: string[], opts: RunGitOptions = {}): string {
   const options = spawnOptions(opts);
   return checkedAfter(cwd, options.env.GIT_DIR, () =>
-    execFileSync('git', safeArgv(cwd, args, options.env, opts.reachesRemote), {
+    execFileSync('git', safeArgv(cwd, args, options.env), {
       ...options,
       encoding: 'utf8',
     }),
@@ -680,7 +681,7 @@ export function runGitBytes(
 ): Buffer {
   const options = spawnOptions(opts);
   return checkedAfter(cwd, options.env.GIT_DIR, () =>
-    execFileSync('git', safeArgv(cwd, args, options.env, opts.reachesRemote), {
+    execFileSync('git', safeArgv(cwd, args, options.env), {
       ...options,
       encoding: 'buffer',
       // A Buffer: a string input is encoded with `encoding`, which `buffer` is not.
@@ -926,26 +927,20 @@ export function assertMainCheckout(repoPath: string): void {
  * fall back to a bare repo planted in the checkout, or a parent repo. A
  * gitfile, a worktree's, is left to git to read, pinned or not (decision 172).
  * A spawn whose `env` pins `GIT_DIR` names nothing: git's `--git-dir` would
- * override the pin, which is the admin dir decision 101 verified. Every
- * transport is pinned off unless the spawn `reachesRemote`.
+ * override the pin, which is the admin dir decision 101 verified.
  */
-function safeArgv(
-  cwd: string,
-  args: string[],
-  env: NodeJS.ProcessEnv,
-  reachesRemote: boolean | undefined,
-): string[] {
+function safeArgv(cwd: string, args: string[], env: NodeJS.ProcessEnv): string[] {
   const gitDir = assertGitDirUnplanted(cwd, env.GIT_DIR);
   const named =
     gitDir && env.GIT_DIR === undefined
       ? [`--git-dir=${gitDir}`, `--work-tree=${resolve(cwd)}`]
       : [];
-  const transports = reachesRemote ? [] : NO_TRANSPORT_CONFIG;
-  return [...GIT_SAFE_CONFIG, ...transports, '-C', cwd, ...named, ...args];
+  return [...GIT_SAFE_CONFIG, '-C', cwd, ...named, ...args];
 }
 
 /**
- * A spawn's options, whose `env` is the one `safeArgv` must be handed. Every
+ * A spawn's options, whose `env` is the one `safeArgv` must be handed, with
+ * every transport pinned off unless the spawn `reachesRemote`. Every
  * child gets a deadline: a gate command's, unless the caller names its own.
  * Git opens `<common>/config` before any command runs, and a session can
  * swap it for a FIFO that no open returns from. Node waits in the spawn, where
@@ -955,7 +950,12 @@ function safeArgv(
  */
 function spawnOptions(opts: RunGitOptions): ExecFileSyncOptions & { env: NodeJS.ProcessEnv } {
   return {
-    env: { ...scrubbedGitEnv(), ...opts.env, ...GIT_HISTORY_ENV },
+    env: {
+      ...scrubbedGitEnv(),
+      ...opts.env,
+      ...GIT_HISTORY_ENV,
+      ...(opts.reachesRemote ? {} : NO_TRANSPORT_ENV),
+    },
     maxBuffer: GIT_MAX_BUFFER,
     stdio: opts.stdio,
     timeout: opts.timeout ?? GATE_COMMAND_TIMEOUT_MS,

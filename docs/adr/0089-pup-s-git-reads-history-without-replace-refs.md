@@ -102,12 +102,19 @@
     deletes a loose object, any read that meets the gap fetches it, which runs that
     `uploadpack` with pup's environment, under the merge lock when the gate is the reader
     (verified on Git 2.54 with a plain `cat-file -p`). `GIT_HISTORY_ENV` now pins
-    `GIT_NO_LAZY_FETCH=1`, and `runGit` and `runGitBytes` pin `protocol.<t>.allow=never` for
-    `ext`, `fd`, `file`, `git`, `http`, `https` and `ssh`, outranking a planted
-    `protocol.<t>.allow`. A bare `protocol.allow=never` would not: it is only the fallback a
-    per-transport key overrides. Either pin alone stops the fetch, and the transports also
-    stop an explicit `git fetch <r>` and a git too old to know `GIT_NO_LAZY_FETCH`. gh's git
-    takes both through `pinnedGitEnv`. pup hands gh `--head` and runs only `pr view`, `list`,
+    `GIT_NO_LAZY_FETCH=1`, and `runGit` and `runGitBytes` set `GIT_ALLOW_PROTOCOL=none`. Once
+    that variable is set it is the whole allowlist, and git reads no `protocol.*.allow` key,
+    so a planted key cannot re-open a transport. `none` names none. A list of
+    `protocol.<t>.allow=never` keys was the first pin. It named `ext`, `fd`, `file`, `git`,
+    `http`, `https` and `ssh`, but missed the `ftp` and `ftps` helpers git ships and any
+    `git-remote-<x>` on PATH, reached through `<x>::` or `remote.<r>.vcs`. A transport with no
+    key falls back to `protocol.allow`, then to git's default for an unknown transport, which
+    allows it because pup's env never sets `GIT_PROTOCOL_FROM_USER`. Before Git 2.44,
+    `GIT_NO_LAZY_FETCH` is ignored, so a promisor remote at `ftp://` was still fetched from,
+    to a host the session chose (CI review on PR #333; verified on Git 2.54 against an
+    explicit fetch). Either pin alone stops the fetch, and the transport pin also stops an
+    explicit `git fetch <r>` and a git too old to know `GIT_NO_LAZY_FETCH`. gh's git takes
+    both through `pinnedGitEnv`. pup hands gh `--head` and runs only `pr view`, `list`,
     `edit`, `create` and `comment`, which read GitHub's API, so its git never needs a
     transport. The two gits that reach a remote on purpose, the gate's push and `pup land`'s
     fetch, run in `withScratchGitDir`, whose runner passes `reachesRemote` and keeps the
@@ -119,8 +126,10 @@
     through `GIT_SAFE_CONFIG` but neither `GIT_HISTORY_ENV` nor the transport pins, so grafts
     and a shallow file still bend what they read and a planted promisor remote can still be
     fetched from. Both are outside this decision's files. `dashboard.service.ts` names its own
-    copy of the transport pins and `GIT_NO_LAZY_FETCH`, now redundant under `runGit`; it is
-    outside this change too.
+    copy of the transport list and `GIT_NO_LAZY_FETCH`, now redundant under `runGit`; it is
+    outside this change too. The security review's git in `profile-compiler.service.ts`
+    names the same list without `runGit` under it, so `ftp`, `ftps` and PATH helpers stay
+    open there. It is outside this decision's files.
     A catch that neither rethrows nor passes the error to `rethrowIfKilled` still reads a git
     the deadline killed as its failure answer. The gate then runs its next git, which a
     session can block the same way, so the lock is held for one deadline per such read, not
