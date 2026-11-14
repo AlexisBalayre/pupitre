@@ -1,0 +1,177 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-14T10:53:11.178Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43587042899",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43587042899",
+  "actor": "AlexisBalayre",
+  "commit_sha": "038a43e8477d8fc0a8d4906996b77b1e296eb42e",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 319,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "359-363",
+      "description": "When the gate skips a thread because a relay-eligible reply came in during the round, it posts nothing on the thread and does not resolve it. The summary comment and the `ThreadAnswers` doc promise that the next round takes it. The next round never does if the round's own pushed commits changed the commented line, because GitHub then marks the thread outdated.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/github.client.ts",
+      "line": "284-286",
+      "description": "`THREAD_COMMENT_FIELDS` now asks every thread comment for `databaseId`, which is a GraphQL `Int` (32-bit signed). By late 2026, new pull request review comment ids are most likely above 2^31; GitHub added `fullDatabaseId: BigInt` on comment types for this reason.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "557-564",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`byPush` only diffs `head` against the pin, but it runs in the same `try` as `git merge-tree --write-tree head targetSha`. When the target conflicts with the round's start (for example, the worker merged a conflicting target by hand), the catch returns `unread`. Every replied-since thread then falls to the `unrelayed` path, even one whose file the push left untouched. That thread gets a marked reply instead of being left for the next round, so the operator's reply never reaches a worker. Compute `byPush` outside the `merge-tree` step so a conflict only empties `byRound`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "187-189",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "On an `unrelayed` thread, the gate's marked reply sits after the operator's reply R1, and the next kickoff relays only replies after the newest marked reply. R1 therefore never reaches a worker, yet `UNRELAYED_NOTE` only says the thread is \"left open for the operator\", and the hints say \"the worker gets your reply with the finding\". An operator who replies \"see my comment above\" and re-runs `pup fix` sends the worker that line without R1. Make the note say the reply must be posted again after this one for a round to take it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/types/session-event.types.ts",
+      "line": "76",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `fix_round` `newestComments` JSDoc says the gate \"never buries or resolves\" a reply posted since the kickoff, and the `readThreadAnswers` JSDoc (github.client.ts:703) says such a reply \"is not buried under its reply\". Neither holds on the `unrelayed` path, where the gate posts the worker's answer under the newer reply. Only the \"never resolves\" part is true in every case. Suggested wording: \"so the gate never resolves a reply posted since, and posts nothing over it when the push left its file as it was\".",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "160-166",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new `unrelayed` field, like `repliedSince`, is a `ThreadAnswers` member that nothing outside `answerFixRoundThreads` reads. Each such counter adds a JSDoc block, an initializer and another entry in `ThreadVerdict`'s `Exclude` list. Local `let` counters would remove all three, unless a test asserts on the fields.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "313",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "In the `answerFixRoundThreads` JSDoc, \"which would bury what the next round takes it with\" is ungrammatical and makes the reader guess what is meant. Say \"which would bury the operator's reply the next round relays\".",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "412-422",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The summary builds a `since` array of at most two strings from two conditional spreads, then joins it with `map`/`join`. Two inline conditional string fragments appended to the body would drop the array, the spreads and the join, about four lines.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "512",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `filesTheRoundChanged` JSDoc's \"With them `byPush`, ...\" has nothing for \"them\" to refer to, and the doc never names `byRound`, so it doesn't map the two returned sets to their names. Start each part with its name: \"`byRound`: the files ...\" and \"`byPush`: the files that differ between `head` and the pin\".",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "conventions",
+      "description": "The reviewer said the `.claude/rules` injection gave only `@` include lines, not the conventions text. It read docs/conventions/general.md directly so it could quote rules, and did not load naming.md or testing.md, so those two conventions went unchecked."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.7875966000000005,
+  "duration_ms": 208562,
+  "num_turns": 18,
+  "tokens": {
+    "input": 12,
+    "output": 11845,
+    "cache_read": 302194,
+    "cache_creation": 61506,
+    "total": 375557
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 90,
+      "output": 49515,
+      "cache_read": 1150944,
+      "cache_creation": 207070,
+      "cost_usd": 2.4407168
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 36,
+      "output": 9233,
+      "cache_read": 203856,
+      "cache_creation": 93296,
+      "cost_usd": 0.3460276
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 453,
+      "cache_read": 0,
+      "cache_creation": 5004,
+      "cost_usd": 0.0008522
+    }
+  ],
+  "permission_denials": []
+}
