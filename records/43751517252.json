@@ -1,0 +1,112 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-15T19:20:09.039Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43751517252",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43751517252",
+  "actor": "AlexisBalayre",
+  "commit_sha": "7a07d23e0737b29f33998ea572b4514d33c5598b",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 336,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context",
+    "maintainability",
+    "spec",
+    "simplicity",
+    "guards",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "tools/review/test/unit/pr-status-workflow.test.ts",
+      "line": "229-232",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The `isResolved: true` setup does nothing, so this test cannot back the \"to a resolved thread too\" part of its name: `[{ isResolved: true, important: owed }].map((t) => t.important)` is just `[owed]`, and `unthreadedImportants` never sees resolution (flipping it to `false` changes nothing; a `statusOf` filter on resolved threads is caught only by the statusOf test at lines 456-463). The first assertion also repeats line 213. Write `const threads = [owed];`, drop the comment, and take \"to a resolved thread too\" out of the name.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "tools/review/test/unit/pr-status-workflow.test.ts",
+      "line": "229",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The name says \"a forged header never below its own count\", but the `forged(2)` case asserts the forged section counts 1 (its 2 minus one released), below its header's 2; a reader taking the name as the spec would expect 3. Wording that matches the assertions: \"a forged header adds its own count and releases at most one entry per thread\".",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "tools/review/test/unit/pr-status-workflow.test.ts",
+      "line": "229-238",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "testing.md asks for \"one logical assertion focus per test\", but this `it` joins three behaviours with \"and\" in its title (repeated entry released once, resolved thread, forged header); the first expect shares nothing with the forged-header ones. Split into a repeated-entry test and a forged-header test so a failure names the behaviour that broke.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 2,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.947597425,
+  "duration_ms": 133800,
+  "num_turns": 10,
+  "tokens": {
+    "input": 10,
+    "output": 5725,
+    "cache_read": 191332,
+    "cache_creation": 34900,
+    "total": 231967
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 32,
+      "output": 13117,
+      "cache_read": 409912,
+      "cache_creation": 75321,
+      "cost_usd": 0.8257553999999999
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 18,
+      "output": 3148,
+      "cache_read": 70797,
+      "cache_creation": 32972,
+      "cost_usd": 0.1210257
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 423,
+      "cache_read": 0,
+      "cache_creation": 4837,
+      "cost_usd": 0.000816325
+    }
+  ],
+  "permission_denials": []
+}
