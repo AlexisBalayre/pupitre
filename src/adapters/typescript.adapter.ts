@@ -1,11 +1,16 @@
 import {
+  closeSync,
+  constants,
   existsSync,
+  fstatSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readdirSync,
   readFileSync,
   readlinkSync,
+  readSync,
 } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join, normalize, relative, sep } from 'node:path';
@@ -245,20 +250,44 @@ const RUNS_A_FILE =
 const KEY_SUBSTITUTION = /^(?![ \t]*[#;])[^=:\r\n\u2028\u2029]*\$/m;
 
 /**
- * A key that has npm read another config, which nothing here checks:
- * `globalconfig`, `userconfig`, or the `prefix` whose `etc/npmrc` is the
- * global config, npm reading the global one last, after the project and user
- * configs that can move it. Matched as a line's key in any case, bare or
- * quoted, and as the `npm_config_` variable an env file sets, `export`ed or
- * not; `save-prefix` is another key.
+ * Keys, normalised by `configKey`, that have npm read another config, which
+ * nothing here checks: `globalconfig`, `userconfig`, the `prefix` whose
+ * `etc/npmrc` is the global config, npm reading the global one last, after
+ * the project and user configs that can move it, and the `DESTDIR` variable
+ * npm puts in front of the global prefix.
  */
-const NAMES_A_CONFIG =
-  /^[ \t]*(?:export[ \t]+)?["']?(?:npm_config_)?(?:global[-_]?config|user[-_]?config|prefix)["']?(?:[ \t=:]|$)/im;
+const CONFIG_NAMING_KEYS = new Set(['globalconfig', 'userconfig', 'prefix', 'destdir']);
+
+/**
+ * A line's key, reduced at least as far as npm's ini parser and dotenv reduce
+ * it, and further, so that a spelling either reads as one of
+ * `CONFIG_NAMING_KEYS` reduces to it: the text before the first `=`, trimmed
+ * as JavaScript's `trim` trims (a BOM, `\f`, `\v`, U+00A0, U+2000-200A,
+ * U+3000), without an `export`, cut at the first `;` or `#` (an unquoted ini
+ * key ends there), `:` (a YAML key) or whitespace (a `.yarnrc` key), without
+ * quotes or a `[]` (an ini array key), in lower case, without an
+ * `npm_config_` and without `-` and `_`. Reducing further only refuses more.
+ */
+function configKey(line: string): string {
+  return (line.split('=')[0] as string)
+    .trim()
+    .replace(/^export\s+/i, '')
+    .split(/[;#:\s]/)[0]
+    ?.replace(/["'[\]]/g, '')
+    .toLowerCase()
+    .replace(/^npm[-_]config[-_]/, '')
+    .replace(/[-_]/g, '') as string;
+}
+
+/** Whether a config or env file has a line whose key names another config (`CONFIG_NAMING_KEYS`). */
+function namesAConfig(text: string): boolean {
+  return text.split(/[\r\n]+/).some((line) => CONFIG_NAMING_KEYS.has(configKey(line)));
+}
 
 /**
  * Whether a package-manager config or env file may have the run load a file:
  * it names one of `RUNS_A_FILE`'s keys as text, names another config
- * (`NAMES_A_CONFIG`), or holds a backslash, by which each of these formats
+ * (`namesAConfig`), or holds a backslash, by which each of these formats
  * escapes a character of a key, quoted or not (`"yarn\u0050ath"`), or a
  * substitution in a key. Read as text rather than parsed as each package
  * manager parses it, so a value with an escape costs the split too.
@@ -266,7 +295,7 @@ const NAMES_A_CONFIG =
 function runsAFile(text: string): boolean {
   return (
     RUNS_A_FILE.test(text) ||
-    NAMES_A_CONFIG.test(text) ||
+    namesAConfig(text) ||
     text.includes('\\') ||
     KEY_SUBSTITUTION.test(text)
   );
@@ -424,20 +453,42 @@ function userNpmrc({ gateEnv = [] }: CapabilityContext): string {
 const USER_CONFIG_MAX_BYTES = 64 * 1024;
 
 /**
+ * The user-level `.npmrc` at `path`, opened without following a link and
+ * without blocking, so a link, a fifo or a device is never read through: only
+ * a regular file whose size on the descriptor is at most
+ * `USER_CONFIG_MAX_BYTES`, read for at most one byte more, so a sparse file
+ * of any size is never loaded. Throws on anything else, the descriptor closed
+ * on every path that holds one.
+ */
+function readUserConfig(path: string): string {
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW);
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.size > USER_CONFIG_MAX_BYTES) {
+      throw new Error(`${path} is not a regular file of at most ${USER_CONFIG_MAX_BYTES} bytes`);
+    }
+    const buffer = Buffer.alloc(USER_CONFIG_MAX_BYTES + 1);
+    let length = 0;
+    for (let read = -1; read !== 0 && length < buffer.length; length += read) {
+      read = readSync(fd, buffer, length, buffer.length - length, null);
+    }
+    if (length > USER_CONFIG_MAX_BYTES) throw new Error(`${path} grew past the cap as it was read`);
+    return buffer.toString('utf8', 0, length);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/**
  * Whether the user-level `.npmrc` may have the run load a file
- * (`runsAFile`): a session can write it, and no commit holds it. It is read
- * only as a regular file of at most `USER_CONFIG_MAX_BYTES`, never through a
- * link, nor a fifo or a device, which would block the read. Throws where
- * anything else stands there, or it cannot be read.
+ * (`runsAFile`): a session can write it, and no commit holds it. Read only as
+ * `readUserConfig` reads it; throws where anything else stands there, or it
+ * cannot be read.
  */
 function userConfigRunsAFile(ctx: CapabilityContext): boolean {
   const path = userNpmrc(ctx);
   if (lstatSync(path, { throwIfNoEntry: false }) === undefined) return false;
-  const text = readPlainFile(path, { followLinks: false });
-  if (Buffer.byteLength(text) > USER_CONFIG_MAX_BYTES) {
-    throw new Error(`${path} is over ${USER_CONFIG_MAX_BYTES} bytes`);
-  }
-  return runsAFile(text);
+  return runsAFile(readUserConfig(path));
 }
 
 /** The config files vitest reads at a package root. */

@@ -7,6 +7,7 @@ import {
   renameSync,
   rmSync,
   symlinkSync,
+  truncateSync,
   writeFileSync,
 } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
@@ -410,6 +411,9 @@ describe('typescriptAdapter.testFiles', () => {
       ['.npmrc', 'globalconfig=./scripts/npmrc\n'],
       ['.env', 'NPM_CONFIG_GLOBALCONFIG=./scripts/npmrc\n'],
       ['.env', 'export npm_config_prefix=./scripts\n'],
+      ['.env', '\u00A0NPM_CONFIG_PREFIX\u00A0=./scripts\n'],
+      ['.env', 'DESTDIR=./scripts\n'],
+      ['.env.local', 'export\tDESTDIR=./scripts\n'],
       // Escaped or substituted keys, which their package manager reads as the key.
       ['.yarnrc.yml', '"yarn\\u0050ath": .yarn/releases/yarn.cjs\n'],
       ['pnpm-workspace.yaml', '"node\\u004Fptions": --import ./scripts/reg.mjs\n'],
@@ -716,6 +720,16 @@ describe('typescriptAdapter.testFiles', () => {
     ['one naming a prefix', 'prefix=/tmp/prefix\n', false],
     ['one naming a quoted prefix in another case', '"PREFIX" = /tmp/prefix\n', false],
     ['one naming a save-prefix', 'save-prefix=~\n', true],
+    // Spellings npm's ini parser reads as the key: trimmed by JavaScript's trim,
+    // cut at an unquoted ; or #, and without an array's [].
+    ['one naming a globalconfig after a BOM', '\uFEFFglobalconfig=/x\n', false],
+    ['one naming a prefix after a form feed', '\fprefix=/x\n', false],
+    ['one naming a prefix before a no-break space', 'prefix\u00A0=/x\n', false],
+    ['one naming a prefix after an ideographic space', '\u3000prefix=/x\n', false],
+    ['one naming a prefix cut at a ;', 'prefix;x=/p\n', false],
+    ['one naming a globalconfig cut at a #', 'globalconfig#c=/rc\n', false],
+    ['one naming a prefix array', 'prefix[]=/p\n', false],
+    ['one naming a quoted prefix array', '"prefix[]"=/p\n', false],
   ])('checks a checkout beside a user .npmrc of %s', (_, npmrc, intact) => {
     const home = tempDir('pup-home-');
     if (npmrc !== undefined) writeFileSync(join(home, '.npmrc'), npmrc);
@@ -734,6 +748,25 @@ describe('typescriptAdapter.testFiles', () => {
     ).toBe(intact);
   });
 
+  it('reads a user .npmrc of exactly 64 KiB', () => {
+    const home = tempDir('pup-home-');
+    const line = 'fund=false\n';
+    writeFileSync(join(home, '.npmrc'), `#${'x'.repeat(64 * 1024 - line.length - 2)}\n${line}`);
+    vi.stubEnv('HOME', home);
+    const { repo, sha } = committed({
+      'package.json': plainVitest,
+      'vitest.config.ts': configWith("{ include: ['src/**/*.test.ts'] }"),
+    });
+
+    expect(
+      typescriptAdapter.testInputsIntact?.({
+        configPath: repo,
+        measurePath: repo,
+        measureSha: sha,
+      }),
+    ).toBe(true);
+  });
+
   // Read only as a small regular file: a link may name what the check never
   // sees, and a fifo or a device would block the read.
   it.each([
@@ -750,6 +783,14 @@ describe('typescriptAdapter.testFiles', () => {
     [
       'a file over 64 KiB',
       (path: string) => writeFileSync(path, `# ${'x'.repeat(64 * 1024)}\nfund=false\n`),
+    ],
+    // Its size is read from the descriptor before any of it is.
+    [
+      'a sparse 50 GiB file',
+      (path: string) => {
+        writeFileSync(path, 'fund=false\n');
+        truncateSync(path, 50 * 1024 ** 3);
+      },
     ],
   ])('finds a checkout not intact beside a user .npmrc that is %s', (_, make) => {
     const home = tempDir('pup-home-');

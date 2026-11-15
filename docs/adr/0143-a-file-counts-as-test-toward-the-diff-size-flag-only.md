@@ -61,6 +61,8 @@
     following a link and without blocking: a link may name what the check never sees, and a
     fifo or a device would block the read, so a link, a fifo, a device, a directory or a
     larger file there fails the check too, a dotfiles setup that links `~/.npmrc` included.
+    The size is read from the open descriptor before any byte is, and at most one byte past
+    the cap is read, so a sparse file of any size is never loaded.
     This covers npm's and pnpm's user `.npmrc` only, not yarn's `~/.yarnrc.yml`, bun's user
     `bunfig.toml`, npm's global `$PREFIX/etc/npmrc` or pnpm's own `rc`, which the gate's run
     may read unchecked; checking those is owed to a later decision. One changed, added, removed, a link or named in another case at either check,
@@ -166,10 +168,19 @@
     newline, while the `${NPM_TOKEN}` an `.npmrc` substitutes into a value is still read.
     A config can also have npm read another that nothing here checks: `globalconfig` and
     `userconfig` name one, and `prefix` moves the global `etc/npmrc`, which npm reads last,
-    after the project and user configs that can move it. So a key spelled any of those, in
-    any case, bare or quoted, or as the `npm_config_` variable an env file sets, `export`ed
-    or not, leaves the answer unknown on either side, as it fails the user-level check;
-    `save-prefix` is another key and is read. Yarn's Plug'n'Play runtime, any `.pnp.*` at the root, leaves
+    after the project and user configs that can move it, as the `DESTDIR` variable does,
+    which npm puts in front of the global prefix. Matching such a key as text anchored to a
+    line misses spellings npm's ini parser reads as the key: it trims a key with
+    JavaScript's `trim` (a BOM, `\f`, `\v`, U+00A0, U+2000-200A, U+3000), cuts an unquoted
+    key at the first `;` or `#`, and strips an array's trailing `[]`, and dotenv's trim
+    reaches as far. So each line's key is reduced at least as far as those parsers reduce
+    it: the text before the first `=`, trimmed as `trim` trims, without an `export`, cut at
+    the first `;`, `#`, `:` or whitespace, without quotes or `[]`, in lower case, without an
+    `npm_config_` and without `-` and `_`. A line whose key reduces to `globalconfig`,
+    `userconfig`, `prefix` or `destdir` leaves the answer unknown on either side, as it fails
+    the user-level check. Reducing further than a parser does only refuses more: `prefix x`
+    or a section named `[prefix]` is refused too, while `save-prefix` reduces to another
+    key and is read. Yarn's Plug'n'Play runtime, any `.pnp.*` at the root, leaves
     the answer unknown on either side: yarn loads it into every script, and it resolves
     packages from a cache the branch may commit, never the `node_modules` the gate links and
     checks. That costs a Yarn Berry repo whose `.yarnrc.yml` names its own binary (one
@@ -292,7 +303,8 @@
     `.yarnrc.yml` with `yarnPath`, `plugins` or `injectEnvironmentFiles`, `.env.yarn`, `.env`
     or `.env.local` with `NODE_OPTIONS`, `pnpm-workspace.yaml` with `nodeOptions`,
     `bunfig.toml` with `preload`, `.pnp.cjs`, an `.npmrc` with `globalconfig`, an `.env`
-    with `NPM_CONFIG_GLOBALCONFIG` or `export npm_config_prefix`, and each of those keys spelled through an
+    with `NPM_CONFIG_GLOBALCONFIG`, `export npm_config_prefix`, an `NPM_CONFIG_PREFIX`
+    between no-break spaces or a `DESTDIR`, an `.env.local` with an `export`ed `DESTDIR`, and each of those keys spelled through an
     escape, `"yarn\u0050ath"`, `"node\u004Fptions"`, `"pre\u006Coad"` or
     `"node\u002doptions"`, or as an `.npmrc` `${KEY}`. A shared `.npmrc` substituting a token
     into a value collects, as does a shared `.env.example` naming `$HOME` in a comment and a
@@ -306,13 +318,16 @@
     for an untouched checkout, a build output beside it, a `node_modules` linked as the gate
     links it, holding a vite cache or holding a `.tmp` build output the trusted one lacks,
     and outside the gate, beside a user `.npmrc` that runs nothing, sets only a
-    `save-prefix`, or is none, and with a
+    `save-prefix`, is exactly 64 KiB, or is none, and with a
     committed `.yarn` untouched or given an empty directory. It fails for a rewritten config,
     an added `.npmrc`, `.yarnrc`, `.yarnrc.yml`, `.env.yarn`, `.env`, `.env.local`,
     `.pnp.cjs`, `.pnp.loader.mjs`, `pnpm-workspace.yaml`, `bunfig.toml` or `.yarn`, a file
     under a committed `.yarn` rewritten, added, made executable or made a link, a user
     `.npmrc` with `node-options`, an escaped key, a `globalconfig`, a `userconfig`, a `prefix`
-    or a quoted `"PREFIX"`, or that is a link, a fifo, a directory or a file over 64 KiB, or
+    or a quoted `"PREFIX"`, or with a key npm's ini parser reads as one of those, after a BOM,
+    a form feed or an ideographic space, before a no-break space, cut at a `;` or a `#`, or
+    as a `prefix[]` bare or quoted, or that is a link, a fifo, a directory, a file over 64 KiB
+    or a sparse 50 GiB file, or
     one named by `npm_config_userconfig` through `--gate-env` with `script-shell`, an added name outside ASCII, a removed manifest, a config made a link,
     a manifest renamed into another case, a `node_modules` entry replaced by a package or linked elsewhere, a `.bin` of its own in
     either case, a `.hooks` of its own in any case, a linked `.vitest` replaced by an entry of
