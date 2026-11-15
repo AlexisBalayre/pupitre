@@ -1,0 +1,98 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-15T21:26:06.510Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43763322951",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43763322951",
+  "actor": "AlexisBalayre",
+  "commit_sha": "a71eff70507c6cd95c8cc9d628838b5fa209a1dc",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 335,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "conventions",
+    "docs",
+    "guards"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "conventions",
+    "docs",
+    "guards"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context",
+    "maintainability",
+    "spec",
+    "simplicity",
+    "workflow-safety"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "314272e63219003bff784140082e6d6f76c973f9",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": ".claude/skills/pr-ci-review/SKILL.md",
+      "line": "179",
+      "description": "After the revert, the skill still asks for prior_importants as {file, line, description, status} and never says how to number entries, while the schema and poster now require {from, index, status} with index counting every element; a model that counts only owed entries makes the poster and metrics resolve the wrong carried important.",
+      "status": "unresolved"
+    },
+    {
+      "file": "tools/review/src/review-metrics.schemas.ts",
+      "line": "240-244",
+      "description": "The prior record is parsed all-or-nothing against today's schema: a pre-#258 record (schema_version 6) whose prior_importants entries lack `description` fails to parse, so the poster carries nothing (not even the record's own findings importants), the body can read \"No issues found\", and the metrics step records prior_importants: [], losing them for every later round.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "tools/review/src/review-metrics.schemas.ts",
+      "line": "248",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "A pre-schema-7 prior record now parses with description \"\", so carriedLines (review-body.utils.ts:146-148) renders a carried bullet like `src/x.ts:39-40` (correctness): with nothing after the colon, and the metrics step copies the \"\" into every later record until resolved; a placeholder in carriedLines (e.g. `entry.description || \"description not recorded in the prior review\"`) would tell the author which finding is owed without touching the record.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.2280925999999996,
+  "duration_ms": 154448,
+  "num_turns": 15,
+  "tokens": {
+    "input": 14,
+    "output": 7242,
+    "cache_read": 311407,
+    "cache_creation": 42457,
+    "total": 361120
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 52,
+      "output": 14958,
+      "cache_read": 876968,
+      "cache_creation": 90592,
+      "cost_usd": 1.0550926
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 40,
+      "output": 4440,
+      "cache_read": 261100,
+      "cache_creation": 40964,
+      "cost_usd": 0.17300000000000001
+    }
+  ],
+  "permission_denials": []
+}
