@@ -1,0 +1,131 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-15T19:07:23.818Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43749959284",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43749959284",
+  "actor": "AlexisBalayre",
+  "commit_sha": "ff6fef8d45d4c421e260ffdce3eebc7464d40e19",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 335,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs",
+    "context"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs",
+    "context"
+  ],
+  "reviewers_skipped": [
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": ".claude/skills/pr-ci-review/SKILL.md",
+      "line": "179",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "After the revert, the skill still asks for prior_importants as {file, line, description, status} and never says how to number entries, while the schema and poster now require {from, index, status} with index counting every element; a model that counts only owed entries makes the poster and metrics resolve the wrong carried important.",
+      "body": "**Concern.** Commit ff6fef8 reverts 15470cf. At head, the skill still tells the model to copy each prior important:\n\n> `prior_importants`: ... each `{file, line, description, status}` (`description` copied from the prior record ...). Copy every still-unresolved entry forward\n\nAfter this merges, `print-schema` (and so `--json-schema`) requires `{from, index, status}`. Only the schema's description explains how to count: \"counting every element from 0, whatever its tag or status\" ([review-metrics.schemas.ts#L64-L73](https://github.com/AlexisBalayre/pupitre/blob/ff6fef8d45d4c421e260ffdce3eebc7464d40e19/tools/review/src/review-metrics.schemas.ts#L64-L73)). The skill is the model's main instruction, and it only talks about \"its `important` findings\" and \"the `unresolved` entries of its own `prior_importants`\" (§3, [line 62](https://github.com/AlexisBalayre/pupitre/blob/ff6fef8d45d4c421e260ffdce3eebc7464d40e19/.claude/skills/pr-ci-review/SKILL.md#L62)). That invites counting only the owed entries. The docs and context reviewers raised the same contradiction.\n\n**Trigger.** Records written by the new metrics step keep resolved entries in `prior_importants`, because `priorImportants` returns entries of both statuses. Take `prior_importants: [X resolved, Y unresolved, Z unresolved]`, where Z is fixed and Y is still open. A model that counts only owed entries sends:\n- `{prior_importants, 0, unresolved}` for Y. Index 0 is X, which nothing owes, so the verdict is ignored.\n- `{prior_importants, 1, resolved}` for Z. Index 1 is Y, so Y is marked resolved and dropped.\n\nThe review body and the next round's record now carry the fixed Z and lose the open Y.\n\n**Fix.** Re-apply 15470cf so the skill and the schema agree. Line 62 should also say the model records a `{from, index, status}` verdict ([SKILL.md#L179](https://github.com/AlexisBalayre/pupitre/blob/ff6fef8d45d4c421e260ffdce3eebc7464d40e19/.claude/skills/pr-ci-review/SKILL.md#L179-L179)).",
+      "suggestion": "- `prior_importants`: when the Mode line names a prior record, one verdict per `important` entry of its `findings` and per `unresolved` entry of its own `prior_importants`, each `{from, index, status}`: `from` is the array (`findings` or `prior_importants`), `index` the entry's position in it counting every element from 0 whatever its tag or status, and `status` `resolved` or `unresolved` against the current head (§3). Copy nothing else from the record: the poster names each entry from the record itself, so its bullet is the text its thread was posted with, and it carries forward every entry you do not mark `resolved`, round after round. Empty only when the Mode line names no prior record."
+    },
+    {
+      "file": "tools/review/src/prior-record.utils.ts",
+      "line": "29-62",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "priorImportants promises that a misnumbered verdict keeps the important open, but a verdict counted off by the non-owed elements lands on another owed entry and resolves it, dropping a still-open important from the poster's body and the stored record.",
+      "body": "**Concern.** The docstring says \"a verdict the model left out or misnumbered keeps the important open rather than dropping it\". That is only true when the wrong index points at a non-owed element or past the end of the array. Those are the only two cases the test covers (`findings` index 0, which is a nit, and `prior_importants` index 9). The lookup never checks that the model numbered the arrays the way the code does:\n\n```ts\nconst said = verdicts.filter((verdict) => verdict.from === from && verdict.index === index);\nconst resolved = said.length > 0 && said.every((verdict) => verdict.status === \"resolved\");\n```\n\n**Trigger.** Take a record with `prior_importants: [X resolved, Y unresolved, Z unresolved]` (the metrics step at `review-metrics.script.ts:286` stores both statuses), or `findings: [nit, A, B]`, and a model that counts only owed entries. With Y still open and Z fixed, the verdict `{prior_importants, 1, resolved}` meant for Z resolves Y instead. The poster (`post-review.script.ts:206`) and the metrics record (`review-metrics.script.ts:286`) both go through this function, so Y disappears from the body and from every later round. This fails open, not closed, and it stays possible after the skill text is fixed.\n\n**Fix.** A model that counts only owed entries always lands its first wrong index on an element nothing owes. So a verdict that points at a non-owed entry means the numbering can't be trusted, and ignoring all verdicts keeps every entry open (fail-closed). The existing tests still pass with this change. A test for the off-by-owed case would pin it ([permalink](https://github.com/AlexisBalayre/pupitre/blob/ff6fef8d45d4c421e260ffdce3eebc7464d40e19/tools/review/src/prior-record.utils.ts#L29-L62)).",
+      "suggestion": "/**\n * Every important the prior record owes this round, named from the record: its\n * own importants, then the unresolved entries it carried. An entry stays\n * unresolved unless the model's verdicts mark it resolved and none marks it\n * unresolved, so a verdict the model left out or misnumbered keeps the\n * important open rather than dropping it.\n */\nexport function priorImportants(record: PriorReview | null, verdicts: PriorVerdict[]): PriorImportant[] {\n  if (record === null) return [];\n  const owed = [\n    ...(record.findings ?? []).map((finding, index) => ({\n      from: \"findings\" as const,\n      index,\n      entry: finding,\n      open: finding.tag === \"important\",\n    })),\n    ...(record.prior_importants ?? []).map((prior, index) => ({\n      from: \"prior_importants\" as const,\n      index,\n      entry: prior,\n      open: prior.status === \"unresolved\",\n    })),\n  ].filter(({ open }) => open);\n  // A verdict on an entry nothing owes means the model numbered the arrays its\n  // own way, so any of its verdicts may sit on the wrong entry.\n  const numbered = verdicts.every((verdict) =>\n    owed.some(({ from, index }) => from === verdict.from && index === verdict.index),\n  );\n  return owed.map(({ from, index, entry }) => {\n    const said = numbered ? verdicts.filter((verdict) => verdict.from === from && verdict.index === index) : [];\n    const resolved = said.length > 0 && said.every((verdict) => verdict.status === \"resolved\");\n    return {\n      file: entry.file,\n      line: entry.line,\n      description: entry.description,\n      status: resolved ? \"resolved\" : \"unresolved\",\n    };\n  });\n}"
+    },
+    {
+      "file": "tools/review/src/post-review.script.ts",
+      "line": "34-35",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The call-site comments here and at review-metrics.script.ts:281-282 restate the prior-record.utils.ts module doc (\"named from the prior record, never from the model's copy\"); AGENTS.md §Comments says to delete a call-site copy of what the seam already says.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "tools/review/src/prior-record.utils.ts",
+      "line": "15",
+      "area": "simplicity",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The REVIEW_PRIOR_RECORD env override is used only by its own unit test: no workflow or script sets it, and RUNNER_TEMP already lets tests pick the path. Dropping the `env.REVIEW_PRIOR_RECORD ??` branch removes a knob that maintainers would otherwise treat as a supported contract.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 4,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 3.070426149999999,
+  "duration_ms": 355874,
+  "num_turns": 20,
+  "tokens": {
+    "input": 18,
+    "output": 14828,
+    "cache_read": 450596,
+    "cache_creation": 73968,
+    "total": 539410
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 102,
+      "output": 43087,
+      "cache_read": 1647743,
+      "cache_creation": 211169,
+      "cost_usd": 2.4694456
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 70,
+      "output": 15092,
+      "cache_read": 672086,
+      "cache_creation": 152724,
+      "cost_usd": 0.6000786000000002
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 504,
+      "cache_read": 0,
+      "cache_creation": 5198,
+      "cost_usd": 0.0009019500000000001
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "grep -n -o \".\\{0,250\\}prior_importants.\\{0,350\\}\" /home/runner/work/pupitre/pupitre/.claude/skills/pr-ci-review/SKILL.md"
+    }
+  ]
+}
