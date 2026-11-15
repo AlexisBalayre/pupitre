@@ -34,6 +34,27 @@ export interface ProfileLayer {
   deny?: string[];
 }
 
+/** A ticket's type (decision 176): only a feature has a design by default. */
+export type TicketType = 'feature' | 'bug' | 'chore' | 'refactor' | 'docs' | 'spike' | 'follow-up';
+
+/**
+ * The ticket a task runs one slice of, as intake copied it off the tracker when
+ * it wrote the task (decision 187). A copy, not a live read: the spec is frozen
+ * once a session claims it, and the ticket with it.
+ */
+export interface TaskTicket {
+  /** The tracker's name for it, such as `#412`. */
+  ref: string;
+  type: TicketType;
+  labels: string[];
+  /** The design triggers that fired: an ADR area, a module boundary, a dependency, the cap. */
+  triggers: string[];
+  /** The ticket's design note; absent on a ticket that needs none. */
+  design?: string;
+  /** This slice's acceptance criteria. */
+  criteria: string[];
+}
+
 export interface TaskSpec {
   id: TaskId;
   goal: string;
@@ -41,6 +62,7 @@ export interface TaskSpec {
   scopeOut?: string[];
   acceptance: string[];
   knowledgeSlice?: string;
+  ticket?: TaskTicket;
 }
 
 export interface CompileInput {

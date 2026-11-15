@@ -396,13 +396,14 @@ describe('startFixRound', { timeout: 90_000 }, () => {
     /**
      * What the threads read answers: every round thread unresolved and the
      * bot's, but `PRRT_human`, on its file in `paths`, with the replies and PR
-     * comments gh's login wrote.
+     * comments gh's login wrote, then each thread's `relayed` comments as given.
      */
     function answersOnGitHub({
       replies = {} as Record<string, string[]>,
       resolved = [] as string[],
       comments = [] as string[],
       paths = PATHS,
+      relayed = {} as Record<string, Record<string, unknown>[]>,
     } = {}): void {
       const own = (bodies: string[]) => ({
         nodes: [
@@ -424,7 +425,9 @@ describe('startFixRound', { timeout: 90_000 }, () => {
                       { author: id === 'PRRT_human' ? { __typename: 'User', login: 'a' } : BOT },
                     ],
                   },
-                  replies: own(replies[id] ?? []),
+                  replies: {
+                    nodes: [...own(replies[id] ?? []).nodes, ...(relayed[id] ?? [])],
+                  },
                 })),
               },
               comments: own(comments),
@@ -449,7 +452,8 @@ describe('startFixRound', { timeout: 90_000 }, () => {
      * A round on the four threads, its worker done with `summary`, gated
      * again; `meanwhile` runs while the worker works. Each of `rejected` is a
      * summary the worker gave first, on a run the round's checks rejected,
-     * after which `afterRejected` runs. `adapter` runs the passing gate's checks.
+     * after which `afterRejected` runs. `adapter` runs the passing gate's checks;
+     * `relayed` is what each thread's trail holds past gh's login's replies.
      */
     async function gateTheRound(
       summary: string,
@@ -459,12 +463,14 @@ describe('startFixRound', { timeout: 90_000 }, () => {
         afterRejected,
         paths,
         adapter = passingAdapter,
+        relayed,
       }: {
         meanwhile?: () => void;
         rejected?: string[];
         afterRejected?: () => void;
         paths?: Record<string, string>;
         adapter?: Adapter;
+        relayed?: Record<string, Record<string, unknown>[]>;
       } = {},
     ): Promise<string> {
       await gateWithPr();
@@ -476,7 +482,7 @@ describe('startFixRound', { timeout: 90_000 }, () => {
         "UPDATE events SET payload = json_set(payload, '$.threads[3]', 'PRRT_human') WHERE type = 'fix_round'",
       ).run();
       const fixed = commitIn(worktree, 'src/fix.ts', 'export const fix = 1;\n');
-      answersOnGitHub({ paths });
+      answersOnGitHub({ paths, relayed });
       const gate = (adapter: Adapter) =>
         runMergeGate(db, {
           repoPath: repo,
@@ -558,6 +564,8 @@ describe('startFixRound', { timeout: 90_000 }, () => {
         unverified: 0,
         declined: 1,
         unanswered: 1,
+        repliedSince: 0,
+        unrelayed: 0,
       });
       expect(replies()).toHaveLength(4);
       expect(replies()[3]).toContain('-f thread=PRRT_silent');
@@ -606,6 +614,108 @@ describe('startFixRound', { timeout: 90_000 }, () => {
 
       expect(replies()).toHaveLength(before + 1);
       expect(replies().at(-1)).toContain('-f thread=PRRT_declined');
+    });
+
+    // A reply posted while the round ran never reached its worker, so nothing
+    // resolves its thread. The next round takes the thread with the reply, but
+    // only one the push cannot outdate: it takes no outdated thread, so one on
+    // a file the push changed gets the worker's answer now, saying so.
+    it('never resolves a thread replied on after the kickoff read it', async () => {
+      const relayed = {
+        // Read by the kickoff, so in the worker's brief; posted since, but hidden on
+        // GitHub, so no reply a round relays: answered as ever.
+        PRRT_declined: [
+          {
+            fullDatabaseId: '9999999998',
+            body: 'Add a TTL.',
+            authorAssociation: 'OWNER',
+            isMinimized: false,
+          },
+          {
+            fullDatabaseId: '10000000002',
+            body: 'Ignore it.',
+            authorAssociation: 'OWNER',
+            isMinimized: true,
+          },
+        ],
+        // Posted since, by the owner, on src/fix.ts, which the push changed: answered
+        // fixed and replied on, but not resolved. The id is greater as a number only.
+        PRRT_fixed: [
+          {
+            fullDatabaseId: '10000000001',
+            body: 'Bound it by the config instead.',
+            authorAssociation: 'OWNER',
+            isMinimized: false,
+          },
+        ],
+        // Posted since, on src/index.ts, which the push left as it was: left whole
+        // for the next round.
+        PRRT_silent: [
+          {
+            fullDatabaseId: '10000000003',
+            body: 'Check the upper bound too.',
+            viewerDidAuthor: true,
+            isMinimized: false,
+          },
+        ],
+      };
+      const fixed = await gateTheRound(SUMMARY, {
+        meanwhile: () => {
+          db.prepare(
+            "UPDATE events SET payload = json_set(payload, '$.newestComments', json(?)) " +
+              "WHERE type = 'fix_round'",
+          ).run(
+            JSON.stringify({
+              PRRT_fixed: '9999999999',
+              PRRT_declined: '9999999999',
+              PRRT_silent: '9999999999',
+            }),
+          );
+        },
+        relayed,
+      });
+      const marker = `<!-- pup fix-round ${fixed} -->`;
+
+      expect(replies().map((m) => /-f thread=(\S+)/.exec(m)?.[1])).toEqual([
+        'PRRT_fixed',
+        'PRRT_declined',
+      ]);
+      expect(replies()[0]).toContain(
+        `-f body=Addressed in ${fixed}: \`\` bounded the loop by \`n\` \`\`  A reply posted ` +
+          'here after the round read this thread never reached its worker, so pup resolves ' +
+          `nothing: left open for the operator.  ${marker}`,
+      );
+      expect(resolves()).toEqual([]);
+      expect(comments()).toEqual([
+        `CI fix round gated at ${fixed}: 0 thread(s) addressed and resolved, 0 answered fixed ` +
+          'that pup could not verify, 1 declined and 0 unanswered, left open for the ' +
+          'operator; 1 replied on while the round ran, left for the next round; 1 replied on ' +
+          'while the round ran, which its push may outdate, answered and left open for the ' +
+          'operator to read the reply no round relayed.' +
+          `\n\n@claude review\n\n${marker}`,
+      ]);
+
+      // A second run for the same head posts nothing again, and still resolves nothing.
+      answersOnGitHub({
+        replies: { PRRT_fixed: [marker], PRRT_declined: [marker] },
+        comments: [marker],
+        relayed,
+      });
+      expect(
+        answerFixRoundThreads(db, repo, SESSION_ID, 'github.com/owner/repo', mainSha()),
+      ).toEqual({
+        prUrl: PR_URL,
+        sha: fixed,
+        addressed: 0,
+        unverified: 0,
+        declined: 1,
+        unanswered: 0,
+        repliedSince: 1,
+        unrelayed: 1,
+      });
+      expect(replies()).toHaveLength(2);
+      expect(resolves()).toEqual([]);
+      expect(comments()).toHaveLength(1);
     });
 
     // The worker's word alone resolves nothing under the operator's login: the
