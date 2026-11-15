@@ -553,6 +553,19 @@ describe('launchSession', () => {
     );
   });
 
+  it('refuses a session dir the session swapped for a symlink, writing nothing through it', () => {
+    const dir = projectPaths(repo).sessionDir('s-1');
+    const target = tempDir('pup-launch-elsewhere-');
+    mkdirSync(dirname(dir), { recursive: true });
+    symlinkSync(target, dir);
+
+    expect(() => launchSession(opts)).toThrow('is a symlink');
+    expect(readdirSync(target)).toEqual([]);
+    expect(
+      vi.mocked(execFileSync).mock.calls.some(([, args]) => args?.includes('new-session')),
+    ).toBe(false);
+  });
+
   afterEach(() => {
     vi.unstubAllEnvs();
   });

@@ -1029,11 +1029,17 @@ function socketRecordFile(repoPath: string, sessionId: string): string {
  * tmux (decision 47). Written by the operator's or the conductor's `pup`
  * before the window exists, so the session never wrote it; a probe reads it
  * rather than its own caller's `TMUX_TMPDIR`, which a caller can unset.
- * Written beside and renamed over, so a probe never reads half a path.
+ * Written beside and renamed over, so a probe never reads half a path. The
+ * session can write its session dir, so a symlink in its place, which would
+ * carry the write wherever it points, is refused.
  */
 function recordWindowSocket(repoPath: string, sessionId: string): void {
   const file = socketRecordFile(repoPath, sessionId);
-  mkdirSync(dirname(file), { recursive: true });
+  const dir = dirname(file);
+  if (lstatSync(dir, { throwIfNoEntry: false })?.isSymbolicLink()) {
+    throw new Error(`Session dir ${dir} is a symlink; refusing to record the window's socket.`);
+  }
+  mkdirSync(dir, { recursive: true });
   const staged = `${file}.${randomUUID()}.tmp`;
   writeFileSync(staged, defaultSocketIn(process.env.TMUX_TMPDIR));
   renameSync(staged, file);
