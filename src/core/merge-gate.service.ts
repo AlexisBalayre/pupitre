@@ -18,8 +18,9 @@ import {
   writeSync,
 } from 'node:fs';
 import { availableParallelism, homedir, loadavg, tmpdir } from 'node:os';
-import { basename, dirname, extname, join, resolve } from 'node:path';
+import { basename, dirname, extname, join, relative, resolve } from 'node:path';
 import type { Database } from 'better-sqlite3';
+import { parse } from 'yaml';
 import {
   failureSummary,
   formatDuration,
@@ -1638,11 +1639,43 @@ const PACKAGE_MANAGERS = [
 ];
 
 /**
- * The nearest directory at or above `dir`, up to the root, that holds a
- * lockfile in the main checkout, and the manager that wrote it. A workspace
- * member keeps none of its own: it installs with its workspace root.
+ * Whether the workspace rooted at `root` lists `dir` as a member, in the main
+ * checkout: by the `packages` globs of its `pnpm-workspace.yaml` for pnpm, by
+ * its manifest's `workspaces` for npm and yarn, a `!` glob dropping what the
+ * others match. A root that lists none, or whose file cannot be read, has no
+ * members: its install never writes `dir`'s dependencies.
  */
-function nearestLockfile(
+function listsMember(repoPath: string, root: string, manager: typeof NPM, dir: string): boolean {
+  let globs: unknown;
+  try {
+    if (manager.name === 'pnpm') {
+      globs = parse(readPlainFile(join(repoPath, root, 'pnpm-workspace.yaml')))?.packages;
+    } else {
+      const { workspaces } = JSON.parse(readPlainFile(join(repoPath, root, 'package.json')));
+      globs = workspaces?.packages ?? workspaces;
+    }
+  } catch {
+    return false;
+  }
+  if (!Array.isArray(globs)) return false;
+  const member = relative(root, dir);
+  const matching = globs.filter(
+    (glob): glob is string =>
+      typeof glob === 'string' && globToRegExp(glob.replace(/^!/, '')).test(member),
+  );
+  return (
+    matching.some((glob) => !glob.startsWith('!')) && !matching.some((glob) => glob.startsWith('!'))
+  );
+}
+
+/**
+ * The lockfile in the main checkout that installs `dir`, and the manager that
+ * wrote it: `dir`'s own, or, for a workspace member, which keeps none, the
+ * nearest one above when its workspace lists `dir`. A package below a
+ * lockfile whose workspace does not list it installs on its own, as the
+ * adapter runs it: undefined, as for a package with no lockfile anywhere.
+ */
+function owningLockfile(
   repoPath: string,
   dir: string,
 ): { dir: string; manager: typeof NPM } | undefined {
@@ -1650,7 +1683,11 @@ function nearestLockfile(
     const manager = PACKAGE_MANAGERS.find(({ lockfile }) =>
       existsSync(join(repoPath, rel, lockfile)),
     );
-    if (manager) return { dir: rel, manager };
+    if (manager) {
+      return rel === dir || listsMember(repoPath, rel, manager, dir)
+        ? { dir: rel, manager }
+        : undefined;
+    }
     if (rel === '.') return undefined;
   }
 }
@@ -1660,14 +1697,14 @@ function nearestLockfile(
  * the trusted manifest gives a dependency that resolves from no
  * `node_modules` the gate links, the package's own or, for a workspace
  * member, its workspace root's, and the pinned tree commits none either.
- * A package whose nearest lockfile sits beside a Yarn Plug'n'Play runtime in
+ * A package whose owning lockfile sits beside a Yarn Plug'n'Play runtime in
  * the pinned tree is never refused: it resolves from yarn's cache, and the
  * install this would name writes no `node_modules` to clear the refusal.
  * `linkEnvironment` would link nothing, and the stage would fail on a runner
  * it cannot find, which reads as the branch's fault. It throws, like a
  * timeout under load: the operator installs, with the manager and in the
- * directory the nearest lockfile names, and the session has nothing to fix
- * (decision 138).
+ * directory the owning lockfile names, npm in the package itself when none
+ * owns it, and the session has nothing to fix (decision 138).
  */
 function refuseUninstalled(repoPath: string, checkout: string, pkg: NestedPackage): void {
   if (pkg.commands.length === 0) return;
@@ -1680,7 +1717,7 @@ function refuseUninstalled(repoPath: string, checkout: string, pkg: NestedPackag
   const declared = Object.keys({ ...manifest.dependencies, ...manifest.devDependencies });
   // Nothing to install: a manager writes the lockfile and no `node_modules`.
   if (declared.length === 0) return;
-  const lock = nearestLockfile(repoPath, pkg.dir);
+  const lock = owningLockfile(repoPath, pkg.dir);
   // Yarn's Plug'n'Play runtime resolves from its cache and no install writes
   // a `node_modules`: the stages resolve through the one the pinned tree holds.
   if (
@@ -1692,8 +1729,8 @@ function refuseUninstalled(repoPath: string, checkout: string, pkg: NestedPackag
     return;
   }
   // Only a member, with no lockfile of its own, has its dependencies hoisted:
-  // to the workspace root holding its lockfile, the repo root when none
-  // does, and the gate links that root's environment too.
+  // to the workspace root holding its lockfile. A package no lockfile owns
+  // still resolves from the repo root's. The gate links both.
   const root = lock?.dir ?? '.';
   if (
     root !== pkg.dir &&
@@ -1701,7 +1738,7 @@ function refuseUninstalled(repoPath: string, checkout: string, pkg: NestedPackag
   ) {
     return;
   }
-  // No lockfile anywhere: npm in the package itself, as the adapter runs it.
+  // No lockfile owns it: npm in the package itself, as the adapter runs it.
   const { dir, manager } = lock ?? { dir: pkg.dir, manager: NPM };
   throw new Error(
     `${quotePath(pkg.dir)} has no ${GATE_ENVIRONMENT_DIR} in the main checkout, so its ` +
@@ -3003,11 +3040,11 @@ export async function measureBranch(
   // checkout writable, so a link made after it could follow a swapped-in
   // parent out of the checkout (decision 81). A package with no environment
   // to link is refused before anything is linked. A member's workspace root,
-  // where its nearest lockfile sits, is linked too: its dependencies are
-  // hoisted there.
+  // where the lockfile that installs it sits, is linked too: its dependencies
+  // are hoisted there.
   for (const pkg of nestedPackages) refuseUninstalled(req.repoPath, checkoutDir, pkg);
   const workspaceRoots = nestedPackages.map(
-    (pkg) => nearestLockfile(req.repoPath, pkg.dir)?.dir ?? '.',
+    (pkg) => owningLockfile(req.repoPath, pkg.dir)?.dir ?? '.',
   );
   for (const rel of new Set(['.', ...workspaceRoots, ...nestedPackages.map((pkg) => pkg.dir)])) {
     linkEnvironment(req.repoPath, checkoutDir, rel);

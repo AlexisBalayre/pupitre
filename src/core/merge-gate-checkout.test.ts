@@ -1306,11 +1306,52 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         }),
       );
       commitIn(repo, 'pnpm-lock.yaml', "lockfileVersion: '9.0'\n");
+      commitIn(repo, 'pnpm-workspace.yaml', "packages:\n  - 'tools/*'\n");
       const worktree = seedSession(db, repo, NESTED_SCOPE);
       commitIn(worktree, 'tools/review/src/r.ts', 'export const r = 1;\n');
 
       await expect(merge(nestedAdapter())).rejects.toThrow(
         /tools\/review has no node_modules.*`pnpm --dir \. install`/,
+      );
+    });
+
+    // A lockfile above a package whose workspace does not list it is not its
+    // install: that install never writes the package's node_modules, and the
+    // stage runs npm in the package, so npm there is what clears the refusal.
+    it("names the package's own npm install under a lockfile whose root declares no workspace", async () => {
+      commitIn(
+        repo,
+        'tools/review/package.json',
+        JSON.stringify({
+          scripts: { test: 'true', typecheck: 'true' },
+          devDependencies: { vitest: '^3.0.0' },
+        }),
+      );
+      commitIn(repo, 'pnpm-lock.yaml', "lockfileVersion: '9.0'\n");
+      const worktree = seedSession(db, repo, NESTED_SCOPE);
+      commitIn(worktree, 'tools/review/src/r.ts', 'export const r = 1;\n');
+
+      await expect(merge(nestedAdapter())).rejects.toThrow(
+        /tools\/review has no node_modules.*`npm --prefix tools\/review install`/,
+      );
+    });
+
+    it("names the package's own npm install when the root's workspace globs exclude it", async () => {
+      commitIn(
+        repo,
+        'tools/review/package.json',
+        JSON.stringify({
+          scripts: { test: 'true', typecheck: 'true' },
+          devDependencies: { vitest: '^3.0.0' },
+        }),
+      );
+      commitIn(repo, 'package.json', JSON.stringify({ workspaces: ['tools/*', '!tools/review'] }));
+      commitIn(repo, 'package-lock.json', '{}\n');
+      const worktree = seedSession(db, repo, NESTED_SCOPE);
+      commitIn(worktree, 'tools/review/src/r.ts', 'export const r = 1;\n');
+
+      await expect(merge(nestedAdapter())).rejects.toThrow(
+        /tools\/review has no node_modules.*`npm --prefix tools\/review install`/,
       );
     });
 
@@ -1325,6 +1366,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
           devDependencies: { vitest: '^3.0.0' },
         }),
       );
+      commitIn(repo, 'package.json', JSON.stringify({ workspaces: { packages: ['tools/*'] } }));
       commitIn(repo, 'yarn.lock', '__metadata:\n  version: 8\n');
       commitIn(repo, '.pnp.cjs', '#!/usr/bin/env node\n');
       const worktree = seedSession(db, repo, NESTED_SCOPE);
