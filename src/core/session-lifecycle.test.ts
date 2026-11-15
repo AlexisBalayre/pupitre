@@ -123,13 +123,6 @@ const GIT_ENV: NodeJS.ProcessEnv = {
   GIT_CONFIG_SYSTEM: '/dev/null',
 };
 
-/**
- * A PATH with no `codegraph` on it, so a launch's code graph is a property of
- * the test rather than of the machine running it (decision 51). `git` is still
- * reachable — these suites drive a real repo.
- */
-const NO_CODEGRAPH_PATH = '/usr/bin:/bin';
-
 const REPO = '/repo';
 
 function spec(overrides: Partial<TaskSpec> = {}): TaskSpec {
@@ -296,7 +289,6 @@ describe('launchTask scope overlap (decision 99)', () => {
     db = openStore(':memory:');
     // projectPaths writes compiled profiles under $HOME/.pupitre.
     vi.stubEnv('HOME', tempDir('pup-launch-home-'));
-    vi.stubEnv('PATH', NO_CODEGRAPH_PATH);
     repo = tempDir('pup-launch-');
     gitIn(repo, 'init', '-b', 'main');
     gitIn(repo, 'config', 'user.email', 't@t');
@@ -624,7 +616,6 @@ describe('launchTask armed-driver guard', () => {
   beforeEach(() => {
     db = openStore(':memory:');
     vi.stubEnv('HOME', tempDir('pup-armed-home-'));
-    vi.stubEnv('PATH', NO_CODEGRAPH_PATH);
     repo = tempDir('pup-armed-');
     gitIn(repo, 'init', '-b', 'main');
     gitIn(repo, 'config', 'user.email', 't@t');
@@ -707,7 +698,7 @@ describe('launchTask armed-driver guard', () => {
       ['#!/bin/sh', shimCase(once), `exec ${realGit()} "$@"`].join('\n'),
       { mode: 0o755 },
     );
-    vi.stubEnv('PATH', `${shim}:${NO_CODEGRAPH_PATH}`);
+    vi.stubEnv('PATH', `${shim}:${process.env.PATH}`);
 
     const error = caught(launch);
     expect(() => {
@@ -746,7 +737,7 @@ describe('launchTask armed-driver guard', () => {
       ].join('\n'),
       { mode: 0o755 },
     );
-    vi.stubEnv('PATH', `${shim}:${NO_CODEGRAPH_PATH}`);
+    vi.stubEnv('PATH', `${shim}:${process.env.PATH}`);
 
     expect(launch).toThrow(
       /No space left on device[\s\S]* The launch could not remove its new worktree \S+\/\.worktrees\/t-1 and branch pup\/t-1: remove both, then retry the launch\.$/,
@@ -791,7 +782,6 @@ describe('launchTask worktree-config guard', () => {
   beforeEach(() => {
     db = openStore(':memory:');
     vi.stubEnv('HOME', tempDir('pup-wtconfig-home-'));
-    vi.stubEnv('PATH', NO_CODEGRAPH_PATH);
     repo = tempDir('pup-wtconfig-');
     gitIn(repo, 'init', '-b', 'main');
     gitIn(repo, 'config', 'user.email', 't@t');
@@ -921,7 +911,6 @@ describe('launchTask rollback', () => {
     vi.clearAllMocks();
     db = openStore(':memory:');
     vi.stubEnv('HOME', tempDir('pup-rollback-home-'));
-    vi.stubEnv('PATH', NO_CODEGRAPH_PATH);
     repo = tempDir('pup-rollback-');
     gitIn(repo, 'init', '-b', 'main');
     gitIn(repo, 'config', 'user.email', 't@t');
@@ -1052,7 +1041,6 @@ describe('launchTask on the window env it is handed (decision 106)', () => {
     vi.clearAllMocks();
     db = openStore(':memory:');
     vi.stubEnv('HOME', tempDir('pup-env-home-'));
-    vi.stubEnv('PATH', NO_CODEGRAPH_PATH);
     repo = tempDir('pup-env-');
     gitIn(repo, 'init', '-b', 'main');
     gitIn(repo, 'config', 'user.email', 't@t');
@@ -1092,7 +1080,6 @@ describe('launchTask model routing (decision 92)', () => {
     vi.clearAllMocks();
     db = openStore(':memory:');
     vi.stubEnv('HOME', tempDir('pup-route-home-'));
-    vi.stubEnv('PATH', NO_CODEGRAPH_PATH);
     repo = tempDir('pup-route-');
     gitIn(repo, 'init', '-b', 'main');
     gitIn(repo, 'config', 'user.email', 't@t');
@@ -1988,61 +1975,17 @@ describe('answering an open question', () => {
   });
 });
 
-// A session's graph is its own worktree's, built at launch, and the launch
-// survives not having one. The binary is faked per docs/conventions/testing.md:
-// what is under test is what pup asks codegraph to index and what it then hands
-// `claude`, not codegraph's own indexing (decision 51).
-describe('launchTask code graph', () => {
+// Sessions get no code graph and no MCP config of pup's (decision 186): the
+// window inherits the operator's own servers and nothing is added to them.
+describe('launchTask without an MCP config', () => {
   let db: Database;
   let repo: string;
-  let cgLog: string;
-
-  /**
-   * A `codegraph` that logs its argv and leaves behind what the real one does:
-   * a `.codegraph/` whose own `.gitignore` hides the database but not the
-   * directory, which is what the exclude line exists to cover.
-   */
-  function fakeCodegraph(body: string): string {
-    const dir = tempDir('pup-cg-bin-');
-    cgLog = join(dir, 'calls.log');
-    writeFileSync(
-      join(dir, 'codegraph'),
-      ['#!/bin/sh', `printf '%s\\n' "$*" >> ${cgLog}`, body].join('\n'),
-      { mode: 0o755 },
-    );
-    vi.stubEnv('PATH', `${dir}:${NO_CODEGRAPH_PATH}`);
-    return join(dir, 'codegraph');
-  }
-
-  const INDEXES = [
-    'mkdir -p "$2/.codegraph"',
-    'printf \'*\\n!.gitignore\\n\' > "$2/.codegraph/.gitignore"',
-    'echo sqlite > "$2/.codegraph/codegraph.db"',
-    'exit 0',
-  ].join('\n');
-
-  const cgCalls = (): string[] =>
-    existsSync(cgLog) ? readFileSync(cgLog, 'utf8').split('\n').filter(Boolean) : [];
-
-  const launch = () =>
-    launchTask(db, {
-      repoPath: repo,
-      base: DEFAULT_BASE_PROFILE,
-      taskId: 't-1',
-      windowEnv: { vars: {}, configDir: join(repo, '.claude') },
-    });
-
-  // The module mocks are file-wide and never cleared, so every assertion below
-  // reads the call this test made, not the first in the file.
-  const launchedWith = () => vi.mocked(launchSession).mock.calls.at(-1)?.[0];
-  const kickoffContext = () => vi.mocked(kickoff).mock.calls.at(-1)?.[1];
 
   beforeEach(() => {
     db = openStore(':memory:');
-    vi.stubEnv('HOME', tempDir('pup-cg-home-'));
-    vi.stubEnv('PATH', NO_CODEGRAPH_PATH);
+    vi.stubEnv('HOME', tempDir('pup-mcp-home-'));
     vi.spyOn(console, 'error').mockImplementation(() => {});
-    repo = tempDir('pup-cg-launch-');
+    repo = tempDir('pup-mcp-launch-');
     gitIn(repo, 'init', '-b', 'main');
     gitIn(repo, 'config', 'user.email', 't@t');
     gitIn(repo, 'config', 'user.name', 't');
@@ -2058,51 +2001,22 @@ describe('launchTask code graph', () => {
     vi.mocked(console.error).mockRestore();
   });
 
-  // The worktree, never the repo it was cut from — and the index it leaves
-  // behind is excluded, because the gate and the overlap radar read a clean tree.
-  it('indexes the session worktree and leaves it clean', () => {
-    fakeCodegraph(INDEXES);
+  it('compiles no mcp.json, indexes nothing and launches in silence', () => {
+    const sessionId = launchTask(db, {
+      repoPath: repo,
+      base: DEFAULT_BASE_PROFILE,
+      taskId: 't-1',
+      windowEnv: { vars: {}, configDir: join(repo, '.claude') },
+    });
 
-    const worktree = join(repo, '.worktrees', launch());
-
-    expect(cgCalls()).toEqual([`init ${worktree} --yes`]);
-    expect(existsSync(join(worktree, '.codegraph', 'codegraph.db'))).toBe(true);
-    expect(gitIn(worktree, 'status', '--porcelain')).toBe('');
-  });
-
-  it('launches claude against a compiled mcp.json naming the absolute binary', () => {
-    const binary = fakeCodegraph(INDEXES);
-
-    const sessionId = launch();
-
-    const mcpConfigPath = launchedWith()?.mcpConfigPath as string;
-    expect(mcpConfigPath).toMatch(/compiled\/mcp\.json$/);
-    const config = JSON.parse(readFileSync(mcpConfigPath, 'utf8'));
-    expect(config.mcpServers.codegraph.command).toBe(binary);
-    expect(config.mcpServers.codegraph.args).toContain(join(repo, '.worktrees', sessionId));
-    expect(kickoffContext()).toContain('## Code graph');
-  });
-
-  // No graph, never the wrong one: codegraph walks PARENTS for a `.codegraph/`,
-  // so a worktree with no index of its own would be served the main checkout's
-  // graph — main's code under this branch's name.
-  it('withholds the mcp config when the index fails, and still launches', () => {
-    fakeCodegraph('echo "out of disk" >&2\nexit 1');
-
-    const sessionId = launch();
-
+    // The module mocks are file-wide and never cleared: the last call is this test's.
+    const settingsPath = vi.mocked(launchSession).mock.calls.at(-1)?.[0].settingsPath as string;
     expect(getSession(db, sessionId)?.state).toBe('running');
-    expect(launchedWith()?.mcpConfigPath).toBeUndefined();
-    expect(vi.mocked(console.error).mock.calls.flat().join(' ')).toContain('without a code graph');
-  });
-
-  it('launches normally, with one line, when the operator has no codegraph', () => {
-    const sessionId = launch();
-
-    expect(getSession(db, sessionId)?.state).toBe('running');
-    expect(launchedWith()?.mcpConfigPath).toBeUndefined();
-    expect(kickoffContext()).not.toContain('## Code graph');
-    expect(vi.mocked(console.error).mock.calls).toHaveLength(1);
+    expect(existsSync(settingsPath)).toBe(true);
+    expect(existsSync(join(dirname(settingsPath), 'mcp.json'))).toBe(false);
+    expect(vi.mocked(kickoff).mock.calls.at(-1)?.[1]).not.toContain('## Code graph');
+    expect(gitIn(join(repo, '.worktrees', sessionId), 'status', '--porcelain')).toBe('');
+    expect(console.error).not.toHaveBeenCalled();
   });
 });
 
@@ -2135,7 +2049,6 @@ describe('launchTask and the project brief', () => {
     db = openStore(':memory:');
     // The brief lives under $HOME/.pupitre beside the compiled profiles.
     vi.stubEnv('HOME', tempDir('pup-brief-home-'));
-    vi.stubEnv('PATH', NO_CODEGRAPH_PATH);
     repo = tempDir('pup-brief-launch-');
     gitIn(repo, 'init', '-b', 'main');
     gitIn(repo, 'config', 'user.email', 't@t');
@@ -2180,7 +2093,6 @@ describe('launch capacity (decision 96)', () => {
     vi.clearAllMocks();
     db = openStore(':memory:');
     vi.stubEnv('HOME', tempDir('pup-cap-home-'));
-    vi.stubEnv('PATH', NO_CODEGRAPH_PATH);
     repo = tempDir('pup-cap-');
     gitIn(repo, 'init', '-b', 'main');
     gitIn(repo, 'config', 'user.email', 't@t');
@@ -2413,7 +2325,6 @@ describe('launch usage hold (decision 156)', () => {
     vi.clearAllMocks();
     db = openStore(':memory:');
     vi.stubEnv('HOME', tempDir('pup-usage-home-'));
-    vi.stubEnv('PATH', NO_CODEGRAPH_PATH);
     repo = tempDir('pup-usage-');
     gitIn(repo, 'init', '-b', 'main');
     gitIn(repo, 'config', 'user.email', 't@t');
