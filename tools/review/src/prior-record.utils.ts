@@ -30,8 +30,10 @@ export function parsePriorReview(raw: string | null): PriorReview | null {
  * Every important the prior record owes this round, named from the record: its
  * own importants, then the unresolved entries it carried. An entry stays
  * unresolved unless the model's verdicts mark it resolved and none marks it
- * unresolved, so a verdict the model left out or misnumbered keeps the
- * important open rather than dropping it.
+ * unresolved. The verdicts count only when they name exactly the owed entries:
+ * a model that numbered the arrays its own way (counting only owed entries,
+ * say) or left an entry out may have put a verdict on the wrong entry, so then
+ * every entry stays open rather than one being dropped.
  */
 export function priorImportants(record: PriorReview | null, verdicts: PriorVerdict[]): PriorImportant[] {
   if (record === null) return [];
@@ -49,8 +51,13 @@ export function priorImportants(record: PriorReview | null, verdicts: PriorVerdi
       open: prior.status === "unresolved",
     })),
   ].filter(({ open }) => open);
+  const names = (verdict: PriorVerdict, from: PriorVerdict["from"], index: number): boolean =>
+    verdict.from === from && verdict.index === index;
+  const numbered =
+    verdicts.every((verdict) => owed.some(({ from, index }) => names(verdict, from, index))) &&
+    owed.every(({ from, index }) => verdicts.some((verdict) => names(verdict, from, index)));
   return owed.map(({ from, index, entry }) => {
-    const said = verdicts.filter((verdict) => verdict.from === from && verdict.index === index);
+    const said = numbered ? verdicts.filter((verdict) => names(verdict, from, index)) : [];
     const resolved = said.length > 0 && said.every((verdict) => verdict.status === "resolved");
     return {
       file: entry.file,

@@ -54,14 +54,37 @@ describe("priorImportants", () => {
     const torn = priorImportants(record, [
       { from: "findings", index: 1, status: "resolved" },
       { from: "findings", index: 1, status: "unresolved" },
+      { from: "prior_importants", index: 1, status: "resolved" },
     ]);
-    expect(torn[0]?.status).toBe("unresolved");
+    expect(torn.map((entry) => entry.status)).toEqual(["unresolved", "resolved"]);
+  });
+
+  it("keeps every entry open when the model counted only the owed entries", () => {
+    const threeCarried: PriorReview = {
+      findings: [],
+      prior_importants: [
+        { ...carriedBefore, status: "resolved", description: "X" },
+        { ...carriedBefore, description: "Y" },
+        { ...carriedBefore, description: "Z" },
+      ],
+    };
+    const offByOwed = priorImportants(threeCarried, [
+      { from: "prior_importants", index: 0, status: "unresolved" },
+      { from: "prior_importants", index: 1, status: "resolved" },
+    ]);
+    expect(offByOwed.map((entry) => [entry.description, entry.status])).toEqual([
+      ["Y", "unresolved"],
+      ["Z", "unresolved"],
+    ]);
+    const onlyZ = priorImportants(threeCarried, [{ from: "prior_importants", index: 1, status: "resolved" }]);
+    expect(onlyZ.map((entry) => entry.status)).toEqual(["unresolved", "unresolved"]);
   });
 
   it("carries the next round from the entries this round recorded", () => {
     const round1 = priorImportants(record, []);
     const round2 = priorImportants({ findings: [], prior_importants: round1 }, [
       { from: "prior_importants", index: 0, status: "resolved" },
+      { from: "prior_importants", index: 1, status: "unresolved" },
     ]);
     expect(round2).toEqual([{ ...round1[0], status: "resolved" }, round1[1]]);
   });
