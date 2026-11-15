@@ -1660,6 +1660,9 @@ function nearestLockfile(
  * the trusted manifest gives a dependency that resolves from no
  * `node_modules` the gate links, the package's own or, for a workspace
  * member, its workspace root's, and the pinned tree commits none either.
+ * A package whose nearest lockfile sits beside a Yarn Plug'n'Play runtime in
+ * the pinned tree is never refused: it resolves from yarn's cache, and the
+ * install this would name writes no `node_modules` to clear the refusal.
  * `linkEnvironment` would link nothing, and the stage would fail on a runner
  * it cannot find, which reads as the branch's fault. It throws, like a
  * timeout under load: the operator installs, with the manager and in the
@@ -1678,6 +1681,16 @@ function refuseUninstalled(repoPath: string, checkout: string, pkg: NestedPackag
   // Nothing to install: a manager writes the lockfile and no `node_modules`.
   if (declared.length === 0) return;
   const lock = nearestLockfile(repoPath, pkg.dir);
+  // Yarn's Plug'n'Play runtime resolves from its cache and no install writes
+  // a `node_modules`: the stages resolve through the one the pinned tree holds.
+  if (
+    lock &&
+    ['.pnp.cjs', '.pnp.js'].some((name) =>
+      lstatSync(join(checkout, lock.dir, name), { throwIfNoEntry: false }),
+    )
+  ) {
+    return;
+  }
   // Only a member, with no lockfile of its own, has its dependencies hoisted:
   // to the workspace root holding its lockfile, the repo root when none
   // does, and the gate links that root's environment too.

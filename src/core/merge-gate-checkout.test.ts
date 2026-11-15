@@ -1314,6 +1314,25 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       );
     });
 
+    // Yarn's Plug'n'Play resolves from the runtime and cache a zero-install
+    // repo commits, never a node_modules, so an install would clear nothing.
+    it("runs a member of a Plug'n'Play workspace root, which has no node_modules", async () => {
+      commitIn(
+        repo,
+        'tools/review/package.json',
+        JSON.stringify({
+          scripts: { test: 'true', typecheck: 'true' },
+          devDependencies: { vitest: '^3.0.0' },
+        }),
+      );
+      commitIn(repo, 'yarn.lock', '__metadata:\n  version: 8\n');
+      commitIn(repo, '.pnp.cjs', '#!/usr/bin/env node\n');
+      const worktree = seedSession(db, repo, NESTED_SCOPE);
+      commitIn(worktree, 'tools/review/src/r.ts', 'export const r = 1;\n');
+
+      expect((await merge(nestedAdapter())).status).toBe('merged');
+    });
+
     // A manager installing a package with no dependencies writes its lockfile
     // and no node_modules, so there is no install to ask for.
     it('runs a package with its own lockfile and no dependencies', async () => {
