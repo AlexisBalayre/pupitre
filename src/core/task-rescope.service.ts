@@ -43,20 +43,42 @@ const CONTROL_CHAR = /[\u0000-\u001f\u007f-\u009f]/;
 /** The gate's protected paths, as its scope-audit matches them: case-insensitively. */
 const PROTECTED = PROTECTED_PATH_GLOBS.map((glob) => new RegExp(globToRegExpSource(glob), 'i'));
 
+/** The pre-commit hook a worker's own commits run in a repo with no `.husky`, as this one. */
+const PRE_COMMIT = 'scripts/pre-commit';
+
+/**
+ * Whether the glob, in the matcher's form, can reach `scripts/pre-commit` in
+ * any case: by matching it, or as a directory above it, bare or with a
+ * trailing `/`, which the edit hooks read as everything beneath it.
+ */
+function reachesPreCommit(form: string): boolean {
+  const dir = form.replace(/\/+$/, '').toLowerCase();
+  return (
+    new RegExp(globToRegExpSource(form), 'i').test(PRE_COMMIT) || PRE_COMMIT.startsWith(`${dir}/`)
+  );
+}
+
 /**
  * The globs a rescope refuses, stricter than a plan's (decision 115): a
  * rescope widens a scope the gate already audited, so it names paths, never
  * the whole tree, never a path outside the repo, never the workflows a
  * same-repo PR runs with the repo's secrets, never a path the gate protects
- * from every session. Each check but the first reads the glob as the matcher
- * does, `globToRegExpSource`'s trim and one leading `./` stripped, so a glob
- * cannot dress past a check in what the matcher drops. A wildcard anywhere in
- * the first segment can match every top-level directory, `.github` among
- * them; past that check the first segment is literal, so a path in it stands
- * for every path the glob can reach there.
+ * from every session, never the git hooks a worker's commits run. A glob
+ * metacharacter pup's matcher reads literally is refused outright, since a
+ * gitignore- or bash-style matcher reads it as a class, a set or an escape
+ * and would widen past it. Each check but the first reads the glob as the
+ * matcher does, `globToRegExpSource`'s trim and one leading `./` stripped, so
+ * a glob cannot dress past a check in what the matcher drops. A wildcard
+ * anywhere in the first segment can match every top-level directory,
+ * `.github` among them; past that check the first segment is literal, so a
+ * path in it stands for every path the glob can reach there.
  */
 const GLOB_REFUSALS: readonly (readonly [(raw: string, form: string) => boolean, string])[] = [
   [(raw) => CONTROL_CHAR.test(raw), 'contains a control character'],
+  [
+    (_raw, form) => /[[\]{}\\]/.test(form),
+    'holds `[`, `]`, `{`, `}` or `\\`, which another matcher reads as a class, a set or an escape',
+  ],
   [(_raw, form) => form === '', 'is empty'],
   [(_raw, form) => form.startsWith('/'), 'is absolute'],
   [(_raw, form) => /^[^/]*[*?]/.test(form), 'has a wildcard in its first segment'],
@@ -68,6 +90,14 @@ const GLOB_REFUSALS: readonly (readonly [(raw: string, form: string) => boolean,
   [
     (_raw, form) => PROTECTED.some((re) => re.test(`${form.split('/')[0]}/x`)),
     `reaches a path the gate protects whatever the scope (${PROTECTED_PATH_GLOBS.join(', ')})`,
+  ],
+  [
+    (_raw, form) => /^\.husky(\/|$)/i.test(form),
+    "reaches `.husky`, the git hooks that check a worker's own commits",
+  ],
+  [
+    (_raw, form) => reachesPreCommit(form),
+    `reaches \`${PRE_COMMIT}\`, the hook that checks a worker's own commits`,
   ],
 ];
 

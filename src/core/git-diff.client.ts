@@ -362,16 +362,15 @@ export class SharedWorktreeKeyError extends Error {
  * besides (`--no-relative`, `--full-tree`, `:(top)`), for a key a live session
  * sets after the check. Read from `/`, so an empty key cannot stop the read.
  * Exit 1 is git's "no such key"; any other failure is a file git cannot read,
- * which every later call would trip on too, so it refuses as well. Timed out
- * like a gate child, since the gate asks under the merge lock and a session can
- * swap the file for a FIFO no read returns from.
+ * which every later call would trip on too, so it refuses as well. A FIFO
+ * swapped in for the file is cut off by `runGit`'s deadline.
  */
 export function assertNoSharedWorktreeKey(repoPath: string): void {
   try {
     runGit(
       '/',
       ['config', '--file', join(repoPath, '.git', 'config'), '--get-all', 'core.worktree'],
-      { stdio: ['ignore', 'pipe', 'ignore'], timeout: GATE_COMMAND_TIMEOUT_MS },
+      { stdio: ['ignore', 'pipe', 'ignore'] },
     );
   } catch (error) {
     rethrowIfKilled(error);
@@ -404,11 +403,7 @@ function worktreeConfigState(
         '--get',
         'extensions.worktreeConfig',
       ],
-      {
-        env: env ? { ...env } : undefined,
-        stdio: ['ignore', 'pipe', 'ignore'],
-        timeout: GATE_COMMAND_TIMEOUT_MS,
-      },
+      { env: env ? { ...env } : undefined, stdio: ['ignore', 'pipe', 'ignore'] },
     );
     return value.trim() === 'false' ? 'off' : 'on';
   } catch (error) {
@@ -544,25 +539,49 @@ export const GIT_SAFE_CONFIG = [
  * itself would open, and print git's deprecation hint on every call.
  * `GIT_NO_REPLACE_OBJECTS` repeats `core.useReplaceRefs=false` for a child
  * that takes no argv of pup's, `gh`'s git, as `pinnedGitEnv` hands it on.
+ * `<common>/shallow` cuts a listed commit's parents off the way a graft does,
+ * and only `GIT_SHALLOW_FILE` moves where git reads it from, so it names a
+ * path that cannot exist too. The cost: a real shallow clone reads as whole,
+ * and a walk past its edge fails on the parent it lacks. `GIT_NO_LAZY_FETCH`
+ * keeps a missing object missing: a promisor remote a session names in the
+ * shared config would otherwise be fetched from, which runs its transport
+ * with pup's environment. A real partial clone fails on the object instead.
  */
 const GIT_HISTORY_ENV = {
   GIT_NO_REPLACE_OBJECTS: '1',
   GIT_GRAFT_FILE: '/dev/null/no-grafts',
+  GIT_SHALLOW_FILE: '/dev/null/no-shallow',
+  GIT_NO_LAZY_FETCH: '1',
 } as const;
 
 /**
+ * Every transport pinned off, for each git child but one that pushes or
+ * fetches on purpose (`RunGitOptions.reachesRemote`). It backs
+ * `GIT_NO_LAZY_FETCH` up for a git that ignores it (before 2.44): a promisor
+ * remote's `uploadpack` is a command of the session's choosing, and its URL a
+ * host of the session's choosing. Once set, `GIT_ALLOW_PROTOCOL` is the whole
+ * allowlist and git reads no `protocol.*.allow` key, so a planted one cannot
+ * re-open a transport. `none` names no transport, so this pin covers what a
+ * list of names would miss: the shipped `ftp` and `ftps`, and any
+ * `git-remote-<x>` helper on PATH, which git otherwise allows (decision 89).
+ */
+const NO_TRANSPORT_ENV = { GIT_ALLOW_PROTOCOL: 'none' } as const;
+
+/**
  * `runGit`'s whole pin as environment alone, for a program that runs git with
- * argv of its own: `scrubbedGitEnv`, `GIT_HISTORY_ENV`, and `GIT_SAFE_CONFIG`
- * as command-scope config, which outranks the repo's config the way a `-c`
- * does. `gh` runs git in the main checkout, whose config a session can write,
- * so a `core.fsmonitor` armed there would otherwise run on gh's first `git
- * status` (decision 89).
+ * argv of its own: `scrubbedGitEnv`, `GIT_HISTORY_ENV`, `NO_TRANSPORT_ENV`, and
+ * `GIT_SAFE_CONFIG` as command-scope config, which outranks the
+ * repo's config the way a `-c` does. `gh` runs git in the main checkout, whose
+ * config a session can write, so a `core.fsmonitor` armed there would
+ * otherwise run on gh's first `git status` (decision 89). gh is always handed
+ * `--head`, so its git never pushes.
  */
 export function pinnedGitEnv(): NodeJS.ProcessEnv {
   const entries = GIT_SAFE_CONFIG.filter((arg) => arg !== '-c');
   const env: NodeJS.ProcessEnv = {
     ...scrubbedGitEnv(),
     ...GIT_HISTORY_ENV,
+    ...NO_TRANSPORT_ENV,
     GIT_CONFIG_COUNT: String(entries.length),
   };
   entries.forEach((entry, index) => {
@@ -605,11 +624,16 @@ export const GIT_MAX_BUFFER = 64 * 1024 * 1024;
 /**
  * What a call site may add to a git spawn. `env` is laid over the scrubbed
  * environment rather than replacing it, so a caller names only what it adds.
+ * `timeout` replaces `spawnOptions`' deadline. `reachesRemote` leaves the
+ * transports to the operator's config rather than pinning them off. Only
+ * `withScratchGitDir` sets it. Neither its git nor any git that git starts
+ * reads a config a session can write, once it pins `core.alternateRefsCommand`.
  */
 interface RunGitOptions {
   env?: NodeJS.ProcessEnv;
   stdio?: ExecFileSyncOptions['stdio'];
   timeout?: number;
+  reachesRemote?: boolean;
 }
 
 /**
@@ -621,7 +645,10 @@ interface RunGitOptions {
 export function runGit(cwd: string, args: string[], opts: RunGitOptions = {}): string {
   const options = spawnOptions(opts);
   return checkedAfter(cwd, options.env.GIT_DIR, () =>
-    execFileSync('git', safeArgv(cwd, args, options.env), { ...options, encoding: 'utf8' }),
+    execFileSync('git', safeArgv(cwd, args, options.env), {
+      ...options,
+      encoding: 'utf8',
+    }),
   );
 }
 
@@ -912,13 +939,27 @@ function safeArgv(cwd: string, args: string[], env: NodeJS.ProcessEnv): string[]
   return [...GIT_SAFE_CONFIG, '-C', cwd, ...named, ...args];
 }
 
-/** A spawn's options, whose `env` is the one `safeArgv` must be handed. */
+/**
+ * A spawn's options, whose `env` is the one `safeArgv` must be handed, with
+ * every transport pinned off unless the spawn `reachesRemote`. Every
+ * child gets a deadline: a gate command's, unless the caller names its own.
+ * Git opens `<common>/config` before any command runs, and a session can
+ * swap it for a FIFO that no open returns from. Node waits in the spawn, where
+ * `withMergeLock`'s signal listeners cannot run, so a signal sent to pup alone
+ * never ends the wait and the lock stays held. At the deadline the child is
+ * killed and the call throws, as decision 124's hooks are bounded (decision 89).
+ */
 function spawnOptions(opts: RunGitOptions): ExecFileSyncOptions & { env: NodeJS.ProcessEnv } {
   return {
-    env: { ...scrubbedGitEnv(), ...opts.env, ...GIT_HISTORY_ENV },
+    env: {
+      ...scrubbedGitEnv(),
+      ...opts.env,
+      ...GIT_HISTORY_ENV,
+      ...(opts.reachesRemote ? {} : NO_TRANSPORT_ENV),
+    },
     maxBuffer: GIT_MAX_BUFFER,
     stdio: opts.stdio,
-    timeout: opts.timeout,
+    timeout: opts.timeout ?? GATE_COMMAND_TIMEOUT_MS,
   };
 }
 
@@ -1301,7 +1342,7 @@ export class ArmedGitDriverError extends Error {
     const rest = armed.length - ARMED_NAMES_SHOWN;
     super(
       `Refusing to run git in ${gitPath}: a filter or merge driver is armed, or a config ` +
-        `include could arm one, and git would run it with your environment —${shown}${rest > 0 ? ` +${rest} more` : ''}. ` +
+        `include could arm one, and git would run it with your environment — ${shown}${rest > 0 ? ` +${rest} more` : ''}. ` +
         'These live in the untracked $GIT_COMMON_DIR, so no diff and no scope audit shows ' +
         'them. Clear them (`git config --unset <key>`, `rm .git/info/attributes`) and retry, ' +
         'and treat a session that wrote them as compromised.',
