@@ -1,6 +1,6 @@
 # 0051. A session's code graph is an external index served over MCP, one per worktree (2026-09-13)
 
-- Status: accepted
+- Status: superseded by [0186](0186-sessions-get-no-code-graph-the-codegraph-mcp-server.md)
 
 51. **A session's code graph is an external index served over MCP, one per worktree
     (2026-09-13).** docs/05 asks a session to reuse what already exists, and the only instrument

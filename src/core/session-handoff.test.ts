@@ -1,9 +1,9 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { Database } from 'better-sqlite3';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../claude/session-runtime.service.js')>()),
@@ -93,7 +93,7 @@ describe('session handoff', () => {
     repoPath = tempDir('pup-handoff-repo-');
     stateBase = tempDir('pup-handoff-state-');
     // A real worktree on the session's branch: a respawn checks its pointers
-    // against the repo before it indexes or opens anything (decision 101).
+    // against the repo before it opens anything (decision 101).
     git(repoPath, 'init', '-q', '-b', 'main');
     writeFileSync(join(repoPath, 'a.ts'), 'export const a = 1;\n');
     git(repoPath, 'add', 'a.ts');
@@ -310,8 +310,8 @@ describe('session handoff', () => {
     );
   });
 
-  // The row is store text a session can write, and a respawn indexes and opens
-  // a window over the worktree it names (decision 101).
+  // The row is store text a session can write, and a respawn opens a
+  // window over the worktree it names (decision 101).
   it('refuses a row naming a worktree its launch never minted, before the kill', () => {
     writeCompiled();
     const elsewhere = tempDir('pup-handoff-elsewhere-');
@@ -326,171 +326,32 @@ describe('session handoff', () => {
     expect(launchSession).not.toHaveBeenCalled();
   });
 
-  /**
-   * The gap decision 51's addendum named: `relaunchWindow` respawned with the
-   * compiled context — which carries the `## Code graph` section whenever the
-   * launch compiled one — but without `--mcp-config`, so the fresh window was
-   * told to use a tool that was not connected.
-   */
-  describe('code graph', () => {
-    let cgLog: string;
-    const worktree = () => join(repoPath, '.worktrees', 's1');
+  // The window it replaces could rewrite the worktree's gitfile at a repo of
+  // its own before the kill (decision 101). The check runs after the kill, so
+  // the refusal says the old window is gone and nothing opens.
+  it('refuses a respawn over a repointed gitfile, saying the old window is gone', () => {
+    writeCompiled();
+    const worktree = join(repoPath, '.worktrees', 's1');
+    const marker = join(tempDir('pup-marker-'), 'fired');
+    writeFileSync(join(worktree, '.git'), `gitdir: ${armedRepo(marker)}\n`);
+    // The plant is live: plain git in the worktree runs it.
+    execFileSync('git', ['status', '--porcelain'], { cwd: worktree, env: GIT_ENV });
+    expect(existsSync(marker)).toBe(true);
+    rmSync(marker);
 
-    /** The launch's compiled config: this is read, never recompiled. */
-    function writeCompiledMcp(): string {
-      const path = join(paths().compiledDir('s1'), 'mcp.json');
-      writeFileSync(path, '{"mcpServers":{}}\n');
-      return path;
+    let refusal: unknown;
+    try {
+      hardRespawnSession(db, repoPath, 's1', WINDOW_ENV, stateBase);
+    } catch (error) {
+      refusal = error;
     }
-
-    /**
-     * Logs its argv, then runs the git codegraph 1.6.0 runs over the tree, in
-     * it and with the cwd in each nested repo it finds (`lib/x` here), on the
-     * environment pup hands it.
-     */
-    function fakeCodegraph(): string {
-      const dir = tempDir('pup-cg-bin-');
-      cgLog = join(dir, 'calls.log');
-      const binary = join(dir, 'codegraph');
-      writeFileSync(
-        binary,
-        [
-          '#!/bin/sh',
-          `printf '%s\\n' "$*" >> ${cgLog}`,
-          'for d in "$2" "$2/lib/x"; do',
-          '  [ -d "$d" ] || continue',
-          '  cd "$d" || exit 1',
-          '  git ls-files -z -s --recurse-submodules > /dev/null 2>&1',
-          '  git ls-files -z -o --exclude-standard > /dev/null 2>&1',
-          '  git status --porcelain --no-renames -uall > /dev/null 2>&1',
-          'done',
-          'exit 0',
-        ].join('\n'),
-        { mode: 0o755 },
-      );
-      vi.stubEnv('PATH', `${dir}:/usr/bin:/bin`);
-      return binary;
-    }
-
-    const cgCalls = (): string[] =>
-      cgLog && existsSync(cgLog) ? readFileSync(cgLog, 'utf8').split('\n').filter(Boolean) : [];
-
-    const launchedWith = () => vi.mocked(launchSession).mock.calls.at(-1)?.[0];
-
-    beforeEach(() => {
-      cgLog = '';
-      vi.spyOn(console, 'error').mockImplementation(() => {});
-      writeCompiled();
-    });
-
-    afterEach(() => {
-      vi.unstubAllEnvs();
-      vi.mocked(console.error).mockRestore();
-    });
-
-    // Re-indexed, not just re-passed: the previous run has been editing this
-    // worktree since the launch, and an index its commits have outrun answers
-    // out of code that is no longer there.
-    it('re-indexes the worktree and hands the fresh window the compiled config', () => {
-      const mcpConfigPath = writeCompiledMcp();
-      fakeCodegraph();
-
-      hardRespawnSession(db, repoPath, 's1', WINDOW_ENV, stateBase);
-
-      expect(cgCalls()).toEqual([`init ${worktree()} --yes`]);
-      expect(launchedWith()?.mcpConfigPath).toBe(mcpConfigPath);
-    });
-
-    // The index runs outside any sandbox, after the window it replaces could
-    // rewrite the worktree's gitfile at a repo of its own (decision 101). The
-    // check comes first, so codegraph never runs over it and nothing opens.
-    it('refuses a respawn over a repointed gitfile before anything is indexed', () => {
-      writeCompiledMcp();
-      fakeCodegraph();
-      const marker = join(tempDir('pup-marker-'), 'fired');
-      writeFileSync(join(worktree(), '.git'), `gitdir: ${armedRepo(marker)}\n`);
-      // The plant is live: plain git in the worktree runs it.
-      execFileSync('git', ['status', '--porcelain'], { cwd: worktree(), env: GIT_ENV });
-      expect(existsSync(marker)).toBe(true);
-      rmSync(marker);
-
-      let refusal: unknown;
-      try {
-        hardRespawnSession(db, repoPath, 's1', WINDOW_ENV, stateBase);
-      } catch (error) {
-        refusal = error;
-      }
-      expect(refusal).toBeInstanceOf(WorktreeRepointedError);
-      // Refused after the kill: the operator must not look for the old window.
-      expect((refusal as Error).message).toMatch(
-        /Its old window is already gone, and no new one was opened\.$/,
-      );
-      expect(cgCalls()).toEqual([]);
-      expect(launchSession).not.toHaveBeenCalled();
-      expect(existsSync(marker)).toBe(false);
-    });
-
-    // codegraph re-runs its git with the cwd in each untracked nested repo it
-    // finds, and there git follows the nested `.git`: a gitfile naming a repo
-    // the session built ran that repo's fsmonitor. Pinned, every one of those
-    // runs reads the trusted repo instead.
-    it('indexes over an untracked nested repo without running what it arms', () => {
-      const mcpConfigPath = writeCompiledMcp();
-      const binary = fakeCodegraph();
-      const marker = join(tempDir('pup-marker-'), 'fired');
-      const nested = join(worktree(), 'lib', 'x');
-      mkdirSync(nested, { recursive: true });
-      writeFileSync(join(nested, '.git'), `gitdir: ${armedRepo(marker)}\n`);
-      // The plant is live: the same binary on a plain environment runs it.
-      execFileSync(binary, ['index', worktree()], { env: GIT_ENV });
-      expect(existsSync(marker)).toBe(true);
-      rmSync(marker);
-      writeFileSync(cgLog, '');
-
-      hardRespawnSession(db, repoPath, 's1', WINDOW_ENV, stateBase);
-
-      expect(cgCalls()).toEqual([`init ${worktree()} --yes`]);
-      expect(launchedWith()?.mcpConfigPath).toBe(mcpConfigPath);
-      expect(existsSync(marker)).toBe(false);
-    });
-
-    // Withheld rather than passed at a binary that is gone: the config names an
-    // absolute command, and pointing claude at one that cannot start is the
-    // same wasted tool call in a different place.
-    it("withholds the config when the operator's codegraph has gone since the launch", () => {
-      writeCompiledMcp();
-      // git stays: the pointer check runs it.
-      vi.stubEnv('PATH', `${tempDir('pup-cg-empty-')}:/usr/bin:/bin`);
-
-      hardRespawnSession(db, repoPath, 's1', WINDOW_ENV, stateBase);
-
-      expect(launchedWith()?.mcpConfigPath).toBeUndefined();
-      expect(vi.mocked(console.error).mock.calls.flat().join(' ')).toContain(
-        'without a code graph',
-      );
-    });
-
-    // A launch that compiled no graph respawns into none, and indexes nothing:
-    // the compiled dir is the record of what this session was launched with.
-    it('indexes nothing when the launch compiled no config', () => {
-      fakeCodegraph();
-
-      hardRespawnSession(db, repoPath, 's1', WINDOW_ENV, stateBase);
-
-      expect(launchedWith()?.mcpConfigPath).toBeUndefined();
-      expect(cgCalls()).toEqual([]);
-      expect(console.error).not.toHaveBeenCalled();
-    });
-
-    it('carries the config through a handoff respawn too, not only a hard one', () => {
-      const mcpConfigPath = writeCompiledMcp();
-      fakeCodegraph();
-      handoffRound();
-
-      respawnSessionWithTestPaths();
-
-      expect(launchedWith()?.mcpConfigPath).toBe(mcpConfigPath);
-    });
+    expect(refusal).toBeInstanceOf(WorktreeRepointedError);
+    // Refused after the kill: the operator must not look for the old window.
+    expect((refusal as Error).message).toMatch(
+      /Its old window is already gone, and no new one was opened\.$/,
+    );
+    expect(launchSession).not.toHaveBeenCalled();
+    expect(existsSync(marker)).toBe(false);
   });
 
   // Decision 92: a respawn is the same session on a fresh window, so it climbs
