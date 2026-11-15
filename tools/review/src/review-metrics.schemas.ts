@@ -237,10 +237,15 @@ export const metricsRecordSchema = z.object({
     ),
 });
 
-/** The fields of the prior review record a round carries its open importants from; older records may hold null. */
+/**
+ * The fields of the prior review record a round carries its open importants
+ * from. Older records may hold null, and records before schema 7 carried no
+ * description on their prior_importants: the read takes them with an empty one,
+ * so an old record still carries its importants. The writer keeps requiring it.
+ */
 export const priorReviewSchema = z.object({
   findings: z.array(findingSchema).nullable(),
-  prior_importants: z.array(priorImportantSchema).nullable(),
+  prior_importants: z.array(priorImportantSchema.extend({ description: z.string().default("") })).nullable(),
 });
 
 /** The poster's hand-off to the metrics step, written as `posted.json`. */

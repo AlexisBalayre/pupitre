@@ -101,6 +101,15 @@ describe("parsePriorReview", () => {
     expect(parsePriorReview(raw)).toEqual(record);
   });
 
+  it("reads a record written before prior_importants carried a description, keeping its importants", () => {
+    const v6Entry = { file: carriedBefore.file, line: carriedBefore.line, status: carriedBefore.status };
+    const raw = JSON.stringify({ schema_version: 6, findings: [finding()], prior_importants: [v6Entry] });
+    expect(priorImportants(parsePriorReview(raw), [])).toEqual([
+      { file: "src/a.ts", line: "10", description: "the guard misses deletions", status: "unresolved" },
+      { ...carriedBefore, description: "" },
+    ]);
+  });
+
   it("is null for no record, invalid JSON, or a record of another shape", () => {
     expect(parsePriorReview(null)).toBeNull();
     expect(parsePriorReview("{")).toBeNull();
