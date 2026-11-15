@@ -406,6 +406,10 @@ describe('typescriptAdapter.testFiles', () => {
       ['bunfig.toml', 'preload = ["./scripts/reg.ts"]\n'],
       ['.env', 'NODE_OPTIONS=--import ./scripts/reg.mjs\n'],
       ['.env.local', 'NODE_OPTIONS=--import ./scripts/reg.mjs\n'],
+      // Keys that have npm read a config nothing here checks.
+      ['.npmrc', 'globalconfig=./scripts/npmrc\n'],
+      ['.env', 'NPM_CONFIG_GLOBALCONFIG=./scripts/npmrc\n'],
+      ['.env', 'export npm_config_prefix=./scripts\n'],
       // Escaped or substituted keys, which their package manager reads as the key.
       ['.yarnrc.yml', '"yarn\\u0050ath": .yarn/releases/yarn.cjs\n'],
       ['pnpm-workspace.yaml', '"node\\u004Fptions": --import ./scripts/reg.mjs\n'],
@@ -706,6 +710,12 @@ describe('typescriptAdapter.testFiles', () => {
     ['one that runs nothing', 'fund=false\n', true],
     ['one with node-options', 'node-options=--import /tmp/reg.mjs\n', false],
     ['one with an escaped key', '"node\\u002doptions"=--import /tmp/reg.mjs\n', false],
+    // npm reads the config these name too, which nothing here checks.
+    ['one naming a globalconfig', 'globalconfig=/tmp/npmrc\n', false],
+    ['one naming a userconfig', 'userconfig=/tmp/npmrc\n', false],
+    ['one naming a prefix', 'prefix=/tmp/prefix\n', false],
+    ['one naming a quoted prefix in another case', '"PREFIX" = /tmp/prefix\n', false],
+    ['one naming a save-prefix', 'save-prefix=~\n', true],
   ])('checks a checkout beside a user .npmrc of %s', (_, npmrc, intact) => {
     const home = tempDir('pup-home-');
     if (npmrc !== undefined) writeFileSync(join(home, '.npmrc'), npmrc);
@@ -722,6 +732,41 @@ describe('typescriptAdapter.testFiles', () => {
         measureSha: sha,
       }),
     ).toBe(intact);
+  });
+
+  // Read only as a small regular file: a link may name what the check never
+  // sees, and a fifo or a device would block the read.
+  it.each([
+    [
+      'a link',
+      (path: string) => {
+        const real = join(tempDir('pup-real-'), 'npmrc');
+        writeFileSync(real, 'fund=false\n');
+        symlinkSync(real, path);
+      },
+    ],
+    ['a fifo', (path: string) => execFileSync('mkfifo', [path])],
+    ['a directory', (path: string) => mkdirSync(path)],
+    [
+      'a file over 64 KiB',
+      (path: string) => writeFileSync(path, `# ${'x'.repeat(64 * 1024)}\nfund=false\n`),
+    ],
+  ])('finds a checkout not intact beside a user .npmrc that is %s', (_, make) => {
+    const home = tempDir('pup-home-');
+    make(join(home, '.npmrc'));
+    vi.stubEnv('HOME', home);
+    const { repo, sha } = committed({
+      'package.json': plainVitest,
+      'vitest.config.ts': configWith("{ include: ['src/**/*.test.ts'] }"),
+    });
+
+    expect(
+      typescriptAdapter.testInputsIntact?.({
+        configPath: repo,
+        measurePath: repo,
+        measureSha: sha,
+      }),
+    ).toBe(false);
   });
 
   it('checks the user .npmrc the operator names through --gate-env', () => {

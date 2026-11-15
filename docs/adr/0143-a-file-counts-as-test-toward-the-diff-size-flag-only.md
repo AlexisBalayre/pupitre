@@ -57,7 +57,13 @@
     and pnpm read for the run, the one an operator names by `npm_config_userconfig` through
     `--gate-env`, else the home directory's: a session can write it and no commit holds it, so
     one that may run a file, by the rule the root's package-manager configs are read by below,
-    fails the check. One changed, added, removed, a link or named in another case at either check,
+    fails the check. It is read only as a regular file of at most 64 KiB, opened without
+    following a link and without blocking: a link may name what the check never sees, and a
+    fifo or a device would block the read, so a link, a fifo, a device, a directory or a
+    larger file there fails the check too, a dotfiles setup that links `~/.npmrc` included.
+    This covers npm's and pnpm's user `.npmrc` only, not yarn's `~/.yarnrc.yml`, bun's user
+    `bunfig.toml`, npm's global `$PREFIX/etc/npmrc` or pnpm's own `rc`, which the gate's run
+    may read unchecked; checking those is owed to a later decision. One changed, added, removed, a link or named in another case at either check,
     or a `node_modules` entry replaced or linked elsewhere, counts no file as test.
     **TypeScript** answers from vitest. The `test` script must be plain `vitest` or `vitest
     run` in both checkouts, with no `pretest` or `posttest` beside it (the `coveredTest` rule
@@ -157,7 +163,13 @@
     key (a line's text before its first `=` or `:`, comment lines aside), leaves the answer
     unknown on either side: every one of these formats escapes a character with a backslash.
     That costs the split a config whose value holds one, a Windows path or an escaped
-    newline, while the `${NPM_TOKEN}` an `.npmrc` substitutes into a value is still read. Yarn's Plug'n'Play runtime, any `.pnp.*` at the root, leaves
+    newline, while the `${NPM_TOKEN}` an `.npmrc` substitutes into a value is still read.
+    A config can also have npm read another that nothing here checks: `globalconfig` and
+    `userconfig` name one, and `prefix` moves the global `etc/npmrc`, which npm reads last,
+    after the project and user configs that can move it. So a key spelled any of those, in
+    any case, bare or quoted, or as the `npm_config_` variable an env file sets, `export`ed
+    or not, leaves the answer unknown on either side, as it fails the user-level check;
+    `save-prefix` is another key and is read. Yarn's Plug'n'Play runtime, any `.pnp.*` at the root, leaves
     the answer unknown on either side: yarn loads it into every script, and it resolves
     packages from a cache the branch may commit, never the `node_modules` the gate links and
     checks. That costs a Yarn Berry repo whose `.yarnrc.yml` names its own binary (one
@@ -226,8 +238,8 @@
     `.yarnrc.yml` in every directory above it, npm the `.npmrc` of a directory above whose
     `package.json` names the checkout a workspace, pnpm a workspace root above a root
     without its own `pnpm-workspace.yaml`, and each the operator's own config and its global
-    one, which the gate's environment leaves where they are; of those, only the user-level
-    `.npmrc` is checked, and only at the two checks, not while the run reads it. A session can write any of them
+    one, which the gate's environment leaves where they are; of those, only npm's and pnpm's
+    user-level `.npmrc` is checked, and only at the two checks, not while the run reads it. A session can write any of them
     during its merge, since it runs unsandboxed (decision 5), and one it writes reaches the
     run unseen, as it reaches the test stage itself. A root with no vitest config is refused
     for that reason only because a config at the root ends vitest's search, and nothing at
@@ -279,7 +291,8 @@
     `node-options`, `node_options` or `script-shell`, `.yarnrc` with `yarn-path`,
     `.yarnrc.yml` with `yarnPath`, `plugins` or `injectEnvironmentFiles`, `.env.yarn`, `.env`
     or `.env.local` with `NODE_OPTIONS`, `pnpm-workspace.yaml` with `nodeOptions`,
-    `bunfig.toml` with `preload`, `.pnp.cjs`, and each of those keys spelled through an
+    `bunfig.toml` with `preload`, `.pnp.cjs`, an `.npmrc` with `globalconfig`, an `.env`
+    with `NPM_CONFIG_GLOBALCONFIG` or `export npm_config_prefix`, and each of those keys spelled through an
     escape, `"yarn\u0050ath"`, `"node\u004Fptions"`, `"pre\u006Coad"` or
     `"node\u002doptions"`, or as an `.npmrc` `${KEY}`. A shared `.npmrc` substituting a token
     into a value collects, as does a shared `.env.example` naming `$HOME` in a comment and a
@@ -292,13 +305,15 @@
     one from the target sha, whatever either checkout's disk holds. `testInputsIntact` holds
     for an untouched checkout, a build output beside it, a `node_modules` linked as the gate
     links it, holding a vite cache or holding a `.tmp` build output the trusted one lacks,
-    and outside the gate, beside a user `.npmrc` that runs nothing or none, and with a
+    and outside the gate, beside a user `.npmrc` that runs nothing, sets only a
+    `save-prefix`, or is none, and with a
     committed `.yarn` untouched or given an empty directory. It fails for a rewritten config,
     an added `.npmrc`, `.yarnrc`, `.yarnrc.yml`, `.env.yarn`, `.env`, `.env.local`,
     `.pnp.cjs`, `.pnp.loader.mjs`, `pnpm-workspace.yaml`, `bunfig.toml` or `.yarn`, a file
     under a committed `.yarn` rewritten, added, made executable or made a link, a user
-    `.npmrc` with `node-options` or an escaped key, or one named by `npm_config_userconfig`
-    through `--gate-env` with `script-shell`, an added name outside ASCII, a removed manifest, a config made a link,
+    `.npmrc` with `node-options`, an escaped key, a `globalconfig`, a `userconfig`, a `prefix`
+    or a quoted `"PREFIX"`, or that is a link, a fifo, a directory or a file over 64 KiB, or
+    one named by `npm_config_userconfig` through `--gate-env` with `script-shell`, an added name outside ASCII, a removed manifest, a config made a link,
     a manifest renamed into another case, a `node_modules` entry replaced by a package or linked elsewhere, a `.bin` of its own in
     either case, a `.hooks` of its own in any case, a linked `.vitest` replaced by an entry of
     its own, a dot-named link replaced by an entry of its own, and a `node_modules` that is

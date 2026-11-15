@@ -245,15 +245,31 @@ const RUNS_A_FILE =
 const KEY_SUBSTITUTION = /^(?![ \t]*[#;])[^=:\r\n\u2028\u2029]*\$/m;
 
 /**
+ * A key that has npm read another config, which nothing here checks:
+ * `globalconfig`, `userconfig`, or the `prefix` whose `etc/npmrc` is the
+ * global config, npm reading the global one last, after the project and user
+ * configs that can move it. Matched as a line's key in any case, bare or
+ * quoted, and as the `npm_config_` variable an env file sets, `export`ed or
+ * not; `save-prefix` is another key.
+ */
+const NAMES_A_CONFIG =
+  /^[ \t]*(?:export[ \t]+)?["']?(?:npm_config_)?(?:global[-_]?config|user[-_]?config|prefix)["']?(?:[ \t=:]|$)/im;
+
+/**
  * Whether a package-manager config or env file may have the run load a file:
- * it names one of `RUNS_A_FILE`'s keys as text, or holds a backslash, by which
- * each of these formats escapes a character of a key, quoted or not
- * (`"yarn\u0050ath"`), or a substitution in a key. Read as text rather than
- * parsed as each package manager parses it, so a value with an escape costs
- * the split too.
+ * it names one of `RUNS_A_FILE`'s keys as text, names another config
+ * (`NAMES_A_CONFIG`), or holds a backslash, by which each of these formats
+ * escapes a character of a key, quoted or not (`"yarn\u0050ath"`), or a
+ * substitution in a key. Read as text rather than parsed as each package
+ * manager parses it, so a value with an escape costs the split too.
  */
 function runsAFile(text: string): boolean {
-  return RUNS_A_FILE.test(text) || text.includes('\\') || KEY_SUBSTITUTION.test(text);
+  return (
+    RUNS_A_FILE.test(text) ||
+    NAMES_A_CONFIG.test(text) ||
+    text.includes('\\') ||
+    KEY_SUBSTITUTION.test(text)
+  );
 }
 
 /**
@@ -404,14 +420,24 @@ function userNpmrc({ gateEnv = [] }: CapabilityContext): string {
   return (named && process.env[named]) || join(homedir(), '.npmrc');
 }
 
+/** The largest user-level `.npmrc` read: any real one is a few lines. */
+const USER_CONFIG_MAX_BYTES = 64 * 1024;
+
 /**
  * Whether the user-level `.npmrc` may have the run load a file
- * (`runsAFile`): a session can write it, and no commit holds it. Throws where
- * it stands but cannot be read.
+ * (`runsAFile`): a session can write it, and no commit holds it. It is read
+ * only as a regular file of at most `USER_CONFIG_MAX_BYTES`, never through a
+ * link, nor a fifo or a device, which would block the read. Throws where
+ * anything else stands there, or it cannot be read.
  */
 function userConfigRunsAFile(ctx: CapabilityContext): boolean {
   const path = userNpmrc(ctx);
-  return existsSync(path) && runsAFile(readFileSync(path, 'utf8'));
+  if (lstatSync(path, { throwIfNoEntry: false }) === undefined) return false;
+  const text = readPlainFile(path, { followLinks: false });
+  if (Buffer.byteLength(text) > USER_CONFIG_MAX_BYTES) {
+    throw new Error(`${path} is over ${USER_CONFIG_MAX_BYTES} bytes`);
+  }
+  return runsAFile(text);
 }
 
 /** The config files vitest reads at a package root. */
