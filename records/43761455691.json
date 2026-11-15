@@ -1,0 +1,119 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-15T21:10:51.744Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43761455691",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43761455691",
+  "actor": "AlexisBalayre",
+  "commit_sha": "314272e63219003bff784140082e6d6f76c973f9",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 335,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "context",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "context",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": ".claude/skills/pr-ci-review/SKILL.md",
+      "line": "179",
+      "description": "After the revert, the skill still asks for prior_importants as {file, line, description, status} and never says how to number entries, while the schema and poster now require {from, index, status} with index counting every element; a model that counts only owed entries makes the poster and metrics resolve the wrong carried important.",
+      "status": "unresolved"
+    },
+    {
+      "file": "tools/review/src/prior-record.utils.ts",
+      "line": "29-62",
+      "description": "priorImportants promises that a misnumbered verdict keeps the important open, but a verdict counted off by the non-owed elements lands on another owed entry and resolves it, dropping a still-open important from the poster's body and the stored record.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "tools/review/src/review-metrics.schemas.ts",
+      "line": "240-244",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The prior record is parsed all-or-nothing against today's schema: a pre-#258 record (schema_version 6) whose prior_importants entries lack `description` fails to parse, so the poster carries nothing (not even the record's own findings importants), the body can read \"No issues found\", and the metrics step records prior_importants: [], losing them for every later round.",
+      "body": "**Concern.** `parsePriorReview` checks the whole prior record against today's `priorReviewSchema`. If any one element fails, it returns `null` ([prior-record.utils.ts#L19-L27](https://github.com/AlexisBalayre/pupitre/blob/314272e63219003bff784140082e6d6f76c973f9/tools/review/src/prior-record.utils.ts#L19-L27)):\n\n```ts\nexport const priorReviewSchema = z.object({\n  findings: z.array(findingSchema).nullable(),\n  prior_importants: z.array(priorImportantSchema).nullable(),\n});\n```\n\n([review-metrics.schemas.ts#L240-L244](https://github.com/AlexisBalayre/pupitre/blob/314272e63219003bff784140082e6d6f76c973f9/tools/review/src/review-metrics.schemas.ts#L240-L244))\n\n`priorImportantSchema` requires `description`. That field was added in ab23073 (#258, 2026-11-08). Earlier records store their entries as `{file, line, status}`. Examples on `ci/review-metrics`: `records/42419252161.json` (v6, PR 262) has six such entries, and `records/42419694447.json` has one. A single entry, even a resolved one, is enough to fail the parse. Nothing in the preflight (`priorRecords`, `newestCleanRecord`, `decideMode`) filters on `schema_version`. `priorPath` is also set on full rounds, so the preflight writes that old record to `prior-record.json`.\n\n**Trigger.** An open PR's newest clean record is a v6 round with a non-empty `prior_importants`. The PR then merges main, picking up this code, and gets reviewed.\n\n**Wrong result.**\n- `post-review.script.ts` only logs a `::warning::` ([L203-L206](https://github.com/AlexisBalayre/pupitre/blob/314272e63219003bff784140082e6d6f76c973f9/tools/review/src/post-review.script.ts#L203-L206)). Then `priorImportants(null, …)` returns `[]`, which drops the record's own `findings` importants too.\n- With a clean round, the body reads \"No issues found.\" and `pr-status.yml` counts zero unthreaded importants.\n- `review-metrics.script.ts` writes `prior_importants: []`, so every later round has lost them too.\n\nBefore this PR, the model read the record directly, so an old entry shape never went through this parse.\n\n**Fix.** Make the prior-record read accept records written before `description` existed. The writer keeps requiring the field. The `.default` keeps the output type `string`, so `PriorImportant` usage still type-checks. A sturdier option is to parse `findings` and `prior_importants` separately, so one bad array cannot drop the other.",
+      "suggestion": "/** The fields of the prior review record a round carries its open importants from; older records may hold null, and records before schema 7 carry no description. */\nexport const priorReviewSchema = z.object({\n  findings: z.array(findingSchema).nullable(),\n  prior_importants: z.array(priorImportantSchema.extend({ description: z.string().default(\"\") })).nullable(),\n});"
+    },
+    {
+      "file": ".github/workflows/pr-status.yml",
+      "line": "116",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "This PR rebuilds carried bullets from the prior record, but the pr-status.yml comment at line 116 and ADR 0165 (docs/adr/0165-pr-status-reads-unthreaded-importants-from-the-review-body.md:28-30) still justify letters-and-digits matching because \"a carried entry is the model's copy of the prior record\"; a maintainer reading either would keep fuzzy matching for drift that can no longer happen.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 1,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 3.8561449500000022,
+  "duration_ms": 404128,
+  "num_turns": 19,
+  "tokens": {
+    "input": 18,
+    "output": 15014,
+    "cache_read": 555408,
+    "cache_creation": 94547,
+    "total": 664987
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 138,
+      "output": 49309,
+      "cache_read": 3087162,
+      "cache_creation": 291027,
+      "cost_usd": 3.3429404000000003
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 58,
+      "output": 12862,
+      "cache_read": 471506,
+      "cache_creation": 134669,
+      "cost_usd": 0.5125591
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 102,
+      "cache_read": 0,
+      "cache_creation": 4754,
+      "cost_usd": 0.0006454500000000001
+    }
+  ],
+  "permission_denials": []
+}
