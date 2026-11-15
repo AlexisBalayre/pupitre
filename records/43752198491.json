@@ -1,0 +1,130 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-15T19:27:29.738Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43752198491",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43752198491",
+  "actor": "AlexisBalayre",
+  "commit_sha": "038dd98a240984afff7872ffbcd4ac5b08783570",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 337,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "guards"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "guards"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "simplicity",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/session-handoff.service.ts",
+      "line": "279-303",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Respawning a session launched before this PR (on a machine with codegraph) replays its old compiled context.md, which still carries the `## Code graph` paragraph telling the window to use codegraph_explore BEFORE reading files — but the respawned window no longer gets --mcp-config, so that tool is not connected. ADR 0186's 'Not migrated' list doesn't mention this; either strip the section at read time or note it there.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/03-profiles.md",
+      "line": "3",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The intro still lists \"MCP config\" among the profile compiler's outputs, but this PR stopped compiling mcp.json; the same stale claim sits in docs/01-architecture.md:44 (behaviour-surface list owned by the profile compiler). Drop \"MCP config\" from both lists.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1512",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "JSDoc on the gate's private checkout says \"Detached like the conductor's checkout (decision 51)\", but this PR removes the conductor's checkout and supersedes decision 51; drop the clause (decision 81 already covers the gate checkout).",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Skipped review-context (no CORS/HTTP/docker/CI surface; the --mcp-config removal was covered by correctness and security), review-simplicity (the diff only adds an ADR, no code construct), review-spec (no spec source), review-workflow-safety (no workflow change), review-maintainability (off default roster). Security ran single-instance despite the size gate because the diff is ~95% deletions with a small trust-boundary surface. Dropped the conventions nit on the orphaned test helpers stubCodegraph/commandScopeConfig: ADR 0186 explicitly defers them (declared out of scope)."
+    },
+    {
+      "component": "docs",
+      "description": "`gh pr diff 337 -- docs/adr` was refused (gh pr diff takes no path filter); the reviewer fell back to Read/Grep on the post-change tree."
+    }
+  ],
+  "duplicates_merged": 1,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.1541822249999996,
+  "duration_ms": 145229,
+  "num_turns": 12,
+  "tokens": {
+    "input": 10,
+    "output": 8929,
+    "cache_read": 205994,
+    "cache_creation": 45174,
+    "total": 260107
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 98,
+      "output": 26861,
+      "cache_read": 1354361,
+      "cache_creation": 181859,
+      "cost_usd": 1.8533011999999998
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 40,
+      "output": 8892,
+      "cache_read": 278042,
+      "cache_creation": 73361,
+      "cost_usd": 0.3002067
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 167,
+      "cache_read": 0,
+      "cache_creation": 4725,
+      "cost_usd": 0.000674325
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "gh pr diff 337 -- docs/adr"
+    }
+  ]
+}
