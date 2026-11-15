@@ -1,0 +1,134 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-15T19:35:53.639Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43752750420",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43752750420",
+  "actor": "AlexisBalayre",
+  "commit_sha": "2f703dcaea7448960641456f247a293a1252453b",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 338,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "docs",
+    "guards"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "docs",
+    "guards"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "1060",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The new symlink check in recordWindowSocket runs after the fix-round relaunch (relaunchWorker → writeSessionProfile) and first launch have already written compiled/ files, hook scripts included, through the same session dir. On those paths a symlinked session dir is followed before the guard throws; only respawn is protected. Sessions share the operator's uid (ADR 0106), so this is inconsistent hardening, not a new exploit.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0115-pup-plan-edit-rescope-lets-the-operator-widen.md",
+      "line": "148-150",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "ADR 0115 still says the protected check \"tests a path in the glob's first segment\"; this PR replaces that with an overlap check against protected entries at any depth, so the ADR (which wins over the design docs) now describes the old behavior.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/task-rescope.service.ts",
+      "line": "70-92",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`beneath` has one caller and hand-rebuilds what `reach(`${own.path}/`)` already returns for a trailing-`/` glob; rescopeReach could use that and drop `beneath`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/task-rescope.service.ts",
+      "line": "87",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The JSDoc \"The gate's protected paths.\" on `PROTECTED` only restates the constant's name and its PROTECTED_PATH_GLOBS source; delete it.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Skipped review-context (no spec/protocol/infra surface), review-workflow-safety (no workflow change), review-maintainability (off default roster), review-spec (no closing issue or spec source)."
+    },
+    {
+      "component": "validator",
+      "description": "Correctness's single important (symlink guard runs after earlier compiled-profile writes) was confirmed by its validator but downgraded to nit: no reachable harm under ADR 0106's same-uid model. Its respawn evidence was also partly wrong."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.392234275000001,
+  "duration_ms": 307240,
+  "num_turns": 17,
+  "tokens": {
+    "input": 16,
+    "output": 8399,
+    "cache_read": 376958,
+    "cache_creation": 45961,
+    "total": 431334
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 114,
+      "output": 41802,
+      "cache_read": 1710318,
+      "cache_creation": 164654,
+      "cost_usd": 2.1397125999999997
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 36,
+      "output": 7760,
+      "cache_read": 215531,
+      "cache_creation": 61046,
+      "cost_usd": 0.25184010000000007
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 180,
+      "cache_read": 0,
+      "cache_creation": 4731,
+      "cost_usd": 0.000681575
+    }
+  ],
+  "permission_denials": []
+}
