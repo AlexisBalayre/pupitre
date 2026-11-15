@@ -180,7 +180,16 @@
     `userconfig`, `prefix` or `destdir` leaves the answer unknown on either side, as it fails
     the user-level check. Reducing further than a parser does only refuses more: `prefix x`
     or a section named `[prefix]` is refused too, while `save-prefix` reduces to another
-    key and is read. Yarn's Plug'n'Play runtime, any `.pnp.*` at the root, leaves
+    key and is read. Reducing cannot keep up with every spelling, though: ini strips quotes
+    and parses a quoted key as JSON, which allows whitespace inside, so `[ "prefix" ]=` and
+    a section `[ prefix ]` are `prefix` to npm. So in an `.npmrc` or an env file, the files
+    read a key per line, the shape fails closed too: a line whose key, the text before the
+    first `=` trimmed and without an `export`, holds any character outside
+    `[A-Za-z0-9._@/:+-]` (a quote, a bracket, whitespace, anything outside ASCII), or a
+    section header that is not exactly `[` such characters `]`, leaves the answer unknown,
+    while `registry = https://…`, `//registry.npmjs.org/:_authToken=…` and
+    `@scope:registry=…` are still read. Lines are split at U+2028 and U+2029 as well as at
+    `\r` and `\n`, since dotenv's multiline `^` starts a line after them. Yarn's Plug'n'Play runtime, any `.pnp.*` at the root, leaves
     the answer unknown on either side: yarn loads it into every script, and it resolves
     packages from a cache the branch may commit, never the `node_modules` the gate links and
     checks. That costs a Yarn Berry repo whose `.yarnrc.yml` names its own binary (one
@@ -306,7 +315,9 @@
     with `NPM_CONFIG_GLOBALCONFIG`, `export npm_config_prefix`, an `NPM_CONFIG_PREFIX`
     between no-break spaces or a `DESTDIR`, an `.env.local` with an `export`ed `DESTDIR`, and each of those keys spelled through an
     escape, `"yarn\u0050ath"`, `"node\u004Fptions"`, `"pre\u006Coad"` or
-    `"node\u002doptions"`, or as an `.npmrc` `${KEY}`. A shared `.npmrc` substituting a token
+    `"node\u002doptions"`, or as an `.npmrc` `${KEY}`, and an `.npmrc` with a key or
+    section not plainly spelt (` "globalconfig"`, `[ "prefix" ]=`, `[ prefix ]`) or an
+    `.env` with a key after a U+2028 or a quoted key with a space after a U+2029. A shared `.npmrc` substituting a token
     into a value collects, as does a shared `.env.example` naming `$HOME` in a comment and a
     value. A branch manifest that adds a devDependency or another script collects; one that
     adds a `packageManager`, a `pnpm` block, a `type` or `imports` collects nothing. A
@@ -318,7 +329,9 @@
     for an untouched checkout, a build output beside it, a `node_modules` linked as the gate
     links it, holding a vite cache or holding a `.tmp` build output the trusted one lacks,
     and outside the gate, beside a user `.npmrc` that runs nothing, sets only a
-    `save-prefix`, is exactly 64 KiB, or is none, and with a
+    `save-prefix`, a spaced `registry`, a registry token or a scope's registry, is exactly
+    64 KiB, or is none, beside plainly keyed `.npmrc` and `.env` files on both sides, and
+    with a
     committed `.yarn` untouched or given an empty directory. It fails for a rewritten config,
     an added `.npmrc`, `.yarnrc`, `.yarnrc.yml`, `.env.yarn`, `.env`, `.env.local`,
     `.pnp.cjs`, `.pnp.loader.mjs`, `pnpm-workspace.yaml`, `bunfig.toml` or `.yarn`, a file
@@ -326,7 +339,9 @@
     `.npmrc` with `node-options`, an escaped key, a `globalconfig`, a `userconfig`, a `prefix`
     or a quoted `"PREFIX"`, or with a key npm's ini parser reads as one of those, after a BOM,
     a form feed or an ideographic space, before a no-break space, cut at a `;` or a `#`, or
-    as a `prefix[]` bare or quoted, or that is a link, a fifo, a directory, a file over 64 KiB
+    as a `prefix[]` bare or quoted, with a key not plainly spelt (` "globalconfig"`,
+    `"prefix"` before a tab, `[ "prefix" ]`), a section `[ prefix ]`, or a `globalconfig`
+    after a U+2028, or that is a link, a fifo, a directory, a file over 64 KiB
     or a sparse 50 GiB file, or
     one named by `npm_config_userconfig` through `--gate-env` with `script-shell`, an added name outside ASCII, a removed manifest, a config made a link,
     a manifest renamed into another case, a `node_modules` entry replaced by a package or linked elsewhere, a `.bin` of its own in

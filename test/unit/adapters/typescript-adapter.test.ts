@@ -393,6 +393,16 @@ describe('typescriptAdapter.testFiles', () => {
       {},
       ['src/a.test.ts'],
     ],
+    [
+      'plainly keyed configs on both sides',
+      {
+        '.npmrc':
+          'save-prefix=~\nregistry = https://registry.npmjs.org/\n@scope:registry=https://npm.example.com/\n[scope]\nfund=false\n',
+        '.env': 'export CI=1\nNODE_ENV=test\n',
+      },
+      {},
+      ['src/a.test.ts'],
+    ],
     ["yarn's Plug'n'Play runtime on both sides", { '.pnp.cjs': 'module.exports = {};\n' }, {}, []],
     ...[
       ['.npmrc', 'node-options=--import ./scripts/reg.mjs\n'],
@@ -421,6 +431,12 @@ describe('typescriptAdapter.testFiles', () => {
       ['.npmrc', '"node\\u002doptions"=--import ./scripts/reg.mjs\n'],
       // biome-ignore lint/suspicious/noTemplateCurlyInString: npm's own substitution, not a JS template
       ['.npmrc', '${KEY}=--import ./scripts/reg.mjs\n'],
+      // Keys not plainly spelt, which ini reads through JSON and dotenv after a line break.
+      ['.npmrc', ' "globalconfig"=./scripts/npmrc\n'],
+      ['.npmrc', '[ "prefix" ]=./scripts\n'],
+      ['.npmrc', '[ prefix ]\nfund=false\n'],
+      ['.env', 'CI=1\u2028NPM_CONFIG_GLOBALCONFIG=./scripts/npmrc\n'],
+      ['.env', 'CI=1\u2029"FOO BAR"=1\n'],
     ].map(
       ([name, text]) =>
         [`a target ${name} that runs a file`, { [name as string]: text }, {}, []] as const,
@@ -730,6 +746,17 @@ describe('typescriptAdapter.testFiles', () => {
     ['one naming a globalconfig cut at a #', 'globalconfig#c=/rc\n', false],
     ['one naming a prefix array', 'prefix[]=/p\n', false],
     ['one naming a quoted prefix array', '"prefix[]"=/p\n', false],
+    // Keys not plainly spelt: ini strips quotes and parses the key as JSON,
+    // which allows whitespace inside, and trims a section's name.
+    ['one naming a globalconfig quoted after a space', ' "globalconfig"=/x\n', false],
+    ['one naming a prefix quoted before a tab', '"prefix"\t=/x\n', false],
+    ['one naming a quoted prefix in a spaced section', '[ "prefix" ]=/x\n', false],
+    ['one with a spaced prefix section', '[ prefix ]\nfund=false\n', false],
+    ['one naming a globalconfig after a U+2028', 'fund=false\u2028globalconfig=/x\n', false],
+    ['one with a registry', 'registry = https://registry.npmjs.org/\n', true],
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: npm's own substitution, not a JS template
+    ['one with a token', '//registry.npmjs.org/:_authToken=${NPM_TOKEN}\n', true],
+    ['one with a scope registry', '@scope:registry=https://npm.example.com/\n', true],
   ])('checks a checkout beside a user .npmrc of %s', (_, npmrc, intact) => {
     const home = tempDir('pup-home-');
     if (npmrc !== undefined) writeFileSync(join(home, '.npmrc'), npmrc);

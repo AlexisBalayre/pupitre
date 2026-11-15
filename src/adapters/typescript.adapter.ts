@@ -279,25 +279,59 @@ function configKey(line: string): string {
     .replace(/[-_]/g, '') as string;
 }
 
+/**
+ * The breaks between lines: ini's, and dotenv's, whose multiline `^` also
+ * starts a line after U+2028 and U+2029.
+ */
+const LINE_BREAKS = /[\r\n\u2028\u2029]+/;
+
 /** Whether a config or env file has a line whose key names another config (`CONFIG_NAMING_KEYS`). */
 function namesAConfig(text: string): boolean {
-  return text.split(/[\r\n]+/).some((line) => CONFIG_NAMING_KEYS.has(configKey(line)));
+  return text.split(LINE_BREAKS).some((line) => CONFIG_NAMING_KEYS.has(configKey(line)));
+}
+
+/** The configs read a key per line, npm's by its ini parser and the env files by dotenv. */
+const LINE_KEYED_CONFIG = /^(?:\.npmrc|\.env(?:\.[^/]*)?)$/;
+
+/** A key, or a section's name, of only the characters a plain one is spelt in. */
+const PLAIN_KEY = /^[A-Za-z0-9._@/:+-]+$/;
+const PLAIN_SECTION = /^\[[A-Za-z0-9._@/:+-]+\]$/;
+
+/**
+ * Whether a line of a `LINE_KEYED_CONFIG` file has a key, or is a section
+ * header, spelt in anything but `PLAIN_KEY`'s characters: a quote, a bracket,
+ * whitespace inside, a non-ASCII character. ini strips quotes and parses a
+ * quoted key as JSON, which allows whitespace inside, so `' "prefix"'` and
+ * `[ "prefix" ]` are `prefix` to npm; rather than reduce each such spelling,
+ * any key not plain is refused. The key is the text before the first `=`,
+ * trimmed as JavaScript's `trim` trims and as ini trims it, without an
+ * `export`. A blank line, or one whose first character is `;` or `#`, is a
+ * comment to both parsers.
+ */
+function unplainKey(line: string): boolean {
+  const trimmed = line.trim();
+  if (trimmed === '' || /^[;#]/.test(trimmed)) return false;
+  if (trimmed.startsWith('[')) return !PLAIN_SECTION.test(trimmed);
+  const key = (trimmed.replace(/^export\s+/, '').split('=')[0] as string).trim();
+  return !PLAIN_KEY.test(key);
 }
 
 /**
- * Whether a package-manager config or env file may have the run load a file:
- * it names one of `RUNS_A_FILE`'s keys as text, names another config
- * (`namesAConfig`), or holds a backslash, by which each of these formats
- * escapes a character of a key, quoted or not (`"yarn\u0050ath"`), or a
- * substitution in a key. Read as text rather than parsed as each package
- * manager parses it, so a value with an escape costs the split too.
+ * Whether the package-manager config or env file `name` may have the run load
+ * a file: it names one of `RUNS_A_FILE`'s keys as text, names another config
+ * (`namesAConfig`), holds a backslash, by which each of these formats escapes
+ * a character of a key, quoted or not (`"yarn\u0050ath"`), or a substitution
+ * in a key, or, read a key per line, has a key not plainly spelt
+ * (`unplainKey`). Read as text rather than parsed as each package manager
+ * parses it, so a value with an escape costs the split too.
  */
-function runsAFile(text: string): boolean {
+function runsAFile(name: string, text: string): boolean {
   return (
     RUNS_A_FILE.test(text) ||
     namesAConfig(text) ||
     text.includes('\\') ||
-    KEY_SUBSTITUTION.test(text)
+    KEY_SUBSTITUTION.test(text) ||
+    (LINE_KEYED_CONFIG.test(name) && text.split(LINE_BREAKS).some(unplainKey))
   );
 }
 
@@ -414,7 +448,7 @@ function plainVitestCollection(root: RootFiles): ReturnType<typeof vitestCollect
   const managers = runInputs(root, PACKAGE_MANAGER_CONFIG);
   const collection =
     runsPlainVitest(manifest) &&
-    !managers.some(([, text]) => runsAFile(text)) &&
+    !managers.some(([name, text]) => runsAFile(name, text)) &&
     ![...root.keys()].some((name) => PNP_RUNTIME.test(name))
       ? vitestCollection(root)
       : undefined;
@@ -488,7 +522,7 @@ function readUserConfig(path: string): string {
 function userConfigRunsAFile(ctx: CapabilityContext): boolean {
   const path = userNpmrc(ctx);
   if (lstatSync(path, { throwIfNoEntry: false }) === undefined) return false;
-  return runsAFile(readUserConfig(path));
+  return runsAFile('.npmrc', readUserConfig(path));
 }
 
 /** The config files vitest reads at a package root. */
