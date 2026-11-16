@@ -40,6 +40,11 @@
     is within 5% of the actual spend (`retro.test.ts`). On the 2026-11-16 data it lands 3–9% over
     the actual. A few compactions fired at 200–230k under an earlier setting, and a replay at the
     267k median carries the context through them.
+    *Trust.* The replay's figures come from transcripts the sessions write themselves, so a
+    worker can skew its class's medians, and the threshold a report favours is advisory: the
+    operator decides the setting. A transcript is read in one linear pass over its requests and
+    compaction boundaries, however many boundaries it holds. Every token count is held at
+    10M (`MAX_COUNT`, which `pup usage` applies too), so no figure prints as Infinity or NaN.
     *Rejected.* The lowest context a compaction fired at, as the observed threshold. It made the
     replay reset sessions that the actual 267k setting let run, and missed the actual spend by up
     to 11%. Replaying fresh windows (a handoff respawn) instead of compactions: the knob being

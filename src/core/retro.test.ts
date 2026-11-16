@@ -405,6 +405,32 @@ describe('pup retro context replay', () => {
     expect(formatRetro(report)).toContain('100k');
   });
 
+  it('reads a transcript with 150k compaction boundaries between two requests', () => {
+    const boundaries = Array.from({ length: 150_000 }, () => boundary(MINUTE, 'auto', 300_000));
+    const lines = [
+      request('r0', 0, 9_000, 11_000),
+      ...boundaries,
+      request('r1', 2 * MINUTE, 9_000, 5_000),
+    ];
+
+    const [row] = retro(lines).classes;
+
+    expect(row?.compactions).toBe(150_000);
+    expect(row?.contextBeforeCompaction).toBe(300_000);
+  });
+
+  it('holds an absurd count at a ceiling, so no figure prints as Infinity or NaN', () => {
+    const lines = [
+      request('r0', 0, 1e308, 1e308),
+      boundary(MINUTE - 1, 'auto', 1e308),
+      request('r1', MINUTE, 1e308, 1e308),
+    ];
+    const report = retro(lines);
+
+    expect(formatRetro(report)).not.toMatch(/Infinity|NaN/);
+    expect(report.classes[0]?.contextBeforeCompaction).toBe(10_000_000);
+  });
+
   it('keeps a /compact whatever the threshold, and reproduces a transcript with no reset', () => {
     const lines = [
       request('r0', 0, 9_000, 11_000 - INPUT),

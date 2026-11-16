@@ -68,22 +68,39 @@ export interface ContextStats {
 
 const sum = (values: number[]): number => values.reduce((n, v) => n + v, 0);
 
+/**
+ * The requests in order, each with the compactions since the one before it. A
+ * transcript is session-written, so the compactions are walked once alongside
+ * the requests: one with any number of boundaries stays linear.
+ */
 function stepsOf(read: Transcript): Step[] {
+  const compactions = [...read.compactions].sort((a, b) => a.at - b.at);
+  let next = 0;
   let previous = read.before;
   return [...read.calls.values()]
     .sort((a, b) => a.at - b.at)
     .map((call) => {
       const after = previous?.at ?? Number.NEGATIVE_INFINITY;
-      const resets = read.compactions.filter((c) => after < c.at && c.at <= call.at);
+      let found = 0;
+      let seen = false;
+      let auto = false;
+      let manual = false;
+      for (; next < compactions.length && (compactions[next]?.at ?? 0) <= call.at; next += 1) {
+        const c = compactions[next];
+        if (!c || c.at <= after) continue;
+        seen = true;
+        found = Math.max(found, c.preTokens);
+        if (c.manual) manual = true;
+        else auto = true;
+      }
       const previousContext = previous ? contextOf(previous) : undefined;
-      const found = Math.max(0, ...resets.map((c) => c.preTokens));
       const step = {
         call,
         context: contextOf(call),
         previousContext,
-        compactedContext: resets.length > 0 ? found || previousContext : undefined,
-        autoReset: resets.some((c) => !c.manual),
-        manualReset: resets.some((c) => c.manual),
+        compactedContext: seen ? found || previousContext : undefined,
+        autoReset: auto,
+        manualReset: manual,
         idle: recachedTokens(call, previous) > 0,
       };
       previous = call;
@@ -106,11 +123,10 @@ function rebuilt(step: Step): boolean {
  * the cache did not hold is written again.
  */
 function replayTranscript(
-  read: Transcript,
+  steps: Step[],
   threshold: number,
   floor: ResetFloor,
 ): { cost: number; resets: number } {
-  const steps = stepsOf(read);
   const longTier = sum(steps.map((s) => s.call.write1h)) >= sum(steps.map((s) => s.call.write5m));
   let cost = 0;
   let resets = 0;
@@ -195,8 +211,8 @@ function statsOf(items: ScannedTranscript[]): ContextStats {
   const floor = resetFloorOf(transcripts);
   const replayAt = (threshold: number): { cost: number; resets: number } =>
     transcripts.reduce(
-      (acc, { read }) => {
-        const one = replayTranscript(read, threshold, floor);
+      (acc, { steps: mine }) => {
+        const one = replayTranscript(mine, threshold, floor);
         return { cost: acc.cost + one.cost, resets: acc.resets + one.resets };
       },
       { cost: 0, resets: 0 },

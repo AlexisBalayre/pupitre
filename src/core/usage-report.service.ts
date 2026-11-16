@@ -202,9 +202,15 @@ function textOf(content: unknown): string {
     .join('');
 }
 
-/** A token count, or 0 for anything else: a string would concatenate, a negative one refund. */
+/** No request carries more; a larger count is a written-in one, and sums of it stay finite. */
+const MAX_COUNT = 10_000_000;
+
+/**
+ * A token count, or 0 for anything else: a string would concatenate, a negative
+ * one refund. A count past `MAX_COUNT` is held at it.
+ */
 function countOf(n: unknown): number {
-  return typeof n === 'number' && Number.isFinite(n) && n >= 0 ? n : 0;
+  return typeof n === 'number' && Number.isFinite(n) && n >= 0 ? Math.min(n, MAX_COUNT) : 0;
 }
 
 function parseCall(entry: TranscriptEntry, at: number): Call | undefined {
