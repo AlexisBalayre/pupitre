@@ -24,7 +24,9 @@
     reviewer's agent file in the main checkout (`.claude/agents/review-<name>.md`), never copied
     into pup. A checklist is the bold-led paragraphs above the file's first `##` heading, then the
     bullets under its `## Flag` heading, or that section's opening paragraph when it has none,
-    each cut to its first sentence. A reviewer whose file is missing has no checklist.
+    each cut to its first sentence; a bold-led one keeps its title and its body's first sentence,
+    so every line states a check. Bold is what marks a lead paragraph as a check: a non-bold one
+    is left out by design, whatever it says. A reviewer whose file is missing has no checklist.
     *Ceiling.* The store and the main checkout are both within a session's shell reach (decision
     46), so a session can turn the step on or rewrite a checklist for a later compile. That is why
     the section sits below every rule and is framed as the brief is (decision 57): each line
