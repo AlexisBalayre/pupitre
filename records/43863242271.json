@@ -1,0 +1,140 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-16T12:10:17.100Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43863242271",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43863242271",
+  "actor": "AlexisBalayre",
+  "commit_sha": "483d8086b78dbe891915f03d37362d4e431efbfc",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 351,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs",
+    "context"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs",
+    "context"
+  ],
+  "reviewers_skipped": [
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "skills/pup/SKILL.md",
+      "line": "41",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "important",
+      "description": "SKILL.md and LOOP.md still show `pup answer <session> <n>` / `pup answer conductor …` without the now-required `--question <id>`, so a copied command fails with commander's 'required option not specified'.",
+      "body": "**Stale operator guide: `pup answer` now requires `--question <id>`**\n\nThis PR makes `--question <id>` a `requiredOption` on `pup answer` (`src/cli/index.ts`, `.requiredOption('--question <id>', …)`), with no positional or fallback alternative. The skill guides the conductor and operator load (README tells users to symlink `skills/pup` into `~/.claude/skills/pup`) still show the old form:\n\n- `skills/pup/SKILL.md:41`: \"`pup answer <session> <n>` picks option n of the question Needs you lists … `pup answer <session> \"<words>\"` answers freely; `pup answer conductor …` answers the conductor's\"\n- `skills/pup/LOOP.md:114`: \"answer it with `pup answer <session> <n>`, or in words.\"\n\nAn agent or operator following either line gets `error: required option '--question <id>' not specified`, and neither says the id is the `question #<id>` the inbox and `pup status` now print. Neither file is in the diff, but this PR's CLI change is what falsified them.\n\nFix: show `--question <id>` in both places and name where the id comes from.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/483d8086b78dbe891915f03d37362d4e431efbfc/skills/pup/SKILL.md#L41-L41\nhttps://github.com/AlexisBalayre/pupitre/blob/483d8086b78dbe891915f03d37362d4e431efbfc/skills/pup/LOOP.md#L114-L114",
+      "suggestion": "| Answer a question | `pup answer <session> <n> --question <id>` picks option n of the question Needs you lists (numbered, the recommended one marked; `<id>` is the `question #<id>` it shows, and a newer question refuses the answer); `pup answer <session> \"<words>\" --question <id>` answers freely; `pup answer conductor … --question <id>` answers the conductor's (operator-only; `pup ui`'s number keys do the same) |"
+    },
+    {
+      "file": "src/core/session-lifecycle.service.ts",
+      "line": "853",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`type AnswerWords` is declared inline in a service file and used by both `answerMessage` and `conductorQuestion`; general.md §Code layout puts a reused type in `src/core/types/` (e.g. beside `EventPayloads` in session-event.types.ts).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "1400-1402",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The call-site comment on `pup conductor ask` (\"The run's token is the window's, never the caller's to name…\") restates `markConductorQuestion`'s JSDoc; general.md §Comments says a call-site copy of the callee's docs is deleted.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "548-560",
+      "area": "simplicity",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`questionNeed` writes `questionId: question.id` in both its early return and its main return; folding the no-options case into a conditional spread removes the branch and the duplicated field.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/use-controls.hook.ts",
+      "line": "240-256",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The TUI number keys and web dashboard option buttons bind to the question rendered at keypress/click time, so a question a session asks milliseconds before the click (web `flush()` swaps the board under the pointer) gets the same option number; holding the board while the pointer is over an answer form would close it.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 4.7817356749999975,
+  "duration_ms": 298198,
+  "num_turns": 19,
+  "tokens": {
+    "input": 14,
+    "output": 15809,
+    "cache_read": 386011,
+    "cache_creation": 63001,
+    "total": 464835
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 178,
+      "output": 75439,
+      "cache_read": 3936768,
+      "cache_creation": 312505,
+      "cost_usd": 4.048373599999999
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 84,
+      "output": 15672,
+      "cache_read": 805905,
+      "cache_creation": 198086,
+      "cost_usd": 0.7326935000000001
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 133,
+      "cache_read": 0,
+      "cache_creation": 4815,
+      "cost_usd": 0.000668575
+    }
+  ],
+  "permission_denials": []
+}
