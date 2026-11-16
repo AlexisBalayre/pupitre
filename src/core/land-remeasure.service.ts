@@ -86,10 +86,11 @@ export async function remeasureMerge(
     );
   }
   if (req.approvedBy === undefined) {
-    // The merge's three-way base is the head's merge-base with `landedOn`, not
-    // the pin's: a head on an older base can bring back what the target
-    // changed after the pin. So what it landed is held to what landing the pin
-    // there would have, and when that cannot be read, nothing is let through.
+    // The trees, not `gitDiffPaths`' merge-base range: from an older merge-base
+    // a head that kept a change the pin reverted would show none. GitHub merged
+    // the head from its own merge-base, so it can bring back what the target
+    // reverted after the pin: what landed is held to what landing the pin
+    // would have. Over-reporting and a pin that will not merge fail closed.
     const pinTree = pinLandingTree(req.repoPath, landedOn, sha);
     if (pinTree === undefined) {
       throw new Error(
@@ -99,9 +100,6 @@ export async function remeasureMerge(
           `\`--remeasure --approved-by <who>\`. Nothing was landed.`,
       );
     }
-    // The trees, not `gitDiffPaths`' merge-base range: the head need not
-    // descend from the pin, and from an older merge-base a head that kept a
-    // change the pin reverted would show none. Over-reporting fails closed.
     const changed = (from: string, to: string) =>
       runGit(req.repoPath, [
         'diff',
@@ -146,17 +144,14 @@ export async function remeasureMerge(
       : newestFirst
           .slice(pinnedAt + 1)
           .find((event) => event.type === 'gate_result' || event.type === 'merge');
-  const pinnedStages =
-    gated?.type === 'gate_result' && gated.to === 'merged' && gated.report?.passed
-      ? gated.report.stages
-      : undefined;
-  if (pinnedStages === undefined) {
+  if (gated?.type !== 'gate_result' || gated.to !== 'merged' || !gated.report?.passed) {
     throw new Error(
       `No passing gate report into merged is recorded right before the merge of ${sha}, the ` +
         'commit the gate pinned, so a remeasure has no stages to hold the merge to. Nothing was ' +
         'landed.',
     );
   }
+  const pinnedStages = gated.report.stages;
   // Every gate run lists these three, run or skipped: a report without one is
   // no full run's, and would hold the merge to nothing there.
   const unlisted = ['build', 'test', 'lint'].filter(
@@ -204,29 +199,25 @@ export async function remeasureMerge(
   // The open entries the session's own gate filed as accepted debt, by kind;
   // one whose files are no list of paths accepts nothing.
   const accepted = new Map<string, { description: string; files: string[] }[]>();
-  for (const entry of measured?.openEntries ?? []) {
+  const { openEntries, flaggedDebt } = measured ?? { openEntries: [], flaggedDebt: [] };
+  for (const entry of openEntries) {
     const kind = remeasureKind(entry.description, session.id);
     const files = pathList(entry.files);
     if (kind === undefined || files === undefined) continue;
     accepted.set(kind, [...(accepted.get(kind) ?? []), { description: entry.description, files }]);
   }
-  const flaggedDebt = measured?.flaggedDebt ?? [];
   const flaggedBy = new Set(
     flaggedDebt.flatMap((flag) => debtFigures(flag.description, session.id)?.stage ?? []),
   );
   // Past a stage that failed the rest never ran, so only a full run is held
   // to the pin's stages: all but the two the gate runs on the session's
   // worktree, which a remeasure has none of.
-  const unrun =
-    measured === undefined
-      ? []
-      : pinnedStages.flatMap(({ stage, status }) => {
-          if (!RAN_STATUSES.has(status) || WORKTREE_STAGES.has(stage)) return [];
-          const now = stages.find((result) => result.stage === stage)?.status ?? 'absent';
-          return ['absent', 'skipped'].includes(now)
-            ? [`  ${stage}: ran at the pin, ${now} now`]
-            : [];
-        });
+  const unrun = (measured === undefined ? [] : pinnedStages)
+    .filter(({ stage, status }) => RAN_STATUSES.has(status) && !WORKTREE_STAGES.has(stage))
+    .flatMap(({ stage }) => {
+      const now = stages.find((result) => result.stage === stage)?.status ?? 'absent';
+      return ['absent', 'skipped'].includes(now) ? [`  ${stage}: ran at the pin, ${now} now`] : [];
+    });
   const failed = [
     ...stages
       .filter((stage) => !LANDABLE_STATUSES.has(stage.status))
@@ -290,30 +281,22 @@ export async function remeasureMerge(
 }
 
 /**
- * The tree git gives merging `sha` onto `landedOn`: what landing the pin itself
- * there would have landed. Undefined when that merge conflicts or git fails in
- * any other way, so the caller fails closed. Run from the scratch git dir with
- * the repo's commit graph off, as `pup land`'s `mergedOnto` merges, for its
- * reasons: a merge reads drivers from config, and the graph is a cache in the
- * object store a session can write (decisions 54, 131). The tree is written to
- * the repo's own object store, where the caller diffs it.
+ * The tree git gives merging `sha` onto `landedOn`, written to the repo's own
+ * objects; undefined on a conflict, a failure or an output that is no object
+ * id. From the scratch git dir with the commit graph off, as land.service's
+ * `mergedOnto` merges, for its reasons.
  */
 function pinLandingTree(repoPath: string, landedOn: string, sha: string): string | undefined {
+  const args = ['-c', 'core.commitGraph=false', 'merge-tree', '--write-tree', '--no-messages'];
   try {
     return withScratchGitDir(repoPath, 'pup-land-', (git) =>
-      git(
-        [
-          '-c',
-          'core.commitGraph=false',
-          'merge-tree',
-          '--write-tree',
-          '--no-messages',
-          landedOn,
-          sha,
-        ],
-        { stdio: ['ignore', 'pipe', 'pipe'], timeout: GATE_COMMAND_TIMEOUT_MS },
-      ).trim(),
-    );
+      git([...args, landedOn, sha], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: GATE_COMMAND_TIMEOUT_MS,
+      }),
+    )
+      .trim()
+      .match(/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/)?.[0];
   } catch (error) {
     rethrowIfKilled(error);
     return undefined;

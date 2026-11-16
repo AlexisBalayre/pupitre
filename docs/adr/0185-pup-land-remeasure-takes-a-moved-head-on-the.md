@@ -106,8 +106,8 @@
     commit the merge went onto, which is what landing the pin itself would have landed. It does
     so in the scratch git dir with the commit graph off, as decision 131's check does. The paths
     where the merge commit's tree differs from that tree join the list. When that merge of the pin
-    conflicts, or git fails, what landed past the pin cannot be read, so `--approved-by` is
-    required whatever the paths. The git is the scope audit's otherwise: the safe config, the
+    conflicts, git fails, or what git prints is no object id, what landed past the pin cannot be
+    read, so `--approved-by` is required whatever the paths. The git is the scope audit's otherwise: the safe config, the
     scrubbed environment with replace refs off, no external diff or textconv, and `--no-renames`,
     so a file moved out of a critical area counts as a change to it. The glob match is
     case-sensitive, as the gate's is, so on a case-insensitive filesystem a path spelled in
