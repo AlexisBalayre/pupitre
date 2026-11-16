@@ -33,7 +33,7 @@ import { NO_PROGRESS, type StageProgress } from './progress.utils.js';
 import {
   appendEvent,
   getSession,
-  listEvents,
+  isPrClosedOnRecord,
   listSessions,
   type SessionRow,
 } from './session.repository.js';
@@ -384,10 +384,7 @@ export async function abandonClosedSession(
             'CLOSED; only a PR closed unmerged can be abandoned. Nothing was recorded.',
         );
       }
-      const newest = listEvents(db, session.id)
-        .reverse()
-        .find((row) => row.type === 'merge' || row.type === 'pr_closed');
-      if (newest?.type === 'pr_closed') return { prUrl, recorded: false };
+      if (isPrClosedOnRecord(db, session.id)) return { prUrl, recorded: false };
       appendEvent(db, session.id, 'pr_closed', { prUrl, sha });
       return { prUrl, recorded: true };
     },

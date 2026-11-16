@@ -690,15 +690,33 @@ export function listEvents(db: Database, sessionId: string): EventRow[] {
     .all(sessionId) as EventRow[];
 }
 
+/** The session's newest event of one of `types`, undefined when it has none. */
+export function newestEventOf(
+  db: Database,
+  sessionId: string,
+  types: readonly StoredEventType[],
+): EventRow | undefined {
+  return listEvents(db, sessionId)
+    .reverse()
+    .find((event) => (types as readonly string[]).includes(event.type));
+}
+
+/**
+ * Whether the operator recorded the session's PR closed unmerged with `pup
+ * land --abandon-closed` (decision 146): its newest `merge` or `pr_closed`
+ * event is `pr_closed`. A re-gate's newer `merge` ends the record.
+ */
+export function isPrClosedOnRecord(db: Database, sessionId: string): boolean {
+  return newestEventOf(db, sessionId, ['merge', 'pr_closed'])?.type === 'pr_closed';
+}
+
 /**
  * The `fix_round` event of the CI fix round a session is in (decision 90):
  * the newest of its `fix_round`, `merge` and `landed` events, when that is a
  * `fix_round`. A round ends at the merge its re-gate records.
  */
 export function currentFixRound(db: Database, sessionId: string): EventRow | undefined {
-  const newest = listEvents(db, sessionId)
-    .reverse()
-    .find((event) => ['fix_round', 'merge', 'landed'].includes(event.type));
+  const newest = newestEventOf(db, sessionId, ['fix_round', 'merge', 'landed']);
   return newest?.type === 'fix_round' ? newest : undefined;
 }
 

@@ -5,7 +5,7 @@ import { quotePath } from './debt.service.js';
 import { rethrowIfKilled, runGit } from './git-diff.client.js';
 import { COMMIT_SHA } from './merge-gate.constants.js';
 import { newestMerge, resolveCommitIfPresent, timedSince } from './merge-gate.service.js';
-import { listEvents, listSessions } from './session.repository.js';
+import { listSessions, newestEventOf } from './session.repository.js';
 import { holdingStates } from './session-state.utils.js';
 import type { GateStageResult } from './types/merge-gate.types.js';
 
@@ -195,9 +195,7 @@ interface Competitor {
  * (`pup land --abandon-closed`).
  */
 function isClosedOut(db: Database, sessionId: string): boolean {
-  const newest = listEvents(db, sessionId)
-    .reverse()
-    .find((row) => ['merge', 'landed', 'retired', 'pr_closed'].includes(row.type));
+  const newest = newestEventOf(db, sessionId, ['merge', 'landed', 'retired', 'pr_closed']);
   return newest?.type === 'retired' || newest?.type === 'pr_closed';
 }
 

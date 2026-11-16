@@ -154,6 +154,7 @@ import {
   getSession,
   insertSession,
   insertTask,
+  isPrClosedOnRecord,
   listEvents,
   saveProjectBaseline,
   saveProjectOriginUrl,
@@ -1430,10 +1431,11 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         fixRound = true,
         firstFile = 'src/feature.ts',
         firstContent = 'export const a = 1;\n',
+        scopeIn = ['src/**'],
       } = {},
       acceptDebt?: { reason: string; reviewBy: string; acceptedBy: string },
     ): Promise<string> {
-      const worktree = seedSession(db, repo);
+      const worktree = seedSession(db, repo, { scopeIn });
       commitIn(worktree, firstFile, firstContent);
       bare = addOrigin();
       const first = await withFakeGh(fakeGh([openPrOnMain]), () =>
@@ -1653,6 +1655,70 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       await setup();
 
       await expectRefusedUnwritten(refusal, fakeGh([openPrOnMain], undefined, state));
+    });
+
+    // Decision 146: `pup land --abandon-closed` freed the PR's ADR numbers, and
+    // a reopen does not move its head; only a re-gate's merge takes them back.
+    describe('a PR reopened after the operator recorded it closed', () => {
+      const ADR_FIRST = {
+        fixRound: false,
+        firstFile: 'docs/adr/0002-mine.md',
+        firstContent: '# 0002\n',
+        scopeIn: ['src/**', 'docs/adr/**'],
+      };
+
+      /** Gated, recorded closed, reopened at the pin, its local branch back at the PR's head. */
+      async function reopenedAtThePin(): Promise<void> {
+        await gateThenFix(ADR_FIRST);
+        appendEvent(db, SESSION_ID, 'pr_closed', { prUrl: PR_URL, sha: pinned });
+        sh(repo, 'git', 'branch', '-f', BRANCH, pinned);
+      }
+
+      it('re-gates the unmoved head, its merge event ending the record', async () => {
+        await reopenedAtThePin();
+
+        const outcome = await regate();
+
+        expect(outcome).toMatchObject({ status: 'merged', regated: true, prUrl: PR_URL });
+        expect(merges().map((merge) => merge.sha)).toEqual([pinned, pinned]);
+        expect(isPrClosedOnRecord(db, SESSION_ID)).toBe(false);
+      });
+
+      it('refuses a number a peer took since the record, keeping the record', async () => {
+        await reopenedAtThePin();
+        insertTask(db, { id: 'task-s2', projectId: 'proj-1', spec: '{}' });
+        const sibling = join(repo, '.worktrees', 's2');
+        sh(repo, 'git', 'worktree', 'add', '-b', 'pup/s2', sibling, 'HEAD');
+        insertSession(db, {
+          id: 's2',
+          taskId: 'task-s2',
+          worktreePath: sibling,
+          branch: 'pup/s2',
+          profileHash: 'hash',
+        });
+        transitionSession(db, 's2', 'running');
+        commitIn(sibling, 'docs/adr/0002-theirs.md', '# 0002\n');
+        const edits = prEdits();
+
+        const outcome = await regate();
+
+        expect(outcome.status).toBe('refused');
+        expect(outcome.report.stages.at(-1)).toMatchObject({
+          stage: 'adr-number',
+          status: 'fail',
+          detail: expect.stringContaining('decision 0002 is also added by pup/s2'),
+        });
+        expect(merges()).toHaveLength(1);
+        expect(isPrClosedOnRecord(db, SESSION_ID)).toBe(true);
+        expect(prEdits()).toBe(edits);
+      });
+
+      it('still refuses the unmoved head of a PR with no close on record', async () => {
+        await gateThenFix(ADR_FIRST);
+        sh(repo, 'git', 'branch', '-f', BRANCH, pinned);
+
+        await expectRefusedUnwritten(/still has its head at/);
+      });
     });
 
     /** A merge event as the store can hold it: session-writable, so any shape. */
