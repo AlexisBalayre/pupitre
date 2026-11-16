@@ -776,6 +776,25 @@ describe('typescriptAdapter.testFiles', () => {
       {},
       ['src/a.test.ts'],
     ],
+    // APFS folds `ſ` onto `s`, which no JavaScript case mapping reproduces.
+    [
+      'a tſconfig.json below the root only the branch adds',
+      {},
+      { 'src/tſconfig.json': '{ "compilerOptions": { "jsxImportSource": "x" } }\n' },
+      [],
+    ],
+    [
+      'a node_moduleſ path below the root only the branch commits',
+      {},
+      { 'src/node_moduleſ/x/jsx-runtime.js': 'x\n' },
+      [],
+    ],
+    [
+      'a name outside ASCII below the root on both sides',
+      { 'docs/café.md': 'a\n' },
+      {},
+      ['src/a.test.ts'],
+    ],
   ] as [string, Record<string, string>, Record<string, string>, string[]][])(
     'reads from the trees %s',
     (_, target, branch, expected) => {
@@ -851,6 +870,28 @@ describe('typescriptAdapter.testFiles', () => {
         }
       });
       change(ctx.measurePath);
+
+      expect(typescriptAdapter.testInputsIntact?.(ctx)).toBe(intact);
+    },
+  );
+
+  // A text read stops at 1 MiB; a root file is compared by object name.
+  it.each([
+    ['untouched', () => {}, true],
+    [
+      'rewritten',
+      (lockfile: string) =>
+        writeFileSync(lockfile, readFileSync(lockfile, 'utf8').replace('a', 'b')),
+      false,
+    ],
+  ] as [string, (lockfile: string) => void, boolean][])(
+    'checks a root lockfile over 1 MiB %s',
+    (_, change, intact) => {
+      const ctx = branched(
+        { ...plainRoot(), 'package-lock.json': `{ "x": "${'a'.repeat(1 << 20)}" }\n` },
+        {},
+      );
+      change(join(ctx.measurePath, 'package-lock.json'));
 
       expect(typescriptAdapter.testInputsIntact?.(ctx)).toBe(intact);
     },
@@ -1213,6 +1254,12 @@ describe('typescriptAdapter.testFiles', () => {
     ['holds binaries of its own', (modules: string) => mkdirSync(join(modules, '.bin')), false],
     // npm 6 and older ran `.hooks/<event>` around each script.
     ['holds npm hooks of its own', (modules: string) => mkdirSync(join(modules, '.HOOKS')), false],
+    // APFS folds `ſ` onto `s`, so it opens `.hookſ` for `.hooks`.
+    [
+      'holds a dot-named entry of its own named outside ASCII',
+      (modules: string) => mkdirSync(join(modules, '.hookſ')),
+      false,
+    ],
     // vite bundles an ESM config into `.vite-temp`, which the trusted one holds too.
     [
       'holds a vite-temp of its own',

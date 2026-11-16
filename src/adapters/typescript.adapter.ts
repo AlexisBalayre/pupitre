@@ -52,6 +52,7 @@ import {
 import {
   configLoadsAFile,
   diskRoot,
+  NON_ASCII,
   treeEntriesMatching,
   treeRoot,
   vitestCollection,
@@ -392,12 +393,15 @@ function rootAt(ctx: CapabilityContext, path: string, sha: string | undefined): 
  * Whether a `node_modules` entry the trusted checkout's lacks is one the gate
  * lets stand: a dot-named one, which no package can be named, such as the
  * build info `tsc -b` may write there, but none the run itself loads, in any
- * case. A package may still load one by name, as `@prisma/client` loads
- * `.prisma/client`, but from its own real path, the trusted checkout's.
+ * case, nor one named outside ASCII, which APFS may fold onto one the run
+ * loads (`NON_ASCII`: `.hookſ` onto `.hooks`). A package may still load one
+ * by name, as `@prisma/client` loads `.prisma/client`, but from its own real
+ * path, the trusted checkout's.
  */
 function unloadedEntry(trusted: string, name: string): boolean {
   return (
     name.startsWith('.') &&
+    !NON_ASCII.test(name) &&
     !RUN_LOADED_DOT_ENTRIES.includes(name.toLowerCase()) &&
     lstatSync(join(trusted, name), { throwIfNoEntry: false }) === undefined
   );
@@ -527,29 +531,34 @@ function aliasesAScope({ configPath }: CapabilityContext, aliases: string[]): bo
 const NODE_MODULES_PATH = /(?:^|\/)node_modules(?:\/|$)/i;
 
 /**
- * A `tsconfig*.json` or `jsconfig*.json` anywhere, in any case: tsconfck reads
- * the nearest one above each file vite transforms, below the root too, and
- * its compiler options can have a transform import code, as `jsxImportSource`
- * names the module each JSX file imports.
+ * The paths the branch must leave as the target holds them, at the root or
+ * below: every `tsconfig*.json` and `jsconfig*.json`, in any case, since
+ * tsconfck reads the nearest one above each file vite transforms, below the
+ * root too, and its compiler options can have a transform import code, as
+ * `jsxImportSource` names the module each JSX file imports; and every path
+ * holding a character outside ASCII (`NON_ASCII`), which APFS may fold onto
+ * such a tsconfig or onto a `node_modules` segment (`src/tſconfig.json`,
+ * `src/node_moduleſ/x.js`). A non-ASCII path the target holds alike is the
+ * target's, so only one the branch adds, removes or changes costs the split.
  */
-const TSCONFIG_PATH = /(?:^|\/)[jt]sconfig[^/]*\.json$/i;
+const KEPT_PATH = /(?:^|\/)[jt]sconfig[^/]*\.json$|[\u0080-￿]/i;
 
 /**
- * A checkout's `TSCONFIG_PATH` files: listed from the commit it holds where it
+ * A checkout's `KEPT_PATH` files: listed from the commit it holds where it
  * has one, as `rootAt` reads the root, else each of `files` it names read
  * from disk, without following a link, or null where none stands. Throws
  * where one cannot be read.
  */
-function tsconfigsAt(
+function keptPathsAt(
   ctx: CapabilityContext,
   path: string,
   sha: string | undefined,
   files: string[],
 ): string {
-  if (sha !== undefined) return treeEntriesMatching(ctx.configPath, sha, TSCONFIG_PATH);
+  if (sha !== undefined) return treeEntriesMatching(ctx.configPath, sha, KEPT_PATH);
   return JSON.stringify(
     files
-      .filter((file) => TSCONFIG_PATH.test(file))
+      .filter((file) => KEPT_PATH.test(file))
       .sort()
       .map((file) => {
         const at = join(path, file);
@@ -560,15 +569,15 @@ function tsconfigsAt(
 }
 
 /**
- * Whether the branch leaves every `tsconfig*.json` and `jsconfig*.json` as the
- * target holds it, at the root or below: one it adds, removes or changes
- * anywhere, or one that cannot be read, costs the split.
+ * Whether the branch leaves every `KEPT_PATH` file as the target holds it, at
+ * the root or below: one it adds, removes or changes anywhere, or one that
+ * cannot be read, costs the split.
  */
-function nestedTsconfigsShared(ctx: CapabilityContext, files: string[]): boolean {
+function keptPathsShared(ctx: CapabilityContext, files: string[]): boolean {
   try {
     return (
-      tsconfigsAt(ctx, ctx.configPath, ctx.configSha, files) ===
-      tsconfigsAt(ctx, ctx.measurePath, ctx.measureSha, files)
+      keptPathsAt(ctx, ctx.configPath, ctx.configSha, files) ===
+      keptPathsAt(ctx, ctx.measurePath, ctx.measureSha, files)
     );
   } catch {
     return false;
@@ -851,7 +860,7 @@ export const typescriptAdapter: Adapter = {
       measured?.config !== trusted.config ||
       aliasesAScope(ctx, trusted.aliases) ||
       files.some((file) => NODE_MODULES_PATH.test(file)) ||
-      !nestedTsconfigsShared(ctx, files)
+      !keptPathsShared(ctx, files)
     ) {
       return [];
     }
@@ -867,14 +876,20 @@ export const typescriptAdapter: Adapter = {
     // The test stage ran vitest over the checkout's disk, which the branch's
     // build had run in, while `testFiles` reads the commit: they answer for the
     // same run only where the disk still holds the commit's inputs, compared
-    // by every name that folds to one (decision 143).
+    // by every name that folds to one and by object name, so a root lockfile
+    // of any size compares (decision 143).
     if (ctx.measureSha === undefined) return true;
+    const byObjectName = { byObjectName: true };
     try {
       return (
         environmentLinked(ctx) &&
         !userConfigRunsAFile(ctx) &&
-        JSON.stringify(runInputs(diskRoot(ctx.measurePath, ctx.configPath), VITEST_RUN_INPUT)) ===
-          JSON.stringify(runInputs(treeRoot(ctx.configPath, ctx.measureSha), VITEST_RUN_INPUT))
+        JSON.stringify(
+          runInputs(diskRoot(ctx.measurePath, ctx.configPath, byObjectName), VITEST_RUN_INPUT),
+        ) ===
+          JSON.stringify(
+            runInputs(treeRoot(ctx.configPath, ctx.measureSha, byObjectName), VITEST_RUN_INPUT),
+          )
       );
     } catch {
       return false;

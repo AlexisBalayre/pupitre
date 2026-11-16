@@ -198,6 +198,15 @@ describe('vitestCollection', () => {
       'an import-equals of a file',
       `import shared = require('./shared.cjs');\n${configWith("{ include: ['src/**/*.test.ts'] }")}`,
     ],
+    // The parser takes one below the top level without a syntax error.
+    [
+      'an import-equals in a namespace',
+      `namespace N { import e = require('./evil'); export const v = e; }\n${configWith("{ include: ['src/**/*.test.ts'] }")}`,
+    ],
+    [
+      'an import-equals of a package in a block',
+      `{ import e = require('vite'); }\n${configWith("{ include: ['src/**/*.test.ts'] }")}`,
+    ],
     [
       'a require',
       `const shared = require('./shared.cjs');\n${configWith("{ include: ['src/**/*.test.ts'] }")}`,
@@ -301,6 +310,14 @@ describe('vitestCollection', () => {
     };
 
     expect(collected(files, ['src/a.test.ts', 'b.test.ts'])).toEqual(['src/a.test.ts']);
+  });
+
+  it('reads a config importing a package by a top-level import-equals', () => {
+    const files = {
+      'vitest.config.ts': `import os = require('node:os');\n${configWith("{ include: ['src/**/*.test.ts'] }")}`,
+    };
+
+    expect(collected(files, ['src/a.test.ts'])).toEqual(['src/a.test.ts']);
   });
 
   // A `.` stops at a line break, so `src/**`'s `.*(?:/.*)?$` would backtrack

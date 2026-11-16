@@ -233,8 +233,15 @@ function defineConfigNames(statement: ts.ImportDeclaration): string[] {
     .map((element) => element.name.text);
 }
 
-/** A call that loads a module named at run time: `require(…)`, `x.require(…)` or `import(…)`. */
+/**
+ * A node that loads a module named at run time: a call to `require(…)`,
+ * `x.require(…)` or `import(…)`, or an `import x = require(…)` below the top
+ * level, in a namespace or a block, which the parser takes there without a
+ * syntax error and the bundler turns into a `require` as it does one at the
+ * top. Reads `parent`, so the tree must be parsed with parent nodes set.
+ */
 function loadsAtRunTime(node: ts.Node): boolean {
+  if (ts.isExternalModuleReference(node)) return !ts.isSourceFile(node.parent.parent);
   if (!ts.isCallExpression(node)) return false;
   const callee = node.expression;
   return (
@@ -248,8 +255,9 @@ function loadsAtRunTime(node: ts.Node): boolean {
  * Whether a config loads a module that in the gate is the branch's: a static
  * specifier naming a file (`FILE_SPECIFIER`) or the package itself by
  * `selfName`, which resolves through its own `exports`, in an import, a
- * re-export or an `import x = require(…)`; or any `require` or dynamic
- * `import()`, whose specifier may be built at run time.
+ * re-export or an `import x = require(…)` at the top level; or any `require`
+ * or dynamic `import()`, whose specifier may be built at run time, or
+ * `import x = require(…)` below the top level (`loadsAtRunTime`).
  */
 function loadsAFile(source: ts.SourceFile, selfName: string | undefined): boolean {
   const namesAFile = (specifier: string): boolean =>
@@ -267,13 +275,16 @@ function loadsAFile(source: ts.SourceFile, selfName: string | undefined): boolea
   return statically || atRunTime(source);
 }
 
-/** A config module parsed, never run, and whether the parser reported a syntax error. */
+/**
+ * A config module parsed with parent nodes set, never run, and whether the
+ * parser reported a syntax error.
+ */
 function parsedConfig(text: string): { source: ts.SourceFile; parses: boolean } {
   const source = ts.createSourceFile(
     'vitest.config.ts',
     text,
     ts.ScriptTarget.Latest,
-    false,
+    true,
     ts.ScriptKind.TS,
   );
   // A config with a syntax error: the parser recovers into a tree no tool loads.
@@ -433,7 +444,7 @@ const notLowerCase = ([name]: [string, unknown]): number => Number(name !== name
  * (`ſ` onto `s`), which no JavaScript case mapping reproduces, so a root name
  * holding one may open for any file a run reads.
  */
-const NON_ASCII = /[\u0080-￿]/;
+export const NON_ASCII = /[\u0080-￿]/;
 
 /** Throws where a name holds a character outside ASCII (`NON_ASCII`). */
 function rootFiles(entries: [string, () => string][]): RootFiles {
@@ -490,18 +501,38 @@ function diskListing(repoPath: string, dir: string): string {
 }
 
 /**
+ * A plain file's object name in `repoPath`'s format, hashed as it stands, of
+ * any size, and nothing written. Throws on a link or anything else a tree
+ * would not check out as a plain file.
+ */
+function diskObjectName(repoPath: string, path: string): string {
+  if (!lstatSync(path).isFile()) throw new Error(`${path} is not read: not a plain file`);
+  return runGit(repoPath, ['hash-object', '--no-filters', '--', path], GIT_READ).trim();
+}
+
+/**
  * A checkout's root as it stands on disk, each file read without following a
  * link. Given the `repoPath` whose object format hashes its files, a directory
- * reads as the listing of its tree (`diskListing`); without one, it is not read.
+ * reads as the listing of its tree (`diskListing`), and with `byObjectName` a
+ * file reads as its object name (`diskObjectName`), as `treeRoot` reads a
+ * blob with it, so a file over the cap a text read has, such as a root
+ * lockfile, still compares with a commit's. Without `repoPath`, a directory
+ * is not read and a file reads as its text.
  */
-export function diskRoot(checkout: string, repoPath?: string): RootFiles {
+export function diskRoot(
+  checkout: string,
+  repoPath?: string,
+  { byObjectName = false } = {},
+): RootFiles {
   return rootFiles(
     readdirSync(checkout, { withFileTypes: true }).map((entry) => {
       const path = join(checkout, entry.name);
       const read =
-        entry.isDirectory() && repoPath !== undefined
+        repoPath !== undefined && entry.isDirectory()
           ? () => diskListing(repoPath, path)
-          : () => readPlainFile(path, { followLinks: false });
+          : repoPath !== undefined && byObjectName
+            ? () => diskObjectName(repoPath, path)
+            : () => readPlainFile(path, { followLinks: false });
       return [entry.name, read];
     }),
   );
@@ -512,10 +543,11 @@ export function diskRoot(checkout: string, repoPath?: string): RootFiles {
  * checkout a session's code has run in (decision 143), each listing with
  * `--full-tree`, so a session's `core.worktree` cannot narrow it to a prefix
  * (decision 161). Only a regular file's
- * blob is read, so a link is not followed; a directory reads as `ls-tree -r`
+ * blob is read, so a link is not followed, as its text or, with
+ * `byObjectName`, as its object name; a directory reads as `ls-tree -r`
  * lists it, as `diskRoot` lists one on disk.
  */
-export function treeRoot(repoPath: string, sha: string): RootFiles {
+export function treeRoot(repoPath: string, sha: string, { byObjectName = false } = {}): RootFiles {
   return rootFiles(
     runGit(repoPath, ['ls-tree', '--full-tree', '-z', sha], GIT_READ)
       .split('\0')
@@ -526,7 +558,9 @@ export function treeRoot(repoPath: string, sha: string): RootFiles {
         const [mode = '', , oid = ''] = entry.slice(0, tab).split(' ');
         const name = entry.slice(tab + 1);
         const read = PLAIN_BLOB_MODE.test(mode)
-          ? () => runGit(repoPath, ['cat-file', 'blob', oid], GIT_READ)
+          ? byObjectName
+            ? () => oid
+            : () => runGit(repoPath, ['cat-file', 'blob', oid], GIT_READ)
           : mode === TREE_MODE
             ? () =>
                 listing(

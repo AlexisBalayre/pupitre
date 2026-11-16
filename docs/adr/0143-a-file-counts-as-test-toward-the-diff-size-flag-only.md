@@ -49,6 +49,9 @@
     and the object name `git hash-object` gives it in the main repo's format, against
     `ls-tree -r` of the sha's directory, so a file added, removed, rewritten, made executable or
     made a link there fails it, while an empty directory, which no tree holds, does not.
+    Each file in the class is compared by that object name too, against its blob's, not by
+    its text: a text read of the disk stops at 1 MiB, and a root lockfile past it, common in
+    an npm or yarn monorepo, would otherwise fail the check on every merge.
     The class costs the split wherever a build writes such an entry at the root: a `.next`,
     `.turbo` or `.svelte-kit` output, or a `.DS_Store`. Failing closed there is the price of
     not having to know which tool reads which name.
@@ -56,7 +59,8 @@
     the trusted checkout's entry that the gate made, apart from the `.cache` and `.vite`
     caches vitest writes and the `.vite-temp` vite bundles an ESM config into under a fresh
     name each run, which the gate leaves unlinked, those three names exactly, and a dot-named entry the trusted
-    `node_modules` lacks, such as the `.tmp` a `tsc -b` with
+    `node_modules` lacks whose name is all ASCII, since APFS opens `.hookſ` for `.hooks`,
+    such as the `.tmp` a `tsc -b` with
     `tsBuildInfoFile: ./node_modules/.tmp/...` writes. No package can be named with a leading
     dot, but that does not make a dot-named entry one no run loads: npm 6 and older ran
     `node_modules/.hooks/<event>` around each script, so `.hooks`, as `.bin`, whose binaries a
@@ -129,7 +133,9 @@
     on either side: a statement that imports or re-exports a module by path (`./`, `../`,
     `/`), by a `file:` URL in any case, by a `#` subpath import or by the package's own name
     (`name` or `name/…`, from the root's `package.json`), which resolves through its own
-    `exports` to a branch file; an `import x = require(…)` of any of those; any `require(…)`,
+    `exports` to a branch file; an `import x = require(…)` of any of those at the top
+    level, and one of anything below it, in a namespace or a block, which the parser takes
+    without a syntax error and the bundler turns into a `require`; any `require(…)`,
     `x.require(…)` or dynamic `import(…)` anywhere in the config, whose specifier may be
     built at run time; a top-level `plugins`; and, under `test`,
     `setupFiles`, `globalSetup`, `reporters`, `environment`, `runner`, `pool`, `poolOptions`,
@@ -301,7 +307,11 @@
     the root as well, the split is refused for any branch path with a `node_modules`
     segment, in any case and even one both sides share. It is refused too for any
     `tsconfig*.json` or `jsconfig*.json` the branch adds, removes or changes anywhere, in any
-    case. In the gate these are read from the two trees, as mode, object name and path, with
+    case, and for any path holding a character outside ASCII the branch adds, removes or
+    changes, which APFS may fold onto either (`src/tſconfig.json`, `src/node_moduleſ/`). The
+    gate asks about every path on the branch, so refusing every such path would cost the
+    split on each merge of a repo holding one; one the target holds alike is the target's.
+    In the gate these are read from the two trees, as mode, object name and path, with
     `--full-tree` (decision 161). An `extends` target named any other way, such as
     `./config/base.json` or an extensionless one, is still a ceiling, owed to
     t-mwiyd1h0. Lint and a nested package's checks run beside the suites in the same
@@ -343,7 +353,8 @@
     `test.root`, `typecheck`, a `__proto__` under `test` or at the top, a top-level `root`,
     an import or re-export of a file, `plugins`, `setupFiles`, `globalSetup`, `reporters`, an
     `environment`, a `runner`, a `pool`, `poolOptions`, `execArgv` and a sequencer, an
-    `import x = require` of a file, a `require`, a `module.require`, a dynamic `import()`, a
+    `import x = require` of a file, one in a namespace, one of a package in a block, a
+    `require`, a `module.require`, a dynamic `import()`, a
     `FILE:` URL import, an import of the package by its own name (and not of one whose name it
     prefixes), a test `alias`, `environmentMatchGlobs`, `poolMatchGlobs`,
     `snapshotSerializers`, a `diff` module, a `browser` run, a custom coverage provider, a
@@ -354,7 +365,8 @@
     case, and a config that is a
     symlink or named in another case is not read, nor a root holding a name outside ASCII,
     on disk or in a commit. Read from a commit, the config is the tree's whatever the disk holds, and one committed as a link or beside a name that folds
-    to it is not read. A config that runs code and imports a package is read. Two configs
+    to it is not read. A config that runs code and imports a package is read, and so is one
+    importing a package by a top-level `import x = require`. Two configs
     that differ only inside their lists give one rest, while another key, another value, an
     assignment in a value, another import, an added exclude or another file name each give
     another, and so do two that differ only in their `coverage`. A path holding any of the
@@ -404,7 +416,7 @@
     or a sparse 50 GiB file, or
     one named by `npm_config_userconfig` through `--gate-env` with `script-shell`, an added name outside ASCII, a removed manifest, a config made a link,
     a manifest renamed into another case, a `node_modules` entry replaced by a package or linked elsewhere, a `.bin` of its own in
-    either case, a `.hooks` of its own in any case, a linked `.vitest` replaced by an entry of
+    either case, a `.hooks` of its own in any case, a `.hookſ` of its own, a linked `.vitest` replaced by an entry of
     its own, a dot-named link replaced by an entry of its own, and a `node_modules` that is
     itself a link. In the split, a collected test under a directory the tree also holds in
     another case, `src/` beside `Src/` or `fixtures/` beside `Fixtures/`, counts as source. In the gate,
@@ -429,9 +441,12 @@
     holds outside `--gate-env`. Read from the two commits as the gate reads them, these
     collect nothing: a `.config` directory on both sides; a `.github` file the branch adds
     or changes; a `node_modules` path below the root, whether the branch commits it or
-    both sides share it as `Node_Modules`; and a nested `tsconfig.json` the branch changes
-    or deletes, or a `jsconfig.json` or `TSCONFIG.app.JSON` it adds. These collect: a
-    `.github` file or a nested `tsconfig.json` both sides share. Names in another case at
+    both sides share it as `Node_Modules`; a nested `tsconfig.json` the branch changes
+    or deletes, or a `jsconfig.json` or `TSCONFIG.app.JSON` it adds; and a `src/tſconfig.json`
+    or a `src/node_moduleſ/` path the branch adds. These collect: a
+    `.github` file, a nested `tsconfig.json` or a `docs/café.md` both sides share.
+    `testInputsIntact` holds for a root `package-lock.json` over 1 MiB left untouched and
+    fails for one rewritten. Names in another case at
     the root collect nothing: a `.PostCSSrc` on both sides, or a `Postcss.config.js` or
     `TSCONFIG.JSON` only the branch commits. `testInputsIntact` fails for each of those
     three added to disk. It also fails for a committed `.config` made unlistable
