@@ -1,0 +1,215 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-16T16:02:07.565Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43901080509",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43901080509",
+  "actor": "AlexisBalayre",
+  "commit_sha": "c43ef7752b38a7dfe36cad80a830536a3d039ada",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 353,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs",
+    "context"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs",
+    "context"
+  ],
+  "reviewers_skipped": [
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "docs/adr/0191-a-worker-s-bash-calls-can-run-in-claude-code-s.md",
+      "line": "19-22",
+      "description": "The ADR says the main checkout's `project.yml` is outside \"the scope hook's reach\". The scope hook only compares the path text against the worktree prefix and never checks for symlinks, and the Write tool runs outside the sandbox with permissions bypassed. A sandboxed worker can link an in-scope worktree path to any file and then Write through that link.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "141-156",
+      "description": "`MERGE_AUTOSTASH` stays writable in the main `.git`, and the conductor's routine `git pull --ff-only` applies it to the main checkout. For the main checkout, `$GIT_DIR` is the common dir; ADR 0191's probe shows new entries at the `.git` root are writable from the sandbox, and the list does not deny `MERGE_AUTOSTASH`.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "1312-1321",
+      "description": "No grant covers the user-level package caches. Only pnpm falls back to a store inside the worktree. npm, uv and poetry write to `~/.npm/_cacache`, `~/.cache/uv` and the pypoetry cache. In a fresh worktree of an npm or uv project, the worker cannot install anything, so neither `pup session test` nor the pre-commit's tests can run.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "1344-1345",
+      "description": "The ADR says no worker commit or merge writes `packed-refs.lock`. But git's files backend takes `packed-refs.lock` for every ref deletion, even of a ref that was never packed. So a sandboxed worker cannot delete any ref. This is a different trigger from the `git gc --auto` nit already posted.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "1374-1378",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The sandbox denyWrite list names the main `.git`'s `config` and `config.worktree` but not `config.lock` / `config.worktree.lock`, while it does deny `packed-refs.lock`, `HEAD.lock`, `index.lock` and `main.lock`. Git commits a config write by renaming `config.lock` over `config`, so content a worker puts into the lock lands in the main config.",
+      "body": "**The main `.git/config.lock` stays writable, so a sandboxed worker can get a `core.fsmonitor` renamed into the main config by the operator's own git.**\n\nThe deny list covers `config` but not its lock:\n\n```ts\n      denyWrite: [\n        common('config'),\n        // The main checkout's own per-worktree config, read once\n        // extensions.worktreeConfig is on (`git sparse-checkout init` turns it on).\n        common('config.worktree'),\n```\n\nADR 0191's probe lists \"new entries … at the `.git` root\" as writable under Claude Code's implicit grant, and ceiling 4 says every deny is a literal path. So `config.lock` is neither denied by this list nor refused by Claude Code. Ceiling 13 already gives the rationale for denying `packed-refs.lock`: \"Allowing the lock instead would let a worker write into the lock while the operator's or the gate's git holds it, and that git would rename the worker's content over `packed-refs`.\" The same mechanism applies to `config.lock`, and the payload is code execution rather than a moved ref. No ceiling names it.\n\n**Trigger** (git lockfile behaviour is pinned knowledge, not probed):\n1. A sandboxed Bash call leaves a background loop running (ceiling 14 already assumes this is possible). Whenever `<main>/.git/config.lock` exists, it renames a prepared file over it: the current config plus `[core] fsmonitor = <worktree program>`.\n2. The operator runs a config-writing git command in the main checkout, such as `git push -u`, `git checkout -b x origin/x`, `gh pr checkout` or `git config`. Git creates `config.lock`, writes it, and renames the lock path over `config`. The rename goes by path, so the worker's file is the one that lands.\n3. Every later unsandboxed git command in the main checkout runs the worker's fsmonitor program, including the operator's and the conductor's.\n\nEven if the worker loses the race, a `config.lock` left in place makes git's O_EXCL create fail, so config writes in the main checkout stall.\n\nA worker never needs the main config's lock: its own `git config` writes target the main `config`, which is already denied.\n\n**Fix:** add `common('config.lock')` and `common('config.worktree.lock')` to `denyWrite`, update the test's exact list, and name both in the ADR's and `docs/03-profiles.md`'s denied lists. The admin dir's `config.worktree.lock`, next to its denied `config.worktree`, is the same pattern.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/c43ef7752b38a7dfe36cad80a830536a3d039ada/src/core/profile-compiler.service.ts#L1374-L1378",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "174-186",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The sandbox allows `registry.yarnpkg.com`, and pup's TypeScript adapter treats a repo with `yarn.lock` as a yarn project, but WORKER_CACHE_VARS redirects only npm, pip, uv and poetry. Yarn 4's global cache (`~/.yarn/berry/cache`) is outside every grant, so a sandboxed install that misses the cache fails with EPERM.",
+      "body": "**Yarn projects get the registry but not a writable cache, so a sandboxed `yarn add` or cold-cache install fails with EPERM.**\n\n```ts\nconst WORKER_CACHE_VARS: Record<string, string> = {\n  npm_config_cache: 'npm',\n  PIP_CACHE_DIR: 'pip',\n  UV_CACHE_DIR: 'uv',\n  POETRY_CACHE_DIR: 'poetry',\n};\n```\n\nYarn is a supported package manager:\n- `WORKER_SANDBOX_DOMAINS` includes `'registry.yarnpkg.com'`, and its JSDoc says these registries are for \"the ecosystems pup ships adapters for\".\n- `src/adapters/typescript.adapter.ts:185` returns `'yarn'` for a repo with `yarn.lock`.\n\nYarn 4 turns `enableGlobalCache` on by default, so packages go to `<globalFolder>/cache`, which is `~/.yarn/berry/cache` (pinned knowledge, not probed). None of the `allowWrite` grants (worktree, admin dir, state.db files, handoff, slots) or TMPDIR covers it. Yarn 1 falls back to a temp-dir cache, so it is probably unaffected.\n\n**Trigger:** a Yarn 4 project sets `workerSandbox: true`. A worker runs `yarn add <pkg>`, or the pre-commit runs an install after a lockfile change, for a package the operator's global cache doesn't hold yet. The registry fetch succeeds, the cache write is refused, and the worker cannot commit.\n\nADR 0191 (L205-216) says npm, pip, uv and poetry \"have no such fallback … so an install stops with `EPERM`\" and that the redirect fixes this. It never mentions yarn, and no ceiling covers it.\n\n**Fix:** add `YARN_CACHE_FOLDER` (Yarn 1) and `YARN_GLOBAL_FOLDER` (Yarn 4) to the redirect, and update the ADR and `docs/03-profiles.md`. Alternatively, record yarn as a ceiling.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/c43ef7752b38a7dfe36cad80a830536a3d039ada/src/core/profile-compiler.service.ts#L174-L186",
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0191-a-worker-s-bash-calls-can-run-in-claude-code-s.md",
+      "line": "249-255",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Ceiling 3 says a worker can point `handoff.md` at `~/.ssh/id_ed25519` and the unsandboxed `pup respawn` then reads it into the next session. It can't: `respawnSession` compares the bytes with the hash `handoff-done` recorded and refuses on a mismatch, and the worker can't compute a secret's hash from inside the sandbox. The real effect is that respawn refuses, so the ceiling should say that.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.test.ts",
+      "line": "946-955",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The \"compiles the same bytes while it is off\" test compares two compiles from the new code against each other, so it never guards the scope hook's bytes when the setting is off. A mutant that always emits SYMLINK_CHECK_SHELL (e.g. `sandboxCredentials !== null`) passes the whole suite while refusing Edit/Write through every in-worktree symlink in non-sandboxed projects. Assert the off hook does not contain `LINK_PATH`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0191-a-worker-s-bash-calls-can-run-in-claude-code-s.md",
+      "line": "217-221",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The cache passages inserted in b5ae181 and ec2a6e3 cut off the pnpm sentence's subject. \"pup's compiled hooks start none of them. It then fetches every package into that store…\" now reads as if the hooks fetch packages. Name pnpm's pre-commit install as the subject again, or move the hooks/MCP passage out of the pnpm paragraph.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "181-186",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `npm_config_cache` redirect sends npm's cache to a folder the worker can write, and the compiled `env` also reaches the unsandboxed session process. Under an `npm -g` install, Claude Code's auto-updater could then install a tarball and metadata the worker planted there. ADR 0191 L217-220 says nothing unsandboxed starts npm, which leaves the updater out. Set `DISABLE_AUTOUPDATER: '1'` alongside the redirect, or list it as a ceiling.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "1372",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`join(homedir(), '.pupitre', 'slots')` is a third inline copy of the slots path (general.md §No hardcoded values). `slotsDir()` in test-slot.service.ts is the existing source. If the slots dir moves, the sandbox grant would go stale without anything failing until `pup session test` breaks under the sandbox. Export and call `slotsDir()`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "181-186",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `WORKER_CACHE_VARS` constant and the `workerCacheEnv` function each have one use and sit about 1,200 lines apart, so finding which env vars a worker gets means reading both. Building the entries inline in `workerCacheEnv` removes the constant and the `Object.fromEntries` round-trip.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "1520-1522",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`sandboxCredentials` doubles as the on/off flag: it is read through `?? []` for the Read rules and through `!== undefined` for the scope hook. One `const sandboxOn = workerSandboxOn(input.repoPath)` would remove both, and the next editor wouldn't have to work out that `undefined` means off.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "841-855",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The scope hook's symlink walk starts at `LINK_PATH=$WORKTREE` and tests `-L` only on the components below it, never the worktree root. If sandboxed Bash swapped the root for a symlink, every in-scope Edit or Write would pass the hook and land outside the worktree.",
+      "refutation": "The loop does skip the root, and nothing on the scope-in path catches a swapped one. But the swap can't be done. Claude Code's sandbox pins every ancestor of a deny path against unlink and rename. Its deny paths include the worktree's `.claude/settings.json`, `.claude/hooks` and `.git` pointer, and the worktree root is an ancestor of all of them, so a sandboxed `mv` of the root is refused. The finding leaned on ADR ceiling 4, but that ceiling covers `refs/heads/main` inside the main `.git`, not the worktree root. This rests on pinned sandbox-runtime knowledge (medium). A sandboxed `mv \"$WORKTREE\" \"$TMPDIR/x\"` on macOS would settle it."
+    }
+  ],
+  "process_issues": [],
+  "duplicates_merged": 1,
+  "comments_posted_actual": 2,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 7.609078125,
+  "duration_ms": 553385,
+  "num_turns": 26,
+  "tokens": {
+    "input": 20,
+    "output": 22224,
+    "cache_read": 624808,
+    "cache_creation": 88489,
+    "total": 735541
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 272,
+      "output": 141598,
+      "cache_read": 7121285,
+      "cache_creation": 494700,
+      "cost_usd": 6.9962719999999985
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 72,
+      "output": 17338,
+      "cache_read": 613538,
+      "cache_creation": 150835,
+      "cost_usd": 0.6119653000000002
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 333,
+      "cache_read": 0,
+      "cache_creation": 5393,
+      "cost_usd": 0.000840825
+    }
+  ],
+  "permission_denials": []
+}
