@@ -15,11 +15,6 @@ too. Nothing outside `src/cli/ui/` imports either package, and no component comp
 it is cheaper for one screen and steadily more expensive for every pane after it, and the cursor
 arithmetic it replaces the dependency with is the part nobody tests.
 
-CodeGraph is an *optional external binary*, not a package dependency: detected on PATH the way
-`gh` and `tmux` are, absent it every command still runs and sessions launch with no code graph.
-Nothing installs it, nothing bundles it, and `pup init` / `pup audit` report which of the two a
-machine is on (decision 51).
-
 ## v1 — control (the week-of-evenings cut)
 
 - Profile compiler: base + role + task layers, token budget, hash recording.

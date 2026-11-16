@@ -40,8 +40,56 @@ interface Rescoped {
 // biome-ignore lint/suspicious/noControlCharactersInRegex: matching them is the point
 const CONTROL_CHAR = /[\u0000-\u001f\u007f-\u009f]/;
 
-/** The gate's protected paths, as its scope-audit matches them: case-insensitively. */
-const PROTECTED = PROTECTED_PATH_GLOBS.map((glob) => new RegExp(globToRegExpSource(glob), 'i'));
+/** The paths a glob matches, case-insensitively, as the scope-audit reads protected ones. */
+interface Reach {
+  /** The glob before its first wildcard, lower-cased: every path it matches starts with it. */
+  prefix: string;
+  /** The one path it matches, when it has no wildcard. */
+  path?: string;
+  matches: (path: string) => boolean;
+}
+
+/**
+ * What `glob` reaches as the matcher reads it: trimmed, one leading `./`
+ * dropped, a trailing `/` reaching all beneath.
+ */
+function reach(glob: string): Reach {
+  const form = glob.trim().replace(/^\.\//, '');
+  const re = new RegExp(globToRegExpSource(glob), 'i');
+  const literal = !/[*?]/.test(form) && !form.endsWith('/');
+  return {
+    prefix: form.replace(/[*?].*/s, '').toLowerCase(),
+    ...(literal ? { path: form } : {}),
+    matches: (path) => re.test(path),
+  };
+}
+
+/** Every path beneath `path`, read as the directory it can be. */
+function beneath(path: string): Reach {
+  const prefix = `${path}/`.toLowerCase();
+  return { prefix, matches: (other) => other.toLowerCase().startsWith(prefix) };
+}
+
+/**
+ * Whether two reaches can share a path. Two whose prefixes diverge cannot;
+ * past that, one without a wildcard has a single path, which the other
+ * matches or not, and two with wildcards are taken to share one.
+ */
+function overlaps(a: Reach, b: Reach): boolean {
+  if (!a.prefix.startsWith(b.prefix) && !b.prefix.startsWith(a.prefix)) return false;
+  if (b.path !== undefined) return a.matches(b.path);
+  if (a.path !== undefined) return b.matches(a.path);
+  return true;
+}
+
+/** The gate's protected paths. */
+const PROTECTED = PROTECTED_PATH_GLOBS.map(reach);
+
+/** What a rescope glob reaches: a path without a wildcard stands for itself and all beneath it. */
+function rescopeReach(glob: string): Reach[] {
+  const own = reach(glob);
+  return own.path === undefined ? [own] : [own, beneath(own.path)];
+}
 
 /** The pre-commit hook a worker's own commits run in a repo with no `.husky`, as this one. */
 const PRE_COMMIT = 'scripts/pre-commit';
@@ -70,8 +118,8 @@ function reachesPreCommit(form: string): boolean {
  * matcher does, `globToRegExpSource`'s trim and one leading `./` stripped, so
  * a glob cannot dress past a check in what the matcher drops. A wildcard
  * anywhere in the first segment can match every top-level directory,
- * `.github` among them; past that check the first segment is literal, so a
- * path in it stands for every path the glob can reach there.
+ * `.github` among them. A protected entry, a file or a directory at any
+ * depth, is refused whenever the glob can share a path with it (`overlaps`).
  */
 const GLOB_REFUSALS: readonly (readonly [(raw: string, form: string) => boolean, string])[] = [
   [(raw) => CONTROL_CHAR.test(raw), 'contains a control character'],
@@ -88,7 +136,7 @@ const GLOB_REFUSALS: readonly (readonly [(raw: string, form: string) => boolean,
     "reaches `.github`, whose workflows run with the repo's secrets",
   ],
   [
-    (_raw, form) => PROTECTED.some((re) => re.test(`${form.split('/')[0]}/x`)),
+    (raw) => rescopeReach(raw).some((own) => PROTECTED.some((guarded) => overlaps(own, guarded))),
     `reaches a path the gate protects whatever the scope (${PROTECTED_PATH_GLOBS.join(', ')})`,
   ],
   [

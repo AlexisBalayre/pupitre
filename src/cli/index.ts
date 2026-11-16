@@ -33,7 +33,6 @@ import { auditProject, buildSweepTask, formatDebtTransition } from '../core/audi
 import { briefPath, ensureBrief, readBrief } from '../core/brief.service.js';
 import { waitForCiReview } from '../core/ci-wait.service.js';
 import { buildCodeMap, renderCodeMap } from '../core/code-map.service.js';
-import { codegraphLabel } from '../core/codegraph.client.js';
 import {
   ConductorTellRefusedError,
   DEFAULT_MAX_SESSIONS,
@@ -85,6 +84,16 @@ import { projectId, projectPaths } from '../core/paths.utils.js';
 import { InvalidProfileError } from '../core/profile.errors.js';
 import { UnknownProfileError } from '../core/profile-store.errors.js';
 import { getProfileLayer, listProfileLayers } from '../core/profile-store.service.js';
+import {
+  AUDIT_STAGES,
+  CI_WAIT_STAGES,
+  FIX_STAGES,
+  LAND_STAGES,
+  MERGE_STAGES,
+  RESPAWN_STAGES,
+  type StageProgress,
+  stageProgress,
+} from '../core/progress.utils.js';
 import { listProjects, putProjectToSleep, wakeProject } from '../core/project.service.js';
 import { renderReportHtml } from '../core/report.service.js';
 import { buildRetro, retroWindowStart, writeRetro } from '../core/retro.service.js';
@@ -349,26 +358,24 @@ function printInitReport(db: Database, report: InitReport, repoPath: string): vo
     if (s.status === 'fail' && s.detail)
       console.log(`    ${sanitizeReason(s.detail.split('\n').at(-1) ?? '')}`);
   }
-  printBaselineTail(db, report, repoPath);
+  printBaselineTail(db, report);
 }
 
 /**
  * What `pup init` and `pup audit` both end on: the debt baseline, with the
- * audit's per-metric moves under it, then the sandbox, codegraph and push
- * target lines and the findings. The audit prints the same findings, so a
+ * audit's per-metric moves under it, then the sandbox and push target lines
+ * and the findings. The audit prints the same findings, so a
  * stage that cannot measure says why on the repeat path too, or that is where
  * the gap goes quiet (decision 29).
  */
 function printBaselineTail(
   db: Database,
   report: InitReport,
-  repoPath: string,
   debtTransitions: readonly string[] = [],
 ): void {
   console.log(`debt baseline: ${describeDebtBaseline(report.baseline.debt)}`);
   for (const t of debtTransitions) console.log(`  ${t}`);
   console.log(`sandbox: ${sanitizeReason(report.sandbox)}`);
-  printCodegraphLine(repoPath);
   printPushTargetLine(db, report.projectId);
   if (report.findings.length > 0) {
     console.log('findings:');
@@ -377,18 +384,7 @@ function printBaselineTail(
 }
 
 /**
- * Beside the sandbox line, and for the same reason (decision 36): an operator
- * who never sees it cannot tell a fleet whose sessions get a code graph from one
- * whose sessions grep. Probed here rather than carried in the report, because
- * what it reports is the operator's machine and not the baseline the stages
- * measured (decision 51).
- */
-function printCodegraphLine(repoPath: string): void {
-  console.log(`codegraph: ${codegraphLabel(repoPath)}`);
-}
-
-/**
- * Beside the sandbox line for the third time (decisions 36, 51): the recorded
+ * Beside the sandbox line (decision 36): the recorded
  * push target is the value `pup merge --pr` refuses to differ from, so the
  * operator has to be able to see what they are being held to — and, on a
  * project set up before it was recorded, that they are being held to nothing
@@ -421,6 +417,21 @@ async function withPushTargetLine<TResult>(
   } catch (error) {
     printPushTargetLine(db, projectId(repoPath));
     throw error;
+  }
+}
+
+/**
+ * `running` once it settles, with the status line cleared first, so the
+ * outcome or refusal printed next starts on a line of its own (decision 184).
+ */
+async function settled<TResult>(
+  progress: StageProgress,
+  running: TResult | Promise<TResult>,
+): Promise<TResult> {
+  try {
+    return await running;
+  } finally {
+    progress.end();
   }
 }
 
@@ -465,7 +476,7 @@ function printAuditOutcome(db: Database, report: AuditOutcome, repoPath: string)
     );
     return;
   }
-  printBaselineTail(db, report, repoPath, report.debtTransitions.map(formatDebtTransition));
+  printBaselineTail(db, report, report.debtTransitions.map(formatDebtTransition));
   console.log('Baseline refreshed.');
   if (report.hasRegression) process.exitCode = 1;
 }
@@ -1802,7 +1813,7 @@ export function buildProgram(): Command {
   program
     .command('dashboard')
     .description(
-      'Serve the live status page on 127.0.0.1, read-only, behind a token minted for this run',
+      'Serve the live status page on 127.0.0.1, behind a token minted for this run; it answers, steers, launches, gates and lands too',
     )
     .option('--open', 'open the page in the browser')
     .action(async (opts: { open?: boolean }) => {
@@ -2257,22 +2268,38 @@ export function buildProgram(): Command {
       if (windowEnv === undefined) return;
       // Both the handoff request and the relaunch kickoff are steers, and
       // either can be refused as never having landed whole.
+      const progress = stageProgress(RESPAWN_STAGES);
       try {
         if (!isHandoffReady(db, repoPath, session)) {
+          progress.stage('request handoff');
           const handoffPath = requestHandoff(db, repoPath, session);
+          // Cleared first: this line is stdout's, which the status line must not run into.
+          progress.end();
           console.log(`Handoff requested; waiting for the session to write ${handoffPath} …`);
-          if (!awaitHandoffReady(db, repoPath, session, Number(opts.wait) * 1000)) {
+          const ready = awaitHandoffReady(
+            db,
+            repoPath,
+            session,
+            Number(opts.wait) * 1000,
+            undefined,
+            progress,
+          );
+          progress.end();
+          if (!ready) {
             return refuse(
               `Session ${session} has not signalled handoff-done yet (steers queue until its ` +
                 'current turn ends). Re-run `pup respawn` to ask again and keep waiting.',
             );
           }
         }
+        progress.stage('relaunch');
         respawnSession(db, repoPath, session, windowEnv, undefined, {
           model: opts.model,
           effort: opts.effort,
         });
+        progress.end();
       } catch (error) {
+        progress.end();
         if (error instanceof TopRungReachedError) return refuse(error.message);
         if (!isRefusedSteer(error)) throw error;
         console.error(error.message);
@@ -2441,23 +2468,31 @@ export function buildProgram(): Command {
         // No signal handler here: under its lock the gate outlives a Ctrl-C
         // and the SIGTERM `pup ui`'s `q` sends this child, stops every stage
         // child and removes the lock in its own `finally` (decision 95).
+        const progress = stageProgress(MERGE_STAGES);
         try {
-          outcome = await runMergeGate(db, {
-            repoPath,
-            sessionId: session,
-            adapters,
-            acceptDebt:
-              opts.acceptDebt && opts.reviewBy
-                ? {
-                    reason: opts.acceptDebt,
-                    reviewBy: opts.reviewBy,
-                    acceptedBy: approvedBy ?? 'human',
-                  }
-                : undefined,
-            openPr: opts.pr,
-            gateEnv: parseGateEnv(opts.gateEnv),
-            wait: true,
-          });
+          outcome = await settled(
+            progress,
+            runMergeGate(
+              db,
+              {
+                repoPath,
+                sessionId: session,
+                adapters,
+                acceptDebt:
+                  opts.acceptDebt && opts.reviewBy
+                    ? {
+                        reason: opts.acceptDebt,
+                        reviewBy: opts.reviewBy,
+                        acceptedBy: approvedBy ?? 'human',
+                      }
+                    : undefined,
+                openPr: opts.pr,
+                gateEnv: parseGateEnv(opts.gateEnv),
+                wait: true,
+              },
+              progress,
+            ),
+          );
         } catch (error) {
           if (error instanceof GateInterruptedError) throw error;
           // The gate ran whole but unprotected: what it did is printed, then
@@ -2583,15 +2618,23 @@ export function buildProgram(): Command {
       let outcome: LandOutcome;
       let lockLost: MergeLockLostError | undefined;
       try {
-        outcome = await landSession(db, {
-          repoPath,
-          sessionId: session,
-          adapters: detectAdapters(repoPath),
-          gateEnv: parseGateEnv(opts.gateEnv),
-          wait: true,
-          audit: opts.audit,
-          acceptHead: opts.acceptHead,
-        });
+        const progress = stageProgress(LAND_STAGES);
+        outcome = await settled(
+          progress,
+          landSession(
+            db,
+            {
+              repoPath,
+              sessionId: session,
+              adapters: detectAdapters(repoPath),
+              gateEnv: parseGateEnv(opts.gateEnv),
+              wait: true,
+              audit: opts.audit,
+              acceptHead: opts.acceptHead,
+            },
+            progress,
+          ),
+        );
       } catch (error) {
         if (error instanceof GateInterruptedError) throw error;
         // Landed and steered, and a re-run refuses it, but unprotected:
@@ -2684,14 +2727,22 @@ export function buildProgram(): Command {
       }
       let outcome: FixRoundOutcome;
       try {
-        outcome = await startFixRound(db, {
-          repoPath,
-          base: DEFAULT_BASE_PROFILE,
-          windowEnv: resolveWindowEnv(repoPath),
-          sessionId: session,
-          override: { model: opts.model, effort: opts.effort },
-          overrideVia: callingConductor() ? 'conductor' : 'operator',
-        });
+        const progress = stageProgress(FIX_STAGES);
+        outcome = await settled(
+          progress,
+          startFixRound(
+            db,
+            {
+              repoPath,
+              base: DEFAULT_BASE_PROFILE,
+              windowEnv: resolveWindowEnv(repoPath),
+              sessionId: session,
+              override: { model: opts.model, effort: opts.effort },
+              overrideVia: callingConductor() ? 'conductor' : 'operator',
+            },
+            progress,
+          ),
+        );
       } catch (error) {
         if (error instanceof LaunchRolledBackError) {
           return reportRolledBack(error, `Re-run \`pup fix ${sanitizeReason(session)}\`.`);
@@ -2727,11 +2778,11 @@ export function buildProgram(): Command {
         return refuse('--timeout takes a positive number of minutes.');
       }
       try {
-        const outcome = await waitForCiReview(db, {
-          repoPath,
-          target,
-          timeoutMs: minutes * 60_000,
-        });
+        const progress = stageProgress(CI_WAIT_STAGES);
+        const outcome = await settled(
+          progress,
+          waitForCiReview(db, { repoPath, target, timeoutMs: minutes * 60_000 }, progress),
+        );
         console.log(outcome.line);
         if (!outcome.finished) process.exitCode = 1;
       } catch (error) {
@@ -2915,9 +2966,20 @@ export function buildProgram(): Command {
         return refuse('`pup audit` is operator-only; sessions cannot move the baseline.');
       }
       if (refusedUnsandboxed()) return;
+      const progress = stageProgress(AUDIT_STAGES);
       const report = await withPushTargetLine(db, repoPath, () =>
         runOrReportNoAdapter(() =>
-          auditProject(db, repoPath, detectAdapters(repoPath), parseGateEnv(opts.gateEnv)),
+          settled(
+            progress,
+            auditProject(
+              db,
+              repoPath,
+              detectAdapters(repoPath),
+              parseGateEnv(opts.gateEnv),
+              'refresh',
+              progress,
+            ),
+          ),
         ),
       );
       if (!report) return;

@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { appendFileSync } from "node:fs";
+import { appendFileSync, writeFileSync } from "node:fs";
 import {
   decideMode,
   isCommentOnlyDelta,
@@ -11,6 +11,7 @@ import {
   parseReviewRequest,
   porcelainPaths,
 } from "./preflight.utils";
+import { priorRecordPath } from "./prior-record.utils";
 
 /**
  * Deterministic review preflight. Asserts the working
@@ -208,6 +209,12 @@ async function main(): Promise<void> {
     markNotReviewed(headSha, `Not reviewed: only comments and prose changed since ${priorSha?.slice(0, 7)}`);
     out("skip", "true");
     return;
+  }
+  if (decision.priorPath) {
+    // The poster and the metrics step name each carried important from this
+    // record, so they read the one the model was pointed at, not a newer one a
+    // racing persist-metrics job wrote since.
+    writeFileSync(priorRecordPath(process.env), git("show", `${METRICS_REF}:${decision.priorPath}`));
   }
   out("round", String(reviewRound(records)));
   out(

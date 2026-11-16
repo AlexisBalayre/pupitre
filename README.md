@@ -50,7 +50,7 @@ All state lives under `~/.pupitre/<project-id>/`. Adopting Pupitre commits nothi
 
 ## Quickstart
 
-Requirements: Node 22+ (24 recommended), git, [tmux](https://github.com/tmux/tmux), the [Claude Code](https://docs.claude.com/en/docs/claude-code) CLI. Optional: [`gh`](https://cli.github.com/) for `pup merge --pr`, [CodeGraph](https://github.com/colbymchenry/codegraph) so sessions query a code graph instead of grepping.
+Requirements: Node 22+ (24 recommended), git, [tmux](https://github.com/tmux/tmux), the [Claude Code](https://docs.claude.com/en/docs/claude-code) CLI. Optional: [`gh`](https://cli.github.com/) for `pup merge --pr`.
 
 ```bash
 git clone https://github.com/AlexisBalayre/pupitre.git

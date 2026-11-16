@@ -712,7 +712,6 @@ describe('worker search delegation (decision 152)', () => {
         conductorName: 'pup-conductor-proj-1',
         userConfigHash: 'user-hash-a',
         outDir: '/state/conductor/compiled',
-        checkoutPath: '/state/conductor/checkout',
         maxSessions: 4,
       }),
     );
@@ -898,7 +897,6 @@ describe('the status line records the plan usage (decision 156)', () => {
       conductorName: 'pup-conductor-proj-1',
       userConfigHash: 'user-hash-a',
       outDir,
-      checkoutPath: '/state/conductor/checkout',
       maxSessions: 4,
     });
 

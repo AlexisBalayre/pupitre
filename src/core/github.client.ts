@@ -322,6 +322,16 @@ const REVIEW_STATUS_CONTEXT = 'claude-review';
  */
 const REVIEW_PAGE = 100;
 
+/** What each read of a thread's comments asks of one: what `isRelayed` and `isMarked` judge it by. */
+const THREAD_COMMENT_FIELDS = `fullDatabaseId body viewerDidAuthor authorAssociation
+  author { __typename login } isMinimized lastEditedAt editor { __typename login }`;
+
+/**
+ * A comment's `fullDatabaseId`, GitHub's BigInt, which it sends as a decimal
+ * string: comment ids are past what the 32-bit `databaseId` is typed to hold.
+ */
+export const COMMENT_ID = /^\d{1,30}$/;
+
 const PULL_REQUEST_REVIEW_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
@@ -364,7 +374,7 @@ const PULL_REQUEST_REVIEW_QUERY = `query($owner: String!, $name: String!, $numbe
             }
           }
           trail: comments(last: ${REVIEW_PAGE}) {
-            nodes { body viewerDidAuthor authorAssociation author { __typename login } }
+            nodes { ${THREAD_COMMENT_FIELDS} }
           }
         }
       }
@@ -404,6 +414,23 @@ export interface ReviewThread {
    * collaborator is pup's reply, marked. Anyone else's comment is skipped.
    */
   isAnswered: boolean;
+  /**
+   * The comments on it since a fix round's newest marked reply, or since the
+   * finding when no round replied, oldest first, that pup's own gh account or
+   * the repo's owner wrote: the round takes them with the finding, as thread
+   * data. Every session posts as that same login, so none is proof of the
+   * operator's word. A member or collaborator may reopen a thread but is not
+   * relayed, as neither proves write access; nor is a comment hidden on GitHub
+   * or edited by an account other than its author's.
+   */
+  replies: string[];
+  /**
+   * The `fullDatabaseId` of the newest comment on it this read saw, whoever
+   * wrote it: a round records it, so its gate tells a reply posted after the
+   * kickoff read the thread, which its worker never saw, by a greater one.
+   * Undefined when no comment carries one.
+   */
+  newestComment: string | undefined;
 }
 
 /** Who may make a thread a fix round answered live again, besides the bot and pup's own account. */
@@ -451,6 +478,61 @@ function isReviewBot(author: unknown): boolean {
 function nodesOf(connection: unknown): Record<string, unknown>[] {
   const nodes = objectFields(connection).nodes;
   return Array.isArray(nodes) ? nodes.map(objectFields) : [];
+}
+
+/** An edit names its editor; one gone from GitHub reads as nobody, so as not the bot. */
+function isEdited(comment: Record<string, unknown>): boolean {
+  return [comment.lastEditedAt, comment.editor].some(
+    (field) => field !== undefined && field !== null,
+  );
+}
+
+function isEditedByOther(comment: Record<string, unknown>): boolean {
+  const editor = objectFields(comment.editor);
+  const author = objectFields(comment.author);
+  return (
+    isEdited(comment) &&
+    !(
+      typeof editor.login === 'string' &&
+      editor.login === author.login &&
+      editor.__typename === author.__typename
+    )
+  );
+}
+
+/** A fix round's own reply: pup's account wrote it, ending on the marker. */
+function isMarked(comment: Record<string, unknown> | undefined): boolean {
+  return (
+    comment?.viewerDidAuthor === true &&
+    typeof comment.body === 'string' &&
+    comment.body.includes(`${FIX_ROUND_MARKER} `)
+  );
+}
+
+/** A comment a fix round relays: pup's login's or the owner's, as written and shown, not a round's own. */
+function isRelayed(comment: Record<string, unknown>): boolean {
+  return (
+    (comment.viewerDidAuthor === true || comment.authorAssociation === 'OWNER') &&
+    comment.isMinimized === false &&
+    !isEditedByOther(comment) &&
+    typeof comment.body === 'string' &&
+    !isMarked(comment)
+  );
+}
+
+/**
+ * The greatest `fullDatabaseId` among `comments`, which GitHub numbers in the
+ * order they are posted, compared as the BigInt it is: past 2^53 a number
+ * would round two ids into one.
+ */
+function newestDatabaseId(comments: Record<string, unknown>[]): string | undefined {
+  return comments
+    .map((comment) => comment.fullDatabaseId)
+    .filter((id): id is string => typeof id === 'string' && COMMENT_ID.test(id))
+    .reduce<string | undefined>(
+      (newest, id) => (newest === undefined || BigInt(id) > BigInt(newest) ? id : newest),
+      undefined,
+    );
 }
 
 /**
@@ -508,31 +590,32 @@ export function readPullRequestReview(
       const [finding] = nodesOf(thread.comments);
       if (!finding || typeof thread.id !== 'string' || isOutdated(thread)) return [];
       const line = [thread.line, thread.originalLine].find(Number.isSafeInteger);
-      // An edit names its editor; one gone from GitHub reads as nobody, so as not the bot.
-      const isEdited = [finding.lastEditedAt, finding.editor].some(
-        (field) => field !== undefined && field !== null,
-      );
+      const trail = nodesOf(thread.trail);
       // An outsider's comment neither answers a thread nor reopens one.
-      const last = nodesOf(thread.trail)
-        .filter(
-          (comment) =>
-            isReviewBot(comment.author) ||
-            comment.viewerDidAuthor === true ||
-            REOPENING_ASSOCIATIONS.has(String(comment.authorAssociation)),
-        )
-        .at(-1);
+      const said = trail.filter(
+        (comment) =>
+          isReviewBot(comment.author) ||
+          comment.viewerDidAuthor === true ||
+          REOPENING_ASSOCIATIONS.has(String(comment.authorAssociation)),
+      );
+      const newestMarked = said.reduce(
+        (found, comment, index) => (isMarked(comment) ? index : found),
+        -1,
+      );
+      const replies = said
+        .slice(newestMarked + 1)
+        .flatMap((comment) => (isRelayed(comment) ? [comment.body as string] : []));
       return [
         {
           id: thread.id,
           path: typeof thread.path === 'string' ? thread.path : undefined,
           line: line as number | undefined,
           body: typeof finding.body === 'string' ? finding.body : '',
-          isEditedByOther: isEdited && !isReviewBot(finding.editor),
+          isEditedByOther: isEdited(finding) && !isReviewBot(finding.editor),
           isMinimized: finding.isMinimized !== false,
-          isAnswered:
-            last?.viewerDidAuthor === true &&
-            typeof last.body === 'string' &&
-            last.body.includes(`${FIX_ROUND_MARKER} `),
+          isAnswered: isMarked(said.at(-1)),
+          replies,
+          newestComment: newestDatabaseId(trail),
         },
       ];
     }),
@@ -588,7 +671,9 @@ const FIX_ROUND_THREADS_QUERY = `query($owner: String!, $name: String!, $number:
           isResolved
           path
           finding: comments(first: 1) { nodes { author { __typename login } } }
-          replies: comments(last: ${REVIEW_PAGE}) { nodes { body viewerDidAuthor } }
+          replies: comments(last: ${REVIEW_PAGE}) {
+            nodes { ${THREAD_COMMENT_FIELDS} }
+          }
         }
       }
       comments(last: ${REVIEW_PAGE}) { nodes { body viewerDidAuthor } }
@@ -606,12 +691,16 @@ interface AnsweredThread {
   path?: string;
   /** The bodies of its comments that gh's own login wrote, newest last. */
   ownReplies: string[];
+  /** The greatest `fullDatabaseId` among its comments a fix round relays; undefined when none is. */
+  newestRelayed: string | undefined;
 }
 
 /**
  * The PR's newest review threads and the comments on it that gh's login wrote
  * (`viewerDidAuthor`), for the replies a fix round posts (decision 90): what
- * is already answered, so a second run for the same head posts nothing again.
+ * is already answered, so a second run for the same head posts nothing again,
+ * and the newest comment on each thread a round would relay, so one posted
+ * after the round's kickoff read the thread is not buried under its reply.
  */
 export function readThreadAnswers(
   repoPath: string,
@@ -634,6 +723,7 @@ export function readThreadAnswers(
               isBots: isReviewBot(nodesOf(thread.finding)[0]?.author),
               ...(typeof thread.path === 'string' ? { path: thread.path } : {}),
               ownReplies: ownBodies(thread.replies),
+              newestRelayed: newestDatabaseId(nodesOf(thread.replies).filter(isRelayed)),
             },
           ]
         : [],

@@ -15,6 +15,9 @@
     *Read at compile time.* Turning a step on reaches the next launch, and the next respawn of a
     running task, never a window already running. The kickoff it changes is hashed, so turning it
     on or off marks the live sessions' profiles stale, as a brief edit does. It changes no gate.
+    *The respawn (2026-11-14, #334).* This supersedes the respawn claim above: turning a step on
+    reaches the next launch or fix round, never a window already running, because a respawn
+    resends the stored context and recompiles nothing.
     *The shift-left kickoff.* When on, a worker's kickoff gains a "Reviewers will check" section
     below the session protocol: one checklist per correctness, docs and conventions reviewer and
     decision 174's failing-scenario rule. Each checklist is read at compile time from the

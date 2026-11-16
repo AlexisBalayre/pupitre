@@ -26,13 +26,6 @@ vi.mock('./session-lifecycle.service.js', async (importOriginal) => {
   return { ...original, recompileSessionProfile: vi.fn(original.recompileSessionProfile) };
 });
 
-// The code graph is a property of the test, not of the machine (decision 51).
-vi.mock('./codegraph.client.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('./codegraph.client.js')>()),
-  codegraphBinary: vi.fn(() => undefined),
-  prepareGraph: vi.fn((binary: string | undefined) => binary !== undefined),
-}));
-
 // Without this, the gate after the fix round would spawn a real `claude -p` call.
 vi.mock('../claude/utility.service.js', () => ({
   runUtility: vi.fn(() => ({ ok: false, output: 'mocked out in tests' })),
@@ -58,7 +51,6 @@ import {
   SteerNotDeliveredError,
   steerPane,
 } from '../claude/session-runtime.service.js';
-import { codegraphBinary } from './codegraph.client.js';
 import { openStore } from './db.client.js';
 import { DEFAULT_BASE_PROFILE } from './default-profile.constants.js';
 import { startFixRound } from './fix-round.service.js';
@@ -517,23 +509,6 @@ describe('startFixRound', { timeout: 90_000 }, () => {
     sh(repo, 'git', 'worktree', 'prune');
     await fix();
     expect(getSession(db, SESSION_ID)?.state).toBe('running');
-  });
-
-  // An `mcp.json` the recompile did not write, stale or planted through the
-  // store, never reaches the window (decision 90).
-  it('launches without a planted mcp.json when the recompile found no code graph', async () => {
-    seedPrMerge();
-    writeFileSync(
-      join(projectPaths(repo, stateBase).compiledDir(SESSION_ID), 'mcp.json'),
-      '{"mcpServers":{"planted":{"command":"sh"}}}',
-    );
-    reviewOnGitHub({ threads: OPEN_THREAD });
-    // None at the recompile, one by the time the window is prepared.
-    vi.mocked(codegraphBinary).mockReturnValueOnce(undefined).mockReturnValue('/opt/codegraph');
-
-    await fix();
-
-    expect(vi.mocked(launchSession).mock.calls[0]?.[0].mcpConfigPath).toBeUndefined();
   });
 
   // A partial pass's findings are still worth fixing; only a clean verdict
