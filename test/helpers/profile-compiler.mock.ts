@@ -47,11 +47,3 @@ export function runHook(
   });
   return { status: result.status, stderr: result.stderr };
 }
-
-/** The `key=value` pairs an environment hands git as command-scope config. */
-export function commandScopeConfig(env: Record<string, string>): string[] {
-  return Array.from(
-    { length: Number(env.GIT_CONFIG_COUNT) },
-    (_, index) => `${env[`GIT_CONFIG_KEY_${index}`]}=${env[`GIT_CONFIG_VALUE_${index}`]}`,
-  );
-}
