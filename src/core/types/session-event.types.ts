@@ -102,10 +102,11 @@ export interface EventPayloads {
   question: { text: string; options?: string[]; recommended?: number; seal?: string };
   /**
    * `pup answer` delivered an answer to the open question (decision 93): the
-   * question it answers, the text delivered, and the 1-based option the
-   * operator picked when they picked one.
+   * question it answers, quoted and by its event id, the text delivered, and
+   * the 1-based option the operator picked when they picked one. The id is what
+   * closes the question: one asked while the answer was typed stays open.
    */
-  answer: { question: string; text: string; option?: number };
+  answer: { question: string; questionId: number; text: string; option?: number };
   /**
    * A conductor run starts, recorded before its window opens (decision 93):
    * the run a conductor question was asked in ends here, so the previous run's

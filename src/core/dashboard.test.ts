@@ -295,12 +295,16 @@ describe('buildDashboardSnapshot', () => {
     });
 
     it('carries no question once answered, or while the conductor is down', () => {
-      markConductorQuestion(db, repo, 'run-1', { text: 'accept the debt?' });
+      const asked = markConductorQuestion(db, repo, 'run-1', { text: 'accept the debt?' });
       vi.mocked(hasConductorWindow).mockReturnValue(false);
       expect(buildDashboardSnapshot(db, repo, NOW).conductor.question).toBeUndefined();
 
       vi.mocked(hasConductorWindow).mockReturnValue(true);
-      appendEvent(db, null, 'answer', { question: 'accept the debt?', text: 'no' });
+      appendEvent(db, null, 'answer', {
+        question: 'accept the debt?',
+        questionId: asked,
+        text: 'no',
+      });
       expect(buildDashboardSnapshot(db, repo, NOW).conductor.question).toBeUndefined();
     });
 
@@ -773,7 +777,12 @@ describe('buildDashboardSnapshot', () => {
 
       it('clears once an answer comes after it', () => {
         appendEvent(db, 's1', 'question', { text: 'rebase or merge?', options: ['a', 'b'] });
-        appendEvent(db, 's1', 'answer', { question: 'rebase or merge?', text: 'b', option: 2 });
+        appendEvent(db, 's1', 'answer', {
+          question: 'rebase or merge?',
+          questionId: newestEventId(db),
+          text: 'b',
+          option: 2,
+        });
 
         expect(questionOf()).toBeUndefined();
       });

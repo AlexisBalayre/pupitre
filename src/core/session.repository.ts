@@ -736,8 +736,10 @@ export const MAX_QUESTION_OPTIONS = 4;
 /**
  * The question a session asked with `pup session ask`, or the conductor with
  * `pup conductor ask` (`sessionId` null), that is still open (decisions 76,
- * 93): the newest `question` with no `answer` after it, no steer the operator
- * sent, and no end of the run it was asked in. The question is the operator's
+ * 93): the newest `question` no `answer` names, with no steer the operator
+ * sent after it, and no end of the run it was asked in. An answer names its
+ * question by id; one stored before answers did closes every question before
+ * it. `pup answer`'s own steer closes nothing: its answer row does. The question is the operator's
  * to answer: a steer from the conductor, a peer or the watchdog types into the
  * pane but leaves it open, so nothing else can clear the inbox entry before the
  * operator sees it. A run ends at a fresh window (a CI fix round, a handoff
@@ -760,13 +762,27 @@ export function openQuestion(
          ORDER BY id DESC`,
     )
     .iterate(sessionId) as IterableIterator<Pick<EventRow, 'id' | 'type' | 'payload'>>;
+  // The questions an answer named: an answer closes the one it names, so a
+  // question asked while the answer was being typed stays open.
+  const answered = new Set<number>();
   for (const row of rows) {
     const event = decodeEvent(row);
+    if (event.type === 'other' && event.eventType === 'answer') {
+      const named = event.fields.questionId;
+      // One written before answers named their question closes all before it.
+      if (!Number.isSafeInteger(named)) return undefined;
+      answered.add(named as number);
+      continue;
+    }
+    // `pup answer`'s steer: the answer recorded after it says which question it closes.
+    if (event.type === 'steer' && event.by === 'operator' && event.kind === 'answer') continue;
     if (event.type === 'steer' && event.by !== 'operator') continue;
     if (event.type === 'gate_result' && event.to !== 'running') continue;
     if (event.type !== 'question') return undefined;
     const asked = { ...event, id: row.id };
     if (!accept(asked)) continue;
+    // Answered, it ends the questions before it as a newer question does.
+    if (answered.has(row.id)) return undefined;
     // The payload is session-writable: past the cap is never an option, so the
     // inbox's numbers and `pup answer`'s cannot disagree.
     return { ...asked, options: (event.options ?? []).slice(0, MAX_QUESTION_OPTIONS) };

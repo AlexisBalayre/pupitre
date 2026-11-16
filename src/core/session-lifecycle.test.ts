@@ -1779,27 +1779,29 @@ describe('answering an open question', () => {
     ).map((row) => JSON.parse(row.payload));
 
   it('steers the picked option, prefixed by the question, and closes it', () => {
-    answerSessionQuestion(db, 's-1', asked('s-1'), '2');
+    const read = asked('s-1');
+    answerSessionQuestion(db, 's-1', read, '2');
 
     expect(steerPane).toHaveBeenCalledWith(
       { sessionId: 's-1', paneId: '%7' },
       'Answer to your question "rebase or merge?": option 2, merge main in',
     );
     expect(answers('s-1')).toEqual([
-      { question: 'rebase or merge?', text: 'merge main in', option: 2 },
+      { question: 'rebase or merge?', questionId: read, text: 'merge main in', option: 2 },
     ]);
     expect(openQuestion(db, 's-1')).toBeUndefined();
   });
 
   it('sends any other text as a free answer', () => {
-    answerSessionQuestion(db, 's-1', asked('s-1'), '  neither: wait for #281  ');
+    const read = asked('s-1');
+    answerSessionQuestion(db, 's-1', read, '  neither: wait for #281  ');
 
     expect(steerPane).toHaveBeenCalledWith(
       { sessionId: 's-1', paneId: '%7' },
       'Answer to your question "rebase or merge?": neither: wait for #281',
     );
     expect(answers('s-1')).toEqual([
-      { question: 'rebase or merge?', text: 'neither: wait for #281' },
+      { question: 'rebase or merge?', questionId: read, text: 'neither: wait for #281' },
     ]);
   });
 
@@ -1822,10 +1824,13 @@ describe('answering an open question', () => {
 
   it('takes a number as words when the question offers no options', () => {
     markSessionQuestion(db, 's-1', { text: 'how many retries?' });
+    const read = asked('s-1');
 
-    answerSessionQuestion(db, 's-1', asked('s-1'), '3');
+    answerSessionQuestion(db, 's-1', read, '3');
 
-    expect(answers('s-1')).toEqual([{ question: 'how many retries?', text: '3' }]);
+    expect(answers('s-1')).toEqual([
+      { question: 'how many retries?', questionId: read, text: '3' },
+    ]);
   });
 
   // The answer is bound to the question the operator read: one asked since
@@ -1858,15 +1863,16 @@ describe('answering an open question', () => {
     ['nobody named', { kind: 'message' }],
   ])('still answers it after a steer from %s', (_, steer) => {
     appendEvent(db, 's-1', 'steer', steer);
+    const read = asked('s-1');
 
-    answerSessionQuestion(db, 's-1', asked('s-1'), '1');
+    answerSessionQuestion(db, 's-1', read, '1');
 
     expect(steerPane).toHaveBeenCalledWith(
       { sessionId: 's-1', paneId: '%7' },
       'Answer to your question "rebase or merge?": option 1, rebase onto main',
     );
     expect(answers('s-1')).toEqual([
-      { question: 'rebase or merge?', text: 'rebase onto main', option: 1 },
+      { question: 'rebase or merge?', questionId: read, text: 'rebase onto main', option: 1 },
     ]);
     expect(openQuestion(db, 's-1')).toBeUndefined();
   });
@@ -1904,14 +1910,44 @@ describe('answering an open question', () => {
     const question = `${'why '.repeat(100)}?`;
     const reply = 'because '.repeat(80).trim();
     markSessionQuestion(db, 's-1', { text: question });
+    const read = asked('s-1');
 
-    answerSessionQuestion(db, 's-1', asked('s-1'), reply);
+    answerSessionQuestion(db, 's-1', read, reply);
 
     expect(steerPane).toHaveBeenCalledWith(
       { sessionId: 's-1', paneId: '%7' },
       `Answer to your question "${question}": ${reply}`,
     );
-    expect(answers('s-1')).toEqual([{ question, text: reply }]);
+    expect(answers('s-1')).toEqual([{ question, questionId: read, text: reply }]);
+  });
+
+  // The answer closes the question it names: one the session asks while the
+  // answer is being typed is a new question, and must reach the inbox.
+  it('leaves open a question asked while the answer was typed', () => {
+    const read = asked('s-1');
+    vi.mocked(steerPane).mockImplementationOnce(() => {
+      markSessionQuestion(db, 's-1', { text: 'and the changelog?', options: ['yes', 'no'] });
+      return true;
+    });
+
+    answerSessionQuestion(db, 's-1', read, '1');
+
+    expect(answers('s-1')).toEqual([
+      { question: 'rebase or merge?', questionId: read, text: 'rebase onto main', option: 1 },
+    ]);
+    expect(openQuestion(db, 's-1')?.text).toBe('and the changelog?');
+    expect(asked('s-1')).toBeGreaterThan(read);
+  });
+
+  // Stored before answers named their question, an answer keeps its meaning:
+  // it closes every question before it.
+  it('reads an answer with no question id as closing every question before it', () => {
+    markSessionQuestion(db, 's-1', { text: 'squash or keep?' });
+    db.prepare("INSERT INTO events (session_id, type, payload) VALUES ('s-1', 'answer', ?)").run(
+      JSON.stringify({ question: 'squash or keep?', text: 'keep' }),
+    );
+
+    expect(openQuestion(db, 's-1')).toBeUndefined();
   });
 
   it('records no answer when the paste was refused, so the question stays open', () => {
@@ -1950,17 +1986,32 @@ describe('answering an open question', () => {
     });
 
     it('tells the conductor the answer, prefixed by its question, and closes it', () => {
-      const answer = answerConductorQuestion(db, REPO, conductorAsked(), '1');
+      const read = conductorAsked();
+      const answer = answerConductorQuestion(db, REPO, read, '1');
 
       expect(tellConductor).toHaveBeenCalledWith(
         REPO,
         'Answer to your question "accept the debt?": option 1, yes',
       );
-      expect(answer).toEqual({ question: 'accept the debt?', text: 'yes', option: 1 });
-      expect(answers(null)).toEqual([{ question: 'accept the debt?', text: 'yes', option: 1 }]);
+      const recorded = { question: 'accept the debt?', questionId: read, text: 'yes', option: 1 };
+      expect(answer).toEqual(recorded);
+      expect(answers(null)).toEqual([recorded]);
       expect(openQuestion(db, null)).toBeUndefined();
       // A session's question is its own: the conductor's answer leaves it open.
       expect(openQuestion(db, 's-1')).toBeDefined();
+    });
+
+    it('leaves open a question the conductor asked while the answer was told', () => {
+      const read = conductorAsked();
+      vi.mocked(tellConductor).mockImplementationOnce(() => {
+        markConductorQuestion(db, REPO, 'run-1', { text: 'and land it?', options: ['yes', 'no'] });
+        return true;
+      });
+
+      answerConductorQuestion(db, REPO, read, '1');
+
+      expect(openConductorQuestion(db, REPO)?.text).toBe('and land it?');
+      expect(conductorAsked()).toBeGreaterThan(read);
     });
 
     it('refuses, leaving the question open, when the tell did not land', () => {
@@ -2031,7 +2082,12 @@ describe('answering an open question', () => {
       const { payload } = db.prepare('SELECT payload FROM events WHERE id = ?').get(real) as {
         payload: string;
       };
-      appendEvent(db, null, 'answer', { question: 'accept the debt?', text: 'yes', option: 1 });
+      appendEvent(db, null, 'answer', {
+        question: 'accept the debt?',
+        questionId: real,
+        text: 'yes',
+        option: 1,
+      });
       db.prepare("INSERT INTO events (session_id, type, payload) VALUES (NULL, 'question', ?)").run(
         payload,
       );

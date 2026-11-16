@@ -817,7 +817,8 @@ function resolveAnswer(asked: QuestionEvent, reply: string): EventPayloads['answ
   if (words === '')
     throw new QuestionRefusedError('Nothing to answer with: give an option number or words.');
   const count = asked.options.length;
-  if (count === 0 || !/^\d+$/.test(words)) return { question, text: paneLine(words) };
+  const questionId = asked.id;
+  if (count === 0 || !/^\d+$/.test(words)) return { question, questionId, text: paneLine(words) };
   const option = Number(words);
   if (option < 1 || option > count) {
     throw new QuestionRefusedError(
@@ -825,7 +826,7 @@ function resolveAnswer(asked: QuestionEvent, reply: string): EventPayloads['answ
         'or in words. Nothing was sent.',
     );
   }
-  return { question, text: paneLine(asked.options[option - 1] ?? ''), option };
+  return { question, questionId, text: paneLine(asked.options[option - 1] ?? ''), option };
 }
 
 /**
@@ -848,8 +849,11 @@ function questionRead(
   return asked;
 }
 
+/** What an answer says to the asker, without the id the store closes the question by. */
+type AnswerWords = Omit<EventPayloads['answer'], 'questionId'>;
+
 /** The answer as the asker reads it: the question first, so a late answer is never a riddle. */
-function answerMessage(answer: EventPayloads['answer']): string {
+function answerMessage(answer: AnswerWords): string {
   const picked = answer.option === undefined ? '' : `option ${answer.option}, `;
   return `Answer to your question "${answer.question}": ${picked}${answer.text}`;
 }
@@ -873,7 +877,7 @@ export function conductorQuestion(
 ): EventPayloads['question'] {
   const asked = askedQuestion('pup conductor ask', text, opts);
   const question = paneLine(asked.text);
-  const answers: EventPayloads['answer'][] = [
+  const answers: AnswerWords[] = [
     { question, text: 'x'.repeat(FREE_ANSWER_ROOM) },
     ...(asked.options ?? []).map((option, index) => ({
       question,
