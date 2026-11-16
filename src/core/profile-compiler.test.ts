@@ -970,7 +970,18 @@ describe('the worker sandbox (decision 191)', () => {
         join(repo, '.git', 'hooks'),
         join(repo, '.git', 'info'),
         join(repo, '.git', 'refs', 'heads', 'main'),
+        join(repo, '.git', 'refs', 'heads', 'main.lock'),
         join(repo, '.git', 'packed-refs'),
+        join(repo, '.git', 'packed-refs.lock'),
+        join(repo, '.git', 'refs', 'replace'),
+        join(repo, '.git', 'refs', 'remotes'),
+        join(repo, '.git', 'shallow'),
+        join(repo, '.git', 'HEAD'),
+        join(repo, '.git', 'index'),
+        join(repo, '.git', 'MERGE_HEAD'),
+        join(repo, '.git', 'ORIG_HEAD'),
+        join(repo, '.git', 'FETCH_HEAD'),
+        join(repo, '.git', 'CHERRY_PICK_HEAD'),
         join(adminDir, 'commondir'),
         join(adminDir, 'gitdir'),
         join(adminDir, 'config.worktree'),
@@ -990,6 +1001,28 @@ describe('the worker sandbox (decision 191)', () => {
     } finally {
       vi.unstubAllEnvs();
     }
+  });
+
+  // Claude Code grants the main .git whole but `config` and `hooks`; these are
+  // what a worker's commit or merge never writes there.
+  it.each([
+    { name: 'replace refs, which rewrite any object git reads', path: ['refs', 'replace'] },
+    { name: 'remote-tracking refs', path: ['refs', 'remotes'] },
+    { name: 'the shallow file', path: ['shallow'] },
+    { name: "main's lock", path: ['refs', 'heads', 'main.lock'] },
+    { name: "packed-refs' lock", path: ['packed-refs.lock'] },
+    { name: "the main checkout's HEAD", path: ['HEAD'] },
+    { name: "the main checkout's index", path: ['index'] },
+    { name: 'MERGE_HEAD', path: ['MERGE_HEAD'] },
+    { name: 'ORIG_HEAD', path: ['ORIG_HEAD'] },
+    { name: 'FETCH_HEAD', path: ['FETCH_HEAD'] },
+    { name: 'CHERRY_PICK_HEAD', path: ['CHERRY_PICK_HEAD'] },
+  ])('denies writes to $name in the main .git', ({ path }) => {
+    const repo = repoWith('workerSandbox: true\n');
+    const { sandbox } = JSON.parse(compileIn(repo).files['settings.json'] as string);
+
+    expect(sandbox.filesystem.denyWrite).toContain(join(repo, '.git', ...path));
+    expect(sandbox.filesystem.allowWrite).not.toContain(join(repo, '.git', ...path));
   });
 
   it('refuses the compile on a malformed setting rather than launch unsandboxed', () => {

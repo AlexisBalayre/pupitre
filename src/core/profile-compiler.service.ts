@@ -127,6 +127,20 @@ const WORKER_SANDBOX_DENY_READ = [
 ];
 
 /**
+ * The main checkout's own state in the main `.git` (decision 191). A linked
+ * worktree keeps its `HEAD`, `index` and `*_HEAD` files in its admin dir, so
+ * a worker's commit or merge never writes these.
+ */
+const MAIN_CHECKOUT_STATE = [
+  'HEAD',
+  'index',
+  'MERGE_HEAD',
+  'ORIG_HEAD',
+  'FETCH_HEAD',
+  'CHERRY_PICK_HEAD',
+];
+
+/**
  * The hosts a sandboxed worker's Bash children may reach (decision 191): the
  * package registries of the ecosystems pup ships adapters for, which a first
  * commit's pre-commit install fetches from. The model's own traffic is the
@@ -1242,16 +1256,19 @@ jq -c --arg sid "\${PUP_SESSION_ID:-unknown}" '. + {pup_session_id: $sid}' >> '$
  * Read, Edit and Write, the hooks and the session process stay outside it.
  * - Writes: the worktree, its admin dir, the per-user temp directory Claude
  *   Code points `TMPDIR` at, and the main `.git` Claude Code grants a linked
- *   worktree's commit. Within that `.git`, its `config`, `hooks` and `info` are
- *   denied, and so are `main` (loose, and `packed-refs`, which would move it as
- *   well) and the admin dir's `commondir`, `gitdir` and `config.worktree`,
- *   which say which repo and config git uses there. Of the store, only the
- *   SQLite files every `pup` command opens read-write, so `pup session done`,
- *   `ask` and the pre-commit hook's `pup session test` still run; and the
- *   machine's test slots that last one takes (`test-slot.service.ts`).
- *   A deny wins over any allow, however narrow, so the store and the other
- *   worktrees' admin dirs are left out of every grant rather than denied: the
- *   sandbox refuses a path no grant names.
+ *   worktree's commit. That grant is the whole `.git` but its `config`,
+ *   `hooks` and every `worktrees/` entry other than this worktree's own. Within
+ *   it this denies what a worker's commit and merge never write: `info`, `main`
+ *   and its lock, `packed-refs` and its lock (either would move `main` too),
+ *   `refs/replace` and `refs/remotes`, `shallow`, and the main checkout's own
+ *   `HEAD`, `index` and `*_HEAD` files (a linked worktree keeps its own in its
+ *   admin dir). In the admin dir, `commondir`, `gitdir` and `config.worktree`
+ *   are denied: they say which repo and config git uses there. Of the store,
+ *   only the SQLite files every `pup` command opens read-write, so `pup session
+ *   done`, `ask` and the pre-commit hook's `pup session test` still run; and
+ *   the machine's test slots that last one takes (`test-slot.service.ts`).
+ *   A deny wins over any allow, however narrow, so the store is left out of
+ *   every grant rather than denied: the sandbox refuses a path no grant names.
  * - Reads: everything but the operator's credentials.
  * - Network: the package registries only. `strictAllowlist` refuses any other
  *   host: the session skips permission prompts, under which an unlisted host
@@ -1284,7 +1301,13 @@ function workerSandbox(input: CompileInput, git: WorktreeGitEnv) {
         common('hooks'),
         common('info'),
         common('refs', 'heads', 'main'),
+        common('refs', 'heads', 'main.lock'),
         common('packed-refs'),
+        common('packed-refs.lock'),
+        common('refs', 'replace'),
+        common('refs', 'remotes'),
+        common('shallow'),
+        ...MAIN_CHECKOUT_STATE.map((name) => common(name)),
         join(git.GIT_DIR, 'commondir'),
         join(git.GIT_DIR, 'gitdir'),
         join(git.GIT_DIR, 'config.worktree'),

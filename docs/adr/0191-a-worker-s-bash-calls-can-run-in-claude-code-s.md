@@ -18,19 +18,24 @@
     conductor is not sandboxed.
     *What the block allows.*
     - Writes allowed: the worktree, its admin dir under the main `.git`'s `worktrees/`, and the
-      per-user temp directory Claude Code points `TMPDIR` at. The main `.git` itself is granted
-      by Claude Code to any session whose working directory is a linked worktree, so that
-      `git commit` can write objects and refs. Of the store `~/.pupitre/<id>/`, only `state.db`
+      per-user temp directory Claude Code points `TMPDIR` at. Claude Code adds its own grant of
+      the main `.git` for a session whose working directory is a linked worktree; its shape is
+      under *The implicit `.git` grant* below. Of the store `~/.pupitre/<id>/`, only `state.db`
       and its `-wal` and `-shm` are allowed, plus the machine's test slots in
       `~/.pupitre/slots/`.
-    - Writes denied inside those grants: the main `.git`'s `config`, `hooks/` and `info/`;
-      `refs/heads/main`; and `packed-refs`, through which `main` could be moved as well. In this
-      worktree's admin dir, `commondir`, `gitdir` and `config.worktree` are denied, since they say
-      which repo and config git uses there. The deny names `main` literally, which is the target
-      branch on this repo. A project that merges into another branch is not covered.
+    - Writes denied inside those grants. In the main `.git`, everything a worker's commit or
+      merge never writes:
+      - `info/`, `refs/replace/`, `refs/remotes/` and `shallow`;
+      - `refs/heads/main` and its `.lock`;
+      - `packed-refs` and its `.lock`, either of which would move `main` too;
+      - the main checkout's own `HEAD`, `index`, `MERGE_HEAD`, `ORIG_HEAD`, `FETCH_HEAD` and
+        `CHERRY_PICK_HEAD`. A linked worktree keeps its own copies of these in its admin dir.
+
+      In this worktree's admin dir, `commondir`, `gitdir` and `config.worktree` are denied, since
+      they say which repo and config git uses there.
     - Outside every grant, and so refused: the rest of the store (the compiled hooks and decision
-      63's snapshots included), every other worktree's admin dir, the main checkout's working
-      tree and the rest of the home directory.
+      63's snapshots included), the main checkout's working tree and the rest of the home
+      directory.
     - Reads: everywhere except the operator's credentials: `~/.ssh`, `~/.gnupg`, `~/.aws`,
       `~/.config/gcloud`, `~/.config/gh`, `~/.kube`, `~/.docker`, `~/.netrc`,
       `~/.git-credentials`, `~/.npmrc`, `~/.pypirc` and `~/.claude/.credentials.json`.
@@ -47,16 +52,31 @@
       local databases. It stays on because `src/core/web-dashboard.test.ts` listens on loopback,
       and the pre-commit hook runs that test inside the sandbox for any staged file it imports.
       Without local binding, all 81 of its tests fail with `listen EPERM` and the worker cannot
-      commit. With it, they pass. Turning it off means first moving those tests off a real
-      socket, or out of the sandboxed commit.
+      commit. With it, they pass. Ceiling 5 below lists the ways to turn it off.
     - `failIfUnavailable` refuses the launch when the sandbox cannot start. With
       `allowUnsandboxedCommands: false`, Claude Code ignores a call's `dangerouslyDisableSandbox`,
       so a worker cannot ask its way out.
     *A deny wins.* In Claude Code's sandbox a `denyWrite` entry beats any `allowWrite` entry, even
-    a narrower one. So the store and the other worktrees' admin dirs are kept out of every grant
-    rather than listed in `denyWrite`. A denied store root would take `state.db` with it. The
-    first version of this decision did exactly that, so a sandboxed worker could not have run
-    `pup session done`.
+    a narrower one. So the store is kept out of every grant rather than listed in `denyWrite`. A
+    denied store root would take `state.db` with it. The first version of this decision did
+    exactly that, so a sandboxed worker could not have run `pup session done`.
+    *The implicit `.git` grant (probed 2026-11-16).* Claude Code's documentation says it grants a
+    linked worktree "the main repository's shared `.git`" except `hooks/` and `config`. The first
+    version of this decision read that as the whole `.git`. A probe pinned the real shape. It ran
+    with an empty `sandbox.filesystem`, so only the implicit grant applied, and was started from
+    the worktree.
+    - Writable: objects; new and existing refs, `refs/heads/main` included; `logs/`; the main
+      checkout's `HEAD`, `index` and `description`; `packed-refs`; new entries in `info/`,
+      `refs/remotes/`, `refs/replace/` and at the `.git` root.
+    - Writable in this worktree's admin dir: `index` and `HEAD`.
+    - Refused: `config`, new entries in `hooks/`, this worktree's `commondir` and `gitdir`, two
+      other worktrees' admin dirs, a new entry in `worktrees/`, and the worktree's own `.git`
+      pointer file.
+
+    So the grant is the main `.git` minus `config`, `hooks/` and every `worktrees/` entry but this
+    worktree's own, and it does not reach the pointer file. `claude --debug` did not print the
+    generated rules. It did log that the sandbox ignores "permission rules and sandbox.filesystem
+    entries" from the disabled `projectSettings` and `localSettings` sources.
     *The live probe (2026-11-16).* Claude Code 2.1.325 on macOS, with the block compiled for this
     session, delivered by `--settings` and started from the worktree. It refused:
     - `curl https://example.com`, reported as
@@ -102,9 +122,36 @@
     therefore lists `.pnpm-store/` in its `.gitignore` before it turns the setting on. Commit
     signing and git over SSH were not checked: neither runs in a worker today, and Claude Code
     documents that SSH remotes fail under its macOS sandbox.
+    *Ceilings.* The setting is off by default and never looser than running without it. What it
+    cannot close is stated here, not built around.
+    1. The worktree's `.git` pointer file. The probe found Claude Code refuses it to Bash. The
+       Read, Edit and Write tools run outside the sandbox, though, and only the scope hook stands
+       between them and the file. A rewritten pointer could send any unsandboxed git run in that
+       worktree to a fake git dir that arms `core.fsmonitor` or `core.hooksPath`. That covers a
+       hook, the gate, or the operator. pup's compiled hooks pin their git with `WorktreeGitEnv`,
+       which pup computes from trusted paths (decision 101). Follow-up: every unsandboxed git
+       call passes a trusted `--git-dir` and `--work-tree` plus hardened `-c` options.
+    2. Other sessions' branches. `refs/heads/pup/*` stay writable, since a worker's own commit
+       writes there and the deny cannot single out its own branch.
+    3. `state.db`, `-wal` and `-shm` are an escape. A sandboxed worker can replace any of them
+       with a symlink. Unsandboxed `pup`, the hooks and the gate then write through it, to wherever
+       the link points. Follow-up: open them with `lstat` and `O_NOFOLLOW`.
+    4. The `main` deny is literal, path for path:
+       - a reftable repository keeps no `refs/heads/main` file;
+       - on case-insensitive APFS, a differently cased spelling of the path names the same file;
+       - renaming a parent directory moves `main` with it.
+
+       All three are ceilings. The deny also names `main` itself, so a project that merges into
+       another branch is not covered.
+    5. `allowLocalBinding` applies to the whole session, not only to the tests that need it.
+       Alternatives:
+       - tests that inject requests rather than open a socket;
+       - a Unix socket in `TMPDIR`;
+       - socket tests that run only in the gate.
     *Left for follow-ups.*
-    - Swapping `state.db` for a symlink. Opening it should refuse a link (`lstat`, `O_NOFOLLOW`).
     - Gaps in the read denials: `.yarnrc.yml`, `pip.conf`, cargo and gem credentials, the
       `.claude.json` in the home directory, and the transcripts.
-    - A worktree-local settings file that loosens the sandbox.
+    - A worktree-local settings file that loosens the sandbox. Claude Code ignores such a file's
+      `sandbox.filesystem` entries and permission rules under `--setting-sources user`, as its
+      debug log above says. Its other sandbox keys were not probed.
     - The test slots path, which every project on the machine shares.
