@@ -685,12 +685,17 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     commitIn(worktree, 'src/a.test.ts', 'x\n'.repeat(3));
     commitIn(worktree, 'scripts/x.test.ts', 'x\n'.repeat(5));
     const claimsEverything: Adapter = { ...passingAdapter, testFiles: (_, files) => files };
+    // The check reads the run's user .npmrc: here none, never the operator's,
+    // which a gate's sandbox does not let it read.
+    vi.stubEnv('npm_config_userconfig', join(tempDir('pup-userconfig-'), 'npmrc'));
 
     const outcome = await merge([
       {
         ...passingAdapter,
         testFiles: typescriptAdapter.testFiles,
-        testInputsIntact: typescriptAdapter.testInputsIntact,
+        testInputsIntact: (ctx) =>
+          typescriptAdapter.testInputsIntact?.({ ...ctx, gateEnv: ['npm_config_userconfig'] }) ??
+          false,
       },
       claimsEverything,
     ]);
