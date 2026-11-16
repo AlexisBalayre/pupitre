@@ -11,7 +11,9 @@
     *The rule.* The session protocol in the compiled worker context gains one line: keep tool output
     small, since every result is re-read on each later request. It names three habits: batch related
     commands into one Bash call, ask for quiet output (`--quiet`, `-q`, or `tail` or `grep` on test
-    and install runs), and do not re-run a command to re-read output already in context. It is one
+    and install runs), and do not re-run a command to re-read output already in context. A pipe is
+    run after `set -o pipefail`: a bare `pup session test … | tail` answers tail's exit status, so it
+    would hide a test failure and the exit 75 of a run that never started. It is one
     line because the context budget (decisions 71 and 128) bounds how far the compiled context may
     grow. Every line added to it is paid for on every request of every worker.
     *The commands.* `pup session done` prints `Session <id> marked done.` and no longer echoes the
