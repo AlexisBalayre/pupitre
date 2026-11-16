@@ -1,0 +1,137 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-16T17:06:05.365Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43914175005",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43914175005",
+  "actor": "AlexisBalayre",
+  "commit_sha": "39bcd73af1df6f32790e522cd5d244c2e892a1fd",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 358,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "conventions",
+    "docs",
+    "simplicity",
+    "guards"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "conventions",
+    "docs",
+    "simplicity",
+    "guards"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "d421540a5e5d643df7d958f234539acb8c19f0e6",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/retro-replay.service.ts",
+      "line": "151",
+      "description": "The replay re-prices carried context as a fresh cache write when an actual automatic compaction is not taken under the replayed threshold. It should be a 0.1x cache read. This inflates the replayed spend at every threshold that skips a compaction.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/retro-replay.service.ts",
+      "line": "169-185",
+      "description": "If no transcript in a class started inside the window and none had an auto compaction, the reset floor is `{read: 0, write: 0}`. Every replayed reset then costs nothing, which makes the lower thresholds look like large savings.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/retro-replay.service.ts",
+      "line": "141-155",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "When the replay skips an automatic compaction, the new rule reads all of `carried` from the cache. That includes the tokens added after the previous request (`compactedContext - before`), which the replay never cached, so the step is under-priced at 0.1x instead of the write tier. The ADR line \"that context is still in the cache\" has the same gap. Capping the read at `Math.min(replayed, carried)` for `autoReset` steps would fix it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/retro-replay.service.ts",
+      "line": "150",
+      "area": "simplicity",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`rebuilt()` now has one caller (the `kept` line). The carried-read line spells out `step.idle || step.manualReset`, which is `rebuilt()` minus `autoReset`. The same predicate is written two ways within 40 lines and the difference is not explained. Inline `rebuilt()` at its last caller, or name the narrower predicate.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/retro-replay.service.ts",
+      "line": "16",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The file header still says the replay re-prices \"the rewrite after an idle hour\". This delta extends the rewrite to a `/compact` (see the ADR and the `replayTranscript` JSDoc), so the header now understates it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0192-pup-retro-replays-each-transcript-under-lower-compaction.md",
+      "line": "33",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "This edit leaves one line well past the ADR's ~100-column hard wrap, and the next sentence (\"A request that rebuilt the cache…\") is joined onto it. Re-wrap the paragraph.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.1557729499999998,
+  "duration_ms": 127969,
+  "num_turns": 15,
+  "tokens": {
+    "input": 12,
+    "output": 7555,
+    "cache_read": 275501,
+    "cache_creation": 46680,
+    "total": 329748
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 28,
+      "output": 15597,
+      "cache_read": 379961,
+      "cache_creation": 79846,
+      "cost_usd": 0.9273142000000002
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 34,
+      "output": 5488,
+      "cache_read": 174393,
+      "cache_creation": 62159,
+      "cost_usd": 0.2277848
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 158,
+      "cache_read": 0,
+      "cache_creation": 4758,
+      "cost_usd": 0.00067395
+    }
+  ],
+  "permission_denials": []
+}
