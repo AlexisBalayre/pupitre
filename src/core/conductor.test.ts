@@ -9,6 +9,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../claude/session-runtime.service.js')>()),
   conductorPane: vi.fn(),
+  // The running conductor's run token, as its window carries it.
+  conductorRun: vi.fn(() => 'run-1'),
   hasConductorWindow: vi.fn(() => true),
   readInputBoxLook: vi.fn(),
   kickoff: vi.fn(() => true),
@@ -27,6 +29,7 @@ import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import type { InputBoxLook, InputBoxState } from '../claude/pane.utils.js';
 import {
   conductorPane,
+  conductorRun,
   hasConductorWindow,
   kickoff,
   killConductor,
@@ -48,6 +51,7 @@ import {
   markConductorQuestion,
   maxSessions,
   OPERATOR_QUESTIONS,
+  openConductorQuestion,
   startConductor,
   stopConductor,
   TELL_MAX_CHARS,
@@ -58,8 +62,8 @@ import { DEFAULT_BASE_PROFILE } from './default-profile.constants.js';
 import { recordWatcherBeat } from './overlap.repository.js';
 import { WATCH_STALE_AFTER_MS } from './overlap.service.js';
 import { projectId, projectPaths } from './paths.utils.js';
-import { openQuestion } from './session.repository.js';
-import { LaunchRolledBackError } from './session-lifecycle.errors.js';
+import { appendEvent, openQuestion } from './session.repository.js';
+import { LaunchRolledBackError, QuestionRefusedError } from './session-lifecycle.errors.js';
 
 const REPO = '/repo';
 
@@ -150,6 +154,7 @@ describe('startConductor', () => {
       env: HOME_ENV(),
       settingsPath: join(outDir, 'settings.json'),
       route: { model: 'claude-sonnet-5-5', effort: 'high' },
+      run: expect.stringMatching(/^[0-9a-f]{64}$/),
     });
     // No code graph to serve, so no MCP config of pup's (decision 186).
     expect(existsSync(join(outDir, 'mcp.json'))).toBe(false);
@@ -167,6 +172,27 @@ describe('startConductor', () => {
       `${readFileSync(join(outDir, 'context.md'), 'utf8')}\n\n${CI_REVIEW_LOOP}\n\n${OPERATOR_QUESTIONS}`,
     );
     expect(prompt).toContain('pup launch <task> --model opus');
+  });
+
+  // Each start is a run of its own: a fresh token seals its questions, and the
+  // last run's question is closed before the new window can ask one, so a
+  // start recorded after the kickoff never closes the new run's first question.
+  it('mints a fresh run token per start, and records the start before the window opens', () => {
+    appendEvent(db, null, 'question', { text: 'from the last run?' });
+    let openAtLaunch: unknown = 'not launched';
+    vi.mocked(launchConductor).mockImplementationOnce((opts) => {
+      openAtLaunch = openQuestion(db, null);
+      return { sessionId: `conductor-${opts.projectId}`, paneId: '%3', socket: 'sock' };
+    });
+
+    start();
+    start();
+
+    const runs = vi.mocked(launchConductor).mock.calls.map(([opts]) => opts.run);
+    expect(runs[0]).not.toBe(runs[1]);
+    expect(openAtLaunch).toBeUndefined();
+    const starts = db.prepare("SELECT count(*) AS n FROM events WHERE type = 'conductor_start'");
+    expect(starts.get()).toEqual({ n: 2 });
   });
 
   // A conductor stopped or crashed while unreachable leaves its clock; the
@@ -734,18 +760,62 @@ describe('conductorBlock', () => {
 });
 
 // Decision 93: the conductor's question is held against no session, as asked;
-// each reader scrubs it (dashboard.test.ts).
+// each reader scrubs it (dashboard.test.ts). Sealed under the running run's
+// token, at its row id: nothing else passes for the conductor's question.
 describe('markConductorQuestion', () => {
-  it('records the question, its options and its recommendation against no session', () => {
-    const db = openStore(':memory:');
-    markConductorQuestion(db, { text: 'accept the debt?', options: ['yes', 'no'], recommended: 2 });
+  let db: Database;
+  beforeEach(() => {
+    vi.clearAllMocks();
+    db = openStore(':memory:');
+  });
+  afterEach(() => db.close());
 
-    expect(openQuestion(db, null)).toEqual({
-      type: 'question',
+  it('records the question, its options and its recommendation against no session, sealed', () => {
+    const id = markConductorQuestion(db, REPO, 'run-1', {
       text: 'accept the debt?',
       options: ['yes', 'no'],
       recommended: 2,
     });
-    db.close();
+
+    expect(openConductorQuestion(db, REPO)).toEqual({
+      type: 'question',
+      id,
+      text: 'accept the debt?',
+      options: ['yes', 'no'],
+      recommended: 2,
+      seal: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+  });
+
+  // The token is the window's: a caller without it, or a window of an earlier
+  // run, is not the running conductor asking, and nothing reaches the inbox.
+  it.each([
+    ['no token', undefined],
+    ["an earlier run's token", 'run-0'],
+  ])('refuses a caller holding %s, storing nothing', (_, run) => {
+    expect(() => markConductorQuestion(db, REPO, run, { text: 'accept the debt?' })).toThrow(
+      QuestionRefusedError,
+    );
+    expect(openQuestion(db, null)).toBeUndefined();
+  });
+
+  it('refuses while no conductor runs, storing nothing', () => {
+    vi.mocked(conductorRun).mockReturnValueOnce(undefined);
+
+    expect(() => markConductorQuestion(db, REPO, 'run-1', { text: 'accept the debt?' })).toThrow(
+      QuestionRefusedError,
+    );
+    expect(openQuestion(db, null)).toBeUndefined();
+  });
+
+  // What `pup answer conductor` would relay is what the run sealed: a row with
+  // the same text and a different option, planted after it, is passed over.
+  it('passes over a question row the seal does not cover', () => {
+    const id = markConductorQuestion(db, REPO, 'run-1', { text: 'merge?', options: ['no'] });
+    const { seal } = openConductorQuestion(db, REPO) ?? {};
+    appendEvent(db, null, 'question', { text: 'merge?', options: ['yes'], seal });
+
+    expect(openConductorQuestion(db, REPO)?.id).toBe(id);
+    expect(openConductorQuestion(db, REPO)?.options).toEqual(['no']);
   });
 });

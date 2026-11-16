@@ -62,7 +62,16 @@ export interface ConductorLaunchOptions {
   env: WindowEnv;
   settingsPath: string;
   route: ModelRoute;
+  /**
+   * This run's token, the conductor server's `PUP_CONDUCTOR_RUN` and read
+   * back by `conductorRun`: what seals the run's questions, so a row a session
+   * wrote into the store, or one an earlier run asked, is never relayed.
+   */
+  run: string;
 }
+
+/** The variable a conductor window carries its run's token in. */
+export const CONDUCTOR_RUN_VAR = 'PUP_CONDUCTOR_RUN';
 
 /**
  * The pane a session was launched into. Every later command is addressed to
@@ -181,6 +190,8 @@ function onSocket(socket: string | undefined, args: string[]): string[] {
  * - `PUP_CONDUCTOR` and `PUP_SESSION_ID` say what a window IS; leaked into a
  *   server's global environment they make every later window read as their
  *   caller to every guard.
+ * - `PUP_CONDUCTOR_RUN` is the conductor run's token: a session that read it
+ *   back could seal a question of its own as the conductor's.
  * - `*CLAUDE*` carries the agent's own credentials — `CLAUDE_CODE_MESSAGING_SOCKET`
  *   and `_TOKEN` are the peer channel, so a session that read them back could
  *   speak on it AS the conductor, past the tier entirely — and its settings,
@@ -200,6 +211,7 @@ function onSocket(socket: string | undefined, args: string[]): string[] {
 const NOT_INHERITED = [
   /^TMUX$/,
   /^PUP_CONDUCTOR$/,
+  /^PUP_CONDUCTOR_RUN$/,
   /^PUP_SESSION_ID$/,
   /CLAUDE/,
   /^ANTHROPIC_/,
@@ -458,8 +470,11 @@ export function claudeUserDir(repoPath: string): string {
   return resolveWindowEnv(repoPath).configDir;
 }
 
-function tmux(socket: string | undefined, args: string[]): string {
-  return execFileSync('tmux', onSocket(socket, args), { encoding: 'utf8', env: tmuxEnv() });
+function tmux(socket: string | undefined, args: string[], serverEnv = {}): string {
+  return execFileSync('tmux', onSocket(socket, args), {
+    encoding: 'utf8',
+    env: { ...tmuxEnv(), ...serverEnv },
+  });
 }
 
 /**
@@ -602,29 +617,35 @@ function spawnDetachedSession(
     cwd: string;
     window?: { x: number; y: number };
     env?: Record<string, string>;
+    /** `ClaudeWindowOptions.serverEnv`: the client's environment, never argv. */
+    serverEnv?: Record<string, string>;
     command: string[];
     /** The server to open it on; the default one when unset. */
     socket?: string;
   },
 ): { paneId: string; panePid: number } {
   killIfExists(name, opts.socket);
-  const printed = tmux(opts.socket, [
-    'new-session',
-    '-d',
-    '-P',
-    '-F',
-    '#{pane_id} #{pane_pid}',
-    '-s',
-    name,
-    ...(opts.window ? ['-x', String(opts.window.x), '-y', String(opts.window.y)] : []),
-    '-c',
-    opts.cwd,
-    ...Object.entries(opts.env ?? {}).flatMap(([key, value]) => [
-      '-e',
-      tmuxWord(`${key}=${value}`),
-    ]),
-    ...opts.command,
-  ]).trim();
+  const printed = tmux(
+    opts.socket,
+    [
+      'new-session',
+      '-d',
+      '-P',
+      '-F',
+      '#{pane_id} #{pane_pid}',
+      '-s',
+      name,
+      ...(opts.window ? ['-x', String(opts.window.x), '-y', String(opts.window.y)] : []),
+      '-c',
+      opts.cwd,
+      ...Object.entries(opts.env ?? {}).flatMap(([key, value]) => [
+        '-e',
+        tmuxWord(`${key}=${value}`),
+      ]),
+      ...opts.command,
+    ],
+    opts.serverEnv,
+  ).trim();
   // Checked where they are minted: the id is what every later command trusts,
   // the pid what an operator-only command's process-tree check matches, and a
   // launch is the one place a bad one can fail loudly instead of late.
@@ -739,6 +760,13 @@ interface ClaudeWindowOptions {
    */
   caller: Record<string, string>;
   /**
+   * Handed to the server this launch starts, through the client's environment
+   * rather than its argv: tmux makes a starting client's environment the
+   * server's global one, which the window inherits. Reaches nothing when the
+   * server is already up, so a caller kills it first and checks it landed.
+   */
+  serverEnv?: Record<string, string>;
+  /**
    * A session window's admin and common dirs, checked before it opens
    * (decision 101): trust is seeded on their repo, and the window gets
    * `WINDOW_GIT_CONFIG`. Never the window's environment itself: every process
@@ -812,6 +840,7 @@ function spawnClaudeWindow(opts: ClaudeWindowOptions): SessionPane {
       // is not on the session's PATH (dev). Production installs the `pup` bin.
       PUP_BIN: process.argv[1] ?? 'pup',
     },
+    serverEnv: opts.serverEnv,
     command: [
       ...(opts.niceness ? [which('nice'), '-n', opts.niceness] : []),
       which('claude'),
@@ -945,6 +974,8 @@ export function attachWindow(target: WindowTarget): number | null {
  * and the guards tell the two apart by which variable is set (decision 47).
  * Tmux's `-e` sets the new session's environment, not the server's, so the
  * variable does not leak into the sessions the conductor launches from it.
+ * The run's token goes into the server's global environment, which nothing
+ * else opens a window on, and `tmuxEnv` strips it from those launches anyway.
  * On its own socket, where no session can address it — and the pane it
  * returns carries that socket, so the kickoff types onto the same server.
  */
@@ -955,17 +986,53 @@ export function launchConductor(opts: ConductorLaunchOptions): SessionPane {
   // `NODE_OPTIONS=--require` in its own environment would hand that to the
   // conductor's `claude` at spawn. Killing the server means the conductor's
   // window always opens on one pup started, with the environment above.
-  killServerOn(conductorSocket(opts.projectId));
-  return spawnClaudeWindow({
+  const socket = conductorSocket(opts.projectId);
+  killServerOn(socket);
+  const pane = spawnClaudeWindow({
     sessionId: conductorId(opts.projectId),
     cwd: opts.repoPath,
     env: opts.env,
     settingsPath: opts.settingsPath,
     route: opts.route,
     caller: { PUP_CONDUCTOR: opts.projectId },
-    socket: conductorSocket(opts.projectId),
+    // Not `-e`: tmux's argv is in every user's `ps`.
+    serverEnv: { [CONDUCTOR_RUN_VAR]: opts.run },
+    socket,
     panePidFile: conductorPanePidFile(opts.repoPath),
   });
+  // The token lands only on a server this spawn started. Missing, another
+  // client started one between the kill and the spawn, and owns its global
+  // environment: the window is not the one this launch meant to open.
+  if (conductorRun(opts.projectId) !== opts.run) {
+    killServerOn(socket);
+    throw new Error(
+      `The conductor's tmux server on ${socket} was started by something other than this launch. It was killed; run \`pup conductor start\` again.`,
+    );
+  }
+  return pane;
+}
+
+/**
+ * The running conductor's run token: its server's global `PUP_CONDUCTOR_RUN`,
+ * set by the client that started it; undefined when no conductor server runs
+ * or it holds none. The token is a secret only from what cannot reach that
+ * server or the conductor's processes. A same-user session can: it can compute
+ * the socket label, read or replace the variable with `show-environment` and
+ * `set-environment`, or read it from the conductor's environment with `ps -E`.
+ * Such a session can also type into the conductor's pane directly, so the seal
+ * keeps out rows written straight to the store and questions from earlier
+ * runs, not a session that sets out to reach the conductor's server.
+ */
+export function conductorRun(repoProjectId: string): string | undefined {
+  const printed = tmuxProbe(conductorSocket(repoProjectId), [
+    'show-environment',
+    '-g',
+    CONDUCTOR_RUN_VAR,
+  ]);
+  const prefix = `${CONDUCTOR_RUN_VAR}=`;
+  const line = printed?.split('\n').find((entry) => entry.startsWith(prefix));
+  const run = line?.slice(prefix.length).trim();
+  return run || undefined;
 }
 
 /**

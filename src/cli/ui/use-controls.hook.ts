@@ -233,7 +233,8 @@ export function useControls({
 
   /**
    * A number key: that option of the selected session's open question, typed
-   * in as `pup answer <id> <n>` would (decision 93). A question asked in words
+   * in as `pup answer <id> <n> --question <q>` would (decision 93), bound to
+   * the question this screen shows. A question asked in words
    * alone takes words, which `s` sends.
    */
   function answerOption(option: string): void {
@@ -248,8 +249,9 @@ export function useControls({
       say(`${asking.id}'s question offers no options; s answers it in words.`, true);
     } else {
       const { deps } = sessionRow.project;
+      const questionId = asking.question.id;
       runAfterFrame(`Answering ${asking.id}: waiting for the paste to land …`, () =>
-        answerSelected(deps, asking.id, option),
+        answerSelected(deps, asking.id, questionId, option),
       );
     }
   }

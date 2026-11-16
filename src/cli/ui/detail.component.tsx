@@ -85,7 +85,7 @@ export function Detail({ row }: { row: DetailRow }) {
 function Question({ question }: { question: DashboardQuestion }) {
   const count = question.options.length;
   return (
-    <Section title="question">
+    <Section title={`question #${question.id}`}>
       <Text color="yellow">{question.text}</Text>
       {question.options.map((option, index) => (
         // Two options can read the same; the number that picks each cannot.

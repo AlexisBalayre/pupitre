@@ -126,7 +126,7 @@ describe('createTerminalStatus', () => {
     const out = tty();
     const hostile = `${ESC}]0;pwned${BEL} \u009b31m\u007f x;status=idle`;
     createTerminalStatus(out, ITERM).update(
-      reading(session({ question: { text: hostile, options: [] } })),
+      reading(session({ question: { id: 41, text: hostile, options: [] } })),
     );
     const [written] = out.writes;
     // The only ESC and BEL left are the writer's own.
@@ -134,7 +134,7 @@ describe('createTerminalStatus', () => {
     expect(written).not.toContain('\u009b');
     expect(written).not.toContain('\u007f');
     expect(written?.split(BEL).length).toBe(3);
-    expect(written).toContain('detail=s-mtzmobsi-1: question: ]0,pwned 31m x,status=idle');
+    expect(written).toContain('detail=s-mtzmobsi-1: question #41: ]0,pwned 31m x,status=idle');
   });
 
   it.each([

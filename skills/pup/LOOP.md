@@ -111,7 +111,8 @@ with no such change, or declined, gets the reason and stays open for you. One su
 round. Never reply or resolve by hand on top of that. Minor issues in the
 review body never take a round alone. A thread that opens a design decision reaches your
 needs-you inbox through the worker's `pup session ask`, with numbered options and the worker's
-recommendation: answer it with `pup answer <session> <n>`, or in words.
+recommendation: answer it with `pup answer <session> <n> --question <id>`, or in words, where
+`<id>` is the number the inbox prints after `question #`.
 
 ## 5. After the human merges
 

@@ -84,6 +84,7 @@ vi.mock('../core/conductor.service.js', () => ({
   NO_CONDUCTOR_RUNNING:
     'No conductor is running for this project; start one with `pup conductor start`.',
   isConductorRunning: vi.fn(() => false),
+  openConductorQuestion: vi.fn(),
   startConductor: vi.fn(),
   stopConductor: vi.fn(),
   tellConductor: vi.fn(() => true),

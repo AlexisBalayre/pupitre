@@ -39,12 +39,10 @@ import { SteerNotDeliveredError, saveSessionEnv } from '../../claude/session-run
 import { startConductor, stopConductor } from '../../core/conductor.service.js';
 import { openStore } from '../../core/db.client.js';
 import {
-  appendEvent,
   ensureProject,
   getSession,
   insertSession,
   insertTask,
-  openQuestion,
   transitionSession,
 } from '../../core/session.repository.js';
 import {
@@ -187,9 +185,11 @@ describe('dashboard actions', () => {
   // Decision 93: the number key and `pup answer` answer through one function,
   // so they cannot drift over what an answer types or records.
   it('answers through `answerSessionQuestion`, as `pup answer` does', () => {
-    expect(answerSelected(deps, SESSION, '2')).toEqual({ message: `Answered ${SESSION}: merge` });
+    expect(answerSelected(deps, SESSION, 41, '2')).toEqual({
+      message: `Answered ${SESSION}: merge`,
+    });
 
-    expect(answerSessionQuestion).toHaveBeenCalledWith(db, SESSION, '2');
+    expect(answerSessionQuestion).toHaveBeenCalledWith(db, SESSION, 41, '2');
   });
 
   it('reports a refused answer as a line', () => {
@@ -197,7 +197,7 @@ describe('dashboard actions', () => {
       throw new Error('The question offers 2 options; answer 1 to 2, or in words.');
     });
 
-    expect(answerSelected(deps, SESSION, '3')).toEqual({
+    expect(answerSelected(deps, SESSION, 41, '3')).toEqual({
       message: 'The question offers 2 options; answer 1 to 2, or in words.',
       failed: true,
     });
@@ -392,16 +392,6 @@ describe('dashboard actions', () => {
         workerModel: 'sonnet',
       });
       expect(result.message).toBe('Conductor running (tmux: pup-conductor-x).');
-    });
-
-    // As `pup conductor start` does: the new run never asked the last run's
-    // question, so the start ends it (decision 93).
-    it("ends the last run's question", () => {
-      appendEvent(db, null, 'question', { text: 'accept the debt?', options: ['yes', 'no'] });
-
-      toggleConductor(deps, false, { model: '', workerModel: '' });
-
-      expect(openQuestion(db, null)).toBeUndefined();
     });
 
     // The radar is `startConductor`'s to bring up, by the store's beat

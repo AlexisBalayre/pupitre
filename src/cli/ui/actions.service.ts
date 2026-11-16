@@ -9,7 +9,7 @@ import {
 import { startConductor, stopConductor } from '../../core/conductor.service.js';
 import { blockedReason } from '../../core/dashboard.service.js';
 import { DEFAULT_BASE_PROFILE } from '../../core/default-profile.constants.js';
-import { appendEvent, getSession, transitionSession } from '../../core/session.repository.js';
+import { getSession, transitionSession } from '../../core/session.repository.js';
 import {
   isHandoffReady,
   requestHandoff,
@@ -129,11 +129,17 @@ export function steerSelected(deps: ActionDeps, sessionId: string, message: stri
 
 /**
  * `pup answer` with an option's number: the session's open question answered
- * in its pane, prefixed by the question, and closed (decision 93).
+ * in its pane, prefixed by the question, and closed (decision 93). Bound to
+ * `questionId`, the question the screen showed: a newer one is refused.
  */
-export function answerSelected(deps: ActionDeps, sessionId: string, option: string): ActionResult {
+export function answerSelected(
+  deps: ActionDeps,
+  sessionId: string,
+  questionId: number,
+  option: string,
+): ActionResult {
   return attempt(() => {
-    const answer = answerSessionQuestion(deps.db, sessionId, option);
+    const answer = answerSessionQuestion(deps.db, sessionId, questionId, option);
     return `Answered ${sessionId}: ${answer.text}`;
   });
 }
@@ -260,8 +266,6 @@ export function toggleConductor(
         ...(models.model ? { model: models.model } : {}),
         ...(models.workerModel ? { workerModel: models.workerModel } : {}),
       });
-      // The new run's start ends the last run's question, as the CLI's does (decision 93).
-      appendEvent(deps.db, null, 'conductor_start', { name: handle.name });
       const radar = handle.radarTarget
         ? ` Conflict radar started with it (tmux: ${handle.radarTarget}).`
         : '';
