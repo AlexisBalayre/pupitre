@@ -456,3 +456,35 @@
     gitfile lets git honour a `core.worktree` a session sets in the shared config. Aimed at
     the checkout's parent, that setting would list an empty root, and an empty root has no
     config to compare. Read from such a checkout, the root still lists whole.
+
+## Amendment (2026-11-16, #341 follow-up)
+
+Three review notes on #341, settled after it landed. Each was a refusal that cost a repo the
+test split on every merge, though nothing it refused could run a file; what can still stays
+refused.
+
+- *A bare `@` alias.* `READ_ALIAS_KEY` read `@name` but not a bare `@`, the most common vite
+  alias. Vite redirects a specifier equal to a key or starting with it and a `/`, so `@`
+  redirects only `@/...`, and no package is named that. It is now read like `@name`.
+- *An `.npmrc` array key.* `PLAIN_KEY` refused `public-hoist-pattern[]=` and
+  `only-built-dependencies[]=`, so a repo or user `.npmrc` with either lost the split. ini
+  reads a key ending in `[]` as an array of that key, so a plain key with a trailing `[]` is
+  now plain, in the repo's file and in the user's. `configKey` already drops the `[]`
+  before matching `CONFIG_NAMING_KEYS`, and `RUNS_A_FILE` matches the text, so
+  `prefix[]=` and `node-options[]=` stay refused. A quoted key, a spaced `key []` or a
+  doubled `[][]` stays unplain.
+- *A link or submodule under a root dot directory.* `treeRoot` lists a committed link as
+  `ls-tree -r` does (mode `120000`, its target's text as a blob), but `diskListing` threw on
+  one, so `testInputsIntact` failed for a repo committing, say, a link under `.husky`. It
+  now lists a link the same way: `readlink`'s bytes hashed with `hash-object --stdin`,
+  never followed. A submodule is listed by its commit in the tree, while the gate checks it
+  out without recursing, as an empty directory that `diskListing` lists nothing for. A tree
+  listing now leaves out a gitlink's line too, since no run reads what it names. A link
+  retargeted on disk, or a submodule populated there, still differs from the commit and
+  fails the check. A link at the root itself is still unread.
+- *Tests.* In `test/unit/adapters/typescript-adapter.test.ts`, these collect: a config
+  aliasing `@`, and an `.npmrc` with `public-hoist-pattern[]=` and
+  `only-built-dependencies[]=` on both sides. `testInputsIntact` holds beside a user
+  `.npmrc` with `public-hoist-pattern[]=`, and for a committed link or uninitialised
+  submodule under `.husky`. Each fails at this change's merge base. Every earlier refusal
+  test passes unchanged.
