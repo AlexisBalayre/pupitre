@@ -1,0 +1,203 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-16T12:53:17.163Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43868198527",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43868198527",
+  "actor": "AlexisBalayre",
+  "commit_sha": "d1d51c99b7b8960782828c1b3f5e59eae8a9e93f",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 341,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "guards"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "guards"
+  ],
+  "reviewers_skipped": [
+    "conventions",
+    "context",
+    "maintainability",
+    "docs",
+    "spec",
+    "simplicity",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/adapters/typescript.adapter.ts",
+      "line": "237-238",
+      "description": "The run-input class now takes every root `.json`, `.yaml`, `.lock` and `.lockb`. Disk files are read through `readPlainFile`, which throws above 1 MiB. So in any repo whose root lockfile is over 1 MiB, `testInputsIntact` returns false on every merge and no file ever counts as test.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/adapters/typescript.adapter.ts",
+      "line": "527-535",
+      "description": "The new node_modules and tsconfig refusals match ASCII case only. A branch path such as `src/node_moduleſ/…` or `src/tſconfig.json` escapes both. Node and tsconfck still open them on APFS as `node_modules` and `tsconfig.json`.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/adapters/vitest-config.utils.ts",
+      "line": "254-268",
+      "description": "loadsAFile looks for static specifiers, including the new import-equals check, only in source.statements (top-level). The run-time walk only matches CallExpression nodes. An `import x = require('./evil')` inside a `namespace` block has no CallExpression in the TS AST: the `require(...)` is an ExternalModuleReference. So a config holding `namespace N { import e = require('./evil'); export const v = e }` parses cleanly and the reader still returns a plain collection, even though bundling the config pulls in and runs the branch's file. This is the shape decision 143 says is refused on either side.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/adapters/vitest-config.utils.ts",
+      "line": "476-501",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The disk side of the directory comparison throws on a symlink or submodule that the commit itself holds, while the tree side lists it fine. So testInputsIntact returns false on every merge of a repo that commits a link (or submodule) under any root dot directory (.github, .claude, .husky, .vscode...).",
+      "body": "**A link the commit holds under a root dot directory costs the split on every merge**\n\nThis PR widened `VITEST_RUN_INPUT` to every dot-named root entry (`typescript.adapter.ts:238-239`), so `.github`, `.claude`, `.husky` and `.vscode` are now read whole on both sides of `testInputsIntact`. The two sides read a directory differently:\n\n- **Tree side** (`treeRoot`): `ls-tree --full-tree -r -z` lists every entry, including `120000` links and `160000` submodules.\n- **Disk side** (`diskListing`): a `Dirent` for a link is neither `isDirectory()` nor `isFile()`, so it reaches\n  ```ts\n  throw new Error(`${path} is not read: not a plain file named on one line`);\n  ```\n  An uninitialised submodule checks out as an empty directory, which lists nothing against the tree's `160000` line.\n\n**Trigger.** The target and the branch both commit `.github/copilot-instructions.md -> ../AGENTS.md`, a common setup for repos run by AI agents.\n1. `cutGateCheckout` keeps it: `refuseEscapingLinks` (`merge-gate.service.ts:1558-1594`) removes only links that point outside the checkout.\n2. `diskListing` throws on it.\n3. The `catch` in `testInputsIntact` (`typescript.adapter.ts:894-895`) returns `false`, so no file counts as test, on every merge.\n\n`testFiles` reads both sides from trees and accepts the same link. Only the disk check refuses it.\n\n**Not declared in the ADR.** ADR 0143 says a file *made* a link on disk fails the check (L50-51, L453), and it accepts the fail-closed cost for build outputs at the root (L55-57). It does not say that a link or submodule *committed* in a compared directory costs the split. At the merge base, `diskListing` did not exist and the run-input list matched no dot directory, so this is new in the PR.\n\n**Fix direction.**\n- List a link as `120000 blob <oid>`, where the oid is the hash of its `readlinkSync` target text. Git hashes a link as a blob of that text, so `hash-object --stdin` (not `--stdin-paths`, which follows the link) gives it.\n- Either skip `160000` entries on the tree side, or refuse them explicitly and record the cost in the ADR.\n- Add a test for a link that both sides hold.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/d1d51c99b7b8960782828c1b3f5e59eae8a9e93f/src/adapters/vitest-config.utils.ts#L476-L501\nhttps://github.com/AlexisBalayre/pupitre/blob/d1d51c99b7b8960782828c1b3f5e59eae8a9e93f/src/adapters/typescript.adapter.ts#L883-L896",
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/vitest-config.utils.ts",
+      "line": "95",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "READ_ALIAS_KEY needs at least one character after `@`, so the most common vite alias, a bare `'@'`, is refused. A vitest config with `resolve: { alias: { '@': path.resolve(__dirname, 'src') } }` was read at the merge base and now collects nothing, though `@` names no package and no scope.",
+      "body": "**A bare `'@'` alias, the most common vite alias, now costs the split**\n\n`aliasKeys` reads an alias object only when every key matches:\n\n```ts\nconst READ_ALIAS_KEY = /^@[\\w.-]+$/;\n```\n\nThe `+` rejects the bare key `'@'`, as in `alias: { '@': path.resolve(__dirname, './src') }` or `fileURLToPath(new URL('./src', import.meta.url))`. For that key, `aliasKeys` returns `undefined`. Then `configGlobs` returns `undefined` (L398), `vitestCollection` returns `undefined`, and `testFiles` returns `[]` (`typescript.adapter.ts:859-865`).\n\n**This is a regression.** At the merge base, `configGlobs` never read `resolve`. A plain `vitest.config.ts` with an `'@'` alias was collected. The `path`/`node:url` imports and the call-expression values don't make the reader refuse it: an existing test (`vitest-config-utils.test.ts:276-285`) accepts the same shape with an `@src` key.\n\n**`'@'` is safe by the code's own model.** ADR 0143 (L146-154) admits \"a bare `@name` … with no `/`, which names no package\". Vite redirects a specifier that equals the key or starts with the key plus `/`. So `'@'` redirects only `@` and `@/…`, and neither is a package or scope name. `aliasesAScope` would `lstat` `node_modules/@`, which no package manager creates. (The vite matching rule is pinned-version knowledge, which the code and ADR already rely on.)\n\nThe fix below admits `'@'` and changes nothing else. Also note in the `READ_ALIAS_KEY` / `VitestCollection.aliases` JSDoc and in ADR 0143 that a bare `@` is read, and add a test row for it.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/d1d51c99b7b8960782828c1b3f5e59eae8a9e93f/src/adapters/vitest-config.utils.ts#L89-L95\nhttps://github.com/AlexisBalayre/pupitre/blob/d1d51c99b7b8960782828c1b3f5e59eae8a9e93f/src/adapters/vitest-config.utils.ts#L364-L379",
+      "suggestion": "const READ_ALIAS_KEY = /^@[\\w.-]*$/;"
+    },
+    {
+      "file": "src/adapters/typescript.adapter.ts",
+      "line": "315",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "`PLAIN_KEY` rejects the trailing `[]` of an ini array key. As a result, a shared `.npmrc` containing `public-hoist-pattern[]=*eslint*` (or `only-built-dependencies[]=esbuild`, `hoist-pattern[]=…`) leaves `plainVitestCollection` undefined, and `testFiles` returns `[]` on every merge. At the merge base this was collected.",
+      "body": "**An `.npmrc` array key (`key[]=`) now costs the split, which hits common pnpm setups**\n\n```ts\nconst PLAIN_KEY = /^[A-Za-z0-9._@/:+-]+$/;\n```\n\n**Trigger.** The target and the branch share an `.npmrc` holding `public-hoist-pattern[]=*eslint*`, a common pnpm idiom (also `only-built-dependencies[]=esbuild`).\n1. `unplainKey` takes the key `public-hoist-pattern[]`, which fails `PLAIN_KEY`.\n2. So `runsAFile` and then `inputLoadsAFile` are true, and `plainVitestCollection` returns `undefined` (L495-501).\n3. `testFiles` returns `[]` on every merge. The same line in an operator's `~/.npmrc` makes `testInputsIntact` false through `userConfigRunsAFile`.\n\nAt the merge base, only `RUNS_A_FILE` was tested, and this file was collected.\n\n**Refusing the trailing `[]` adds no safety.** ADR 0143 itself says ini strips an array's trailing `[]` and that `configKey` drops it (L199, L202). So `prefix[]=/p` is still refused by `namesAConfig`, and `node-options[]=` is still refused by `RUNS_A_FILE`. The spellings the plain-key rule exists for (quotes, whitespace, `[ \"prefix\" ]`) stay refused. The ADR names every other fail-closed cost in a \"that costs … the split\" sentence, but never this one. Its \"(a quote, a bracket, …)\" wording at L210-213 should read \"other than an array's trailing `[]`\".\n\nThe tests \"one naming a prefix array\" and \"one naming a quoted prefix array\" still fail closed under the fix below. Add a row showing that a shared `.npmrc` with `public-hoist-pattern[]=…` collects.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/d1d51c99b7b8960782828c1b3f5e59eae8a9e93f/src/adapters/typescript.adapter.ts#L315-L336",
+      "suggestion": "const PLAIN_KEY = /^[A-Za-z0-9._@/:+-]+(?:\\[\\])?$/;"
+    }
+  ],
+  "refuted_findings": [
+    {
+      "file": "src/adapters/vitest-config.utils.ts",
+      "line": "450-461",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "Any root name in the widened run-input class that is not lower case (Gemfile.lock, Cargo.toml, Cargo.lock, Pipfile.lock, Podfile.lock, Taskfile.yml, a committed .DS_Store) now throws when read, so testFiles returns [] and testInputsIntact returns false on every merge of such a repo; at the merge base these names were never read and the split worked.",
+      "refutation": "The mechanism holds, but ADR 0143 declares it as intended fail-closed policy. The class is every root .json/.yaml/.toml/.lock, with names folded to lower case (L40-46). An entry 'named in another case at either check' counts no file as test (L89-90). 'Names in another case at the root collect nothing', even when both sides commit them (L449-451). Failing closed there is 'the price of not having to know which tool reads which name' (L56-57). Treating miscased names as unreadable predates the PR. The PR only widened the class, which the ADR declares."
+    }
+  ],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Round 4 budget: only correctness (2), security (2) and guards spawned; conventions, docs, context, simplicity and maintainability skipped per §4. spec skipped: no spec source (no closing keywords or linked issues)."
+    },
+    {
+      "component": "guards",
+      "description": "Guards reviewer reported the typescript.adapter.ts diff output was truncated and it did not read it past the first part, nor check the new NON_ASCII export against a dead-export guard."
+    },
+    {
+      "component": "validator",
+      "description": "Validators reported `git diff` with an absolute path or `-C` was blocked for approval; they fell back to relative-path `git diff` or `git show <base>:<path>`, verdicts unaffected."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 3,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 10.215399775000002,
+  "duration_ms": 923320,
+  "num_turns": 18,
+  "tokens": {
+    "input": 14,
+    "output": 16185,
+    "cache_read": 394703,
+    "cache_creation": 76685,
+    "total": 487587
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 298,
+      "output": 255226,
+      "cache_read": 6776624,
+      "cache_creation": 689734,
+      "cost_usd": 10.139761800000002
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 14,
+      "output": 2453,
+      "cache_read": 66604,
+      "cache_creation": 17472,
+      "cost_usd": 0.0748984
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 265,
+      "cache_read": 0,
+      "cache_creation": 4855,
+      "cost_usd": 0.000739575
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "git -C /home/runner/work/pupitre/pupitre diff --stat 19027d50fcb5b8cc70eb16cb8bef81bd7f2c7048..HEAD"
+    },
+    {
+      "tool": "Bash",
+      "input": "git -C /home/runner/work/pupitre/pupitre diff --stat 19027d50fcb5b8cc70eb16cb8bef81bd7f2c7048..HEAD"
+    },
+    {
+      "tool": "Bash",
+      "input": "git -C /home/runner/work/pupitre/pupitre diff --stat 19027d50fcb5b8cc70eb16cb8bef81bd7f2c7048..HEAD"
+    },
+    {
+      "tool": "Bash",
+      "input": "git ls-tree HEAD"
+    },
+    {
+      "tool": "Bash",
+      "input": "git -C /home/runner/work/pupitre/pupitre diff 19027d50fcb5b8cc70eb16cb8bef81bd7f2c7048..HEAD --stat"
+    },
+    {
+      "tool": "Bash",
+      "input": "git -C /home/runner/work/pupitre/pupitre diff 19027d50fcb5b8cc70eb16cb8bef81bd7f2c7048..HEAD --stat"
+    },
+    {
+      "tool": "Bash",
+      "input": "git -C /home/runner/work/pupitre/pupitre show 19027d50fcb5b8cc70eb16cb8bef81bd7f2c7048:src/adapters/typescript.adapter.ts"
+    },
+    {
+      "tool": "Bash",
+      "input": "git -C /home/runner/work/pupitre/pupitre diff 19027d50fcb5b8cc70eb16cb8bef81bd7f2c7048..HEAD --stat; git -C /home/runner/work/pupitre/pupitre diff 19027d50fcb5b8cc70eb16cb8bef81bd7f2c7048..HEAD -- src"
+    },
+    {
+      "tool": "Bash",
+      "input": "git -C /home/runner/work/pupitre/pupitre diff 19027d50fcb5b8cc70eb16cb8bef81bd7f2c7048..HEAD -- src/adapters/vitest-config.utils.ts"
+    },
+    {
+      "tool": "Bash",
+      "input": "git -C /home/runner/work/pupitre/pupitre diff 19027d50fcb5b8cc70eb16cb8bef81bd7f2c7048..HEAD -- src/adapters/typescript.adapter.ts"
+    },
+    {
+      "tool": "Bash",
+      "input": "git -C /home/runner/work/pupitre/pupitre diff 19027d50fcb5b8cc70eb16cb8bef81bd7f2c7048..HEAD -- /home/runner/work/pupitre/pupitre/src/adapters/typescript.adapter.ts"
+    }
+  ]
+}
