@@ -1,0 +1,144 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-16T11:52:21.637Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43860755565",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43860755565",
+  "actor": "AlexisBalayre",
+  "commit_sha": "0bacf07759d594f5cf650ce1625f8fe89d5329c3",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 349,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "2405-2410",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "When `git rebase --abort` fails, the empty catch swallows it, and the gate now goes on to merge and land the branch. Before this change the same path stopped with a fail.",
+      "body": "**If `rebase --abort` fails, including when a Ctrl-C kills it, the error is lost and the gate merges and lands anyway.**\n\nWhile the merge lock is held, node ignores SIGINT, SIGTERM and SIGHUP (`stayAlive`, L1242-1243). The only way the gate sees an interrupt is through a child's `error.signal`, which `rethrowIfKilled` checks.\n\n**Trigger.** The rebase hits a real conflict and exits with status 1, so its `error.signal` is unset. The operator then presses Ctrl-C while `git rebase --abort` is running. On a large worktree the abort's `reset --hard` takes a while, so this window is real.\n- The bare `catch {}` throws away the killed abort's error.\n- `rethrowIfKilled(error)` checks only the rebase's error, which was not killed.\n- The code sets `step = 'merge'` and calls `mergeTargetInto`.\n\n**What `mergeTargetInto` does next.** The worktree is still in the stopped rebase, so HEAD is detached.\n- `symbolic-ref -q HEAD` exits 1, so `head` is undefined.\n- The compare-and-swap moves the branch to the merge commit.\n- `if (head !== branchRef) return undefined;` counts as a pass.\n\nThe gate then runs the remaining stages and fast-forwards the target. Node already swallowed the signal, so nothing later sees the interrupt. This breaks ADR 0190's guarantee that \"no merge follows a Ctrl-C\".\n\nThe same catch also hides an abort that fails for another reason, such as an `index.lock` held by the session's own git. Before this PR that case ended in a worker-facing fail. Now the gate passes and lands while the session's worktree is left mid-rebase on a detached HEAD.\n\n**Fix.**\n- **Interrupt case:** `catch (abortError) { rethrowIfKilled(abortError); }`.\n- **Other abort failures:** keep the old fail when the abort fails, or merge only once no rebase is in progress, for example once `rebase-merge` is gone from the worktree's admin dir.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/0bacf07759d594f5cf650ce1625f8fe89d5329c3/src/core/merge-gate.service.ts#L2402-L2413",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate-fresh-base.test.ts",
+      "line": "1",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "No test covers the new guard that stops an interrupted rebase from turning into a merge. If you delete `rethrowIfKilled(error);` at L2410, the whole suite still passes, but an interrupted rebase then merges and lands.",
+      "body": "**No test covers the rule that an interrupted rebase is never treated as a conflict.**\n\nAfter this change, any rebase failure that is not a kill leads to `mergeTargetInto` and then landing. The only thing that stops an operator's Ctrl-C from turning into a merge is `rethrowIfKilled(error)` at `merge-gate.service.ts` L2410.\n\nThat line can be deleted without any test failing. A rebase killed by SIGINT would then set `rebaseConflicted = true`, the clean `merge-tree` would pass, and the gate would land. Nothing in the suite catches this:\n- `merge-gate-fresh-base.test.ts` covers only real conflicts, clean merges and ancestry-check counts.\n- No existing test throws a signal from the `rebase` call. The only test that hooks it (`merge-gate-open-pr.test.ts:438-445`) never throws.\n\nThe project already tests interrupts at other points of the merge path, for example `merge-gate-regate.test.ts` L1417 and L1446. They use `beforeGit` to throw `{ signal: 'SIGINT', status: null }`.\n\nAdd a matching case with a matcher like `args.includes('rebase') && !args.includes('--abort')`, and assert that:\n- `runMergeGate` rejects with the interrupt;\n- `steerPane` is not called;\n- the branch and `main` are unchanged.\n\nA second case that throws the signal from the `--abort` call would also cover the abort-swallow finding.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/0bacf07759d594f5cf650ce1625f8fe89d5329c3/src/core/merge-gate.service.ts#L2402-L2413",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "2292-2301",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`holdsMergeOfTarget` counts any merge commit with a parent in the target's history, not only a merge of the target. A branch whose first commit merges a side branch, or that merged a sibling branch which has since landed, skips a clean rebase and lands an extra merge commit.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0190-fresh-base-merges-the-target-into-a-branch-that.md",
+      "line": "30-32",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "\"A fresh-base failure the session did not cause no longer happens\" claims too much: the fallback merge can still conflict. Say instead that a rebase conflict whose merge is clean no longer fails.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "2147-2148",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "In the `mergeTargetInto` JSDoc, \"or one no rebase should rewrite\" is vague, and the inserted text runs well past the paragraph's wrap width. Name the case instead: a no-PR branch that holds a merge of the target or whose rebase conflicted (decision 190).",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "guards",
+      "description": "A `git diff` naming merge-gate.service.ts and merge-gate.test.ts together failed with a bwrap error on .git/config.worktree.lock. The retry for the service file alone worked, but the guards reviewer never saw the merge-gate.test.ts diff."
+    },
+    {
+      "component": "orchestrator",
+      "description": "Not spawned: review-context (no spec/protocol/infra surface), review-workflow-safety (no workflow change), review-spec (no closing reference or spec source), review-maintainability (off the default roster)."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 2,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.75561345,
+  "duration_ms": 275977,
+  "num_turns": 16,
+  "tokens": {
+    "input": 14,
+    "output": 12258,
+    "cache_read": 335349,
+    "cache_creation": 52174,
+    "total": 399795
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 108,
+      "output": 45036,
+      "cache_read": 1361520,
+      "cache_creation": 198035,
+      "cost_usd": 2.320153
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 54,
+      "output": 12293,
+      "cache_read": 419015,
+      "cache_creation": 107903,
+      "cost_usd": 0.434697
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 312,
+      "cache_read": 0,
+      "cache_creation": 4858,
+      "cost_usd": 0.00076345
+    }
+  ],
+  "permission_denials": []
+}
