@@ -538,6 +538,21 @@ export function treeRoot(repoPath: string, sha: string): RootFiles {
   );
 }
 
+/**
+ * A commit's entries anywhere in its tree whose path `pattern` matches, as
+ * `ls-tree -r` lists them: mode, object name and path, so two commits holding
+ * the same such files give the same listing. Read from `repoPath`'s object
+ * store, the whole tree whatever directory a session's `core.worktree` makes
+ * git think it runs in (decision 161).
+ */
+export function treeEntriesMatching(repoPath: string, sha: string, pattern: RegExp): string {
+  return listing(
+    runGit(repoPath, ['ls-tree', '--full-tree', '-r', '-z', sha], GIT_READ)
+      .split('\0')
+      .filter((line) => line !== '' && pattern.test(line.slice(line.indexOf('\t') + 1))),
+  );
+}
+
 /** What one vitest run collects, and the config that says so without its lists. */
 interface VitestCollection {
   collects: (path: string) => boolean;

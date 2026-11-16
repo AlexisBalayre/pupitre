@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import {
   chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
   renameSync,
@@ -567,6 +568,10 @@ describe('typescriptAdapter.testFiles', () => {
       {},
       ['src/a.test.ts'],
     ],
+    // Named in another case, which a case-insensitive disk opens for the lower-case name.
+    ['a .PostCSSrc on both sides', { '.PostCSSrc': '{}\n' }, {}, []],
+    ['a Postcss.config.js only the branch commits', {}, { 'Postcss.config.js': 'x\n' }, []],
+    ['a TSCONFIG.JSON only the branch commits', {}, { 'TSCONFIG.JSON': '{}\n' }, []],
   ] as [string, Record<string, string>, Record<string, string>, string[]][])(
     'reads the root configs of %s',
     (_, both, branchOnly, expected) => {
@@ -688,6 +693,169 @@ describe('typescriptAdapter.testFiles', () => {
     return { repo, sha: sh(repo, 'git', 'rev-parse', 'HEAD') };
   }
 
+  /**
+   * A gate context over one repo committing `target`, then `branch` over it,
+   * paths nested and ignored ones included, read from the two commits.
+   */
+  function branched(
+    target: Record<string, string>,
+    branch: Record<string, string>,
+  ): { configPath: string; configSha: string; measurePath: string; measureSha: string } {
+    const repo = tempDir('pup-adapter-');
+    const commit = (files: Record<string, string>): string => {
+      for (const [name, text] of Object.entries(files)) {
+        mkdirSync(dirname(join(repo, name)), { recursive: true });
+        writeFileSync(join(repo, name), text);
+      }
+      sh(repo, 'git', 'add', '-A', '-f');
+      sh(
+        repo,
+        'git',
+        '-c',
+        'user.name=t',
+        '-c',
+        'user.email=t@t',
+        'commit',
+        '-q',
+        '--allow-empty',
+        '-m',
+        'c',
+      );
+      return sh(repo, 'git', 'rev-parse', 'HEAD');
+    };
+    sh(repo, 'git', 'init', '-q');
+    const configSha = commit(target);
+    return { configPath: repo, configSha, measurePath: repo, measureSha: commit(branch) };
+  }
+
+  const plainRoot = () => ({
+    'package.json': plainVitest,
+    'vitest.config.ts': configWith("{ include: ['src/**/*.test.ts'] }"),
+  });
+
+  // The gate reads both sides from trees: a directory there is a tree entry,
+  // and below the root node resolves a `node_modules` and tsconfck a tsconfig.
+  it.each([
+    ['a .config directory on both sides', { '.config/postcssrc.json': '{}\n' }, {}, []],
+    [
+      'a .github directory only the branch changes',
+      { '.github/ci.yml': 'a\n' },
+      { '.github/ci.yml': 'b\n' },
+      [],
+    ],
+    ['a .github directory only the branch adds', {}, { '.github/ci.yml': 'a\n' }, []],
+    ['a .github directory on both sides', { '.github/ci.yml': 'a\n' }, {}, ['src/a.test.ts']],
+    [
+      'a node_modules path below the root only the branch commits',
+      {},
+      { 'src/node_modules/x/index.js': 'x\n' },
+      [],
+    ],
+    [
+      'a Node_Modules path below the root on both sides',
+      { 'lib/Node_Modules/x.js': 'x\n' },
+      {},
+      [],
+    ],
+    [
+      'a nested tsconfig.json the branch changes',
+      { 'web/tsconfig.json': '{}\n' },
+      { 'web/tsconfig.json': '{ "compilerOptions": { "jsxImportSource": "./jsx" } }\n' },
+      [],
+    ],
+    ['a nested jsconfig.json only the branch adds', {}, { 'web/jsconfig.json': '{}\n' }, []],
+    [
+      'a nested TSCONFIG.app.JSON only the branch adds',
+      {},
+      { 'web/TSCONFIG.app.JSON': '{}\n' },
+      [],
+    ],
+    [
+      'a nested tsconfig.json on both sides',
+      { 'web/tsconfig.json': '{}\n' },
+      {},
+      ['src/a.test.ts'],
+    ],
+  ] as [string, Record<string, string>, Record<string, string>, string[]][])(
+    'reads from the trees %s',
+    (_, target, branch, expected) => {
+      const ctx = branched({ ...plainRoot(), ...target }, branch);
+      const files = ['src/a.test.ts', ...Object.keys(target), ...Object.keys(branch)];
+
+      expect(typescriptAdapter.testFiles?.(ctx, files)).toEqual(expected);
+    },
+  );
+
+  it('reads a nested tsconfig.json the branch deletes from the trees', () => {
+    const ctx = branched({ ...plainRoot(), 'web/tsconfig.json': '{}\n' }, {});
+    sh(ctx.configPath, 'git', 'rm', '-q', 'web/tsconfig.json');
+    sh(
+      ctx.configPath,
+      'git',
+      '-c',
+      'user.name=t',
+      '-c',
+      'user.email=t@t',
+      'commit',
+      '-q',
+      '-m',
+      'rm',
+    );
+    const measureSha = sh(ctx.configPath, 'git', 'rev-parse', 'HEAD');
+
+    expect(
+      typescriptAdapter.testFiles?.({ ...ctx, measureSha }, ['src/a.test.ts', 'web/tsconfig.json']),
+    ).toEqual([]);
+  });
+
+  // A directory the run reads is walked whole: what cannot be read, or is a
+  // link, fails the check rather than read as empty or throw.
+  it.each([
+    ['untouched', () => {}, true],
+    ['with .config unlistable', (repo: string) => chmodSync(join(repo, '.config'), 0o300), false],
+    [
+      'with a file under .github unreadable',
+      (repo: string) => chmodSync(join(repo, '.github', 'ci.yml'), 0o000),
+      false,
+    ],
+    [
+      'with a file under .github made a link',
+      (repo: string) => {
+        rmSync(join(repo, '.github', 'ci.yml'));
+        symlinkSync('../package.json', join(repo, '.github', 'ci.yml'));
+      },
+      false,
+    ],
+    [
+      'with .config made a link to a copy',
+      (repo: string) => {
+        const copy = tempDir('pup-config-');
+        writeFileSync(join(copy, 'postcssrc.json'), '{}\n');
+        rmSync(join(repo, '.config'), { recursive: true });
+        symlinkSync(copy, join(repo, '.config'));
+      },
+      false,
+    ],
+  ] as [string, (repo: string) => void, boolean][])(
+    'checks the directories of a checkout %s',
+    (_, change, intact) => {
+      const ctx = branched(
+        { ...plainRoot(), '.config/postcssrc.json': '{}\n', '.github/ci.yml': 'a\n' },
+        {},
+      );
+      onTestFinished(() => {
+        for (const path of ['.config', '.github/ci.yml']) {
+          const at = join(ctx.measurePath, path);
+          if (lstatSync(at, { throwIfNoEntry: false })?.isSymbolicLink() === false)
+            chmodSync(at, 0o755);
+        }
+      });
+      change(ctx.measurePath);
+
+      expect(typescriptAdapter.testInputsIntact?.(ctx)).toBe(intact);
+    },
+  );
+
   // The gate's checkout is where the branch's build and tests ran, so its
   // config is read from the commit it was cut at, never from its disk.
   it('reads the measured config from the pinned sha, whatever the checkout holds', () => {
@@ -760,6 +928,10 @@ describe('typescriptAdapter.testFiles', () => {
       '.babelrc',
       'browserslist',
       'tailwind.config.ts',
+      // Named in another case, which a case-insensitive disk opens for the lower-case name.
+      '.PostCSSrc',
+      'Postcss.config.js',
+      'TSCONFIG.JSON',
     ].map(
       (name) =>
         [`given a ${name}`, (dir: string) => writeFileSync(join(dir, name), 'x\n'), false] as const,

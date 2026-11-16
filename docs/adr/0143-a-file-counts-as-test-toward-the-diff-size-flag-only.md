@@ -293,10 +293,18 @@
     process or a key this does not list, loads the branch's file unseen. So does a data
     config both sides share, of a tool other than PostCSS, that names a file below the root
     the branch rewrites: a `tsconfig.json` whose `extends` names `./config/base.json` is one.
-    Only the root is a class. A tool's search below it (a nested `tsconfig.json` for a
-    file under it) is not compared. For the tools a vitest run loads, those reads shape a
-    transform (tsconfig's compiler options) and run no code in the vitest process, which is
-    what the refusals above guard against. Lint and a nested package's checks run beside the suites in the same
+    An earlier version of this decision said those reads shape only a transform and run no
+    code. That was wrong. tsconfck reads the nearest `tsconfig.json` above each file vite
+    transforms, below the root too, and its compiler options can make a transform import
+    code: `jsxImportSource` names the module each JSX file imports. Node resolves a package
+    from the nearest `node_modules` above the importing file, below the root too. So below
+    the root as well, the split is refused for any branch path with a `node_modules`
+    segment, in any case and even one both sides share. It is refused too for any
+    `tsconfig*.json` or `jsconfig*.json` the branch adds, removes or changes anywhere, in any
+    case. In the gate these are read from the two trees, as mode, object name and path, with
+    `--full-tree` (decision 161). An `extends` target named any other way, such as
+    `./config/base.json` or an extensionless one, is still a ceiling, owed to
+    t-mwiyd1h0. Lint and a nested package's checks run beside the suites in the same
     writable checkout, so one that rewrites the config while vitest loads it and restores it
     before the last check is not seen. A `node_modules` entry the branch removes is not
     missed, since resolution then climbs to a parent directory's. A package manager reads
@@ -418,4 +426,14 @@
     `tsconfig.json`, `.babelrc`, `browserslist`, `tailwind.config.ts` or `.config`
     directory. It also fails for a user `.npmrc` named through `--gate-env` as
     `~/.npmrc-work`, as `.npmrc.ci`, as empty, or in two spellings at once, each of which
-    holds outside `--gate-env`.
+    holds outside `--gate-env`. Read from the two commits as the gate reads them, these
+    collect nothing: a `.config` directory on both sides; a `.github` file the branch adds
+    or changes; a `node_modules` path below the root, whether the branch commits it or
+    both sides share it as `Node_Modules`; and a nested `tsconfig.json` the branch changes
+    or deletes, or a `jsconfig.json` or `TSCONFIG.app.JSON` it adds. These collect: a
+    `.github` file or a nested `tsconfig.json` both sides share. Names in another case at
+    the root collect nothing: a `.PostCSSrc` on both sides, or a `Postcss.config.js` or
+    `TSCONFIG.JSON` only the branch commits. `testInputsIntact` fails for each of those
+    three added to disk. It also fails for a committed `.config` made unlistable
+    (mode 300), or made a link to a copy, and for a file under `.github` made unreadable or
+    a link. It holds for both left untouched.

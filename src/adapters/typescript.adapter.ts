@@ -49,7 +49,13 @@ import {
   resolveImport,
   SOURCE_EXTENSIONS,
 } from './typescript-source.utils.js';
-import { configLoadsAFile, diskRoot, treeRoot, vitestCollection } from './vitest-config.utils.js';
+import {
+  configLoadsAFile,
+  diskRoot,
+  treeEntriesMatching,
+  treeRoot,
+  vitestCollection,
+} from './vitest-config.utils.js';
 
 interface PackageManifest {
   name?: unknown;
@@ -514,6 +520,62 @@ function aliasesAScope({ configPath }: CapabilityContext, aliases: string[]): bo
 }
 
 /**
+ * A path with a `node_modules` segment, in any case: node resolves a package
+ * from the nearest one above the importing file, below the root too, so a
+ * branch that commits one there hands its own code to whatever imports it.
+ */
+const NODE_MODULES_PATH = /(?:^|\/)node_modules(?:\/|$)/i;
+
+/**
+ * A `tsconfig*.json` or `jsconfig*.json` anywhere, in any case: tsconfck reads
+ * the nearest one above each file vite transforms, below the root too, and
+ * its compiler options can have a transform import code, as `jsxImportSource`
+ * names the module each JSX file imports.
+ */
+const TSCONFIG_PATH = /(?:^|\/)[jt]sconfig[^/]*\.json$/i;
+
+/**
+ * A checkout's `TSCONFIG_PATH` files: listed from the commit it holds where it
+ * has one, as `rootAt` reads the root, else each of `files` it names read
+ * from disk, without following a link, or null where none stands. Throws
+ * where one cannot be read.
+ */
+function tsconfigsAt(
+  ctx: CapabilityContext,
+  path: string,
+  sha: string | undefined,
+  files: string[],
+): string {
+  if (sha !== undefined) return treeEntriesMatching(ctx.configPath, sha, TSCONFIG_PATH);
+  return JSON.stringify(
+    files
+      .filter((file) => TSCONFIG_PATH.test(file))
+      .sort()
+      .map((file) => {
+        const at = join(path, file);
+        const stands = lstatSync(at, { throwIfNoEntry: false }) !== undefined;
+        return [file, stands ? readPlainFile(at, { followLinks: false }) : null];
+      }),
+  );
+}
+
+/**
+ * Whether the branch leaves every `tsconfig*.json` and `jsconfig*.json` as the
+ * target holds it, at the root or below: one it adds, removes or changes
+ * anywhere, or one that cannot be read, costs the split.
+ */
+function nestedTsconfigsShared(ctx: CapabilityContext, files: string[]): boolean {
+  try {
+    return (
+      tsconfigsAt(ctx, ctx.configPath, ctx.configSha, files) ===
+      tsconfigsAt(ctx, ctx.measurePath, ctx.measureSha, files)
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
  * The user-level `.npmrc` npm and pnpm read for the gate's run: the one the
  * operator names by `npm_config_userconfig` through `--gate-env`, or the one
  * in the home directory the gate's environment keeps, as it keeps `HOME`.
@@ -784,7 +846,13 @@ export const typescriptAdapter: Adapter = {
         return undefined;
       }
     });
-    if (!trusted || measured?.config !== trusted.config || aliasesAScope(ctx, trusted.aliases)) {
+    if (
+      !trusted ||
+      measured?.config !== trusted.config ||
+      aliasesAScope(ctx, trusted.aliases) ||
+      files.some((file) => NODE_MODULES_PATH.test(file)) ||
+      !nestedTsconfigsShared(ctx, files)
+    ) {
       return [];
     }
     const nested = nestedPackageDirs(ctx);
