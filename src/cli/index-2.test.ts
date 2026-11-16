@@ -1740,6 +1740,76 @@ describe('CLI commands', () => {
       expect(errors).toEqual([]);
     });
 
+    it("hands the operator's --remeasure and --approved-by to the land, printing the stages", async () => {
+      useCwd(initRepoWithAdapter());
+      vi.mocked(landSession).mockResolvedValue({
+        ...landedOutcome(),
+        remeasure: {
+          sessionId: 's1',
+          passed: true,
+          sandbox: 'sandbox-exec (macOS)',
+          stages: [{ stage: 'build', status: 'pass' }],
+        },
+      });
+
+      await buildProgram().parseAsync(['land', 's1', '--remeasure', '--approved-by', 'tg:alexis'], {
+        from: 'user',
+      });
+
+      expect(firstCall(landSession)[1]).toMatchObject({
+        remeasure: true,
+        approvedBy: 'tg:alexis',
+      });
+      expect(logs).toContain('Remeasured the merge; every stage passed:');
+      expect(logs.some((line) => /^ {2}build +PASS$/.test(line))).toBe(true);
+      expect(errors).toEqual([]);
+    });
+
+    it('refuses --approved-by without --remeasure, landing nothing', async () => {
+      useCwd(initRepoWithAdapter());
+
+      await buildProgram().parseAsync(['land', 's1', '--approved-by', 'tg:alexis'], {
+        from: 'user',
+      });
+
+      expect(errors).toEqual([
+        '--approved-by names who approved a remeasure; pass it with --remeasure.',
+      ]);
+      expect(landSession).not.toHaveBeenCalled();
+    });
+
+    // `--approved-by` is a name the CLI cannot check, so a remeasure is the
+    // operator's alone (decision 185).
+    it('refuses --remeasure from the conductor, landing nothing', async () => {
+      const repo = initRepoWithAdapter();
+      useCwd(repo);
+      vi.stubEnv('PUP_CONDUCTOR', projectId(repo));
+
+      await buildProgram().parseAsync(
+        ['land', 's1', '--remeasure', '--approved-by', 'tg:operator'],
+        { from: 'user' },
+      );
+
+      expect(errors).toEqual(['`pup land --remeasure` is operator-only.']);
+      expect(process.exitCode).toBe(1);
+      expect(landSession).not.toHaveBeenCalled();
+    });
+
+    it('refuses --remeasure from a session, landing nothing', async () => {
+      const repo = initRepoWithAdapter();
+      useCwd(repo);
+      seedOpenPr(repo);
+      vi.stubEnv('PUP_SESSION_ID', 's1');
+
+      await buildProgram().parseAsync(['land', 's1', '--remeasure'], { from: 'user' });
+
+      expect(errors).toEqual([
+        '`pup land` is refused to sessions; the operator or the conductor runs it.',
+      ]);
+      expect(process.exitCode).toBe(1);
+      expect(landSession).not.toHaveBeenCalled();
+    });
+
     // Any session can close a peer's PR with the shared gh login, so freeing
     // the ADR numbers a closed PR holds is the operator's word (decision 146).
     it('refuses --abandon-closed from the conductor, recording nothing', async () => {
@@ -1840,6 +1910,21 @@ describe('CLI commands', () => {
         ),
       ]);
       expect(process.exitCode).toBe(1);
+    });
+
+    it('refuses --abandon-closed beside --remeasure', async () => {
+      useCwd(initRepoWithAdapter());
+
+      await buildProgram().parseAsync(['land', 's1', '--abandon-closed', '--remeasure'], {
+        from: 'user',
+      });
+
+      expect(errors).toEqual([
+        '`pup land --abandon-closed` lands nothing, so it takes no --remeasure.',
+      ]);
+      expect(process.exitCode).toBe(1);
+      expect(abandonClosedSession).not.toHaveBeenCalled();
+      expect(landSession).not.toHaveBeenCalled();
     });
 
     it('names a kept branch and a target that already held the merge', async () => {

@@ -55,11 +55,20 @@ export interface EventPayloads {
    * `sha` is the merge commit GitHub made (decision 84). A land of a head past
    * the pin on the operator's `--accept-head` also records that head and the
    * pin it moved past, the ends of the commits no gate measured (decision 164's
-   * 2026-11-11 amendment).
+   * 2026-11-11 amendment). One landed on `--remeasure` records that head, the
+   * pin, the passing report of the stages run on the merge commit, and who
+   * approved a critical-area change when one did (decision 185).
    */
   landed: { sha: string; target: string; prUrl: string } & (
-    | { acceptedHead?: never; pinned?: never }
-    | { acceptedHead: string; pinned: string }
+    | { acceptedHead?: never; remeasuredHead?: never; pinned?: never }
+    | { acceptedHead: string; remeasuredHead?: never; pinned: string }
+    | {
+        acceptedHead?: never;
+        remeasuredHead: string;
+        pinned: string;
+        remeasure: GateReport;
+        approvedBy?: string;
+      }
   );
   /**
    * `pup retire` saw the session's PR closed unmerged on GitHub and the PR the

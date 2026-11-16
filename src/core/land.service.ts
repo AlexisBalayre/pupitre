@@ -11,6 +11,7 @@ import {
   runGit,
 } from './git-diff.client.js';
 import { assertGhAvailable, originRepoSlug, readPullRequestLanding } from './github.client.js';
+import { remeasureMerge } from './land-remeasure.service.js';
 import { COMMIT_SHA, GATE_COMMAND_TIMEOUT_MS } from './merge-gate.constants.js';
 import {
   assertMergeLockHeld,
@@ -62,6 +63,16 @@ interface LandRequest {
    * 164): the full sha GitHub reports, after reading the commits between them.
    */
   acceptHead?: string;
+  /**
+   * The gate's word for a head the PR merged at past the pin (decision 185):
+   * its stages run on the merge commit under the lock, and only a pass lands.
+   */
+  remeasure?: boolean;
+  /**
+   * Who approved a remeasure whose commits past the pin touch a critical area
+   * (decision 185), scrubbed by the caller; the land event records it.
+   */
+  approvedBy?: string;
 }
 
 /**
@@ -93,6 +104,16 @@ export async function landSession(
     throw new Error(
       `No adapter for ${req.repoPath}; the audit after the land would measure nothing. ` +
         'Nothing was landed.',
+    );
+  }
+  if (req.remeasure && req.adapters.length === 0) {
+    throw new Error(
+      `No adapter for ${req.repoPath}; the remeasure would measure nothing. Nothing was landed.`,
+    );
+  }
+  if (req.remeasure && req.acceptHead !== undefined) {
+    throw new Error(
+      '--remeasure and --accept-head each vouch for a moved head; pass one. Nothing was landed.',
     );
   }
   assertGhAvailable(LAND_USE.command);
@@ -136,7 +157,8 @@ export async function landSession(
   // 82). GitHub's own "Update branch" moves the head too. A re-gate before the
   // merge vouches for a moved head (decision 86); after the merge only the
   // operator's `--accept-head` naming that very head does, and only for
-  // commits past the pin, checked under the lock (decision 164).
+  // commits past the pin, checked under the lock (decision 164), or the
+  // gate's stages run again on the merge commit with `--remeasure` (decision 185).
   if (pr.head === undefined || !COMMIT_SHA.test(pr.head)) {
     throw new Error(`GitHub reports ${prUrl} merged with an unreadable head. Nothing was landed.`);
   }
@@ -147,8 +169,14 @@ export async function landSession(
         `head at ${head}; the operator's word holds for that commit only. Nothing was landed.`,
     );
   }
+  if (req.remeasure && head === sha) {
+    throw new Error(
+      `${prUrl} merged with its head at ${sha}, the commit the gate pinned: there is nothing ` +
+        `to remeasure. Run \`pup land ${id}\`. Nothing was landed.`,
+    );
+  }
   const pullRef = `refs/pull/${prUrl.slice(prUrl.lastIndexOf('/') + 1)}/head`;
-  if (head !== sha && req.acceptHead === undefined) {
+  if (head !== sha && req.acceptHead === undefined && !req.remeasure) {
     // The operator's read is all that vouches for these commits, so it is
     // pointed at GitHub, not at git in the repo, whose replace refs, attributes,
     // pager, fsmonitor and remotes a session can write (decision 164).
@@ -200,9 +228,10 @@ export async function landSession(
             `says merged ${prUrl}; the PR landed elsewhere. Nothing was landed.`,
         );
       }
-      // The accepted head is read from origin, not the local branch a session
-      // can move, and must carry the pin whole: a head that rewrote the gated
-      // commits is no longer "the gate's content plus what the operator read".
+      // The moved head is read from origin, not the local branch a session can
+      // move. An accepted one must carry the pin whole: a head that rewrote the
+      // gated commits is no longer "the gate's content plus what the operator
+      // read". A remeasured one need not, the stages measuring all it landed.
       if (head !== sha) {
         if (fetched.pullHead !== head) {
           throw new Error(
@@ -210,7 +239,7 @@ export async function landSession(
               `${prUrl} merged at. Nothing was landed.`,
           );
         }
-        if (!descendsFrom(req.repoPath, head, sha)) {
+        if (!req.remeasure && !descendsFrom(req.repoPath, head, sha)) {
           throw new Error(
             `${head}, the head ${prUrl} merged at, does not descend from ${sha}, the commit the ` +
               'gate pinned: its commits rewrote what the gate measured, so --accept-head cannot ' +
@@ -219,12 +248,16 @@ export async function landSession(
         }
       }
       // A merge, squash or rebase is taken when what it landed is exactly the
-      // gate's content, or the accepted head's: ancestry alone would take a
-      // merge commit carrying changes of its own (decision 131).
+      // gate's content, or the moved head's: ancestry alone would take a merge
+      // commit carrying changes of its own (decision 131).
       const landedOn = mergedOnto(req.repoPath, head, mergeCommit);
       if (landedOn === undefined) {
         const merged =
-          head === sha ? `${sha}, the commit the gate pinned` : `${head}, the head you accepted`;
+          head === sha
+            ? `${sha}, the commit the gate pinned`
+            : req.remeasure
+              ? `${head}, the head it merged at`
+              : `${head}, the head you accepted`;
         throw new Error(
           `${mergeCommit}, the commit GitHub says merged ${prUrl}, does not have the tree git ` +
             `gives merging ${merged}, onto the commit the merge went onto; the merge landed ` +
@@ -241,6 +274,28 @@ export async function landSession(
             `not ${target}; check out ${target} there and re-run \`pup land\`.`,
         );
       }
+      // Before anything moves, so a refused remeasure leaves the repo as it was.
+      const remeasured = req.remeasure
+        ? await remeasureMerge(
+            db,
+            req,
+            session,
+            {
+              sha,
+              head,
+              landedOn,
+              mergeCommit,
+              target,
+              prUrl,
+              id,
+              localSha,
+              originTip,
+              originTipNow: () =>
+                fetchTarget(req.repoPath, originUrl, target, localSha, undefined).tip,
+            },
+            progress,
+          )
+        : undefined;
       progress.stage('fast-forward');
       let fastForwarded = false;
       if (!isAncestor(req.repoPath, originTip, localSha)) {
@@ -271,7 +326,17 @@ export async function landSession(
         db,
         session.id,
         'landed',
-        head === sha ? landed : { ...landed, acceptedHead: head, pinned: sha },
+        head === sha
+          ? landed
+          : remeasured === undefined
+            ? { ...landed, acceptedHead: head, pinned: sha }
+            : {
+                ...landed,
+                remeasuredHead: head,
+                pinned: sha,
+                remeasure: remeasured,
+                ...(req.approvedBy === undefined ? {} : { approvedBy: req.approvedBy }),
+              },
       );
       // Right after the event, still under the lock, and before the audit,
       // which can throw: once the event is written a re-run refuses, and
@@ -304,6 +369,7 @@ export async function landSession(
         fastForwarded,
         ...tornDown,
         ...(unsteered.length > 0 ? { unsteered } : {}),
+        ...(remeasured === undefined ? {} : { remeasure: remeasured }),
       };
       if (req.audit === false) return outcome;
       // Under the lock too: the steer wakes the sessions whose gates come next,
