@@ -509,13 +509,15 @@ export function diskRoot(checkout: string, repoPath?: string): RootFiles {
 
 /**
  * A commit's root, listed and read from `repoPath`'s object store, never from a
- * checkout a session's code has run in (decision 143). Only a regular file's
+ * checkout a session's code has run in (decision 143), each listing with
+ * `--full-tree`, so a session's `core.worktree` cannot narrow it to a prefix
+ * (decision 161). Only a regular file's
  * blob is read, so a link is not followed; a directory reads as `ls-tree -r`
  * lists it, as `diskRoot` lists one on disk.
  */
 export function treeRoot(repoPath: string, sha: string): RootFiles {
   return rootFiles(
-    runGit(repoPath, ['ls-tree', '-z', sha], GIT_READ)
+    runGit(repoPath, ['ls-tree', '--full-tree', '-z', sha], GIT_READ)
       .split('\0')
       .filter((entry) => entry !== '')
       .map((entry) => {
@@ -528,7 +530,7 @@ export function treeRoot(repoPath: string, sha: string): RootFiles {
           : mode === TREE_MODE
             ? () =>
                 listing(
-                  runGit(repoPath, ['ls-tree', '-r', '-z', oid], GIT_READ)
+                  runGit(repoPath, ['ls-tree', '--full-tree', '-r', '-z', oid], GIT_READ)
                     .split('\0')
                     .filter((line) => line !== ''),
                 )

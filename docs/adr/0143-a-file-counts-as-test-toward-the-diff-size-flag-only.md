@@ -436,4 +436,8 @@
     `TSCONFIG.JSON` only the branch commits. `testInputsIntact` fails for each of those
     three added to disk. It also fails for a committed `.config` made unlistable
     (mode 300), or made a link to a copy, and for a file under `.github` made unreadable or
-    a link. It holds for both left untouched.
+    a link. It holds for both left untouched. A commit's root, and each directory in it,
+    is listed with `--full-tree` as well (decision 161). A checkout whose `.git` is a
+    gitfile lets git honour a `core.worktree` a session sets in the shared config. Aimed at
+    the checkout's parent, that setting would list an empty root, and an empty root has no
+    config to compare. Read from such a checkout, the root still lists whole.

@@ -1,10 +1,15 @@
 import { execFileSync } from 'node:child_process';
-import { symlinkSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { GIT_ENV } from '@test/helpers/git.mock.js';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import { describe, expect, it } from 'vitest';
-import { diskRoot, treeRoot, vitestCollection } from './vitest-config.utils.js';
+import {
+  diskRoot,
+  treeEntriesMatching,
+  treeRoot,
+  vitestCollection,
+} from './vitest-config.utils.js';
 
 function repoWith(files: Record<string, string>): string {
   const dir = tempDir('pup-vitest-config-');
@@ -357,6 +362,35 @@ describe('vitestCollection', () => {
     expect(['src/a.test.ts', 'b.test.ts'].filter((path) => collects?.(path))).toEqual([
       'src/a.test.ts',
     ]);
+  });
+
+  // A session can write the shared config, and a `core.worktree` aimed at the
+  // repo's parent runs git there from `repo/`, so a plain `ls-tree` lists
+  // nothing and the root would hold no config and no directory (decision 161).
+  // `runGit` names a `.git` directory's work tree itself, which overrides the
+  // setting, so the checkout holds a gitfile, as a linked worktree does, for
+  // git to discover its directory and honour the setting.
+  it("lists a commit's whole root from a gitfile checkout whose config aims core.worktree at a parent", () => {
+    const host = tempDir('pup-host-');
+    const repo = join(host, 'repo');
+    mkdirSync(join(repo, '.github'), { recursive: true });
+    const git = (...args: string[]): string =>
+      execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8', env: GIT_ENV }).trim();
+    git('init', '-q', `--separate-git-dir=${join(host, 'repo.git')}`);
+    writeFileSync(join(repo, 'vitest.config.ts'), configWith("{ include: ['src/**/*.test.ts'] }"));
+    writeFileSync(join(repo, '.github', 'ci.yml'), 'a\n');
+    git('add', '-A');
+    git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'init');
+    const sha = git('rev-parse', 'HEAD');
+    git('config', 'core.worktree', dirname(repo));
+    // The control: armed, a plain listing of the commit holds nothing.
+    expect(git('ls-tree', '-r', '--name-only', sha)).toBe('');
+
+    const root = treeRoot(repo, sha);
+
+    expect([...root.keys()].sort()).toEqual(['.github', 'vitest.config.ts']);
+    expect(root.get('.github')?.()).toMatch(/\tci\.yml$/);
+    expect(treeEntriesMatching(repo, sha, /ci\.yml$/)).toMatch(/\t\.github\/ci\.yml$/);
   });
 
   it.each([
