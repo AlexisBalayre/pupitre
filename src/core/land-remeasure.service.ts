@@ -37,7 +37,9 @@ const CRITICAL_PATHS = CRITICAL_AREAS.map(globToRegExp);
  * `--remeasure` (decision 185): the gate's stages, `measureBranch`'s, run on
  * the commit GitHub's merge made, against the commit it went onto on the
  * pinned target, from a gate checkout of its own and under the land's lock, as
- * `runMergeGate` runs them. The commits past the pin are the ones no gate
+ * `runMergeGate` runs them, and only with the local target at that commit,
+ * which the main checkout then holds for the complexity stage's "before" as
+ * it does for the gate's. The commits past the pin are the ones no gate
  * measured; when they change a file in a critical area, the remeasure runs
  * only on the approval `approvedBy` names: a pass says the code builds and its
  * tests pass, not that a change to the gate itself is sound. A hard stage that
@@ -69,6 +71,18 @@ export async function remeasureMerge(
   progress: StageProgress,
 ): Promise<GateReport> {
   const { sha, head, landedOn, mergeCommit, target, prUrl, id, localSha, originTip } = merge;
+  // `measureBranch` reads the complexity stage's "before" from the main
+  // checkout, which holds the local target, not `landedOn`. Any commit between
+  // them that changed a file the merge changes would hide or inflate its rise,
+  // and a target that already holds the merge reads its own change as before.
+  if (localSha !== landedOn) {
+    throw new Error(
+      `Local ${target} is at ${localSha}, not ${landedOn}, the commit the merge of ${prUrl} ` +
+        'went onto. The complexity stage reads what the merge changed as it was before from the ' +
+        `main checkout, so a remeasure runs only with local ${target} at that commit. Nothing ` +
+        'was landed.',
+    );
+  }
   if (req.approvedBy === undefined) {
     // The trees, not `gitDiffPaths`' merge-base range: the head need not
     // descend from the pin, and from an older merge-base a head that kept a
@@ -207,7 +221,9 @@ export async function remeasureMerge(
       const held = accepted.get(remeasureKind(flag.description, session.id) as string) ?? [];
       if (held.length === 0) return [`  flagged, never accepted: ${flag.description}`];
       const now = debtFigures(flag.description, session.id);
-      if (now === undefined) return [`  flagged, its figures unreadable: ${flag.description}`];
+      if (now === undefined || DEBT_WORDINGS[now.wording]?.unrecorded) {
+        return [`  flagged, its figures unreadable or unrecorded: ${flag.description}`];
+      }
       const sameFiles = DEBT_WORDINGS[now.wording]?.sameFiles === true;
       return held.some(
         (entry) =>
@@ -262,13 +278,16 @@ export async function remeasureMerge(
  * `worse` has. `stage` names the stage that files it. A wording with no figure
  * matches on its `debtKind` alone, which holds its every other word. With
  * `sameFiles`, a flag's files are what was accepted, not where it was found,
- * so it passes only against an entry that named each of them.
+ * so it passes only against an entry that named each of them. With
+ * `unrecorded`, the wording leaves out a figure that can worsen, so no entry
+ * holds it and it refuses.
  */
 const DEBT_WORDINGS: readonly {
   pattern: RegExp;
   worse: readonly number[];
   stage: (match: RegExpExecArray) => string;
   sameFiles?: true;
+  unrecorded?: true;
 }[] = [
   { pattern: /^Oversize diff \((\d+) lines\) merged from$/, worse: [1], stage: () => 'diff-size' },
   {
@@ -306,11 +325,12 @@ const DEBT_WORDINGS: readonly {
     stage: () => 'coverage',
     sameFiles: true,
   },
+  // Its patch coverage is in no word of it, so it could fall to any figure.
   {
     pattern: /^Coverage gap \(unreported files and patch coverage\) merged from$/,
     worse: [],
     stage: () => 'coverage',
-    sameFiles: true,
+    unrecorded: true,
   },
   {
     pattern: /^Nested package (.+) changed with no (test|typecheck) script, merged from$/s,

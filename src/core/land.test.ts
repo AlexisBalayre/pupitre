@@ -1423,18 +1423,22 @@ describe('landSession', { timeout: 20_000 }, () => {
       expectNothingChanged(before);
     });
 
-    it('refuses a coverage gap of unreported files and patch coverage on a swapped file', async () => {
+    // Its wording records no patch coverage, which could have fallen to any figure.
+    it('refuses a coverage gap of unreported files and patch coverage on the files accepted', async () => {
       mergeMovedHead();
       const before = mainSha();
       const wording = filed('Coverage gap (unreported files and patch coverage) merged from');
+      const files = ['src/a.ts', 'src/b.ts'];
       measuredAs(
         [...pinnedStages, { stage: 'coverage', status: 'flagged' }],
-        [{ description: wording, files: ['src/b.ts'] }],
-        [{ description: wording, files: ['src/a.ts'] }],
+        [{ description: wording, files }],
+        [{ description: wording, files }],
       );
 
+      // Its only line: the coverage stage did file debt.
       await expect(remeasure()).rejects.toThrow(
-        `flagged past the accepted ${wording} or on files it did not name: ${wording}`,
+        `did not pass:\n  flagged, its figures unreadable or unrecorded: ${wording}\n` +
+          'The session stays merged.',
       );
       expectNothingChanged(before);
     });
@@ -1492,6 +1496,56 @@ describe('landSession', { timeout: 20_000 }, () => {
         return measured;
       });
     }
+
+    // The complexity stage reads "before" from the main checkout, which would
+    // hold another PR's change, or this merge's own, in place of the merge's base.
+    it.each([
+      [
+        'behind it, another PR merged on GitHub first',
+        () => {
+          const clone = cloneOrigin();
+          commitIn(clone, 'src/other.ts', 'export const other = 1;\n');
+          sh(clone, 'git', 'push', '-q', 'origin', 'HEAD:main');
+          // A fix round that took in its target, so GitHub's merge is of its tree.
+          sh(worktree, 'git', 'fetch', '-q', origin, 'main');
+          sh(
+            worktree,
+            'git',
+            '-c',
+            'user.email=t@t',
+            '-c',
+            'user.name=t',
+            'merge',
+            '-q',
+            'FETCH_HEAD',
+          );
+          seedPrMerge(PR_URL, passingReport());
+          return mergeAt(sh(worktree, 'git', 'rev-parse', 'HEAD'));
+        },
+      ],
+      [
+        'past it, holding the merge already',
+        () => {
+          const moved = mergeMovedHead();
+          sh(repo, 'git', 'fetch', '-q', origin, 'main');
+          sh(repo, 'git', 'merge', '-q', '--ff-only', moved.merge);
+          return moved;
+        },
+      ],
+    ])('refuses with local main %s, before any stage runs', async (_case, mergeOff) => {
+      const { merge } = mergeOff();
+      const before = mainSha();
+      const failing: Adapter = {
+        ...passingAdapter,
+        gateCommands: () => [{ stage: 'build', command: 'false', args: [] }],
+      };
+
+      await expect(remeasure({ adapter: failing })).rejects.toThrow(
+        `Local main is at ${before}, not ${sh(origin, 'git', 'rev-parse', `${merge}^1`)}, the ` +
+          `commit the merge of ${PR_URL} went onto.`,
+      );
+      expectNothingChanged(before);
+    });
 
     it('refuses when the local target moved while the stages ran', async () => {
       mergeMovedHead();

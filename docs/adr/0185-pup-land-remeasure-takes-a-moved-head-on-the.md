@@ -50,10 +50,14 @@
     the same cause. A percentage is one figure whether it is rounded to a whole percent or not, so
     `80%` and `80.4%` give the same kind. Where a flag's files are what was accepted rather than
     where it was found (a text file git reports as binary, a changed source file coverage did not
-    measure, a coverage gap of unreported files with or without patch coverage), the entry no
-    worse must also have named each of the flag's files: a count held level cannot swap a hidden
-    file no one read for the one accepted. An entry whose files are not a JSON list of paths
-    accepts nothing, so a string cannot match a file by substring. *Not caught:*
+    measure, a coverage gap of unreported files), the entry no worse must also have named each of
+    the flag's files: a count held level cannot swap a hidden file no one read for the one
+    accepted. A coverage gap of unreported files and patch coverage refuses whatever was
+    accepted: its wording records no patch coverage, so held to its kind and files alone its
+    patch coverage could fall to any figure, as long as the uncovered lines stayed in files the
+    entry named. The refusal says its figures are unreadable or unrecorded. An entry whose files
+    are not a JSON list of paths accepts nothing, so a string cannot match a file by substring.
+    *Not caught:*
     a re-gate files no flag of a kind the session already holds, so the ledger keeps the first
     gate's figures, and a remeasure of a re-pinned head whose figures grew since then refuses;
     it fails closed. A remeasure files no debt, refused or passed: every flag it passes is
@@ -67,6 +71,15 @@
     and the local target at the commit read before. Origin's target is fetched again and must
     still hold the tip fetched before; origin moving on changes nothing landed, while origin
     rewound refuses. Anything moved refuses, and the operator re-runs the remeasure.
+    *The local target.* `measureBranch` reads the complexity stage's "before" from the main
+    checkout's files, which the gate's merge lock holds at the target it measures against. A
+    remeasure measures against the commit the merge went onto, so it runs only when the local
+    target is at that commit, and refuses before any stage otherwise. Another PR that merged
+    between the two and changed a file this merge changes would hide this merge's rise, or
+    inflate it. A local target that already holds the merge would read the merge's own change as
+    what came before. Either way the rise read is not this merge's. A session whose merge the
+    local target already holds therefore cannot be remeasured, as long as that side is read from
+    the main checkout.
     *What it checks besides.* The PR's head ref is still read from origin and must be the head
     GitHub reports. The merge commit must still have the tree that merging that head gives
     (decision 131). The pin need not be an ancestor of the head, unlike with `--accept-head`: the
