@@ -1,0 +1,164 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-16T15:32:50.011Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43896495554",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43896495554",
+  "actor": "AlexisBalayre",
+  "commit_sha": "217ca149d3a93a22a441ff7a8d537841a8242f67",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 351,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs",
+    "context"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs",
+    "context"
+  ],
+  "reviewers_skipped": [
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "skills/pup/SKILL.md",
+      "line": "41",
+      "description": "SKILL.md and LOOP.md still show `pup answer <session> <n>` / `pup answer conductor …` without the now-required `--question <id>`, so a copied command fails with commander's 'required option not specified'.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/conductor.service.ts",
+      "line": "113-119",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "A conductor started before this change has no PUP_CONDUCTOR_RUN in its tmux server, so after an upgrade (or a pulled branch under `pnpm dev`) every `pup conductor ask` it runs is refused as if the caller were an impostor and its earlier question vanishes from the inbox; when the server holds no token but a conductor window exists, the refusal could say to restart it with `pup conductor start`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/conductor.service.ts",
+      "line": "252",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The call-site comment on minting the run token (\"Minted per start and kept in the window alone: what seals this run's questions…\") restates the JSDoc on `ConductorLaunchOptions.run` in session-runtime.service.ts; general.md §Comments says a call-site copy of the callee's docs is deleted.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "998",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The comment \"Not `-e`: tmux's argv is in every user's `ps`.\" restates the `ClaudeWindowOptions.serverEnv` JSDoc this PR added (\"through the client's environment rather than its argv\"); general.md §Comments says the explanation lives at the seam, so delete the call-site copy.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/conductor.service.ts",
+      "line": "158-162",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`sameText` wraps `timingSafeEqual` for a constant-time compare, but the PR's own threat model says any same-user caller who could time the comparison can read the token outright with `show-environment`/`ps -E`; plain `===` on the two hex strings would drop the helper, the import and the Buffer allocations unless a caller who can time but not read is named.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/conductor.service.ts",
+      "line": "125-137",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "What the seal does not stop is written out in full in the `openConductorQuestion` JSDoc, the `conductorRun` JSDoc (session-runtime.service.ts ~297-307) and ADR 93, so a change to the trust model has three copies to keep in step; a one-line contract pointing at decision 93 in each JSDoc would leave the ADR as the single source.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "conventions",
+      "description": "Reviewer did not read testing.md, the changed test files' diffs, or the ADR 93 diff, so the testing-convention and ADR-compliance checks on this PR were not done."
+    },
+    {
+      "component": "context",
+      "description": "Reviewer covered the tmux, commander and HTTP form surfaces, but not the node:crypto HMAC code in conductor.service.ts, the dashboard service/overview changes, or the ADR 93 cross-check against other design docs."
+    },
+    {
+      "component": "guards",
+      "description": "The non-test source diff was truncated on read, so the reviewer checked it with targeted greps and did not read src/cli/ui/* or src/claude/session-runtime.service.ts for forbidden patterns."
+    },
+    {
+      "component": "docs",
+      "description": "Dropped one docs nit (markConductorQuestion's JSDoc documents a return value with no consumer): it named no cost or reader misled, so it fails the finding bar."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 4.6881826250000005,
+  "duration_ms": 287823,
+  "num_turns": 20,
+  "tokens": {
+    "input": 12,
+    "output": 15817,
+    "cache_read": 295317,
+    "cache_creation": 65610,
+    "total": 376756
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 188,
+      "output": 76693,
+      "cache_read": 4344168,
+      "cache_creation": 322950,
+      "cost_usd": 4.2150256000000015
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 50,
+      "output": 12528,
+      "cache_read": 364737,
+      "cache_creation": 124144,
+      "cost_usd": 0.47221370000000007
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 649,
+      "cache_read": 0,
+      "cache_creation": 4949,
+      "cost_usd": 0.0009433250000000001
+    }
+  ],
+  "permission_denials": []
+}
