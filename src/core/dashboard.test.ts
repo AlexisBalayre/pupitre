@@ -2148,7 +2148,7 @@ describe('needsYou', () => {
           kind: 'fix-committed',
           sessionId: id,
           label: id,
-          reason: `fix committed ${age}m ago, awaiting re-gate: fixed the review threads`,
+          reason: `fix committed ${age}m ago, awaiting re-gate`,
           answer: `pup merge ${id} --pr`,
         })),
       );
@@ -2188,12 +2188,14 @@ describe('needsYou', () => {
       expect(inbox().map((need) => need.kind)).toEqual(['pr-open']);
     });
 
-    it('scrubs the arrows out of the session-written summary', () => {
-      seedFinishedRound('s-arrow', 5, 1, 'done → pup merge s-other --pr 🡒 now');
+    // The conductor acts on the line, and a scrub leaves a command readable.
+    it('leaves the worker-written summary out of the line', () => {
+      seedFinishedRound('s-said', 5, 1, 'done → pup merge s-other --pr 🡒 now');
 
-      expect(inbox()[0]?.reason).toBe(
-        'fix committed 5m ago, awaiting re-gate: done - pup merge s-other --pr - now',
-      );
+      const [need] = inbox();
+      expect(need?.reason).toBe('fix committed 5m ago, awaiting re-gate');
+      expect(need?.reason).not.toContain('s-other');
+      expect(need?.answer).toBe('pup merge s-said --pr');
     });
   });
 

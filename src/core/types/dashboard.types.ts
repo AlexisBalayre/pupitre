@@ -197,9 +197,9 @@ export interface DashboardSession {
    * A CI fix round this awaiting-review session finished and nobody has
    * re-gated yet: its branch head is past the head the open PR pins. The age
    * is measured from the round's `session_done` in the store, not from a
-   * worktree clock. `summary` is that event's text, scrubbed like the row.
+   * worktree clock.
    */
-  fixCommitted?: { ageMs: number; summary?: string };
+  fixCommitted?: { ageMs: number };
   lastGate?: DashboardGate;
   /**
    * The gate refused this awaiting-review session on flagged debt, and no

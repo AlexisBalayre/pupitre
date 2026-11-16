@@ -652,13 +652,14 @@ function needOf(
     );
   }
   // Shown while the conductor runs too: a conductor that compacted has lost
-  // the round, and the merge lock sits idle until someone re-gates it.
+  // the round, and the merge lock sits idle until someone re-gates it. The
+  // worker's own summary stays out: the conductor acts on this line, and a
+  // scrub leaves another session's command readable (`pup review` shows it).
   const fixed = session.state === 'awaiting-review' ? session.fixCommitted : undefined;
   if (fixed !== undefined) {
-    const said = fixed.summary ? `: ${fixed.summary.replace(SYMBOLS, '-')}` : '';
     return need(
       'fix-committed',
-      `fix committed ${formatStaleAge(fixed.ageMs)} ago, awaiting re-gate${said}`,
+      `fix committed ${formatStaleAge(fixed.ageMs)} ago, awaiting re-gate`,
       command(`pup merge ${id} --pr`),
     );
   }
@@ -1043,10 +1044,7 @@ function committedFixRound(
     const pr = done && openPullRequest(newestFirst);
     if (!done || !pr || !isPast(session.branch, pr.sha)) return undefined;
     const endedAt = Date.parse(toIsoUtc(done.created_at));
-    if (!Number.isFinite(endedAt)) return undefined;
-    const said = decodeEvent(done);
-    const summary = said.type === 'session_done' ? sanitizeReason(said.summary ?? '') : '';
-    return { ageMs: Math.max(0, now - endedAt), ...(summary ? { summary } : {}) };
+    return Number.isFinite(endedAt) ? { ageMs: Math.max(0, now - endedAt) } : undefined;
   }
   return undefined;
 }
