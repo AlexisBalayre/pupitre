@@ -1,0 +1,124 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-16T08:49:24.438Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43833627798",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43833627798",
+  "actor": "AlexisBalayre",
+  "commit_sha": "25133c3acf5b39f9f6e80b6c3dbffa50f7b05d1b",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 342,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "conventions",
+    "docs",
+    "simplicity",
+    "guards"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "conventions",
+    "docs",
+    "simplicity",
+    "guards"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "946-952",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The new under-lock recheck reads only the session's state. `pup retire` never changes state; it appends a `retired` event and leaves the session `merged`. So a `pup fix` that waited behind a `pup retire` passes every check and brings the retired branch back, which the ADR and the docblock say this change prevents.",
+      "body": "The new guard at [fix-round.service.ts#L946-L952](https://github.com/AlexisBalayre/pupitre/blob/25133c3acf5b39f9f6e80b6c3dbffa50f7b05d1b/src/core/fix-round.service.ts#L946-L952) refuses only when `state !== 'merged'`. `pup retire` never moves the state. Under the lock it runs `assertStillMerged`, then `tearDown` (which removes the worktree and deletes the branch), then `appendEvent(db, session.id, 'retired', ...)`, and does nothing else ([session-retire.service.ts#L101-L118](https://github.com/AlexisBalayre/pupitre/blob/25133c3acf5b39f9f6e80b6c3dbffa50f7b05d1b/src/core/session-retire.service.ts#L101-L118)). The rest of `assertStillPinned` passes as well:\n- `newestMerge` stops only at `landed` or `merge`. It skips `retired` and still returns the pinned merge.\n- The PR was closed without merging, so the pin is not an ancestor of `origin/<target>`.\n\n**Trigger:**\n1. `pup fix s1` reads the PR while it is OPEN, then waits behind a gate that holds the lock.\n2. The operator closes the PR and runs `pup retire s1 --superseded-by N`, which also waits.\n3. `withMergeLock` polls with no fairness, so retire can take the lock first.\n4. The fix takes the lock after it.\n\n**Result:**\n- `restoreWorktree` finds no branch and runs `worktree add -b pup/s1 ... <pin>`, which recreates the retired branch and worktree.\n- `takeFixRoundEdge` moves the retired session from merged to running.\n- A worker is started against a CLOSED PR.\n\nBefore this PR the wait was `0`, so a fix could never wait behind a retire. The wait added here is what opens the race. The docblock (L928-932) and the ADR 88 amendment both name this exact case as one the recheck prevents. The new test only simulates a holder that sets `state = 'running'`.\n\n**Fix:** also refuse when the newest of the session's `merge`, `landed` and `retired` events is `retired`, as `newestStanding` in `session-retire.service.ts` does. Add a test where the holder appends a `retired` event.",
+      "suggestion": "  const state = getSession(db, sessionId)?.state;\n  if (state !== FIX_ROUND_EDGE.from) {\n    throw new Error(\n      `Session ${sanitizeReason(sessionId)} is ${state ?? 'gone'} now, no longer merged: a run ` +\n        `that held the merge lock meanwhile moved it. ${NOT_STARTED}`,\n    );\n  }\n  const standing = listEvents(db, sessionId)\n    .reverse()\n    .find((row) => ['merge', 'landed', 'retired'].includes(row.type));\n  if (standing?.type === 'retired') {\n    throw new Error(\n      `Session ${sanitizeReason(sessionId)} was retired by a run that held the merge lock ` +\n        `meanwhile. ${NOT_STARTED}`,\n    );\n  }"
+    },
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "271",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "`startFixRound` now always waits up to `MERGE_LOCK_WAIT_MS` (125 min). Its second caller, the web dashboard's `fix` action, is documented to refuse at once, so a page click on a held lock now hangs the request. It also stalls the dashboard's Ctrl-C shutdown for up to two hours.",
+      "body": "The ADR amendment says \"with no flag: like `pup retire`, its only caller is the CLI\" ([0088#L248-L249](https://github.com/AlexisBalayre/pupitre/blob/25133c3acf5b39f9f6e80b6c3dbffa50f7b05d1b/docs/adr/0088-the-merge-lock-records-its-holder-survives-every.md#L248-L249)). That is not true: `runAction`'s `fix` case calls `startFixRound` directly ([web-dashboard-actions.service.ts#L170-L178](https://github.com/AlexisBalayre/pupitre/blob/25133c3acf5b39f9f6e80b6c3dbffa50f7b05d1b/src/core/web-dashboard-actions.service.ts#L170-L178)).\n\nThat file's own contract ([L111-L112](https://github.com/AlexisBalayre/pupitre/blob/25133c3acf5b39f9f6e80b6c3dbffa50f7b05d1b/src/core/web-dashboard-actions.service.ts#L111-L112)) says: \"The merge gate, the land and the fix round take no lock wait: a page refuses at once where the CLI waits.\" Merge and land keep that contract through `req.wait`, which only the CLI sets ([merge-gate.service.ts#L1389](https://github.com/AlexisBalayre/pupitre/blob/25133c3acf5b39f9f6e80b6c3dbffa50f7b05d1b/src/core/merge-gate.service.ts#L1389), [land.service.ts#L310](https://github.com/AlexisBalayre/pupitre/blob/25133c3acf5b39f9f6e80b6c3dbffa50f7b05d1b/src/core/land.service.ts#L310)). This PR hard-codes the wait for fix instead ([fix-round.service.ts#L271](https://github.com/AlexisBalayre/pupitre/blob/25133c3acf5b39f9f6e80b6c3dbffa50f7b05d1b/src/core/fix-round.service.ts#L271)).\n\n**Trigger:** the operator clicks Fix on the page while any gate holds the lock.\n\n**Result:**\n- The request hangs for up to the full wait instead of refusing at once.\n- The \"Waiting for the merge lock\" line goes to the server's stderr, not to the page.\n- The round may start long after the page gave up.\n- The first Ctrl-C on `pup dashboard` runs `close()`, which awaits `desk.settle()` ([web-dashboard.service.ts#L227-L233](https://github.com/AlexisBalayre/pupitre/blob/25133c3acf5b39f9f6e80b6c3dbffa50f7b05d1b/src/core/web-dashboard.service.ts#L227-L233)). Shutdown therefore stalls until the wait ends; only a second Ctrl-C kills the process.\n\n`web-dashboard-actions.test.ts` mocks `startFixRound`, so the suite cannot catch this.\n\n**Fix:** give `FixRoundRequest` a `wait?: boolean` as `MergeRequest` and `LandRequest` have, pass `req.wait ? MERGE_LOCK_WAIT_MS : 0`, set `wait: true` only in the CLI's `pup fix` action, and correct the ADR sentence.",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "251",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The comment's new clause \"waiting for a live holder as they do (decision 88)\" repeats what the `MERGE_LOCK_WAIT_MS` argument and `withMergeLock`'s JSDoc already say; the original two-line comment was enough.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "257-269",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "If a `pup plan edit --rescope` lands while `pup fix` waits for the lock, `takeFixRoundEdge` refuses only after `restoreWorktree` has already added the worktree and branch, and nothing removes them. The refusal says no round was started, yet the next `pup fix` refuses on the leftover worktree. The new 125-minute wait widens a window that used to be seconds.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 2,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.3267031999999994,
+  "duration_ms": 270993,
+  "num_turns": 15,
+  "tokens": {
+    "input": 18,
+    "output": 11340,
+    "cache_read": 393307,
+    "cache_creation": 49126,
+    "total": 453791
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 104,
+      "output": 33466,
+      "cache_read": 1954625,
+      "cache_creation": 175344,
+      "cost_usd": 2.084759
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 38,
+      "output": 6744,
+      "cache_read": 195540,
+      "cache_creation": 61674,
+      "cost_usd": 0.24125499999999997
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 171,
+      "cache_read": 0,
+      "cache_creation": 4828,
+      "cost_usd": 0.0006892
+    }
+  ],
+  "permission_denials": []
+}
