@@ -53,22 +53,6 @@ export function initRepoWithAdapter(): string {
   return repo;
 }
 
-/**
- * A `codegraph` on PATH printing `version`, or a PATH with none at all. The
- * capability line reports the operator's machine, so every test that reads it
- * says which machine it is pretending to be (decision 51).
- */
-export function stubCodegraph(version?: string): void {
-  const dir = tempDir('pup-cli-cg-');
-  if (version !== undefined) {
-    writeFileSync(join(dir, 'codegraph'), `#!/bin/sh\necho "${version}"\nexit 0\n`, {
-      mode: 0o755,
-    });
-  }
-  // `git` stays reachable: `pup init` resolves its project through it.
-  vi.stubEnv('PATH', `${dir}:/usr/bin:/bin`);
-}
-
 /** Inserts the project/task/session rows a real (unmocked) `getSession` needs. */
 export function seedSession(repoPath: string, sessionId: string, worktreePath?: string): void {
   const { db } = resolveProject(repoPath);

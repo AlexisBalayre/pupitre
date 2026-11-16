@@ -261,6 +261,25 @@ describe('session handoff', () => {
     expect(JSON.parse(event.payload)).toMatchObject({ delivered: true });
   });
 
+  // A session launched before decision 186 stored a context telling it to call
+  // `codegraph_explore`, a tool its fresh window no longer has.
+  it('resends a context stored before decision 186 without its Code graph section', () => {
+    writeCompiled();
+    writeFileSync(
+      join(paths().compiledDir('s1'), 'context.md'),
+      '# task context\n\n## Code graph\nThe `codegraph_explore` MCP tool answers from it.\n\n' +
+        '## Session protocol\n- Work only inside this worktree.',
+    );
+    handoffRound();
+
+    respawnSessionWithTestPaths();
+
+    const prompt = vi.mocked(kickoff).mock.calls[0]?.[1] ?? '';
+    expect(prompt).not.toContain('## Code graph');
+    expect(prompt).not.toContain('codegraph_explore');
+    expect(prompt).toContain('# task context\n\n## Session protocol\n- Work only inside');
+  });
+
   it('refuses to respawn without a handoff file', () => {
     expect(() => respawnSessionWithTestPaths()).toThrow('No handoff at');
     expect(killSession).not.toHaveBeenCalled();
