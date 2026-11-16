@@ -98,6 +98,17 @@
     covered. `~/` keeps its meaning in a rule and `//` roots an absolute path. Deny rules hold
     with permissions skipped (decision 5), and Claude Code applies Read rules to Grep and Glob
     too. With the setting off, no rule is added.
+    *Read through a link (probed 2026-11-16).* Sandboxed Bash can link a worktree path to a
+    credential without reading it, and the Read tool runs outside the sandbox. This was probed
+    with Claude Code 2.1.325 on a scratch fake secret, never a real credential: a `claude -p` run
+    with permissions skipped, `--setting-sources user` and a `--settings` file holding
+    `Read(//<scratch>/secret)` and `Read(//<scratch>/secret/**)`, from a directory holding a
+    link to the secret file and a link to its directory. Only whether the secret came back was
+    recorded. With the rules, Read of the file link and of a path through the directory link,
+    and Grep with either link as its path, were all refused, as was Read of the secret itself.
+    With an empty settings file, the same Read and both Greps returned the secret. A Grep or a
+    Glob over the directory found nothing either way: neither descends into a link. So the rules
+    match a link's resolved target, and no hook is added for Read, Grep or Glob.
     - Network: only the package registries of the ecosystems pup has adapters for:
       `registry.npmjs.org`, `registry.yarnpkg.com`, `pypi.org` and `files.pythonhosted.org`. A
       first commit's pre-commit install fetches from them. `strictAllowlist` refuses every other
@@ -203,7 +214,10 @@
     gate's (decision 36 keeps the gate's caches apart). Corepack's home is not redirected: it only
     reads the package managers the operator already cached, and a redirect would make it fetch
     them, from hosts the network list may not hold. The gate's `XDG_CACHE_HOME` redirect is left
-    out too, since the compiled `env` also reaches the session's Claude Code process. It
+    out too, since the compiled `env` also reaches the session's Claude Code process. That reach
+    has a cost: the same `env` reaches the hooks and any MCP server, which run outside the
+    sandbox, so an `npx`, `npm` or `uv` that the session process or a hook starts resolves
+    packages from a cache the worker wrote. pup's compiled hooks start none of them. It
     then fetches every package into that store from the registry, which is why the registries
     are allowed. That store is about 6,000 untracked files. The count trips decision 63's cap of
     200 dirty paths, and once the cap trips, every later Bash call is refused. Opening the shared

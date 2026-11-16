@@ -148,7 +148,7 @@ The block runs every process a Bash call starts inside Claude Code's sandbox:
 
 The Read, Edit and Write tools, the hooks and the session process are not sandboxed. The setting
 also adds a `Read(...)` deny rule for each credential path, which keeps the Read tool, and Grep
-and Glob with it, from the same files; the scope hook still guards Edit and Write, and under the
+and Glob with it, from the same files, a symlink to them included (probed); the scope hook still guards Edit and Write, and under the
 setting it also refuses a path that runs through a symlink in the worktree, which sandboxed Bash
 could plant to send Edit or Write past the sandbox. A pnpm
 project lists `.pnpm-store/` in its `.gitignore` before turning the setting on, because pnpm
