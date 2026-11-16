@@ -103,6 +103,7 @@ export function buildDashboardSnapshot(
       isLanded,
       newest ? topRungFailure(db, paths, row, task, now) : undefined,
       claudeDir,
+      (newestFirst) => committedFixRound(newestFirst, row, repoPath, now),
     );
   });
   const beat = getWatcherBeat(db, pid);
@@ -443,6 +444,7 @@ const NEED_ORDER: DashboardNeed['kind'][] = [
   'top-rung',
   'stalled',
   'awaiting-review',
+  'fix-committed',
   'pr-open',
 ];
 
@@ -491,11 +493,15 @@ export function needsYou(snapshot: DashboardSnapshot, ciReview?: CiReviewLookup)
         },
       ]
     : [];
-  const needs = [
-    ...conductor,
-    ...conductorNeed(snapshot.conductor),
-    ...snapshot.sessions.flatMap((session) => needOf(session, gating, ciReview) ?? []),
-  ];
+  // A finished fix round holds the merge lock's next turn, so the longest
+  // waiting goes first; every other kind keeps the snapshot's row order.
+  // `sort` is stable, every other row weighs 0, and a row with a committed fix
+  // round has no other line (see `committedFixRound`).
+  const waited = (session: DashboardSession): number => session.fixCommitted?.ageMs ?? 0;
+  const sessionNeeds = [...snapshot.sessions]
+    .sort((a, b) => waited(b) - waited(a))
+    .flatMap((session) => needOf(session, gating, ciReview) ?? []);
+  const needs = [...conductor, ...conductorNeed(snapshot.conductor), ...sessionNeeds];
   return NEED_ORDER.flatMap((kind) => needs.filter((need) => need.kind === kind));
 }
 
@@ -563,6 +569,9 @@ function questionNeed(
   };
 }
 
+/** The lines that ask for a merge, which the operator judges against the gated scope. */
+const MERGE_KINDS: DashboardNeed['kind'][] = ['awaiting-review', 'fix-committed', 'pr-open'];
+
 function needOf(
   session: DashboardSession,
   gating: boolean,
@@ -576,7 +585,7 @@ function needOf(
     label: session.isMintedId ? id : UNMINTED_ID,
     // The merge is the operator's to judge against the scope it was gated
     // on, which is wider than the plan they approved (decision 188).
-    reason: kind === 'awaiting-review' || kind === 'pr-open' ? `${reason}${widened}` : reason,
+    reason: MERGE_KINDS.includes(kind) ? `${reason}${widened}` : reason,
     answer,
   });
   // The answer is what the conductor acts on, and the session row is
@@ -635,6 +644,17 @@ function needOf(
         `pup merge ${id} --pr --accept-debt "<reason>" --review-by "<condition>", ` +
           `or pup steer ${id} "..."`,
       ),
+    );
+  }
+  // Shown while the conductor runs too: a conductor that compacted has lost
+  // the round, and the merge lock sits idle until someone re-gates it. The
+  // worker's own summary stays out: the conductor acts on this line, and a
+  // scrub leaves another session's command readable (`pup review` shows it).
+  if (session.fixCommitted !== undefined) {
+    return need(
+      'fix-committed',
+      `fix committed ${formatStaleAge(session.fixCommitted.ageMs)} ago, awaiting re-gate`,
+      command(`pup merge ${id} --pr`),
     );
   }
   if (session.state === 'awaiting-review' && !gating) {
@@ -819,6 +839,33 @@ function ancestry(repoPath: string, sha: string, target: string): 'landed' | 'op
   }
 }
 
+/**
+ * Whether a session branch holds a commit the PR's pinned head does not: the
+ * fix round committed and the PR has yet to be re-gated onto it. The same
+ * walk as `ancestry`, under the same pins and timeout, the other way round;
+ * asked only for awaiting-review sessions whose last fix round ended, so it
+ * is not cached. A branch or sha outside its shape, a missing branch or
+ * object and a timeout all read as not past: the session keeps the line it
+ * had before.
+ */
+function isBranchPast(repoPath: string, branch: string, sha: string): boolean {
+  if (!PLAIN_BRANCH.test(branch) || !COMMIT_SHA.test(sha)) return false;
+  try {
+    const past = runGit(
+      repoPath,
+      [...NO_TRANSPORT, 'rev-list', '--max-count=1', `refs/heads/${branch}`, `^${sha}`, '--'],
+      {
+        env: { GIT_NO_LAZY_FETCH: '1' },
+        stdio: ['ignore', 'pipe', 'ignore'],
+        timeout: LANDED_CHECK_TIMEOUT_MS,
+      },
+    );
+    return past.trim() !== '';
+  } catch {
+    return false;
+  }
+}
+
 function dashboardSession(
   db: Database,
   row: SessionRow,
@@ -828,6 +875,7 @@ function dashboardSession(
   isLanded: (target: string | undefined, sha: string | undefined) => boolean,
   topReached: string | undefined,
   claudeDir: string | undefined,
+  fixRoundOf: (newestFirst: EventRow[]) => DashboardSession['fixCommitted'],
 ): DashboardSession {
   const spec = taskSpecForDisplay(task);
   // Decision 2: hook events, never pane contents. Nothing to classify for a
@@ -853,6 +901,9 @@ function dashboardSession(
   const openPr = pr && !isLanded(pr.target, pr.sha) ? { url: pr.url } : undefined;
   const lastGate = newestGate(events);
   const gateRefused = row.state === 'awaiting-review' && newestGateRefused(events);
+  // A refused gate's line comes first, and the inbox sorts on this alone.
+  const fixCommitted =
+    row.state === 'awaiting-review' && !gateRefused ? fixRoundOf(events) : undefined;
   // Only for the stall the session is in now: an hour-old resume belongs to a
   // stall the session has worked its way out of since.
   const deadTurn = stall && newestDeadTurn(events, stall.stalledAt);
@@ -885,6 +936,7 @@ function dashboardSession(
     ...(lastSteer ? { lastSteer } : {}),
     ...(question === undefined ? {} : { question }),
     ...(openPr === undefined ? {} : { openPr }),
+    ...(fixCommitted === undefined ? {} : { fixCommitted }),
     ...(lastGate ? { lastGate } : {}),
     ...(gateRefused ? { gateRefused } : {}),
     ...(route ? { route } : {}),
@@ -962,6 +1014,34 @@ function openPullRequest(
     return { url: PR_URL.test(url) ? url : undefined, sha: event.sha, target: event.target };
   }
   return undefined;
+}
+
+/**
+ * The CI fix round an awaiting-review session finished and nobody re-gated
+ * (decision 90): the newest `fix_round` with a `session_done` after it, no
+ * `steer` since that `session_done` (a steer hands the worker more to do, and
+ * leaves the state awaiting-review), and no `merge`, `landed` or `retired`
+ * since the round, on a PR still open whose pinned head
+ * the branch has moved past. Its age runs from the newest such `session_done`,
+ * the store's end of the round, so a worktree's clock has no say. A pin or
+ * branch outside its shape, and any git failure, read as not past.
+ */
+function committedFixRound(
+  newestFirst: EventRow[],
+  session: SessionRow,
+  repoPath: string,
+  now: number,
+): DashboardSession['fixCommitted'] {
+  const marks = ['fix_round', 'merge', 'landed', 'retired'];
+  const at = newestFirst.findIndex((row) => marks.includes(row.type));
+  const done = newestFirst
+    .slice(0, at)
+    .find((row) => row.type === 'session_done' || row.type === 'steer');
+  const pin = openPullRequest(newestFirst)?.sha ?? '';
+  const isOpenRound = newestFirst[at]?.type === 'fix_round' && done?.type === 'session_done';
+  if (!isOpenRound || !isBranchPast(repoPath, session.branch, pin)) return undefined;
+  const endedAt = Date.parse(toIsoUtc(done.created_at));
+  return Number.isFinite(endedAt) ? { ageMs: Math.max(0, now - endedAt) } : undefined;
 }
 
 /**

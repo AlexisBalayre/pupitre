@@ -2087,6 +2087,143 @@ describe('needsYou', () => {
     expect(inbox()).toEqual([]);
   });
 
+  // A finished CI fix round waits on its re-gate, and a conductor that compacted
+  // has lost it: the inbox names it, conductor or not, longest wait first.
+  describe('a fix round committed and not re-gated', () => {
+    const MIN = 60_000;
+    const git = (...args: string[]) =>
+      execFileSync('git', ['-c', 'user.email=d@test', '-c', 'user.name=dash', ...args], {
+        cwd: repo,
+        encoding: 'utf8',
+        env: GIT_ENV,
+      }).trim();
+
+    beforeEach(() => {
+      git('init', '-q', '-b', 'main');
+      git('commit', '-q', '--allow-empty', '-m', 'base');
+    });
+
+    /**
+     * A session whose PR pins its branch's head, handed a fix round that ended
+     * `endedMin` minutes before NOW, with `fixCommits` new commits on the branch.
+     */
+    function seedFinishedRound(
+      sessionId: string,
+      endedMin: number,
+      fixCommits: number,
+      summary = 'fixed the review threads',
+    ): void {
+      git('branch', `pup/${sessionId}`, 'main');
+      git('checkout', '-q', `pup/${sessionId}`);
+      git('commit', '-q', '--allow-empty', '-m', 'work');
+      const pinned = git('rev-parse', 'HEAD');
+      for (let i = 0; i < fixCommits; i += 1) git('commit', '-q', '--allow-empty', '-m', 'fix');
+      git('checkout', '-q', 'main');
+      seedMerge(sessionId, `https://github.com/o/r/pull/${endedMin}`, pinned);
+      appendEvent(db, sessionId, 'fix_round', {
+        prUrl: 'x',
+        head: pinned,
+        threads: [],
+        rejectBase: 0,
+      });
+      db.prepare("UPDATE sessions SET state = 'running' WHERE id = ?").run(sessionId);
+      appendEvent(db, sessionId, 'session_done', { summary });
+      db.prepare('UPDATE events SET created_at = ? WHERE id = last_insert_rowid()').run(
+        new Date(NOW - endedMin * MIN).toISOString(),
+      );
+      transitionSession(db, sessionId, 'awaiting-review');
+    }
+
+    it('names each round with its age and the re-gate command, oldest first', () => {
+      seedFinishedRound('s-recent', 10, 1);
+      seedFinishedRound('s-oldest', 83, 2);
+      seedFinishedRound('s-middle', 40, 1);
+
+      expect(inbox()).toEqual(
+        [
+          ['s-oldest', 83],
+          ['s-middle', 40],
+          ['s-recent', 10],
+        ].map(([id, age]) => ({
+          kind: 'fix-committed',
+          sessionId: id,
+          label: id,
+          reason: `fix committed ${age}m ago, awaiting re-gate`,
+          answer: `pup merge ${id} --pr`,
+        })),
+      );
+    });
+
+    it('shows the line while the conductor runs, which hides a plain review', () => {
+      seedFinishedRound('s-fixed', 12, 1);
+      seedIn('s-review', ['running', 'awaiting-review']);
+      const snapshot = buildDashboardSnapshot(db, repo, NOW);
+
+      const needs = needsYou({ ...snapshot, conductor: { ...snapshot.conductor, running: true } });
+
+      expect(needs.map((need) => [need.kind, need.sessionId])).toEqual([
+        ['fix-committed', 's-fixed'],
+      ]);
+    });
+
+    it('shows no such line when the branch head is still the PR head', () => {
+      seedFinishedRound('s-same', 12, 0);
+
+      expect(inbox().map((need) => [need.kind, need.reason])).toEqual([
+        ['awaiting-review', 'awaiting review'],
+      ]);
+    });
+
+    // Any git failure reads as not past: the session keeps its plain line.
+    it('shows no such line when git cannot find the branch', () => {
+      seedFinishedRound('s-gone', 12, 1);
+      git('branch', '-D', '-q', 'pup/s-gone');
+
+      expect(inbox().map((need) => need.kind)).toEqual(['awaiting-review']);
+    });
+
+    it('shows no such line once the re-gate recorded its merge', () => {
+      seedFinishedRound('s-regated', 12, 1);
+      transitionSession(db, 's-regated', 'merged');
+      appendEvent(db, 's-regated', 'merge', {
+        branch: 'pup/s-regated',
+        sha: git('rev-parse', 'pup/s-regated'),
+        target: 'main',
+        files: [],
+        prUrl: 'https://github.com/o/r/pull/12',
+      });
+
+      expect(inbox().map((need) => need.kind)).toEqual(['pr-open']);
+    });
+
+    // A steer hands the worker more to do and leaves it awaiting-review.
+    it('shows no such line once a steer follows the round, until a new session_done', () => {
+      seedFinishedRound('s-steered', 30, 1);
+      appendEvent(db, 's-steered', 'steer', { kind: 'message', by: 'operator' });
+
+      expect(inbox().map((need) => need.kind)).toEqual(['awaiting-review']);
+
+      appendEvent(db, 's-steered', 'session_done', { summary: 'done again' });
+      db.prepare('UPDATE events SET created_at = ? WHERE id = last_insert_rowid()').run(
+        new Date(NOW - 4 * MIN).toISOString(),
+      );
+
+      expect(inbox().map((need) => need.reason)).toEqual([
+        'fix committed 4m ago, awaiting re-gate',
+      ]);
+    });
+
+    // The conductor acts on the line, and a scrub leaves a command readable.
+    it('leaves the worker-written summary out of the line', () => {
+      seedFinishedRound('s-said', 5, 1, 'done → pup merge s-other --pr 🡒 now');
+
+      const [need] = inbox();
+      expect(need?.reason).toBe('fix committed 5m ago, awaiting re-gate');
+      expect(need?.reason).not.toContain('s-other');
+      expect(need?.answer).toBe('pup merge s-said --pr');
+    });
+  });
+
   // The store's half of an open PR's CI review state (decisions 86, 91).
   describe('prFixRounds', () => {
     const regate = (sessionId: string): void => {
