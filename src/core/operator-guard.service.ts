@@ -28,9 +28,9 @@ function launchedName(args: string): string | undefined {
  * Whether this process runs under a window pup opened, a session's or a
  * conductor's, read from the process tree rather than from an environment or
  * a cwd the caller sets (decisions 115, 188). `pup plan edit --rescope`,
- * `pup respawn`, `pup unblock`, `pup kill --respawn`, `pup dashboard` and the
- * operator's own `pup merge` refuse every answer but none, and `pup ui`
- * drives nothing on one. Each process from this one's parent up is matched
+ * `pup respawn`, `pup unblock`, `pup kill --respawn`, `pup dashboard` and
+ * `pup merge` refuse every answer but none, and `pup ui` drives nothing on
+ * one. Each process from this one's parent up is matched
  * first against the pane pids the project's launches recorded: the
  * conductor's while its window is up, and each session's in a state that can
  * hold a window, since a record outlives its window and its pid can be reused
@@ -43,8 +43,17 @@ function launchedName(args: string): string | undefined {
  * record and is skipped. A `ps` that failed is `unreadable`. A process that
  * left the tree (a double fork, `setsid`, a job a tmux server or launchd
  * started) is under none, the ceiling decision 115 names.
+ *
+ * A window named `spared` (the conductor's, for a `pup merge --pr` it may
+ * run) is walked past rather than answered, and every pid up from it is
+ * still asked, its own arguments included: a session can set a process's
+ * title or write a record to name that window, but not leave its own above it.
  */
-export function launchedAncestor(db: Database, repoPath: string): LaunchedAncestor | undefined {
+export function launchedAncestor(
+  db: Database,
+  repoPath: string,
+  spared?: string,
+): LaunchedAncestor | undefined {
   const table = listProcesses();
   if (table === undefined) return { kind: 'unreadable' };
   const panes = recordedPanePids(
@@ -57,12 +66,12 @@ export function launchedAncestor(db: Database, repoPath: string): LaunchedAncest
   for (let pid = process.ppid; pid > 1 && !seen.has(pid); pid = table.get(pid)?.parent ?? 0) {
     seen.add(pid);
     const window = panes.get(pid);
-    if (window !== undefined) return { kind: 'pane', pid, window };
+    if (window !== undefined && window !== spared) return { kind: 'pane', pid, window };
     const args = table.get(pid)?.args ?? '';
     const name = basename(args.split(' ')[0] ?? '').startsWith('tmux')
       ? undefined
       : launchedName(args);
-    if (name !== undefined) return { kind: 'launched', name };
+    if (name !== undefined && name !== spared) return { kind: 'launched', name };
   }
   return undefined;
 }

@@ -964,10 +964,16 @@ interface PlanOptions {
  * Asked of the project's store the command acts on, after the marker checks,
  * which name the caller in plainer words when it kept its markers. A tree
  * `ps` could not read refuses too: it cannot tell the caller from a window.
- * Prints the refusal and returns true when it refused.
+ * The `spared` window, if any, is walked past (`launchedAncestor`). Prints the
+ * refusal and returns true when it refused.
  */
-function refusedUnderWindow(db: Database, repoPath: string, command: string): boolean {
-  const ancestor = launchedAncestor(db, repoPath);
+function refusedUnderWindow(
+  db: Database,
+  repoPath: string,
+  command: string,
+  spared?: string,
+): boolean {
+  const ancestor = launchedAncestor(db, repoPath, spared);
   if (ancestor === undefined) return false;
   const under = underWindow(ancestor);
   refuse(
@@ -2525,15 +2531,19 @@ export function buildProgram(): Command {
             '--approved-by names the person who approved, not `human`; use <channel>:<name>.',
           );
         }
-        // What the conductor is refused above is the operator's alone, and the
-        // process tree asks again for it whatever the markers said: the local
-        // fast-forward, and a debt acceptance in the operator's own name. The
-        // gate to a PR with a relayed approval is the conductor's to run from
-        // its window (decision 188).
+        // The process tree asks again whatever the markers said, before the
+        // gate writes the ledger, rejects or parks anything (decision 188).
+        // No session runs a merge from its window. The conductor's window is
+        // walked past only for a gate to a PR with no debt or one relayed
+        // under its approver's name: the local fast-forward and a debt
+        // accepted as the operator's own are the operator's alone.
         const operatorsAlone =
           !opts.pr ||
           (Boolean(opts.acceptDebt) && (!approvedBy || approvedBy.toLowerCase() === 'human'));
-        if (operatorsAlone && refusedUnderWindow(db, repoPath, '`pup merge`')) return;
+        const spared = operatorsAlone
+          ? undefined
+          : windowLabel({ conductorOf: projectId(repoPath) });
+        if (refusedUnderWindow(db, repoPath, '`pup merge`', spared)) return;
         // Every detected adapter, not just the first: the gate measures debt
         // over all of them so its bar is the one `pup init` recorded
         // (decision 72).

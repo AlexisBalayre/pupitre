@@ -125,6 +125,58 @@ describe('launchedAncestor (decisions 115, 188)', () => {
     });
   });
 
+  // The conductor's own `pup merge --pr`: its window is walked past, and a
+  // session that names it, by a record or a title, is still found above.
+  describe('a spared window', () => {
+    const CONDUCTOR = 'pup-conductor-p1';
+
+    it.each([
+      ['its recorded pane', new Map([[700, CONDUCTOR]]), 'claude'],
+      ['its launch name', new Map<number, string>(), `${CLAUDE} --name ${CONDUCTOR}`],
+    ])('passes a caller under %s and no other', (_how, panes, args) => {
+      vi.mocked(recordedPanePids).mockReturnValue(panes);
+      tree([process.ppid, 700, '/bin/zsh'], [700, 1, args]);
+
+      expect(launchedAncestor(db, '/repo', CONDUCTOR)).toBeUndefined();
+    });
+
+    it("finds a session's pane above a process its record or title made the conductor's", () => {
+      vi.mocked(recordedPanePids).mockReturnValue(
+        new Map([
+          [process.ppid, CONDUCTOR],
+          [700, 'pup-t-abc'],
+        ]),
+      );
+      tree(
+        [process.ppid, 600, '/bin/zsh'],
+        [600, 700, `/bin/zsh --name ${CONDUCTOR}`],
+        [700, 1, 'claude'],
+      );
+
+      expect(launchedAncestor(db, '/repo', CONDUCTOR)).toEqual({
+        kind: 'pane',
+        pid: 700,
+        window: 'pup-t-abc',
+      });
+    });
+
+    it('still reads the arguments of a pid the record names as the spared window', () => {
+      vi.mocked(recordedPanePids).mockReturnValue(new Map([[700, CONDUCTOR]]));
+      tree([process.ppid, 700, '/bin/zsh'], [700, 1, `${CLAUDE} --name pup-t-abc`]);
+
+      expect(launchedAncestor(db, '/repo', CONDUCTOR)).toEqual({
+        kind: 'launched',
+        name: 'pup-t-abc',
+      });
+    });
+
+    it('is still unreadable when ps failed', () => {
+      vi.mocked(listProcesses).mockReturnValue(undefined);
+
+      expect(launchedAncestor(db, '/repo', CONDUCTOR)).toEqual({ kind: 'unreadable' });
+    });
+  });
+
   it.each([
     ['the conductor', 'pup-conductor-p1'],
     ['a session', 'pup-t-abc'],

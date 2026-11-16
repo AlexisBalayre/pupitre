@@ -1061,6 +1061,15 @@ describe('recordedPanePids (decision 188)', () => {
     );
   });
 
+  // A guard that walks past the conductor's window must still find the session
+  // that wrote its own pid into the conductor's record.
+  it("names a session's window for a pid the conductor's record names too", () => {
+    record(join(projectPaths(REPO).sessionDir('s1'), 'pane-pid'), '101');
+    record(join(projectPaths(REPO).root, 'conductor', 'pane-pid'), '101');
+
+    expect(recordedPanePids(REPO, ['s1'])).toEqual(new Map([[101, 'pup-s1']]));
+  });
+
   // Only the sessions the caller names: which windows may still be up is its to say.
   it('reads no session it was not asked about', () => {
     record(join(projectPaths(REPO).sessionDir('s1'), 'pane-pid'), '101');

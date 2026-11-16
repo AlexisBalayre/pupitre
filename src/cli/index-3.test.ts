@@ -3191,7 +3191,39 @@ describe('CLI commands', () => {
       expect(runMergeGate).not.toHaveBeenCalled();
     });
 
-    it.each(OPERATORS_ALONE)(
+    // What the conductor may run from its window, which no session may: the
+    // gate rejects or parks the branch, and a relayed approval is written to
+    // the ledger as a human's.
+    const CONDUCTORS_PR = [
+      ['a PR', ['--pr']],
+      ['a PR with a named approver', ['--pr', ...DEBT, '--approved-by', 'tg:someone']],
+    ] as const;
+
+    it.each(
+      CONDUCTORS_PR.flatMap(([what, flags]) =>
+        MARKERS.map(([how, value]) => ({ what, flags, how, value })),
+      ),
+    )(
+      "refuses $what under a session's recorded pane, its markers $how",
+      async ({ flags, value }) => {
+        const repo = initRepoWithAdapter();
+        useCwd(repo);
+        vi.stubEnv('PUP_SESSION_ID', value);
+        vi.stubEnv('PUP_CONDUCTOR', value);
+        underPane(() => 'pup-s9');
+
+        await buildProgram().parseAsync(['merge', 's1', ...flags], { from: 'user' });
+
+        expect(errors).toEqual([
+          '`pup merge` is operator-only, and this runs under process 700, the pane pup recorded ' +
+            "for pup-s9's window, whatever its environment says; run it from your own shell.",
+        ]);
+        expect(process.exitCode).toBe(1);
+        expect(runMergeGate).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([...OPERATORS_ALONE, ...CONDUCTORS_PR])(
       'refuses %s when the process tree cannot be read',
       async (_what, flags) => {
         useCwd(initRepoWithAdapter());
@@ -3209,24 +3241,24 @@ describe('CLI commands', () => {
 
     // The gate to a PR, with any debt approval relayed under its approver's
     // name, is the conductor's to run from its own window (decision 75).
-    it.each([
-      ['a PR', ['--pr']],
-      ['a PR with a relayed debt approval', ['--pr', ...DEBT, '--approved-by', 'tg:someone']],
-    ])('lets the conductor gate %s under its recorded pane', async (_what, flags) => {
-      const repo = initRepoWithAdapter();
-      useCwd(repo);
-      vi.stubEnv('PUP_CONDUCTOR', projectId(repo));
-      underPane(conductorWindow);
-      vi.mocked(runMergeGate).mockResolvedValue(
-        mergedOutcome({ prUrl: 'https://github.com/acme/repo/pull/7', prWasAdopted: false }),
-      );
+    it.each(CONDUCTORS_PR)(
+      'lets the conductor gate %s under its recorded pane',
+      async (_what, flags) => {
+        const repo = initRepoWithAdapter();
+        useCwd(repo);
+        vi.stubEnv('PUP_CONDUCTOR', projectId(repo));
+        underPane(conductorWindow);
+        vi.mocked(runMergeGate).mockResolvedValue(
+          mergedOutcome({ prUrl: 'https://github.com/acme/repo/pull/7', prWasAdopted: false }),
+        );
 
-      await buildProgram().parseAsync(['merge', 's1', ...flags], { from: 'user' });
+        await buildProgram().parseAsync(['merge', 's1', ...flags], { from: 'user' });
 
-      expect(errors).toEqual([]);
-      expect(runMergeGate).toHaveBeenCalledTimes(1);
-      expect(listProcesses).not.toHaveBeenCalled();
-    });
+        expect(errors).toEqual([]);
+        expect(listProcesses).toHaveBeenCalledOnce();
+        expect(runMergeGate).toHaveBeenCalledTimes(1);
+      },
+    );
 
     it('forwards the repo, session, and detected adapter to the gate', async () => {
       const repo = initRepoWithAdapter();

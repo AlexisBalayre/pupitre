@@ -57,18 +57,22 @@
     debt in the operator's name, each ask after their marker checks, against the store of
     the project they act on, and refuse a caller found under a recorded pane (naming the
     process and the window), under a process carrying a launch's `--name`, or with a
-    process tree `ps` could not read, changing nothing. So does `pup merge` for each call
-    the conductor's marker is refused as the operator's alone: the local fast-forward, and
-    a debt acceptance with no `--approved-by` or one naming `human`, which the ledger would
-    record as the operator's own (decision 75). "Whatever its environment says" is
-    in the refusal: emptying or unsetting `PUP_SESSION_ID` and `PUP_CONDUCTOR` changes
-    nothing here. The plain `pup kill` is not asked: it is the conductor's to run. Nor is
-    `pup merge --pr` with no debt or with one relayed under its approver's name, which the
-    conductor runs from its window: a session that emptied its markers and left its
-    worktree can still gate a branch to a pull request the human merges, which moves no
-    target, at decision 27's ceiling. The other commands the markers hold to the operator
-    (`pup answer`, `pup debt close`, `pup retire`, `pup land --accept-head` among them)
-    are not asked yet.
+    process tree `ps` could not read, changing nothing. So does every `pup merge`, before
+    the gate writes anything: even with `--pr`, a merge writes a debt acceptance to the
+    ledger under the approver it is handed, as a human's, and rejects or parks `blocked`
+    the branch it gates, so a session that emptied its markers and left its worktree must
+    not run one from its window. The conductor's own window, this project's, is spared
+    only for a `--pr` with no debt or with one relayed under its approver's name (decision
+    75), and is walked past rather than taken as the answer: every process above it is
+    still asked, its arguments too at the pid its record names, and a session's record
+    wins a pid the conductor's also names, so a session that sets a process's title or
+    writes a record to name the conductor's window is still found by its own. The local
+    fast-forward and a debt acceptance with no `--approved-by` or one naming `human`,
+    which the ledger records as the operator's own, spare no window. "Whatever its
+    environment says" is in the refusal: emptying or unsetting `PUP_SESSION_ID` and
+    `PUP_CONDUCTOR` changes nothing here. The plain `pup kill` is not asked: it is the
+    conductor's to run. The other commands the markers hold to the operator (`pup answer`,
+    `pup debt close`, `pup retire`, `pup land --accept-head` among them) are not asked yet.
     `pup ui` asks the same question after the markers, and on any answer but none shows
     the dashboard read-only with the reason in its footer, as it does for a session or
     the conductor (its keys run the respawn, the unblock and the merge). The fleet view
@@ -96,11 +100,14 @@
     *Tests.* `session-runtime.test.ts`: a session's launch and the conductor's record the
     pid tmux printed, a print that is not a pane id and a pid refuses the launch, and
     `recordedPanePids` names each window, reads only the sessions asked and the conductor's
-    record only while its window is up, and ignores a malformed record and a symlink. `operator-guard.test.ts`: a recorded pid up the tree
-    finds a session's or the conductor's window whatever the caller's environment and the
-    arguments `ps` shows, wins over a launch name further up, reads only holding-state
-    sessions and minted ids, and passes a tree that holds none; decision 115's arguments
-    cases stay. `task-rescope.test.ts`: the overlap check records and returns another
+    record only while its window is up, names a session's window for a pid the
+    conductor's record names too, and ignores a malformed record and a symlink.
+    `operator-guard.test.ts`: a recorded pid up the tree finds a session's or the
+    conductor's window whatever the caller's environment and the arguments `ps` shows,
+    wins over a launch name further up, reads only holding-state sessions and minted ids,
+    and passes a tree that holds none; a spared window passes a caller under it alone, and
+    a session's pane above a record or a title naming it, or a session's name at the pid
+    its record names, is still found; decision 115's arguments cases stay. `task-rescope.test.ts`: the overlap check records and returns another
     task's live session and leaves the task's own, and `taskRescopes` lists a task's
     rescopes across its sessions and no other task's. `index.test.ts`: each of the four
     commands is refused under a session's and the conductor's recorded pane with its
@@ -109,8 +116,9 @@
     its overlaps. `index-3.test.ts`: `pup ui` is read-only under a recorded pane with its
     markers emptied and unset, and when `ps` fails, and the fleet is read-only under a
     pane one project's store recorded; `pup dashboard`, the local merge and a debt
-    accepted in the operator's name are refused the same ways, and the conductor's `--pr`
-    gate, with or without a relayed approval, goes through under its pane. `merge-gate.test.ts`: the body lists the rescopes,
+    accepted in the operator's name are refused the same ways, a `--pr` with or without a
+    named approver is refused under a session's pane and when `ps` fails, and goes through
+    under the conductor's. `merge-gate.test.ts`: the body lists the rescopes,
     scrubbed, has no section without one, a gate opening a PR reads them off the store,
     and a re-gate's rewrite lists one taken after the first gate. `dashboard.test.ts`: the
     awaiting-review, refused-gate and
