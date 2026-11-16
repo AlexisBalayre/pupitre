@@ -1,5 +1,6 @@
 import { basename, isAbsolute, normalize, relative } from 'node:path';
 
+import { type ContextStats, contextStatsByClass, type ReplayRow } from './retro-replay.service.js';
 import {
   addCalls,
   addToolCarry,
@@ -47,6 +48,14 @@ interface ClassRow {
   compactions: number;
   medianContext: number;
   firstRequestFloor: number;
+  cost: number;
+  contextBeforeCompaction: number;
+  contextAfterCompaction: number;
+  growthPerRequest: number;
+  highContextCostShare: number;
+  observedThreshold: number;
+  observedReplayCost: number;
+  replay: ReplayRow[];
 }
 
 interface RepeatedRead {
@@ -124,6 +133,7 @@ function classRows(scanned: ScannedTranscript[]): ClassRow[] {
     addCalls(buckets, item.class, item.read);
     transcripts.set(item.class, [...(transcripts.get(item.class) ?? []), item]);
   }
+  const stats = contextStatsByClass(scanned);
   return [...transcripts.entries()]
     .map(([klass, items]) => {
       const mine = [...buckets.values()].filter((b) => b.class === klass);
@@ -138,12 +148,13 @@ function classRows(scanned: ScannedTranscript[]): ClassRow[] {
         recaches: sum(mine.map((b) => b.recaches)),
         recachedTokens: sum(mine.map((b) => b.recachedTokens)),
         recacheCost: sum(mine.map((b) => b.recachedCost)),
-        compactions: sum(items.map(({ read }) => read.compactions)),
+        compactions: sum(items.map(({ read }) => read.compactions.length)),
         medianContext: percentile(calls.map(contextOf), 0.5),
         firstRequestFloor: percentile(
           mine.flatMap((b) => b.floors),
           0.5,
         ),
+        ...(stats.get(klass) as ContextStats),
       };
     })
     .sort((a, b) => b.calls - a.calls);
@@ -200,6 +211,15 @@ function carryFinding(row: CarryRow): RetroFinding {
   };
 }
 
+const pct = (share: number): string => `${share > 0 ? '+' : ''}${(share * 100).toFixed(1)}%`;
+
+/** The threshold the replay prices lowest, when one saves anything. */
+function cheapestReplay(row: ClassRow): string {
+  const best = [...row.replay].sort((a, b) => a.cost - b.cost)[0];
+  if (!best || best.change >= 0) return '';
+  return `: replayed at ${best.threshold} tokens, its spend changes by ${pct(best.changeShare)} with ${best.resets} resets`;
+}
+
 function classFindings(row: ClassRow): RetroFinding[] {
   const found: RetroFinding[] = [];
   if (row.recaches > 0) {
@@ -215,9 +235,9 @@ function classFindings(row: ClassRow): RetroFinding[] {
     found.push({
       signal: 'context compactions',
       impactTokens: row.compactions * row.medianContext,
-      evidence: `${row.class}: ${row.compactions} compactions, median context ${Math.round(row.medianContext)} tokens`,
+      evidence: `${row.class}: ${row.compactions} compactions, median context ${Math.round(row.contextBeforeCompaction)} tokens before and ${Math.round(row.contextAfterCompaction)} after`,
       why: 'a compaction rewrites the summary and rebuilds the cache, and the work after it starts from a lossy context',
-      fix: 'split the task earlier or lower the compaction threshold for this class',
+      fix: `split the task earlier or lower the compaction threshold for this class${cheapestReplay(row)}`,
     });
   }
   if (row.calls > 0 && row.cacheHitRate < CACHE_HIT_TARGET) {
@@ -304,6 +324,20 @@ export function serializeRetro(report: RetroReport): string {
         compactions: finite(c.compactions),
         medianContext: finite(c.medianContext),
         firstRequestFloor: finite(c.firstRequestFloor),
+        cost: finite(c.cost),
+        contextBeforeCompaction: finite(c.contextBeforeCompaction),
+        contextAfterCompaction: finite(c.contextAfterCompaction),
+        growthPerRequest: finite(c.growthPerRequest),
+        highContextCostShare: finite(c.highContextCostShare),
+        observedThreshold: finite(c.observedThreshold),
+        observedReplayCost: finite(c.observedReplayCost),
+        replay: c.replay.map((r) => ({
+          threshold: finite(r.threshold),
+          resets: finite(r.resets),
+          cost: finite(r.cost),
+          change: finite(r.change),
+          changeShare: finite(r.changeShare),
+        })),
       })),
       repeatedReads: report.repeatedReads.map((r) => ({
         path: label(r.path),
@@ -343,6 +377,8 @@ export function formatRetro(report: RetroReport): string {
   for (const c of report.classes) {
     out.push(
       `- ${c.class}: ${c.calls} calls, cache hit ${(c.cacheHitRate * 100).toFixed(1)}%, ${c.recaches} re-caches, ${c.compactions} compactions, first-request floor ${Math.round(c.firstRequestFloor)}`,
+      `  - context: compactions at a median ${Math.round(c.contextBeforeCompaction)} tokens leaving ${Math.round(c.contextAfterCompaction)}, growth ${Math.round(c.growthPerRequest)} tokens per request, ${(c.highContextCostShare * 100).toFixed(1)}% of spend above 150k`,
+      `  - replayed spend against the actual ${c.cost.toFixed(2)} USD (${c.observedReplayCost.toFixed(2)} at the observed threshold ${Math.round(c.observedThreshold)}): ${c.replay.map((r) => `${r.threshold / 1000}k ${pct(r.changeShare)} (${r.resets} resets)`).join(', ')}`,
     );
   }
   out.push('', `## Files read ${REPEATED_READS}+ times in one session`, '');
