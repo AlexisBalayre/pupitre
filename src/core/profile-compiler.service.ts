@@ -588,9 +588,9 @@ function buildContextMarkdown(
       // Decision 189: every tool result is re-read from the cache on each later request.
       '- Keep tool output small, since every result is re-read on each later request: batch ' +
       'related commands into one Bash call, ask for quiet output (`--quiet`, `-q`, or `tail` ' +
-      'or `grep` on test and install runs, after `set -o pipefail` so the exit status, 75 ' +
-      'included, survives the pipe), and do not re-run a command to re-read output already ' +
-      'in context.\n' +
+      'on test and install runs, after `set -o pipefail` so the exit status, 75 included, ' +
+      'survives the pipe; not `grep`, which exits 1 when nothing matches), and do not re-run ' +
+      'a command to re-read output already in context.\n' +
       '- When every acceptance criterion is met and all work is committed, run exactly:\n' +
       '  `pup session done "<one-line summary>"`\n' +
       '  (if `pup` is not found, run `node "$PUP_BIN" session done "<one-line summary>"`).\n' +

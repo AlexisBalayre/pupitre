@@ -149,9 +149,11 @@ describe('compileProfile', () => {
     for (const sentence of [
       '- Keep tool output small, since every result is re-read on each later request:',
       'batch related commands into one Bash call,',
-      'ask for quiet output (`--quiet`, `-q`, or `tail` or `grep` on test and install runs,',
+      'ask for quiet output (`--quiet`, `-q`, or `tail` on test and install runs,',
       // A bare pipe answers tail's status and hides a failure or exit 75.
-      'after `set -o pipefail` so the exit status, 75 included, survives the pipe),',
+      'after `set -o pipefail` so the exit status, 75 included, survives the pipe;',
+      // Under pipefail a grep that matches nothing turns a green run or an exit 75 into 1.
+      'not `grep`, which exits 1 when nothing matches),',
       'do not re-run a command to re-read output already in context.\n',
     ]) {
       expect(contextMarkdown).toContain(sentence);
