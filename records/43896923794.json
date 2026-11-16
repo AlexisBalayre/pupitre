@@ -1,0 +1,183 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-16T15:34:45.022Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43896923794",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43896923794",
+  "actor": "AlexisBalayre",
+  "commit_sha": "4c588466c07cddb3ef5dfd3a74c62a1c63714dcb",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 354,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "context",
+    "conventions",
+    "docs",
+    "simplicity"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "context",
+    "conventions",
+    "docs",
+    "simplicity"
+  ],
+  "reviewers_skipped": [
+    "maintainability",
+    "spec",
+    "guards",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "docs/spikes/2026-11-16-container-worker.md",
+      "line": "237-238",
+      "description": "Dropping GitHub does not 'close the hole', because npm also accepts writes. The report correctly says a host-name allowlist cannot enforce 'read'. Its fix (drop GitHub, keep the model API and npm) has the same flaw, because registry.npmjs.org accepts publishes.",
+      "status": "resolved"
+    },
+    {
+      "file": "docs/spikes/2026-11-16-container-worker.md",
+      "line": "116-124",
+      "description": "A secret file does not keep the token from the agent. The report puts 'use a secret file, not -e' right after 'the agent can read it from its own environment'. A secret file only hides the token from docker inspect. The agent can still read it.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "docs/spikes/2026-11-16-container-worker.md",
+      "line": "258-259",
+      "area": "security",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The report names the model API as an exfiltration channel, but none of the remedies it gives the ADR closes that channel. The egress fixes cover npm and GitHub only. The proposed header-injection proxy leaves `api.anthropic.com` reachable over CONNECT with any credential the client supplies.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/spikes/2026-11-16-container-worker.md",
+      "line": "271",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The report weighs the two token sources by lifetime only, and scope reverses the conclusion.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/spikes/2026-11-16-container-worker.md",
+      "line": "121-123",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The report says a secret file \"closes that exposure\", meaning the token being readable by anyone with docker access. It does not. Anyone with docker access can still `docker exec` into the container and read the file, or read `/proc/<claude pid>/environ`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/spikes/2026-11-16-container-worker.md",
+      "line": "97-100",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The report offers pinning `BASE_REF` to the host's `HEAD` sha as a fix for unpushed local commits. It cannot work: the sha is not on GitHub, and the committed scripts cannot take a sha anyway.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/spikes/2026-11-16-container-worker.md",
+      "line": "117-120",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "'at the cost below' points at nothing: the long-lived-token cost is in the next bullet (L128-130), and the following sentence lists a different cost. State the costs in place and rewrap the over-long L119.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/spikes/2026-11-16-container-worker.md",
+      "line": "283-284",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "'4 GiB / 4 CPUs was enough, and worked out to about 6 workers per 8 GiB VM': the 6 does not follow from the 4 GiB cap (which allows 2); it comes from the ~1.1 GiB measured peak, so say so.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/spikes/2026-11-16-container-worker.md",
+      "line": "114-120",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The report says only decision 12 needs amending, but both token options it weighs (keychain replication and `setup-token`) are the workarounds decision 9 (sessions inherit the user's Claude) rejected; the token item should name decision 9 too.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/spikes/2026-11-16-container-worker.md",
+      "line": "150",
+      "area": "context",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The report says pnpm runs `node-gyp rebuild` on every install, yet gives 2.4 s for a cold `pnpm install`; a from-source better-sqlite3 build takes far longer, so state whether the compile ran or a prebuild loaded.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "simplicity",
+      "description": "review-simplicity made no tool calls and reported no findings based on the round-1 result and the brief, without a fresh read of the diff."
+    }
+  ],
+  "duplicates_merged": 1,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.211764605000001,
+  "duration_ms": 230323,
+  "num_turns": 21,
+  "tokens": {
+    "input": 16,
+    "output": 13195,
+    "cache_read": 409535,
+    "cache_creation": 60049,
+    "total": 482795
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 62,
+      "output": 40697,
+      "cache_read": 723289,
+      "cache_creation": 175911,
+      "cost_usd": 2.0185478
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 20,
+      "output": 5947,
+      "cache_read": 112414,
+      "cache_creation": 48776,
+      "cost_usd": 0.1926914
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 185,
+      "cache_read": 1933,
+      "cache_creation": 3307,
+      "cost_usd": 0.0005254050000000001
+    }
+  ],
+  "permission_denials": []
+}
