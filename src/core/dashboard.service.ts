@@ -87,7 +87,6 @@ export function buildDashboardSnapshot(
   const tasks = new Map(listTasks(db, pid).map((task) => [task.id, task]));
   const stalls = new Map(findStalledSessions(db, repoPath, now).map((stall) => [stall.id, stall]));
   const isLanded = landedShaLookup(repoPath);
-  const isPast = branchPastLookup(repoPath);
   const claudeDir = windowsClaudeDir(repoPath);
   const rows = listSessions(db);
   // Oldest first, so each task maps to its newest session: the one a relaunch climbs from.
@@ -104,7 +103,7 @@ export function buildDashboardSnapshot(
       isLanded,
       newest ? topRungFailure(db, paths, row, task, now) : undefined,
       claudeDir,
-      (newestFirst) => committedFixRound(newestFirst, row, isPast, now),
+      (newestFirst) => committedFixRound(newestFirst, row, repoPath, now),
     );
   });
   const beat = getWatcherBeat(db, pid);
@@ -496,16 +495,12 @@ export function needsYou(snapshot: DashboardSnapshot, ciReview?: CiReviewLookup)
     : [];
   // A finished fix round holds the merge lock's next turn, so the longest
   // waiting goes first; every other kind keeps the snapshot's row order.
-  // `sort` is stable and every other line weighs 0.
-  const waited = (need: DashboardNeed, session: DashboardSession): number =>
-    need.kind === 'fix-committed' ? (session.fixCommitted?.ageMs ?? 0) : 0;
-  const sessionNeeds = snapshot.sessions
-    .flatMap((session) => {
-      const need = needOf(session, gating, ciReview);
-      return need ? [{ need, ageMs: waited(need, session) }] : [];
-    })
-    .sort((a, b) => b.ageMs - a.ageMs)
-    .map(({ need }) => need);
+  // `sort` is stable, every other row weighs 0, and a row with a committed fix
+  // round has no other line (see `committedFixRound`).
+  const waited = (session: DashboardSession): number => session.fixCommitted?.ageMs ?? 0;
+  const sessionNeeds = [...snapshot.sessions]
+    .sort((a, b) => waited(b) - waited(a))
+    .flatMap((session) => needOf(session, gating, ciReview) ?? []);
   const needs = [...conductor, ...conductorNeed(snapshot.conductor), ...sessionNeeds];
   return NEED_ORDER.flatMap((kind) => needs.filter((need) => need.kind === kind));
 }
@@ -655,11 +650,10 @@ function needOf(
   // the round, and the merge lock sits idle until someone re-gates it. The
   // worker's own summary stays out: the conductor acts on this line, and a
   // scrub leaves another session's command readable (`pup review` shows it).
-  const fixed = session.state === 'awaiting-review' ? session.fixCommitted : undefined;
-  if (fixed !== undefined) {
+  if (session.fixCommitted !== undefined) {
     return need(
       'fix-committed',
-      `fix committed ${formatStaleAge(fixed.ageMs)} ago, awaiting re-gate`,
+      `fix committed ${formatStaleAge(session.fixCommitted.ageMs)} ago, awaiting re-gate`,
       command(`pup merge ${id} --pr`),
     );
   }
@@ -854,24 +848,22 @@ function ancestry(repoPath: string, sha: string, target: string): 'landed' | 'op
  * object and a timeout all read as not past: the session keeps the line it
  * had before.
  */
-function branchPastLookup(repoPath: string): (branch: string, sha: string | undefined) => boolean {
-  return (branch, sha) => {
-    if (sha === undefined || !PLAIN_BRANCH.test(branch) || !COMMIT_SHA.test(sha)) return false;
-    try {
-      const past = runGit(
-        repoPath,
-        [...NO_TRANSPORT, 'rev-list', '--max-count=1', `refs/heads/${branch}`, `^${sha}`, '--'],
-        {
-          env: { GIT_NO_LAZY_FETCH: '1' },
-          stdio: ['ignore', 'pipe', 'ignore'],
-          timeout: LANDED_CHECK_TIMEOUT_MS,
-        },
-      );
-      return past.trim() !== '';
-    } catch {
-      return false;
-    }
-  };
+function isBranchPast(repoPath: string, branch: string, sha: string): boolean {
+  if (!PLAIN_BRANCH.test(branch) || !COMMIT_SHA.test(sha)) return false;
+  try {
+    const past = runGit(
+      repoPath,
+      [...NO_TRANSPORT, 'rev-list', '--max-count=1', `refs/heads/${branch}`, `^${sha}`, '--'],
+      {
+        env: { GIT_NO_LAZY_FETCH: '1' },
+        stdio: ['ignore', 'pipe', 'ignore'],
+        timeout: LANDED_CHECK_TIMEOUT_MS,
+      },
+    );
+    return past.trim() !== '';
+  } catch {
+    return false;
+  }
 }
 
 function dashboardSession(
@@ -907,9 +899,11 @@ function dashboardSession(
     row.state === 'running' ? dashboardQuestion(openQuestion(db, row.id)) : undefined;
   const pr = row.state === 'merged' ? openPullRequest(events) : undefined;
   const openPr = pr && !isLanded(pr.target, pr.sha) ? { url: pr.url } : undefined;
-  const fixCommitted = row.state === 'awaiting-review' ? fixRoundOf(events) : undefined;
   const lastGate = newestGate(events);
   const gateRefused = row.state === 'awaiting-review' && newestGateRefused(events);
+  // A refused gate's line comes first, and the inbox sorts on this alone.
+  const fixCommitted =
+    row.state === 'awaiting-review' && !gateRefused ? fixRoundOf(events) : undefined;
   // Only for the stall the session is in now: an hour-old resume belongs to a
   // stall the session has worked its way out of since.
   const deadTurn = stall && newestDeadTurn(events, stall.stalledAt);
@@ -1033,20 +1027,17 @@ function openPullRequest(
 function committedFixRound(
   newestFirst: EventRow[],
   session: SessionRow,
-  isPast: (branch: string, sha: string | undefined) => boolean,
+  repoPath: string,
   now: number,
 ): DashboardSession['fixCommitted'] {
-  let done: EventRow | undefined;
-  for (const row of newestFirst) {
-    if (row.type === 'merge' || row.type === 'landed' || row.type === 'retired') return undefined;
-    if (row.type === 'session_done') done ??= row;
-    if (row.type !== 'fix_round') continue;
-    const pr = done && openPullRequest(newestFirst);
-    if (!done || !pr || !isPast(session.branch, pr.sha)) return undefined;
-    const endedAt = Date.parse(toIsoUtc(done.created_at));
-    return Number.isFinite(endedAt) ? { ageMs: Math.max(0, now - endedAt) } : undefined;
-  }
-  return undefined;
+  const marks = ['fix_round', 'merge', 'landed', 'retired'];
+  const at = newestFirst.findIndex((row) => marks.includes(row.type));
+  const done = newestFirst.slice(0, at).find((row) => row.type === 'session_done');
+  const pin = openPullRequest(newestFirst)?.sha ?? '';
+  const isOpenRound = newestFirst[at]?.type === 'fix_round' && done !== undefined;
+  if (!isOpenRound || !isBranchPast(repoPath, session.branch, pin)) return undefined;
+  const endedAt = Date.parse(toIsoUtc(done.created_at));
+  return Number.isFinite(endedAt) ? { ageMs: Math.max(0, now - endedAt) } : undefined;
 }
 
 /**

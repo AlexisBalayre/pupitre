@@ -2174,6 +2174,14 @@ describe('needsYou', () => {
       ]);
     });
 
+    // Any git failure reads as not past: the session keeps its plain line.
+    it('shows no such line when git cannot find the branch', () => {
+      seedFinishedRound('s-gone', 12, 1);
+      git('branch', '-D', '-q', 'pup/s-gone');
+
+      expect(inbox().map((need) => need.kind)).toEqual(['awaiting-review']);
+    });
+
     it('shows no such line once the re-gate recorded its merge', () => {
       seedFinishedRound('s-regated', 12, 1);
       transitionSession(db, 's-regated', 'merged');
