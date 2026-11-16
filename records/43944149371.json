@@ -1,0 +1,110 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-16T20:03:09.766Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43944149371",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43944149371",
+  "actor": "AlexisBalayre",
+  "commit_sha": "7d0be38b4592dd16afbed6cf860308eab36a7f32",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 353,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "guards"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "guards"
+  ],
+  "reviewers_skipped": [
+    "conventions",
+    "context",
+    "maintainability",
+    "docs",
+    "spec",
+    "simplicity",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "1369-1423",
+      "description": "Workers launch with `--setting-sources user`, so the operator's user `settings.json` in `claudeUserDir(repoPath)` is loaded next to the compiled `--settings` file. Claude Code joins array settings from every source instead of letting one replace the other. So a `sandbox.excludedCommands`, `sandbox.network.allowedDomains` or `sandbox.filesystem.allowWrite` in the operator's user settings is added to the worker's sandbox. The compiled `allowUnsandboxedCommands: false` and `strictAllowlist: true` do not stop this, because they are single values and only replace single values. The trigger is an operator whose user settings already hold, say, `\"sandbox\": {\"excludedCommands\": [\"docker\"]}`, which Claude Code's docs give as an example, and who then sets `workerSandbox: true`. A worker can then run `docker run -v \"$HOME:/h\" ...` or the excluded `git -c core.fsmonitor=...` outside the sandbox, with full home access and open network. With `allowedDomains: [\"github.com\"]`, the registry-only network limit fails silently. pup never reads the user `sandbox` block, and ADR 0191 lists neither a ceiling nor a follow-up for it. The only related follow-up is about a worktree-local settings file. The ADR states \"no command may ask to leave the sandbox\" and that `strictAllowlist` holds \"because the settings arrive by `--settings`\", but neither is true for such an operator.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "1385",
+      "description": "The new `allowWrite` entry `join(homedir(), '.pupitre', 'slots')` lets a sandboxed worker's `pup session test` take part in the machine-wide slot protocol. That protocol decides whether a holder is alive with `process.kill(pid, 0)` and treats any error as a dead holder. As I recall it, Claude Code's macOS sandbox profile is deny-default and allows signals only with `(target same-sandbox)`. Each Bash call is its own sandbox instance, and the gate's `pup` process runs unsandboxed. So from inside the sandbox, `kill(pid, 0)` on the gate's pid or another worker's pid returns EPERM. `isAlive` then answers false. `liveHolders` reclaims that live holder's `slot-N.lock`, and `waitingGates` unlinks a waiting gate's `.wait` file. The trigger is a sandboxed worker committing, so its pre-commit hook runs `pup session test`, while a gate holds a slot or waits for one. The worker deletes the gate's slot or wait file and runs its tests beside the gate. That breaks decision 140 (a gate's run has the machine to itself) and gate-before-worker ordering, and the machine is over-subscribed. Nothing reports any of this. Before this change the same call failed to write the slots dir with EPERM, `isUnwritable` matched, and the tests ran slot-less without touching anyone's files. ADR 0191 does not mention the slot handling; its ceiling 3 covers only symlinks planted in the slots dir.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/project-config-config.test.ts",
+      "line": "59-62",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The test \"reads the setting the project gives\" calls `workerSandboxOn` with `workerSandbox: true` and expects `true`, but it never fakes `process.platform`. On any host that is not macOS, `workerSandboxOn` throws \"refused outside macOS\", so the test fails. That includes Linux hosts where pup gates itself under `PUP_SANDBOX=vm`.",
+      "body": "**This test fails on any host that is not macOS.**\n\n```ts\nit('reads the setting the project gives', () => {\n  expect(workerSandboxOn(repoWith('workerSandbox: true\\n'))).toBe(true);\n  expect(workerSandboxOn(repoWith('workerSandbox: false\\n'))).toBe(false);\n});\n```\n\nThis PR also adds a throw to `workerSandboxOn` for when the setting is on and the platform is not `darwin` (`src/core/project-config.config.ts` L68-76):\n\n```ts\nif (on && process.platform !== 'darwin') {\n  throw new Error(`... ${WORKER_SANDBOX_KEY} is refused outside macOS ...`);\n```\n\nNothing fakes the platform for line 60:\n- `vitest.config.ts` has no setup files.\n- The file has no `beforeEach`.\n- Only the `it.each` table at L76-92 overrides `process.platform`, and it restores the real value afterwards.\n\nOn Linux, line 60 therefore throws. pup supports Linux hosts (`PUP_SANDBOX=vm`; `src/core/sandbox.utils.ts` L388-390 covers pup gating itself on Linux), so pup's test stage goes red there. It passes on the author's macOS gate, which is why it went unseen. The rest of the suite keeps platform-dependent assertions host-independent with `onPlatform(...)` helpers.\n\nGating the test loses no coverage: the `{ platform: 'darwin', refused: false }` row at L77 already asserts `true` with darwin faked, and L91 already asserts `false` on every platform.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/7d0be38b4592dd16afbed6cf860308eab36a7f32/src/core/project-config-config.test.ts#L59-L62",
+      "suggestion": "  it.runIf(process.platform === 'darwin')('reads the setting the project gives', () => {"
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Round 6 budget: conventions, docs, context, simplicity and maintainability were skipped per §4. spec was skipped (no spec source) and workflow-safety was skipped (no workflow change). The consolidator was not spawned because only one finding survived, so there was nothing to group."
+    },
+    {
+      "component": "security",
+      "description": "Two possible gaps could not be checked statically, so neither was reported. (1) Whether Claude Code's macOS sandbox lets a Bash child connect to the tmux server socket it inherits through TMUX; if it can, `tmux send-keys` runs commands outside the sandbox. A one-line probe, `tmux list-sessions` from a sandboxed worker, would settle it. (2) Whether the env key in the user settings.json, or some tool-name alias of Edit, widens the sandbox past refuseUserSandbox. The Claude Code bundle is not in the tree."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 5.4770553,
+  "duration_ms": 467278,
+  "num_turns": 16,
+  "tokens": {
+    "input": 14,
+    "output": 9890,
+    "cache_read": 400395,
+    "cache_creation": 67773,
+    "total": 478072
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 228,
+      "output": 113305,
+      "cache_read": 4991801,
+      "cache_creation": 383386,
+      "cost_usd": 5.385621199999999
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 18,
+      "output": 3003,
+      "cache_read": 89056,
+      "cache_creation": 20985,
+      "cost_usd": 0.09143409999999999
+    }
+  ],
+  "permission_denials": []
+}
