@@ -200,7 +200,6 @@ import {
   seedLedgerEntry,
   seedSession,
   seedStalledSession,
-  stubCodegraph,
   worktreeOf,
 } from '@test/helpers/cli-index.mock.js';
 import {
@@ -709,24 +708,16 @@ describe('CLI commands', () => {
       await expect(buildProgram().parseAsync(['audit'], { from: 'user' })).rejects.toThrow();
     });
 
-    // The repeat path prints it too, or the capability goes quiet on every run
-    // after the first (decision 29).
-    it('reports the codegraph capability on the re-run path as well', async () => {
+    // The repeat path ends on the same tail as `pup init`: no code graph line
+    // between the sandbox and the push target (decision 186).
+    it('prints the push target line straight after the sandbox line', async () => {
       useCwd(initRepoWithAdapter());
-      stubCodegraph('1.6.0');
 
       await buildProgram().parseAsync(['audit'], { from: 'user' });
 
-      expect(logs).toContain('codegraph: 1.6.0');
-    });
-
-    it('reports an absent codegraph on the re-run path too', async () => {
-      useCwd(initRepoWithAdapter());
-      stubCodegraph();
-
-      await buildProgram().parseAsync(['audit'], { from: 'user' });
-
-      expect(logs).toContain('codegraph: not installed');
+      const sandbox = logs.findIndex((line) => line.startsWith('sandbox: '));
+      expect(sandbox).toBeGreaterThan(-1);
+      expect(logs[sandbox + 1]).toMatch(/^push target: /);
     });
 
     // The repeat path prints its own stage lines rather than `pup init`'s, and
@@ -3068,9 +3059,8 @@ const CONSTANT_INTERPOLATIONS = [
   'entry.id',
   'record.id',
   'c.id',
-  // Derivations of the repo path, not the path: a label pup composes and a
-  // store path pup built. The path itself prints scrubbed.
-  'codegraphLabel(repoPath)',
+  // A derivation of the repo path, not the path: a store path pup built. The
+  // path itself prints scrubbed.
   'briefPath(repoPath)',
 ];
 
