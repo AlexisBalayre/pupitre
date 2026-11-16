@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
@@ -13,6 +14,13 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
 vi.mock('../claude/utility.service.js', () => ({
   runUtility: vi.fn(() => ({ ok: false, output: 'mocked out in tests' })),
 }));
+
+// The real execFileSync, wrapped so a test can count the git processes a gate
+// spawns; every git call still runs for real.
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  return { ...actual, execFileSync: vi.fn(actual.execFileSync) };
+});
 
 import {
   BRANCH,
@@ -30,7 +38,7 @@ import { getSession } from './session.repository.js';
 import { HELD_SLOT_ENV } from './test-slot.service.js';
 import type { GateStageResult } from './types/merge-gate.types.js';
 
-describe('fresh-base on a branch no open PR holds (decision 188)', { timeout: 20_000 }, () => {
+describe('fresh-base on a branch no open PR holds (decision 190)', { timeout: 20_000 }, () => {
   let db: Database;
   let repo: string;
 
@@ -138,5 +146,38 @@ describe('fresh-base on a branch no open PR holds (decision 188)', { timeout: 20
     expect(revParse(repo, 'main')).toBe(target);
     expect(revParse(repo, BRANCH)).toBe(resolved);
     expect(sh(worktree, 'git', 'status', '--porcelain').trim()).toBe('');
+  });
+
+  it('spends no more ancestry checks on 30 merges off the target than on 1', async () => {
+    /** The gate's `--is-ancestor` processes on a stale branch holding `merges` side merges. */
+    const ancestryChecks = async (merges: number): Promise<number> => {
+      db = openStore(':memory:');
+      repo = initRepo();
+      const worktree = seedSession(db, repo);
+      // A commit of the branch's own first, so no merge has a parent on main.
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      for (let side = 0; side < merges; side++) {
+        sh(worktree, 'git', 'checkout', '-q', '-b', `side-${side}`, BRANCH);
+        commitIn(worktree, `src/side-${side}.ts`, `export const side${side} = 1;\n`);
+        sh(worktree, 'git', 'checkout', '-q', BRANCH);
+        sh(worktree, 'git', 'merge', '-q', '--no-ff', '--no-edit', `side-${side}`);
+      }
+      commitIn(repo, 'README.md', '# hello\n');
+      vi.mocked(execFileSync).mockClear();
+
+      const outcome = await merge();
+
+      // No merge of the target among them, so the branch is still rebased.
+      expect(freshBase(outcome.report.stages)).toMatchObject({
+        status: 'pass',
+        detail: 'auto-rebased onto main',
+      });
+      return vi
+        .mocked(execFileSync)
+        .mock.calls.filter(([, args]) => (args as string[] | undefined)?.includes('--is-ancestor'))
+        .length;
+    };
+
+    expect(await ancestryChecks(30)).toBe(await ancestryChecks(1));
   });
 });

@@ -2145,7 +2145,7 @@ export function assertPullRequestOf(prUrl: string, repo: string, untouched: stri
 
 /**
  * Merge `targetSha` into the branch an open PR holds, or one no rebase should
- * rewrite (decision 188), in plumbing only (decision 105): `merge-tree` writes the merged tree, `commit-tree` the merge
+ * rewrite (decision 190), in plumbing only (decision 105): `merge-tree` writes the merged tree, `commit-tree` the merge
  * commit, and a compare-and-swap moves the branch from the tip the merge read.
  * The porcelain `git merge` reads `branch.<name>.mergeOptions` from the shared
  * config a session can write, after the `-c` pins and before argv, so a planted
@@ -2284,19 +2284,20 @@ async function mergeTargetInto(
  * Whether the branch already holds a merge of the target: a merge commit the
  * target lacks with a parent the target contains, as a worker's `git merge
  * main` writes. A rebase would drop that merge and replay the commits under
- * it, bringing back the conflicts it resolved (decision 188).
+ * it, bringing back the conflicts it resolved (decision 190). One git process
+ * whatever the branch holds, as it runs under the merge lock every queued gate
+ * waits on: a parent of a commit the target lacks is in the target exactly
+ * when it is not itself one of those commits.
  */
 function holdsMergeOfTarget(repoPath: string, branchRef: string, targetSha: string): boolean {
-  return runGit(repoPath, ['rev-list', '--merges', '--parents', `${targetSha}..${branchRef}`])
+  const commits = runGit(repoPath, ['rev-list', '--parents', `${targetSha}..${branchRef}`])
     .split('\n')
-    .filter(Boolean)
-    .some((line) =>
-      line
-        .trim()
-        .split(' ')
-        .slice(1)
-        .some((parent) => isAncestor(repoPath, parent, targetSha)),
-    );
+    .map((line) => line.trim().split(' '))
+    .filter(([commit]) => commit);
+  const targetLacks = new Set(commits.map(([commit]) => commit));
+  return commits.some(
+    ([, ...parents]) => parents.length > 1 && parents.some((parent) => !targetLacks.has(parent)),
+  );
 }
 
 async function gateAndMerge(
@@ -2355,7 +2356,7 @@ async function gateAndMerge(
   // the target as a merge commit and is never rewritten (decision 105). A
   // branch with no open PR is rebased, unless it already holds a merge of the
   // target or the rebase conflicts: then it takes the merge too, and fails only
-  // when that merge conflicts (decision 188).
+  // when that merge conflicts (decision 190).
   const isPrBranch = pullRequest?.adoptedUrl !== undefined;
   // What the gate last pushed, which the merge keeps and a rewrite by the
   // session would drop: refused here, with the fix in the worker's hands,

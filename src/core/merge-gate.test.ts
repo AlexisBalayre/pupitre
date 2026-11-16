@@ -428,7 +428,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       sessionId: SESSION_ID,
       paneId: LAUNCH_PANE,
     });
-    // The rebase conflicted, and so did the merge it fell back to (decision 188).
+    // The rebase conflicted, and so did the merge it fell back to (decision 190).
     expect(vi.mocked(steerPane).mock.calls[0]?.[1]).toContain('git merge refs/heads/main');
   });
 

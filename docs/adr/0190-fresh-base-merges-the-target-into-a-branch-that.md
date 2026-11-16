@@ -1,9 +1,9 @@
-# 0188. Fresh-base merges the target into a branch that already merged it, or whose rebase conflicts (2026-11-16)
+# 0190. Fresh-base merges the target into a branch that already merged it, or whose rebase conflicts (2026-11-16)
 
 - Status: accepted
 - Amends: [0008](0008-fresh-base-gating.md), [0105](0105-a-branch-an-open-pr-holds-is-never.md)
 
-188. **Fresh-base merges the target into a branch that already merged it, or whose rebase
+190. **Fresh-base merges the target into a branch that already merged it, or whose rebase
      conflicts (2026-11-16).**
      Amends decisions 8 and 105. Fresh-base rebased every stale branch no open PR holds. Workers
      are told to resolve a conflict with the target by merging it into their branch while they
@@ -16,8 +16,10 @@
      plumbing a PR branch uses (decision 105: `merge-tree --write-tree`, `commit-tree`, a
      compare-and-swap of the branch, and the pinned two-way `read-tree` of the worktree), in two
      cases. First, when it already holds a merge of the target: a merge commit in
-     `<target>..<branch>` with a parent the target contains. The rebase is not tried, so the
-     worker's resolution is kept. Second, when the rebase hits conflicts: the rebase is aborted
+     `<target>..<branch>` with a parent the target contains. It is read in one `rev-list --parents`
+     (a parent is in the target exactly when it is not itself in that range), never a git process
+     per parent, as it runs under the merge lock every queued gate waits on (found on security
+     review). The rebase is not tried, so the worker's resolution is kept. Second, when the rebase hits conflicts: the rebase is aborted
      as before (no resolved stop goes on through rebase state the session can write, decision
      120), and the merge is tried. Only a conflicting merge fails fresh-base, with the PR
      branch's steer: `Run git merge refs/heads/<target>, resolve the conflicts, and commit the
@@ -38,5 +40,6 @@
      with the worker's resolution. A branch whose rebase conflicts but whose merge is clean
      passes as `auto-merged main after the auto-rebase hit conflicts`. A branch whose merge with
      the target conflicts is rejected and steered to `git merge refs/heads/main`, with the
-     branch, the target and the worktree left as they were. In `merge-gate.test.ts`, a plain
+     branch, the target and the worktree left as they were. A branch holding 30 merges off the
+     target is still rebased, with no more `--is-ancestor` checks than one holding 1. In `merge-gate.test.ts`, a plain
      conflicting branch is steered to the same merge.
