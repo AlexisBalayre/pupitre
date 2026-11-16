@@ -336,6 +336,7 @@ const DEBT_WORDINGS: readonly {
     pattern: /^Nested package (.+) changed with no (test|typecheck) script, merged from$/s,
     worse: [],
     stage: (match) => `${match[2]} (${match[1]})`,
+    sameFiles: true,
   },
 ];
 

@@ -1177,6 +1177,19 @@ describe('landSession', { timeout: 20_000 }, () => {
         filed('Nested package packages/a changed with no test script, merged from'),
         'flagged, never accepted',
       ],
+      // No stage measured its files, so they are what the operator accepted.
+      [
+        'the nested package and script accepted, on a file the entry did not name',
+        {
+          description: filed('Nested package packages/a changed with no test script, merged from'),
+          files: ['packages/a/index.ts', 'packages/a/run.ts'],
+        },
+        {
+          description: filed('Nested package packages/a changed with no test script, merged from'),
+          files: ['packages/a/index.ts'],
+        },
+        'or on files it did not name',
+      ],
       [
         'a coverage gap wider than the one accepted',
         filed('Coverage gap (unreported files and patch coverage) merged from'),
@@ -1733,6 +1746,7 @@ describe('landSession', { timeout: 20_000 }, () => {
       ['Complexity rise (+20 decision points) merged from', 'complexity'],
       ['Coverage unmeasured over 2 changed source file(s) in', 'coverage'],
       ['Coverage gap (unreported files) merged from', 'coverage'],
+      ['Nested package packages/a changed with no test script, merged from', 'test (packages/a)'],
     ])('lands "%s" flagged by %s against the same accepted', async (wording, stage) => {
       const { merge } = mergeMovedHead();
       measuredAs(

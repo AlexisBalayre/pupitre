@@ -50,9 +50,10 @@
     the same cause. A percentage is one figure whether it is rounded to a whole percent or not, so
     `80%` and `80.4%` give the same kind. Where a flag's files are what was accepted rather than
     where it was found (a text file git reports as binary, a changed source file coverage did not
-    measure, a coverage gap of unreported files), the entry no worse must also have named each of
-    the flag's files: a count held level cannot swap a hidden file no one read for the one
-    accepted. A coverage gap of unreported files and patch coverage refuses whatever was
+    measure, a coverage gap of unreported files, a nested package missing a script, whose files no
+    root stage measures), the entry no worse must also have named each of the flag's files: a
+    count held level cannot swap a hidden file no one read for the one accepted, and a kind with
+    no count cannot add one. A coverage gap of unreported files and patch coverage refuses whatever was
     accepted: its wording records no patch coverage, so held to its kind and files alone its
     patch coverage could fall to any figure, as long as the uncovered lines stayed in files the
     entry named. The refusal says its figures are unreadable or unrecorded. An entry whose files
