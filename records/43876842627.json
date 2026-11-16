@@ -1,0 +1,157 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-16T13:38:23.161Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43876842627",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43876842627",
+  "actor": "AlexisBalayre",
+  "commit_sha": "ba2b084a99681edb44468f53fda21b15fa4b6d1d",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 349,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/merge-gate-fresh-base.test.ts",
+      "line": "195-209",
+      "description": "No test reaches the `rethrowIfKilled(error)` inside the abort's catch, which handles a rebase killed before it starts. Deleting that line passes the suite, and a Ctrl-C then becomes a fresh-base failure steered to the worker.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "2147-2148",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `mergeTargetInto` JSDoc now says \"or one no rebase should rewrite (decision 190)\", which doesn't name the two cases decision 190 defines: the branch already holds a merge of the target, or its rebase conflicted. A reader can't tell from the contract when the function runs, and line 2148 runs well past the wrapped width.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "2408-2410",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The comment (repeated in ADR 0190 L29-32) says a rebase that never started may leave the worktree mid-rebase. A rebase that never started writes no rebase state, so its abort fails because there is nothing to abort. The mid-rebase risk comes only from an abort the lock held off, or a kill between sequencer steps.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0190-fresh-base-merges-the-target-into-a-branch-that.md",
+      "line": "33-35",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "\"A fresh-base failure the session did not cause no longer happens\" claims too much. Fresh-base can still fail for reasons the worker didn't cause: a lost `update-ref` compare-and-swap race, a failed `read-tree`, or the new abort-failed path. Narrow the claim to a conflicting rebase over a merge the worker already resolved.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "2390",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new boolean `rebaseConflicted` doesn't start with `is`/`has`/`should`/`can`, as docs/conventions/general.md §Type safety asks. Renaming it to `hasRebaseConflicted` would match.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate-fresh-base.test.ts",
+      "line": "104-113",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The test \"takes the target as a merge when the rebase conflicts\" writes out the same seedSession and app=2/app=3/app=1 setup as `conflictingRebase()` (L181-188). Define the helper first and call it, then add the `feature.ts` commit; that removes about five duplicated lines.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Not spawned: review-context (no spec, protocol or infra surface), review-workflow-safety (no workflow change), review-spec (no closing reference or spec source), review-maintainability (not on the default roster). Dropped below the finding bar: two simplicity nits on test helpers. One would remove failGit's runFirst/failure parameters; the reviewer kept that at 0.5 confidence and deferred to the author's preference. The other would save one includes('rebase') call in isAbort, which is trivial. No important was raised, so no validator ran."
+    },
+    {
+      "component": "conventions",
+      "description": "Read merge-gate-fresh-base.test.ts only up to about line 90 and did not read the merge-gate.test.ts diff, so assertions past that point were not checked against the conventions. scripts/adr-index.sh is unavailable under CI."
+    },
+    {
+      "component": "guards",
+      "description": "Of the 10 test files that mention docs/adr, read only the three that looked like guards (adr-number, decision-record, merge-gate-untested). Could not see PR #343 or other sessions' branches, so an ADR-number clash with them would only show at gate time."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.6353925999999994,
+  "duration_ms": 224738,
+  "num_turns": 16,
+  "tokens": {
+    "input": 12,
+    "output": 11336,
+    "cache_read": 280401,
+    "cache_creation": 56511,
+    "total": 348260
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 88,
+      "output": 48870,
+      "cache_read": 1190375,
+      "cache_creation": 170781,
+      "cost_usd": 2.239265
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 48,
+      "output": 12415,
+      "cache_read": 351459,
+      "cache_creation": 94399,
+      "cost_usd": 0.39538940000000006
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 261,
+      "cache_read": 0,
+      "cache_creation": 4860,
+      "cost_usd": 0.0007381999999999999
+    }
+  ],
+  "permission_denials": []
+}
