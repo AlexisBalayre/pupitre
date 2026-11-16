@@ -1040,12 +1040,7 @@ function relaunchWorker(
     runGit(repoPath, ['worktree', 'prune']);
   };
   try {
-    const { settingsPath, mcpConfigPath } = writeSessionProfile(
-      compile,
-      repoPath,
-      session.worktree_path,
-      compiledDir,
-    );
+    const settingsPath = writeSessionProfile(compile, compiledDir);
     // By name only: the pane id the gate recorded can be another window's
     // once tmux has restarted. A window of this name is one a failed teardown
     // left, and would refuse the new one.
@@ -1057,7 +1052,6 @@ function relaunchWorker(
       env: windowEnv,
       settingsPath,
       route: routeFor(route.tier, route.rung, route),
-      mcpConfigPath,
     });
     // A `pup kill` while the window opened took the row back to merged: a
     // pane stored on it would be a live window on a session that has none.

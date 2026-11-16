@@ -22,13 +22,6 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   steerPane: vi.fn(),
 }));
 
-// The code graph is a property of the test, not of the machine (decision 51).
-vi.mock('./codegraph.client.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('./codegraph.client.js')>()),
-  codegraphBinary: vi.fn(() => undefined),
-  prepareGraph: vi.fn((binary: string | undefined) => binary !== undefined),
-}));
-
 // Without this, the gate after the fix round would spawn a real `claude -p` call.
 vi.mock('../claude/utility.service.js', () => ({
   runUtility: vi.fn(() => ({ ok: false, output: 'mocked out in tests' })),

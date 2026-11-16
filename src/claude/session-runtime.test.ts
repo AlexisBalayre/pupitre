@@ -265,21 +265,10 @@ describe('launchArgs', () => {
     expect(args).not.toContain('--fallback-model');
   });
 
-  it('passes --mcp-config only when the session has a code graph (decision 51)', () => {
-    expect(launchArgs(OPTS)).not.toContain('--mcp-config');
-
-    const args = launchArgs({ ...OPTS, mcpConfigPath: '/state/s-1/compiled/mcp.json' });
-
-    const flag = args.indexOf('--mcp-config');
-    expect(args[flag + 1]).toBe('/state/s-1/compiled/mcp.json');
-  });
-
-  // Strict mode would drop the operator's own MCP servers, and sessions inherit
-  // user config (decision 9) — the code graph is added to it, not swapped for it.
-  it('never restricts MCP to the compiled config', () => {
-    expect(launchArgs({ ...OPTS, mcpConfigPath: '/state/s-1/compiled/mcp.json' })).not.toContain(
-      '--strict-mcp-config',
-    );
+  // Sessions get no MCP server of pup's (decision 186); the operator's own
+  // still load from the user config the window inherits (decision 9).
+  it('passes no MCP config of its own', () => {
+    expect(launchArgs(OPTS).filter((arg) => arg.includes('mcp'))).toEqual([]);
   });
 
   // The peer name is what the conductor sees in ListAgents and addresses with
@@ -564,6 +553,19 @@ describe('launchSession', () => {
     );
   });
 
+  it('refuses a session dir the session swapped for a symlink, writing nothing through it', () => {
+    const dir = projectPaths(repo).sessionDir('s-1');
+    const target = tempDir('pup-launch-elsewhere-');
+    mkdirSync(dirname(dir), { recursive: true });
+    symlinkSync(target, dir);
+
+    expect(() => launchSession(opts)).toThrow('is a symlink');
+    expect(readdirSync(target)).toEqual([]);
+    expect(
+      vi.mocked(execFileSync).mock.calls.some(([, args]) => args?.includes('new-session')),
+    ).toBe(false);
+  });
+
   afterEach(() => {
     vi.unstubAllEnvs();
   });
@@ -653,7 +655,7 @@ describe('launchSession', () => {
     expect(() => verifiedWorktreeGitEnv(foreign.repo, foreign.worktree)).not.toThrow();
   });
 
-  // Claude Code's startup git and the code graph's run on the window's
+  // Claude Code's startup git runs on the window's
   // environment alone, outside the Bash sandbox. A gitlink over a `.git` the
   // session made would have their status and diff run a child git there, so
   // the window skips submodules (decision 101).
@@ -1212,7 +1214,7 @@ describe('listProcesses (decision 115)', () => {
   // project id renamed: the launch's `--name` reaches the arguments whole.
   it('reads the launch arguments ps really prints', () => {
     const claude =
-      '/Users/me/.local/bin/claude --model claude-opus-5-5 --effort xhigh --name pup-t-mvdw5id6 --dangerously-skip-permissions --settings /Users/me/.pupitre/p1/sessions/t-mvdw5id6/compiled/settings.json --mcp-config /Users/me/.pupitre/p1/sessions/t-mvdw5id6/compiled/mcp.json --setting-sources user';
+      '/Users/me/.local/bin/claude --model claude-opus-5-5 --effort xhigh --name pup-t-mvdw5id6 --dangerously-skip-permissions --settings /Users/me/.pupitre/p1/sessions/t-mvdw5id6/compiled/settings.json --setting-sources user';
     const server =
       'tmux new-session -d -P -F #{pane_id} -s pup-watch-p1 -c /repo /Users/me/.nvm/versions/node/v24.13.1/bin/node /Users/me/.nvm/versions/node/v24.13.1/bin/pup watch';
     vi.mocked(execFileSync).mockImplementation(
@@ -2293,37 +2295,6 @@ describe('launchConductor', () => {
       '--effort',
       'xhigh',
     ]);
-  });
-
-  // The conductor's context carries a `## Code graph` section whenever its
-  // profile compiled one, so the flag has to reach its argv too — the section
-  // without the server is a window told to use a tool nothing connected
-  // (decision 51).
-  it("carries the conductor's compiled mcp.json into claude's argv", () => {
-    const mcpConfigPath = '/tmp/conductor/mcp.json';
-
-    launchConductor({ ...CONDUCTOR, mcpConfigPath });
-
-    const spawn =
-      vi
-        .mocked(execFileSync)
-        .mock.calls.find(([file, args]) => file === 'tmux' && args?.includes('new-session'))?.[1] ??
-      [];
-    expect(spawn.slice(spawn.indexOf('--mcp-config'), spawn.indexOf('--mcp-config') + 2)).toEqual([
-      '--mcp-config',
-      mcpConfigPath,
-    ]);
-  });
-
-  it('passes no mcp flag at all when the conductor has no graph', () => {
-    launchConductor(CONDUCTOR);
-
-    const spawn =
-      vi
-        .mocked(execFileSync)
-        .mock.calls.find(([file, args]) => file === 'tmux' && args?.includes('new-session'))?.[1] ??
-      [];
-    expect(spawn).not.toContain('--mcp-config');
   });
 });
 
