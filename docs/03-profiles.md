@@ -111,12 +111,22 @@ The block runs every process a Bash call starts inside Claude Code's sandbox:
 
 - Writes allowed: the worktree and its admin dir, the sandbox's `TMPDIR`, the store's `state.db`
   files, the machine's test slots, and the main `.git` that a commit needs.
-- Writes denied: within the main `.git`, what a worker's commit never writes. That is `info/`,
-  `refs/replace/`, `refs/remotes/` and `shallow`; `main` and `packed-refs` with their locks; and
-  the main checkout's own `HEAD`, `index` and `*_HEAD` files. Claude Code itself refuses `config`,
-  `hooks/` and the other worktrees' admin dirs. In this worktree's admin dir, `commondir`,
-  `gitdir` and `config.worktree` are denied. A deny wins over any allow, so the rest of the store
-  is kept out of every grant rather than denied, which refuses it just the same.
+- Writes denied, within the main `.git`:
+  - `info/`, `refs/replace/`, `refs/remotes/` and `shallow`;
+  - `main` and `packed-refs`, with their locks;
+  - the main checkout's own `HEAD`, `HEAD.lock`, `index`, `index.lock`, `MERGE_HEAD`,
+    `ORIG_HEAD`, `FETCH_HEAD` and `CHERRY_PICK_HEAD`;
+  - its `rebase-merge/`, `rebase-apply/` and `sequencer/`.
+
+  A worker's commit writes none of these. Claude Code itself refuses `config`, `hooks/` and the
+  other worktrees' admin dirs. In this worktree's admin dir, `commondir`, `gitdir` and
+  `config.worktree` are denied.
+- Writes left open in the main `.git`: objects, `logs/`, `rr-cache/`, `refs/tags/`,
+  `refs/notes/`, the other branch refs, and the main checkout's `REVERT_HEAD`, `REBASE_HEAD`,
+  `BISECT_*`, `AUTO_MERGE`, `MERGE_MSG` and `SQUASH_MSG`. Decision 191 lists the ceilings this
+  leaves.
+- A deny wins over any allow, so the rest of the store is kept out of every grant rather than
+  denied, which refuses it just the same.
 - Reads: allowed everywhere except the operator's credential files.
 - Network: only the npm and PyPI registries, plus loopback, which the web dashboard's tests need.
   Any other host is refused, and no command may leave the sandbox. The refusal holds because the

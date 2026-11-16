@@ -23,13 +23,23 @@
       under *The implicit `.git` grant* below. Of the store `~/.pupitre/<id>/`, only `state.db`
       and its `-wal` and `-shm` are allowed, plus the machine's test slots in
       `~/.pupitre/slots/`.
-    - Writes denied inside those grants. In the main `.git`, everything a worker's commit or
-      merge never writes:
+    - Writes denied inside those grants. In the main `.git`, exactly these, none of which a
+      worker's commit or merge writes:
       - `info/`, `refs/replace/`, `refs/remotes/` and `shallow`;
       - `refs/heads/main` and its `.lock`;
       - `packed-refs` and its `.lock`, either of which would move `main` too;
-      - the main checkout's own `HEAD`, `index`, `MERGE_HEAD`, `ORIG_HEAD`, `FETCH_HEAD` and
-        `CHERRY_PICK_HEAD`. A linked worktree keeps its own copies of these in its admin dir.
+      - the main checkout's own `HEAD`, `HEAD.lock`, `index`, `index.lock`, `MERGE_HEAD`,
+        `ORIG_HEAD`, `FETCH_HEAD` and `CHERRY_PICK_HEAD`. A linked worktree keeps its own copies
+        of these in its admin dir. A planted lock would stall every git command in the main
+        checkout.
+      - the main checkout's `rebase-merge/`, `rebase-apply/` and `sequencer/`. A todo planted
+        there carries `exec` lines, which run on the operator's next `--continue`.
+
+      The rest of the main `.git` stays writable to a sandboxed worker:
+      - objects, `logs/`, `rr-cache/`, `refs/tags/` and `refs/notes/`;
+      - the branch refs other than `main`;
+      - the main checkout's `REVERT_HEAD`, `REBASE_HEAD`, `BISECT_*`, `AUTO_MERGE`, `MERGE_MSG`
+        and `SQUASH_MSG`.
 
       In this worktree's admin dir, `commondir`, `gitdir` and `config.worktree` are denied, since
       they say which repo and config git uses there.
@@ -128,14 +138,19 @@
        Read, Edit and Write tools run outside the sandbox, though, and only the scope hook stands
        between them and the file. A rewritten pointer could send any unsandboxed git run in that
        worktree to a fake git dir that arms `core.fsmonitor` or `core.hooksPath`. That covers a
-       hook, the gate, or the operator. pup's compiled hooks pin their git with `WorktreeGitEnv`,
-       which pup computes from trusted paths (decision 101). Follow-up: every unsandboxed git
-       call passes a trusted `--git-dir` and `--work-tree` plus hardened `-c` options.
+       hook, the gate, or the operator. A nested `.git` directory planted inside the worktree does
+       the same: Bash can write it, since it is inside the worktree. Unsandboxed git run from that
+       subdirectory then picks it up, the operator's own git included. pup's compiled hooks pin
+       their git with `WorktreeGitEnv`, which pup computes from trusted paths (decision 101).
+       Follow-up: every unsandboxed git call passes a trusted `--git-dir` and `--work-tree` plus
+       hardened `-c` options.
     2. Other sessions' branches. `refs/heads/pup/*` stay writable, since a worker's own commit
        writes there and the deny cannot single out its own branch.
     3. `state.db`, `-wal` and `-shm` are an escape. A sandboxed worker can replace any of them
        with a symlink. Unsandboxed `pup`, the hooks and the gate then write through it, to wherever
-       the link points. Follow-up: open them with `lstat` and `O_NOFOLLOW`.
+       the link points. `~/.pupitre/slots/` is the same kind of redirect: a link planted there is
+       followed by the unsandboxed gate's slot handling. Follow-up: open them with `lstat` and
+       `O_NOFOLLOW`.
     4. The `main` deny is literal, path for path:
        - a reftable repository keeps no `refs/heads/main` file;
        - on case-insensitive APFS, a differently cased spelling of the path names the same file;
@@ -148,6 +163,12 @@
        - tests that inject requests rather than open a socket;
        - a Unix socket in `TMPDIR`;
        - socket tests that run only in the gate.
+    6. Objects. `objects/` must stay writable, since a commit writes there. A worker can
+       therefore forge `objects/info/commit-graph`, or rewrite a loose object or a pack's `.idx`.
+       Either changes the history the gate reads without touching a ref. Denying `refs/replace/`
+       closes one way to swap objects, but it is not object integrity.
+    7. A repository whose path runs through a symlink was not probed. Claude Code's implicit
+       `.git` grant, and the paths pup compiles, may resolve differently there.
     *Left for follow-ups.*
     - Gaps in the read denials: `.yarnrc.yml`, `pip.conf`, cargo and gem credentials, the
       `.claude.json` in the home directory, and the transcripts.

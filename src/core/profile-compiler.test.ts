@@ -977,11 +977,16 @@ describe('the worker sandbox (decision 191)', () => {
         join(repo, '.git', 'refs', 'remotes'),
         join(repo, '.git', 'shallow'),
         join(repo, '.git', 'HEAD'),
+        join(repo, '.git', 'HEAD.lock'),
         join(repo, '.git', 'index'),
+        join(repo, '.git', 'index.lock'),
         join(repo, '.git', 'MERGE_HEAD'),
         join(repo, '.git', 'ORIG_HEAD'),
         join(repo, '.git', 'FETCH_HEAD'),
         join(repo, '.git', 'CHERRY_PICK_HEAD'),
+        join(repo, '.git', 'rebase-merge'),
+        join(repo, '.git', 'rebase-apply'),
+        join(repo, '.git', 'sequencer'),
         join(adminDir, 'commondir'),
         join(adminDir, 'gitdir'),
         join(adminDir, 'config.worktree'),
@@ -1003,10 +1008,10 @@ describe('the worker sandbox (decision 191)', () => {
     }
   });
 
-  // Claude Code grants the main .git whole but `config` and `hooks`; these are
-  // what a worker's commit or merge never writes there.
+  // Claude Code grants the main .git whole but `config`, `hooks` and the other
+  // worktrees' `worktrees/` entries. A worker's commit or merge writes none of these.
   it.each([
-    { name: 'replace refs, which rewrite any object git reads', path: ['refs', 'replace'] },
+    { name: 'replace refs, which swap the object a name resolves to', path: ['refs', 'replace'] },
     { name: 'remote-tracking refs', path: ['refs', 'remotes'] },
     { name: 'the shallow file', path: ['shallow'] },
     { name: "main's lock", path: ['refs', 'heads', 'main.lock'] },
@@ -1017,6 +1022,11 @@ describe('the worker sandbox (decision 191)', () => {
     { name: 'ORIG_HEAD', path: ['ORIG_HEAD'] },
     { name: 'FETCH_HEAD', path: ['FETCH_HEAD'] },
     { name: 'CHERRY_PICK_HEAD', path: ['CHERRY_PICK_HEAD'] },
+    { name: 'a rebase todo, whose exec lines run on --continue', path: ['rebase-merge'] },
+    { name: 'an am or apply-style rebase', path: ['rebase-apply'] },
+    { name: 'a cherry-pick or revert sequence', path: ['sequencer'] },
+    { name: "the index lock, which stalls the main checkout's git", path: ['index.lock'] },
+    { name: "HEAD's lock", path: ['HEAD.lock'] },
   ])('denies writes to $name in the main .git', ({ path }) => {
     const repo = repoWith('workerSandbox: true\n');
     const { sandbox } = JSON.parse(compileIn(repo).files['settings.json'] as string);

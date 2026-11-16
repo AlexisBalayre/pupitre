@@ -127,17 +127,26 @@ const WORKER_SANDBOX_DENY_READ = [
 ];
 
 /**
- * The main checkout's own state in the main `.git` (decision 191). A linked
- * worktree keeps its `HEAD`, `index` and `*_HEAD` files in its admin dir, so
- * a worker's commit or merge never writes these.
+ * The main checkout's own state in the main `.git` that a worker denies
+ * (decision 191). A linked worktree keeps its copies of these in its admin dir,
+ * so a worker's commit or merge writes none of them here. The rebase and
+ * sequencer dirs carry a todo whose `exec` lines run on the operator's
+ * `--continue`. The locks would stall every git command in the main checkout.
+ * The rest of the main checkout's state is not denied: `REVERT_HEAD`,
+ * `REBASE_HEAD`, `BISECT_*`, `AUTO_MERGE`, `MERGE_MSG` and `SQUASH_MSG`.
  */
 const MAIN_CHECKOUT_STATE = [
   'HEAD',
+  'HEAD.lock',
   'index',
+  'index.lock',
   'MERGE_HEAD',
   'ORIG_HEAD',
   'FETCH_HEAD',
   'CHERRY_PICK_HEAD',
+  'rebase-merge',
+  'rebase-apply',
+  'sequencer',
 ];
 
 /**
@@ -1258,12 +1267,14 @@ jq -c --arg sid "\${PUP_SESSION_ID:-unknown}" '. + {pup_session_id: $sid}' >> '$
  *   Code points `TMPDIR` at, and the main `.git` Claude Code grants a linked
  *   worktree's commit. That grant is the whole `.git` but its `config`,
  *   `hooks` and every `worktrees/` entry other than this worktree's own. Within
- *   it this denies what a worker's commit and merge never write: `info`, `main`
- *   and its lock, `packed-refs` and its lock (either would move `main` too),
- *   `refs/replace` and `refs/remotes`, `shallow`, and the main checkout's own
- *   `HEAD`, `index` and `*_HEAD` files (a linked worktree keeps its own in its
- *   admin dir). In the admin dir, `commondir`, `gitdir` and `config.worktree`
- *   are denied: they say which repo and config git uses there. Of the store,
+ *   it this denies `info`, `main` and its lock, `packed-refs` and its lock
+ *   (either would move `main` too), `refs/replace`, `refs/remotes`, `shallow`
+ *   and the main checkout's state that `MAIN_CHECKOUT_STATE` lists. A worker's
+ *   commit or merge writes none of these. The rest of the `.git` stays
+ *   writable: objects, `logs`, `rr-cache`, `refs/tags`, `refs/notes` and the
+ *   state files that list leaves out. In the admin dir, `commondir`, `gitdir`
+ *   and `config.worktree` are denied: they say which repo and config git uses
+ *   there. Of the store,
  *   only the SQLite files every `pup` command opens read-write, so `pup session
  *   done`, `ask` and the pre-commit hook's `pup session test` still run; and
  *   the machine's test slots that last one takes (`test-slot.service.ts`).
