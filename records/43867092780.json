@@ -1,0 +1,88 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-16T12:33:01.942Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43867092780",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43867092780",
+  "actor": "AlexisBalayre",
+  "commit_sha": "6a2c58f8d04d7554007cdcb46db118ff4a881392",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 348,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "guards",
+    "simplicity"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "guards",
+    "simplicity"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "docs/adr/0181-a-main-checkout-s-git-is-checked-after-each-read.md",
+      "line": "18-114",
+      "description": "The PR rewrites decision 181's landed body in place (e.g. \"holds it only when the two agree\" becomes \"records it only when the two agree\", the heldFleet sentence, the env-var list, the tests paragraph) instead of appending a dated amendment section or adding a new decision with `Amends:`.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Skipped review-context (no CI, docker, HTTP or settings surface; the GIT_* env allowlist was covered by security), review-spec (no closing keyword or linked issue; #324 is cited only as 'follow-up to'), review-workflow-safety (no workflow change) and review-maintainability (off the default roster). Dropped the only finding returned, a simplicity nit that the ci-wait.service.ts catch comment repeats waitForCiReview's JSDoc: round 1 already posted the same nit (docs, ci-wait.service.ts:125-126). With no findings left, the consolidator and validators were not spawned."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.001173,
+  "duration_ms": 148893,
+  "num_turns": 14,
+  "tokens": {
+    "input": 10,
+    "output": 7982,
+    "cache_read": 226662,
+    "cache_creation": 53000,
+    "total": 287654
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 80,
+      "output": 26569,
+      "cache_read": 1304398,
+      "cache_creation": 147357,
+      "cost_usd": 1.6883646000000005
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 44,
+      "output": 7608,
+      "cache_read": 243954,
+      "cache_creation": 84898,
+      "cost_usd": 0.3128084
+    }
+  ],
+  "permission_denials": []
+}
