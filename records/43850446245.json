@@ -1,0 +1,104 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-16T10:41:50.270Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43850446245",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43850446245",
+  "actor": "AlexisBalayre",
+  "commit_sha": "53e99b5a23111bae8e3086eb59832a2b8d1eea65",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 346,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "guards"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "guards"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "simplicity",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "445",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "firstSentence's new lazy bold-title group makes the cut quadratic: a session-written agent line of `**` followed by about 1 MiB of `*` stalls every later worker launch and fix-round compile for minutes, where the old regex was linear.",
+      "body": "**Concern.** The title group `(?:\\*\\*.*?\\*\\*)?` can end at any later `**`. When the tail `.*?[.!?](?:\\*\\*)?(?=\\s|$)` fails, V8's backtracking engine tries each of those ends in turn, and each try rescans the rest of the text. On a text with many `**` and no sentence end that is O(n²). The old `/^.*?[.!?](?:\\*\\*)?(?=\\s|$)/` was O(n): it is anchored and has a single lazy scan.\n\n```ts\nfunction firstSentence(text: string): string {\n  return /^(?:\\*\\*.*?\\*\\*)?.*?[.!?](?:\\*\\*)?(?=\\s|$)/.exec(text)?.[0] ?? text;\n}\n```\n\n**Trigger.** ADR 0183's *Ceiling* says a session can rewrite a checklist for a later compile, because the main checkout is within its shell reach (decision 46). Say a session writes a one-line paragraph above the first `##` in `.claude/agents/review-correctness.md`: `**` followed by about 1,048,000 `*`. That fits under `readPlainFile`'s 1 MiB cap (`src/adapters/capability.utils.ts`). `rubricLines` keeps the paragraph because it starts with `**`, and `sanitizeReason`'s 300-char cap runs only *after* `firstSentence`, so the regex gets the whole MiB.\n\n**Wrong result.** That is about n²/2 ≈ 5×10^11 backtracking steps. While `rework/shift-left-kickoff` is `on`, `reviewersSection` runs on every worker compile: session launch and `recompileSessionProfile` in `pup fix-round`. So every later launch and fix round for the project pins a core for minutes, other sessions' launches included, until someone repairs the file. Decision 183 accepts that a session can get a sentence through. It does not accept a pup hang, and the 1 MiB cap in `readPlainFile` exists to bound exactly this kind of work.\n\n**Fix.** Give the title exactly one possible end, which matches the new test's own `\\*\\*[^*]+\\*\\*`. `**Title.** Body. More.` still gives `**Title.** Body.`.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/53e99b5a23111bae8e3086eb59832a2b8d1eea65/src/core/profile-compiler.service.ts#L444-L446",
+      "suggestion": "  return /^(?:\\*\\*[^*]+\\*\\*)?.*?[.!?](?:\\*\\*)?(?=\\s|$)/.exec(text)?.[0] ?? text;"
+    },
+    {
+      "file": "docs/adr/0183-a-rework-step-s-setting-is-a-store-file-read.md",
+      "line": "25-29",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "important",
+      "description": "PR rewrites the landed text of ADR 0183 in place. docs/adr/README.md says a later change appends a dated amendment section (with the PR) or adds a new decision that links back through `Amends:`.",
+      "body": "Decision 183 is already on main: the merge base contains its commits 8698f31 through d3f87d5. This diff rewrites its checklist sentence in place. The landed text said \"each cut to its first sentence\". The new text says a bold-led paragraph \"keeps its title and its body's first sentence\" and adds a new rule that \"a non-bold one is left out by design, whatever it says\". That changes the decision, not just its wording.\n\n`docs/adr/README.md` L19-21:\n\n> An open PR may still edit the decision it adds. Once a decision has landed, a later change appends an amendment section to it (dated, with the PR) or adds a new decision that links back through `Amends:`. It does not rewrite the landed text.\n\nThis same file already follows that rule. Commit d3f87d5 (\"keep 0183's landed respawn sentence, amend it as dated\") left the landed text and appended `*The respawn (2026-11-14, #334).* This supersedes ...`. After this rewrite, a reader can no longer tell what #323 decided from what #346 changed.\n\n**Fix.** Restore the landed sentence. Then append a dated amendment, in the style of the existing respawn one (for example `*The checklist cut (2026-11-16, #346).*`). It should say that a bold-led paragraph keeps its title plus its body's first sentence, and that a non-bold lead paragraph is left out by design.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/53e99b5a23111bae8e3086eb59832a2b8d1eea65/docs/adr/0183-a-rework-step-s-setting-is-a-store-file-read.md#L25-L29",
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 2,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.7903708000000003,
+  "duration_ms": 214041,
+  "num_turns": 17,
+  "tokens": {
+    "input": 20,
+    "output": 11949,
+    "cache_read": 426350,
+    "cache_creation": 47431,
+    "total": 485750
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 78,
+      "output": 33075,
+      "cache_read": 834137,
+      "cache_creation": 120908,
+      "cost_usd": 1.5754724000000004
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 36,
+      "output": 6153,
+      "cache_read": 186542,
+      "cache_creation": 53610,
+      "cost_usd": 0.21428119999999998
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 72,
+      "cache_read": 0,
+      "cache_creation": 4648,
+      "cost_usd": 0.0006172
+    }
+  ],
+  "permission_denials": []
+}
