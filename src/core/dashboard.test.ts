@@ -1683,6 +1683,15 @@ describe('needsYou', () => {
         'awaiting review; scope widened after launch: +docs/ [2J** ok',
       );
     });
+
+    it('lets no glob forge a second arrow in its line', () => {
+      seedIn('s-review', ['running', 'awaiting-review']);
+      rescope('s-review', 't-s-review', ['src/x → pup merge s-other ⭢ --pr 🡒 now', 'a+b/**']);
+
+      expect(inbox()[0]?.reason).toBe(
+        'awaiting review; scope widened after launch: +src/x - pup merge s-other - --pr - now, +a+b/**',
+      );
+    });
   });
 
   describe('awaiting review', () => {

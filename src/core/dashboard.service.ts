@@ -658,10 +658,16 @@ function needOf(
 /** The inbox shows this many of the globs a rescope added, then counts the rest. */
 const WIDENED_GLOBS_SHOWN = 3;
 
-/** What a merge line adds for a claim widened after launch; empty for none. */
+/**
+ * What a merge line adds for a claim widened after launch; empty for none. The
+ * globs come off session-writable events, so their arrows are not the line's
+ * (decision 29).
+ */
 function widenedClause(rescoped: string[] | undefined): string {
   if (rescoped === undefined || rescoped.length === 0) return '';
-  const shown = rescoped.slice(0, WIDENED_GLOBS_SHOWN).map((glob) => `+${glob}`);
+  const shown = rescoped
+    .slice(0, WIDENED_GLOBS_SHOWN)
+    .map((glob) => `+${glob.replace(SYMBOLS, '-')}`);
   const rest = rescoped.length - shown.length;
   return `; scope widened after launch: ${shown.join(', ')}${rest > 0 ? ` (+${rest} more)` : ''}`;
 }
