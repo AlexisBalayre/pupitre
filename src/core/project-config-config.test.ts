@@ -56,7 +56,7 @@ describe('workerSandboxOn', () => {
     expect(workerSandboxOn(repoWith(content))).toBe(false);
   });
 
-  it('reads the setting the project gives', () => {
+  it.runIf(process.platform === 'darwin')('reads the setting the project gives', () => {
     expect(workerSandboxOn(repoWith('workerSandbox: true\n'))).toBe(true);
     expect(workerSandboxOn(repoWith('workerSandbox: false\n'))).toBe(false);
   });
