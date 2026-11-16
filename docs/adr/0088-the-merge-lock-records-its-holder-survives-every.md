@@ -250,13 +250,16 @@
     merged, a PR not open or moved past the pin, a clean review, no thread) still comes at once,
     before any wait, and so do the refusals no wait cures: a lock with no pid after its second,
     and one whose path cannot be made. Under the lock it now asks again that the session is still
-    merged, before it restores the worktree: the run it waited for may have been another `pup
-    fix` that started its round, whose live worktree the restore would otherwise name for
-    removal, or a `pup retire` whose deleted branch the restore would bring back. The checks it
+    merged and not retired, before it restores the worktree: the run it waited for may have been
+    another `pup fix` that started its round, whose live worktree the restore would otherwise name
+    for removal, or a `pup retire` whose deleted branch the restore would bring back. A retire
+    leaves the session merged and records only its `retired` event, so that event, newer than the
+    session's last merge or land, is what refuses it. The checks it
     already made there stay: the newest merge still the pinned one and not landed, and the task's
     spec and tier unchanged. The review read before the wait is not read again: a thread resolved
     meanwhile still reaches the worker, as one resolved during the kickoff always could.
     Tests: a `pup fix` started while a live pid holds the lock waits, prints one line and starts
     its round once the lock is released; one whose session the holder took out of merged refuses
-    under the lock with nothing written and no worktree restored; one finding a lock with no pid
+    under the lock with nothing written and no worktree restored; one whose session the holder
+    retired refuses there too, with no worktree restored; one finding a lock with no pid
     refuses with nothing written and leaves the lock.

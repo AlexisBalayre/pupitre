@@ -950,6 +950,16 @@ function assertStillPinned(
         `that held the merge lock meanwhile moved it. ${NOT_STARTED}`,
     );
   }
+  // `pup retire` leaves the session merged and records only its event.
+  const standing = listEvents(db, sessionId)
+    .reverse()
+    .find((row) => ['merge', 'landed', 'retired'].includes(row.type));
+  if (standing?.type === 'retired') {
+    throw new Error(
+      `Session ${sanitizeReason(sessionId)} was retired by a run that held the merge lock ` +
+        `meanwhile. ${NOT_STARTED}`,
+    );
+  }
   const merge = newestMerge(db, sessionId);
   if (merge === 'landed' || merge?.sha !== pinned) {
     throw new Error(

@@ -780,6 +780,27 @@ describe('startFixRound', { timeout: 90_000 }, () => {
       expect(existsSync(worktree)).toBe(false);
     });
 
+    // `pup retire` leaves the session merged: only its event says the branch
+    // is gone, and restoring would bring it back.
+    it('refuses under it a session the holder retired, restoring nothing', async () => {
+      seedPrMerge();
+      reviewOnGitHub({ threads: OPEN_THREAD });
+      setTimeout(() => {
+        appendEvent(db, SESSION_ID, 'retired', { prUrl: PR_URL, supersededBy: `${PR_URL}0` });
+        rmSync(lock, { recursive: true });
+      }, 200);
+
+      await expect(fix()).rejects.toThrow(
+        /Session s1 was retired by a run that held the merge lock meanwhile\. No fix round was started\./,
+      );
+
+      expect(listEvents(db, SESSION_ID).at(-1)?.type).toBe('retired');
+      expect(getSession(db, SESSION_ID)?.state).toBe('merged');
+      expect(existsSync(worktree)).toBe(false);
+      expect(launchSession).not.toHaveBeenCalled();
+      expect(kickoff).not.toHaveBeenCalled();
+    });
+
     // No wait cures a lock with no holder to wait for: it is refused as before.
     it('refuses a lock with no pid to wait for, writing nothing', async () => {
       rmSync(join(lock, 'pid'));
