@@ -13,7 +13,7 @@ import {
   readSync,
 } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { dirname, join, normalize, relative, sep } from 'node:path';
+import { dirname, isAbsolute, join, normalize, relative, sep } from 'node:path';
 import ts from 'typescript';
 import { withoutFiles } from '../core/coverage.utils.js';
 import { GATE_ENVIRONMENT_DIR } from '../core/merge-gate.constants.js';
@@ -49,9 +49,10 @@ import {
   resolveImport,
   SOURCE_EXTENSIONS,
 } from './typescript-source.utils.js';
-import { diskRoot, treeRoot, vitestCollection } from './vitest-config.utils.js';
+import { configLoadsAFile, diskRoot, treeRoot, vitestCollection } from './vitest-config.utils.js';
 
 interface PackageManifest {
+  name?: unknown;
   scripts?: Record<string, string>;
   dependencies?: Record<string, string>;
   devDependencies?: Record<string, string>;
@@ -214,15 +215,24 @@ function runsPlainVitest(manifest: PackageManifest | undefined): boolean {
 }
 
 /**
- * The root entries, by lower-cased name, that decide what a vitest run
- * collects: the manifest whose script starts it, the npm, yarn, pnpm and bun
- * configs and env files that can change how that script runs, yarn's
- * Plug'n'Play runtime (`.pnp.cjs`, `.pnp.loader.mjs`) and its `.yarn`
- * directory, read whole, pnpm's hooks file (`.pnpmfile.cjs`), and every config
- * and workspace file vitest or vite reads.
+ * The root entries, by lower-cased name, that may decide what a vitest run
+ * does: a class of the shapes a tool's config takes, not a list of the files
+ * each tool loads by convention, which a review found one more of each round.
+ * Every dot-named entry but `.git` (each tool's rc file, the env files, yarn's
+ * Plug'n'Play runtime and `.yarn`, pnpm's hooks file, the `.config` directory
+ * lilconfig and cosmiconfig search), every `*.config.*` (vite's, vitest's,
+ * PostCSS's, tailwind's, babel's), vitest's workspace files, every root
+ * `.json`, `.json5`, `.jsonc`, `.yaml`, `.yml`, `.toml`, `.lock` and `.lockb`
+ * (the manifest, `tsconfig.json`, `pnpm-workspace.yaml`, `bunfig.toml`, the
+ * lockfiles) and `browserslist`. A directory is read whole. A bare `*rc` is
+ * no shape of its own: every rc convention is a dotfile, and it would take
+ * `src`.
  */
 const VITEST_RUN_INPUT =
-  /^(?:package\.json|\.npmrc|\.yarnrc(?:\.yml)?|\.env(?:\.[^/]*)?|\.pnp(?:mfile)?\.[^/]*|\.yarn|pnpm-workspace\.yaml|bunfig\.toml|vite(?:st)?\.(?:config|workspace|projects)\.[^/]*)$/;
+  /^(?!\.git$)(?:\.[^/]*|[^/]*\.config\.[^/]*|vite(?:st)?\.(?:workspace|projects)\.[^/]*|[^/]*\.(?:json[5c]?|ya?ml|toml|lockb?)|browserslist)$/;
+
+/** A run input that is a module, which may load others as it runs. */
+const MODULE_CONFIG = /\.[cm]?[jt]sx?$/;
 
 /**
  * The npm, yarn, pnpm and bun configs among the run inputs, which the branch
@@ -337,13 +347,17 @@ function runsAFile(name: string, text: string): boolean {
 }
 
 /**
- * Code at the root a package manager loads around every script it runs, so
- * where it stands the run is the branch's: yarn's Plug'n'Play runtime, which
- * resolves packages without the `node_modules` the gate links and checks,
- * from a cache the branch may commit, and pnpm's hooks file, `.pnpmfile.cjs`
- * or `.pnpmfile.mjs`, which pnpm requires as it reads its config.
+ * Root entries that load code by what they name, which comparing their text
+ * with the target's would not make the target's: yarn's Plug'n'Play runtime,
+ * which resolves packages without the `node_modules` the gate links and
+ * checks, from a cache the branch may commit; pnpm's hooks file,
+ * `.pnpmfile.cjs` or `.pnpmfile.mjs`, which pnpm requires as it reads its
+ * config; and PostCSS's config, `postcss.config.*`, any `.postcssrc*`, or one
+ * in a `.config` directory, which vite loads into the vitest process for a
+ * test's CSS import, and whose plugins, even in a JSON or YAML one, may be
+ * named by a path to the branch's file.
  */
-const ROOT_RUNTIME = /^\.pnp(?:mfile)?\./;
+const ROOT_RUNTIME = /^(?:\.pnp(?:mfile)?\.|postcss\.config\.|\.postcssrc|\.config$)/;
 
 /**
  * What vitest and vite write in `node_modules` as they run, which the gate does
@@ -365,7 +379,7 @@ const RUN_LOADED_DOT_ENTRIES = ['.bin', '.hooks'];
  * disk outside the gate.
  */
 function rootAt(ctx: CapabilityContext, path: string, sha: string | undefined): RootFiles {
-  return sha === undefined ? diskRoot(path) : treeRoot(ctx.configPath, sha);
+  return sha === undefined ? diskRoot(path, ctx.configPath) : treeRoot(ctx.configPath, sha);
 }
 
 /**
@@ -444,26 +458,44 @@ function runFields(manifest: PackageManifest): [string, unknown][] {
 }
 
 /**
+ * Whether a run input may load a file the branch wrote, though the target
+ * commits the same text: a package-manager config by a key (`runsAFile`), or
+ * a module of any tool by what it imports (`configLoadsAFile`).
+ */
+function inputLoadsAFile(name: string, text: string, selfName: string | undefined): boolean {
+  return (
+    (PACKAGE_MANAGER_CONFIG.test(name) && runsAFile(name, text)) ||
+    (MODULE_CONFIG.test(name) && configLoadsAFile(text, selfName))
+  );
+}
+
+/**
  * What a plain vitest run over `root` collects, with the manifest's run fields
- * and the package-manager configs beside the config it compares across
- * checkouts; undefined where it is unknown, where one of those configs may run
- * a file (`runsAFile`), or where yarn's Plug'n'Play runtime or pnpm's hooks
- * file stands at the root (`ROOT_RUNTIME`). Throws where the root cannot be
- * read.
+ * and every other run input (`VITEST_RUN_INPUT`) beside the config it compares
+ * across checkouts, the vitest configs aside, whose lists are read on each
+ * side; undefined where it is unknown, where a run input may load a file
+ * (`inputLoadsAFile`), where an entry that loads code by what it names stands
+ * at the root (`ROOT_RUNTIME`), or where the manifest holds a `postcss` field,
+ * PostCSS's config too. Throws where the root cannot be read.
  */
 function plainVitestCollection(root: RootFiles): ReturnType<typeof vitestCollection> {
   const manifest = parsedManifest(root);
-  const managers = runInputs(root, PACKAGE_MANAGER_CONFIG);
+  const selfName = typeof manifest?.name === 'string' ? manifest.name : undefined;
+  const inputs = runInputs(root, VITEST_RUN_INPUT);
   const collection =
     runsPlainVitest(manifest) &&
-    !managers.some(([name, text]) => runsAFile(name, text)) &&
+    !(manifest && 'postcss' in manifest) &&
+    !inputs.some(([name, text]) => inputLoadsAFile(name, text, selfName)) &&
     ![...root.keys()].some((name) => ROOT_RUNTIME.test(name))
       ? vitestCollection(root)
       : undefined;
+  const compared = inputs.filter(
+    ([name]) => name !== 'package.json' && !VITEST_CONFIG_FILE.test(name),
+  );
   return (
     collection && {
       ...collection,
-      config: JSON.stringify([collection.config, runFields(manifest as PackageManifest), managers]),
+      config: JSON.stringify([collection.config, runFields(manifest as PackageManifest), compared]),
     }
   );
 }
@@ -484,11 +516,21 @@ function aliasesAScope({ configPath }: CapabilityContext, aliases: string[]): bo
 /**
  * The user-level `.npmrc` npm and pnpm read for the gate's run: the one the
  * operator names by `npm_config_userconfig` through `--gate-env`, or the one
- * in the home directory the gate's environment keeps.
+ * in the home directory the gate's environment keeps, as it keeps `HOME`.
+ * npm expands a named path's `~/` against `HOME` and resolves the rest
+ * against the run's working directory, the gate checkout, where the branch may
+ * commit it; rather than resolve it as npm does, a named path that is not
+ * absolute throws, as do two spellings of the name, of which npm reads one.
  */
 function userNpmrc({ gateEnv = [] }: CapabilityContext): string {
-  const named = gateEnv.find((name) => name.toLowerCase() === 'npm_config_userconfig');
-  return (named && process.env[named]) || join(homedir(), '.npmrc');
+  const named = gateEnv.filter(
+    (name) => name.toLowerCase() === 'npm_config_userconfig' && process.env[name] !== undefined,
+  );
+  if (named.length > 1) throw new Error(`${named.join(' and ')} both name a user .npmrc`);
+  const path =
+    named[0] === undefined ? join(homedir(), '.npmrc') : (process.env[named[0]] as string);
+  if (!isAbsolute(path)) throw new Error(`the user .npmrc ${path} is not an absolute path`);
+  return path;
 }
 
 /** The largest user-level `.npmrc` read: any real one is a few lines. */

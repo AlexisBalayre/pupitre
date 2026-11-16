@@ -33,14 +33,25 @@
     reads it, and could narrow the config the run read, then restore the committed one. The
     run itself read that disk, so the adapter's optional `testInputsIntact` checks it twice,
     once after the build and before any suite and once before the split. It compares the
-    checkout's root files that decide the run with the sha's blobs: `package.json`, `.npmrc`,
-    `.yarnrc`, `.yarnrc.yml`, `.env` and every `.env.*` (`.env.yarn` among them), every
-    `.pnp.*` (`.pnp.cjs`, `.pnp.loader.mjs`), every `.pnpmfile.*`, `pnpm-workspace.yaml`, `bunfig.toml`, every
-    `vite.config.*`, `vitest.config.*`, `vitest.workspace.*` and `vitest.projects.*`, names
-    folded to lower case, and the `.yarn` directory whole: each file under it, by path, mode
+    checkout's root entries that may decide the run with the sha's blobs. These are named as
+    a class of the shapes a tool's config takes, not as a list of the files each tool loads
+    by convention. Such a list was enumerated first, and review after review found one more
+    file it lacked: pnpm's `.pnpmfile.*`, vite's `.vite-temp`, then vite's PostCSS config.
+    The class is every dot-named entry but `.git` (every rc file and env file, yarn's
+    `.pnp.*` and `.yarn`, pnpm's hooks file, the `.config` directory lilconfig and
+    cosmiconfig search), every `*.config.*` (vite's, vitest's, PostCSS's, tailwind's,
+    babel's), `vite.workspace.*`, `vitest.workspace.*` and `vitest.projects.*`, every root
+    `.json`, `.json5`, `.jsonc`, `.yaml`, `.yml`, `.toml`, `.lock` and `.lockb` (the
+    manifest, `tsconfig.json`, `pnpm-workspace.yaml`, `bunfig.toml`, the lockfiles) and
+    `browserslist`. Names are folded to lower case. A bare `*rc` is no shape of its own:
+    every rc convention is a dotfile, and the shape would take `src`. Each directory in the
+    class is read whole, as `.yarn` was: each file under it, by path, mode
     and the object name `git hash-object` gives it in the main repo's format, against
-    `ls-tree -r` of the sha's `.yarn`, so a file added, removed, rewritten, made executable or
+    `ls-tree -r` of the sha's directory, so a file added, removed, rewritten, made executable or
     made a link there fails it, while an empty directory, which no tree holds, does not.
+    The class costs the split wherever a build writes such an entry at the root: a `.next`,
+    `.turbo` or `.svelte-kit` output, or a `.DS_Store`. Failing closed there is the price of
+    not having to know which tool reads which name.
     It also checks that each entry of the checkout's `node_modules` is still the link to
     the trusted checkout's entry that the gate made, apart from the `.cache` and `.vite`
     caches vitest writes and the `.vite-temp` vite bundles an ESM config into under a fresh
@@ -56,7 +67,12 @@
     specifier). A package that loads a dot-named entry the trusted `node_modules` lacks by a
     path other than its real path's is a ceiling. And it checks the user-level `.npmrc` that npm
     and pnpm read for the run, the one an operator names by `npm_config_userconfig` through
-    `--gate-env`, else the home directory's: a session can write it and no commit holds it, so
+    `--gate-env`, else the home directory's under the `HOME` the gate's environment keeps.
+    npm expands a named path's `~/` against `HOME` and resolves the rest against the run's
+    working directory, the gate checkout, where the branch can commit the file. So a named
+    path that is not absolute fails the check, `~/.npmrc-work`, `.npmrc.ci` and an empty one
+    among them, rather than be resolved as npm resolves it. So do two spellings of the name
+    allowed at once, of which npm reads one. A session can write the file and no commit holds it, so
     one that may run a file, by the rule the root's package-manager configs are read by below,
     fails the check. It is read only as a regular file of at most 64 KiB, opened without
     following a link and without blocking: a link may name what the check never sees, and a
@@ -200,7 +216,25 @@
     the root, leaves the answer unknown on either side for the same reason: pnpm requires it
     as it reads its config, for `pnpm run` as for an install, so it is code the branch runs
     with every script, which comparing its text with the target's would not make the
-    target's. That costs a pnpm repo with a root hooks file the split. Vitest 3's
+    target's. That costs a pnpm repo with a root hooks file the split.
+    Across the two checkouts every entry of `testInputsIntact`'s class is compared too, not
+    only the package-manager configs. The manifest is the exception: its run fields are
+    compared as above. So are the vitest configs, whose lists are read on each side. A
+    branch that adds, removes or changes any other root config, whichever tool reads it,
+    leaves the answer unknown: a `postcss.config.mjs`, a `tsconfig.json`, a `.babelrc`, a
+    `browserslist`, a lockfile, a `.github` workflow. A config both sides share may still
+    load a file the branch rewrites. So, on either side, a root module of any tool (a name
+    ending `.js`, `.cjs`, `.mjs`, `.ts`, `.cts`, `.mts`, `.jsx` or `.tsx`) leaves the answer
+    unknown where it does not parse or where it loads a module the way a vitest config may
+    not (`loadsAFile`): a file, a `#` subpath, a `file:` URL, the package by its own name,
+    any `require` or dynamic `import()`. An `eslint.config.js` that imports `./rules.js`
+    costs the split; one that imports `@eslint/js` does not. PostCSS's config is refused on
+    either side as the hooks file is, whether it is `postcss.config.*`, any `.postcssrc*`,
+    anything in a root `.config` directory or a manifest `postcss` field. Vite loads it into
+    the vitest process for a test's CSS import, even one vitest empties (knowledge of vite 7
+    and 8 and vitest 4 as released, which no run here confirmed), and its plugins can
+    be named by a path to a branch file even in JSON or YAML, where no import reads them.
+    That costs a repo with a PostCSS config, or a `.config` directory, the split. Vitest 3's
     default `exclude` (a `node_modules`, `dist`, `cypress`, `.idea`, `.git`, `.cache`,
     `.output` or `.temp` directory, a tool's `*.config.*`), a superset of vitest 4's, applies
     whatever the config declares, since excluding more only counts more as source. A declared
@@ -256,14 +290,23 @@
     `import.meta.glob('./**/*.spec.ts')`. That is the module-graph item decision 110 still
     owes. A config the two sides share that loads a file some other way than a specifier or
     a key this reads, a `createRequire` result called by another name, an `eval`, a child
-    process or a key this does not list, loads the branch's file unseen. Lint and a nested package's checks run beside the suites in the same
+    process or a key this does not list, loads the branch's file unseen. So does a data
+    config both sides share, of a tool other than PostCSS, that names a file below the root
+    the branch rewrites: a `tsconfig.json` whose `extends` names `./config/base.json` is one.
+    Only the root is a class. A tool's search below it (a nested `tsconfig.json` for a
+    file under it) is not compared. For the tools a vitest run loads, those reads shape a
+    transform (tsconfig's compiler options) and run no code in the vitest process, which is
+    what the refusals above guard against. Lint and a nested package's checks run beside the suites in the same
     writable checkout, so one that rewrites the config while vitest loads it and restores it
     before the last check is not seen. A `node_modules` entry the branch removes is not
     missed, since resolution then climbs to a parent directory's. A package manager reads
     config outside the checkout too, which no read of a commit sees: yarn a `.yarnrc` or
     `.yarnrc.yml` in every directory above it, npm the `.npmrc` of a directory above whose
     `package.json` names the checkout a workspace, pnpm a workspace root above a root
-    without its own `pnpm-workspace.yaml`, and each the operator's own config and its global
+    without its own `pnpm-workspace.yaml`, vite a PostCSS config in a directory above (where
+    the root has none, up to the workspace root it searches for), tsconfck a `tsconfig.json`
+    above a root without one, node a `node_modules` above for a package the linked one
+    lacks, and each the operator's own config and its global
     one, which the gate's environment leaves where they are; of those, only npm's and pnpm's
     user-level `.npmrc` is checked, and only at the two checks, not while the run reads it. A session can write any of them
     during its merge, since it runs unsandboxed (decision 5), and one it writes reaches the
@@ -364,3 +407,15 @@
     an uncollected `a.test.ts` does too, a file renamed and rewritten onto a collected name
     from one not collected counts as source, a deleted collected test counts as test, and every file counts as source where the build
     narrows the config and the test stage restores it, or the build adds an `.npmrc`.
+    For the root class, these collect nothing: a `postcss.config.mjs`, `.babelrc`,
+    `browserslist` or `tailwind.config.js` only the branch commits, a `tsconfig.json`,
+    lockfile or `.github` file only the branch changes, a `.postcssrc.json`,
+    `postcss.config.js`, manifest `postcss` field or `.config` directory on both sides, and a
+    shared tool config that imports `./rules.js`, requires a package or does not parse.
+    These collect: a shared `tsconfig.json` or `.github`, a shared `eslint.config.js` that
+    imports `@eslint/js`, and a branch that changes only a README or a source file.
+    `testInputsIntact` fails for an added `postcss.config.mjs`, `.postcssrc`,
+    `tsconfig.json`, `.babelrc`, `browserslist`, `tailwind.config.ts` or `.config`
+    directory. It also fails for a user `.npmrc` named through `--gate-env` as
+    `~/.npmrc-work`, as `.npmrc.ci`, as empty, or in two spellings at once, each of which
+    holds outside `--gate-env`.

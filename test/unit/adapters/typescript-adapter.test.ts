@@ -489,6 +489,129 @@ describe('typescriptAdapter.testFiles', () => {
     );
   });
 
+  // Every root entry shaped like a tool's config is compared whole, whichever
+  // tool loads it by convention; a module one, or PostCSS's, loads by what it names.
+  it.each([
+    [
+      'a postcss.config.mjs only the branch commits',
+      {},
+      { 'postcss.config.mjs': 'export default {};\n' },
+      [],
+    ],
+    [
+      'a tsconfig.json only the branch changes',
+      { 'tsconfig.json': '{}\n' },
+      { 'tsconfig.json': '{ "compilerOptions": { "jsx": "react-jsx" } }\n' },
+      [],
+    ],
+    ['a .babelrc only the branch commits', {}, { '.babelrc': '{}\n' }, []],
+    ['a browserslist only the branch commits', {}, { browserslist: 'defaults\n' }, []],
+    [
+      'a lockfile only the branch changes',
+      { 'pnpm-lock.yaml': 'a\n' },
+      { 'pnpm-lock.yaml': 'b\n' },
+      [],
+    ],
+    [
+      'a tool config only the branch commits',
+      {},
+      { 'tailwind.config.js': 'export default {};\n' },
+      [],
+    ],
+    [
+      'a README and a source file only the branch changes',
+      {},
+      { 'README.md': 'x\n', 'out.js': 'x\n' },
+      ['src/a.test.ts'],
+    ],
+    ['a tsconfig.json on both sides', { 'tsconfig.json': '{}\n' }, {}, ['src/a.test.ts']],
+    [
+      'a .postcssrc.json on both sides',
+      { '.postcssrc.json': '{ "plugins": { "./p.cjs": {} } }\n' },
+      {},
+      [],
+    ],
+    [
+      'a postcss.config.js on both sides',
+      { 'postcss.config.js': 'export default { plugins: {} };\n' },
+      {},
+      [],
+    ],
+    [
+      'a postcss field on both sides',
+      { 'package.json': JSON.stringify({ scripts: { test: 'vitest run' }, postcss: {} }) },
+      {},
+      [],
+    ],
+    [
+      'a tool config on both sides importing a file',
+      { 'eslint.config.js': "import rules from './rules.js';\nexport default [rules];\n" },
+      {},
+      [],
+    ],
+    [
+      'a tool config on both sides requiring a package',
+      { '.eslintrc.cjs': "module.exports = require('x');\n" },
+      {},
+      [],
+    ],
+    [
+      'a tool config on both sides that does not parse',
+      { 'prettier.config.js': 'export default {\n' },
+      {},
+      [],
+    ],
+    [
+      'a tool config on both sides importing a package',
+      { 'eslint.config.js': "import js from '@eslint/js';\nexport default [js];\n" },
+      {},
+      ['src/a.test.ts'],
+    ],
+  ] as [string, Record<string, string>, Record<string, string>, string[]][])(
+    'reads the root configs of %s',
+    (_, both, branchOnly, expected) => {
+      const files = {
+        'package.json': plainVitest,
+        'vitest.config.ts': configWith("{ include: ['src/**/*.test.ts'] }"),
+        ...both,
+      };
+      const configPath = makeRepo(files);
+      const measurePath = makeRepo({ ...files, ...branchOnly });
+
+      expect(typescriptAdapter.testFiles?.({ configPath, measurePath }, ['src/a.test.ts'])).toEqual(
+        expected,
+      );
+    },
+  );
+
+  // A directory is read whole: lilconfig and cosmiconfig search `.config`.
+  it.each([
+    ['a .github directory only the branch changes', '.github', 'ci.yml', false, []],
+    ['a .github directory on both sides', '.github', 'ci.yml', true, ['src/a.test.ts']],
+    ['a .config directory on both sides', '.config', 'postcssrc.json', true, []],
+  ] as [string, string, string, boolean, string[]][])(
+    'reads the root of %s',
+    (_, dir, file, shared, expected) => {
+      const files = {
+        'package.json': plainVitest,
+        'vitest.config.ts': configWith("{ include: ['src/**/*.test.ts'] }"),
+      };
+      const configPath = makeRepo(files);
+      const measurePath = makeRepo(files);
+      for (const [repo, text] of [
+        [configPath, 'a\n'],
+        [measurePath, shared ? 'a\n' : 'b\n'],
+      ] as const) {
+        mkdirSync(join(repo, dir));
+        writeFileSync(join(repo, dir, file), text);
+      }
+
+      expect(typescriptAdapter.testFiles?.({ configPath, measurePath }, ['src/a.test.ts'])).toEqual(
+        expected,
+      );
+    },
+  );
+
   // Vite redirects `@src/x` too, so an alias of a scope node_modules holds
   // hands its packages to the branch.
   it.each([
@@ -631,6 +754,12 @@ describe('typescriptAdapter.testFiles', () => {
       '.pnpmfile.cjs',
       'pnpm-workspace.yaml',
       'bunfig.toml',
+      'postcss.config.mjs',
+      '.postcssrc',
+      'tsconfig.json',
+      '.babelrc',
+      'browserslist',
+      'tailwind.config.ts',
     ].map(
       (name) =>
         [`given a ${name}`, (dir: string) => writeFileSync(join(dir, name), 'x\n'), false] as const,
@@ -660,6 +789,14 @@ describe('typescriptAdapter.testFiles', () => {
       (dir: string) => {
         mkdirSync(join(dir, '.yarn', 'plugins'), { recursive: true });
         writeFileSync(join(dir, '.yarn', 'plugins', 'p.cjs'), 'x\n');
+      },
+      false,
+    ],
+    [
+      'given a .config directory',
+      (dir: string) => {
+        mkdirSync(join(dir, '.config'));
+        writeFileSync(join(dir, '.config', 'postcssrc.json'), '{}\n');
       },
       false,
     ],
@@ -862,6 +999,30 @@ describe('typescriptAdapter.testFiles', () => {
       typescriptAdapter.testInputsIntact?.({ ...ctx, gateEnv: ['npm_config_userconfig'] }),
     ).toBe(false);
   });
+
+  // npm expands `~/` against HOME and resolves the rest against the run's own
+  // directory, the gate checkout, so a path not absolute may name what pup never reads.
+  it.each([
+    ['under a ~', { NPM_CONFIG_USERCONFIG: '~/.npmrc-work' }],
+    ['relative', { NPM_CONFIG_USERCONFIG: '.npmrc.ci' }],
+    ['empty', { NPM_CONFIG_USERCONFIG: '' }],
+    ['in two spellings', { NPM_CONFIG_USERCONFIG: '/tmp/a', npm_config_userconfig: '/tmp/b' }],
+  ] as [string, Record<string, string>][])(
+    'finds a checkout not intact beside a user .npmrc named %s through --gate-env',
+    (_, env) => {
+      for (const [name, value] of Object.entries(env)) vi.stubEnv(name, value);
+      const { repo, sha } = committed({
+        'package.json': plainVitest,
+        'vitest.config.ts': configWith("{ include: ['src/**/*.test.ts'] }"),
+      });
+      const ctx = { configPath: repo, measurePath: repo, measureSha: sha };
+
+      expect(typescriptAdapter.testInputsIntact?.(ctx)).toBe(true);
+      expect(typescriptAdapter.testInputsIntact?.({ ...ctx, gateEnv: Object.keys(env) })).toBe(
+        false,
+      );
+    },
+  );
 
   // The gate links each entry of the trusted node_modules into its checkout.
   it.each([

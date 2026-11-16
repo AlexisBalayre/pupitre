@@ -267,6 +267,30 @@ function loadsAFile(source: ts.SourceFile, selfName: string | undefined): boolea
   return statically || atRunTime(source);
 }
 
+/** A config module parsed, never run, and whether the parser reported a syntax error. */
+function parsedConfig(text: string): { source: ts.SourceFile; parses: boolean } {
+  const source = ts.createSourceFile(
+    'vitest.config.ts',
+    text,
+    ts.ScriptTarget.Latest,
+    false,
+    ts.ScriptKind.TS,
+  );
+  // A config with a syntax error: the parser recovers into a tree no tool loads.
+  const parseErrors = (source as unknown as { parseDiagnostics: unknown[] }).parseDiagnostics;
+  return { source, parses: parseErrors.length === 0 };
+}
+
+/**
+ * Whether a root config module of any tool may load a module that in the gate
+ * is the branch's (`loadsAFile`), or does not parse, so that what it loads is
+ * not read. Parsed, never run.
+ */
+export function configLoadsAFile(text: string, selfName: string | undefined): boolean {
+  const { source, parses } = parsedConfig(text);
+  return !parses || loadsAFile(source, selfName);
+}
+
 /**
  * The object a vitest config exports by default, bare or through the
  * `defineConfig` imported from vitest or vite; undefined for a function
@@ -275,21 +299,13 @@ function loadsAFile(source: ts.SourceFile, selfName: string | undefined): boolea
  * (`loadsAFile`), which runs when vitest loads the config.
  */
 function exportedConfig(text: string, selfName: string | undefined): ts.Expression | undefined {
-  const source = ts.createSourceFile(
-    'vitest.config.ts',
-    text,
-    ts.ScriptTarget.Latest,
-    false,
-    ts.ScriptKind.TS,
-  );
+  const { source, parses } = parsedConfig(text);
   const exported = source.statements.filter(
     (statement): statement is ts.ExportAssignment =>
       ts.isExportAssignment(statement) && !statement.isExportEquals,
   );
   const imports = source.statements.filter(importsVitestConfig);
-  // A config with a syntax error: the parser recovers into a tree vitest never loads.
-  const parseErrors = (source as unknown as { parseDiagnostics: unknown[] }).parseDiagnostics;
-  if (exported.length !== 1 || parseErrors.length > 0 || loadsAFile(source, selfName)) {
+  if (exported.length !== 1 || !parses || loadsAFile(source, selfName)) {
     return undefined;
   }
   const callees = new Set(imports.flatMap(defineConfigNames));
