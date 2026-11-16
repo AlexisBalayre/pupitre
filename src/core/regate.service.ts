@@ -18,17 +18,16 @@ import {
   measureBranch,
   newestMerge,
   type PullRequestPlan,
-  pullRequestText,
   recordMerge,
   refuseGate,
   resolveCommit,
   resolveCommitIfPresent,
+  sessionPullRequestText,
   timedSince,
   withLedgerKept,
 } from './merge-gate.service.js';
 import { NO_PROGRESS, type StageProgress } from './progress.utils.js';
 import { appendEvent, type SessionRow } from './session.repository.js';
-import { taskRescopes } from './task-rescope.service.js';
 import type { PullRequestRef } from './types/github.types.js';
 import type {
   GateReport,
@@ -225,14 +224,14 @@ export async function regateMerged(
       ...pullRequest,
       // The rewrite replaces the whole body: the rescopes the first gate
       // listed are read again, with any taken since (decision 188).
-      ...pullRequestText(
+      ...sessionPullRequestText(
+        db,
+        session,
         measured.spec,
-        session.id,
         report,
         commitSubjects,
         sha,
         ownSubject,
-        taskRescopes(db, session.task_id),
       ),
     });
     assertPullRequestHead(req.repoPath, regate.prUrl, pullRequest.repo, sha);

@@ -2467,15 +2467,7 @@ async function gateAndMerge(
   if (pullRequest) {
     const newPr = {
       ...pullRequest,
-      ...pullRequestText(
-        spec,
-        session.id,
-        report,
-        commitSubjects,
-        sha,
-        ownSubject,
-        taskRescopes(db, session.task_id),
-      ),
+      ...sessionPullRequestText(db, session, spec, report, commitSubjects, sha, ownSubject),
     };
     try {
       // After the last stage: a live session can set the key while they run,
@@ -3627,6 +3619,24 @@ export function pullRequestText(
     title: prTitle(spec.goal, ownSubject) || `pup session ${sessionId}`,
     body: prBody(spec, report, commitSubjects, sha, rescopes),
   };
+}
+
+/**
+ * `pullRequestText` for `session`'s PR, with its task's rescopes read off the
+ * store (decision 188): what a gate opening or adopting the PR writes, and
+ * what a re-gate's rewrite writes again.
+ */
+export function sessionPullRequestText(
+  db: Database,
+  session: SessionRow,
+  spec: TaskSpec,
+  report: GateReport,
+  commitSubjects: string[],
+  sha: string,
+  ownSubject: string | undefined,
+): { title: string; body: string } {
+  const rescopes = taskRescopes(db, session.task_id);
+  return pullRequestText(spec, session.id, report, commitSubjects, sha, ownSubject, rescopes);
 }
 
 /**
