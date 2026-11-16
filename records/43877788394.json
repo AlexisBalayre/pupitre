@@ -1,0 +1,220 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-16T13:46:58.952Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43877788394",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43877788394",
+  "actor": "AlexisBalayre",
+  "commit_sha": "8408169317442c21906b8b973762baee58a19247",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 353,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "context",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "context",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "docs/adr/0191-a-worker-s-bash-calls-can-run-in-claude-code-s.md",
+      "line": "122",
+      "area": "security",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The credential read-deny binds only Bash children. The Read tool (and Grep/Glob) can still read ~/.npmrc and the other listed files, because the scope hook matches only Edit|Write and permissions.deny has no Read(...) rules. The ADR's claims that Read is guarded and that registry tokens are kept from reads are false.",
+      "body": "**Nothing stops the Read tool from reading the credentials the sandbox denies to Bash, and the ADR says something does.**\n\n`WORKER_SANDBOX_DENY_READ` exists so that \"a token read there could [not] publish to\" the allowlisted registries ([profile-compiler.service.ts#L107-L127](https://github.com/AlexisBalayre/pupitre/blob/8408169317442c21906b8b973762baee58a19247/src/core/profile-compiler.service.ts#L107-L127)). But `sandbox.filesystem.denyRead` applies only to processes a Bash call starts. The `workerSandbox()` JSDoc says so itself: \"Read, Edit and Write, the hooks and the session process stay outside it\".\n\nThe compiled worker settings have no other guard on reads:\n- The `PreToolUse` scope hook (`scope-enforce.sh`) runs only on `matcher: 'Edit|Write'`. `read-guard.sh` runs only on the `Bash` matcher.\n- `permissions.deny` holds `UNANSWERABLE_TOOLS`, `WORKER_UNUSED_TOOLS`, `Skill` and `merged.deny`. It has no `Read(...)` entry, and sessions run with `--dangerously-skip-permissions`.\n\n**Trigger:** with `workerSandbox: true`, a worker calls the Read tool on `~/.npmrc`. Nothing checks that call. It then runs `npm publish --//registry.npmjs.org/:_authToken=<token>` through Bash, and `registry.npmjs.org` is on `WORKER_SANDBOX_DOMAINS`. The same works for `~/.ssh/*` and `~/.claude/.credentials.json`.\n\nThe ADR says the opposite in two places:\n- L115: \"The registry tokens are kept from reads\"\n- L122: Read is guarded by \"the scope hook and permission rules\"\n\nCeiling 1 says \"only the scope hook stands between them\", but that hook doesn't cover Read either.\n\n**Fix:** when the setting is on, add matching `Read(...)` deny rules, e.g. `Read(~/.ssh/**)` and `Read(~/.npmrc)`, to `permissions.deny`. Deny rules hold under skip-permissions, and Claude Code applies Read rules to Grep and Glob as well. Otherwise, correct the ADR, the JSDoc and `docs/03-profiles.md` to say the Read tool can read these files.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/8408169317442c21906b8b973762baee58a19247/docs/adr/0191-a-worker-s-bash-calls-can-run-in-claude-code-s.md#L114-L122",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "1311-1329",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "`commondir` is denied only in the worktree's admin dir (`join(git.GIT_DIR, 'commondir')`), not at the main `.git` root. The ADR's probe says Claude Code's implicit grant allows \"new entries … at the `.git` root\". Git follows a `<main>/.git/commondir` for the main checkout. A sandboxed Bash call can write one pointing at a decoy repo whose `config` sets `core.fsmonitor`, and the operator's next plain git command in the main checkout runs that program outside the sandbox.",
+      "body": "**The main `.git/commondir` is not denied, and planting one redirects the operator's git to a config the worker controls.**\n\nThe deny list protects the main checkout's `config.worktree` because \"a `core.fsmonitor` or `core.hooksPath` planted there would run in the operator's git\". It also denies this worktree's admin-dir `commondir`, since it says \"which repo and config git uses there\". But the main `.git`'s own `commondir` is not denied:\n\n```ts\n        ...MAIN_CHECKOUT_STATE.map((name) => common(name)),\n        join(git.GIT_DIR, 'commondir'),\n        join(git.GIT_DIR, 'gitdir'),\n        join(git.GIT_DIR, 'config.worktree'),\n```\n\nThe ADR's probe of the implicit grant lists \"new entries … at the `.git` root\" as writable. A main checkout has no `commondir`, so creating one is such a new entry. Git reads `$GIT_DIR/commondir` for any git dir, and this repo already records that in `src/core/git-diff.client.ts:807-811`: \"Git follows `<cwd>/.git/commondir` … and a main checkout's git dir has no such file\". `assertGitDirUnplanted` refuses a planted file only for pup's own git calls.\n\n**Trigger:** in a sandboxed Bash call, the worker:\n1. creates `<worktree>/.d/{objects,refs}`;\n2. writes `<worktree>/.d/config` with `[core] fsmonitor = <worktree>/x.sh`;\n3. writes `<worktree>/.d` into `<main>/.git/commondir`.\n\nThe main `HEAD` is still valid, so git accepts the decoy as the common dir. The operator's next `git status` in the main checkout, or an IDE's background poll, runs `x.sh` outside the sandbox. No ceiling covers this: ceiling 1 is about the worktree pointer and nested `.git` dirs, and ceiling 10 about a `.git` that is a file.\n\n**Fix:** add `common('commondir'),` to `denyWrite`, the test's exact `toEqual` list and `it.each` table, and the ADR's and `docs/03-profiles.md`'s denied lists.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/8408169317442c21906b8b973762baee58a19247/src/core/profile-compiler.service.ts#L1311-L1329",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "1311-1329",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The main `.git/modules/<name>/` holds each submodule's own `config` and `hooks/`. Neither the `denyWrite` list nor Claude Code's refusal, as the ADR describes it, covers them. In a project with submodules, a sandboxed Bash call can plant `core.fsmonitor` in `<main>/.git/modules/<name>/config`. The operator's plain `git status` in the main checkout then runs that program outside the sandbox.",
+      "body": "**The main checkout's submodule git dirs are writable, and their `config` and `hooks/` run in the operator's git.**\n\nThe deny list covers `config`, `hooks` and `config.worktree` only at the root of the common dir:\n\n```ts\n        common('config'),\n        ...\n        common('config.worktree'),\n        common('hooks'),\n```\n\nThe ADR's probe found that the implicit grant is \"the main `.git` minus `config`, `hooks/` and every `worktrees/` entry but this worktree's own\". That leaves `<main>/.git/modules/<name>/config` and `<main>/.git/modules/<name>/hooks/` writable. `modules/` appears nowhere in ADR 0191, its ceilings or its follow-ups.\n\n**Trigger:** in a project with a populated submodule, a sandboxed Bash call appends `[core] fsmonitor = <worktree>/x.sh` to `<main>/.git/modules/<name>/config`. The operator's plain `git status` in the main checkout spawns a child git in each submodule (`--ignore-submodules=none` is the default). That child loads the planted config and runs `x.sh` outside the sandbox. A planted `modules/<name>/hooks/post-checkout` or `pre-commit` runs on the operator's `git submodule update` or on a commit in the submodule. The repo already names this mechanism in `merge-gate.service.ts:2301-2303` and `git-diff.client.ts:453-454`. It is the same harm the change denies `config.worktree` for.\n\n**Fix:** add `common('modules'),` to `denyWrite`, and update the test's exact list and the ADR. Git's `common_list` does not include `modules`, so a linked worktree's own submodules live under `$GIT_COMMON_DIR/worktrees/<wt>/modules/`, which `git.GIT_DIR` already grants. A worker's own commits and submodule work therefore don't touch the common `modules/`.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/8408169317442c21906b8b973762baee58a19247/src/core/profile-compiler.service.ts#L1311-L1329",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "126",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The deny hardcodes `'~/.claude/.credentials.json'`. pup supports moving the window's Claude config dir: `pup init --session-env CLAUDE_CONFIG_DIR` (decision 106, `SESSION_ENV_ALLOWED`), resolved in `resolveWindowEnv` to `configDir`. For such a project, Claude Code on Linux keeps the OAuth credentials at `$CLAUDE_CONFIG_DIR/.credentials.json`. That path is not denied, and the worker's Bash inherits `CLAUDE_CONFIG_DIR`, so `cat \"$CLAUDE_CONFIG_DIR/.credentials.json\"` reads the operator's Claude token.",
+      "body": "**When a project moves the Claude config dir, the Claude credentials are not in the read deny.**\n\n```ts\n  '~/.claude/.credentials.json',\n```\n\npup supports a per-project Claude config dir. `CLAUDE_CONFIG_DIR` is the first entry of `SESSION_ENV_ALLOWED` (decision 106), and `resolveWindowEnv` turns it into `WindowEnv.configDir`, which replaces `~/.claude` ([session-runtime.service.ts#L455-L458](https://github.com/AlexisBalayre/pupitre/blob/8408169317442c21906b8b973762baee58a19247/src/claude/session-runtime.service.ts#L455-L458)). The window gets the variable, and the ADR says Bash children inherit the session's environment.\n\n**Trigger:** on Linux, a project initialised with `--session-env CLAUDE_CONFIG_DIR` turns on `workerSandbox`. Claude Code keeps its OAuth credentials under that dir, not under `~/.claude`. A worker's Bash `cat \"$CLAUDE_CONFIG_DIR/.credentials.json\"` succeeds, and the token can leave through the registry channel the ADR already concedes.\n\nThe ADR's read-deny gap list (`.yarnrc.yml`, `pip.conf`, cargo and gem credentials, `.claude.json`, transcripts) does not name this case, and L53-55 presents the Claude credential as denied.\n\n**Fix:** pass the resolved `configDir` into the compile (`compileSessionProfile` has it as `source.windowEnv.configDir`) and deny `join(configDir, '.credentials.json')`. At minimum, list this case among the ADR's read-deny gaps.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/8408169317442c21906b8b973762baee58a19247/src/core/profile-compiler.service.ts#L114-L127",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "1303-1310",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "With `workerSandbox: true`, a worker has no way to write its handoff document, so `pup respawn` and the TUI respawn can never complete for a sandboxed worker.",
+      "body": "**A sandboxed worker cannot write its respawn handoff, so `pup respawn` always times out.**\n\n`requestHandoff` (`src/core/session-handoff.service.ts:104-110`) deletes `projectPaths(repoPath).handoffFile(sessionId)`, which is `~/.pupitre/<id>/sessions/<sid>/handoff.md`, and steers the worker to write it. `pup session handoff-done` then refuses with `HandoffMissingError` if the file is absent. No pup command writes the file itself.\n\nThe worker had two ways to write that file. This change closes the second:\n- **Write or Edit tool:** the scope hook already blocks any path outside the worktree (`buildScopeHookScript`, L832: `*) echo \"BLOCKED: file is outside the session worktree.\" >&2; exit 2 ;;`). That was true before this PR.\n- **Bash:** the new grant doesn't include the sessions dir:\n  ```ts\n      allowWrite: [\n        input.worktreePath,\n        git.GIT_DIR,\n        store.dbFile,\n        `${store.dbFile}-wal`,\n        `${store.dbFile}-shm`,\n        join(homedir(), '.pupitre', 'slots'),\n      ],\n  ```\n  `allowUnsandboxedCommands: false` leaves no way out, and the ADR's own probe confirms \"a new store file\" is refused.\n\n**Trigger:** the operator runs `pup respawn <sid>`, or the TUI respawn action, on a worker launched with the setting on. The worker cannot satisfy the steer, `handoff-done` refuses, and `awaitHandoffReady` times out. Only `pup kill --respawn`, which carries no handoff, still works.\n\nNeither the ADR nor `docs/03-profiles.md` mentions handoff or respawn. The ADR's \"Why `state.db` stays writable\" lists `done`, `ask` and `test`, not `handoff-done`.\n\n**Fix:** grant the single file `store.handoffFile(input.sessionId)`, not `sessionDir`, which would open `compiled/`. Mind the Linux concern in the `-wal`/`-shm` finding, since the file does not exist when the grant is evaluated. Add a test.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/8408169317442c21906b8b973762baee58a19247/src/core/profile-compiler.service.ts#L1303-L1310",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "1306-1308",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The `-wal` and `-shm` grants name files that SQLite deletes when the last connection closes and recreates on the next open. Under Claude Code's Linux sandbox, a sandboxed `pup` probably cannot recreate them, so `pup session done`, `ask`, `test` and the commit's pre-commit `pup session test` would fail.",
+      "body": "**On Linux, a sandboxed `pup` probably cannot open the store, because `-wal` and `-shm` usually don't exist when the grant is evaluated.**\n\n`openStore` (`src/core/db.client.ts:283`) sets `journal_mode = WAL`, and nothing keeps the side files alive: no persistent-WAL or locking-mode setting. When the last connection closes cleanly, SQLite checkpoints and unlinks `state.db-wal` and `state.db-shm`. Every short-lived `pup` CLI process closes on exit. Only an optional `pup ui` or `pup dashboard` keeps the store open.\n\nThe grants are file literals in a directory that is otherwise refused:\n```ts\n        store.dbFile,\n        `${store.dbFile}-wal`,\n        `${store.dbFile}-shm`,\n```\n- **macOS (Seatbelt):** a literal-path allow also covers creating the file, which is why the ADR's probe passed. That probe ran only on macOS.\n- **Linux (pinned knowledge of sandbox-runtime's bubblewrap backend, not readable in-tree):** it mounts `/` read-only, then bind-mounts each allowWrite path that exists and skips any that don't.\n\n**Trigger:** on Linux, with no `pup ui` or `pup dashboard` running, a sandboxed worker runs `git commit`. The pre-commit hook's `pup session test`, or the worker's `pup session done`, opens the store. SQLite's create of `~/.pupitre/<id>/state.db-wal` hits EROFS and the command fails with \"unable to open database file\". The worker can neither commit nor finish. Even when the files exist at launch, a bind mount over a file SQLite later unlinks breaks partway through a session.\n\nCeiling 11 discloses only that the denies on missing paths were not probed on Linux. Nothing covers these allows, and `docs/03-profiles.md` has no platform caveat. A fix is a design choice: for example, give the database a directory of its own to grant, or probe on Linux before shipping. So there is no snippet.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/8408169317442c21906b8b973762baee58a19247/src/core/profile-compiler.service.ts#L1306-L1308",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/project-config.config.ts",
+      "line": "62-67",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Respawns don't pick up the `workerSandbox` setting. Only `compileProfile` reads it, and only the launch and the fix round recompile. A respawn (`relaunchWindow`, session-handoff.service.ts:305-311) reuses the stored `compiled/settings.json`. If the operator turns the setting on while a session runs, its respawned windows stay unsandboxed until a fix round. ADR 0191's \"reaches the next launch\" should say whether a respawn counts, or the respawn should recompile.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "1320-1321",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Denying `packed-refs` and its lock makes a `git gc --auto` that a worker's commit triggers fail in its pack-refs step. The failure is written to the undenied `.git/gc.log`. For a day after that (`gc.logExpiry`), every `git gc --auto`, the operator's included, skips with a warning instead of repacking, so loose objects pile up on a busy repo. Document this in the ADR or set `gc.auto=0` for workers.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "1285-1288",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Workers still load the user settings source (`--setting-sources user`), and Claude Code merges sandbox arrays across sources. An operator's own `~/.claude/settings.json` entries therefore reach every sandboxed worker:\n- `sandbox.excludedCommands`, e.g. `docker`;\n- `sandbox.network.allowedDomains`;\n- `WebFetch(domain:…)` allow rules.\n\nThat contradicts \"the package registries only\" and \"no command may leave the sandbox\" in the JSDoc and ADR. Warn about or refuse such keys, or list this among the ADR's ceilings.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "123",
+      "area": "security",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The read denies cover `~/.git-credentials` but not git's XDG credential-store file, `~/.config/git/credentials`. An operator using `credential.helper store` with the XDG file keeps a plaintext token there that a sandboxed worker can `cat`. Add `'~/.config/git/credentials'` to `WORKER_SANDBOX_DENY_READ` and to the ADR's list.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0191-a-worker-s-bash-calls-can-run-in-claude-code-s.md",
+      "line": "78",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The ADR narrates a draft that never shipped (\"The first version of this decision did exactly that…\", \"The first version of this decision read that as the whole `.git`\"). A reader of the merged ADR has no first version to compare against. Drop both sentences; the rule and the probe results stand without them.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "1262-1296",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `workerSandbox()` JSDoc's Writes bullet re-lists the `denyWrite` array that sits right under it. The ADR and `docs/03-profiles.md` list it too, so it is a fourth copy to keep in step, and this PR's commits changed that list four times. Keep the WHY (the implicit grant's shape, why the store is left out rather than denied, the macOS localhost note) and point to decision 191 for the list.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/03-profiles.md",
+      "line": "121",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "\"`main` and `packed-refs`, with their locks\" is ambiguous: a bare `main` can read as the main checkout. The code denies `refs/heads/main` and `refs/heads/main.lock`, so write `refs/heads/main`.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 6,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 6.405572675000001,
+  "duration_ms": 432778,
+  "num_turns": 26,
+  "tokens": {
+    "input": 22,
+    "output": 29110,
+    "cache_read": 645228,
+    "cache_creation": 88389,
+    "total": 762749
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 284,
+      "output": 120346,
+      "cache_read": 4402495,
+      "cache_creation": 474048,
+      "cost_usd": 5.923962
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 58,
+      "output": 13539,
+      "cache_read": 484076,
+      "cache_creation": 118544,
+      "cost_usd": 0.4802736000000001
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 1274,
+      "cache_read": 0,
+      "cache_creation": 5599,
+      "cost_usd": 0.001337075
+    }
+  ],
+  "permission_denials": []
+}
