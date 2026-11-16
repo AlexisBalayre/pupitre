@@ -1267,12 +1267,13 @@ jq -c --arg sid "\${PUP_SESSION_ID:-unknown}" '. + {pup_session_id: $sid}' >> '$
  *   Code points `TMPDIR` at, and the main `.git` Claude Code grants a linked
  *   worktree's commit. That grant is the whole `.git` but its `config`,
  *   `hooks` and every `worktrees/` entry other than this worktree's own. Within
- *   it this denies `info`, `main` and its lock, `packed-refs` and its lock
- *   (either would move `main` too), `refs/replace`, `refs/remotes`, `shallow`
- *   and the main checkout's state that `MAIN_CHECKOUT_STATE` lists. A worker's
- *   commit or merge writes none of these. The rest of the `.git` stays
- *   writable: objects, `logs`, `rr-cache`, `refs/tags`, `refs/notes` and the
- *   state files that list leaves out. In the admin dir, `commondir`, `gitdir`
+ *   it this denies `config.worktree`, `info`, `main` and its lock,
+ *   `packed-refs` and its lock (either would move `main` too), `refs/replace`,
+ *   `refs/remotes`, `shallow` and the main checkout's state that
+ *   `MAIN_CHECKOUT_STATE` lists. A worker's commit or merge writes none of
+ *   these. The rest of the `.git` stays writable, including objects, `logs`,
+ *   `rr-cache`, `refs/tags`, `refs/notes` and the state files that list
+ *   leaves out. In the admin dir, `commondir`, `gitdir`
  *   and `config.worktree` are denied: they say which repo and config git uses
  *   there. Of the store,
  *   only the SQLite files every `pup` command opens read-write, so `pup session
@@ -1309,6 +1310,9 @@ function workerSandbox(input: CompileInput, git: WorktreeGitEnv) {
       ],
       denyWrite: [
         common('config'),
+        // The main checkout's own per-worktree config, read once
+        // extensions.worktreeConfig is on (`git sparse-checkout init` turns it on).
+        common('config.worktree'),
         common('hooks'),
         common('info'),
         common('refs', 'heads', 'main'),

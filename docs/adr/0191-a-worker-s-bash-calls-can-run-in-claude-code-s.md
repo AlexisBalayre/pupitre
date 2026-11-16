@@ -25,6 +25,9 @@
       `~/.pupitre/slots/`.
     - Writes denied inside those grants. In the main `.git`, exactly these, none of which a
       worker's commit or merge writes:
+      - the main checkout's own `config.worktree`. Git reads it once
+        `extensions.worktreeConfig` is on, which `git sparse-checkout init` turns on, and a
+        `core.fsmonitor` or `core.hooksPath` planted there would run in the operator's git;
       - `info/`, `refs/replace/`, `refs/remotes/` and `shallow`;
       - `refs/heads/main` and its `.lock`;
       - `packed-refs` and its `.lock`, either of which would move `main` too;
@@ -35,7 +38,8 @@
       - the main checkout's `rebase-merge/`, `rebase-apply/` and `sequencer/`. A todo planted
         there carries `exec` lines, which run on the operator's next `--continue`.
 
-      The rest of the main `.git` stays writable to a sandboxed worker:
+      The rest of the main `.git` stays writable to a sandboxed worker. That includes the
+      following, and the list is not exhaustive:
       - objects, `logs/`, `rr-cache/`, `refs/tags/` and `refs/notes/`;
       - the branch refs other than `main`;
       - the main checkout's `REVERT_HEAD`, `REBASE_HEAD`, `BISECT_*`, `AUTO_MERGE`, `MERGE_MSG`
@@ -151,9 +155,11 @@
        the link points. `~/.pupitre/slots/` is the same kind of redirect: a link planted there is
        followed by the unsandboxed gate's slot handling. Follow-up: open them with `lstat` and
        `O_NOFOLLOW`.
-    4. The `main` deny is literal, path for path:
+    4. Every deny is a literal path, matched path for path:
+       - on case-insensitive APFS, a differently cased spelling may reach the same file. That
+         applies to every denied entry (`rebase-merge/`, `sequencer/`, `HEAD.lock`,
+         `index.lock` and the rest), not only `main`;
        - a reftable repository keeps no `refs/heads/main` file;
-       - on case-insensitive APFS, a differently cased spelling of the path names the same file;
        - renaming a parent directory moves `main` with it.
 
        All three are ceilings. The deny also names `main` itself, so a project that merges into
@@ -169,6 +175,14 @@
        closes one way to swap objects, but it is not object integrity.
     7. A repository whose path runs through a symlink was not probed. Claude Code's implicit
        `.git` grant, and the paths pup compiles, may resolve differently there.
+    8. `objects/info/alternates` stays writable. It can point git's object lookup at a
+       directory of the worker's choosing.
+    9. `rr-cache/` stays writable. A planted resolution is applied to a conflict whenever rerere
+       is on.
+    10. A main checkout whose `.git` is a file (a separate git dir) is not covered. Every deny
+        then points at a path that does not exist.
+    11. The denies on paths that do not exist yet, such as the locks and the rebase dirs, were
+        probed only on macOS. Linux was not probed.
     *Left for follow-ups.*
     - Gaps in the read denials: `.yarnrc.yml`, `pip.conf`, cargo and gem credentials, the
       `.claude.json` in the home directory, and the transcripts.

@@ -967,6 +967,7 @@ describe('the worker sandbox (decision 191)', () => {
       // denied: a denied store root would take state.db with it.
       expect(sandbox.filesystem.denyWrite).toEqual([
         join(repo, '.git', 'config'),
+        join(repo, '.git', 'config.worktree'),
         join(repo, '.git', 'hooks'),
         join(repo, '.git', 'info'),
         join(repo, '.git', 'refs', 'heads', 'main'),
@@ -1008,9 +1009,14 @@ describe('the worker sandbox (decision 191)', () => {
     }
   });
 
-  // Claude Code grants the main .git whole but `config`, `hooks` and the other
-  // worktrees' `worktrees/` entries. A worker's commit or merge writes none of these.
+  // Claude Code's implicit grant is the main .git except `config`, `hooks` and
+  // the other worktrees' `worktrees/` entries. These denies narrow it further,
+  // to paths a worker's commit or merge does not write.
   it.each([
+    {
+      name: "the main checkout's config.worktree, read under extensions.worktreeConfig",
+      path: ['config.worktree'],
+    },
     { name: 'replace refs, which swap the object a name resolves to', path: ['refs', 'replace'] },
     { name: 'remote-tracking refs', path: ['refs', 'remotes'] },
     { name: 'the shallow file', path: ['shallow'] },

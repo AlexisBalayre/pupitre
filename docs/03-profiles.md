@@ -112,6 +112,7 @@ The block runs every process a Bash call starts inside Claude Code's sandbox:
 - Writes allowed: the worktree and its admin dir, the sandbox's `TMPDIR`, the store's `state.db`
   files, the machine's test slots, and the main `.git` that a commit needs.
 - Writes denied, within the main `.git`:
+  - the main checkout's own `config.worktree`;
   - `info/`, `refs/replace/`, `refs/remotes/` and `shallow`;
   - `main` and `packed-refs`, with their locks;
   - the main checkout's own `HEAD`, `HEAD.lock`, `index`, `index.lock`, `MERGE_HEAD`,
@@ -121,7 +122,7 @@ The block runs every process a Bash call starts inside Claude Code's sandbox:
   A worker's commit writes none of these. Claude Code itself refuses `config`, `hooks/` and the
   other worktrees' admin dirs. In this worktree's admin dir, `commondir`, `gitdir` and
   `config.worktree` are denied.
-- Writes left open in the main `.git`: objects, `logs/`, `rr-cache/`, `refs/tags/`,
+- Writes left open in the main `.git` include, among others: objects, `logs/`, `rr-cache/`, `refs/tags/`,
   `refs/notes/`, the other branch refs, and the main checkout's `REVERT_HEAD`, `REBASE_HEAD`,
   `BISECT_*`, `AUTO_MERGE`, `MERGE_MSG` and `SQUASH_MSG`. Decision 191 lists the ceilings this
   leaves.
