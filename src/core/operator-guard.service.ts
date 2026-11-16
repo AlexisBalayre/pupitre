@@ -28,13 +28,14 @@ function launchedName(args: string): string | undefined {
  * Whether this process runs under a window pup opened, a session's or a
  * conductor's, read from the process tree rather than from an environment or
  * a cwd the caller sets (decisions 115, 188). `pup plan edit --rescope`,
- * `pup respawn`, `pup unblock` and `pup kill --respawn` refuse every answer
- * but none, and `pup ui` drives nothing on one. Each process
- * from this one's parent up is matched first against the pane pids the
- * project's launches recorded: the conductor's, and each session's in a state
- * that can hold a window, since a record outlives its window and its pid can
- * be reused once that is gone. pid and parent are what the kernel says, which
- * no process rewrites. Then against the `--name pup-<...>` pair a launch
+ * `pup respawn`, `pup unblock`, `pup kill --respawn`, `pup dashboard` and the
+ * operator's own `pup merge` refuse every answer but none, and `pup ui`
+ * drives nothing on one. Each process from this one's parent up is matched
+ * first against the pane pids the project's launches recorded: the
+ * conductor's while its window is up, and each session's in a state that can
+ * hold a window, since a record outlives its window and its pid can be reused
+ * once that is gone. pid and parent are what the kernel says, which no
+ * process rewrites. Then against the `--name pup-<...>` pair a launch
  * passed Claude Code, which reaches any project's window but reads arguments
  * a process can overwrite. A tmux process is passed over there: a server lists
  * the command that started it, which can be a launch's, and the operator's

@@ -1883,6 +1883,13 @@ export function buildProgram(): Command {
         db.close();
         return refuse('`pup dashboard` is operator-only.');
       }
+      // Its page merges, lands, answers and closes debt in the operator's name,
+      // as `pup ui`'s keys do: the process tree asks again whatever the markers
+      // said (decision 188).
+      if (refusedUnderWindow(db, repoPath, '`pup dashboard`')) {
+        db.close();
+        return;
+      }
       const dashboard = await startWebDashboard(db, repoPath);
       console.log(`Dashboard on ${dashboard.url}`);
       console.log('Anyone holding this url reads the page; Ctrl-C stops the server.');
@@ -2518,6 +2525,15 @@ export function buildProgram(): Command {
             '--approved-by names the person who approved, not `human`; use <channel>:<name>.',
           );
         }
+        // What the conductor is refused above is the operator's alone, and the
+        // process tree asks again for it whatever the markers said: the local
+        // fast-forward, and a debt acceptance in the operator's own name. The
+        // gate to a PR with a relayed approval is the conductor's to run from
+        // its window (decision 188).
+        const operatorsAlone =
+          !opts.pr ||
+          (Boolean(opts.acceptDebt) && (!approvedBy || approvedBy.toLowerCase() === 'human'));
+        if (operatorsAlone && refusedUnderWindow(db, repoPath, '`pup merge`')) return;
         // Every detected adapter, not just the first: the gate measures debt
         // over all of them so its bar is the one `pup init` recorded
         // (decision 72).

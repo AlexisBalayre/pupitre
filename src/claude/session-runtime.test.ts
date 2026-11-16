@@ -1034,6 +1034,33 @@ describe('recordedPanePids (decision 188)', () => {
     );
   });
 
+  // No stop, exit or reboot removes the conductor's record, and its pid is the
+  // system's to reuse: one of the operator's own processes once the window is gone.
+  it("reads the conductor's record only while its window is up", () => {
+    record(join(projectPaths(REPO).root, 'conductor', 'pane-pid'), '303');
+    const original = vi.mocked(execFileSync).getMockImplementation();
+    vi.mocked(execFileSync).mockImplementation((file, args, options) => {
+      if (file === 'tmux' && args?.includes('has-session')) throw new Error("can't find session");
+      return (original as (...callArgs: unknown[]) => unknown)(file, args, options) as string;
+    });
+    try {
+      expect(recordedPanePids(REPO, [])).toEqual(new Map());
+    } finally {
+      vi.mocked(execFileSync).mockImplementation(original as never);
+    }
+    expect(vi.mocked(execFileSync)).toHaveBeenCalledWith(
+      'tmux',
+      [
+        '-L',
+        `pup-conductor-${projectId(REPO)}`,
+        'has-session',
+        '-t',
+        `=pup-conductor-${projectId(REPO)}:`,
+      ],
+      expect.anything(),
+    );
+  });
+
   // Only the sessions the caller names: which windows may still be up is its to say.
   it('reads no session it was not asked about', () => {
     record(join(projectPaths(REPO).sessionDir('s1'), 'pane-pid'), '101');

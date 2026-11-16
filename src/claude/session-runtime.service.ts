@@ -1084,20 +1084,24 @@ const PANE_PID_RECORD_MAX_BYTES = 64;
  * the conductor's `pup`, never from the window; a respawn or a fix round
  * writes over it. A window can still write its own record, so each is read as
  * one it wrote, and a record that is missing or not a pid as a launch writes
- * one names nothing. A record outlives its window: which windows may still be
- * up is the caller's to choose.
+ * one names nothing. A record outlives its window, and its pid is the
+ * system's to reuse once that is gone. Which sessions' windows may still be
+ * up is the caller's to choose, from their states. The conductor has no state
+ * to bound its record, and no stop, exit or reboot removes it, so it is read
+ * only while the conductor's window is up.
  */
 export function recordedPanePids(
   repoPath: string,
   sessionIds: readonly string[],
 ): Map<number, string> {
-  const records: [file: string, window: string][] = [
-    ...sessionIds.map((sessionId): [string, string] => [
-      sessionPanePidFile(repoPath, sessionId),
-      tmuxName(sessionId),
-    ]),
-    [conductorPanePidFile(repoPath), conductorName(projectId(repoPath))],
-  ];
+  const repoProjectId = projectId(repoPath);
+  const records: [file: string, window: string][] = sessionIds.map((sessionId) => [
+    sessionPanePidFile(repoPath, sessionId),
+    tmuxName(sessionId),
+  ]);
+  if (hasConductorWindow(repoProjectId)) {
+    records.push([conductorPanePidFile(repoPath), conductorName(repoProjectId)]);
+  }
   const pids = new Map<number, string>();
   for (const [file, window] of records) {
     const text = readSessionWritable(file, PANE_PID_RECORD_MAX_BYTES) ?? '';

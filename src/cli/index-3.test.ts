@@ -324,6 +324,28 @@ describe('CLI commands', () => {
     });
   }
 
+  /**
+   * Run the caller under process 700, whose title carries no `--name`: the
+   * markers are the caller's word, emptied or unset, and the process tree it
+   * runs in still holds the pane pid a launch recorded (decision 188).
+   * `window` names the window each project's store recorded pid 700 for, if any.
+   */
+  function underPane(window: (repoPath: string) => string | undefined): void {
+    vi.mocked(listProcesses).mockReturnValue(
+      new Map([
+        [process.ppid, { parent: 700, args: '/bin/zsh -c pup' }],
+        [700, { parent: 1, args: 'claude' }],
+      ]),
+    );
+    vi.mocked(recordedPanePids).mockImplementation((repoPath) => {
+      const recorded = window(repoPath);
+      return new Map(recorded === undefined ? [] : [[700, recorded]]);
+    });
+  }
+
+  /** The window a launch recorded for the project's conductor. */
+  const conductorWindow = (repoPath: string): string => `pup-conductor-${projectId(repoPath)}`;
+
   describe('status', () => {
     it('reports an empty project when nothing runs and nothing is planned', () => {
       useCwd(initRepo());
@@ -1146,23 +1168,6 @@ describe('CLI commands', () => {
       else expect(mountedProps().readOnlyReason).toContain(reason);
     });
 
-    // The markers are the caller's word: emptied or unset, the process tree
-    // the caller runs in still holds the pane pid a launch recorded, and its
-    // title need not carry the launch's `--name` (decision 188).
-    // `window` names the window each project's store recorded pid 700 for, if any.
-    const underPane = (window: (repoPath: string) => string | undefined) => {
-      vi.mocked(listProcesses).mockReturnValue(
-        new Map([
-          [process.ppid, { parent: 700, args: '/bin/zsh -c pup ui' }],
-          [700, { parent: 1, args: 'claude' }],
-        ]),
-      );
-      vi.mocked(recordedPanePids).mockImplementation((repoPath) => {
-        const recorded = window(repoPath);
-        return new Map(recorded === undefined ? [] : [[700, recorded]]);
-      });
-    };
-
     it.each([
       ['emptied', ''],
       ['unset', undefined],
@@ -1172,14 +1177,14 @@ describe('CLI commands', () => {
       seedSession(repo, 's1');
       vi.stubEnv('PUP_SESSION_ID', value);
       vi.stubEnv('PUP_CONDUCTOR', value);
-      underPane((repoPath) => `pup-conductor-${projectId(repoPath)}`);
+      underPane(conductorWindow);
       stubRender();
 
       runUi(true);
 
       expect(mountedProps().readOnlyReason).toBe(
         `read-only: this runs under process 700, the pane pup recorded for ` +
-          `pup-conductor-${projectId(repo)}'s window, whatever its environment says (decision 188).`,
+          `${conductorWindow(repo)}'s window, whatever its environment says (decision 188).`,
       );
     });
 
@@ -2474,6 +2479,41 @@ describe('CLI commands', () => {
       expect(errors.join('\n')).toContain('`pup dashboard` is operator-only.');
       expect(process.exitCode).toBe(1);
     });
+
+    // Its page merges, lands, answers and closes debt in the operator's name.
+    it.each([
+      ['emptied', ''],
+      ['unset', undefined],
+    ])('refuses a caller under a recorded pane, its markers %s', async (_how, value) => {
+      const repo = initRepo();
+      useCwd(repo);
+      vi.stubEnv('PUP_SESSION_ID', value);
+      vi.stubEnv('PUP_CONDUCTOR', value);
+      underPane(conductorWindow);
+
+      await buildProgram().parseAsync(['dashboard'], { from: 'user' });
+
+      expect(startWebDashboard).not.toHaveBeenCalled();
+      expect(errors).toEqual([
+        '`pup dashboard` is operator-only, and this runs under process 700, the pane pup ' +
+          `recorded for ${conductorWindow(repo)}'s window, whatever its environment says; run ` +
+          'it from your own shell.',
+      ]);
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('refuses when the process tree cannot be read', async () => {
+      useCwd(initRepo());
+      vi.mocked(listProcesses).mockReturnValue(undefined);
+
+      await buildProgram().parseAsync(['dashboard'], { from: 'user' });
+
+      expect(startWebDashboard).not.toHaveBeenCalled();
+      expect(errors).toEqual([
+        '`pup dashboard` could not read the process tree (`ps` failed), so it cannot tell this ' +
+          'caller from a session or the conductor; nothing changed.',
+      ]);
+    });
   });
 
   describe('debt', () => {
@@ -3113,6 +3153,79 @@ describe('CLI commands', () => {
 
       expect(errors).toEqual(['`pup merge` is operator-only; sessions cannot merge sessions.']);
       expect(runMergeGate).not.toHaveBeenCalled();
+    });
+
+    // The calls the conductor is refused by its marker are the operator's
+    // alone, and a caller that emptied or unset the markers still runs under
+    // the pane a launch recorded (decision 188).
+    const DEBT = ['--accept-debt', 'r', '--review-by', 'c'];
+    const OPERATORS_ALONE = [
+      ['the local merge', []],
+      ['a debt accepted in the operator’s name', ['--pr', ...DEBT]],
+      ['a debt approved by `human`', ['--pr', ...DEBT, '--approved-by', 'Human']],
+    ] as const;
+    const MARKERS = [
+      ['emptied', ''],
+      ['unset', undefined],
+    ] as const;
+
+    it.each(
+      OPERATORS_ALONE.flatMap(([what, flags]) =>
+        MARKERS.map(([how, value]) => ({ what, flags, how, value })),
+      ),
+    )('refuses $what under a recorded pane, its markers $how', async ({ flags, value }) => {
+      const repo = initRepoWithAdapter();
+      useCwd(repo);
+      vi.stubEnv('PUP_SESSION_ID', value);
+      vi.stubEnv('PUP_CONDUCTOR', value);
+      underPane(conductorWindow);
+
+      await buildProgram().parseAsync(['merge', 's1', ...flags], { from: 'user' });
+
+      expect(errors).toEqual([
+        '`pup merge` is operator-only, and this runs under process 700, the pane pup recorded ' +
+          `for ${conductorWindow(repo)}'s window, whatever its environment says; run it from ` +
+          'your own shell.',
+      ]);
+      expect(process.exitCode).toBe(1);
+      expect(runMergeGate).not.toHaveBeenCalled();
+    });
+
+    it.each(OPERATORS_ALONE)(
+      'refuses %s when the process tree cannot be read',
+      async (_what, flags) => {
+        useCwd(initRepoWithAdapter());
+        vi.mocked(listProcesses).mockReturnValue(undefined);
+
+        await buildProgram().parseAsync(['merge', 's1', ...flags], { from: 'user' });
+
+        expect(errors).toEqual([
+          '`pup merge` could not read the process tree (`ps` failed), so it cannot tell this ' +
+            'caller from a session or the conductor; nothing changed.',
+        ]);
+        expect(runMergeGate).not.toHaveBeenCalled();
+      },
+    );
+
+    // The gate to a PR, with any debt approval relayed under its approver's
+    // name, is the conductor's to run from its own window (decision 75).
+    it.each([
+      ['a PR', ['--pr']],
+      ['a PR with a relayed debt approval', ['--pr', ...DEBT, '--approved-by', 'tg:someone']],
+    ])('lets the conductor gate %s under its recorded pane', async (_what, flags) => {
+      const repo = initRepoWithAdapter();
+      useCwd(repo);
+      vi.stubEnv('PUP_CONDUCTOR', projectId(repo));
+      underPane(conductorWindow);
+      vi.mocked(runMergeGate).mockResolvedValue(
+        mergedOutcome({ prUrl: 'https://github.com/acme/repo/pull/7', prWasAdopted: false }),
+      );
+
+      await buildProgram().parseAsync(['merge', 's1', ...flags], { from: 'user' });
+
+      expect(errors).toEqual([]);
+      expect(runMergeGate).toHaveBeenCalledTimes(1);
+      expect(listProcesses).not.toHaveBeenCalled();
     });
 
     it('forwards the repo, session, and detected adapter to the gate', async () => {

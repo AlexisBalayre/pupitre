@@ -29,30 +29,46 @@
     whether a launch recorded it, then whether its arguments carry the launch's `--name`.
     pid and parent pid are the kernel's and no process rewrites them, so a Claude Code
     that rewrote its title (`setproctitle`) still matches by its pid. The records read are
-    the conductor's and each session's of the project in a state that can hold a window
-    (`queued`, `running`, `awaiting-review`, `rejected`, `blocked`), since a record
-    outlives its window and its pid is the system's to reuse once that window is gone. A
-    session id outside the minted shape names no path and is skipped. The arguments check
-    stays: it reaches other projects' windows, whose records are in their own stores, and
-    a window launched before the record existed.
+    each session's of the project in a state that can hold a window (`queued`, `running`,
+    `awaiting-review`, `rejected`, `blocked`), and the conductor's while its window is up
+    (`hasConductorWindow`), since a record outlives its window and its pid is the system's
+    to reuse once that window is gone. The conductor has no state to bound its record, and
+    neither `pup conductor stop`, a conductor that exits on its own nor a reboot removes
+    it: read regardless, a stale one would refuse the operator from the day its pid went
+    to one of their processes. A session id outside the minted shape names no path and is
+    skipped. The arguments check stays: it reaches other projects' windows, whose records
+    are in their own stores, and a window launched before the record existed.
     *The ceilings.* A pid the system reused after a window died while its session stayed
     in a holding state (a crashed pane on a blocked session) can be one of the operator's
     processes, which is then refused, the refusal naming the window and the pid; killing
     the session or ending that process clears it. That fails toward refusing, never toward
     passing. The records are in the store, which a session can write (decision 115's
     *Who*): a window that writes another pid over its own record, and runs under a Claude
-    Code whose title no longer carries `--name`, is matched by neither check. Each record
+    Code whose title no longer carries `--name`, is matched by neither check. The
+    conductor's window is probed as `pup status` probes it, with the caller's `PATH` and
+    `TMUX_TMPDIR`: a caller that points them elsewhere hides the conductor's record as one
+    that writes over it does, and is still matched by its Claude Code's `--name`. Each record
     is read as one a session wrote, with no symlink followed, bounded, and only digits as
     a launch writes them counting. Another project's window is found only by its arguments.
     A process that left the tree (a double fork, `setsid`, a job tmux or launchd started)
     is under none of them, as decision 115 says.
-    *The commands.* `pup plan edit --rescope`, `pup respawn`, `pup unblock` and
-    `pup kill --respawn` each ask after their marker checks, against the store of the
-    project they act on, and refuse a caller found under a recorded pane (naming the
+    *The commands.* `pup plan edit --rescope`, `pup respawn`, `pup unblock`,
+    `pup kill --respawn` and `pup dashboard`, whose page merges, lands, answers and closes
+    debt in the operator's name, each ask after their marker checks, against the store of
+    the project they act on, and refuse a caller found under a recorded pane (naming the
     process and the window), under a process carrying a launch's `--name`, or with a
-    process tree `ps` could not read, changing nothing. "Whatever its environment says" is
+    process tree `ps` could not read, changing nothing. So does `pup merge` for each call
+    the conductor's marker is refused as the operator's alone: the local fast-forward, and
+    a debt acceptance with no `--approved-by` or one naming `human`, which the ledger would
+    record as the operator's own (decision 75). "Whatever its environment says" is
     in the refusal: emptying or unsetting `PUP_SESSION_ID` and `PUP_CONDUCTOR` changes
-    nothing here. The plain `pup kill` is not asked: it is the conductor's to run.
+    nothing here. The plain `pup kill` is not asked: it is the conductor's to run. Nor is
+    `pup merge --pr` with no debt or with one relayed under its approver's name, which the
+    conductor runs from its window: a session that emptied its markers and left its
+    worktree can still gate a branch to a pull request the human merges, which moves no
+    target, at decision 27's ceiling. The other commands the markers hold to the operator
+    (`pup answer`, `pup debt close`, `pup retire`, `pup land --accept-head` among them)
+    are not asked yet.
     `pup ui` asks the same question after the markers, and on any answer but none shows
     the dashboard read-only with the reason in its footer, as it does for a session or
     the conductor (its keys run the respawn, the unblock and the merge). The fleet view
@@ -79,8 +95,8 @@
     `DashboardSession.rescoped` holds them all, scrubbed.
     *Tests.* `session-runtime.test.ts`: a session's launch and the conductor's record the
     pid tmux printed, a print that is not a pane id and a pid refuses the launch, and
-    `recordedPanePids` names each window, reads only the sessions asked, and ignores a
-    malformed record and a symlink. `operator-guard.test.ts`: a recorded pid up the tree
+    `recordedPanePids` names each window, reads only the sessions asked and the conductor's
+    record only while its window is up, and ignores a malformed record and a symlink. `operator-guard.test.ts`: a recorded pid up the tree
     finds a session's or the conductor's window whatever the caller's environment and the
     arguments `ps` shows, wins over a launch name further up, reads only holding-state
     sessions and minted ids, and passes a tree that holds none; decision 115's arguments
@@ -92,7 +108,9 @@
     no recorded pane in its tree; the plain kill goes through under one; a rescope prints
     its overlaps. `index-3.test.ts`: `pup ui` is read-only under a recorded pane with its
     markers emptied and unset, and when `ps` fails, and the fleet is read-only under a
-    pane one project's store recorded. `merge-gate.test.ts`: the body lists the rescopes,
+    pane one project's store recorded; `pup dashboard`, the local merge and a debt
+    accepted in the operator's name are refused the same ways, and the conductor's `--pr`
+    gate, with or without a relayed approval, goes through under its pane. `merge-gate.test.ts`: the body lists the rescopes,
     scrubbed, has no section without one, a gate opening a PR reads them off the store,
     and a re-gate's rewrite lists one taken after the first gate. `dashboard.test.ts`: the
     awaiting-review, refused-gate and
