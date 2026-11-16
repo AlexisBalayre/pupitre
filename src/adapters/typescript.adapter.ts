@@ -311,20 +311,24 @@ function namesAConfig(text: string): boolean {
 /** The configs read a key per line, npm's by its ini parser and the env files by dotenv. */
 const LINE_KEYED_CONFIG = /^(?:\.npmrc|\.env(?:\.[^/]*)?)$/;
 
-/** A key, or a section's name, of only the characters a plain one is spelt in. */
-const PLAIN_KEY = /^[A-Za-z0-9._@/:+-]+$/;
+/**
+ * A key, or a section's name, of only the characters a plain one is spelt in;
+ * a key may end in the `[]` by which ini reads it as an array of that key
+ * (`public-hoist-pattern[]=`), which `configKey` reduces away.
+ */
+const PLAIN_KEY = /^[A-Za-z0-9._@/:+-]+(?:\[\])?$/;
 const PLAIN_SECTION = /^\[[A-Za-z0-9._@/:+-]+\]$/;
 
 /**
  * Whether a line of a `LINE_KEYED_CONFIG` file has a key, or is a section
- * header, spelt in anything but `PLAIN_KEY`'s characters: a quote, a bracket,
- * whitespace inside, a non-ASCII character. ini strips quotes and parses a
- * quoted key as JSON, which allows whitespace inside, so `' "prefix"'` and
- * `[ "prefix" ]` are `prefix` to npm; rather than reduce each such spelling,
- * any key not plain is refused. The key is the text before the first `=`,
- * trimmed as JavaScript's `trim` trims and as ini trims it, without an
- * `export`. A blank line, or one whose first character is `;` or `#`, is a
- * comment to both parsers.
+ * header, spelt in anything but `PLAIN_KEY`'s characters: a quote, a bracket
+ * but a last `[]`, whitespace inside, a non-ASCII character. ini strips
+ * quotes and parses a quoted key as JSON, which allows whitespace inside, so
+ * `' "prefix"'` and `[ "prefix" ]` are `prefix` to npm; rather than reduce
+ * each such spelling, any key not plain is refused. The key is the text
+ * before the first `=`, trimmed as JavaScript's `trim` trims and as ini trims
+ * it, without an `export`. A blank line, or one whose first character is `;`
+ * or `#`, is a comment to both parsers.
  */
 function unplainKey(line: string): boolean {
   const trimmed = line.trim();
