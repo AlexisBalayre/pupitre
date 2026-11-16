@@ -1,0 +1,195 @@
+{
+  "schema_version": 7,
+  "timestamp": "2026-11-16T07:55:56.178Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43825726807",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43825726807",
+  "actor": "AlexisBalayre",
+  "commit_sha": "7145bb9bf7cd5bcaf4b105e1459350c7f4178c5d",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 341,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs",
+    "context"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs",
+    "context"
+  ],
+  "reviewers_skipped": [
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/adapters/typescript.adapter.ts",
+      "line": "345-346",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "Narrowing `RUN_CACHE` to the exact names `.cache` and `.vite` drops `.vite-temp`. Vite writes its bundled ESM config there in the gate checkout's `node_modules`. The second `testInputsIntact` check, run after the test stage, then fails on every pupitre gate run once the main checkout's `node_modules` also holds a `.vite-temp`, and the split counts no file as test.",
+      "body": "**Fail-closed regression: `.vite-temp` is no longer a run cache**\n\n`RUN_CACHE` now matches only the exact names `.cache` and `.vite`:\n```ts\nconst RUN_CACHE = /^\\.(?:cache|vite)$/;\n```\nBefore this PR, `/^(?:\\.cache$|\\.vite)/` also matched `.vite-temp`.\n\n**Why the gate's `.vite-temp` is a real directory.** `linkEnvironment` (`src/core/merge-gate.service.ts:1622-1625`) skips every `.vite*` entry with `name.startsWith('.vite')`. Its comment and ADR 0081 both say vite writes `.vite-temp` beside the packages. Pupitre is `\"type\": \"module\"` and has a root `vitest.config.ts`, so Vite bundles the config into `<gate>/node_modules/.vite-temp/`. Vite removes the bundled file afterwards but leaves the directory. The main checkout ends up with a `.vite-temp` too whenever vitest has run there.\n\n**What happens on the post-suite check.** The check is `testInputsIntact` at `merge-gate.service.ts:3219`. For `.vite-temp`, `environmentLinked` (L385-398) does this:\n1. `RUN_CACHE` doesn't match `.vite-temp`.\n2. `unloadedEntry` returns false, because the trusted `<main>/node_modules/.vite-temp` exists.\n3. `readlinkSync` on the gate's directory throws EINVAL.\n4. The `catch` returns false.\n\nThe split then passes `[]` as test files, so every test line counts as source toward the diff-size flag. No report line says why.\n\nThe new test \"replaces a linked .vite-named entry\" uses a trusted `.vitest` link. The gate never builds that state, so no test covers the `.vite-temp` state it does build. Adding `vite-temp` to the regex still refuses `.vitest`.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/7145bb9bf7cd5bcaf4b105e1459350c7f4178c5d/src/adapters/typescript.adapter.ts#L345-L346\nhttps://github.com/AlexisBalayre/pupitre/blob/7145bb9bf7cd5bcaf4b105e1459350c7f4178c5d/src/adapters/typescript.adapter.ts#L385-L398",
+      "suggestion": "/** What vitest and vite write in `node_modules` as they run, which the gate does not link. */\nconst RUN_CACHE = /^\\.(?:cache|vite|vite-temp)$/;"
+    },
+    {
+      "file": "src/adapters/typescript.adapter.ts",
+      "line": "224-233",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The run-input lists omit pnpm's hooks file. A branch-committed root `.pnpmfile.cjs` or `.pnpmfile.mjs` is in neither `VITEST_RUN_INPUT` nor `PACKAGE_MANAGER_CONFIG`, and `PNP_RUNTIME` doesn't match it, so the file runs in `pnpm run test` while the split stays trusted.",
+      "body": "**A branch-committed pnpm hooks file escapes the run-shaping comparison**\n\nNone of these three patterns matches `.pnpmfile.cjs` or `.pnpmfile.mjs`:\n```ts\nconst VITEST_RUN_INPUT =\n  /^(?:package\\.json|\\.npmrc|\\.yarnrc(?:\\.yml)?|\\.env(?:\\.[^/]*)?|\\.pnp\\.[^/]*|\\.yarn|pnpm-workspace\\.yaml|bunfig\\.toml|vite(?:st)?\\.(?:config|workspace|projects)\\.[^/]*)$/;\nconst PACKAGE_MANAGER_CONFIG =\n  /^(?:\\.npmrc|\\.yarnrc(?:\\.yml)?|\\.env(?:\\.[^/]*)?|pnpm-workspace\\.yaml|bunfig\\.toml)$/;\nconst PNP_RUNTIME = /^\\.pnp\\./;   // `.pnpm…` has `m` after `.pnp`, not `.`\n```\n\nThis repo pins `pnpm@10.34.5`, and `gateCommands` runs `pnpm run test`. pnpm 10's config load requires `<lockfileDir>/.pnpmfile.cjs` for every command, `run` included, unless `ignore-pnpmfile` is set (pinned-version knowledge). Nothing in `src/` sets that.\n\n**Trigger:** a branch adds a root `.pnpmfile.cjs` containing `process.env.NODE_OPTIONS = '--import ./reg.mjs'`, plus a collected `src/big.test.ts` that holds production code and no test.\n- `plainVitestCollection` (L446-461) builds the same config on both sides, so `testFiles` (L737) keeps the split.\n- `testInputsIntact` doesn't list the file.\n\nThe result is that vitest runs with the branch's preload while its files count as test. That contradicts the PR's acceptance criterion that \"a branch that commits a run-shaping file differing from the target's gets no test-file split\". The ADR ceilings don't cover it: the file isn't shared with the target and isn't outside the checkout.\n\nThe hooks file is code, like `.pnp.*`, so comparing its text is not enough. Refuse it at the root on either side, for example with `PNP_RUNTIME = /^\\.pnp(?:mfile)?\\./`, and add `\\.pnpmfile\\.[^/]*` to `VITEST_RUN_INPUT`.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/7145bb9bf7cd5bcaf4b105e1459350c7f4178c5d/src/adapters/typescript.adapter.ts#L224-L233\nhttps://github.com/AlexisBalayre/pupitre/blob/7145bb9bf7cd5bcaf4b105e1459350c7f4178c5d/src/adapters/typescript.adapter.ts#L343",
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/vitest-config.utils.ts",
+      "line": "104-126",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The refused vitest keys still miss some that make vitest load a branch-written module, so a config using them stays trusted. `test.env` can pass `NODE_OPTIONS: '--import ./x.mjs'` to fork workers, the same preload as the refused `execArgv`. `test.snapshotEnvironment` names a module the worker runs before collection, a sibling of the newly refused `diff` and `snapshotSerializers`. `test.coverage.reporter` can be a custom reporter's module path, but only `customProviderModule` is refused.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/typescript.adapter.ts",
+      "line": "242-243",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`RUNS_A_FILE` is now also applied to the user `.npmrc`, but it misses npm and pnpm keys that change what `pm run test` runs. All are plainly spelt, so they pass `unplainKey` and `CONFIG_NAMING_KEYS` too: `pnpmfile`/`global-pnpmfile`, `use-node-version` with `node-mirror`, npm's `workspaces`/`workspace`, and npm 7-9's `onload-script`. Adding `pnpmfile|use[-_]?node[-_]?version|node[-_]?mirror|workspaces?|onload[-_]?script` closes them.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/typescript.adapter.ts",
+      "line": "259",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "An operator whose `~/.npmrc` holds `prefix=~/.npm-global` gets an empty test split on every gate, and no report line says why. npm's own EACCES guide has users write that line with `npm config set prefix`. `CONFIG_NAMING_KEYS` refuses `prefix`, so `testInputsIntact` is always false. A dotfile-manager symlink at `~/.npmrc` is refused silently in the same way by `O_NOFOLLOW`. A report detail naming the cause would make this visible.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/typescript.adapter.ts",
+      "line": "252-291",
+      "area": "context",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`namesAConfig` runs over every `.env*` file, so an ordinary `.env` line such as `PREFIX=/usr/local`, `DESTDIR=` or `USERCONFIG=` reduces to a config-naming key and drops the split on a normal repo. Neither npm nor dotenv treats a bare `PREFIX` in `.env` as npm's `prefix`. Only an `npm_config_`-prefixed key in an env file names a config.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/typescript.adapter.ts",
+      "line": "250-280",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "For `.npmrc` and `.env*`, the `PLAIN_KEY` whitelist in `unplainKey` already refuses any `$`, quote, `[]`, inner whitespace or non-ASCII in a key. That makes `KEY_SUBSTITUTION` and most of `configKey`'s reduction (quote, `[]` and `;#` stripping) dead for those files, and `configKey`'s \"at least as far as ini and dotenv\" claim redundant. A maintainer has to reason through two layers to see which one covers a given spelling.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/typescript.adapter.ts",
+      "line": "300-310",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `unplainKey` JSDoc says a line starting with `;` \"is a comment to both parsers\", but dotenv has no `;` comment form. Such a line yields no key only because its key fails dotenv's key pattern. Reword it, for example \"`#`- or `;`-led lines carry no key to either parser\".",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/vitest-config.utils.ts",
+      "line": "689",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `vitestCollection` JSDoc inserts \"given the package's own name from the root's manifest\" in mid-sentence, where it reads as a precondition that the caller supplies the name. The function reads the name itself, and `configGlobs` and `loadsAFile` already document why. The edit also left one comment line far longer than its neighbours. Delete the clause and re-wrap.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/vitest-config.utils.ts",
+      "line": "4",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`vitest-config.utils.ts` now also imports `runGitBytes` from `../core/git-diff.client.js` and adds more git-reading code (`diskListing`, the `ls-tree` read). That deepens an existing break of naming.md's utils rule (\"Pure functions only. Cannot import … client\"). The git reads belong in a client or service file.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Dropped 3 important candidates at consolidation because ADR 0143 itself names them as accepted limits (ceilings). (1) Unchecked user-level configs (pnpm rc, global etc/npmrc, ~/.yarnrc.yml): ADR L66-67 and L260-262. (2) The window in which ~/.npmrc can change between the two checks: ADR L262. (3) A createRequire result called by another name: ADR L252. Also downgraded the unlisted vitest keys (env, snapshotEnvironment, coverage.reporter) to nit, under the ADR's 'a key this does not list' ceiling. Dropped one simplicity nit about readUserConfig that its own reviewer recommended keeping."
+    }
+  ],
+  "duplicates_merged": 4,
+  "comments_posted_actual": 2,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 8.284166200000003,
+  "duration_ms": 719760,
+  "num_turns": 22,
+  "tokens": {
+    "input": 24,
+    "output": 27388,
+    "cache_read": 725470,
+    "cache_creation": 99786,
+    "total": 852668
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 208,
+      "output": 198854,
+      "cache_read": 4196289,
+      "cache_creation": 500180,
+      "cost_usd": 7.617427800000004
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 52,
+      "output": 22749,
+      "cache_read": 432042,
+      "cache_creation": 157843,
+      "cost_usd": 0.6654057000000001
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 1230,
+      "cache_read": 0,
+      "cache_creation": 5740,
+      "cost_usd": 0.0013327
+    }
+  ],
+  "permission_denials": []
+}
