@@ -1123,6 +1123,17 @@ describe('the worker sandbox (decision 191)', () => {
     expect(compileOn).toThrow(settingsPath);
   });
 
+  it('refuses an Edit allow rule spelled with whitespace around its tool name', () => {
+    const settingsPath = join(home, '.claude', 'settings.json');
+    mkdirSync(dirname(settingsPath));
+    const repo = repoWith('workerSandbox: true\n');
+
+    for (const rule of [' Edit(x)', 'Edit (x)']) {
+      writeFileSync(settingsPath, JSON.stringify({ permissions: { allow: [rule] } }));
+      expect(() => compileIn(repo)).toThrow(`rule ${JSON.stringify(rule)} is refused`);
+    }
+  });
+
   it('compiles the sandbox beside a user settings.json that adds nothing to it, or none', () => {
     const repo = repoWith('workerSandbox: true\n');
     expect(compileIn(repo).settings).toHaveProperty('sandbox');
