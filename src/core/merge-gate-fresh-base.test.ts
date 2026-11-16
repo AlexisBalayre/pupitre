@@ -192,10 +192,15 @@ describe('fresh-base on a branch no open PR holds (decision 190)', { timeout: 20
   const isAbort = (args: string[]): boolean => args.includes('rebase') && args.includes('--abort');
   const interrupt = { message: 'Command failed: git rebase', signal: 'SIGINT', status: null };
 
-  // The rebase really stops on its conflict, so the abort succeeds and only the
-  // interrupt check stands between the Ctrl-C and a clean merge that lands.
+  // With `runFirst`, the killed git does its work first: the rebase stops on its
+  // conflict and its abort succeeds, so only the interrupt check stands between
+  // the Ctrl-C and a clean merge that lands. A rebase killed before it starts
+  // leaves nothing to abort, so the abort fails too and only the interrupt check
+  // on the rebase's own error keeps the Ctrl-C from a fail steered to the worker.
+  // A killed abort is thrown before it runs, its own error carrying the signal.
   it.each([
     ['the rebase', isRebase, true],
+    ['the rebase before it starts', isRebase, false],
     ['the abort of a conflicting rebase', isAbort, false],
   ])('rethrows an interrupt that kills %s, merging nothing', async (_, matches, runFirst) => {
     const { tip, target } = conflictingRebase();
@@ -258,5 +263,5 @@ describe('fresh-base on a branch no open PR holds (decision 190)', { timeout: 20
     };
 
     expect(await ancestryChecks(30)).toBe(await ancestryChecks(1));
-  });
+  }, 120_000);
 });
