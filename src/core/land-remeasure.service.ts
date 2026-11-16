@@ -167,13 +167,14 @@ export async function remeasureMerge(
       // see above
     }
   }
-  // The open entries the session's own gate filed as accepted debt, by kind.
+  // The open entries the session's own gate filed as accepted debt, by kind;
+  // one whose files are no list of paths accepts nothing.
   const accepted = new Map<string, { description: string; files: string[] }[]>();
   for (const entry of measured?.openEntries ?? []) {
     const kind = remeasureKind(entry.description, session.id);
-    if (kind === undefined) continue;
-    const held = { description: entry.description, files: JSON.parse(entry.files) as string[] };
-    accepted.set(kind, [...(accepted.get(kind) ?? []), held]);
+    const files = pathList(entry.files);
+    if (kind === undefined || files === undefined) continue;
+    accepted.set(kind, [...(accepted.get(kind) ?? []), { description: entry.description, files }]);
   }
   const flaggedBy = new Set(
     (measured?.flaggedDebt ?? []).flatMap(
@@ -303,6 +304,7 @@ const DEBT_WORDINGS: readonly {
     pattern: /^Coverage gap \(unreported files and patch coverage\) merged from$/,
     worse: [],
     stage: () => 'coverage',
+    sameFiles: true,
   },
   {
     pattern: /^Nested package (.+) changed with no (test|typecheck) script, merged from$/s,
@@ -320,6 +322,18 @@ const WORKTREE_STAGES: ReadonlySet<string> = new Set(['worktree-clean', 'fresh-b
  */
 function remeasureKind(description: string, sessionId: string): string | undefined {
   return debtKind(description, sessionId)?.replace(/#\.#%/g, '#%');
+}
+
+/** A ledger entry's `files`, when it is the JSON array of paths it should be. */
+function pathList(raw: string): string[] | undefined {
+  try {
+    const files: unknown = JSON.parse(raw);
+    return Array.isArray(files) && files.every((file) => typeof file === 'string')
+      ? files
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Which statuses a remeasure lands on; any other, a future one included, refuses. */

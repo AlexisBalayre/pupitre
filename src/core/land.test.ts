@@ -1108,14 +1108,16 @@ describe('landSession', { timeout: 20_000 }, () => {
         reported.push(...stages);
         return {
           flaggedDebt: flags.map(debt),
-          openEntries: held
-            .map(debt)
-            .map(({ description, files }) => ({ description, files: JSON.stringify(files) })),
+          openEntries: held.map(debt).map(({ description, files }) => ({
+            description,
+            files: typeof files === 'string' ? files : JSON.stringify(files),
+          })),
         } as unknown as Awaited<ReturnType<typeof measureBranch>>;
       });
     }
 
-    type Debt = { description: string; files: string[] };
+    /** A debt flag or entry; a held entry's `files` as a string is its raw column. */
+    type Debt = { description: string; files: string[] | string };
 
     const filed = (wording: string) => `${wording} session ${SESSION_ID}`;
     const huge = '9'.repeat(400);
@@ -1418,6 +1420,41 @@ describe('landSession', { timeout: 20_000 }, () => {
       await expect(remeasure()).rejects.toThrow(
         `flagged past the accepted ${wording} or on files it did not name: ${wording}`,
       );
+      expectNothingChanged(before);
+    });
+
+    it('refuses a coverage gap of unreported files and patch coverage on a swapped file', async () => {
+      mergeMovedHead();
+      const before = mainSha();
+      const wording = filed('Coverage gap (unreported files and patch coverage) merged from');
+      measuredAs(
+        [...pinnedStages, { stage: 'coverage', status: 'flagged' }],
+        [{ description: wording, files: ['src/b.ts'] }],
+        [{ description: wording, files: ['src/a.ts'] }],
+      );
+
+      await expect(remeasure()).rejects.toThrow(
+        `flagged past the accepted ${wording} or on files it did not name: ${wording}`,
+      );
+      expectNothingChanged(before);
+    });
+
+    // A JSON string would match a file by substring; it accepts nothing.
+    it.each([
+      ['a JSON string', '"vendor/a.js"'],
+      ['a list holding a number', '["vendor/a", 1]'],
+      ['no JSON at all', 'vendor/a'],
+    ])('refuses against an entry whose files are %s', async (_case, files) => {
+      mergeMovedHead();
+      const before = mainSha();
+      const wording = filed('Text files git reports as binary (1) merged from');
+      measuredAs(
+        [...pinnedStages, { stage: 'diff-size', status: 'flagged' }],
+        [{ description: wording, files: ['vendor/a'] }],
+        [{ description: wording, files }],
+      );
+
+      await expect(remeasure()).rejects.toThrow(`flagged, never accepted: ${wording}`);
       expectNothingChanged(before);
     });
 

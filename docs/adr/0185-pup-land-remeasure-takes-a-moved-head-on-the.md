@@ -50,14 +50,18 @@
     the same cause. A percentage is one figure whether it is rounded to a whole percent or not, so
     `80%` and `80.4%` give the same kind. Where a flag's files are what was accepted rather than
     where it was found (a text file git reports as binary, a changed source file coverage did not
-    measure or report), the entry no worse must also have named each of the flag's files: a
-    count held level cannot swap a hidden file no one read for the one accepted. *Not caught:*
+    measure, a coverage gap of unreported files with or without patch coverage), the entry no
+    worse must also have named each of the flag's files: a count held level cannot swap a hidden
+    file no one read for the one accepted. An entry whose files are not a JSON list of paths
+    accepts nothing, so a string cannot match a file by substring. *Not caught:*
     a re-gate files no flag of a kind the session already holds, so the ledger keeps the first
     gate's figures, and a remeasure of a re-pinned head whose figures grew since then refuses;
-    it fails closed. A refusal
-    changes nothing and records nothing: `measureBranch` only reads the store, and the debt it
-    flags, the baseline it would ratchet and the event are written by the land alone, after a
-    pass. The session stays merged, and the operator still has `--accept-head`.
+    it fails closed. A remeasure files no debt, refused or passed: every flag it passes is
+    already an open entry no worse, which filing again would only duplicate, as the re-gate
+    does not file a kind the session holds. `measureBranch` only reads the store, so a refusal
+    changes nothing and records nothing. A pass records only the `landed` event below, and the
+    audit then re-stamps the baseline as it does after every land. The session stays merged
+    after a refusal, and the operator still has `--accept-head`.
     *After the stages.* They take minutes, so the land reads again what it acts on before
     anything moves: the merge lock must still be held, the main checkout still on the target,
     and the local target at the commit read before. Origin's target is fetched again and must
