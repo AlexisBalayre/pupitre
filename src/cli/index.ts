@@ -2630,11 +2630,15 @@ export function buildProgram(): Command {
       if (refusedUnsandboxed()) return;
       if (opts.abandonClosed) {
         let abandoned: { prUrl: string; recorded: boolean };
+        let abandonLockLost: MergeLockLostError | undefined;
         try {
           abandoned = await abandonClosedSession(db, { repoPath, sessionId: session, wait: true });
         } catch (error) {
           if (error instanceof GateInterruptedError) throw error;
-          return refuseScrubbed(error);
+          // Recorded all the same: reported, then failed on the lost lock (decision 88).
+          if (!(error instanceof MergeLockLostError)) return refuseScrubbed(error);
+          abandoned = error.result as { prUrl: string; recorded: boolean };
+          abandonLockLost = error;
         }
         console.log(
           abandoned.recorded
@@ -2642,6 +2646,7 @@ export function buildProgram(): Command {
                 `counts ${sanitizeReason(session)}'s decisions.`
             : `${abandoned.prUrl} was already recorded as closed unmerged.`,
         );
+        if (abandonLockLost !== undefined) refuseScrubbed(abandonLockLost);
         return;
       }
       let outcome: LandOutcome;

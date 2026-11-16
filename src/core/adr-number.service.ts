@@ -192,7 +192,7 @@ interface Competitor {
 /**
  * Whether the session's PR was closed unmerged: its newest merge, landed,
  * retired or pr_closed event is `retired` (`pup retire`) or `pr_closed`
- * (`pup land` reading the PR CLOSED).
+ * (`pup land --abandon-closed`).
  */
 function isClosedOut(db: Database, sessionId: string): boolean {
   const newest = listEvents(db, sessionId)
@@ -205,8 +205,8 @@ function isClosedOut(db: Database, sessionId: string): boolean {
  * The other sessions whose branch can still land: one holding its scope
  * (decision 41's live states), read at its branch, or a merged one whose PR has
  * not landed, read at the sha its newest merge pinned. One whose PR was closed
- * unmerged is out once the store records the close, by `pup retire` or by a
- * `pup land` that read it CLOSED; until then it counts (decision 146). That gate normally
+ * unmerged is out once the store records the close, by `pup retire` or by
+ * `pup land --abandon-closed`; until then it counts (decision 146). That gate normally
  * deleted the local branch, in both modes; it keeps it with a worktree it could
  * not remove or when the branch moved past the pin, and then the branch may
  * hold commits the PR does not. Either way the sha is pup's record of the PR's

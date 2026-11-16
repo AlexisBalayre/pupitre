@@ -346,7 +346,7 @@ describe('adrNumberStage', { timeout: 20_000 }, () => {
     expect(stage()).toBeUndefined();
   });
 
-  it('ignores a PR peer pup land read closed, even once its gated commit is pruned', () => {
+  it('ignores a PR peer abandoned with pup land --abandon-closed, even once its gated commit is pruned', () => {
     openPrPeer('1'.repeat(40));
     appendEvent(db, 'other', 'pr_closed', {
       prUrl: 'https://github.com/o/r/pull/1',

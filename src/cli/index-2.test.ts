@@ -1815,6 +1815,27 @@ describe('CLI commands', () => {
       expect(errors).toEqual([]);
     });
 
+    // The close was recorded all the same: reported, then failed on the lost
+    // lock (decision 88), so the operator knows the numbers were freed.
+    it('reports a close recorded under a lock that was lost, and fails on it', async () => {
+      useCwd(initRepoWithAdapter());
+      vi.mocked(abandonClosedSession).mockRejectedValue(
+        new MergeLockLostError('/repo/.git/pup-merge.lock', { prUrl: PR, recorded: true }),
+      );
+
+      await buildProgram().parseAsync(['land', 's1', '--abandon-closed'], { from: 'user' });
+
+      expect(logs).toContain(
+        `Recorded ${PR} as closed unmerged: the ADR-number check no longer counts s1's decisions.`,
+      );
+      expect(errors).toEqual([
+        expect.stringMatching(
+          /^The merge lock at \/repo\/\.git\/pup-merge\.lock was gone or replaced/,
+        ),
+      ]);
+      expect(process.exitCode).toBe(1);
+    });
+
     it('names a kept branch and a target that already held the merge', async () => {
       useCwd(initRepoWithAdapter());
       vi.mocked(landSession).mockResolvedValue({
