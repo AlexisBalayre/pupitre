@@ -87,7 +87,8 @@ export async function remeasureMerge(
       head,
     ])
       .split('\0')
-      .filter((path) => path !== '' && CRITICAL_PATHS.some((area) => area.test(path)));
+      .filter(Boolean)
+      .filter((path) => CRITICAL_PATHS.some((area) => area.test(path)));
     if (critical.length > 0) {
       const named = critical.slice(0, DEBT_DETAIL_SAMPLES).map(quotePath).join(', ');
       const more = critical.length > DEBT_DETAIL_SAMPLES ? ', …' : '';
@@ -176,10 +177,9 @@ export async function remeasureMerge(
     if (kind === undefined || files === undefined) continue;
     accepted.set(kind, [...(accepted.get(kind) ?? []), { description: entry.description, files }]);
   }
+  const flaggedDebt = measured?.flaggedDebt ?? [];
   const flaggedBy = new Set(
-    (measured?.flaggedDebt ?? []).flatMap(
-      (flag) => debtFigures(flag.description, session.id)?.stage ?? [],
-    ),
+    flaggedDebt.flatMap((flag) => debtFigures(flag.description, session.id)?.stage ?? []),
   );
   // Past a stage that failed the rest never ran, so only a full run is held
   // to the pin's stages: all but the two the gate runs on the session's
@@ -188,11 +188,10 @@ export async function remeasureMerge(
     measured === undefined
       ? []
       : pinnedStages.flatMap(({ stage, status }) => {
-          if (status !== 'pass' && status !== 'flagged') return [];
-          if (WORKTREE_STAGES.has(stage)) return [];
-          const now = stages.find((result) => result.stage === stage);
-          return now === undefined || now.status === 'skipped'
-            ? [`  ${stage}: ran at the pin, ${now === undefined ? 'absent' : 'skipped'} now`]
+          if (!RAN_STATUSES.has(status) || WORKTREE_STAGES.has(stage)) return [];
+          const now = stages.find((result) => result.stage === stage)?.status ?? 'absent';
+          return ['absent', 'skipped'].includes(now)
+            ? [`  ${stage}: ran at the pin, ${now} now`]
             : [];
         });
   const failed = [
@@ -204,7 +203,7 @@ export async function remeasureMerge(
     ...stages
       .filter((stage) => stage.status === 'flagged' && !flaggedBy.has(stage.stage))
       .map((stage) => `  ${stage.stage}: flagged, with no debt filed for it`),
-    ...(measured?.flaggedDebt ?? []).flatMap((flag) => {
+    ...flaggedDebt.flatMap((flag) => {
       const held = accepted.get(remeasureKind(flag.description, session.id) as string) ?? [];
       if (held.length === 0) return [`  flagged, never accepted: ${flag.description}`];
       const now = debtFigures(flag.description, session.id);
@@ -230,15 +229,22 @@ export async function remeasureMerge(
     );
   }
   assertMergeLockHeld(req.repoPath, `the land of ${prUrl} after its remeasure`);
-  const moved = [
-    ...(currentBranch(req.repoPath) === target ? [] : [`the main checkout left ${target}`]),
-    ...(resolveCommit(req.repoPath, `refs/heads/${target}`) === localSha
-      ? []
-      : [`local ${target} moved from ${localSha}`]),
-    ...(isAncestor(req.repoPath, originTip, merge.originTipNow())
-      ? []
-      : [`origin's ${target} no longer holds ${originTip}`]),
-  ];
+  // Each read and what it says when it no longer holds.
+  const moved = (
+    [
+      [currentBranch(req.repoPath) === target, `the main checkout left ${target}`],
+      [
+        resolveCommit(req.repoPath, `refs/heads/${target}`) === localSha,
+        `local ${target} moved from ${localSha}`,
+      ],
+      [
+        isAncestor(req.repoPath, originTip, merge.originTipNow()),
+        `origin's ${target} no longer holds ${originTip}`,
+      ],
+    ] as const
+  )
+    .filter(([holds]) => !holds)
+    .map(([, change]) => change);
   if (moved.length > 0) {
     throw new Error(
       `While the remeasure ran, ${moved.join('; ')}. The session stays merged. Nothing ` +
@@ -312,6 +318,9 @@ const DEBT_WORDINGS: readonly {
     stage: (match) => `${match[2]} (${match[1]})`,
   },
 ];
+
+/** The statuses of a stage that ran at the pin, which must run again. */
+const RAN_STATUSES: ReadonlySet<string> = new Set(['pass', 'flagged']);
 
 /** The gate's stages on the session's worktree, which a remeasure cannot run. */
 const WORKTREE_STAGES: ReadonlySet<string> = new Set(['worktree-clean', 'fresh-base']);
