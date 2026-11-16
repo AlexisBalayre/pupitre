@@ -18,9 +18,7 @@
     (`ghInCheckout`), as `runGit` does. gh runs git there with no `--git-dir` of pup's, so a
     planted commondir or a symlinked `.git` is refused before gh starts. A gitfile is
     refused at a checkout `assertMainCheckout` has passed in the process, and gh always
-    runs after that, at the gate and through the CLI. `pup ci wait` reads a failed gh read
-    as one more wait, but not a `RewrittenGitDirError`: every later read would be refused
-    too, so the wait ends at once rather than at its timeout.
+    runs after that, at the gate and through the CLI.
     *CLI resolution.* `held` in `src/cli/index.ts` calls `assertMainCheckout` on a resolved
     project's repo before any command reads it, and closes the store when that refuses. It
     covers every path a command takes to one project's repo: the shared resolver
@@ -30,8 +28,7 @@
     every later spawn in that process. The fleet views, `pup status --all` and
     `pup ui --all`, run git in each project they read, so `heldFleet` holds each of those
     first: every project whose repo exists, is its own path, and is awake or shown with
-    `--dormant`, the rule `readFleetProjects` in `fleet.service.ts` holds for both views
-    and for `heldFleet`. One that refuses stops the view, as it stops a command run in that repo.
+    `--dormant`. One that refuses stops the view, as it stops a command run in that repo.
     `fatalExitCode` prints a `RewrittenGitDirError` as one line and exits 1, as it does for
     `ProjectResolutionError`. `pup project list|dormant|wake` reads no git, so it is left
     alone.
@@ -44,9 +41,8 @@
     `packed-refs` are left out because git replaces both by rename on every ref update, so
     their inodes change with no session involved. Writes there by a gate stage are already
     denied: the gate profile denies `file-write*` (unlink and rename included) on every
-    `/.git` path under a checkout it grants. `assertMainCheckout` takes the identity, of `.git`,
-    `objects/` and `refs/`, before its checks and again after they pass, and records it only
-    when the two agree. So a decoy
+    `/.git` path under a checkout it grants. `assertMainCheckout` takes the identity before
+    its checks and again after they pass, and holds it only when the two agree. So a decoy
     that fails the checks is never the one held, and neither is a directory swapped in
     while they ran.
     *The env and the argv.* The scrubbed env, which `runGit`, `runGitBytes` and gh (through
@@ -54,16 +50,7 @@
     operator's config locations (`GIT_CONFIG_GLOBAL`, `GIT_CONFIG_SYSTEM`,
     `GIT_CONFIG_NOSYSTEM`), commit identity (`GIT_AUTHOR_*`, `GIT_COMMITTER_*`), and how a
     fetch or push reaches the remote (`GIT_SSH`, `GIT_SSH_COMMAND`, `GIT_SSH_VARIANT`,
-    `GIT_ASKPASS`, `GIT_TERMINAL_PROMPT`, and over HTTPS the CA, client certificate and
-    proxy variables: `GIT_SSL_CAINFO`, `GIT_SSL_CAPATH`, `GIT_SSL_CERT`, `GIT_SSL_KEY`,
-    `GIT_SSL_CERT_PASSWORD_PROTECTED`, `GIT_PROXY_SSL_CERT`, `GIT_PROXY_SSL_KEY`,
-    `GIT_PROXY_SSL_CERT_PASSWORD_PROTECTED`, `GIT_PROXY_SSL_CAINFO` and
-    `GIT_HTTP_PROXY_AUTHMETHOD`). A push to a remote or through a proxy that asks for a
-    client certificate fails without them, and each names only how to authenticate, not
-    what git reads. `GIT_SSL_NO_VERIFY` is left out: it turns certificate verification off,
-    which no push needs, so from a session's environment it would only let a push go to a
-    host that is not the remote. An operator who wants it sets `http.sslVerify` in the
-    config `GIT_CONFIG_GLOBAL` names. It replaces
+    `GIT_ASKPASS`, `GIT_TERMINAL_PROMPT`, `GIT_SSL_CAINFO`, `GIT_SSL_CAPATH`). It replaces
     a denylist that the re-review of 751cf8dd showed still passed `GIT_SHALLOW_FILE`
     (rewrites parents), `GIT_NAMESPACE` (the refs read), `GIT_REPLACE_REF_BASE`,
     `GIT_EXEC_PATH` (git's subcommands from a session's directory) and `GIT_ATTR_SOURCE`.
@@ -97,18 +84,41 @@
       git it spawns is handed pup's own pin in its place (decision 89). No inherited
       `GIT_NAMESPACE` or `GIT_REPLACE_REF_BASE` reaches that git. `GIT_CONFIG_GLOBAL` and
       `GIT_AUTHOR_NAME` still do.
-    In `test/unit/core/git-diff-client.test.ts`, the HTTPS variables reach a spawned git
-    and `GIT_SSL_NO_VERIFY` does not.
     In `github-client.test.ts`, gh is refused before it runs on a planted commondir, a
     gitfile or a symlink, and its answer is refused when `.git` became a symlink while it
     ran. gh is spawned with pup's `GIT_SHALLOW_FILE` pin rather than the inherited one, and with no `GIT_NAMESPACE`. In `index.test.ts`, `--project <id> status` on a registered repo whose `.git`
     became a gitfile or a symlink throws the refusal, which `fatalExitCode` prints and exits
     1 on. So does `pup status` or `pup ui` run inside a repo whose `.git` became a
     gitfile, and `pup status --all` or `pup ui --all` over a registered one. An untouched
-    checkout runs. `test/unit/core/github-client.test.ts` scans `github.client.ts`, as
-    decision 172's test scans `git-diff.client.ts`: every `child_process` use must be the
-    spawn `ghInCheckout` wraps, or the `gh --version` probe, which runs no git. In
-    `ci-wait.test.ts`, a read during which the checkout's `.git` gains a commondir ends
-    `pup ci wait` with the refusal, after one read and no sleep. In `fleet.test.ts`,
-    `readFleetProjects` leaves out a missing repo, a variant path and, unless asked, a
-    dormant project.
+    checkout runs.
+
+## Amendment (2026-11-16, #348)
+
+Five review notes on #324, settled after it landed.
+
+- *`pup ci wait`.* It reads a failed gh read as one more wait, but not a
+  `RewrittenGitDirError`: every later read would be refused too, so the wait ends at once
+  rather than at its timeout.
+- *The HTTPS variables.* The allowlist kept `GIT_SSL_CAINFO` and `GIT_SSL_CAPATH` but dropped
+  the client certificate and proxy variables, which were inherited before. It now also keeps
+  `GIT_SSL_CERT`, `GIT_SSL_KEY`, `GIT_SSL_CERT_PASSWORD_PROTECTED`, `GIT_PROXY_SSL_CERT`,
+  `GIT_PROXY_SSL_KEY`, `GIT_PROXY_SSL_CERT_PASSWORD_PROTECTED`, `GIT_PROXY_SSL_CAINFO` and
+  `GIT_HTTP_PROXY_AUTHMETHOD`. A push to a remote or through a proxy that asks for a client
+  certificate fails without them, and each names only how to authenticate, not what git
+  reads. `GIT_SSL_NO_VERIFY` is left out: it turns certificate verification off, which no
+  push needs, so from a session's environment it would only let a push go to a host that is
+  not the remote. An operator who wants it sets `http.sslVerify` in the config
+  `GIT_CONFIG_GLOBAL` names.
+- *The fleet filter.* Which projects `heldFleet` holds (repo exists, is its own path, awake
+  or shown with `--dormant`) is `readFleetProjects` in `fleet.service.ts`, the rule both
+  fleet views read, rather than a copy in `src/cli/index.ts`.
+- *The identity.* The identity `assertMainCheckout` takes covers `.git`, `objects/` and
+  `refs/`, and is recorded only once its checks pass and the two identities agree.
+- *Tests.* In `test/unit/core/git-diff-client.test.ts`, the HTTPS variables reach a spawned
+  git and `GIT_SSL_NO_VERIFY` does not. `test/unit/core/github-client.test.ts` scans
+  `github.client.ts`, as decision 172's test scans `git-diff.client.ts`: every
+  `child_process` use must be the spawn `ghInCheckout` wraps, or the `gh --version` probe,
+  which runs no git. In `ci-wait.test.ts`, a read during which the checkout's `.git` gains a
+  commondir ends `pup ci wait` with the refusal, after one read and no sleep. In
+  `fleet.test.ts`, `readFleetProjects` leaves out a missing repo, a variant path and, unless
+  asked, a dormant project.
