@@ -191,7 +191,10 @@
     the commit leaves the gate nothing to see. So under the setting the scope hook walks the path
     from the worktree down and refuses it when any component that exists is a symlink, the file
     itself included. It refuses rather than resolve: a link inside the worktree costs a worker
-    nothing, since it can edit the target's own path. Without the setting Bash writes those files
+    nothing, since it can edit the target's own path. It first refuses a path with a control
+    character in the raw payload: the shell drops trailing newlines and the hook's sed
+    normalization works line by line, so a newline in a link's name would make the walk test
+    another path than the one the Write opens. Without the setting Bash writes those files
     directly, so the check is compiled only with it and the hook's bytes stay as they were.
     *Exfiltration it does not stop.* Every reachable host is a way out:
     - The registry tokens are kept from Bash reads and from the Read tool, but a worker can still

@@ -838,10 +838,18 @@ merge_of_target() {
 
 /**
  * The scope hook's refusal of a path through a symlink in the worktree, from
- * its first component down to the first that does not exist yet.
+ * its first component down to the first that does not exist yet. A path with a
+ * control character is refused first, from the raw payload: `$(...)` drops
+ * trailing newlines and sed rewrites line by line, so the walk would test
+ * another path than the one the tool opens.
  */
 const SYMLINK_CHECK_SHELL = `# Decision 191: sandboxed Bash can plant a symlink that this Edit or Write,
 # outside the sandbox, would follow; no component of the path may be one.
+# Checked on the raw payload: $(...) drops trailing newlines and sed rewrites
+# per line, so a control character would make the walk test another path.
+if ! printf '%s' "$INPUT" | jq -e '.tool_input.file_path | test("[[:cntrl:]]") | not' >/dev/null 2>&1; then
+  echo "BLOCKED: under the worker sandbox, Edit and Write refuse a path with a control character." >&2; exit 2
+fi
 LINK_PATH=$WORKTREE
 LINK_REST=$REL
 while [ -n "$LINK_REST" ]; do

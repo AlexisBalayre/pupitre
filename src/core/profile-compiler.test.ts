@@ -1135,6 +1135,13 @@ describe('the worker sandbox (decision 191)', () => {
       expect(result.stderr).toContain('is a symlink');
     }
     expect(write('src/net/new/file.ts').status).toBe(0);
+    // sed strips `./` after an embedded LF, so the walk would test `src/evil\nproject.yml`.
+    symlinkSync(join(repo, '.pupitre'), join(worktree, 'src', 'evil\n.'));
+    for (const path of ['src/evil\n./project.yml', 'src/net/file.ts\n', 'src/net/a\rb.ts']) {
+      const result = write(path);
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain('control character');
+    }
     expect(readFileSync(join(repo, '.pupitre', 'project.yml'), 'utf8')).toBe(
       'workerSandbox: true\n',
     );
