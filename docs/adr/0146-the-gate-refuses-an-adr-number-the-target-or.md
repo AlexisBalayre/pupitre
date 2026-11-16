@@ -193,8 +193,10 @@
     would send the operator to merge on GitHub and `pup land` with no check. So `planRegate`
     re-gates an unmoved head when the close is on record; once the local branch is back at the
     PR's head, its ADR-number stage refuses a number taken since, and only its passing merge
-    event makes the numbers count again. The ceiling above on closed PRs now holds only until
-    the operator's record.
+    event makes the numbers count again. A plain `pup land` of such a PR, `OPEN` with its head
+    at the pin and its close on record, would send the operator the same way, to merge it on
+    GitHub, so it refuses and names the re-gate instead. The ceiling above on closed PRs now
+    holds only until the operator's record.
     Tests: the stage ignores a PR peer with a `pr_closed` event, even once its gated commit is
     pruned, and refuses a clash with one whose newer merge event follows the close. A plain land
     of a `CLOSED` PR refuses with that message and records nothing. `--abandon-closed` records
@@ -204,4 +206,5 @@
     close recorded under a merge lock lost, then fails on it (decision 88). A re-gate of a PR
     reopened at the pin after the record passes and records a merge that ends the record,
     refuses a number a live peer took since and keeps the record, and an unmoved head with no
-    close on record is still refused.
+    close on record is still refused. A plain land of that reopened PR refuses, naming the
+    re-gate, and changes nothing.

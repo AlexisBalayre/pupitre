@@ -116,6 +116,15 @@ export async function landSession(
         `re-landed it, \`pup retire ${id} --superseded-by <pr>\`. Nothing was landed.`,
     );
   }
+  // A reopen leaves the head at the pin, but the record freed the PR's ADR
+  // numbers to other gates: only a re-gate checks them again (decision 146).
+  if (pr.state === 'OPEN' && isPrClosedOnRecord(db, session.id)) {
+    throw new Error(
+      `${prUrl} was recorded closed unmerged and is OPEN on GitHub again; its ADR numbers were ` +
+        `free to other gates since. Re-gate it with \`pup merge ${id} --pr\` before merging it ` +
+        'there, then re-run `pup land`. Nothing was landed.',
+    );
+  }
   if (pr.state !== 'MERGED') {
     throw new Error(
       `${prUrl} is ${sanitizeReason(pr.state ?? 'in an unreadable state')} on GitHub, not ` +

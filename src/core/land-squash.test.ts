@@ -703,6 +703,23 @@ describe('landSession', { timeout: 20_000 }, () => {
       expect(closedEvents()).toEqual([]);
       expect(existsSync(ghLog)).toBe(false);
     });
+
+    // Merging it on GitHub as asked would skip the re-gate that re-checks the
+    // ADR numbers the record freed.
+    it('refuses a land of a PR reopened at the pin, naming the re-gate', async () => {
+      seedPrMerge();
+      appendEvent(db, SESSION_ID, 'pr_closed', { prUrl: PR_URL, sha: pinned });
+      const before = mainSha();
+      fakeGh({ state: 'OPEN', headRefOid: pinned, mergeCommit: null });
+
+      await expect(land()).rejects.toThrow(
+        `${PR_URL} was recorded closed unmerged and is OPEN on GitHub again; its ADR numbers ` +
+          `were free to other gates since. Re-gate it with \`pup merge ${SESSION_ID} --pr\` ` +
+          'before merging it there, then re-run `pup land`. Nothing was landed.',
+      );
+      expectNothingChanged(before);
+      expect(closedEvents()).toHaveLength(1);
+    });
   });
 
   // Decision 131: GitHub's squash merges the pinned content onto a main that
