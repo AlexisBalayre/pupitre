@@ -1,0 +1,218 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-16T15:28:31.238Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43895169004",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43895169004",
+  "actor": "AlexisBalayre",
+  "commit_sha": "09bf9e5ceed0242671bccde1cb7d8268e706f122",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 357,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/land-remeasure.service.ts",
+      "line": "166-177",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "Every real gate report lists `worktree-clean` and/or `fresh-base` as passed, but `measureBranch` never produces either, so `unrun` always reports \"ran at the pin, absent now\" and every real `pup land --remeasure` refuses.",
+      "body": "**`--remeasure` refuses every real merge.**\n\nThe ran-at-pin check walks every `pass`/`flagged` stage in the pin's report and looks for it in `stages`. But `stages` holds only what `measureBranch` produces.\n\nThe stored report contains two stages that `measureBranch` never produces:\n- `gateAndMerge` always pushes `{ stage: 'worktree-clean', status: 'pass' }` (merge-gate.service.ts:2344). Every path through `fresh-base` that continues records a pass (2383-2461). That `stages` array becomes the report passed to `transitionSession(..., 'merged', { report })` (2506, 2563), and the lookup at land-remeasure.service.ts:92-103 finds exactly that report.\n- A re-gate records `fresh-base: pass` (regate.service.ts:203-209). Its `worktree-clean` is `skipped`, which the status filter already drops.\n\nNothing in `measureBranch` (from merge-gate.service.ts:2941) or `remeasureMerge` adds either stage. So `unrun` always contains `fresh-base: ran at the pin, absent now` (plus `worktree-clean` for a first-gate pin), and the land always refuses.\n\nThe tests miss this for two reasons:\n- `measureBranch` is mocked.\n- The pinned report is built only from `['build','test','lint','scope-audit']` (land.test.ts:934).\n\nThe fix below excludes both stages by name. Intersecting with `measureBranch`'s output would defeat the check, because that output varies per run. Both stages need the session worktree, which a remeasure does not have. A test whose pinned report includes these two passes would cover the regression.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/09bf9e5ceed0242671bccde1cb7d8268e706f122/src/core/land-remeasure.service.ts#L166-L177",
+      "suggestion": "          if (status !== 'pass' && status !== 'flagged') return [];\n          if (stage === 'worktree-clean' || stage === 'fresh-base') return [];"
+    },
+    {
+      "file": "src/core/land-remeasure.service.ts",
+      "line": "72-75",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The critical-area check diffs `<pin>...<head>`, which compares from their merge-base. A remeasure no longer requires the head to descend from the pin, so a head branched from an earlier commit can land a critical-area change that the check never sees.",
+      "body": "**A head that does not descend from the pin can bypass the critical-area approval.**\n\n```ts\nconst critical = gitDiffPaths(req.repoPath, sha, head).filter((path) =>\n  CRITICAL_PATHS.some((area) => area.test(path)),\n);\n```\n\n`gitDiffPaths` runs `git diff … ${target}...${branch}` (git-diff.client.ts:997-1008), a three-dot diff that starts at the merge-base. Under `--remeasure`, land.service.ts:242 skips `descendsFrom(head, sha)`, and ADR 0185 says \"The pin need not be an ancestor of the head\". So `merge-base(pin, head)` can be an older ancestor of the pin rather than the pin itself.\n\n**Trigger:**\n1. The session commits S1, which changes critical file C (e.g. `src/core/merge-gate.service.ts`).\n2. It commits S2, which reverts C. The gate pins S2 and sees nothing in C.\n3. A fix round force-pushes H, a child of S1 and not of S2, which keeps the S1 change to C.\n4. GitHub merges the PR at H.\n\n`merge-base(S2, H) = S1` and `S1[C] == H[C]`, so the diff does not list C. `critical` is empty and no `--approved-by` is needed. If build, test and lint pass, the C change lands unapproved.\n\nNothing else catches it:\n- `CRITICAL_AREAS` is not used anywhere in `measureBranch`.\n- The scope audit checks scope-in, not approval.\n\nThis is exactly what ADR 0185's \"Critical areas\" paragraph says cannot happen.\n\n**Possible fixes** (ADR 0185 line 66 specifies `<pin>...<head>`, so update its wording too):\n- Require `--approved-by` whenever `head` does not descend from `sha`.\n- Or list the paths with a tree diff (`git diff <sha> <head>`, two-dot). This over-reports and fails closed.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/09bf9e5ceed0242671bccde1cb7d8268e706f122/src/core/land-remeasure.service.ts#L72-L75",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land-remeasure.service.ts",
+      "line": "155-196",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "A remeasure accepts a debt flag when an open ledger entry of the same kind has an equal or higher count. It never checks that the files flagged now are the files someone accepted, so a commit past the pin can put an unreviewed \"Text files git reports as binary\" file in place of an accepted one.",
+      "body": "**Debt is matched by kind and count, not by the files that were accepted.**\n\n```ts\nreturn held.some((entry) => noWorse(flag.description, entry, session.id))\n```\n\n`accepted` keeps only descriptions, and `noWorse` (316-331) compares only the figures in them. For `Text files git reports as binary (N)`, the gate's flag carries `files` and the ledger stores them (merge-gate.service.ts:3421-3424, 3586-3601). Decision 53 says this flag exists because such a file is \"a write no diff and no scope audit showed\", and the operator decides on it with `--accept-debt`.\n\nThe remeasure is weaker than the gate here:\n- The gate and the re-gate refuse any flag without `--accept-debt` on that run (merge-gate.service.ts:2493, regate.service.ts:213).\n- Only the remeasure passes a held kind with no operator decision.\n\n**Trigger:**\n1. The pin's gate flags `vendor/bundle.min.js` (tracked `-diff`), and the operator accepts it.\n2. A commit past the pin adds `-diff` for a different in-scope text file, `src/cli/foo.ts`, and changes it.\n3. A revert stops changing the bundle, so the count stays at 1.\n\nThe remeasure flags `Text files git reports as binary (1)`, with the same kind and figure as the accepted entry, so it lands. No stage puts a human on the hidden file's content, and `.gitattributes` is not a critical area.\n\nThe same gap applies, with less impact, to `Coverage unmeasured over N changed source file(s)` and to the figureless `Coverage gap (unreported files)`.\n\n**Possible fix:** keep each held entry's `files` (`JSON.parse(entry.files)`). Pass a flag only when its `files` are a subset of a no-worse entry's files, at least for the forged-binary wording.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/09bf9e5ceed0242671bccde1cb7d8268e706f122/src/core/land-remeasure.service.ts#L155-L196",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land-remeasure.service.ts",
+      "line": "155-196",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "After a re-gate, the remeasure holds a flag to the first gate's figures. The ledger never records the larger figure the re-gate accepted, so a merge no worse than the re-gated pin refuses.",
+      "body": "**The accepted figures are the first gate's, not the pin's.**\n\nThe remeasure builds `accepted` only from `measured.openEntries`, which comes straight from `listLedgerEntries` (merge-gate.service.ts:3372). A re-gate requires `--accept-debt` for any flag (regate.service.ts:213), then skips filing any kind the session already holds:\n\n```ts\nfileAcceptedDebt(db, req, measured.projectId, measured.flaggedDebt, (flag) =>\n  held.has(debtKind(flag.description, session.id) as string),\n);\n```\n\n`fileAcceptedDebt` inserts only when `!held(flag)` (merge-gate.service.ts:3601). Nothing updates an entry's description; the ledger's only UPDATE closes an entry. So the ledger keeps the first gate's figure.\n\n**Trigger:**\n1. The first gate accepts `Oversize diff (612 lines)`.\n2. A fix round re-gates with `--accept-debt` at 651 lines. Nothing is filed, because the kind is held.\n3. GitHub merges a CI fix past that pin, still at 651 lines.\n\n**Result:** `noWorse(651, 612)` is false, and the land refuses with `flagged past the accepted Oversize diff (612 lines)…`, even though the operator accepted 651 at this very pin. Any re-gated pin whose debt figures grew hits this.\n\n**Possible fixes:** compare against the figures in the pin report's flagged stages, or have the re-gate refresh the held entry's figure.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/09bf9e5ceed0242671bccde1cb7d8268e706f122/src/core/land-remeasure.service.ts#L155-L196",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land-remeasure.service.ts",
+      "line": "155-196",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "A coverage-gap flag can refuse as \"never accepted\" when only the rounding of a percentage changed: `debtKind` turns `80%` into `#%` and `80.4%` into `#.#%`, so the two get different kinds.",
+      "body": "**A percentage moving between whole and decimal changes the debt kind.**\n\n`pct` writes `${Math.round(ratio * 1000) / 10}%` (debt.service.ts:454), so you get `80%` or `80.4%`. `debtKind` runs `span.replace(/\\d+/g, '#')` (merge-gate.service.ts:3690-3710) and leaves the dot in place. That gives `patch coverage #% below baseline #.#%` for one and `patch coverage #.#% …` for the other.\n\nThe remeasure uses the kind in three places:\n- the `accepted` map key (lines 156-160)\n- the lookup at line 188, where a miss means `flagged, never accepted`\n- `noWorse` (line 323)\n\nThe `DEBT_WORDINGS` coverage regex (line 261) reads both shapes, but the kind check rejects the flag before any figure is compared.\n\n**Trigger:** the pin accepted `Coverage gap (patch coverage 80% below baseline 85.3%)`. The remeasure, against a moved target, measures `80.4%`, which is better. The baseline moving between `85.3%` and `85%` does the same.\n\n**Result:** the land refuses with `flagged, never accepted`.\n\nThe tests (land.test.ts:1379-1380) use the decimal shape on both sides, so they never hit this. The quirk in `debtKind` is older, but this PR is the first code to turn a kind mismatch into a refusal.\n\n**Possible fix:** normalise `#.#` to `#` in the kind used for these lookups, or key figure wordings by wording index.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/09bf9e5ceed0242671bccde1cb7d8268e706f122/src/core/land-remeasure.service.ts#L155-L196",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land.service.ts",
+      "line": "277-298",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The remeasure measures against `landedOn` but links `node_modules` and reads scripts from the main checkout at `localSha`, so `pup land B --remeasure` before an unlanded earlier PR A that added a dependency fails build/test and blames B's merge. It fails closed: landing A first, or a pull plus install, recovers.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "2832-2835",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "When a remeasure passes with a flagged stage (for example complexity, no worse than the session's accepted debt), `pup land` prints \"every stage passed:\" and then the stage's `flagDetail` text, which ends \"Re-run with --accept-debt ... --review-by ...\". That hint is for a flag `pup land` does not have, printed under a header that says every stage passed. The `remeasure` doc comment in land.types.ts (\"every one passed\") has the same inaccuracy.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land-remeasure.service.ts",
+      "line": "72-84",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "After GitHub's \"Update branch\", the three-dot `gitDiffPaths(sha, head)` lists the target's own commits as \"past the pin\", so another session's critical-area change on the target makes the remeasure demand `--approved-by` for files this PR never touched (fails safe).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "2762-2764",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`--remeasure` is kept operator-only only by `PUP_CONDUCTOR`, which a steered conductor can empty (`PUP_CONDUCTOR= pup land <id> --remeasure --approved-by <name>`), recording an approver who never approved. `pup merge` uses the `launchedAncestor` process-tree check for this; otherwise name `--remeasure` as a known gap in decision 188.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land-remeasure.service.ts",
+      "line": "157-198",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`measured === undefined` is handled three times (`measured?.openEntries ?? []`, `measured?.flaggedDebt ?? []` twice, and the `unrun` ternary). One early throw after the try/finally would let the rest use `measured` directly.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land-remeasure.service.ts",
+      "line": "61-71",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`remeasureMerge` takes a 10-field `merge` object built inline for its one call, and several fields (`id`, `target`, `prUrl`) are used only in error text or are already on `req`/`session`. Passing the shas directly would drop the type and the destructure.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land-remeasure.service.ts",
+      "line": "232-280",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Nine of the ten `DEBT_WORDINGS` entries have `stage: () => 'literal'`. A `string | ((m) => string)` field would remove nine lambdas.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "The validator confirmed the reviewer's important on land.service.ts 277-298 (node_modules/scripts read at localSha while measuring against landedOn) but judged it fails closed with a recovery path. I recorded it as a nit."
+    },
+    {
+      "component": "orchestrator",
+      "description": "Skipped by gate: context (no spec/protocol/infra surface), workflow-safety (no .github/workflows change), spec (no closing issue or spec source), maintainability (off the default roster at standard depth)."
+    }
+  ],
+  "duplicates_merged": 3,
+  "comments_posted_actual": 5,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 7.533500805000002,
+  "duration_ms": 468321,
+  "num_turns": 22,
+  "tokens": {
+    "input": 12,
+    "output": 22742,
+    "cache_read": 326297,
+    "cache_creation": 70565,
+    "total": 419616
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 354,
+      "output": 127119,
+      "cache_read": 7366414,
+      "cache_creation": 569048,
+      "cost_usd": 7.0740137999999995
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 58,
+      "output": 11144,
+      "cache_read": 504146,
+      "cache_creation": 118640,
+      "cost_usd": 0.4585706
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 887,
+      "cache_read": 1933,
+      "cache_creation": 3627,
+      "cost_usd": 0.000916405
+    }
+  ],
+  "permission_denials": []
+}
