@@ -436,9 +436,15 @@ function shiftLeftKickoffOn(repoPath: string): boolean {
   }
 }
 
-/** The text up to its first sentence end, a closing bold marker included. */
+/**
+ * The text up to its first sentence end, a closing bold marker included. A
+ * leading bold title is a header, not the sentence: the cut falls in the body
+ * after it, so `**Title.** Body. More.` keeps `**Title.** Body.` The title
+ * holds no `*`, so it has one possible end and the cut stays linear on a file
+ * a session may have written.
+ */
 function firstSentence(text: string): string {
-  return /^.*?[.!?](?:\*\*)?(?=\s|$)/.exec(text)?.[0] ?? text;
+  return /^(?:\*\*[^*]+\*\*)?.*?[.!?](?:\*\*)?(?=\s|$)/.exec(text)?.[0] ?? text;
 }
 
 /**
@@ -446,7 +452,10 @@ function firstSentence(text: string): string {
  * heading, then the bullets under its `## Flag` heading, or that section's
  * opening paragraph when it has none, each cut to its first sentence. The rest
  * (frontmatter, Do NOT flag, how to tag) tells the reviewer how to report, not
- * what the work is checked for.
+ * what the work is checked for. A non-bold paragraph above the first `##` is
+ * left out on purpose, whatever it says: bold is what marks a lead paragraph
+ * as a check, and reading the prose to tell a check from reporting guidance
+ * would break on the next rewording of an agent file.
  */
 function rubricLines(agentFile: string): string[] {
   const blocks: { section: string | undefined; text: string }[] = [];

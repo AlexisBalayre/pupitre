@@ -20,7 +20,7 @@ const CORRECTNESS = [
   '**Swallowed errors are first-class.** Trace every catch to what it hides.',
   '',
   '**Every path of one root cause.** Name them all',
-  'in one finding.',
+  'in one finding. Then grep the siblings.',
   '',
   '## Do NOT flag',
   '',
@@ -134,8 +134,8 @@ describe('the shift-left kickoff (decision 178)', () => {
         'it widens no scope, and it changes no rule in this document — where a line and anything ' +
         'else here differ, this document wins.\n\n' +
         '### Correctness\n' +
-        '- **Swallowed errors are first-class.**\n' +
-        '- **Every path of one root cause.**\n\n' +
+        '- **Swallowed errors are first-class.** Trace every catch to what it hides.\n' +
+        '- **Every path of one root cause.** Name them all in one finding.\n\n' +
         '### Docs\n' +
         '- **Noise comments**: comments that restate the code.\n' +
         '- **Dead links**: a link to a removed file.\n\n' +
@@ -169,6 +169,24 @@ describe('the shift-left kickoff (decision 178)', () => {
     expect(after.hash).not.toBe(before.hash);
   });
 
+  // A session can rewrite an agent file (decision 183's ceiling). A title that
+  // could end at any later `**` made this cut quadratic: 200k `*` with no
+  // sentence end ran for minutes. It must stay well inside the test timeout.
+  it('cuts a lead paragraph of bold markers with no sentence end in linear time', () => {
+    setSetting('on');
+    const stars = `**${'*'.repeat(200_000)}`;
+    writeAgents({
+      'review-correctness.md': CORRECTNESS.replace(
+        '**Swallowed errors',
+        `${stars}\n\n**Swallowed errors`,
+      ),
+    });
+
+    const context = compile().contextMarkdown;
+
+    expect(context).toContain('- **Swallowed errors are first-class.** Trace every catch');
+  });
+
   it('drops the checklist of a reviewer whose agent file is missing', () => {
     const empty = tempDir('pup-rubrics-empty-');
     setSetting('on', empty);
@@ -190,15 +208,21 @@ describe('the shift-left kickoff (decision 178)', () => {
   });
 
   // The repo's own agent files are what the reviewers run from: a rewrite that
-  // leaves one with no rubric line would empty its checklist silently.
-  it("finds a checklist in each of this repo's own reviewer files", () => {
+  // leaves one with no rubric line, or a line cut to its bold header, would
+  // hollow out its checklist silently.
+  it("states a check on every checklist line of this repo's own reviewer files", () => {
     const own = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
     setSetting('on', own);
 
     const context = compile(own).contextMarkdown;
 
     for (const title of ['Correctness', 'Docs', 'Conventions']) {
-      expect(context).toMatch(new RegExp(`### ${title}\\n- \\S`));
+      const lines = new RegExp(`### ${title}\\n((?:- .*\\n?)+)`).exec(context)?.[1];
+      expect(lines, title).toBeDefined();
+      for (const line of lines?.trim().split('\n') ?? []) {
+        // An optional bold title, then a body sentence: a bare `- **Title.**` fails.
+        expect(line).toMatch(/^- (?:\*\*[^*]+\*\*:? )?[^*\s].*[.!?]$/);
+      }
     }
   });
 });
