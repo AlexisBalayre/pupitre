@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# Build dist/ from scratch, so no module of a deleted source survives in it.
+#   pnpm build   ->  type-checks, compiles into a fresh directory, then swaps it in for dist/
+# The installed pup is a symlink into dist/: a failed build leaves the previous dist/ in place.
+# Each run stages in its own ./.pup-build.XXXXXX, so concurrent builds never delete each other's.
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+[ ! -L node_modules ] || { echo "build: node_modules is a symlink; refusing to build" >&2; exit 1; }
+TSC=node_modules/.bin/tsc
+
+STAGE=$(mktemp -d ./.pup-build.XXXXXX)
+trap 'rm -rf "$STAGE"' EXIT
+[ ! -L "$STAGE" ] || { echo "build: $STAGE is a symlink; refusing to build" >&2; exit 1; }
+# Hide the stage from git status (scope re-check, merge gate), even if a killed build leaves it behind.
+echo '*' > "$STAGE/.gitignore"
+
+"$TSC" --noEmit
+# Emit at the same depth as dist/: tsc writes source map paths relative to the output folder.
+"$TSC" -p tsconfig.build.json --outDir "$STAGE"
+[ -f "$STAGE/cli/index.js" ] || { echo "build: $STAGE/cli/index.js was not emitted" >&2; exit 1; }
+chmod +x "$STAGE/cli/index.js"
+chmod 755 "$STAGE"
+
+# The swap holds a mkdir lock, so two builds never interleave their moves of dist/.
+LOCK=.pup-build.lock
+LOCKED=0
+for _ in $(seq 100); do
+  if mkdir "$LOCK" 2>/dev/null; then LOCKED=1; break; fi
+  sleep 0.1
+done
+[ "$LOCKED" = 1 ] || { echo "build: another build holds $LOCK; remove it if no build is running" >&2; exit 1; }
+OLD=$(mktemp -d ./.pup-build.XXXXXX)
+trap 'rm -rf "$STAGE" "$OLD"; rmdir "$LOCK"' EXIT
+[ ! -e dist ] || mv dist "$OLD/dist"
+if ! mv "$STAGE" dist; then
+  [ ! -e "$OLD/dist" ] || mv "$OLD/dist" dist
+  echo "build: could not move the new build into dist/; the previous dist/ is kept" >&2
+  exit 1
+fi
+rm -f dist/.gitignore
