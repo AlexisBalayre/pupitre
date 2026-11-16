@@ -1,0 +1,93 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-16T11:49:28.842Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43860883864",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43860883864",
+  "actor": "AlexisBalayre",
+  "commit_sha": "e56a1ebcc83078bc1685f672afc7deffabce2778",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 350,
+  "action": "review",
+  "reviewers_spawned": [
+    "docs",
+    "conventions"
+  ],
+  "reviewers_returned": [
+    "docs",
+    "conventions"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "context",
+    "maintainability",
+    "spec",
+    "simplicity",
+    "guards",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "docs/spikes/2026-11-16-utility-cache-hit-rate.md",
+      "line": "7-11",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The verdict calls replacing the system prompt \"the only lever pup has\", but lines 81-84 list two more levers (`--bare`, `--exclude-dynamic-system-prompt-sections`) and why each fails; say \"the only lever that changes the prompt\". Likewise \"Most of the gap has two causes\" should be \"The gap has two causes\", since the two causes account for all of it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/spikes/2026-11-16-utility-cache-hit-rate.md",
+      "line": "21-28",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The spike measures the post-#303 hit rate at 50.0% of ~3.8k tokens (claude 2.1.325), while the comment at src/claude/utility.service.ts:18-19 still says \"now 78% of ~3.1k\" (2.1.322); add a sentence reconciling the two figures so a reader of utility.service.ts does not trust a rate this spike contradicts.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.4320769,
+  "duration_ms": 44552,
+  "num_turns": 7,
+  "tokens": {
+    "input": 8,
+    "output": 3074,
+    "cache_read": 143844,
+    "cache_creation": 29380,
+    "total": 176306
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 8,
+      "output": 3074,
+      "cache_read": 143844,
+      "cache_creation": 29380,
+      "cost_usd": 0.32532079999999997
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 16,
+      "output": 3922,
+      "cache_read": 82316,
+      "cache_creation": 23709,
+      "cost_usd": 0.1067561
+    }
+  ],
+  "permission_denials": []
+}
