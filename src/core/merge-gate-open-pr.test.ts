@@ -239,7 +239,8 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
    * tests can assert on the wiring. `pr view` reports the PR's head as `head`,
    * or else as whatever the branch holds in the repo its `--repo` names, read
    * from outside the repo so only the operator's global rewrite applies, and
-   * the PR as `state` onto main.
+   * the PR as `state` onto main. GitHub reads that head, not a git under pup's
+   * pin, so the read drops the transports `pinnedGitEnv` turns off.
    */
   const fakeGh = (openPrs: unknown[], head?: string, state = 'OPEN'): string =>
     [
@@ -249,7 +250,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       `if [ "$2" = "list" ]; then echo '${JSON.stringify(openPrs)}'; exit 0; fi`,
       'if [ "$2" = "view" ]; then',
       head === undefined
-        ? `  head=$(cd / && git ls-remote "git@\${5%%/*}:\${5#*/}.git" refs/heads/${BRANCH} | cut -f1)`
+        ? `  head=$(cd / && unset GIT_ALLOW_PROTOCOL && GIT_CONFIG_COUNT=0 git ls-remote "git@\${5%%/*}:\${5#*/}.git" refs/heads/${BRANCH} | cut -f1)`
         : `  head=${head}`,
       `  printf '{"headRefOid":"%s","state":"${state}","baseRefName":"main"}\\n' "$head"; exit 0`,
       'fi',
@@ -1336,7 +1337,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
     it('still counts a real binary as free', async () => {
       const worktree = seedSession(db, repo);
-      commitIn(worktree, 'src/image.bin', 'x\0y\n'.repeat(700));
+      commitIn(worktree, 'src/icon.ico', `\0\0\x01\0${'x\0y\n'.repeat(700)}`);
       forgeBinary();
 
       const outcome = await merge();
@@ -1593,6 +1594,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
     const head = sh(worktree, 'git', 'rev-parse', 'HEAD').trim();
+    const target = sh(repo, 'git', 'rev-parse', 'HEAD').trim();
     seedDebtBaseline({ deadExports: [], duplicatedLines: 0 });
     let seen: CapabilityContext | undefined;
     const adapter = debtAdapter({
@@ -1607,11 +1609,13 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     // Split on purpose: a session that edits its own manifest must not be able
     // to un-declare the tool that measures it (decision 29). The pinned sha
     // rides along, for what git reads of it from the main checkout's repo
-    // (decision 101).
+    // (decision 101), and so does the target sha the lock pinned, which the
+    // main checkout's committed tree is read at, never at its HEAD (decision 161).
     expect(seen).toEqual({
       measurePath: expect.stringMatching(GATE_CHECKOUT),
       configPath: repo,
       measureSha: head,
+      configSha: target,
     });
   });
 

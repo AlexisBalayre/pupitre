@@ -21,12 +21,10 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   steerPane: vi.fn(),
 }));
 
-// The code graph is a property of the test, not of the machine (decision 51).
-vi.mock('./codegraph.client.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('./codegraph.client.js')>()),
-  codegraphBinary: vi.fn(() => undefined),
-  prepareGraph: vi.fn((binary: string | undefined) => binary !== undefined),
-}));
+vi.mock('./session-lifecycle.service.js', async (importOriginal) => {
+  const original = await importOriginal<typeof import('./session-lifecycle.service.js')>();
+  return { ...original, recompileSessionProfile: vi.fn(original.recompileSessionProfile) };
+});
 
 // Without this, the gate after the fix round would spawn a real `claude -p` call.
 vi.mock('../claude/utility.service.js', () => ({
@@ -53,7 +51,6 @@ import {
   SteerNotDeliveredError,
   steerPane,
 } from '../claude/session-runtime.service.js';
-import { codegraphBinary } from './codegraph.client.js';
 import { openStore } from './db.client.js';
 import { DEFAULT_BASE_PROFILE } from './default-profile.constants.js';
 import { startFixRound } from './fix-round.service.js';
@@ -73,7 +70,11 @@ import {
   transitionSession,
 } from './session.repository.js';
 import { LaunchRolledBackError } from './session-lifecycle.errors.js';
-import { killSession as killPupSession, markSessionDone } from './session-lifecycle.service.js';
+import {
+  killSession as killPupSession,
+  markSessionDone,
+  recompileSessionProfile,
+} from './session-lifecycle.service.js';
 
 // The file's temp dirs, its children's included, go to a TMPDIR of its own,
 // which must hold no pup-* entry once every test has removed its own
@@ -422,6 +423,29 @@ describe('startFixRound', { timeout: 90_000 }, () => {
     expect(getSession(db, SESSION_ID)?.tmux_target).toBe('%9');
   });
 
+  it('refuses a round whose scope an operator rescope widened while it was prepared', async () => {
+    seedPrMerge();
+    reviewOnGitHub({ threads: OPEN_THREAD });
+    const compile = vi.mocked(recompileSessionProfile);
+    compile.mockImplementationOnce((...args) => {
+      const compiled = compile.getMockImplementation()?.(...args) as ReturnType<
+        typeof recompileSessionProfile
+      >;
+      db.prepare("UPDATE tasks SET spec = ?, tier = 'critical' WHERE id = 'task-s1'").run(
+        JSON.stringify({
+          id: 'task-s1',
+          goal: 'g',
+          scopeIn: ['src/**', 'docs/**'],
+          acceptance: ['a'],
+        }),
+      );
+      db.prepare("UPDATE sessions SET tier = 'critical' WHERE id = ?").run(SESSION_ID);
+      return compiled;
+    });
+
+    await expectRefusedUnwritten(/scope or tier changed while the round was prepared/, 'merged');
+  });
+
   it('refuses a session that is not merged without asking GitHub', async () => {
     reviewOnGitHub({ threads: OPEN_THREAD });
 
@@ -485,23 +509,6 @@ describe('startFixRound', { timeout: 90_000 }, () => {
     sh(repo, 'git', 'worktree', 'prune');
     await fix();
     expect(getSession(db, SESSION_ID)?.state).toBe('running');
-  });
-
-  // An `mcp.json` the recompile did not write, stale or planted through the
-  // store, never reaches the window (decision 90).
-  it('launches without a planted mcp.json when the recompile found no code graph', async () => {
-    seedPrMerge();
-    writeFileSync(
-      join(projectPaths(repo, stateBase).compiledDir(SESSION_ID), 'mcp.json'),
-      '{"mcpServers":{"planted":{"command":"sh"}}}',
-    );
-    reviewOnGitHub({ threads: OPEN_THREAD });
-    // None at the recompile, one by the time the window is prepared.
-    vi.mocked(codegraphBinary).mockReturnValueOnce(undefined).mockReturnValue('/opt/codegraph');
-
-    await fix();
-
-    expect(vi.mocked(launchSession).mock.calls[0]?.[0].mcpConfigPath).toBeUndefined();
   });
 
   // A partial pass's findings are still worth fixing; only a clean verdict

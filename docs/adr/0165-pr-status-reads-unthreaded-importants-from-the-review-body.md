@@ -21,8 +21,35 @@
     not, is left to that thread. A thread's line is its `originalLine`, or the line in its
     `Re: path:line` prefix when the poster pulled the comment to the nearest diff line. A carried
     entry that names no line, or matches no thread, still counts.
+    *The match (2026-11-13, #320).* This supersedes the `path:line` match above: a carried entry is
+    left to a bot thread, resolved or not, only when it matches the thread's marker. Each line
+    comment ends with a hidden marker, `<!-- important [file, line, description] -->`, written by
+    the poster from the finding. A carried entry matches a thread whose marker names the same file,
+    the same whole line range, and the same description compared on letters and digits only, because
+    the carried bullet is the model's copy of the prior record: a dropped period or a collapsed
+    space still matches, a rewording does not. Each thread releases at most one entry, so an earlier
+    finding's resolved thread at the same lines releases no other. Each carried section is counted
+    on its own: its header adds N, and only the N list lines under it may release any; a section
+    that is not N list lines followed by a blank line or the end of the body releases nothing, so
+    finding text shaped like a header or a bullet cannot lower the count. A carried entry that
+    matches no thread still counts, and so does one under a thread posted before the marker existed.
+    A review whose opening line cannot be read as a verdict or as the no-verdict notice counts as a
+    verdict.
+    *The operator's override (2026-11-11).* An unanchored important the operator declines has no
+    thread to resolve, and the next round carries it, so every later summary counts it. The
+    operator adds the `review-accepted` label instead. Only someone with triage access can label a
+    PR, and adding or removing it recomputes the label. It holds while it is on and was added after
+    the newest summary review with a verdict, read from the PR's issue events. It then accepts
+    that round's unthreaded importants and the status description, whether that round's or the
+    push marker that replaced it. Open bot threads still count. A later summary lapses it, and the
+    workflow removes the lapsed label, so a new round's importants are never waved through unread
+    and the operator sees they must decide again. Added in the same second as the summary, it
+    could predate it, so it does not hold. *Not taken:* a label that holds until removed, which
+    would hide every later round's new importants. A per-finding accept (an owner comment naming
+    `path:line`): a round's own unanchored finding may name no line, and the job would have to
+    run on `issue_comment`, an event any outsider can start.
     *Where the parser lives.* Inline in the workflow's github-script step, as
-    `unthreadedImportants` and `isVerdict`. That job holds a write token, readable in its environment as
+    `unthreadedImportants`, `isVerdict` and `acceptedSince`. That job holds a write token, readable in its environment as
     `INPUT_GITHUB-TOKEN`, so every line it runs stays in `.github/workflows/`, where a change is
     reviewed as a workflow change. `tools/review/test/unit/pr-status-workflow.test.ts` cuts the
     functions out of the YAML and runs them on bodies `bodyLines` renders. It also checks the inline

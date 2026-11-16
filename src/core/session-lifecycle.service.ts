@@ -16,7 +16,6 @@ import {
   windowLabel,
 } from '../claude/session-runtime.service.js';
 import { buildCodeMap, buildKnowledgeSlice } from './code-map.service.js';
-import { codegraphBinary, prepareGraph } from './codegraph.client.js';
 import {
   maxSessions,
   openConductorQuestion,
@@ -29,7 +28,6 @@ import {
   assertNoWorktreeConfig,
   checkoutPinned,
   runGit,
-  verifiedWorktreeGitEnv,
   WorktreeRepointedError,
   worktreeGitEnv,
 } from './git-diff.client.js';
@@ -502,10 +500,9 @@ function sessionWindowRoute(
  */
 export type ProfileSource = Pick<LaunchTaskRequest, 'repoPath' | 'base' | 'windowEnv'>;
 
-/** A compiled profile and the codegraph binary it was compiled for, if any. */
+/** A session's compiled profile, as the launch and the fix round hand it on. */
 export interface SessionCompile {
   compiled: CompiledProfile;
-  binary: string | undefined;
 }
 
 /**
@@ -522,10 +519,6 @@ function compileSessionProfile(
   const compiledDir = paths.compiledDir(session.id);
   const userConfigHash = snapshotUserConfigHash(source.windowEnv.configDir);
   mkdirSync(compiledDir, { recursive: true });
-  // Before the compile, because the answer shapes the compiled files and the
-  // hash is recorded over them: which binary serves the graph is part of the
-  // session's environment, not a runtime detail (decision 51).
-  const binary = codegraphBinary(source.repoPath);
   const compiled = compileProfile({
     base: source.base,
     role: source.role,
@@ -538,11 +531,10 @@ function compileSessionProfile(
     eventsFile: paths.eventsFile(session.id),
     userConfigHash,
     outDir: compiledDir,
-    codegraphBinary: binary,
     peers,
     testCommand: testCommandFor(source.repoPath),
   });
-  return { compiled, binary };
+  return { compiled };
 }
 
 /**
@@ -583,29 +575,12 @@ export function recompileSessionProfile(
 }
 
 /**
- * Write a compile into the session's compiled dir and prepare its code graph
- * on the worktree, which must exist by now, so the window opens on a graph of
- * its own branch (decision 51). The MCP config is offered only from this
- * compile's binary, never from an `mcp.json` found on disk. The indexer's git
- * is pinned to the dirs pup trusts, once the pointers are checked (decision
- * 101); a check that fails costs the graph, and the window's own check then
- * refuses the launch.
+ * Write a compile into the session's compiled dir, and answer the settings
+ * path its window is launched with.
  */
-export function writeSessionProfile(
-  { compiled, binary }: SessionCompile,
-  repoPath: string,
-  worktreePath: string,
-  compiledDir: string,
-): { settingsPath: string; mcpConfigPath: string | undefined } {
+export function writeSessionProfile({ compiled }: SessionCompile, compiledDir: string): string {
   writeCompiledProfile(compiled, compiledDir);
-  return {
-    settingsPath: join(compiledDir, 'settings.json'),
-    mcpConfigPath: prepareGraph(binary, repoPath, worktreePath, () =>
-      verifiedWorktreeGitEnv(repoPath, worktreePath),
-    )
-      ? join(compiledDir, 'mcp.json')
-      : undefined,
-  };
+  return join(compiledDir, 'settings.json');
 }
 
 /**
@@ -689,12 +664,7 @@ function startSession(
     if (error instanceof Error) error.message += ` ${undone}.`;
     throw error;
   }
-  const { settingsPath, mcpConfigPath } = writeSessionProfile(
-    compile,
-    req.repoPath,
-    worktreePath,
-    compiledDir,
-  );
+  const settingsPath = writeSessionProfile(compile, compiledDir);
 
   insertSession(db, {
     id: sessionId,
@@ -713,7 +683,6 @@ function startSession(
     env: req.windowEnv,
     settingsPath,
     route: routeFor(route.tier, route.rung, route),
-    mcpConfigPath,
   });
   // The pane id, not the session name: every later steer is addressed to it
   // (decision 46), so it is stored before anything is typed into it.

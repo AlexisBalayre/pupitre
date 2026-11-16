@@ -27,10 +27,12 @@ import {
   MalformedTaskSpecError,
   readTaskSpec,
   recordSessionRoute,
+  rescopeTaskSpec,
   saveProjectDormantAt,
   taskSpecForDisplay,
   transitionSession,
   updateTaskSpec,
+  workingSession,
 } from './session.repository.js';
 
 function seedSession(db: Database, id: string): void {
@@ -313,6 +315,34 @@ describe('the backlog', () => {
     expect(updateTaskSpec(db, 't-1', '{}')).toBe(false);
     expect(getTask(db, 't-1')?.spec).toBe(JSON.stringify({ goal: 't-1' }));
   });
+
+  // Decision 115: a claimed spec moves only once no session is at work on it,
+  // and the guard sits in the statement, so a launch after the check still wins.
+  it.each([
+    ['queued', false],
+    ['running', false],
+    ['rejected', false],
+    ['blocked', false],
+    ['awaiting-review', true],
+    ['merged', true],
+    ['killed', true],
+  ] as const)('rescopes a claimed task whose session is %s: %s', (state, rescoped) => {
+    planned('t-1');
+    insertSession(db, {
+      id: 's1',
+      taskId: 't-1',
+      worktreePath: '/repo/.worktrees/s1',
+      branch: 'pup/s1',
+      profileHash: 'hash',
+    });
+    db.prepare('UPDATE sessions SET state = ? WHERE id = ?').run(state, 's1');
+
+    expect(workingSession(db, 't-1')).toBe(rescoped ? undefined : 's1');
+    expect(rescopeTaskSpec(db, 't-1', '{"goal":"wider"}')).toBe(rescoped);
+    expect(getTask(db, 't-1')?.spec).toBe(
+      rescoped ? '{"goal":"wider"}' : JSON.stringify({ goal: 't-1' }),
+    );
+  });
 });
 
 describe('dropped_at (decision 147)', () => {
@@ -536,6 +566,57 @@ describe('task spec decoding', () => {
 
     it('refuses a task that is not stored', () => {
       expect(() => readTaskSpec(db, 't-gone')).toThrow(MalformedTaskSpecError);
+    });
+
+    describe('a ticket (decision 187)', () => {
+      const ticket = {
+        ref: '#412',
+        type: 'feature',
+        labels: ['ready', 'design-approved'],
+        triggers: [],
+        design: 'Store the ticket on the spec.',
+        criteria: ['the kickoff quotes it'],
+      };
+
+      it('reads an approved ticket back whole', () => {
+        stored(JSON.stringify({ ...valid, ticket }));
+
+        expect(readTaskSpec(db, 't-1').ticket).toEqual(ticket);
+      });
+
+      it.each([
+        ['null', null],
+        ['a list', [ticket]],
+        ['no ref', { ...ticket, ref: undefined }],
+        ['a type that is not text', { ...ticket, type: 1 }],
+        ['labels that are not a list', { ...ticket, labels: 'design-approved' }],
+        ['no triggers', { ...ticket, triggers: undefined }],
+        ['a criterion that is not text', { ...ticket, criteria: [1] }],
+        ['a design note that is not text', { ...ticket, design: ['note'] }],
+      ])('refuses a ticket with %s, naming the task', (_, bad) => {
+        stored(JSON.stringify({ ...valid, ticket: bad }));
+
+        const read = () => readTaskSpec(db, 't-1');
+        expect(read).toThrow(MalformedTaskSpecError);
+        expect(read).toThrow('Task t-1 has an unusable spec: its ticket needs a ref, a type,');
+      });
+
+      // A row intake wrote before the operator's label, or one whose label a
+      // later write dropped: the launch, the gate and the review all refuse it.
+      it('refuses a feature ticket without the design-approved label, naming the task', () => {
+        stored(JSON.stringify({ ...valid, ticket: { ...ticket, labels: ['ready'] } }));
+
+        expect(() => readTaskSpec(db, 't-1')).toThrow(
+          'Task t-1 has an unusable spec: Ticket #412 has no design-approved label',
+        );
+      });
+
+      it('keeps the ticket through an edit', () => {
+        stored(JSON.stringify({ ...valid, ticket }));
+
+        expect(editTaskSpec(db, 't-1', { goal: 'sharper' })).toBe('updated');
+        expect(readTaskSpec(db, 't-1').ticket).toEqual(ticket);
+      });
     });
   });
 

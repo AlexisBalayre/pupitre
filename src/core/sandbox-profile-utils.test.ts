@@ -399,4 +399,39 @@ describe('writeProfile', () => {
 
     expect(generated).toContain(`(subpath "${join(holder, 'report')}")`);
   });
+
+  // A nested package's cwd is `join(checkout, pkg.dir)`, and an earlier child
+  // can make an outer segment of it a link to a directory holding the same
+  // inner name: the parent is followed, so the grant was the link's target
+  // (decision 180).
+  it('refuses a grant whose resolved path leaves the root, writing no profile', () => {
+    const checkout = tempDir('pup-checkout-');
+    const elsewhere = tempDir('pup-main-checkout-');
+    mkdirSync(join(elsewhere, 'packages', 'app'), { recursive: true });
+    symlinkSync(join(elsewhere, 'packages'), join(checkout, 'packages'));
+    const policyDir = tempDir('pup-profile-');
+
+    expect(() =>
+      writeProfile(policyDir, [join(checkout, 'packages', 'app')], [], [], checkout),
+    ).toThrow(
+      `Refusing to grant ${join(checkout, 'packages', 'app')}: it resolves to ${join(elsewhere, 'packages', 'app')}, outside ${checkout}.`,
+    );
+    expect(existsSync(join(policyDir, 'gate-child.sb'))).toBe(false);
+  });
+
+  it.each([
+    ['the root itself', [] as string[]],
+    ['a nested package under it', ['packages', 'app']],
+  ])('grants %s, the root named unresolved', (_, segments) => {
+    const checkout = tempDir('pup-checkout-');
+    mkdirSync(join(checkout, ...segments), { recursive: true });
+    const unresolved = join(tmpdir(), basename(checkout));
+
+    const generated = readFileSync(
+      writeProfile(tempDir('pup-profile-'), [join(unresolved, ...segments)], [], [], unresolved),
+      'utf8',
+    );
+
+    expect(generated).toContain(`(subpath "${join(checkout, ...segments)}")`);
+  });
 });

@@ -486,7 +486,7 @@ export function needsYou(snapshot: DashboardSnapshot, ciReview?: CiReviewLookup)
           label: CONDUCTOR_TARGET,
           reason: questionReason(asked),
           answer: answerCommand(CONDUCTOR_TARGET, asked),
-          ...questionOptions(asked),
+          ...questionNeed(asked),
         },
       ]
     : [];
@@ -546,13 +546,17 @@ function answerCommand(target: string, question: DashboardQuestion): string {
   return question.options.length > 0 ? `${answer('<n>')}, or ${words}` : words;
 }
 
-/** A question's options for the inbox to number, their arrows not the line's (decision 29). */
-function questionOptions(
+/**
+ * A question line's event id, for an answer to name, and its options for the
+ * inbox to number, their arrows not the line's (decision 29).
+ */
+function questionNeed(
   question: DashboardQuestion,
-): Pick<DashboardNeed, 'options' | 'recommended'> {
-  if (question.options.length === 0) return {};
+): Pick<DashboardNeed, 'questionId' | 'options' | 'recommended'> {
+  if (question.options.length === 0) return { questionId: question.id };
   const { recommended } = question;
   return {
+    questionId: question.id,
     options: question.options.map((option) => option.replace(SYMBOLS, '-')),
     ...(recommended === undefined ? {} : { recommended }),
   };
@@ -580,7 +584,7 @@ function needOf(
     const asked = session.question;
     return {
       ...need('question', questionReason(asked), command(answerCommand(id, asked))),
-      ...questionOptions(asked),
+      ...questionNeed(asked),
     };
   }
   if (session.state === 'blocked') {
@@ -606,6 +610,16 @@ function needOf(
     return need(
       'stalled',
       stallReason(session, session.stalledAgeMs),
+      command(`pup steer ${id} "..."`),
+    );
+  }
+  // A stage that failed refused the gate before any debt was weighed, such as
+  // a taken ADR number (decision 146): only the session's fix gets it through.
+  const failedStage = session.gateRefused ? session.lastGate?.failedStage : undefined;
+  if (session.state === 'awaiting-review' && failedStage !== undefined) {
+    return need(
+      'awaiting-review',
+      `gate refused: ${failedStage} failed`,
       command(`pup steer ${id} "..."`),
     );
   }
@@ -903,7 +917,8 @@ function dashboardQuestion(asked: QuestionEvent | undefined): DashboardQuestion 
 
 /**
  * The PR the newest merge opened, with the commit it pinned, unless a `landed`
- * event came after it (decision 83). Only the newest merge counts: a session
+ * or `retired` event came after it (decision 83); `pup retire` closes out a PR
+ * closed unmerged. Only the newest merge counts: a session
  * merged twice is described by the merge that stands. A merge with no PR is a
  * local fast-forward, already on the target, so nothing is open. `pup land`
  * writes `landed` once GitHub merged the PR and main holds the pinned sha
@@ -913,7 +928,7 @@ function openPullRequest(
   newestFirst: EventRow[],
 ): { url: string | undefined; sha: string | undefined; target: string | undefined } | undefined {
   for (const row of newestFirst) {
-    if (row.type === 'landed') return undefined;
+    if (row.type === 'landed' || row.type === 'retired') return undefined;
     const event = decodeEvent(row);
     if (event.type !== 'merge') continue;
     if (event.prUrl === undefined) return undefined;

@@ -231,6 +231,8 @@ export interface DashboardNeed {
   label: string;
   reason: string;
   answer: string;
+  /** A question line's event id, which an answer names (`pup answer --question`). */
+  questionId?: number;
   /** A question's numbered options and the 1-based one recommended (decision 93). */
   options?: string[];
   recommended?: number;

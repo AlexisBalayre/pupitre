@@ -243,7 +243,8 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
    * tests can assert on the wiring. `pr view` reports the PR's head as `head`,
    * or else as whatever the branch holds in the repo its `--repo` names, read
    * from outside the repo so only the operator's global rewrite applies, and
-   * the PR as `state` onto main.
+   * the PR as `state` onto main. GitHub reads that head, not a git under pup's
+   * pin, so the read drops the transports `pinnedGitEnv` turns off.
    */
   const fakeGh = (openPrs: unknown[], head?: string, state = 'OPEN'): string =>
     [
@@ -253,7 +254,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       `if [ "$2" = "list" ]; then echo '${JSON.stringify(openPrs)}'; exit 0; fi`,
       'if [ "$2" = "view" ]; then',
       head === undefined
-        ? `  head=$(cd / && git ls-remote "git@\${5%%/*}:\${5#*/}.git" refs/heads/${BRANCH} | cut -f1)`
+        ? `  head=$(cd / && unset GIT_ALLOW_PROTOCOL && GIT_CONFIG_COUNT=0 git ls-remote "git@\${5%%/*}:\${5#*/}.git" refs/heads/${BRANCH} | cut -f1)`
         : `  head=${head}`,
       `  printf '{"headRefOid":"%s","state":"${state}","baseRefName":"main"}\\n' "$head"; exit 0`,
       'fi',
@@ -1529,6 +1530,32 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(sh(repo, 'git', 'rev-parse', BRANCH).trim()).toBe(pushed);
       expect(sh(worktree, 'git', 'rev-parse', 'HEAD').trim()).toBe(pushed);
       expect(sh(bare, 'git', 'rev-parse', BRANCH).trim()).toBe(pushed);
+    });
+
+    // A session can move the lock away while the gate runs: the run refuses
+    // before it moves the branch, as before every ref it moves (decision 88).
+    it('refuses to merge the target in once its lock was moved away, moving nothing', async () => {
+      const worktree = seedSession(db, repo);
+      const { bare, pushed } = await pushedOnce(worktree);
+      commitIn(repo, 'README.md', '# moved on\n');
+      const lock = join(repo, '.git', 'pup-merge.lock');
+      beforeGit(
+        (args) => args.includes('commit-tree'),
+        () => renameSync(lock, `${lock}.moved`),
+      );
+      const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      onTestFinished(() => errors.mockRestore());
+      vi.mocked(steerPane).mockClear();
+      vi.mocked(execFileSync).mockClear();
+
+      await expect(
+        withFakeGh(fakeGh([openPrOnMain]), () => runMergeGate(db, request())),
+      ).rejects.toThrow(`the merge of main into ${BRANCH} was refused`);
+      expect(vi.mocked(steerPane)).not.toHaveBeenCalled();
+      expect(sh(repo, 'git', 'rev-parse', BRANCH).trim()).toBe(pushed);
+      expect(sh(worktree, 'git', 'rev-parse', 'HEAD').trim()).toBe(pushed);
+      expect(sh(bare, 'git', 'rev-parse', BRANCH).trim()).toBe(pushed);
+      expect(pushCalls()).toEqual([]);
     });
 
     // Only exit 1 is a conflict: git with no `--write-tree` (before 2.38) dies

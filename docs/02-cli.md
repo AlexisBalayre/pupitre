@@ -21,11 +21,8 @@ instead (decisions 60, 61, addendum to decision 43).
 ## Lifecycle
 
 - `pup init` — onboard a repo: detect stack, run audit, snapshot baseline, draft conventions, open
-  review step (see 07-onboarding.md). Prints one `codegraph: <version>` or `codegraph: not
-  installed` line beside the `sandbox:` one: an external binary detected like `gh` and `tmux`,
-  never a dependency, and the difference between a fleet whose sessions query a code graph and
-  one whose sessions grep (decision 51). Records `remote.origin.url` as the project's push
-  target and prints it as `push target: <url>` on the next line — that recorded value is what
+  review step (see 07-onboarding.md). Records `remote.origin.url` as the project's push
+  target and prints it as `push target: <url>` on the line after the `sandbox:` one — that recorded value is what
   `pup merge --pr` pushes to, and it refuses when the repo's config no longer says the same
   thing. The record is held back, with a finding, rather than written when the configured URL
   carries control characters or when sessions have already run for the project; `--origin-moved`
@@ -165,13 +162,10 @@ instead (decisions 60, 61, addendum to decision 43).
   nothing (a hook refuses every Edit and Write), and is refused a local `pup merge` (it may gate
   with `--pr`, decision 75), `pup respawn`,
   `pup unblock` and `--project`. Tasks it plans are recorded `origin = conductor`.
-  `start` cuts a private detached checkout of the merge target under
-  `~/.pupitre/<id>/conductor/checkout`, indexes it, and launches with `codegraph_explore` over
-  that — so the conductor plans and reviews against tracked content of what has merged, never a
-  working tree the sessions it supervises can write into. `start` also brings the conflict radar
+  `start` also brings the conflict radar
   up when none is running, and says so: the radar hosts the turn watchdog, and the conductor's
   own waiting turn is what the watchdog nudges back after a sleep or an outage (addendum to
-  decision 35). `stop` leaves the checkout and the radar in place. Operator-only (decision 47).
+  decision 35). `stop` leaves the radar in place. Operator-only (decision 47).
 - `pup steer <session> "<message>"` — inject a correction into a running session. `--sent`
   records a steer already delivered by cross-session message and types nothing (decision 47).
 - `pup interrupt <session> ["<message>"]` — abort the in-flight tool call (Escape to the pane), optionally steering a message after; the hung-tool escape hatch steer cannot reach (decision 37).
@@ -293,8 +287,8 @@ the same expression; decision 68 enumerates exactly what that scan does and does
   session could hide its own project from the operator's views, and the conductor could put
   the project it runs to sleep (decision 62).
 - `pup audit` — re-run the baseline stages and report drift against the stored baseline,
-  refreshing it. Prints the same `codegraph:` and `push target:` lines `pup init` does, so both
-  are reported on the repeat path too and not only the first run. Operator-only: outside a merge
+  refreshing it. Prints the same `push target:` line `pup init` does, so it is reported on the
+  repeat path too and not only the first run. Operator-only: outside a merge
   this and `pup init` are the only things that re-stamp the debt baseline, and on a `--pr` repo
   they are the only things at all, so a session running either from its worktree would choose
   when its own bar moves (decisions 26, 39, 48, 64).

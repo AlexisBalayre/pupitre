@@ -27,6 +27,19 @@ vi.mock('node:child_process', async (importOriginal) => {
   };
 });
 
+// Shortened by the test of a fifo swapped in for `.git/config` under the lock,
+// whose git child only the deadline ends.
+const gateTimeout = vi.hoisted(() => ({ ms: undefined as number | undefined }));
+vi.mock('./merge-gate.constants.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./merge-gate.constants.js')>();
+  return {
+    ...actual,
+    get GATE_COMMAND_TIMEOUT_MS() {
+      return gateTimeout.ms ?? actual.GATE_COMMAND_TIMEOUT_MS;
+    },
+  };
+});
+
 // Set by the tests of a session racing the gate: it clears the key right
 // before each of the gate's checks (of the shared config's key and of
 // per-worktree config) and sets it again right after, so every git call after
@@ -61,6 +74,7 @@ import {
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import { nestedPackageDirs } from '../adapters/git-tree.client.js';
 import type { Adapter, CapabilityContext } from '../adapters/types/adapter.types.js';
+import { typescriptAdapter } from '../adapters/typescript.adapter.js';
 import { openStore } from './db.client.js';
 import { SharedWorktreeKeyError, WorktreeConfigError } from './git-diff.client.js';
 import { listLedgerEntries } from './ledger.repository.js';
@@ -112,6 +126,7 @@ describe('the merge gate under a shared-config core.worktree and diff.relative',
 
   afterEach(() => {
     keyRace.around = undefined;
+    gateTimeout.ms = undefined;
     vi.unstubAllEnvs();
   });
 
@@ -444,21 +459,80 @@ describe('the merge gate under a shared-config core.worktree and diff.relative',
     commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
     const config = join(repo, '.git', 'config');
     const adapter = debtAdapter({
-      touchedNestedPackages: (ctx: CapabilityContext) => {
+      touchedNestedPackages: (ctx: CapabilityContext, files: string[]) => {
         const kept = readFileSync(config, 'utf8');
         writeFileSync(config, '[core\n');
         try {
-          nestedPackageDirs(ctx);
-          return [];
+          return typescriptAdapter.touchedNestedPackages?.(ctx, files) ?? [];
         } finally {
           writeFileSync(config, kept);
         }
       },
     });
 
-    await expect(merge(adapter)).rejects.toThrow();
+    await expect(merge(adapter)).rejects.toThrow(/Command failed: git .* ls-tree --full-tree/);
     expect(vi.mocked(spawn)).not.toHaveBeenCalled();
     expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+  });
+
+  // A session can detach the main checkout's `.git/HEAD` to a commit with no
+  // nested package.json while the listing runs and restore it before the
+  // gate's last check: listed at HEAD, the trusted set was empty and every
+  // nested package's stages were skipped with no error.
+  it('runs every nested package stage with HEAD moved during the nested listing', async () => {
+    const withoutPackage = sh(repo, 'git', 'rev-parse', 'HEAD').trim();
+    commitIn(repo, 'tools/review/package.json', '{}\n');
+    const worktree = seedSession(db, repo, { scopeIn: ['**'] });
+    commitIn(worktree, 'tools/review/src/x.ts', 'export const x = 1;\n');
+    const head = join(repo, '.git', 'HEAD');
+    const adapter = debtAdapter({
+      touchedNestedPackages: (ctx: CapabilityContext, files: string[]) => {
+        const kept = readFileSync(head, 'utf8');
+        writeFileSync(head, `${withoutPackage}\n`);
+        try {
+          return typescriptAdapter.touchedNestedPackages?.(ctx, files) ?? [];
+        } finally {
+          writeFileSync(head, kept);
+        }
+      },
+    });
+
+    const outcome = await merge(adapter);
+
+    expect(stage(outcome, 'test (tools/review)')?.status).toBe('flagged');
+    expect(stage(outcome, 'typecheck (tools/review)')?.status).toBe('flagged');
+  });
+
+  // Complexity's "before" side reads the main checkout: listed at its HEAD, a
+  // session that detaches it while the side runs changes which nested files
+  // the target's measure leaves out, while the "after" side is pinned.
+  it('lists nested packages at the target sha on both complexity sides with HEAD moved', async () => {
+    const withoutPackage = sh(repo, 'git', 'rev-parse', 'HEAD').trim();
+    commitIn(repo, 'tools/review/package.json', '{}\n');
+    const worktree = seedSession(db, repo, { scopeIn: ['**'] });
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+    const head = join(repo, '.git', 'HEAD');
+    const listed: { measurePath: string; nested: Set<string> }[] = [];
+    const adapter = debtAdapter({
+      complexity: (ctx: CapabilityContext) => {
+        const kept = readFileSync(head, 'utf8');
+        writeFileSync(head, `${withoutPackage}\n`);
+        try {
+          listed.push({ measurePath: ctx.measurePath, nested: nestedPackageDirs(ctx) });
+          return [];
+        } finally {
+          writeFileSync(head, kept);
+        }
+      },
+    });
+
+    await merge(adapter);
+
+    expect(listed).toHaveLength(2);
+    expect(listed.find((side) => side.measurePath === repo)?.nested).toEqual(
+      new Set(['tools/review']),
+    );
+    for (const side of listed) expect(side.nested).toEqual(new Set(['tools/review']));
   });
 
   /** A stage that sets the key while it runs, after every check before the stages. */
@@ -541,6 +615,60 @@ describe('the merge gate under a shared-config core.worktree and diff.relative',
       expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
     },
   );
+
+  // Git opens `.git/config` before any command runs, so a fifo swapped in for
+  // it blocks every git child, under the merge lock too, where node waits in
+  // the spawn and no signal it handles gets it out. Swapped in after the gate's
+  // last check of the file, it blocks the re-read of the checked-out branch,
+  // which the deadline kills; the lock goes with the run (decision 89).
+  it('kills a git child a fifo at .git/config blocks under the merge lock, and releases the lock', async () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+    seedDebtBaseline({ deadExports: [], duplicatedLines: 0 });
+    const mainTip = sh(repo, 'git', 'rev-parse', 'main');
+    const config = join(repo, '.git', 'config');
+    const kept = readFileSync(config, 'utf8');
+    let stagesRan = false;
+    const adapter = debtAdapter({
+      deadCode: () => {
+        stagesRan = true;
+        return [];
+      },
+    });
+    const planted = { writer: undefined as ReturnType<typeof spawn> | undefined };
+    keyRace.around = <T>(name: string, check: () => T): T => {
+      const checked = check();
+      if (name === 'per-worktree' && stagesRan && !planted.writer) {
+        rmSync(config);
+        execFileSync('mkfifo', [config]);
+        // Serves an empty config after a while, so a git with no deadline
+        // goes on to merge and fails this test rather than hang the run.
+        planted.writer = spawn(
+          'sh',
+          ['-c', 'sleep 8; while [ -p "$0" ]; do : > "$0"; done', config],
+          { stdio: 'ignore' },
+        );
+        gateTimeout.ms = 2_000;
+      }
+      return checked;
+    };
+
+    try {
+      await expect(merge(adapter)).rejects.toThrow(/ETIMEDOUT/);
+    } finally {
+      planted.writer?.kill('SIGKILL');
+      rmSync(config, { force: true });
+      writeFileSync(config, kept);
+    }
+
+    expect(planted.writer).toBeDefined();
+    expect(existsSync(join(repo, '.git', 'pup-merge.lock'))).toBe(false);
+    expect(sh(repo, 'git', 'rev-parse', 'main')).toBe(mainTip);
+    expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+    keyRace.around = undefined;
+    gateTimeout.ms = undefined;
+    expect((await merge(adapter)).status).toBe('merged');
+  });
 
   // Under git's default rename detection `--name-only` lists a rename's new
   // path alone, and the deletion of an out-of-scope file passed the audit.

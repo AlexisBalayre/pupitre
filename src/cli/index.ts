@@ -29,11 +29,11 @@ import {
   type WindowEnv,
   windowLabel,
 } from '../claude/session-runtime.service.js';
+import { ADR_NUMBER_STAGE } from '../core/adr-number.service.js';
 import { auditProject, buildSweepTask, formatDebtTransition } from '../core/audit.service.js';
 import { briefPath, ensureBrief, readBrief } from '../core/brief.service.js';
 import { waitForCiReview } from '../core/ci-wait.service.js';
 import { buildCodeMap, renderCodeMap } from '../core/code-map.service.js';
-import { codegraphLabel } from '../core/codegraph.client.js';
 import {
   ConductorTellRefusedError,
   DEFAULT_MAX_SESSIONS,
@@ -66,6 +66,7 @@ import { IntentRefusedError } from '../core/errors/intent.errors.js';
 import { ciReviewLookup, type FixRoundOutcome, startFixRound } from '../core/fix-round.service.js';
 import { fleetReading, readFleet } from '../core/fleet.service.js';
 import { parseGateEnv } from '../core/gate-env.utils.js';
+import { assertMainCheckout, RewrittenGitDirError } from '../core/git-diff.client.js';
 import { initProject } from '../core/init.service.js';
 import { acceptIntent, createIntent, listIntents, readIntent } from '../core/intent.service.js';
 import { landSession } from '../core/land.service.js';
@@ -84,6 +85,16 @@ import { projectId, projectPaths } from '../core/paths.utils.js';
 import { InvalidProfileError } from '../core/profile.errors.js';
 import { UnknownProfileError } from '../core/profile-store.errors.js';
 import { getProfileLayer, listProfileLayers } from '../core/profile-store.service.js';
+import {
+  AUDIT_STAGES,
+  CI_WAIT_STAGES,
+  FIX_STAGES,
+  LAND_STAGES,
+  MERGE_STAGES,
+  RESPAWN_STAGES,
+  type StageProgress,
+  stageProgress,
+} from '../core/progress.utils.js';
 import { listProjects, putProjectToSleep, wakeProject } from '../core/project.service.js';
 import { renderReportHtml } from '../core/report.service.js';
 import { buildRetro, retroWindowStart, writeRetro } from '../core/retro.service.js';
@@ -150,6 +161,7 @@ import {
   steerSession,
 } from '../core/session-lifecycle.service.js';
 import { retireSession } from '../core/session-retire.service.js';
+import { launchedAncestor, rescopeTask } from '../core/task-rescope.service.js';
 import {
   describeSlotWait,
   runSessionTest,
@@ -160,11 +172,16 @@ import { sweepDeadTurns } from '../core/turn-watchdog.service.js';
 import type { AuditOutcome } from '../core/types/audit.types.js';
 import type { ConductorHandle } from '../core/types/conductor.types.js';
 import type { DashboardSnapshot } from '../core/types/dashboard.types.js';
+import type { RegisteredProject } from '../core/types/fleet.types.js';
 import type { DebtBaseline, InitReport } from '../core/types/init.types.js';
 import type { LandOutcome } from '../core/types/land.types.js';
 import type { GateReport, MergeOutcome } from '../core/types/merge-gate.types.js';
 import type { TaskId, TaskSpec } from '../core/types/profile.types.js';
-import type { AskOptions, StoredGateStage } from '../core/types/session-event.types.js';
+import type {
+  AskOptions,
+  RescopeCaller,
+  StoredGateStage,
+} from '../core/types/session-event.types.js';
 import type { NewSessionRequest, RouteOverride } from '../core/types/session-lifecycle.types.js';
 import type { RetireOutcome } from '../core/types/session-retire.types.js';
 import {
@@ -341,26 +358,24 @@ function printInitReport(db: Database, report: InitReport, repoPath: string): vo
     if (s.status === 'fail' && s.detail)
       console.log(`    ${sanitizeReason(s.detail.split('\n').at(-1) ?? '')}`);
   }
-  printBaselineTail(db, report, repoPath);
+  printBaselineTail(db, report);
 }
 
 /**
  * What `pup init` and `pup audit` both end on: the debt baseline, with the
- * audit's per-metric moves under it, then the sandbox, codegraph and push
- * target lines and the findings. The audit prints the same findings, so a
+ * audit's per-metric moves under it, then the sandbox and push target lines
+ * and the findings. The audit prints the same findings, so a
  * stage that cannot measure says why on the repeat path too, or that is where
  * the gap goes quiet (decision 29).
  */
 function printBaselineTail(
   db: Database,
   report: InitReport,
-  repoPath: string,
   debtTransitions: readonly string[] = [],
 ): void {
   console.log(`debt baseline: ${describeDebtBaseline(report.baseline.debt)}`);
   for (const t of debtTransitions) console.log(`  ${t}`);
   console.log(`sandbox: ${sanitizeReason(report.sandbox)}`);
-  printCodegraphLine(repoPath);
   printPushTargetLine(db, report.projectId);
   if (report.findings.length > 0) {
     console.log('findings:');
@@ -369,18 +384,7 @@ function printBaselineTail(
 }
 
 /**
- * Beside the sandbox line, and for the same reason (decision 36): an operator
- * who never sees it cannot tell a fleet whose sessions get a code graph from one
- * whose sessions grep. Probed here rather than carried in the report, because
- * what it reports is the operator's machine and not the baseline the stages
- * measured (decision 51).
- */
-function printCodegraphLine(repoPath: string): void {
-  console.log(`codegraph: ${codegraphLabel(repoPath)}`);
-}
-
-/**
- * Beside the sandbox line for the third time (decisions 36, 51): the recorded
+ * Beside the sandbox line (decision 36): the recorded
  * push target is the value `pup merge --pr` refuses to differ from, so the
  * operator has to be able to see what they are being held to — and, on a
  * project set up before it was recorded, that they are being held to nothing
@@ -413,6 +417,21 @@ async function withPushTargetLine<TResult>(
   } catch (error) {
     printPushTargetLine(db, projectId(repoPath));
     throw error;
+  }
+}
+
+/**
+ * `running` once it settles, with the status line cleared first, so the
+ * outcome or refusal printed next starts on a line of its own (decision 184).
+ */
+async function settled<TResult>(
+  progress: StageProgress,
+  running: TResult | Promise<TResult>,
+): Promise<TResult> {
+  try {
+    return await running;
+  } finally {
+    progress.end();
   }
 }
 
@@ -457,7 +476,7 @@ function printAuditOutcome(db: Database, report: AuditOutcome, repoPath: string)
     );
     return;
   }
-  printBaselineTail(db, report, repoPath, report.debtTransitions.map(formatDebtTransition));
+  printBaselineTail(db, report, report.debtTransitions.map(formatDebtTransition));
   console.log('Baseline refreshed.');
   if (report.hasRegression) process.exitCode = 1;
 }
@@ -872,6 +891,42 @@ function ownSession(db: Database, command: string): string | undefined {
   return declared;
 }
 
+/**
+ * `project` held as a main checkout before any command reads it, its store
+ * closed when that refuses. A `.git` a session swapped for a gitfile, a
+ * symlink or a decoy, or one holding a commondir, would otherwise answer every
+ * ref the command reads, and git and gh there hold the same rule from then on
+ * (decisions 172, 181). Every path a command takes to one project's repo goes
+ * through here: `project()`, and the repo around cwd `pup status` and `pup ui`
+ * read without it.
+ */
+function held(project: ResolvedProject): ResolvedProject {
+  try {
+    assertMainCheckout(project.repoPath);
+  } catch (error) {
+    project.db.close();
+    throw error;
+  }
+  return project;
+}
+
+/**
+ * Every registered project, each one a fleet view reads held first, as `held`
+ * holds one: each reading runs git in its repo. A project the view passes over
+ * (its repo missing or not its own path, or dormant and not shown) is never
+ * read, so it is not checked. One that refuses stops the view, as it stops a
+ * command run in that repo.
+ */
+function heldFleet(shouldShowDormant: boolean): RegisteredProject[] {
+  const registered = fleetProjects();
+  for (const project of registered) {
+    const isRead =
+      project.repoExists && project.isOwnPath && (shouldShowDormant || project.dormantAt === null);
+    if (isRead) assertMainCheckout(project.repoPath);
+  }
+  return registered;
+}
+
 function operatorOnlyProject(): ProjectResolutionError {
   return new ProjectResolutionError(
     'Reaching another project is operator-only; a session controls only the project it runs in.',
@@ -897,6 +952,95 @@ interface PlanOptions {
   accept?: string[];
   goal?: string;
   tier?: string;
+  rescope?: boolean;
+}
+
+/**
+ * `pup plan edit <task> --rescope --scope <glob...>` (decision 115). The
+ * caller already refused a session; the conductor is refused here, because a
+ * scope a gate-failing agent widens for itself is no scope at all. Both are
+ * refused again by the process tree, which a caller that unset its markers
+ * and left its worktree still runs under. Only `--scope` rides along: a
+ * rescope appends globs and changes nothing else.
+ */
+function rescopeOrRefuse(db: Database, target: string, opts: PlanOptions): void {
+  if (callingConductor()) {
+    refuse(
+      '`pup plan edit --rescope` is operator-only; the conductor cannot widen a claimed task.',
+    );
+    return;
+  }
+  const ancestor = launchedAncestor();
+  if (ancestor?.kind === 'launched') {
+    refuse(
+      `\`pup plan edit --rescope\` is operator-only, and this runs under ${sanitizeReason(ancestor.name)}, ` +
+        'a Claude Code pup launched, whatever its environment says; run it from your own shell.',
+    );
+    return;
+  }
+  if (ancestor?.kind === 'unreadable') {
+    refuse(
+      '`pup plan edit --rescope` could not read the process tree (`ps` failed), so it cannot ' +
+        'tell this caller from a session or the conductor; nothing changed.',
+    );
+    return;
+  }
+  if ([opts.goal, opts.scopeOut, opts.accept, opts.tier].some((field) => field !== undefined)) {
+    refuse('--rescope takes only --scope: it appends scope-in globs and changes nothing else.');
+    return;
+  }
+  if (!opts.scope) {
+    refuse('Usage: pup plan edit <task> --rescope --scope <glob...>');
+    return;
+  }
+  try {
+    console.log(rescopedLine(target, rescopeTask(db, target, opts.scope, rescopeCaller())));
+  } catch (error) {
+    if (!(error instanceof InvalidProfileError)) throw error;
+    // Store text: a refusal can name a session id read back from the store.
+    refuse(sanitizeLines(error.message));
+  }
+}
+
+/**
+ * What a rescope records of its caller (decision 115): the operator, inferred
+ * from the session and conductor markers being absent, and the terminal and
+ * tmux pane the command ran on, each only in the shape a real one has.
+ */
+function rescopeCaller(): RescopeCaller {
+  const pane = process.env.TMUX_PANE;
+  return {
+    by: 'inferred-operator',
+    tty: callerTty(),
+    tmuxPane: pane !== undefined && /^%\d+$/.test(pane) ? pane : null,
+  };
+}
+
+/** The terminal device on stdin, from the system's own `tty`; null when there is none. */
+function callerTty(): string | null {
+  if (!process.stdin.isTTY) return null;
+  try {
+    const name = execFileSync('/usr/bin/tty', [], {
+      encoding: 'utf8',
+      stdio: ['inherit', 'pipe', 'ignore'],
+      timeout: 2000,
+    }).trim();
+    return /^\/dev\/[\w./-]+$/.test(name) ? name : null;
+  } catch {
+    return null;
+  }
+}
+
+/** What a rescope that went through says: the globs it appended and the tier it leaves. */
+function rescopedLine(target: string, outcome: ReturnType<typeof rescopeTask>): string {
+  if (outcome.added.length === 0) {
+    return `${target}'s scope-in already holds every glob given; nothing changed.`;
+  }
+  return (
+    `Widened ${target}'s scope-in with ${sanitizeReason(outcome.added.join(', '))}; ` +
+    `recorded on session ${sanitizeReason(outcome.sessionId)}; tier ${outcome.tier}` +
+    `${outcome.raised ? ', raised from standard' : ''}.`
+  );
 }
 
 /**
@@ -927,13 +1071,13 @@ export function buildProgram(): Command {
    * asks `callingSession` and a session is unknown — so both are refused for
    * a session here, by the variable first and by its own store's rows second
    * (decision 43).
+   * The repo it hands over is `held` (decision 181).
    */
   const project = (): ResolvedProject => {
     const selected = program.opts().project as string | undefined;
     const own = enclosingProject(process.cwd());
-    if (own && selected === undefined) return own;
-    refuseUnlessOperator(own);
-    return resolveProject(process.cwd(), selected);
+    if (!own || selected !== undefined) refuseUnlessOperator(own);
+    return held(own && selected === undefined ? own : resolveProject(process.cwd(), selected));
   };
 
   /**
@@ -1055,6 +1199,7 @@ export function buildProgram(): Command {
     .option('--accept <criterion...>', 'acceptance criteria')
     .option('--goal <goal>', 'replacement goal (edit)')
     .option('--tier <tier>', 'critical|standard, over the tier the scope-in implies (add, edit)')
+    .option('--rescope', "append --scope globs to a claimed task's scope-in (edit, operator only)")
     .action((action: string | undefined, target: string | undefined, opts: PlanOptions) => {
       const { repoPath, db } = project();
       const verb = action ?? 'list';
@@ -1135,6 +1280,7 @@ export function buildProgram(): Command {
           if (!target) {
             return refuse('Usage: pup plan edit <task> [--goal ...] [--scope ...]');
           }
+          if (opts.rescope) return rescopeOrRefuse(db, target, opts);
           let outcome: ReturnType<typeof editTaskSpec>;
           try {
             outcome = editTaskSpec(db, target, {
@@ -1580,22 +1726,13 @@ export function buildProgram(): Command {
       // project's full table and so wins over `--all` (decision 60).
       const selected = program.opts().project as string | undefined;
       const own = selected === undefined ? enclosingProject(process.cwd()) : undefined;
-      if (own && !opts.all) {
-        printDashboard(
-          own.db,
-          own.repoPath,
-          buildDashboardSnapshot(own.db, own.repoPath, Date.now()),
-          shouldShowHistory,
-          ciReviewLookup(own.db, own.repoPath),
-        );
-        return;
-      }
-      if (selected === undefined) {
+      const isSingleProject = selected !== undefined || (own !== undefined && !opts.all);
+      if (!isSingleProject) {
         refuseUnlessOperator(own);
         printFleet(opts.dormant === true);
         return;
       }
-      const { repoPath, db } = project();
+      const { repoPath, db } = own ? held(own) : project();
       printDashboard(
         db,
         repoPath,
@@ -1626,13 +1763,13 @@ export function buildProgram(): Command {
       // a reasonable thing to have typed, not an error (decision 52).
       if (!process.stdout.isTTY) {
         if (!isSingleProject) return printFleet(opts.dormant === true);
-        const { repoPath, db } = own ?? project();
+        const { repoPath, db } = own ? held(own) : project();
         printDashboard(db, repoPath, buildDashboardSnapshot(db, repoPath, Date.now()), false);
         return;
       }
       let props: AppProps;
       if (isSingleProject) {
-        const { repoPath, db } = own ?? project();
+        const { repoPath, db } = own ? held(own) : project();
         // The store and repo the keys write through.
         const deps: ActionDeps = { db, repoPath, pupBin };
         const readOnlyReason = uiReadOnlyReason(db);
@@ -1648,7 +1785,7 @@ export function buildProgram(): Command {
         // Only the operator gets here, refused above like `pup status --all`,
         // so the fleet is always driven and always shown the attach command.
         props = {
-          read: fleetReading(fleetProjects(), opts.dormant === true, pupBin),
+          read: fleetReading(heldFleet(opts.dormant === true), opts.dormant === true, pupBin),
           showAttach: true,
         };
       }
@@ -1676,7 +1813,7 @@ export function buildProgram(): Command {
   program
     .command('dashboard')
     .description(
-      'Serve the live status page on 127.0.0.1, read-only, behind a token minted for this run',
+      'Serve the live status page on 127.0.0.1, behind a token minted for this run; it answers, steers, launches, gates and lands too',
     )
     .option('--open', 'open the page in the browser')
     .action(async (opts: { open?: boolean }) => {
@@ -1711,7 +1848,9 @@ export function buildProgram(): Command {
 
   /** `pup status`'s fleet view, and a piped `pup ui --all`'s (decisions 60, 65). */
   function printFleet(shouldShowDormant: boolean): void {
-    for (const line of fleetLines(readFleet(fleetProjects(), Date.now(), shouldShowDormant))) {
+    for (const line of fleetLines(
+      readFleet(heldFleet(shouldShowDormant), Date.now(), shouldShowDormant),
+    )) {
       console.log(line);
     }
   }
@@ -2140,22 +2279,38 @@ export function buildProgram(): Command {
       if (windowEnv === undefined) return;
       // Both the handoff request and the relaunch kickoff are steers, and
       // either can be refused as never having landed whole.
+      const progress = stageProgress(RESPAWN_STAGES);
       try {
         if (!isHandoffReady(db, repoPath, session)) {
+          progress.stage('request handoff');
           const handoffPath = requestHandoff(db, repoPath, session);
+          // Cleared first: this line is stdout's, which the status line must not run into.
+          progress.end();
           console.log(`Handoff requested; waiting for the session to write ${handoffPath} …`);
-          if (!awaitHandoffReady(db, repoPath, session, Number(opts.wait) * 1000)) {
+          const ready = awaitHandoffReady(
+            db,
+            repoPath,
+            session,
+            Number(opts.wait) * 1000,
+            undefined,
+            progress,
+          );
+          progress.end();
+          if (!ready) {
             return refuse(
               `Session ${session} has not signalled handoff-done yet (steers queue until its ` +
                 'current turn ends). Re-run `pup respawn` to ask again and keep waiting.',
             );
           }
         }
+        progress.stage('relaunch');
         respawnSession(db, repoPath, session, windowEnv, undefined, {
           model: opts.model,
           effort: opts.effort,
         });
+        progress.end();
       } catch (error) {
+        progress.end();
         if (error instanceof TopRungReachedError) return refuse(error.message);
         if (!isRefusedSteer(error)) throw error;
         console.error(error.message);
@@ -2212,6 +2367,13 @@ export function buildProgram(): Command {
       if (detail.spec.scopeOut?.length)
         console.log(`scope-out: ${sanitizeReason(detail.spec.scopeOut.join(', '))}`);
       console.log(`acceptance: ${sanitizeReason(detail.spec.acceptance.join('; '))}`);
+      // Above the diff, so the reviewer reads what the slice owes before what
+      // it changed (decision 187).
+      if (detail.spec.ticket) {
+        console.log(`ticket ${sanitizeReason(detail.spec.ticket.ref)} slice criteria:`);
+        for (const criterion of detail.spec.ticket.criteria)
+          console.log(`  - ${sanitizeReason(criterion)}`);
+      }
       console.log(
         `rejections: ${detail.entry.rejectCount}  scope violations: ${detail.entry.scopeViolations}  overlaps: ${detail.entry.overlaps}`,
       );
@@ -2317,23 +2479,31 @@ export function buildProgram(): Command {
         // No signal handler here: under its lock the gate outlives a Ctrl-C
         // and the SIGTERM `pup ui`'s `q` sends this child, stops every stage
         // child and removes the lock in its own `finally` (decision 95).
+        const progress = stageProgress(MERGE_STAGES);
         try {
-          outcome = await runMergeGate(db, {
-            repoPath,
-            sessionId: session,
-            adapters,
-            acceptDebt:
-              opts.acceptDebt && opts.reviewBy
-                ? {
-                    reason: opts.acceptDebt,
-                    reviewBy: opts.reviewBy,
-                    acceptedBy: approvedBy ?? 'human',
-                  }
-                : undefined,
-            openPr: opts.pr,
-            gateEnv: parseGateEnv(opts.gateEnv),
-            wait: true,
-          });
+          outcome = await settled(
+            progress,
+            runMergeGate(
+              db,
+              {
+                repoPath,
+                sessionId: session,
+                adapters,
+                acceptDebt:
+                  opts.acceptDebt && opts.reviewBy
+                    ? {
+                        reason: opts.acceptDebt,
+                        reviewBy: opts.reviewBy,
+                        acceptedBy: approvedBy ?? 'human',
+                      }
+                    : undefined,
+                openPr: opts.pr,
+                gateEnv: parseGateEnv(opts.gateEnv),
+                wait: true,
+              },
+              progress,
+            ),
+          );
         } catch (error) {
           if (error instanceof GateInterruptedError) throw error;
           // The gate ran whole but unprotected: what it did is printed, then
@@ -2384,6 +2554,17 @@ export function buildProgram(): Command {
             if (outcome.regated && failedStage) {
               console.log(
                 `Re-gate refused: ${sanitizeReason(failedStage.stage)} failed on the new head, and the PR still vouches for the earlier pin only. Fix it on the branch, push, then re-run \`pup merge ${session} --pr\`.`,
+              );
+              break;
+            }
+            // Refused before any debt was measured (decision 146): accepting
+            // debt cannot get it through, only the session's own fix can.
+            if (failedStage) {
+              console.log(
+                `Merge refused: ${sanitizeReason(failedStage.stage)} failed, which --accept-debt does not cover. ` +
+                  (failedStage.stage === ADR_NUMBER_STAGE
+                    ? `Steer the session to renumber its ADR as the report says: \`pup steer ${session} "..."\`.`
+                    : `Steer the session to fix it: \`pup steer ${session} "..."\`.`),
               );
               break;
             }
@@ -2448,15 +2629,23 @@ export function buildProgram(): Command {
       let outcome: LandOutcome;
       let lockLost: MergeLockLostError | undefined;
       try {
-        outcome = await landSession(db, {
-          repoPath,
-          sessionId: session,
-          adapters: detectAdapters(repoPath),
-          gateEnv: parseGateEnv(opts.gateEnv),
-          wait: true,
-          audit: opts.audit,
-          acceptHead: opts.acceptHead,
-        });
+        const progress = stageProgress(LAND_STAGES);
+        outcome = await settled(
+          progress,
+          landSession(
+            db,
+            {
+              repoPath,
+              sessionId: session,
+              adapters: detectAdapters(repoPath),
+              gateEnv: parseGateEnv(opts.gateEnv),
+              wait: true,
+              audit: opts.audit,
+              acceptHead: opts.acceptHead,
+            },
+            progress,
+          ),
+        );
       } catch (error) {
         if (error instanceof GateInterruptedError) throw error;
         // Landed and steered, and a re-run refuses it, but unprotected:
@@ -2549,14 +2738,22 @@ export function buildProgram(): Command {
       }
       let outcome: FixRoundOutcome;
       try {
-        outcome = await startFixRound(db, {
-          repoPath,
-          base: DEFAULT_BASE_PROFILE,
-          windowEnv: resolveWindowEnv(repoPath),
-          sessionId: session,
-          override: { model: opts.model, effort: opts.effort },
-          overrideVia: callingConductor() ? 'conductor' : 'operator',
-        });
+        const progress = stageProgress(FIX_STAGES);
+        outcome = await settled(
+          progress,
+          startFixRound(
+            db,
+            {
+              repoPath,
+              base: DEFAULT_BASE_PROFILE,
+              windowEnv: resolveWindowEnv(repoPath),
+              sessionId: session,
+              override: { model: opts.model, effort: opts.effort },
+              overrideVia: callingConductor() ? 'conductor' : 'operator',
+            },
+            progress,
+          ),
+        );
       } catch (error) {
         if (error instanceof LaunchRolledBackError) {
           return reportRolledBack(error, `Re-run \`pup fix ${sanitizeReason(session)}\`.`);
@@ -2592,11 +2789,11 @@ export function buildProgram(): Command {
         return refuse('--timeout takes a positive number of minutes.');
       }
       try {
-        const outcome = await waitForCiReview(db, {
-          repoPath,
-          target,
-          timeoutMs: minutes * 60_000,
-        });
+        const progress = stageProgress(CI_WAIT_STAGES);
+        const outcome = await settled(
+          progress,
+          waitForCiReview(db, { repoPath, target, timeoutMs: minutes * 60_000 }, progress),
+        );
         console.log(outcome.line);
         if (!outcome.finished) process.exitCode = 1;
       } catch (error) {
@@ -2780,9 +2977,20 @@ export function buildProgram(): Command {
         return refuse('`pup audit` is operator-only; sessions cannot move the baseline.');
       }
       if (refusedUnsandboxed()) return;
+      const progress = stageProgress(AUDIT_STAGES);
       const report = await withPushTargetLine(db, repoPath, () =>
         runOrReportNoAdapter(() =>
-          auditProject(db, repoPath, detectAdapters(repoPath), parseGateEnv(opts.gateEnv)),
+          settled(
+            progress,
+            auditProject(
+              db,
+              repoPath,
+              detectAdapters(repoPath),
+              parseGateEnv(opts.gateEnv),
+              'refresh',
+              progress,
+            ),
+          ),
         ),
       );
       if (!report) return;
@@ -2987,7 +3195,8 @@ function isMainModule(): boolean {
  */
 export function fatalExitCode(error: unknown): number {
   if (error instanceof CommanderError) return error.exitCode;
-  if (error instanceof ProjectResolutionError) {
+  // A rewritten `.git` is the operator's to inspect, as its message says.
+  if (error instanceof ProjectResolutionError || error instanceof RewrittenGitDirError) {
     console.error(error.message);
     return 1;
   }

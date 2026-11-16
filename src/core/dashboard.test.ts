@@ -1504,6 +1504,7 @@ describe('needsYou', () => {
         label: 's-asking',
         reason: `question #${asked}: rebase or merge?`,
         answer: `pup answer s-asking "..." --question ${asked}`,
+        questionId: asked,
       },
       {
         kind: 'blocked',
@@ -1579,6 +1580,7 @@ describe('needsYou', () => {
           label: 's1',
           reason: `question #${asked}: rebase - or merge?`,
           answer: `pup answer s1 <n> --question ${asked}, or pup answer s1 "..." --question ${asked}`,
+          questionId: asked,
           options: ['rebase -', 'merge'],
           recommended: 1,
         },
@@ -1606,6 +1608,7 @@ describe('needsYou', () => {
         answer:
           `pup answer conductor <n> --question ${asked}, ` +
           `or pup answer conductor "..." --question ${asked}`,
+        questionId: asked,
         options: ['yes', 'no'],
       });
     });
@@ -1688,6 +1691,32 @@ describe('needsYou', () => {
         ]);
       });
 
+      // A failed stage refused it before any debt was weighed (decision 146):
+      // accepting debt cannot help, so the answer is a steer, not --accept-debt.
+      it('names the failed stage and answers with a steer when a stage failed', () => {
+        vi.mocked(hasConductorWindow).mockReturnValue(true);
+        seedIn('s-review', ['running', 'awaiting-review']);
+        appendEvent(db, 's-review', 'gate_result', {
+          outcome: 'refused',
+          report: {
+            sessionId: 's-review',
+            passed: false,
+            sandbox: 'none',
+            stages: [{ stage: 'adr-number', status: 'fail', detail: '0146 is taken' }],
+          },
+        });
+
+        expect(inbox()).toEqual([
+          {
+            kind: 'awaiting-review',
+            sessionId: 's-review',
+            label: 's-review',
+            reason: 'gate refused: adr-number failed',
+            answer: 'pup steer s-review "..."',
+          },
+        ]);
+      });
+
       // Neither moves the state, so neither logs a transition after the refusal.
       it.each([
         ['a steer', (id: string) => appendEvent(db, id, 'steer', { kind: 'message' })],
@@ -1734,6 +1763,19 @@ describe('needsYou', () => {
 
     expect(inbox()).toEqual([]);
     expect(buildDashboardSnapshot(db, repo, NOW).sessions[0]?.openPr).toBeUndefined();
+  });
+
+  it('leaves out a PR once a retired event comes after its merge', () => {
+    seedMerge('s-pr', 'https://github.com/o/r/pull/7');
+    appendEvent(db, 's-pr', 'retired', {
+      prUrl: 'https://github.com/o/r/pull/7',
+      supersededBy: 't-other',
+    });
+    seedMerge('s-open', 'https://github.com/o/r/pull/8');
+
+    expect(inbox().map((need) => need.sessionId)).toEqual(['s-open']);
+    const retired = buildDashboardSnapshot(db, repo, NOW).sessions.find((s) => s.id === 's-pr');
+    expect(retired?.openPr).toBeUndefined();
   });
 
   it('leaves out a PR once the target holds the commit the gate pinned', () => {
