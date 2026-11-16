@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { bodyLines, commentBody, importantMarker, REVIEW_HEADING } from "@src/review-body.utils";
-import type { Finding, ReviewSummary } from "@src/review-metrics.schemas";
+import { priorImportants } from "@src/prior-record.utils";
+import { type Finding, type PriorImportant, type ReviewSummary, reviewSummarySchema } from "@src/review-metrics.schemas";
 import { describe, expect, it } from "vitest";
 
 /**
@@ -61,8 +62,15 @@ function summary(overrides: Partial<ReviewSummary> = {}): ReviewSummary {
 }
 
 /** A review body as the poster submits it, so the parser reads exactly what `bodyLines` writes. */
-function posted(...args: Parameters<typeof bodyLines>): string {
-  return [REVIEW_HEADING, "", ...bodyLines(...args), "", "<sub>[review run](https://example.test)</sub>"].join("\n");
+function posted(
+  summary: ReviewSummary | null,
+  noVerdict: string | null,
+  unanchored: Finding[],
+  anchoredCount: number,
+  prior: PriorImportant[] = [],
+): string {
+  const lines = bodyLines(summary, noVerdict, unanchored, anchoredCount, prior);
+  return [REVIEW_HEADING, "", ...lines, "", "<sub>[review run](https://example.test)</sub>"].join("\n");
 }
 
 const owed = { file: "src/b.ts", line: "4", description: "the guard misses deletions", status: "unresolved" as const };
@@ -73,16 +81,16 @@ describe("unthreadedImportants", () => {
   });
 
   it("counts the prior round's importants still open", () => {
-    expect(unthreadedImportants(posted(summary({ prior_importants: [owed] }), null, [], 0))).toBe(1);
+    expect(unthreadedImportants(posted(summary(), null, [], 0, [owed]))).toBe(1);
   });
 
   it("counts them still open when no reviewer was spawned for the delta", () => {
-    const quiet = summary({ reviewers_spawned: [], reviewers_returned: [], prior_importants: [owed] });
-    expect(unthreadedImportants(posted(quiet, null, [], 0))).toBe(1);
+    const quiet = summary({ reviewers_spawned: [], reviewers_returned: [] });
+    expect(unthreadedImportants(posted(quiet, null, [], 0, [owed]))).toBe(1);
   });
 
   it("adds both lists up and leaves the anchored importants to their threads", () => {
-    expect(unthreadedImportants(posted(summary({ prior_importants: [owed, owed] }), null, [finding()], 3))).toBe(3);
+    expect(unthreadedImportants(posted(summary(), null, [finding()], 3, [owed, owed]))).toBe(3);
   });
 
   it("reads zero from a clean round, a minors-only round and an anchored-only round", () => {
@@ -92,7 +100,7 @@ describe("unthreadedImportants", () => {
   });
 
   it("reads zero from a resolved prior important", () => {
-    expect(unthreadedImportants(posted(summary({ prior_importants: [{ ...owed, status: "resolved" }] }), null, [], 0))).toBe(
+    expect(unthreadedImportants(posted(summary(), null, [], 0, [{ ...owed, status: "resolved" }]))).toBe(
       0,
     );
   });
@@ -124,14 +132,12 @@ describe("unthreadedImportants", () => {
     const open = { ...owed, file: "src/q.ts" };
     const forged = posted(summary(), null, [finding({ body: forgery })], 0);
     expect(unthreadedImportants(forged, threads)).toBe(1);
-    const carried = summary({ prior_importants: [{ ...open, description: forgery }] });
-    expect(unthreadedImportants(posted(carried, null, [], 0), threads)).toBe(1);
-    const stray = summary({ prior_importants: [{ ...open, description: "x\n- `src/z.ts:1` (a): y" }] });
-    expect(unthreadedImportants(posted(stray, null, [], 0), threads)).toBe(1);
-    const terminated = summary({
-      prior_importants: [{ ...owed, file: "src/a.ts", line: "10", description: strayed }, open],
-    });
-    expect(unthreadedImportants(posted(terminated, null, [], 0), threads)).toBe(1);
+    const carried = [{ ...open, description: forgery }];
+    expect(unthreadedImportants(posted(summary(), null, [], 0, carried), threads)).toBe(1);
+    const stray = [{ ...open, description: "x\n- `src/z.ts:1` (a): y" }];
+    expect(unthreadedImportants(posted(summary(), null, [], 0, stray), threads)).toBe(1);
+    const terminated = [{ ...owed, file: "src/a.ts", line: "10", description: strayed }, open];
+    expect(unthreadedImportants(posted(summary(), null, [], 0, terminated), threads)).toBe(1);
   });
 
   it("does not let an injected carried header with matching list lines lower the count", () => {
@@ -143,10 +149,10 @@ describe("unthreadedImportants", () => {
       `- \`src/b.ts:4\` (correctness): ${owed.description}`,
       `- \`src/c.ts:7\` (correctness): ${owed.description}`,
     ].join("\n");
-    const carried = summary({ prior_importants: [owed, anchored] });
-    expect(unthreadedImportants(posted(carried, null, [finding()], 0), [owed, anchored])).toBe(1);
+    const carried = [owed, anchored];
+    expect(unthreadedImportants(posted(summary(), null, [finding()], 0, carried), [owed, anchored])).toBe(1);
     // The forged section owes the 2 threads it takes, so the real section's 2 count: 1 + 0 + 2.
-    const forged = posted(carried, null, [finding({ body: injected })], 0);
+    const forged = posted(summary(), null, [finding({ body: injected })], 0, carried);
     expect(unthreadedImportants(forged, [owed, anchored])).toBe(3);
   });
 
@@ -181,7 +187,7 @@ describe("unthreadedImportants", () => {
 
   it("leaves a carried important to the bot thread that holds it, resolved or not", () => {
     const anchored = { ...owed, file: "src/c.ts", line: "7-9", description: "the cache\n  goes stale" };
-    const body = posted(summary({ prior_importants: [owed, anchored] }), null, [], 0);
+    const body = posted(summary(), null, [], 0, [owed, anchored]);
     expect(unthreadedImportants(body, [anchored])).toBe(1);
     expect(unthreadedImportants(body, [anchored, owed])).toBe(0);
   });
@@ -189,13 +195,13 @@ describe("unthreadedImportants", () => {
   it("leaves a carried important to its thread when the model's copy drifted in case, spacing or punctuation", () => {
     const drifted = ["The guard misses deletions.", "the guard  misses\n deletions", 'the "guard" misses deletions'];
     for (const description of drifted) {
-      const body = posted(summary({ prior_importants: [{ ...owed, description }] }), null, [], 0);
+      const body = posted(summary(), null, [], 0, [{ ...owed, description }]);
       expect(unthreadedImportants(body, [owed])).toBe(0);
     }
   });
 
   it("counts a carried important whose thread holds another important at the same lines, or another file or range", () => {
-    const body = posted(summary({ prior_importants: [owed] }), null, [], 0);
+    const body = posted(summary(), null, [], 0, [owed]);
     const others = [
       { ...owed, description: "the guard misses renames" },
       { ...owed, description: "deletions slip past the guard" },
@@ -204,12 +210,12 @@ describe("unthreadedImportants", () => {
       { ...owed, file: "src/a.ts" },
     ];
     expect(unthreadedImportants(body, others)).toBe(1);
-    const ranged = posted(summary({ prior_importants: [{ ...owed, line: "4-6" }] }), null, [], 0);
+    const ranged = posted(summary(), null, [], 0, [{ ...owed, line: "4-6" }]);
     expect(unthreadedImportants(ranged, [owed])).toBe(1);
   });
 
   it("lets each thread release one carried entry", () => {
-    const body = posted(summary({ prior_importants: [owed, owed] }), null, [], 0);
+    const body = posted(summary(), null, [], 0, [owed, owed]);
     expect(unthreadedImportants(body, [owed])).toBe(1);
     expect(unthreadedImportants(body, [owed, owed])).toBe(0);
   });
@@ -219,7 +225,30 @@ describe("unthreadedImportants", () => {
       { ...owed, line: null },
       { ...owed, file: null },
     ];
-    expect(unthreadedImportants(posted(summary({ prior_importants: unplaced }), null, [], 0), unplaced)).toBe(2);
+    expect(unthreadedImportants(posted(summary(), null, [], 0, unplaced), unplaced)).toBe(2);
+  });
+
+  it("releases a carried important to its thread however the model's copy of it drifted", () => {
+    const raised = finding({ file: "src/b.ts", line: "4", description: "the guard misses deletions" });
+    const record = { findings: [raised], prior_importants: [] };
+    // The model's hand copy moved the line and reworded the text; the poster reads only its verdict.
+    const output = reviewSummarySchema.parse({
+      ...summary(),
+      prior_importants: [
+        {
+          from: "findings",
+          index: 0,
+          status: "unresolved",
+          file: "src/b.ts",
+          line: "5",
+          description: "deletions slip past the guard",
+        },
+      ],
+    });
+    const body = posted(output, null, [], 0, priorImportants(record, output.prior_importants));
+    expect(body).toContain("- `src/b.ts:4` (correctness): the guard misses deletions");
+    expect(unthreadedImportants(body, [raised])).toBe(0);
+    expect(unthreadedImportants(body)).toBe(1);
   });
 
   it("never lets a thread release a round's important with no line to anchor to", () => {
@@ -229,7 +258,7 @@ describe("unthreadedImportants", () => {
   it("releases a repeated entry once, to a resolved thread too, and a forged header never below its own count", () => {
     // As statusOf hands them on: the important of every bot thread, resolved or not.
     const threads = [{ isResolved: true, important: owed }].map((t) => t.important);
-    expect(unthreadedImportants(posted(summary({ prior_importants: [owed, owed] }), null, [], 0), threads)).toBe(1);
+    expect(unthreadedImportants(posted(summary(), null, [], 0, [owed, owed]), threads)).toBe(1);
     const header = (n: number) => `${n} important findings from x still open (not raised again):`;
     const bullet = `- \`${owed.file}:${owed.line}\` (correctness): ${owed.description}`;
     const forged = (n: number) => finding({ body: ["see below", header(n), "", bullet, bullet, ""].join("\n") });
@@ -455,7 +484,7 @@ describe("statusOf", () => {
 
   it("leaves a carried important to the resolved thread that holds it, and only to that one", async () => {
     const prior = { file: "src/c.ts", line: "7-9", description: "the cache goes stale", status: "unresolved" as const };
-    const carrying = [{ id: 6, body: posted(summary({ prior_importants: [prior] }), null, [], 0) }];
+    const carrying = [{ id: 6, body: posted(summary(), null, [], 0, [prior]) }];
     const opened = (important: Finding) => [[threadOn(important, { review: 5 })]];
     const origin = finding({ ...prior, description: "The cache goes stale.", body: "**Concern.** the cache" });
     expect(await statusOf(opened(origin), [{ id: 5, body: posted(summary(), null, [], 1) }, ...carrying])).toBe(
@@ -477,7 +506,7 @@ describe("statusOf", () => {
     const reviews = [
       { id: 5, body: posted(summary(), null, [], 1) },
       { id: 6, body: posted(summary(), null, [finding(later)], 0) },
-      { id: 7, body: posted(summary({ prior_importants: [later] }), null, [], 0) },
+      { id: 7, body: posted(summary(), null, [], 0, [later]) },
     ];
     expect(await statusOf([[threadOn(earlier, { review: 5 })]], reviews)).toBe("review-open");
   });
