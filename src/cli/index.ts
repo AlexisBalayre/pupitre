@@ -68,7 +68,7 @@ import { parseGateEnv } from '../core/gate-env.utils.js';
 import { assertMainCheckout, RewrittenGitDirError } from '../core/git-diff.client.js';
 import { initProject } from '../core/init.service.js';
 import { acceptIntent, createIntent, listIntents, readIntent } from '../core/intent.service.js';
-import { landSession } from '../core/land.service.js';
+import { abandonClosedSession, landSession } from '../core/land.service.js';
 import { closeLedgerEntry, listLedgerEntries } from '../core/ledger.repository.js';
 import { MAX_REJECTS_BEFORE_BLOCKED } from '../core/merge-gate.constants.js';
 import { MergeLockLostError } from '../core/merge-gate.errors.js';
@@ -945,6 +945,7 @@ interface LandOptions {
   gateEnv?: string;
   audit: boolean;
   acceptHead?: string;
+  abandonClosed?: boolean;
 }
 
 interface PlanOptions {
@@ -2718,6 +2719,10 @@ export function buildProgram(): Command {
       '--accept-head <sha>',
       'Land a PR merged at this head, past the pinned sha, after reading the commits between them',
     )
+    .option(
+      '--abandon-closed',
+      'Record the PR, closed unmerged on GitHub, as abandoned, freeing the ADR numbers it holds',
+    )
     .action(async (session: string, opts: LandOptions) => {
       const { repoPath, db } = project();
       // The human merged the PR on GitHub already; what is left moves main to
@@ -2731,7 +2736,36 @@ export function buildProgram(): Command {
       if (opts.acceptHead !== undefined && callingConductor()) {
         return refuse('`pup land --accept-head` is operator-only.');
       }
+      // Any session can close a peer's PR with the shared gh login, so freeing
+      // the ADR numbers a closed PR holds is the operator's word (decision 146).
+      if (opts.abandonClosed && callingConductor()) {
+        return refuse('`pup land --abandon-closed` is operator-only.');
+      }
+      if (opts.abandonClosed && opts.acceptHead !== undefined) {
+        return refuse('`pup land --abandon-closed` lands nothing, so it takes no --accept-head.');
+      }
       if (refusedUnsandboxed()) return;
+      if (opts.abandonClosed) {
+        let abandoned: { prUrl: string; recorded: boolean };
+        let abandonLockLost: MergeLockLostError | undefined;
+        try {
+          abandoned = await abandonClosedSession(db, { repoPath, sessionId: session, wait: true });
+        } catch (error) {
+          if (error instanceof GateInterruptedError) throw error;
+          // Recorded all the same: reported, then failed on the lost lock (decision 88).
+          if (!(error instanceof MergeLockLostError)) return refuseScrubbed(error);
+          abandoned = error.result as { prUrl: string; recorded: boolean };
+          abandonLockLost = error;
+        }
+        console.log(
+          abandoned.recorded
+            ? `Recorded ${abandoned.prUrl} as closed unmerged: the ADR-number check no longer ` +
+                `counts ${sanitizeReason(session)}'s decisions.`
+            : `${abandoned.prUrl} was already recorded as closed unmerged.`,
+        );
+        if (abandonLockLost !== undefined) refuseScrubbed(abandonLockLost);
+        return;
+      }
       let outcome: LandOutcome;
       let lockLost: MergeLockLostError | undefined;
       try {
