@@ -1,0 +1,153 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-16T11:02:30.183Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43853428433",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43853428433",
+  "actor": "AlexisBalayre",
+  "commit_sha": "fceab2170a218af077360d86e8320fd7b8e7e4a4",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 344,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "docs/adr/0146-the-gate-refuses-an-adr-number-the-target-or.md",
+      "line": "189-191",
+      "description": "The remedy the amendment gives for reopening an abandoned PR (`pup merge <session> --pr`) is refused by planRegate whenever the PR head did not move, and its message says to merge on GitHub and `pup land`. The freed ADR number then lands twice without any check.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "2633-2638",
+      "description": "`pup land --abandon-closed` treats a `MergeLockLostError` like any other refusal. If the lock is lost, the operator is never told that the `pr_closed` event was already written and the PR's ADR numbers are already freed. `pup land` and `pup retire` report what happened before they fail on a lost lock.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/adr-number.service.ts",
+      "line": "194-195",
+      "description": "The `isClosedOut` and `competingBranches` JSDocs say a `pup land` that read the PR CLOSED records the close. A plain `pup land` of a CLOSED PR refuses and records nothing; only the operator's `pup land --abandon-closed` writes `pr_closed`.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/land.service.ts",
+      "line": "119-124",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "After `--abandon-closed` and a reopen on GitHub, a plain `pup land` tells the operator to \"merge it there first\". The PR is open with its head still at the pin, so following that advice merges it with no ADR-number re-check. A number a peer took after the record then reaches the target twice.",
+      "body": "**Reopened abandoned PR: `pup land` tells the operator to merge with no ADR re-check**\n\nThe amended decision 146 relies on the operator re-gating a reopened, abandoned PR with `pup merge <session> --pr` before merging it. This PR changed `planRegate` so that, with the close on record, it re-gates an unmoved head (`pr.head === pinned && !merge.closedOnRecord`) instead of answering \"Merge it on GitHub, then run `pup land`\". `landSession` still gives that same advice on the same path:\n\n```ts\nif (pr.state !== 'MERGED') {\n  throw new Error(\n    `${prUrl} is ${sanitizeReason(pr.state ?? 'in an unreadable state')} on GitHub, not ` +\n      'MERGED; merge it there first. Nothing was landed.',\n  );\n}\n```\n\nhttps://github.com/AlexisBalayre/pupitre/blob/fceab2170a218af077360d86e8320fd7b8e7e4a4/src/core/land.service.ts#L119-L124\n\n**Trigger.**\n1. `pup land s --abandon-closed` records `pr_closed`, and `isClosedOut` drops `s` from `competingBranches`, which frees its ADR numbers.\n2. A peer is gated with one of those numbers, and its PR merges.\n3. The operator reopens `s`'s PR on GitHub. Its head is still at the pin.\n4. The operator runs `pup land s`. The moved-head refusal (L102) needs `pr.head !== sha`, and the new CLOSED refusal (L111) needs `CLOSED`, so neither fires. Execution reaches L119: \"is OPEN on GitHub, not MERGED; merge it there first.\"\n5. The gate's success status on the pinned sha is still on GitHub, so the merge goes through. `newestMerge` skips `pr_closed`, so the next `pup land` lands it.\n\nResult: two decisions under one number on the target. The ADR amendment rejects an unmoved-head refusal that \"would send the operator to merge on GitHub and `pup land` with no check\". That case is why `planRegate` changed, and this message is the same steer on the land side.\n\n**Fix.** Before L119, refuse an OPEN PR whose close is on record and point the operator to the re-gate. `isPrClosedOnRecord` is already imported here, and `id` is the sanitized id in scope. Add a test that seeds `pr_closed` and fakes gh `OPEN` at the pin.",
+      "suggestion": "  // A reopen leaves the head at the pin, but the record freed its ADR numbers\n  // to other gates: only a re-gate checks them again (decision 146).\n  if (pr.state === 'OPEN' && isPrClosedOnRecord(db, session.id)) {\n    throw new Error(\n      `${prUrl} was recorded closed unmerged and is OPEN on GitHub again; its ADR numbers ` +\n        `were free to other gates since. Re-gate it with \\`pup merge ${id} --pr\\` before ` +\n        'merging it there, then re-run `pup land`. Nothing was landed.',\n    );\n  }\n  if (pr.state !== 'MERGED') {\n    throw new Error(\n      `${prUrl} is ${sanitizeReason(pr.state ?? 'in an unreadable state')} on GitHub, not ` +\n        'MERGED; merge it there first. Nothing was landed.',\n    );\n  }"
+    },
+    {
+      "file": "src/core/land.service.ts",
+      "line": "316-330",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`landablePullRequest`'s JSDoc sentence is garbled (\"a PR of the repo origin was recorded as, pinned onto a target the gate's way\"). Its refusals all end \"Nothing was landed.\", but `--abandon-closed` reaches them too, and it records rather than lands, so its other refusals say \"Nothing was recorded.\"",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/regate.service.ts",
+      "line": "93-95",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`planRegate`'s JSDoc says \"only a new merge event, which the ADR-number stage checks first, makes them its own again\". The stage runs before that merge event exists, since the passing gate writes it. The ADR wording is accurate: the stage re-checks the numbers, and only its passing merge event makes them count again.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "2632-2641",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The `{ prUrl: string; recorded: boolean }` shape is written out inline three times: the CLI declaration, the `error.result` cast, and `abandonClosedSession`'s return type. `docs/conventions/general.md` §Code layout wants a reused type named in a types file, the way `LandOutcome` lives in `src/core/types/land.types.ts`.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 3.481397255,
+  "duration_ms": 248153,
+  "num_turns": 20,
+  "tokens": {
+    "input": 18,
+    "output": 14939,
+    "cache_read": 475782,
+    "cache_creation": 65821,
+    "total": 556560
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 136,
+      "output": 54027,
+      "cache_read": 2205877,
+      "cache_creation": 278743,
+      "cost_usd": 3.1134374
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 46,
+      "output": 8730,
+      "cache_read": 317152,
+      "cache_creation": 99344,
+      "cost_usd": 0.3674672
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 227,
+      "cache_read": 1933,
+      "cache_creation": 2877,
+      "cost_usd": 0.0004926549999999999
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "bash /home/runner/work/pupitre/pupitre/scripts/adr-index.sh"
+    }
+  ]
+}
