@@ -27,7 +27,9 @@
     the pane and removes the worktree between its report and its merge event. That report must
     list build, test and lint, which every gate run lists whether it ran or skipped them; an empty
     or partial one refuses. A stage that ran there, passing or flagged, must run again, so a
-    commit past the pin that takes a script or a config away cannot turn it into a skip.
+    commit past the pin that takes a script or a config away cannot turn it into a skip. Only
+    `worktree-clean` and `fresh-base` are let off: the gate runs them on the session's worktree,
+    and a remeasure, measuring the merge commit from a checkout of its own, has none.
     *What it does not catch.* Stages are matched by name and status only. A commit past the pin
     that replaces a script with a no-op gets `pass` from that stage, as it would at the gate,
     which trusts the session's scripts the same way. A `flagged` stage must
@@ -45,7 +47,14 @@
     or a figure that is no finite number, on either side, refuses. A wording with no figure (a
     nested package missing a script, a coverage gap of unreported files) passes only against an
     entry of the same kind, which keeps every word but the figures: the same package and script,
-    the same cause. A refusal
+    the same cause. A percentage is one figure whether it is rounded to a whole percent or not, so
+    `80%` and `80.4%` give the same kind. Where a flag's files are what was accepted rather than
+    where it was found (a text file git reports as binary, a changed source file coverage did not
+    measure or report), the entry no worse must also have named each of the flag's files: a
+    count held level cannot swap a hidden file no one read for the one accepted. *Not caught:*
+    a re-gate files no flag of a kind the session already holds, so the ledger keeps the first
+    gate's figures, and a remeasure of a re-pinned head whose figures grew since then refuses;
+    it fails closed. A refusal
     changes nothing and records nothing: `measureBranch` only reads the store, and the debt it
     flags, the baseline it would ratchet and the event are written by the land alone, after a
     pass. The session stays merged, and the operator still has `--accept-head`.
@@ -63,15 +72,18 @@
     flag records a closed PR and lands nothing, so a remeasure beside it would be dropped unread.
     *Critical areas.* A pass says that the code builds and that its tests and lint pass. It does
     not say that a change to the gate, git, the store or the hooks is sound. So when the commits
-    past the pin (`<pin>...<head>`) change a file in a `CRITICAL_AREAS` path, the remeasure is
+    past the pin (`<pin>..<head>`) change a file in a `CRITICAL_AREAS` path, the remeasure is
     refused before any stage runs, unless `--approved-by <who>` names the operator's approval.
     `--remeasure` is operator-only, as `--accept-head` is, and `pup land` is refused to sessions
     already. `--approved-by` is a name the CLI cannot check, so a conductor that could pass one
     could land an unmeasured change to a critical area on a steer or an injected prompt.
-    `--approved-by` without `--remeasure` is refused. The paths past the pin are listed with
-    `gitDiffPaths`, the git the gate's scope audit runs: the safe config, the scrubbed
-    environment with replace refs off, no external diff or textconv, and `--no-renames`, so a file
-    moved out of a critical area counts as a change to it. The glob match is
+    `--approved-by` without `--remeasure` is refused. The paths past the pin are the two trees'
+    difference, not the scope audit's diff from a merge-base: the head need not descend from the
+    pin, and from an older merge-base a head that kept a critical change the pin had changed back
+    would show none. A head that took in its target since lists the target's changes too, which
+    over-reports and fails closed. The git is the scope audit's otherwise: the safe config, the
+    scrubbed environment with replace refs off, no external diff or textconv, and `--no-renames`,
+    so a file moved out of a critical area counts as a change to it. The glob match is
     case-sensitive, as the gate's is, so on a case-insensitive filesystem a path spelled in
     another case escapes it there too.
     *The event.* The `landed` event of a remeasured land records `remeasuredHead`, `pinned`, the
