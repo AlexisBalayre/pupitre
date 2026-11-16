@@ -85,7 +85,7 @@ export interface UsageOptions {
   claudeDirs: string[];
 }
 
-interface Call {
+export interface Call {
   at: number;
   model: string;
   effort: string;
@@ -116,6 +116,7 @@ interface TranscriptEntry {
   requestId?: string;
   effort?: unknown;
   entrypoint?: string;
+  compactMetadata?: { trigger?: unknown; preTokens?: unknown };
   message?: {
     id?: string;
     model?: unknown;
@@ -172,6 +173,10 @@ function sum(parts: CostParts): number {
   return parts.input + parts.read + parts.write + parts.output;
 }
 
+export function callCost(call: Call): number {
+  return sum(costOf(call));
+}
+
 /** Nearest-rank percentile of an unsorted list; 0 for an empty one. */
 export function percentile(values: number[], p: number): number {
   if (values.length === 0) return 0;
@@ -197,9 +202,15 @@ function textOf(content: unknown): string {
     .join('');
 }
 
-/** A token count, or 0 for anything else: a string would concatenate, a negative one refund. */
+/** No request carries more; a larger count is a written-in one, and sums of it stay finite. */
+const MAX_COUNT = 10_000_000;
+
+/**
+ * A token count, or 0 for anything else: a string would concatenate, a negative
+ * one refund. A count past `MAX_COUNT` is held at it.
+ */
 function countOf(n: unknown): number {
-  return typeof n === 'number' && Number.isFinite(n) && n >= 0 ? n : 0;
+  return typeof n === 'number' && Number.isFinite(n) && n >= 0 ? Math.min(n, MAX_COUNT) : 0;
 }
 
 function parseCall(entry: TranscriptEntry, at: number): Call | undefined {
@@ -235,6 +246,14 @@ interface FileRead {
   tokens: number;
 }
 
+interface Compaction {
+  at: number;
+  /** Asked for with `/compact`, not fired by the context reaching the threshold. */
+  manual: boolean;
+  /** The context it found, 0 when the boundary does not say. */
+  preTokens: number;
+}
+
 interface Transcript {
   calls: Map<string, Call>;
   /** The last call before the window, when the transcript began before it. */
@@ -243,8 +262,8 @@ interface Transcript {
   toolResults: ToolResult[];
   readPaths: Map<string, { path: string; range: string }>;
   reads: FileRead[];
-  /** Compactions inside the window. */
-  compactions: number;
+  /** Compactions inside the window, in order. */
+  compactions: Compaction[];
   conductor: boolean;
   headless: boolean;
   sawUser: boolean;
@@ -312,7 +331,12 @@ function scanLine(state: Transcript, line: string, sinceMs: number): void {
   if (at < sinceMs) state.before = parseCall(entry, at) ?? state.before;
   else if (entry.type === 'assistant') noteAssistant(state, entry, at);
   else if (entry.type === 'user') noteToolResults(state, entry);
-  else if (entry.type === 'system' && entry.subtype === 'compact_boundary') state.compactions += 1;
+  else if (entry.type === 'system' && entry.subtype === 'compact_boundary')
+    state.compactions.push({
+      at,
+      manual: entry.compactMetadata?.trigger === 'manual',
+      preTokens: countOf(entry.compactMetadata?.preTokens),
+    });
 }
 
 /**
@@ -328,7 +352,7 @@ function readTranscript(file: string, sinceMs: number): Transcript {
     toolResults: [],
     readPaths: new Map(),
     reads: [],
-    compactions: 0,
+    compactions: [],
     conductor: false,
     headless: false,
     sawUser: false,
@@ -419,7 +443,7 @@ function bucketFor(buckets: Map<string, Bucket>, klass: UsageClass, call: Call):
 }
 
 /** Tokens a call wrote again after the cache expired idle, or 0 when it did not. */
-function recachedTokens(call: Call, previous: Call | undefined): number {
+export function recachedTokens(call: Call, previous: Call | undefined): number {
   if (!previous || call.at - previous.at <= IDLE_RECACHE_MS) return 0;
   const written = call.write5m + call.write1h;
   return written > call.read ? written : 0;
@@ -540,7 +564,7 @@ export function buildUsageReport(db: Database, repoPath: string, opts: UsageOpti
     addToolCarry(carry, read);
   }
   const all = [...buckets.values()];
-  const totalCost = total(all.flatMap((b) => b.calls.map((c) => sum(costOf(c)))));
+  const totalCost = total(all.flatMap((b) => b.calls.map(callCost)));
   const rows = all.map((bucket) => rowOf(bucket, totalCost)).sort((a, b) => b.cost - a.cost);
   return {
     since: opts.since.toISOString(),
