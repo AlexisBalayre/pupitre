@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { skipsTestsOnUntestedChanges } from './project-config.config.js';
+import { skipsTestsOnUntestedChanges, workerSandboxOn } from './project-config.config.js';
 
 /** A repo directory holding `.pupitre/project.yml` with `content`, or none when undefined. */
 function repoWith(content?: string): string {
@@ -39,5 +39,36 @@ describe('skipsTestsOnUntestedChanges', () => {
     { name: 'a list', content: '- false\n', error: /mapping/ },
   ])('refuses $name rather than leave the skip on', ({ content, error }) => {
     expect(() => skipsTestsOnUntestedChanges(repoWith(content))).toThrow(error);
+  });
+
+  it('reads its own key beside the sandbox one', () => {
+    const repo = repoWith('workerSandbox: true\nskipTestsOnUntestedChanges: false\n');
+    expect(skipsTestsOnUntestedChanges(repo)).toBe(false);
+  });
+});
+
+describe('workerSandboxOn', () => {
+  it.each([
+    { name: 'no project.yml', content: undefined },
+    { name: 'an empty project.yml', content: '' },
+    { name: 'a project.yml without the key', content: 'skipTestsOnUntestedChanges: false\n' },
+  ])('keeps the sandbox off with $name', ({ content }) => {
+    expect(workerSandboxOn(repoWith(content))).toBe(false);
+  });
+
+  it('reads the setting the project gives', () => {
+    expect(workerSandboxOn(repoWith('workerSandbox: true\n'))).toBe(true);
+    expect(workerSandboxOn(repoWith('workerSandbox: false\n'))).toBe(false);
+  });
+
+  it.each([
+    { name: 'an unknown key', content: 'sandbox: true\n', error: /unknown key/ },
+    {
+      name: 'a value that is not a boolean',
+      content: 'workerSandbox: "on"\n',
+      error: /true or false/,
+    },
+  ])('refuses $name rather than leave the sandbox off', ({ content, error }) => {
+    expect(() => workerSandboxOn(repoWith(content))).toThrow(error);
   });
 });

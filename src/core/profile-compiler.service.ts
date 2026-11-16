@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { parse } from 'yaml';
 import { readPlainFile, sanitizeReason } from '../adapters/capability.utils.js';
@@ -32,6 +33,7 @@ import {
   WORKER_SUBAGENT_ENV,
 } from './profile.constants.js';
 import { ContextBudgetExceededError, InvalidProfileError } from './profile.errors.js';
+import { workerSandboxOn } from './project-config.config.js';
 import { CRITICAL_AREAS } from './routing.utils.js';
 import { shellWord } from './shell-quote.utils.js';
 import { scopeInFiles } from './task-spec.utils.js';
@@ -101,6 +103,41 @@ const WORKER_UNUSED_TOOLS = [
  * go by skill name, with no wildcard (decision 107).
  */
 const SKILL_TOOL = 'Skill';
+
+/**
+ * What a sandboxed worker's Bash children may not read (decision 188): the
+ * operator's credentials, none of which a worker's task needs. Claude Code has
+ * no built-in list; `~/` is the home directory in sandbox paths. The registry
+ * tokens go too: the registries are the hosts a worker can reach, and a token
+ * read there could publish to them. A public install needs none.
+ */
+const WORKER_SANDBOX_DENY_READ = [
+  '~/.ssh',
+  '~/.gnupg',
+  '~/.aws',
+  '~/.config/gcloud',
+  '~/.config/gh',
+  '~/.kube',
+  '~/.docker',
+  '~/.netrc',
+  '~/.git-credentials',
+  '~/.npmrc',
+  '~/.pypirc',
+  '~/.claude/.credentials.json',
+];
+
+/**
+ * The hosts a sandboxed worker's Bash children may reach (decision 188): the
+ * package registries of the ecosystems pup ships adapters for, which a first
+ * commit's pre-commit install fetches from. The model's own traffic is the
+ * session process's, outside the sandbox.
+ */
+const WORKER_SANDBOX_DOMAINS = [
+  'registry.npmjs.org',
+  'registry.yarnpkg.com',
+  'pypi.org',
+  'files.pythonhosted.org',
+];
 
 /** What a session's compile takes beyond the task: launch-time facts (decisions 96, 99). */
 type SessionCompileInput = CompileInput & { peers?: SessionPeer[]; testCommand?: GateCommand };
@@ -1200,6 +1237,55 @@ jq -c --arg sid "\${PUP_SESSION_ID:-unknown}" '. + {pup_session_id: $sid}' >> '$
 }
 
 /**
+ * Claude Code's Bash sandbox for a worker of a project that turned it on
+ * (decision 188). It holds every process a Bash call starts, and nothing else:
+ * Read, Edit and Write, the hooks and the session process stay outside it.
+ * - Writes: the worktree, the per-user temp directory Claude Code points
+ *   `TMPDIR` at, and the main `.git` git grants a linked worktree's commit —
+ *   less its `config` and `hooks`, and this worktree's own config. Of the store,
+ *   only the SQLite files every `pup` command opens read-write, so `pup session
+ *   done`, `ask` and the pre-commit hook's `pup session test` still run; and the
+ *   machine's test slots that last one takes (`test-slot.service.ts`). The rest
+ *   of the store, the compiled hooks among it, is denied.
+ * - Reads: everything but the operator's credentials.
+ * - Network: the package registries only. `strictAllowlist` refuses any other
+ *   host: the session skips permission prompts, under which an unlisted host
+ *   would otherwise be let through. Loopback binding stays, for tests that
+ *   start a local server.
+ * `failIfUnavailable` refuses the launch rather than run the worker
+ * unsandboxed, and no command may ask to leave the sandbox.
+ */
+function workerSandbox(input: CompileInput, git: WorktreeGitEnv) {
+  const store = projectPaths(input.repoPath);
+  return {
+    enabled: true,
+    failIfUnavailable: true,
+    allowUnsandboxedCommands: false,
+    filesystem: {
+      allowWrite: [
+        input.worktreePath,
+        store.dbFile,
+        `${store.dbFile}-wal`,
+        `${store.dbFile}-shm`,
+        join(homedir(), '.pupitre', 'slots'),
+      ],
+      denyWrite: [
+        store.root,
+        join(git.GIT_COMMON_DIR, 'config'),
+        join(git.GIT_COMMON_DIR, 'hooks'),
+        join(git.GIT_DIR, 'config.worktree'),
+      ],
+      denyRead: WORKER_SANDBOX_DENY_READ,
+    },
+    network: {
+      allowedDomains: WORKER_SANDBOX_DOMAINS,
+      strictAllowlist: true,
+      allowLocalBinding: true,
+    },
+  };
+}
+
+/**
  * `peers` are the live sessions sharing files with this one at its launch
  * (decision 99); a launch-time fact like the knowledge slice, so it is
  * compiled into the context and its hash rather than stored with the task.
@@ -1303,6 +1389,8 @@ export function compileProfile(input: SessionCompileInput): CompiledProfile {
     autoMemoryEnabled: false,
     env: { ...SLIM_CONTEXT_ENV, ...WORKER_SLIM_CONTEXT_ENV, ...WORKER_SUBAGENT_ENV },
     statusLine: { type: 'command', command: hookPath('statusline.sh') },
+    // Last and only when on, so a project that leaves it off compiles the same bytes.
+    ...(workerSandboxOn(input.repoPath) ? { sandbox: workerSandbox(input, git) } : {}),
   };
 
   const scopeIn = input.task.scopeIn.filter((g) => g.trim());

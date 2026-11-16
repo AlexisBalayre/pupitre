@@ -907,3 +907,75 @@ describe('the status line records the plan usage (decision 156)', () => {
     expect(compiled.files['hooks/statusline.sh']).toContain(`USAGE='${usageFile()}'`);
   });
 });
+
+// Decision 188: Claude Code's Bash sandbox, behind the project's `workerSandbox` setting.
+describe('the worker sandbox (decision 188)', () => {
+  /** A repo directory whose `.pupitre/project.yml` holds `content`, or none when undefined. */
+  function repoWith(content?: string): string {
+    const repo = tempDir('pup-sandbox-repo-');
+    if (content !== undefined) {
+      mkdirSync(join(repo, '.pupitre'));
+      writeFileSync(join(repo, '.pupitre', 'project.yml'), content);
+    }
+    return repo;
+  }
+
+  function compileIn(repo: string) {
+    return ProfileCompiler.compileProfile(
+      makeInput({ repoPath: repo, worktreePath: join(repo, '.worktrees', 's-1') }),
+    );
+  }
+
+  /** The project-config file is the only difference, so `repo` alone names the input. */
+  function settingsText(content?: string): string {
+    const repo = repoWith(content);
+    const settings = compileIn(repo).files['settings.json'] as string;
+    return settings.replaceAll(repo, '<repo>');
+  }
+
+  it('compiles the same settings bytes as a project without the setting while it is off', () => {
+    const without = settingsText(undefined);
+
+    expect(JSON.parse(without)).not.toHaveProperty('sandbox');
+    expect(settingsText('workerSandbox: false\n')).toBe(without);
+    expect(settingsText('skipTestsOnUntestedChanges: false\n')).toBe(without);
+  });
+
+  it('confines Bash children to the worktree, denying the store and the main .git config', () => {
+    const home = tempDir('pup-sandbox-home-');
+    vi.stubEnv('HOME', home);
+    try {
+      const repo = repoWith('workerSandbox: true\n');
+      const store = projectPaths(repo);
+      const { sandbox } = JSON.parse(compileIn(repo).files['settings.json'] as string);
+
+      expect(sandbox).toMatchObject({
+        enabled: true,
+        failIfUnavailable: true,
+        allowUnsandboxedCommands: false,
+        network: { strictAllowlist: true },
+      });
+      expect(sandbox.filesystem.allowWrite).toEqual([
+        join(repo, '.worktrees', 's-1'),
+        store.dbFile,
+        `${store.dbFile}-wal`,
+        `${store.dbFile}-shm`,
+        join(home, '.pupitre', 'slots'),
+      ]);
+      expect(sandbox.filesystem.denyWrite).toEqual([
+        store.root,
+        join(repo, '.git', 'config'),
+        join(repo, '.git', 'hooks'),
+        join(repo, '.git', 'worktrees', 's-1', 'config.worktree'),
+      ]);
+      expect(sandbox.filesystem.denyRead).toEqual(expect.arrayContaining(['~/.ssh', '~/.npmrc']));
+      expect(sandbox.network.allowedDomains).toContain('registry.npmjs.org');
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('refuses the compile on a malformed setting rather than launch unsandboxed', () => {
+    expect(() => compileIn(repoWith('workerSandbox: "yes"\n'))).toThrow(/true or false/);
+  });
+});

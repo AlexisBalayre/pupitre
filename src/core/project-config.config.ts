@@ -16,29 +16,53 @@ const PROJECT_CONFIG_PATH = '.pupitre/project.yml';
 const SKIP_UNTESTED_KEY = 'skipTestsOnUntestedChanges';
 
 /**
- * Whether the gate may skip the test stage on a change of only untested paths
- * (decision 139). Yes when the repo has no `.pupitre/project.yml` or the file
- * leaves the key out. A malformed file throws: an unknown key or a value that
- * is not a boolean would otherwise leave the skip on without anyone noticing.
+ * The key that runs every worker's Bash calls inside Claude Code's sandbox
+ * (decision 188): `true` turns it on, from the next launch.
  */
-export function skipsTestsOnUntestedChanges(repoPath: string): boolean {
+const WORKER_SANDBOX_KEY = 'workerSandbox';
+
+const PROJECT_CONFIG_KEYS = [SKIP_UNTESTED_KEY, WORKER_SANDBOX_KEY];
+
+/**
+ * One boolean setting, or `fallback` when the repo has no `.pupitre/project.yml`
+ * or the file leaves the key out. A malformed file throws: an unknown key or a
+ * value that is not a boolean would otherwise leave the default in force
+ * without anyone noticing.
+ */
+function projectSetting(repoPath: string, key: string, fallback: boolean): boolean {
   const configPath = join(repoPath, PROJECT_CONFIG_PATH);
-  if (!existsSync(configPath)) return true;
+  if (!existsSync(configPath)) return fallback;
   const raw = parse(readFileSync(configPath, 'utf8')) as unknown;
-  if (raw === null) return true;
+  if (raw === null) return fallback;
   if (typeof raw !== 'object' || Array.isArray(raw)) {
     throw new Error(`Invalid ${PROJECT_CONFIG_PATH}: expected a mapping of settings.`);
   }
-  const unknown = Object.keys(raw).filter((key) => key !== SKIP_UNTESTED_KEY);
+  const unknown = Object.keys(raw).filter((name) => !PROJECT_CONFIG_KEYS.includes(name));
   if (unknown.length > 0) {
     throw new Error(
-      `Invalid ${PROJECT_CONFIG_PATH}: unknown key(s) ${unknown.join(', ')} (valid: ${SKIP_UNTESTED_KEY}).`,
+      `Invalid ${PROJECT_CONFIG_PATH}: unknown key(s) ${unknown.join(', ')} (valid: ${PROJECT_CONFIG_KEYS.join(', ')}).`,
     );
   }
-  const value = (raw as Record<string, unknown>)[SKIP_UNTESTED_KEY];
-  if (value === undefined) return true;
+  const value = (raw as Record<string, unknown>)[key];
+  if (value === undefined) return fallback;
   if (typeof value !== 'boolean') {
-    throw new Error(`Invalid ${PROJECT_CONFIG_PATH}: ${SKIP_UNTESTED_KEY} must be true or false.`);
+    throw new Error(`Invalid ${PROJECT_CONFIG_PATH}: ${key} must be true or false.`);
   }
   return value;
+}
+
+/**
+ * Whether the gate may skip the test stage on a change of only untested paths
+ * (decision 139). Yes unless the project says otherwise.
+ */
+export function skipsTestsOnUntestedChanges(repoPath: string): boolean {
+  return projectSetting(repoPath, SKIP_UNTESTED_KEY, true);
+}
+
+/**
+ * Whether a worker's compiled settings switch on the Bash sandbox (decision
+ * 188). No unless the project says so.
+ */
+export function workerSandboxOn(repoPath: string): boolean {
+  return projectSetting(repoPath, WORKER_SANDBOX_KEY, false);
 }

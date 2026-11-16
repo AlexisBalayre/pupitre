@@ -100,6 +100,26 @@ for a plain write into `.claude/` and reads no scope file at all.
 The merge gate's diff-vs-scope audit is still the authority. What the gate cannot see yet is
 listed in decision 63's ceilings.
 
+## Bash sandbox (decision 188)
+
+Off by default. A project turns it on with `workerSandbox: true` in `.pupitre/project.yml`, and
+every worker launched after that gets a `sandbox` block in its compiled `settings.json`. While the
+setting is off the settings are byte for byte unchanged. A value that is not a boolean refuses the
+compile.
+
+The block runs every process a Bash call starts inside Claude Code's sandbox:
+
+- Writes: allowed in the worktree, the sandbox's `TMPDIR`, the store's `state.db` files, the
+  machine's test slots, and the main `.git` that a commit needs. Denied for the rest of the store
+  and for the main `.git`'s `config` and `hooks`.
+- Reads: allowed everywhere except the operator's credential files.
+- Network: only the npm and PyPI registries. Any other host is refused, and no command may leave
+  the sandbox.
+
+The Read, Edit and Write tools, the hooks and the session process are not sandboxed. The hooks
+above still guard them. A pnpm project lists `.pnpm-store/` in its `.gitignore` before turning the
+setting on, because pnpm keeps a store in the worktree when it cannot write the shared one.
+
 ## Project brief (decision 57)
 
 The operator's direction for the project, in free Markdown at `~/.pupitre/<id>/brief.md` and
