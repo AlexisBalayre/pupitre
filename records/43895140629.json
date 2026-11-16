@@ -1,0 +1,133 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-16T15:25:03.194Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43895140629",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43895140629",
+  "actor": "AlexisBalayre",
+  "commit_sha": "7724d97e3abecc363c89cad14361736f44538349",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 356,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "context",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "context",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "scripts/build.sh",
+      "line": "18",
+      "description": "tsconfig.json sets sourceMap: true, and tsc writes each .map's `sources` relative to the map's own folder. Compiling into .pup-build.X/dist/ (one level deeper than dist/) gives `../../../src/...`. After the move to dist/, every shipped source map points one folder above the repo.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "scripts/build.sh",
+      "line": "13-19",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "tsc now writes straight into the repo-root ./.pup-build.XXXXXX stage. Its output sits at .pup-build.X/cli/index.js and similar, which no .gitignore rule matches: the `dist/` rule only covered the previous head's .pup-build.X/dist/ layout. While the stage holds output, git status in a worktree lists about 330 untracked .js and .js.map files (about 165 non-test modules, two files each). Two checks in pup read that status. The merge gate's worktree-clean stage (merge-gate.service.ts:2329-2343) fails with 'Uncommitted changes'. The generated Bash scope re-check (profile-compiler.service.ts:1047-1061, cap RECHECK_MAX_DIRTY_PATHS=200) fails with 'over 200 dirty paths... every Bash call is refused'. Below the cap it reports SCOPE VIOLATIONs and blames the wrong command. Triggers: (a) a parallel or background Bash call whose PostToolUse check runs between tsc's emit and the swap. That window can last up to 10s while a second build in the same worktree waits for the lock. (b) A build SIGKILLed after the emit, which leaves the stage behind for good. From then on every Bash call in the session is refused and the gate refuses the branch until someone deletes it by hand. On the previous head both cases were invisible to git.",
+      "body": "**Staged build output is now visible to `git status` in session worktrees**\n\nThis head makes tsc emit straight into the stage:\n\n```bash\nSTAGE=$(mktemp -d ./.pup-build.XXXXXX)\n...\n\"$TSC\" -p tsconfig.build.json --outDir \"$STAGE\"\n```\n\nhttps://github.com/AlexisBalayre/pupitre/blob/7724d97e3abecc363c89cad14361736f44538349/scripts/build.sh#L13-L19\n\nBefore this head, the output landed in `.pup-build.X/dist/`, and the `.gitignore` rule `dist/` (which matches at any depth) hid it; that is why last round's similar finding was refuted. Now the files sit at `.pup-build.X/cli/index.js`, `.pup-build.X/core/*.js(.map)` and so on, and no ignore rule covers them: roughly 160 non-test modules × (`.js` + `.js.map`) ≈ 320 untracked files while the stage holds output. pup reads worktree status in two places:\n\n- **Bash scope re-check** (`src/core/profile-compiler.service.ts:1047-1061`) runs `git status --porcelain --untracked-files=all` after every Bash call. Above `RECHECK_MAX_DIRTY_PATHS` (200, `src/core/profile.constants.ts:16`) it exits 2: \"over 200 dirty paths ... every Bash call is refused\". Below it, each stage file is an out-of-scope SCOPE VIOLATION blamed on whichever command happened to run.\n- **Merge gate `worktree-clean`** (`src/core/merge-gate.service.ts:2329-2343`): any untracked `.pup-build.X/` fails it with \"Uncommitted changes in the worktree\".\n\nTwo ways to hit it:\n1. **Transient.** A parallel or background Bash call (or a `pup merge`) checks status between the emit and `mv \"$STAGE\" dist`; a second build in the same worktree keeps its full stage alive for up to 10s while it waits on `.pup-build.lock`.\n2. **Persistent.** A build SIGKILLed after the emit (OOM, hard timeout) skips the EXIT trap and leaves the stage behind. Every later Bash call in that session is refused and the gate refuses the branch until someone deletes `.pup-build.*` by hand; a stray `git add -A` would also commit the compiled output.\n\n**Fix:** add `.pup-build.*` to `.gitignore` next to `dist/` (it also covers `.pup-build.lock`). The emit stays at `dist/`'s depth, so the source-map fix is kept.",
+      "suggestion": null
+    },
+    {
+      "file": "scripts/build.sh",
+      "line": "20",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`[ -f \"$STAGE/cli/index.js\" ]` can only fire on a misconfigured tsconfig: a successful tsc emits the CLI entry, a failed one already exited under `set -e`, and the next `chmod +x` would fail on a missing file anyway. The check only adds a nicer message; consider deleting it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "scripts/build.sh",
+      "line": "22",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`chmod 755 \"$STAGE\"` is there because `mktemp -d` creates the directory with mode 700, which would make dist/ unreadable to other users; nothing says so, so the next maintainer may delete it as noise. Add a one-line WHY comment.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "scripts/build.sh",
+      "line": "10-11",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `[ ! -L node_modules ]` refusal guards a layout no requirement or install path here produces (pnpm creates a real node_modules, and the merge gate's is a real directory of symlinks); deleting it removes a branch and an error message.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 1,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.0477505250000005,
+  "duration_ms": 245603,
+  "num_turns": 18,
+  "tokens": {
+    "input": 14,
+    "output": 11427,
+    "cache_read": 333243,
+    "cache_creation": 52923,
+    "total": 397607
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 98,
+      "output": 35241,
+      "cache_read": 1300393,
+      "cache_creation": 138970,
+      "cost_usd": 1.8189096
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 34,
+      "output": 7802,
+      "cache_read": 176981,
+      "cache_creation": 52913,
+      "cost_usd": 0.22806859999999998
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 337,
+      "cache_read": 0,
+      "cache_creation": 4829,
+      "cost_usd": 0.000772325
+    }
+  ],
+  "permission_denials": []
+}
