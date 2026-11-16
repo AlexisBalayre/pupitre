@@ -182,6 +182,7 @@ import { abandonClosedSession, landSession } from '../core/land.service.js';
 import { MergeLockLostError } from '../core/merge-gate.errors.js';
 import { projectId, projectPaths } from '../core/paths.utils.js';
 import { InvalidProfileError } from '../core/profile.errors.js';
+import { GateInterruptedError } from '../core/sandbox.utils.js';
 import {
   appendEvent,
   ensureProject,
@@ -1773,6 +1774,44 @@ describe('CLI commands', () => {
       expect(logs).toContain(
         `Recorded ${PR} as closed unmerged: the ADR-number check no longer counts s1's decisions.`,
       );
+      expect(errors).toEqual([]);
+    });
+
+    it('prints a refused --abandon-closed scrubbed, and fails', async () => {
+      useCwd(initRepoWithAdapter());
+      vi.mocked(abandonClosedSession).mockRejectedValue(
+        new Error(`${PR} is OPEN\u001b[2J on GitHub, not CLOSED. Nothing was recorded.`),
+      );
+
+      await buildProgram().parseAsync(['land', 's1', '--abandon-closed'], { from: 'user' });
+
+      expect(errors).toEqual([`${PR} is OPEN [2J on GitHub, not CLOSED. Nothing was recorded.`]);
+      expect(process.exitCode).toBe(1);
+      expect(logs).toEqual([]);
+    });
+
+    it('leaves an interrupt during --abandon-closed to the entry point', async () => {
+      useCwd(initRepoWithAdapter());
+      vi.mocked(abandonClosedSession).mockRejectedValue(new GateInterruptedError('SIGINT'));
+
+      const escaped = await buildProgram()
+        .parseAsync(['land', 's1', '--abandon-closed'], { from: 'user' })
+        .then(
+          () => undefined,
+          (error: unknown) => error,
+        );
+
+      expect(escaped).toBeInstanceOf(GateInterruptedError);
+      expect(logs).toEqual([]);
+    });
+
+    it('says when --abandon-closed finds the close already recorded', async () => {
+      useCwd(initRepoWithAdapter());
+      vi.mocked(abandonClosedSession).mockResolvedValue({ prUrl: PR, recorded: false });
+
+      await buildProgram().parseAsync(['land', 's1', '--abandon-closed'], { from: 'user' });
+
+      expect(logs).toContain(`${PR} was already recorded as closed unmerged.`);
       expect(errors).toEqual([]);
     });
 
