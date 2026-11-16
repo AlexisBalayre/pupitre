@@ -257,6 +257,15 @@ export function hardRespawnSession(...args: RespawnArgs): void {
 }
 
 /**
+ * The stored context without its `## Code graph` section. A session launched
+ * before decision 186 was compiled with one, a heading and a one-line paragraph
+ * telling it to call `codegraph_explore`, which no window has any more.
+ */
+function withoutCodeGraph(context: string): string {
+  return context.replace(/\n\n## Code graph\n[^\n]*/, '');
+}
+
+/**
  * What both respawns share. The session must be running, on the worktree and
  * branch its launch minted: the row is store text a session can write, and a
  * respawn opens a window over the path it names (decision 101).
@@ -277,7 +286,7 @@ function relaunchWindow(
   const paths = projectPaths(repoPath, pathsBase);
   const extras = extrasFor(paths);
   const compiledDir = paths.compiledDir(sessionId);
-  const contextMarkdown = readFileSync(join(compiledDir, 'context.md'), 'utf8');
+  const contextMarkdown = withoutCodeGraph(readFileSync(join(compiledDir, 'context.md'), 'utf8'));
   // Before the kill, so a respawn refused at the top rung leaves the window
   // it would have replaced running.
   const route = respawnRoute(db, paths, session, override);
