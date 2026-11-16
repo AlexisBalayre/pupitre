@@ -1,0 +1,143 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-16T17:17:12.235Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43915387276",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43915387276",
+  "actor": "AlexisBalayre",
+  "commit_sha": "3dac28e91bef916382c65042687598ddd3567ad0",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 353,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "guards"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "guards"
+  ],
+  "reviewers_skipped": [
+    "conventions",
+    "context",
+    "maintainability",
+    "docs",
+    "spec",
+    "simplicity",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "1374-1378",
+      "description": "The sandbox denyWrite list names the main `.git`'s `config` and `config.worktree` but not `config.lock` / `config.worktree.lock`, while it does deny `packed-refs.lock`, `HEAD.lock`, `index.lock` and `main.lock`. Git commits a config write by renaming `config.lock` over `config`, so content a worker puts into the lock lands in the main config.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "174-186",
+      "description": "The sandbox allows `registry.yarnpkg.com`, and pup's TypeScript adapter treats a repo with `yarn.lock` as a yarn project, but WORKER_CACHE_VARS redirects only npm, pip, uv and poetry. Yarn 4's global cache (`~/.yarn/berry/cache`) is outside every grant, so a sandboxed install that misses the cache fails with EPERM.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "843-845",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "SYMLINK_CHECK_SHELL walks the sed-normalized `$REL` (`LINK_REST=$REL`), but the Write tool opens the raw `file_path`. sed works line by line, so its `s#^\\./##` strip also fires after an embedded newline, where it is not a path-equivalent rewrite. A sandboxed worker plants a symlink whose name ends in `<LF>.` and then Writes through it. The hook checks a different, nonexistent path, exits 0 on scope-in, and the unsandboxed Write follows the link to a compiled hook or to the main checkout's `.pupitre/project.yml`.",
+      "body": "**A newline in `file_path` gets a Write past the new symlink check, which reopens the escape the check was added to close.**\n\nThe walk runs on `REL` after it has been normalized, not on the path Edit or Write will actually open:\n\n```sh\nFILE=$(printf '%s' \"$INPUT\" | jq -r '.tool_input.file_path // empty')\n...\nREL=$(printf '%s' \"$REL\" | sed -e 's#//*#/#g' -e ':a' -e 's#/\\./#/#g; s#^\\./##' -e 'ta')\n...\nLINK_PATH=$WORKTREE\nLINK_REST=$REL\n```\n\nsed works one line at a time, so `^\\./` also matches right after an embedded LF. For `src/evil<LF>./project.yml`, the kernel resolves the components `src`, `evil<LF>.` and `project.yml`. sed rewrites the path to `src/evil<LF>project.yml`, which has a different set of components.\n\n**Trigger (`workerSandbox: true`):**\n1. Sandboxed Bash creates a link in the worktree: `ln -s <main>/.pupitre \"src/$(printf 'evil\\n.')\"`. The target could also be the session's compiled `hooks/` dir.\n2. The worker calls Write with `file_path` = `<worktree>/src/evil\\n./project.yml`.\n3. In the hook:\n   - The worktree-prefix `case`, the `/../` check and the `^\\.claude/` check all pass, because `*` matches a newline.\n   - The walk tests `src`, which is a real dir, then `src/evil<LF>project.yml`, which does not exist, so it `break`s. The real link is never tested.\n   - `printf '%s\\n' \"$REL\" | grep -qE -f scope-in.pat` passes when any one line matches, and `src/evil` matches `src/**`.\n4. Write runs outside the sandbox and follows the link. It can rewrite `project.yml` to turn `workerSandbox` off for later launches, or overwrite a compiled hook that then runs unsandboxed.\n\nA trailing newline does the same without sed: `$(...)` strips trailing LFs from `FILE`. Whether the Write tool keeps a trailing LF is Claude Code internals and was not probed. The embedded variant does not depend on it.\n\nADR 0191 says the hook refuses such a link \"short of the race in ceiling 14\". This bypass involves no race, and no ceiling covers it.\n\n**Fix:** under the sandbox, refuse any control character in the raw payload's `file_path`, before `$(...)` or sed can change it.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/3dac28e91bef916382c65042687598ddd3567ad0/src/core/profile-compiler.service.ts#L843-L857",
+      "suggestion": "const SYMLINK_CHECK_SHELL = `# Decision 191: sandboxed Bash can plant a symlink that this Edit or Write,\n# outside the sandbox, would follow; no component of the path may be one.\n# Checked on the raw payload: $(...) drops trailing newlines and sed rewrites\n# per line, so a control character would make the walk test another path.\nif printf '%s' \"$INPUT\" | jq -e '.tool_input.file_path | test(\"[[:cntrl:]]\")' >/dev/null; then\n  echo \"BLOCKED: a path with a control character is refused under the worker sandbox.\" >&2; exit 2\nfi\nLINK_PATH=$WORKTREE"
+    },
+    {
+      "file": "docs/adr/0191-a-worker-s-bash-calls-can-run-in-claude-code-s.md",
+      "line": "35-71",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The ADR calls its main-.git deny list \"exactly these\", but the list leaves out `hooks/`, which the code denies (`common('hooks')`, with its `.lock`). The `workerSandbox` JSDoc and docs/03-profiles.md leave it out too. Add `hooks/` to all three so whoever reconciles the list against the ADR doesn't remove it from the code.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "1399",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`refs/stash` and `logs/refs/stash` in the main `.git` stay writable, so a worker can swap in a forged stash commit that the operator's next `git stash pop` applies to the main checkout. This is the same route as `MERGE_AUTOSTASH`, which is denied. A worker's own `git stash` writes these files, so they can't be denied; name the route in ADR 0191's writable list or ceilings instead.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Round 4 budget: conventions, docs, context, simplicity and maintainability were skipped per §4; spec skipped (no spec source); workflow-safety skipped (no workflow change)."
+    },
+    {
+      "component": "guards",
+      "description": "Guards reviewer had `git ls-tree origin/main` denied (couldn't confirm ADR 0191 doesn't collide with a newer main ADR) and did not read the 29 candidate source-scanning guard tests, so a Linux-only guard failure is not ruled out."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 4.30002505,
+  "duration_ms": 377908,
+  "num_turns": 15,
+  "tokens": {
+    "input": 18,
+    "output": 13765,
+    "cache_read": 494937,
+    "cache_creation": 72467,
+    "total": 581187
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 180,
+      "output": 87353,
+      "cache_read": 3386182,
+      "cache_creation": 317402,
+      "cost_usd": 4.2294274000000005
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 10,
+      "output": 2252,
+      "cache_read": 54592,
+      "cache_creation": 16758,
+      "cost_usd": 0.0698942
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 222,
+      "cache_read": 0,
+      "cache_creation": 4738,
+      "cost_usd": 0.00070345
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "git ls-tree --name-only origin/main docs/adr/"
+    }
+  ]
+}
