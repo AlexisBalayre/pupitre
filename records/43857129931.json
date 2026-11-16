@@ -1,0 +1,128 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-16T11:25:59.696Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43857129931",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43857129931",
+  "actor": "AlexisBalayre",
+  "commit_sha": "fd2cea5bd3df0d4c91fd9f302f64d6baaab32a46",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 347,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "conventions",
+    "docs",
+    "guards"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "conventions",
+    "docs",
+    "guards"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context",
+    "maintainability",
+    "spec",
+    "simplicity",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "589-593",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The new protocol line tells workers to pipe test runs to `tail` or `grep` and says `set -o pipefail` keeps the exit status, 75 included. That is wrong for `grep`. Under pipefail, bash and zsh return the status of the rightmost command that failed, and `grep` exits 1 when nothing matches. When the test slots stay busy, `runSessionTest` writes only to stderr (src/core/test-slot.service.ts:560-564), so `grep` gets empty input and the pipeline returns 1 instead of 75. A passing run piped to a failure filter such as `grep -E 'FAIL|Error'` also returns 1, so green tests look red.",
+      "body": "**The `grep` half of the new rule loses the exit status it says it keeps.**\n\nThe line says that piping a test run to `tail` or `grep` after `set -o pipefail` keeps the exit status, 75 included. With pipefail, bash and zsh return the status of the *rightmost* command that exited non-zero, and `grep` exits 1 whenever nothing matches:\n\n- **Slots busy:** when no slot frees up, `runSessionTest` prints only to stderr ([test-slot.service.ts#L558-L564](https://github.com/AlexisBalayre/pupitre/blob/fd2cea5bd3df0d4c91fd9f302f64d6baaab32a46/src/core/test-slot.service.ts#L558-L564)). The wait messages go to stderr too (`onWait` uses `console.error`), and the test child is never started. So in `set -o pipefail; pup session test a.test.ts | grep -E 'FAIL|Tests'`, `grep` reads empty input and exits 1, and the pipeline returns **1, not 75**. The protocol line just above ([L579-L580](https://github.com/AlexisBalayre/pupitre/blob/fd2cea5bd3df0d4c91fd9f302f64d6baaab32a46/src/core/profile-compiler.service.ts#L579-L580)) tells the worker that 75 means \"retry, not a test failure\". Exit 1 tells it the opposite.\n- **Green run:** `pup session test a.test.ts | grep -E 'FAIL|Error'` finds no match when the tests pass, so the pipeline returns 1 and a passing run looks like a failure.\n\n`tail` is safe because it exits 0 on any input, so 75 and test failures both come through. Only `grep` breaks the promise ([profile-compiler.service.ts#L589-L593](https://github.com/AlexisBalayre/pupitre/blob/fd2cea5bd3df0d4c91fd9f302f64d6baaab32a46/src/core/profile-compiler.service.ts#L589-L593)).\n\nFix: recommend only `tail` for test runs, or warn that `grep` exits 1 on no match. Update the sentence that `src/core/profile-compiler-context.test.ts` pins and the matching claim in `docs/adr/0189-…` in the same change.",
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0189-workers-keep-tool-output-small-and-pup-s-worker.md",
+      "line": "17",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The ADR cites \"the context budget (decisions 71 and 128)\", but 71 is about parser typing of `contextBudget` and 128 about kickoff scope-in files; neither sets the budget, so a reader following the citation lands on unrelated decisions.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/question.utils.ts",
+      "line": "6",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The module doc still says `pup session ask` echoes the numbered question, which this PR stopped; only `pup conductor ask` echoes it now.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "588",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `// Decision 189:` comment restates the \"every result is re-read on each later request\" reason that the string right below it already says; keep the decision pointer and drop the repeated reason.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Skipped review-security: the diff changes a static string in the compiled worker context and removes the echo of worker-written text from CLI output. It adds no new input handling or shell-out. Also skipped simplicity (only new file is an ADR), context, spec (no closing issue), workflow-safety and maintainability (gates not met)."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.2436394499999996,
+  "duration_ms": 151734,
+  "num_turns": 13,
+  "tokens": {
+    "input": 16,
+    "output": 8108,
+    "cache_read": 314983,
+    "cache_creation": 43044,
+    "total": 366151
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 54,
+      "output": 17470,
+      "cache_read": 608342,
+      "cache_creation": 85795,
+      "cost_usd": 1.0293914
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 34,
+      "output": 5826,
+      "cache_read": 216591,
+      "cache_creation": 53424,
+      "cost_usd": 0.2135471
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 201,
+      "cache_read": 0,
+      "cache_creation": 4802,
+      "cost_usd": 0.00070095
+    }
+  ],
+  "permission_denials": []
+}
