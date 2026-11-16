@@ -104,12 +104,14 @@ listed in decision 63's ceilings.
 
 Off by default. A project turns it on with `workerSandbox: true` in `.pupitre/project.yml`, and
 every worker launched after that gets a `sandbox` block in its compiled `settings.json`. While the
-setting is off the settings are byte for byte unchanged. A value that is not a boolean refuses the
+setting is off the settings and the scope hook are byte for byte unchanged. A value that is not a boolean refuses the
 compile.
 
 The block runs every process a Bash call starts inside Claude Code's sandbox:
 
-- Writes allowed: the worktree and its admin dir, the sandbox's `TMPDIR`, the store's `state.db`
+- Writes allowed: the worktree and its admin dir, where the npm, pip, uv and poetry caches are
+  pointed (`npm_config_cache`, `PIP_CACHE_DIR`, `UV_CACHE_DIR`, `POETRY_CACHE_DIR` in the
+  compiled `env`), the sandbox's `TMPDIR`, the store's `state.db`
   files, the session's handoff document that `pup respawn` asks for, the machine's test slots,
   and the main `.git` that a commit needs.
 - Writes denied, within the main `.git`:
@@ -121,9 +123,14 @@ The block runs every process a Bash call starts inside Claude Code's sandbox:
     `main`: `main` at the `.git` root, `refs/main` and `refs/tags/main`, with their locks;
   - the main checkout's own `HEAD`, `HEAD.lock`, `index`, `index.lock`, `MERGE_HEAD`,
     `ORIG_HEAD`, `FETCH_HEAD` and `CHERRY_PICK_HEAD`;
+  - its `MERGE_AUTOSTASH`, a stash the operator's next merge or `git pull` would apply to the
+    main checkout's working tree;
   - its `rebase-merge/`, `rebase-apply/` and `sequencer/`.
 
-  A worker's commit writes none of these. Claude Code itself refuses `config`, `hooks/` and the
+  A worker's commit writes none of these, but every ref deletion takes the `packed-refs` lock, so
+  a sandboxed worker deletes no ref: `git branch -D` fails, a rebase prints an error for each
+  pick, and a conflicted cherry-pick leaves `CHERRY_PICK_HEAD` behind (decision 191, ceiling 13).
+  Claude Code itself refuses `config`, `hooks/` and the
   other worktrees' admin dirs. In this worktree's admin dir, `commondir`, `gitdir` and
   `config.worktree` are denied.
 - Writes left open in the main `.git` include, among others: objects, `logs/`, `rr-cache/`, `refs/tags/`,
@@ -141,7 +148,9 @@ The block runs every process a Bash call starts inside Claude Code's sandbox:
 
 The Read, Edit and Write tools, the hooks and the session process are not sandboxed. The setting
 also adds a `Read(...)` deny rule for each credential path, which keeps the Read tool, and Grep
-and Glob with it, from the same files; the scope hook still guards Edit and Write. A pnpm
+and Glob with it, from the same files; the scope hook still guards Edit and Write, and under the
+setting it also refuses a path that runs through a symlink in the worktree, which sandboxed Bash
+could plant to send Edit or Write past the sandbox. A pnpm
 project lists `.pnpm-store/` in its `.gitignore` before turning the setting on, because pnpm
 keeps a store in the worktree when it cannot write the shared one. The setting was probed only
 on macOS, and elsewhere grants of files that do not exist at launch, such as `state.db-wal` and

@@ -13,13 +13,15 @@
     file, read from the main checkout) adds a `sandbox` block to every worker's compiled
     `settings.json`. It is read at compile time, so turning it on reaches the next launch and
     never a window already running. It is off by default. While it is off, the compiled settings
-    are byte for byte what they were, and so is the profile hash. A value that is not a boolean
+    are byte for byte what they were, and so are the scope hook and the profile hash. A value that is not a boolean
     refuses the compile, so a typo cannot launch a worker unsandboxed without anyone noticing. The
     conductor is not sandboxed. Outside macOS the setting refuses the compile for now
     (ceiling 12). A worker cannot turn the setting off for the launches after it: `.pupitre/**`
     is a protected path (`PROTECTED_PATH_GLOBS`), so the gate refuses any branch that touches
-    `project.yml`, and the main checkout's copy, which is the one read, is outside the sandbox's
-    grants and the scope hook's reach.
+    `project.yml`. The main checkout's copy, which is the one read, is outside the sandbox's
+    grants and outside the worktree the scope hook confines Edit and Write to. A symlink planted
+    in the worktree by sandboxed Bash would carry an unsandboxed Write past both, so under the
+    setting the scope hook also refuses a path with a symlink in it (*The scope hook* below).
     *What the block allows.*
     - Writes allowed: the worktree, its admin dir under the main `.git`'s `worktrees/`, and the
       per-user temp directory Claude Code points `TMPDIR` at. Claude Code adds its own grant of
@@ -30,8 +32,8 @@
       it, the scope hook keeps the Write tool from it, and no pup command writes it, so without
       the grant a sandboxed worker could never be respawned with a handoff. The machine's test
       slots in `~/.pupitre/slots/` are allowed too.
-    - Writes denied inside those grants. In the main `.git`, exactly these, none of which a
-      worker's commit or merge writes:
+    - Writes denied inside those grants. In the main `.git`, exactly these. A worker's commit or
+      merge writes none of them, but every ref deletion takes the `packed-refs` lock (ceiling 13):
       - the main checkout's own `config.worktree`. Git reads it once
         `extensions.worktreeConfig` is on, which `git sparse-checkout init` turns on, and a
         `core.fsmonitor` or `core.hooksPath` planted there would run in the operator's git;
@@ -46,11 +48,18 @@
       - `refs/heads/main` and every ref git tries before it for a bare `main`: `main` at the
         `.git` root, `refs/main` and `refs/tags/main`, each with its `.lock`. Any of them, once
         created, would shadow `main` for the operator's and the gate's unsandboxed git;
-      - `packed-refs` and its `.lock`, either of which would move `main` too;
+      - `packed-refs` and its `.lock`. Git renames the lock over `packed-refs`, so content
+        written into either, the lock while another git holds it included, could move `main` too;
       - the main checkout's own `HEAD`, `HEAD.lock`, `index`, `index.lock`, `MERGE_HEAD`,
         `ORIG_HEAD`, `FETCH_HEAD` and `CHERRY_PICK_HEAD`. A linked worktree keeps its own copies
         of these in its admin dir. A planted lock would stall every git command in the main
         checkout.
+      - the main checkout's `MERGE_AUTOSTASH`. It names a stash that `git merge` applies to the
+        working tree once a merge or fast-forward succeeds, whether or not `--autostash` was
+        given, and `git pull --ff-only` runs that merge. Objects are writable, so a worker can
+        build a stash-shaped commit and name it there. The conductor's routine pull after a
+        human merge would then write the worker's edits into the main checkout. A linked
+        worktree keeps its own `MERGE_AUTOSTASH` in its admin dir.
       - the main checkout's `rebase-merge/`, `rebase-apply/` and `sequencer/`. A todo planted
         there carries `exec` lines, which run on the operator's next `--continue`.
 
@@ -154,7 +163,17 @@
     database directly. That was already true without the sandbox, and decision 63's ceilings
     still cover it. What the sandbox does close is the store's files: a worker's shell can no
     longer rewrite its own compiled hooks, which run outside the sandbox, or its recheck
-    snapshots.
+    snapshots. Nor can its Write tool through a link the shell planted, which the scope hook
+    refuses under the setting, short of the race in ceiling 14.
+    *The scope hook.* Edit and Write run outside the sandbox, with permissions skipped, and the
+    scope hook only compared the path's text with the worktree. A sandboxed Bash call can create
+    a symlink anywhere in the worktree, pointing at the main checkout's `project.yml` or a
+    compiled hook, and a Write to that in-scope path would follow it. Removing the link before
+    the commit leaves the gate nothing to see. So under the setting the scope hook walks the path
+    from the worktree down and refuses it when any component that exists is a symlink, the file
+    itself included. It refuses rather than resolve: a link inside the worktree costs a worker
+    nothing, since it can edit the target's own path. Without the setting Bash writes those files
+    directly, so the check is compiled only with it and the hook's bytes stay as they were.
     *Exfiltration it does not stop.* Every reachable host is a way out:
     - The registry tokens are kept from Bash reads and from the Read tool, but a worker can still
       `npm publish` with a token of its own, so the registries remain an exfiltration channel.
@@ -173,7 +192,18 @@
     (decision 36), and through the operator's own commands. Containing those is the container
     spike's job.
     *Found when checking it.* pnpm cannot write the operator's shared store from the sandbox, so
-    the pre-commit install falls back to a fresh store inside the worktree, `.pnpm-store/`. It
+    the pre-commit install falls back to a fresh store inside the worktree, `.pnpm-store/`.
+    npm, pip, uv and poetry have no such fallback: their caches default to `~/.npm`,
+    `~/Library/Caches` and `~/.cache`, which the sandbox refuses, so an install stops with
+    `EPERM` (not probed; found in review). The setting therefore also adds `npm_config_cache`,
+    `PIP_CACHE_DIR`, `UV_CACHE_DIR` and `POETRY_CACHE_DIR` to the compiled `env`, each pointed at
+    its own directory under `pup-cache/` in the worktree's admin dir. That dir is already granted,
+    stays out of `git status`, and goes with the worktree when it is removed. Each worker starts
+    with empty caches, so it fetches every package once, and no worker can poison another's or the
+    gate's (decision 36 keeps the gate's caches apart). Corepack's home is not redirected: it only
+    reads the package managers the operator already cached, and a redirect would make it fetch
+    them, from hosts the network list may not hold. The gate's `XDG_CACHE_HOME` redirect is left
+    out too, since the compiled `env` also reaches the session's Claude Code process. It
     then fetches every package into that store from the registry, which is why the registries
     are allowed. That store is about 6,000 untracked files. The count trips decision 63's cap of
     200 dirty paths, and once the cap trips, every later Bash call is refused. Opening the shared
@@ -245,6 +275,23 @@
         `pup` may fail to open the store and the handoff may fail to write. Until another
         platform is probed, `workerSandbox: true` refuses the compile anywhere but macOS, and so
         the launch, the way a malformed value does.
+    13. Ref deletion. Git's files backend takes `packed-refs.lock` in the common dir before it
+        deletes any ref, packed or not, and the lock is denied. Checked with git 2.54, a held
+        lock standing in for the deny, from a linked worktree: `git branch -D` and
+        `git update-ref -d` fail; a rebase finishes but prints an `Unable to create
+        'packed-refs.lock'` error for each pick, as it fails to delete `REBASE_HEAD`; and a
+        conflicted `git cherry-pick --continue` commits but leaves `CHERRY_PICK_HEAD`, so the
+        worker's next `git commit` is taken as that cherry-pick and gets its authorship (git
+        internals, not probed). A worker clears it with `rm "$(git rev-parse --git-dir)/CHERRY_PICK_HEAD"`: the
+        admin dir is granted. Allowing the lock instead would let a worker write into the lock
+        while the operator's or the gate's git holds it, and that git would rename the worker's
+        content over `packed-refs`. A worker's own refs are not deleted by pup's flow; the gate's
+        cleanup runs unsandboxed.
+    14. The scope hook's symlink check is a check before use. A Bash call left running in the
+        background can swap a path component for a symlink between the hook's check and the
+        Write. Closing that needs the Write tool itself to refuse links, which Claude Code offers
+        no setting for, or Edit and Write deny rules on the store and the main checkout's
+        `.pupitre/`, which would need a probe that deny rules match a link's resolved target.
     *Left for follow-ups.*
     - Gaps in the read denials: `.yarnrc.yml`, `pip.conf`, cargo and gem credentials, the
       `.claude.json` in the home directory, and the transcripts.

@@ -5,6 +5,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  symlinkSync,
   unlinkSync,
   utimesSync,
   writeFileSync,
@@ -936,18 +937,27 @@ describe('the worker sandbox (decision 191)', () => {
   }
 
   /** The project-config file is the only difference, so `repo` alone names the input. */
-  function settingsText(content?: string): string {
+  function compiledText(content: string | undefined, file: string): string {
     const repo = repoWith(content);
-    const settings = compileIn(repo).files['settings.json'] as string;
-    return settings.replaceAll(repo, '<repo>');
+    const text = compileIn(repo).files[file] as string;
+    return text.replaceAll(repo, '<repo>');
   }
 
-  it('compiles the same settings bytes as a project without the setting while it is off', () => {
-    const without = settingsText(undefined);
+  it.each(['settings.json', 'hooks/scope-enforce.sh'])(
+    'compiles the same %s bytes as a project without the setting while it is off',
+    (file) => {
+      const without = compiledText(undefined, file);
 
-    expect(JSON.parse(without)).not.toHaveProperty('sandbox');
-    expect(settingsText('workerSandbox: false\n')).toBe(without);
-    expect(settingsText('skipTestsOnUntestedChanges: false\n')).toBe(without);
+      expect(compiledText('workerSandbox: false\n', file)).toBe(without);
+      expect(compiledText('skipTestsOnUntestedChanges: false\n', file)).toBe(without);
+    },
+  );
+
+  it('adds no sandbox block and no cache redirect while it is off', () => {
+    const settings = JSON.parse(compiledText(undefined, 'settings.json'));
+
+    expect(settings).not.toHaveProperty('sandbox');
+    expect(settings.env).not.toHaveProperty('npm_config_cache');
   });
 
   it('confines Bash children to the worktree, keeping the store and the main .git config unwritable', () => {
@@ -1003,6 +1013,7 @@ describe('the worker sandbox (decision 191)', () => {
         join(repo, '.git', 'ORIG_HEAD'),
         join(repo, '.git', 'FETCH_HEAD'),
         join(repo, '.git', 'CHERRY_PICK_HEAD'),
+        join(repo, '.git', 'MERGE_AUTOSTASH'),
         join(repo, '.git', 'rebase-merge'),
         join(repo, '.git', 'rebase-apply'),
         join(repo, '.git', 'sequencer'),
@@ -1054,6 +1065,10 @@ describe('the worker sandbox (decision 191)', () => {
     { name: 'ORIG_HEAD', path: ['ORIG_HEAD'] },
     { name: 'FETCH_HEAD', path: ['FETCH_HEAD'] },
     { name: 'CHERRY_PICK_HEAD', path: ['CHERRY_PICK_HEAD'] },
+    {
+      name: "MERGE_AUTOSTASH, which the operator's next pull applies to the main checkout",
+      path: ['MERGE_AUTOSTASH'],
+    },
     { name: 'a rebase todo, whose exec lines run on --continue', path: ['rebase-merge'] },
     { name: 'an am or apply-style rebase', path: ['rebase-apply'] },
     { name: 'a cherry-pick or revert sequence', path: ['sequencer'] },
@@ -1065,6 +1080,55 @@ describe('the worker sandbox (decision 191)', () => {
 
     expect(sandbox.filesystem.denyWrite).toContain(join(repo, '.git', ...path));
     expect(sandbox.filesystem.allowWrite).not.toContain(join(repo, '.git', ...path));
+  });
+
+  // The sandbox refuses ~/.npm and ~/.cache; the admin dir is granted and goes with the worktree.
+  it('points the package caches into the worktree admin dir the sandbox grants', () => {
+    const repo = repoWith('workerSandbox: true\n');
+    const settings = JSON.parse(compileIn(repo).files['settings.json'] as string);
+    const caches = join(repo, '.git', 'worktrees', 's-1', 'pup-cache');
+
+    expect(settings.env).toMatchObject({
+      npm_config_cache: join(caches, 'npm'),
+      PIP_CACHE_DIR: join(caches, 'pip'),
+      UV_CACHE_DIR: join(caches, 'uv'),
+      POETRY_CACHE_DIR: join(caches, 'poetry'),
+    });
+    expect(settings.sandbox.filesystem.allowWrite).toContain(
+      join(repo, '.git', 'worktrees', 's-1'),
+    );
+  });
+
+  // Edit and Write run outside the sandbox and would follow a link sandboxed Bash planted.
+  it('refuses an Edit or Write through a symlink in the worktree', () => {
+    const repo = repoWith('workerSandbox: true\n');
+    const worktree = join(repo, '.worktrees', 's-1');
+    const outDir = tempDir('pup-sandbox-out-');
+    ProfileCompiler.writeCompiledProfile(
+      ProfileCompiler.compileProfile(makeInput({ repoPath: repo, worktreePath: worktree, outDir })),
+      outDir,
+    );
+    mkdirSync(join(worktree, 'src', 'net'), { recursive: true });
+    symlinkSync(join(repo, '.pupitre', 'project.yml'), join(worktree, 'src', 'net', 'retry.ts'));
+    symlinkSync(join(repo, '.pupitre'), join(worktree, 'src', 'net', 'linked'));
+    const write = (path: string) =>
+      spawnSync('/bin/sh', [join(outDir, 'hooks', 'scope-enforce.sh')], {
+        input: JSON.stringify({
+          tool_name: 'Write',
+          tool_input: { file_path: join(worktree, path) },
+        }),
+        encoding: 'utf8',
+      });
+
+    for (const path of ['src/net/retry.ts', 'src/net/linked/project.yml', 'src//net/./linked']) {
+      const result = write(path);
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain('is a symlink');
+    }
+    expect(write('src/net/new/file.ts').status).toBe(0);
+    expect(readFileSync(join(repo, '.pupitre', 'project.yml'), 'utf8')).toBe(
+      'workerSandbox: true\n',
+    );
   });
 
   it('keeps the Read tool from the credentials the sandbox keeps from Bash', () => {
