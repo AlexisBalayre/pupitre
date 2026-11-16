@@ -289,6 +289,194 @@ describe('pup retro', () => {
   });
 });
 
+type Row = RetroReport['classes'][number];
+type Replay = Row['replay'][number];
+
+describe('pup retro context replay', () => {
+  let db: Database;
+  let claudeDir: string;
+  const MINUTE = 60_000;
+  const GROWTH = 2_000;
+  const INPUT = 10;
+
+  function request(id: string, ms: number, read: number, write: number): string {
+    return JSON.stringify({
+      type: 'assistant',
+      requestId: id,
+      timestamp: at(ms),
+      effort: 'high',
+      message: {
+        model: 'claude-opus-5-5',
+        content: [],
+        usage: {
+          input_tokens: INPUT,
+          cache_read_input_tokens: read,
+          cache_creation_input_tokens: write,
+          cache_creation: { ephemeral_1h_input_tokens: write },
+          output_tokens: 400,
+        },
+      },
+    });
+  }
+
+  function boundary(ms: number, trigger: string, preTokens?: number): string {
+    return JSON.stringify({
+      type: 'system',
+      subtype: 'compact_boundary',
+      timestamp: at(ms),
+      compactMetadata: { trigger, preTokens },
+    });
+  }
+
+  /**
+   * A worker that starts on a 20k floor, grows 2k a request, compacts when the
+   * next request would reach the threshold (a summary of `posts[i]` tokens written after each),
+   * and idles two hours once mid-way.
+   */
+  function worker(threshold: number, posts: number[], requests: number): string[] {
+    const lines: string[] = [];
+    let ms = 0;
+    let context = 0;
+    let compactions = 0;
+    for (let n = 0; n < requests; n += 1) {
+      ms += n === Math.floor(requests / 2) ? 2 * 3_600_000 : MINUTE;
+      if (n === 0) {
+        lines.push(request(`r${n}`, ms, 9_000, 11_000 - INPUT));
+        context = 20_000;
+      } else if (context + GROWTH >= threshold && compactions < posts.length) {
+        lines.push(boundary(ms - 1, 'auto', context + GROWTH));
+        const post = posts[compactions] ?? 0;
+        compactions += 1;
+        lines.push(request(`r${n}`, ms, 9_000, post - 9_000 - INPUT));
+        context = post;
+      } else if (n === Math.floor(requests / 2)) {
+        context += GROWTH;
+        lines.push(request(`r${n}`, ms, 0, context - INPUT));
+      } else {
+        lines.push(request(`r${n}`, ms, context, GROWTH - INPUT));
+        context += GROWTH;
+      }
+    }
+    return lines;
+  }
+
+  function retro(lines: string[]): RetroReport {
+    const dir = transcriptDir(`${REPO}/.worktrees/w1`, claudeDir);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'a.jsonl'), `${lines.join('\n')}\n`);
+    return buildRetro(db, REPO, { since: new Date(T0 - 1000), claudeDirs: [claudeDir] });
+  }
+
+  beforeEach(() => {
+    db = openStore(':memory:');
+    ensureProject(db, projectId(REPO), REPO);
+    claudeDir = mkdtempSync(join(tmpdir(), 'pup-retro-replay-'));
+  });
+
+  afterEach(() => rmSync(claudeDir, { recursive: true, force: true }));
+
+  it('replays the observed threshold within 5% of the actual spend', () => {
+    const [row] = retro(worker(200_000, [24_000, 30_000], 250)).classes;
+
+    expect(row?.compactions).toBe(2);
+    expect(row?.observedThreshold).toBe(200_000);
+    expect(row?.observedReplayCost).toBeGreaterThan(0);
+    expect(Math.abs((row?.observedReplayCost ?? 0) / (row?.cost ?? 1) - 1)).toBeLessThan(0.05);
+  });
+
+  it('reports the context around compactions, growth and spend above 150k', () => {
+    const [row] = retro(worker(200_000, [24_000, 30_000], 250)).classes;
+
+    expect(row?.contextBeforeCompaction).toBe(200_000);
+    expect(row?.contextAfterCompaction).toBe(24_000);
+    expect(row?.growthPerRequest).toBeCloseTo(GROWTH, -2);
+    expect(row?.highContextCostShare).toBeGreaterThan(0.2);
+    expect(row?.highContextCostShare).toBeLessThan(0.8);
+  });
+
+  it('carries a replay at four thresholds in --json, a lower one saving with more resets', () => {
+    const report = retro(worker(200_000, [24_000, 30_000], 250));
+    const json = JSON.parse(serializeRetro(report)) as {
+      classes: { replay: { threshold: number; resets: number; change: number }[] }[];
+    };
+    const replay = json.classes[0]?.replay ?? [];
+
+    expect(replay.map((r) => r.threshold)).toEqual([100_000, 120_000, 150_000, 200_000]);
+    expect(replay[0]?.change).toBeLessThan(0);
+    expect(replay[0]?.change).toBeLessThan(replay[2]?.change ?? 0);
+    expect(replay[0]?.resets).toBeGreaterThan(replay[3]?.resets ?? 0);
+    expect(formatRetro(report)).toContain('100k');
+  });
+
+  it('reads a transcript with 150k compaction boundaries between two requests', () => {
+    const boundaries = Array.from({ length: 150_000 }, () => boundary(MINUTE, 'auto', 300_000));
+    const lines = [
+      request('r0', 0, 9_000, 11_000),
+      ...boundaries,
+      request('r1', 2 * MINUTE, 9_000, 5_000),
+    ];
+
+    const [row] = retro(lines).classes;
+
+    expect(row?.compactions).toBe(150_000);
+    expect(row?.contextBeforeCompaction).toBe(300_000);
+  });
+
+  it('holds an absurd count at a ceiling, so no figure prints as Infinity or NaN', () => {
+    const lines = [
+      request('r0', 0, 1e308, 1e308),
+      boundary(MINUTE - 1, 'auto', 1e308),
+      request('r1', MINUTE, 1e308, 1e308),
+    ];
+    const report = retro(lines);
+
+    expect(formatRetro(report)).not.toMatch(/Infinity|NaN/);
+    expect(report.classes[0]?.contextBeforeCompaction).toBe(10_000_000);
+  });
+
+  it('keeps a /compact whatever the threshold, and reproduces a transcript with no reset', () => {
+    const lines = [
+      request('r0', 0, 9_000, 11_000 - INPUT),
+      request('r1', MINUTE, 20_000, GROWTH - INPUT),
+      boundary(2 * MINUTE - 1, 'manual'),
+      request('r2', 2 * MINUTE, 9_000, 5_000 - INPUT),
+      request('r3', 3 * MINUTE, 14_000, GROWTH - INPUT),
+    ];
+    const [row] = retro(lines).classes;
+    const at200k = row?.replay.find((r) => r.threshold === 200_000);
+
+    expect(row?.observedThreshold).toBe(0);
+    expect(at200k?.resets).toBe(1);
+    expect(at200k?.change).toBeCloseTo(0, 10);
+    expect(row?.observedReplayCost).toBeCloseTo(row?.cost ?? 0, 10);
+  });
+
+  it('reads the carried context from the cache across an automatic compaction the replay skips', () => {
+    const [uncompacted] = retro(worker(Number.POSITIVE_INFINITY, [], 80)).classes as [Row];
+    const [compacted] = retro(worker(160_000, [24_000], 80)).classes as [Row];
+    const [, , , at200k] = compacted.replay as [Replay, Replay, Replay, Replay];
+
+    expect(compacted.compactions).toBe(1);
+    expect(at200k.threshold).toBe(200_000);
+    expect(at200k.resets).toBe(0);
+    expect(Math.abs(at200k.cost / uncompacted.cost - 1)).toBeLessThan(0.01);
+  });
+
+  it('prices no lower threshold when no reset in the window gives a floor to restart from', () => {
+    const report = retro([
+      request('r0', -10 * MINUTE, 9_000, 100_000),
+      ...Array.from({ length: 20 }, (_, n) =>
+        request(`r${n + 1}`, (n + 1) * MINUTE, 109_000 + n * GROWTH, GROWTH - INPUT),
+      ),
+    ]);
+    const [row] = report.classes as [Row];
+
+    expect(row.replay).toEqual([]);
+    expect(row.observedReplayCost).toBeCloseTo(row.cost, 10);
+    expect(formatRetro(report)).toContain('no lower threshold priced');
+  });
+});
+
 describe('repoRelative', () => {
   it('strips the repo or worktree root and reduces a path outside the repo to its basename', () => {
     expect(repoRelative('/repo/src/a.ts', '/repo')).toBe('src/a.ts');
