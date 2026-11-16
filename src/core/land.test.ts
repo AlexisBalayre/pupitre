@@ -1664,6 +1664,58 @@ describe('landSession', { timeout: 20_000 }, () => {
       expectNothingChanged(before);
     });
 
+    // The pin and the head hold the same file there, so `<pin>..<head>` shows
+    // none: only the merge, from the head's older base, brings it back.
+    /** Commits on the target take no `.worktrees/` gitlink, which `commitIn`'s `add .` would. */
+    const excludeWorktrees = () =>
+      writeFileSync(join(repo, '.git', 'info', 'exclude'), '.worktrees/\n');
+
+    it('refuses a head off an older base that brings back a critical file the target reverted', async () => {
+      excludeWorktrees();
+      const older = mainSha();
+      commitIn(repo, 'src/core/land-x.ts', 'export const x = 1;\n');
+      sh(repo, 'git', 'push', '-q', origin, 'main');
+      sh(worktree, 'git', 'reset', '-q', '--hard', 'main');
+      pinned = commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      sh(repo, 'git', 'push', '-q', '-f', origin, BRANCH);
+      seedPrMerge(PR_URL, passingReport(pinnedStages));
+      sh(repo, 'git', 'rm', '-q', 'src/core/land-x.ts');
+      sh(repo, 'git', '-c', 'user.email=l@test', '-c', 'user.name=land', 'commit', '-qm', 'revert');
+      sh(repo, 'git', 'push', '-q', origin, 'main');
+      sh(worktree, 'git', 'reset', '-q', '--hard', older);
+      // Not the target's commit adding it again: in the same second that would
+      // be the same commit, and the head would descend from it.
+      commitIn(worktree, 'src/fix.ts', 'export const fix = 1;\n');
+      const later = commitIn(worktree, 'src/core/land-x.ts', 'export const x = 1;\n');
+      sh(repo, 'git', 'push', '-q', '-f', origin, BRANCH);
+      expect(sh(repo, 'git', 'diff', '--name-only', pinned, later)).not.toContain('land-x');
+      mergeAt(later);
+      const before = mainSha();
+
+      await expect(remeasure()).rejects.toThrow(
+        'change 1 file(s) in a critical area (src/core/land-x.ts)',
+      );
+      expectNothingChanged(before);
+    });
+
+    it('asks for --approved-by when the pin no longer merges cleanly onto the target', async () => {
+      excludeWorktrees();
+      seedPrMerge(PR_URL, passingReport(pinnedStages));
+      commitIn(repo, 'src/feature.ts', 'export const feature = 2;\n');
+      sh(repo, 'git', 'push', '-q', origin, 'main');
+      const landedOn = mainSha();
+      sh(worktree, 'git', 'reset', '-q', '--hard', 'main');
+      const later = commitIn(worktree, 'src/fix.ts', 'export const fix = 1;\n');
+      sh(repo, 'git', 'push', '-q', '-f', origin, BRANCH);
+      mergeAt(later);
+
+      await expect(remeasure()).rejects.toThrow(
+        `Merging ${pinned}, the commit the gate pinned, onto ${landedOn}, the commit the merge of ` +
+          `${PR_URL} went onto, conflicted or failed`,
+      );
+      expectNothingChanged(landedOn);
+    });
+
     it('refuses a critical-area change without --approved-by, before any stage runs', async () => {
       mergeMovedHead('src/core/land.service.ts');
       const before = mainSha();

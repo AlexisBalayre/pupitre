@@ -4,15 +4,16 @@ import { basename, join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import type { Adapter } from '../adapters/types/adapter.types.js';
 import { quotePath } from './debt.service.js';
-import { currentBranch, runGit } from './git-diff.client.js';
+import { currentBranch, rethrowIfKilled, runGit } from './git-diff.client.js';
 import { globToRegExp } from './glob.utils.js';
-import { DEBT_DETAIL_SAMPLES } from './merge-gate.constants.js';
+import { DEBT_DETAIL_SAMPLES, GATE_COMMAND_TIMEOUT_MS } from './merge-gate.constants.js';
 import {
   assertMergeLockHeld,
   debtKind,
   isAncestor,
   measureBranch,
   resolveCommit,
+  withScratchGitDir,
 } from './merge-gate.service.js';
 import type { StageProgress } from './progress.utils.js';
 import { CRITICAL_AREAS } from './routing.utils.js';
@@ -40,8 +41,9 @@ const CRITICAL_PATHS = CRITICAL_AREAS.map(globToRegExp);
  * `runMergeGate` runs them, and only with the local target at that commit,
  * which the main checkout then holds for the complexity stage's "before" as
  * it does for the gate's. The commits past the pin are the ones no gate
- * measured; when they change a file in a critical area, the remeasure runs
- * only on the approval `approvedBy` names: a pass says the code builds and its
+ * measured; when they, or what the merge landed past merging the pin there,
+ * change a file in a critical area, or that merge of the pin conflicts, the
+ * remeasure runs only on the approval `approvedBy` names: a pass says the code builds and its
  * tests pass, not that a change to the gate itself is sound. A hard stage that
  * fails refuses, and so does a flag of a kind the session's own gate did not
  * already file as accepted debt: no one accepted it. The stages take minutes,
@@ -84,32 +86,49 @@ export async function remeasureMerge(
     );
   }
   if (req.approvedBy === undefined) {
+    // The merge's three-way base is the head's merge-base with `landedOn`, not
+    // the pin's: a head on an older base can bring back what the target
+    // changed after the pin. So what it landed is held to what landing the pin
+    // there would have, and when that cannot be read, nothing is let through.
+    const pinTree = pinLandingTree(req.repoPath, landedOn, sha);
+    if (pinTree === undefined) {
+      throw new Error(
+        `Merging ${sha}, the commit the gate pinned, onto ${landedOn}, the commit the merge of ` +
+          `${prUrl} went onto, conflicted or failed, so what that merge landed past the pin ` +
+          `cannot be read; a remeasure lands it only on the operator's approval: re-run with ` +
+          `\`--remeasure --approved-by <who>\`. Nothing was landed.`,
+      );
+    }
     // The trees, not `gitDiffPaths`' merge-base range: the head need not
     // descend from the pin, and from an older merge-base a head that kept a
     // change the pin reverted would show none. Over-reporting fails closed.
-    const critical = runGit(req.repoPath, [
-      'diff',
-      '--no-ext-diff',
-      '--no-textconv',
-      '--no-color',
-      '--text',
-      '--no-relative',
-      '--no-renames',
-      '-z',
-      '--name-only',
-      sha,
-      head,
-    ])
-      .split('\0')
-      .filter(Boolean)
-      .filter((path) => CRITICAL_PATHS.some((area) => area.test(path)));
+    const changed = (from: string, to: string) =>
+      runGit(req.repoPath, [
+        'diff',
+        '--no-ext-diff',
+        '--no-textconv',
+        '--no-color',
+        '--text',
+        '--no-relative',
+        '--no-renames',
+        '-z',
+        '--name-only',
+        from,
+        to,
+      ])
+        .split('\0')
+        .filter(Boolean);
+    const critical = [
+      ...new Set([...changed(sha, head), ...changed(pinTree, `${mergeCommit}^{tree}`)]),
+    ].filter((path) => CRITICAL_PATHS.some((area) => area.test(path)));
     if (critical.length > 0) {
       const named = critical.slice(0, DEBT_DETAIL_SAMPLES).map(quotePath).join(', ');
       const more = critical.length > DEBT_DETAIL_SAMPLES ? ', …' : '';
       throw new Error(
-        `The commits past the pin, ${sha}..${head}, change ${critical.length} file(s) in a ` +
-          `critical area (${named}${more}); a remeasure lands them only on the operator's ` +
-          `approval: re-run with \`--remeasure --approved-by <who>\`. Nothing was landed.`,
+        `The commits past the pin, ${sha}..${head}, and what the merge landed past merging the ` +
+          `pin onto ${landedOn}, change ${critical.length} file(s) in a critical area ` +
+          `(${named}${more}); a remeasure lands them only on the operator's approval: re-run ` +
+          `with \`--remeasure --approved-by <who>\`. Nothing was landed.`,
       );
     }
   }
@@ -268,6 +287,37 @@ export async function remeasureMerge(
     );
   }
   return { sessionId: session.id, passed: true, sandbox, stages };
+}
+
+/**
+ * The tree git gives merging `sha` onto `landedOn`: what landing the pin itself
+ * there would have landed. Undefined when that merge conflicts or git fails in
+ * any other way, so the caller fails closed. Run from the scratch git dir with
+ * the repo's commit graph off, as `pup land`'s `mergedOnto` merges, for its
+ * reasons: a merge reads drivers from config, and the graph is a cache in the
+ * object store a session can write (decisions 54, 131). The tree is written to
+ * the repo's own object store, where the caller diffs it.
+ */
+function pinLandingTree(repoPath: string, landedOn: string, sha: string): string | undefined {
+  try {
+    return withScratchGitDir(repoPath, 'pup-land-', (git) =>
+      git(
+        [
+          '-c',
+          'core.commitGraph=false',
+          'merge-tree',
+          '--write-tree',
+          '--no-messages',
+          landedOn,
+          sha,
+        ],
+        { stdio: ['ignore', 'pipe', 'pipe'], timeout: GATE_COMMAND_TIMEOUT_MS },
+      ).trim(),
+    );
+  } catch (error) {
+    rethrowIfKilled(error);
+    return undefined;
+  }
 }
 
 /**

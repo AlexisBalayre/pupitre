@@ -99,7 +99,15 @@
     difference, not the scope audit's diff from a merge-base: the head need not descend from the
     pin, and from an older merge-base a head that kept a critical change the pin had changed back
     would show none. A head that took in its target since lists the target's changes too, which
-    over-reports and fails closed. The git is the scope audit's otherwise: the safe config, the
+    over-reports and fails closed. That difference alone misses the opposite case. GitHub merges
+    the head from its own merge-base with the target, not the pin's, so a head on an older base
+    can bring back a change that the target reverted after the pin. The head and the pin then
+    hold the same file, and only the merge differs. So the remeasure also merges the pin onto the
+    commit the merge went onto, which is what landing the pin itself would have landed. It does
+    so in the scratch git dir with the commit graph off, as decision 131's check does. The paths
+    where the merge commit's tree differs from that tree join the list. When that merge of the pin
+    conflicts, or git fails, what landed past the pin cannot be read, so `--approved-by` is
+    required whatever the paths. The git is the scope audit's otherwise: the safe config, the
     scrubbed environment with replace refs off, no external diff or textconv, and `--no-renames`,
     so a file moved out of a critical area counts as a change to it. The glob match is
     case-sensitive, as the gate's is, so on a case-insensitive filesystem a path spelled in
