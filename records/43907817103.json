@@ -1,0 +1,136 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-16T16:32:57.096Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43907817103",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43907817103",
+  "actor": "AlexisBalayre",
+  "commit_sha": "d421540a5e5d643df7d958f234539acb8c19f0e6",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 358,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/retro-replay.service.ts",
+      "line": "151",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The replay re-prices carried context as a fresh cache write when an actual automatic compaction is not taken under the replayed threshold. It should be a 0.1x cache read. This inflates the replayed spend at every threshold that skips a compaction.",
+      "body": "**Carried context across a skipped auto compaction is charged as a cache write, not a read.**\n\n`rebuilt()` counts `autoReset` as a rebuilt request:\n\n```ts\nfunction rebuilt(step: Step): boolean {\n  return step.idle || step.autoReset || step.manualReset;\n}\n...\n    const carried = Math.max(0, grown - newTokens);\n    carriedRead = rebuilt(step) ? Math.min(call.read, carried) : carried;\n    rewrite = carried - carriedRead;\n```\n\nSometimes the replay does **not** take a real auto compaction, because `grown < threshold`. On that step, `call.read` is the real request's read after compaction, which is usually just the system prompt and tools (9k in the fixture). The read is capped at that value, and the rest of `carried` is priced as a 1.25x/2x cache write. In the replayed timeline nothing compacted, so the prefix is unchanged and the cache is warm. Both ADR 0192 (\"The context carried from the request before, read from the cache at 0.1x\", with a rewrite only \"after an idle hour\") and this function's JSDoc (\"read from the cache, except after an idle hour\") say this should be a read.\n\n**Trigger:**\n- At 100k/120k/150k, the replayed context is usually below the threshold when the real compaction arrives. The fixture `worker(200_000, …)` hits this path at every lower threshold. For that request, the cost comes out roughly 19x too high, once per real compaction.\n- Any compaction that fired below the median observed threshold hits the same path. That inflates the observed-threshold self-check, and the 200k row when real compactions fire around 160-170k.\n\nThe result is that savings at the lower thresholds are understated. The tests miss this because every fixture compaction fires exactly at the observed threshold, so the replay takes each one.\n\nKeep the `min` for manual `/compact` (it really happened) and for idle. Drop it for auto.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/d421540a5e5d643df7d958f234539acb8c19f0e6/src/core/retro-replay.service.ts#L112-L114\nhttps://github.com/AlexisBalayre/pupitre/blob/d421540a5e5d643df7d958f234539acb8c19f0e6/src/core/retro-replay.service.ts#L150-L152",
+      "suggestion": "      carriedRead = step.idle || step.manualReset ? Math.min(call.read, carried) : carried;"
+    },
+    {
+      "file": "src/core/retro-replay.service.ts",
+      "line": "169-185",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "If no transcript in a class started inside the window and none had an auto compaction, the reset floor is `{read: 0, write: 0}`. Every replayed reset then costs nothing, which makes the lower thresholds look like large savings.",
+      "body": "**The reset floor can be zero, which makes every replayed reset free.**\n\n```ts\n  const after = transcripts.flatMap(({ steps }) => steps.filter((s) => s.autoReset));\n  const firsts = transcripts.flatMap(({ read, steps }) =>\n    read.before || !steps[0] ? [] : [steps[0]],\n  );\n  const sample = after.length > 0 ? after : firsts;\n  return {\n    read: percentile(sample.map((s) => s.call.read), 0.5),\n```\n\nA transcript gets `read.before` set (`usage-report.service.ts:331`) when any of its calls predates `--since`, and `firsts` skips those transcripts. When no transcript in a class had an in-window auto compaction and all of them began before the window, `sample` is `[]`. `percentile([])` then returns 0 (`usage-report.service.ts:181-182`).\n\nNothing downstream guards against this. `statsOf` passes that floor into every `replayAt(threshold)`, and the `+Infinity` fallback only covers the observed-threshold row.\n\n**Trigger:** a long conductor or console session that spans the `--since` boundary and holds more than 100k of context (for example `pup retro --since 1`).\n- At each replayed reset at 100k/120k/150k, `carriedRead = rewrite = 0`, and the context restarts at that request's new tokens.\n- The class row then prints a large negative `change`/`changeShare`.\n- If the window holds only manual `/compact`s, or an auto compaction after the class's last request, `cheapestReplay` also puts \"lower the compaction threshold\" into the finding's fix text.\n\nOptions:\n- Skip or mark the replay rows when the floor has no sample.\n- Fall back to each transcript's first in-window request.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/d421540a5e5d643df7d958f234539acb8c19f0e6/src/core/retro-replay.service.ts#L169-L185",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/retro-signals.service.ts",
+      "line": "231",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The compaction count counts every compact_boundary, but the before/after medians only sample compactions followed by an in-window request. A class whose only compactions are the last entry of their transcripts (e.g. `/compact` then close) reports \"N compactions, median context 0 tokens before and 0 after\". Fall back to `preTokens` for a trailing boundary or omit the clause when nothing was sampled.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/retro-replay.service.ts",
+      "line": "254-259",
+      "area": "simplicity",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`contextStatsByClass` regroups the transcripts by class, but `classRows` has already done that grouping. Calling an exported `statsOf(items)` inside `classRows`' existing map would remove the second Map and the `as ContextStats` cast, which hides a lookup that could be undefined.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/retro-replay.service.ts",
+      "line": "31-32",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `Step.compactedContext` comment says \"the previous one's plus what came after it\", but nothing is added. The code takes the compaction's `preTokens` and falls back to the previous request's context. Reword it the way ADR 0192 does: \"the compaction's `preTokens`, else the previous request's context\".",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 2,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.393708750000001,
+  "duration_ms": 240173,
+  "num_turns": 15,
+  "tokens": {
+    "input": 14,
+    "output": 12745,
+    "cache_read": 320079,
+    "cache_creation": 48261,
+    "total": 381099
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 78,
+      "output": 44040,
+      "cache_read": 823273,
+      "cache_creation": 165736,
+      "cost_usd": 2.0192296
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 50,
+      "output": 8756,
+      "cache_read": 386987,
+      "cache_creation": 98957,
+      "cost_usd": 0.3737512
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 217,
+      "cache_read": 0,
+      "cache_creation": 4954,
+      "cost_usd": 0.00072795
+    }
+  ],
+  "permission_denials": []
+}
