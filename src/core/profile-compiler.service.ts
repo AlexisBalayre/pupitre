@@ -439,10 +439,12 @@ function shiftLeftKickoffOn(repoPath: string): boolean {
 /**
  * The text up to its first sentence end, a closing bold marker included. A
  * leading bold title is a header, not the sentence: the cut falls in the body
- * after it, so `**Title.** Body. More.` keeps `**Title.** Body.`
+ * after it, so `**Title.** Body. More.` keeps `**Title.** Body.` The title
+ * holds no `*`, so it has one possible end and the cut stays linear on a file
+ * a session may have written.
  */
 function firstSentence(text: string): string {
-  return /^(?:\*\*.*?\*\*)?.*?[.!?](?:\*\*)?(?=\s|$)/.exec(text)?.[0] ?? text;
+  return /^(?:\*\*[^*]+\*\*)?.*?[.!?](?:\*\*)?(?=\s|$)/.exec(text)?.[0] ?? text;
 }
 
 /**

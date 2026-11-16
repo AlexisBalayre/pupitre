@@ -169,6 +169,24 @@ describe('the shift-left kickoff (decision 178)', () => {
     expect(after.hash).not.toBe(before.hash);
   });
 
+  // A session can rewrite an agent file (decision 183's ceiling). A title that
+  // could end at any later `**` made this cut quadratic: 200k `*` with no
+  // sentence end ran for minutes. It must stay well inside the test timeout.
+  it('cuts a lead paragraph of bold markers with no sentence end in linear time', () => {
+    setSetting('on');
+    const stars = `**${'*'.repeat(200_000)}`;
+    writeAgents({
+      'review-correctness.md': CORRECTNESS.replace(
+        '**Swallowed errors',
+        `${stars}\n\n**Swallowed errors`,
+      ),
+    });
+
+    const context = compile().contextMarkdown;
+
+    expect(context).toContain('- **Swallowed errors are first-class.** Trace every catch');
+  });
+
   it('drops the checklist of a reviewer whose agent file is missing', () => {
     const empty = tempDir('pup-rubrics-empty-');
     setSetting('on', empty);
