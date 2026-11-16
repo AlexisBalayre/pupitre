@@ -1,0 +1,153 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-16T12:56:13.066Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43870102214",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43870102214",
+  "actor": "AlexisBalayre",
+  "commit_sha": "4cf82073617fa6a485842d1b603a0edec69d1a69",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 349,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "2405-2410",
+      "description": "When `git rebase --abort` fails, the empty catch swallows it, and the gate now goes on to merge and land the branch. Before this change the same path stopped with a fail.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/merge-gate-fresh-base.test.ts",
+      "line": "1",
+      "description": "No test covers the new guard that stops an interrupted rebase from turning into a merge. If you delete `rethrowIfKilled(error);` at L2410, the whole suite still passes, but an interrupted rebase then merges and lands.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/merge-gate-fresh-base.test.ts",
+      "line": "195-209",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "No test reaches the `rethrowIfKilled(error)` inside the abort's catch, which handles a rebase killed before it starts. Deleting that line passes the suite, and a Ctrl-C then becomes a fresh-base failure steered to the worker.",
+      "body": "**No test covers the interrupt check that runs when a rebase is killed before it starts.**\n\nIn `gateAndMerge`, the abort's catch begins with `rethrowIfKilled(error)` ([merge-gate.service.ts L2405-L2410](https://github.com/AlexisBalayre/pupitre/blob/4cf82073617fa6a485842d1b603a0edec69d1a69/src/core/merge-gate.service.ts#L2405-L2410)). It only matters when two things happen together:\n- the rebase was killed by a signal;\n- the abort then failed.\n\nThat is the common Ctrl-C case. git dies before it writes any rebase state, so `git rebase --abort` exits 128 with \"no rebase in progress\".\n\nNone of the [`it.each` rows](https://github.com/AlexisBalayre/pupitre/blob/4cf82073617fa6a485842d1b603a0edec69d1a69/src/core/merge-gate-fresh-base.test.ts#L195-L209) reach that line:\n- **`['the rebase', isRebase, true]`:** the real rebase stops on its conflict, and the real abort succeeds. The catch is never entered, and the rethrow comes from the check after the abort (L2426).\n- **`['the abort of a conflicting rebase', isAbort, false]`:** the rebase's error has no signal, so only `rethrowIfKilled(abortError)` fires.\n- **The L211 test:** it uses `signal: null`.\n\n**Mutant.** Delete L2408. A killed rebase followed by a failed abort then reaches `rethrowIfKilled(abortError)`, which does nothing because the abort's error has no signal. The gate then:\n- pushes \"Auto-rebase onto main failed and so did its abort\";\n- calls `failed()`, which goes through `rejectOrBlock`;\n- counts a rejection and steers the worker, while the operator is the one interrupting.\n\nThe suite stays green. The merge lock keeps node alive through SIGINT (`LOCK_SIGNALS`), so in production this window is reachable.\n\nThe comment above the `it.each` is also wrong for the abort row. With `runFirst: false`, that abort never runs, so \"the abort succeeds\" is false.\n\n**Fix.** Add a row `['the rebase before it starts', isRebase, false]`. The rebase is skipped and thrown as SIGINT, then the real abort fails, and only L2408 rethrows. Also correct the comment.",
+      "suggestion": "  // With `runFirst`, the killed git does its work first: the rebase stops on its\n  // conflict and its abort succeeds. A rebase killed before it starts leaves\n  // nothing to abort, so the abort fails too and only the interrupt check on\n  // the rebase's own error keeps the Ctrl-C from becoming a fail steered to the worker.\n  it.each([\n    ['the rebase', isRebase, true],\n    ['the rebase before it starts', isRebase, false],\n    ['the abort of a conflicting rebase', isAbort, false],\n  ])('rethrows an interrupt that kills %s, merging nothing', async (_, matches, runFirst) => {"
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "2402-2428",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The rebase catch now treats any error that is not an interrupt as a conflict and falls back to a merge that can pass. That includes `runGit`'s `RewrittenGitDirError` refusal, so the session-compromised warning is lost where it used to fail fresh-base. Rethrow any error without a numeric git `status` after the abort.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate-fresh-base.test.ts",
+      "line": "254-260",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The 30-vs-1 test counts only `--is-ancestor` processes, which `holdsMergeOfTarget` never spawns. A rewrite that ran one `rev-list` or `merge-base` per merge parent under the merge lock would still pass. Count the git calls whose argv includes `rev-list` or `merge-base` to pin the \"one git process\" promise.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1323-1324",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `pup merge` JSDoc still describes fresh-base as an auto-rebase, with a merge of the target only for a branch an open PR holds. It does not mention decision 190's merge for a no-PR branch that already merged the target or whose rebase conflicts.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Not spawned: review-context (no spec/protocol/infra surface), review-workflow-safety (no workflow change), review-spec (no closing reference or spec source), review-maintainability (off the default roster). Dropped below the finding bar: a conventions nit on ADR line wrap that cites no written rule, a simplicity nit on the `rebaseConflicted` flag whose only cost was diagnostic, and a docs re-raise of the already-posted mergeTargetInto JSDoc nit."
+    },
+    {
+      "component": "simplicity",
+      "description": "Read only the first 110 lines of merge-gate-fresh-base.test.ts, so the later test helpers (conflictingRebase, isRebase/isAbort, failGit) were not checked for simplicity."
+    },
+    {
+      "component": "guards",
+      "description": "Did not read decision 146 or find any ADR-numbering guard, so 0190's numbering gap (no 0188/0189 in tree) was not checked against that decision."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 3.0298893049999998,
+  "duration_ms": 299671,
+  "num_turns": 18,
+  "tokens": {
+    "input": 18,
+    "output": 13079,
+    "cache_read": 407976,
+    "cache_creation": 59796,
+    "total": 480869
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 110,
+      "output": 57468,
+      "cache_read": 1632227,
+      "cache_creation": 218425,
+      "cost_usd": 2.7477583999999995
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 44,
+      "output": 7696,
+      "cache_read": 260775,
+      "cache_creation": 71422,
+      "cost_usd": 0.28168050000000006
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 133,
+      "cache_read": 1933,
+      "cache_creation": 2915,
+      "cost_usd": 0.000450405
+    }
+  ],
+  "permission_denials": []
+}
