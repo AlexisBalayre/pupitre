@@ -1,0 +1,146 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-16T14:50:03.513Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43888879963",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43888879963",
+  "actor": "AlexisBalayre",
+  "commit_sha": "c7cb47ed3afee6c7cf0a16c461ec8919399e1bb9",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 356,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "context",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "context",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "scripts/build.sh",
+      "line": "18",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "tsconfig.json sets sourceMap: true, and tsc writes each .map's `sources` relative to the map's own folder. Compiling into .pup-build.X/dist/ (one level deeper than dist/) gives `../../../src/...`. After the move to dist/, every shipped source map points one folder above the repo.",
+      "body": "**Every emitted source map points one folder too high after the swap**\n\n`tsconfig.build.json` inherits `\"sourceMap\": true` from `tsconfig.json`, and neither file sets `sourceRoot`, `mapRoot` or `inlineSources`. tsc writes each map's `sources` relative to the folder the map file is in:\n\n- Before this PR, `dist/cli/index.js.map` held `\"../../src/cli/index.ts\"`.\n- Now the map is written at `.pup-build.Ab12cd/dist/cli/index.js.map`, one level deeper, so it holds `\"../../../src/cli/index.ts\"`.\n- The `mv` on line 32 moves it to `dist/cli/index.js.map` without changing it. From there the path resolves to `<repo>/../src/cli/index.ts`, which does not exist.\n\n**Trigger:** any `pnpm build`, followed by `node --enable-source-maps dist/cli/index.js ...` or a debugger attached to the installed `pup`. Stack traces and breakpoints then map to missing files, and nothing reports an error. `pup` itself never loads the maps, but `package.json` has no `files` field, so they ship with the package.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/c7cb47ed3afee6c7cf0a16c461ec8919399e1bb9/scripts/build.sh#L18\n\n**Fix:** emit at the same depth as `dist/`. Pass `--outDir \"$STAGE\"` so the `mktemp -d ./.pup-build.XXXXXX` directory is the output folder itself, then `mv \"$STAGE\" dist`. Park the previous `dist/` somewhere other than inside `$STAGE`, for example a second `mktemp -d` directory that the EXIT trap also removes.\n\n(Medium confidence: this follows tsc's documented source-map path behaviour, but a static review could not run a build to check it.)",
+      "suggestion": null
+    },
+    {
+      "file": "docs/conventions/general.md",
+      "line": "63-64",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The doc still calls `pnpm build` \"a bare `tsc`\", but it now runs `bash scripts/build.sh`, which type-checks, compiles into a staging dir and swaps the result into dist/. The point that nothing rewrites specifiers still holds; only the wording is stale.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "scripts/build.sh",
+      "line": "22-30",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The 100-iteration mkdir lock loop (with LOCKED and the second trap) only matters when two builds share one dist/, and each worktree has its own. A SIGKILLed build leaves .pup-build.lock behind, and every later build then waits 10s and fails until someone removes it by hand. Consider dropping the lock, or using a single `mkdir \"$LOCK\" || exit 1`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "scripts/build.sh",
+      "line": "15",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `[ ! -L \"$STAGE\" ]` check can never fire: `mktemp -d` creates the directory itself (exclusively), so it cannot return a symlink, and a planted symlink at that name makes mktemp fail instead. Delete the line.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "scripts/build.sh",
+      "line": "3",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Header line 3 (`pnpm build -> type-checks, compiles into a fresh directory, then swaps it in`) restates the script body. Lines 2, 4 and 5 carry the real WHY, so line 3 can go.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [
+    {
+      "file": "scripts/build.sh",
+      "line": "13",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The per-run staging dir ./.pup-build.XXXXXX sits in the worktree but is not gitignored. A session's Bash calls that finish while a build is running see about 340 untracked files there, which is over pup's scope re-check cap of 200, so those calls are refused. Before this change, build output only went to the gitignored dist/.",
+      "refutation": "The `.gitignore` entry `dist/` has no leading or middle slash, so git matches a `dist` directory at any depth. tsc's output in `./.pup-build.XXXXXX/dist/` is therefore ignored, and the scope re-check's `git status --porcelain=v1 --untracked-files=all` (src/core/profile-compiler.service.ts:1047) runs without `--ignored`, so it never sees it. The only untracked content is the old dist/ moved to `$STAGE/old`, which exists only for the few milliseconds between the renames and the EXIT trap. `.pup-build.lock` is an empty directory, which git status never lists. So neither the 200-path cap nor the merged worktree-clean concern about a SIGKILLed build is realistically reachable."
+    }
+  ],
+  "process_issues": [],
+  "duplicates_merged": 1,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.1787886499999995,
+  "duration_ms": 259380,
+  "num_turns": 16,
+  "tokens": {
+    "input": 14,
+    "output": 12549,
+    "cache_read": 326007,
+    "cache_creation": 49525,
+    "total": 388095
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 86,
+      "output": 39227,
+      "cache_read": 1023353,
+      "cache_creation": 147954,
+      "cost_usd": 1.8778996000000001
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 44,
+      "output": 9940,
+      "cache_read": 239096,
+      "cache_creation": 70689,
+      "cost_usd": 0.3001201
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 301,
+      "cache_read": 0,
+      "cache_creation": 4946,
+      "cost_usd": 0.00076895
+    }
+  ],
+  "permission_denials": []
+}
