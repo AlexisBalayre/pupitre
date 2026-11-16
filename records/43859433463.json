@@ -1,0 +1,154 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-16T11:42:22.474Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43859433463",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43859433463",
+  "actor": "AlexisBalayre",
+  "commit_sha": "a014f9a6bd90d6d3b4de984c2a144434247ad3a2",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 348,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "guards",
+    "simplicity"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "guards",
+    "simplicity"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "docs/adr/0181-a-main-checkout-s-git-is-checked-after-each-read.md",
+      "line": "18-114",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The PR rewrites decision 181's landed body in place (e.g. \"holds it only when the two agree\" becomes \"records it only when the two agree\", the heldFleet sentence, the env-var list, the tests paragraph) instead of appending a dated amendment section or adding a new decision with `Amends:`.",
+      "body": "**Decision 181 has landed, so its text should not be rewritten in place.**\n\nADR 0181 reached `main` through #324 and #333, before this PR. [`docs/adr/README.md` L19-21](https://github.com/AlexisBalayre/pupitre/blob/a014f9a6bd90d6d3b4de984c2a144434247ad3a2/docs/adr/README.md#L19-L21) says:\n\n> An open PR may still edit the decision it adds. Once a decision has landed, a later change appends an amendment section to it (dated, with the PR) or adds a new decision that links back through `Amends:`. It does not rewrite the landed text.\n\nThis diff edits the landed body in several places:\n- It rewords sentences that already existed: \"takes the identity before its checks … holds it only when the two agree\" becomes \"takes the identity, of `.git`, `objects/` and `refs/`, … records it only when the two agree\".\n- It splices new clauses into existing paragraphs: the `pup ci wait` / `RewrittenGitDirError` sentence, the `readFleetProjects` clause in the `heldFleet` sentence, and the HTTPS variable list with the new `GIT_SSL_NO_VERIFY` rationale (which is a new decision in itself).\n- It extends the tests paragraph.\n\nAfter this, anyone reading 0181 can't tell what was decided in #324 from what this PR added. That is exactly what the amendment rule protects.\n\nTo fix: restore the landed text, and move the additions into a dated `## Amendment (2026-11-16, #348)` section at the end of 0181. Alternatively, add a new decision with `Amends: 0181`.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/a014f9a6bd90d6d3b4de984c2a144434247ad3a2/docs/adr/0181-a-main-checkout-s-git-is-checked-after-each-read.md#L18-L114",
+      "suggestion": null
+    },
+    {
+      "file": "test/unit/core/git-diff-client.test.ts",
+      "line": "1-36",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Both subjects already have a colocated test file, `src/core/git-diff-client.test.ts` and `src/core/github-client.test.ts`; the PR adds a second file for each under a new `test/unit/core/`, breaking testing.md's \"One test file per source file\" (the new git-diff one also re-declares `GIT_ENV`); put the new cases in the existing colocated files.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/ci-wait.service.ts",
+      "line": "125-126",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new catch-site comment (\"A checkout refused is refused at every read after it, so waiting on it would only run out the timeout (decision 181)\") repeats the sentence this PR adds to waitForCiReview's own JSDoc a few lines above; AGENTS.md §Comments says to keep one copy.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "test/unit/core/github-client.test.ts",
+      "line": "1-97",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "About 45 lines of regex \"parser\" (`boundNames`, `ghSpawnGuards`) plus a 40-line self-test guard two `ghInCheckout` call sites; a behavioral check (plant `.git/commondir`, assert each exported gh function throws `RewrittenGitDirError` before spawning) or one source regex per call site, as `src/core/git-diff-client.test.ts:2995` does, would drop the mini analyser.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "test/unit/core/github-client.test.ts",
+      "line": "40-44",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The guard test accepts any spawn written as `ghInCheckout(<path>, () => execFileSync(...))` without checking that the spawn runs in that path, so `ghInCheckout(repoPath, () => execFileSync('gh', args, { cwd: otherPath }))`, or a spawn with no `cwd`, would pass while gh's git runs in a directory whose `.git` was never checked (both current call sites pass `cwd: repoPath`).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0181-a-main-checkout-s-git-is-checked-after-each-read.md",
+      "line": "33-34",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The comma-spliced sentence \"every project whose repo exists, is its own path, and is awake or shown with `--dormant`, the rule `readFleetProjects` … holds\" restates the rule as three conditions that `readFleetProjects` actually derives through `fleetRefusal`; point at `readFleetProjects` as the definition rather than paraphrasing it.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Skipped review-context (no CI, docker, HTTP or settings surface; the GIT_* env allowlist was covered by security), review-spec (no closing keyword or linked issue; #324 is cited only as \"follow-up to\"), review-workflow-safety (no workflow change) and review-maintainability (off the default roster). Dropped one simplicity nit (readFleetProjects as a third derivation of the read rule): the reviewer had not read readFleet/fleetReading, and those must keep refused projects to print their lines, so they cannot iterate readFleetProjects."
+    },
+    {
+      "component": "conventions",
+      "description": "The .claude/rules injection gave only @-references to general.md and naming.md, not their text, so the reviewer raised no naming or altitude findings."
+    }
+  ],
+  "duplicates_merged": 2,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.047649125,
+  "duration_ms": 183615,
+  "num_turns": 17,
+  "tokens": {
+    "input": 14,
+    "output": 13558,
+    "cache_read": 353571,
+    "cache_creation": 55946,
+    "total": 423089
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 60,
+      "output": 28164,
+      "cache_read": 961146,
+      "cache_creation": 146757,
+      "cost_usd": 1.6573722000000002
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 48,
+      "output": 12558,
+      "cache_read": 313001,
+      "cache_creation": 92968,
+      "cost_usd": 0.3893961000000002
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 489,
+      "cache_read": 0,
+      "cache_creation": 5089,
+      "cost_usd": 0.000880825
+    }
+  ],
+  "permission_denials": []
+}
