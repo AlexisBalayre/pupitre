@@ -1,0 +1,115 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-16T17:51:10.335Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43921940285",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43921940285",
+  "actor": "AlexisBalayre",
+  "commit_sha": "99f86ff5b2150d695970123b256a7baede55b17d",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 359,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "docs",
+    "conventions",
+    "guards"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "docs",
+    "conventions",
+    "guards"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context",
+    "maintainability",
+    "spec",
+    "simplicity",
+    "workflow-safety"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "26a1551180cbace6311b98a47b2373f0b262b65c",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "1035-1037",
+      "description": "committedFixRound ignores a steer after the round's session_done, so a steered session gets 'fix committed Nm ago, awaiting re-gate / pup merge <id> --pr' while its worker is still working, even with the conductor running.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/dashboard.test.ts",
+      "line": "2199",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The test comment \"A steer hands the worker more to do and leaves it awaiting-review\" repeats the committedFixRound JSDoc, and the `it` title already states the behaviour, so the comment can go.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "1037-1041",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "When a steer follows a fix round's `session_done` and the worker's reply turn ends without a new `pup session done`, `fixCommitted` stays undefined for good. While the conductor runs, `needOf` then gives the session no line at all, and the merge lock sits idle with nothing pointing at it.",
+      "refutation": "This is the intended design, not a regression. ADR 0102 deliberately keeps an awaiting-review session out of the inbox while the conductor runs; the session stays in `pup status`, the table and the web dashboard's awaiting-review group. The existing refused-gate exception follows the same rule: `newestGateRefused` (dashboard.service.ts:1101) treats a steer and a new session_done alike, and the test 'is the conductor's again after a steer' expects an empty inbox. The delta applies that rule to the fix-committed line, which was the point of the prior-round finding, and the new test pins this behaviour on purpose."
+    }
+  ],
+  "process_issues": [],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.4613078,
+  "duration_ms": 202608,
+  "num_turns": 13,
+  "tokens": {
+    "input": 12,
+    "output": 6054,
+    "cache_read": 252883,
+    "cache_creation": 40752,
+    "total": 299701
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 78,
+      "output": 22018,
+      "cache_read": 1026780,
+      "cache_creation": 117567,
+      "cost_usd": 1.356119
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 14,
+      "output": 2200,
+      "cache_read": 51981,
+      "cache_creation": 30929,
+      "cost_usd": 0.10454859999999999
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 122,
+      "cache_read": 0,
+      "cache_creation": 4632,
+      "cost_usd": 0.0006402
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "f=/home/runner/.claude/projects/-home-runner-work-pupitre-pupitre/15c8759e-c258-423e-ac64-d776f9dbf00a/tool-results/bjxwgp9ny.txt; grep -n -i \"steer\\|re-gate\\|awaiting\\|needs you\\|compact\" $f | head -"
+    }
+  ]
+}
