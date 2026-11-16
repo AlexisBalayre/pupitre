@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 
 vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../claude/session-runtime.service.js')>()),
@@ -146,6 +146,85 @@ describe('fresh-base on a branch no open PR holds (decision 190)', { timeout: 20
     expect(revParse(repo, 'main')).toBe(target);
     expect(revParse(repo, BRANCH)).toBe(resolved);
     expect(sh(worktree, 'git', 'status', '--porcelain').trim()).toBe('');
+  });
+
+  /**
+   * Throw `failure` from the first git call whose argv `matches`, after running
+   * it for real when `runFirst`, as a Ctrl-C landing once it has done its work.
+   */
+  const failGit = (
+    matches: (args: string[]) => boolean,
+    failure: { message: string; signal: string | null; status: number | null },
+    runFirst: boolean,
+  ): void => {
+    const real = vi.mocked(execFileSync).getMockImplementation();
+    let done = false;
+    vi.mocked(execFileSync).mockImplementation(((file: string, args: string[], opts: object) => {
+      if (!done && file === 'git' && matches(args)) {
+        done = true;
+        if (runFirst) {
+          try {
+            real?.(file, args, opts as never);
+          } catch {
+            // the failure below stands for this one
+          }
+        }
+        throw Object.assign(new Error(failure.message), failure);
+      }
+      return real?.(file, args, opts as never);
+    }) as never);
+    onTestFinished(() => {
+      vi.mocked(execFileSync).mockImplementation(real as never);
+    });
+  };
+
+  /** A branch whose rebase onto main conflicts while its merge with main is clean. */
+  const conflictingRebase = (): { worktree: string; tip: string; target: string } => {
+    const worktree = seedSession(db, repo);
+    commitIn(repo, 'src/app.ts', 'export const app = 2;\n');
+    commitIn(worktree, 'src/app.ts', 'export const app = 3;\n');
+    commitIn(worktree, 'src/app.ts', 'export const app = 1;\n');
+    return { worktree, tip: revParse(worktree, 'HEAD'), target: revParse(repo, 'main') };
+  };
+
+  const isRebase = (args: string[]): boolean =>
+    args.includes('rebase') && !args.includes('--abort');
+  const isAbort = (args: string[]): boolean => args.includes('rebase') && args.includes('--abort');
+  const interrupt = { message: 'Command failed: git rebase', signal: 'SIGINT', status: null };
+
+  // The rebase really stops on its conflict, so the abort succeeds and only the
+  // interrupt check stands between the Ctrl-C and a clean merge that lands.
+  it.each([
+    ['the rebase', isRebase, true],
+    ['the abort of a conflicting rebase', isAbort, false],
+  ])('rethrows an interrupt that kills %s, merging nothing', async (_, matches, runFirst) => {
+    const { tip, target } = conflictingRebase();
+    failGit(matches, interrupt, runFirst);
+
+    await expect(merge()).rejects.toThrow('Command failed: git rebase');
+
+    expect(vi.mocked(steerPane)).not.toHaveBeenCalled();
+    expect(revParse(repo, BRANCH)).toBe(tip);
+    expect(revParse(repo, 'main')).toBe(target);
+  });
+
+  it('fails fresh-base without merging when the abort of a conflicting rebase fails', async () => {
+    const { tip, target } = conflictingRebase();
+    failGit(
+      isAbort,
+      { message: 'Command failed: git rebase --abort', signal: null, status: 128 },
+      false,
+    );
+
+    const outcome = await merge();
+
+    expect(outcome.status).toBe('rejected');
+    const stage = freshBase(outcome.report.stages);
+    expect(stage?.status).toBe('fail');
+    expect(stage?.detail).toContain('Auto-rebase onto main failed and so did its abort');
+    expect(stage?.detail).toContain('`git merge refs/heads/main`');
+    expect(revParse(repo, BRANCH)).toBe(tip);
+    expect(revParse(repo, 'main')).toBe(target);
   });
 
   it('spends no more ancestry checks on 30 merges off the target than on 1', async () => {

@@ -25,8 +25,11 @@
      branch's steer: `Run git merge refs/heads/<target>, resolve the conflicts, and commit the
      merge`. A merge the worker commits there is the one the next gate keeps. Any other branch
      is rebased as before, so a branch with no merge keeps the linear history decision 8 gives
-     it. An interrupt during the rebase is rethrown after the abort, never taken as a conflict,
-     so no merge follows a Ctrl-C.
+     it. An interrupt during the rebase or its abort is rethrown, never taken as a conflict,
+     so no merge follows a Ctrl-C. An abort that fails otherwise (a rebase that never started,
+     or an `index.lock` the session holds) may leave the worktree mid-rebase on a detached
+     HEAD, so it fails fresh-base as before, steering the worker to finish the abort and merge
+     the target, and nothing is merged over it (found on CI review).
      *The reject budget.* A fresh-base failure the session did not cause no longer happens: the
      cleanly mergeable cases above pass. A merge that truly conflicts still re-steers the worker
      and counts toward the reject cap, as decision 15 has it, since the fix is the worker's.
@@ -42,4 +45,7 @@
      the target conflicts is rejected and steered to `git merge refs/heads/main`, with the
      branch, the target and the worktree left as they were. A branch holding 30 merges off the
      target is still rebased, with no more `--is-ancestor` checks than one holding 1. In `merge-gate.test.ts`, a plain
-     conflicting branch is steered to the same merge.
+     conflicting branch is steered to the same merge. An interrupt thrown from the rebase,
+     once it has stopped on its conflict, or from its abort, rejects the gate with no steer and
+     leaves the branch and the target where they were; an abort that fails with no interrupt
+     fails fresh-base and merges nothing.

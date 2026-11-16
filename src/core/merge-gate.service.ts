@@ -2404,8 +2404,24 @@ async function gateAndMerge(
         // session can write (decision 120). The merge below is plumbing.
         try {
           runGit(worktree, ['rebase', '--abort'], pinned);
-        } catch {
-          // nothing to abort — the rebase never started
+        } catch (abortError) {
+          rethrowIfKilled(error);
+          rethrowIfKilled(abortError);
+          // A rebase that never started, or an abort a lock held off, may leave
+          // the worktree mid-rebase on a detached HEAD: no merge goes over it.
+          const onto = shellWord(`refs/heads/${sanitizeReason(target)}`);
+          stages.push(
+            timedSince(started, {
+              stage: 'fresh-base',
+              status: 'fail',
+              detail:
+                `Auto-rebase onto ${sanitizeReason(target)} failed and so did its abort. Run ` +
+                `\`git rebase --abort\` if a rebase is still in progress, then \`git merge ` +
+                `${onto}\`, resolve any conflicts, and commit the merge.\n` +
+                `${commandFailureDetail(error)}\n${commandFailureDetail(abortError)}`,
+            }),
+          );
+          return failed();
         }
         rethrowIfKilled(error);
         rebaseConflicted = true;
