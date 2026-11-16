@@ -142,6 +142,20 @@ describe('compileProfile', () => {
     );
   });
 
+  // Decision 189: small Bash results were the retro's largest cache re-read.
+  it('asks for batched commands and quiet output, and no re-run to re-read', () => {
+    const { contextMarkdown } = ProfileCompiler.compileProfile(makeInput());
+
+    for (const sentence of [
+      '- Keep tool output small, since every result is re-read on each later request:',
+      'batch related commands into one Bash call,',
+      'ask for quiet output (`--quiet`, `-q`, or `tail` or `grep` on test and install runs),',
+      'do not re-run a command to re-read output already in context.\n',
+    ]) {
+      expect(contextMarkdown).toContain(sentence);
+    }
+  });
+
   // Decision 74: a selector or a plan approval leaves the pane without an
   // input box, so no steer reaches it. The tools are denied, and the protocol
   // names the one way to ask instead (decision 76).

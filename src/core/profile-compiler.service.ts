@@ -585,6 +585,11 @@ function buildContextMarkdown(
       'foreground, never with `run_in_background`, and give a long one a Bash `timeout` of up ' +
       'to 600000 ms so it is not moved to the background. Never end a turn while a ' +
       'background job of your own is still running: wait for its result, or stop it, first.\n' +
+      // Decision 189: every tool result is re-read from the cache on each later request.
+      '- Keep tool output small, since every result is re-read on each later request: batch ' +
+      'related commands into one Bash call, ask for quiet output (`--quiet`, `-q`, or `tail` ' +
+      'or `grep` on test and install runs), and do not re-run a command to re-read output ' +
+      'already in context.\n' +
       '- When every acceptance criterion is met and all work is committed, run exactly:\n' +
       '  `pup session done "<one-line summary>"`\n' +
       '  (if `pup` is not found, run `node "$PUP_BIN" session done "<one-line summary>"`).\n' +
