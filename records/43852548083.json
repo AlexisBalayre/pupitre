@@ -1,0 +1,137 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-16T10:59:12.731Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43852548083",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43852548083",
+  "actor": "AlexisBalayre",
+  "commit_sha": "16ab4142b7078b56ee196342d481a2773df6d49e",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 343,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "1094-1100",
+      "description": "`recordedPanePids` always reads `conductor/pane-pid`, whether or not a conductor window is up, and no path ever removes that file. Once the conductor stops, crashes or the machine reboots, its old pid is a permanent match. If the OS later hands that pid to one of the operator's processes (their shell, terminal, sshd or tmux server), `pup respawn`, `unblock`, `kill --respawn` and `plan edit --rescope` all refuse, and `pup ui` goes read-only. `pup conductor stop` does not clear it.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "2495-2520",
+      "description": "`pup merge` without `--pr`, and `--accept-debt` recorded as `human`, are held to the operator by the session and conductor markers alone. A worker or the conductor that empties them (`PUP_CONDUCTOR= pup merge <id> --accept-debt`) still fast-forwards the target, or writes a debt acceptance in the operator's name, under a recorded pane.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/cli/index.ts",
+      "line": "1847-1848",
+      "area": "security",
+      "confidence": "high",
+      "tag": "important",
+      "description": "`readOnlyUnderWindow` only asks the stores in `read().projects`. That list leaves out any project whose `buildDashboardSnapshot` threw on this first call. `fleetReading` keeps such a store open and returns it with its `deps` on every later call. The App then drives it: the unblock and the respawn run in-process, and the `readOnlyReason` decided at startup is never asked again. With a single registered project the check gets an empty list and returns undefined, so not even the `--name` arguments check runs.",
+      "body": "**A session can get a driven fleet `pup ui` (in-process unblock and respawn) by making its project's first dashboard reading throw**\n\n```ts\nconst read = fleetReading(heldFleet(opts.dormant === true), opts.dormant === true, pupBin);\nconst readOnlyReason = readOnlyUnderWindow(read().projects.map(({ deps }) => deps));\n```\n\nADR 0188 says \"The fleet view asks each store its reading opened\", and the comment above this line says the same. The code asks only the stores whose *first snapshot succeeded*:\n\n- In `fleetReading` (`src/core/fleet.service.ts:101-122`), a snapshot that throws drops the project from that one reading only. The store stays in `opened`, and the next refresh returns it with its `deps`.\n- `readOnlyReason` is a prop fixed at render (`src/cli/ui/app.component.tsx`), so later readings never ask it again.\n- `unblockSelected` and `respawnSelected` (`src/cli/ui/actions.service.ts:175`, `:203`) run in-process with no check of their own. Only the merge key is re-checked, because it spawns a guarded `pup merge` child.\n\n**Trigger.** A running session S in project P, where P is the only registered project:\n\n1. S replaces its own `sessions/<S>/events.jsonl` with a directory. The file is session-writable, and `dashboardSession` calls `readFileSync(eventsFile)` for a running row (`dashboard.service.ts:816-818`), which throws `EISDIR`.\n2. S empties `PUP_SESSION_ID`, runs `cd /tmp`, and runs `pup ui` under `script` so stdout is a TTY. `refuseUnlessOperator` checks markers only, so it passes.\n3. The first `read()` drops P. `readOnlyUnderWindow([])` never enters its loop, so no pane check, no `--name` check and no \"`ps` failed\" refusal runs.\n4. S restores the file. The next reading lists P with its `deps`.\n5. S's keystrokes can now unblock any `blocked` session (decision 7's parking brake) or respawn any session. Decisions 44, 47 and 188 reserve both for the operator.\n\nThis needs no title rewrite and no record forgery, so it is not one of the ceilings decision 188 accepts. With several projects registered, a project that did render still runs the `--name` check against S, but the single-project case is a full bypass.\n\n**Fix:** ask every store `fleetReading` opened, not just the ones that rendered. For example, have `fleetReading` also return its `opened` deps and pass those to `readOnlyUnderWindow`. Alternatively, record the deps asked at startup and filter each later reading's `projects` to that set.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/16ab4142b7078b56ee196342d481a2773df6d49e/src/cli/index.ts#L1847-L1848",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/operator-guard.service.ts",
+      "line": "67-70",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "A holding session can write a pid it sees in `ps` into its own `pane-pid` record, such as the operator's terminal, tmux server or sshd, or the conductor's tmux server. The walk checks recorded panes before the tmux skip, and session records win over the conductor's. So every `pup merge` (the conductor's spared `--pr` included), `respawn`, `unblock` and `kill --respawn` then refuses, and `pup ui` goes read-only. This fails closed and names the window, so `pup kill <session>` clears it, but ADR 0188 covers only accidental pid reuse, not a session deliberately stalling the pipeline. Either require the recorded pid's own `ps` args to look like the launch (`nice`/`claude`, not tmux or a shell), or name the case in the ADR's ceilings.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/operator-guard.service.ts",
+      "line": "80-85",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The exported `MergeCall` interface has a single consumer, `mergeCallerAncestor`, and its only caller passes an object literal without importing the type. Writing the parameter inline as `call: { pr?: boolean; acceptDebt?: string; approvedBy?: string }` removes one exported named type.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 1,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 5.687208475000004,
+  "duration_ms": 424301,
+  "num_turns": 21,
+  "tokens": {
+    "input": 18,
+    "output": 13426,
+    "cache_read": 462075,
+    "cache_creation": 71030,
+    "total": 546549
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 264,
+      "output": 99351,
+      "cache_read": 5650968,
+      "cache_creation": 382515,
+      "cost_usd": 5.243934600000003
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 48,
+      "output": 10576,
+      "cache_read": 341773,
+      "cache_creation": 121029,
+      "cost_usd": 0.4426058000000001
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 140,
+      "cache_read": 0,
+      "cache_creation": 4783,
+      "cost_usd": 0.000668075
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "bash /home/runner/work/pupitre/pupitre/scripts/adr-index.sh"
+    }
+  ]
+}
