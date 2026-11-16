@@ -21,13 +21,23 @@
       per-user temp directory Claude Code points `TMPDIR` at. Claude Code adds its own grant of
       the main `.git` for a session whose working directory is a linked worktree; its shape is
       under *The implicit `.git` grant* below. Of the store `~/.pupitre/<id>/`, only `state.db`
-      and its `-wal` and `-shm` are allowed, plus the machine's test slots in
-      `~/.pupitre/slots/`.
+      and its `-wal` and `-shm` are allowed, and the session's own handoff document,
+      `sessions/<id>/handoff.md`. `pup respawn` deletes that file and steers the worker to write
+      it, the scope hook keeps the Write tool from it, and no pup command writes it, so without
+      the grant a sandboxed worker could never be respawned with a handoff. The machine's test
+      slots in `~/.pupitre/slots/` are allowed too.
     - Writes denied inside those grants. In the main `.git`, exactly these, none of which a
       worker's commit or merge writes:
       - the main checkout's own `config.worktree`. Git reads it once
         `extensions.worktreeConfig` is on, which `git sparse-checkout init` turns on, and a
         `core.fsmonitor` or `core.hooksPath` planted there would run in the operator's git;
+      - `commondir`. A main checkout has none, but git reads `$GIT_DIR/commondir` for any git
+        dir. One planted there, pointing at a decoy repo in the worktree, sends the operator's
+        git in the main checkout to the decoy's `config` and its `core.fsmonitor`;
+      - `modules/`, the git dirs of the main checkout's submodules. Each has its own `config` and
+        `hooks/`, and the operator's `git status` runs a child git in every submodule. A linked
+        worktree keeps its own submodules' git dirs in its admin dir, so a worker never writes
+        here;
       - `info/`, `refs/replace/`, `refs/remotes/` and `shallow`;
       - `refs/heads/main` and its `.lock`;
       - `packed-refs` and its `.lock`, either of which would move `main` too;
@@ -52,7 +62,17 @@
       directory.
     - Reads: everywhere except the operator's credentials: `~/.ssh`, `~/.gnupg`, `~/.aws`,
       `~/.config/gcloud`, `~/.config/gh`, `~/.kube`, `~/.docker`, `~/.netrc`,
-      `~/.git-credentials`, `~/.npmrc`, `~/.pypirc` and `~/.claude/.credentials.json`.
+      `~/.git-credentials`, `~/.npmrc`, `~/.pypirc` and `~/.claude/.credentials.json`. A project
+      whose windows run on another `CLAUDE_CONFIG_DIR` (decision 106) keeps the Claude
+      credentials in that dir, and a worker's Bash inherits the variable, so its
+      `.credentials.json` is denied as well. The config dir is resolved again at compile time,
+      as the launch resolved it.
+    *The Read tool.* The sandbox's read denial binds only Bash children, and the scope hook
+    matches only Edit and Write. So the setting also adds two `Read(...)` rules per credential
+    path to `permissions.deny`: the path itself and its `/**`, so a directory's files are
+    covered. `~/` keeps its meaning in a rule and `//` roots an absolute path. Deny rules hold
+    with permissions skipped (decision 5), and Claude Code applies Read rules to Grep and Glob
+    too. With the setting off, no rule is added.
     - Network: only the package registries of the ecosystems pup has adapters for:
       `registry.npmjs.org`, `registry.yarnpkg.com`, `pypi.org` and `files.pythonhosted.org`. A
       first commit's pre-commit install fetches from them. `strictAllowlist` refuses every other
@@ -112,14 +132,15 @@
     longer rewrite its own compiled hooks, which run outside the sandbox, or its recheck
     snapshots.
     *Exfiltration it does not stop.* Every reachable host is a way out:
-    - The registry tokens are kept from reads, but a worker can still `npm publish` with a token
-      of its own, so the registries remain an exfiltration channel.
+    - The registry tokens are kept from Bash reads and from the Read tool, but a worker can still
+      `npm publish` with a token of its own, so the registries remain an exfiltration channel.
     - So does any token in the session's environment, such as `GH_TOKEN` or `NPM_TOKEN`. Bash
       children inherit it, and the sandbox only hides the variables `sandbox.credentials` lists,
       which this block lists none of.
     *What the sandbox does not cover.* It holds only the processes a Bash call starts. These stay
     outside it:
-    - the Read, Edit and Write tools, which the scope hook and permission rules still guard;
+    - the Read, Edit and Write tools. The credential `Read(...)` rules above guard Read, Grep
+      and Glob; the scope hook guards Edit and Write and nothing else;
     - the hooks, the status line and any MCP server;
     - the session's Claude Code process itself, with its model traffic.
 
@@ -139,7 +160,7 @@
     *Ceilings.* The setting is off by default and never looser than running without it. What it
     cannot close is stated here, not built around.
     1. The worktree's `.git` pointer file. The probe found Claude Code refuses it to Bash. The
-       Read, Edit and Write tools run outside the sandbox, though, and only the scope hook stands
+       Edit and Write tools run outside the sandbox, though, and only the scope hook stands
        between them and the file. A rewritten pointer could send any unsandboxed git run in that
        worktree to a fake git dir that arms `core.fsmonitor` or `core.hooksPath`. That covers a
        hook, the gate, or the operator. A nested `.git` directory planted inside the worktree does
@@ -183,6 +204,12 @@
         then points at a path that does not exist.
     11. The denies on paths that do not exist yet, such as the locks and the rebase dirs, were
         probed only on macOS. Linux was not probed.
+    12. The grants on paths that do not exist yet were probed only on macOS too, where a literal
+        allow covers creating the file. `state.db-wal` and `-shm` usually do not exist at launch:
+        SQLite deletes them when the last connection closes, which every short-lived `pup`
+        command does. The handoff document does not exist either. Claude Code's Linux sandbox is
+        expected to grant only the paths that exist when it starts, so on Linux a sandboxed
+        `pup` may fail to open the store and the handoff may fail to write.
     *Left for follow-ups.*
     - Gaps in the read denials: `.yarnrc.yml`, `pip.conf`, cargo and gem credentials, the
       `.claude.json` in the home directory, and the transcripts.

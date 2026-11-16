@@ -110,9 +110,12 @@ compile.
 The block runs every process a Bash call starts inside Claude Code's sandbox:
 
 - Writes allowed: the worktree and its admin dir, the sandbox's `TMPDIR`, the store's `state.db`
-  files, the machine's test slots, and the main `.git` that a commit needs.
+  files, the session's handoff document that `pup respawn` asks for, the machine's test slots,
+  and the main `.git` that a commit needs.
 - Writes denied, within the main `.git`:
-  - the main checkout's own `config.worktree`;
+  - the main checkout's own `config.worktree`, and a `commondir`, which a main checkout has none
+    of and git would follow to a config of the worker's;
+  - `modules/`, the main checkout's submodules' git dirs with their own `config` and `hooks/`;
   - `info/`, `refs/replace/`, `refs/remotes/` and `shallow`;
   - `main` and `packed-refs`, with their locks;
   - the main checkout's own `HEAD`, `HEAD.lock`, `index`, `index.lock`, `MERGE_HEAD`,
@@ -128,14 +131,18 @@ The block runs every process a Bash call starts inside Claude Code's sandbox:
   leaves.
 - A deny wins over any allow, so the rest of the store is kept out of every grant rather than
   denied, which refuses it just the same.
-- Reads: allowed everywhere except the operator's credential files.
+- Reads: allowed everywhere except the operator's credential files, including the Claude
+  credentials of a `CLAUDE_CONFIG_DIR` the project's windows run on.
 - Network: only the npm and PyPI registries, plus loopback, which the web dashboard's tests need.
   Any other host is refused, and no command may leave the sandbox. The refusal holds because the
   settings arrive by `--settings`.
 
-The Read, Edit and Write tools, the hooks and the session process are not sandboxed. The hooks
-above still guard them. A pnpm project lists `.pnpm-store/` in its `.gitignore` before turning the
+The Read, Edit and Write tools, the hooks and the session process are not sandboxed. The setting
+also adds a `Read(...)` deny rule for each credential path, which keeps the Read tool, and Grep
+and Glob with it, from the same files; the scope hook still guards Edit and Write. A pnpm project lists `.pnpm-store/` in its `.gitignore` before turning the
 setting on, because pnpm keeps a store in the worktree when it cannot write the shared one.
+The setting was probed only on macOS. On Linux, grants of files that do not exist at launch,
+such as `state.db-wal` and the handoff document, may not hold (decision 191, ceiling 12).
 
 ## Project brief (decision 57)
 

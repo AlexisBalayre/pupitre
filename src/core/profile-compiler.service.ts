@@ -10,6 +10,7 @@ import {
   type ModelRoute,
   SECURITY_REVIEW_EFFORT,
 } from '../claude/model-ladder.constants.js';
+import { claudeUserDir } from '../claude/session-runtime.service.js';
 import { CONTROL_CHARS, readBrief, workerBrief } from './brief.service.js';
 import {
   GIT_SAFE_CONFIG,
@@ -105,13 +106,15 @@ const WORKER_UNUSED_TOOLS = [
 const SKILL_TOOL = 'Skill';
 
 /**
- * What a sandboxed worker's Bash children may not read (decision 191): the
- * operator's credentials, none of which a worker's task needs. Claude Code has
- * no built-in list; `~/` is the home directory in sandbox paths. The registry
- * tokens go too: the registries are the hosts a worker can reach, and a token
- * read there could publish to them. A public install needs none.
+ * What a sandboxed worker may not read (decision 191): the operator's
+ * credentials, none of which a worker's task needs. Claude Code has no
+ * built-in list; `~/` is the home directory in sandbox paths and permission
+ * rules alike. The registry tokens go too: the registries are the hosts a
+ * worker can reach, and a token read there could publish to them. A public
+ * install needs none. `workerCredentials` adds the Claude credentials of a
+ * config dir the project moved.
  */
-const WORKER_SANDBOX_DENY_READ = [
+const WORKER_CREDENTIALS = [
   '~/.ssh',
   '~/.gnupg',
   '~/.aws',
@@ -1267,21 +1270,23 @@ jq -c --arg sid "\${PUP_SESSION_ID:-unknown}" '. + {pup_session_id: $sid}' >> '$
  *   Code points `TMPDIR` at, and the main `.git` Claude Code grants a linked
  *   worktree's commit. That grant is the whole `.git` but its `config`,
  *   `hooks` and every `worktrees/` entry other than this worktree's own. Within
- *   it this denies `config.worktree`, `info`, `main` and its lock,
- *   `packed-refs` and its lock (either would move `main` too), `refs/replace`,
- *   `refs/remotes`, `shallow` and the main checkout's state that
- *   `MAIN_CHECKOUT_STATE` lists. A worker's commit or merge writes none of
+ *   it this denies `config.worktree`, `commondir`, `info`, `modules`, `main`
+ *   and its lock, `packed-refs` and its lock (either would move `main` too),
+ *   `refs/replace`, `refs/remotes`, `shallow` and the main checkout's state
+ *   that `MAIN_CHECKOUT_STATE` lists. A worker's commit or merge writes none of
  *   these. The rest of the `.git` stays writable, including objects, `logs`,
  *   `rr-cache`, `refs/tags`, `refs/notes` and the state files that list
  *   leaves out. In the admin dir, `commondir`, `gitdir`
  *   and `config.worktree` are denied: they say which repo and config git uses
  *   there. Of the store,
  *   only the SQLite files every `pup` command opens read-write, so `pup session
- *   done`, `ask` and the pre-commit hook's `pup session test` still run; and
- *   the machine's test slots that last one takes (`test-slot.service.ts`).
+ *   done`, `ask` and the pre-commit hook's `pup session test` still run; the
+ *   session's handoff document `pup respawn` asks for; and the machine's test
+ *   slots `pup session test` takes (`test-slot.service.ts`).
  *   A deny wins over any allow, however narrow, so the store is left out of
  *   every grant rather than denied: the sandbox refuses a path no grant names.
- * - Reads: everything but the operator's credentials.
+ * - Reads: everything but the operator's credentials, which the Read tool is
+ *   kept from by `credentialReadRules` instead.
  * - Network: the package registries only. `strictAllowlist` refuses any other
  *   host: the session skips permission prompts, under which an unlisted host
  *   would otherwise be let through. It holds because the settings arrive by
@@ -1292,7 +1297,7 @@ jq -c --arg sid "\${PUP_SESSION_ID:-unknown}" '. + {pup_session_id: $sid}' >> '$
  * `failIfUnavailable` refuses the launch rather than run the worker
  * unsandboxed, and no command may ask to leave the sandbox.
  */
-function workerSandbox(input: CompileInput, git: WorktreeGitEnv) {
+function workerSandbox(input: CompileInput, git: WorktreeGitEnv, credentials: string[]) {
   const store = projectPaths(input.repoPath);
   const common = (...path: string[]) => join(git.GIT_COMMON_DIR, ...path);
   return {
@@ -1306,6 +1311,8 @@ function workerSandbox(input: CompileInput, git: WorktreeGitEnv) {
         store.dbFile,
         `${store.dbFile}-wal`,
         `${store.dbFile}-shm`,
+        // `pup respawn` steers the worker to write it, and no pup command does.
+        store.handoffFile(input.sessionId),
         join(homedir(), '.pupitre', 'slots'),
       ],
       denyWrite: [
@@ -1313,8 +1320,13 @@ function workerSandbox(input: CompileInput, git: WorktreeGitEnv) {
         // The main checkout's own per-worktree config, read once
         // extensions.worktreeConfig is on (`git sparse-checkout init` turns it on).
         common('config.worktree'),
+        // A main checkout has none; git follows a planted one to a config of the worker's.
+        common('commondir'),
         common('hooks'),
         common('info'),
+        // The main checkout's submodules' git dirs, each with its own config and hooks.
+        // A linked worktree's submodules live in its admin dir instead.
+        common('modules'),
         common('refs', 'heads', 'main'),
         common('refs', 'heads', 'main.lock'),
         common('packed-refs'),
@@ -1327,7 +1339,7 @@ function workerSandbox(input: CompileInput, git: WorktreeGitEnv) {
         join(git.GIT_DIR, 'gitdir'),
         join(git.GIT_DIR, 'config.worktree'),
       ],
-      denyRead: WORKER_SANDBOX_DENY_READ,
+      denyRead: credentials,
     },
     network: {
       allowedDomains: WORKER_SANDBOX_DOMAINS,
@@ -1335,6 +1347,31 @@ function workerSandbox(input: CompileInput, git: WorktreeGitEnv) {
       allowLocalBinding: true,
     },
   };
+}
+
+/**
+ * The credentials a sandboxed worker may not read (decision 191). A project
+ * whose windows run on another `CLAUDE_CONFIG_DIR` (decision 106) keeps the
+ * Claude credentials there, and the worker's Bash inherits the variable.
+ */
+function workerCredentials(repoPath: string): string[] {
+  const configDir = claudeUserDir(repoPath);
+  return configDir === join(homedir(), '.claude')
+    ? WORKER_CREDENTIALS
+    : [...WORKER_CREDENTIALS, join(configDir, '.credentials.json')];
+}
+
+/**
+ * The sandbox holds only Bash children, so the Read tool, and Grep and Glob
+ * with it, is kept from the credentials by deny rules, which hold with
+ * permissions skipped (decision 191). `//` roots an absolute path in a rule;
+ * the `/**` form reaches the files inside a directory.
+ */
+function credentialReadRules(credentials: string[]): string[] {
+  return credentials.flatMap((path) => {
+    const rule = path.startsWith('~/') ? path : `/${path}`;
+    return [`Read(${rule})`, `Read(${rule}/**)`];
+  });
 }
 
 /**
@@ -1406,6 +1443,9 @@ export function compileProfile(input: SessionCompileInput): CompiledProfile {
     { matcher: 'TaskOutput', hooks: [bashRecheck] },
   ];
 
+  const sandboxCredentials = workerSandboxOn(input.repoPath)
+    ? workerCredentials(input.repoPath)
+    : undefined;
   // Additive-only invariant (docs/03-profiles.md): layer-supplied hooks are
   // appended after the compiler's security/event hooks, never allowed to replace
   // them. Spread the layer's map first, then overwrite the guarded events with
@@ -1434,6 +1474,7 @@ export function compileProfile(input: SessionCompileInput): CompiledProfile {
           ...WORKER_UNUSED_TOOLS,
           ...(merged.skills?.length ? [] : [SKILL_TOOL]),
           ...(merged.deny ?? []),
+          ...credentialReadRules(sandboxCredentials ?? []),
         ]),
       ],
     },
@@ -1442,7 +1483,7 @@ export function compileProfile(input: SessionCompileInput): CompiledProfile {
     env: { ...SLIM_CONTEXT_ENV, ...WORKER_SLIM_CONTEXT_ENV, ...WORKER_SUBAGENT_ENV },
     statusLine: { type: 'command', command: hookPath('statusline.sh') },
     // Last and only when on, so a project that leaves it off compiles the same bytes.
-    ...(workerSandboxOn(input.repoPath) ? { sandbox: workerSandbox(input, git) } : {}),
+    ...(sandboxCredentials ? { sandbox: workerSandbox(input, git, sandboxCredentials) } : {}),
   };
 
   const scopeIn = input.task.scopeIn.filter((g) => g.trim());

@@ -961,6 +961,7 @@ describe('the worker sandbox (decision 191)', () => {
         store.dbFile,
         `${store.dbFile}-wal`,
         `${store.dbFile}-shm`,
+        store.handoffFile('s-1'),
         join(home, '.pupitre', 'slots'),
       ]);
       // A deny wins over any allow, so the store is left out of the grants, not
@@ -968,8 +969,10 @@ describe('the worker sandbox (decision 191)', () => {
       expect(sandbox.filesystem.denyWrite).toEqual([
         join(repo, '.git', 'config'),
         join(repo, '.git', 'config.worktree'),
+        join(repo, '.git', 'commondir'),
         join(repo, '.git', 'hooks'),
         join(repo, '.git', 'info'),
+        join(repo, '.git', 'modules'),
         join(repo, '.git', 'refs', 'heads', 'main'),
         join(repo, '.git', 'refs', 'heads', 'main.lock'),
         join(repo, '.git', 'packed-refs'),
@@ -1017,6 +1020,8 @@ describe('the worker sandbox (decision 191)', () => {
       name: "the main checkout's config.worktree, read under extensions.worktreeConfig",
       path: ['config.worktree'],
     },
+    { name: 'a commondir, which git would follow to a planted config', path: ['commondir'] },
+    { name: "the submodules' git dirs, with their own config and hooks", path: ['modules'] },
     { name: 'replace refs, which swap the object a name resolves to', path: ['refs', 'replace'] },
     { name: 'remote-tracking refs', path: ['refs', 'remotes'] },
     { name: 'the shallow file', path: ['shallow'] },
@@ -1039,6 +1044,35 @@ describe('the worker sandbox (decision 191)', () => {
 
     expect(sandbox.filesystem.denyWrite).toContain(join(repo, '.git', ...path));
     expect(sandbox.filesystem.allowWrite).not.toContain(join(repo, '.git', ...path));
+  });
+
+  it('keeps the Read tool from the credentials the sandbox keeps from Bash', () => {
+    const repo = repoWith('workerSandbox: true\n');
+    const settings = JSON.parse(compileIn(repo).files['settings.json'] as string);
+
+    expect(settings.permissions.deny).toEqual(
+      expect.arrayContaining(['Read(~/.ssh)', 'Read(~/.ssh/**)', 'Read(~/.npmrc)']),
+    );
+    for (const path of settings.sandbox.filesystem.denyRead) {
+      expect(settings.permissions.deny).toContain(`Read(${path})`);
+    }
+  });
+
+  it("denies the Claude credentials of a config dir the project's windows run on", () => {
+    vi.stubEnv('HOME', tempDir('pup-sandbox-home-'));
+    const configDir = tempDir('pup-sandbox-config-');
+    vi.stubEnv('CLAUDE_CONFIG_DIR', configDir);
+    try {
+      const repo = repoWith('workerSandbox: true\n');
+      saveSessionEnv(repo, ['CLAUDE_CONFIG_DIR']);
+      const settings = JSON.parse(compileIn(repo).files['settings.json'] as string);
+      const credentials = join(configDir, '.credentials.json');
+
+      expect(settings.sandbox.filesystem.denyRead).toContain(credentials);
+      expect(settings.permissions.deny).toContain(`Read(/${credentials})`);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it('refuses the compile on a malformed setting rather than launch unsandboxed', () => {
