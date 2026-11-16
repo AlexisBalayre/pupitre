@@ -1,0 +1,4 @@
+^api\.anthropic\.com$
+^registry\.npmjs\.org$
+^github\.com$
+^codeload\.github\.com$
