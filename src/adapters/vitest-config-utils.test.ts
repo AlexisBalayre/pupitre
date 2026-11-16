@@ -1,10 +1,15 @@
 import { execFileSync } from 'node:child_process';
-import { symlinkSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { GIT_ENV } from '@test/helpers/git.mock.js';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import { describe, expect, it } from 'vitest';
-import { diskRoot, treeRoot, vitestCollection } from './vitest-config.utils.js';
+import {
+  diskRoot,
+  treeEntriesMatching,
+  treeRoot,
+  vitestCollection,
+} from './vitest-config.utils.js';
 
 function repoWith(files: Record<string, string>): string {
   const dir = tempDir('pup-vitest-config-');
@@ -116,6 +121,9 @@ describe('vitestCollection', () => {
   const patterns = (count: number): string =>
     JSON.stringify(Array.from({ length: count }, (_, i) => `x${i}`));
 
+  const aliasing = (alias: string): string =>
+    `import { defineConfig } from 'vitest/config';\nexport default defineConfig({ resolve: { alias: ${alias} }, test: {} });\n`;
+
   // Read as the trusted checkout's, the laxer side, so a row fails if its
   // refusal is deleted.
   it.each([
@@ -186,6 +194,35 @@ describe('vitestCollection', () => {
       'a subpath import',
       `import shared from '#shared/vitest';\n${configWith("{ include: ['src/**/*.test.ts'] }")}`,
     ],
+    [
+      'an import-equals of a file',
+      `import shared = require('./shared.cjs');\n${configWith("{ include: ['src/**/*.test.ts'] }")}`,
+    ],
+    // The parser takes one below the top level without a syntax error.
+    [
+      'an import-equals in a namespace',
+      `namespace N { import e = require('./evil'); export const v = e; }\n${configWith("{ include: ['src/**/*.test.ts'] }")}`,
+    ],
+    [
+      'an import-equals of a package in a block',
+      `{ import e = require('vite'); }\n${configWith("{ include: ['src/**/*.test.ts'] }")}`,
+    ],
+    [
+      'a require',
+      `const shared = require('./shared.cjs');\n${configWith("{ include: ['src/**/*.test.ts'] }")}`,
+    ],
+    [
+      "a module's require",
+      `module.require('./shared.cjs');\n${configWith("{ include: ['src/**/*.test.ts'] }")}`,
+    ],
+    [
+      'a dynamic import',
+      configWith("{ include: ['src/**/*.test.ts'], maxWorkers: (await import('./workers.js')).n }"),
+    ],
+    [
+      'a file: URL import',
+      `import shared from 'FILE:///tmp/shared.js';\n${configWith("{ include: ['src/**/*.test.ts'] }")}`,
+    ],
     ['setupFiles', configWith("{ setupFiles: ['./setup.ts'] }")],
     ['globalSetup', configWith("{ globalSetup: 'global.ts' }")],
     ['reporters', configWith("{ reporters: ['./reporter.ts'] }")],
@@ -195,6 +232,26 @@ describe('vitestCollection', () => {
     ['poolOptions', configWith("{ poolOptions: { forks: { execArgv: ['--import=./x.js'] } } }")],
     ['execArgv', configWith("{ execArgv: ['--import=./x.js'] }")],
     ['a sequencer', configWith("{ sequence: { sequencer: './sequencer.ts' } }")],
+    ['a test alias', configWith("{ alias: { vitest: './fake.ts' } }")],
+    ['environmentMatchGlobs', configWith("{ environmentMatchGlobs: [['src/**', './env.ts']] }")],
+    ['poolMatchGlobs', configWith("{ poolMatchGlobs: [['src/**', 'threads']] }")],
+    ['snapshotSerializers', configWith("{ snapshotSerializers: ['./serializer.ts'] }")],
+    ['a diff module', configWith("{ diff: './diff.ts' }")],
+    ['a browser run', configWith('{ browser: { enabled: true } }')],
+    [
+      'a custom coverage provider',
+      configWith("{ coverage: { provider: 'custom', customProviderModule: './cov.ts' } }"),
+    ],
+    ['a coverage spread', configWith('{ coverage: { ...shared } }')],
+    ['a resolve alias of a package name', aliasing("{ vitest: './fake.ts' }")],
+    ['a resolve alias of a scoped package', aliasing("{ '@vitest/spy': './fake.ts' }")],
+    ['a resolve alias list', aliasing("[{ find: '@src', replacement: './src' }]")],
+    ['a computed resolve alias', aliasing("{ [name]: './src' }")],
+    ['a spread resolve alias', aliasing('{ ...shared }')],
+    [
+      'a resolve spread',
+      "import { defineConfig } from 'vitest/config';\nexport default defineConfig({ resolve: { ...shared }, test: {} });\n",
+    ],
     [
       'plugins',
       "import { defineConfig } from 'vitest/config';\nexport default defineConfig({ plugins: [], test: {} });\n",
@@ -203,6 +260,44 @@ describe('vitestCollection', () => {
   ])('collects nothing under %s', (_, config) => {
     expect(vitestCollection(diskRoot(repoWith({ 'vitest.config.ts': config })))).toBeUndefined();
   });
+
+  it('reads a config that resolves and covers without loading a module of its own', () => {
+    const files = {
+      'vitest.config.ts':
+        "import { defineConfig } from 'vitest/config';\n" +
+        "export default defineConfig({ resolve: { conditions: ['node'] }, test: { include: ['src/**/*.test.ts'], coverage: { provider: 'v8' } } });\n",
+    };
+
+    expect(collected(files, ['src/a.test.ts', 'b.test.ts'])).toEqual(['src/a.test.ts']);
+  });
+
+  // This repo's own form: a bare `@name` is no package, and the adapter checks
+  // node_modules for a scope of that name.
+  it('reads a resolve alias whose keys are each a bare @name, and names them', () => {
+    const config =
+      "import { fileURLToPath } from 'node:url';\n" +
+      aliasing("{ '@src': fileURLToPath(new URL('./src', import.meta.url)), '@test': './test' }");
+
+    expect(vitestCollection(diskRoot(repoWith({ 'vitest.config.ts': config })))?.aliases).toEqual([
+      '@src',
+      '@test',
+    ]);
+  });
+
+  // Self-reference resolves the name through the package's own `exports`, to a branch file.
+  it.each(['my-app', 'my-app/vitest-shared'])(
+    'collects nothing where the config imports the package itself as %s',
+    (specifier) => {
+      const config = `import shared from '${specifier}';\n${configWith("{ include: ['src/**/*.test.ts'] }")}`;
+
+      expect(
+        collected({ 'package.json': '{"name":"my-app"}', 'vitest.config.ts': config }, []),
+      ).toBeUndefined();
+      expect(
+        collected({ 'package.json': '{"name":"my-app-ui"}', 'vitest.config.ts': config }, []),
+      ).toEqual([]);
+    },
+  );
 
   // This repo's own: the gate compares it across checkouts rather than run it.
   it('reads a config that runs code and imports packages', () => {
@@ -215,6 +310,14 @@ describe('vitestCollection', () => {
     };
 
     expect(collected(files, ['src/a.test.ts', 'b.test.ts'])).toEqual(['src/a.test.ts']);
+  });
+
+  it('reads a config importing a package by a top-level import-equals', () => {
+    const files = {
+      'vitest.config.ts': `import os = require('node:os');\n${configWith("{ include: ['src/**/*.test.ts'] }")}`,
+    };
+
+    expect(collected(files, ['src/a.test.ts'])).toEqual(['src/a.test.ts']);
   });
 
   // A `.` stops at a line break, so `src/**`'s `.*(?:/.*)?$` would backtrack
@@ -278,6 +381,35 @@ describe('vitestCollection', () => {
     ]);
   });
 
+  // A session can write the shared config, and a `core.worktree` aimed at the
+  // repo's parent runs git there from `repo/`, so a plain `ls-tree` lists
+  // nothing and the root would hold no config and no directory (decision 161).
+  // `runGit` names a `.git` directory's work tree itself, which overrides the
+  // setting, so the checkout holds a gitfile, as a linked worktree does, for
+  // git to discover its directory and honour the setting.
+  it("lists a commit's whole root from a gitfile checkout whose config aims core.worktree at a parent", () => {
+    const host = tempDir('pup-host-');
+    const repo = join(host, 'repo');
+    mkdirSync(join(repo, '.github'), { recursive: true });
+    const git = (...args: string[]): string =>
+      execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8', env: GIT_ENV }).trim();
+    git('init', '-q', `--separate-git-dir=${join(host, 'repo.git')}`);
+    writeFileSync(join(repo, 'vitest.config.ts'), configWith("{ include: ['src/**/*.test.ts'] }"));
+    writeFileSync(join(repo, '.github', 'ci.yml'), 'a\n');
+    git('add', '-A');
+    git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'init');
+    const sha = git('rev-parse', 'HEAD');
+    git('config', 'core.worktree', dirname(repo));
+    // The control: armed, a plain listing of the commit holds nothing.
+    expect(git('ls-tree', '-r', '--name-only', sha)).toBe('');
+
+    const root = treeRoot(repo, sha);
+
+    expect([...root.keys()].sort()).toEqual(['.github', 'vitest.config.ts']);
+    expect(root.get('.github')?.()).toMatch(/\tci\.yml$/);
+    expect(treeEntriesMatching(repo, sha, /ci\.yml$/)).toMatch(/\t\.github\/ci\.yml$/);
+  });
+
   it.each([
     ['a link', [['vitest.config.ts', '120000', 'real.config.ts']]],
     [
@@ -324,6 +456,17 @@ describe('vitestCollection', () => {
       ),
     ).toBe(configOf(trusted));
     expect(configOf(configWith('{ include: [], maxWorkers: 2 }'))).toBe(configOf(trusted));
+  });
+
+  // Only the lists are cut out: a `coverage` read for its provider module stays in.
+  it('tells apart two configs that differ only in their coverage', () => {
+    const covering = (reporter: string): string | undefined =>
+      configOf(
+        configWith(`{ include: ['src/**/*.test.ts'], coverage: { reporter: ['${reporter}'] } }`),
+      );
+
+    expect(covering('text')).toBeDefined();
+    expect(covering('text')).not.toBe(covering('json'));
   });
 
   it.each([

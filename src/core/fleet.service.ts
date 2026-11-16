@@ -44,6 +44,21 @@ function awakeFleet(
 }
 
 /**
+ * The projects a fleet view opens and runs git in: the shown ones
+ * `fleetRefusal` lets through. A project it passes over is never read, so the
+ * CLI holds each of these, and only these, before a view reads any
+ * (decision 181).
+ */
+export function readFleetProjects(
+  registered: RegisteredProject[],
+  shouldShowDormant: boolean,
+): RegisteredProject[] {
+  return awakeFleet(registered, shouldShowDormant).shown.filter(
+    (project) => fleetRefusal(project) === undefined,
+  );
+}
+
+/**
  * `pup status`'s fleet: one block per shown project, from each store's own
  * snapshot. A project `fleetRefusal` turns away is a line and its store left
  * shut — opening it would migrate a store nobody can act on, or one a session
