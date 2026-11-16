@@ -202,7 +202,6 @@ import {
   seedLedgerEntry,
   seedSession,
   seedStalledSession,
-  stubCodegraph,
   worktreeOf,
 } from '@test/helpers/cli-index.mock.js';
 import {
@@ -718,24 +717,16 @@ describe('CLI commands', () => {
       await expect(buildProgram().parseAsync(['audit'], { from: 'user' })).rejects.toThrow();
     });
 
-    // The repeat path prints it too, or the capability goes quiet on every run
-    // after the first (decision 29).
-    it('reports the codegraph capability on the re-run path as well', async () => {
+    // The repeat path ends on the same tail as `pup init`: no code graph line
+    // between the sandbox and the push target (decision 186).
+    it('prints the push target line straight after the sandbox line', async () => {
       useCwd(initRepoWithAdapter());
-      stubCodegraph('1.6.0');
 
       await buildProgram().parseAsync(['audit'], { from: 'user' });
 
-      expect(logs).toContain('codegraph: 1.6.0');
-    });
-
-    it('reports an absent codegraph on the re-run path too', async () => {
-      useCwd(initRepoWithAdapter());
-      stubCodegraph();
-
-      await buildProgram().parseAsync(['audit'], { from: 'user' });
-
-      expect(logs).toContain('codegraph: not installed');
+      const sandbox = logs.findIndex((line) => line.startsWith('sandbox: '));
+      expect(sandbox).toBeGreaterThan(-1);
+      expect(logs[sandbox + 1]).toMatch(/^push target: /);
     });
 
     // The repeat path prints its own stage lines rather than `pup init`'s, and
@@ -3036,6 +3027,43 @@ describe('CLI commands', () => {
     });
   });
 
+  describe('review of a task launched from a ticket (decision 187)', () => {
+    it("prints the ticket's slice criteria, scrubbed, before the diff", () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedSession(repo, 's-ticket');
+      const { db } = resolveProject(repo);
+      db.prepare('UPDATE tasks SET spec = ?').run(
+        JSON.stringify({
+          goal: 'g',
+          scopeIn: ['**'],
+          acceptance: ['a'],
+          ticket: {
+            ref: '#412',
+            type: 'feature',
+            labels: ['design-approved'],
+            triggers: [],
+            criteria: ['\u001b[2Jthe kickoff quotes the design', 'review prints this'],
+          },
+        }),
+      );
+      transitionSession(db, 's-ticket', 'running');
+      transitionSession(db, 's-ticket', 'awaiting-review');
+      db.close();
+
+      buildProgram().parse(['review', 's-ticket'], { from: 'user' });
+
+      const criteria = logs.indexOf('ticket #412 slice criteria:');
+      expect(logs.slice(criteria, criteria + 3)).toEqual([
+        'ticket #412 slice criteria:',
+        '  - [2Jthe kickoff quotes the design',
+        '  - review prints this',
+      ]);
+      expect(criteria).toBeGreaterThan(logs.findIndex((line) => line.startsWith('acceptance:')));
+      expect(criteria).toBeLessThan(logs.indexOf('files:'));
+    });
+  });
+
   // Every path a command takes to a project's repo holds it as a main checkout
   // before reading it, so a `.git` a session swapped refuses the command
   // (decisions 172, 181).
@@ -3216,9 +3244,8 @@ const CONSTANT_INTERPOLATIONS = [
   'entry.id',
   'record.id',
   'c.id',
-  // Derivations of the repo path, not the path: a label pup composes and a
-  // store path pup built. The path itself prints scrubbed.
-  'codegraphLabel(repoPath)',
+  // A derivation of the repo path, not the path: a store path pup built. The
+  // path itself prints scrubbed.
   'briefPath(repoPath)',
 ];
 

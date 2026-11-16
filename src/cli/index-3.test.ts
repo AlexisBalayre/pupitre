@@ -2249,6 +2249,8 @@ describe('CLI commands', () => {
         expect.any(String),
         's1',
         HANDOFF_WAIT_DEFAULT_MS,
+        undefined,
+        expect.anything(),
       );
       expect(respawnSession).toHaveBeenCalledTimes(1);
       expect(logs).toContain('Respawned s1 on a fresh context window with its handoff.');
@@ -2319,6 +2321,8 @@ describe('CLI commands', () => {
         expect.any(String),
         's1',
         30_000,
+        undefined,
+        expect.anything(),
       );
     });
 

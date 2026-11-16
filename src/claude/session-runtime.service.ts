@@ -52,12 +52,6 @@ export interface LaunchOptions {
   settingsPath: string;
   /** The model and effort the window runs on: its rung, or the operator's override (decision 92). */
   route: ModelRoute;
-  /**
-   * Compiled mcp.json path, passed to `claude --mcp-config`. Absent when the
-   * session gets no code graph — either the operator has no codegraph binary,
-   * or indexing this worktree failed (decision 51).
-   */
-  mcpConfigPath?: string;
 }
 
 export interface ConductorLaunchOptions {
@@ -68,12 +62,6 @@ export interface ConductorLaunchOptions {
   env: WindowEnv;
   settingsPath: string;
   route: ModelRoute;
-  /**
-   * Compiled mcp.json path, passed to `claude --mcp-config`. Absent when the
-   * conductor gets no code graph — either the operator has no codegraph binary,
-   * or indexing the main checkout failed (decision 51).
-   */
-  mcpConfigPath?: string;
 }
 
 /**
@@ -712,17 +700,12 @@ function mainRepoRoot(worktreePath: string): string[] {
  * rescope's window probe finds a renamed window by the `--name <tmux name>`
  * pair in its pane's start command (decision 115), so the pair stays adjacent.
  *
- * `--mcp-config` adds the code graph without `--strict-mcp-config`: strict mode
- * would drop the operator's own MCP servers, and sessions inherit user config
- * (decision 9). The flag is only passed when there is a graph to serve
- * (decision 51).
- *
  * `--model` and `--effort` are always passed, the window's route: the user
  * settings the window inherits name a model and an effort too, and must never
  * be what decides a worker's (decision 92).
  */
 export function launchArgs(
-  opts: Pick<LaunchOptions, 'sessionId' | 'settingsPath' | 'route' | 'mcpConfigPath'>,
+  opts: Pick<LaunchOptions, 'sessionId' | 'settingsPath' | 'route'>,
 ): string[] {
   const { model, effort, fallbackModel } = opts.route;
   return [
@@ -736,7 +719,6 @@ export function launchArgs(
     '--dangerously-skip-permissions',
     '--settings',
     opts.settingsPath,
-    ...(opts.mcpConfigPath ? ['--mcp-config', opts.mcpConfigPath] : []),
     '--setting-sources',
     'user',
   ];
@@ -750,7 +732,6 @@ interface ClaudeWindowOptions {
   env: WindowEnv;
   settingsPath: string;
   route: ModelRoute;
-  mcpConfigPath?: string;
   /**
    * The one variable that names the caller — `PUP_SESSION_ID` or
    * `PUP_CONDUCTOR` — which is all that separates a session's window from the
@@ -779,8 +760,8 @@ interface ClaudeWindowOptions {
  * Config a session window's git takes from its environment (decision 101). A
  * gitlink in the index over a `.git` of the session's makes `status` and
  * `diff` run a child git in it, which reads that repo's config and runs its
- * filters. This narrows that for Claude Code's startup git and the code
- * graph's, which run outside the Bash sandbox, and does not close it: a
+ * filters. This narrows that for Claude Code's startup git, which runs
+ * outside the Bash sandbox, and does not close it: a
  * per-submodule `ignore` in `.gitmodules` outranks it, and `diff-files` and
  * `diff-index` never read it. pup's own git passes `--ignore-submodules=all`
  * instead. `status.submoduleSummary` because the summary spawns git in each
@@ -855,7 +836,6 @@ export function launchSession(opts: LaunchOptions): SessionPane {
     env: opts.env,
     settingsPath: opts.settingsPath,
     route: opts.route,
-    mcpConfigPath: opts.mcpConfigPath,
     caller: { PUP_SESSION_ID: opts.sessionId },
     // Checked before the window opens, so a respawn over pointers the last
     // window rewrote is refused rather than have Claude Code's startup git
@@ -982,7 +962,6 @@ export function launchConductor(opts: ConductorLaunchOptions): SessionPane {
     env: opts.env,
     settingsPath: opts.settingsPath,
     route: opts.route,
-    mcpConfigPath: opts.mcpConfigPath,
     caller: { PUP_CONDUCTOR: opts.projectId },
     socket: conductorSocket(opts.projectId),
     panePidFile: conductorPanePidFile(opts.repoPath),
@@ -1061,9 +1040,17 @@ function socketRecordFile(repoPath: string, sessionId: string): string {
  * tmux (decision 47). Written by the operator's or the conductor's `pup`
  * before the window exists, so the session never wrote it; a probe reads it
  * rather than its own caller's `TMUX_TMPDIR`, which a caller can unset.
+ * Written beside and renamed over, so a probe never reads half a path. The
+ * session can write its session dir, so a symlink in its place, which would
+ * carry the write wherever it points, is refused.
  */
 function recordWindowSocket(repoPath: string, sessionId: string): void {
-  writeRenamed(socketRecordFile(repoPath, sessionId), defaultSocketIn(process.env.TMUX_TMPDIR));
+  const file = socketRecordFile(repoPath, sessionId);
+  const dir = dirname(file);
+  if (lstatSync(dir, { throwIfNoEntry: false })?.isSymbolicLink()) {
+    throw new Error(`Session dir ${dir} is a symlink; refusing to record the window's socket.`);
+  }
+  writeRenamed(file, defaultSocketIn(process.env.TMUX_TMPDIR));
 }
 
 /**
@@ -1452,8 +1439,13 @@ export function kickoff(pane: SessionPane, prompt: string): boolean {
   return true;
 }
 
-/** The pane as plain text, for the markers that carry no styling of their own. */
-function capturePane(pane: SessionPane): string {
+/**
+ * The pane as plain text, for the markers that carry no styling of their own,
+ * and for the dashboard's session view, which shows what the worker's window
+ * shows (decision 91). Read-only, and addressed to the pinned pane like every
+ * look at it.
+ */
+export function capturePane(pane: SessionPane): string {
   return tmuxAt(pane, ['capture-pane', '-p', '-t', paneTarget(pane)]);
 }
 

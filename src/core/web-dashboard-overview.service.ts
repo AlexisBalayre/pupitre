@@ -10,6 +10,7 @@ import { briefDestination, readBrief } from './brief.service.js';
 import { barChart, type ChartDatum, sparkline } from './chart.utils.js';
 import {
   buildDashboardSnapshot,
+  CONDUCTOR_TARGET,
   debtFigures,
   needsYou,
   prFixRounds,
@@ -26,6 +27,7 @@ import type {
   DashboardSnapshot,
 } from './types/dashboard.types.js';
 import type { DebtBaseline, ProjectBaseline } from './types/init.types.js';
+import { actionButton, answerForms, textAction } from './web-dashboard-actions.service.js';
 import {
   DAY_MS,
   escapeHtml,
@@ -241,17 +243,24 @@ const STATE_ORDER = ['blocked', 'running', 'awaiting-review', 'queued', 'rejecte
  * The Overview: the goal and the figures first, then the live sections `pup
  * status` prints. Nothing in it is time-relative beyond what the snapshot
  * holds and the day the weeks end on, so an unchanged store renders the same
- * string and the stream stays quiet. `debtHref` is the Debt sheet's url.
+ * string and the stream stays quiet. `debtHref` is the Debt sheet's url and
+ * `sessionHref` a session view's, where that session's actions are; a
+ * question is answered here, the conductor told, and a planned task launched
+ * (decision 91).
  */
-export function renderOverview(view: OverviewView, debtHref: string): string {
+export function renderOverview(
+  view: OverviewView,
+  debtHref: string,
+  sessionHref: (sessionId: string) => string,
+): string {
   return [
     goalSection(view.goal),
     figuresSection(view.tiles, debtHref),
     deliverySection(view),
-    needsSection(view.needs),
+    needsSection(view.needs, sessionHref),
     conductorSection(view.snapshot),
-    sessionsSection(view),
-    pullRequestsSection(view),
+    sessionsSection(view, sessionHref),
+    pullRequestsSection(view, sessionHref),
     plannedSection(view.snapshot),
   ].join('\n');
 }
@@ -299,26 +308,50 @@ function deliverySection(view: OverviewView): string {
   return section('Delivery', `${tasks}${merges}`);
 }
 
-function needsSection(needs: DashboardNeed[]): string {
+/**
+ * Each line with its answer as text, and, for a line about a session or the
+ * conductor the store names in the minted shape, the way to act on it: a
+ * question's options and an answer in words, and a session's view.
+ */
+function needsSection(needs: DashboardNeed[], sessionHref: (sessionId: string) => string): string {
   if (needs.length === 0) return section('Needs you', hint('Nothing waits on you.'));
-  const items = needs.map(
-    (need) =>
-      `<li class="need need-${escapeHtml(need.kind)}"><span class="sid">${escapeHtml(need.label)}</span> ` +
+  const items = needs.map((need) => {
+    const named = need.label === need.sessionId && need.kind !== 'conductor';
+    const answer =
+      named && need.kind === 'question'
+        ? answerForms(need.sessionId, {
+            options: need.options ?? [],
+            ...(need.recommended === undefined ? {} : { recommended: need.recommended }),
+          })
+        : '';
+    const open =
+      named && need.sessionId !== CONDUCTOR_TARGET
+        ? ` ${viewLink(need.sessionId, sessionHref)}`
+        : '';
+    return (
+      `<li class="need need-${escapeHtml(need.kind)}"><span class="sid">${escapeHtml(need.label)}</span>${open} ` +
       `<span class="reason">${escapeHtml(need.reason)}</span>` +
-      `<div class="answer">${textOrPrLink(need.answer)}</div></li>`,
-  );
+      `<div class="answer">${textOrPrLink(need.answer)}</div>${answer}</li>`
+    );
+  });
   return section('Needs you', `<ul class="rows">${items.join('')}</ul>`);
 }
 
 function conductorSection(snapshot: DashboardSnapshot): string {
   const { conductor } = snapshot;
   const body = conductor.running
-    ? `<p>running <span class="hint">attach:</span> <code>${escapeHtml(conductor.attachCommand)}</code></p>`
+    ? `<p>running <span class="hint">attach:</span> <code>${escapeHtml(conductor.attachCommand)}</code></p>` +
+      textAction('tell', {}, 'message', 'a message for the conductor', 'Tell')
     : hint('not running — `pup conductor start` starts it');
   return section('Conductor', body);
 }
 
-function sessionsSection(view: OverviewView): string {
+/** The link to a session's view, where its pane, its attach line and its actions are. */
+function viewLink(sessionId: string, sessionHref: (sessionId: string) => string): string {
+  return `<a href="${escapeHtml(sessionHref(sessionId))}">open</a>`;
+}
+
+function sessionsSection(view: OverviewView, sessionHref: (sessionId: string) => string): string {
   const live = view.snapshot.sessions.filter((s) => s.state !== 'merged' && s.state !== 'killed');
   if (live.length === 0) return section('Sessions', hint('Nothing running.'));
   const states = [
@@ -326,13 +359,19 @@ function sessionsSection(view: OverviewView): string {
     ...new Set(live.map((s) => s.state).filter((state) => !STATE_ORDER.includes(state))),
   ];
   const groups = states.map((state) => {
-    const rows = live.filter((s) => s.state === state).map((s) => sessionRow(s, view.openDebt));
+    const rows = live
+      .filter((s) => s.state === state)
+      .map((s) => sessionRow(s, view.openDebt, sessionHref));
     return `<h3 class="state-group">${escapeHtml(state)} <span class="hint">${rows.length}</span></h3><ul class="rows">${rows.join('')}</ul>`;
   });
   return section('Sessions', groups.join(''));
 }
 
-function sessionRow(session: DashboardSession, openDebt: WebDebtEntry[]): string {
+function sessionRow(
+  session: DashboardSession,
+  openDebt: WebDebtEntry[],
+  sessionHref: (sessionId: string) => string,
+): string {
   const facts = [
     session.question === undefined ? '' : `question: ${session.question.text}`,
     activityText(session),
@@ -344,7 +383,8 @@ function sessionRow(session: DashboardSession, openDebt: WebDebtEntry[]): string
   ].filter(Boolean);
   return (
     `<li class="session"><div class="meta"><span class="sid">${escapeHtml(labelOf(session))}</span>` +
-    `<span class="branch">${escapeHtml(session.branch)}</span></div>` +
+    `<span class="branch">${escapeHtml(session.branch)}</span>` +
+    `${session.isMintedId ? viewLink(session.id, sessionHref) : ''}</div>` +
     `<div class="goal">${escapeHtml(session.goal || '(no goal recorded)')}</div>` +
     facts.map((fact) => `<div class="fact">${escapeHtml(fact)}</div>`).join('') +
     debtOf(session, openDebt) +
@@ -398,7 +438,10 @@ function debtOf(session: DashboardSession, openDebt: WebDebtEntry[]): string {
     .join('');
 }
 
-function pullRequestsSection(view: OverviewView): string {
+function pullRequestsSection(
+  view: OverviewView,
+  sessionHref: (sessionId: string) => string,
+): string {
   const open = view.snapshot.sessions.filter((s) => s.openPr !== undefined);
   if (open.length === 0) return section('Open pull requests', hint('No PR waits to land.'));
   const rows = open.map((session) => {
@@ -408,7 +451,8 @@ function pullRequestsSection(view: OverviewView): string {
         ? `<code>${escapeHtml('(PR url outside the pull-request shape; inspect the store)')}</code>`
         : textOrPrLink(url);
     return (
-      `<li class="session"><div class="meta"><span class="sid">${escapeHtml(labelOf(session))}</span>${link}</div>` +
+      `<li class="session"><div class="meta"><span class="sid">${escapeHtml(labelOf(session))}</span>${link}` +
+      `${session.isMintedId ? viewLink(session.id, sessionHref) : ''}</div>` +
       `<div class="goal">${escapeHtml(session.goal || '(no goal recorded)')}</div>` +
       `<div class="fact">${escapeHtml(reviewState(session, view.fixRounds.get(session.id)))}</div>` +
       debtOf(session, view.openDebt) +
@@ -441,7 +485,8 @@ function plannedSection(snapshot: DashboardSnapshot): string {
     (task) =>
       `<li class="session"><div class="meta"><span class="sid">${escapeHtml(task.id)}</span>` +
       `${task.origin === 'human' ? '' : `<span class="branch">from ${escapeHtml(task.origin)}</span>`}</div>` +
-      `<div class="goal">${escapeHtml(task.goal || '(no goal recorded)')}</div></li>`,
+      `<div class="goal">${escapeHtml(task.goal || '(no goal recorded)')}</div>` +
+      `${actionButton('launch', { task: task.id }, 'Launch')}</li>`,
   );
   return section('Planned', `<ul class="rows">${rows.join('')}</ul>`);
 }
