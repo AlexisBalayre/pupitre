@@ -76,8 +76,11 @@
     `pup ui` asks the same question after the markers, and on any answer but none shows
     the dashboard read-only with the reason in its footer, as it does for a session or
     the conductor (its keys run the respawn, the unblock and the merge). The fleet view
-    asks each store its reading opened, so a project the fleet refuses to open is not
-    opened for this either, and is read-only when any of them finds the caller.
+    asks each store its first reading rendered, so a project the fleet refuses to open is
+    not opened for this either, and is read-only when any of them finds the caller. It
+    drives only those: a store whose first snapshot threw renders once it mends, and a
+    caller could break its own project's reading to skip the check, so every later
+    reading lists it as held out, never as a row, until `pup ui` starts again.
     *The overlap check.* The globs a rescope adds go through the check a launch runs
     (decision 99) against every live session of another task, inside the rescope's
     transaction: the files they share are recorded as a `scope_overlap` event on the
@@ -118,7 +121,8 @@
     no recorded pane in its tree; the plain kill goes through under one; a rescope prints
     its overlaps. `index-3.test.ts`: `pup ui` is read-only under a recorded pane with its
     markers emptied and unset, and when `ps` fails, and the fleet is read-only under a
-    pane one project's store recorded; `pup dashboard`, the local merge and a debt
+    pane one project's store recorded and never drives a project its first reading could
+    not read, once it mends; `pup dashboard`, the local merge and a debt
     accepted in the operator's name are refused the same ways, a `--pr` with or without a
     named approver is refused under a session's pane and when `ps` fails, and goes through
     under the conductor's. `merge-gate.test.ts`: the body lists the rescopes,

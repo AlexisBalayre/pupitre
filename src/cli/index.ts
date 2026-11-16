@@ -177,7 +177,7 @@ import { sweepDeadTurns } from '../core/turn-watchdog.service.js';
 import type { AuditOutcome } from '../core/types/audit.types.js';
 import type { ConductorHandle } from '../core/types/conductor.types.js';
 import type { DashboardSnapshot } from '../core/types/dashboard.types.js';
-import type { RegisteredProject } from '../core/types/fleet.types.js';
+import type { FleetReading, RegisteredProject } from '../core/types/fleet.types.js';
 import type { DebtBaseline, InitReport } from '../core/types/init.types.js';
 import type { LandOutcome } from '../core/types/land.types.js';
 import type { GateReport, MergeOutcome } from '../core/types/merge-gate.types.js';
@@ -1016,6 +1016,41 @@ function readOnlyUnderWindow(
 }
 
 /**
+ * The fleet `pup ui` drives, and why it drives nothing: each store its first
+ * reading rendered is asked as `readOnlyUnderWindow` asks it (decision 188),
+ * and only those are ever driven. A store whose first snapshot threw stays
+ * open and renders once it mends, so a caller could break its own project's
+ * reading to skip the check and mend it to be handed that project's keys:
+ * every later reading lists it as a line, never a row, until `pup ui` starts
+ * again and asks it.
+ */
+function askedFleet(read: () => FleetReading): {
+  read: () => FleetReading;
+  readOnlyReason: string | undefined;
+} {
+  const asked = new Set(read().projects.map(({ deps }) => deps));
+  return {
+    read: () => {
+      const { projects, unreadable } = read();
+      const unasked = projects.filter(({ deps }) => !asked.has(deps));
+      return {
+        projects: projects.filter(({ deps }) => asked.has(deps)),
+        unreadable: [
+          ...unreadable,
+          ...unasked.map(
+            ({ deps }) =>
+              `${projectId(deps.repoPath)}  ${sanitizeReason(deps.repoPath)}  held out: ` +
+              'unreadable when `pup ui` started, so never asked whether this runs under its ' +
+              'windows; restart it to read this (decision 188)',
+          ),
+        ],
+      };
+    },
+    readOnlyReason: readOnlyUnderWindow([...asked]),
+  };
+}
+
+/**
  * `pup plan edit <task> --rescope --scope <glob...>` (decision 115). The
  * caller already refused a session; the conductor is refused here, because a
  * scope a gate-failing agent widens for itself is no scope at all. Both are
@@ -1842,10 +1877,12 @@ export function buildProgram(): Command {
         // status --all`, so the fleet is shown the attach command. Driven
         // unless the process tree finds it under a window of a project it
         // reads, each store asked as its own single-project dashboard asks
-        // it (decision 188): the stores the reading opened, so a project the
-        // fleet refuses to open is not opened for this either.
-        const read = fleetReading(heldFleet(opts.dormant === true), opts.dormant === true, pupBin);
-        const readOnlyReason = readOnlyUnderWindow(read().projects.map(({ deps }) => deps));
+        // it (decision 188): the stores its first reading rendered, the only
+        // ones it drives, so a project the fleet refuses to open is not
+        // opened for this either.
+        const { read, readOnlyReason } = askedFleet(
+          fleetReading(heldFleet(opts.dormant === true), opts.dormant === true, pupBin),
+        );
         props = {
           read,
           showAttach: true,

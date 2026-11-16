@@ -1390,6 +1390,38 @@ describe('CLI commands', () => {
         expect(mountedProps().read().projects).toHaveLength(2);
       });
 
+      // A caller under its own project's window that breaks that project's
+      // first reading skips the check for it, so the store is never driven,
+      // even once it mends: else the lone project would be handed to the keys
+      // with no store ever asked (decision 188).
+      it('never drives a project its first reading could not read, once it mends', () => {
+        const broken = initRepo();
+        seedSession(broken, 's1');
+        const unreadable = unreadableEventsFile(broken, 's1');
+        const { db } = resolveProject(broken);
+        transitionSession(db, 's1', 'running');
+        db.close();
+        vi.stubEnv('PUP_SESSION_ID', '');
+        underPane((repoPath) => (repoPath === broken ? 'pup-s1' : undefined));
+        useCwd(tempDir('pup-cli-noproj-'));
+        stubRender();
+
+        try {
+          runUi(true);
+        } finally {
+          chmodSync(unreadable, 0o600);
+        }
+        const reading = mountedProps().read();
+
+        expect(reading.projects).toEqual([]);
+        expect(reading.unreadable).toEqual([
+          `${projectId(broken)}  ${broken}  held out: unreadable when \`pup ui\` started, so ` +
+            'never asked whether this runs under its windows; restart it to read this ' +
+            '(decision 188)',
+        ]);
+        expect(mountedProps().readOnlyReason).toBeUndefined();
+      });
+
       it('lists a store it cannot open and reads the rest', () => {
         const live = initRepo();
         registerProject(live);
