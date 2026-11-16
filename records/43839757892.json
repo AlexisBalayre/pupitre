@@ -1,0 +1,99 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-16T09:28:53.458Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43839757892",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43839757892",
+  "actor": "AlexisBalayre",
+  "commit_sha": "7b8f882992ac5d099c8a4111deff462da99795a6",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 342,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "conventions",
+    "docs",
+    "simplicity",
+    "guards"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "conventions",
+    "docs",
+    "simplicity",
+    "guards"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "25133c3acf5b39f9f6e80b6c3dbffa50f7b05d1b",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "946-952",
+      "description": "The new under-lock recheck reads only the session's state. `pup retire` never changes state; it appends a `retired` event and leaves the session `merged`. So a `pup fix` that waited behind a `pup retire` passes every check and brings the retired branch back, which the ADR and the docblock say this change prevents.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "271",
+      "description": "`startFixRound` now always waits up to `MERGE_LOCK_WAIT_MS` (125 min). Its second caller, the web dashboard's `fix` action, is documented to refuse at once, so a page click on a held lock now hangs the request. It also stalls the dashboard's Ctrl-C shutdown for up to two hours.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/fix-round.service.ts",
+      "line": "955-964",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new retired refusal always says a run held the merge lock meanwhile, but it also fires when nothing held the lock. Example: a session retired days ago whose PR was reopened on GitHub (retire deletes only the local branch), then `pup fix` with the lock free. The refusal itself is right, only the cause it names is false; wording it as \"Session s1 has been retired (`pup retire`)\" would cover both cases.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.0677821,
+  "duration_ms": 97250,
+  "num_turns": 15,
+  "tokens": {
+    "input": 12,
+    "output": 6176,
+    "cache_read": 271014,
+    "cache_creation": 46640,
+    "total": 323842
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 30,
+      "output": 11253,
+      "cache_read": 427413,
+      "cache_creation": 78895,
+      "cost_usd": 0.8450576000000001
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 32,
+      "output": 5658,
+      "cache_read": 160580,
+      "cache_creation": 60009,
+      "cost_usd": 0.2227245
+    }
+  ],
+  "permission_denials": []
+}
