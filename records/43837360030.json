@@ -1,0 +1,169 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-16T09:18:46.202Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43837360030",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43837360030",
+  "actor": "AlexisBalayre",
+  "commit_sha": "9a344c1096b5f0aa6b2e170e9194795f4938ca8c",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 343,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "1094-1100",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "`recordedPanePids` always reads `conductor/pane-pid`, whether or not a conductor window is up, and no path ever removes that file. Once the conductor stops, crashes or the machine reboots, its old pid is a permanent match. If the OS later hands that pid to one of the operator's processes (their shell, terminal, sshd or tmux server), `pup respawn`, `unblock`, `kill --respawn` and `plan edit --rescope` all refuse, and `pup ui` goes read-only. `pup conductor stop` does not clear it.",
+      "body": "**The conductor's pane-pid record is never cleared, and it is always read.**\n\n`launchedAncestor` limits session records to `holdingStates()`, which bounds how long a dead window's pid can match. The conductor record gets no such limit. `recordedPanePids` adds it on every call:\n\n```ts\n[conductorPanePidFile(repoPath), conductorName(projectId(repoPath))],\n```\n\nThe function's own JSDoc says \"A record outlives its window: which windows may still be up is the caller's to choose\", but the caller never gets that choice for the conductor. Nothing deletes the file either. `stopConductor` (`src/core/conductor.service.ts:229-231`) calls `killConductor` (`session-runtime.service.ts:977-985`), which only kills the tmux windows. The only thing that replaces the record is the next `launchConductor`.\n\n**Trigger**\n1. Run `pup conductor start`, then `pup conductor stop`. Letting the window exit or rebooting has the same effect.\n2. The OS later hands the stored pid to a long-lived process that is an ancestor of the operator's `pup` call: their login shell, terminal, sshd or tmux server. After a reboot, pids are handed out from low numbers again.\n3. `launchedAncestor` checks every pid against the recorded panes before the tmux-skipping `--name` check (`operator-guard.service.ts:56-59`). From then on, rescope, respawn, unblock and `kill --respawn` refuse, saying the caller is \"under … pup-conductor-…'s window\", and `pup ui` goes read-only.\n\nADR 0188 accepts pid reuse only for \"a crashed pane on a blocked session\", whose fix is \"killing the session or ending that process clears it\". A stopped conductor has no session to kill, and `pup conductor stop` does nothing about it. The only ways out are restarting the conductor so it overwrites the record, or deleting the file by hand.\n\n**Fix:** read the conductor record only while `hasConductorWindow(projectId(repoPath))` is true. That also covers a conductor that exited on its own, and a reboot. Removing the file in `killConductor` only covers a clean stop.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/9a344c1096b5f0aa6b2e170e9194795f4938ca8c/src/claude/session-runtime.service.ts#L1090-L1107",
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "2495-2520",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "`pup merge` without `--pr`, and `--accept-debt` recorded as `human`, are held to the operator by the session and conductor markers alone. A worker or the conductor that empties them (`PUP_CONDUCTOR= pup merge <id> --accept-debt`) still fast-forwards the target, or writes a debt acceptance in the operator's name, under a recorded pane.",
+      "body": "**`pup merge` is still guarded by forgeable markers only.**\n\nDecision 188's premise is that the marker-only refusals of decisions 44 and 47 can be forged, because \"the caller can empty or unset\" them. The PR adds the process-tree check to rescope, respawn, unblock and `kill --respawn`. It also makes `pup ui` read-only under a recorded pane because \"its keys run the respawn, the unblock and the merge\" (`readOnlyUnderWindow`, index.ts:993-998). The CLI's own local merge still reads only the markers:\n\n```ts\nif (callingSession(db)) { return refuse(...); }\nconst conductor = callingConductor();\nif (conductor && !opts.pr) { return refuse(...); }\nif (conductor && opts.acceptDebt && !approvedBy) { return refuse(...); }\n```\n\n`launchedAncestor` has only two callers outside tests, `refusedUnderWindow` and `readOnlyUnderWindow`, and neither one is on this path.\n\n**Trigger**\n- The conductor runs `PUP_CONDUCTOR= pup merge <session>`. The gate still runs, but the target is fast-forwarded locally with no operator and no PR for the human to merge (decisions 47, 75).\n- A worker leaves its worktree and runs `PUP_SESSION_ID= pup merge <id> --accept-debt <r> --review-by <d>`. Line 2550 records `acceptedBy: approvedBy ?? 'human'`, so the debt ledger says the operator accepted a debt it never saw.\n\nThe result is that the UI's merge key is guarded while the stronger CLI merge stays open. ADR 0188 never scopes merge out; the only exclusion it explains is plain `pup kill`. The same gap applies to `pup dashboard` (index.ts:1879-1886). Its `showAttachCommand` check is `!(callingSession(db) || callingConductor())`, so a window with emptied markers can start the server, read the token URL and POST answer, debt-close or land actions.\n\n**Fix:** after the marker checks, call `refusedUnderWindow(db, repoPath, '`pup merge`')` whenever the call is the operator's alone, i.e. `!opts.pr || (opts.acceptDebt && !approvedBy)`, so the conductor's legitimate `--pr` path still runs. Either guard `pup dashboard` the same way, or state in ADR 0188 why these commands are left out.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/9a344c1096b5f0aa6b2e170e9194795f4938ca8c/src/cli/index.ts#L2495-L2520",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/task-rescope.service.ts",
+      "line": "373-395",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "taskRescopes reads every `rescope` event on any session of the task, killed ones included, with no cutoff. So after a kill (killed is not a claimed state, so the task returns to the backlog), a plain `pup plan edit <task> --scope ...` that replaces scope-in (and maybe `--tier standard`), and a relaunch, the new session's PR body `## Rescopes` and its needs-you line still say `scope widened after launch: +<glob>` and `tier critical, raised from standard`. Those globs and that tier are no longer in the spec the gate checked. Possible fix: ignore rescope events older than the newest spec edit, or older than the first session launched after it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "662-667",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`pup status` prints each inbox line through `sanitizeReason`, which keeps only the first 300 characters (src/cli/ui/dashboard-text.utils.ts:136). The new clause is added after a reason that can already be 107 characters ('CI review status reads clean ... merge click'), so a pr-open line with three rescoped globs of about 60 characters each loses the third glob and its '(+N more)' count without any marker. The operator still sees 'scope widened after launch' but not how far it was widened; the web dashboard escapes the line and does not cut it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/regate.service.ts",
+      "line": "225-226",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The comment \"The rewrite replaces the whole body: the rescopes the first gate listed are read again...\" restates the JSDoc of `sessionPullRequestText`/`pullRequestText` in merge-gate.service.ts; general.md §Comments seam-duplication rule says delete the call-site copy.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "3609-3640",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`pullRequestText` now has no production caller besides the new `sessionPullRequestText`, so two layers forward a long positional argument list; fold them into one function taking `db` and `session`, or mark `pullRequestText` as the test seam if that is why the split exists.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/02-cli.md",
+      "line": "155-157",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "02-cli.md still says only \"a session or the conductor gets the dashboard read-only\"; after this change `pup ui` is also read-only for any caller under a recorded pane pid or an unreadable process tree, so a reader thinks unsetting the markers restores the controls. Point to decision 188.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0188-operator-only-commands-refuse-a-caller-under-a.md",
+      "line": "27-29",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "ADR 0188's *The match* says each pid is checked against recorded panes, then against `--name`, but leaves out that the `--name` check skips tmux processes, which operator-guard.service.ts's docstring and decision 115 both state.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 1,
+  "comments_posted_actual": 2,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 5.416592349999999,
+  "duration_ms": 416003,
+  "num_turns": 22,
+  "tokens": {
+    "input": 20,
+    "output": 19185,
+    "cache_read": 504067,
+    "cache_creation": 63421,
+    "total": 586693
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 244,
+      "output": 93517,
+      "cache_read": 4645361,
+      "cache_creation": 355538,
+      "cost_usd": 4.768341199999999
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 72,
+      "output": 16087,
+      "cache_read": 812672,
+      "cache_creation": 162024,
+      "cost_usd": 0.6473412
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 537,
+      "cache_read": 0,
+      "cache_creation": 5130,
+      "cost_usd": 0.0009099500000000001
+    }
+  ],
+  "permission_denials": []
+}
