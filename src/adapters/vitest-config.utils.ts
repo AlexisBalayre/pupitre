@@ -1,4 +1,4 @@
-import { lstatSync, readdirSync } from 'node:fs';
+import { lstatSync, readdirSync, readlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import ts from 'typescript';
 import { runGit, runGitBytes } from '../core/git-diff.client.js';
@@ -18,6 +18,12 @@ const PLAIN_BLOB_MODE = /^100(?:644|755)$/;
 
 /** A directory's tree mode, which `ls-tree` lists recursively. */
 const TREE_MODE = '040000';
+
+/** A link's tree mode: its blob is the link's target, as text. */
+const LINK_MODE = '120000';
+
+/** A submodule's tree mode, which `ls-tree -r` lists as one line, its commit. */
+const GITLINK_MODE = '160000';
 
 /** The longest line `hash-object` prints for one file: a SHA-256 name and its newline. */
 const OBJECT_NAME_LINE_BYTES = 65;
@@ -87,12 +93,13 @@ const UNREAD_SEGMENT = /^(?!\*\*$)(?:[^*]*\*){2}/;
 const VITEST_UNREAD_KEYS = ['root', 'plugins', '__proto__'];
 
 /**
- * A `resolve.alias` key that is read: a bare `@name` with no `/`, which names
- * no package. Vite redirects a specifier equal to it or starting with it and a
- * `/`, so it still redirects the packages of a scope of that name, which the
- * caller checks `node_modules` for (`VitestCollection.aliases`).
+ * A `resolve.alias` key that is read: a bare `@` or `@name` with no `/`, which
+ * names no package. Vite redirects a specifier equal to it or starting with it
+ * and a `/`, so `@name` still redirects the packages of a scope of that name,
+ * which the caller checks `node_modules` for (`VitestCollection.aliases`); `@`
+ * redirects only `@/...`, which no package is named.
  */
-const READ_ALIAS_KEY = /^@[\w.-]+$/;
+const READ_ALIAS_KEY = /^@[\w.-]*$/;
 
 /**
  * Keys under `test` that move or split what one run collects, or name modules
@@ -468,28 +475,33 @@ function listing(lines: string[]): string {
 /**
  * A directory on disk listed as `ls-tree -r -z` lists a tree: a line per file,
  * its mode, object name and path, each file hashed in `repoPath`'s object
- * format and nothing written. An empty directory, which no tree holds, lists
- * nothing. Throws on a link or anything else a tree would not check out as a
- * plain file, and on a name holding a line break, which `hash-object` cannot
- * read back from its input.
+ * format and nothing written. A link lists as a tree lists one, by the object
+ * name of its target's text, never followed (`diskLinkName`). An empty
+ * directory, which no tree holds, lists nothing, as does the submodule a
+ * checkout leaves uninitialised (`treeListing`). Throws on anything else a
+ * tree would not check out as a plain file or a link, and on a name holding a
+ * line break, which `hash-object` cannot read back from its input.
  */
 function diskListing(repoPath: string, dir: string): string {
   const files: { path: string; mode: string }[] = [];
+  const links: string[] = [];
   const walk = (at: string): void => {
     for (const entry of readdirSync(join(dir, at), { withFileTypes: true })) {
       const path = at === '' ? entry.name : `${at}/${entry.name}`;
       if (entry.isDirectory()) {
         walk(path);
-      } else if (entry.isFile() && !/[\r\n]/.test(path)) {
+      } else if (/[\r\n]/.test(path) || !(entry.isFile() || entry.isSymbolicLink())) {
+        throw new Error(`${path} is not read: not a plain file or a link named on one line`);
+      } else if (entry.isSymbolicLink()) {
+        links.push(`${LINK_MODE} blob ${diskLinkName(repoPath, join(dir, path))}\t${path}`);
+      } else {
         const executable = (lstatSync(join(dir, path)).mode & 0o100) !== 0;
         files.push({ path, mode: executable ? '100755' : '100644' });
-      } else {
-        throw new Error(`${path} is not read: not a plain file named on one line`);
       }
     }
   };
   walk('');
-  if (files.length === 0) return '';
+  if (files.length === 0) return listing(links);
   const names = runGitBytes(repoPath, ['hash-object', '--no-filters', '--stdin-paths'], {
     input: Buffer.from(files.map(({ path }) => `${join(dir, path)}\n`).join('')),
     maxBuffer: files.length * OBJECT_NAME_LINE_BYTES,
@@ -497,7 +509,37 @@ function diskListing(repoPath: string, dir: string): string {
   })
     .toString('utf8')
     .split('\n');
-  return listing(files.map(({ path, mode }, i) => `${mode} blob ${names[i]}\t${path}`));
+  return listing([
+    ...links,
+    ...files.map(({ path, mode }, i) => `${mode} blob ${names[i]}\t${path}`),
+  ]);
+}
+
+/**
+ * A link's object name as a tree holds it: its target's bytes hashed as a blob
+ * in `repoPath`'s format, the link never followed, and nothing written.
+ */
+function diskLinkName(repoPath: string, path: string): string {
+  return runGitBytes(repoPath, ['hash-object', '--no-filters', '--stdin'], {
+    input: readlinkSync(path, { encoding: 'buffer' }),
+    maxBuffer: OBJECT_NAME_LINE_BYTES,
+    timeout: GATE_COMMAND_TIMEOUT_MS,
+  })
+    .toString('utf8')
+    .trim();
+}
+
+/**
+ * A tree as `ls-tree -r` lists it, as `diskListing` lists one on disk: a
+ * submodule's line left out, since the gate checks one out as the empty
+ * directory a disk listing holds nothing of, whichever commit it names.
+ */
+function treeListing(repoPath: string, oid: string): string {
+  return listing(
+    runGit(repoPath, ['ls-tree', '--full-tree', '-r', '-z', oid], GIT_READ)
+      .split('\0')
+      .filter((line) => line !== '' && !line.startsWith(`${GITLINK_MODE} `)),
+  );
 }
 
 /**
@@ -544,7 +586,7 @@ export function diskRoot(
  * `--full-tree`, so a session's `core.worktree` cannot narrow it to a prefix
  * (decision 161). Only a regular file's
  * blob is read, so a link is not followed, as its text or, with
- * `byObjectName`, as its object name; a directory reads as `ls-tree -r`
+ * `byObjectName`, as its object name; a directory reads as `treeListing`
  * lists it, as `diskRoot` lists one on disk.
  */
 export function treeRoot(repoPath: string, sha: string, { byObjectName = false } = {}): RootFiles {
@@ -562,12 +604,7 @@ export function treeRoot(repoPath: string, sha: string, { byObjectName = false }
             ? () => oid
             : () => runGit(repoPath, ['cat-file', 'blob', oid], GIT_READ)
           : mode === TREE_MODE
-            ? () =>
-                listing(
-                  runGit(repoPath, ['ls-tree', '--full-tree', '-r', '-z', oid], GIT_READ)
-                    .split('\0')
-                    .filter((line) => line !== ''),
-                )
+            ? () => treeListing(repoPath, oid)
             : unreadable(name);
         return [name, read];
       }),
