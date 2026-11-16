@@ -28,10 +28,45 @@
     can write that row to the store. So the section also tells the conductor that an answer is
     valid only for a question it asked itself in this run. An answer to any other question, or
     one whose question text does not match what it asked, is ignored and reported to the
-    operator. Stamping the conductor's questions with a token is left to t-mw9e0cpd.
+    operator.
 
-    *Answering.* `pup answer <session|conductor> <n|text>` is operator-only, refused to a session
-    and to the conductor, since either would be deciding in the operator's name. A bare number
+    *Sealed to its run (t-mw9e0cpd, 2026-11-13).* Each `pup conductor start` mints a fresh run
+    token (32 random bytes, hex) and hands it to the conductor as `PUP_CONDUCTOR_RUN`. The token
+    never goes on tmux's argv, which every user's `ps` shows. The launch kills the conductor's
+    server, then passes the token in the environment of the client that starts it; tmux makes that
+    the server's global environment, which the window inherits. `conductorRun` reads it back with
+    `show-environment -g` on the conductor's socket. The launch checks the token landed: if not,
+    another client started the server between the kill and the spawn and owns its environment,
+    so the launch kills it and fails. `tmuxEnv` strips the variable from every other tmux call,
+    so no session's window or default server inherits it. `pup conductor ask` refuses, storing
+    nothing, unless its caller's `PUP_CONDUCTOR_RUN` is the running conductor's. It stores the
+    question with a `seal`: an HMAC-SHA256 under the token over the row's own id, its text, its
+    options and its recommendation, written in the same transaction as the row. The conductor's
+    open question (`openConductorQuestion`) is the newest NULL-session question whose seal checks
+    under the current token. A row a session wrote, one an earlier run sealed, and a sealed row
+    copied to another id or with its words changed are all passed over. A conductor started
+    before this change holds no token: its questions are refused until it restarts.
+
+    *What the seal does not stop.* It keeps out rows written straight into the store and
+    questions from earlier runs, not a session that sets out to reach the conductor. Worker
+    sessions run as the operator's user with no OS sandbox, and a session's shell can reach the
+    store (decision 46). So no place exists that the conductor's Bash can read and a session
+    cannot. A same-user session can compute the conductor's socket label and read or replace the
+    token with `show-environment` or `set-environment`, or read it from the conductor's
+    environment with `ps -E`, and then seal a question of its own. It could already type into
+    the conductor's pane on that socket, so the token adds no reach it lacked. A session that can
+    write the store can also delete rows: the run's newer question, or the answer that closed an
+    older one. That reopens an older question the same run sealed, in the conductor's own words,
+    and answering it sends the conductor an answer to a question it may have moved past. Closing
+    either means keeping worker sessions away from the store and the conductor's socket (an OS
+    sandbox, or another user), which this decision does not do.
+
+    *Answering.* `pup answer <session|conductor> <n|text> --question <id>` is operator-only,
+    refused to a session and to the conductor, since either would be deciding in the operator's
+    name. `--question` is required: it is the event id of the question the operator read, which
+    the inbox prints as `question #<id>`. An answer whose id is not the open question's is
+    refused with nothing typed, since a newer question, which could be a session's own swap, may
+    ask something else, and option 2 of one is not option 2 of another (t-mw9e0cpd). A bare number
     picks that option of a question that offers some. A number past the options is refused with
     nothing typed: it is a slip, not an answer. Any other text, and any reply to a question asked in
     words alone, is a free answer. The answer is delivered prefixed by the question it answers
@@ -59,8 +94,9 @@
     asked in, since the agent after it never asked it: a session's at a CI fix round (`fix_round`),
     a handoff respawn (`respawn`), `pup session done` (`session_done`), or a transition back to
     `running` from another state (an unblock, a gate re-steer); the conductor's at its next start,
-    which the CLI's and the TUI's start record as a `conductor_start` event held against no
-    session. The dashboard, `pup answer` and the TUI all read through it, so the inbox's
+    which `startConductor` records as a `conductor_start` event held against no session before the
+    window opens, so no question the new run asks can precede it. The conductor's is read through
+    `openConductorQuestion`, which adds the seal check above. The dashboard, `pup answer` and the TUI all read through it, so the inbox's
     numbers and the answer's cannot disagree. The payload is session-writable, so the dashboard
     scrubs the text and every option with `sanitizeReason` (decision 29) and drops a recommendation
     that names no option. The inbox also swaps arrows and emoji for `-`, as it already did for the
@@ -71,7 +107,8 @@
     and sorts the row first in `pup status` and in the TUI, above blocked and stalled rows: it
     idles a worker that has said exactly what it needs. In the needs-you inbox the conductor's
     question leads, then the sessions' questions, then the rest in decision 83's order. Each
-    question line answers with `pup answer <id> <n>, or pup answer <id> "..."`, and its options
+    question line reads `question #<event id>: <text>` and answers with `pup answer <target> <n>
+    --question <event id>, or pup answer <target> "..." --question <event id>`, and its options
     follow it numbered, the recommended one marked `(recommended)`, through `needLines` in both
     `pup status` and the fleet view. In `pup ui` the detail pane lists the options the same way,
     and the number keys 1–9 answer the selected session's open question through `answerSelected`,
