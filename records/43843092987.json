@@ -1,0 +1,149 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-16T09:54:15.764Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43843092987",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43843092987",
+  "actor": "AlexisBalayre",
+  "commit_sha": "bf7cb4b8131aad22264485c43e5b1739f39a790b",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 344,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "docs/adr/0146-the-gate-refuses-an-adr-number-the-target-or.md",
+      "line": "189-191",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The remedy the amendment gives for reopening an abandoned PR (`pup merge <session> --pr`) is refused by planRegate whenever the PR head did not move, and its message says to merge on GitHub and `pup land`. The freed ADR number then lands twice without any check.",
+      "body": "**Concern.** The amendment accepts that a reopened PR goes unchecked until it is re-gated, and names the remedy: *\"the operator who reopens an abandoned PR re-gates it with `pup merge <session> --pr` before merging it, and that re-gate refuses the clash.\"* A plain reopen does not move the PR head. `planRegate` refuses exactly that case before any stage runs, so no `merge` event is written and the ADR-number stage never runs:\n\n```ts\nif (pr.head === pinned) {\n  throw new Error(\n    `${prUrl} still has its head at ${pinned}, the commit the gate pinned: there is nothing ` +\n      `new to gate. Merge it on GitHub, then run \\`pup land ${sanitizeReason(sessionId)}\\`. ` +\n```\n\nhttps://github.com/AlexisBalayre/pupitre/blob/bf7cb4b8131aad22264485c43e5b1739f39a790b/src/core/regate.service.ts#L124-L129\n\n**Trigger.**\n1. Session X's PR adds `0150-*.md`. The operator runs `pup land X --abandon-closed`, and `isClosedOut` drops X from `competingBranches`.\n2. Session Y gates its own `0150-*.md`, and that PR merges.\n3. The operator reopens X's PR and runs `pup merge X --pr`, as the ADR says.\n4. `mergeToRegate` → `planRegate` refuses with \"nothing new to gate. Merge it on GitHub, then run `pup land X`\". The operator does that.\n5. `newestMerge` skips `pr_closed`, so `pup land X` lands. `land.service.ts` runs no ADR-number check.\n\nResult: two decision-0150 files on the target. Before this PR a closed PR counted forever, so Y's gate would have refused 0150 and this path could not happen.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/bf7cb4b8131aad22264485c43e5b1739f39a790b/docs/adr/0146-the-gate-refuses-an-adr-number-the-target-or.md#L181-L193\n\n**Fix direction (either one).**\n- Let `planRegate` re-gate an unmoved head when the session's newest `merge`/`pr_closed` event is `pr_closed`. That re-gate's `merge` event makes the claim count again.\n- Or have `pup land` refuse a session whose newest `merge`/`pr_closed` event is `pr_closed` until a re-gate records a new merge.\n\nEither way, the amendment's text must match the path you choose.",
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "2633-2638",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "`pup land --abandon-closed` treats a `MergeLockLostError` like any other refusal. If the lock is lost, the operator is never told that the `pr_closed` event was already written and the PR's ADR numbers are already freed. `pup land` and `pup retire` report what happened before they fail on a lost lock.",
+      "body": "**Concern.** `withMergeLock` runs the whole section, including `appendEvent(db, session.id, 'pr_closed', …)`, and only then checks the lock. If the lock was gone or replaced at release, it throws `MergeLockLostError` carrying the section's result ([merge-gate.service.ts](https://github.com/AlexisBalayre/pupitre/blob/bf7cb4b8131aad22264485c43e5b1739f39a790b/src/core/merge-gate.service.ts#L1286-L1294)). Decision 88 and the error's JSDoc require the caller to report that result before it fails: \"Carries what the section returned, which happened all the same, for the caller to report before it fails\". The new branch sends every non-interrupt error straight to `refuseScrubbed`:\n\n```ts\n} catch (error) {\n  if (error instanceof GateInterruptedError) throw error;\n  return refuseScrubbed(error);\n}\n```\n\nhttps://github.com/AlexisBalayre/pupitre/blob/bf7cb4b8131aad22264485c43e5b1739f39a790b/src/cli/index.ts#L2633-L2638\n\n**Trigger.** The lock directory is moved or replaced while the section runs. The section includes a `gh` call between the re-check and the write. The operator then sees only \"The merge lock ... was gone or replaced\". Every other refusal from `abandonClosedSession` means nothing was recorded, so the operator reads this one the same way. In fact the close was recorded and the ADR numbers were freed.\n\nThe sibling `pup land` (L2667-2674, L2698) and `pup retire` paths both catch `MergeLockLostError`, print the outcome, and only then call `refuseScrubbed(lockLost)`.",
+      "suggestion": "        let abandoned: { prUrl: string; recorded: boolean };\n        let lockLost: MergeLockLostError | undefined;\n        try {\n          abandoned = await abandonClosedSession(db, { repoPath, sessionId: session, wait: true });\n        } catch (error) {\n          if (error instanceof GateInterruptedError) throw error;\n          if (!(error instanceof MergeLockLostError)) return refuseScrubbed(error);\n          abandoned = error.result as { prUrl: string; recorded: boolean };\n          lockLost = error;\n        }\n        console.log(\n          abandoned.recorded\n            ? `Recorded ${abandoned.prUrl} as closed unmerged: the ADR-number check no longer ` +\n                `counts ${sanitizeReason(session)}'s decisions.`\n            : `${abandoned.prUrl} was already recorded as closed unmerged.`,\n        );\n        if (lockLost !== undefined) refuseScrubbed(lockLost);\n        return;"
+    },
+    {
+      "file": "src/core/adr-number.service.ts",
+      "line": "194-195",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The `isClosedOut` and `competingBranches` JSDocs say a `pup land` that read the PR CLOSED records the close. A plain `pup land` of a CLOSED PR refuses and records nothing; only the operator's `pup land --abandon-closed` writes `pr_closed`.",
+      "body": "**Concern.** Two JSDocs describe the model the second commit rejected. The `isClosedOut` JSDoc says `pr_closed` comes from \"(`pup land` reading the PR CLOSED)\" (L194-195). The `competingBranches` JSDoc says the close is recorded \"by `pup retire` or by a `pup land` that read it CLOSED\" (L208-209).\n\nhttps://github.com/AlexisBalayre/pupitre/blob/bf7cb4b8131aad22264485c43e5b1739f39a790b/src/core/adr-number.service.ts#L192-L209\n\nIn the code, `landSession` throws on `pr.state === 'CLOSED'` and writes nothing ([land.service.ts](https://github.com/AlexisBalayre/pupitre/blob/bf7cb4b8131aad22264485c43e5b1739f39a790b/src/core/land.service.ts#L109-L118)). The only writer of `pr_closed` is `abandonClosedSession`, which is reached through `--abandon-closed`. A maintainer who trusts these docs would expect a plain land to free a closed PR's numbers. That is exactly the session-closes-a-peer's-PR hole ADR 0146's amendment closes, and the docs invite \"restoring\" it.\n\n**Fix.** Lines 194-195:\n```\n * retired or pr_closed event is `retired` (`pup retire`) or `pr_closed`\n * (`pup land --abandon-closed`).\n```\nLines 208-209: replace \"by a `pup land` that read it CLOSED\" with \"by `pup land --abandon-closed`\".\n\nThe test title at `src/core/adr-number.test.ts:349` (\"ignores a PR peer pup land read closed\") has the same wording, for example \"ignores a PR peer abandoned with pup land --abandon-closed, even once its gated commit is pruned\".",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "918",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`openPullRequest` stops at `landed`/`retired` but not at the new `pr_closed`. So after `pup land --abandon-closed`, the inbox still shows the abandoned PR as \"PR opened, not landed\", and no honest command clears it. Adding `|| row.type === 'pr_closed'` (and updating its JSDoc) would clear it, and a later re-gate's `merge` would show the PR again.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "2622-2623",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The call-site comment \"Any session can close a peer's PR with the shared gh login…\" restates `abandonClosedSession`'s JSDoc. `docs/conventions/general.md` §Comments (seam-duplication test) says a duplicated call-site WHY comment should go. The same applies to the comment above the CLOSED refusal in `landSession`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land.service.ts",
+      "line": "385-392",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`abandonClosedSession` scans `listEvents` for a prior `pr_closed` only to return `recorded: false`. `isClosedOut` reads only the newest event, so appending unconditionally would remove the scan, the `recorded` field, and the CLI's second message, at the cost of one duplicate row per repeated run.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 2,
+  "comments_posted_actual": 3,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 3.785400525,
+  "duration_ms": 291787,
+  "num_turns": 20,
+  "tokens": {
+    "input": 20,
+    "output": 20453,
+    "cache_read": 472634,
+    "cache_creation": 64578,
+    "total": 557685
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 188,
+      "output": 61259,
+      "cache_read": 2506290,
+      "cache_creation": 284930,
+      "cost_usd": 3.3455740000000005
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 58,
+      "output": 11710,
+      "cache_read": 403082,
+      "cache_creation": 112596,
+      "cost_usd": 0.4390142
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 346,
+      "cache_read": 0,
+      "cache_creation": 5113,
+      "cost_usd": 0.000812325
+    }
+  ],
+  "permission_denials": []
+}
