@@ -139,27 +139,18 @@ const WORKER_CREDENTIALS = [
  * sequencer dirs carry a todo whose `exec` lines run on the operator's
  * `--continue`. `MERGE_AUTOSTASH` names a stash the operator's next merge or
  * `git pull` applies to the main checkout's working tree once it succeeds.
- * Each file comes with its lock: git may commit a write by renaming the lock
- * over the file, so content put into a lock another git holds lands there, and
- * a planted `HEAD.lock` or `index.lock` stalls every git command in the main
- * checkout. The rest of the main checkout's state is not denied: `REVERT_HEAD`,
+ * `workerSandbox` denies each with its lock; a planted `HEAD.lock` or
+ * `index.lock` stalls every git command in the main checkout. The rest of the main checkout's state is not denied: `REVERT_HEAD`,
  * `REBASE_HEAD`, `BISECT_*`, `AUTO_MERGE`, `MERGE_MSG` and `SQUASH_MSG`.
  */
 const MAIN_CHECKOUT_STATE = [
   'HEAD',
-  'HEAD.lock',
   'index',
-  'index.lock',
   'MERGE_HEAD',
-  'MERGE_HEAD.lock',
   'ORIG_HEAD',
-  'ORIG_HEAD.lock',
   'FETCH_HEAD',
-  'FETCH_HEAD.lock',
   'CHERRY_PICK_HEAD',
-  'CHERRY_PICK_HEAD.lock',
   'MERGE_AUTOSTASH',
-  'MERGE_AUTOSTASH.lock',
   'rebase-merge',
   'rebase-apply',
   'sequencer',
@@ -1333,20 +1324,22 @@ jq -c --arg sid "\${PUP_SESSION_ID:-unknown}" '. + {pup_session_id: $sid}' >> '$
  *   Code points `TMPDIR` at, and the main `.git` Claude Code grants a linked
  *   worktree's commit. That grant is the whole `.git` but its `config`,
  *   `hooks` and every `worktrees/` entry other than this worktree's own. Within
- *   it this denies `config`'s lock, `config.worktree`, `commondir`, `info`,
+ *   it this denies `config` again, `config.worktree`, `commondir`, `info`,
  *   `modules`, `main` and the refs that would shadow it (`main`, `refs/main`,
  *   `refs/tags/main`), `packed-refs`, `refs/replace`, `refs/remotes`, `shallow`
- *   and the main checkout's state that `MAIN_CHECKOUT_STATE` lists. Each file
- *   git writes comes with its lock: git renames the lock over the file, so a
- *   write into the lock while another git holds it lands in the file, which for
- *   `packed-refs` could move `main`. A worker's commit or merge writes none of
+ *   and the main checkout's state that `MAIN_CHECKOUT_STATE` lists. A worker's
+ *   commit or merge writes none of
  *   these, but every ref deletion takes the `packed-refs` lock first, so a
  *   sandboxed worker deletes no ref, pseudorefs such as `CHERRY_PICK_HEAD`
  *   included (the decision's ceiling 13). The rest of the `.git` stays
  *   writable, including objects, `logs`, `rr-cache`, `refs/tags`,
  *   `refs/notes` and the state files that list leaves out. In the admin dir, `commondir`, `gitdir`
- *   and `config.worktree` with its lock are denied: they say which repo and
- *   config git uses there. Of the store,
+ *   and `config.worktree` are denied: they say which repo and config git uses
+ *   there. Every denied path is denied with its `.lock`, generated so no entry
+ *   misses it: git commits a write by renaming the lock over the file, by path,
+ *   so content a worker puts into a lock another git holds lands in the file,
+ *   which for `config` arms a `core.fsmonitor` and for `packed-refs` could
+ *   move `main`. Of the store,
  *   only the SQLite files every `pup` command opens read-write, so `pup session
  *   done`, `ask` and the pre-commit hook's `pup session test` still run; the
  *   session's handoff document `pup respawn` asks for; and the machine's test
@@ -1384,14 +1377,10 @@ function workerSandbox(input: CompileInput, git: WorktreeGitEnv, credentials: st
         join(homedir(), '.pupitre', 'slots'),
       ],
       denyWrite: [
-        // Each denied file git writes comes with its lock: git renames the lock
-        // over the file, so content put into a lock another git holds lands there.
         common('config'),
-        common('config.lock'),
         // The main checkout's own per-worktree config, read once
         // extensions.worktreeConfig is on (`git sparse-checkout init` turns it on).
         common('config.worktree'),
-        common('config.worktree.lock'),
         // A main checkout has none; git follows a planted one to a config of the worker's.
         common('commondir'),
         common('hooks'),
@@ -1400,27 +1389,21 @@ function workerSandbox(input: CompileInput, git: WorktreeGitEnv, credentials: st
         // A linked worktree's submodules live in its admin dir instead.
         common('modules'),
         // `main` and every ref git tries before `refs/heads/main` for a bare
-        // `main` (gitrevisions), with their locks: one planted there shadows it.
+        // `main` (gitrevisions): one planted there shadows it.
         common('main'),
-        common('main.lock'),
         common('refs', 'main'),
-        common('refs', 'main.lock'),
         common('refs', 'tags', 'main'),
-        common('refs', 'tags', 'main.lock'),
         common('refs', 'heads', 'main'),
-        common('refs', 'heads', 'main.lock'),
         common('packed-refs'),
-        common('packed-refs.lock'),
         common('refs', 'replace'),
         common('refs', 'remotes'),
         common('shallow'),
-        common('shallow.lock'),
         ...MAIN_CHECKOUT_STATE.map((name) => common(name)),
         join(git.GIT_DIR, 'commondir'),
         join(git.GIT_DIR, 'gitdir'),
         join(git.GIT_DIR, 'config.worktree'),
-        join(git.GIT_DIR, 'config.worktree.lock'),
-      ],
+        // Git renames a lock over its file by path, so a lock is as good as the file.
+      ].flatMap((path) => [path, `${path}.lock`]),
       denyRead: credentials,
     },
     network: {

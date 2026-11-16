@@ -985,51 +985,37 @@ describe('the worker sandbox (decision 191)', () => {
       ]);
       // A deny wins over any allow, so the store is left out of the grants, not
       // denied: a denied store root would take state.db with it.
-      expect(sandbox.filesystem.denyWrite).toEqual([
-        join(repo, '.git', 'config'),
-        join(repo, '.git', 'config.lock'),
-        join(repo, '.git', 'config.worktree'),
-        join(repo, '.git', 'config.worktree.lock'),
-        join(repo, '.git', 'commondir'),
-        join(repo, '.git', 'hooks'),
-        join(repo, '.git', 'info'),
-        join(repo, '.git', 'modules'),
-        join(repo, '.git', 'main'),
-        join(repo, '.git', 'main.lock'),
-        join(repo, '.git', 'refs', 'main'),
-        join(repo, '.git', 'refs', 'main.lock'),
-        join(repo, '.git', 'refs', 'tags', 'main'),
-        join(repo, '.git', 'refs', 'tags', 'main.lock'),
-        join(repo, '.git', 'refs', 'heads', 'main'),
-        join(repo, '.git', 'refs', 'heads', 'main.lock'),
-        join(repo, '.git', 'packed-refs'),
-        join(repo, '.git', 'packed-refs.lock'),
-        join(repo, '.git', 'refs', 'replace'),
-        join(repo, '.git', 'refs', 'remotes'),
-        join(repo, '.git', 'shallow'),
-        join(repo, '.git', 'shallow.lock'),
-        join(repo, '.git', 'HEAD'),
-        join(repo, '.git', 'HEAD.lock'),
-        join(repo, '.git', 'index'),
-        join(repo, '.git', 'index.lock'),
-        join(repo, '.git', 'MERGE_HEAD'),
-        join(repo, '.git', 'MERGE_HEAD.lock'),
-        join(repo, '.git', 'ORIG_HEAD'),
-        join(repo, '.git', 'ORIG_HEAD.lock'),
-        join(repo, '.git', 'FETCH_HEAD'),
-        join(repo, '.git', 'FETCH_HEAD.lock'),
-        join(repo, '.git', 'CHERRY_PICK_HEAD'),
-        join(repo, '.git', 'CHERRY_PICK_HEAD.lock'),
-        join(repo, '.git', 'MERGE_AUTOSTASH'),
-        join(repo, '.git', 'MERGE_AUTOSTASH.lock'),
-        join(repo, '.git', 'rebase-merge'),
-        join(repo, '.git', 'rebase-apply'),
-        join(repo, '.git', 'sequencer'),
-        join(adminDir, 'commondir'),
-        join(adminDir, 'gitdir'),
-        join(adminDir, 'config.worktree'),
-        join(adminDir, 'config.worktree.lock'),
-      ]);
+      expect(sandbox.filesystem.denyWrite).toEqual(
+        [
+          join(repo, '.git', 'config'),
+          join(repo, '.git', 'config.worktree'),
+          join(repo, '.git', 'commondir'),
+          join(repo, '.git', 'hooks'),
+          join(repo, '.git', 'info'),
+          join(repo, '.git', 'modules'),
+          join(repo, '.git', 'main'),
+          join(repo, '.git', 'refs', 'main'),
+          join(repo, '.git', 'refs', 'tags', 'main'),
+          join(repo, '.git', 'refs', 'heads', 'main'),
+          join(repo, '.git', 'packed-refs'),
+          join(repo, '.git', 'refs', 'replace'),
+          join(repo, '.git', 'refs', 'remotes'),
+          join(repo, '.git', 'shallow'),
+          join(repo, '.git', 'HEAD'),
+          join(repo, '.git', 'index'),
+          join(repo, '.git', 'MERGE_HEAD'),
+          join(repo, '.git', 'ORIG_HEAD'),
+          join(repo, '.git', 'FETCH_HEAD'),
+          join(repo, '.git', 'CHERRY_PICK_HEAD'),
+          join(repo, '.git', 'MERGE_AUTOSTASH'),
+          join(repo, '.git', 'rebase-merge'),
+          join(repo, '.git', 'rebase-apply'),
+          join(repo, '.git', 'sequencer'),
+          join(adminDir, 'commondir'),
+          join(adminDir, 'gitdir'),
+          join(adminDir, 'config.worktree'),
+        ].flatMap((path) => [path, `${path}.lock`]),
+      );
       expect(sandbox.filesystem.denyRead).toEqual(expect.arrayContaining(['~/.ssh', '~/.npmrc']));
       expect(sandbox.network).toEqual({
         allowedDomains: [
@@ -1055,17 +1041,11 @@ describe('the worker sandbox (decision 191)', () => {
       name: "the main checkout's config.worktree, read under extensions.worktreeConfig",
       path: ['config.worktree'],
     },
-    {
-      name: "config's lock, which the operator's next config write renames over config",
-      path: ['config.lock'],
-    },
-    { name: "config.worktree's lock", path: ['config.worktree.lock'] },
     { name: 'a commondir, which git would follow to a planted config', path: ['commondir'] },
     { name: "the submodules' git dirs, with their own config and hooks", path: ['modules'] },
     { name: 'replace refs, which swap the object a name resolves to', path: ['refs', 'replace'] },
     { name: 'remote-tracking refs', path: ['refs', 'remotes'] },
     { name: 'the shallow file', path: ['shallow'] },
-    { name: "the shallow file's lock", path: ['shallow.lock'] },
     { name: "main's lock", path: ['refs', 'heads', 'main.lock'] },
     { name: 'a root-level main, which git tries first for a bare main', path: ['main'] },
     { name: "a root-level main's lock", path: ['main.lock'] },
@@ -1080,8 +1060,6 @@ describe('the worker sandbox (decision 191)', () => {
     { name: 'ORIG_HEAD', path: ['ORIG_HEAD'] },
     { name: 'FETCH_HEAD', path: ['FETCH_HEAD'] },
     { name: 'CHERRY_PICK_HEAD', path: ['CHERRY_PICK_HEAD'] },
-    { name: "ORIG_HEAD's lock, which a ref update renames over it", path: ['ORIG_HEAD.lock'] },
-    { name: "MERGE_HEAD's lock", path: ['MERGE_HEAD.lock'] },
     {
       name: "MERGE_AUTOSTASH, which the operator's next pull applies to the main checkout",
       path: ['MERGE_AUTOSTASH'],
@@ -1097,6 +1075,19 @@ describe('the worker sandbox (decision 191)', () => {
 
     expect(sandbox.filesystem.denyWrite).toContain(join(repo, '.git', ...path));
     expect(sandbox.filesystem.allowWrite).not.toContain(join(repo, '.git', ...path));
+  });
+
+  // Git renames a lock over its file by path, so content a worker puts into a
+  // lock the operator's git holds lands in the file (decision 191).
+  it('denies the lock of every path it denies', () => {
+    const repo = repoWith('workerSandbox: true\n');
+    const { sandbox } = JSON.parse(compileIn(repo).files['settings.json'] as string);
+    const denied: string[] = sandbox.filesystem.denyWrite;
+
+    expect(denied).toContain(join(repo, '.git', 'config.lock'));
+    for (const path of denied.filter((entry) => !entry.endsWith('.lock'))) {
+      expect(denied).toContain(`${path}.lock`);
+    }
   });
 
   // The sandbox refuses ~/.npm and ~/.cache; the admin dir is granted and goes with the worktree.

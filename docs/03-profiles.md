@@ -114,9 +114,10 @@ The block runs every process a Bash call starts inside Claude Code's sandbox:
   `YARN_GLOBAL_FOLDER` in the compiled `env`), the sandbox's `TMPDIR`, the store's `state.db`
   files, the session's handoff document that `pup respawn` asks for, the machine's test slots,
   and the main `.git` that a commit needs.
-- Writes denied, within the main `.git`. Each file git writes is denied with its `.lock`, since
-  git renames the lock over the file and content put into a lock another git holds lands there:
-  - `config`'s lock, which the operator's next config write would rename over `config`;
+- Writes denied, within the main `.git`. Every denied path is denied with its `.lock` too,
+  generated from the list: git renames the lock over the file, so content put into a lock
+  another git holds lands there:
+  - `config`, which Claude Code refuses as well, and its lock, which it does not;
   - the main checkout's own `config.worktree`, and a `commondir`, which a main checkout has none
     of and git would follow to a config of the worker's;
   - `modules/`, the main checkout's submodules' git dirs with their own `config` and `hooks/`;
@@ -133,8 +134,8 @@ The block runs every process a Bash call starts inside Claude Code's sandbox:
   a sandboxed worker deletes no ref: `git branch -D` fails, a rebase prints an error for each
   pick, and a conflicted cherry-pick leaves `CHERRY_PICK_HEAD` behind (decision 191, ceiling 13).
   Claude Code itself refuses `config`, `hooks/` and the
-  other worktrees' admin dirs. In this worktree's admin dir, `commondir`, `gitdir`, and
-  `config.worktree` with its lock are denied.
+  other worktrees' admin dirs. In this worktree's admin dir, `commondir`, `gitdir` and
+  `config.worktree` are denied, each with its lock.
 - Writes left open in the main `.git` include, among others: objects, `logs/`, `rr-cache/`, `refs/tags/`,
   `refs/notes/`, the other branch refs, and the main checkout's `REVERT_HEAD`, `REBASE_HEAD`,
   `BISECT_*`, `AUTO_MERGE`, `MERGE_MSG` and `SQUASH_MSG`. Decision 191 lists the ceilings this

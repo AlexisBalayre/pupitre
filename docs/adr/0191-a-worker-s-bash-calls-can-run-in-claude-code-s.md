@@ -34,14 +34,16 @@
       slots in `~/.pupitre/slots/` are allowed too.
     - Writes denied inside those grants. In the main `.git`, exactly these. A worker's commit or
       merge writes none of them, but every ref deletion takes the `packed-refs` lock (ceiling 13).
-      Each file here that git writes is denied with its `.lock`. Git commits a write by renaming
-      the lock over the file, and the rename goes by path. A sandboxed loop that renames its own
-      file over a lock another git holds therefore has its content land in place of that git's
-      (git internals, not probed):
-      - `config.lock`. Claude Code refuses `config` itself, but not its lock. Content landed
-        there by the operator's next config write, such as a `git push -u`, would arm a
+      Every path denied here, in the main `.git` and in the admin dir alike, is denied with its
+      `.lock`. pup generates the locks from the list, so an entry added later cannot miss its
+      own. Git commits a write by renaming the lock over the file, and the rename goes by path. A
+      sandboxed loop that renames its own file over a lock another git holds therefore has its
+      content land in place of that git's (git internals, not probed). A planted lock also stalls
+      every git that needs it, since git creates a lock only when none exists:
+      - `config`, which Claude Code refuses too, though not its lock. Content landed through
+        `config.lock` by the operator's next config write, such as a `git push -u`, would arm a
         `core.fsmonitor` that runs in every later git in the main checkout;
-      - the main checkout's own `config.worktree` and its lock. Git reads it once
+      - the main checkout's own `config.worktree`. Git reads it once
         `extensions.worktreeConfig` is on, which `git sparse-checkout init` turns on, and a
         `core.fsmonitor` or `core.hooksPath` planted there would run in the operator's git;
       - `commondir`. A main checkout has none, but git reads `$GIT_DIR/commondir` for any git
@@ -51,17 +53,15 @@
         `hooks/`, and the operator's `git status` runs a child git in every submodule. A linked
         worktree keeps its own submodules' git dirs in its admin dir, so a worker never writes
         here;
-      - `info/`, `refs/replace/`, `refs/remotes/`, and `shallow` with its lock;
+      - `info/`, `refs/replace/`, `refs/remotes/` and `shallow`;
       - `refs/heads/main` and every ref git tries before it for a bare `main`: `main` at the
-        `.git` root, `refs/main` and `refs/tags/main`, each with its `.lock`. Any of them, once
+        `.git` root, `refs/main` and `refs/tags/main`. Any of them, once
         created, would shadow `main` for the operator's and the gate's unsandboxed git;
-      - `packed-refs` and its `.lock`. Git renames the lock over `packed-refs`, so content
-        written into either, the lock while another git holds it included, could move `main` too;
+      - `packed-refs`. Content written into it or into its lock could move `main` too;
       - the main checkout's own `HEAD`, `index`, `MERGE_HEAD`, `ORIG_HEAD`, `FETCH_HEAD` and
-        `CHERRY_PICK_HEAD`, each with its lock. A linked worktree keeps its own copies of these
-        in its admin dir. A planted `HEAD.lock` or `index.lock` would stall every git command in
-        the main checkout.
-      - the main checkout's `MERGE_AUTOSTASH` and its lock. It names a stash that `git merge` applies to the
+        `CHERRY_PICK_HEAD`. A linked worktree keeps its own copies of these in its admin dir. A
+        planted `HEAD.lock` or `index.lock` would stall every git command in the main checkout.
+      - the main checkout's `MERGE_AUTOSTASH`. It names a stash that `git merge` applies to the
         working tree once a merge or fast-forward succeeds, whether or not `--autostash` was
         given, and `git pull --ff-only` runs that merge. Objects are writable, so a worker can
         build a stash-shaped commit and name it there. The conductor's routine pull after a
@@ -77,8 +77,9 @@
       - the main checkout's `REVERT_HEAD`, `REBASE_HEAD`, `BISECT_*`, `AUTO_MERGE`, `MERGE_MSG`
         and `SQUASH_MSG`.
 
-      In this worktree's admin dir, `commondir`, `gitdir`, and `config.worktree` with its lock are
-      denied, since they say which repo and config git uses there.
+      In this worktree's admin dir, `commondir`, `gitdir` and `config.worktree` are denied, since
+      they say which repo and config git uses there. The compiled hooks and the rest of the store
+      need no lock of their own: a lock sits beside its file, so it lies outside every grant too.
     - Outside every grant, and so refused: the rest of the store (the compiled hooks and decision
       63's snapshots included), the main checkout's working tree and the rest of the home
       directory.
