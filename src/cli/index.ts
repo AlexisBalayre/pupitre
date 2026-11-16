@@ -2768,6 +2768,7 @@ export function buildProgram(): Command {
               sessionId: session,
               override: { model: opts.model, effort: opts.effort },
               overrideVia: callingConductor() ? 'conductor' : 'operator',
+              wait: true,
             },
             progress,
           ),

@@ -37,6 +37,7 @@ import {
   assertPullRequestOf,
   assertTargetName,
   isAncestor,
+  MERGE_LOCK_WAIT_MS,
   newestMerge,
   type OriginUse,
   plainDetail,
@@ -126,6 +127,8 @@ interface FixRoundRequest extends ProfileSource {
   overrideVia: 'operator' | 'conductor';
   /** Where the store's per-session files live; `~/.pupitre` unless a test moves them. */
   pathsBase?: string;
+  /** Wait for a merge lock a live run holds, as `pup fix` does, rather than refuse (decision 88). */
+  wait?: boolean;
 }
 
 export interface FixRoundOutcome {
@@ -248,8 +251,9 @@ export async function startFixRound(
   progress.stage('compile profile');
   const recompiled = orNotStarted(() => recompileSessionProfile(db, req, session, paths));
   // Under the lock `pup merge` and `pup land` take, since both move the branch
-  // and the worktree this restores; the window opens after it, as it may take
-  // a while to become ready.
+  // and the worktree this restores, waiting for a live holder as they do
+  // (decision 88); the window opens after it, as it may take a while to become
+  // ready.
   const roundId = await withMergeLock(
     req.repoPath,
     () => {
@@ -266,7 +270,7 @@ export async function startFixRound(
         ...(newest.length > 0 ? { newestComments: Object.fromEntries(newest) } : {}),
       });
     },
-    0,
+    req.wait ? MERGE_LOCK_WAIT_MS : 0,
     progress,
   );
   progress.stage('open window');
@@ -923,8 +927,13 @@ function dropUncheckedRound(repoPath: string, session: SessionRow): string {
 }
 
 /**
- * Asked again once the lock is held. A re-gate that finished while the review
- * was read moved the newest merge, and the review answered for the one before.
+ * Asked again once the lock is held, which `pup fix` may have waited minutes
+ * for. A run that held it meanwhile may have taken the session out of merged:
+ * another `pup fix` that restored the worktree and started its round, or a
+ * `pup retire` that removed the branch. Restoring then would name a live
+ * round's worktree for removal, or bring a retired branch back. A re-gate that
+ * finished while the review was read moved the newest merge, and the review
+ * answered for the one before.
  * A `pup land` under way has not: it releases the lock after the fast-forward
  * and teardown, and writes `landed` only after its audit, minutes later. What
  * it moves under the lock is origin's tracking ref, so a pin that ref already
@@ -936,6 +945,23 @@ function assertStillPinned(
   sessionId: string,
   pinned: string,
 ): void {
+  const state = getSession(db, sessionId)?.state;
+  if (state !== FIX_ROUND_EDGE.from) {
+    throw new Error(
+      `Session ${sanitizeReason(sessionId)} is ${state ?? 'gone'} now, no longer merged: a run ` +
+        `that held the merge lock meanwhile moved it. ${NOT_STARTED}`,
+    );
+  }
+  // `pup retire` leaves the session merged and records only its event.
+  const standing = listEvents(db, sessionId)
+    .reverse()
+    .find((row) => ['merge', 'landed', 'retired'].includes(row.type));
+  if (standing?.type === 'retired') {
+    throw new Error(
+      `Session ${sanitizeReason(sessionId)} was retired by a run that held the merge lock ` +
+        `meanwhile. ${NOT_STARTED}`,
+    );
+  }
   const merge = newestMerge(db, sessionId);
   if (merge === 'landed' || merge?.sha !== pinned) {
     throw new Error(
