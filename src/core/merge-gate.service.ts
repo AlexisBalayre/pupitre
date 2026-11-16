@@ -1510,9 +1510,9 @@ function sessionMark(db: Database, sessionId: string): string {
 /**
  * Cut the gate's private detached checkout of the pinned sha, which every
  * stage and debt capability then reads instead of the session's worktree, whose
- * files the live session can edit while they run (decision 81). Detached like
- * the conductor's checkout (decision 51), but cut fresh under the lock and
- * dropped before it is released, since it must hold the one sha this gate lands.
+ * files the live session can edit while they run (decision 81). Cut fresh under
+ * the lock and dropped before it is released, since it must hold the one sha
+ * this gate lands.
  *
  * `--no-checkout` then a `read-tree` of our own, for the reasons `fastForward`
  * gives: `--no-sparse-checkout`, because a planted `core.sparseCheckout` would
