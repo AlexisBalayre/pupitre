@@ -11,7 +11,7 @@ import {
   transcriptDir,
 } from '../claude/session-runtime.service.js';
 import { latestContextTokens } from '../claude/transcript.service.js';
-import { conductorBlock, isConductorRunning } from './conductor.service.js';
+import { conductorBlock, isConductorRunning, openConductorQuestion } from './conductor.service.js';
 import { PR_URL } from './constants/dashboard.constants.js';
 import { eventDetail } from './dashboard-events.utils.js';
 import type { SessionState } from './db.client.js';
@@ -108,8 +108,11 @@ export function buildDashboardSnapshot(
   const beat = getWatcherBeat(db, pid);
   const baseline = baselineOf(db, pid);
   const conductorRunning = isConductorRunning(repoPath);
-  // Like a session's: a question only the running conductor can be answered on.
-  const conductorAsked = conductorRunning ? dashboardQuestion(openQuestion(db, null)) : undefined;
+  // Like a session's: a question only the running conductor can be answered
+  // on, and only one its run sealed, the one `pup answer conductor` relays.
+  const conductorAsked = conductorRunning
+    ? dashboardQuestion(openConductorQuestion(db, repoPath))
+    : undefined;
   const blocked = conductorRunning ? conductorBlock(repoPath, now) : undefined;
   return {
     projectId: pid,
@@ -484,7 +487,7 @@ export function needsYou(snapshot: DashboardSnapshot, ciReview?: CiReviewLookup)
           label: CONDUCTOR_TARGET,
           reason: questionReason(asked),
           answer: answerCommand(CONDUCTOR_TARGET, asked),
-          ...questionOptions(asked),
+          ...questionNeed(asked),
         },
       ]
     : [];
@@ -528,23 +531,33 @@ const UNMINTED_ID = '(session id outside the minted shape; inspect the store)';
 /** What `pup answer` takes for the conductor's question, and how the inbox labels it. */
 export const CONDUCTOR_TARGET = 'conductor';
 
+/** The question as the inbox reads it, its event id first: the id an answer names. */
 function questionReason(question: DashboardQuestion): string {
-  return `question: ${question.text.replace(SYMBOLS, '-')}`;
+  return `question #${question.id}: ${question.text.replace(SYMBOLS, '-')}`;
 }
 
-/** The command that answers a question (decision 93): a number with options, words always. */
+/**
+ * The command that answers a question (decision 93): a number with options,
+ * words always, each bound to the question read by its event id.
+ */
 function answerCommand(target: string, question: DashboardQuestion): string {
-  const words = `pup answer ${target} "..."`;
-  return question.options.length > 0 ? `pup answer ${target} <n>, or ${words}` : words;
+  const answer = (reply: string): string =>
+    `pup answer ${target} ${reply} --question ${question.id}`;
+  const words = answer('"..."');
+  return question.options.length > 0 ? `${answer('<n>')}, or ${words}` : words;
 }
 
-/** A question's options for the inbox to number, their arrows not the line's (decision 29). */
-function questionOptions(
+/**
+ * A question line's event id, for an answer to name, and its options for the
+ * inbox to number, their arrows not the line's (decision 29).
+ */
+function questionNeed(
   question: DashboardQuestion,
-): Pick<DashboardNeed, 'options' | 'recommended'> {
-  if (question.options.length === 0) return {};
+): Pick<DashboardNeed, 'questionId' | 'options' | 'recommended'> {
+  if (question.options.length === 0) return { questionId: question.id };
   const { recommended } = question;
   return {
+    questionId: question.id,
     options: question.options.map((option) => option.replace(SYMBOLS, '-')),
     ...(recommended === undefined ? {} : { recommended }),
   };
@@ -575,7 +588,7 @@ function needOf(
     const asked = session.question;
     return {
       ...need('question', questionReason(asked), command(answerCommand(id, asked))),
-      ...questionOptions(asked),
+      ...questionNeed(asked),
     };
   }
   if (session.state === 'blocked') {
@@ -922,7 +935,7 @@ function dashboardQuestion(asked: QuestionEvent | undefined): DashboardQuestion 
   const { recommended } = asked;
   const isRecommendedInRange =
     recommended !== undefined && recommended >= 1 && recommended <= options.length;
-  return { text, options, ...(isRecommendedInRange ? { recommended } : {}) };
+  return { id: asked.id, text, options, ...(isRecommendedInRange ? { recommended } : {}) };
 }
 
 /**

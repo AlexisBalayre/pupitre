@@ -571,13 +571,13 @@ describe('dashboard components', () => {
     // Decision 76: the snapshot carries a question only while no steer has
     // answered it, already scrubbed (dashboard.test.ts proves both); the pane
     // draws what it is handed, under its own heading above the gate.
-    it('draws an open question under its own heading', () => {
+    it('draws an open question under its own heading, named by its event id', () => {
       const frame = frameOf(
         createElement(Detail, {
           row: {
             kind: 'session',
             session: sessionFixture({
-              question: { text: '[2Jrebase or merge?', options: [] },
+              question: { id: 41, text: '[2Jrebase or merge?', options: [] },
               recentEvents: [
                 { type: 'question', at: '2026-09-13T09:00:00.000Z', detail: '[2Jrebase or merge?' },
               ],
@@ -586,7 +586,8 @@ describe('dashboard components', () => {
         }),
       );
 
-      expect(frame).toMatch(/^│question\s*│\n│ {2}\[2Jrebase or merge\?\s*│$/m);
+      // The id is what `pup answer --question` and the number keys bind to.
+      expect(frame).toMatch(/^│question #41\s*│\n│ {2}\[2Jrebase or merge\?\s*│$/m);
       expect(frame.indexOf('question')).toBeLessThan(frame.indexOf('last gate'));
     });
 
@@ -599,6 +600,7 @@ describe('dashboard components', () => {
             kind: 'session',
             session: sessionFixture({
               question: {
+                id: 41,
                 text: 'rebase or merge?',
                 options: ['rebase onto main', 'merge main in'],
                 recommended: 2,

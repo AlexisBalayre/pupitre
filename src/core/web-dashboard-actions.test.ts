@@ -82,16 +82,16 @@ const CASES: {
 }[] = [
   {
     action: 'answer',
-    fields: { target: 's-1', reply: '2' },
+    fields: { target: 's-1', question: '41', reply: '2' },
     arrange: () => vi.mocked(answerSessionQuestion).mockReturnValue({ text: 'rebase' } as never),
-    expectCall: [DB, 's-1', '2'],
+    expectCall: [DB, 's-1', 41, '2'],
     lines: ['Answered session s-1: rebase'],
   },
   {
     action: 'answer',
-    fields: { target: 'conductor', reply: 'ship it' },
+    fields: { target: 'conductor', question: '42', reply: 'ship it' },
     arrange: () => vi.mocked(answerConductorQuestion).mockReturnValue({ text: 'ship it' } as never),
-    expectCall: [DB, REPO, 'ship it'],
+    expectCall: [DB, REPO, 42, 'ship it'],
     lines: ['Answered the conductor: ship it'],
   },
   {
@@ -242,6 +242,25 @@ describe('runAction', () => {
       'The action needs a session; nothing was done.',
     );
     expect(killSession).not.toHaveBeenCalled();
+  });
+
+  // An answer is bound to the question the page showed, as `pup answer
+  // --question` binds it: without its id, a newer question would take it.
+  it.each([
+    [
+      'no question id',
+      { target: 's-1', reply: '1' },
+      'The action needs a question; nothing was done.',
+    ],
+    [
+      'a question id that is not one',
+      { target: 'conductor', question: '4x', reply: '1' },
+      'The answer names no question by its event id; nothing was sent.',
+    ],
+  ])('refuses an answer with %s before anything is typed', async (_case, fields, refusal) => {
+    await expect(runAction(DB, REPO, 'answer', fields)).rejects.toThrow(refusal);
+    expect(answerSessionQuestion).not.toHaveBeenCalled();
+    expect(answerConductorQuestion).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -501,13 +520,19 @@ describe('confirmations', () => {
 
 describe('answerForms', () => {
   it('offers each option as one button sending its number, the recommended one marked, then words', () => {
-    const html = answerForms('s-1', { options: ['rebase', '<b>merge</b>'], recommended: 2 });
+    const html = answerForms('s-1', {
+      id: 41,
+      options: ['rebase', '<b>merge</b>'],
+      recommended: 2,
+    });
 
     expect(html).toContain('<button type="submit" name="reply" value="1">1. rebase</button>');
     expect(html).toContain(
       '<button type="submit" name="reply" value="2" class="recommended">2. &lt;b&gt;merge&lt;/b&gt; (recommended)</button>',
     );
     expect(html).toContain('<input type="hidden" name="target" value="s-1">');
+    // Both forms name the question the page showed, so a newer one refuses them.
+    expect(html.split('<input type="hidden" name="question" value="41">')).toHaveLength(3);
     expect(html).toContain('<input type="text" name="reply"');
     expect(html).not.toContain('<b>');
   });
