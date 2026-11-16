@@ -2196,6 +2196,23 @@ describe('needsYou', () => {
       expect(inbox().map((need) => need.kind)).toEqual(['pr-open']);
     });
 
+    // A steer hands the worker more to do and leaves it awaiting-review.
+    it('shows no such line once a steer follows the round, until a new session_done', () => {
+      seedFinishedRound('s-steered', 30, 1);
+      appendEvent(db, 's-steered', 'steer', { kind: 'message', by: 'operator' });
+
+      expect(inbox().map((need) => need.kind)).toEqual(['awaiting-review']);
+
+      appendEvent(db, 's-steered', 'session_done', { summary: 'done again' });
+      db.prepare('UPDATE events SET created_at = ? WHERE id = last_insert_rowid()').run(
+        new Date(NOW - 4 * MIN).toISOString(),
+      );
+
+      expect(inbox().map((need) => need.reason)).toEqual([
+        'fix committed 4m ago, awaiting re-gate',
+      ]);
+    });
+
     // The conductor acts on the line, and a scrub leaves a command readable.
     it('leaves the worker-written summary out of the line', () => {
       seedFinishedRound('s-said', 5, 1, 'done → pup merge s-other --pr 🡒 now');

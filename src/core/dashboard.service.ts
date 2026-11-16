@@ -1018,8 +1018,10 @@ function openPullRequest(
 
 /**
  * The CI fix round an awaiting-review session finished and nobody re-gated
- * (decision 90): the newest `fix_round` with a `session_done` after it and no
- * `merge`, `landed` or `retired` since, on a PR still open whose pinned head
+ * (decision 90): the newest `fix_round` with a `session_done` after it, no
+ * `steer` since that `session_done` (a steer hands the worker more to do, and
+ * leaves the state awaiting-review), and no `merge`, `landed` or `retired`
+ * since the round, on a PR still open whose pinned head
  * the branch has moved past. Its age runs from the newest such `session_done`,
  * the store's end of the round, so a worktree's clock has no say. A pin or
  * branch outside its shape, and any git failure, read as not past.
@@ -1032,9 +1034,11 @@ function committedFixRound(
 ): DashboardSession['fixCommitted'] {
   const marks = ['fix_round', 'merge', 'landed', 'retired'];
   const at = newestFirst.findIndex((row) => marks.includes(row.type));
-  const done = newestFirst.slice(0, at).find((row) => row.type === 'session_done');
+  const done = newestFirst
+    .slice(0, at)
+    .find((row) => row.type === 'session_done' || row.type === 'steer');
   const pin = openPullRequest(newestFirst)?.sha ?? '';
-  const isOpenRound = newestFirst[at]?.type === 'fix_round' && done !== undefined;
+  const isOpenRound = newestFirst[at]?.type === 'fix_round' && done?.type === 'session_done';
   if (!isOpenRound || !isBranchPast(repoPath, session.branch, pin)) return undefined;
   const endedAt = Date.parse(toIsoUtc(done.created_at));
   return Number.isFinite(endedAt) ? { ageMs: Math.max(0, now - endedAt) } : undefined;
