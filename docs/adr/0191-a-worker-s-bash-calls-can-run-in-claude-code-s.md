@@ -140,18 +140,46 @@
       block lists none, and the compile refuses a user settings file that could add one.
     *The operator's own sandbox settings.* A worker also loads the operator's user
     `settings.json`, from the config dir its windows run on (decisions 9 and 106). Claude Code
-    joins a `sandbox` list from every source it loads rather than letting one replace another
-    (its documentation; not probed). So a user `excludedCommands` entry such as `docker` would
-    run that command outside the sandbox, with the home directory and the network open. A user
-    `allowedDomains` entry would open its host, and a user `allowWrite` entry would grant a path
-    no compiled entry names. No compiled value takes such an entry back: `strictAllowlist` and
-    `allowUnsandboxedCommands` are single values, and only managed settings can make their own
-    domain list the only one. Under the setting the compile therefore refuses a user
-    `settings.json` that holds a `sandbox` key, naming the key and the file, the way it refuses
-    a malformed value. It also refuses one that does not parse as JSON, since the key cannot be
-    checked there. The file is read at compile time, like the setting itself. With the key
-    absent, the compiled lists are the only ones a worker loads, managed settings aside: those
-    are the machine administrator's, and pup does not read them.
+    joins the sandbox's lists from every source it loads rather than letting one replace
+    another. So a user `excludedCommands` entry such as `docker` would run that command outside
+    the sandbox, with the home directory and the network open. A user `allowedDomains` entry
+    would open its host, and a user `allowWrite` entry would grant a path no compiled entry
+    names. The lists are also built from keys outside `sandbox`. The path of an `Edit(...)`
+    allow rule and each `permissions.additionalDirectories` entry join the write list, and the
+    host of a `WebFetch(domain:...)` allow rule joins the network list. No compiled value takes
+    such an entry back: `strictAllowlist` and `allowUnsandboxedCommands` are single values, and
+    only managed settings can make their own domain list the only one.
+    What was checked: Claude Code's documentation pages could not be fetched from the session
+    that made this change, which has no web access. The check was made instead against the
+    installed Claude Code 2.1.325 bundle, which workers run (not probed):
+    - Its settings schema says `allowWrite` is "Merged with paths from Edit(...) allow
+      permission rules" and `allowedDomains` is "Merged with WebFetch(domain:…) allow rules and
+      across settings sources".
+    - The code that builds the lists reads, for each source, `sandbox.filesystem.allowWrite`
+      and `allowRead`, `sandbox.network.allowedDomains`, `permissions.additionalDirectories`,
+      and allow rules whose tool is `Edit` (to the write list) or `WebFetch` with a `domain:`
+      argument (to the network list).
+    - The grant keys it merges across sources are `permissions.allow`,
+      `permissions.additionalDirectories` and, under `sandbox`, `filesystem.allowRead`,
+      `filesystem.allowWrite`, `network.allowedDomains`, `network.allowUnixSockets` and
+      `excludedCommands`.
+    - A rule's tool name goes through an alias table with no entry for `Edit`, `Write` or
+      `WebFetch`. A rule without an argument, such as a bare `Edit`, adds no path.
+    Under the setting the compile therefore refuses a user `settings.json` that holds any of
+    these, naming the key or the rule and the file, the way it refuses a malformed value:
+    - a `sandbox` key, whatever its value, `null` included;
+    - `permissions.additionalDirectories`;
+    - a `permissions.allow` rule of the form `Edit(...)`, `Write(...)` or `WebFetch(...)`.
+    `Write(...)` is refused with `Edit(...)`, though 2.1.325 does not read it into the list.
+    WebFetch takes only the `domain:` form, so its whole call form is refused. `Bash(...)` and
+    other allow rules stay allowed, and so do deny rules, which only narrow. The check fails
+    closed. A file it cannot read or parse as JSON, one that is not a JSON object, a
+    `permissions` that is not an object, an `allow` that is not a list, or a rule that is not a
+    string each refuse the compile.
+    The file is read at compile time only, like the setting itself. A key or rule added to it
+    after the compile reaches the workers of profiles already compiled, until the next compile
+    refuses it. Managed settings aside, a worker's lists are then the compiled ones, as of that
+    compile. Managed settings are the machine administrator's, and pup does not read them.
     *A deny wins.* In Claude Code's sandbox a `denyWrite` entry beats any `allowWrite` entry, even
     a narrower one. So the store is kept out of every grant rather than listed in `denyWrite`. A
     denied store root would take `state.db` with it. The first version of this decision did

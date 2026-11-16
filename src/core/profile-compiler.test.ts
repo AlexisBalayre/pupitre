@@ -1045,15 +1045,64 @@ describe('the worker sandbox (decision 191)', () => {
     }
   });
 
-  // Claude Code joins a sandbox list from every source a worker loads, the
-  // operator's user settings included, and no compiled value takes an entry back.
+  // Claude Code joins the sandbox's lists from every source a worker loads, the
+  // operator's user settings included: a `sandbox` key's lists, additional
+  // directories and Edit and WebFetch allow rules. No compiled value takes an
+  // entry back, and a value the compile cannot check refuses too.
   it.each([
     {
       name: 'a sandbox key',
       content: '{"sandbox":{"excludedCommands":["docker"]}}',
       error: 'its `sandbox` key is refused',
     },
-    { name: 'JSON that does not parse', content: '{"sandbox": ', error: 'parse as JSON' },
+    { name: 'a null sandbox', content: '{"sandbox":null}', error: 'its `sandbox` key is refused' },
+    {
+      name: 'a sandbox that is not an object',
+      content: '{"sandbox":true}',
+      error: 'its `sandbox` key is refused',
+    },
+    {
+      name: 'an Edit allow rule',
+      content: '{"permissions":{"allow":["Bash(npm test:*)","Edit(/tmp/**)"]}}',
+      error: 'rule "Edit(/tmp/**)" is refused',
+    },
+    {
+      name: 'a Write allow rule',
+      content: '{"permissions":{"allow":["Write(~/notes/**)"]}}',
+      error: 'rule "Write(~/notes/**)" is refused',
+    },
+    {
+      name: 'a WebFetch domain allow rule',
+      content: '{"permissions":{"allow":["WebFetch(domain:example.com)"]}}',
+      error: 'rule "WebFetch(domain:example.com)" is refused',
+    },
+    {
+      name: 'additional directories',
+      content: '{"permissions":{"additionalDirectories":["/tmp"]}}',
+      error: 'its `permissions.additionalDirectories` is refused',
+    },
+    {
+      name: 'permissions that are not an object',
+      content: '{"permissions":["Edit(/tmp/**)"]}',
+      error: 'its `permissions` must be an object',
+    },
+    {
+      name: 'null permissions',
+      content: '{"permissions":null}',
+      error: 'its `permissions` must be an object',
+    },
+    {
+      name: 'allow rules that are not a list',
+      content: '{"permissions":{"allow":"Edit(/tmp/**)"}}',
+      error: 'its `permissions.allow` must be a list',
+    },
+    {
+      name: 'an allow rule that is not a string',
+      content: '{"permissions":{"allow":[{"Edit":"/tmp/**"}]}}',
+      error: 'not a rule string',
+    },
+    { name: 'a JSON value not an object', content: '[]', error: 'hold a JSON object' },
+    { name: 'JSON that does not parse', content: '{"sandbox": ', error: 'read it as JSON' },
   ])('refuses the compile on a user settings.json holding $name', ({ content, error }) => {
     const settingsPath = join(home, '.claude', 'settings.json');
     mkdirSync(dirname(settingsPath));
@@ -1065,12 +1114,27 @@ describe('the worker sandbox (decision 191)', () => {
     expect(compileIn(repoWith('workerSandbox: false\n')).settings).not.toHaveProperty('sandbox');
   });
 
-  it('compiles the sandbox beside a user settings.json without the key, or none', () => {
+  it('refuses the compile on a user settings.json it cannot read', () => {
+    const settingsPath = join(home, '.claude', 'settings.json');
+    mkdirSync(settingsPath, { recursive: true });
+
+    const compileOn = () => compileIn(repoWith('workerSandbox: true\n'));
+    expect(compileOn).toThrow('read it as JSON');
+    expect(compileOn).toThrow(settingsPath);
+  });
+
+  it('compiles the sandbox beside a user settings.json that adds nothing to it, or none', () => {
     const repo = repoWith('workerSandbox: true\n');
     expect(compileIn(repo).settings).toHaveProperty('sandbox');
 
     mkdirSync(join(home, '.claude'));
-    writeFileSync(join(home, '.claude', 'settings.json'), '{"model":"opus","permissions":{}}');
+    writeFileSync(
+      join(home, '.claude', 'settings.json'),
+      JSON.stringify({
+        model: 'opus',
+        permissions: { allow: ['Bash(npm test:*)', 'Read(~/docs/**)'], deny: ['Edit(/etc/**)'] },
+      }),
+    );
     expect(compileIn(repo).settings).toHaveProperty('sandbox');
   });
 

@@ -150,8 +150,14 @@ The block runs every process a Bash call starts inside Claude Code's sandbox:
   Any other host is refused, and no command may ask to leave the sandbox.
 - The operator's user `settings.json` is loaded beside the compiled one, and Claude Code adds its
   `sandbox` lists to the block's: a user `excludedCommands` entry would run outside the sandbox,
-  a user `allowedDomains` entry would open its host. So under the setting the compile refuses a
-  user `settings.json` that holds a `sandbox` key, or that does not parse, and names the file.
+  a user `allowedDomains` entry would open its host. It also adds the paths of `Edit(...)` allow
+  rules and `permissions.additionalDirectories` to the write list, and the hosts of
+  `WebFetch(domain:...)` allow rules to the network list. So under the setting the compile
+  refuses a user `settings.json` that holds a `sandbox` key, `permissions.additionalDirectories`
+  or an `Edit(...)`, `Write(...)` or `WebFetch(...)` allow rule, naming the key or rule and the
+  file. `Bash(...)` and other rules stay allowed. A file it cannot read, parse or check (a
+  `permissions` or `allow` of the wrong type) refuses too. The file is read at compile time
+  only: a key or rule added later reaches already-compiled profiles until the next compile.
 
 The Read, Edit and Write tools, the hooks and the session process are not sandboxed. The setting
 also adds a `Read(...)` deny rule for each credential path, which keeps the Read tool, and Grep

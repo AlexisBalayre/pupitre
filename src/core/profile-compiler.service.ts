@@ -1366,8 +1366,8 @@ jq -c --arg sid "\${PUP_SESSION_ID:-unknown}" '. + {pup_session_id: $sid}' >> '$
  *   pre-commit hook runs them inside the sandbox for any change they import.
  * `failIfUnavailable` refuses the launch rather than run the worker
  * unsandboxed, and `allowUnsandboxedCommands` ignores a call's request to leave
- * it. Each list here is the only one a worker loads, managed settings aside,
- * because `refuseUserSandbox` keeps the operator's user settings from adding to it.
+ * it. `refuseUserSandbox` keeps the operator's user settings, as they stand at
+ * the compile, from adding to a list here; managed settings can still add.
  */
 function workerSandbox(input: CompileInput, git: WorktreeGitEnv, credentials: string[]) {
   const store = projectPaths(input.repoPath);
@@ -1447,29 +1447,69 @@ function workerCredentials(repoPath: string): string[] {
 }
 
 /**
+ * Allow-rule tools whose argument Claude Code 2.1.325 adds to the sandbox: an
+ * `Edit(...)` path to the write list, a `WebFetch(domain:...)` host to the
+ * network list. `Write(...)` goes with `Edit(...)`; WebFetch takes only the
+ * `domain:` form, so its whole call form is refused (decision 191).
+ */
+const SANDBOX_WIDENING_TOOLS = new Set(['Edit', 'Write', 'WebFetch']);
+
+/**
  * A worker loads the operator's user `settings.json` beside the compiled one
- * (`--setting-sources user`, decision 9), and Claude Code joins a `sandbox`
- * list from every source it loads. A user `excludedCommands`, `allowedDomains`
- * or `allowWrite` would widen the compiled block, and no compiled value takes
- * an entry back, so the compile refuses a user file that holds the key, or one
- * it cannot parse to check (decision 191).
+ * (`--setting-sources user`, decision 9), and Claude Code joins the sandbox's
+ * lists from every source it loads: a `sandbox` key's own lists, its
+ * `permissions.additionalDirectories` and the paths and domains of its
+ * `Edit(...)` and `WebFetch(domain:...)` allow rules. No compiled value takes
+ * an entry back, so the compile refuses a user file that holds any of them,
+ * or one it cannot read and check (decision 191).
  */
 function refuseUserSandbox(repoPath: string): void {
   const settingsPath = join(claudeUserDir(repoPath), 'settings.json');
   if (!existsSync(settingsPath)) return;
-  const text = readFileSync(settingsPath, 'utf8');
+  const invalid = (why: string) => new Error(`Invalid ${settingsPath}: ${why} (decision 191).`);
+  const isObject = (value: unknown): value is Record<string, unknown> =>
+    typeof value === 'object' && value !== null && !Array.isArray(value);
   let settings: unknown;
   try {
-    settings = JSON.parse(text);
-  } catch {
-    throw new Error(
-      `Invalid ${settingsPath}: workerSandbox needs it to parse as JSON, to check it holds no \`sandbox\` key (decision 191).`,
+    settings = JSON.parse(readFileSync(settingsPath, 'utf8'));
+  } catch (error) {
+    throw invalid(
+      `workerSandbox needs to read it as JSON, to check it adds nothing to the worker's sandbox: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
-  if (typeof settings === 'object' && settings !== null && 'sandbox' in settings) {
-    throw new Error(
-      `Invalid ${settingsPath}: its \`sandbox\` key is refused while workerSandbox is on, since Claude Code adds its lists to the worker's sandbox (decision 191).`,
+  if (!isObject(settings)) throw invalid('workerSandbox needs it to hold a JSON object');
+  if ('sandbox' in settings) {
+    throw invalid(
+      "its `sandbox` key is refused while workerSandbox is on, since Claude Code adds its lists to the worker's sandbox",
     );
+  }
+  const { permissions } = settings;
+  if (permissions === undefined) return;
+  if (!isObject(permissions)) {
+    throw invalid('its `permissions` must be an object, for workerSandbox to check it');
+  }
+  if ('additionalDirectories' in permissions) {
+    throw invalid(
+      "its `permissions.additionalDirectories` is refused while workerSandbox is on, since Claude Code adds each directory to the worker's sandbox write list",
+    );
+  }
+  const { allow } = permissions;
+  if (allow === undefined) return;
+  if (!Array.isArray(allow)) {
+    throw invalid('its `permissions.allow` must be a list, for workerSandbox to check it');
+  }
+  for (const rule of allow) {
+    if (typeof rule !== 'string') {
+      throw invalid(
+        `its \`permissions.allow\` holds ${JSON.stringify(rule)}, not a rule string, for workerSandbox to check`,
+      );
+    }
+    const open = rule.indexOf('(');
+    if (open !== -1 && SANDBOX_WIDENING_TOOLS.has(rule.slice(0, open).trim())) {
+      throw invalid(
+        `its \`permissions.allow\` rule ${JSON.stringify(rule)} is refused while workerSandbox is on, since Claude Code adds its path or domain to the worker's sandbox`,
+      );
+    }
   }
 }
 
