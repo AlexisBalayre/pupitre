@@ -25,6 +25,7 @@ import { localContext } from '@src/adapters/capability.utils.js';
 import type { DeadExport, DuplicationReport } from '@src/adapters/types/adapter.types.js';
 import type { IstanbulCoverageMap } from '@src/adapters/types/istanbul.types.js';
 import { rootCoverageReport, typescriptAdapter } from '@src/adapters/typescript.adapter.js';
+import { diskRoot } from '@src/adapters/vitest-config.utils.js';
 import { endSandboxRun, runGateChild, sandboxLabel } from '@src/core/sandbox.utils.js';
 import { sh } from '@test/helpers/git.mock.js';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
@@ -930,6 +931,28 @@ describe('typescriptAdapter.testFiles', () => {
       const measureSha = sh(ctx.measurePath, 'git', 'rev-parse', 'HEAD');
 
       expect(typescriptAdapter.testInputsIntact?.({ ...ctx, measureSha })).toBe(true);
+    },
+  );
+
+  // What a tree cannot hold, or a name `hash-object` cannot read back from its
+  // input, refuses the directory's listing, and so the check.
+  it.each([
+    ['a FIFO', (dir: string) => execFileSync('mkfifo', [join(dir, 'pipe')]), 'pipe'],
+    [
+      'a file named across two lines',
+      (dir: string) => writeFileSync(join(dir, 'a\nb'), 'x\n'),
+      'a\nb',
+    ],
+  ] as [string, (dir: string) => void, string][])(
+    'refuses a dot directory holding %s',
+    (_, add, name) => {
+      const ctx = branched({ ...plainRoot(), '.github/ci.yml': 'a\n' }, {});
+      add(join(ctx.measurePath, '.github'));
+
+      expect(() => diskRoot(ctx.measurePath, ctx.configPath).get('.github')?.()).toThrow(
+        `${name} is not read: not a plain file or a link named on one line`,
+      );
+      expect(typescriptAdapter.testInputsIntact?.(ctx)).toBe(false);
     },
   );
 
