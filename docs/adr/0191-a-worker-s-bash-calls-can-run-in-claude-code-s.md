@@ -139,6 +139,14 @@
 
     It allowed `curl https://registry.npmjs.org`, git object and branch-ref writes, the worktree's
     `index` and `state.db`.
+    *Hard links (probed 2026-11-16).* A hard link would let a write through a granted path reach
+    a denied file, so this was probed on scratch copies, not on real hooks or config. A granted
+    directory held a file listed in `denyWrite`, and a file sat beside it outside every grant,
+    as the compiled hooks sit outside the store's grants. From a sandboxed Bash call, `ln` into
+    the granted directory was refused with `Operation not permitted` for both, and their link
+    counts stayed at 1. A write to the name the link would have taken only created a new file
+    there, and both originals were unchanged. So a hard link does not reopen what the sandbox
+    denies, and the claim below that a worker cannot rewrite its compiled hooks stands, on macOS.
     *Why `state.db` stays writable.* Every `pup` command a worker runs opens the store's database
     read-write: `pup session done`, `pup session ask`, and `pup session test`. The pre-commit hook
     runs `pup session test` inside the commit's sandbox. If the database were denied, a worker
@@ -184,7 +192,11 @@
        subdirectory then picks it up, the operator's own git included. So does this worktree's
        admin dir, which a worker's commit writes and so stays granted: its `modules/<name>/`
        keeps each of the worktree's submodules' `config` and `hooks/`, which run in any
-       unsandboxed git that recurses into that submodule from the worktree. pup's compiled hooks pin
+       unsandboxed git that recurses into that submodule from the worktree. The admin dir also
+       holds the worktree's own `rebase-merge/`, `rebase-apply/`, `sequencer/` and `MERGE_HEAD`,
+       which a worker can plant: the `exec` lines of a planted todo run on an unsandboxed
+       `--continue` in the worktree, and a planted `MERGE_HEAD` gives the next unsandboxed commit
+       there a parent of the worker's choosing. pup's compiled hooks pin
        their git with `WorktreeGitEnv`, which pup computes from trusted paths (decision 101).
        Follow-up: every unsandboxed git call passes a trusted `--git-dir` and `--work-tree` plus
        hardened `-c` options.
@@ -193,8 +205,10 @@
     3. `state.db`, `-wal` and `-shm` are an escape. A sandboxed worker can replace any of them
        with a symlink. Unsandboxed `pup`, the hooks and the gate then write through it, to wherever
        the link points. `~/.pupitre/slots/` is the same kind of redirect: a link planted there is
-       followed by the unsandboxed gate's slot handling. Follow-up: open them with `lstat` and
-       `O_NOFOLLOW`.
+       followed by the unsandboxed gate's slot handling. The session's `handoff.md` is one more:
+       a worker can replace it with a symlink to a file the sandbox denies it, such as
+       `~/.ssh/id_ed25519`, and the unsandboxed `pup respawn` then reads that file into the next
+       session's handoff. Follow-up: open them all with `lstat` and `O_NOFOLLOW`.
     4. Every deny is a literal path, matched path for path:
        - on case-insensitive APFS, a differently cased spelling may reach the same file. That
          applies to every denied entry (`rebase-merge/`, `sequencer/`, `HEAD.lock`,
