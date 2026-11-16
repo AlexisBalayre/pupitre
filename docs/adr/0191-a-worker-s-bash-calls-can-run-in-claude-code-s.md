@@ -1,10 +1,10 @@
-# 0188. A worker's Bash calls can run in Claude Code's sandbox, behind a project setting (2026-11-16)
+# 0191. A worker's Bash calls can run in Claude Code's sandbox, behind a project setting (2026-11-16)
 
 - Status: accepted
 - Amends: [0005](0005-sessions-run-with-permissions-bypassed-compiled-hooks-are.md)
 - Amends: [0063](0063-every-bash-call-is-re-checked-against-the.md)
 
-188. **A worker's Bash calls can run in Claude Code's sandbox, behind a project setting (2026-11-16).**
+191. **A worker's Bash calls can run in Claude Code's sandbox, behind a project setting (2026-11-16).**
     This is the first step of worker containment, decided on 2026-11-13. The per-worker container
     is a separate spike. Until now the compiled hooks were the only thing standing between a
     worker's shell and the machine (decision 5). Those hooks read the worktree after each call

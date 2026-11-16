@@ -105,7 +105,7 @@ const WORKER_UNUSED_TOOLS = [
 const SKILL_TOOL = 'Skill';
 
 /**
- * What a sandboxed worker's Bash children may not read (decision 188): the
+ * What a sandboxed worker's Bash children may not read (decision 191): the
  * operator's credentials, none of which a worker's task needs. Claude Code has
  * no built-in list; `~/` is the home directory in sandbox paths. The registry
  * tokens go too: the registries are the hosts a worker can reach, and a token
@@ -127,7 +127,7 @@ const WORKER_SANDBOX_DENY_READ = [
 ];
 
 /**
- * The hosts a sandboxed worker's Bash children may reach (decision 188): the
+ * The hosts a sandboxed worker's Bash children may reach (decision 191): the
  * package registries of the ecosystems pup ships adapters for, which a first
  * commit's pre-commit install fetches from. The model's own traffic is the
  * session process's, outside the sandbox.
@@ -1238,7 +1238,7 @@ jq -c --arg sid "\${PUP_SESSION_ID:-unknown}" '. + {pup_session_id: $sid}' >> '$
 
 /**
  * Claude Code's Bash sandbox for a worker of a project that turned it on
- * (decision 188). It holds every process a Bash call starts, and nothing else:
+ * (decision 191). It holds every process a Bash call starts, and nothing else:
  * Read, Edit and Write, the hooks and the session process stay outside it.
  * - Writes: the worktree, the per-user temp directory Claude Code points
  *   `TMPDIR` at, and the main `.git` git grants a linked worktree's commit —

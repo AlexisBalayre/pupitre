@@ -17,7 +17,7 @@ const SKIP_UNTESTED_KEY = 'skipTestsOnUntestedChanges';
 
 /**
  * The key that runs every worker's Bash calls inside Claude Code's sandbox
- * (decision 188): `true` turns it on, from the next launch.
+ * (decision 191): `true` turns it on, from the next launch.
  */
 const WORKER_SANDBOX_KEY = 'workerSandbox';
 
@@ -61,7 +61,7 @@ export function skipsTestsOnUntestedChanges(repoPath: string): boolean {
 
 /**
  * Whether a worker's compiled settings switch on the Bash sandbox (decision
- * 188). No unless the project says so.
+ * 191). No unless the project says so.
  */
 export function workerSandboxOn(repoPath: string): boolean {
   return projectSetting(repoPath, WORKER_SANDBOX_KEY, false);

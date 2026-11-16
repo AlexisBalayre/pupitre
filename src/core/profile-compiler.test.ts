@@ -908,8 +908,8 @@ describe('the status line records the plan usage (decision 156)', () => {
   });
 });
 
-// Decision 188: Claude Code's Bash sandbox, behind the project's `workerSandbox` setting.
-describe('the worker sandbox (decision 188)', () => {
+// Decision 191: Claude Code's Bash sandbox, behind the project's `workerSandbox` setting.
+describe('the worker sandbox (decision 191)', () => {
   /** A repo directory whose `.pupitre/project.yml` holds `content`, or none when undefined. */
   function repoWith(content?: string): string {
     const repo = tempDir('pup-sandbox-repo-');

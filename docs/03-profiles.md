@@ -100,7 +100,7 @@ for a plain write into `.claude/` and reads no scope file at all.
 The merge gate's diff-vs-scope audit is still the authority. What the gate cannot see yet is
 listed in decision 63's ceilings.
 
-## Bash sandbox (decision 188)
+## Bash sandbox (decision 191)
 
 Off by default. A project turns it on with `workerSandbox: true` in `.pupitre/project.yml`, and
 every worker launched after that gets a `sandbox` block in its compiled `settings.json`. While the
