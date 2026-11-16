@@ -13,6 +13,8 @@ TSC=node_modules/.bin/tsc
 STAGE=$(mktemp -d ./.pup-build.XXXXXX)
 trap 'rm -rf "$STAGE"' EXIT
 [ ! -L "$STAGE" ] || { echo "build: $STAGE is a symlink; refusing to build" >&2; exit 1; }
+# Hide the stage from git status (scope re-check, merge gate), even if a killed build leaves it behind.
+echo '*' > "$STAGE/.gitignore"
 
 "$TSC" --noEmit
 # Emit at the same depth as dist/: tsc writes source map paths relative to the output folder.
@@ -37,3 +39,4 @@ if ! mv "$STAGE" dist; then
   echo "build: could not move the new build into dist/; the previous dist/ is kept" >&2
   exit 1
 fi
+rm -f dist/.gitignore
