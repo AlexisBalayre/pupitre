@@ -1,0 +1,99 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-16T19:14:36.892Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43936668752",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43936668752",
+  "actor": "AlexisBalayre",
+  "commit_sha": "8aa9ba02aa7eb35667089b604b223c7efe5eca96",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 357,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "guards"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "guards"
+  ],
+  "reviewers_skipped": [
+    "conventions",
+    "context",
+    "maintainability",
+    "docs",
+    "spec",
+    "simplicity",
+    "workflow-safety"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "eb5adcc1bb5e62457862d8a7d7b2fa10de709cc0",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/land-remeasure.service.ts",
+      "line": "86-105",
+      "description": "The critical-area check compares only tree(pin) with tree(head). It does not compare what the merge commit landed with what merging the pin there would have landed. A head on an older base can bring back a critical-area change that the target reverted after the pin, and no --approved-by is asked for.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/land-remeasure.service.ts",
+      "line": "155-196",
+      "description": "After a re-gate, the remeasure holds a flag to the first gate's figures. The ledger never records the larger figure the re-gate accepted, so a merge no worse than the re-gated pin refuses.",
+      "status": "unresolved"
+    }
+  ],
+  "findings": [],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Round 5 importants-only budget: skipped conventions, docs, simplicity, context, maintainability. Spec was skipped because there is no closing issue or spec source. Workflow-safety was skipped because no .github/workflows file changed."
+    },
+    {
+      "component": "consolidator",
+      "description": "The consolidator was not spawned because no reviewer returned any findings."
+    },
+    {
+      "component": "orchestrator",
+      "description": "Prior prior_importants[1] (re-gate figures missing from the ledger) is still unresolved at 8aa9ba0. The delta only destructures `measured`, and `accepted` is still built only from `openEntries`."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.4123724999999998,
+  "duration_ms": 128263,
+  "num_turns": 10,
+  "tokens": {
+    "input": 10,
+    "output": 4905,
+    "cache_read": 232415,
+    "cache_creation": 49682,
+    "total": 287012
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 48,
+      "output": 22709,
+      "cache_read": 592282,
+      "cache_creation": 123464,
+      "cost_usd": 1.3391943999999996
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 10,
+      "output": 1595,
+      "cache_read": 43706,
+      "cache_creation": 21135,
+      "cost_usd": 0.0731781
+    }
+  ],
+  "permission_denials": []
+}
