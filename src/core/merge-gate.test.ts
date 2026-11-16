@@ -413,7 +413,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(log).toContain('edit src/feature.ts');
   });
 
-  it('re-steers the session with the report when the auto-rebase conflicts', async () => {
+  it('re-steers the session with the report when the target conflicts with the branch', async () => {
     const worktree = seedSession(db, repo);
     commitIn(repo, 'src/app.ts', 'export const app = 2;\n');
     commitIn(worktree, 'src/app.ts', 'export const app = 3;\n');
@@ -428,7 +428,8 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       sessionId: SESSION_ID,
       paneId: LAUNCH_PANE,
     });
-    expect(vi.mocked(steerPane).mock.calls[0]?.[1]).toContain('rebase');
+    // The rebase conflicted, and so did the merge it fell back to (decision 188).
+    expect(vi.mocked(steerPane).mock.calls[0]?.[1]).toContain('git merge refs/heads/main');
   });
 
   it('hard-fails a session that edits the adapter escape-hatch config', async () => {
