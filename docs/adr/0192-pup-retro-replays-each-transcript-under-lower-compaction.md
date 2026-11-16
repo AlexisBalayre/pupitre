@@ -1,9 +1,9 @@
-# 0191. `pup retro` replays each transcript under lower compaction thresholds (2026-11-16)
+# 0192. `pup retro` replays each transcript under lower compaction thresholds (2026-11-16)
 
 - Status: accepted
 - Amends: [0150](0150-pup-retro-reads-the-claude-code-traces-locally-and.md), [0122](0122-pup-usage-reports-where-the-claude-usage-went-from-the.md)
 
-191. **`pup retro` replays each transcript under lower compaction thresholds (2026-11-16).**
+192. **`pup retro` replays each transcript under lower compaction thresholds (2026-11-16).**
     A one-off study on 2026-11-16 replayed every transcript since 2026-10-17 request by request
     and found that resetting at 120k instead of the 267k where the compactions fired would have
     cut 23% of worker, conductor and console spend. `pup retro` now runs that replay on every
