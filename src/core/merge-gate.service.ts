@@ -2145,8 +2145,8 @@ export function assertPullRequestOf(prUrl: string, repo: string, untouched: stri
 }
 
 /**
- * Merge `targetSha` into the branch an open PR holds, in plumbing only
- * (decision 105): `merge-tree` writes the merged tree, `commit-tree` the merge
+ * Merge `targetSha` into the branch an open PR holds, or one no rebase should
+ * rewrite (decision 190), in plumbing only (decision 105): `merge-tree` writes the merged tree, `commit-tree` the merge
  * commit, and a compare-and-swap moves the branch from the tip the merge read.
  * The porcelain `git merge` reads `branch.<name>.mergeOptions` from the shared
  * config a session can write, after the `-c` pins and before argv, so a planted
@@ -2281,6 +2281,26 @@ async function mergeTargetInto(
   return undefined;
 }
 
+/**
+ * Whether the branch already holds a merge of the target: a merge commit the
+ * target lacks with a parent the target contains, as a worker's `git merge
+ * main` writes. A rebase would drop that merge and replay the commits under
+ * it, bringing back the conflicts it resolved (decision 190). One git process
+ * whatever the branch holds, as it runs under the merge lock every queued gate
+ * waits on: a parent of a commit the target lacks is in the target exactly
+ * when it is not itself one of those commits.
+ */
+function holdsMergeOfTarget(repoPath: string, branchRef: string, targetSha: string): boolean {
+  const commits = runGit(repoPath, ['rev-list', '--parents', `${targetSha}..${branchRef}`])
+    .split('\n')
+    .map((line) => line.trim().split(' '))
+    .filter(([commit]) => commit);
+  const targetLacks = new Set(commits.map(([commit]) => commit));
+  return commits.some(
+    ([, ...parents]) => parents.length > 1 && parents.some((parent) => !targetLacks.has(parent)),
+  );
+}
+
 async function gateAndMerge(
   db: Database,
   req: MergeRequest,
@@ -2334,8 +2354,10 @@ async function gateAndMerge(
   started = Date.now();
   const targetSha = resolveCommit(req.repoPath, `refs/heads/${target}`);
   // An open PR's commits are what its review and CI read, so its branch takes
-  // the target as a merge commit and is never rewritten; a branch with no open
-  // PR is still rebased (decision 105).
+  // the target as a merge commit and is never rewritten (decision 105). A
+  // branch with no open PR is rebased, unless it already holds a merge of the
+  // target or the rebase conflicts: then it takes the merge too, and fails only
+  // when that merge conflicts (decision 190).
   const isPrBranch = pullRequest?.adoptedUrl !== undefined;
   // What the gate last pushed, which the merge keeps and a rewrite by the
   // session would drop: refused here, with the fix in the worker's hands,
@@ -2356,6 +2378,7 @@ async function gateAndMerge(
     );
     return failed();
   }
+  let step: 'merge' | 'rebase' = isPrBranch ? 'merge' : 'rebase';
   if (isAncestor(req.repoPath, targetSha, branchRef)) {
     stages.push(
       timedSince(started, {
@@ -2364,31 +2387,49 @@ async function gateAndMerge(
         detail: `already based on ${target}`,
       }),
     );
-  } else if (isPrBranch) {
-    const refused = await mergeTargetInto(
-      req,
-      worktree,
-      worktreeEnv,
-      session.branch,
-      target,
-      targetSha,
-    );
-    if (refused) {
-      stages.push(timedSince(started, { stage: 'fresh-base', status: 'fail', detail: refused }));
-      return failed();
-    }
-    stages.push(
-      timedSince(started, { stage: 'fresh-base', status: 'pass', detail: `auto-merged ${target}` }),
-    );
   } else {
-    // Before the try, so a lost lock goes to the operator, not to the worker.
-    assertMergeLockHeld(req.repoPath, `the rebase of ${session.branch} onto ${target}`);
-    try {
-      // The strategy named, not left to `pull.twohead`: git's sequencer takes
-      // the first value it reads, a session's local one before the `-c` pin,
-      // and runs any name but ort as `git merge-<name>`, a path into the
-      // worktree included (decision 120, amending 79).
-      runGit(worktree, ['rebase', '--strategy=ort', targetSha], pinned);
+    let rebaseConflicted = false;
+    if (isPrBranch || holdsMergeOfTarget(req.repoPath, branchRef, targetSha)) {
+      step = 'merge';
+    } else {
+      // Before the try, so a lost lock goes to the operator, not to the worker.
+      assertMergeLockHeld(req.repoPath, `the rebase of ${session.branch} onto ${target}`);
+      try {
+        // The strategy named, not left to `pull.twohead`: git's sequencer takes
+        // the first value it reads, a session's local one before the `-c` pin,
+        // and runs any name but ort as `git merge-<name>`, a path into the
+        // worktree included (decision 120, amending 79).
+        runGit(worktree, ['rebase', '--strategy=ort', targetSha], pinned);
+      } catch (error) {
+        // No resolved stop goes on: it would run through rebase state the live
+        // session can write (decision 120). The merge below is plumbing.
+        try {
+          runGit(worktree, ['rebase', '--abort'], pinned);
+        } catch (abortError) {
+          rethrowIfKilled(error);
+          rethrowIfKilled(abortError);
+          // A rebase that never started, or an abort a lock held off, may leave
+          // the worktree mid-rebase on a detached HEAD: no merge goes over it.
+          const onto = shellWord(`refs/heads/${sanitizeReason(target)}`);
+          stages.push(
+            timedSince(started, {
+              stage: 'fresh-base',
+              status: 'fail',
+              detail:
+                `Auto-rebase onto ${sanitizeReason(target)} failed and so did its abort. Run ` +
+                `\`git rebase --abort\` if a rebase is still in progress, then \`git merge ` +
+                `${onto}\`, resolve any conflicts, and commit the merge.\n` +
+                `${commandFailureDetail(error)}\n${commandFailureDetail(abortError)}`,
+            }),
+          );
+          return failed();
+        }
+        rethrowIfKilled(error);
+        rebaseConflicted = true;
+        step = 'merge';
+      }
+    }
+    if (step === 'rebase') {
       stages.push(
         timedSince(started, {
           stage: 'fresh-base',
@@ -2396,25 +2437,28 @@ async function gateAndMerge(
           detail: `auto-rebased onto ${target}`,
         }),
       );
-    } catch (error) {
-      // Every conflict goes back to the worker: a resolved stop would go on
-      // through rebase state the live session can write (decision 120).
-      try {
-        runGit(worktree, ['rebase', '--abort'], pinned);
-      } catch {
-        // nothing to abort — the rebase never started
+    } else {
+      const refused = await mergeTargetInto(
+        req,
+        worktree,
+        worktreeEnv,
+        session.branch,
+        target,
+        targetSha,
+      );
+      if (refused) {
+        stages.push(timedSince(started, { stage: 'fresh-base', status: 'fail', detail: refused }));
+        return failed();
       }
       stages.push(
         timedSince(started, {
           stage: 'fresh-base',
-          status: 'fail',
-          detail:
-            `Auto-rebase onto ${sanitizeReason(target)} hit conflicts. Run ` +
-            `\`git rebase ${shellWord(`refs/heads/${sanitizeReason(target)}`)}\`, ` +
-            `resolve the conflicts, and finish the rebase.\n${commandFailureDetail(error)}`,
+          status: 'pass',
+          detail: rebaseConflicted
+            ? `auto-merged ${target} after the auto-rebase hit conflicts`
+            : `auto-merged ${target}`,
         }),
       );
-      return failed();
     }
   }
   const sha = resolveCommit(req.repoPath, branchRef);
@@ -2423,9 +2467,7 @@ async function gateAndMerge(
   // no fast-forward, and the diffs would measure against the wrong base.
   if (!isAncestor(req.repoPath, targetSha, sha)) {
     const onto = `refs/heads/${sanitizeReason(target)}`;
-    const [step, fix] = isPrBranch
-      ? ['merge', `merge ${onto} into it`]
-      : ['rebase', `rebase it onto ${onto}`];
+    const fix = step === 'merge' ? `merge ${onto} into it` : `rebase it onto ${onto}`;
     // Replaces the pass pushed above: one fresh-base line, not a pass then a fail.
     stages.pop();
     stages.push(

@@ -2766,7 +2766,7 @@ describe('CLI commands', () => {
         const [, sessionId, summary] = firstCall(markSessionDone);
         expect(sessionId).toBe('s1');
         expect(summary).toBe('shipped the thing');
-        expect(logs).toContain('Session s1 marked done: shipped the thing');
+        expect(logs).toEqual(['Session s1 marked done.']);
         expect(process.exitCode).toBeUndefined();
       });
 
@@ -2848,7 +2848,7 @@ describe('CLI commands', () => {
         expect(markSessionQuestion).not.toHaveBeenCalled();
       });
 
-      it('records the question from inside its own worktree, scrubbing the echo', () => {
+      it('records the question from inside its own worktree, printing one line without it', () => {
         const repo = initRepo();
         seedSession(repo, 's1');
         useCwd(worktreeOf(repo, 's1'));
@@ -2860,7 +2860,7 @@ describe('CLI commands', () => {
         const [, sessionId, question] = firstCall(markSessionQuestion);
         expect(sessionId).toBe('s1');
         expect(question).toEqual({ text: 'rebase\u001b[2J or\nmerge?' });
-        expect(logs).toEqual(['Session s1 asked: rebase [2J or merge?']);
+        expect(logs).toEqual(['Session s1 question recorded; end your turn, a steer answers it.']);
         expect(markSessionDone).not.toHaveBeenCalled();
         expect(process.exitCode).toBeUndefined();
       });

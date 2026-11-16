@@ -63,7 +63,7 @@ import {
 import { DEFAULT_BASE_PROFILE } from '../core/default-profile.constants.js';
 import { IntentRefusedError } from '../core/errors/intent.errors.js';
 import { ciReviewLookup, type FixRoundOutcome, startFixRound } from '../core/fix-round.service.js';
-import { fleetReading, readFleet } from '../core/fleet.service.js';
+import { fleetReading, readFleet, readFleetProjects } from '../core/fleet.service.js';
 import { parseGateEnv } from '../core/gate-env.utils.js';
 import { assertMainCheckout, RewrittenGitDirError } from '../core/git-diff.client.js';
 import { initProject } from '../core/init.service.js';
@@ -916,18 +916,14 @@ function held(project: ResolvedProject): ResolvedProject {
 }
 
 /**
- * Every registered project, each one a fleet view reads held first, as `held`
- * holds one: each reading runs git in its repo. A project the view passes over
- * (its repo missing or not its own path, or dormant and not shown) is never
- * read, so it is not checked. One that refuses stops the view, as it stops a
- * command run in that repo.
+ * Every registered project, each one a fleet view reads (`readFleetProjects`)
+ * held first, as `held` holds one: each reading runs git in its repo. One that
+ * refuses stops the view, as it stops a command run in that repo.
  */
 function heldFleet(shouldShowDormant: boolean): RegisteredProject[] {
   const registered = fleetProjects();
-  for (const project of registered) {
-    const isRead =
-      project.repoExists && project.isOwnPath && (shouldShowDormant || project.dormantAt === null);
-    if (isRead) assertMainCheckout(project.repoPath);
+  for (const project of readFleetProjects(registered, shouldShowDormant)) {
+    assertMainCheckout(project.repoPath);
   }
   return registered;
 }
@@ -3204,7 +3200,8 @@ export function buildProgram(): Command {
       const sessionId = ownSession(db, 'done');
       if (!sessionId) return;
       markSessionDone(db, sessionId, summary);
-      console.log(`Session ${sanitizeReason(sessionId)} marked done: ${sanitizeReason(summary)}`);
+      // Decision 189: one line, no echo of the summary the worker just wrote.
+      console.log(`Session ${sanitizeReason(sessionId)} marked done.`);
     });
   session
     .command('ask <question>')
@@ -3220,7 +3217,10 @@ export function buildProgram(): Command {
       questionOrRefuse(() => {
         const asked = askedQuestion('pup session ask', question, opts);
         markSessionQuestion(db, sessionId, asked);
-        return askedLines(`Session ${sanitizeReason(sessionId)}`, asked);
+        // Decision 189: one line, no echo of the question and options the worker just wrote.
+        return [
+          `Session ${sanitizeReason(sessionId)} question recorded; end your turn, a steer answers it.`,
+        ];
       });
     });
   session
