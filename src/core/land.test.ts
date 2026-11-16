@@ -25,10 +25,15 @@ vi.mock('./git-diff.client.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./git-diff.client.js')>();
   return { ...actual, gitDiffPaths: vi.fn(actual.gitDiffPaths) };
 });
-// The real scratch git dir, so a test can fail one git call made in it.
+// The real scratch git dir, so a test can fail one git call made in it, and
+// the real stages, so a test can stand in for one remeasure's.
 vi.mock('./merge-gate.service.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./merge-gate.service.js')>();
-  return { ...actual, withScratchGitDir: vi.fn(actual.withScratchGitDir) };
+  return {
+    ...actual,
+    withScratchGitDir: vi.fn(actual.withScratchGitDir),
+    measureBranch: vi.fn(actual.measureBranch),
+  };
 });
 // The real audit, so a test can make the one after a land throw.
 vi.mock('./audit.service.js', async (importOriginal) => {
@@ -45,8 +50,9 @@ import { openStore } from './db.client.js';
 import { gitDiffPaths } from './git-diff.client.js';
 import { initProject } from './init.service.js';
 import { landSession } from './land.service.js';
+import { insertLedgerEntry } from './ledger.repository.js';
 import { MergeLockLostError } from './merge-gate.errors.js';
-import { runMergeGate, withScratchGitDir } from './merge-gate.service.js';
+import { measureBranch, runMergeGate, withScratchGitDir } from './merge-gate.service.js';
 import { projectId } from './paths.utils.js';
 import { LAND_STAGES, stageProgress } from './progress.utils.js';
 import {
@@ -63,6 +69,7 @@ import { TerminalSessionError } from './session-lifecycle.errors.js';
 import { HELD_SLOT_ENV } from './test-slot.service.js';
 import type { ProjectBaseline } from './types/init.types.js';
 import type { LandOutcome } from './types/land.types.js';
+import type { GateReport, GateStageResult } from './types/merge-gate.types.js';
 
 // Real git repos, a bare origin and a sandboxed audit per test.
 // The gate children this file runs outside a gate start a sandbox run the
@@ -139,8 +146,9 @@ describe('landSession', { timeout: 20_000 }, () => {
   });
 
   /** What the gate's `--pr` merge leaves: the session merged, its PR on the event. */
-  function seedPrMerge(prUrl: string | null = PR_URL): void {
-    transitionSession(db, SESSION_ID, 'merged');
+  function seedPrMerge(prUrl: string | null = PR_URL, report?: GateReport): void {
+    // The gate files its report on the way to merged, before the merge event.
+    transitionSession(db, SESSION_ID, 'merged', report === undefined ? undefined : { report });
     appendEvent(db, SESSION_ID, 'merge', {
       branch: BRANCH,
       sha: pinned,
@@ -907,5 +915,900 @@ describe('landSession', { timeout: 20_000 }, () => {
     await expect(land()).rejects.toThrow(refusal(squash));
     expectNothingChanged(before);
     expect(hasTrackingRef()).toBe(false);
+  });
+
+  // Decision 185: a PR merged at a head past the pin lands on the gate's word,
+  // its stages run again on the merge commit under the lock.
+  describe('--remeasure', () => {
+    beforeEach(() => {
+      // As inside a slot already held, so the stages never queue behind the
+      // machine's real test runs (decision 96).
+      vi.stubEnv(HELD_SLOT_ENV, 'land.test');
+      db.prepare('UPDATE tasks SET spec = ? WHERE id = ?').run(
+        JSON.stringify({ id: 'task-s1', goal: 'g', scopeIn: ['src/**'], acceptance: ['a'] }),
+        'task-s1',
+      );
+    });
+
+    /** The stages the pin's gate ran, every one passing. */
+    const pinnedStages: GateStageResult[] = ['build', 'test', 'lint', 'scope-audit'].map(
+      (stage) => ({ stage, status: 'pass' }),
+    );
+
+    /** A passing gate report of `stages`. */
+    const passingReport = (stages: GateStageResult[] = pinnedStages): GateReport => ({
+      sessionId: SESSION_ID,
+      passed: true,
+      sandbox: 'none',
+      stages,
+    });
+
+    /**
+     * A commit past the pin, pushed as the PR's head and merged on GitHub at
+     * it, the pin's gate having run `stages`.
+     */
+    function mergeMovedHead(
+      path = 'src/fix.ts',
+      content = 'export const fix = 1;\n',
+      stages = pinnedStages,
+    ) {
+      seedPrMerge(PR_URL, passingReport(stages));
+      return mergeAt(commitIn(worktree, path, content));
+    }
+
+    /** `later`, past the pin, pushed as the PR's head and merged on GitHub at it. */
+    function mergeAt(later: string) {
+      sh(repo, 'git', 'push', '-q', origin, BRANCH);
+      sh(origin, 'git', 'update-ref', 'refs/pull/7/head', later);
+      const merge = mergeOnGitHub(later);
+      fakeGh({
+        state: 'MERGED',
+        baseRefName: 'main',
+        headRefOid: later,
+        mergeCommit: { oid: merge },
+      });
+      return { later, merge };
+    }
+
+    const remeasure = (extra: { adapter?: Adapter; approvedBy?: string } = {}) =>
+      landSession(db, {
+        repoPath: repo,
+        sessionId: SESSION_ID,
+        adapters: [extra.adapter ?? passingAdapter],
+        remeasure: true,
+        ...(extra.approvedBy === undefined ? {} : { approvedBy: extra.approvedBy }),
+      });
+
+    it('lands a moved head whose remeasure passes, recording the report on the event', async () => {
+      const { later, merge } = mergeMovedHead();
+
+      const outcome = await remeasure();
+
+      expect(mainSha()).toBe(merge);
+      expect(outcome.remeasure).toMatchObject({ sessionId: SESSION_ID, passed: true });
+      expect(outcome.remeasure?.stages.map(({ stage, status }) => [stage, status])).toEqual(
+        expect.arrayContaining([
+          ['build', 'pass'],
+          ['test', 'pass'],
+          ['lint', 'pass'],
+          ['scope-audit', 'pass'],
+        ]),
+      );
+      const [event] = landedEvents().map((row) => JSON.parse(row.payload));
+      expect(event).toEqual({
+        sha: merge,
+        target: 'main',
+        prUrl: PR_URL,
+        remeasuredHead: later,
+        pinned,
+        remeasure: outcome.remeasure,
+      });
+      expect(existsSync(worktree)).toBe(false);
+    });
+
+    it('still refuses the same moved head without it, changing nothing', async () => {
+      const { later } = mergeMovedHead();
+      const before = mainSha();
+
+      await expect(land()).rejects.toThrow(
+        `${PR_URL} merged with its head at ${later}, not ${pinned}, the commit the gate pinned`,
+      );
+      expectNothingChanged(before);
+    });
+
+    it('refuses a remeasure whose stage fails, naming it and changing nothing', async () => {
+      mergeMovedHead();
+      const before = mainSha();
+      const failing: Adapter = {
+        ...passingAdapter,
+        gateCommands: () => [{ stage: 'build', command: 'false', args: [] }],
+      };
+
+      await expect(remeasure({ adapter: failing })).rejects.toThrow(
+        /The remeasure of [0-9a-f]{40} against main at [0-9a-f]{40} did not pass:\n {2}build: /,
+      );
+      expectNothingChanged(before);
+      expect(hasTrackingRef()).toBe(false);
+    });
+
+    /** Every row of every table in the store. */
+    const storeRows = () =>
+      (
+        db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as {
+          name: string;
+        }[]
+      ).map(({ name }) => [name, db.prepare(`SELECT * FROM "${name}"`).all()]);
+
+    /** A 651-line source diff past the pin, over the oversize flag. */
+    function mergeOversizeHead(): void {
+      const big = Array.from({ length: 650 }, (_, i) => `export const v${i} = ${i};\n`).join('');
+      mergeMovedHead('src/big.ts', big);
+    }
+
+    /** The session's own gate filing an oversize diff of `lines` as accepted debt. */
+    function acceptOversize(lines: number): void {
+      insertLedgerEntry(db, {
+        projectId: pid,
+        description: `Oversize diff (${lines} lines) merged from session ${SESSION_ID}`,
+        files: ['src/feature.ts'],
+        reason: 'r',
+        acceptedBy: 'human',
+        reviewBy: 'c',
+      });
+    }
+
+    it('refuses a flag the session never accepted, leaving the store as it was', async () => {
+      mergeOversizeHead();
+      const before = mainSha();
+      const store = storeRows();
+
+      await expect(remeasure()).rejects.toThrow(
+        `flagged, never accepted: Oversize diff (651 lines) merged from session ${SESSION_ID}`,
+      );
+      expectNothingChanged(before);
+      expect(storeRows()).toEqual(store);
+    });
+
+    it('refuses a flag worse than the one accepted, and lands one no worse', async () => {
+      mergeOversizeHead();
+      const before = mainSha();
+      acceptOversize(612);
+
+      await expect(remeasure()).rejects.toThrow(
+        `flagged past the accepted Oversize diff (612 lines) merged from session ${SESSION_ID}: ` +
+          `Oversize diff (651 lines) merged from session ${SESSION_ID}`,
+      );
+      expectNothingChanged(before);
+
+      // One accepted entry no worse is enough, and an equal figure is no worse.
+      acceptOversize(651);
+      expect((await remeasure()).remeasure?.passed).toBe(true);
+    });
+
+    it('lands a flag better than the one accepted', async () => {
+      mergeOversizeHead();
+      acceptOversize(700);
+
+      expect((await remeasure()).remeasure?.passed).toBe(true);
+    });
+
+    /**
+     * One remeasure's stages stood in for: a measurement reporting `stages`,
+     * flagging `flags`, over the open ledger entries `held`; a bare description
+     * names no file.
+     */
+    function measuredAs(
+      stages: GateStageResult[] = pinnedStages,
+      flags: (string | Debt)[] = [],
+      held: (string | Debt)[] = [],
+    ) {
+      const debt = (entry: string | Debt) =>
+        typeof entry === 'string' ? { description: entry, files: [] } : entry;
+      vi.mocked(measureBranch).mockImplementationOnce(async (_db, _req, _session, reported) => {
+        reported.push(...stages);
+        return {
+          flaggedDebt: flags.map(debt),
+          openEntries: held.map(debt).map(({ description, files }) => ({
+            description,
+            files: typeof files === 'string' ? files : JSON.stringify(files),
+          })),
+        } as unknown as Awaited<ReturnType<typeof measureBranch>>;
+      });
+    }
+
+    /** A debt flag or entry; a held entry's `files` as a string is its raw column. */
+    type Debt = { description: string; files: string[] | string };
+
+    const filed = (wording: string) => `${wording} session ${SESSION_ID}`;
+    const huge = '9'.repeat(400);
+
+    // The land reads the stages itself, not only that a measurement came back,
+    // and lands on the statuses it knows only.
+    it.each([
+      ['fail', /did not pass:\n {2}build: boom\n/],
+      ['timeout', /did not pass:\n {2}build: boom\n/],
+    ])('refuses a measurement that came back with a %s stage', async (status, refusal) => {
+      mergeMovedHead();
+      const before = mainSha();
+      measuredAs([
+        { stage: 'build', status: status as GateStageResult['status'], detail: 'boom' },
+        ...pinnedStages.slice(1),
+      ]);
+
+      await expect(remeasure()).rejects.toThrow(refusal);
+      expectNothingChanged(before);
+    });
+
+    it.each([
+      [
+        'an accepted figure that is no finite number',
+        filed('Oversize diff (651 lines) merged from'),
+        filed(`Oversize diff (${huge} lines) merged from`),
+        'flagged past the accepted',
+      ],
+      [
+        'a flagged figure that is no finite number',
+        filed(`Oversize diff (${huge} lines) merged from`),
+        filed('Oversize diff (612 lines) merged from'),
+        'flagged, its figures unreadable',
+      ],
+      [
+        'a figure only a name supplies, in no wording the gate files',
+        filed('Nested thing src/x(10) merged from'),
+        filed('Nested thing src/x(9999) merged from'),
+        'flagged, its figures unreadable',
+      ],
+      [
+        'a figure worse, the rise it makes with another equal',
+        filed('Duplicated lines rose from 120 to 170 in'),
+        filed('Duplicated lines rose from 100 to 150 in'),
+        'flagged past the accepted',
+      ],
+      // The gate's own wordings with no figure: every other word is the kind.
+      [
+        'another nested package missing the script accepted',
+        filed('Nested package packages/b changed with no test script, merged from'),
+        filed('Nested package packages/a changed with no test script, merged from'),
+        'flagged, never accepted',
+      ],
+      [
+        'the nested package accepted missing another script',
+        filed('Nested package packages/a changed with no typecheck script, merged from'),
+        filed('Nested package packages/a changed with no test script, merged from'),
+        'flagged, never accepted',
+      ],
+      // No stage measured its files, so they are what the operator accepted.
+      [
+        'the nested package and script accepted, on a file the entry did not name',
+        {
+          description: filed('Nested package packages/a changed with no test script, merged from'),
+          files: ['packages/a/index.ts', 'packages/a/run.ts'],
+        },
+        {
+          description: filed('Nested package packages/a changed with no test script, merged from'),
+          files: ['packages/a/index.ts'],
+        },
+        'or on files it did not name',
+      ],
+      [
+        'a coverage gap wider than the one accepted',
+        filed('Coverage gap (unreported files and patch coverage) merged from'),
+        filed('Coverage gap (unreported files) merged from'),
+        'flagged, never accepted',
+      ],
+    ])('refuses %s', async (_case, flag, held, refusal) => {
+      mergeMovedHead();
+      const before = mainSha();
+      measuredAs(pinnedStages, [flag], [held]);
+
+      await expect(remeasure()).rejects.toThrow(`${refusal}`);
+      expectNothingChanged(before);
+    });
+
+    it('refuses a flagged stage that filed no debt, whatever else was flagged', async () => {
+      mergeMovedHead();
+      const before = mainSha();
+      measuredAs(
+        [...pinnedStages, { stage: 'complexity', status: 'flagged' }],
+        [filed('Oversize diff (651 lines) merged from')],
+        [filed('Oversize diff (700 lines) merged from')],
+      );
+
+      await expect(remeasure()).rejects.toThrow(
+        /did not pass:\n {2}complexity: flagged, with no debt filed for it\n/,
+      );
+      expectNothingChanged(before);
+    });
+
+    it('refuses a stage the pin ran that the remeasure did not', async () => {
+      mergeMovedHead();
+      const before = mainSha();
+      measuredAs(pinnedStages.filter(({ stage }) => stage !== 'lint'));
+
+      await expect(remeasure()).rejects.toThrow(
+        /did not pass:\n {2}lint: ran at the pin, absent now\n/,
+      );
+      expectNothingChanged(before);
+    });
+
+    // As when a commit past the pin took the test script away: the stage the
+    // pin's gate ran skips on the merge, and nothing measured it.
+    it('refuses when the test stage the pin ran skips on the merge', async () => {
+      mergeMovedHead();
+      const before = mainSha();
+      const untested: Adapter = {
+        ...passingAdapter,
+        gateCommands: (path) =>
+          passingAdapter.gateCommands(path).filter(({ stage }) => stage !== 'test'),
+      };
+
+      await expect(remeasure({ adapter: untested })).rejects.toThrow(
+        /did not pass:\n {2}test: ran at the pin, skipped now\n/,
+      );
+      expectNothingChanged(before);
+    });
+
+    it('refuses a stage flagged at the pin that the remeasure did not run', async () => {
+      mergeMovedHead(undefined, undefined, [
+        ...pinnedStages,
+        { stage: 'diff-size', status: 'flagged' },
+      ]);
+      const before = mainSha();
+      measuredAs(pinnedStages);
+
+      await expect(remeasure()).rejects.toThrow(
+        /did not pass:\n {2}diff-size: ran at the pin, absent now\n/,
+      );
+      expectNothingChanged(before);
+    });
+
+    const noPinReport = `No passing gate report into merged is recorded right before the merge of`;
+
+    it('refuses with no passing gate report recorded for the pin', async () => {
+      seedPrMerge();
+      mergeAt(commitIn(worktree, 'src/fix.ts', 'export const fix = 1;\n'));
+      const before = mainSha();
+
+      await expect(remeasure()).rejects.toThrow(
+        `${noPinReport} ${pinned}, the commit the gate pinned`,
+      );
+      expectNothingChanged(before);
+    });
+
+    // The report is the last `gate_result` before the merge event naming the
+    // pin: what came after it measured something else, or nothing.
+    it('holds the merge to the report before the pin, not a failing one after it', async () => {
+      const { merge } = mergeMovedHead();
+      appendEvent(db, SESSION_ID, 'gate_result', {
+        from: 'merged',
+        to: 'merged',
+        report: { ...passingReport([]), passed: false },
+      });
+      measuredAs();
+
+      await remeasure();
+      expect(mainSha()).toBe(merge);
+    });
+
+    /** A `merge` event naming `sha`, as `recordMerge` writes it. */
+    const recordPin = (sha: string) =>
+      appendEvent(db, SESSION_ID, 'merge', {
+        branch: BRANCH,
+        sha,
+        target: 'main',
+        files: ['src/feature.ts'],
+        prUrl: PR_URL,
+      });
+
+    it("refuses a pin's merge with no report of its own, never borrowing an older pin's", async () => {
+      // The older pin's report and merge, then the newer pin's merge alone.
+      transitionSession(db, SESSION_ID, 'merged', { report: passingReport() });
+      recordPin('a'.repeat(40));
+      recordPin(pinned);
+      mergeAt(commitIn(worktree, 'src/fix.ts', 'export const fix = 1;\n'));
+      const before = mainSha();
+
+      await expect(remeasure()).rejects.toThrow(`${noPinReport} ${pinned}`);
+      expectNothingChanged(before);
+    });
+
+    // The gate kills the pane and removes the worktree between its report and
+    // its merge event; an event another hand writes then carries no report.
+    it('reads the report past an event of another type before the merge', async () => {
+      transitionSession(db, SESSION_ID, 'merged', { report: passingReport() });
+      appendEvent(db, SESSION_ID, 'steer', { kind: 'peer' });
+      recordPin(pinned);
+      const { merge } = mergeAt(commitIn(worktree, 'src/fix.ts', 'export const fix = 1;\n'));
+      measuredAs();
+
+      await remeasure();
+      expect(mainSha()).toBe(merge);
+    });
+
+    it('holds the merge to the report of the newest merge naming the pin', async () => {
+      mergeMovedHead(undefined, undefined, pinnedStages.slice(0, 3));
+      // A re-gate re-pinning the same sha, its report listing scope-audit.
+      appendEvent(db, SESSION_ID, 'gate_result', {
+        from: 'merged',
+        to: 'merged',
+        report: passingReport(),
+      });
+      recordPin(pinned);
+      const before = mainSha();
+      measuredAs(pinnedStages.slice(0, 3));
+
+      await expect(remeasure()).rejects.toThrow(
+        /did not pass:\n {2}scope-audit: ran at the pin, absent now\n/,
+      );
+      expectNothingChanged(before);
+    });
+
+    it('holds the merge to the report before the pin, not a passing one after it', async () => {
+      mergeMovedHead();
+      appendEvent(db, SESSION_ID, 'gate_result', {
+        from: 'merged',
+        to: 'merged',
+        report: passingReport(pinnedStages.filter(({ stage }) => stage !== 'scope-audit')),
+      });
+      const before = mainSha();
+      measuredAs(pinnedStages.filter(({ stage }) => stage !== 'scope-audit'));
+
+      await expect(remeasure()).rejects.toThrow(
+        /did not pass:\n {2}scope-audit: ran at the pin, absent now\n/,
+      );
+      expectNothingChanged(before);
+    });
+
+    it('refuses when the report before the pin went into a state other than merged', async () => {
+      transitionSession(db, SESSION_ID, 'merged', { report: passingReport() });
+      appendEvent(db, SESSION_ID, 'gate_result', {
+        from: 'merged',
+        to: 'blocked',
+        report: passingReport(),
+      });
+      appendEvent(db, SESSION_ID, 'merge', {
+        branch: BRANCH,
+        sha: pinned,
+        target: 'main',
+        files: ['src/feature.ts'],
+        prUrl: PR_URL,
+      });
+      mergeAt(commitIn(worktree, 'src/fix.ts', 'export const fix = 1;\n'));
+      const before = mainSha();
+
+      await expect(remeasure()).rejects.toThrow(`${noPinReport} ${pinned}`);
+      expectNothingChanged(before);
+    });
+
+    it.each([
+      ['an empty', [], 'build, test, lint'],
+      ['a partial', pinnedStages.filter(({ stage }) => stage !== 'test'), 'test'],
+    ])('refuses %s pin report', async (_case, stages, unlisted) => {
+      mergeMovedHead(undefined, undefined, stages);
+      const before = mainSha();
+
+      await expect(remeasure()).rejects.toThrow(
+        `The gate report recorded for ${pinned}, the commit the gate pinned, lists no ` +
+          `${unlisted} stage`,
+      );
+      expectNothingChanged(before);
+    });
+
+    it('lands a flag whose every figure is no worse than an accepted one', async () => {
+      const { merge } = mergeMovedHead();
+      measuredAs(
+        [...pinnedStages, { stage: 'coverage', status: 'flagged' }],
+        [filed('Coverage gap (patch coverage 61.5% below baseline 70%) merged from')],
+        [filed('Coverage gap (patch coverage 60.5% below baseline 70%) merged from')],
+      );
+
+      await remeasure();
+      expect(mainSha()).toBe(merge);
+    });
+
+    // `debtKind` keeps a percentage's dot: `80%` and `79.6%` are one kind here.
+    it('lands a coverage gap whose percentages moved between whole and decimal', async () => {
+      const { merge } = mergeMovedHead();
+      measuredAs(
+        [...pinnedStages, { stage: 'coverage', status: 'flagged' }],
+        [filed('Coverage gap (patch coverage 80% below baseline 85%) merged from')],
+        [filed('Coverage gap (patch coverage 79.6% below baseline 85.3%) merged from')],
+      );
+
+      await remeasure();
+      expect(mainSha()).toBe(merge);
+    });
+
+    // The files of a forged binary are what the operator accepted, not its count.
+    it('refuses a forged binary on a file the accepted entry did not name', async () => {
+      mergeMovedHead();
+      const before = mainSha();
+      const wording = filed('Text files git reports as binary (1) merged from');
+      measuredAs(
+        [...pinnedStages, { stage: 'diff-size', status: 'flagged' }],
+        [{ description: wording, files: ['src/cli/foo.ts'] }],
+        [{ description: wording, files: ['vendor/bundle.min.js'] }],
+      );
+
+      await expect(remeasure()).rejects.toThrow(
+        `flagged past the accepted ${wording} or on files it did not name: ${wording}`,
+      );
+      expectNothingChanged(before);
+    });
+
+    // Its wording records no patch coverage, which could have fallen to any figure.
+    it('refuses a coverage gap of unreported files and patch coverage on the files accepted', async () => {
+      mergeMovedHead();
+      const before = mainSha();
+      const wording = filed('Coverage gap (unreported files and patch coverage) merged from');
+      const files = ['src/a.ts', 'src/b.ts'];
+      measuredAs(
+        [...pinnedStages, { stage: 'coverage', status: 'flagged' }],
+        [{ description: wording, files }],
+        [{ description: wording, files }],
+      );
+
+      // Its only line: the coverage stage did file debt.
+      await expect(remeasure()).rejects.toThrow(
+        `did not pass:\n  flagged, its figures unreadable or unrecorded: ${wording}\n` +
+          'The session stays merged.',
+      );
+      expectNothingChanged(before);
+    });
+
+    // A JSON string would match a file by substring; it accepts nothing.
+    it.each([
+      ['a JSON string', '"vendor/a.js"'],
+      ['a list holding a number', '["vendor/a", 1]'],
+      ['no JSON at all', 'vendor/a'],
+    ])('refuses against an entry whose files are %s', async (_case, files) => {
+      mergeMovedHead();
+      const before = mainSha();
+      const wording = filed('Text files git reports as binary (1) merged from');
+      measuredAs(
+        [...pinnedStages, { stage: 'diff-size', status: 'flagged' }],
+        [{ description: wording, files: ['vendor/a'] }],
+        [{ description: wording, files }],
+      );
+
+      await expect(remeasure()).rejects.toThrow(`flagged, never accepted: ${wording}`);
+      expectNothingChanged(before);
+    });
+
+    it('lands a forged binary on a file the accepted entry named', async () => {
+      const { merge } = mergeMovedHead();
+      const wording = filed('Text files git reports as binary (1) merged from');
+      measuredAs(
+        [...pinnedStages, { stage: 'diff-size', status: 'flagged' }],
+        [{ description: wording, files: ['vendor/a.js'] }],
+        [{ description: wording, files: ['vendor/a.js', 'vendor/b.js'] }],
+      );
+
+      await remeasure();
+      expect(mainSha()).toBe(merge);
+    });
+
+    // The gate runs these two on the session's worktree; a remeasure has none.
+    it('lands when the pin passed worktree-clean and fresh-base, which it cannot rerun', async () => {
+      const { merge } = mergeMovedHead('src/fix.ts', 'export const fix = 1;\n', [
+        { stage: 'worktree-clean', status: 'pass' },
+        { stage: 'fresh-base', status: 'pass' },
+        ...pinnedStages,
+      ]);
+
+      await remeasure();
+      expect(mainSha()).toBe(merge);
+    });
+
+    /** Stands in for the stages, running the real ones, then `meanwhile`. */
+    function whileMeasuring(meanwhile: () => void): void {
+      const real = vi.mocked(measureBranch).getMockImplementation();
+      vi.mocked(measureBranch).mockImplementationOnce(async (...args) => {
+        const measured = await real?.(...args);
+        meanwhile();
+        return measured;
+      });
+    }
+
+    // The complexity stage reads "before" from the main checkout, which would
+    // hold another PR's change, or this merge's own, in place of the merge's base.
+    it.each([
+      [
+        'behind it, another PR merged on GitHub first',
+        () => {
+          const clone = cloneOrigin();
+          commitIn(clone, 'src/other.ts', 'export const other = 1;\n');
+          sh(clone, 'git', 'push', '-q', 'origin', 'HEAD:main');
+          // A fix round that took in its target, so GitHub's merge is of its tree.
+          sh(worktree, 'git', 'fetch', '-q', origin, 'main');
+          sh(
+            worktree,
+            'git',
+            '-c',
+            'user.email=t@t',
+            '-c',
+            'user.name=t',
+            'merge',
+            '-q',
+            'FETCH_HEAD',
+          );
+          seedPrMerge(PR_URL, passingReport());
+          return mergeAt(sh(worktree, 'git', 'rev-parse', 'HEAD'));
+        },
+      ],
+      [
+        'past it, holding the merge already',
+        () => {
+          const moved = mergeMovedHead();
+          sh(repo, 'git', 'fetch', '-q', origin, 'main');
+          sh(repo, 'git', 'merge', '-q', '--ff-only', moved.merge);
+          return moved;
+        },
+      ],
+    ])('refuses with local main %s, before any stage runs', async (_case, mergeOff) => {
+      const { merge } = mergeOff();
+      const before = mainSha();
+      const failing: Adapter = {
+        ...passingAdapter,
+        gateCommands: () => [{ stage: 'build', command: 'false', args: [] }],
+      };
+
+      await expect(remeasure({ adapter: failing })).rejects.toThrow(
+        `Local main is at ${before}, not ${sh(origin, 'git', 'rev-parse', `${merge}^1`)}, the ` +
+          `commit the merge of ${PR_URL} went onto.`,
+      );
+      expectNothingChanged(before);
+    });
+
+    it('refuses when the local target moved while the stages ran', async () => {
+      mergeMovedHead();
+      whileMeasuring(() => commitIn(repo, 'NOTES.md', 'moved under the remeasure\n'));
+
+      await expect(remeasure()).rejects.toThrow(
+        /While the remeasure ran, local main moved from [0-9a-f]{40}\. .*Nothing was landed/,
+      );
+      expect(landedEvents()).toEqual([]);
+      expect(existsSync(worktree)).toBe(true);
+    });
+
+    // Origin moving on keeps the measured tip in its history: that tip lands.
+    it('lands the tip it fetched when origin moved on while the stages ran', async () => {
+      const { merge } = mergeMovedHead();
+      whileMeasuring(() => {
+        const next = sh(
+          origin,
+          'git',
+          '-c',
+          'user.email=gh@test',
+          '-c',
+          'user.name=github',
+          'commit-tree',
+          `${merge}^{tree}`,
+          '-p',
+          merge,
+          '-m',
+          'Another PR',
+        );
+        sh(origin, 'git', 'update-ref', 'refs/heads/main', next);
+      });
+
+      await remeasure();
+
+      expect(mainSha()).toBe(merge);
+      expect(sh(repo, 'git', 'rev-parse', 'refs/remotes/origin/main')).toBe(merge);
+      expect(JSON.parse(landedEvents()[0]?.payload ?? '{}')).toMatchObject({ sha: merge });
+    });
+
+    it('refuses when origin was rewound while the stages ran', async () => {
+      const { merge } = mergeMovedHead();
+      const before = mainSha();
+      whileMeasuring(() =>
+        sh(
+          origin,
+          'git',
+          'update-ref',
+          'refs/heads/main',
+          sh(origin, 'git', 'rev-parse', `${merge}^1`),
+        ),
+      );
+
+      await expect(remeasure()).rejects.toThrow(
+        `While the remeasure ran, origin's main no longer holds ${merge}.`,
+      );
+      expectNothingChanged(before);
+    });
+
+    // Listed with `--no-renames`, as the scope audit lists them: a file moved
+    // out of a critical area changed that area.
+    it('takes a file renamed out of a critical area as a change to that area', async () => {
+      pinned = commitIn(worktree, 'src/core/land-old.ts', 'export const old = 1;\n');
+      sh(repo, 'git', 'push', '-q', origin, BRANCH);
+      seedPrMerge();
+      sh(worktree, 'git', 'mv', 'src/core/land-old.ts', 'src/old.ts');
+      sh(
+        worktree,
+        'git',
+        '-c',
+        'user.email=l@test',
+        '-c',
+        'user.name=land',
+        'commit',
+        '-qm',
+        'out',
+      );
+      mergeAt(sh(worktree, 'git', 'rev-parse', 'HEAD'));
+      const before = mainSha();
+
+      await expect(remeasure()).rejects.toThrow(
+        'change 1 file(s) in a critical area (src/core/land-old.ts)',
+      );
+      expectNothingChanged(before);
+    });
+
+    // From their merge-base the head would show no change: it kept one the pin
+    // had already changed back.
+    it('refuses a critical-area change a head off an older commit kept', async () => {
+      const kept = commitIn(worktree, 'src/core/land-x.ts', 'export const x = 1;\n');
+      pinned = commitIn(worktree, 'src/core/land-x.ts', 'export const x = 2;\n');
+      sh(repo, 'git', 'push', '-q', origin, BRANCH);
+      seedPrMerge();
+      sh(worktree, 'git', 'reset', '-q', '--hard', kept);
+      const later = commitIn(worktree, 'src/fix.ts', 'export const fix = 1;\n');
+      sh(repo, 'git', 'push', '-q', '-f', origin, BRANCH);
+      mergeAt(later);
+      const before = mainSha();
+
+      await expect(remeasure()).rejects.toThrow(
+        'change 1 file(s) in a critical area (src/core/land-x.ts)',
+      );
+      expectNothingChanged(before);
+    });
+
+    // The pin and the head hold the same file there, so `<pin>..<head>` shows
+    // none: only the merge, from the head's older base, brings it back.
+    /** Commits on the target take no `.worktrees/` gitlink, which `commitIn`'s `add .` would. */
+    const excludeWorktrees = () =>
+      writeFileSync(join(repo, '.git', 'info', 'exclude'), '.worktrees/\n');
+
+    it('refuses a head off an older base that brings back a critical file the target reverted', async () => {
+      excludeWorktrees();
+      const older = mainSha();
+      commitIn(repo, 'src/core/land-x.ts', 'export const x = 1;\n');
+      sh(repo, 'git', 'push', '-q', origin, 'main');
+      sh(worktree, 'git', 'reset', '-q', '--hard', 'main');
+      pinned = commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      sh(repo, 'git', 'push', '-q', '-f', origin, BRANCH);
+      seedPrMerge(PR_URL, passingReport(pinnedStages));
+      sh(repo, 'git', 'rm', '-q', 'src/core/land-x.ts');
+      sh(repo, 'git', '-c', 'user.email=l@test', '-c', 'user.name=land', 'commit', '-qm', 'revert');
+      sh(repo, 'git', 'push', '-q', origin, 'main');
+      sh(worktree, 'git', 'reset', '-q', '--hard', older);
+      // Not the target's commit adding it again: in the same second that would
+      // be the same commit, and the head would descend from it.
+      commitIn(worktree, 'src/fix.ts', 'export const fix = 1;\n');
+      const later = commitIn(worktree, 'src/core/land-x.ts', 'export const x = 1;\n');
+      sh(repo, 'git', 'push', '-q', '-f', origin, BRANCH);
+      expect(sh(repo, 'git', 'diff', '--name-only', pinned, later)).not.toContain('land-x');
+      mergeAt(later);
+      const before = mainSha();
+
+      await expect(remeasure()).rejects.toThrow(
+        'change 1 file(s) in a critical area (src/core/land-x.ts)',
+      );
+      expectNothingChanged(before);
+    });
+
+    it('asks for --approved-by when the pin no longer merges cleanly onto the target', async () => {
+      excludeWorktrees();
+      seedPrMerge(PR_URL, passingReport(pinnedStages));
+      commitIn(repo, 'src/feature.ts', 'export const feature = 2;\n');
+      sh(repo, 'git', 'push', '-q', origin, 'main');
+      const landedOn = mainSha();
+      sh(worktree, 'git', 'reset', '-q', '--hard', 'main');
+      const later = commitIn(worktree, 'src/fix.ts', 'export const fix = 1;\n');
+      sh(repo, 'git', 'push', '-q', '-f', origin, BRANCH);
+      mergeAt(later);
+
+      await expect(remeasure()).rejects.toThrow(
+        `Merging ${pinned}, the commit the gate pinned, onto ${landedOn}, the commit the merge of ` +
+          `${PR_URL} went onto, conflicted or failed`,
+      );
+      expectNothingChanged(landedOn);
+    });
+
+    it('refuses a critical-area change without --approved-by, before any stage runs', async () => {
+      mergeMovedHead('src/core/land.service.ts');
+      const before = mainSha();
+      const failing: Adapter = {
+        ...passingAdapter,
+        gateCommands: () => [{ stage: 'build', command: 'false', args: [] }],
+      };
+
+      await expect(remeasure({ adapter: failing })).rejects.toThrow(
+        /change 1 file\(s\) in a critical area \(src\/core\/land\.service\.ts\); .*`--remeasure --approved-by <who>`/,
+      );
+      expectNothingChanged(before);
+    });
+
+    it('lands a critical-area change on --approved-by, recording the approver', async () => {
+      const { merge } = mergeMovedHead('src/core/land.service.ts');
+
+      await remeasure({ approvedBy: 'tg:alexis' });
+
+      expect(mainSha()).toBe(merge);
+      expect(JSON.parse(landedEvents()[0]?.payload ?? '{}')).toMatchObject({
+        approvedBy: 'tg:alexis',
+      });
+    });
+
+    it('refuses a PR merged at the pin: there is nothing to remeasure', async () => {
+      seedPrMerge();
+      const merge = mergeOnGitHub();
+      fakeGh({
+        state: 'MERGED',
+        baseRefName: 'main',
+        headRefOid: pinned,
+        mergeCommit: { oid: merge },
+      });
+      const before = mainSha();
+
+      await expect(remeasure()).rejects.toThrow('there is nothing to remeasure');
+      expectNothingChanged(before);
+    });
+
+    // Without the audit the empty adapter list reaches the remeasure's own check.
+    it('refuses a remeasure with no adapter to measure with', async () => {
+      mergeMovedHead();
+      const before = mainSha();
+
+      await expect(
+        landSession(db, {
+          repoPath: repo,
+          sessionId: SESSION_ID,
+          adapters: [],
+          audit: false,
+          remeasure: true,
+        }),
+      ).rejects.toThrow(
+        `No adapter for ${repo}; the remeasure would measure nothing. Nothing was landed.`,
+      );
+      expectNothingChanged(before);
+    });
+
+    it('refuses --remeasure together with --accept-head', async () => {
+      const { later } = mergeMovedHead();
+      const before = mainSha();
+
+      await expect(
+        landSession(db, {
+          repoPath: repo,
+          sessionId: SESSION_ID,
+          adapters: [passingAdapter],
+          remeasure: true,
+          acceptHead: later,
+        }),
+      ).rejects.toThrow('--remeasure and --accept-head each vouch for a moved head; pass one.');
+      expectNothingChanged(before);
+    });
+
+    // Each gate wording read back, its stage the one that files it.
+    it.each([
+      ['Text files git reports as binary (3) merged from', 'diff-size'],
+      ['New unused exports (2) merged from', 'dead-code'],
+      ['Complexity rise (+20 decision points) merged from', 'complexity'],
+      ['Coverage unmeasured over 2 changed source file(s) in', 'coverage'],
+      ['Coverage gap (unreported files) merged from', 'coverage'],
+      ['Nested package packages/a changed with no test script, merged from', 'test (packages/a)'],
+    ])('lands "%s" flagged by %s against the same accepted', async (wording, stage) => {
+      const { merge } = mergeMovedHead();
+      measuredAs(
+        [...pinnedStages, { stage, status: 'flagged' }],
+        [filed(wording)],
+        [filed(wording)],
+      );
+
+      await remeasure();
+      expect(mainSha()).toBe(merge);
+    });
   });
 });

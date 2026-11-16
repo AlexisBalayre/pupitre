@@ -946,6 +946,8 @@ interface LandOptions {
   audit: boolean;
   acceptHead?: string;
   abandonClosed?: boolean;
+  remeasure?: boolean;
+  approvedBy?: string;
 }
 
 interface PlanOptions {
@@ -2734,6 +2736,14 @@ export function buildProgram(): Command {
       '--abandon-closed',
       'Record the PR, closed unmerged on GitHub, as abandoned, freeing the ADR numbers it holds',
     )
+    .option(
+      '--remeasure',
+      "Land a PR merged at a head past the pinned sha if the gate's stages pass on the merge",
+    )
+    .option(
+      '--approved-by <who>',
+      'with --remeasure: who approved commits past the pin that change a critical area',
+    )
     .action(async (session: string, opts: LandOptions) => {
       const { repoPath, db } = project();
       // The human merged the PR on GitHub already; what is left moves main to
@@ -2743,7 +2753,9 @@ export function buildProgram(): Command {
         return refuse('`pup land` is refused to sessions; the operator or the conductor runs it.');
       }
       // Vouching for commits no gate measured is the merge's power, which the
-      // conductor does not hold (decisions 47, 164).
+      // conductor does not hold (decisions 47, 164). Neither is a remeasure its
+      // to run: `--approved-by` is a name the CLI cannot check, so only the
+      // operator, who is that name or heard from it, may pass one (decision 185).
       if (opts.acceptHead !== undefined && callingConductor()) {
         return refuse('`pup land --accept-head` is operator-only.');
       }
@@ -2755,6 +2767,18 @@ export function buildProgram(): Command {
       if (opts.abandonClosed && opts.acceptHead !== undefined) {
         return refuse('`pup land --abandon-closed` lands nothing, so it takes no --accept-head.');
       }
+      if (opts.abandonClosed && opts.remeasure) {
+        return refuse('`pup land --abandon-closed` lands nothing, so it takes no --remeasure.');
+      }
+      if (opts.remeasure && callingConductor()) {
+        return refuse('`pup land --remeasure` is operator-only.');
+      }
+      if (opts.approvedBy !== undefined && !opts.remeasure) {
+        return refuse('--approved-by names who approved a remeasure; pass it with --remeasure.');
+      }
+      const approvedBy =
+        opts.approvedBy === undefined ? undefined : sanitizeReason(opts.approvedBy);
+      if (approvedBy === '') return refuse('--approved-by needs a name, such as tg:<user>.');
       if (refusedUnsandboxed()) return;
       if (opts.abandonClosed) {
         let abandoned: { prUrl: string; recorded: boolean };
@@ -2793,6 +2817,8 @@ export function buildProgram(): Command {
               wait: true,
               audit: opts.audit,
               acceptHead: opts.acceptHead,
+              remeasure: opts.remeasure,
+              approvedBy,
             },
             progress,
           ),
@@ -2814,6 +2840,10 @@ export function buildProgram(): Command {
             ? `${target} fast-forwarded to ${outcome.targetSha}.`
             : `${target} already held it at ${outcome.targetSha}.`),
       );
+      if (outcome.remeasure) {
+        console.log('Remeasured the merge; every stage passed:');
+        printGateReport(outcome.remeasure);
+      }
       if (outcome.removedWorktree) console.log('Removed the session worktree.');
       if (outcome.keptWorktree !== undefined) {
         console.log(
