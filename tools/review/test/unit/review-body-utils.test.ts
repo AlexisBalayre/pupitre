@@ -4,7 +4,6 @@ import {
   commentBody,
   findingLine,
   importantMarker,
-  unresolvedPrior,
 } from "@src/review-body.utils";
 import type { Finding, ReviewSummary } from "@src/review-metrics.schemas";
 import { describe, expect, it } from "vitest";
@@ -274,6 +273,7 @@ describe("bodyLines", () => {
       "Not reviewed: the run left no structured output that matches the schema; re-run",
       [],
       0,
+      [],
     ).join("\n");
     expect(rendered).toContain("**Not reviewed: the run left no structured output that matches the schema; re-run.**");
     expect(rendered).toContain("Comment `@claude review` to run it again.");
@@ -289,6 +289,7 @@ describe("bodyLines", () => {
       "Review incomplete: 1 of 6 reviewers returned; re-run",
       [],
       0,
+      [],
     ).join("\n");
     expect(rendered).toContain("**Review incomplete: 1 of 6 reviewers returned; re-run.**");
     expect(rendered).toContain("- **orchestrator**: four reviewers were still out");
@@ -308,6 +309,7 @@ describe("bodyLines", () => {
       null,
       [],
       0,
+      [],
     ).join("\n");
     expect(rendered).toContain("No reviewer was spawned for the changes since abcdef0.");
     expect(rendered).toContain("- **orchestrator**: the delta is a one-line version bump");
@@ -316,13 +318,13 @@ describe("bodyLines", () => {
   });
 
   it("keeps the plain clean-bill line when the record is empty", () => {
-    expect(bodyLines(summary(), null, [], 0)).toEqual([
+    expect(bodyLines(summary(), null, [], 0, [])).toEqual([
       "No issues found. Checked correctness, security, conventions, context, maintainability, simplicity, guards, docs, spec.",
     ]);
   });
 
   it("names the skipped areas", () => {
-    const rendered = bodyLines(summary({ reviewers_spawned: ["correctness", "docs"] }), null, [], 0).join("\n");
+    const rendered = bodyLines(summary({ reviewers_spawned: ["correctness", "docs"] }), null, [], 0, []).join("\n");
     expect(rendered).toContain("Checked correctness, docs.");
     expect(rendered).toContain("Skipped security, conventions, context, maintainability, simplicity, guards.");
   });
@@ -333,6 +335,7 @@ describe("bodyLines", () => {
       null,
       [finding({ file: "gone.ts" })],
       1,
+      [],
     ).join("\n");
     expect(rendered).toContain("1 important finding on the diff below.");
     expect(rendered).toContain("1 important finding with no line in this diff to anchor to:");
@@ -340,7 +343,7 @@ describe("bodyLines", () => {
   });
 
   it("headlines no-blocking when only sub-important content exists", () => {
-    const rendered = bodyLines(summary({ findings: [finding({ tag: "nit" })] }), null, [], 0).join("\n");
+    const rendered = bodyLines(summary({ findings: [finding({ tag: "nit" })] }), null, [], 0, []).join("\n");
     expect(rendered).toContain("No blocking issues found.");
     expect(rendered).toContain("minor issue");
   });
@@ -351,6 +354,7 @@ describe("bodyLines", () => {
       null,
       [],
       0,
+      [],
     ).join("\n");
     expect(rendered).toContain("Incremental review of the changes since abcdef0.");
   });
@@ -365,7 +369,7 @@ describe("bodyLines", () => {
     const incremental = { review_mode: "incremental" as const, incremental_from_sha: "abcdef0123456789" };
 
     it("does not read a clean delta as a clean bill while a prior important is open", () => {
-      const rendered = bodyLines(summary({ ...incremental, prior_importants: [owed] }), null, [], 0).join("\n");
+      const rendered = bodyLines(summary(incremental), null, [], 0, [owed]).join("\n");
       expect(rendered).not.toContain("No issues found");
       expect(rendered).not.toContain("No blocking issues found");
       expect(rendered).toContain("1 important finding from the review of abcdef0 still open (not raised again):");
@@ -373,7 +377,7 @@ describe("bodyLines", () => {
     });
 
     it("lists it after the new importants of the round", () => {
-      const rendered = bodyLines(summary({ ...incremental, prior_importants: [owed] }), null, [], 2).join("\n");
+      const rendered = bodyLines(summary(incremental), null, [], 2, [owed]).join("\n");
       expect(rendered.indexOf("2 important findings on the diff below.")).toBeLessThan(
         rendered.indexOf("still open (not raised again)"),
       );
@@ -381,29 +385,23 @@ describe("bodyLines", () => {
 
     it("names it when no reviewer was spawned for the delta", () => {
       const rendered = bodyLines(
-        summary({ ...incremental, reviewers_spawned: [], reviewers_returned: [], prior_importants: [owed] }),
+        summary({ ...incremental, reviewers_spawned: [], reviewers_returned: [] }),
         null,
         [],
         0,
+        [owed],
       ).join("\n");
       expect(rendered).toContain("No reviewer was spawned for the changes since abcdef0.");
       expect(rendered).toContain("the guard misses deletions");
     });
 
-    it("keeps listing it when the next round copies the unresolved entries forward", () => {
-      const round1 = summary({ ...incremental, prior_importants: [owed] });
-      const round2 = summary({ ...incremental, prior_importants: unresolvedPrior(round1) });
-      const rendered = bodyLines(round2, null, [], 0).join("\n");
-      expect(rendered).not.toContain("No issues found");
-      expect(rendered).toContain("the guard misses deletions");
-    });
-
     it("says nothing about a prior important the head resolved", () => {
       const rendered = bodyLines(
-        summary({ ...incremental, prior_importants: [{ ...owed, status: "resolved" }] }),
+        summary(incremental),
         null,
         [],
         0,
+        [{ ...owed, status: "resolved" }],
       ).join("\n");
       expect(rendered).toContain("No issues found.");
       expect(rendered).not.toContain("still open");
