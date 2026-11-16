@@ -40,9 +40,10 @@
     anchored, exactly 40 lowercase hex digits or 64), one whose commit the repo lacks, or one
     whose commit git cannot diff against the target, fails the stage closed, under its own
     heading. Nothing else in the repo holds what that PR adds, so passing would let a clash
-    through unseen. A commit the repo holds can still be undiffable: a session can write the
-    PR's sha into the shared `shallow` file, which `GIT_HISTORY_ENV` does not pin (decision 89),
-    and so cut its merge base, or it can delete one of the commit's loose objects. Unlike a live
+    through unseen. A commit the repo holds can still be undiffable: a session can delete one
+    of the commit's loose objects, and a real shallow clone lacks the parents past its edge. A
+    `shallow` file a session writes no longer cuts the merge base: `GIT_HISTORY_ENV` pins
+    `GIT_SHALLOW_FILE` to a path that cannot exist (decision 89, as amended). Unlike a live
     branch, which is skipped when unreadable (below), a PR's gated commit is fixed and was read
     at its own gate, so a failed diff of it is refused, not skipped. The line names the branch
     and the PR, whose url is withheld unless it has a pull request's shape (decisions 29, 83).
@@ -139,8 +140,9 @@
     branch adds, one a merged session with an open PR adds (read at its recorded sha after the
     gate deleted its branch, and refused, naming the branch and the PR, when that merge recorded
     no sha, a malformed one, a commit the repo lacks, or a commit git cannot diff because it is
-    parentless or a `shallow` file cuts its history, with a url that is not a pull request's
-    withheld), and a decision renamed onto a taken
+    parentless, with a url that is not a pull request's withheld, and refused as a clash when a
+    `shallow` file a session wrote names that commit, which no longer cuts its history), and a
+    decision renamed onto a taken
     number. It ignores killed sessions, landed PRs, local merges and `pup/` branches no session
     holds. It skips and names an orphan branch while still refusing a clash with another, a
     symbolic ref, a read Node killed for its timeout or buffer (read with the 10 s timeout),

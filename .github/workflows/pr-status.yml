@@ -99,47 +99,59 @@ jobs:
             const REVIEW_HEADING = "## Claude code review";
 
             // A round with no verdict (`noVerdictReason`) opens its body with this line and lists no
-            // finding, so it says nothing about the importants still owed. Matched on the body's
-            // first line only, so a finding's text quoting it cannot hide a verdict.
+            // finding, so it says nothing about the importants still owed. Matched on the line that
+            // opens the body under the heading, whatever blank lines precede it, and on no other,
+            // so a finding's text quoting it cannot hide a verdict.
             function isVerdict(body) {
-              return !/^\*\*.+\.\*\* Nothing in this round is a verdict on the diff\.$/.test(body.split(/\r?\n/)[2] ?? "");
+              const opening = body.split(/\r?\n/).slice(1).find((line) => line.trim() !== "") ?? "";
+              return !/^\*\*.+\.\*\* Nothing in this round is a verdict on the diff\.$/.test(opening);
             }
 
             // The importants a summary review lists with no inline thread to resolve: the round's
             // findings with no line in the diff to anchor to, and the prior round's still open.
-            // A carried one may have been anchored in its own round: `threaded` holds the
-            // `path:line` of every bot thread, resolved or not, and a carried entry at one of them
-            // is left to that thread. Finding text can hold column-0 lines shaped like a count
-            // header or a bullet, so a header's bullets only release importants when they are
-            // exactly the N it announces, in the block `carriedLines` writes (header, blank line,
-            // N bullets), and each `path:line` releases once. A forged header adds its N and can
-            // release at most N, so forgery cannot take the total below the genuine count.
+            // A carried one may have been anchored in its own round: `threaded` holds the important
+            // each bot thread names in its marker, resolved or not, and a carried entry whose file,
+            // whole line range and description match one is left to that thread, one entry per
+            // thread, so the resolved thread of an earlier finding at the same lines releases no
+            // other. A carried entry is the model's copy of the prior record, so its description is
+            // compared on its letters and digits only: a dropped period, a collapsed space or a
+            // re-escaped quote still matches; a rewording does not, and `review-accepted` covers it.
+            // Finding text can hold column-0 lines shaped like a count header or a bullet, so each
+            // carried section is counted on its own: its header adds N, and only the N lines under
+            // it (after the blank line `carriedLines` writes) may release any, each at most one,
+            // when all N are list lines and a blank line or the end of the body follows them;
+            // otherwise the section releases nothing. A forged section therefore never counts
+            // below zero, and no list line outside a section's own N can lower its count.
             function unthreadedImportants(body, threaded) {
+              const key = (file, line, description) =>
+                JSON.stringify([file, line, description.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "")]);
               const lines = body.split(/\r?\n/);
-              const released = new Set();
+              const unclaimed = threaded.map((held) => key(...JSON.parse(held)));
               let sum = 0;
               lines.forEach((line, i) => {
                 const unanchored = /^(\d+) important findings? with no line in this diff to anchor to:$/.exec(line);
                 if (unanchored) sum += Number(unanchored[1]);
-                const prior = /^(\d+) important findings? from .+ still open \(not raised again\):$/.exec(line);
-                if (!prior) return;
-                const owed = Number(prior[1]);
-                sum += owed;
-                let next = i + 1;
-                if (lines[next] === "") next++;
-                const bullets = [];
-                while (lines[next]?.startsWith("- ")) bullets.push(lines[next++]);
-                if (bullets.length !== owed) return;
-                for (const bullet of bullets) {
-                  const at = /^- `(.+?):\s*(\d+)[^`]*` \(/.exec(bullet);
-                  const key = at && `${at[1]}:${at[2]}`;
-                  if (key && threaded.has(key) && !released.has(key)) {
-                    released.add(key);
-                    sum--;
+                const carried = /^(\d+) important findings? from .+ still open \(not raised again\):$/.exec(line);
+                if (!carried) return;
+                const owed = Number(carried[1]);
+                const first = lines[i + 1] === "" ? i + 2 : i + 1;
+                const bullets = lines.slice(first, first + owed);
+                const closed =
+                  bullets.length === owed &&
+                  bullets.every((bullet) => bullet.startsWith("- ")) &&
+                  (lines[first + owed] ?? "") === "";
+                let open = owed;
+                for (const bullet of closed ? bullets : []) {
+                  const entry = /^- `([^`]+):([^`:]+)` \([^)]*\): (.*)$/.exec(bullet);
+                  const holder = entry ? unclaimed.indexOf(key(entry[1], entry[2], entry[3])) : -1;
+                  if (holder !== -1) {
+                    unclaimed.splice(holder, 1);
+                    open--;
                   }
                 }
+                sum += open;
               });
-              return Math.max(sum, 0);
+              return sum;
             }
 
             // Whether the operator's `name` label, read from the PR's issue events in the order
@@ -153,9 +165,13 @@ jobs:
               return last?.event === "labeled" && Date.parse(last.created_at) > since;
             }
 
-            // Every bot-opened review thread, as `ci-wait.service.ts` reads them, at the line its
-            // finding names: a comment pulled to the nearest diff line opens with that line
-            // (`commentBody`).
+            // Every bot-opened review thread, as `ci-wait.service.ts` reads them. `important` is the
+            // `[file, line, description]` its comment's last line names (`importantMarker`), as
+            // JSON, or null: a comment posted before the marker existed, or whose marker names
+            // another file than the thread's, holds none. Only the last line counts, since the
+            // finding's own text comes before it. `review` is the node id of the review that opened
+            // it, which is the REST review's `node_id`: its `databaseId` is a 32-bit Int, and
+            // review ids have outgrown that.
             async function botThreads(number) {
               const found = [];
               let after = null;
@@ -167,8 +183,8 @@ jobs:
                         reviewThreads(first: 100, after: $after) {
                           pageInfo { hasNextPage endCursor }
                           nodes {
-                            isResolved path originalLine
-                            comments(first: 1) { nodes { author { login } body } }
+                            isResolved path
+                            comments(first: 1) { nodes { author { login } body pullRequestReview { id } } }
                           }
                         }
                       }
@@ -180,10 +196,21 @@ jobs:
                 for (const t of threads.nodes) {
                   const first = t.comments.nodes[0];
                   if (first?.author?.login !== "github-actions") continue;
-                  const relocated = /^Re: `(.+):(\d+)`/.exec(first.body ?? "");
+                  const last = (first.body ?? "").trimEnd().split(/\r?\n/).at(-1);
+                  const marker = /^<!-- important (\[.*\]) -->$/.exec(last);
+                  let held = null;
+                  try {
+                    held = marker && JSON.parse(marker[1]);
+                  } catch {}
+                  const named =
+                    Array.isArray(held) &&
+                    held.length === 3 &&
+                    held.every((v) => typeof v === "string") &&
+                    held[0] === t.path;
                   found.push({
                     isResolved: t.isResolved,
-                    at: relocated ? `${relocated[1]}:${relocated[2]}` : `${t.path}:${t.originalLine}`,
+                    important: named ? JSON.stringify(held) : null,
+                    review: first.pullRequestReview?.id,
                   });
                 }
                 after = threads.pageInfo.hasNextPage ? threads.pageInfo.endCursor : null;
@@ -231,19 +258,24 @@ jobs:
               // important with no line to anchor to gets no thread, nor does the incremental round
               // open one for an important it carries: the newest summary review with a verdict
               // lists both until a round finds them fixed, and it too outlives a push. A carried
-              // important that has a thread from its own round is that thread's to hold.
-              const summary = reviews
-                .filter(
-                  (r) =>
-                    r.user?.login === "github-actions[bot]" && r.body?.startsWith(REVIEW_HEADING) && isVerdict(r.body),
-                )
-                .at(-1);
+              // important that has a thread from its own round is that thread's to hold. A review
+              // that raised importants, by a count line or by opening a bot thread, and has no
+              // summary review with a verdict at or after it leaves the count unknown: that holds
+              // the PR in review rather than reading zero.
               const threads = await botThreads(number);
+              const opened = new Set(threads.map((t) => t.review));
+              const isSummary = (r) => r.user?.login === "github-actions[bot]" && r.body?.startsWith(REVIEW_HEADING);
+              const verdictAt = reviews.findLastIndex((r) => isSummary(r) && isVerdict(r.body));
+              const raisedAt = reviews.findLastIndex(
+                (r) => opened.has(r.node_id) ||(isSummary(r) && /^\d+ important findings? /m.test(r.body)),
+              );
+              const summary = reviews[verdictAt];
               // The operator's override: `review-accepted`, added after the newest summary review,
               // accepts the importants that round left with no thread, and the description of that
               // round or the push marker that replaced it. A later round lapses it, so its own
               // importants count; the label comes off so the operator sees that. Open threads
-              // still count: each has its own resolve.
+              // still count: each has its own resolve, and so does an unknown count, which no
+              // summary review the operator could have read lists.
               let accepted = false;
               if (pr.labels.some((l) => l.name === ACCEPTED)) {
                 const events = await github.paginate(github.rest.issues.listEvents, {
@@ -261,7 +293,8 @@ jobs:
               if (
                 (!accepted &&
                   ((review?.state === "success" && /\d+ important finding/.test(review.description ?? "")) ||
-                    unthreadedImportants(summary?.body ?? "", new Set(threads.map((t) => t.at))) > 0)) ||
+                    unthreadedImportants(summary?.body ?? "", threads.flatMap((t) => t.important ?? [])) > 0)) ||
+                raisedAt > verdictAt ||
                 threads.some((t) => !t.isResolved)
               ) {
                 return "review-open";

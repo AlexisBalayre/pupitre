@@ -14,7 +14,7 @@ import { dirname, join } from 'node:path';
 import type { Readable } from 'node:stream';
 import { CACHE_VAR_SUBDIRS, gateChildEnv } from './gate-env.utils.js';
 import { projectId } from './paths.utils.js';
-import { resolvePath, writeProfile } from './sandbox-profile.utils.js';
+import { grantWithin, resolvePath, writeProfile } from './sandbox-profile.utils.js';
 
 /**
  * Containment for the children whose code a session wrote — gate stages,
@@ -65,6 +65,13 @@ interface GateChildOptions {
    * same path as `cwd`, where the write grant is legitimate.
    */
   repoPath: string;
+  /**
+   * The checkout `cwd` must stay under once resolved; the child is refused
+   * otherwise, in every mode (decision 180). The gate passes its checkout, so
+   * a nested package's cwd an earlier child redirected through a link is not
+   * granted the link's target.
+   */
+  root?: string;
   /** Further writable paths — a capability's report directory, which the child may remove. */
   writablePaths?: string[];
   /**
@@ -388,7 +395,12 @@ function gateInvocation(
     cacheDir,
     ...(options.env ? { set: options.env } : {}),
   });
-  if (!applied) return { command, args, env };
+  if (!applied) {
+    // Nothing to grant here, but a stage refused where pup sandboxes is
+    // refused everywhere: one answer for the operator, on every platform.
+    if (options.root) grantWithin(options.cwd, options.root);
+    return { command, args, env };
+  }
   return {
     command: SANDBOX_EXEC,
     args: [
@@ -412,6 +424,7 @@ function gateInvocation(
         [options.cwd],
         [scratchDir, cacheDir],
         options.writablePaths ?? [],
+        options.root,
       ),
       command,
       ...args,

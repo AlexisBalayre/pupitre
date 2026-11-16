@@ -15,6 +15,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { type CiWaitClock, waitForCiReview } from './ci-wait.service.js';
 import { openStore } from './db.client.js';
 import { projectId } from './paths.utils.js';
+import { CI_WAIT_STAGES, stageProgress } from './progress.utils.js';
 import {
   appendEvent,
   ensureProject,
@@ -257,6 +258,28 @@ describe('waitForCiReview', { timeout: 20_000 }, () => {
     );
   });
 
+  // Decision 184: the stages go to stderr, and the digest stays the one line.
+  it('shows its stages off a terminal as one plain line each, the digest unchanged', async () => {
+    githubAnswers({ reviewedOn: null, status: null }, {});
+    const lines: string[] = [];
+    const progress = stageProgress(CI_WAIT_STAGES, { write: (chunk) => lines.push(String(chunk)) });
+
+    const outcome = await waitForCiReview(
+      db,
+      { repoPath: repo, target: SESSION_ID, timeoutMs: 600_000, readTimeoutMs: 1000, clock },
+      progress,
+    );
+
+    expect(outcome.line).toBe(
+      `${PR_URL} at ${HEAD}: review no blocking issues; 0 open thread(s), 0 important → ` +
+        "ready for the operator's merge click",
+    );
+    expect(lines.map((line) => line.replace(/, \d+s\n$/, ''))).toEqual([
+      'stage 1/2, find PR',
+      'stage 2/2, wait for review',
+    ]);
+  });
+
   // On #284, a run's clean status hid a thread an earlier run left open on the
   // same head: every open thread counts, whatever the newest status says.
   it('names pup fix for a thread left open under a clean status, but not for an outdated one', async () => {
@@ -280,7 +303,7 @@ describe('waitForCiReview', { timeout: 20_000 }, () => {
       line:
         `${PR_URL} at ${HEAD}: review no blocking issues; 1 open thread(s), 0 important → ` +
         'resolve the 1 thread(s) a fix round left open, or reply on one as the operator ' +
-        "and re-run pup fix to take it again; the worker sees only the bot's finding, not your reply (the operator's call)",
+        "and re-run pup fix to take it again; the worker gets your reply with the finding (the operator's call)",
     });
 
     // The read stands on its last answer, so this one replaces it.
@@ -314,7 +337,7 @@ describe('waitForCiReview', { timeout: 20_000 }, () => {
       line:
         `${PR_URL} at ${HEAD}: review no blocking issues; 1 open thread(s), 0 important → ` +
         'resolve the 1 thread(s) a fix round left open, or reply on one as the operator ' +
-        "and re-run pup fix to take it again; the worker sees only the bot's finding, not your reply; resolve the 1 unresolved thread(s) a push outdated, once " +
+        'and re-run pup fix to take it again; the worker gets your reply with the finding; resolve the 1 unresolved thread(s) a push outdated, once ' +
         "each fix holds (the operator's call)",
     });
   });

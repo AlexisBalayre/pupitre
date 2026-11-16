@@ -15,6 +15,21 @@ export interface TransitionPayload {
 }
 
 /**
+ * What the CLI saw of a rescope's caller (decision 115). It takes the caller
+ * for the operator from what is absent: no session's worktree holds the cwd,
+ * and neither `PUP_SESSION_ID` nor `PUP_CONDUCTOR` is set. A worker can shed
+ * each of those, so the operator is inferred, never confirmed; the terminal
+ * the command ran on is kept beside the inference for an audit to weigh.
+ */
+export interface RescopeCaller {
+  by: 'inferred-operator';
+  /** The caller's terminal device, null when stdin is not one. */
+  tty: string | null;
+  /** The pane `TMUX_PANE` names, null when it is unset or not a pane id. */
+  tmuxPane: string | null;
+}
+
+/**
  * The payload `appendEvent` writes for each event type. `tool_call`,
  * `scope_violation` and `config_drift` have no writer in pup: the session's
  * hooks append them to its events file, never to the store.
@@ -63,9 +78,24 @@ export interface EventPayloads {
    * `pup fix` handed the PR's CI review back to the session's worker
    * (decision 90): the head the bot reviewed, the ids of the open threads the
    * kickoff listed, and the session's rejection count as the round started,
-   * which the gate's cap counts the round's rejections from.
+   * which the gate's cap counts the round's rejections from. `newestComments`
+   * maps each thread to the `fullDatabaseId`, a decimal string, of the newest
+   * comment the kickoff read on it, so the gate never buries or resolves a
+   * reply posted since; absent when no thread's comments carried one.
    */
-  fix_round: { prUrl: string; head: string; threads: string[]; rejectBase: number };
+  fix_round: {
+    prUrl: string;
+    head: string;
+    threads: string[];
+    rejectBase: number;
+    newestComments?: Record<string, string>;
+  };
+  /**
+   * `pup plan edit --rescope` widened the session's task (decision 115): the
+   * globs it appended to scope-in, what was seen of the caller, the tier the
+   * session's next window runs on, and whether the rescope raised it to critical.
+   */
+  rescope: { task: string; added: string[]; tier: string; raised: boolean } & RescopeCaller;
   steer: { kind: string; by?: string; delivered?: boolean };
   interrupt: { steered: boolean };
   session_done: { summary: string };
@@ -92,6 +122,12 @@ export interface EventPayloads {
   utility_call: { kind: string; ok: boolean; detail?: string };
   /** `stalledAt` for a session's dead turn, `target` for the conductor's (decision 47). */
   turn_died: { reason: string; refusal?: string } & ({ stalledAt: string } | { target: string });
+  /**
+   * The watcher held an idle worker's prompt cache, its events file quiet
+   * `idleMs` and `eventsBytes` long, where the hold's turn starts writing
+   * (decision 179).
+   */
+  cache_hold: { idleMs: number; eventsBytes: number };
   tool_call: Record<string, unknown>;
   scope_violation: { path: string; reason?: string; command?: string };
   config_drift: Record<string, unknown>;

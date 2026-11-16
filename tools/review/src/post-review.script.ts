@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
-import { appendFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { commentableLines, resolveAnchor, trueLine } from "./diff-anchor.utils";
+import { parsePriorReview, priorImportants, priorRecordPath } from "./prior-record.utils";
 import { bodyLines, commentBody, REVIEW_HEADING } from "./review-body.utils";
 import { consolidateSummary } from "./review-consolidate.utils";
 import { noVerdictReason } from "./review-completeness.utils";
@@ -197,12 +198,19 @@ function main(): void {
   const { anchored, unanchored } =
     summary && !noVerdict ? prepare(summary, env.REVIEW_MERGE_BASE ?? "") : { anchored: [], unanchored: [] };
 
+  // Each carried important is named from the prior record, never from the
+  // model's copy of it, so its bullet is the text its thread was posted with.
+  const priorPath = priorRecordPath(env);
+  const priorRecord = parsePriorReview(existsSync(priorPath) ? readFileSync(priorPath, "utf8") : null);
+  if (existsSync(priorPath) && priorRecord === null) warn("the prior review record did not parse; no important is carried");
+  const prior = priorImportants(priorRecord, summary?.prior_importants ?? []);
+
   const runUrl = `https://github.com/${repository}/actions/runs/${runId}`;
   const body = (findings: Finding[], anchoredCount: number) =>
     [
       REVIEW_HEADING,
       "",
-      ...bodyLines(summary, noVerdict, findings, anchoredCount),
+      ...bodyLines(summary, noVerdict, findings, anchoredCount, prior),
       "",
       `<sub>[review run](${runUrl})</sub>`,
     ].join("\n");

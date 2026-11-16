@@ -1,4 +1,4 @@
-import { type Finding, REVIEWER_AREAS, type RefutedFinding, type ReviewSummary } from "./review-metrics.schemas";
+import { type Finding, type PriorImportant, REVIEWER_AREAS, type RefutedFinding, type ReviewSummary } from "./review-metrics.schemas";
 
 /**
  * Renders what the poster submits: the review body, and the line comment for
@@ -51,6 +51,18 @@ function inertFences(markdown: string): string {
     .replace(/<(?=pre\b)/gi, "<\u200b");
 }
 
+/**
+ * The hidden last line of every line comment: the important the thread holds.
+ * pr-status.yml leaves a carried important to the thread whose marker names its
+ * file and whole line range, and its description in the same letters and digits,
+ * as its bullet does: an earlier finding's thread at the same lines holds no other.
+ * `<` and `>` are escaped, so no text can end the comment early.
+ */
+export function importantMarker(finding: Pick<Finding, "file" | "line" | "description">): string {
+  const held = JSON.stringify([finding.file, finding.line, finding.description]);
+  return `<!-- important ${held.replace(/</g, "\\u003c").replace(/>/g, "\\u003e")} -->`;
+}
+
 export function commentBody(finding: Finding, relocatedFrom: number | null): string {
   const parts: string[] = [];
   if (relocatedFrom !== null) parts.push(inertFences(`Re: \`${finding.file}:${relocatedFrom}\``), "");
@@ -65,6 +77,7 @@ export function commentBody(finding: Finding, relocatedFrom: number | null): str
     // text, inert fence.
     parts.push("", relocatedFrom === null ? `${fence}suggestion` : fence, finding.suggestion, fence);
   }
+  parts.push("", importantMarker(finding));
   return parts.join("\n");
 }
 
@@ -117,24 +130,21 @@ export function collapsedSections(summary: ReviewSummary): string[] {
 }
 
 /**
- * The prior round's importants this head still has open. A round's delta can be
- * clean while one of them is still owed, so the body names them: otherwise a clean
- * incremental round reads as "nothing left to fix".
+ * The prior round's importants this head still has open, as `priorImportants`
+ * names them from the prior record. A round's delta can be clean while one of
+ * them is still owed, so the body names them: otherwise a clean incremental
+ * round reads as "nothing left to fix".
  */
-export function unresolvedPrior(summary: ReviewSummary): ReviewSummary["prior_importants"] {
-  return summary.prior_importants.filter((prior) => prior.status === "unresolved");
-}
-
-function carriedLines(summary: ReviewSummary): string[] {
-  const open = unresolvedPrior(summary);
+function carriedLines(summary: ReviewSummary, prior: PriorImportant[]): string[] {
+  const open = prior.filter((entry) => entry.status === "unresolved");
   if (open.length === 0) return [];
   const sha = summary.incremental_from_sha?.slice(0, 7);
   return [
     `${plural(open.length, "important finding")} from ${sha ? `the review of ${sha}` : "the prior review"} still open (not raised again):`,
     "",
     // One line per bullet: pr-status.yml parses the block by counting its lines.
-    ...open.map((prior) =>
-      findingLine({ ...prior, description: prior.description.replace(/\s*[\r\n]+\s*/g, " "), area: "correctness", body: null }),
+    ...open.map((entry) =>
+      findingLine({ ...entry, description: entry.description.replace(/\s*[\r\n]+\s*/g, " "), area: "correctness", body: null }),
     ),
   ];
 }
@@ -149,6 +159,7 @@ export function bodyLines(
   noVerdict: string | null,
   unanchored: Finding[],
   anchoredCount: number,
+  prior: PriorImportant[],
 ): string[] {
   if (noVerdict !== null || summary === null) {
     const blockers = issueLines(summary);
@@ -163,7 +174,7 @@ export function bodyLines(
   if (summary.reviewers_spawned.length === 0) {
     const notes = issueLines(summary);
     const since = summary.incremental_from_sha?.slice(0, 7) ?? "the prior review";
-    const carried = carriedLines(summary);
+    const carried = carriedLines(summary, prior);
     return [
       `No reviewer was spawned for the changes since ${since}.`,
       ...(carried.length ? ["", ...carried] : []),
@@ -183,7 +194,7 @@ export function bodyLines(
       : "";
 
   const sections = collapsedSections(summary);
-  const carried = carriedLines(summary);
+  const carried = carriedLines(summary, prior);
   if (anchoredCount === 0 && unanchored.length === 0 && sections.length === 0 && carried.length === 0) {
     return [`No issues found. ${scope}${coverage}`];
   }

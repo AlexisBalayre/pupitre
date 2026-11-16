@@ -149,3 +149,6 @@
     off and the rename limit at 1 in the shared config (where the numstat, which leaves the
     limit to that config, also counts the delete) while a test renamed onto a test stays a test,
     a root lockfile counts nothing and a lockfile-named file elsewhere still counts.
+
+Note (2026-11-07): decision 143 closes the owed runner-collection item. Only TypeScript reads
+its runner's config; Python keeps this decision's rule, so a `test_*.py` still counts as source.

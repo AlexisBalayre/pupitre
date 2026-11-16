@@ -1,11 +1,13 @@
 import { execFileSync, spawn } from 'node:child_process';
 import {
   chmodSync,
+  closeSync,
   existsSync,
   lstatSync,
   mkdirSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
   rmSync,
   symlinkSync,
@@ -36,11 +38,13 @@ vi.mock('node:child_process', async (importOriginal) => {
 });
 
 // The real rmSync, wrapped so a test can make the gate checkout's removal fail,
-// and the real writeFileSync, so one can fail the merge lock's pid write.
+// the real writeFileSync, so one can fail the merge lock's pid write, and the
+// real closeSync, so one can fail the close of the lock's status file.
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();
   return {
     ...actual,
+    closeSync: vi.fn(actual.closeSync),
     lstatSync: vi.fn(actual.lstatSync),
     rmSync: vi.fn(actual.rmSync),
     writeFileSync: vi.fn(actual.writeFileSync),
@@ -117,6 +121,7 @@ import {
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import { formatDuration } from '../adapters/capability.utils.js';
 import type { Adapter, CapabilityContext } from '../adapters/types/adapter.types.js';
+import { typescriptAdapter } from '../adapters/typescript.adapter.js';
 import { killSession, steerPane } from '../claude/session-runtime.service.js';
 import { runUtility } from '../claude/utility.service.js';
 import { openStore } from './db.client.js';
@@ -139,7 +144,9 @@ import {
   runMergeGate as runGate,
   waitForLoad,
   withMergeLock,
+  withScratchGitDir,
 } from './merge-gate.service.js';
+import { MERGE_STAGES, stageProgress } from './progress.utils.js';
 import { GateInterruptedError, UndeclaredSandboxError } from './sandbox.utils.js';
 import {
   appendEvent,
@@ -268,7 +275,8 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
    * tests can assert on the wiring. `pr view` reports the PR's head as `head`,
    * or else as whatever the branch holds in the repo its `--repo` names, read
    * from outside the repo so only the operator's global rewrite applies, and
-   * the PR as `state` onto main.
+   * the PR as `state` onto main. GitHub reads that head, not a git under pup's
+   * pin, so the read drops the transports `pinnedGitEnv` turns off.
    */
   const fakeGh = (openPrs: unknown[], head?: string, state = 'OPEN'): string =>
     [
@@ -278,7 +286,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       `if [ "$2" = "list" ]; then echo '${JSON.stringify(openPrs)}'; exit 0; fi`,
       'if [ "$2" = "view" ]; then',
       head === undefined
-        ? `  head=$(cd / && git ls-remote "git@\${5%%/*}:\${5#*/}.git" refs/heads/${BRANCH} | cut -f1)`
+        ? `  head=$(cd / && unset GIT_ALLOW_PROTOCOL && GIT_CONFIG_COUNT=0 git ls-remote "git@\${5%%/*}:\${5#*/}.git" refs/heads/${BRANCH} | cut -f1)`
         : `  head=${head}`,
       `  printf '{"headRefOid":"%s","state":"${state}","baseRefName":"main"}\\n' "$head"; exit 0`,
       'fi',
@@ -638,6 +646,97 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     );
   });
 
+  // Decision 143: where the test stage's adapter says what its runner
+  // collects, that is what counts as test, and no other adapter is asked.
+  it('counts every file as source where only the branch config cannot be read', async () => {
+    commitIn(repo, 'package.json', JSON.stringify({ scripts: { test: 'vitest run' } }));
+    commitIn(
+      repo,
+      'vitest.config.ts',
+      "export default { test: { include: ['src/**/*.test.ts'] } };\n",
+    );
+    const worktree = seedSession(db, repo, { scopeIn: ['src/**', 'vitest.config.ts'] });
+    commitIn(
+      worktree,
+      'vitest.config.ts',
+      "import { defineConfig } from './shared.js';\n" +
+        "export default defineConfig({ test: { include: ['src/**/*.test.ts'] } });\n",
+    );
+    commitIn(worktree, 'src/a.test.ts', 'x\n'.repeat(3));
+
+    const outcome = await merge({ ...passingAdapter, testFiles: typescriptAdapter.testFiles });
+
+    expect(untimed(outcome.report.stages)).toContainEqual({
+      stage: 'diff-size',
+      status: 'pass',
+      detail: '6 source + 0 test + 0 docs changed lines',
+    });
+  });
+
+  it('counts a .test.ts outside the trusted vitest include as source', async () => {
+    commitIn(repo, 'package.json', JSON.stringify({ scripts: { test: 'vitest run' } }));
+    commitIn(
+      repo,
+      'vitest.config.ts',
+      "export default { test: { include: ['src/**/*.test.ts'] } };\n",
+    );
+    const worktree = seedSession(db, repo, { scopeIn: ['src/**', 'scripts/**'] });
+    commitIn(worktree, 'src/a.test.ts', 'x\n'.repeat(3));
+    commitIn(worktree, 'scripts/x.test.ts', 'x\n'.repeat(5));
+    const claimsEverything: Adapter = { ...passingAdapter, testFiles: (_, files) => files };
+
+    const outcome = await merge([
+      {
+        ...passingAdapter,
+        testFiles: typescriptAdapter.testFiles,
+        testInputsIntact: typescriptAdapter.testInputsIntact,
+      },
+      claimsEverything,
+    ]);
+
+    expect(untimed(outcome.report.stages)).toContainEqual({
+      stage: 'diff-size',
+      status: 'pass',
+      detail: '5 source + 3 test + 0 docs changed lines',
+    });
+  });
+
+  // The test run reads the checkout's disk after the branch's build ran there;
+  // the split reads the pinned sha. Where they part, no file counts as test.
+  it.each([
+    [
+      'the build narrows the config and the test stage restores it',
+      "cp vitest.config.ts saved.txt && printf '// narrowed\\n' >> vitest.config.ts",
+      'mv saved.txt vitest.config.ts',
+    ],
+    ['the build adds an .npmrc', "printf 'script-shell=/bin/sh\\n' > .npmrc", 'true'],
+  ])('counts every file as source where %s', async (_, build, test) => {
+    commitIn(repo, 'package.json', JSON.stringify({ scripts: { test: 'vitest run' } }));
+    commitIn(
+      repo,
+      'vitest.config.ts',
+      "export default { test: { include: ['src/**/*.test.ts'] } };\n",
+    );
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/a.test.ts', 'x\n'.repeat(3));
+
+    const outcome = await merge({
+      ...passingAdapter,
+      gateCommands: () => [
+        { stage: 'build', command: 'sh', args: ['-c', build] },
+        { stage: 'test', command: 'sh', args: ['-c', test] },
+      ],
+      testFiles: typescriptAdapter.testFiles,
+      testInputsIntact: typescriptAdapter.testInputsIntact,
+    });
+
+    expect(untimed(outcome.report.stages)).toContainEqual({
+      stage: 'diff-size',
+      status: 'pass',
+      detail: '3 source + 0 test + 0 docs changed lines',
+    });
+  });
+
   it('refuses to run while another merge holds the lock', async () => {
     seedSession(db, repo);
     mkdirSync(join(repo, '.git', 'pup-merge.lock'));
@@ -992,6 +1091,64 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     });
   });
 
+  // The build runs session code with the checkout writable, so it can make an
+  // outer segment of a nested package's dir a link to the main checkout's own
+  // copy; the package's stage, the next child, then resolved its cwd there
+  // (decision 180).
+  describe("a nested package's cwd an earlier child redirected", () => {
+    const pkg = 'src/packages/app';
+    const nestedAdapter = (build: string): Adapter => ({
+      ...passingAdapter,
+      gateCommands: () => [
+        { stage: 'build', command: 'sh', args: ['-c', build] },
+        { stage: 'test', command: 'true', args: [] },
+        { stage: 'lint', command: 'true', args: [] },
+      ],
+      touchedNestedPackages: () => [
+        {
+          dir: pkg,
+          changedFiles: [`${pkg}/index.ts`],
+          droppedSources: [],
+          commands: [{ stage: 'test', command: 'sh', args: ['-c', 'touch ran'] }],
+          missing: [],
+        },
+      ],
+    });
+
+    beforeEach(() => {
+      commitIn(repo, `${pkg}/package.json`, '{}\n');
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, `${pkg}/index.ts`, 'export const app = 1;\n');
+    });
+
+    it("refuses the package's stage once an outer segment links out, never running in the target", async () => {
+      const target = join(realpathSync(repo), pkg);
+
+      const outcome = await merge(
+        nestedAdapter(`rm -rf src/packages && ln -s '${dirname(target)}' src/packages`),
+      );
+
+      expect(outcome.report.stages).toContainEqual(
+        expect.objectContaining({
+          stage: expect.stringContaining(pkg),
+          status: 'fail',
+          detail: expect.stringContaining(`resolves to ${target}, outside`),
+        }),
+      );
+      expect(outcome.status).not.toBe('merged');
+      expect(existsSync(join(target, 'ran'))).toBe(false);
+    });
+
+    it("runs the package's stage in its own directory when nothing linked it out", async () => {
+      const outcome = await merge(nestedAdapter('true'));
+
+      expect(outcome.report.stages).toContainEqual(
+        expect.objectContaining({ stage: expect.stringContaining(pkg), status: 'pass' }),
+      );
+      expect(outcome.status).toBe('merged');
+    });
+  });
+
   // The trap this closes end to end: a compare the gate skipped must not write
   // the number it could not compare in as the floor, where no later merge or
   // audit ever sees it. `judgeDebt` withholds it; this is the store agreeing.
@@ -1121,6 +1278,98 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     // An adopted description is unverifiable, so the gate overwrites it.
     expect(ghCalls()).toContainEqual(expect.stringContaining(`pr edit ${openPrOnMain.url}`));
     expect(ghCalls()).not.toContainEqual(expect.stringContaining('pr create'));
+  });
+
+  /** `fakeGh`, but keeping what each `gh api` call reads on stdin in `payloads`, newest last. */
+  const keepingApiPayloads = (script: string, payloads: string): string =>
+    script.replace(
+      'cat >/dev/null',
+      `if [ "$1" = "api" ]; then cat >> ${payloads}; echo >> ${payloads}; exit 0; fi\ncat >/dev/null`,
+    );
+
+  /** The `gh api` calls that set a commit status, and the statuses they set. */
+  const statusesSet = (payloads: string) => ({
+    calls: ghCalls().filter((call) => call.startsWith('api ') && call.includes('/statuses/')),
+    payloads: existsSync(payloads)
+      ? readFileSync(payloads, 'utf8')
+          .split('\n')
+          .filter(Boolean)
+          .map((line) => JSON.parse(line) as Record<string, string>)
+      : [],
+  });
+
+  it.each([
+    ['opens', []],
+    ['reuses', [openPrOnMain]],
+  ])(
+    'with openPr sets a pup-gate success status on the pinned sha when it %s a PR (decision 182)',
+    async (_label, openPrs) => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      const bare = addOrigin();
+      const payloads = `${ghLog}.payloads`;
+
+      const outcome = await withFakeGh(keepingApiPayloads(fakeGh(openPrs), payloads), () =>
+        runMergeGate(db, {
+          repoPath: repo,
+          sessionId: SESSION_ID,
+          adapters: [passingAdapter],
+          openPr: true,
+        }),
+      );
+
+      expect(outcome.status).toBe('merged');
+      const pinned = listEvents(db, SESSION_ID)
+        .filter((row) => row.type === 'merge')
+        .map((row) => (JSON.parse(row.payload) as { sha: string }).sha);
+      expect(pinned).toEqual([sh(bare, 'git', 'rev-parse', BRANCH).trim()]);
+      const { calls, payloads: set } = statusesSet(payloads);
+      expect(calls).toEqual([
+        `api --method POST --hostname github.com repos/owner/repo/statuses/${pinned[0]} --input -`,
+      ]);
+      expect(set).toHaveLength(1);
+      expect(set[0]).toMatchObject({ state: 'success', context: 'pup-gate' });
+      expect(set[0]?.description).toMatch(
+        new RegExp(`^Session ${SESSION_ID} passed the pup merge --pr run of \\d{4}-\\d\\d-\\d\\dT`),
+      );
+      // Only once GitHub reported the PR's head at the pin.
+      const view = ghCalls().findIndex((call) => call.startsWith('pr view'));
+      expect(view).toBeGreaterThan(-1);
+      expect(ghCalls().indexOf(calls[0] as string)).toBeGreaterThan(view);
+    },
+  );
+
+  it('with openPr leaves the session to retry when gh cannot set the status, and the retry sets it', async () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+    addOrigin();
+    const statusRefused = fakeGh([]).replace(
+      'cat >/dev/null',
+      'if [ "$1" = "api" ]; then exit 1; fi\ncat >/dev/null',
+    );
+    const request = {
+      repoPath: repo,
+      sessionId: SESSION_ID,
+      adapters: [passingAdapter],
+      openPr: true,
+    };
+
+    await expect(withFakeGh(statusRefused, () => runMergeGate(db, request))).rejects.toThrow(
+      /gh api --method POST .*\/statuses\//,
+    );
+    expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+    expect(listEvents(db, SESSION_ID).some((row) => row.type === 'merge')).toBe(false);
+
+    const payloads = `${ghLog}.payloads`;
+    const retried = await withFakeGh(keepingApiPayloads(fakeGh([openPrOnMain]), payloads), () =>
+      runMergeGate(db, request),
+    );
+
+    expect(retried.status).toBe('merged');
+    expect(retried.prWasAdopted).toBe(true);
+    expect(statusesSet(payloads).payloads).toEqual([
+      expect.objectContaining({ state: 'success', context: 'pup-gate' }),
+    ]);
   });
 
   it('with openPr refuses a same-named PR from a fork, before pushing', async () => {
@@ -1278,14 +1527,92 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         to: 'merged',
         report: { passed: true },
       });
-      // Adopted and rewritten, then read back at the new pin; nothing pushed.
+      // Adopted and rewritten, then read back at the new pin and vouched for
+      // with pup-gate there (decision 182); nothing pushed.
       expect(prEdits()).toBe(2);
-      expect(ghCalls().at(-1)).toBe(
+      expect(ghCalls().slice(-2)).toEqual([
         `pr view ${PR_URL} --repo github.com/owner/repo --json headRefOid`,
-      );
+        `api --method POST --hostname github.com repos/owner/repo/statuses/${tip} --input -`,
+      ]);
       expect(sh(bare, 'git', 'rev-parse', BRANCH).trim()).toBe(tip);
       expect(vi.mocked(runUtility).mock.calls.length).toBe(drafts);
       expect(killSession).toHaveBeenCalledTimes(1);
+    });
+
+    // Decision 184: the status line follows the re-gate past the lock.
+    it('shows the stages it runs on the status line, not the merge lock throughout', async () => {
+      await gateThenFix();
+      const lines: string[] = [];
+      const progress = stageProgress(MERGE_STAGES, {
+        write: (chunk) => lines.push(String(chunk)),
+      });
+
+      const outcome = await withFakeGh(fakeGh([openPrOnMain]), () =>
+        runMergeGate(
+          db,
+          { repoPath: repo, sessionId: SESSION_ID, adapters: [fixChecking], openPr: true },
+          progress,
+        ),
+      );
+
+      expect(outcome).toMatchObject({ status: 'merged', regated: true });
+      expect(lines.map((line) => line.replace(/, [^,]+\n$/, ''))).toEqual([
+        'stage 1/9, plan',
+        'stage 2/9, merge lock',
+        'stage 4/9, fresh-base',
+        'stage 5/9, build',
+        'stage 6/9, tests and checks',
+        'stage 7/9, scope-audit',
+        'stage 8/9, debt',
+        'stage 9/9, merge',
+      ]);
+    });
+
+    const statusOn = (sha: string) =>
+      `api --method POST --hostname github.com repos/owner/repo/statuses/${sha} --input -`;
+
+    it('sets pup-gate on the pushed head, which the first gate left without one (decision 182)', async () => {
+      const tip = await gateThenFix();
+      const payloads = `${ghLog}.payloads`;
+      // The first gate vouched for its own pin, and the push moved the head off it.
+      expect(statusesSet(payloads).calls).toEqual([statusOn(pinned)]);
+      expect(tip).not.toBe(pinned);
+
+      const outcome = await regate(
+        [fixChecking],
+        keepingApiPayloads(fakeGh([openPrOnMain]), payloads),
+      );
+
+      expect(outcome.status).toBe('merged');
+      expect(statusesSet(payloads).calls).toEqual([statusOn(pinned), statusOn(tip)]);
+      expect(statusesSet(payloads).payloads).toEqual([
+        {
+          state: 'success',
+          context: 'pup-gate',
+          description: expect.stringMatching(
+            new RegExp(`^Session ${SESSION_ID} passed the pup merge --pr run of \\d{4}-`),
+          ),
+        },
+      ]);
+    });
+
+    it('records no re-gate when gh cannot set the status, so a retry sets it', async () => {
+      const tip = await gateThenFix();
+      const statusRefused = fakeGh([openPrOnMain]).replace(
+        'cat >/dev/null',
+        'if [ "$1" = "api" ]; then exit 1; fi\ncat >/dev/null',
+      );
+
+      await expect(regate([fixChecking], statusRefused)).rejects.toThrow(
+        `repos/owner/repo/statuses/${tip}`,
+      );
+      expect(merges().map((merge) => merge.sha)).toEqual([pinned]);
+
+      const outcome = await regate([fixChecking]);
+
+      expect(outcome.status).toBe('merged');
+      expect(merges().map((merge) => merge.sha)).toEqual([pinned, tip]);
+      expect(ghCalls().at(-1)).toBe(statusOn(tip));
     });
 
     /** Run a re-gate expected to refuse, and assert it wrote nothing. */
@@ -1476,6 +1803,9 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(listEvents(db, SESSION_ID)).toHaveLength(events);
       expect(merges().at(-1)?.sha).toBe(pinned);
       expect(getSession(db, SESSION_ID)?.state).toBe('merged');
+      // Neither the head the gate measured nor the one GitHub reported gets pup-gate.
+      expect(ghCalls()).not.toContainEqual(statusOn(tip));
+      expect(ghCalls()).not.toContainEqual(statusOn(elsewhere));
     });
 
     it('refuses a new head failing a hard stage, keeping the earlier merge event newest', async () => {
@@ -1950,6 +2280,85 @@ describe('countChangedLines', () => {
     }
     sh(repo, 'git', 'commit', '-q', '-m', 'from the index');
   }
+
+  // A runner's answer replaces the spelling (decision 143), and a collected
+  // test is named without whatever extension it has, not `.ts` alone.
+  it('counts a collected test production code imports as source', () => {
+    const repo = initRepo();
+    sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
+    commitBlobs(repo, [
+      ['100644', 'src/big.spec.tsx', 'export const X = 1;\n'.repeat(5)],
+      ['100644', 'src/kept.spec.tsx', 'it("k", () => {});\n'.repeat(2)],
+      ['100644', 'src/main.ts', "import { X } from './big.spec.js';\n"],
+      ['100644', 'src/a.test.ts', 'x\n'],
+    ]);
+    const collects = (files: string[]) => files.filter((file) => file.endsWith('.spec.tsx'));
+
+    expect(countChangedLines(repo, 'main', 'feature', collects)).toEqual({
+      source: 7,
+      test: 2,
+      docs: 0,
+      forged: [],
+    });
+  });
+
+  // APFS checks `src/big.test.ts` out into `Src/`, where a case-sensitive
+  // include does not see it, and `src/fixtures/` into a `Fixtures/` an exclude names.
+  it('counts a collected test as source where its directory folds onto another spelling', () => {
+    const repo = initRepo();
+    sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
+    commitBlobs(repo, [
+      ['100644', 'Src/zzz.txt', 'z\n'],
+      ['100644', 'src/big.test.ts', 'export const X = 1;\n'.repeat(5)],
+      ['100644', 'lib/Fixtures/zzz.txt', 'z\n'],
+      ['100644', 'lib/fixtures/c.test.ts', 'x\n'.repeat(2)],
+      ['100644', 'lib/a.test.ts', 'x\n'.repeat(3)],
+    ]);
+    const collects = (files: string[]) => files.filter((file) => file.endsWith('.test.ts'));
+
+    expect(countChangedLines(repo, 'main', 'feature', collects)).toEqual({
+      source: 9,
+      test: 3,
+      docs: 0,
+      forged: [],
+    });
+  });
+
+  it('counts a deleted test the runner collected as test', () => {
+    const repo = initRepo();
+    commitIn(repo, 'src/old.spec.ts', 'it("o", () => {});\n'.repeat(7));
+    sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
+    sh(repo, 'git', 'rm', '-q', 'src/old.spec.ts');
+    sh(repo, 'git', 'commit', '-q', '-m', 'drop the old test');
+    const collects = (files: string[]) => files.filter((file) => file.endsWith('.spec.ts'));
+
+    expect(countChangedLines(repo, 'main', 'feature', collects)).toEqual({
+      source: 0,
+      test: 7,
+      docs: 0,
+      forged: [],
+    });
+  });
+
+  it('counts a file renamed onto a collected name from one the runner does not collect as source', () => {
+    const repo = initRepo();
+    commitIn(repo, 'src/payments.ts', 'export const RATE = 1;\n'.repeat(20));
+    sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
+    sh(repo, 'git', 'mv', 'src/payments.ts', 'src/payments.spec.ts');
+    commitIn(
+      repo,
+      'src/payments.spec.ts',
+      `${'export const RATE = 1;\n'.repeat(20)}${'export const FEE = 2;\n'.repeat(5)}`,
+    );
+    const collects = (files: string[]) => files.filter((file) => file.endsWith('.spec.ts'));
+
+    expect(countChangedLines(repo, 'main', 'feature', collects)).toEqual({
+      source: 5,
+      test: 0,
+      docs: 0,
+      forged: [],
+    });
+  });
 
   // On macOS `core.precomposeUnicode`, which `git init` turns on and a session
   // can write into the shared config, rewrites an NFD `<rev>:<path>` to NFC,
@@ -2495,6 +2904,38 @@ describe('firstOwnSubject (decision 137)', () => {
   });
 });
 
+// The scratch dir borrows the repo's objects, whose `info/alternates` a
+// session can write. A fetch starts `git for-each-ref` in each alternate's
+// repo, with the `-c` pins unset and that repo's config read. Before Git 2.44
+// a dangling ref there could lazily fetch through a remote that config names
+// (decision 89).
+describe('withScratchGitDir under a planted alternates (decision 89)', () => {
+  it("starts no git in the alternate's repo, so its dangling ref fails no fetch", () => {
+    const repo = initRepo();
+    const origin = initRepo();
+    commitIn(origin, 'src/next.ts', 'export const next = 2;\n');
+    const planted = tempDir('pup-planted-');
+    sh(planted, 'git', 'init', '-q', '--bare');
+    writeFileSync(join(planted, 'refs', 'heads', 'dangling'), `${'1'.repeat(40)}\n`);
+    writeFileSync(
+      join(repo, '.git', 'objects', 'info', 'alternates'),
+      `${join(planted, 'objects')}\n`,
+    );
+    const trace = join(tempDir('pup-trace-'), 'trace');
+
+    expect(() => sh(repo, 'git', 'fetch', '-q', origin, 'main')).toThrow();
+    const fetched = withScratchGitDir(repo, 'pup-test-', (git) => {
+      git(['fetch', '--quiet', '--no-tags', origin, '+refs/heads/main:refs/heads/origin'], {
+        stdio: 'pipe',
+        env: { GIT_TRACE: trace },
+      });
+      return git(['rev-parse', 'refs/heads/origin']).trim();
+    });
+    expect(fetched).toBe(sh(origin, 'git', 'rev-parse', 'HEAD').trim());
+    expect(readFileSync(trace, 'utf8')).not.toContain('for-each-ref');
+  });
+});
+
 describe('withMergeLock', () => {
   const lockedRepo = () => {
     const repo = tempDir('pup-lock-');
@@ -2727,6 +3168,22 @@ describe('withMergeLock', () => {
     afterEach(() => {
       errors.mockRestore();
       expect(signals.map((signal) => process.listeners(signal))).toEqual(before);
+    });
+
+    // On NFS a close returns the deferred error of a write before it: the
+    // status is best effort, so its close keeps neither the lock nor the
+    // signal listeners, and never replaces what the section did.
+    it('returns the result and drops the lock when closing its status file fails', async () => {
+      vi.mocked(closeSync).mockImplementationOnce(() => {
+        throw Object.assign(new Error('EIO: i/o error, close'), { code: 'EIO' });
+      });
+
+      const result = await withMergeLock(repo, () => 'merged');
+
+      expect(result).toBe('merged');
+      expect(closeSync).toHaveBeenCalled();
+      expect(existsSync(lock)).toBe(false);
+      expect(errors).not.toHaveBeenCalled();
     });
 
     it('fails on a lock moved away under it, carrying what the section returned', async () => {
@@ -3069,6 +3526,132 @@ describe('withMergeLock', () => {
       expect(errors).toHaveBeenCalledTimes(1);
       expect(readFileSync(join(repo, '.git', 'pup-merge.lock', 'pid'), 'utf8')).toBe(
         `${process.pid}\n`,
+      );
+    });
+
+    // Decision 184: a waiter says what it waits on, and again when that moves.
+    it("names the holder's command, how long it has held the lock and its stage, again when the stage moves", async () => {
+      const since = Date.now() - 125_000;
+      const holding = (stage: string): void =>
+        writeFileSync(
+          join(repo, '.git', 'pup-merge.lock', 'status'),
+          JSON.stringify({ command: 'pup merge s1 --pr\u001b[2J', since, stage }),
+        );
+      holding('stage 6/9, tests and checks');
+      const locked = withMergeLock(repo, () => 'ran', 60_000);
+
+      await vi.advanceTimersByTimeAsync(2_500);
+      holding('stage 7/9, scope-audit');
+      await vi.advanceTimersByTimeAsync(2_000);
+      rmSync(join(repo, '.git', 'pup-merge.lock'), { recursive: true });
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      await expect(locked).resolves.toBe('ran');
+      expect(errors.mock.calls).toEqual([
+        [
+          `Waiting for the merge lock, held by pid ${process.pid} (\`pup merge s1 --pr [2J\`, held ` +
+            'for 2m 05s, at stage 6/9, tests and checks), for up to 60.0s.',
+        ],
+        [
+          `Waiting for the merge lock, held by pid ${process.pid} (\`pup merge s1 --pr [2J\`, held ` +
+            'for 2m 08s, at stage 7/9, scope-audit), for up to 57.0s.',
+        ],
+      ]);
+    });
+
+    it('says the pid alone for a status that is not what pup writes', async () => {
+      writeFileSync(join(repo, '.git', 'pup-merge.lock', 'status'), '{"command":7}');
+      const locked = withMergeLock(repo, () => 'ran', 60_000);
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      rmSync(join(repo, '.git', 'pup-merge.lock'), { recursive: true });
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      await expect(locked).resolves.toBe('ran');
+      expect(errors.mock.calls).toEqual([
+        [`Waiting for the merge lock, held by pid ${process.pid}, for up to 60.0s.`],
+      ]);
+    });
+  });
+
+  describe("the holder's status (decision 184)", () => {
+    it('records its command, when it took the lock and its stage, and removes them with the lock', async () => {
+      const repo = lockedRepo();
+      const lock = join(repo, '.git', 'pup-merge.lock');
+      const progress = stageProgress(['plan', 'merge lock', 'build'], { write: () => undefined });
+      const read = () => JSON.parse(readFileSync(join(lock, 'status'), 'utf8'));
+      const before = Date.now();
+
+      const [taken, moved, entries] = await withMergeLock(
+        repo,
+        () => {
+          const first = read();
+          progress.stage('build');
+          return [first, read(), readdirSync(lock).sort()];
+        },
+        0,
+        progress,
+      );
+
+      expect(taken).toEqual({
+        command: ['pup', ...process.argv.slice(2)].join(' '),
+        since: expect.any(Number),
+        stage: 'stage 2/3, merge lock',
+      });
+      expect(taken.since).toBeGreaterThanOrEqual(before);
+      expect(moved).toEqual({ ...taken, stage: 'stage 3/3, build' });
+      expect(entries).toEqual(['pid', 'status', 'token']);
+      expect(existsSync(lock)).toBe(false);
+      // Released: a later stage writes nothing where the lock was.
+      progress.stage('plan');
+      expect(existsSync(lock)).toBe(false);
+    });
+
+    it('writes no status through a link a session put at its name', async () => {
+      const repo = lockedRepo();
+      const elsewhere = join(tempDir('pup-status-elsewhere-'), 'target');
+      writeFileSync(elsewhere, 'kept');
+      const progress = stageProgress(['build'], { write: () => undefined });
+
+      await withMergeLock(
+        repo,
+        () => {
+          const status = join(repo, '.git', 'pup-merge.lock', 'status');
+          rmSync(status);
+          symlinkSync(elsewhere, status);
+          progress.stage('build');
+        },
+        0,
+        progress,
+      );
+
+      expect(readFileSync(elsewhere, 'utf8')).toBe('kept');
+      expect(existsSync(join(repo, '.git', 'pup-merge.lock'))).toBe(false);
+    });
+
+    it('writes no status into what a session swapped in for the lock path', async () => {
+      const repo = lockedRepo();
+      const lock = join(repo, '.git', 'pup-merge.lock');
+      const elsewhere = tempDir('pup-status-elsewhere-');
+      writeFileSync(join(elsewhere, 'status'), 'kept');
+      const progress = stageProgress(['build'], { write: () => undefined });
+
+      const locked = withMergeLock(
+        repo,
+        () => {
+          renameSync(lock, `${lock}.moved`);
+          symlinkSync(elsewhere, lock);
+          progress.stage('build');
+        },
+        0,
+        progress,
+      );
+
+      await expect(locked).rejects.toThrow(MergeLockLostError);
+      expect(readdirSync(elsewhere)).toEqual(['status']);
+      expect(readFileSync(join(elsewhere, 'status'), 'utf8')).toBe('kept');
+      expect(JSON.parse(readFileSync(join(`${lock}.moved`, 'status'), 'utf8')).stage).toBe(
+        'stage 1/1, build',
       );
     });
   });
