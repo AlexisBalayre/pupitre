@@ -15,9 +15,11 @@ trap 'rm -rf "$STAGE"' EXIT
 [ ! -L "$STAGE" ] || { echo "build: $STAGE is a symlink; refusing to build" >&2; exit 1; }
 
 "$TSC" --noEmit
-"$TSC" -p tsconfig.build.json --outDir "$STAGE/dist"
-[ -f "$STAGE/dist/cli/index.js" ] || { echo "build: $STAGE/dist/cli/index.js was not emitted" >&2; exit 1; }
-chmod +x "$STAGE/dist/cli/index.js"
+# Emit at the same depth as dist/: tsc writes source map paths relative to the output folder.
+"$TSC" -p tsconfig.build.json --outDir "$STAGE"
+[ -f "$STAGE/cli/index.js" ] || { echo "build: $STAGE/cli/index.js was not emitted" >&2; exit 1; }
+chmod +x "$STAGE/cli/index.js"
+chmod 755 "$STAGE"
 
 # The swap holds a mkdir lock, so two builds never interleave their moves of dist/.
 LOCK=.pup-build.lock
@@ -27,10 +29,11 @@ for _ in $(seq 100); do
   sleep 0.1
 done
 [ "$LOCKED" = 1 ] || { echo "build: another build holds $LOCK; remove it if no build is running" >&2; exit 1; }
-trap 'rm -rf "$STAGE"; rmdir "$LOCK"' EXIT
-[ ! -e dist ] || mv dist "$STAGE/old"
-if ! mv "$STAGE/dist" dist; then
-  [ ! -e "$STAGE/old" ] || mv "$STAGE/old" dist
+OLD=$(mktemp -d ./.pup-build.XXXXXX)
+trap 'rm -rf "$STAGE" "$OLD"; rmdir "$LOCK"' EXIT
+[ ! -e dist ] || mv dist "$OLD/dist"
+if ! mv "$STAGE" dist; then
+  [ ! -e "$OLD/dist" ] || mv "$OLD/dist" dist
   echo "build: could not move the new build into dist/; the previous dist/ is kept" >&2
   exit 1
 fi
