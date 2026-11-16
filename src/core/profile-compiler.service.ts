@@ -1240,23 +1240,32 @@ jq -c --arg sid "\${PUP_SESSION_ID:-unknown}" '. + {pup_session_id: $sid}' >> '$
  * Claude Code's Bash sandbox for a worker of a project that turned it on
  * (decision 191). It holds every process a Bash call starts, and nothing else:
  * Read, Edit and Write, the hooks and the session process stay outside it.
- * - Writes: the worktree, the per-user temp directory Claude Code points
- *   `TMPDIR` at, and the main `.git` git grants a linked worktree's commit —
- *   less its `config` and `hooks`, and this worktree's own config. Of the store,
- *   only the SQLite files every `pup` command opens read-write, so `pup session
- *   done`, `ask` and the pre-commit hook's `pup session test` still run; and the
- *   machine's test slots that last one takes (`test-slot.service.ts`). The rest
- *   of the store, the compiled hooks among it, is denied.
+ * - Writes: the worktree, its admin dir, the per-user temp directory Claude
+ *   Code points `TMPDIR` at, and the main `.git` Claude Code grants a linked
+ *   worktree's commit. Within that `.git`, its `config`, `hooks` and `info` are
+ *   denied, and so are `main` (loose, and `packed-refs`, which would move it as
+ *   well) and the admin dir's `commondir`, `gitdir` and `config.worktree`,
+ *   which say which repo and config git uses there. Of the store, only the
+ *   SQLite files every `pup` command opens read-write, so `pup session done`,
+ *   `ask` and the pre-commit hook's `pup session test` still run; and the
+ *   machine's test slots that last one takes (`test-slot.service.ts`).
+ *   A deny wins over any allow, however narrow, so the store and the other
+ *   worktrees' admin dirs are left out of every grant rather than denied: the
+ *   sandbox refuses a path no grant names.
  * - Reads: everything but the operator's credentials.
  * - Network: the package registries only. `strictAllowlist` refuses any other
  *   host: the session skips permission prompts, under which an unlisted host
- *   would otherwise be let through. Loopback binding stays, for tests that
- *   start a local server.
+ *   would otherwise be let through. It holds because the settings arrive by
+ *   `--settings`, never as a project settings file. Local binding stays, though
+ *   on macOS it also opens every localhost port to the sandbox: the web
+ *   dashboard's tests listen on loopback, and the pre-commit hook runs them
+ *   inside the sandbox for any change they import.
  * `failIfUnavailable` refuses the launch rather than run the worker
  * unsandboxed, and no command may ask to leave the sandbox.
  */
 function workerSandbox(input: CompileInput, git: WorktreeGitEnv) {
   const store = projectPaths(input.repoPath);
+  const common = (...path: string[]) => join(git.GIT_COMMON_DIR, ...path);
   return {
     enabled: true,
     failIfUnavailable: true,
@@ -1264,15 +1273,20 @@ function workerSandbox(input: CompileInput, git: WorktreeGitEnv) {
     filesystem: {
       allowWrite: [
         input.worktreePath,
+        git.GIT_DIR,
         store.dbFile,
         `${store.dbFile}-wal`,
         `${store.dbFile}-shm`,
         join(homedir(), '.pupitre', 'slots'),
       ],
       denyWrite: [
-        store.root,
-        join(git.GIT_COMMON_DIR, 'config'),
-        join(git.GIT_COMMON_DIR, 'hooks'),
+        common('config'),
+        common('hooks'),
+        common('info'),
+        common('refs', 'heads', 'main'),
+        common('packed-refs'),
+        join(git.GIT_DIR, 'commondir'),
+        join(git.GIT_DIR, 'gitdir'),
         join(git.GIT_DIR, 'config.worktree'),
       ],
       denyRead: WORKER_SANDBOX_DENY_READ,

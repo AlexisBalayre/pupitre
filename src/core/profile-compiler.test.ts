@@ -941,7 +941,7 @@ describe('the worker sandbox (decision 191)', () => {
     expect(settingsText('skipTestsOnUntestedChanges: false\n')).toBe(without);
   });
 
-  it('confines Bash children to the worktree, denying the store and the main .git config', () => {
+  it('confines Bash children to the worktree, keeping the store and the main .git config unwritable', () => {
     const home = tempDir('pup-sandbox-home-');
     vi.stubEnv('HOME', home);
     try {
@@ -953,23 +953,40 @@ describe('the worker sandbox (decision 191)', () => {
         enabled: true,
         failIfUnavailable: true,
         allowUnsandboxedCommands: false,
-        network: { strictAllowlist: true },
       });
+      const adminDir = join(repo, '.git', 'worktrees', 's-1');
       expect(sandbox.filesystem.allowWrite).toEqual([
         join(repo, '.worktrees', 's-1'),
+        adminDir,
         store.dbFile,
         `${store.dbFile}-wal`,
         `${store.dbFile}-shm`,
         join(home, '.pupitre', 'slots'),
       ]);
+      // A deny wins over any allow, so the store is left out of the grants, not
+      // denied: a denied store root would take state.db with it.
       expect(sandbox.filesystem.denyWrite).toEqual([
-        store.root,
         join(repo, '.git', 'config'),
         join(repo, '.git', 'hooks'),
-        join(repo, '.git', 'worktrees', 's-1', 'config.worktree'),
+        join(repo, '.git', 'info'),
+        join(repo, '.git', 'refs', 'heads', 'main'),
+        join(repo, '.git', 'packed-refs'),
+        join(adminDir, 'commondir'),
+        join(adminDir, 'gitdir'),
+        join(adminDir, 'config.worktree'),
       ]);
       expect(sandbox.filesystem.denyRead).toEqual(expect.arrayContaining(['~/.ssh', '~/.npmrc']));
-      expect(sandbox.network.allowedDomains).toContain('registry.npmjs.org');
+      expect(sandbox.network).toEqual({
+        allowedDomains: [
+          'registry.npmjs.org',
+          'registry.yarnpkg.com',
+          'pypi.org',
+          'files.pythonhosted.org',
+        ],
+        strictAllowlist: true,
+        // The web dashboard's tests listen on loopback (decision 191).
+        allowLocalBinding: true,
+      });
     } finally {
       vi.unstubAllEnvs();
     }

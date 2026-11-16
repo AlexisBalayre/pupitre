@@ -109,12 +109,16 @@ compile.
 
 The block runs every process a Bash call starts inside Claude Code's sandbox:
 
-- Writes: allowed in the worktree, the sandbox's `TMPDIR`, the store's `state.db` files, the
-  machine's test slots, and the main `.git` that a commit needs. Denied for the rest of the store
-  and for the main `.git`'s `config` and `hooks`.
+- Writes allowed: the worktree and its admin dir, the sandbox's `TMPDIR`, the store's `state.db`
+  files, the machine's test slots, and the main `.git` that a commit needs.
+- Writes denied: within the main `.git`, its `config`, `hooks/`, `info/`, `refs/heads/main` and
+  `packed-refs`, and the admin dir's `commondir`, `gitdir` and `config.worktree`. A deny wins
+  over any allow. So the rest of the store and the other worktrees' admin dirs are kept out of
+  every grant rather than denied, which refuses them just the same.
 - Reads: allowed everywhere except the operator's credential files.
-- Network: only the npm and PyPI registries. Any other host is refused, and no command may leave
-  the sandbox.
+- Network: only the npm and PyPI registries, plus loopback, which the web dashboard's tests need.
+  Any other host is refused, and no command may leave the sandbox. The refusal holds because the
+  settings arrive by `--settings`.
 
 The Read, Edit and Write tools, the hooks and the session process are not sandboxed. The hooks
 above still guard them. A pnpm project lists `.pnpm-store/` in its `.gitignore` before turning the
