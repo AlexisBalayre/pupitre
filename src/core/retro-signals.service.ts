@@ -371,7 +371,7 @@ export function formatRetro(report: RetroReport): string {
     out.push(
       `- ${c.class}: ${c.calls} calls, cache hit ${(c.cacheHitRate * 100).toFixed(1)}%, ${c.recaches} re-caches, ${c.compactions} compactions, first-request floor ${Math.round(c.firstRequestFloor)}`,
       `  - context: compactions at a median ${Math.round(c.contextBeforeCompaction)} tokens leaving ${Math.round(c.contextAfterCompaction)}, growth ${Math.round(c.growthPerRequest)} tokens per request, ${(c.highContextCostShare * 100).toFixed(1)}% of spend above 150k`,
-      `  - replayed spend against the actual ${c.cost.toFixed(2)} USD (${c.observedReplayCost.toFixed(2)} at the observed threshold ${Math.round(c.observedThreshold)}): ${c.replay.map((r) => `${r.threshold / 1000}k ${pct(r.changeShare)} (${r.resets} resets)`).join(', ')}`,
+      `  - replayed spend against the actual ${c.cost.toFixed(2)} USD (${c.observedReplayCost.toFixed(2)} at the observed threshold ${Math.round(c.observedThreshold)}): ${c.replay.length > 0 ? c.replay.map((r) => `${r.threshold / 1000}k ${pct(r.changeShare)} (${r.resets} resets)`).join(', ') : 'no lower threshold priced, no fresh window or automatic compaction in the window to restart from'}`,
     );
   }
   out.push('', `## Files read ${REPEATED_READS}+ times in one session`, '');

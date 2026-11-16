@@ -63,6 +63,7 @@ export interface ContextStats {
   observedThreshold: number;
   /** The replay at the observed threshold, the check on the replay itself. */
   observedReplayCost: number;
+  /** Empty when the window holds no fresh window or automatic compaction to price a reset from. */
   replay: ReplayRow[];
 }
 
@@ -118,14 +119,15 @@ function rebuilt(step: Step): boolean {
  * context it would carry reaches the threshold, as an automatic compaction
  * does, and leaves the floor plus the request's new tokens. Otherwise the
  * context grows as it did in the transcript; across an automatic compaction the
- * replay did not take, by what the compaction found over the request before it.
- * Carried context is read from the cache, except after an idle hour, when what
- * the cache did not hold is written again.
+ * replay did not take, by what the compaction found over the request before it,
+ * all still in the cache. Carried context is read from the cache, except after
+ * an idle hour or a `/compact`, when what the cache did not hold is written
+ * again. With no floor to restart from, no reset fires.
  */
 function replayTranscript(
   steps: Step[],
   threshold: number,
-  floor: ResetFloor,
+  floor: ResetFloor | undefined,
 ): { cost: number; resets: number } {
   const longTier = sum(steps.map((s) => s.call.write1h)) >= sum(steps.map((s) => s.call.write5m));
   let cost = 0;
@@ -140,7 +142,7 @@ function replayTranscript(
       i === 0 || step.manualReset
         ? step.context
         : replayed + (step.autoReset ? (step.compactedContext ?? before) : step.context) - before;
-    const reset = i > 0 && !step.manualReset && grown >= threshold;
+    const reset = floor !== undefined && i > 0 && !step.manualReset && grown >= threshold;
     let carriedRead: number;
     let rewrite: number;
     if (reset) {
@@ -148,7 +150,7 @@ function replayTranscript(
       rewrite = floor.write;
     } else {
       const carried = Math.max(0, grown - newTokens);
-      carriedRead = rebuilt(step) ? Math.min(call.read, carried) : carried;
+      carriedRead = step.idle || step.manualReset ? Math.min(call.read, carried) : carried;
       rewrite = carried - carriedRead;
     }
     if (reset || step.manualReset) resets += 1;
@@ -165,13 +167,18 @@ function replayTranscript(
   return { cost, resets };
 }
 
-/** The median request after an automatic compaction; a fresh window's first request when none fired. */
-function resetFloorOf(transcripts: { read: Transcript; steps: Step[] }[]): ResetFloor {
+/**
+ * The median request after an automatic compaction; a fresh window's first
+ * request when none fired. Undefined when neither is in the window: every
+ * transcript began before it and none compacted, so a reset has no price.
+ */
+function resetFloorOf(transcripts: { read: Transcript; steps: Step[] }[]): ResetFloor | undefined {
   const after = transcripts.flatMap(({ steps }) => steps.filter((s) => s.autoReset));
   const firsts = transcripts.flatMap(({ read, steps }) =>
     read.before || !steps[0] ? [] : [steps[0]],
   );
   const sample = after.length > 0 ? after : firsts;
+  if (sample.length === 0) return undefined;
   return {
     read: percentile(
       sample.map((s) => s.call.read),
@@ -238,7 +245,7 @@ function statsOf(items: ScannedTranscript[]): ContextStats {
         : 0,
     observedThreshold: observed,
     observedReplayCost: replayAt(observed > 0 ? observed : Number.POSITIVE_INFINITY).cost,
-    replay: REPLAY_THRESHOLDS.map((threshold) => {
+    replay: (floor ? REPLAY_THRESHOLDS : []).map((threshold) => {
       const replayed = replayAt(threshold);
       return {
         threshold,

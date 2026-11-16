@@ -447,6 +447,28 @@ describe('pup retro context replay', () => {
     expect(at200k?.change).toBeCloseTo(0, 10);
     expect(row?.observedReplayCost).toBeCloseTo(row?.cost ?? 0, 10);
   });
+
+  it('reads the carried context from the cache across an automatic compaction the replay skips', () => {
+    const [uncompacted] = retro(worker(Number.POSITIVE_INFINITY, [], 80)).classes;
+    const [compacted] = retro(worker(160_000, [24_000], 80)).classes;
+    const at200k = compacted?.replay.find((r) => r.threshold === 200_000);
+
+    expect(compacted?.compactions).toBe(1);
+    expect(at200k?.resets).toBe(0);
+    expect(Math.abs((at200k?.cost ?? 0) / (uncompacted?.cost ?? 1) - 1)).toBeLessThan(0.01);
+  });
+
+  it('prices no lower threshold when no reset in the window gives a floor to restart from', () => {
+    const lines = [request('r0', -10 * MINUTE, 9_000, 100_000)];
+    for (let n = 1; n <= 20; n += 1)
+      lines.push(request(`r${n}`, n * MINUTE, 109_000 + (n - 1) * GROWTH, GROWTH - INPUT));
+    const report = retro(lines);
+    const [row] = report.classes;
+
+    expect(row?.replay).toEqual([]);
+    expect(row?.observedReplayCost).toBeCloseTo(row?.cost ?? 0, 10);
+    expect(formatRetro(report)).toContain('no lower threshold priced');
+  });
 });
 
 describe('repoRelative', () => {

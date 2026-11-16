@@ -20,15 +20,17 @@
     *Replay.* Each request keeps its uncached input, its output and its write of new tokens as
     they were. Only what the threshold changes is re-priced, at the `pup usage` prices:
     - The context carried from the request before, read from the cache at 0.1x.
-    - The rewrite after an idle hour: of the carried context, what the actual request read stays
-      read, and the rest is written at the request's own cache tier.
+    - The rewrite after an idle hour or a `/compact`: of the carried context, what the actual
+      request read stays read, and the rest is written at the request's own cache tier.
     - The resets. A replayed reset fires before a request when the context it would carry
       reaches the threshold, as an automatic compaction does. It leaves the class's median
       request after an automatic compaction (its cache read and its write, priced as such), or a
-      fresh window's first request when the class had no compaction.
+      fresh window's first request when the class had no compaction. When the window holds
+      neither (every transcript of the class began before it and none compacted), a reset has
+      no price, and the class shows no replay rows rather than resets that cost nothing.
     Between resets the context grows as it did in the transcript. Across an automatic compaction
     that the replay did not take, it grows by what the compaction found over the request before
-    it. A request that rebuilt the cache (after a compaction or an idle hour) has no new tokens
+    it, and that context is still in the cache, so it is read, not written. A request that rebuilt the cache (after a compaction or an idle hour) has no new tokens
     of its own to keep. A `/compact` (trigger `manual`) is kept at every threshold: it was the
     operator's choice, not the threshold's.
     *Not priced.* The compaction's own summarizing request is not in the transcript, so neither
