@@ -193,6 +193,13 @@ export interface DashboardSession {
    * pull-request shape: it is printed as the thing to act on.
    */
   openPr?: { url?: string };
+  /**
+   * A CI fix round this awaiting-review session finished and nobody has
+   * re-gated yet: its branch head is past the head the open PR pins. The age
+   * is measured from the round's `session_done` in the store, not from a
+   * worktree clock. `summary` is that event's text, scrubbed like the row.
+   */
+  fixCommitted?: { ageMs: number; summary?: string };
   lastGate?: DashboardGate;
   /**
    * The gate refused this awaiting-review session on flagged debt, and no
@@ -220,8 +227,9 @@ export interface DashboardSession {
 export interface DashboardNeed {
   /**
    * The inbox's own order: question, conductor, blocked, top-rung, stalled,
-   * awaiting-review, pr-open. `conductor` is the conductor out of reach, not a
-   * session (decision 168).
+   * awaiting-review, fix-committed, pr-open. `conductor` is the conductor out
+   * of reach, not a session (decision 168). `fix-committed` is a finished CI
+   * fix round waiting on its re-gate.
    */
   kind:
     | 'question'
@@ -230,6 +238,7 @@ export interface DashboardNeed {
     | 'top-rung'
     | 'stalled'
     | 'awaiting-review'
+    | 'fix-committed'
     | 'pr-open';
   /** The session, `conductor` for the conductor's own question, or its window name on a `conductor` line. */
   sessionId: string;
