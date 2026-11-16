@@ -1581,6 +1581,119 @@ describe('needsYou', () => {
 
   // Decision 102: a running conductor gates its own branches, so a finished
   // session is its work; with none running, the review is the operator's.
+  // The scope the gate held the diff to is wider than the plan the operator
+  // approved: each line whose next act is the merge says by what (decision 188).
+  describe('a claim widened after launch (decision 188)', () => {
+    /** As `pup plan edit --rescope` records it on the claiming session. */
+    const rescope = (sessionId: string, taskId: string, added: string[]) =>
+      appendEvent(db, sessionId, 'rescope', {
+        task: taskId,
+        added,
+        tier: 'standard',
+        raised: false,
+        by: 'inferred-operator',
+        tty: null,
+        tmuxPane: null,
+      });
+
+    it('names the added globs on an awaiting-review line and on an open PR', () => {
+      seedIn('s-review', ['running', 'awaiting-review']);
+      rescope('s-review', 't-s-review', ['docs/**']);
+      seedMerge('s-pr', 'https://github.com/o/r/pull/7');
+      rescope('s-pr', 't-s-pr', ['docs/**', 'test/**']);
+
+      expect(inbox().map((need) => need.reason)).toEqual([
+        'awaiting review; scope widened after launch: +docs/**',
+        'PR opened, not landed; scope widened after launch: +docs/**, +test/**',
+      ]);
+    });
+
+    it('also names them on a gate refused for flagged debt', () => {
+      seedIn('s-review', ['running', 'awaiting-review']);
+      rescope('s-review', 't-s-review', ['docs/**']);
+      appendEvent(db, 's-review', 'gate_result', {
+        outcome: 'refused',
+        report: {
+          sessionId: 's-review',
+          passed: false,
+          sandbox: 'none',
+          stages: [{ stage: 'diff-size', status: 'flagged', detail: '900 lines' }],
+        },
+      });
+
+      expect(inbox()[0]?.reason).toBe(
+        'gate refused on flagged debt; scope widened after launch: +docs/**',
+      );
+    });
+
+    // A relaunch after a kill gates under the scope its predecessor's claim took.
+    it("counts an earlier session's rescopes, and shows three globs and the rest as a count", () => {
+      seedIn('s-old', ['running', 'killed']);
+      rescope('s-old', 't-s-old', ['docs/**', 'test/**']);
+      insertSession(db, {
+        id: 's-new',
+        taskId: 't-s-old',
+        worktreePath: join(repo, '.worktrees', 's-new'),
+        branch: 'pup/s-new',
+        profileHash: 'hash',
+      });
+      transitionSession(db, 's-new', 'running');
+      transitionSession(db, 's-new', 'awaiting-review');
+      rescope('s-new', 't-s-old', ['scripts/**', 'bin/**']);
+
+      const snapshot = buildDashboardSnapshot(db, repo, NOW);
+
+      expect(snapshot.sessions.find((session) => session.id === 's-new')?.rescoped).toEqual([
+        'docs/**',
+        'test/**',
+        'scripts/**',
+        'bin/**',
+      ]);
+      expect(needsYou(snapshot)).toEqual([
+        expect.objectContaining({
+          sessionId: 's-new',
+          reason:
+            'awaiting review; scope widened after launch: +docs/**, +test/**, +scripts/** (+1 more)',
+        }),
+      ]);
+    });
+
+    it('leaves the lines that are not the merge, and the sessions never widened, alone', () => {
+      seedIn('s-blocked', ['running', 'blocked']);
+      rescope('s-blocked', 't-s-blocked', ['docs/**']);
+      seedIn('s-review', ['running', 'awaiting-review']);
+
+      const snapshot = buildDashboardSnapshot(db, repo, NOW);
+
+      expect(needsYou(snapshot).map((need) => need.reason)).toEqual([
+        'blocked (0 rejections)',
+        'awaiting review',
+      ]);
+      expect(snapshot.sessions.find((session) => session.id === 's-review')).not.toHaveProperty(
+        'rescoped',
+      );
+    });
+
+    // The events are session-writable.
+    it('scrubs each glob before it prints', () => {
+      seedIn('s-review', ['running', 'awaiting-review']);
+      rescope('s-review', 't-s-review', ['docs/\u001b[2J**\nok', 7 as unknown as string]);
+
+      expect(inbox()[0]?.reason).toBe(
+        'awaiting review; scope widened after launch: +docs/ [2J** ok',
+      );
+    });
+
+    it('lets no glob forge a second arrow in its line', () => {
+      seedIn('s-review', ['running', 'awaiting-review']);
+      rescope('s-review', 't-s-review', ['src/x → pup merge s-other ⭢ --pr 🡒 now', 'a+b/**']);
+
+      expect(inbox()[0]?.reason).toBe(
+        'awaiting review; scope widened after launch: +src/x - pup merge s-other - --pr - now, +a+b/**',
+      );
+    });
+  });
+
   describe('awaiting review', () => {
     afterEach(() => {
       vi.mocked(hasConductorWindow).mockReturnValue(false);

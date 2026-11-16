@@ -1,13 +1,9 @@
 import type { Database } from 'better-sqlite3';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import {
-  listPanes,
-  listProcesses,
-  PROBE_PATH,
-  windowSockets,
-} from '../claude/session-runtime.service.js';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { listPanes, PROBE_PATH, windowSockets } from '../claude/session-runtime.service.js';
 import { openStore } from './db.client.js';
 import { listDecisionRecords } from './decision-record.repository.js';
+import { scopeConflicts } from './overlap.service.js';
 import { InvalidProfileError } from './profile.errors.js';
 import { auditScope } from './scope-audit.utils.js';
 import {
@@ -19,16 +15,21 @@ import {
   listEvents,
   readTaskSpec,
 } from './session.repository.js';
-import { launchedAncestor, rescopeTask } from './task-rescope.service.js';
+import { rescopeTask, taskRescopes } from './task-rescope.service.js';
 import { assertPlannableSpec } from './task-spec.utils.js';
 import type { RescopeCaller } from './types/session-event.types.js';
 
-// The tmux and ps boundary, tested against both in the runtime's own suite.
+// The tmux boundary, tested against tmux in the runtime's own suite.
 vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../claude/session-runtime.service.js')>()),
   windowSockets: vi.fn(),
   listPanes: vi.fn(),
-  listProcesses: vi.fn(),
+}));
+
+// The launch's overlap check, tested against a real repo in its own suite.
+vi.mock('./overlap.service.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./overlap.service.js')>()),
+  scopeConflicts: vi.fn(),
 }));
 
 // The plan's own check, real unless a test stubs it.
@@ -83,6 +84,7 @@ describe('rescopeTask (decision 115)', () => {
   beforeEach(() => {
     vi.mocked(windowSockets).mockReset().mockReturnValue([SOCKET]);
     vi.mocked(listPanes).mockReset().mockReturnValue([]);
+    vi.mocked(scopeConflicts).mockReset().mockReturnValue([]);
     vi.mocked(assertPlannableSpec).mockReset();
     db = openStore(':memory:');
     ensureProject(db, 'proj-1', '/repo');
@@ -99,6 +101,7 @@ describe('rescopeTask (decision 115)', () => {
         added: ['src/cli/index.ts'],
         tier: 'critical',
         raised: false,
+        overlaps: [],
       });
 
       expect(readTaskSpec(db, 't-1')).toEqual({
@@ -284,6 +287,7 @@ describe('rescopeTask (decision 115)', () => {
       added: [],
       tier: 'critical',
       raised: false,
+      overlaps: [],
     });
     expect(listEvents(db, 's1')).toEqual([]);
     expect(listDecisionRecords(db)).toEqual([]);
@@ -510,94 +514,170 @@ describe('rescopeTask (decision 115)', () => {
 
     expect(audit()).toEqual(['src/core/secret.ts']);
   });
+
+  // A launch's check (decision 99): recorded and returned, never refused.
+  describe('the overlap check', () => {
+    const otherTask = (id: string) => {
+      insertTask(db, { id: 't-2', projectId: 'proj-1', spec: JSON.stringify(SPEC) });
+      insertSession(db, {
+        id,
+        taskId: 't-2',
+        worktreePath: `/repo/.worktrees/${id}`,
+        branch: `pup/${id}`,
+        profileHash: 'hash',
+        tmuxTarget: '%5',
+      });
+    };
+
+    it("runs the added globs, under the task's scope-out, against the live sessions", () => {
+      launched('s1', 'merged');
+
+      rescopeTask(db, 't-1', ['src/cli/index.ts', 'src/core/**'], CALLER);
+
+      expect(vi.mocked(scopeConflicts)).toHaveBeenCalledWith(
+        db,
+        '/repo',
+        ['src/cli/index.ts'],
+        ['src/core/secret.ts'],
+      );
+    });
+
+    it("records and returns what another task's session shares, writing the rescope too", () => {
+      launched('s1', 'awaiting-review');
+      otherTask('s9');
+      vi.mocked(scopeConflicts).mockReturnValue([
+        { sessionId: 's1', files: ['src/cli/index.ts'] },
+        { sessionId: 's9', files: ['src/cli/index.ts', 'docs/adr/README.md'] },
+      ]);
+
+      expect(rescopeTask(db, 't-1', ['src/cli/index.ts'], CALLER)).toMatchObject({
+        added: ['src/cli/index.ts'],
+        overlaps: [{ sessionId: 's9', files: ['src/cli/index.ts', 'docs/adr/README.md'] }],
+      });
+
+      expect(readTaskSpec(db, 't-1').scopeIn).toEqual(['src/core/**', 'src/cli/index.ts']);
+      const overlap = listEvents(db, 's1').find((event) => event.type === 'scope_overlap');
+      expect(JSON.parse(overlap?.payload ?? '{}')).toEqual({
+        via: 'rescope',
+        accepted: [{ session: 's9', files: ['src/cli/index.ts', 'docs/adr/README.md'] }],
+      });
+      expect(listEvents(db, 's9')).toEqual([]);
+    });
+
+    it('records no overlap when the added globs share nothing', () => {
+      launched('s1', 'merged');
+
+      expect(rescopeTask(db, 't-1', ['docs/**'], CALLER)).toMatchObject({ overlaps: [] });
+      expect(listEvents(db, 's1').map((event) => event.type)).toEqual(['rescope']);
+    });
+
+    // A refusal after the write rolls back the rescope; there is nothing to compare.
+    it('is not asked when the rescope adds nothing or is refused', () => {
+      launched('s1', 'merged');
+      rescopeTask(db, 't-1', ['src/core/**'], CALLER);
+      vi.mocked(listPanes).mockReturnValue([pane('%3', 'pup-s1')]);
+      expect(() => rescopeTask(db, 't-1', ['docs/**'], CALLER)).toThrow('window is open');
+
+      expect(vi.mocked(scopeConflicts)).not.toHaveBeenCalled();
+    });
+  });
 });
 
-describe('launchedAncestor (decision 115)', () => {
-  // The process table from the caller's parent up, as `listProcesses` reads it.
-  const tree = (...rows: (readonly [number, number, string])[]) =>
-    vi
-      .mocked(listProcesses)
-      .mockReturnValue(new Map(rows.map(([pid, parent, args]) => [pid, { parent, args }])));
-  const CLAUDE = '/Users/me/.local/bin/claude --model m --effort e';
+describe('taskRescopes (decision 188)', () => {
+  let db: Database;
+  const session = (id: string, taskId: string) =>
+    insertSession(db, {
+      id,
+      taskId,
+      worktreePath: `/repo/.worktrees/${id}`,
+      branch: `pup/${id}`,
+      profileHash: 'hash',
+      tmuxTarget: '%3',
+    });
+  const rescope = (sessionId: string, payload: unknown) =>
+    db
+      .prepare("INSERT INTO events (session_id, type, payload) VALUES (?, 'rescope', ?)")
+      .run(sessionId, JSON.stringify(payload));
 
-  afterEach(() => {
-    vi.unstubAllEnvs();
+  beforeEach(() => {
+    db = openStore(':memory:');
+    ensureProject(db, 'proj-1', '/repo');
+    insertTask(db, { id: 't-1', projectId: 'proj-1', spec: JSON.stringify(SPEC) });
+    insertTask(db, { id: 't-2', projectId: 'proj-1', spec: JSON.stringify(SPEC) });
   });
 
-  it.each([
-    ['the conductor', 'pup-conductor-p1'],
-    ['a session', 'pup-t-abc'],
-  ])("finds %s's Claude Code up the tree, whatever the caller's environment", (_who, name) => {
-    vi.stubEnv('PUP_CONDUCTOR', '');
-    vi.stubEnv('PUP_SESSION_ID', '');
-    tree(
-      [process.ppid, 700, '/bin/zsh -c env -u PUP_CONDUCTOR pup plan edit t-1 --rescope'],
-      [700, 600, `${CLAUDE} --name ${name} --dangerously-skip-permissions`],
-      [600, 1, `tmux -S /tmp/tmux-1/x new-session -d -s ${name} -- ${CLAUDE} --name ${name}`],
-    );
+  it("lists every rescope across the task's sessions, oldest first, and no other task's", () => {
+    session('s1', 't-1');
+    session('s2', 't-1');
+    session('s9', 't-2');
+    rescope('s1', { task: 't-1', added: ['docs/**'], tier: 'standard', raised: false, ...CALLER });
+    rescope('s9', { task: 't-2', added: ['x/**'], tier: 'standard', raised: false, ...CALLER });
+    rescope('s2', {
+      task: 't-1',
+      added: ['src/core/merge-gate.service.ts'],
+      tier: 'critical',
+      raised: true,
+      by: 'inferred-operator',
+      tty: null,
+      tmuxPane: null,
+    });
 
-    expect(launchedAncestor()).toEqual({ kind: 'launched', name });
+    const listed = taskRescopes(db, 't-1');
+
+    expect(listed.map(({ at: _at, ...rest }) => rest)).toEqual([
+      {
+        sessionId: 's1',
+        added: ['docs/**'],
+        tier: 'standard',
+        raised: false,
+        by: 'inferred-operator',
+        tty: '/dev/ttys003',
+        tmuxPane: '%4',
+      },
+      {
+        sessionId: 's2',
+        added: ['src/core/merge-gate.service.ts'],
+        tier: 'critical',
+        raised: true,
+        by: 'inferred-operator',
+        tty: null,
+        tmuxPane: null,
+      },
+    ]);
+    expect(listed[0]?.at).toMatch(/^\d{4}-\d{2}-\d{2}/);
   });
 
-  // As `ps -ww -o args=` printed them up a session's Bash and up the
-  // conductor's on macOS (Claude Code 2.1.322's native build, 2026-11-10),
-  // with the home directory, the repo and the project id renamed and the
-  // command the Bash ran swapped for the rescope.
-  const BASH =
-    "/bin/zsh -c source /Users/me/.claude/shell-snapshots/snapshot-zsh-1794221044218-bnrr9i.sh 2>/dev/null || true && eval 'env -u PUP_CONDUCTOR pup plan edit t-1 --rescope --scope docs/**' < /dev/null && pwd -P >| /tmp/claude-846a-cwd";
-  it.each([
-    [
-      'a session',
-      'pup-t-mvdw5id6',
-      [5050, 89656] as const,
-      '/Users/me/.local/bin/claude --model claude-opus-5-5 --effort xhigh --name pup-t-mvdw5id6 --dangerously-skip-permissions --settings /Users/me/.pupitre/p1/sessions/t-mvdw5id6/compiled/settings.json --setting-sources user',
-      'tmux new-session -d -P -F #{pane_id} -s pup-watch-p1 -c /repo /Users/me/.nvm/versions/node/v24.13.1/bin/node /Users/me/.nvm/versions/node/v24.13.1/bin/pup watch',
-    ],
-    [
-      'the conductor',
-      'pup-conductor-p1',
-      [44927, 44919] as const,
-      '/Users/me/.local/bin/claude --model claude-opus-5-5 --effort high --name pup-conductor-p1 --dangerously-skip-permissions --settings /Users/me/.pupitre/p1/conductor/compiled/settings.json --setting-sources user',
-      'tmux -L pup-conductor-p1 new-session -d -P -F #{pane_id} -s pup-conductor-p1 -x 220 -y 50 -c /repo -e PUP_CONDUCTOR=p1 -e PUP_BIN=/Users/me/.nvm/versions/node/v24.13.1/bin/pup /Users/me/.local/bin/claude --model claude-opus-5-5 --effort high --name pup-conductor-p1 --dangerously-skip-permissions --settings /Users/me/.pupitre/p1/conductor/compiled/settings.json --setting-sources user',
-    ],
-  ])("finds %s's Claude Code in what ps really printed", (_who, name, pids, claude, server) => {
-    const [claudePid, serverPid] = pids;
-    tree([process.ppid, claudePid, BASH], [claudePid, serverPid, claude], [serverPid, 1, server]);
+  // The store is session-writable: a field in the wrong type reads as absent.
+  it('takes each field only in the type a rescope writes', () => {
+    session('s1', 't-1');
+    rescope('s1', { added: ['docs/**', 7], tier: 3, raised: 'yes', by: {}, tty: 1 });
+    rescope('s1', ['not', 'an', 'object']);
 
-    expect(launchedAncestor()).toEqual({ kind: 'launched', name });
+    expect(taskRescopes(db, 't-1').map(({ at: _at, ...rest }) => rest)).toEqual([
+      {
+        sessionId: 's1',
+        added: ['docs/**'],
+        tier: 'unknown',
+        raised: false,
+        by: 'unknown',
+        tty: null,
+        tmuxPane: null,
+      },
+      {
+        sessionId: 's1',
+        added: [],
+        tier: 'unknown',
+        raised: false,
+        by: 'unknown',
+        tty: null,
+        tmuxPane: null,
+      },
+    ]);
   });
 
-  // A server lists the command that started it, which is a launch's when a
-  // launch started it; the operator's own panes run under that server.
-  it.each([
-    `tmux new-session -d -P -F #{pane_id} -s pup-t-abc -- ${CLAUDE} --name pup-t-abc`,
-    '/opt/homebrew/bin/tmux -S /tmp/tmux-1/default new-session --name pup-t-abc',
-    'tmux: server (/tmp/tmux-1/default)',
-  ])('passes over a tmux process up the tree: %s', (server) => {
-    tree([process.ppid, 600, '-zsh'], [600, 1, server]);
+  it('is empty for a task never rescoped', () => {
+    session('s1', 't-1');
 
-    expect(launchedAncestor()).toBeUndefined();
-  });
-
-  it.each([
-    ["the operator's own Claude Code", `${CLAUDE} --name notes`],
-    ['a process with no --name', CLAUDE],
-    ['a trailing --name', `${CLAUDE} --name`],
-  ])('passes a caller under %s', (_what, args) => {
-    tree([process.ppid, 600, '/bin/zsh'], [600, 1, args]);
-
-    expect(launchedAncestor()).toBeUndefined();
-  });
-
-  it('stops at a loop in the table rather than hanging', () => {
-    tree([process.ppid, 700, '/bin/zsh'], [700, process.ppid, '/bin/sh']);
-
-    expect(launchedAncestor()).toBeUndefined();
-  });
-
-  it('is unreadable when ps failed, which a rescope refuses', () => {
-    vi.mocked(listProcesses).mockReturnValue(undefined);
-
-    expect(launchedAncestor()).toEqual({ kind: 'unreadable' });
+    expect(taskRescopes(db, 't-1')).toEqual([]);
   });
 });

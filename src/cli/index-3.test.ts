@@ -68,6 +68,11 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
     .refusedSessionEnv,
   saveSessionEnv: (await importOriginal<typeof import('../claude/session-runtime.service.js')>())
     .saveSessionEnv,
+  // The `ps` table and the launches' pane pids an operator-only command walks
+  // (decision 188): this suite runs under a session's Claude Code while
+  // dogfooding, so by default the caller runs under no window pup opened.
+  listProcesses: vi.fn(() => new Map()),
+  recordedPanePids: vi.fn(() => new Map()),
 }));
 // `render` takes over the terminal and never returns until the operator quits,
 // which is the one boundary `pup ui` has; the dashboard it would draw is tested
@@ -180,6 +185,8 @@ import {
 } from '@test/helpers/cli-index.mock.js';
 import { render } from 'ink';
 import {
+  listProcesses,
+  recordedPanePids,
   SessionPaneMissingError,
   SteerNotDeliveredError,
 } from '../claude/session-runtime.service.js';
@@ -316,6 +323,28 @@ describe('CLI commands', () => {
       Object.defineProperty(process, 'platform', original);
     });
   }
+
+  /**
+   * Run the caller under process 700, whose title carries no `--name`: the
+   * markers are the caller's word, emptied or unset, and the process tree it
+   * runs in still holds the pane pid a launch recorded (decision 188).
+   * `window` names the window each project's store recorded pid 700 for, if any.
+   */
+  function underPane(window: (repoPath: string) => string | undefined): void {
+    vi.mocked(listProcesses).mockReturnValue(
+      new Map([
+        [process.ppid, { parent: 700, args: '/bin/zsh -c pup' }],
+        [700, { parent: 1, args: 'claude' }],
+      ]),
+    );
+    vi.mocked(recordedPanePids).mockImplementation((repoPath) => {
+      const recorded = window(repoPath);
+      return new Map(recorded === undefined ? [] : [[700, recorded]]);
+    });
+  }
+
+  /** The window a launch recorded for the project's conductor. */
+  const conductorWindow = (repoPath: string): string => `pup-conductor-${projectId(repoPath)}`;
 
   describe('status', () => {
     it('reports an empty project when nothing runs and nothing is planned', () => {
@@ -1139,6 +1168,40 @@ describe('CLI commands', () => {
       else expect(mountedProps().readOnlyReason).toContain(reason);
     });
 
+    it.each([
+      ['emptied', ''],
+      ['unset', undefined],
+    ])('drives nothing under a recorded pane, its markers %s', (_how, value) => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedSession(repo, 's1');
+      vi.stubEnv('PUP_SESSION_ID', value);
+      vi.stubEnv('PUP_CONDUCTOR', value);
+      underPane(conductorWindow);
+      stubRender();
+
+      runUi(true);
+
+      expect(mountedProps().readOnlyReason).toBe(
+        `read-only: this runs under process 700, the pane pup recorded for ` +
+          `${conductorWindow(repo)}'s window, whatever its environment says (decision 188).`,
+      );
+    });
+
+    it('drives nothing when the process tree cannot be read', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      vi.mocked(listProcesses).mockReturnValue(undefined);
+      stubRender();
+
+      runUi(true);
+
+      expect(mountedProps().readOnlyReason).toBe(
+        'read-only: the process tree could not be read (`ps` failed), so this caller cannot be ' +
+          'told from a session or the conductor (decision 188).',
+      );
+    });
+
     // Ink restores the primary screen when it unmounts, so a signal that would
     // otherwise end the process has to reach unmount first — else the operator
     // is left on the alternate buffer with their scrollback hidden.
@@ -1209,6 +1272,26 @@ describe('CLI commands', () => {
         expect(mountedProps()).toMatchObject({ showAttach: true });
         expect(mountedProps().readOnlyReason).toBeUndefined();
         expect(mountedProps().read().unreadable).toEqual([]);
+      });
+
+      // Each store the fleet reads is asked for the panes its launches
+      // recorded, as its own dashboard would ask it (decision 188).
+      it("drives nothing under a pane one project's launch recorded", () => {
+        const repoA = initRepo();
+        const repoB = initRepo();
+        seedSession(repoA, 's-a');
+        seedSession(repoB, 's-b');
+        useCwd(tempDir('pup-cli-noproj-'));
+        underPane((repoPath) => (repoPath === repoB ? 'pup-s-b' : undefined));
+        stubRender();
+
+        runUi(true);
+
+        expect(mountedProps().readOnlyReason).toBe(
+          "read-only: this runs under process 700, the pane pup recorded for pup-s-b's window, " +
+            'whatever its environment says (decision 188).',
+        );
+        expect(mountedProps()).toMatchObject({ showAttach: true });
       });
 
       it('reads the fleet from inside a repo with --all, and only that repo without it', () => {
@@ -1305,6 +1388,38 @@ describe('CLI commands', () => {
         );
         // The next reading finds the events file readable again.
         expect(mountedProps().read().projects).toHaveLength(2);
+      });
+
+      // A caller under its own project's window that breaks that project's
+      // first reading skips the check for it, so the store is never driven,
+      // even once it mends: else the lone project would be handed to the keys
+      // with no store ever asked (decision 188).
+      it('never drives a project its first reading could not read, once it mends', () => {
+        const broken = initRepo();
+        seedSession(broken, 's1');
+        const unreadable = unreadableEventsFile(broken, 's1');
+        const { db } = resolveProject(broken);
+        transitionSession(db, 's1', 'running');
+        db.close();
+        vi.stubEnv('PUP_SESSION_ID', '');
+        underPane((repoPath) => (repoPath === broken ? 'pup-s1' : undefined));
+        useCwd(tempDir('pup-cli-noproj-'));
+        stubRender();
+
+        try {
+          runUi(true);
+        } finally {
+          chmodSync(unreadable, 0o600);
+        }
+        const reading = mountedProps().read();
+
+        expect(reading.projects).toEqual([]);
+        expect(reading.unreadable).toEqual([
+          `${projectId(broken)}  ${broken}  held out: unreadable when \`pup ui\` started, so ` +
+            'never asked whether this runs under its windows; restart it to read this ' +
+            '(decision 188)',
+        ]);
+        expect(mountedProps().readOnlyReason).toBeUndefined();
       });
 
       it('lists a store it cannot open and reads the rest', () => {
@@ -2396,6 +2511,41 @@ describe('CLI commands', () => {
       expect(errors.join('\n')).toContain('`pup dashboard` is operator-only.');
       expect(process.exitCode).toBe(1);
     });
+
+    // Its page merges, lands, answers and closes debt in the operator's name.
+    it.each([
+      ['emptied', ''],
+      ['unset', undefined],
+    ])('refuses a caller under a recorded pane, its markers %s', async (_how, value) => {
+      const repo = initRepo();
+      useCwd(repo);
+      vi.stubEnv('PUP_SESSION_ID', value);
+      vi.stubEnv('PUP_CONDUCTOR', value);
+      underPane(conductorWindow);
+
+      await buildProgram().parseAsync(['dashboard'], { from: 'user' });
+
+      expect(startWebDashboard).not.toHaveBeenCalled();
+      expect(errors).toEqual([
+        '`pup dashboard` is operator-only, and this runs under process 700, the pane pup ' +
+          `recorded for ${conductorWindow(repo)}'s window, whatever its environment says; run ` +
+          'it from your own shell.',
+      ]);
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('refuses when the process tree cannot be read', async () => {
+      useCwd(initRepo());
+      vi.mocked(listProcesses).mockReturnValue(undefined);
+
+      await buildProgram().parseAsync(['dashboard'], { from: 'user' });
+
+      expect(startWebDashboard).not.toHaveBeenCalled();
+      expect(errors).toEqual([
+        '`pup dashboard` could not read the process tree (`ps` failed), so it cannot tell this ' +
+          'caller from a session or the conductor; nothing changed.',
+      ]);
+    });
   });
 
   describe('debt', () => {
@@ -3036,6 +3186,111 @@ describe('CLI commands', () => {
       expect(errors).toEqual(['`pup merge` is operator-only; sessions cannot merge sessions.']);
       expect(runMergeGate).not.toHaveBeenCalled();
     });
+
+    // The calls the conductor is refused by its marker are the operator's
+    // alone, and a caller that emptied or unset the markers still runs under
+    // the pane a launch recorded (decision 188).
+    const DEBT = ['--accept-debt', 'r', '--review-by', 'c'];
+    const OPERATORS_ALONE = [
+      ['the local merge', []],
+      ['a debt accepted in the operator’s name', ['--pr', ...DEBT]],
+      ['a debt approved by `human`', ['--pr', ...DEBT, '--approved-by', 'Human']],
+    ] as const;
+    const MARKERS = [
+      ['emptied', ''],
+      ['unset', undefined],
+    ] as const;
+
+    it.each(
+      OPERATORS_ALONE.flatMap(([what, flags]) =>
+        MARKERS.map(([how, value]) => ({ what, flags, how, value })),
+      ),
+    )('refuses $what under a recorded pane, its markers $how', async ({ flags, value }) => {
+      const repo = initRepoWithAdapter();
+      useCwd(repo);
+      vi.stubEnv('PUP_SESSION_ID', value);
+      vi.stubEnv('PUP_CONDUCTOR', value);
+      underPane(conductorWindow);
+
+      await buildProgram().parseAsync(['merge', 's1', ...flags], { from: 'user' });
+
+      expect(errors).toEqual([
+        '`pup merge` is operator-only, and this runs under process 700, the pane pup recorded ' +
+          `for ${conductorWindow(repo)}'s window, whatever its environment says; run it from ` +
+          'your own shell.',
+      ]);
+      expect(process.exitCode).toBe(1);
+      expect(runMergeGate).not.toHaveBeenCalled();
+    });
+
+    // What the conductor may run from its window, which no session may: the
+    // gate rejects or parks the branch, and a relayed approval is written to
+    // the ledger as a human's.
+    const CONDUCTORS_PR = [
+      ['a PR', ['--pr']],
+      ['a PR with a named approver', ['--pr', ...DEBT, '--approved-by', 'tg:someone']],
+    ] as const;
+
+    it.each(
+      CONDUCTORS_PR.flatMap(([what, flags]) =>
+        MARKERS.map(([how, value]) => ({ what, flags, how, value })),
+      ),
+    )(
+      "refuses $what under a session's recorded pane, its markers $how",
+      async ({ flags, value }) => {
+        const repo = initRepoWithAdapter();
+        useCwd(repo);
+        vi.stubEnv('PUP_SESSION_ID', value);
+        vi.stubEnv('PUP_CONDUCTOR', value);
+        underPane(() => 'pup-s9');
+
+        await buildProgram().parseAsync(['merge', 's1', ...flags], { from: 'user' });
+
+        expect(errors).toEqual([
+          '`pup merge` is operator-only, and this runs under process 700, the pane pup recorded ' +
+            "for pup-s9's window, whatever its environment says; run it from your own shell.",
+        ]);
+        expect(process.exitCode).toBe(1);
+        expect(runMergeGate).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([...OPERATORS_ALONE, ...CONDUCTORS_PR])(
+      'refuses %s when the process tree cannot be read',
+      async (_what, flags) => {
+        useCwd(initRepoWithAdapter());
+        vi.mocked(listProcesses).mockReturnValue(undefined);
+
+        await buildProgram().parseAsync(['merge', 's1', ...flags], { from: 'user' });
+
+        expect(errors).toEqual([
+          '`pup merge` could not read the process tree (`ps` failed), so it cannot tell this ' +
+            'caller from a session or the conductor; nothing changed.',
+        ]);
+        expect(runMergeGate).not.toHaveBeenCalled();
+      },
+    );
+
+    // The gate to a PR, with any debt approval relayed under its approver's
+    // name, is the conductor's to run from its own window (decision 75).
+    it.each(CONDUCTORS_PR)(
+      'lets the conductor gate %s under its recorded pane',
+      async (_what, flags) => {
+        const repo = initRepoWithAdapter();
+        useCwd(repo);
+        vi.stubEnv('PUP_CONDUCTOR', projectId(repo));
+        underPane(conductorWindow);
+        vi.mocked(runMergeGate).mockResolvedValue(
+          mergedOutcome({ prUrl: 'https://github.com/acme/repo/pull/7', prWasAdopted: false }),
+        );
+
+        await buildProgram().parseAsync(['merge', 's1', ...flags], { from: 'user' });
+
+        expect(errors).toEqual([]);
+        expect(listProcesses).toHaveBeenCalledOnce();
+        expect(runMergeGate).toHaveBeenCalledTimes(1);
+      },
+    );
 
     it('forwards the repo, session, and detected adapter to the gate', async () => {
       const repo = initRepoWithAdapter();
