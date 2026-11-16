@@ -142,7 +142,8 @@ also adds a `Read(...)` deny rule for each credential path, which keeps the Read
 and Glob with it, from the same files; the scope hook still guards Edit and Write. A pnpm project lists `.pnpm-store/` in its `.gitignore` before turning the
 setting on, because pnpm keeps a store in the worktree when it cannot write the shared one.
 The setting was probed only on macOS. On Linux, grants of files that do not exist at launch,
-such as `state.db-wal` and the handoff document, may not hold (decision 191, ceiling 12).
+such as `state.db-wal` and the handoff document, may not hold, so until Linux is probed the
+setting refuses the compile there (decision 191, ceiling 12).
 
 ## Project brief (decision 57)
 

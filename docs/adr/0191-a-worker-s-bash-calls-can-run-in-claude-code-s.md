@@ -15,7 +15,7 @@
     never a window already running. It is off by default. While it is off, the compiled settings
     are byte for byte what they were, and so is the profile hash. A value that is not a boolean
     refuses the compile, so a typo cannot launch a worker unsandboxed without anyone noticing. The
-    conductor is not sandboxed.
+    conductor is not sandboxed. On Linux the setting refuses the compile for now (ceiling 12).
     *What the block allows.*
     - Writes allowed: the worktree, its admin dir under the main `.git`'s `worktrees/`, and the
       per-user temp directory Claude Code points `TMPDIR` at. Claude Code adds its own grant of
@@ -209,7 +209,9 @@
         SQLite deletes them when the last connection closes, which every short-lived `pup`
         command does. The handoff document does not exist either. Claude Code's Linux sandbox is
         expected to grant only the paths that exist when it starts, so on Linux a sandboxed
-        `pup` may fail to open the store and the handoff may fail to write.
+        `pup` may fail to open the store and the handoff may fail to write. Until Linux is
+        probed, `workerSandbox: true` refuses the compile there, and so the launch, the way a
+        malformed value does.
     *Left for follow-ups.*
     - Gaps in the read denials: `.yarnrc.yml`, `pip.conf`, cargo and gem credentials, the
       `.claude.json` in the home directory, and the transcripts.

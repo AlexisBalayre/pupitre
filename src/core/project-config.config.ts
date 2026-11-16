@@ -61,8 +61,16 @@ export function skipsTestsOnUntestedChanges(repoPath: string): boolean {
 
 /**
  * Whether a worker's compiled settings switch on the Bash sandbox (decision
- * 191). No unless the project says so.
+ * 191). No unless the project says so. On Linux it throws rather than launch:
+ * the sandbox's grants of files that do not exist at launch were probed only
+ * on macOS (ceiling 12).
  */
 export function workerSandboxOn(repoPath: string): boolean {
-  return projectSetting(repoPath, WORKER_SANDBOX_KEY, false);
+  const on = projectSetting(repoPath, WORKER_SANDBOX_KEY, false);
+  if (on && process.platform === 'linux') {
+    throw new Error(
+      `Invalid ${PROJECT_CONFIG_PATH}: ${WORKER_SANDBOX_KEY} is refused on Linux until the sandbox is probed there (decision 191).`,
+    );
+  }
+  return on;
 }

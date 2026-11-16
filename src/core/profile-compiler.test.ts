@@ -12,7 +12,7 @@ import {
 import { dirname, join } from 'node:path';
 import { makeInput } from '@test/helpers/profile-compiler.mock.js';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { saveSessionEnv } from '../claude/session-runtime.service.js';
 import { DEFAULT_BASE_PROFILE } from './default-profile.constants.js';
 import { projectPaths } from './paths.utils.js';
@@ -910,6 +910,15 @@ describe('the status line records the plan usage (decision 156)', () => {
 
 // Decision 191: Claude Code's Bash sandbox, behind the project's `workerSandbox` setting.
 describe('the worker sandbox (decision 191)', () => {
+  // The setting refuses on Linux (ceiling 12), so these compile as on macOS.
+  const platform = Object.getOwnPropertyDescriptor(process, 'platform') as PropertyDescriptor;
+  beforeEach(() => {
+    Object.defineProperty(process, 'platform', { ...platform, value: 'darwin' });
+  });
+  afterEach(() => {
+    Object.defineProperty(process, 'platform', platform);
+  });
+
   /** A repo directory whose `.pupitre/project.yml` holds `content`, or none when undefined. */
   function repoWith(content?: string): string {
     const repo = tempDir('pup-sandbox-repo-');

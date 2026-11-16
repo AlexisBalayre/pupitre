@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, onTestFinished } from 'vitest';
 import { skipsTestsOnUntestedChanges, workerSandboxOn } from './project-config.config.js';
 
 /** A repo directory holding `.pupitre/project.yml` with `content`, or none when undefined. */
@@ -70,5 +70,22 @@ describe('workerSandboxOn', () => {
     },
   ])('refuses $name rather than leave the sandbox off', ({ content, error }) => {
     expect(() => workerSandboxOn(repoWith(content))).toThrow(error);
+  });
+
+  // Decision 191, ceiling 12: Linux was not probed, so the setting refuses there.
+  it.each<{ platform: NodeJS.Platform; on: boolean }>([
+    { platform: 'linux', on: true },
+    { platform: 'darwin', on: false },
+  ])('refuses the setting on Linux only ($platform)', ({ platform, on }) => {
+    const original = Object.getOwnPropertyDescriptor(process, 'platform') as PropertyDescriptor;
+    Object.defineProperty(process, 'platform', { ...original, value: platform });
+    onTestFinished(() => {
+      Object.defineProperty(process, 'platform', original);
+    });
+    const check = () => workerSandboxOn(repoWith('workerSandbox: true\n'));
+
+    if (on) expect(check).toThrow(/refused on Linux/);
+    else expect(check()).toBe(true);
+    expect(workerSandboxOn(repoWith('workerSandbox: false\n'))).toBe(false);
   });
 });
