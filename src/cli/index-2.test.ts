@@ -98,7 +98,7 @@ vi.mock('../core/merge-gate.service.js', () => ({
   countChangedLines: vi.fn(() => ({ source: 0, test: 0, docs: 0, forged: [] })),
 }));
 // The land's own git and gh work is land.test.ts's, against a real repo.
-vi.mock('../core/land.service.js', () => ({ landSession: vi.fn() }));
+vi.mock('../core/land.service.js', () => ({ abandonClosedSession: vi.fn(), landSession: vi.fn() }));
 // So is the retire's, in session-retire.test.ts.
 vi.mock('../core/session-retire.service.js', () => ({ retireSession: vi.fn() }));
 // So is the fix round's, in fix-round.test.ts; `pup status` asks GitHub nothing here.
@@ -179,7 +179,7 @@ import type { SessionState } from '../core/db.client.js';
 import { insertDecisionRecord } from '../core/decision-record.repository.js';
 import { DEFAULT_BASE_PROFILE } from '../core/default-profile.constants.js';
 import { ciReviewLookup, startFixRound } from '../core/fix-round.service.js';
-import { landSession } from '../core/land.service.js';
+import { abandonClosedSession, landSession } from '../core/land.service.js';
 import { MergeLockLostError } from '../core/merge-gate.errors.js';
 import { projectId, projectPaths } from '../core/paths.utils.js';
 import { InvalidProfileError } from '../core/profile.errors.js';
@@ -1754,6 +1754,49 @@ describe('CLI commands', () => {
       });
 
       expect(firstCall(landSession)[1]).toMatchObject({ acceptHead: 'b'.repeat(40) });
+      expect(errors).toEqual([]);
+    });
+
+    // Any session can close a peer's PR with the shared gh login, so freeing
+    // the ADR numbers a closed PR holds is the operator's word (decision 146).
+    it('refuses --abandon-closed from the conductor, recording nothing', async () => {
+      const repo = initRepoWithAdapter();
+      useCwd(repo);
+      vi.stubEnv('PUP_CONDUCTOR', projectId(repo));
+
+      await buildProgram().parseAsync(['land', 's1', '--abandon-closed'], { from: 'user' });
+
+      expect(errors).toEqual(['`pup land --abandon-closed` is operator-only.']);
+      expect(process.exitCode).toBe(1);
+      expect(abandonClosedSession).not.toHaveBeenCalled();
+      expect(landSession).not.toHaveBeenCalled();
+    });
+
+    it('refuses --abandon-closed beside --accept-head', async () => {
+      useCwd(initRepoWithAdapter());
+
+      await buildProgram().parseAsync(
+        ['land', 's1', '--abandon-closed', '--accept-head', 'b'.repeat(40)],
+        { from: 'user' },
+      );
+
+      expect(errors).toEqual([
+        '`pup land --abandon-closed` lands nothing, so it takes no --accept-head.',
+      ]);
+      expect(abandonClosedSession).not.toHaveBeenCalled();
+    });
+
+    it("records the operator's --abandon-closed and lands nothing", async () => {
+      useCwd(initRepoWithAdapter());
+      vi.mocked(abandonClosedSession).mockResolvedValue({ prUrl: PR, recorded: true });
+
+      await buildProgram().parseAsync(['land', 's1', '--abandon-closed'], { from: 'user' });
+
+      expect(firstCall(abandonClosedSession)[1]).toMatchObject({ sessionId: 's1', wait: true });
+      expect(landSession).not.toHaveBeenCalled();
+      expect(logs).toContain(
+        `Recorded ${PR} as closed unmerged: the ADR-number check no longer counts s1's decisions.`,
+      );
       expect(errors).toEqual([]);
     });
 

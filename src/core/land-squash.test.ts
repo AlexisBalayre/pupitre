@@ -18,6 +18,11 @@ vi.mock('./merge-gate.service.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./merge-gate.service.js')>();
   return { ...actual, withScratchGitDir: vi.fn(actual.withScratchGitDir) };
 });
+// The real gh probe, so a test can act between the store's checks and the lock.
+vi.mock('./github.client.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./github.client.js')>();
+  return { ...actual, assertGhAvailable: vi.fn(actual.assertGhAvailable) };
+});
 // The real audit, so a test can make the one after a land throw.
 vi.mock('./audit.service.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./audit.service.js')>();
@@ -29,7 +34,8 @@ import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import type { Adapter } from '../adapters/types/adapter.types.js';
 import { auditProject } from './audit.service.js';
 import { openStore } from './db.client.js';
-import { landSession } from './land.service.js';
+import { assertGhAvailable } from './github.client.js';
+import { abandonClosedSession, landSession } from './land.service.js';
 import { withScratchGitDir } from './merge-gate.service.js';
 import { projectId } from './paths.utils.js';
 import {
@@ -632,6 +638,72 @@ describe('landSession', { timeout: 20_000 }, () => {
       expect(hasTrackingRef()).toBe(false);
     },
   );
+
+  // Decision 146: any session can close a peer's PR with the shared gh login,
+  // so only the operator's --abandon-closed frees the numbers it holds.
+  describe('a PR closed unmerged', () => {
+    const closedEvents = () => listEvents(db, SESSION_ID).filter((row) => row.type === 'pr_closed');
+    const abandon = () => abandonClosedSession(db, { repoPath: repo, sessionId: SESSION_ID });
+
+    it('refuses a plain land, records nothing and names --abandon-closed', async () => {
+      seedPrMerge();
+      fakeGh({ state: 'CLOSED', mergeCommit: null });
+
+      await expect(land()).rejects.toThrow(
+        `${PR_URL} is CLOSED on GitHub, not MERGED. Check on GitHub who closed it: any session ` +
+          'can close a PR with the shared gh login. If the work is abandoned, run ' +
+          `\`pup land ${SESSION_ID} --abandon-closed\` to free the ADR numbers it holds; if ` +
+          `another PR re-landed it, \`pup retire ${SESSION_ID} --superseded-by <pr>\`. Nothing ` +
+          'was landed.',
+      );
+      expect(closedEvents()).toEqual([]);
+    });
+
+    it('records the close once on --abandon-closed, landing nothing', async () => {
+      seedPrMerge();
+      const before = mainSha();
+      fakeGh({ state: 'CLOSED', mergeCommit: null });
+
+      await expect(abandon()).resolves.toEqual({ prUrl: PR_URL, recorded: true });
+      await expect(abandon()).resolves.toEqual({ prUrl: PR_URL, recorded: false });
+      expect(closedEvents().map((row) => JSON.parse(row.payload))).toEqual([
+        { prUrl: PR_URL, sha: pinned },
+      ]);
+      expectNothingChanged(before);
+    });
+
+    it.each(['OPEN', 'MERGED'])('refuses --abandon-closed when gh says %s', async (state) => {
+      seedPrMerge();
+      fakeGh({ state, mergeCommit: null });
+
+      await expect(abandon()).rejects.toThrow(
+        `${PR_URL} is ${state} on GitHub, not CLOSED; only a PR closed unmerged can be ` +
+          'abandoned. Nothing was recorded.',
+      );
+      expect(closedEvents()).toEqual([]);
+    });
+
+    it('refuses --abandon-closed when a re-gate records a new merge before the lock', async () => {
+      seedPrMerge();
+      fakeGh({ state: 'CLOSED', mergeCommit: null });
+      vi.mocked(assertGhAvailable).mockImplementationOnce(() => {
+        appendEvent(db, SESSION_ID, 'merge', {
+          branch: BRANCH,
+          sha: 'f'.repeat(40),
+          target: 'main',
+          files: ['src/feature.ts'],
+          prUrl: PR_URL,
+        });
+      });
+
+      await expect(abandon()).rejects.toThrow(
+        `Session ${SESSION_ID} recorded another merge or a land while \`pup land\` waited for ` +
+          `the merge lock, so ${PR_URL} is no longer the PR it stands for. Nothing was recorded.`,
+      );
+      expect(closedEvents()).toEqual([]);
+      expect(existsSync(ghLog)).toBe(false);
+    });
+  });
 
   // Decision 131: GitHub's squash merges the pinned content onto a main that
   // moved, so main holds the content the gate measured but not the pinned sha.

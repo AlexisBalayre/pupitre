@@ -159,18 +159,38 @@
     once the store records the close, and `pup retire` is not the only way to record it. Retire
     needs a merged successor PR, so it cannot close out an abandoned PR, nor one whose decision
     is redone in a new session under the same number while that redo still waits on this very
-    gate. So `pup land`, reading the PR `CLOSED` on GitHub, now records a `pr_closed` event
-    (`prUrl` and the pinned `sha`) and still refuses with nothing landed, its message saying the
-    close is recorded. The write is under the merge lock, after re-checking that the session is
-    still merged and that its newest merge still names that PR and sha: a re-gate while land
-    read GitHub would otherwise have its new PR's claim ended by the old PR's close. A second
-    land of the same closed PR writes nothing more. `newestMerge` skips `pr_closed`, so a PR
-    reopened and merged still lands, and `pup retire` still accepts the session afterwards. The
-    gate skips a merged session whose newest `merge`, `landed`, `retired` or `pr_closed` event
-    is `retired` or `pr_closed`; a newer `merge` event, a re-gate's, makes it count again. The
-    gate still asks GitHub nothing, so the close counts only once the operator runs `pup land`
-    on the session. A PR reopened on GitHub without a re-gate stays skipped: the store cannot
-    see the reopen, so its numbers are free to other gates until it is re-gated. The ceiling
-    above on closed PRs now holds only until that land. Tests: the stage ignores a PR peer with
-    a `pr_closed` event, even once its gated commit is pruned, and refuses a clash with one
-    whose newer merge event follows the close.
+    gate. So `pup land <session> --abandon-closed` (`abandonClosedSession`) records a
+    `pr_closed` event, `prUrl` and the pinned `sha`, and lands nothing.
+    *The threat.* Every session shares the operator's gh login, so any session can close any
+    peer's PR. A close recorded on GitHub's word alone would let a session close a peer's PR,
+    have the next land free the peer's numbers, and take one. If the operator then reopened and
+    merged the peer's PR, two decisions under one number would reach the target. So the close
+    is recorded on the operator's word only. A plain `pup land` of a `CLOSED` PR records
+    nothing: it refuses, saying a session may have closed it, to check on GitHub who did, and
+    naming `--abandon-closed` for abandoned work and `pup retire` for work another PR re-landed.
+    `--abandon-closed` is operator-only, refused to the conductor as `--accept-head` is (decision
+    164), and sessions are refused `pup land` outright. It takes no `--accept-head`, since it
+    lands nothing.
+    *Under the lock.* The record is written under the merge lock, which a re-gate takes too,
+    after re-checking that the session is still merged and that its newest merge still names
+    that PR and sha, and after asking GitHub, under the lock, whether the PR is still `CLOSED`.
+    A re-gate, or a reopen, while the command waited would otherwise have the old close end the
+    claim of a PR that is live again. A second run on the same close writes nothing more and
+    says it was already recorded. `newestMerge` skips `pr_closed`, so a PR reopened and merged
+    still lands, and `pup retire` still accepts the session afterwards. The event only frees the
+    numbers: the session's worktree and branch stay, for `pup retire` or the operator.
+    *The check.* The gate skips a merged session whose newest `merge`, `landed`, `retired` or
+    `pr_closed` event is `retired` or `pr_closed`; a newer `merge` event, a re-gate's, makes it
+    count again. The gate still asks GitHub nothing, so a closed PR counts until the operator
+    records it. A PR reopened on GitHub after the record and merged there without a re-gate is
+    beyond the check: the store cannot see the reopen, and its numbers were free to other gates
+    since the record. Nothing in pup forces a re-gate of a PR whose head did not move, so the
+    operator who reopens an abandoned PR re-gates it with `pup merge <session> --pr` before
+    merging it, and that re-gate refuses the clash. The ceiling above on closed PRs now holds
+    only until the operator's record.
+    Tests: the stage ignores a PR peer with a `pr_closed` event, even once its gated commit is
+    pruned, and refuses a clash with one whose newer merge event follows the close. A plain land
+    of a `CLOSED` PR refuses with that message and records nothing. `--abandon-closed` records
+    the close once and lands nothing. It is refused when GitHub says the PR is `OPEN` or
+    `MERGED`, and when a re-gate records a new merge before the lock, without asking GitHub. The
+    CLI refuses `--abandon-closed` from the conductor and beside `--accept-head`.

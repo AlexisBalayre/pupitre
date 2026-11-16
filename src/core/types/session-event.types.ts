@@ -53,9 +53,10 @@ export interface EventPayloads {
    */
   retired: { prUrl: string; supersededBy: string };
   /**
-   * `pup land` saw the session's PR closed unmerged on GitHub; `sha` is the
-   * commit the merge it closes out pinned. The ADR-number check stops counting
-   * the PR (decision 146) until a newer merge event re-opens its claim.
+   * The operator's `pup land --abandon-closed` saw the session's PR closed
+   * unmerged on GitHub; `sha` is the commit the merge it closes out pinned. The
+   * ADR-number check stops counting the PR (decision 146) until a newer merge
+   * event re-opens its claim.
    */
   pr_closed: { prUrl: string; sha: string };
   /**

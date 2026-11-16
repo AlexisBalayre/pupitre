@@ -29,7 +29,13 @@ import {
 } from './merge-gate.service.js';
 import { SESSION_ID_PATTERN } from './paths.constants.js';
 import { mainLandedMessage } from './profile-compiler.service.js';
-import { appendEvent, getSession, listEvents, listSessions } from './session.repository.js';
+import {
+  appendEvent,
+  getSession,
+  listEvents,
+  listSessions,
+  type SessionRow,
+} from './session.repository.js';
 import { steerSession } from './session-lifecycle.service.js';
 import {
   assertStillMerged,
@@ -76,29 +82,13 @@ interface LandRequest {
  * `MergeLockLostError` carrying the outcome, steer and all.
  */
 export async function landSession(db: Database, req: LandRequest): Promise<LandOutcome> {
-  const session = getSession(db, req.sessionId);
-  const id = sanitizeReason(req.sessionId);
-  if (!session) throw new Error(`No session ${id}. Nothing was landed.`);
-  if (session.state !== 'merged') {
-    throw new Error(
-      `Session ${id} is ${session.state}, not merged; only a session the gate merged with ` +
-        '`--pr` can land. Nothing was landed.',
-    );
-  }
-  const { prUrl, sha, target } = pinnedPullRequest(db, session.id, id, LAND_USE.untouched);
-  // Store text about to be handed to git and printed: refused the gate's way.
-  assertTargetName(req.repoPath, target);
+  const { session, id, prUrl, sha, target, originUrl, repo } = landablePullRequest(db, req);
   if (req.audit !== false && req.adapters.length === 0) {
     throw new Error(
       `No adapter for ${req.repoPath}; the audit after the land would measure nothing. ` +
         'Nothing was landed.',
     );
   }
-  assertMintedRow(req.repoPath, session, 'Nothing was landed.');
-  const originUrl = pushTarget(db, session, req.repoPath, LAND_USE);
-  const repo = originRepoSlug(originUrl);
-  // Store text: a pull request of another repo would land on its word.
-  assertPullRequestOf(prUrl, repo, 'Nothing was landed.');
   assertGhAvailable(LAND_USE.command);
   const pr = readPullRequestLanding(req.repoPath, prUrl, repo);
   // The PR took commits past the pin, a CI fix round's: GitHub's merge would
@@ -110,11 +100,14 @@ export async function landSession(db: Database, req: LandRequest): Promise<LandO
         'then re-run `pup land`. Nothing was landed.',
     );
   }
+  // Recorded on the operator's word alone: any session can close a peer's PR
+  // with the shared gh login, and the record frees its ADR numbers (decision 146).
   if (pr.state === 'CLOSED') {
-    await recordClosedPullRequest(db, req, session.id, id, { prUrl, sha });
     throw new Error(
-      `${prUrl} is CLOSED on GitHub, not MERGED; the close is recorded, so the ADR-number check ` +
-        'no longer counts the decisions it adds. Nothing was landed.',
+      `${prUrl} is CLOSED on GitHub, not MERGED. Check on GitHub who closed it: any session ` +
+        'can close a PR with the shared gh login. If the work is abandoned, run ' +
+        `\`pup land ${id} --abandon-closed\` to free the ADR numbers it holds; if another PR ` +
+        `re-landed it, \`pup retire ${id} --superseded-by <pr>\`. Nothing was landed.`,
     );
   }
   if (pr.state !== 'MERGED') {
@@ -308,34 +301,83 @@ export async function landSession(db: Database, req: LandRequest): Promise<LandO
 }
 
 /**
- * Record that GitHub reports the session's PR closed unmerged (decision 146):
- * the `pr_closed` event ends the PR's claim on the ADR numbers its pinned
- * commit adds. Under the merge lock, which the gate's re-gate takes too: the
- * PR read must still be the one the session's newest merge stands for, or the
- * close would end the claim of a PR opened since. Recorded once per merge.
+ * The checks `pup land` and `pup land --abandon-closed` share before asking
+ * GitHub: a merged session whose newest merge opened a PR of the repo origin
+ * was recorded as, pinned onto a target the gate's way.
  */
-async function recordClosedPullRequest(
+function landablePullRequest(
   db: Database,
-  req: LandRequest,
-  sessionId: string,
-  id: string,
-  closed: { prUrl: string; sha: string },
-): Promise<void> {
-  await withMergeLock(
+  req: { repoPath: string; sessionId: string },
+): {
+  session: SessionRow;
+  id: string;
+  prUrl: string;
+  sha: string;
+  target: string;
+  originUrl: string;
+  repo: string;
+} {
+  const session = getSession(db, req.sessionId);
+  const id = sanitizeReason(req.sessionId);
+  if (!session) throw new Error(`No session ${id}. Nothing was landed.`);
+  if (session.state !== 'merged') {
+    throw new Error(
+      `Session ${id} is ${session.state}, not merged; only a session the gate merged with ` +
+        '`--pr` can land. Nothing was landed.',
+    );
+  }
+  const { prUrl, sha, target } = pinnedPullRequest(db, session.id, id, LAND_USE.untouched);
+  // Store text about to be handed to git and printed: refused the gate's way.
+  assertTargetName(req.repoPath, target);
+  assertMintedRow(req.repoPath, session, 'Nothing was landed.');
+  const originUrl = pushTarget(db, session, req.repoPath, LAND_USE);
+  const repo = originRepoSlug(originUrl);
+  // Store text: a pull request of another repo would land on its word.
+  assertPullRequestOf(prUrl, repo, 'Nothing was landed.');
+  return { session, id, prUrl, sha, target, originUrl, repo };
+}
+
+/**
+ * `pup land <session> --abandon-closed` (decision 146's 2026-11-13
+ * amendment): the operator's word that the session's PR, closed unmerged on
+ * GitHub, is abandoned. The `pr_closed` event it records ends the PR's claim
+ * on the ADR numbers its pinned commit adds. Operator-only at the CLI, since
+ * any session can close a peer's PR with the shared gh login. Under the merge
+ * lock, which a re-gate takes too, GitHub is asked whether the PR is CLOSED,
+ * and the session must still be merged with its newest merge naming that PR
+ * and sha: otherwise the record would free the numbers of a PR reopened or
+ * opened since. `recorded` is false when the close was already on record.
+ */
+export async function abandonClosedSession(
+  db: Database,
+  req: { repoPath: string; sessionId: string; wait?: boolean },
+): Promise<{ prUrl: string; recorded: boolean }> {
+  const { session, id, prUrl, sha, repo } = landablePullRequest(db, req);
+  assertGhAvailable(LAND_USE.command);
+  return withMergeLock(
     req.repoPath,
     () => {
-      assertStillMerged(db, sessionId, id, LAND_USE);
-      const merge = newestMerge(db, sessionId);
-      if (merge === 'landed' || merge?.prUrl !== closed.prUrl || merge.sha !== closed.sha) {
+      assertStillMerged(db, session.id, id, LAND_USE);
+      const merge = newestMerge(db, session.id);
+      if (merge === 'landed' || merge?.prUrl !== prUrl || merge.sha !== sha) {
         throw new Error(
           `Session ${id} recorded another merge or a land while \`pup land\` waited for the ` +
-            `merge lock, so ${closed.prUrl} is no longer the PR it stands for. Nothing was landed.`,
+            `merge lock, so ${prUrl} is no longer the PR it stands for. Nothing was recorded.`,
         );
       }
-      const newest = listEvents(db, sessionId)
+      const state = readPullRequestLanding(req.repoPath, prUrl, repo).state;
+      if (state !== 'CLOSED') {
+        throw new Error(
+          `${prUrl} is ${sanitizeReason(state ?? 'in an unreadable state')} on GitHub, not ` +
+            'CLOSED; only a PR closed unmerged can be abandoned. Nothing was recorded.',
+        );
+      }
+      const newest = listEvents(db, session.id)
         .reverse()
         .find((row) => row.type === 'merge' || row.type === 'pr_closed');
-      if (newest?.type !== 'pr_closed') appendEvent(db, sessionId, 'pr_closed', closed);
+      if (newest?.type === 'pr_closed') return { prUrl, recorded: false };
+      appendEvent(db, session.id, 'pr_closed', { prUrl, sha });
+      return { prUrl, recorded: true };
     },
     req.wait ? MERGE_LOCK_WAIT_MS : 0,
   );

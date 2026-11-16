@@ -109,9 +109,11 @@ export interface TaskRow {
 
 /**
  * Every type the store holds: the schema's, `landed`, which `pup land` writes
- * (decision 84), `fix_round`, which `pup fix` writes (decision 90), and
- * `retired`, which `pup retire` writes (decision 141), the three `EventType`
- * has yet to join.
+ * (decision 84), `fix_round`, which `pup fix` writes (decision 90), `retired`,
+ * which `pup retire` writes (decision 141), `pr_closed`, which `pup land
+ * --abandon-closed` writes (decision 146), and `conductor_start`, the ones
+ * `EventType` has yet to join. The `events.type` column takes any text: no
+ * CHECK constraint names the types.
  */
 type StoredEventType =
   | EventType
