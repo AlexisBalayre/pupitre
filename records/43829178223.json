@@ -1,0 +1,203 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-16T08:26:06.348Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43829178223",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43829178223",
+  "actor": "AlexisBalayre",
+  "commit_sha": "44bbd597b6e28848baddacb842c26469ae855f66",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 341,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs",
+    "context"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs",
+    "context"
+  ],
+  "reviewers_skipped": [
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/adapters/typescript.adapter.ts",
+      "line": "345-346",
+      "description": "Narrowing `RUN_CACHE` to the exact names `.cache` and `.vite` drops `.vite-temp`. Vite writes its bundled ESM config there in the gate checkout's `node_modules`. The second `testInputsIntact` check, run after the test stage, then fails on every pupitre gate run once the main checkout's `node_modules` also holds a `.vite-temp`, and the split counts no file as test.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/adapters/typescript.adapter.ts",
+      "line": "224-233",
+      "description": "The run-input lists omit pnpm's hooks file. A branch-committed root `.pnpmfile.cjs` or `.pnpmfile.mjs` is in neither `VITEST_RUN_INPUT` nor `PACKAGE_MANAGER_CONFIG`, and `PNP_RUNTIME` doesn't match it, so the file runs in `pnpm run test` while the split stays trusted.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/adapters/typescript.adapter.ts",
+      "line": "489-492",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "`userNpmrc` uses the operator's `npm_config_userconfig` value exactly as written. npm handles that value differently: `~/x` becomes a path under HOME, and a relative path is taken from the run's working directory, which is the gate checkout. So for either kind of value, the check reads a file that doesn't exist and passes, while npm reads another file that nothing checks.",
+      "body": "**The user `.npmrc` check can read a different file from the one npm reads**\n\n```ts\nfunction userNpmrc({ gateEnv = [] }: CapabilityContext): string {\n  const named = gateEnv.find((name) => name.toLowerCase() === 'npm_config_userconfig');\n  return (named && process.env[named]) || join(homedir(), '.npmrc');\n}\n```\n\n`userConfigRunsAFile` lstats this path in pup's own process, and returns `false` (\"runs nothing\") when nothing is there. `gateChildEnv` (`src/core/gate-env.utils.ts`) hands the child the same value unchanged, and the stage runs with `cwd` set to the gate checkout. npm treats `userconfig` as a path setting: it expands a leading `~/` against HOME, then resolves the result against the child's working directory. That npm behaviour is pinned-version knowledge, since npm's source isn't in this tree.\n\n- **Tilde.** Take `NPM_CONFIG_USERCONFIG=\"~/.npmrc-work\"`, set quoted in a shell or through a CI `env:` block (neither expands `~`), and passed with `--gate-env`. pup lstats the literal `~/.npmrc-work` relative to its own cwd, finds nothing, and the check passes. npm reads `$HOME/.npmrc-work`, and nothing checks that file. If it holds `node-options=--import …`, the run is not plain vitest while the split stays trusted.\n- **Relative.** Take `NPM_CONFIG_USERCONFIG=.npmrc.ci`. pup resolves it against wherever `pup` was started. npm resolves it against the gate checkout, where the branch can commit `.npmrc.ci`. `VITEST_RUN_INPUT` matches only `.npmrc` exactly, so that file is never compared with the target's copy or scanned.\n\nADR 0143 says the check covers \"the one an operator names by `npm_config_userconfig` through `--gate-env`\". None of its ceilings covers a value that pup and npm resolve differently. The only `--gate-env` test uses an absolute temp path.\n\n**Fix:** resolve the value the way npm does (`~/` against `homedir()`, anything else against the checkout the run uses). Or, more simply, fail closed when the value isn't absolute.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/44bbd597b6e28848baddacb842c26469ae855f66/src/adapters/typescript.adapter.ts#L489-L492\nhttps://github.com/AlexisBalayre/pupitre/blob/44bbd597b6e28848baddacb842c26469ae855f66/src/adapters/typescript.adapter.ts#L530-L534",
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/typescript.adapter.ts",
+      "line": "339-346",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The run-input lists leave out vite's PostCSS config (`postcss.config.*`, `.postcssrc*`). Vite loads and runs it inside the vitest process whenever a test imports CSS. A branch can commit one plus a CSS import in a test, and both checks still pass. The diff-size split then counts a test-less file as test.",
+      "body": "**A branch-committed PostCSS config runs code in the vitest process while the split stays trusted**\n\nThis PR names the root files that shape `pnpm run test`, and refuses the ones that are code:\n```ts\nconst ROOT_RUNTIME = /^\\.pnp(?:mfile)?\\./;\n```\n`VITEST_RUN_INPUT`'s JSDoc says it covers \"every config and workspace file vitest or vite reads\". Vite reads one more such file by convention from the root: its PostCSS config. Neither list names `postcss.config.*` or `.postcssrc*`, and nothing in `src/` mentions them.\n\n**Mechanism** (pinned-version knowledge of vite 7/8 and vitest 4; no `node_modules` here to confirm):\n- Vitest's default `css: { include: [] }` only empties the CSS module's text.\n- Vite's `vite:css` transform still calls `resolvePostcssConfig`, before its \"plain CSS needs no processing\" shortcut.\n- postcss-load-config then imports `postcss.config.{js,cjs,mjs,ts,…}` or `.postcssrc*`, inside the vitest main process.\n\n**Trigger:**\n1. A branch commits `postcss.config.mjs`. Its side effect can tamper with the run's result, for example by forcing exit code 0.\n2. It adds a test that does `import './x.css'`.\n3. It parks production code in a collected `src/big.test.ts`.\n\nThe vitest config, `runFields` and the package-manager configs are equal on both sides, so `testFiles` keeps the split. `testInputsIntact` passes too, because the file matches its own committed blob. This is the same power for which the ADR refuses `setupFiles`, `reporters` and `.pnpmfile.*`, and no ceiling in ADR 0143 covers it. The gap predates the PR. It falls under the PR's acceptance criterion, though (\"a branch that commits a run-shaping file differing from the target's gets no test-file split\"), and the PR widened exactly these lists.\n\n**Fix:** refuse these names at the root, as `.pnpmfile.*` is refused, because the file is code that can import branch files. Add them to `VITEST_RUN_INPUT` too, so an on-disk copy fails `testInputsIntact`. For example, `ROOT_RUNTIME = /^(?:\\.pnp(?:mfile)?\\.|postcss\\.config\\.|\\.postcssrc)/` plus `|postcss\\.config\\.[^/]*|\\.postcssrc(?:\\.[^/]*)?` in `VITEST_RUN_INPUT`.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/44bbd597b6e28848baddacb842c26469ae855f66/src/adapters/typescript.adapter.ts#L339-L346\nhttps://github.com/AlexisBalayre/pupitre/blob/44bbd597b6e28848baddacb842c26469ae855f66/src/adapters/typescript.adapter.ts#L216-L225",
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/vitest-config.utils.ts",
+      "line": "95",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`READ_ALIAS_KEY = /^@[\\w.-]+$/` needs at least one character after `@`. So a config with the common `resolve: { alias: { '@': path.resolve(__dirname, './src') } }` is now refused and no file counts as test, where before this PR it was read. No package name is a bare `@`, and `aliasesAScope` would find no `node_modules/@`, so allowing `/^@[\\w.-]*$/` is as safe as `@src`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/typescript.adapter.ts",
+      "line": "224-240",
+      "area": "context",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`.env(?:\\.[^/]*)?` matches `.env.example` and `.env.sample`, which no package manager loads (bun reads only `.env`, `.env.local` and `.env.<NODE_ENV>`). A branch that just documents a new variable in `.env.example` therefore differs across sides, and its test files are no longer counted separately.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/typescript.adapter.ts",
+      "line": "254-262",
+      "area": "context",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`RUNS_A_FILE` and the backslash check scan the whole text of a `.env*` file, values and comments included. dotenv treats values as data, so a Windows path in a value, or a comment that mentions `plugins` or `preload`, leaves the split unknown on an ordinary repo.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/typescript.adapter.ts",
+      "line": "317-345",
+      "area": "simplicity",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`readUserConfig` repeats `readPlainFile(path, { followLinks: false })` from `capability.utils.ts`, which this file already imports: the same `O_NOFOLLOW\\|O_NONBLOCK` open, fstat, size cap, bounded read loop and `finally` close. Calling `readPlainFile` removes about 30 lines and five fs imports. It also keeps one copy of the security-sensitive read loop to patch. The 64 KiB cap is the only real difference, and a size check after the read keeps it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/vitest-config.utils.ts",
+      "line": "236-245",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`loadsAtRunTime` catches `require` only as the direct callee or as `x.require`. In a CJS-format config, `const r = require; r('./x')`, `require.call(null, './x')` and `module['require']('./x')` still load a file. These are `require` itself, not the `createRequire` result the ADR accepts. Treating any `require` identifier, or any element access by `'require'`, as a load would close them.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/vitest-config.utils.ts",
+      "line": "724-725",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`vitestCollection` parses `package.json` a second time to read `name` (`JSON.parse(manifest()) as { name?: unknown } \\| null`), while the adapter's `parsedManifest` already parses the same file. Passing the name in would drop the second parse and its cast.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/vitest-config.utils.ts",
+      "line": "518-526",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`setsAny` (in `vitest-config.utils.ts`) and `runFields` (in `typescript.adapter.ts`) each have one caller. `setsAny` is called with a one-key list. Inlining each at its call site removes a helper and its JSDoc, which a reader otherwise has to trace for a single check.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [
+    {
+      "file": "src/adapters/vitest-config.utils.ts",
+      "line": "337-339, 376-379",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The new reads of `resolve.alias` and `coverage.customProviderModule` skip a `__proto__` at that level. So `resolve: { __proto__: { alias: { vitest: … } } }` or `coverage: { __proto__: { provider: 'custom', customProviderModule: './x' } }` passes the reader, while both keys are refused when written directly.",
+      "refutation": "The reader gap is real: `literalProperties` skips `__proto__` at line 199, and only the top level and `test` refuse it. The exploit does not reach vitest, though. A branch cannot add the key alone, because the whole config text is compared across sides. The inherited keys are also lost when the config is merged: vite copies the user `resolve` with an own-keys spread, and vitest's `deepMerge` walks `Object.keys` into the plain-object `coverage`, so `customProviderModule` never reaches the resolved config (pinned-version knowledge, medium confidence). The base commit read neither object, so the PR narrows the gap rather than opening it."
+    }
+  ],
+  "process_issues": [],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 2,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 8.905797425000001,
+  "duration_ms": 840080,
+  "num_turns": 23,
+  "tokens": {
+    "input": 16,
+    "output": 24984,
+    "cache_read": 463195,
+    "cache_creation": 96276,
+    "total": 584471
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 170,
+      "output": 213911,
+      "cache_read": 4011425,
+      "cache_creation": 576929,
+      "cost_usd": 8.254657999999997
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 56,
+      "output": 23283,
+      "cache_read": 433201,
+      "cache_creation": 149621,
+      "cost_usd": 0.6503146000000001
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 315,
+      "cache_read": 0,
+      "cache_creation": 5337,
+      "cost_usd": 0.000824825
+    }
+  ],
+  "permission_denials": []
+}
