@@ -1,0 +1,135 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-16T18:20:07.433Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43926593646",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43926593646",
+  "actor": "AlexisBalayre",
+  "commit_sha": "eb5adcc1bb5e62457862d8a7d7b2fa10de709cc0",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 357,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "guards"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "guards"
+  ],
+  "reviewers_skipped": [
+    "conventions",
+    "context",
+    "maintainability",
+    "docs",
+    "spec",
+    "simplicity",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/land-remeasure.service.ts",
+      "line": "335-339",
+      "description": "The 'nested package missing a script' debt passes on its kind alone, with no figure and no `sameFiles`. So once that debt is accepted for a package, a commit past the pin can add any number of new files there and the remeasure lands them. No test or typecheck measured those files, and no ledger entry names them.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/land-remeasure.service.ts",
+      "line": "155-196",
+      "description": "After a re-gate, the remeasure holds a flag to the first gate's figures. The ledger never records the larger figure the re-gate accepted, so a merge no worse than the re-gated pin refuses.",
+      "status": "unresolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/land-remeasure.service.ts",
+      "line": "86-105",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The critical-area check compares only tree(pin) with tree(head). It does not compare what the merge commit landed with what merging the pin there would have landed. A head on an older base can bring back a critical-area change that the target reverted after the pin, and no --approved-by is asked for.",
+      "body": "**A head on an older base can undo a critical-area revert on the target without `--approved-by`.**\n\n[`remeasureMerge`](https://github.com/AlexisBalayre/pupitre/blob/eb5adcc1bb5e62457862d8a7d7b2fa10de709cc0/src/core/land-remeasure.service.ts#L86-L105) asks for `--approved-by` only when `git diff <sha> <head>` lists a path under `CRITICAL_PATHS`. That diff shows how the head's tree differs from the pin's. What actually lands is GitHub's three-way merge of `head` onto `landedOn`, whose base is `merge-base(head, landedOn)`, not the pin's merge-base.\n\n`--remeasure` drops the descends-from-pin check ([land.service.ts L242](https://github.com/AlexisBalayre/pupitre/blob/eb5adcc1bb5e62457862d8a7d7b2fa10de709cc0/src/core/land.service.ts#L242-L248)), so the head can sit on an older base than the pin. When it does, the two diffs disagree.\n\n**Trigger** (the session's scope-in covers critical file X, so the scope audit passes):\n1. The target at `T1` holds X=V1. The gate pins `sha`, which descends from `T1`, so X=V1 there.\n2. The target later reverts X to V0, the content at an older ancestor `B0`. `landedOn` has X=V0.\n3. The session force-pushes `head`, a commit on `B0` that keeps X=V1. A human merges it on GitHub. With base V0, ours V0 and theirs V1, the result is V1.\n4. `pup land <s> --remeasure`: `git diff sha head` does not show X, so no approval is asked for. `mergedOnto` matches, because the tree is exactly merge-tree(landedOn, head). The stages pass, and the land goes through.\n\nLanding the pin itself would have kept the revert, because its merge-base is at or after `T1`. Here a critical-area change that the target reverted lands again, unapproved. Nothing else in `measureBranch` treats critical paths specially.\n\n[ADR 0185 L98-L101](https://github.com/AlexisBalayre/pupitre/blob/eb5adcc1bb5e62457862d8a7d7b2fa10de709cc0/docs/adr/0185-pup-land-remeasure-takes-a-moved-head-on-the.md#L91-L106) justifies the tree diff only for the opposite case: an older-base head that keeps a change the pin had reverted. Neither *What it does not catch* nor *Not caught* lists this case.\n\n**Possible fix:** also diff what landed beyond the pin's own landing. In the scratch git dir, as `mergedOnto` does, compute `pinTree = git merge-tree --write-tree --no-messages <landedOn> <sha>`. Then diff `<pinTree> <mergeCommit>^{tree}` with the same safe flags and `--name-only -z`, and take the union of its critical paths with the `<sha> <head>` list. If merging the pin there conflicts, fail closed and require `--approved-by`.",
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Round 4 importants-only budget: skipped conventions, docs, simplicity, context, maintainability; spec skipped (no closing issue or spec source); workflow-safety skipped (no .github/workflows change)."
+    },
+    {
+      "component": "consolidator",
+      "description": "Consolidator not spawned: only one finding came back from the reviewers, so there was nothing to group; dedup was done inline."
+    },
+    {
+      "component": "orchestrator",
+      "description": "Prior important prior_importants[2] (re-gate figures not recorded in the ledger) is still unresolved at eb5adcc: `accepted` is still built only from `measured.openEntries` (land-remeasure.service.ts:185-192)."
+    },
+    {
+      "component": "security",
+      "description": "One security instance had `git show` of commit 52a5005 refused, so it checked the nested-package sameFiles fix from the current file instead."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 4.3737184000000005,
+  "duration_ms": 338630,
+  "num_turns": 15,
+  "tokens": {
+    "input": 14,
+    "output": 8849,
+    "cache_read": 365186,
+    "cache_creation": 56700,
+    "total": 430749
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 190,
+      "output": 76256,
+      "cache_read": 3938171,
+      "cache_creation": 347599,
+      "cost_usd": 4.221609199999999
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 16,
+      "output": 3307,
+      "cache_read": 152972,
+      "cache_creation": 41484,
+      "cost_usd": 0.1521092
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "git -C /home/runner/work/pupitre/pupitre diff a08e48bcd09552ffab5b8988fe0b560c452feb3c..HEAD --stat"
+    },
+    {
+      "tool": "Bash",
+      "input": "git -C /home/runner/work/pupitre/pupitre diff a08e48bcd09552ffab5b8988fe0b560c452feb3c..HEAD --stat"
+    },
+    {
+      "tool": "Bash",
+      "input": "git -C /home/runner/work/pupitre/pupitre show 52a5005 --stat"
+    },
+    {
+      "tool": "Bash",
+      "input": "git -C /home/runner/work/pupitre/pupitre diff a08e48bcd09552ffab5b8988fe0b560c452feb3c..HEAD --stat"
+    }
+  ]
+}
