@@ -1,6 +1,6 @@
 # Profile compiler
 
-Compiles three layers into a session's worktree: `CLAUDE.md`, `.claude/settings.json`, `.claude/agents/`, `.claude/skills/`, MCP config. The compiled output is hashed and recorded on the session. Hand-editing worktree config is blocked by the scope hook.
+Compiles three layers into a session's worktree: `CLAUDE.md`, `.claude/settings.json`, `.claude/agents/`, `.claude/skills/`. The compiled output is hashed and recorded on the session. Hand-editing worktree config is blocked by the scope hook.
 
 ## Layers
 
