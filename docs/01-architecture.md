@@ -41,7 +41,7 @@ is "which sessions need me now, and what is queued behind them".
 ## Claude Code integration
 
 - Launch: `claude -p` (headless) or interactive, inside the session worktree.
-- Behaviour surface is files, all owned by the profile compiler: `CLAUDE.md`, `.claude/settings.json` (hooks), `.claude/agents/`, `.claude/skills/`, MCP config.
+- Behaviour surface is files, all owned by the profile compiler: `CLAUDE.md`, `.claude/settings.json` (hooks), `.claude/agents/`, `.claude/skills/`.
 - PreToolUse hook enforces scope: Edit/Write outside scope-in, or touching `.claude/`, is blocked, not just logged.
 - PostToolUse hook streams events to the store.
 
