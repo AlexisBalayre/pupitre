@@ -1,0 +1,205 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-16T17:39:38.742Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43919014362",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43919014362",
+  "actor": "AlexisBalayre",
+  "commit_sha": "a984db0be6ac878a7c9ae486cc4832988cf73d22",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 357,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/land-remeasure.service.ts",
+      "line": "146-160",
+      "description": "The remeasure calls `measureBranch` with `targetSha: landedOn`. The complexity \"before\" figure is still read from the main checkout's working tree, which holds local `target` at `localSha`. It does not hold `landedOn`, so another PR's changes to the same file can hide this session's complexity rise and no flag is raised.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/land-remeasure.service.ts",
+      "line": "309-314",
+      "description": "The mixed coverage-gap wording has no figure (`worse: []`). The latest fix holds it only to its files, so under a remeasure patch coverage can fall to any level as long as the uncovered lines stay in files the accepted entry already names.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/land-remeasure.service.ts",
+      "line": "155-196",
+      "description": "After a re-gate, the remeasure holds a flag to the first gate's figures. The ledger never records the larger figure the re-gate accepted, so a merge no worse than the re-gated pin refuses.",
+      "status": "unresolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/land-remeasure.service.ts",
+      "line": "335-339",
+      "area": "security",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The 'nested package missing a script' debt passes on its kind alone, with no figure and no `sameFiles`. So once that debt is accepted for a package, a commit past the pin can add any number of new files there and the remeasure lands them. No test or typecheck measured those files, and no ledger entry names them.",
+      "body": "**An accepted nested-package debt lets any number of new, unmeasured files past the pin land.**\n\n```ts\n{\n  pattern: /^Nested package (.+) changed with no (test|typecheck) script, merged from$/s,\n  worse: [],\n  stage: (match) => `${match[2]} (${match[1]})`,\n},\n```\n\nThis wording has `worse: []` and no `sameFiles`. In the held check ([L220-L237](https://github.com/AlexisBalayre/pupitre/blob/a984db0be6ac878a7c9ae486cc4832988cf73d22/src/core/land-remeasure.service.ts#L220-L237)), `noWorse` compares an empty figure list (`[].every(...)` is `true`) and the files clause is skipped, so the flag passes against any open entry for the same package and script.\n\nFor this flag, the files *are* what was accepted. `measureBranch` files it with `files: [...pkg.changedFiles].sort()` ([merge-gate.service.ts#L3316-L3320](https://github.com/AlexisBalayre/pupitre/blob/a984db0be6ac878a7c9ae486cc4832988cf73d22/src/core/merge-gate.service.ts#L3316-L3320)), and decision 58 keeps nested packages out of every root measurement (L3298-3302). Complexity, dead code, duplication and coverage do not see these files. ADR 0185 gives the reason for `sameFiles` as \"a count held level cannot swap a hidden file no one read for the one accepted\", and applies it to \"a changed source file coverage did not measure\". This flag is the same case, and it has no count at all. Neither *What it does not catch* nor *Not caught* lists it.\n\n**Trigger:**\n1. The pin is gated with `--accept-debt` and files `Nested package packages/tool changed with no test script, merged from session S` over `[packages/tool/index.ts]`.\n2. A fix-round commit past the pin adds `packages/tool/run.ts` (or any number of files). GitHub merges at that head.\n3. `pup land S --remeasure` files the same wording over `[index.ts, run.ts]`. `remeasureKind` matches the open entry, `noWorse` returns true, `sameFiles` is unset, and it lands.\n\nNo stage tested `run.ts` and no one accepted it. Because a remeasure files no debt, the ledger still names only `index.ts`. The gate and re-gate are stricter here: both refuse any flag without a fresh `--accept-debt` (merge-gate.service.ts:2493, regate.service.ts:213), so a plain re-gate would make the operator accept the new files again.\n\n**Possible fix:** add `sameFiles: true` to this wording, so each of the flag's files must appear in the accepted entry. Add a land.test.ts case beside the existing nested-package ones where the same package and script come back with an extra file, and add this wording to ADR 0185's list of files-are-what-was-accepted wordings.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/a984db0be6ac878a7c9ae486cc4832988cf73d22/src/core/land-remeasure.service.ts#L335-L339",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land-remeasure.service.ts",
+      "line": "201-210",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`adrNumberStage` pushes no stage when every check passed with nothing to say. A pin whose report holds `adr-number: pass` (because a peer branch read timed out, giving an unchecked note) therefore makes every later `--remeasure` refuse with \"adr-number: ran at the pin, absent now\" once all peers read fine. It fails closed; one fix is to treat an absent `adr-number` as passed in the ran-at-pin check.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land.service.ts",
+      "line": "299-340",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "A `--remeasure` land that fails after the fast-forward (L310) but before the `landed` event (L325), for example in tear-down or the lock re-check, can no longer be finished by re-running it. Local main is now at `originTip`, past `landedOn`, so the new `localSha !== landedOn` refusal fires; a plain land refuses the moved head, and `--accept-head` refuses a head that does not descend from the pin. This contradicts landSession's \"a re-run after a failure under the lock is safe\", and leaves the operator to rewind main by hand.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land.test.ts",
+      "line": "1099-1116",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`measuredAs` replaces `measureBranch`'s result with a hand-built object cast through `as unknown as Awaited<ReturnType<typeof measureBranch>>`, against testing.md §Prefer the real dependency over a mock. About half the remeasure tests (figures, debt, stage comparison) then run against a fabricated shape, and the double cast hides any change to the real return type.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land.test.ts",
+      "line": "1072-1086",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "'refuses a flag worse than the one accepted, and lands one no worse' asserts a refusal and then a landing in one body, against testing.md §Structure (one behaviour per test). If the refusal half fails, the landing half never runs; split the no-worse landing into its own `it`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land-remeasure.service.ts",
+      "line": "329-334",
+      "area": "simplicity",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The new `unrecorded` marker (field, the `|| DEBT_WORDINGS[now.wording]?.unrecorded` clause, and its doc sentence) exists only to make one wording always refuse. Dropping that wording from `DEBT_WORDINGS` gives the same refusal, because `debtFigures` returns `undefined` for an unmatched description. The only difference is an extra \"no debt filed for it\" line for the coverage stage.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "2753-2756",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The comment \"Neither is a remeasure its to run: `--approved-by` is a name the CLI cannot check…\" sits on the `--accept-head` conductor check, but explains the separate `if (opts.remeasure && callingConductor())` a few lines below, so \"Neither\" has no clear referent. Move it above the `--remeasure` check.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0185-pup-land-remeasure-takes-a-moved-head-on-the.md",
+      "line": "39, 66",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "ADR 0185 has two near-identical headings, *What it does not catch.* and *Not caught:*, which cover different subjects (the second is re-pinned heads' figures and a remeasure filing no debt). A reader looking for the re-pin behaviour has to scan both; give the second a heading that names its subject.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Skipped by gate: context (no spec/protocol/infra surface), workflow-safety (no .github/workflows change), spec (no closing issue or spec source), maintainability (off the default roster at standard depth)."
+    },
+    {
+      "component": "orchestrator",
+      "description": "Prior important prior_importants[3] (re-gate figures not recorded in the ledger) is still unresolved at a984db0: `accepted` is still built only from `measured.openEntries` (land-remeasure.service.ts:187-192). ADR 0185 lists it under *Not caught* as failing closed, but an important is not deferrable."
+    },
+    {
+      "component": "docs",
+      "description": "Dropped one docs nit (a `// see above` catch comment) that named no reader cost."
+    },
+    {
+      "component": "conventions",
+      "description": "The conventions reviewer read only the test diffs against testing.md this round, not general.md or naming.md against the source diffs, and could not map index-2.test.ts additions to line numbers."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 6.178971,
+  "duration_ms": 522766,
+  "num_turns": 19,
+  "tokens": {
+    "input": 14,
+    "output": 15408,
+    "cache_read": 404938,
+    "cache_creation": 72241,
+    "total": 492601
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 236,
+      "output": 112306,
+      "cache_read": 5823291,
+      "cache_creation": 433315,
+      "cost_usd": 5.7950202
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 40,
+      "output": 10109,
+      "cache_read": 267676,
+      "cache_creation": 102038,
+      "cost_usd": 0.3830326
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 568,
+      "cache_read": 0,
+      "cache_creation": 5072,
+      "cost_usd": 0.0009182000000000001
+    }
+  ],
+  "permission_denials": []
+}
