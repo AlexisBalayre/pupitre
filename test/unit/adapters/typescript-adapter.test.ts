@@ -404,6 +404,13 @@ describe('typescriptAdapter.testFiles', () => {
       ['src/a.test.ts'],
     ],
     ["yarn's Plug'n'Play runtime on both sides", { '.pnp.cjs': 'module.exports = {};\n' }, {}, []],
+    ["pnpm's hooks file on both sides", { '.pnpmfile.cjs': 'module.exports = {};\n' }, {}, []],
+    [
+      'a pnpm hooks file only the branch commits',
+      {},
+      { '.pnpmfile.mjs': "process.env.NODE_OPTIONS = '--import ./reg.mjs';\n" },
+      [],
+    ],
     ...[
       ['.npmrc', 'node-options=--import ./scripts/reg.mjs\n'],
       ['.npmrc', 'node_options=--import ./scripts/reg.mjs\n'],
@@ -415,6 +422,8 @@ describe('typescriptAdapter.testFiles', () => {
       ['.env.yarn', 'NODE_OPTIONS=--import ./scripts/reg.mjs\n'],
       ['pnpm-workspace.yaml', 'nodeOptions: --import ./scripts/reg.mjs\n'],
       ['bunfig.toml', 'preload = ["./scripts/reg.ts"]\n'],
+      ['.npmrc', 'pnpmfile=./scripts/hooks.cjs\n'],
+      ['pnpm-workspace.yaml', 'globalPnpmfile: ./scripts/hooks.cjs\n'],
       ['.env', 'NODE_OPTIONS=--import ./scripts/reg.mjs\n'],
       ['.env.local', 'NODE_OPTIONS=--import ./scripts/reg.mjs\n'],
       // Keys that have npm read a config nothing here checks.
@@ -619,6 +628,7 @@ describe('typescriptAdapter.testFiles', () => {
       '.env.local',
       '.pnp.cjs',
       '.pnp.loader.mjs',
+      '.pnpmfile.cjs',
       'pnpm-workspace.yaml',
       'bunfig.toml',
     ].map(
@@ -870,7 +880,13 @@ describe('typescriptAdapter.testFiles', () => {
     ['holds binaries of its own', (modules: string) => mkdirSync(join(modules, '.bin')), false],
     // npm 6 and older ran `.hooks/<event>` around each script.
     ['holds npm hooks of its own', (modules: string) => mkdirSync(join(modules, '.HOOKS')), false],
-    // Only `.cache` and `.vite` are the run's caches; `.vitest` is a linked entry.
+    // vite bundles an ESM config into `.vite-temp`, which the trusted one holds too.
+    [
+      'holds a vite-temp of its own',
+      (modules: string) => mkdirSync(join(modules, '.vite-temp')),
+      true,
+    ],
+    // Only `.cache`, `.vite` and `.vite-temp` are the run's; `.vitest` is a linked entry.
     [
       'replaces a linked .vite-named entry with one of its own',
       (modules: string) => {
@@ -929,6 +945,7 @@ describe('typescriptAdapter.testFiles', () => {
       mkdirSync(join(repo, 'node_modules', entry), { recursive: true });
       symlinkSync(join(repo, 'node_modules', entry), join(modules, entry));
     }
+    mkdirSync(join(repo, 'node_modules', '.vite-temp'));
     change(modules);
 
     expect(

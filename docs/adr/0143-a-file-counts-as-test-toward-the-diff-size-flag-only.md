@@ -35,7 +35,7 @@
     once after the build and before any suite and once before the split. It compares the
     checkout's root files that decide the run with the sha's blobs: `package.json`, `.npmrc`,
     `.yarnrc`, `.yarnrc.yml`, `.env` and every `.env.*` (`.env.yarn` among them), every
-    `.pnp.*` (`.pnp.cjs`, `.pnp.loader.mjs`), `pnpm-workspace.yaml`, `bunfig.toml`, every
+    `.pnp.*` (`.pnp.cjs`, `.pnp.loader.mjs`), every `.pnpmfile.*`, `pnpm-workspace.yaml`, `bunfig.toml`, every
     `vite.config.*`, `vitest.config.*`, `vitest.workspace.*` and `vitest.projects.*`, names
     folded to lower case, and the `.yarn` directory whole: each file under it, by path, mode
     and the object name `git hash-object` gives it in the main repo's format, against
@@ -43,7 +43,8 @@
     made a link there fails it, while an empty directory, which no tree holds, does not.
     It also checks that each entry of the checkout's `node_modules` is still the link to
     the trusted checkout's entry that the gate made, apart from the `.cache` and `.vite`
-    caches vitest writes, those two names exactly, and a dot-named entry the trusted
+    caches vitest writes and the `.vite-temp` vite bundles an ESM config into under a fresh
+    name each run, which the gate leaves unlinked, those three names exactly, and a dot-named entry the trusted
     `node_modules` lacks, such as the `.tmp` a `tsc -b` with
     `tsBuildInfoFile: ./node_modules/.tmp/...` writes. No package can be named with a leading
     dot, but that does not make a dot-named entry one no run loads: npm 6 and older ran
@@ -154,7 +155,8 @@
     field leaves the answer unknown, a version bump included. One the two share may still
     name a file the branch can rewrite, so on either
     side a config mentioning `yarnPath`, `yarn-path`, `plugins`, `node-options` or
-    `nodeOptions`, `script-shell` or `scriptShell`, `preload`, or the
+    `nodeOptions`, `script-shell` or `scriptShell`, `pnpmfile` or `globalPnpmfile`, which
+    name pnpm's hooks file, `preload`, or the
     `injectEnvironmentFiles` that names more env files, leaves the answer unknown, matched
     as text in any case and with `-`, `_` or nothing between the words, so `NODE_OPTIONS`
     and `YARN_YARN_PATH` too. Matched as text, a key its package manager reads through an
@@ -194,7 +196,11 @@
     packages from a cache the branch may commit, never the `node_modules` the gate links and
     checks. That costs a Yarn Berry repo whose `.yarnrc.yml` names its own binary (one
     corepack starts names none) the split, since its run is the binary's, which is the
-    branch's to rewrite, and a Plug'n'Play repo too. Vitest 3's
+    branch's to rewrite, and a Plug'n'Play repo too. pnpm's hooks file, any `.pnpmfile.*` at
+    the root, leaves the answer unknown on either side for the same reason: pnpm requires it
+    as it reads its config, for `pnpm run` as for an install, so it is code the branch runs
+    with every script, which comparing its text with the target's would not make the
+    target's. That costs a pnpm repo with a root hooks file the split. Vitest 3's
     default `exclude` (a `node_modules`, `dist`, `cypress`, `.idea`, `.git`, `.cache`,
     `.output` or `.temp` directory, a tool's `*.config.*`), a superset of vitest 4's, applies
     whatever the config declares, since excluding more only counts more as source. A declared
@@ -311,7 +317,9 @@
     `node-options`, `node_options` or `script-shell`, `.yarnrc` with `yarn-path`,
     `.yarnrc.yml` with `yarnPath`, `plugins` or `injectEnvironmentFiles`, `.env.yarn`, `.env`
     or `.env.local` with `NODE_OPTIONS`, `pnpm-workspace.yaml` with `nodeOptions`,
-    `bunfig.toml` with `preload`, `.pnp.cjs`, an `.npmrc` with `globalconfig`, an `.env`
+    `bunfig.toml` with `preload`, an `.npmrc` with `pnpmfile`, `pnpm-workspace.yaml` with
+    `globalPnpmfile`, `.pnp.cjs`, `.pnpmfile.cjs` on both sides or a `.pnpmfile.mjs` only the
+    branch commits, an `.npmrc` with `globalconfig`, an `.env`
     with `NPM_CONFIG_GLOBALCONFIG`, `export npm_config_prefix`, an `NPM_CONFIG_PREFIX`
     between no-break spaces or a `DESTDIR`, an `.env.local` with an `export`ed `DESTDIR`, and each of those keys spelled through an
     escape, `"yarn\u0050ath"`, `"node\u004Fptions"`, `"pre\u006Coad"` or
@@ -327,14 +335,14 @@
     branch narrowing its include or excluding a file drops it. The measured config is read from the pinned sha and the trusted
     one from the target sha, whatever either checkout's disk holds. `testInputsIntact` holds
     for an untouched checkout, a build output beside it, a `node_modules` linked as the gate
-    links it, holding a vite cache or holding a `.tmp` build output the trusted one lacks,
+    links it, holding a vite cache, a `.vite-temp` of its own beside the trusted one's, or holding a `.tmp` build output the trusted one lacks,
     and outside the gate, beside a user `.npmrc` that runs nothing, sets only a
     `save-prefix`, a spaced `registry`, a registry token or a scope's registry, is exactly
     64 KiB, or is none, beside plainly keyed `.npmrc` and `.env` files on both sides, and
     with a
     committed `.yarn` untouched or given an empty directory. It fails for a rewritten config,
     an added `.npmrc`, `.yarnrc`, `.yarnrc.yml`, `.env.yarn`, `.env`, `.env.local`,
-    `.pnp.cjs`, `.pnp.loader.mjs`, `pnpm-workspace.yaml`, `bunfig.toml` or `.yarn`, a file
+    `.pnp.cjs`, `.pnp.loader.mjs`, `.pnpmfile.cjs`, `pnpm-workspace.yaml`, `bunfig.toml` or `.yarn`, a file
     under a committed `.yarn` rewritten, added, made executable or made a link, a user
     `.npmrc` with `node-options`, an escaped key, a `globalconfig`, a `userconfig`, a `prefix`
     or a quoted `"PREFIX"`, or with a key npm's ini parser reads as one of those, after a BOM,

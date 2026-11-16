@@ -218,11 +218,11 @@ function runsPlainVitest(manifest: PackageManifest | undefined): boolean {
  * collects: the manifest whose script starts it, the npm, yarn, pnpm and bun
  * configs and env files that can change how that script runs, yarn's
  * Plug'n'Play runtime (`.pnp.cjs`, `.pnp.loader.mjs`) and its `.yarn`
- * directory, read whole, and every config and workspace file vitest or vite
- * reads.
+ * directory, read whole, pnpm's hooks file (`.pnpmfile.cjs`), and every config
+ * and workspace file vitest or vite reads.
  */
 const VITEST_RUN_INPUT =
-  /^(?:package\.json|\.npmrc|\.yarnrc(?:\.yml)?|\.env(?:\.[^/]*)?|\.pnp\.[^/]*|\.yarn|pnpm-workspace\.yaml|bunfig\.toml|vite(?:st)?\.(?:config|workspace|projects)\.[^/]*)$/;
+  /^(?:package\.json|\.npmrc|\.yarnrc(?:\.yml)?|\.env(?:\.[^/]*)?|\.pnp(?:mfile)?\.[^/]*|\.yarn|pnpm-workspace\.yaml|bunfig\.toml|vite(?:st)?\.(?:config|workspace|projects)\.[^/]*)$/;
 
 /**
  * The npm, yarn, pnpm and bun configs among the run inputs, which the branch
@@ -236,11 +236,12 @@ const PACKAGE_MANAGER_CONFIG =
  * A key, in any of their spellings, by which a package-manager config has the
  * test script run a file, which in the gate is the branch's even where the
  * config is the target's: yarn's own binary and plugins, a node option such
- * as `--import`, the shell scripts run in, bun's preloads, and the env files
- * yarn injects, which may set any of these.
+ * as `--import`, the shell scripts run in, pnpm's hooks file (`pnpmfile`,
+ * `global-pnpmfile`), bun's preloads, and the env files yarn injects, which
+ * may set any of these.
  */
 const RUNS_A_FILE =
-  /yarn[-_]?path|plugins|node[-_]?options|script[-_]?shell|preload|inject[-_]?environment[-_]?files/i;
+  /yarn[-_]?path|plugins|node[-_]?options|script[-_]?shell|pnpm[-_]?file|preload|inject[-_]?environment[-_]?files/i;
 
 /**
  * A `$` in a key, the text of a line that is not a comment before its first
@@ -336,14 +337,20 @@ function runsAFile(name: string, text: string): boolean {
 }
 
 /**
- * Yarn's Plug'n'Play runtime, which yarn loads into every script it runs. It
- * resolves packages without the `node_modules` the gate links and checks, from
- * a cache the branch may commit, so where it stands the run is the branch's.
+ * Code at the root a package manager loads around every script it runs, so
+ * where it stands the run is the branch's: yarn's Plug'n'Play runtime, which
+ * resolves packages without the `node_modules` the gate links and checks,
+ * from a cache the branch may commit, and pnpm's hooks file, `.pnpmfile.cjs`
+ * or `.pnpmfile.mjs`, which pnpm requires as it reads its config.
  */
-const PNP_RUNTIME = /^\.pnp\./;
+const ROOT_RUNTIME = /^\.pnp(?:mfile)?\./;
 
-/** What vitest and vite write in `node_modules` as they run, which the gate does not link. */
-const RUN_CACHE = /^\.(?:cache|vite)$/;
+/**
+ * What vitest and vite write in `node_modules` as they run, which the gate does
+ * not link: their caches, and the `.vite-temp` vite bundles an ESM config
+ * into, under a fresh name each run.
+ */
+const RUN_CACHE = /^\.(?:cache|vite|vite-temp)$/;
 
 /**
  * Dot-named `node_modules` entries a run loads: the binaries a script runs by
@@ -440,8 +447,9 @@ function runFields(manifest: PackageManifest): [string, unknown][] {
  * What a plain vitest run over `root` collects, with the manifest's run fields
  * and the package-manager configs beside the config it compares across
  * checkouts; undefined where it is unknown, where one of those configs may run
- * a file (`runsAFile`), or where yarn's Plug'n'Play runtime stands at the
- * root. Throws where the root cannot be read.
+ * a file (`runsAFile`), or where yarn's Plug'n'Play runtime or pnpm's hooks
+ * file stands at the root (`ROOT_RUNTIME`). Throws where the root cannot be
+ * read.
  */
 function plainVitestCollection(root: RootFiles): ReturnType<typeof vitestCollection> {
   const manifest = parsedManifest(root);
@@ -449,7 +457,7 @@ function plainVitestCollection(root: RootFiles): ReturnType<typeof vitestCollect
   const collection =
     runsPlainVitest(manifest) &&
     !managers.some(([name, text]) => runsAFile(name, text)) &&
-    ![...root.keys()].some((name) => PNP_RUNTIME.test(name))
+    ![...root.keys()].some((name) => ROOT_RUNTIME.test(name))
       ? vitestCollection(root)
       : undefined;
   return (
