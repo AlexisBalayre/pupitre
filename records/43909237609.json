@@ -1,0 +1,230 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-16T16:45:16.030Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43909237609",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43909237609",
+  "actor": "AlexisBalayre",
+  "commit_sha": "045a20f23ccd1d10701c66b1b0ee218de52f7a6a",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 357,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/land-remeasure.service.ts",
+      "line": "166-177",
+      "description": "Every real gate report lists `worktree-clean` and/or `fresh-base` as passed, but `measureBranch` never produces either, so `unrun` always reports \"ran at the pin, absent now\" and every real `pup land --remeasure` refuses.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/land-remeasure.service.ts",
+      "line": "72-75",
+      "description": "The critical-area check diffs `<pin>...<head>`, which compares from their merge-base. A remeasure no longer requires the head to descend from the pin, so a head branched from an earlier commit can land a critical-area change that the check never sees.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/land-remeasure.service.ts",
+      "line": "155-196",
+      "description": "A remeasure accepts a debt flag when an open ledger entry of the same kind has an equal or higher count. It never checks that the files flagged now are the files someone accepted, so a commit past the pin can put an unreviewed \"Text files git reports as binary\" file in place of an accepted one.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/land-remeasure.service.ts",
+      "line": "155-196",
+      "description": "After a re-gate, the remeasure holds a flag to the first gate's figures. The ledger never records the larger figure the re-gate accepted, so a merge no worse than the re-gated pin refuses.",
+      "status": "unresolved"
+    },
+    {
+      "file": "src/core/land-remeasure.service.ts",
+      "line": "155-196",
+      "description": "A coverage-gap flag can refuse as \"never accepted\" when only the rounding of a percentage changed: `debtKind` turns `80%` into `#%` and `80.4%` into `#.#%`, so the two get different kinds.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/land-remeasure.service.ts",
+      "line": "146-160",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The remeasure calls `measureBranch` with `targetSha: landedOn`. The complexity \"before\" figure is still read from the main checkout's working tree, which holds local `target` at `localSha`. It does not hold `landedOn`, so another PR's changes to the same file can hide this session's complexity rise and no flag is raised.",
+      "body": "**The complexity baseline is read at `localSha`, but the remeasure measures against `landedOn`.**\n\n```ts\n{ targetSha: landedOn, sha: mergeCommit },\n```\n\n`measureBranch` builds its \"before\" context from `localContext(req.repoPath, …)` and overrides only `measureSha`/`configSha` with `targetSha`. Its comment assumes \"the main checkout, which the merge lock holds at the target branch\" ([merge-gate.service.ts#L3237-L3248](https://github.com/AlexisBalayre/pupitre/blob/045a20f23ccd1d10701c66b1b0ee218de52f7a6a/src/core/merge-gate.service.ts#L3237-L3248)). The TypeScript adapter's `complexity` ignores `measureSha` and reads `readFileSync(join(measurePath, file))` from disk ([typescript.adapter.ts#L821-L827](https://github.com/AlexisBalayre/pupitre/blob/045a20f23ccd1d10701c66b1b0ee218de52f7a6a/src/adapters/typescript.adapter.ts#L821-L827)).\n\n`runMergeGate` makes that assumption true. The remeasure does not:\n- `localSha` is local `refs/heads/<target>`. `landedOn` comes from `mergedOnto(head, mergeCommit)` on origin's history.\n- Nothing ties the two before `remeasureMerge` runs. The fast-forward to `originTip` happens only after it returns (land.service.ts), and the post-measure check only asserts `localSha` did not *move*, not that it equals `landedOn`.\n\n**Trigger (fails open):**\n1. PR X refactors `src/a.ts` from 60 to 40 decision points and merges on GitHub; it is not landed locally yet.\n2. This session's PR merges after it, so `landedOn` contains X.\n3. Its commits past the pin add 25 points to `a.ts`, so `after` = 65.\n4. The operator runs `pup land <id> --remeasure` before landing X. The checkout still holds `a.ts` at 60.\n5. The rise reads +5 instead of +25, under `COMPLEXITY_FILE_FLAG_DELTA` (15). No flag, and a rise nobody measured or accepted lands.\n\nThe opposite direction (X raised the file, or X added a file this session edits) over-counts and refuses wrongly. Complexity is the only stage affected: duplication and coverage judge against the stored baseline, and the other static debt reads the gate checkout.\n\nThis shares a root with last round's `node_modules`/scripts-at-`localSha` nit, but that one failed closed; this one lets an unaccepted rise through.\n\n**Possible fixes:**\n- Refuse the remeasure unless `localSha === landedOn`, telling the operator to land the earlier merges first.\n- Or read the \"before\" contents at `landedOn` from the object store rather than the working tree.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/045a20f23ccd1d10701c66b1b0ee218de52f7a6a/src/core/land-remeasure.service.ts#L146-L160",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land-remeasure.service.ts",
+      "line": "309-314",
+      "area": "security",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The mixed coverage-gap wording has no figure (`worse: []`). The latest fix holds it only to its files, so under a remeasure patch coverage can fall to any level as long as the uncovered lines stay in files the accepted entry already names.",
+      "body": "**A mixed coverage gap is held to its files but never to its ratio.**\n\n```ts\n{\n  pattern: /^Coverage gap \\(unreported files and patch coverage\\) merged from$/,\n  worse: [],\n  stage: () => 'coverage',\n  sameFiles: true,\n},\n```\n\n`judgeCoverage` ([debt.service.ts#L517-L546](https://github.com/AlexisBalayre/pupitre/blob/045a20f23ccd1d10701c66b1b0ee218de52f7a6a/src/core/debt.service.ts#L517-L546)) writes the mixed cause as the bare text `unreported files and patch coverage`, with no ratio or baseline. Its `files` are the unreported files plus every file with uncovered added lines. In the remeasure:\n- `debtFigures` returns `figures: []`, so `noWorse` ends in `[].every(...)`, which is `true`.\n- `sameFiles` only checks `flag.files ⊆ entry.files`.\n- The pinned report is checked by stage name and status only, and `flaggedBy` only asks that coverage filed some debt.\n\n**Trigger:**\n1. The pin flags `Coverage gap (unreported files and patch coverage)` over `[a.ts, b.ts]` (a.ts unreported, b.ts at 79% against an 80% baseline), and the operator accepts it.\n2. A fix round pushes hundreds of untested lines into `b.ts` past the pin; `a.ts` stays unreported. The PR merges on GitHub.\n3. `pup land --remeasure` files the same mixed wording over `{a.ts, b.ts}`, a subset of the entry, so it lands at, say, 10% patch coverage.\n\nThe same drop with no unreported file is the patch-only wording, whose `worse: [-1, 1]` refuses it. So whether an unreported file was accepted alone decides whether patch coverage is held at all. ADR 0185 says a coverage gap is compared on \"a lower patch coverage or a higher baseline\", and its *Not caught* list does not mention this. No test in land.test.ts covers a mixed flag with the same files and lower coverage.\n\n**Possible fixes:**\n- Fail closed: drop the mixed wording from `DEBT_WORDINGS`, so the flag refuses as `flagged, its figures unreadable`. Note that `flaggedBy` is built from `debtFigures` too, so the refusal would also print a misleading `coverage: flagged, with no debt filed for it` line; the test at land.test.ts:1426-1440 and ADR 0185's list of `sameFiles` wordings need updating.\n- Or have `judgeCoverage` put the ratio and baseline into the mixed wording and give it `worse: [-1, 1]` plus `sameFiles` (old entries then no longer match, which also fails closed).\n- Or hold the mixed flag to the ratio in the pinned report's `coverage` stage detail.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/045a20f23ccd1d10701c66b1b0ee218de52f7a6a/src/core/land-remeasure.service.ts#L309-L314",
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0185-pup-land-remeasure-takes-a-moved-head-on-the.md",
+      "line": "40-43",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "ADR 0185 says \"each wording below names the stage that files it\", but the ADR lists no wordings: they live only in `DEBT_WORDINGS` in land-remeasure.service.ts, so a reader looks for a list that isn't there.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land-remeasure.service.ts",
+      "line": "382-397",
+      "area": "simplicity",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Two of `noWorse`'s guards can never fire from its only caller. `now === undefined` was already handled at line 210, and the kind check always passes because `held` is keyed by the flag's own kind. Inlining the figure comparison into the `held.some` callback, reusing the `now` from line 209, would drop the function, both dead branches and a third `debtFigures` call, freeing decision points under the 50-point limit.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/types/session-event.types.ts",
+      "line": null,
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `landed` event doc (and `LandRequest.approvedBy`) describes `approvedBy` as who approved a critical-area change. In fact it is recorded whenever `--approved-by` is passed, and passing it skips the critical-path diff, so an auditor could read it as proof that a critical area changed. The ADR's \"when one was given\" is the accurate wording.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land-remeasure.service.ts",
+      "line": "143",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`'pup-gate-checkout-'` is inlined a second time here (first at merge-gate.service.ts:1367), against general.md §No hardcoded values. The comment says the two must match, so renaming one silently splits them. A `GATE_CHECKOUT_PREFIX` in merge-gate.constants.ts would keep them in step.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land-remeasure.service.ts",
+      "line": "232",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The comment \"Each read and what it says when it no longer holds.\" only restates the tuple shape below it. The WHY, re-reading after minutes of stages, is already in the function's JSDoc, so per AGENTS.md §Comments it can go.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [
+    {
+      "file": "src/core/land-remeasure.service.ts",
+      "line": "33-34",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The approval check uses decision 92's routing list as is. That list leaves out the gate's own judges (`debt.service.ts`, `scope-audit.utils.ts`, `coverage.utils.ts`), the list itself (`routing.utils.ts`), `glob.utils.ts`, the adapters that pick the gate commands, and the CLI's operator-only checks. A commit past the pin that weakens any of them lands under `--remeasure` with no `--approved-by`.",
+      "refutation": "ADR 0185 (Critical areas) deliberately defines the approval set as `CRITICAL_AREAS`, and the code does exactly that. The normal gate and re-gate need no approval for any of these paths: `CRITICAL_AREAS` is used only for tier routing and profile text. So an in-scope change to `debt.service.ts` passes them unapproved, and the remeasure is no weaker than the gate (and stricter for the listed paths). The stages also run pup's installed modules, not the measured checkout's, so a weakened judge does not grade itself. Widening the list belongs in an ADR amending decision 92 or 185, not in this PR."
+    }
+  ],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Skipped by gate: context (no spec/protocol/infra surface), workflow-safety (no .github/workflows change), spec (no closing issue or spec source), maintainability (off the default roster at standard depth)."
+    },
+    {
+      "component": "orchestrator",
+      "description": "The consolidator grouped two importants (correctness and security, both on the mixed coverage wording at land-remeasure.service.ts:309-314). Both were validated separately and both confirmed. I then merged them into one finding, keeping the security instance's description and folding in the correctness instance's detail."
+    },
+    {
+      "component": "conventions",
+      "description": "gh pr diff was too large for one read. The test diffs (land.test.ts, index-2.test.ts) were not checked clause by clause against testing.md."
+    },
+    {
+      "component": "docs",
+      "description": "gh pr diff was persisted and paged. Part of the land.test.ts diff was not read (test-only)."
+    },
+    {
+      "component": "guards",
+      "description": "The guards reviewer did not read ADR 0185's invariants or scan scripts/ for shell-based guards; it covered only the guard tests under src/."
+    },
+    {
+      "component": "orchestrator",
+      "description": "Prior important index 3 (re-gate figures not recorded in the ledger) was declined by the author in the fix round. It is still unresolved at 045a20f because `accepted` is built only from `measured.openEntries`, and an important is not deferrable."
+    }
+  ],
+  "duplicates_merged": 1,
+  "comments_posted_actual": 2,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 7.468075999999996,
+  "duration_ms": 484300,
+  "num_turns": 21,
+  "tokens": {
+    "input": 18,
+    "output": 19823,
+    "cache_read": 517261,
+    "cache_creation": 85854,
+    "total": 622956
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 326,
+      "output": 126795,
+      "cache_read": 7326841,
+      "cache_creation": 536680,
+      "cost_usd": 6.943534199999996
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 50,
+      "output": 15441,
+      "cache_read": 487486,
+      "cache_creation": 128220,
+      "cost_usd": 0.5238086
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 162,
+      "cache_read": 0,
+      "cache_creation": 5216,
+      "cost_usd": 0.0007332
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "bash /home/runner/work/pupitre/pupitre/scripts/adr-index.sh"
+    }
+  ]
+}
