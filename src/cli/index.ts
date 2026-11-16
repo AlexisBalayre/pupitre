@@ -74,7 +74,11 @@ import { MAX_REJECTS_BEFORE_BLOCKED } from '../core/merge-gate.constants.js';
 import { MergeLockLostError } from '../core/merge-gate.errors.js';
 import { runMergeGate } from '../core/merge-gate.service.js';
 import { renderMindMapHtml } from '../core/mind-map.service.js';
-import { type LaunchedAncestor, launchedAncestor } from '../core/operator-guard.service.js';
+import {
+  type LaunchedAncestor,
+  launchedAncestor,
+  mergeCallerAncestor,
+} from '../core/operator-guard.service.js';
 import {
   appendOnlyLine,
   radarView,
@@ -961,19 +965,13 @@ interface PlanOptions {
  * or the conductor's, whatever its environment and cwd say: the markers are
  * the caller's word, and a caller can empty or unset them and leave its
  * worktree, but not leave the process tree it runs in (decisions 115, 188).
- * Asked of the project's store the command acts on, after the marker checks,
- * which name the caller in plainer words when it kept its markers. A tree
- * `ps` could not read refuses too: it cannot tell the caller from a window.
- * The `spared` window, if any, is walked past (`launchedAncestor`). Prints the
- * refusal and returns true when it refused.
+ * `ancestor` is what the process tree said, asked of the project's store the
+ * command acts on, after the marker checks, which name the caller in plainer
+ * words when it kept its markers. A tree `ps` could not read refuses too: it
+ * cannot tell the caller from a window. Prints the refusal and returns true
+ * when it refused.
  */
-function refusedUnderWindow(
-  db: Database,
-  repoPath: string,
-  command: string,
-  spared?: string,
-): boolean {
-  const ancestor = launchedAncestor(db, repoPath, spared);
+function refusedUnderWindow(ancestor: LaunchedAncestor | undefined, command: string): boolean {
   if (ancestor === undefined) return false;
   const under = underWindow(ancestor);
   refuse(
@@ -1032,7 +1030,7 @@ function rescopeOrRefuse(db: Database, repoPath: string, target: string, opts: P
     );
     return;
   }
-  if (refusedUnderWindow(db, repoPath, '`pup plan edit --rescope`')) return;
+  if (refusedUnderWindow(launchedAncestor(db, repoPath), '`pup plan edit --rescope`')) return;
   if ([opts.goal, opts.scopeOut, opts.accept, opts.tier].some((field) => field !== undefined)) {
     refuse('--rescope takes only --scope: it appends scope-in globs and changes nothing else.');
     return;
@@ -1892,7 +1890,7 @@ export function buildProgram(): Command {
       // Its page merges, lands, answers and closes debt in the operator's name,
       // as `pup ui`'s keys do: the process tree asks again whatever the markers
       // said (decision 188).
-      if (refusedUnderWindow(db, repoPath, '`pup dashboard`')) {
+      if (refusedUnderWindow(launchedAncestor(db, repoPath), '`pup dashboard`')) {
         db.close();
         return;
       }
@@ -2230,14 +2228,15 @@ export function buildProgram(): Command {
           '`pup kill --respawn` is operator-only; the conductor kills, the operator respawns.',
         );
       }
-      // Only the respawn: the plain kill is the conductor's to run.
-      if (opts.respawn && refusedUnderWindow(db, repoPath, '`pup kill --respawn`')) return;
       if (!opts.respawn && (opts.model !== undefined || opts.effort !== undefined)) {
         return refuse(
           '`--model` and `--effort` go with `--respawn`; a plain kill opens no window.',
         );
       }
       if (opts.respawn) {
+        // Only the respawn asks the process tree: the plain kill is the
+        // conductor's to run.
+        if (refusedUnderWindow(launchedAncestor(db, repoPath), '`pup kill --respawn`')) return;
         // Before the kill: a refused config dir would leave the session no window.
         const windowEnv = windowEnvOrRefuse(repoPath);
         if (windowEnv === undefined) return;
@@ -2283,7 +2282,7 @@ export function buildProgram(): Command {
           '`pup unblock` is operator-only; the conductor reports a blocked session and the operator unblocks it.',
         );
       }
-      if (refusedUnderWindow(db, repoPath, '`pup unblock`')) return;
+      if (refusedUnderWindow(launchedAncestor(db, repoPath), '`pup unblock`')) return;
       const row = getSession(db, session);
       if (!row) return refuse(`No session ${session}.`);
       // Not `canTransition`: `queued -> running` is a legal edge that this
@@ -2338,7 +2337,7 @@ export function buildProgram(): Command {
           '`pup respawn` is operator-only; the conductor asks the operator to respawn.',
         );
       }
-      if (refusedUnderWindow(db, repoPath, '`pup respawn`')) return;
+      if (refusedUnderWindow(launchedAncestor(db, repoPath), '`pup respawn`')) return;
       // Before the handoff is asked for and the window killed: a refused config
       // dir would leave the session no window.
       const windowEnv = windowEnvOrRefuse(repoPath);
@@ -2533,17 +2532,12 @@ export function buildProgram(): Command {
         }
         // The process tree asks again whatever the markers said, before the
         // gate writes the ledger, rejects or parks anything (decision 188).
-        // No session runs a merge from its window. The conductor's window is
-        // walked past only for a gate to a PR with no debt or one relayed
-        // under its approver's name: the local fast-forward and a debt
-        // accepted as the operator's own are the operator's alone.
-        const operatorsAlone =
-          !opts.pr ||
-          (Boolean(opts.acceptDebt) && (!approvedBy || approvedBy.toLowerCase() === 'human'));
-        const spared = operatorsAlone
-          ? undefined
-          : windowLabel({ conductorOf: projectId(repoPath) });
-        if (refusedUnderWindow(db, repoPath, '`pup merge`', spared)) return;
+        const ancestor = mergeCallerAncestor(db, repoPath, {
+          pr: opts.pr,
+          acceptDebt: opts.acceptDebt,
+          approvedBy,
+        });
+        if (refusedUnderWindow(ancestor, '`pup merge`')) return;
         // Every detected adapter, not just the first: the gate measures debt
         // over all of them so its bar is the one `pup init` recorded
         // (decision 72).

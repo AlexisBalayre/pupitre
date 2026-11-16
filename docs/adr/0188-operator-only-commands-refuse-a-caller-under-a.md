@@ -107,7 +107,10 @@
     wins over a launch name further up, reads only holding-state sessions and minted ids,
     and passes a tree that holds none; a spared window passes a caller under it alone, and
     a session's pane above a record or a title naming it, or a session's name at the pid
-    its record names, is still found; decision 115's arguments cases stay. `task-rescope.test.ts`: the overlap check records and returns another
+    its record names, is still found; `mergeCallerAncestor` finds the local merge and a
+    debt accepted as the operator's own under the conductor's window, walks past it for a
+    PR with or without a named approver, and finds a session's or another project's
+    conductor's window for one; decision 115's arguments cases stay. `task-rescope.test.ts`: the overlap check records and returns another
     task's live session and leaves the task's own, and `taskRescopes` lists a task's
     rescopes across its sessions and no other task's. `index.test.ts`: each of the four
     commands is refused under a session's and the conductor's recorded pane with its

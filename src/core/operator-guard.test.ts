@@ -2,7 +2,8 @@ import type { Database } from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { listProcesses, recordedPanePids } from '../claude/session-runtime.service.js';
 import { openStore } from './db.client.js';
-import { launchedAncestor } from './operator-guard.service.js';
+import { launchedAncestor, type MergeCall, mergeCallerAncestor } from './operator-guard.service.js';
+import { projectId } from './paths.utils.js';
 import { ensureProject, insertSession, insertTask } from './session.repository.js';
 
 // The ps boundary and the launch's records, tested against both in the
@@ -252,5 +253,56 @@ describe('launchedAncestor (decisions 115, 188)', () => {
     vi.mocked(listProcesses).mockReturnValue(undefined);
 
     expect(launchedAncestor(db, '/repo')).toEqual({ kind: 'unreadable' });
+  });
+
+  describe('mergeCallerAncestor', () => {
+    const CONDUCTOR = `pup-conductor-${projectId('/repo')}`;
+    const DEBT = { acceptDebt: 'r' };
+    /** The caller under pid 700, which a launch recorded for `window`. */
+    const underPane = (window: string) => {
+      vi.mocked(recordedPanePids).mockReturnValue(new Map([[700, window]]));
+      tree([process.ppid, 700, '/bin/zsh'], [700, 1, 'claude']);
+    };
+
+    // The local fast-forward, and a debt the ledger would record as the operator's own.
+    it.each<[string, MergeCall]>([
+      ['the local merge', {}],
+      ['a debt with no approver', { pr: true, ...DEBT }],
+      ['a debt approved by `human`', { pr: true, ...DEBT, approvedBy: 'Human' }],
+    ])("finds %s under the conductor's own window", (_what, call) => {
+      underPane(CONDUCTOR);
+
+      expect(mergeCallerAncestor(db, '/repo', call)).toEqual({
+        kind: 'pane',
+        pid: 700,
+        window: CONDUCTOR,
+      });
+    });
+
+    it.each<[string, MergeCall]>([
+      ['a PR', { pr: true }],
+      ['a PR with a named approver', { pr: true, ...DEBT, approvedBy: 'tg:someone' }],
+    ])("walks past the conductor's window for %s, and finds a session's", (_what, call) => {
+      underPane(CONDUCTOR);
+      expect(mergeCallerAncestor(db, '/repo', call)).toBeUndefined();
+
+      underPane('pup-t-abc');
+      expect(mergeCallerAncestor(db, '/repo', call)).toEqual({
+        kind: 'pane',
+        pid: 700,
+        window: 'pup-t-abc',
+      });
+    });
+
+    // Only this project's conductor is spared.
+    it("finds another project's conductor for a PR", () => {
+      underPane('pup-conductor-elsewhere');
+
+      expect(mergeCallerAncestor(db, '/repo', { pr: true })).toEqual({
+        kind: 'pane',
+        pid: 700,
+        window: 'pup-conductor-elsewhere',
+      });
+    });
   });
 });

@@ -1,7 +1,8 @@
 import { basename } from 'node:path';
 import type { Database } from 'better-sqlite3';
-import { listProcesses, recordedPanePids } from '../claude/session-runtime.service.js';
+import { listProcesses, recordedPanePids, windowLabel } from '../claude/session-runtime.service.js';
 import { SESSION_ID_PATTERN } from './paths.constants.js';
+import { projectId } from './paths.utils.js';
 import { listSessions } from './session.repository.js';
 import { holdingStates } from './session-state.utils.js';
 
@@ -74,4 +75,31 @@ export function launchedAncestor(
     if (name !== undefined && name !== spared) return { kind: 'launched', name };
   }
   return undefined;
+}
+
+/** A `pup merge` call as the window check reads it; `approvedBy` already scrubbed. */
+export interface MergeCall {
+  pr?: boolean;
+  acceptDebt?: string;
+  approvedBy?: string;
+}
+
+/**
+ * What the process tree says of a `pup merge` caller, asked whatever its
+ * markers said and before the gate writes the ledger, rejects or parks
+ * anything (decision 188). No session runs a merge from its window. The
+ * project's conductor's window is walked past only for a gate to a PR with no
+ * debt or one relayed under its approver's name: the local fast-forward and a
+ * debt accepted as the operator's own are the operator's alone.
+ */
+export function mergeCallerAncestor(
+  db: Database,
+  repoPath: string,
+  call: MergeCall,
+): LaunchedAncestor | undefined {
+  const operatorsAlone =
+    !call.pr ||
+    (Boolean(call.acceptDebt) && (!call.approvedBy || call.approvedBy.toLowerCase() === 'human'));
+  const spared = operatorsAlone ? undefined : windowLabel({ conductorOf: projectId(repoPath) });
+  return launchedAncestor(db, repoPath, spared);
 }
