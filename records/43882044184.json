@@ -1,0 +1,92 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-16T14:09:37.097Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43882044184",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43882044184",
+  "actor": "AlexisBalayre",
+  "commit_sha": "0b98a19e70ef342ba44f99cd082ec48aa9c6ecda",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 344,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/land.service.ts",
+      "line": "119-124",
+      "description": "After `--abandon-closed` and a reopen on GitHub, a plain `pup land` tells the operator to \"merge it there first\". The PR is open with its head still at the pin, so following that advice merges it with no ADR-number re-check. A number a peer took after the record then reaches the target twice.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 3.394938,
+  "duration_ms": 215049,
+  "num_turns": 16,
+  "tokens": {
+    "input": 12,
+    "output": 11230,
+    "cache_read": 293310,
+    "cache_creation": 60209,
+    "total": 364761
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 166,
+      "output": 50138,
+      "cache_read": 2898572,
+      "cache_creation": 259193,
+      "cost_usd": 3.0597303999999994
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 36,
+      "output": 6843,
+      "cache_read": 255231,
+      "cache_creation": 96473,
+      "cost_usd": 0.3352076
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "bash /home/runner/work/pupitre/pupitre/scripts/adr-index.sh"
+    }
+  ]
+}
