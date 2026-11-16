@@ -1,7 +1,7 @@
 import type { Database } from 'better-sqlite3';
 import { sanitizeReason } from '../adapters/capability.utils.js';
 import { FORMAT_CHARS } from './fix-round.service.js';
-import { rethrowIfKilled } from './git-diff.client.js';
+import { RewrittenGitDirError, rethrowIfKilled } from './git-diff.client.js';
 import {
   assertGhAvailable,
   isCutOffByNode,
@@ -91,7 +91,9 @@ interface CiWaitOutcome {
  * open. A status the owner asked `@claude review` past is the run's before,
  * so it finishes nothing. Nothing but `progress` prints while it waits, on
  * stderr, so the digest stays the one line on stdout; a gh read that fails
- * is one more wait, and the timeout's line names the last thing seen.
+ * is one more wait, and the timeout's line names the last thing seen. A main
+ * checkout whose `.git` a read refused (`RewrittenGitDirError`) ends the wait
+ * at once: every later read would be refused too.
  */
 export async function waitForCiReview(
   db: Database,
@@ -120,6 +122,9 @@ export async function waitForCiReview(
       if ('line' in digest) return { finished: true, line: digest.line };
       lastSeen = digest.waiting;
     } catch (error) {
+      // A checkout refused is refused at every read after it, so waiting on
+      // it would only run out the timeout (decision 181).
+      if (error instanceof RewrittenGitDirError) throw error;
       // A read node cut off, past its budget or its buffer, is one more wait,
       // not an interrupt.
       if (!isCutOffByNode(error)) rethrowIfKilled(error);

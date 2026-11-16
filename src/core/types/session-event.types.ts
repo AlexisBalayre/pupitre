@@ -77,6 +77,13 @@ export interface EventPayloads {
    */
   retired: { prUrl: string; supersededBy: string };
   /**
+   * The operator's `pup land --abandon-closed` saw the session's PR closed
+   * unmerged on GitHub; `sha` is the commit the merge it closes out pinned. The
+   * ADR-number check stops counting the PR (decision 146) until a newer merge
+   * event re-opens its claim.
+   */
+  pr_closed: { prUrl: string; sha: string };
+  /**
    * `pup fix` handed the PR's CI review back to the session's worker
    * (decision 90): the head the bot reviewed, the ids of the open threads the
    * kickoff listed, and the session's rejection count as the round started,

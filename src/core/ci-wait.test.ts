@@ -14,6 +14,7 @@ import type { Database } from 'better-sqlite3';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { type CiWaitClock, waitForCiReview } from './ci-wait.service.js';
 import { openStore } from './db.client.js';
+import { RewrittenGitDirError } from './git-diff.client.js';
 import { projectId } from './paths.utils.js';
 import { CI_WAIT_STAGES, stageProgress } from './progress.utils.js';
 import {
@@ -195,6 +196,8 @@ describe('waitForCiReview', { timeout: 20_000 }, () => {
         `printf '%s\\n' "$*" >> ${ghDir}/calls`,
         // A read that hangs once, before it takes an answer.
         `if [ -f ${ghDir}/slow ]; then rm ${ghDir}/slow; exec sleep 5; fi`,
+        // A read during which the checkout's .git gains a commondir (decision 172).
+        `if [ -f ${ghDir}/plant ]; then rm ${ghDir}/plant; : > .git/commondir; fi`,
         `n=$(cat ${ghDir}/n 2>/dev/null || echo 0)`,
         `if [ -f ${ghDir}/answer-$((n + 1)) ]; then n=$((n + 1)); echo $n > ${ghDir}/n; fi`,
         `cat ${ghDir}/answer-$n`,
@@ -553,6 +556,18 @@ describe('waitForCiReview', { timeout: 20_000 }, () => {
 
     expect(outcome.line).toContain("→ ready for the operator's merge click");
     expect(clock.slept).toEqual([30_000]);
+  });
+
+  // Every read after a refused one is refused too, so a wait would only run
+  // out its timeout.
+  it("ends at once on a read that refused the checkout's .git", async () => {
+    githubAnswers({ reviewedOn: null, status: null });
+    writeFileSync(join(ghDir, 'plant'), '');
+
+    await expect(wait()).rejects.toThrow(RewrittenGitDirError);
+    expect(clock.slept).toEqual([]);
+    // One read, and none after it: each logs its query, which spans lines.
+    expect(readFileSync(join(ghDir, 'calls'), 'utf8').match(/^api graphql /gm)).toHaveLength(1);
   });
 
   // A forged status could otherwise print its own `→` and next step after the

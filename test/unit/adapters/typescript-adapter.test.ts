@@ -1,15 +1,18 @@
 import { execFileSync } from 'node:child_process';
 import {
+  chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
   renameSync,
   rmSync,
   symlinkSync,
+  truncateSync,
   writeFileSync,
 } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
-import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 
 // The real mkdirSync and rmSync, wrapped so one test can make the report
 // directory's creation fail and another can act midway through a removal.
@@ -292,6 +295,14 @@ describe('typescriptAdapter.coveredTest', () => {
 // is vitest-config.utils.ts's, tested there.
 describe('typescriptAdapter.testFiles', () => {
   const plainVitest = JSON.stringify({ scripts: { test: 'vitest run' } });
+
+  // The run reads the user's own .npmrc, so the operator's would decide these.
+  beforeEach(() => {
+    vi.stubEnv('HOME', tempDir('pup-home-'));
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
   const configWith = (test: string): string =>
     `import { defineConfig } from 'vitest/config';\n\nexport default defineConfig({\n  test: ${test},\n});\n`;
 
@@ -369,7 +380,38 @@ describe('typescriptAdapter.testFiles', () => {
       [],
     ],
     ['an .env.yarn only the branch commits', {}, { '.env.yarn': 'CI=1\n' }, []],
+    ['an .env only the branch commits', {}, { '.env': 'CI=1\n' }, []],
+    [
+      'an .npmrc on both sides substituting a token in a value',
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: npm's own substitution, not a JS template
+      { '.npmrc': '//registry.npmjs.org/:_authToken=${NPM_TOKEN}\n' },
+      {},
+      ['src/a.test.ts'],
+    ],
+    [
+      'an .env on both sides naming a variable in a comment',
+      { '.env.example': '# under $HOME\nVAULT="$HOME/notes"\n' },
+      {},
+      ['src/a.test.ts'],
+    ],
+    [
+      'plainly keyed configs on both sides',
+      {
+        '.npmrc':
+          'save-prefix=~\nregistry = https://registry.npmjs.org/\n@scope:registry=https://npm.example.com/\n[scope]\nfund=false\n',
+        '.env': 'export CI=1\nNODE_ENV=test\n',
+      },
+      {},
+      ['src/a.test.ts'],
+    ],
     ["yarn's Plug'n'Play runtime on both sides", { '.pnp.cjs': 'module.exports = {};\n' }, {}, []],
+    ["pnpm's hooks file on both sides", { '.pnpmfile.cjs': 'module.exports = {};\n' }, {}, []],
+    [
+      'a pnpm hooks file only the branch commits',
+      {},
+      { '.pnpmfile.mjs': "process.env.NODE_OPTIONS = '--import ./reg.mjs';\n" },
+      [],
+    ],
     ...[
       ['.npmrc', 'node-options=--import ./scripts/reg.mjs\n'],
       ['.npmrc', 'node_options=--import ./scripts/reg.mjs\n'],
@@ -381,6 +423,30 @@ describe('typescriptAdapter.testFiles', () => {
       ['.env.yarn', 'NODE_OPTIONS=--import ./scripts/reg.mjs\n'],
       ['pnpm-workspace.yaml', 'nodeOptions: --import ./scripts/reg.mjs\n'],
       ['bunfig.toml', 'preload = ["./scripts/reg.ts"]\n'],
+      ['.npmrc', 'pnpmfile=./scripts/hooks.cjs\n'],
+      ['pnpm-workspace.yaml', 'globalPnpmfile: ./scripts/hooks.cjs\n'],
+      ['.env', 'NODE_OPTIONS=--import ./scripts/reg.mjs\n'],
+      ['.env.local', 'NODE_OPTIONS=--import ./scripts/reg.mjs\n'],
+      // Keys that have npm read a config nothing here checks.
+      ['.npmrc', 'globalconfig=./scripts/npmrc\n'],
+      ['.env', 'NPM_CONFIG_GLOBALCONFIG=./scripts/npmrc\n'],
+      ['.env', 'export npm_config_prefix=./scripts\n'],
+      ['.env', '\u00A0NPM_CONFIG_PREFIX\u00A0=./scripts\n'],
+      ['.env', 'DESTDIR=./scripts\n'],
+      ['.env.local', 'export\tDESTDIR=./scripts\n'],
+      // Escaped or substituted keys, which their package manager reads as the key.
+      ['.yarnrc.yml', '"yarn\\u0050ath": .yarn/releases/yarn.cjs\n'],
+      ['pnpm-workspace.yaml', '"node\\u004Fptions": --import ./scripts/reg.mjs\n'],
+      ['bunfig.toml', '"pre\\u006Coad" = ["./scripts/reg.ts"]\n'],
+      ['.npmrc', '"node\\u002doptions"=--import ./scripts/reg.mjs\n'],
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: npm's own substitution, not a JS template
+      ['.npmrc', '${KEY}=--import ./scripts/reg.mjs\n'],
+      // Keys not plainly spelt, which ini reads through JSON and dotenv after a line break.
+      ['.npmrc', ' "globalconfig"=./scripts/npmrc\n'],
+      ['.npmrc', '[ "prefix" ]=./scripts\n'],
+      ['.npmrc', '[ prefix ]\nfund=false\n'],
+      ['.env', 'CI=1\u2028NPM_CONFIG_GLOBALCONFIG=./scripts/npmrc\n'],
+      ['.env', 'CI=1\u2029"FOO BAR"=1\n'],
     ].map(
       ([name, text]) =>
         [`a target ${name} that runs a file`, { [name as string]: text }, {}, []] as const,
@@ -401,6 +467,178 @@ describe('typescriptAdapter.testFiles', () => {
       );
     },
   );
+
+  // Every manifest field but the dependency maps and the scripts may shape the
+  // run, so the branch's must be the target's.
+  it.each([
+    ['a devDependency', { devDependencies: { zod: '^4' } }, ['src/a.test.ts']],
+    ['another script', { scripts: { test: 'vitest run', lint: 'biome check' } }, ['src/a.test.ts']],
+    ['a packageManager', { packageManager: 'yarn@4.5.0' }, []],
+    ['a pnpm block', { pnpm: { executionEnv: { nodeVersion: '18.0.0' } } }, []],
+    ['a module type', { type: 'module' }, []],
+    ['subpath imports', { imports: { '#vitest': './fake.js' } }, []],
+  ])('reads a branch manifest that adds %s', (_, fields, expected) => {
+    const config = configWith("{ include: ['src/**/*.test.ts'] }");
+    const configPath = makeRepo({ 'package.json': plainVitest, 'vitest.config.ts': config });
+    const measurePath = makeRepo({
+      'package.json': JSON.stringify({ scripts: { test: 'vitest run' }, ...fields }),
+      'vitest.config.ts': config,
+    });
+
+    expect(typescriptAdapter.testFiles?.({ configPath, measurePath }, ['src/a.test.ts'])).toEqual(
+      expected,
+    );
+  });
+
+  // Every root entry shaped like a tool's config is compared whole, whichever
+  // tool loads it by convention; a module one, or PostCSS's, loads by what it names.
+  it.each([
+    [
+      'a postcss.config.mjs only the branch commits',
+      {},
+      { 'postcss.config.mjs': 'export default {};\n' },
+      [],
+    ],
+    [
+      'a tsconfig.json only the branch changes',
+      { 'tsconfig.json': '{}\n' },
+      { 'tsconfig.json': '{ "compilerOptions": { "jsx": "react-jsx" } }\n' },
+      [],
+    ],
+    ['a .babelrc only the branch commits', {}, { '.babelrc': '{}\n' }, []],
+    ['a browserslist only the branch commits', {}, { browserslist: 'defaults\n' }, []],
+    [
+      'a lockfile only the branch changes',
+      { 'pnpm-lock.yaml': 'a\n' },
+      { 'pnpm-lock.yaml': 'b\n' },
+      [],
+    ],
+    [
+      'a tool config only the branch commits',
+      {},
+      { 'tailwind.config.js': 'export default {};\n' },
+      [],
+    ],
+    [
+      'a README and a source file only the branch changes',
+      {},
+      { 'README.md': 'x\n', 'out.js': 'x\n' },
+      ['src/a.test.ts'],
+    ],
+    ['a tsconfig.json on both sides', { 'tsconfig.json': '{}\n' }, {}, ['src/a.test.ts']],
+    [
+      'a .postcssrc.json on both sides',
+      { '.postcssrc.json': '{ "plugins": { "./p.cjs": {} } }\n' },
+      {},
+      [],
+    ],
+    [
+      'a postcss.config.js on both sides',
+      { 'postcss.config.js': 'export default { plugins: {} };\n' },
+      {},
+      [],
+    ],
+    [
+      'a postcss field on both sides',
+      { 'package.json': JSON.stringify({ scripts: { test: 'vitest run' }, postcss: {} }) },
+      {},
+      [],
+    ],
+    [
+      'a tool config on both sides importing a file',
+      { 'eslint.config.js': "import rules from './rules.js';\nexport default [rules];\n" },
+      {},
+      [],
+    ],
+    [
+      'a tool config on both sides requiring a package',
+      { '.eslintrc.cjs': "module.exports = require('x');\n" },
+      {},
+      [],
+    ],
+    [
+      'a tool config on both sides that does not parse',
+      { 'prettier.config.js': 'export default {\n' },
+      {},
+      [],
+    ],
+    [
+      'a tool config on both sides importing a package',
+      { 'eslint.config.js': "import js from '@eslint/js';\nexport default [js];\n" },
+      {},
+      ['src/a.test.ts'],
+    ],
+    // Named in another case, which a case-insensitive disk opens for the lower-case name.
+    ['a .PostCSSrc on both sides', { '.PostCSSrc': '{}\n' }, {}, []],
+    ['a Postcss.config.js only the branch commits', {}, { 'Postcss.config.js': 'x\n' }, []],
+    ['a TSCONFIG.JSON only the branch commits', {}, { 'TSCONFIG.JSON': '{}\n' }, []],
+  ] as [string, Record<string, string>, Record<string, string>, string[]][])(
+    'reads the root configs of %s',
+    (_, both, branchOnly, expected) => {
+      const files = {
+        'package.json': plainVitest,
+        'vitest.config.ts': configWith("{ include: ['src/**/*.test.ts'] }"),
+        ...both,
+      };
+      const configPath = makeRepo(files);
+      const measurePath = makeRepo({ ...files, ...branchOnly });
+
+      expect(typescriptAdapter.testFiles?.({ configPath, measurePath }, ['src/a.test.ts'])).toEqual(
+        expected,
+      );
+    },
+  );
+
+  // A directory is read whole: lilconfig and cosmiconfig search `.config`.
+  it.each([
+    ['a .github directory only the branch changes', '.github', 'ci.yml', false, []],
+    ['a .github directory on both sides', '.github', 'ci.yml', true, ['src/a.test.ts']],
+    ['a .config directory on both sides', '.config', 'postcssrc.json', true, []],
+  ] as [string, string, string, boolean, string[]][])(
+    'reads the root of %s',
+    (_, dir, file, shared, expected) => {
+      const files = {
+        'package.json': plainVitest,
+        'vitest.config.ts': configWith("{ include: ['src/**/*.test.ts'] }"),
+      };
+      const configPath = makeRepo(files);
+      const measurePath = makeRepo(files);
+      for (const [repo, text] of [
+        [configPath, 'a\n'],
+        [measurePath, shared ? 'a\n' : 'b\n'],
+      ] as const) {
+        mkdirSync(join(repo, dir));
+        writeFileSync(join(repo, dir, file), text);
+      }
+
+      expect(typescriptAdapter.testFiles?.({ configPath, measurePath }, ['src/a.test.ts'])).toEqual(
+        expected,
+      );
+    },
+  );
+
+  // Vite redirects `@src/x` too, so an alias of a scope node_modules holds
+  // hands its packages to the branch.
+  it.each([
+    ['no such scope', [], ['src/a.test.ts']],
+    ['an @src scope', ['@src'], []],
+  ])('reads an @src alias beside a trusted node_modules holding %s', (_, scopes, expected) => {
+    const files = {
+      'package.json': plainVitest,
+      'vitest.config.ts':
+        "import { defineConfig } from 'vitest/config';\n" +
+        "export default defineConfig({ resolve: { alias: { '@src': './src' } }, test: { include: ['src/**/*.test.ts'] } });\n",
+    };
+    const configPath = makeRepo(files);
+    for (const scope of scopes)
+      mkdirSync(join(configPath, 'node_modules', scope), { recursive: true });
+
+    expect(
+      typescriptAdapter.testFiles?.({ configPath, measurePath: makeRepo(files) }, [
+        'src/a.test.ts',
+      ]),
+    ).toEqual(expected);
+  });
 
   // Vitest then loads the first config in a directory above, which a session can write.
   it('collects nothing with no config at the root', () => {
@@ -454,6 +692,210 @@ describe('typescriptAdapter.testFiles', () => {
     sh(repo, 'git', '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'init');
     return { repo, sha: sh(repo, 'git', 'rev-parse', 'HEAD') };
   }
+
+  /**
+   * A gate context over one repo committing `target`, then `branch` over it,
+   * paths nested and ignored ones included, read from the two commits.
+   */
+  function branched(
+    target: Record<string, string>,
+    branch: Record<string, string>,
+  ): { configPath: string; configSha: string; measurePath: string; measureSha: string } {
+    const repo = tempDir('pup-adapter-');
+    const commit = (files: Record<string, string>): string => {
+      for (const [name, text] of Object.entries(files)) {
+        mkdirSync(dirname(join(repo, name)), { recursive: true });
+        writeFileSync(join(repo, name), text);
+      }
+      sh(repo, 'git', 'add', '-A', '-f');
+      sh(
+        repo,
+        'git',
+        '-c',
+        'user.name=t',
+        '-c',
+        'user.email=t@t',
+        'commit',
+        '-q',
+        '--allow-empty',
+        '-m',
+        'c',
+      );
+      return sh(repo, 'git', 'rev-parse', 'HEAD');
+    };
+    sh(repo, 'git', 'init', '-q');
+    const configSha = commit(target);
+    return { configPath: repo, configSha, measurePath: repo, measureSha: commit(branch) };
+  }
+
+  const plainRoot = () => ({
+    'package.json': plainVitest,
+    'vitest.config.ts': configWith("{ include: ['src/**/*.test.ts'] }"),
+  });
+
+  // The gate reads both sides from trees: a directory there is a tree entry,
+  // and below the root node resolves a `node_modules` and tsconfck a tsconfig.
+  it.each([
+    ['a .config directory on both sides', { '.config/postcssrc.json': '{}\n' }, {}, []],
+    [
+      'a .github directory only the branch changes',
+      { '.github/ci.yml': 'a\n' },
+      { '.github/ci.yml': 'b\n' },
+      [],
+    ],
+    ['a .github directory only the branch adds', {}, { '.github/ci.yml': 'a\n' }, []],
+    ['a .github directory on both sides', { '.github/ci.yml': 'a\n' }, {}, ['src/a.test.ts']],
+    [
+      'a node_modules path below the root only the branch commits',
+      {},
+      { 'src/node_modules/x/index.js': 'x\n' },
+      [],
+    ],
+    [
+      'a Node_Modules path below the root on both sides',
+      { 'lib/Node_Modules/x.js': 'x\n' },
+      {},
+      [],
+    ],
+    [
+      'a nested tsconfig.json the branch changes',
+      { 'web/tsconfig.json': '{}\n' },
+      { 'web/tsconfig.json': '{ "compilerOptions": { "jsxImportSource": "./jsx" } }\n' },
+      [],
+    ],
+    ['a nested jsconfig.json only the branch adds', {}, { 'web/jsconfig.json': '{}\n' }, []],
+    [
+      'a nested TSCONFIG.app.JSON only the branch adds',
+      {},
+      { 'web/TSCONFIG.app.JSON': '{}\n' },
+      [],
+    ],
+    [
+      'a nested tsconfig.json on both sides',
+      { 'web/tsconfig.json': '{}\n' },
+      {},
+      ['src/a.test.ts'],
+    ],
+    // APFS folds `ſ` onto `s`, which no JavaScript case mapping reproduces.
+    [
+      'a tſconfig.json below the root only the branch adds',
+      {},
+      { 'src/tſconfig.json': '{ "compilerOptions": { "jsxImportSource": "x" } }\n' },
+      [],
+    ],
+    [
+      'a node_moduleſ path below the root only the branch commits',
+      {},
+      { 'src/node_moduleſ/x/jsx-runtime.js': 'x\n' },
+      [],
+    ],
+    [
+      'a name outside ASCII below the root on both sides',
+      { 'docs/café.md': 'a\n' },
+      {},
+      ['src/a.test.ts'],
+    ],
+  ] as [string, Record<string, string>, Record<string, string>, string[]][])(
+    'reads from the trees %s',
+    (_, target, branch, expected) => {
+      const ctx = branched({ ...plainRoot(), ...target }, branch);
+      const files = ['src/a.test.ts', ...Object.keys(target), ...Object.keys(branch)];
+
+      expect(typescriptAdapter.testFiles?.(ctx, files)).toEqual(expected);
+    },
+  );
+
+  it('reads a nested tsconfig.json the branch deletes from the trees', () => {
+    const ctx = branched({ ...plainRoot(), 'web/tsconfig.json': '{}\n' }, {});
+    sh(ctx.configPath, 'git', 'rm', '-q', 'web/tsconfig.json');
+    sh(
+      ctx.configPath,
+      'git',
+      '-c',
+      'user.name=t',
+      '-c',
+      'user.email=t@t',
+      'commit',
+      '-q',
+      '-m',
+      'rm',
+    );
+    const measureSha = sh(ctx.configPath, 'git', 'rev-parse', 'HEAD');
+
+    expect(
+      typescriptAdapter.testFiles?.({ ...ctx, measureSha }, ['src/a.test.ts', 'web/tsconfig.json']),
+    ).toEqual([]);
+  });
+
+  // A directory the run reads is walked whole: what cannot be read, or is a
+  // link, fails the check rather than read as empty or throw.
+  it.each([
+    ['untouched', () => {}, true],
+    ['with .config unlistable', (repo: string) => chmodSync(join(repo, '.config'), 0o300), false],
+    [
+      'with a file under .github unreadable',
+      (repo: string) => chmodSync(join(repo, '.github', 'ci.yml'), 0o000),
+      false,
+    ],
+    [
+      'with a file under .github made a link',
+      (repo: string) => {
+        rmSync(join(repo, '.github', 'ci.yml'));
+        symlinkSync('../package.json', join(repo, '.github', 'ci.yml'));
+      },
+      false,
+    ],
+    [
+      'with .config made a link to a copy',
+      (repo: string) => {
+        const copy = tempDir('pup-config-');
+        writeFileSync(join(copy, 'postcssrc.json'), '{}\n');
+        rmSync(join(repo, '.config'), { recursive: true });
+        symlinkSync(copy, join(repo, '.config'));
+      },
+      false,
+    ],
+  ] as [string, (repo: string) => void, boolean][])(
+    'checks the directories of a checkout %s',
+    (_, change, intact) => {
+      const ctx = branched(
+        { ...plainRoot(), '.config/postcssrc.json': '{}\n', '.github/ci.yml': 'a\n' },
+        {},
+      );
+      onTestFinished(() => {
+        for (const path of ['.config', '.github/ci.yml']) {
+          const at = join(ctx.measurePath, path);
+          if (lstatSync(at, { throwIfNoEntry: false })?.isSymbolicLink() === false)
+            chmodSync(at, 0o755);
+        }
+      });
+      change(ctx.measurePath);
+
+      expect(typescriptAdapter.testInputsIntact?.(ctx)).toBe(intact);
+    },
+  );
+
+  // A text read stops at 1 MiB; a root file is compared by object name.
+  it.each([
+    ['untouched', () => {}, true],
+    [
+      'rewritten',
+      (lockfile: string) =>
+        writeFileSync(lockfile, readFileSync(lockfile, 'utf8').replace('a', 'b')),
+      false,
+    ],
+  ] as [string, (lockfile: string) => void, boolean][])(
+    'checks a root lockfile over 1 MiB %s',
+    (_, change, intact) => {
+      const ctx = branched(
+        { ...plainRoot(), 'package-lock.json': `{ "x": "${'a'.repeat(1 << 20)}" }\n` },
+        {},
+      );
+      change(join(ctx.measurePath, 'package-lock.json'));
+
+      expect(typescriptAdapter.testInputsIntact?.(ctx)).toBe(intact);
+    },
+  );
 
   // The gate's checkout is where the branch's build and tests ran, so its
   // config is read from the commit it was cut at, never from its disk.
@@ -514,9 +956,23 @@ describe('typescriptAdapter.testFiles', () => {
       '.yarnrc',
       '.yarnrc.yml',
       '.env.yarn',
+      '.env',
+      '.env.local',
       '.pnp.cjs',
+      '.pnp.loader.mjs',
+      '.pnpmfile.cjs',
       'pnpm-workspace.yaml',
       'bunfig.toml',
+      'postcss.config.mjs',
+      '.postcssrc',
+      'tsconfig.json',
+      '.babelrc',
+      'browserslist',
+      'tailwind.config.ts',
+      // Named in another case, which a case-insensitive disk opens for the lower-case name.
+      '.PostCSSrc',
+      'Postcss.config.js',
+      'TSCONFIG.JSON',
     ].map(
       (name) =>
         [`given a ${name}`, (dir: string) => writeFileSync(join(dir, name), 'x\n'), false] as const,
@@ -541,6 +997,22 @@ describe('typescriptAdapter.testFiles', () => {
       (dir: string) => renameSync(join(dir, 'package.json'), join(dir, 'Package.json')),
       false,
     ],
+    [
+      'given a .yarn directory',
+      (dir: string) => {
+        mkdirSync(join(dir, '.yarn', 'plugins'), { recursive: true });
+        writeFileSync(join(dir, '.yarn', 'plugins', 'p.cjs'), 'x\n');
+      },
+      false,
+    ],
+    [
+      'given a .config directory',
+      (dir: string) => {
+        mkdirSync(join(dir, '.config'));
+        writeFileSync(join(dir, '.config', 'postcssrc.json'), '{}\n');
+      },
+      false,
+    ],
   ] as [string, (dir: string) => void, boolean][])(
     'checks the run inputs of a checkout %s',
     (_, change, intact) => {
@@ -560,6 +1032,211 @@ describe('typescriptAdapter.testFiles', () => {
     },
   );
 
+  // Yarn reads its own directory, which the branch's build may rewrite.
+  it.each([
+    ['untouched', () => {}, true],
+    ['given an empty directory', (yarn: string) => mkdirSync(join(yarn, 'cache')), true],
+    [
+      'with a file rewritten',
+      (yarn: string) => writeFileSync(join(yarn, 'releases', 'yarn.cjs'), 'y\n'),
+      false,
+    ],
+    [
+      'given a file',
+      (yarn: string) => writeFileSync(join(yarn, 'releases', 'other.cjs'), 'x\n'),
+      false,
+    ],
+    [
+      'with a file made executable',
+      (yarn: string) => chmodSync(join(yarn, 'releases', 'yarn.cjs'), 0o755),
+      false,
+    ],
+    [
+      'with a file made a link',
+      (yarn: string) => {
+        rmSync(join(yarn, 'releases', 'yarn.cjs'));
+        symlinkSync('../../package.json', join(yarn, 'releases', 'yarn.cjs'));
+      },
+      false,
+    ],
+  ] as [string, (yarn: string) => void, boolean][])(
+    'checks the .yarn directory of a checkout %s',
+    (_, change, intact) => {
+      const repo = makeRepo({
+        'package.json': plainVitest,
+        'vitest.config.ts': configWith("{ include: ['src/**/*.test.ts'] }"),
+      });
+      mkdirSync(join(repo, '.yarn', 'releases'), { recursive: true });
+      writeFileSync(join(repo, '.yarn', 'releases', 'yarn.cjs'), 'x\n');
+      sh(repo, 'git', 'init', '-q');
+      sh(repo, 'git', 'add', '-A');
+      sh(repo, 'git', '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'init');
+      const sha = sh(repo, 'git', 'rev-parse', 'HEAD');
+      change(join(repo, '.yarn'));
+
+      expect(
+        typescriptAdapter.testInputsIntact?.({
+          configPath: repo,
+          measurePath: repo,
+          measureSha: sha,
+        }),
+      ).toBe(intact);
+    },
+  );
+
+  // npm and pnpm read the operator's own .npmrc too, which a session can write.
+  it.each([
+    ['none', undefined, true],
+    ['one that runs nothing', 'fund=false\n', true],
+    ['one with node-options', 'node-options=--import /tmp/reg.mjs\n', false],
+    ['one with an escaped key', '"node\\u002doptions"=--import /tmp/reg.mjs\n', false],
+    // npm reads the config these name too, which nothing here checks.
+    ['one naming a globalconfig', 'globalconfig=/tmp/npmrc\n', false],
+    ['one naming a userconfig', 'userconfig=/tmp/npmrc\n', false],
+    ['one naming a prefix', 'prefix=/tmp/prefix\n', false],
+    ['one naming a quoted prefix in another case', '"PREFIX" = /tmp/prefix\n', false],
+    ['one naming a save-prefix', 'save-prefix=~\n', true],
+    // Spellings npm's ini parser reads as the key: trimmed by JavaScript's trim,
+    // cut at an unquoted ; or #, and without an array's [].
+    ['one naming a globalconfig after a BOM', '\uFEFFglobalconfig=/x\n', false],
+    ['one naming a prefix after a form feed', '\fprefix=/x\n', false],
+    ['one naming a prefix before a no-break space', 'prefix\u00A0=/x\n', false],
+    ['one naming a prefix after an ideographic space', '\u3000prefix=/x\n', false],
+    ['one naming a prefix cut at a ;', 'prefix;x=/p\n', false],
+    ['one naming a globalconfig cut at a #', 'globalconfig#c=/rc\n', false],
+    ['one naming a prefix array', 'prefix[]=/p\n', false],
+    ['one naming a quoted prefix array', '"prefix[]"=/p\n', false],
+    // Keys not plainly spelt: ini strips quotes and parses the key as JSON,
+    // which allows whitespace inside, and trims a section's name.
+    ['one naming a globalconfig quoted after a space', ' "globalconfig"=/x\n', false],
+    ['one naming a prefix quoted before a tab', '"prefix"\t=/x\n', false],
+    ['one naming a quoted prefix in a spaced section', '[ "prefix" ]=/x\n', false],
+    ['one with a spaced prefix section', '[ prefix ]\nfund=false\n', false],
+    ['one naming a globalconfig after a U+2028', 'fund=false\u2028globalconfig=/x\n', false],
+    ['one with a registry', 'registry = https://registry.npmjs.org/\n', true],
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: npm's own substitution, not a JS template
+    ['one with a token', '//registry.npmjs.org/:_authToken=${NPM_TOKEN}\n', true],
+    ['one with a scope registry', '@scope:registry=https://npm.example.com/\n', true],
+  ])('checks a checkout beside a user .npmrc of %s', (_, npmrc, intact) => {
+    const home = tempDir('pup-home-');
+    if (npmrc !== undefined) writeFileSync(join(home, '.npmrc'), npmrc);
+    vi.stubEnv('HOME', home);
+    const { repo, sha } = committed({
+      'package.json': plainVitest,
+      'vitest.config.ts': configWith("{ include: ['src/**/*.test.ts'] }"),
+    });
+
+    expect(
+      typescriptAdapter.testInputsIntact?.({
+        configPath: repo,
+        measurePath: repo,
+        measureSha: sha,
+      }),
+    ).toBe(intact);
+  });
+
+  it('reads a user .npmrc of exactly 64 KiB', () => {
+    const home = tempDir('pup-home-');
+    const line = 'fund=false\n';
+    writeFileSync(join(home, '.npmrc'), `#${'x'.repeat(64 * 1024 - line.length - 2)}\n${line}`);
+    vi.stubEnv('HOME', home);
+    const { repo, sha } = committed({
+      'package.json': plainVitest,
+      'vitest.config.ts': configWith("{ include: ['src/**/*.test.ts'] }"),
+    });
+
+    expect(
+      typescriptAdapter.testInputsIntact?.({
+        configPath: repo,
+        measurePath: repo,
+        measureSha: sha,
+      }),
+    ).toBe(true);
+  });
+
+  // Read only as a small regular file: a link may name what the check never
+  // sees, and a fifo or a device would block the read.
+  it.each([
+    [
+      'a link',
+      (path: string) => {
+        const real = join(tempDir('pup-real-'), 'npmrc');
+        writeFileSync(real, 'fund=false\n');
+        symlinkSync(real, path);
+      },
+    ],
+    ['a fifo', (path: string) => execFileSync('mkfifo', [path])],
+    ['a directory', (path: string) => mkdirSync(path)],
+    [
+      'a file over 64 KiB',
+      (path: string) => writeFileSync(path, `# ${'x'.repeat(64 * 1024)}\nfund=false\n`),
+    ],
+    // Its size is read from the descriptor before any of it is.
+    [
+      'a sparse 50 GiB file',
+      (path: string) => {
+        writeFileSync(path, 'fund=false\n');
+        truncateSync(path, 50 * 1024 ** 3);
+      },
+    ],
+  ])('finds a checkout not intact beside a user .npmrc that is %s', (_, make) => {
+    const home = tempDir('pup-home-');
+    make(join(home, '.npmrc'));
+    vi.stubEnv('HOME', home);
+    const { repo, sha } = committed({
+      'package.json': plainVitest,
+      'vitest.config.ts': configWith("{ include: ['src/**/*.test.ts'] }"),
+    });
+
+    expect(
+      typescriptAdapter.testInputsIntact?.({
+        configPath: repo,
+        measurePath: repo,
+        measureSha: sha,
+      }),
+    ).toBe(false);
+  });
+
+  it('checks the user .npmrc the operator names through --gate-env', () => {
+    const named = join(tempDir('pup-userconfig-'), 'npmrc');
+    writeFileSync(named, 'script-shell=/tmp/sh\n');
+    vi.stubEnv('npm_config_userconfig', named);
+    const { repo, sha } = committed({
+      'package.json': plainVitest,
+      'vitest.config.ts': configWith("{ include: ['src/**/*.test.ts'] }"),
+    });
+    const ctx = { configPath: repo, measurePath: repo, measureSha: sha };
+
+    expect(typescriptAdapter.testInputsIntact?.(ctx)).toBe(true);
+    expect(
+      typescriptAdapter.testInputsIntact?.({ ...ctx, gateEnv: ['npm_config_userconfig'] }),
+    ).toBe(false);
+  });
+
+  // npm expands `~/` against HOME and resolves the rest against the run's own
+  // directory, the gate checkout, so a path not absolute may name what pup never reads.
+  it.each([
+    ['under a ~', { NPM_CONFIG_USERCONFIG: '~/.npmrc-work' }],
+    ['relative', { NPM_CONFIG_USERCONFIG: '.npmrc.ci' }],
+    ['empty', { NPM_CONFIG_USERCONFIG: '' }],
+    ['in two spellings', { NPM_CONFIG_USERCONFIG: '/tmp/a', npm_config_userconfig: '/tmp/b' }],
+  ] as [string, Record<string, string>][])(
+    'finds a checkout not intact beside a user .npmrc named %s through --gate-env',
+    (_, env) => {
+      for (const [name, value] of Object.entries(env)) vi.stubEnv(name, value);
+      const { repo, sha } = committed({
+        'package.json': plainVitest,
+        'vitest.config.ts': configWith("{ include: ['src/**/*.test.ts'] }"),
+      });
+      const ctx = { configPath: repo, measurePath: repo, measureSha: sha };
+
+      expect(typescriptAdapter.testInputsIntact?.(ctx)).toBe(true);
+      expect(typescriptAdapter.testInputsIntact?.({ ...ctx, gateEnv: Object.keys(env) })).toBe(
+        false,
+      );
+    },
+  );
+
   // The gate links each entry of the trusted node_modules into its checkout.
   it.each([
     ['links each entry to the trusted one', () => {}, true],
@@ -575,6 +1252,29 @@ describe('typescriptAdapter.testFiles', () => {
       true,
     ],
     ['holds binaries of its own', (modules: string) => mkdirSync(join(modules, '.bin')), false],
+    // npm 6 and older ran `.hooks/<event>` around each script.
+    ['holds npm hooks of its own', (modules: string) => mkdirSync(join(modules, '.HOOKS')), false],
+    // APFS folds `ſ` onto `s`, so it opens `.hookſ` for `.hooks`.
+    [
+      'holds a dot-named entry of its own named outside ASCII',
+      (modules: string) => mkdirSync(join(modules, '.hookſ')),
+      false,
+    ],
+    // vite bundles an ESM config into `.vite-temp`, which the trusted one holds too.
+    [
+      'holds a vite-temp of its own',
+      (modules: string) => mkdirSync(join(modules, '.vite-temp')),
+      true,
+    ],
+    // Only `.cache`, `.vite` and `.vite-temp` are the run's; `.vitest` is a linked entry.
+    [
+      'replaces a linked .vite-named entry with one of its own',
+      (modules: string) => {
+        rmSync(join(modules, '.vitest'));
+        mkdirSync(join(modules, '.vitest'));
+      },
+      false,
+    ],
     [
       'holds binaries of its own in another case',
       (modules: string) => mkdirSync(join(modules, '.BIN')),
@@ -621,10 +1321,11 @@ describe('typescriptAdapter.testFiles', () => {
     const checkout = makeRepo(files);
     const modules = join(checkout, 'node_modules');
     mkdirSync(modules);
-    for (const entry of ['vitest', '.pnpm']) {
+    for (const entry of ['vitest', '.pnpm', '.vitest']) {
       mkdirSync(join(repo, 'node_modules', entry), { recursive: true });
       symlinkSync(join(repo, 'node_modules', entry), join(modules, entry));
     }
+    mkdirSync(join(repo, 'node_modules', '.vite-temp'));
     change(modules);
 
     expect(

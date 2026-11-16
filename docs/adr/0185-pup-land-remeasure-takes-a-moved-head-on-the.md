@@ -59,7 +59,8 @@
     (decision 131). The pin need not be an ancestor of the head, unlike with `--accept-head`: the
     stages measure everything the merge landed, not "the gate's content plus what someone read".
     `--remeasure` and `--accept-head` are refused together, and so is `--remeasure` on a PR that
-    merged at the pin.
+    merged at the pin. `--remeasure` with decision 146's `--abandon-closed` is refused too: that
+    flag records a closed PR and lands nothing, so a remeasure beside it would be dropped unread.
     *Critical areas.* A pass says that the code builds and that its tests and lint pass. It does
     not say that a change to the gate, git, the store or the hooks is sound. So when the commits
     past the pin (`<pin>...<head>`) change a file in a `CRITICAL_AREAS` path, the remeasure is

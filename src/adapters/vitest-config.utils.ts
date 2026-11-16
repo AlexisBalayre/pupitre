@@ -1,7 +1,7 @@
-import { readdirSync } from 'node:fs';
+import { lstatSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import ts from 'typescript';
-import { runGit } from '../core/git-diff.client.js';
+import { runGit, runGitBytes } from '../core/git-diff.client.js';
 import { globToRegExp } from '../core/glob.utils.js';
 import { GATE_COMMAND_TIMEOUT_MS } from '../core/merge-gate.constants.js';
 import { readPlainFile } from './capability.utils.js';
@@ -15,6 +15,12 @@ const GIT_READ: Parameters<typeof runGit>[2] = {
 
 /** The tree modes of a regular file; a link, a submodule or a directory is none. */
 const PLAIN_BLOB_MODE = /^100(?:644|755)$/;
+
+/** A directory's tree mode, which `ls-tree` lists recursively. */
+const TREE_MODE = '040000';
+
+/** The longest line `hash-object` prints for one file: a SHA-256 name and its newline. */
+const OBJECT_NAME_LINE_BYTES = 65;
 
 /** The root configs vitest looks for, in its own order: the first one present is the one it loads. */
 const VITEST_CONFIG_FILES = ['vitest', 'vite'].flatMap((stem) =>
@@ -81,6 +87,14 @@ const UNREAD_SEGMENT = /^(?!\*\*$)(?:[^*]*\*){2}/;
 const VITEST_UNREAD_KEYS = ['root', 'plugins', '__proto__'];
 
 /**
+ * A `resolve.alias` key that is read: a bare `@name` with no `/`, which names
+ * no package. Vite redirects a specifier equal to it or starting with it and a
+ * `/`, so it still redirects the packages of a scope of that name, which the
+ * caller checks `node_modules` for (`VitestCollection.aliases`).
+ */
+const READ_ALIAS_KEY = /^@[\w.-]+$/;
+
+/**
  * Keys under `test` that move or split what one run collects, or name modules
  * the run loads, which the branch may have written: a setup file can register
  * a test in every collected file, and a reporter, runner or pool can pass a
@@ -102,11 +116,20 @@ const VITEST_UNREAD_TEST_KEYS = [
   'poolOptions',
   'execArgv',
   'sequence',
+  'alias',
+  'environmentMatchGlobs',
+  'poolMatchGlobs',
+  'snapshotSerializers',
+  'diff',
+  'browser',
   '__proto__',
 ];
 
-/** A specifier naming a file, a path or a `#` subpath import, which in the gate is the branch's. */
-const FILE_SPECIFIER = /^[./#]/;
+/**
+ * A specifier naming a file, a path, a `file:` URL or a `#` subpath import,
+ * which in the gate is the branch's.
+ */
+const FILE_SPECIFIER = /^(?:[./#]|file:)/i;
 
 /**
  * A path holding a line break, which `.` in a pattern's regex does not match,
@@ -211,33 +234,89 @@ function defineConfigNames(statement: ts.ImportDeclaration): string[] {
 }
 
 /**
- * The object a vitest config exports by default, bare or through the
- * `defineConfig` imported from vitest or vite; undefined for a function
- * config, `mergeConfig`, any other callee, an identifier or CommonJS, which no
- * static read answers, and for a config that imports or re-exports a file by
- * path, which in the gate is the branch's and runs when vitest loads it.
+ * A node that loads a module named at run time: a call to `require(…)`,
+ * `x.require(…)` or `import(…)`, or an `import x = require(…)` below the top
+ * level, in a namespace or a block, which the parser takes there without a
+ * syntax error and the bundler turns into a `require` as it does one at the
+ * top. Reads `parent`, so the tree must be parsed with parent nodes set.
  */
-function exportedConfig(text: string): ts.Expression | undefined {
+function loadsAtRunTime(node: ts.Node): boolean {
+  if (ts.isExternalModuleReference(node)) return !ts.isSourceFile(node.parent.parent);
+  if (!ts.isCallExpression(node)) return false;
+  const callee = node.expression;
+  return (
+    callee.kind === ts.SyntaxKind.ImportKeyword ||
+    (ts.isIdentifier(callee) && callee.text === 'require') ||
+    (ts.isPropertyAccessExpression(callee) && callee.name.text === 'require')
+  );
+}
+
+/**
+ * Whether a config loads a module that in the gate is the branch's: a static
+ * specifier naming a file (`FILE_SPECIFIER`) or the package itself by
+ * `selfName`, which resolves through its own `exports`, in an import, a
+ * re-export or an `import x = require(…)` at the top level; or any `require`
+ * or dynamic `import()`, whose specifier may be built at run time, or
+ * `import x = require(…)` below the top level (`loadsAtRunTime`).
+ */
+function loadsAFile(source: ts.SourceFile, selfName: string | undefined): boolean {
+  const namesAFile = (specifier: string): boolean =>
+    FILE_SPECIFIER.test(specifier) ||
+    (selfName !== undefined && (specifier === selfName || specifier.startsWith(`${selfName}/`)));
+  const statically = source.statements.some((statement) => {
+    const specifier = ts.isImportEqualsDeclaration(statement)
+      ? ts.isExternalModuleReference(statement.moduleReference) &&
+        statement.moduleReference.expression
+      : (statement as { moduleSpecifier?: ts.Expression }).moduleSpecifier;
+    return specifier && ts.isStringLiteralLike(specifier) && namesAFile(specifier.text);
+  });
+  const atRunTime = (node: ts.Node): boolean =>
+    loadsAtRunTime(node) || ts.forEachChild(node, atRunTime) === true;
+  return statically || atRunTime(source);
+}
+
+/**
+ * A config module parsed with parent nodes set, never run, and whether the
+ * parser reported a syntax error.
+ */
+function parsedConfig(text: string): { source: ts.SourceFile; parses: boolean } {
   const source = ts.createSourceFile(
     'vitest.config.ts',
     text,
     ts.ScriptTarget.Latest,
-    false,
+    true,
     ts.ScriptKind.TS,
   );
+  // A config with a syntax error: the parser recovers into a tree no tool loads.
+  const parseErrors = (source as unknown as { parseDiagnostics: unknown[] }).parseDiagnostics;
+  return { source, parses: parseErrors.length === 0 };
+}
+
+/**
+ * Whether a root config module of any tool may load a module that in the gate
+ * is the branch's (`loadsAFile`), or does not parse, so that what it loads is
+ * not read. Parsed, never run.
+ */
+export function configLoadsAFile(text: string, selfName: string | undefined): boolean {
+  const { source, parses } = parsedConfig(text);
+  return !parses || loadsAFile(source, selfName);
+}
+
+/**
+ * The object a vitest config exports by default, bare or through the
+ * `defineConfig` imported from vitest or vite; undefined for a function
+ * config, `mergeConfig`, any other callee, an identifier or CommonJS, which no
+ * static read answers, and for a config that loads a module the branch wrote
+ * (`loadsAFile`), which runs when vitest loads the config.
+ */
+function exportedConfig(text: string, selfName: string | undefined): ts.Expression | undefined {
+  const { source, parses } = parsedConfig(text);
   const exported = source.statements.filter(
     (statement): statement is ts.ExportAssignment =>
       ts.isExportAssignment(statement) && !statement.isExportEquals,
   );
   const imports = source.statements.filter(importsVitestConfig);
-  // A config with a syntax error: the parser recovers into a tree vitest never loads.
-  const parseErrors = (source as unknown as { parseDiagnostics: unknown[] }).parseDiagnostics;
-  const loadsAFile = source.statements.some((statement) =>
-    FILE_SPECIFIER.test(
-      (statement as { moduleSpecifier?: ts.StringLiteral }).moduleSpecifier?.text ?? '',
-    ),
-  );
-  if (exported.length !== 1 || parseErrors.length > 0 || loadsAFile) {
+  if (exported.length !== 1 || !parses || loadsAFile(source, selfName)) {
     return undefined;
   }
   const callees = new Set(imports.flatMap(defineConfigNames));
@@ -266,24 +345,66 @@ function withoutLists(text: string, lists: ts.Expression[]): string {
 }
 
 /**
+ * Whether an object sets one of `keys`, or cannot be read statically
+ * (`literalProperties`), which may hide one.
+ */
+function setsAny(node: ts.Expression | undefined, keys: string[]): boolean {
+  if (node === undefined) return false;
+  const found = literalProperties(node, keys);
+  return found === undefined || keys.some((key) => found.has(key));
+}
+
+/**
+ * The keys of a `resolve`'s `alias`, none where it has none, or undefined
+ * where one cannot be read: a `resolve` or `alias` that is not an object
+ * literal read statically (an array of `find` entries included), or an alias
+ * key that is not `READ_ALIAS_KEY`. An alias redirects a specifier a test or
+ * the code under it spells to a module the branch wrote.
+ */
+function aliasKeys(resolve: ts.Expression | undefined): string[] | undefined {
+  const found = resolve === undefined ? new Map() : literalProperties(resolve, ['alias']);
+  if (found === undefined) return undefined;
+  const alias = found.get('alias');
+  if (alias === undefined) return [];
+  const object = unwrapExpression(alias);
+  if (!ts.isObjectLiteralExpression(object)) return undefined;
+  const keys = object.properties.map((property) =>
+    ts.isPropertyAssignment(property) && !ts.isComputedPropertyName(property.name)
+      ? property.name.text
+      : undefined,
+  );
+  return keys.every((key): key is string => key !== undefined && READ_ALIAS_KEY.test(key))
+    ? keys
+    : undefined;
+}
+
+/**
  * A config's `include` and `exclude` as regexes, and its text without them, or
  * undefined where they cannot be read: an unread key, or an `include` or
  * `exclude` that is not a literal list. An `include` pattern this does not
  * read collects nothing; an `exclude` one leaves the whole answer unknown. An
  * exclude names a directory as well as a file, so it matches a path up to any
- * `/`.
+ * `/`. `selfName` is the package's own name, a specifier the config may not
+ * load (`loadsAFile`).
  */
 function configGlobs(
   text: string,
-): { include: RegExp[]; exclude: RegExp[]; rest: string } | undefined {
-  const config = exportedConfig(text);
-  const top = config && literalProperties(config, ['test', ...VITEST_UNREAD_KEYS]);
+  selfName: string | undefined,
+): { include: RegExp[]; exclude: RegExp[]; rest: string; aliases: string[] } | undefined {
+  const config = exportedConfig(text, selfName);
+  const top = config && literalProperties(config, ['test', 'resolve', ...VITEST_UNREAD_KEYS]);
   if (top === undefined || VITEST_UNREAD_KEYS.some((key) => top.has(key))) return undefined;
+  const aliases = aliasKeys(top.get('resolve'));
+  if (aliases === undefined) return undefined;
   const testConfig = top.get('test');
   const test = testConfig
-    ? literalProperties(testConfig, ['include', 'exclude', ...VITEST_UNREAD_TEST_KEYS])
+    ? literalProperties(testConfig, ['include', 'exclude', 'coverage', ...VITEST_UNREAD_TEST_KEYS])
     : new Map<string, ts.Expression>();
-  if (test === undefined || VITEST_UNREAD_TEST_KEYS.some((key) => test.has(key))) {
+  if (
+    test === undefined ||
+    VITEST_UNREAD_TEST_KEYS.some((key) => test.has(key)) ||
+    setsAny(test.get('coverage'), ['customProviderModule'])
+  ) {
     return undefined;
   }
   const included = test.get('include');
@@ -301,7 +422,11 @@ function configGlobs(
       VITEST_DEFAULT_EXCLUDE,
       ...(exclude as RegExp[]).map((glob) => new RegExp(`${glob.source.slice(0, -1)}(?:/.*)?$`)),
     ],
-    rest: withoutLists(text, [...test.values()]),
+    rest: withoutLists(
+      text,
+      [included, excluded].filter((list): list is ts.Expression => list !== undefined),
+    ),
+    aliases,
   };
 }
 
@@ -319,7 +444,7 @@ const notLowerCase = ([name]: [string, unknown]): number => Number(name !== name
  * (`ſ` onto `s`), which no JavaScript case mapping reproduces, so a root name
  * holding one may open for any file a run reads.
  */
-const NON_ASCII = /[\u0080-￿]/;
+export const NON_ASCII = /[\u0080-￿]/;
 
 /** Throws where a name holds a character outside ASCII (`NON_ASCII`). */
 function rootFiles(entries: [string, () => string][]): RootFiles {
@@ -335,24 +460,96 @@ function rootFiles(entries: [string, () => string][]): RootFiles {
   return root;
 }
 
-/** A checkout's root as it stands on disk, each file read without following a link. */
-export function diskRoot(checkout: string): RootFiles {
+/** A listing's lines in one order, whichever order they were found in. */
+function listing(lines: string[]): string {
+  return lines.sort().join('\0');
+}
+
+/**
+ * A directory on disk listed as `ls-tree -r -z` lists a tree: a line per file,
+ * its mode, object name and path, each file hashed in `repoPath`'s object
+ * format and nothing written. An empty directory, which no tree holds, lists
+ * nothing. Throws on a link or anything else a tree would not check out as a
+ * plain file, and on a name holding a line break, which `hash-object` cannot
+ * read back from its input.
+ */
+function diskListing(repoPath: string, dir: string): string {
+  const files: { path: string; mode: string }[] = [];
+  const walk = (at: string): void => {
+    for (const entry of readdirSync(join(dir, at), { withFileTypes: true })) {
+      const path = at === '' ? entry.name : `${at}/${entry.name}`;
+      if (entry.isDirectory()) {
+        walk(path);
+      } else if (entry.isFile() && !/[\r\n]/.test(path)) {
+        const executable = (lstatSync(join(dir, path)).mode & 0o100) !== 0;
+        files.push({ path, mode: executable ? '100755' : '100644' });
+      } else {
+        throw new Error(`${path} is not read: not a plain file named on one line`);
+      }
+    }
+  };
+  walk('');
+  if (files.length === 0) return '';
+  const names = runGitBytes(repoPath, ['hash-object', '--no-filters', '--stdin-paths'], {
+    input: Buffer.from(files.map(({ path }) => `${join(dir, path)}\n`).join('')),
+    maxBuffer: files.length * OBJECT_NAME_LINE_BYTES,
+    timeout: GATE_COMMAND_TIMEOUT_MS,
+  })
+    .toString('utf8')
+    .split('\n');
+  return listing(files.map(({ path, mode }, i) => `${mode} blob ${names[i]}\t${path}`));
+}
+
+/**
+ * A plain file's object name in `repoPath`'s format, hashed as it stands, of
+ * any size, and nothing written. Throws on a link or anything else a tree
+ * would not check out as a plain file.
+ */
+function diskObjectName(repoPath: string, path: string): string {
+  if (!lstatSync(path).isFile()) throw new Error(`${path} is not read: not a plain file`);
+  return runGit(repoPath, ['hash-object', '--no-filters', '--', path], GIT_READ).trim();
+}
+
+/**
+ * A checkout's root as it stands on disk, each file read without following a
+ * link. Given the `repoPath` whose object format hashes its files, a directory
+ * reads as the listing of its tree (`diskListing`), and with `byObjectName` a
+ * file reads as its object name (`diskObjectName`), as `treeRoot` reads a
+ * blob with it, so a file over the cap a text read has, such as a root
+ * lockfile, still compares with a commit's. Without `repoPath`, a directory
+ * is not read and a file reads as its text.
+ */
+export function diskRoot(
+  checkout: string,
+  repoPath?: string,
+  { byObjectName = false } = {},
+): RootFiles {
   return rootFiles(
-    readdirSync(checkout).map((name) => [
-      name,
-      () => readPlainFile(join(checkout, name), { followLinks: false }),
-    ]),
+    readdirSync(checkout, { withFileTypes: true }).map((entry) => {
+      const path = join(checkout, entry.name);
+      const read =
+        repoPath !== undefined && entry.isDirectory()
+          ? () => diskListing(repoPath, path)
+          : repoPath !== undefined && byObjectName
+            ? () => diskObjectName(repoPath, path)
+            : () => readPlainFile(path, { followLinks: false });
+      return [entry.name, read];
+    }),
   );
 }
 
 /**
  * A commit's root, listed and read from `repoPath`'s object store, never from a
- * checkout a session's code has run in (decision 143). Only a regular file's
- * blob is read, so a link is not followed.
+ * checkout a session's code has run in (decision 143), each listing with
+ * `--full-tree`, so a session's `core.worktree` cannot narrow it to a prefix
+ * (decision 161). Only a regular file's
+ * blob is read, so a link is not followed, as its text or, with
+ * `byObjectName`, as its object name; a directory reads as `ls-tree -r`
+ * lists it, as `diskRoot` lists one on disk.
  */
-export function treeRoot(repoPath: string, sha: string): RootFiles {
+export function treeRoot(repoPath: string, sha: string, { byObjectName = false } = {}): RootFiles {
   return rootFiles(
-    runGit(repoPath, ['ls-tree', '-z', sha], GIT_READ)
+    runGit(repoPath, ['ls-tree', '--full-tree', '-z', sha], GIT_READ)
       .split('\0')
       .filter((entry) => entry !== '')
       .map((entry) => {
@@ -360,9 +557,35 @@ export function treeRoot(repoPath: string, sha: string): RootFiles {
         const tab = entry.indexOf('\t');
         const [mode = '', , oid = ''] = entry.slice(0, tab).split(' ');
         const name = entry.slice(tab + 1);
-        const read = () => runGit(repoPath, ['cat-file', 'blob', oid], GIT_READ);
-        return [name, PLAIN_BLOB_MODE.test(mode) ? read : unreadable(name)];
+        const read = PLAIN_BLOB_MODE.test(mode)
+          ? byObjectName
+            ? () => oid
+            : () => runGit(repoPath, ['cat-file', 'blob', oid], GIT_READ)
+          : mode === TREE_MODE
+            ? () =>
+                listing(
+                  runGit(repoPath, ['ls-tree', '--full-tree', '-r', '-z', oid], GIT_READ)
+                    .split('\0')
+                    .filter((line) => line !== ''),
+                )
+            : unreadable(name);
+        return [name, read];
       }),
+  );
+}
+
+/**
+ * A commit's entries anywhere in its tree whose path `pattern` matches, as
+ * `ls-tree -r` lists them: mode, object name and path, so two commits holding
+ * the same such files give the same listing. Read from `repoPath`'s object
+ * store, the whole tree whatever directory a session's `core.worktree` makes
+ * git think it runs in (decision 161).
+ */
+export function treeEntriesMatching(repoPath: string, sha: string, pattern: RegExp): string {
+  return listing(
+    runGit(repoPath, ['ls-tree', '--full-tree', '-r', '-z', sha], GIT_READ)
+      .split('\0')
+      .filter((line) => line !== '' && pattern.test(line.slice(line.indexOf('\t') + 1))),
   );
 }
 
@@ -376,13 +599,18 @@ interface VitestCollection {
    * pass a file the lists collect (decision 143).
    */
   config: string;
+  /**
+   * The config's `resolve.alias` keys, each a bare `@name`: one that names a
+   * scope in `node_modules` redirects its packages to the branch's modules.
+   */
+  aliases: string[];
 }
 
 /**
  * What a plain vitest run over `root` collects, or undefined where that cannot
  * be read: no config at the root, a workspace file, or a config `configGlobs`
- * does not read. The config is the first of vitest's own list present, parsed,
- * never run. With none at the root, vitest loads the first it finds in a
+ * does not read, given the package's own name from the root's manifest. The
+ * config is the first of vitest's own list present, parsed, never run. With none at the root, vitest loads the first it finds in a
  * directory above, which a session can write and no read of the commit sees.
  * A path holding a line break is collected by nothing (`UNREAD_PATH`). Throws
  * where the root cannot be read.
@@ -391,7 +619,12 @@ export function vitestCollection(root: RootFiles): VitestCollection | undefined 
   if ([...root.keys()].some((name) => VITEST_WORKSPACE_FILE.test(name))) return undefined;
   const file = VITEST_CONFIG_FILES.find((name) => root.has(name));
   if (file === undefined) return undefined;
-  const globs = configGlobs((root.get(file) as () => string)());
+  const manifest = root.get('package.json');
+  const name = manifest && (JSON.parse(manifest()) as { name?: unknown } | null)?.name;
+  const globs = configGlobs(
+    (root.get(file) as () => string)(),
+    typeof name === 'string' ? name : undefined,
+  );
   return (
     globs && {
       collects: (path) =>
@@ -399,6 +632,7 @@ export function vitestCollection(root: RootFiles): VitestCollection | undefined 
         !globs.exclude.some((glob) => glob.test(path)) &&
         globs.include.some((glob) => glob.test(path)),
       config: [file, globs.rest].join('\0'),
+      aliases: globs.aliases,
     }
   );
 }

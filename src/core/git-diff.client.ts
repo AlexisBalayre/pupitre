@@ -42,8 +42,10 @@ export type { DiffFileStat };
  * `diff.ignoreSubmodules=all` that way, decision 101), and
  * `GIT_LITERAL_PATHSPECS`, which git exports to a hook's children, turns off
  * the `:(top)` magic these reads rely on. A list of what to keep, not of what
- * to drop, so a variable a later git adds is dropped too. What pup sets on
- * purpose, a call site's `opts.env`, is laid over this.
+ * to drop, so a variable a later git adds is dropped too. `GIT_SSL_NO_VERIFY`
+ * is left out: it turns certificate checks off, which no push needs, and
+ * `http.sslVerify` in the operator's config still can (decision 181). What pup
+ * sets on purpose, a call site's `opts.env`, is laid over this.
  */
 const INHERITED_GIT_VARS = new Set([
   'GIT_CONFIG_GLOBAL',
@@ -62,6 +64,14 @@ const INHERITED_GIT_VARS = new Set([
   'GIT_TERMINAL_PROMPT',
   'GIT_SSL_CAINFO',
   'GIT_SSL_CAPATH',
+  'GIT_SSL_CERT',
+  'GIT_SSL_KEY',
+  'GIT_SSL_CERT_PASSWORD_PROTECTED',
+  'GIT_PROXY_SSL_CERT',
+  'GIT_PROXY_SSL_KEY',
+  'GIT_PROXY_SSL_CERT_PASSWORD_PROTECTED',
+  'GIT_PROXY_SSL_CAINFO',
+  'GIT_HTTP_PROXY_AUTHMETHOD',
 ]);
 
 /** `process.env` with no `GIT_*` variable but those in `INHERITED_GIT_VARS`. */
@@ -890,11 +900,11 @@ export function rethrowIfNoUsableRepo(repoPath: string, error: unknown): void {
 /**
  * Refuse unless `repoPath` is a main checkout whose `.git` is a directory of
  * its own, not a gitfile or a symlink, that git would take as a repo and that
- * holds no commondir. Called wherever
- * pup knows it is about to read the main repo's refs. The first call records
- * the identity of its `.git` and `objects/`, and from then on the path is one
- * `safeArgv` holds to the same rule, and to that identity, on every spawn
- * (decision 172).
+ * holds no commondir. Called wherever pup knows it is about to read the main
+ * repo's refs. The first call whose checks pass records the identity of its
+ * `.git`, `objects/` and `refs/` (`gitDirIdentity`), and from then on the path
+ * is one `safeArgv` holds to the same rule, and to that identity, on every
+ * spawn (decisions 172 and 181). A call that refuses records nothing.
  */
 export function assertMainCheckout(repoPath: string): void {
   const dotGit = join(repoPath, '.git');
