@@ -155,6 +155,12 @@ export interface DashboardSession {
   origin: string;
   /** The task's scope-in globs. */
   scope: string[];
+  /**
+   * The globs `pup plan edit --rescope` added to `scope` after launch, on this
+   * session or an earlier one of the task, oldest first (decision 188).
+   * Absent when the claim was never widened.
+   */
+  rescoped?: string[];
   /** The task's acceptance criteria, one per entry. */
   acceptance: string[];
   rejectCount: number;

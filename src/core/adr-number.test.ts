@@ -346,6 +346,36 @@ describe('adrNumberStage', { timeout: 20_000 }, () => {
     expect(stage()).toBeUndefined();
   });
 
+  it('ignores a PR peer abandoned with pup land --abandon-closed, even once its gated commit is pruned', () => {
+    openPrPeer('1'.repeat(40));
+    appendEvent(db, 'other', 'pr_closed', {
+      prUrl: 'https://github.com/o/r/pull/1',
+      sha: '1'.repeat(40),
+    });
+    commitOn(repo, 'pup/me', 'docs/adr/0003-mine.md');
+    expect(stage()).toBeUndefined();
+  });
+
+  it('counts a closed PR peer again once a re-gate records a newer merge', () => {
+    commitOn(repo, 'pup/other', 'docs/adr/0003-theirs.md');
+    const sha = git(repo, 'rev-parse', 'refs/heads/pup/other');
+    git(repo, 'branch', '-q', '-D', 'pup/other');
+    openPrPeer(sha);
+    appendEvent(db, 'other', 'pr_closed', { prUrl: 'https://github.com/o/r/pull/1', sha });
+    appendEvent(db, 'other', 'merge', {
+      branch: 'pup/other',
+      sha,
+      target: 'main',
+      files: [],
+      prUrl: 'https://github.com/o/r/pull/1',
+    });
+    commitOn(repo, 'pup/me', 'docs/adr/0003-mine.md');
+    expect(refusals()).toContain(
+      '  docs/adr/0003-mine.md: decision 0003 is also added by pup/other, a session branch that ' +
+        'is live or whose PR has not landed; renumber it 0004, the lowest free number',
+    );
+  });
+
   it('adds no stage for a branch adding no ADR beside an unreadable open PR peer', () => {
     openPrPeer();
     commitOn(repo, 'pup/me', 'src/app.ts');

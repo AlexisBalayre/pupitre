@@ -154,6 +154,7 @@ import {
   getSession,
   insertSession,
   insertTask,
+  isPrClosedOnRecord,
   listEvents,
   saveProjectBaseline,
   saveProjectOriginUrl,
@@ -413,7 +414,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(log).toContain('edit src/feature.ts');
   });
 
-  it('re-steers the session with the report when the auto-rebase conflicts', async () => {
+  it('re-steers the session with the report when the target conflicts with the branch', async () => {
     const worktree = seedSession(db, repo);
     commitIn(repo, 'src/app.ts', 'export const app = 2;\n');
     commitIn(worktree, 'src/app.ts', 'export const app = 3;\n');
@@ -428,7 +429,8 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       sessionId: SESSION_ID,
       paneId: LAUNCH_PANE,
     });
-    expect(vi.mocked(steerPane).mock.calls[0]?.[1]).toContain('rebase');
+    // The rebase conflicted, and so did the merge it fell back to (decision 190).
+    expect(vi.mocked(steerPane).mock.calls[0]?.[1]).toContain('git merge refs/heads/main');
   });
 
   it('hard-fails a session that edits the adapter escape-hatch config', async () => {
@@ -684,12 +686,17 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     commitIn(worktree, 'src/a.test.ts', 'x\n'.repeat(3));
     commitIn(worktree, 'scripts/x.test.ts', 'x\n'.repeat(5));
     const claimsEverything: Adapter = { ...passingAdapter, testFiles: (_, files) => files };
+    // The check reads the run's user .npmrc: here none, never the operator's,
+    // which a gate's sandbox does not let it read.
+    vi.stubEnv('npm_config_userconfig', join(tempDir('pup-userconfig-'), 'npmrc'));
 
     const outcome = await merge([
       {
         ...passingAdapter,
         testFiles: typescriptAdapter.testFiles,
-        testInputsIntact: typescriptAdapter.testInputsIntact,
+        testInputsIntact: (ctx) =>
+          typescriptAdapter.testInputsIntact?.({ ...ctx, gateEnv: ['npm_config_userconfig'] }) ??
+          false,
       },
       claimsEverything,
     ]);
@@ -1228,6 +1235,47 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(stored.debt?.deadExports).toEqual([{ file: 'src/legacy.ts', exportName: 'old' }]);
   });
 
+  // Read off the store's `rescope` events, as `pup plan edit --rescope` wrote
+  // them on the claiming session (decision 188).
+  it('with openPr lists the rescopes the task took in the PR body', async () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+    seedDebtBaseline({ deadExports: [] });
+    addOrigin();
+    db.prepare("INSERT INTO events (session_id, type, payload) VALUES (?, 'rescope', ?)").run(
+      SESSION_ID,
+      JSON.stringify({
+        task: `task-${SESSION_ID}`,
+        added: ['docs/**'],
+        tier: 'standard',
+        raised: false,
+        by: 'inferred-operator',
+        tty: null,
+        tmuxPane: '%12',
+      }),
+    );
+    const bodyFile = join(tempDir('pup-gh-body-'), 'body');
+
+    const outcome = await withFakeGh(
+      fakeGh([]).replace('cat >/dev/null', `cat >> ${bodyFile}`),
+      () =>
+        runMergeGate(db, {
+          repoPath: repo,
+          sessionId: SESSION_ID,
+          adapters: [debtAdapter({ deadCode: () => [] })],
+          openPr: true,
+        }),
+    );
+
+    expect(outcome.status).toBe('merged');
+    expect(readFileSync(bodyFile, 'utf8')).toMatch(
+      new RegExp(
+        `## Rescopes\\n\\n.*\\n\\n\`\`\`\`\\n- [^;]+; session ${SESSION_ID}; added docs/\\*\\*; ` +
+          'tier standard; by inferred-operator; tty none; tmux pane %12\\n````\\n',
+      ),
+    );
+  });
+
   it('with openPr refuses when origin no longer matches the recorded push target', async () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
@@ -1430,10 +1478,11 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         fixRound = true,
         firstFile = 'src/feature.ts',
         firstContent = 'export const a = 1;\n',
+        scopeIn = ['src/**'],
       } = {},
       acceptDebt?: { reason: string; reviewBy: string; acceptedBy: string },
     ): Promise<string> {
-      const worktree = seedSession(db, repo);
+      const worktree = seedSession(db, repo, { scopeIn });
       commitIn(worktree, firstFile, firstContent);
       bare = addOrigin();
       const first = await withFakeGh(fakeGh([openPrOnMain]), () =>
@@ -1492,6 +1541,38 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         .filter((call) => call.startsWith('pr edit'))
         .at(-1);
       expect(edit).toContain('--title edit src/feature.ts --body-file');
+    });
+
+    // The rewrite replaces the whole body, so it reads the rescopes again: the
+    // one the operator took for the fix round shows (decision 188).
+    it('lists in the rewritten body a rescope taken after the first gate', async () => {
+      await gateThenFix();
+      db.prepare("INSERT INTO events (session_id, type, payload) VALUES (?, 'rescope', ?)").run(
+        SESSION_ID,
+        JSON.stringify({
+          task: `task-${SESSION_ID}`,
+          added: ['docs/**'],
+          tier: 'critical',
+          raised: false,
+          by: 'inferred-operator',
+          tty: '/dev/ttys009',
+          tmuxPane: null,
+        }),
+      );
+      const bodies = join(tempDir('pup-gh-body-'), 'bodies');
+
+      const outcome = await regate(
+        [fixChecking],
+        fakeGh([openPrOnMain]).replace('cat >/dev/null', `cat >> ${bodies}`),
+      );
+
+      expect(outcome.status).toBe('merged');
+      expect(readFileSync(bodies, 'utf8')).toMatch(
+        new RegExp(
+          `## Rescopes\\n\\n.*\\n\\n\`\`\`\`\\n- [^;]+; session ${SESSION_ID}; added docs/\\*\\*; ` +
+            'tier critical; by inferred-operator; tty /dev/ttys009; tmux pane none\\n````\\n',
+        ),
+      );
     });
 
     it('runs every stage on the new head and appends a merge event with its sha and the same PR', async () => {
@@ -1653,6 +1734,70 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       await setup();
 
       await expectRefusedUnwritten(refusal, fakeGh([openPrOnMain], undefined, state));
+    });
+
+    // Decision 146: `pup land --abandon-closed` freed the PR's ADR numbers, and
+    // a reopen does not move its head; only a re-gate's merge takes them back.
+    describe('a PR reopened after the operator recorded it closed', () => {
+      const ADR_FIRST = {
+        fixRound: false,
+        firstFile: 'docs/adr/0002-mine.md',
+        firstContent: '# 0002\n',
+        scopeIn: ['src/**', 'docs/adr/**'],
+      };
+
+      /** Gated, recorded closed, reopened at the pin, its local branch back at the PR's head. */
+      async function reopenedAtThePin(): Promise<void> {
+        await gateThenFix(ADR_FIRST);
+        appendEvent(db, SESSION_ID, 'pr_closed', { prUrl: PR_URL, sha: pinned });
+        sh(repo, 'git', 'branch', '-f', BRANCH, pinned);
+      }
+
+      it('re-gates the unmoved head, its merge event ending the record', async () => {
+        await reopenedAtThePin();
+
+        const outcome = await regate();
+
+        expect(outcome).toMatchObject({ status: 'merged', regated: true, prUrl: PR_URL });
+        expect(merges().map((merge) => merge.sha)).toEqual([pinned, pinned]);
+        expect(isPrClosedOnRecord(db, SESSION_ID)).toBe(false);
+      });
+
+      it('refuses a number a peer took since the record, keeping the record', async () => {
+        await reopenedAtThePin();
+        insertTask(db, { id: 'task-s2', projectId: 'proj-1', spec: '{}' });
+        const sibling = join(repo, '.worktrees', 's2');
+        sh(repo, 'git', 'worktree', 'add', '-b', 'pup/s2', sibling, 'HEAD');
+        insertSession(db, {
+          id: 's2',
+          taskId: 'task-s2',
+          worktreePath: sibling,
+          branch: 'pup/s2',
+          profileHash: 'hash',
+        });
+        transitionSession(db, 's2', 'running');
+        commitIn(sibling, 'docs/adr/0002-theirs.md', '# 0002\n');
+        const edits = prEdits();
+
+        const outcome = await regate();
+
+        expect(outcome.status).toBe('refused');
+        expect(outcome.report.stages.at(-1)).toMatchObject({
+          stage: 'adr-number',
+          status: 'fail',
+          detail: expect.stringContaining('decision 0002 is also added by pup/s2'),
+        });
+        expect(merges()).toHaveLength(1);
+        expect(isPrClosedOnRecord(db, SESSION_ID)).toBe(true);
+        expect(prEdits()).toBe(edits);
+      });
+
+      it('still refuses the unmoved head of a PR with no close on record', async () => {
+        await gateThenFix(ADR_FIRST);
+        sh(repo, 'git', 'branch', '-f', BRANCH, pinned);
+
+        await expectRefusedUnwritten(/still has its head at/);
+      });
     });
 
     /** A merge event as the store can hold it: session-writable, so any shape. */
@@ -2802,6 +2947,7 @@ describe('pullRequestText (decision 137)', () => {
       ownSubject === undefined ? [] : [ownSubject],
       'a'.repeat(40),
       ownSubject,
+      [],
     ).title;
   /** 79 characters of nine-letter words: the 72-character limit falls mid-word. */
   const longGoal = 'abcdefghi '.repeat(8).trim();
@@ -2867,6 +3013,80 @@ describe('pullRequestText (decision 137)', () => {
     // A closing word with no reference after it, or none at all, is kept.
     expect(title('the goal', 'Fix the closer for #12')).toBe('Fix the closer for #12');
     expect(title('the goal', 'Close the lock file')).toBe('Close the lock file');
+  });
+});
+
+// The reviewer reviews the plan; the gate held the diff to the scope the
+// claim was widened to after launch (decision 188).
+describe("the PR body's rescopes (decision 188)", () => {
+  const report = { sessionId: SESSION_ID, passed: true, sandbox: 'test', stages: [] };
+  const body = (rescopes: Parameters<typeof pullRequestText>[6]): string =>
+    pullRequestText(
+      { id: 'task-s1' as TaskId, goal: 'the goal', scopeIn: ['src/**'], acceptance: ['done'] },
+      SESSION_ID,
+      report,
+      ['Fix the retry loop'],
+      'a'.repeat(40),
+      'Fix the retry loop',
+      rescopes,
+    ).body;
+  const RESCOPE = {
+    at: '2026-11-13 10:00:00',
+    sessionId: SESSION_ID,
+    added: ['docs/**', 'src/core/merge-gate.service.ts'],
+    tier: 'critical',
+    raised: true,
+    by: 'inferred-operator',
+    tty: '/dev/ttys009',
+    tmuxPane: null,
+  };
+
+  it('lists each rescope, fenced, between the acceptance and the commits', () => {
+    const text = body([RESCOPE, { ...RESCOPE, added: ['test/**'], raised: false, tty: null }]);
+
+    expect(text).toContain(
+      [
+        '- done',
+        '',
+        '## Rescopes',
+        '',
+        'Scope-in widened after launch by `pup plan edit --rescope`; the caller is what was seen of it, not proof.',
+        '',
+        '````',
+        `- 2026-11-13 10:00:00; session ${SESSION_ID}; added docs/**, src/core/merge-gate.service.ts; ` +
+          'tier critical, raised from standard; by inferred-operator; tty /dev/ttys009; tmux pane none',
+        `- 2026-11-13 10:00:00; session ${SESSION_ID}; added test/**; tier critical; ` +
+          'by inferred-operator; tty none; tmux pane none',
+        '````',
+        '',
+        '## Commits',
+      ].join('\n'),
+    );
+  });
+
+  it('has no section when the claim was never widened', () => {
+    expect(body([])).not.toContain('## Rescopes');
+    expect(body([])).toContain('- done\n\n## Commits');
+  });
+
+  // Store text a session can write: no line it plants can close the fence or
+  // start a line of its own.
+  it('scrubs every value to one line that cannot close the fence', () => {
+    const text = body([
+      {
+        ...RESCOPE,
+        added: ['docs/**\n````\n## Approved'],
+        by: 'inferred-operator\r\n@someone',
+        tmuxPane: '%1\u001b[2K',
+      },
+    ]);
+
+    const fenced = text.split('## Rescopes')[1]?.split('## Commits')[0] ?? '';
+    expect(fenced.split('\n').filter((line) => line.startsWith('````'))).toEqual(['````', '````']);
+    expect(text).not.toContain('\n## Approved');
+    expect(text).not.toContain('\n@someone');
+    expect(text).toContain('added docs/** ```` ## Approved; tier critical');
+    expect(text).toContain('tmux pane %1 [2K');
   });
 });
 

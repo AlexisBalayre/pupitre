@@ -141,6 +141,7 @@ import {
 } from './session.repository.js';
 import { steerSession } from './session-lifecycle.service.js';
 import { shellWord } from './shell-quote.utils.js';
+import { type TaskRescope, taskRescopes } from './task-rescope.service.js';
 import {
   describeSlotWait,
   GATE_SLOT_WAIT_MS,
@@ -2144,8 +2145,8 @@ export function assertPullRequestOf(prUrl: string, repo: string, untouched: stri
 }
 
 /**
- * Merge `targetSha` into the branch an open PR holds, in plumbing only
- * (decision 105): `merge-tree` writes the merged tree, `commit-tree` the merge
+ * Merge `targetSha` into the branch an open PR holds, or one no rebase should
+ * rewrite (decision 190), in plumbing only (decision 105): `merge-tree` writes the merged tree, `commit-tree` the merge
  * commit, and a compare-and-swap moves the branch from the tip the merge read.
  * The porcelain `git merge` reads `branch.<name>.mergeOptions` from the shared
  * config a session can write, after the `-c` pins and before argv, so a planted
@@ -2280,6 +2281,26 @@ async function mergeTargetInto(
   return undefined;
 }
 
+/**
+ * Whether the branch already holds a merge of the target: a merge commit the
+ * target lacks with a parent the target contains, as a worker's `git merge
+ * main` writes. A rebase would drop that merge and replay the commits under
+ * it, bringing back the conflicts it resolved (decision 190). One git process
+ * whatever the branch holds, as it runs under the merge lock every queued gate
+ * waits on: a parent of a commit the target lacks is in the target exactly
+ * when it is not itself one of those commits.
+ */
+function holdsMergeOfTarget(repoPath: string, branchRef: string, targetSha: string): boolean {
+  const commits = runGit(repoPath, ['rev-list', '--parents', `${targetSha}..${branchRef}`])
+    .split('\n')
+    .map((line) => line.trim().split(' '))
+    .filter(([commit]) => commit);
+  const targetLacks = new Set(commits.map(([commit]) => commit));
+  return commits.some(
+    ([, ...parents]) => parents.length > 1 && parents.some((parent) => !targetLacks.has(parent)),
+  );
+}
+
 async function gateAndMerge(
   db: Database,
   req: MergeRequest,
@@ -2333,8 +2354,10 @@ async function gateAndMerge(
   started = Date.now();
   const targetSha = resolveCommit(req.repoPath, `refs/heads/${target}`);
   // An open PR's commits are what its review and CI read, so its branch takes
-  // the target as a merge commit and is never rewritten; a branch with no open
-  // PR is still rebased (decision 105).
+  // the target as a merge commit and is never rewritten (decision 105). A
+  // branch with no open PR is rebased, unless it already holds a merge of the
+  // target or the rebase conflicts: then it takes the merge too, and fails only
+  // when that merge conflicts (decision 190).
   const isPrBranch = pullRequest?.adoptedUrl !== undefined;
   // What the gate last pushed, which the merge keeps and a rewrite by the
   // session would drop: refused here, with the fix in the worker's hands,
@@ -2355,6 +2378,7 @@ async function gateAndMerge(
     );
     return failed();
   }
+  let step: 'merge' | 'rebase' = isPrBranch ? 'merge' : 'rebase';
   if (isAncestor(req.repoPath, targetSha, branchRef)) {
     stages.push(
       timedSince(started, {
@@ -2363,31 +2387,49 @@ async function gateAndMerge(
         detail: `already based on ${target}`,
       }),
     );
-  } else if (isPrBranch) {
-    const refused = await mergeTargetInto(
-      req,
-      worktree,
-      worktreeEnv,
-      session.branch,
-      target,
-      targetSha,
-    );
-    if (refused) {
-      stages.push(timedSince(started, { stage: 'fresh-base', status: 'fail', detail: refused }));
-      return failed();
-    }
-    stages.push(
-      timedSince(started, { stage: 'fresh-base', status: 'pass', detail: `auto-merged ${target}` }),
-    );
   } else {
-    // Before the try, so a lost lock goes to the operator, not to the worker.
-    assertMergeLockHeld(req.repoPath, `the rebase of ${session.branch} onto ${target}`);
-    try {
-      // The strategy named, not left to `pull.twohead`: git's sequencer takes
-      // the first value it reads, a session's local one before the `-c` pin,
-      // and runs any name but ort as `git merge-<name>`, a path into the
-      // worktree included (decision 120, amending 79).
-      runGit(worktree, ['rebase', '--strategy=ort', targetSha], pinned);
+    let rebaseConflicted = false;
+    if (isPrBranch || holdsMergeOfTarget(req.repoPath, branchRef, targetSha)) {
+      step = 'merge';
+    } else {
+      // Before the try, so a lost lock goes to the operator, not to the worker.
+      assertMergeLockHeld(req.repoPath, `the rebase of ${session.branch} onto ${target}`);
+      try {
+        // The strategy named, not left to `pull.twohead`: git's sequencer takes
+        // the first value it reads, a session's local one before the `-c` pin,
+        // and runs any name but ort as `git merge-<name>`, a path into the
+        // worktree included (decision 120, amending 79).
+        runGit(worktree, ['rebase', '--strategy=ort', targetSha], pinned);
+      } catch (error) {
+        // No resolved stop goes on: it would run through rebase state the live
+        // session can write (decision 120). The merge below is plumbing.
+        try {
+          runGit(worktree, ['rebase', '--abort'], pinned);
+        } catch (abortError) {
+          rethrowIfKilled(error);
+          rethrowIfKilled(abortError);
+          // A rebase that never started, or an abort a lock held off, may leave
+          // the worktree mid-rebase on a detached HEAD: no merge goes over it.
+          const onto = shellWord(`refs/heads/${sanitizeReason(target)}`);
+          stages.push(
+            timedSince(started, {
+              stage: 'fresh-base',
+              status: 'fail',
+              detail:
+                `Auto-rebase onto ${sanitizeReason(target)} failed and so did its abort. Run ` +
+                `\`git rebase --abort\` if a rebase is still in progress, then \`git merge ` +
+                `${onto}\`, resolve any conflicts, and commit the merge.\n` +
+                `${commandFailureDetail(error)}\n${commandFailureDetail(abortError)}`,
+            }),
+          );
+          return failed();
+        }
+        rethrowIfKilled(error);
+        rebaseConflicted = true;
+        step = 'merge';
+      }
+    }
+    if (step === 'rebase') {
       stages.push(
         timedSince(started, {
           stage: 'fresh-base',
@@ -2395,25 +2437,28 @@ async function gateAndMerge(
           detail: `auto-rebased onto ${target}`,
         }),
       );
-    } catch (error) {
-      // Every conflict goes back to the worker: a resolved stop would go on
-      // through rebase state the live session can write (decision 120).
-      try {
-        runGit(worktree, ['rebase', '--abort'], pinned);
-      } catch {
-        // nothing to abort — the rebase never started
+    } else {
+      const refused = await mergeTargetInto(
+        req,
+        worktree,
+        worktreeEnv,
+        session.branch,
+        target,
+        targetSha,
+      );
+      if (refused) {
+        stages.push(timedSince(started, { stage: 'fresh-base', status: 'fail', detail: refused }));
+        return failed();
       }
       stages.push(
         timedSince(started, {
           stage: 'fresh-base',
-          status: 'fail',
-          detail:
-            `Auto-rebase onto ${sanitizeReason(target)} hit conflicts. Run ` +
-            `\`git rebase ${shellWord(`refs/heads/${sanitizeReason(target)}`)}\`, ` +
-            `resolve the conflicts, and finish the rebase.\n${commandFailureDetail(error)}`,
+          status: 'pass',
+          detail: rebaseConflicted
+            ? `auto-merged ${target} after the auto-rebase hit conflicts`
+            : `auto-merged ${target}`,
         }),
       );
-      return failed();
     }
   }
   const sha = resolveCommit(req.repoPath, branchRef);
@@ -2422,9 +2467,7 @@ async function gateAndMerge(
   // no fast-forward, and the diffs would measure against the wrong base.
   if (!isAncestor(req.repoPath, targetSha, sha)) {
     const onto = `refs/heads/${sanitizeReason(target)}`;
-    const [step, fix] = isPrBranch
-      ? ['merge', `merge ${onto} into it`]
-      : ['rebase', `rebase it onto ${onto}`];
+    const fix = step === 'merge' ? `merge ${onto} into it` : `rebase it onto ${onto}`;
     // Replaces the pass pushed above: one fresh-base line, not a pass then a fail.
     stages.pop();
     stages.push(
@@ -2466,7 +2509,7 @@ async function gateAndMerge(
   if (pullRequest) {
     const newPr = {
       ...pullRequest,
-      ...pullRequestText(spec, session.id, report, commitSubjects, sha, ownSubject),
+      ...sessionPullRequestText(db, session, spec, report, commitSubjects, sha, ownSubject),
     };
     try {
       // After the last stage: a live session can set the key while they run,
@@ -3602,7 +3645,8 @@ export function recordMerge(
  * The title and body pupitre writes on a PR it opens or adopts. A squash merge
  * makes the title the subject of the commit on the target (decision 137), so
  * it is `ownSubject`, the session's first non-merge commit subject, when that
- * fits, else the goal's first line.
+ * fits, else the goal's first line. `rescopes` are the task's, `taskRescopes`'s
+ * read, so a re-gate's rewrite keeps the section the first gate wrote.
  */
 export function pullRequestText(
   spec: TaskSpec,
@@ -3611,11 +3655,30 @@ export function pullRequestText(
   commitSubjects: string[],
   sha: string,
   ownSubject: string | undefined,
+  rescopes: readonly TaskRescope[],
 ): { title: string; body: string } {
   return {
     title: prTitle(spec.goal, ownSubject) || `pup session ${sessionId}`,
-    body: prBody(spec, report, commitSubjects, sha),
+    body: prBody(spec, report, commitSubjects, sha, rescopes),
   };
+}
+
+/**
+ * `pullRequestText` for `session`'s PR, with its task's rescopes read off the
+ * store (decision 188): what a gate opening or adopting the PR writes, and
+ * what a re-gate's rewrite writes again.
+ */
+export function sessionPullRequestText(
+  db: Database,
+  session: SessionRow,
+  spec: TaskSpec,
+  report: GateReport,
+  commitSubjects: string[],
+  sha: string,
+  ownSubject: string | undefined,
+): { title: string; body: string } {
+  const rescopes = taskRescopes(db, session.task_id);
+  return pullRequestText(spec, session.id, report, commitSubjects, sha, ownSubject, rescopes);
 }
 
 /**
@@ -3826,7 +3889,13 @@ function prTitle(goal: string, ownSubject: string | undefined): string {
   return cut < 0 ? '' : line.slice(0, cut).replace(/[\s,;:–—-]+$/, '');
 }
 
-function prBody(spec: TaskSpec, report: GateReport, commitSubjects: string[], sha: string): string {
+function prBody(
+  spec: TaskSpec,
+  report: GateReport,
+  commitSubjects: string[],
+  sha: string,
+  rescopes: readonly TaskRescope[],
+): string {
   // Commit subjects and gate details quote session-authored text. Fenced so
   // GitHub renders it inert — no `Closes #n` auto-closing, no @mention pings,
   // no invisible HTML comments aimed at review bots.
@@ -3839,6 +3908,7 @@ function prBody(spec: TaskSpec, report: GateReport, commitSubjects: string[], sh
     '',
     ...spec.acceptance.map((item) => `- ${item}`),
     '',
+    ...rescopeSection(rescopes),
     '## Commits',
     '',
     '````',
@@ -3855,6 +3925,37 @@ function prBody(spec: TaskSpec, report: GateReport, commitSubjects: string[], sh
     formatGateReport(report),
     '````',
   ].join('\n');
+}
+
+/**
+ * The scope-in the task's claim was widened with after launch, for the
+ * reviewer (decision 188): the gate held the diff to the widened globs, not
+ * to the plan's. Empty when there was none. Store text a session could write,
+ * so every value is scrubbed to one line, and each line opens with `- `, which
+ * no closing fence does.
+ */
+function rescopeSection(rescopes: readonly TaskRescope[]): string[] {
+  if (rescopes.length === 0) return [];
+  const line = (rescope: TaskRescope) =>
+    [
+      `- ${sanitizeReason(rescope.at)}`,
+      `session ${sanitizeReason(rescope.sessionId)}`,
+      `added ${rescope.added.map(sanitizeReason).join(', ')}`,
+      `tier ${sanitizeReason(rescope.tier)}${rescope.raised ? ', raised from standard' : ''}`,
+      `by ${sanitizeReason(rescope.by)}`,
+      `tty ${sanitizeReason(rescope.tty ?? 'none')}`,
+      `tmux pane ${sanitizeReason(rescope.tmuxPane ?? 'none')}`,
+    ].join('; ');
+  return [
+    '## Rescopes',
+    '',
+    'Scope-in widened after launch by `pup plan edit --rescope`; the caller is what was seen of it, not proof.',
+    '',
+    '````',
+    ...rescopes.map(line),
+    '````',
+    '',
+  ];
 }
 
 /**

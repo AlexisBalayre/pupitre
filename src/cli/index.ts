@@ -64,17 +64,22 @@ import {
 import { DEFAULT_BASE_PROFILE } from '../core/default-profile.constants.js';
 import { IntentRefusedError } from '../core/errors/intent.errors.js';
 import { ciReviewLookup, type FixRoundOutcome, startFixRound } from '../core/fix-round.service.js';
-import { fleetReading, readFleet } from '../core/fleet.service.js';
+import { fleetReading, readFleet, readFleetProjects } from '../core/fleet.service.js';
 import { parseGateEnv } from '../core/gate-env.utils.js';
 import { assertMainCheckout, RewrittenGitDirError } from '../core/git-diff.client.js';
 import { initProject } from '../core/init.service.js';
 import { acceptIntent, createIntent, listIntents, readIntent } from '../core/intent.service.js';
-import { landSession } from '../core/land.service.js';
+import { abandonClosedSession, landSession } from '../core/land.service.js';
 import { closeLedgerEntry, listLedgerEntries } from '../core/ledger.repository.js';
 import { MAX_REJECTS_BEFORE_BLOCKED } from '../core/merge-gate.constants.js';
 import { MergeLockLostError } from '../core/merge-gate.errors.js';
 import { runMergeGate } from '../core/merge-gate.service.js';
 import { renderMindMapHtml } from '../core/mind-map.service.js';
+import {
+  type LaunchedAncestor,
+  launchedAncestor,
+  mergeCallerAncestor,
+} from '../core/operator-guard.service.js';
 import {
   appendOnlyLine,
   radarView,
@@ -161,7 +166,7 @@ import {
   steerSession,
 } from '../core/session-lifecycle.service.js';
 import { retireSession } from '../core/session-retire.service.js';
-import { launchedAncestor, rescopeTask } from '../core/task-rescope.service.js';
+import { rescopeTask } from '../core/task-rescope.service.js';
 import {
   describeSlotWait,
   runSessionTest,
@@ -172,7 +177,7 @@ import { sweepDeadTurns } from '../core/turn-watchdog.service.js';
 import type { AuditOutcome } from '../core/types/audit.types.js';
 import type { ConductorHandle } from '../core/types/conductor.types.js';
 import type { DashboardSnapshot } from '../core/types/dashboard.types.js';
-import type { RegisteredProject } from '../core/types/fleet.types.js';
+import type { FleetReading, RegisteredProject } from '../core/types/fleet.types.js';
 import type { DebtBaseline, InitReport } from '../core/types/init.types.js';
 import type { LandOutcome } from '../core/types/land.types.js';
 import type { GateReport, MergeOutcome } from '../core/types/merge-gate.types.js';
@@ -911,18 +916,14 @@ function held(project: ResolvedProject): ResolvedProject {
 }
 
 /**
- * Every registered project, each one a fleet view reads held first, as `held`
- * holds one: each reading runs git in its repo. A project the view passes over
- * (its repo missing or not its own path, or dormant and not shown) is never
- * read, so it is not checked. One that refuses stops the view, as it stops a
- * command run in that repo.
+ * Every registered project, each one a fleet view reads (`readFleetProjects`)
+ * held first, as `held` holds one: each reading runs git in its repo. One that
+ * refuses stops the view, as it stops a command run in that repo.
  */
 function heldFleet(shouldShowDormant: boolean): RegisteredProject[] {
   const registered = fleetProjects();
-  for (const project of registered) {
-    const isRead =
-      project.repoExists && project.isOwnPath && (shouldShowDormant || project.dormantAt === null);
-    if (isRead) assertMainCheckout(project.repoPath);
+  for (const project of readFleetProjects(registered, shouldShowDormant)) {
+    assertMainCheckout(project.repoPath);
   }
   return registered;
 }
@@ -944,6 +945,7 @@ interface LandOptions {
   gateEnv?: string;
   audit: boolean;
   acceptHead?: string;
+  abandonClosed?: boolean;
 }
 
 interface PlanOptions {
@@ -956,6 +958,96 @@ interface PlanOptions {
 }
 
 /**
+ * Refuse an operator-only command run under a window pup opened, a session's
+ * or the conductor's, whatever its environment and cwd say: the markers are
+ * the caller's word, and a caller can empty or unset them and leave its
+ * worktree, but not leave the process tree it runs in (decisions 115, 188).
+ * `ancestor` is what the process tree said, asked of the project's store the
+ * command acts on, after the marker checks, which name the caller in plainer
+ * words when it kept its markers. A tree `ps` could not read refuses too: it
+ * cannot tell the caller from a window. Prints the refusal and returns true
+ * when it refused.
+ */
+function refusedUnderWindow(ancestor: LaunchedAncestor | undefined, command: string): boolean {
+  if (ancestor === undefined) return false;
+  const under = underWindow(ancestor);
+  refuse(
+    under === undefined
+      ? `${command} could not read the process tree (\`ps\` failed), so it cannot tell this ` +
+          'caller from a session or the conductor; nothing changed.'
+      : `${command} is operator-only, and this runs under ${under}, whatever its environment ` +
+          'says; run it from your own shell.',
+  );
+  return true;
+}
+
+/** What the caller runs under, in words; undefined for a tree `ps` could not read. */
+function underWindow(ancestor: LaunchedAncestor): string | undefined {
+  if (ancestor.kind === 'pane') {
+    return `process ${ancestor.pid}, the pane pup recorded for ${sanitizeReason(ancestor.window)}'s window`;
+  }
+  return ancestor.kind === 'launched'
+    ? `${sanitizeReason(ancestor.name)}, a Claude Code pup launched`
+    : undefined;
+}
+
+/**
+ * Why `pup ui` drives nothing for a caller under a window pup opened in any of
+ * `stores`, whatever its environment says, asked as the guarded commands ask
+ * it (decision 188): its keys run the respawn, the unblock and the merge.
+ * Undefined when the caller runs under none.
+ */
+function readOnlyUnderWindow(
+  stores: readonly { db: Database; repoPath: string }[],
+): string | undefined {
+  for (const { db, repoPath } of stores) {
+    const ancestor = launchedAncestor(db, repoPath);
+    if (ancestor === undefined) continue;
+    const under = underWindow(ancestor);
+    return under === undefined
+      ? 'read-only: the process tree could not be read (`ps` failed), so this caller cannot be ' +
+          'told from a session or the conductor (decision 188).'
+      : `read-only: this runs under ${under}, whatever its environment says (decision 188).`;
+  }
+  return undefined;
+}
+
+/**
+ * The fleet `pup ui` drives, and why it drives nothing: each store its first
+ * reading rendered is asked as `readOnlyUnderWindow` asks it (decision 188),
+ * and only those are ever driven. A store whose first snapshot threw stays
+ * open and renders once it mends, so a caller could break its own project's
+ * reading to skip the check and mend it to be handed that project's keys:
+ * every later reading lists it as a line, never a row, until `pup ui` starts
+ * again and asks it.
+ */
+function askedFleet(read: () => FleetReading): {
+  read: () => FleetReading;
+  readOnlyReason: string | undefined;
+} {
+  const asked = new Set(read().projects.map(({ deps }) => deps));
+  return {
+    read: () => {
+      const { projects, unreadable } = read();
+      const unasked = projects.filter(({ deps }) => !asked.has(deps));
+      return {
+        projects: projects.filter(({ deps }) => asked.has(deps)),
+        unreadable: [
+          ...unreadable,
+          ...unasked.map(
+            ({ deps }) =>
+              `${projectId(deps.repoPath)}  ${sanitizeReason(deps.repoPath)}  held out: ` +
+              'unreadable when `pup ui` started, so never asked whether this runs under its ' +
+              'windows; restart it to read this (decision 188)',
+          ),
+        ],
+      };
+    },
+    readOnlyReason: readOnlyUnderWindow([...asked]),
+  };
+}
+
+/**
  * `pup plan edit <task> --rescope --scope <glob...>` (decision 115). The
  * caller already refused a session; the conductor is refused here, because a
  * scope a gate-failing agent widens for itself is no scope at all. Both are
@@ -963,28 +1055,14 @@ interface PlanOptions {
  * and left its worktree still runs under. Only `--scope` rides along: a
  * rescope appends globs and changes nothing else.
  */
-function rescopeOrRefuse(db: Database, target: string, opts: PlanOptions): void {
+function rescopeOrRefuse(db: Database, repoPath: string, target: string, opts: PlanOptions): void {
   if (callingConductor()) {
     refuse(
       '`pup plan edit --rescope` is operator-only; the conductor cannot widen a claimed task.',
     );
     return;
   }
-  const ancestor = launchedAncestor();
-  if (ancestor?.kind === 'launched') {
-    refuse(
-      `\`pup plan edit --rescope\` is operator-only, and this runs under ${sanitizeReason(ancestor.name)}, ` +
-        'a Claude Code pup launched, whatever its environment says; run it from your own shell.',
-    );
-    return;
-  }
-  if (ancestor?.kind === 'unreadable') {
-    refuse(
-      '`pup plan edit --rescope` could not read the process tree (`ps` failed), so it cannot ' +
-        'tell this caller from a session or the conductor; nothing changed.',
-    );
-    return;
-  }
+  if (refusedUnderWindow(launchedAncestor(db, repoPath), '`pup plan edit --rescope`')) return;
   if ([opts.goal, opts.scopeOut, opts.accept, opts.tier].some((field) => field !== undefined)) {
     refuse('--rescope takes only --scope: it appends scope-in globs and changes nothing else.');
     return;
@@ -1031,15 +1109,25 @@ function callerTty(): string | null {
   }
 }
 
-/** What a rescope that went through says: the globs it appended and the tier it leaves. */
+/**
+ * What a rescope that went through says: the globs it appended, the tier it
+ * leaves, and an `OVERLAP` line, as the radar prints one, for each live
+ * session of another task the added globs share files with (decision 188).
+ */
 function rescopedLine(target: string, outcome: ReturnType<typeof rescopeTask>): string {
   if (outcome.added.length === 0) {
     return `${target}'s scope-in already holds every glob given; nothing changed.`;
   }
+  const overlaps = outcome.overlaps.map(({ sessionId, files }) => {
+    const extra = files.length > 1 ? ` (+${files.length - 1} more)` : '';
+    return `\nOVERLAP  ${sanitizeReason(sessionId)}  ${sanitizeReason(files[0] ?? '')}${extra}`;
+  });
+  const introduced =
+    overlaps.length > 0 ? '\nRecorded as overlaps; the next fix round introduces the workers.' : '';
   return (
     `Widened ${target}'s scope-in with ${sanitizeReason(outcome.added.join(', '))}; ` +
     `recorded on session ${sanitizeReason(outcome.sessionId)}; tier ${outcome.tier}` +
-    `${outcome.raised ? ', raised from standard' : ''}.`
+    `${outcome.raised ? ', raised from standard' : ''}.${overlaps.join('')}${introduced}`
   );
 }
 
@@ -1280,7 +1368,7 @@ export function buildProgram(): Command {
           if (!target) {
             return refuse('Usage: pup plan edit <task> [--goal ...] [--scope ...]');
           }
-          if (opts.rescope) return rescopeOrRefuse(db, target, opts);
+          if (opts.rescope) return rescopeOrRefuse(db, repoPath, target, opts);
           let outcome: ReturnType<typeof editTaskSpec>;
           try {
             outcome = editTaskSpec(db, target, {
@@ -1772,7 +1860,7 @@ export function buildProgram(): Command {
         const { repoPath, db } = own ? held(own) : project();
         // The store and repo the keys write through.
         const deps: ActionDeps = { db, repoPath, pupBin };
-        const readOnlyReason = uiReadOnlyReason(db);
+        const readOnlyReason = uiReadOnlyReason(db, repoPath);
         props = {
           read: () => ({
             projects: [{ deps, snapshot: buildDashboardSnapshot(db, repoPath, Date.now()) }],
@@ -1782,11 +1870,20 @@ export function buildProgram(): Command {
           ...(readOnlyReason ? { readOnlyReason } : {}),
         };
       } else {
-        // Only the operator gets here, refused above like `pup status --all`,
-        // so the fleet is always driven and always shown the attach command.
+        // Only a caller with no marker gets here, refused above like `pup
+        // status --all`, so the fleet is shown the attach command. Driven
+        // unless the process tree finds it under a window of a project it
+        // reads, each store asked as its own single-project dashboard asks
+        // it (decision 188): the stores its first reading rendered, the only
+        // ones it drives, so a project the fleet refuses to open is not
+        // opened for this either.
+        const { read, readOnlyReason } = askedFleet(
+          fleetReading(heldFleet(opts.dormant === true), opts.dormant === true, pupBin),
+        );
         props = {
-          read: fleetReading(heldFleet(opts.dormant === true), opts.dormant === true, pupBin),
+          read,
           showAttach: true,
+          ...(readOnlyReason ? { readOnlyReason } : {}),
         };
       }
       const instance = render(createElement(App, props), {
@@ -1823,6 +1920,13 @@ export function buildProgram(): Command {
       if (!showAttachCommand(db)) {
         db.close();
         return refuse('`pup dashboard` is operator-only.');
+      }
+      // Its page merges, lands, answers and closes debt in the operator's name,
+      // as `pup ui`'s keys do: the process tree asks again whatever the markers
+      // said (decision 188).
+      if (refusedUnderWindow(launchedAncestor(db, repoPath), '`pup dashboard`')) {
+        db.close();
+        return;
       }
       const dashboard = await startWebDashboard(db, repoPath);
       console.log(`Dashboard on ${dashboard.url}`);
@@ -1941,16 +2045,17 @@ export function buildProgram(): Command {
    * and the steer are refused to sessions (decisions 42, 44, 47). A screen
    * that offered them and refused each keystroke one at a time would be a menu
    * of things that do not work, so the whole set goes and the reason is on
-   * screen instead. The keys that only look — the cursor, `r`, `q` — stay.
+   * screen instead. The keys that only look — the cursor, `r`, `q` — stay. The
+   * markers are asked first, then the process tree (decision 188).
    */
-  function uiReadOnlyReason(db: Database): string | undefined {
+  function uiReadOnlyReason(db: Database, repoPath: string): string | undefined {
     if (callingSession(db)) {
       return 'read-only: sessions do not drive sessions (decisions 42, 44).';
     }
     if (callingConductor()) {
       return "read-only: the conductor drives sessions with `pup` commands, and the local merge, respawn and unblock are the operator's (decisions 47, 75).";
     }
-    return undefined;
+    return readOnlyUnderWindow([{ db, repoPath }]);
   }
 
   /**
@@ -2174,6 +2279,9 @@ export function buildProgram(): Command {
         );
       }
       if (opts.respawn) {
+        // Only the respawn asks the process tree: the plain kill is the
+        // conductor's to run.
+        if (refusedUnderWindow(launchedAncestor(db, repoPath), '`pup kill --respawn`')) return;
         // Before the kill: a refused config dir would leave the session no window.
         const windowEnv = windowEnvOrRefuse(repoPath);
         if (windowEnv === undefined) return;
@@ -2202,7 +2310,7 @@ export function buildProgram(): Command {
     .description('Return a blocked session to running once a human has dealt with the block')
     .option('--reason <text>', 'what was done about it, recorded on the event')
     .action((session: string, opts: { reason?: string }) => {
-      const { db } = project();
+      const { repoPath, db } = project();
       // `blocked` is decision 7's parking brake: the gate has stopped steering
       // this session and asked for a human. A session releasing its own brake
       // would undo the parking by the very thing it was parked for, and a
@@ -2219,6 +2327,7 @@ export function buildProgram(): Command {
           '`pup unblock` is operator-only; the conductor reports a blocked session and the operator unblocks it.',
         );
       }
+      if (refusedUnderWindow(launchedAncestor(db, repoPath), '`pup unblock`')) return;
       const row = getSession(db, session);
       if (!row) return refuse(`No session ${session}.`);
       // Not `canTransition`: `queued -> running` is a legal edge that this
@@ -2273,6 +2382,7 @@ export function buildProgram(): Command {
           '`pup respawn` is operator-only; the conductor asks the operator to respawn.',
         );
       }
+      if (refusedUnderWindow(launchedAncestor(db, repoPath), '`pup respawn`')) return;
       // Before the handoff is asked for and the window killed: a refused config
       // dir would leave the session no window.
       const windowEnv = windowEnvOrRefuse(repoPath);
@@ -2465,6 +2575,14 @@ export function buildProgram(): Command {
             '--approved-by names the person who approved, not `human`; use <channel>:<name>.',
           );
         }
+        // The process tree asks again whatever the markers said, before the
+        // gate writes the ledger, rejects or parks anything (decision 188).
+        const ancestor = mergeCallerAncestor(db, repoPath, {
+          pr: opts.pr,
+          acceptDebt: opts.acceptDebt,
+          approvedBy,
+        });
+        if (refusedUnderWindow(ancestor, '`pup merge`')) return;
         // Every detected adapter, not just the first: the gate measures debt
         // over all of them so its bar is the one `pup init` recorded
         // (decision 72).
@@ -2612,6 +2730,10 @@ export function buildProgram(): Command {
       '--accept-head <sha>',
       'Land a PR merged at this head, past the pinned sha, after reading the commits between them',
     )
+    .option(
+      '--abandon-closed',
+      'Record the PR, closed unmerged on GitHub, as abandoned, freeing the ADR numbers it holds',
+    )
     .action(async (session: string, opts: LandOptions) => {
       const { repoPath, db } = project();
       // The human merged the PR on GitHub already; what is left moves main to
@@ -2625,7 +2747,36 @@ export function buildProgram(): Command {
       if (opts.acceptHead !== undefined && callingConductor()) {
         return refuse('`pup land --accept-head` is operator-only.');
       }
+      // Any session can close a peer's PR with the shared gh login, so freeing
+      // the ADR numbers a closed PR holds is the operator's word (decision 146).
+      if (opts.abandonClosed && callingConductor()) {
+        return refuse('`pup land --abandon-closed` is operator-only.');
+      }
+      if (opts.abandonClosed && opts.acceptHead !== undefined) {
+        return refuse('`pup land --abandon-closed` lands nothing, so it takes no --accept-head.');
+      }
       if (refusedUnsandboxed()) return;
+      if (opts.abandonClosed) {
+        let abandoned: { prUrl: string; recorded: boolean };
+        let abandonLockLost: MergeLockLostError | undefined;
+        try {
+          abandoned = await abandonClosedSession(db, { repoPath, sessionId: session, wait: true });
+        } catch (error) {
+          if (error instanceof GateInterruptedError) throw error;
+          // Recorded all the same: reported, then failed on the lost lock (decision 88).
+          if (!(error instanceof MergeLockLostError)) return refuseScrubbed(error);
+          abandoned = error.result as { prUrl: string; recorded: boolean };
+          abandonLockLost = error;
+        }
+        console.log(
+          abandoned.recorded
+            ? `Recorded ${abandoned.prUrl} as closed unmerged: the ADR-number check no longer ` +
+                `counts ${sanitizeReason(session)}'s decisions.`
+            : `${abandoned.prUrl} was already recorded as closed unmerged.`,
+        );
+        if (abandonLockLost !== undefined) refuseScrubbed(abandonLockLost);
+        return;
+      }
       let outcome: LandOutcome;
       let lockLost: MergeLockLostError | undefined;
       try {
@@ -3094,7 +3245,8 @@ export function buildProgram(): Command {
       const sessionId = ownSession(db, 'done');
       if (!sessionId) return;
       markSessionDone(db, sessionId, summary);
-      console.log(`Session ${sanitizeReason(sessionId)} marked done: ${sanitizeReason(summary)}`);
+      // Decision 189: one line, no echo of the summary the worker just wrote.
+      console.log(`Session ${sanitizeReason(sessionId)} marked done.`);
     });
   session
     .command('ask <question>')
@@ -3110,7 +3262,10 @@ export function buildProgram(): Command {
       questionOrRefuse(() => {
         const asked = askedQuestion('pup session ask', question, opts);
         markSessionQuestion(db, sessionId, asked);
-        return askedLines(`Session ${sanitizeReason(sessionId)}`, asked);
+        // Decision 189: one line, no echo of the question and options the worker just wrote.
+        return [
+          `Session ${sanitizeReason(sessionId)} question recorded; end your turn, a steer answers it.`,
+        ];
       });
     });
   session

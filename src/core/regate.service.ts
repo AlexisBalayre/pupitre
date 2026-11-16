@@ -18,16 +18,16 @@ import {
   measureBranch,
   newestMerge,
   type PullRequestPlan,
-  pullRequestText,
   recordMerge,
   refuseGate,
   resolveCommit,
   resolveCommitIfPresent,
+  sessionPullRequestText,
   timedSince,
   withLedgerKept,
 } from './merge-gate.service.js';
 import { NO_PROGRESS, type StageProgress } from './progress.utils.js';
-import { appendEvent, type SessionRow } from './session.repository.js';
+import { appendEvent, isPrClosedOnRecord, type SessionRow } from './session.repository.js';
 import type { PullRequestRef } from './types/github.types.js';
 import type {
   GateReport,
@@ -50,11 +50,14 @@ interface MergeToRegate {
   prUrl: string;
   sha: string;
   target: string;
+  /** The operator recorded the PR closed unmerged, freeing its ADR numbers (decision 146). */
+  closedOnRecord: boolean;
 }
 
 /**
  * The merge a re-gate starts from (decision 86): the newest `merge` event of a
- * merged session, which must have opened a PR, pinned a sha and not landed.
+ * merged session, which must have opened a PR, pinned a sha and not landed,
+ * and whether `pup land --abandon-closed` recorded its PR closed since.
  * Read before anything spawns, so a merged session with nothing to re-gate is
  * refused as cheaply as one in any other state.
  */
@@ -77,7 +80,7 @@ export function mergeToRegate(db: Database, sessionId: string): MergeToRegate {
         `a moved head from. ${NOT_REGATED}`,
     );
   }
-  return { prUrl, sha, target };
+  return { prUrl, sha, target, closedOnRecord: isPrClosedOnRecord(db, sessionId) };
 }
 
 /**
@@ -87,6 +90,9 @@ export function mergeToRegate(db: Database, sessionId: string): MergeToRegate {
  * sha, and be the open PR adoption finds for the branch, past the same checks.
  * A head that is not a descendant of the pin is allowed: a fix round can
  * rebase. The stages then measure that head, never anything the merge recorded.
+ * A PR the operator recorded closed and then reopened is re-gated at the pin
+ * too: the record freed its ADR numbers, so only a new merge event, which the
+ * ADR-number stage checks first, makes them its own again (decision 146).
  */
 export function planRegate(
   repoPath: string,
@@ -121,7 +127,7 @@ export function planRegate(
   if (pr.head === undefined || !COMMIT_SHA.test(pr.head)) {
     throw new Error(`GitHub reports ${prUrl} with an unreadable head. ${NOT_REGATED}`);
   }
-  if (pr.head === pinned) {
+  if (pr.head === pinned && !merge.closedOnRecord) {
     throw new Error(
       `${prUrl} still has its head at ${pinned}, the commit the gate pinned: there is nothing ` +
         `new to gate. Merge it on GitHub, then run \`pup land ${sanitizeReason(sessionId)}\`. ` +
@@ -222,7 +228,17 @@ export async function regateMerged(
   try {
     rewritePullRequest(req.repoPath, regate.prUrl, {
       ...pullRequest,
-      ...pullRequestText(measured.spec, session.id, report, commitSubjects, sha, ownSubject),
+      // The rewrite replaces the whole body: the rescopes the first gate
+      // listed are read again, with any taken since (decision 188).
+      ...sessionPullRequestText(
+        db,
+        session,
+        measured.spec,
+        report,
+        commitSubjects,
+        sha,
+        ownSubject,
+      ),
     });
     assertPullRequestHead(req.repoPath, regate.prUrl, pullRequest.repo, sha);
     // The push that moved the head left the new sha without the first gate's

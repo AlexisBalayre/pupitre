@@ -10,7 +10,7 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
 
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import { openStore } from './db.client.js';
-import { fleetReading, readFleet } from './fleet.service.js';
+import { fleetReading, readFleet, readFleetProjects } from './fleet.service.js';
 import { projectId } from './paths.utils.js';
 import { ensureProject, insertTask } from './session.repository.js';
 
@@ -132,6 +132,19 @@ describe('readFleet', () => {
     const { blocks } = readFleet([{ ...project, repoPath: 'evil\u001b[2J' }], NOW, false);
 
     expect(blocks[0]?.header).toBe(`${project.id}  evil [2J`);
+  });
+});
+
+describe('readFleetProjects', () => {
+  it('is the projects a view opens: shown, its repo there and its own path', () => {
+    const awake = registered(tempDir('pup-fleet-repo-'));
+    const dormant = registered(tempDir('pup-fleet-repo-'), { dormantAt: '2026-09-01T00:00:00Z' });
+    const gone = registered(tempDir('pup-fleet-repo-'), { repoExists: false });
+    const variant = registered(`${tempDir('pup-fleet-repo-')}/`, { isOwnPath: false });
+    const fleet = [awake, dormant, gone, variant];
+
+    expect(readFleetProjects(fleet, false)).toEqual([awake]);
+    expect(readFleetProjects(fleet, true)).toEqual([awake, dormant]);
   });
 });
 

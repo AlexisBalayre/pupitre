@@ -5,7 +5,7 @@ import { quotePath } from './debt.service.js';
 import { rethrowIfKilled, runGit } from './git-diff.client.js';
 import { COMMIT_SHA } from './merge-gate.constants.js';
 import { newestMerge, resolveCommitIfPresent, timedSince } from './merge-gate.service.js';
-import { listEvents, listSessions } from './session.repository.js';
+import { listSessions, newestEventOf } from './session.repository.js';
 import { holdingStates } from './session-state.utils.js';
 import type { GateStageResult } from './types/merge-gate.types.js';
 
@@ -189,20 +189,22 @@ interface Competitor {
   prUrl?: string;
 }
 
-/** Whether `pup retire` closed the session's PR out: its newest merge, landed or retired event is `retired`. */
-function isRetired(db: Database, sessionId: string): boolean {
-  const newest = listEvents(db, sessionId)
-    .reverse()
-    .find((row) => ['merge', 'landed', 'retired'].includes(row.type));
-  return newest?.type === 'retired';
+/**
+ * Whether the session's PR was closed unmerged: its newest merge, landed,
+ * retired or pr_closed event is `retired` (`pup retire`) or `pr_closed`
+ * (`pup land --abandon-closed`).
+ */
+function isClosedOut(db: Database, sessionId: string): boolean {
+  const newest = newestEventOf(db, sessionId, ['merge', 'landed', 'retired', 'pr_closed']);
+  return newest?.type === 'retired' || newest?.type === 'pr_closed';
 }
 
 /**
  * The other sessions whose branch can still land: one holding its scope
  * (decision 41's live states), read at its branch, or a merged one whose PR has
- * not landed, read at the sha its newest merge pinned. A retired one is out
- * (`pup retire` records the close). The store cannot tell any other such PR
- * open from closed unmerged, so a closed one counts too (decision 146's ceilings). That gate normally
+ * not landed, read at the sha its newest merge pinned. One whose PR was closed
+ * unmerged is out once the store records the close, by `pup retire` or by
+ * `pup land --abandon-closed`; until then it counts (decision 146). That gate normally
  * deleted the local branch, in both modes; it keeps it with a worktree it could
  * not remove or when the branch moved past the pin, and then the branch may
  * hold commits the PR does not. Either way the sha is pup's record of the PR's
@@ -218,7 +220,7 @@ function competingBranches(db: Database, sessionId: string): Competitor[] {
       competitors.push({ branch: session.branch, rev: `refs/heads/${session.branch}` });
       continue;
     }
-    if (session.state === 'merged' && isRetired(db, session.id)) continue;
+    if (session.state === 'merged' && isClosedOut(db, session.id)) continue;
     const merge = session.state === 'merged' ? newestMerge(db, session.id) : undefined;
     if (typeof merge !== 'object' || merge.prUrl === undefined) continue;
     const rev = COMMIT_SHA.test(String(merge.sha)) ? merge.sha : undefined;

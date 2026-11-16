@@ -91,3 +91,34 @@
     1 on. So does `pup status` or `pup ui` run inside a repo whose `.git` became a
     gitfile, and `pup status --all` or `pup ui --all` over a registered one. An untouched
     checkout runs.
+
+## Amendment (2026-11-16, #348)
+
+Five review notes on #324, settled after it landed.
+
+- *`pup ci wait`.* It reads a failed gh read as one more wait, but not a
+  `RewrittenGitDirError`: every later read would be refused too, so the wait ends at once
+  rather than at its timeout.
+- *The HTTPS variables.* The allowlist kept `GIT_SSL_CAINFO` and `GIT_SSL_CAPATH` but dropped
+  the client certificate and proxy variables, which were inherited before. It now also keeps
+  `GIT_SSL_CERT`, `GIT_SSL_KEY`, `GIT_SSL_CERT_PASSWORD_PROTECTED`, `GIT_PROXY_SSL_CERT`,
+  `GIT_PROXY_SSL_KEY`, `GIT_PROXY_SSL_CERT_PASSWORD_PROTECTED`, `GIT_PROXY_SSL_CAINFO` and
+  `GIT_HTTP_PROXY_AUTHMETHOD`. A push to a remote or through a proxy that asks for a client
+  certificate fails without them, and each names only how to authenticate, not what git
+  reads. `GIT_SSL_NO_VERIFY` is left out: it turns certificate verification off, which no
+  push needs, so from a session's environment it would only let a push go to a host that is
+  not the remote. An operator who wants it sets `http.sslVerify` in the config
+  `GIT_CONFIG_GLOBAL` names.
+- *The fleet filter.* Which projects `heldFleet` holds (repo exists, is its own path, awake
+  or shown with `--dormant`) is `readFleetProjects` in `fleet.service.ts`, the rule both
+  fleet views read, rather than a copy in `src/cli/index.ts`.
+- *The identity.* The identity `assertMainCheckout` takes covers `.git`, `objects/` and
+  `refs/`, and is recorded only once its checks pass and the two identities agree.
+- *Tests.* In `test/unit/core/git-diff-client.test.ts`, the HTTPS variables reach a spawned
+  git and `GIT_SSL_NO_VERIFY` does not. `test/unit/core/github-client.test.ts` scans
+  `github.client.ts`, as decision 172's test scans `git-diff.client.ts`: every
+  `child_process` use must be the spawn `ghInCheckout` wraps, or the `gh --version` probe,
+  which runs no git. In `ci-wait.test.ts`, a read during which the checkout's `.git` gains a
+  commondir ends `pup ci wait` with the refusal, after one read and no sleep. In
+  `fleet.test.ts`, `readFleetProjects` leaves out a missing repo, a variant path and, unless
+  asked, a dormant project.

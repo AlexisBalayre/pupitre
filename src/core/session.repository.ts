@@ -109,10 +109,12 @@ export interface TaskRow {
 
 /**
  * Every type the store holds: the schema's, `landed`, which `pup land` writes
- * (decision 84), `fix_round`, which `pup fix` writes (decision 90), and
- * `rescope`, which `pup plan edit --rescope` writes (decision 115), and
- * `retired`, which `pup retire` writes (decision 141), the four `EventType`
- * has yet to join.
+ * (decision 84), `fix_round`, which `pup fix` writes (decision 90), `rescope`,
+ * which `pup plan edit --rescope` writes (decision 115), `retired`, which `pup
+ * retire` writes (decision 141), `pr_closed`, which `pup land --abandon-closed`
+ * writes (decision 146), and `conductor_start`, the ones `EventType` has yet to
+ * join. The `events.type` column takes any text: no CHECK constraint names the
+ * types.
  */
 type StoredEventType =
   | EventType
@@ -120,6 +122,7 @@ type StoredEventType =
   | 'fix_round'
   | 'rescope'
   | 'retired'
+  | 'pr_closed'
   | 'conductor_start';
 
 export interface EventRow {
@@ -687,15 +690,33 @@ export function listEvents(db: Database, sessionId: string): EventRow[] {
     .all(sessionId) as EventRow[];
 }
 
+/** The session's newest event of one of `types`, undefined when it has none. */
+export function newestEventOf(
+  db: Database,
+  sessionId: string,
+  types: readonly StoredEventType[],
+): EventRow | undefined {
+  return listEvents(db, sessionId)
+    .reverse()
+    .find((event) => (types as readonly string[]).includes(event.type));
+}
+
+/**
+ * Whether the operator recorded the session's PR closed unmerged with `pup
+ * land --abandon-closed` (decision 146): its newest `merge` or `pr_closed`
+ * event is `pr_closed`. A re-gate's newer `merge` ends the record.
+ */
+export function isPrClosedOnRecord(db: Database, sessionId: string): boolean {
+  return newestEventOf(db, sessionId, ['merge', 'pr_closed'])?.type === 'pr_closed';
+}
+
 /**
  * The `fix_round` event of the CI fix round a session is in (decision 90):
  * the newest of its `fix_round`, `merge` and `landed` events, when that is a
  * `fix_round`. A round ends at the merge its re-gate records.
  */
 export function currentFixRound(db: Database, sessionId: string): EventRow | undefined {
-  const newest = listEvents(db, sessionId)
-    .reverse()
-    .find((event) => ['fix_round', 'merge', 'landed'].includes(event.type));
+  const newest = newestEventOf(db, sessionId, ['fix_round', 'merge', 'landed']);
   return newest?.type === 'fix_round' ? newest : undefined;
 }
 

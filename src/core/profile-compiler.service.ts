@@ -436,9 +436,15 @@ function shiftLeftKickoffOn(repoPath: string): boolean {
   }
 }
 
-/** The text up to its first sentence end, a closing bold marker included. */
+/**
+ * The text up to its first sentence end, a closing bold marker included. A
+ * leading bold title is a header, not the sentence: the cut falls in the body
+ * after it, so `**Title.** Body. More.` keeps `**Title.** Body.` The title
+ * holds no `*`, so it has one possible end and the cut stays linear on a file
+ * a session may have written.
+ */
 function firstSentence(text: string): string {
-  return /^.*?[.!?](?:\*\*)?(?=\s|$)/.exec(text)?.[0] ?? text;
+  return /^(?:\*\*[^*]+\*\*)?.*?[.!?](?:\*\*)?(?=\s|$)/.exec(text)?.[0] ?? text;
 }
 
 /**
@@ -446,7 +452,10 @@ function firstSentence(text: string): string {
  * heading, then the bullets under its `## Flag` heading, or that section's
  * opening paragraph when it has none, each cut to its first sentence. The rest
  * (frontmatter, Do NOT flag, how to tag) tells the reviewer how to report, not
- * what the work is checked for.
+ * what the work is checked for. A non-bold paragraph above the first `##` is
+ * left out on purpose, whatever it says: bold is what marks a lead paragraph
+ * as a check, and reading the prose to tell a check from reporting guidance
+ * would break on the next rewording of an agent file.
  */
 function rubricLines(agentFile: string): string[] {
   const blocks: { section: string | undefined; text: string }[] = [];
@@ -585,6 +594,12 @@ function buildContextMarkdown(
       'foreground, never with `run_in_background`, and give a long one a Bash `timeout` of up ' +
       'to 600000 ms so it is not moved to the background. Never end a turn while a ' +
       'background job of your own is still running: wait for its result, or stop it, first.\n' +
+      // Decision 189: every tool result is re-read from the cache on each later request.
+      '- Keep tool output small, since every result is re-read on each later request: batch ' +
+      'related commands into one Bash call, ask for quiet output (`--quiet`, `-q`, or `tail` ' +
+      'on test and install runs, after `set -o pipefail` so the exit status, 75 included, ' +
+      'survives the pipe; not `grep`, which exits 1 when nothing matches), and do not re-run ' +
+      'a command to re-read output already in context.\n' +
       '- When every acceptance criterion is met and all work is committed, run exactly:\n' +
       '  `pup session done "<one-line summary>"`\n' +
       '  (if `pup` is not found, run `node "$PUP_BIN" session done "<one-line summary>"`).\n' +
