@@ -1,0 +1,217 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-16T15:08:55.016Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43891326866",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43891326866",
+  "actor": "AlexisBalayre",
+  "commit_sha": "f0cc6b9864dd83cb9c5742549d0d1e9a7110396c",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 353,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs",
+    "context"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs",
+    "context"
+  ],
+  "reviewers_skipped": [
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "docs/adr/0191-a-worker-s-bash-calls-can-run-in-claude-code-s.md",
+      "line": "122",
+      "description": "The credential read-deny binds only Bash children. The Read tool (and Grep/Glob) can still read ~/.npmrc and the other listed files, because the scope hook matches only Edit|Write and permissions.deny has no Read(...) rules. The ADR's claims that Read is guarded and that registry tokens are kept from reads are false.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "1311-1329",
+      "description": "`commondir` is denied only in the worktree's admin dir (`join(git.GIT_DIR, 'commondir')`), not at the main `.git` root. The ADR's probe says Claude Code's implicit grant allows \"new entries … at the `.git` root\". Git follows a `<main>/.git/commondir` for the main checkout. A sandboxed Bash call can write one pointing at a decoy repo whose `config` sets `core.fsmonitor`, and the operator's next plain git command in the main checkout runs that program outside the sandbox.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "1311-1329",
+      "description": "The main `.git/modules/<name>/` holds each submodule's own `config` and `hooks/`. Neither the `denyWrite` list nor Claude Code's refusal, as the ADR describes it, covers them. In a project with submodules, a sandboxed Bash call can plant `core.fsmonitor` in `<main>/.git/modules/<name>/config`. The operator's plain `git status` in the main checkout then runs that program outside the sandbox.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "126",
+      "description": "The deny hardcodes `'~/.claude/.credentials.json'`. pup supports moving the window's Claude config dir: `pup init --session-env CLAUDE_CONFIG_DIR` (decision 106, `SESSION_ENV_ALLOWED`), resolved in `resolveWindowEnv` to `configDir`. For such a project, Claude Code on Linux keeps the OAuth credentials at `$CLAUDE_CONFIG_DIR/.credentials.json`. That path is not denied, and the worker's Bash inherits `CLAUDE_CONFIG_DIR`, so `cat \"$CLAUDE_CONFIG_DIR/.credentials.json\"` reads the operator's Claude token.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "1303-1310",
+      "description": "With `workerSandbox: true`, a worker has no way to write its handoff document, so `pup respawn` and the TUI respawn can never complete for a sandboxed worker.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "1306-1308",
+      "description": "The `-wal` and `-shm` grants name files that SQLite deletes when the last connection closes and recreates on the next open. Under Claude Code's Linux sandbox, a sandboxed `pup` probably cannot recreate them, so `pup session done`, `ask`, `test` and the commit's pre-commit `pup session test` would fail.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "docs/adr/0191-a-worker-s-bash-calls-can-run-in-claude-code-s.md",
+      "line": "19-22",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The ADR says the main checkout's `project.yml` is outside \"the scope hook's reach\". The scope hook only compares the path text against the worktree prefix and never checks for symlinks, and the Write tool runs outside the sandbox with permissions bypassed. A sandboxed worker can link an in-scope worktree path to any file and then Write through that link.",
+      "body": "**A symlink planted from sandboxed Bash lets the unsandboxed Write tool reach `.pupitre/project.yml` and the compiled hooks, which this ADR says are out of a worker's reach.**\n\nThe ADR says the main checkout's `project.yml` \"is outside the sandbox's grants and the scope hook's reach\" (L19-22). It also says \"a worker's shell can no longer rewrite its own compiled hooks\" (L155-157). The scope hook, which this PR does not change, checks only the path's text:\n\n```sh\ncase \"$FILE\" in\n  \"$WORKTREE\"/*) REL=\\${FILE#\"$WORKTREE\"/} ;;\n  *) echo \"BLOCKED: file is outside the session worktree.\" >&2; exit 2 ;;\nesac\n```\n([profile-compiler.service.ts#L836-L839](https://github.com/AlexisBalayre/pupitre/blob/f0cc6b9864dd83cb9c5742549d0d1e9a7110396c/src/core/profile-compiler.service.ts#L836-L839))\n\nNothing resolves `$FILE`: no `-L`, `realpath` or `pwd -P`.\n\n**Trigger:**\n1. A sandboxed Bash call runs `ln -s <repo>/.pupitre/project.yml <worktree>/<in-scope path>`. Creating a link needs only the worktree, which is granted.\n2. The worker calls `Write(<worktree>/<in-scope path>)`. The scope hook passes it on the path text. Write is unsandboxed, permissions are skipped, and no `Edit(...)` deny names the target, so the write follows the link (Claude Code behaviour, not probed here).\n3. The worker deletes the link before committing, so the gate never sees it.\n\n**Harm:**\n- Writing `workerSandbox: false` turns the sandbox off for every later launch.\n- Pointing the link at `<store>/sessions/<id>/compiled/hooks/*.sh` rewrites a hook that runs unsandboxed on the next tool call.\n\nBefore this PR Bash could write these files directly, so the hole is older. What is new is that the ADR now states it is closed. No ceiling covers it: ceiling 1 is about the `.git` pointer, ceiling 3 about links that pup and its hooks follow, and the hard-link probe covers only Bash.\n\n**Fix options:**\n- When the setting is on, compile `Edit(//<store>/**)` and `Edit(//<repo>/.pupitre/**)` deny rules. This needs a probe that deny rules match a symlink's resolved target.\n- Have the scope hook refuse any `$FILE` that has a symlink in its path inside the worktree.\n- At minimum, record this as a ceiling and correct L19-22 and L155-157.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/f0cc6b9864dd83cb9c5742549d0d1e9a7110396c/docs/adr/0191-a-worker-s-bash-calls-can-run-in-claude-code-s.md#L19-L22",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "141-156",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "`MERGE_AUTOSTASH` stays writable in the main `.git`, and the conductor's routine `git pull --ff-only` applies it to the main checkout. For the main checkout, `$GIT_DIR` is the common dir; ADR 0191's probe shows new entries at the `.git` root are writable from the sandbox, and the list does not deny `MERGE_AUTOSTASH`.",
+      "body": "**A worker can plant `MERGE_AUTOSTASH` in the main `.git`, and the operator's next `git pull --ff-only` stashes-applies the worker's edits into the main checkout.**\n\n`MAIN_CHECKOUT_STATE` denies `rebase-merge/`, `rebase-apply/` and `sequencer/` because the operator's own git runs on state planted there. `MERGE_AUTOSTASH` belongs to the same class, and nothing denies it:\n\n```ts\nconst MAIN_CHECKOUT_STATE = [\n  'HEAD',\n  ...\n  'CHERRY_PICK_HEAD',\n  'rebase-merge',\n  'rebase-apply',\n  'sequencer',\n];\n```\n\nNo ceiling in ADR 0191 names it, and `docs/` never mentions autostash.\n\n**Mechanism** (git internals, pinned knowledge, not probed): `git merge` applies the stash named by `$GIT_DIR/MERGE_AUTOSTASH` in `finish()` after a successful merge or fast-forward. It does so whether or not `--autostash` was given; that flag only controls whether the file is created. `git pull --ff-only` runs that same merge.\n\n**Trigger:**\n1. Objects are writable, so a sandboxed Bash call builds a stash-shaped commit (`git stash create`, or `git commit-tree`).\n2. It writes that commit's oid to `<main>/.git/MERGE_AUTOSTASH`.\n3. `skills/pup/LOOP.md:119` has the unsandboxed conductor run `git pull --ff-only` in the main checkout after every human merge. The pull applies the stash.\n\n**Harm:** worker-chosen edits land in the main checkout's working tree, which the ADR places outside every grant. For example:\n- `package.json`'s `worktree:remove` script, which LOOP.md:120 runs right after the pull;\n- `.pupitre/project.yml`, turning `workerSandbox` off;\n- `CLAUDE.md` or `AGENTS.md`.\n\nA linked worktree keeps its own `MERGE_AUTOSTASH` in its admin dir, so denying the main one costs a worker nothing.\n\n**Fix:** add `'MERGE_AUTOSTASH'` to `MAIN_CHECKOUT_STATE`, update the test's exact `denyWrite` list, and add it to the ADR's and `docs/03-profiles.md`'s denied lists.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/f0cc6b9864dd83cb9c5742549d0d1e9a7110396c/src/core/profile-compiler.service.ts#L141-L156",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "1312-1321",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "No grant covers the user-level package caches. Only pnpm falls back to a store inside the worktree. npm, uv and poetry write to `~/.npm/_cacache`, `~/.cache/uv` and the pypoetry cache. In a fresh worktree of an npm or uv project, the worker cannot install anything, so neither `pup session test` nor the pre-commit's tests can run.",
+      "body": "**Only pnpm projects can install dependencies under the sandbox. npm and uv write their caches to home-directory paths that no grant covers.**\n\n```ts\n      allowWrite: [\n        input.worktreePath,\n        git.GIT_DIR,\n        store.dbFile,\n        `${store.dbFile}-wal`,\n        `${store.dbFile}-shm`,\n        store.handoffFile(input.sessionId),\n        join(homedir(), '.pupitre', 'slots'),\n      ],\n```\n\nThe ADR's probe found that pnpm falls back to `.pnpm-store/` inside the worktree. The other package managers pup has adapters for have no such fallback (pinned knowledge, not probed):\n- **npm**, the TS adapter's default (`src/adapters/typescript.adapter.ts:183-187`), stops with `EPERM` on `mkdir ~/.npm/_cacache/...`.\n- **uv:** for a project with `uv.lock`, the Python adapter's test command is `uv run …` without `--no-sync` (`src/adapters/python.adapter.ts:91`). In a fresh worktree it must sync, which writes `~/.cache/uv`.\n\nThe compiled worker `env` redirects none of these. The redirects that do exist (`npm_config_cache`, `XDG_CACHE_HOME`, `UV_CACHE_DIR` in `src/core/gate-env.utils.ts:50-54`) reach only gate children.\n\n**Trigger:** an npm or uv project sets `workerSandbox: true`. Its next worker runs `npm ci`, or `pup session test` (which runs `uv run`), in its new worktree. The install fails, so the worker can't run its tests or pass a pre-commit that needs dependencies.\n\nThe ADR's ceilings don't mention this. The ADR also justifies the registry allowlist by \"a first commit's pre-commit install\" across \"the ecosystems pup ships adapters for\".\n\n**Fix:** point the caches at a granted, gitignored location through the compiled worker `env`, the way `gate-env.utils.ts` already does for the gate. Otherwise, state in ADR 0191 and `docs/03-profiles.md` that only pnpm projects can install under the setting.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/f0cc6b9864dd83cb9c5742549d0d1e9a7110396c/src/core/profile-compiler.service.ts#L1312-L1321",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "1344-1345",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The ADR says no worker commit or merge writes `packed-refs.lock`. But git's files backend takes `packed-refs.lock` for every ref deletion, even of a ref that was never packed. So a sandboxed worker cannot delete any ref. This is a different trigger from the `git gc --auto` nit already posted.",
+      "body": "**Denying `packed-refs.lock` makes every ref deletion fail, including the pseudoref deletions inside a rebase and a cherry-pick.**\n\n```ts\n        common('packed-refs'),\n        common('packed-refs.lock'),\n```\n\nThe JSDoc (L1280) and ADR 0191 (L33-34) say a worker's commit or merge writes none of these paths. Git's files backend says otherwise (pinned knowledge, not probed):\n- `files_transaction_prepare` adds every `REF_DELETING` update to a packed transaction.\n- It calls `packed_refs_lock()` before it checks whether the ref is packed at all.\n- The packed store is the common dir's, so the lock lands on `<repo>/.git/packed-refs.lock`, which this list denies.\n\nThe ADR's live probe covered only object writes and branch-ref creates and updates. It never ran a deletion.\n\n**Triggers:**\n- **`git rebase refs/heads/main`**, which `mainLandedMessage` (L617) tells the worker to run. The sequencer deletes `REBASE_HEAD` for each pick and ignores the result, so the rebase finishes but prints an `error:` line per commit. An agent may read that as a failed rebase.\n- **A conflicted `git cherry-pick`.** The `CHERRY_PICK_HEAD` deletion fails and the ref stays. The worker's next `git commit` is then treated as a cherry-pick and takes that commit's authorship.\n- **`git branch -D`, `git tag -d`, `git stash clear`** fail outright.\n\nThis is a different trigger from the `git gc --auto` nit posted last round.\n\n**Fix:** either allow `packed-refs.lock` and accept the planted-lock stall the ADR wants to avoid (`packed-refs` itself stays denied), or record ref deletion and the rebase error noise as a ceiling. In both cases, correct the \"writes none of these\" sentence.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/f0cc6b9864dd83cb9c5742549d0d1e9a7110396c/src/core/profile-compiler.service.ts#L1344-L1345",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "1369-1375",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "workerCredentials asks claudeUserDir(repoPath) for the config dir. That call reads session-env.json and the CLAUDE_CONFIG_DIR value a second time. The window does not use that second read: its dir comes from the WindowEnv the command resolved at its start (req.windowEnv / source.windowEnv.configDir). The WindowEnv JSDoc (session-runtime.service.ts:430-434) says the list is resolved once because 'a list read twice could be rewritten by a session between the reads'. If session-env.json is rewritten between the two reads, the window runs on dir A while the denyRead and Read(//...) rules name dir B's .credentials.json. Fix: pass source.windowEnv.configDir in through CompileInput instead of re-resolving.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "1382-1387",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `Read(...)` rules match the credential paths themselves. A sandboxed worker can create `<worktree>/x -> ~/.ssh/id_ed25519` and then `Read(<worktree>/x)` outside the sandbox. The rules only hold if Claude Code checks a symlink's resolved target against deny rules, and the ADR's Read-tool paragraph (L86-91) records no probe of that, unlike the hard-link probe. One sandboxed `ln -s` followed by a Read would settle it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/project-config.config.ts",
+      "line": "62-66",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The `workerSandboxOn` JSDoc says \"Anywhere but macOS it throws rather than launch\", but it throws only when `workerSandbox: true` is set on a non-darwin platform; with the key off or absent it returns `false`. Suggested wording: \"Where the project turns it on anywhere but macOS, it throws rather than launch\".",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "1361-1365",
+      "area": "context",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`strictAllowlist` is not a `sandbox.network` key the reviewer could confirm (the known ones are `allowedDomains`, `allowUnixSockets`, `allowLocalBinding`, `allowManagedDomainsOnly`). The ADR's `example.com` probe did not toggle it, so the refusal may come from `allowedDomains` alone, and the ADR's rationale for the key may describe a setting that is silently ignored. Confirm with a probe that toggles only this key, and record the result in the ADR.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/project-config.config.ts",
+      "line": "72",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new local boolean in `workerSandboxOn` is named `on`; docs/conventions/general.md says boolean names start with `is` / `has` / `should` / `can` (e.g. `isOn`).",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 1,
+  "comments_posted_actual": 4,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 7.483668400000001,
+  "duration_ms": 613548,
+  "num_turns": 24,
+  "tokens": {
+    "input": 18,
+    "output": 24048,
+    "cache_read": 582868,
+    "cache_creation": 89955,
+    "total": 696889
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 270,
+      "output": 154576,
+      "cache_read": 5849433,
+      "cache_creation": 507365,
+      "cost_usd": 7.069176600000001
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 46,
+      "output": 11822,
+      "cache_read": 294371,
+      "cache_creation": 106390,
+      "cost_usd": 0.4137241
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 206,
+      "cache_read": 0,
+      "cache_creation": 5316,
+      "cost_usd": 0.0007677000000000001
+    }
+  ],
+  "permission_denials": []
+}
