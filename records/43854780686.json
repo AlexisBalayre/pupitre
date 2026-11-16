@@ -1,0 +1,229 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-16T11:19:03.046Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43854780686",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43854780686",
+  "actor": "AlexisBalayre",
+  "commit_sha": "d7a8532f36c0ac9b213cff8186f2956863e85d37",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 341,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs",
+    "context"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs",
+    "context"
+  ],
+  "reviewers_skipped": [
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/adapters/typescript.adapter.ts",
+      "line": "489-492",
+      "description": "`userNpmrc` uses the operator's `npm_config_userconfig` value exactly as written. npm handles that value differently: `~/x` becomes a path under HOME, and a relative path is taken from the run's working directory, which is the gate checkout. So for either kind of value, the check reads a file that doesn't exist and passes, while npm reads another file that nothing checks.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/adapters/typescript.adapter.ts",
+      "line": "339-346",
+      "description": "The run-input lists leave out vite's PostCSS config (`postcss.config.*`, `.postcssrc*`). Vite loads and runs it inside the vitest process whenever a test imports CSS. A branch can commit one plus a CSS import in a test, and both checks still pass. The diff-size split then counts a test-less file as test.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/adapters/typescript.adapter.ts",
+      "line": "237-238",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The run-input class now takes every root `.json`, `.yaml`, `.lock` and `.lockb`. Disk files are read through `readPlainFile`, which throws above 1 MiB. So in any repo whose root lockfile is over 1 MiB, `testInputsIntact` returns false on every merge and no file ever counts as test.",
+      "body": "**A root lockfile over 1 MiB costs the repo the test split on every merge**\n\nThis PR widened `VITEST_RUN_INPUT` to every root `*.json[5c]`, `*.ya?ml`, `*.toml` and `*.lockb?`. That class now holds `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml` and `bun.lockb`. Before the PR the class held no lockfile.\n\n`testInputsIntact` reads the class from disk:\n\n```ts\nJSON.stringify(runInputs(diskRoot(ctx.measurePath, ctx.configPath), VITEST_RUN_INPUT)) ===\n  JSON.stringify(runInputs(treeRoot(ctx.configPath, ctx.measureSha), VITEST_RUN_INPUT))\n```\n\n- `runInputs` calls `read()` on every matched entry and compares contents.\n- `diskRoot` (`src/adapters/vitest-config.utils.ts:497-508`) reads each root file with `readPlainFile(path, { followLinks: false })`.\n- `readPlainFile` throws when the file is over `PLAIN_FILE_MAX_BYTES = 1 << 20` (`src/adapters/capability.utils.ts`).\n- The tree side (`git cat-file`) has no such cap, so only the disk side throws.\n\n**Result:** `testInputsIntact` catches the throw and returns `false`. The gate always sets `measureSha`, so this runs on every merge. With `intact` false, the collector returns `[]` (`merge-gate.service.ts:3349-3356`), and no changed file counts as test. Nothing adversarial is needed: npm and yarn apps and monorepos often have a root lockfile over 1 MiB. ADR 0143 lists build-written root entries and a changed lockfile as costs, not this one.\n\n**Fix options:**\n- Compare root files on disk by object name, as `diskListing` already does for directories (`hash-object --no-filters` against the tree's oid).\n- Or read class files with a cap that matches the tree side.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/d7a8532f36c0ac9b213cff8186f2956863e85d37/src/adapters/typescript.adapter.ts#L237-L238\nhttps://github.com/AlexisBalayre/pupitre/blob/d7a8532f36c0ac9b213cff8186f2956863e85d37/src/adapters/typescript.adapter.ts#L866-L882\nhttps://github.com/AlexisBalayre/pupitre/blob/d7a8532f36c0ac9b213cff8186f2956863e85d37/src/adapters/vitest-config.utils.ts#L497-L508",
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/typescript.adapter.ts",
+      "line": "527-535",
+      "area": "security",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The new node_modules and tsconfig refusals match ASCII case only. A branch path such as `src/node_moduleſ/…` or `src/tſconfig.json` escapes both. Node and tsconfck still open them on APFS as `node_modules` and `tsconfig.json`.",
+      "body": "**The below-root `node_modules` and tsconfig refusals miss APFS case folds**\n\nThe repo states that APFS folds some characters outside ASCII onto ASCII, `ſ` (U+017F) onto `s` among them (`src/core/merge-gate.service.ts:378-385`, ADR 0143). `rootFiles` refuses any non-ASCII root name for exactly that reason (`src/adapters/vitest-config.utils.ts:432-441`). The checks below the root added in ec5cdeb2 match ASCII only:\n\n```ts\nconst NODE_MODULES_PATH = /(?:^|\\/)node_modules(?:\\/|$)/i;\nconst TSCONFIG_PATH = /(?:^|\\/)[jt]sconfig[^/]*\\.json$/i;\n```\n\nWithout the `u` flag, `/s/i` does not match `ſ`. `src/core/adr-number.service.ts:56-59` relies on this same behaviour.\n\n**Trigger:** a branch commits `src/tſconfig.json` with `jsxImportSource: \"x\"` and `src/node_moduleſ/x/jsx-runtime.js`.\n- `files.some(NODE_MODULES_PATH.test)` is false (line 853).\n- `treeEntriesMatching(…, TSCONFIG_PATH)` (and the disk filter at line 552) leaves `tſconfig.json` out on both sides, so `nestedTsconfigsShared` holds.\n- `diffSizeKind` counts only the two non-ASCII paths as source. Every other collected test file still counts as test.\n\nOn the gate's APFS checkout, tsconfck's lookup of `src/tsconfig.json` and node's lookup of `src/node_modules/x` open the folded names. The suites then import the branch's module, which this refusal exists to prevent.\n\n**Fix:** a `u` flag covers `ſ` and the Kelvin sign. But the repo's own position is that no JavaScript mapping reproduces APFS's tables. The fix that matches the rest of the codebase is to have `testFiles` return `[]` when any branch path holds a non-ASCII character, or at least when its ASCII-folded form would match either pattern. The same ASCII-only fold also lets `node_modules/.hookſ` through `unloadedEntry`.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/d7a8532f36c0ac9b213cff8186f2956863e85d37/src/adapters/typescript.adapter.ts#L527-L535\nhttps://github.com/AlexisBalayre/pupitre/blob/d7a8532f36c0ac9b213cff8186f2956863e85d37/src/adapters/typescript.adapter.ts#L853-L854",
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/vitest-config.utils.ts",
+      "line": "254-268",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "loadsAFile looks for static specifiers, including the new import-equals check, only in source.statements (top-level). The run-time walk only matches CallExpression nodes. An `import x = require('./evil')` inside a `namespace` block has no CallExpression in the TS AST: the `require(...)` is an ExternalModuleReference. So a config holding `namespace N { import e = require('./evil'); export const v = e }` parses cleanly and the reader still returns a plain collection, even though bundling the config pulls in and runs the branch's file. This is the shape decision 143 says is refused on either side.",
+      "body": "**`import x = require(…)` inside a namespace passes the config reader**\n\nADR 0143 refuses \"an `import x = require(…)` of any of those\", with no top-level qualifier. The check only walks top-level statements:\n\n```ts\nconst statically = source.statements.some((statement) => {\n  const specifier = ts.isImportEqualsDeclaration(statement)\n    ? ts.isExternalModuleReference(statement.moduleReference) &&\n      statement.moduleReference.expression\n    : (statement as { moduleSpecifier?: ts.Expression }).moduleSpecifier;\n  return specifier && ts.isStringLiteralLike(specifier) && namesAFile(specifier.text);\n});\nconst atRunTime = (node: ts.Node): boolean =>\n  loadsAtRunTime(node) || ts.forEachChild(node, atRunTime) === true;\n```\n\n`atRunTime` matches only `CallExpression`. A nested `import e = require('./evil')` is `ImportEqualsDeclaration → ExternalModuleReference → StringLiteral`, with no call in it, so it passes both checks.\n\n**Trigger:**\n```ts\nimport { defineConfig } from 'vitest/config';\nnamespace N { import e = require('./scripts/evil'); export const v = e; }\nexport default defineConfig({ define: { __V__: JSON.stringify(N.v) }, test: { include: ['src/**/*.test.ts'] } });\n```\n- TS1147 (\"Import declarations in a namespace cannot reference a module\") is a checker error, not a parse diagnostic, so `parses` is true.\n- `exportedConfig` does not refuse extra statements, so `vitestCollection` returns a collection.\n- esbuild, which bundles the config, lowers this to a `require` and bundles the relative file (pinned-version knowledge, medium confidence).\n\nThe whole config text is compared across sides, so the shape must also be on the target. That is the same precondition as the top-level refusal this PR adds. Only the top-level form is tested (`vitest-config-utils.test.ts:199`).\n\n**Fix:** `parsedConfig` creates the source file with `setParentNodes` false, so a fix based on `node.parent` would throw. Instead, refuse any `ts.isModuleDeclaration(node)` inside the `atRunTime` walk, or pass `true` for `setParentNodes` and refuse an `ExternalModuleReference` whose declaration's parent is not the source file. Add a test row with the namespace form.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/d7a8532f36c0ac9b213cff8186f2956863e85d37/src/adapters/vitest-config.utils.ts#L254-L268",
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/typescript.adapter.ts",
+      "line": "498-500",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "In a repo that uses Changesets, every PR adds a `.changeset/<name>.md`. `.changeset` is a dot-named root directory in the compared class, so the two sides always differ and `testFiles` returns `[]` on every merge. The split never applies to such repos. Consider exempting `.changeset`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.test.ts",
+      "line": "728-736",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The two \"counts every file as source\" arms pass the real `typescriptAdapter.testInputsIntact` without the `npm_config_userconfig` stub added at line 689, so they read the developer's real `~/.npmrc`. Where that file holds `prefix=`, is a dotfiles link, or is unreadable under the gate's sandbox, the check is already false. The arms then pass whether or not the disk-vs-tree comparison works. Apply the same `vi.stubEnv` + `gateEnv: ['npm_config_userconfig']` wrapper.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/vitest-config.utils.ts",
+      "line": "123",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`diff` is refused whatever its value. Vitest 2.1+ also takes `test.diff` as an options object (`{ truncateThreshold: 0 }`, `{ expand: false }`) that names no module, so such a config makes `testFiles` return [] and every changed test line counts as source. The ADR only means to refuse \"a `diff` module\": refusing `diff` only when it is not an object literal (or when it is a string) would match it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/vitest-config.utils.ts",
+      "line": "104-126",
+      "area": "context",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "A top-level `css` key is not refused. Vite accepts `css.postcss` as a string directory and loads a PostCSS config from it, below the root where `ROOT_RUNTIME` doesn't look. So a shared config with `css: { postcss: './build' }` loads the branch's `build/postcss.config.js` while the config text matches on both sides.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/typescript.adapter.ts",
+      "line": "226",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The JSDoc on `VITEST_RUN_INPUT` says the design replaces \"a list of the files each tool loads by convention, which a review found one more of each round\". That clause is review history, and general.md §Comments forbids journal comments. Drop it; the sentence around it already gives the WHY.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/vitest-config.utils.ts",
+      "line": "497",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`diskRoot`'s new `repoPath?` parameter is optional, but both production callers pass it, and only tests omit it. Its `undefined` fallback (`readPlainFile` on a directory, which throws anyway) is dead in production. Making it required removes one optional parameter, one branch, and a doc sentence.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [
+    {
+      "file": "src/adapters/typescript.adapter.ts",
+      "line": "866-882",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The checks below the root only read the two trees, and `testInputsIntact` compares only root entries against disk. A `tsconfig.json` or `node_modules` that the build writes below the root on disk therefore reaches the suites and is never seen.",
+      "refutation": "The gap is real, but ADR 0143 scopes the disk check to root entries on purpose (lines 31-36). Its ceiling at lines 323-327 already accepts \"a collected file the build deletes or rewrites before the suites\", which has the same result: a production file with no test counts as test. A build that can write `src/tsconfig.json` and `src/node_modules/...` can more simply rewrite the collected test file itself, so this route gives the branch no new power. The PR also narrows no disk check: before it, `testInputsIntact` already compared only the root, and no check below the root existed."
+    }
+  ],
+  "process_issues": [
+    {
+      "component": "consolidator",
+      "description": "The consolidator returned no groups (merged: 0). It missed that findings 2 (correctness) and 6 (security) were the same APFS-fold root cause at typescript.adapter.ts:527-535. The orchestrator merged them inline into one security important before validation."
+    },
+    {
+      "component": "validator",
+      "description": "The validator for the namespace import-equals finding reported that `gh pr diff` was denied. It read the diff with `git diff` over the merge-base range instead, so the verdict was not affected."
+    }
+  ],
+  "duplicates_merged": 1,
+  "comments_posted_actual": 3,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 9.953851925000006,
+  "duration_ms": 706262,
+  "num_turns": 22,
+  "tokens": {
+    "input": 14,
+    "output": 22827,
+    "cache_read": 406377,
+    "cache_creation": 83492,
+    "total": 512710
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 266,
+      "output": 220448,
+      "cache_read": 6657001,
+      "cache_creation": 641023,
+      "cost_usd": 9.197015200000006
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 66,
+      "output": 22097,
+      "cache_read": 723959,
+      "cache_creation": 184972,
+      "cost_usd": 0.7559279
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 473,
+      "cache_read": 0,
+      "cache_creation": 5377,
+      "cost_usd": 0.000908825
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "bash /home/runner/work/pupitre/pupitre/scripts/adr-index.sh"
+    },
+    {
+      "tool": "Bash",
+      "input": "git ls-tree -l HEAD -- pnpm-lock.yaml package-lock.json yarn.lock"
+    },
+    {
+      "tool": "Bash",
+      "input": "git ls-tree --name-only HEAD"
+    },
+    {
+      "tool": "Bash",
+      "input": "gh pr diff 341 --repo AlexisBalayre/pupitre"
+    }
+  ]
+}
