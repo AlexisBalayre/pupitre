@@ -340,7 +340,8 @@ describe('startFixRound', { timeout: 90_000 }, () => {
   const land = () =>
     landSession(db, { repoPath: repo, sessionId: SESSION_ID, adapters: [passingAdapter] });
 
-  const fix = (override = {}, overrideVia: 'operator' | 'conductor' = 'operator') =>
+  // As the CLI asks, waiting for a held merge lock; the dashboard does not.
+  const fix = (override = {}, overrideVia: 'operator' | 'conductor' = 'operator', wait = true) =>
     startFixRound(db, {
       repoPath: repo,
       sessionId: SESSION_ID,
@@ -349,6 +350,7 @@ describe('startFixRound', { timeout: 90_000 }, () => {
       pathsBase: stateBase,
       base: DEFAULT_BASE_PROFILE,
       windowEnv: { vars: {}, configDir: claudeUserDir },
+      wait,
     });
   const payloads = (type: string) =>
     listEvents(db, SESSION_ID)
@@ -799,6 +801,22 @@ describe('startFixRound', { timeout: 90_000 }, () => {
       expect(existsSync(worktree)).toBe(false);
       expect(launchSession).not.toHaveBeenCalled();
       expect(kickoff).not.toHaveBeenCalled();
+    });
+
+    // The dashboard asks for no wait: a page refuses at once where the CLI waits.
+    it('refuses at once, writing nothing, for a caller that does not wait', async () => {
+      seedPrMerge();
+      reviewOnGitHub({ threads: OPEN_THREAD });
+
+      await expect(fix({}, 'operator', false)).rejects.toThrow(
+        /Another merge is in progress: pid \d+ holds the lock/,
+      );
+
+      expect(errors).not.toHaveBeenCalled();
+      expect(getSession(db, SESSION_ID)?.state).toBe('merged');
+      expect(existsSync(worktree)).toBe(false);
+      expect(kickoff).not.toHaveBeenCalled();
+      expect(existsSync(lock)).toBe(true);
     });
 
     // No wait cures a lock with no holder to wait for: it is refused as before.

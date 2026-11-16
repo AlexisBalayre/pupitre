@@ -127,6 +127,8 @@ interface FixRoundRequest extends ProfileSource {
   overrideVia: 'operator' | 'conductor';
   /** Where the store's per-session files live; `~/.pupitre` unless a test moves them. */
   pathsBase?: string;
+  /** Wait for a merge lock a live run holds, as `pup fix` does, rather than refuse (decision 88). */
+  wait?: boolean;
 }
 
 export interface FixRoundOutcome {
@@ -268,7 +270,7 @@ export async function startFixRound(
         ...(newest.length > 0 ? { newestComments: Object.fromEntries(newest) } : {}),
       });
     },
-    MERGE_LOCK_WAIT_MS,
+    req.wait ? MERGE_LOCK_WAIT_MS : 0,
     progress,
   );
   progress.stage('open window');
