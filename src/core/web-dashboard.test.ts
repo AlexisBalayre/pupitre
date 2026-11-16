@@ -1401,6 +1401,7 @@ describe('startWebDashboard', () => {
         await post(actionUrl(), {
           action: 'answer',
           target: 's-gone',
+          question: '1',
           reply: '1',
           nonce: String(first.nonce),
         })
@@ -1441,6 +1442,9 @@ describe('startWebDashboard', () => {
         options: ['rebase', 'merge'],
         recommended: 1,
       });
+      const { id: questionId } = db.prepare('SELECT max(id) AS id FROM events').get() as {
+        id: number;
+      };
       insertTask(db, {
         id: 't-planned',
         projectId: projectId(repo),
@@ -1456,6 +1460,8 @@ describe('startWebDashboard', () => {
       expect(overview).toContain(
         'name="reply" value="1" class="recommended">1. rebase (recommended)',
       );
+      // The inbox's answer names the question it showed, as `pup answer --question` does.
+      expect(overview).toContain(`<input type="hidden" name="question" value="${questionId}">`);
       expect(overview).toContain('<form class="act" data-action="tell">');
       expect(overview).toContain(
         '<form class="act" data-action="launch"><input type="hidden" name="task" value="t-planned">',

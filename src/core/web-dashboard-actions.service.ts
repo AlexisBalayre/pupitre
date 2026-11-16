@@ -121,13 +121,19 @@ export async function runAction(
     case 'answer': {
       const target = field(fields, 'target');
       const reply = field(fields, 'reply');
+      // The question the page showed, by its event id, as `pup answer --question` takes it.
+      const asked = field(fields, 'question');
+      if (!/^\d+$/.test(asked)) {
+        throw new Error('The answer names no question by its event id; nothing was sent.');
+      }
+      const questionId = Number(asked);
       if (target === CONDUCTOR_TARGET) {
         return [
-          `Answered the conductor: ${sanitizeReason(answerConductorQuestion(db, repoPath, reply).text)}`,
+          `Answered the conductor: ${sanitizeReason(answerConductorQuestion(db, repoPath, questionId, reply).text)}`,
         ];
       }
       return [
-        `Answered session ${sanitizeReason(target)}: ${sanitizeReason(answerSessionQuestion(db, target, reply).text)}`,
+        `Answered session ${sanitizeReason(target)}: ${sanitizeReason(answerSessionQuestion(db, target, questionId, reply).text)}`,
       ];
     }
     case 'tell': {
@@ -373,22 +379,23 @@ export function actionButton(action: ActionName, hidden: ActionFields, label: st
 /**
  * An open question's answers (decision 93): one button per option, sending
  * its number as `pup answer <target> <n>` does, the recommended one marked,
- * then an answer in words. `target` is the session, or `conductor`.
+ * then an answer in words. `target` is the session, or `conductor`. Each
+ * form carries the question's event id, so a newer question asked since the
+ * page loaded refuses the answer rather than take it.
  */
 export function answerForms(
   target: string,
-  question: { options: string[]; recommended?: number },
+  question: { id: number; options: string[]; recommended?: number },
 ): string {
+  const hidden = { target, question: String(question.id) };
   const options = question.options.map(
     (option, i) =>
       `<button type="submit" name="reply" value="${i + 1}"${i + 1 === question.recommended ? ' class="recommended"' : ''}>` +
       `${escapeHtml(`${i + 1}. ${option}${i + 1 === question.recommended ? ' (recommended)' : ''}`)}</button>`,
   );
   return (
-    (options.length === 0
-      ? ''
-      : actionForm('answer', { target }, options.join(''), 'act options')) +
-    textAction('answer', { target }, 'reply', 'answer in words', 'Answer')
+    (options.length === 0 ? '' : actionForm('answer', hidden, options.join(''), 'act options')) +
+    textAction('answer', hidden, 'reply', 'answer in words', 'Answer')
   );
 }
 

@@ -185,13 +185,14 @@ describe('dashboard controls', () => {
     // Decision 93: one keystroke answers the selected session's open question.
     it("answers the selected session's open question with the option a number picks", async () => {
       const asking = sessionFixture({
-        question: { text: 'which?', options: ['rebase', 'merge'], recommended: 1 },
+        question: { id: 41, text: 'which?', options: ['rebase', 'merge'], recommended: 1 },
       });
       const instance = mount(snapshotFixture({ sessions: [asking] }));
 
       await press(instance, '2');
 
-      expect(answerSelected).toHaveBeenCalledWith(DEPS, 's-run-1', '2');
+      // Bound to the question on screen, by its event id.
+      expect(answerSelected).toHaveBeenCalledWith(DEPS, 's-run-1', 41, '2');
       expect(instance.lastFrame()).toContain('Answered.');
       instance.unmount();
     });
@@ -205,7 +206,7 @@ describe('dashboard controls', () => {
       instance.unmount();
       const words = mount(
         snapshotFixture({
-          sessions: [sessionFixture({ question: { text: 'why?', options: [] } })],
+          sessions: [sessionFixture({ question: { id: 41, text: 'why?', options: [] } })],
         }),
       );
       await press(words, '1');
@@ -226,7 +227,7 @@ describe('dashboard controls', () => {
       await press(instance, '\u001B[B');
 
       reading.unshift(
-        sessionFixture({ id: 's-c', question: { text: 'which?', options: ['x', 'y'] } }),
+        sessionFixture({ id: 's-c', question: { id: 41, text: 'which?', options: ['x', 'y'] } }),
       );
       await press(instance, 'r', '1');
 
@@ -239,7 +240,7 @@ describe('dashboard controls', () => {
       const instance = mount(
         snapshotFixture({
           sessions: [
-            sessionFixture({ isMintedId: false, question: { text: 'q?', options: ['x'] } }),
+            sessionFixture({ isMintedId: false, question: { id: 41, text: 'q?', options: ['x'] } }),
           ],
         }),
       );
@@ -790,7 +791,7 @@ describe('dashboard controls', () => {
         const running = snapshotFixture({
           sessions: [
             sessionFixture({
-              question: { text: 'which?', options: ['rebase', 'merge'], recommended: 1 },
+              question: { id: 41, text: 'which?', options: ['rebase', 'merge'], recommended: 1 },
             }),
           ],
         });

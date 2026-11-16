@@ -317,9 +317,12 @@ function needsSection(needs: DashboardNeed[], sessionHref: (sessionId: string) =
   if (needs.length === 0) return section('Needs you', hint('Nothing waits on you.'));
   const items = needs.map((need) => {
     const named = need.label === need.sessionId && need.kind !== 'conductor';
+    // A question line names the event it shows, which the answer is bound to:
+    // without it, no answer form, since one would be refused.
     const answer =
-      named && need.kind === 'question'
+      named && need.kind === 'question' && need.questionId !== undefined
         ? answerForms(need.sessionId, {
+            id: need.questionId,
             options: need.options ?? [],
             ...(need.recommended === undefined ? {} : { recommended: need.recommended }),
           })
