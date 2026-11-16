@@ -80,9 +80,9 @@ describe('nestedPackageDirs', () => {
     expect(git(repo, 'ls-tree', '-r', '--name-only', sha).toString()).toBe('');
 
     expect(nestedPackageDirs(localContext(repo))).toEqual(new Set(['tools/review']));
-    expect(nestedPackageDirs({ measurePath: repo, configPath: repo, measureSha: sha })).toEqual(
-      new Set(['tools/review']),
-    );
+    expect(
+      nestedPackageDirs({ measurePath: repo, configPath: repo, measureSha: sha, configSha: sha }),
+    ).toEqual(new Set(['tools/review']));
   });
 
   it('names nothing in a directory that is no repository', () => {
@@ -112,9 +112,77 @@ describe('nestedPackageDirs', () => {
     writeFileSync(join(trusted, '.git', 'config'), '[core\n');
 
     expect(() =>
-      nestedPackageDirs({ measurePath: checkout, configPath: trusted, measureSha: cut }),
-    ).toThrow();
-    expect(() => nestedPackageDirs(localContext(trusted))).toThrow();
+      nestedPackageDirs({
+        measurePath: checkout,
+        configPath: trusted,
+        measureSha: cut,
+        configSha: cut,
+      }),
+    ).toThrow(/ls-tree/);
+    expect(() => nestedPackageDirs(localContext(trusted))).toThrow(/ls-tree/);
+  });
+
+  // A context pinning one sha alone would list the other side at a HEAD the
+  // session can move: the cut alone reads the trusted checkout there, the
+  // target alone reads the gate's checkout through its admin dir (decision 161).
+  it.each([
+    ['the cut', 'measureSha'],
+    ['the target', 'configSha'],
+  ] as const)('refuses a gate context that pins %s alone', (_, key) => {
+    const trusted = makeCheckout(['tools/review/package.json']);
+    const cut = git(trusted, 'rev-parse', 'HEAD').toString().trim();
+    const checkout = join(tempDir('pup-gate-'), 'checkout');
+    git(trusted, 'worktree', 'add', '-q', '--detach', '--no-checkout', checkout, cut);
+
+    expect(() =>
+      nestedPackageDirs({ measurePath: checkout, configPath: trusted, [key]: cut }),
+    ).toThrow(/pins one and not the other/);
+  });
+
+  // At the gate one path still holds two commits: the trusted listing at the
+  // target is the AND's other half even where measurePath is configPath.
+  it('lists the target sha too when a gate context names one checkout', () => {
+    const repo = makeCheckout([]);
+    const target = git(repo, 'rev-parse', 'HEAD').toString().trim();
+    writeFiles(repo, ['tools/review/package.json']);
+    git(repo, 'add', '-A');
+    git(repo, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'nested');
+    const cut = git(repo, 'rev-parse', 'HEAD').toString().trim();
+
+    expect(
+      nestedPackageDirs({
+        measurePath: repo,
+        configPath: repo,
+        measureSha: cut,
+        configSha: target,
+      }),
+    ).toEqual(new Set());
+  });
+
+  // A session can detach the trusted checkout's `.git/HEAD` to a commit with no
+  // nested marker while the listing runs and restore it before the gate's last
+  // check: listed at HEAD, no nested package's own stages would run.
+  it('lists the trusted checkout at the target sha the gate pinned, not at its HEAD', () => {
+    const trusted = makeCheckout([]);
+    const before = git(trusted, 'rev-parse', 'HEAD').toString().trim();
+    writeFiles(trusted, ['tools/review/package.json']);
+    git(trusted, 'add', '-A');
+    git(trusted, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'nested');
+    const target = git(trusted, 'rev-parse', 'HEAD').toString().trim();
+    const checkout = join(tempDir('pup-gate-'), 'checkout');
+    git(trusted, 'worktree', 'add', '-q', '--detach', '--no-checkout', checkout, target);
+    git(trusted, 'checkout', '-q', '--detach', before);
+    // The control: listed at its HEAD, the trusted side holds no marker.
+    expect(nestedPackageDirs(localContext(trusted))).toEqual(new Set());
+
+    expect(
+      nestedPackageDirs({
+        measurePath: checkout,
+        configPath: trusted,
+        measureSha: target,
+        configSha: target,
+      }),
+    ).toEqual(new Set(['tools/review']));
   });
 
   // The gate's checkout keeps its HEAD and `commondir` in an admin dir under
@@ -166,7 +234,12 @@ describe('nestedPackageDirs', () => {
     if (existsSync(fired)) unlinkSync(fired);
 
     expect(
-      nestedPackageDirs({ measurePath: checkout, configPath: trusted, measureSha: cut }),
+      nestedPackageDirs({
+        measurePath: checkout,
+        configPath: trusted,
+        measureSha: cut,
+        configSha: cut,
+      }),
     ).toEqual(new Set(['tools/review']));
     expect(existsSync(fired)).toBe(false);
   });

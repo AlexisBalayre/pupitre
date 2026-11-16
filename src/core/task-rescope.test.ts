@@ -8,7 +8,6 @@ import {
 } from '../claude/session-runtime.service.js';
 import { openStore } from './db.client.js';
 import { listDecisionRecords } from './decision-record.repository.js';
-import { globToRegExp } from './glob.utils.js';
 import { InvalidProfileError } from './profile.errors.js';
 import { auditScope } from './scope-audit.utils.js';
 import {
@@ -36,6 +35,16 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
 vi.mock('./task-spec.utils.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./task-spec.utils.js')>();
   return { ...actual, assertPlannableSpec: vi.fn(actual.assertPlannableSpec) };
+});
+
+// The gate's protected paths, plus a file at the top and one nested: every
+// real entry is a top-level directory, and a refusal must not rely on that.
+vi.mock('./merge-gate.constants.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./merge-gate.constants.js')>();
+  return {
+    ...actual,
+    PROTECTED_PATH_GLOBS: [...actual.PROTECTED_PATH_GLOBS, 'pup.lock', 'config/pup.lock'],
+  };
 });
 
 // What the CLI hands over of a caller it took for the operator.
@@ -417,6 +426,39 @@ describe('rescopeTask (decision 115)', () => {
     ['.claude/hooks/scope-guard.sh', 'reaches a path the gate protects whatever the scope'],
     ['./.CLAUDE', 'reaches a path the gate protects whatever the scope'],
     ['.pupitre/adapter.yml', 'reaches a path the gate protects whatever the scope'],
+    // A protected file, at the top and nested, and any glob that can reach it.
+    ['pup.lock', 'reaches a path the gate protects whatever the scope'],
+    ['./PUP.LOCK', 'reaches a path the gate protects whatever the scope'],
+    ['config/pup.lock', 'reaches a path the gate protects whatever the scope'],
+    ['config/pup.lock*', 'reaches a path the gate protects whatever the scope'],
+    ['config/**', 'reaches a path the gate protects whatever the scope'],
+    ['config/*.lock', 'reaches a path the gate protects whatever the scope'],
+    ['config/pup.loc?', 'reaches a path the gate protects whatever the scope'],
+    ['Config/', 'reaches a path the gate protects whatever the scope'],
+    ['config', 'reaches a path the gate protects whatever the scope'],
+    // The git hooks that check a worker's own commits, in any case.
+    ['.husky/**', 'reaches `.husky`'],
+    ['.husky/pre-commit', 'reaches `.husky`'],
+    ['./.HUSKY', 'reaches `.husky`'],
+    ['.husky/', 'reaches `.husky`'],
+    ['scripts/pre-commit', 'reaches `scripts/pre-commit`'],
+    ['./Scripts/Pre-Commit', 'reaches `scripts/pre-commit`'],
+    ['scripts/**', 'reaches `scripts/pre-commit`'],
+    ['scripts/*', 'reaches `scripts/pre-commit`'],
+    ['scripts/pre-*', 'reaches `scripts/pre-commit`'],
+    ['scripts/pre-comm?t', 'reaches `scripts/pre-commit`'],
+    ['scripts', 'reaches `scripts/pre-commit`'],
+    ['scripts/', 'reaches `scripts/pre-commit`'],
+    // pup's matcher reads these literally; a gitignore- or bash-style one
+    // reads a class, a set or an escape, which could reach `.github`.
+    ['[.]github/**', 'holds `[`, `]`, `{`, `}` or `\\`'],
+    ['{docs,.github}/**', 'holds `[`, `]`, `{`, `}` or `\\`'],
+    ['\\.github/**', 'holds `[`, `]`, `{`, `}` or `\\`'],
+    ['docs/[a-z]*.md', 'holds `[`, `]`, `{`, `}` or `\\`'],
+    ['docs/x]', 'holds `[`, `]`, `{`, `}` or `\\`'],
+    ['docs/{a', 'holds `[`, `]`, `{`, `}` or `\\`'],
+    ['docs/a}', 'holds `[`, `]`, `{`, `}` or `\\`'],
+    ['docs\\x', 'holds `[`, `]`, `{`, `}` or `\\`'],
     ['  ', 'is empty'],
     ['./', 'is empty'],
     ['src/\u0007x', 'contains a control character'],
@@ -430,32 +472,28 @@ describe('rescopeTask (decision 115)', () => {
     expect(readTaskSpec(db, 't-1').scopeIn).toEqual(['src/core/**']);
   });
 
-  // The matcher escapes `[]`, `{}` and `\`, so each of these names a literal
-  // path: the table takes it, and it never matches anything under `.github`.
-  it.each(['[.]github/**', '{docs,.github}/**', '\\.github/**'])(
-    'takes %j as a literal path that never reaches .github',
-    (glob) => {
-      launched('s1', 'merged');
-
-      expect(rescopeTask(db, 't-1', [glob], CALLER)).toMatchObject({ added: [glob] });
-
-      const workflows = ['.github/x', '.github/workflows/ci.yml'];
-      expect(workflows.filter((path) => globToRegExp(glob).test(path))).toEqual([]);
-      const spec = readTaskSpec(db, 't-1');
-      expect(auditScope(workflows, spec.scopeIn, spec.scopeOut).map((v) => v.path)).toEqual(
-        workflows,
-      );
-    },
-  );
-
   it('takes a glob the matcher reads as a plain path', () => {
     launched('s1', 'merged');
+    const globs = [
+      './docs/**',
+      'src/cli/',
+      '.claudeignore',
+      'docs/.claude/x',
+      '.huskyrc',
+      'docs/.husky/x',
+      'scripts/adr-index.sh',
+      'scripts/pre-commit.md',
+      'docs/scripts/pre-commit',
+    ];
 
-    expect(
-      rescopeTask(db, 't-1', ['./docs/**', 'src/cli/', '.claudeignore', 'docs/.claude/x'], CALLER),
-    ).toMatchObject({
-      added: ['./docs/**', 'src/cli/', '.claudeignore', 'docs/.claude/x'],
-    });
+    expect(rescopeTask(db, 't-1', globs, CALLER)).toMatchObject({ added: globs });
+  });
+
+  it('takes a glob beside a protected file that can never match it', () => {
+    launched('s1', 'merged');
+    const globs = ['config/*.ts', 'config/x/**', 'config/pup.lock/', 'pup', 'pup.lockfile'];
+
+    expect(rescopeTask(db, 't-1', globs, CALLER)).toMatchObject({ added: globs });
   });
 
   // What the gate's scope-audit stage runs, on the spec it reads back.
@@ -512,15 +550,15 @@ describe('launchedAncestor (decision 115)', () => {
       'a session',
       'pup-t-mvdw5id6',
       [5050, 89656] as const,
-      '/Users/me/.local/bin/claude --model claude-opus-5-5 --effort xhigh --name pup-t-mvdw5id6 --dangerously-skip-permissions --settings /Users/me/.pupitre/p1/sessions/t-mvdw5id6/compiled/settings.json --mcp-config /Users/me/.pupitre/p1/sessions/t-mvdw5id6/compiled/mcp.json --setting-sources user',
+      '/Users/me/.local/bin/claude --model claude-opus-5-5 --effort xhigh --name pup-t-mvdw5id6 --dangerously-skip-permissions --settings /Users/me/.pupitre/p1/sessions/t-mvdw5id6/compiled/settings.json --setting-sources user',
       'tmux new-session -d -P -F #{pane_id} -s pup-watch-p1 -c /repo /Users/me/.nvm/versions/node/v24.13.1/bin/node /Users/me/.nvm/versions/node/v24.13.1/bin/pup watch',
     ],
     [
       'the conductor',
       'pup-conductor-p1',
       [44927, 44919] as const,
-      '/Users/me/.local/bin/claude --model claude-opus-5-5 --effort high --name pup-conductor-p1 --dangerously-skip-permissions --settings /Users/me/.pupitre/p1/conductor/compiled/settings.json --mcp-config /Users/me/.pupitre/p1/conductor/compiled/mcp.json --setting-sources user',
-      'tmux -L pup-conductor-p1 new-session -d -P -F #{pane_id} -s pup-conductor-p1 -x 220 -y 50 -c /repo -e PUP_CONDUCTOR=p1 -e PUP_BIN=/Users/me/.nvm/versions/node/v24.13.1/bin/pup /Users/me/.local/bin/claude --model claude-opus-5-5 --effort high --name pup-conductor-p1 --dangerously-skip-permissions --settings /Users/me/.pupitre/p1/conductor/compiled/settings.json --mcp-config /Users/me/.pupitre/p1/conductor/compiled/mcp.json --setting-sources user',
+      '/Users/me/.local/bin/claude --model claude-opus-5-5 --effort high --name pup-conductor-p1 --dangerously-skip-permissions --settings /Users/me/.pupitre/p1/conductor/compiled/settings.json --setting-sources user',
+      'tmux -L pup-conductor-p1 new-session -d -P -F #{pane_id} -s pup-conductor-p1 -x 220 -y 50 -c /repo -e PUP_CONDUCTOR=p1 -e PUP_BIN=/Users/me/.nvm/versions/node/v24.13.1/bin/pup /Users/me/.local/bin/claude --model claude-opus-5-5 --effort high --name pup-conductor-p1 --dangerously-skip-permissions --settings /Users/me/.pupitre/p1/conductor/compiled/settings.json --setting-sources user',
     ],
   ])("finds %s's Claude Code in what ps really printed", (_who, name, pids, claude, server) => {
     const [claudePid, serverPid] = pids;

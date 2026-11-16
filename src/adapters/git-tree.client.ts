@@ -26,11 +26,17 @@ const MANIFEST = 'package.json';
  * file is whatever git committed, and there is no filesystem type to check.
  * Outside the gate, a directory that is no repository and a repository with
  * no commit yet, as `pup init` meets, commit no markers, so nothing is
- * exempt. Any other listing that fails throws, and at the gate, `measureSha`
+ * exempt. Any other listing that fails throws, and at the gate, both shas
  * given, every one does, so the gate refuses: an empty trusted set would run
  * no nested package's own stages, and a session can fail that listing alone,
  * by a `.git/config` git cannot parse, and mend it
  * before the gate's last check (decision 161).
+ * The trusted checkout is listed at the target sha the gate pinned under the
+ * merge lock, not at its HEAD: a session can detach `.git/HEAD` to a commit
+ * with no nested marker while the listing runs and restore it before the
+ * gate's last check, and no nested package's own stages would run. A context
+ * pinning one sha and not the other is refused, not read: either side it
+ * leaves unpinned would be listed at a HEAD the session can move.
  * The gate's checkout is listed at the sha it was cut at, from the trusted
  * repo's object store, never through the checkout: its HEAD and `commondir`
  * sit in an admin dir under `<common>/worktrees/` a session can rewrite after
@@ -46,14 +52,24 @@ export function nestedPackageDirs({
   measurePath,
   configPath,
   measureSha,
+  configSha,
 }: CapabilityContext): Set<string> {
   const gate = measureSha !== undefined;
-  const measured =
-    measureSha === undefined
-      ? committedPackageDirs(measurePath, 'HEAD', gate)
-      : committedPackageDirs(configPath, measureSha, gate);
-  if (configPath === measurePath) return measured;
-  const trusted = committedPackageDirs(configPath, 'HEAD', gate);
+  if (gate !== (configSha !== undefined)) {
+    throw new Error(
+      'A gate lists nested packages at both pinned shas, the cut and the target; this ' +
+        'context pins one and not the other, so nothing was listed.',
+    );
+  }
+  const measured = committedPackageDirs(
+    gate ? configPath : measurePath,
+    measureSha ?? 'HEAD',
+    gate,
+  );
+  // One checkout outside the gate is one listing; at the gate the two shas are
+  // two commits whatever the paths, so the trusted one is always listed.
+  if (!gate && configPath === measurePath) return measured;
+  const trusted = committedPackageDirs(configPath, configSha ?? 'HEAD', gate);
   return new Set([...measured].filter((dir) => trusted.has(dir)));
 }
 

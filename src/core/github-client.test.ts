@@ -6,19 +6,23 @@ import {
   readdirSync,
   readFileSync,
   realpathSync,
+  renameSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { assertMainCheckout, RewrittenGitDirError } from './git-diff.client.js';
 import {
   commentOnPullRequest,
   isCutOffByNode,
   originRepoSlug,
   readPullRequestReview,
   replyToReviewThread,
+  setGateStatus,
 } from './github.client.js';
 
 // The file's temp dirs, its children's included, go to a TMPDIR of its own,
@@ -193,6 +197,7 @@ describe('readPullRequestReview', () => {
           isEditedByOther: false,
           isMinimized: false,
           isAnswered: false,
+          replies: [],
         },
         {
           id: 'PRRT_moved',
@@ -202,6 +207,7 @@ describe('readPullRequestReview', () => {
           isEditedByOther: false,
           isMinimized: false,
           isAnswered: false,
+          replies: [],
         },
       ],
     });
@@ -310,6 +316,139 @@ describe('readPullRequestReview', () => {
       PRRT_quoted_member: false,
       PRRT_unread: false,
       PRRT_bare: false,
+    });
+  });
+
+  describe('the replies a round takes with a finding', () => {
+    const SOMEONE = { __typename: 'User', login: 'someone' };
+    const marked = (sha: string) => ({
+      body: `Declined.\n\n<!-- pup fix-round ${sha} -->`,
+      viewerDidAuthor: true,
+      authorAssociation: 'OWNER',
+      isMinimized: false,
+    });
+    const by = (authorAssociation: unknown, body: unknown, fields: object = {}) => ({
+      author: SOMEONE,
+      body,
+      viewerDidAuthor: false,
+      authorAssociation,
+      isMinimized: false,
+      lastEditedAt: null,
+      editor: null,
+      ...fields,
+    });
+    const finding = { author: BOT, body: 'finding', authorAssociation: 'NONE', isMinimized: false };
+    const trail = (id: string, ...comments: unknown[]) =>
+      thread({ id, trail: { nodes: [finding, ...comments] } });
+    const repliesOf = (...nodes: unknown[]) => {
+      ghAnswers({
+        state: 'OPEN',
+        headRefOid: HEAD,
+        reviews: { nodes: [review()] },
+        reviewThreads: { pageInfo: { hasPreviousPage: false }, nodes },
+      });
+      return Object.fromEntries(read().openThreads.map((open) => [open.id, open.replies]));
+    };
+
+    // What the operator said since the round's newest reply goes to the next
+    // round with the finding. A member or collaborator may reopen a thread but
+    // proves no write access, so neither is relayed, nor is the bot or an outsider.
+    it("reads the operator's replies since the newest marked one", () => {
+      expect(
+        repliesOf(
+          trail(
+            'PRRT_reopened',
+            by('OWNER', 'Before the first round.'),
+            marked('d'.repeat(40)),
+            by('OWNER', 'Before the newest round.'),
+            marked('e'.repeat(40)),
+            by('NONE', 'Not a false positive.', { viewerDidAuthor: true }),
+            by('NONE', 'An outsider.'),
+            finding,
+            by('MEMBER', 'A member.'),
+            by('COLLABORATOR', 'A collaborator.'),
+            by('OWNER', 'Add a TTL.'),
+            by('OWNER', 7),
+          ),
+          trail('PRRT_unanswered', by('OWNER', 'Fix this one first.')),
+          trail('PRRT_answered', marked('d'.repeat(40))),
+        ),
+      ).toEqual({
+        PRRT_reopened: ['Not a false positive.', 'Add a TTL.'],
+        PRRT_unanswered: ['Fix this one first.'],
+        PRRT_answered: [],
+      });
+    });
+
+    // A comment hidden on GitHub is out of the operator's view; a field outside
+    // its shape reads as hidden, as a finding's does.
+    it('drops a reply hidden on GitHub', () => {
+      expect(
+        repliesOf(
+          trail(
+            'PRRT_hidden',
+            by('OWNER', 'Shown.'),
+            by('OWNER', 'Hidden.', { isMinimized: true }),
+            by('OWNER', 'Unread.', { isMinimized: undefined }),
+            by('NONE', 'Hidden, by hand.', { viewerDidAuthor: true, isMinimized: true }),
+          ),
+        ),
+      ).toEqual({ PRRT_hidden: ['Shown.'] });
+    });
+
+    // Anyone with write access can edit another's comment: an edit by another
+    // account, or by one gone from GitHub, leaves it no longer the operator's.
+    it('drops a reply an account other than its author edited', () => {
+      const edited = (body: string, editor: unknown) =>
+        by('OWNER', body, { lastEditedAt: '2026-10-18T09:00:00Z', editor });
+      expect(
+        repliesOf(
+          trail(
+            'PRRT_edited',
+            edited('Edited by its author.', SOMEONE),
+            edited('Edited by another.', { __typename: 'User', login: 'alexis' }),
+            edited('Edited by a bot of the same login.', { __typename: 'Bot', login: 'someone' }),
+            edited('Edited by one gone.', null),
+            by('OWNER', 'Edited, its editor unread.', { editor: SOMEONE, author: null }),
+          ),
+        ),
+      ).toEqual({ PRRT_edited: ['Edited by its author.'] });
+    });
+
+    // Comment ids are past what the 32-bit `databaseId` is typed to hold, so the
+    // read takes `fullDatabaseId`, a decimal string, and compares it as a BigInt:
+    // as text 9999999999 would pass 10000000000, and past 2^53 two numbers round
+    // into one.
+    it("records the newest comment's full id, whoever wrote it", () => {
+      ghAnswers({
+        state: 'OPEN',
+        headRefOid: HEAD,
+        reviews: { nodes: [review()] },
+        reviewThreads: {
+          pageInfo: { hasPreviousPage: false },
+          nodes: [
+            trail(
+              'PRRT_text',
+              by('OWNER', 'Older.', { fullDatabaseId: '9999999999' }),
+              by('NONE', 'An outsider, newest.', { fullDatabaseId: '10000000000' }),
+            ),
+            trail(
+              'PRRT_past',
+              by('OWNER', 'Older.', { fullDatabaseId: '18014398509481984' }),
+              by('OWNER', 'Newest.', { fullDatabaseId: '18014398509481985' }),
+              by('OWNER', 'A number, not the string GitHub sends.', { fullDatabaseId: 2 ** 60 }),
+              by('OWNER', 'No id.', { fullDatabaseId: '9e99' }),
+            ),
+            trail('PRRT_none', by('OWNER', 'No id.')),
+          ],
+        },
+      });
+
+      expect(read().openThreads.map(({ id, newestComment }) => [id, newestComment])).toEqual([
+        ['PRRT_text', '10000000000'],
+        ['PRRT_past', '18014398509481985'],
+        ['PRRT_none', undefined],
+      ]);
     });
   });
 
@@ -506,6 +645,79 @@ describe('isCutOffByNode', () => {
   });
 });
 
+describe('setGateStatus', () => {
+  let ghDir: string;
+  let originalPath: string | undefined;
+  const SHA = 'd'.repeat(40);
+
+  beforeEach(() => {
+    ghDir = tempDir('pup-status-gh-');
+    originalPath = process.env.PATH;
+    process.env.PATH = `${ghDir}:${originalPath}`;
+    // Logs its argv one per line and what it read on stdin; `exit` set by the test.
+    writeFileSync(
+      join(ghDir, 'gh'),
+      `#!/bin/sh\nprintf '%s\\n' "$@" > ${ghDir}/argv\ncat > ${ghDir}/stdin\nexit $(cat ${ghDir}/exit 2>/dev/null || echo 0)\n`,
+      { mode: 0o755 },
+    );
+  });
+
+  afterEach(() => {
+    process.env.PATH = originalPath;
+  });
+
+  it("posts pup-gate success on the sha in origin's host and repo, naming the session and run", () => {
+    setGateStatus(ghDir, 'ghe.example.com/owner/repo', SHA, 't-abc-1');
+
+    expect(readFileSync(join(ghDir, 'argv'), 'utf8').trim().split('\n')).toEqual([
+      'api',
+      '--method',
+      'POST',
+      '--hostname',
+      'ghe.example.com',
+      `repos/owner/repo/statuses/${SHA}`,
+      '--input',
+      '-',
+    ]);
+    const payload = JSON.parse(readFileSync(join(ghDir, 'stdin'), 'utf8')) as Record<
+      string,
+      string
+    >;
+    expect(payload).toEqual({
+      state: 'success',
+      context: 'pup-gate',
+      description: expect.stringMatching(
+        /^Session t-abc-1 passed the pup merge --pr run of \d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/,
+      ),
+    });
+  });
+
+  it("cuts the description to GitHub's 140 characters", () => {
+    setGateStatus(ghDir, 'github.com/owner/repo', SHA, 's'.repeat(200));
+
+    const payload = JSON.parse(readFileSync(join(ghDir, 'stdin'), 'utf8')) as Record<
+      string,
+      string
+    >;
+    expect(payload.description).toHaveLength(140);
+  });
+
+  it('throws when gh refuses the status', () => {
+    writeFileSync(join(ghDir, 'exit'), '1');
+
+    expect(() => setGateStatus(ghDir, 'github.com/owner/repo', SHA, 't-abc-1')).toThrow(
+      `repos/owner/repo/statuses/${SHA}`,
+    );
+  });
+
+  it('refuses a repo with no owner or name before asking gh', () => {
+    expect(() => setGateStatus(ghDir, 'github.com/owner', SHA, 't-abc-1')).toThrow(
+      'Cannot read a GitHub repo from github.com/owner.',
+    );
+    expect(existsSync(join(ghDir, 'argv'))).toBe(false);
+  });
+});
+
 describe('replyToReviewThread', () => {
   it('refuses a repo with no host before asking gh', () => {
     expect(() => replyToReviewThread('/nowhere', '/owner/repo', 'PRRT_1', 'body')).toThrow(
@@ -569,4 +781,116 @@ describe('the git gh runs', () => {
 
     expect(existsSync(fired)).toBe(false);
   });
+
+  it("hands gh pup's GIT_SHALLOW_FILE pin in place of an inherited one, and no GIT_NAMESPACE", () => {
+    const repo = tempDir('pup-gh-env-');
+    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repo, env: plainEnv });
+    const seen = join(tempDir('pup-gh-env-log-'), 'env');
+    const ghDir = tempDir('pup-gh-env-bin-');
+    writeFileSync(join(ghDir, 'gh'), `#!/bin/sh\ncat > /dev/null\nenv > ${seen}\n`, {
+      mode: 0o755,
+    });
+    process.env.PATH = `${ghDir}:${originalPath}`;
+    vi.stubEnv('GIT_SHALLOW_FILE', join(repo, 'planted-shallow'));
+    vi.stubEnv('GIT_NAMESPACE', 'planted');
+    try {
+      commentOnPullRequest(repo, 'https://github.com/o/r/pull/1', 'github.com/o/r', 'body');
+    } finally {
+      vi.unstubAllEnvs();
+    }
+
+    const env = readFileSync(seen, 'utf8');
+    expect(env).toMatch(/^PATH=/m);
+    expect(env).toMatch(/^GIT_SHALLOW_FILE=\/dev\/null\/no-shallow$/m);
+    expect(env).not.toMatch(/^GIT_NAMESPACE=/m);
+  });
 });
+
+// gh runs git in the main checkout with no `--git-dir` of pup's, so a `.git` a
+// session rewrote there would hand gh's git a decoy repo (decision 172).
+describe('gh in a main checkout whose .git a session rewrote', () => {
+  let originalPath: string | undefined;
+  beforeEach(() => {
+    originalPath = process.env.PATH;
+  });
+  afterEach(() => {
+    process.env.PATH = originalPath;
+  });
+
+  /** A main checkout pup has passed, and a gh that logs to `ran` after running `script`. */
+  function checkout(script = ''): { repo: string; ran: string; decoy: string } {
+    const repo = tempDir('pup-gh-dotgit-');
+    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repo, env: plainGitEnv() });
+    const decoy = tempDir('pup-gh-decoy-');
+    execFileSync('git', ['init', '-q', '--bare', '-b', 'main'], { cwd: decoy, env: plainGitEnv() });
+    const ran = join(tempDir('pup-gh-log-'), 'ran');
+    const ghDir = tempDir('pup-gh-bin-');
+    writeFileSync(
+      join(ghDir, 'gh'),
+      `#!/bin/sh\ncat > /dev/null\n${script}\necho ran >> ${ran}\n`,
+      { mode: 0o755 },
+    );
+    process.env.PATH = `${ghDir}:${originalPath}`;
+    assertMainCheckout(repo);
+    return { repo, ran, decoy };
+  }
+
+  const comment = (repo: string) =>
+    commentOnPullRequest(repo, 'https://github.com/o/r/pull/1', 'github.com/o/r', 'body');
+
+  it('runs gh in a checkout whose .git is untouched', () => {
+    const { repo, ran } = checkout();
+    comment(repo);
+
+    expect(readFileSync(ran, 'utf8')).toBe('ran\n');
+  });
+
+  it.each([
+    [
+      'a planted commondir',
+      (repo: string, decoy: string) => writeFileSync(join(repo, '.git', 'commondir'), `${decoy}\n`),
+      /commondir exists/,
+    ],
+    [
+      'a gitfile',
+      (repo: string, decoy: string) => {
+        renameSync(join(repo, '.git'), join(tempDir('pup-gh-aside-'), 'git'));
+        writeFileSync(join(repo, '.git'), `gitdir: ${decoy}\n`);
+      },
+      /\.git is no longer a directory/,
+    ],
+    [
+      'a symlink',
+      (repo: string, decoy: string) => {
+        renameSync(join(repo, '.git'), join(tempDir('pup-gh-aside-'), 'git'));
+        symlinkSync(decoy, join(repo, '.git'));
+      },
+      /\.git is a symlink/,
+    ],
+  ] as const)('refuses before gh runs when .git holds %s', (_, plant, refusal) => {
+    const { repo, ran, decoy } = checkout();
+    plant(repo, decoy);
+
+    expect(() => comment(repo)).toThrow(RewrittenGitDirError);
+    expect(() => comment(repo)).toThrow(refusal);
+    expect(existsSync(ran)).toBe(false);
+  });
+
+  it("refuses gh's answer when .git became a symlink while it ran", () => {
+    const decoy = tempDir('pup-gh-swap-');
+    const { repo, ran } = checkout(
+      `mv .git ${join(tempDir('pup-gh-aside-'), 'git')} && ln -s ${decoy} .git`,
+    );
+
+    expect(() => comment(repo)).toThrow(/\.git is a symlink/);
+    expect(readFileSync(ran, 'utf8')).toBe('ran\n');
+  });
+});
+
+function plainGitEnv(): NodeJS.ProcessEnv {
+  return {
+    ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_'))),
+    GIT_CONFIG_GLOBAL: '/dev/null',
+    GIT_CONFIG_SYSTEM: '/dev/null',
+  };
+}

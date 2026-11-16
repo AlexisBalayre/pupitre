@@ -60,12 +60,100 @@
     read of a session-writable file in `git-diff.client.ts`. `readPointer` already opened
     this way and now shares the helper. `worktreeGitEnv`'s `existsSync` stats the main
     checkout's `.git` and reads nothing. The `config.worktree` checks are `lstat`s.
+    *Follow-up from the security review of this decision (t-mvb0lvqr).* *A deadline on every
+    git child.* `--no-includes` stops a fifo an include names from blocking the listing.
+    But git opens `<common>/config` itself before any command runs, and a session can swap
+    that file for a fifo too. The `rev-parse`, `config --list` and `branch --show-current`
+    the gate runs under the merge lock, after its last check of the file, then blocked in a
+    spawn node waits on, where `withMergeLock`'s signal listeners never run (reproduced on
+    Git 2.54: each blocks until it is killed). So did every other git child the gate runs
+    under the lock: the reads after the stages, the fast-forward and the push.
+    `spawnOptions` now gives every `runGit` and `runGitBytes` child a deadline,
+    `GATE_COMMAND_TIMEOUT_MS`, unless the call names its own, much as decision 124 bounds
+    every hook's git. At the deadline node kills the child with SIGTERM. The call throws
+    `ETIMEDOUT`. A caller that lets that through, or whose catch passes it to
+    `rethrowIfKilled`, which rethrows a killed git rather than read it as an answer, fails
+    the run, and `withMergeLock` releases the lock. The push's lease read, which took any
+    failure for a first push, now passes it through `rethrowIfKilled`. The same value, named explicitly in
+    `assertNoSharedWorktreeKey`, `worktreeConfigState` and the gate's push, is now the
+    default there. `pup land`, `pup init` and the nested-package listing still name it
+    explicitly, in files outside this change. Twenty-five minutes is long for a one-line
+    read, but it is the cap `MERGE_LOCK_WAIT_MS` is built from. A git that really runs past
+    it, a fetch over a slow link say, now fails rather than waits. *Shallow file.*
+    `GIT_HISTORY_ENV` now also pins `GIT_SHALLOW_FILE=/dev/null/no-shallow`, a path that
+    cannot exist, which git reads as no shallow file. A `<common>/shallow` naming the branch
+    tip made that tip a root commit. `log <target>..<tip>` then listed the tip alone, so the
+    commit subjects the gate reads off the branch lost every commit under it: cutting
+    history can shrink a read, not only fail a merge-base. gh's git takes the pin too,
+    through `pinnedGitEnv`. *Cost:* a repo that really is a shallow clone now reads as
+    whole, and any walk past its edge fails on the parent it lacks ("Failed to traverse
+    parents", verified on Git 2.54). The gate and `pup land` therefore fail on a shallow
+    main checkout until `git fetch --unshallow`. *Inherited variables.*
+    `GIT_TEST_COMMIT_GRAPH=1` loads the commit-graph whatever `core.commitGraph` says.
+    Verified on Git 2.54: under it, `-c core.commitGraph=false` read a forged graph's tree.
+    `GIT_NAMESPACE` and `GIT_REPLACE_REF_BASE` change which refs and replace refs are read.
+    Decision 181's allowlist already drops all three from the env that `runGit`,
+    `runGitBytes` and gh start from. The tests below now guard the first and the third.
+    *Refusal text.* `ArmedGitDriverError` had lost the space between its dash and the list
+    of what is armed. It is back.
+    *Lazy fetch and transports.* The shared config can make the repo a partial clone of a
+    remote a session names: `extensions.partialClone`, `remote.<r>.promisor` and an
+    `uploadpack` of the session's, with `protocol.file.allow=always`. Once the session
+    deletes a loose object, any read that meets the gap fetches it, which runs that
+    `uploadpack` with pup's environment, under the merge lock when the gate is the reader
+    (verified on Git 2.54 with a plain `cat-file -p`). `GIT_HISTORY_ENV` now pins
+    `GIT_NO_LAZY_FETCH=1`, and `runGit` and `runGitBytes` set `GIT_ALLOW_PROTOCOL=none`. Once
+    that variable is set it is the whole allowlist, and git reads no `protocol.*.allow` key,
+    so a planted key cannot re-open a transport. `none` names none. A list of
+    `protocol.<t>.allow=never` keys was the first pin. It named `ext`, `fd`, `file`, `git`,
+    `http`, `https` and `ssh`, but missed the `ftp` and `ftps` helpers git ships and any
+    `git-remote-<x>` on PATH, reached through `<x>::` or `remote.<r>.vcs`. A transport with no
+    key falls back to `protocol.allow`, then to git's default for an unknown transport, which
+    allows it because pup's env never sets `GIT_PROTOCOL_FROM_USER`. Before Git 2.44,
+    `GIT_NO_LAZY_FETCH` is ignored, so a promisor remote at `ftp://` was still fetched from,
+    to a host the session chose (CI review on PR #333; verified on Git 2.54 against an
+    explicit fetch). Either pin alone stops the fetch, and the transport pin also stops an
+    explicit `git fetch <r>` and a git too old to know `GIT_NO_LAZY_FETCH`. gh's git takes
+    both through `pinnedGitEnv`. pup hands gh `--head` and runs only `pr view`, `list`,
+    `edit`, `create` and `comment`, which read GitHub's API, so its git never needs a
+    transport. The two gits that reach a remote on purpose, the gate's push and `pup land`'s
+    fetch, run in `withScratchGitDir`, whose runner passes `reachesRemote` and keeps the
+    transports. Its scratch git dir reads no config a session can write. It borrows the
+    repo's object store, though, whose `info/alternates` a session can write. For each
+    alternate that is a repo, a fetch, and the `rev-list --alternate-refs` of its
+    connectivity check, start `git --git-dir=<alternate's repo> for-each-ref`, first
+    unsetting `GIT_CONFIG_PARAMETERS` and `GIT_CONFIG_COUNT`. That git read the session's
+    config with none of the `-c` pins and no transport pin. Before Git 2.44 a dangling ref
+    there could lazily fetch from a promisor remote that config names (CI review on PR
+    #333). Verified on Git 2.54: the child starts with both variables unset, and a dangling
+    ref there fails the fetch. The lazy fetch was not reproduced, for Git 2.54 printed the
+    ref without reading its object. The runner now passes `-c core.alternateRefsCommand=true`.
+    The scratch git reads that key itself, and hands it to its `rev-list` as
+    `GIT_CONFIG_PARAMETERS`, so each runs `true`, which prints no ref, in place of that git.
+    Neither the scratch git nor any git it starts then reads a config a session can write,
+    so it reaches only the URL it is handed. It still pins `ext` off and keeps the lazy-fetch
+    pin. *Cost:* a main checkout that really is a partial clone fails on a missing object
+    rather than fetching it. A fetch no longer offers an alternate's refs as haves, so for a
+    clone made with `--reference` it may receive objects the alternate already holds.
     *Ceilings.* The session hooks' `safe_git` and codegraph's git get `core.commitGraph=false`
-    through `GIT_SAFE_CONFIG` but not `GIT_HISTORY_ENV`, so grafts still bend what they read.
-    Both are outside this decision's files. A `<common>/shallow` file cuts history the way a
-    graft does, and it is not pinned. Cutting can only remove a merge-base, which fails the
-    diff rather than shrinking it, but that has not been verified for every read.
-    The check is still check-then-run (decision 50).
+    through `GIT_SAFE_CONFIG` but neither `GIT_HISTORY_ENV` nor the transport pins, so grafts
+    and a shallow file still bend what they read and a planted promisor remote can still be
+    fetched from. Both are outside this decision's files. `dashboard.service.ts` names its own
+    copy of the transport list and `GIT_NO_LAZY_FETCH`, now redundant under `runGit`; it is
+    outside this change too. The security review's git in `profile-compiler.service.ts`
+    names the same list without `runGit` under it, so `ftp`, `ftps` and PATH helpers stay
+    open there. It is outside this decision's files.
+    A catch that neither rethrows nor passes the error to `rethrowIfKilled` still reads a git
+    the deadline killed as its failure answer. The gate then runs its next git, which a
+    session can block the same way, so the lock is held for one deadline per such read, not
+    one in all.
+    `pinnedGitEnv` cannot disarm a `filter.<x>.clean` that `info/attributes` selects, for a
+    filter has no `-c` disarm, so gh's index refresh would run it; only
+    `assertNoArmedGitDrivers` guards against that.
+    The check is still check-then-run (decision 50). The deadline bounds how long a blocked
+    git holds the lock. It does not undo what the git did before the kill, nor reach a child
+    it started (decision 124's ceilings). A git the kernel holds in an uninterruptible
+    sleep, on a hung network filesystem say, ignores the kill until its call returns.
     *Tests.* In `git-diff-client.test.ts`, with a plain-git control for each: under a
     `git replace --graft` and under an `info/grafts` that re-parent main's tip,
     `gitDiffPaths` still lists both feature files. Under a commit-graph whose tip tree is
@@ -78,3 +166,22 @@
     status` in a checkout whose config arms `core.fsmonitor` does not fire it, and a plain
     `git status` there does. Each test except the replace-ref one fails with its fix removed;
     the replace ref was already pinned by decision 99, and its test guards the pin.
+    The follow-up's tests. In `merge-gate-shared-config.test.ts`, a fifo is swapped in for
+    `.git/config` under the lock, after the gate's last check of it. Once the shortened
+    deadline passes, the merge throws `ETIMEDOUT`. Main stays where it was, the lock is
+    released, and the next run merges. With no deadline, a writer the test starts 8 s after
+    the swap unblocks git and the gate merges: the test fails rather than hangs. In
+    `git-diff-client.test.ts`, under a planted `.git/shallow` naming the branch tip, plain
+    git's `log main..feature` lists one commit, while `runGit` lists both and `gitDiffPaths`
+    both files. Under an inherited `GIT_TEST_COMMIT_GRAPH=1`, plain git with
+    `-c core.commitGraph=false` reads the forged graph's tree, while `runGit` reads the real
+    one. A spawned git is handed `GIT_SHALLOW_FILE=/dev/null/no-shallow` and no inherited
+    `GIT_REPLACE_REF_BASE`. The `include.path` refusal reads `— include.path.`. In a repo
+    whose config names a promisor remote with a planted `uploadpack` and lets the `file`
+    transport through, and which lacks a blob, plain git's `cat-file -p` of the blob runs
+    the command. `runGit`'s read of it and its `fetch` of that remote run nothing, the fetch
+    refused as "transport 'file' not allowed". gh's git under `pinnedGitEnv` runs nothing
+    with either pin taken away, the lazy-fetch pin or the env config. In `merge-gate.test.ts`,
+    under a planted `objects/info/alternates` naming a bare repo with a dangling ref, a plain
+    `git fetch` in the repo fails, while `withScratchGitDir`'s fetch succeeds and its
+    `GIT_TRACE` names no `for-each-ref`. Each fails with its fix removed.

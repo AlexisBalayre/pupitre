@@ -9,16 +9,24 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // real, per docs/conventions/testing.md.
 vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../claude/session-runtime.service.js')>()),
+  capturePane: vi.fn(() => ''),
   hasConductorWindow: vi.fn(() => false),
   conductorPane: vi.fn(() => undefined),
   readInputBoxLook: vi.fn(() => ({ state: 'empty', draft: '' })),
 }));
+// Real unless a test holds one action open, to see what a shutdown does meanwhile.
+vi.mock('./web-dashboard-actions.service.js', async (importOriginal) => {
+  const real = await importOriginal<typeof import('./web-dashboard-actions.service.js')>();
+  return { ...real, runAction: vi.fn(real.runAction) };
+});
 
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import {
+  capturePane,
   conductorPane,
   hasConductorWindow,
   readInputBoxLook,
+  SessionPaneMissingError,
 } from '../claude/session-runtime.service.js';
 import { formatDebtTransition } from './audit.service.js';
 import { appendBaselineHistory } from './baseline-history.repository.js';
@@ -33,6 +41,7 @@ import { projectId, projectPaths } from './paths.utils.js';
 import {
   appendEvent,
   ensureProject,
+  getSession,
   incrementRejectCount,
   insertSession,
   insertTask,
@@ -41,6 +50,7 @@ import {
 } from './session.repository.js';
 import { STALLED_AFTER_MS } from './session-activity.constants.js';
 import { startWebDashboard, type WebDashboard } from './web-dashboard.service.js';
+import { ACTIONS, runAction } from './web-dashboard-actions.service.js';
 import { escapeHtml } from './web-dashboard-sheet.utils.js';
 
 const POLL_MS = 300;
@@ -52,10 +62,26 @@ interface Reply {
   body: string;
 }
 
+/** The secret the page the url's token opened was handed; every request carries it unless it names it `''`. */
+let secret: string | undefined;
+
+/** The request's headers, the secret included; one named as `''` is left out. */
+function withSecret(headers: Record<string, string>): Record<string, string> {
+  const all = { ...(secret === undefined ? {} : { 'X-Pup-Secret': secret }), ...headers };
+  return Object.fromEntries(Object.entries(all).filter(([, value]) => value !== ''));
+}
+
+const NO_SECRET = { 'X-Pup-Secret': '' };
+
+/** The secret a page was handed, or undefined when it was handed none. */
+function handedTo(page: Reply): string | undefined {
+  return /const handed = "([^"]+)";/.exec(page.body)?.[1];
+}
+
 /** One request over the real socket, with the Host header the test names. */
 function get(url: string, headers: Record<string, string> = {}, method = 'GET'): Promise<Reply> {
   return new Promise((resolve, reject) => {
-    const req = request(url, { method, headers }, (res) => {
+    const req = request(url, { method, headers: withSecret(headers) }, (res) => {
       let body = '';
       res.setEncoding('utf8');
       res.on('data', (chunk: string) => {
@@ -68,42 +94,119 @@ function get(url: string, headers: Record<string, string> = {}, method = 'GET'):
   });
 }
 
-/** An open event stream: every `data:` frame it has received, decoded, and a way to wait for the next. */
-function openStream(url: string): Promise<{
+/** A form post from the page's own origin over the real socket, answered as JSON when the server got that far. */
+function post(
+  url: string,
+  fields: Record<string, string>,
+  headers: Record<string, string> = {},
+): Promise<Reply & { json: () => Record<string, unknown> }> {
+  return new Promise((resolve, reject) => {
+    const req = request(
+      url,
+      {
+        method: 'POST',
+        headers: withSecret({
+          'Content-Type': 'application/x-www-form-urlencoded',
+          Origin: new URL(url).origin,
+          ...headers,
+        }),
+      },
+      (res) => {
+        let body = '';
+        res.setEncoding('utf8');
+        res.on('data', (chunk: string) => {
+          body += chunk;
+        });
+        res.on('end', () =>
+          resolve({
+            status: res.statusCode ?? 0,
+            headers: res.headers,
+            body,
+            json: () => JSON.parse(body) as Record<string, unknown>,
+          }),
+        );
+      },
+    );
+    req.on('error', reject);
+    req.end(new URLSearchParams(fields).toString());
+  });
+}
+
+/**
+ * An open event stream: every board it has received, decoded, a way to wait
+ * for the next, and the action nonce it handed over.
+ */
+function openStream(
+  url: string,
+  headers: Record<string, string> = {},
+): Promise<{
+  status: number;
   frames: string[];
   next: () => Promise<string>;
+  nonce: () => Promise<string>;
+  ended: (done: () => void) => void;
   close: () => void;
 }> {
   return new Promise((resolve, reject) => {
     const frames: string[] = [];
     let waiting: ((frame: string) => void) | undefined;
+    let nonce: string | undefined;
+    let waitingNonce: ((nonce: string) => void) | undefined;
     let buffer = '';
-    const req = request(url, (res) => {
+    const req = request(url, { headers: withSecret(headers) }, (res) => {
       res.setEncoding('utf8');
       res.on('data', (chunk: string) => {
         buffer += chunk;
         let end = buffer.indexOf('\n\n');
         while (end !== -1) {
-          const frame = JSON.parse(buffer.slice(0, end).replace(/^data: /, '')) as string;
+          const lines = buffer.slice(0, end).split('\n');
           buffer = buffer.slice(end + 2);
-          frames.push(frame);
-          waiting?.(frame);
-          waiting = undefined;
+          const data = JSON.parse(
+            String(lines.find((line) => line.startsWith('data: '))).slice(6),
+          ) as string;
+          if (lines.includes('event: nonce')) {
+            nonce = data;
+            waitingNonce?.(data);
+          } else {
+            frames.push(data);
+            waiting?.(data);
+            waiting = undefined;
+          }
           end = buffer.indexOf('\n\n');
         }
       });
       resolve({
+        status: res.statusCode ?? 0,
         frames,
         next: () =>
           new Promise((done) => {
             waiting = done;
           }),
+        nonce: () =>
+          nonce !== undefined
+            ? Promise.resolve(nonce)
+            : new Promise((done) => {
+                waitingNonce = done;
+              }),
+        ended: (done) => res.on('end', done),
         close: () => req.destroy(),
       });
     });
     req.on('error', reject);
     req.end();
   });
+}
+
+/** A page as the browser shows it: its shell, then the first board its stream sends. */
+async function readPage(url: string): Promise<string> {
+  const shell = await get(url);
+  const at = new URL(url);
+  const stream = await openStream(`${at.origin}/events${at.search}`);
+  try {
+    return shell.body + (stream.frames[0] ?? (await stream.next()));
+  } finally {
+    stream.close();
+  }
 }
 
 describe('startWebDashboard', () => {
@@ -116,7 +219,9 @@ describe('startWebDashboard', () => {
     db = openStore(':memory:');
     repo = tempDir('pup-web-');
     ensureProject(db, projectId(repo), repo);
+    secret = undefined;
     dashboard = await startWebDashboard(db, repo, { pollMs: POLL_MS });
+    secret = handedTo(await get(dashboard.url));
   });
 
   afterEach(async () => {
@@ -173,7 +278,9 @@ describe('startWebDashboard', () => {
   }
 
   const address = (): URL => new URL(dashboard.url);
-  const eventsUrl = (): string => `${address().origin}/events${address().search}`;
+  const eventsUrl = (): string => `${address().origin}/events`;
+  /** A page's url as its links make it: no token, which is spent. */
+  const home = (search = ''): string => `${address().origin}/${search}`;
   const host = (): string => address().host;
   const origin = (): string => address().origin;
 
@@ -187,19 +294,124 @@ describe('startWebDashboard', () => {
         expect(new URL(other.url).searchParams.get('token')).not.toBe(
           url.searchParams.get('token'),
         );
-        expect((await get(dashboard.url)).status).toBe(200);
+        expect((await get(home())).status).toBe(200);
+      } finally {
+        await other.close();
+      }
+    });
+
+    it("hands the page the url's token opened a secret, once, kept out of cookies, and takes the token out of the address bar", async () => {
+      const other = await startWebDashboard(db, repo, { pollMs: POLL_MS });
+      try {
+        const opened = await get(`${other.url}&sheet=debt`, NO_SECRET);
+        const handed = String(handedTo(opened));
+
+        expect(opened.status).toBe(200);
+        expect(opened.body).toContain('<title>pup dashboard — Debt</title>');
+        expect(handed).toMatch(/^[\w-]{43}$/);
+        expect(handed).not.toBe(new URL(other.url).searchParams.get('token'));
+        expect(opened.headers['set-cookie']).toBeUndefined();
+        expect(opened.body).toContain(
+          "history.replaceState(null, '', here.pathname + here.search);",
+        );
+        // A page loaded without the token is handed nothing.
+        expect(handedTo(await get(`${new URL(other.url).origin}/?sheet=debt`, NO_SECRET))).toBe(
+          undefined,
+        );
+        const stream = await openStream(`${new URL(other.url).origin}/events`, {
+          'X-Pup-Secret': handed,
+        });
+        expect(stream.status).toBe(200);
+        stream.close();
+      } finally {
+        await other.close();
+      }
+    });
+
+    it('serves the page as a shell holding nothing from the store', async () => {
+      seedSession('s-asking', ['running']);
+      appendEvent(db, 's-asking', 'question', { text: 'rebase or merge?' });
+
+      const shell = (await get(home(), NO_SECRET)).body;
+
+      expect(shell).not.toContain('rebase or merge?');
+      expect(shell).not.toContain('s-asking');
+      expect(await readPage(home())).toContain('rebase or merge?');
+    });
+
+    it('revokes the secret when the token comes back, cutting off the page it opened first', async () => {
+      const again = await get(dashboard.url, NO_SECRET);
+      const stream = await get(eventsUrl());
+      const id = insertLedgerEntry(db, {
+        projectId: projectId(repo),
+        description: 'd',
+        files: ['src/a.ts'],
+        reason: 'r',
+        acceptedBy: 'human',
+        reviewBy: 'q',
+      });
+      const action = await post(`${origin()}/action`, { action: 'debt-close', id: String(id) });
+
+      const revoked =
+        'This url was opened a second time, so the page it opened first is cut off too. Run `pup dashboard` again for a new url.';
+      expect(again.status).toBe(403);
+      expect(again.body).toBe(revoked);
+      expect(handedTo(again)).toBeUndefined();
+      expect(stream.status).toBe(403);
+      expect(stream.body).toBe(revoked);
+      expect(action.status).toBe(403);
+      expect(listLedgerEntries(db, projectId(repo))).toHaveLength(1);
+    });
+
+    it('closes a stream opened before the token came back, and drops every nonce it was handed', async () => {
+      const board = await openStream(`${eventsUrl()}?sheet=debt`);
+      const key = await board.nonce();
+      const ended = new Promise<void>((resolve) => board.ended(resolve));
+
+      await get(dashboard.url, NO_SECRET);
+      await ended;
+      const reply = await post(`${origin()}/action`, { action: 'debt-close', id: '1', nonce: key });
+
+      expect(reply.status).toBe(403);
+    });
+
+    it('spends the token only on a page it served, so a first load it could not answer leaves it good', async () => {
+      const other = await startWebDashboard(db, repo, { pollMs: POLL_MS });
+      try {
+        const missing = await get(`${other.url}&sheet=releases`, NO_SECRET);
+        const opened = await get(other.url, NO_SECRET);
+
+        expect(missing.status).toBe(404);
+        expect(opened.status).toBe(200);
+        expect(handedTo(opened)).toMatch(/^[\w-]{43}$/);
       } finally {
         await other.close();
       }
     });
 
     it.each([
-      ['no token', (url: URL) => `${url.origin}/`],
+      ['no secret', () => NO_SECRET],
+      ['a wrong secret', () => ({ 'X-Pup-Secret': 'A'.repeat(43) })],
+      [
+        'the token as the secret',
+        () => ({ 'X-Pup-Secret': String(address().searchParams.get('token')) }),
+      ],
+      [
+        'only a cookie, as another 127.0.0.1 port could plant',
+        () => ({ 'X-Pup-Secret': '', Cookie: `pup-dashboard-${address().port}=${secret}` }),
+      ],
+    ])('refuses the stream with %s before reading the store', async (_case, headers) => {
+      const reply = await get(`${eventsUrl()}?sheet=debt`, headers());
+
+      expect(reply.status).toBe(403);
+      expect(reply.body).toBe('Forbidden.');
+    });
+
+    it.each([
       ['a wrong token', (url: URL) => `${url.origin}/?token=${'A'.repeat(43)}`],
-      ['a token one character short', (url: URL) => `${url.href.slice(0, -1)}`],
-      ['no token on the stream', (url: URL) => `${url.origin}/events`],
-    ])('refuses a request with %s before reading the store', async (_case, target) => {
-      const reply = await get(target(address()));
+      ['a token one character short', (url: URL) => url.href.slice(0, -1)],
+    ])('refuses a page with %s, and hands it nothing', async (_case, target) => {
+      const reply = await get(target(address()), NO_SECRET);
 
       expect(reply.status).toBe(403);
       expect(reply.body).toBe('Forbidden.');
@@ -210,35 +422,36 @@ describe('startWebDashboard', () => {
       ['localhost', () => `localhost:${address().port}`],
       ['the right address on another port', () => '127.0.0.1:1'],
     ])('refuses %s in the Host header, token and all', async (_case, hostHeader) => {
-      const reply = await get(dashboard.url, { Host: hostHeader() });
+      const reply = await get(home(), { Host: hostHeader() });
 
       expect(reply.status).toBe(403);
     });
 
-    it('takes nothing but a read', async () => {
-      expect((await get(dashboard.url, {}, 'POST')).status).toBe(405);
+    it('takes a post at /action only, and nothing but a post there', async () => {
+      expect((await get(home(), {}, 'POST')).status).toBe(405);
+      expect((await get(eventsUrl(), {}, 'POST')).status).toBe(405);
+      expect((await get(`${origin()}/action`)).status).toBe(405);
     });
 
     it('serves nothing but the page and its stream', async () => {
-      const reply = await get(`${address().origin}/other${address().search}`);
+      const reply = await get(`${address().origin}/other`);
 
       expect(reply.status).toBe(404);
     });
 
-    it('answers 500 for a store it cannot read, and ends a stream it could not fill', async () => {
+    it('serves the shell without reading the store, and ends a stream it could not fill', async () => {
       db.close();
 
-      const page = await get(dashboard.url);
+      const page = await get(home('?session=s-1'));
       const stream = await get(eventsUrl());
 
-      expect(page.status).toBe(500);
-      expect(page.body).toBe('The store could not be read.');
+      expect(page.status).toBe(200);
       expect(stream.status).toBe(200);
       expect(stream.body).toBe('');
     });
 
     it('serves the page under a CSP that admits only its own nonce and stream', async () => {
-      const reply = await get(dashboard.url, { Host: host() });
+      const reply = await get(home(), { Host: host() });
       const csp = String(reply.headers['content-security-policy']);
       const nonce = /'nonce-([^']+)'/.exec(csp)?.[1];
 
@@ -296,7 +509,7 @@ describe('startWebDashboard', () => {
         reviewBy: '2000-01-01',
       });
 
-      const page = (await get(dashboard.url)).body;
+      const page = await readPage(home());
       const snapshot = buildDashboardSnapshot(db, repo, Date.now());
       const at = (text: string): number => page.indexOf(escapeHtml(text));
 
@@ -330,7 +543,7 @@ describe('startWebDashboard', () => {
       // The planned task; the open ledger, overdue marked, is the Debt sheet's.
       expect(page).toContain('t-planned');
       expect(page).not.toContain('accepted by alexis');
-      const debtSheet = (await get(`${dashboard.url}&sheet=debt`)).body;
+      const debtSheet = await readPage(home('?sheet=debt'));
       expect(debtSheet).toMatch(/#1<\/span><span class="state state-blocked">overdue/);
       expect(debtSheet).toContain('accepted by alexis, review by 2000-01-01');
     });
@@ -338,7 +551,7 @@ describe('startWebDashboard', () => {
     it('puts the review in the inbox when no conductor runs to gate it', async () => {
       seedSession('s-review', ['running', 'awaiting-review']);
 
-      const page = (await get(dashboard.url)).body;
+      const page = await readPage(home());
 
       expect(page).toContain(escapeHtml('pup review s-review then pup merge s-review --pr'));
     });
@@ -351,7 +564,7 @@ describe('startWebDashboard', () => {
       // The first look starts the clock; the page's own look, a quarter-hour on, finds it held.
       buildDashboardSnapshot(db, repo, Date.now() - 15 * 60_000);
 
-      const page = (await get(dashboard.url)).body;
+      const page = await readPage(home());
       const snapshot = buildDashboardSnapshot(db, repo, Date.now());
 
       const line = page.slice(page.indexOf('need-conductor'));
@@ -366,7 +579,7 @@ describe('startWebDashboard', () => {
       seedSession('s1', ['running'], '<img src=x onerror=alert(1)>\u001b[31mred\u009b2J');
       appendEvent(db, 's1', 'question', { text: '</script><script>alert(2)</script>' });
 
-      const page = (await get(dashboard.url)).body;
+      const page = await readPage(home());
 
       expect(page).not.toContain('<img');
       expect(page).not.toContain('<script>alert');
@@ -393,7 +606,7 @@ describe('startWebDashboard', () => {
         { hook_event_name: 'Stop' },
       ]);
 
-      const page = (await get(dashboard.url)).body;
+      const page = await readPage(home());
 
       expect(page).toContain('waiting on input (Allow Bash?)');
       expect(page).toContain('idle (turn ended, no done signal)');
@@ -414,7 +627,7 @@ describe('startWebDashboard', () => {
       });
       seedSession('s-old', ['running']);
 
-      const page = (await get(dashboard.url)).body;
+      const page = await readPage(home());
 
       expect(page).toContain(
         '<div class="fact">claude-opus-5-5 xhigh, rung 2/2 after turn-death</div>',
@@ -433,7 +646,7 @@ describe('startWebDashboard', () => {
         reviewBy: '2999-01-01',
       });
 
-      const page = (await get(dashboard.url)).body;
+      const page = await readPage(home());
 
       expect(page).toContain('<span class="sid">(unminted session id)</span>');
       expect(page).not.toContain('debt #');
@@ -445,10 +658,12 @@ describe('startWebDashboard', () => {
       seedSession('s-ask', ['running']);
       appendEvent(db, 's-ask', 'question', { text: `see ${PR}` });
 
-      const page = (await get(dashboard.url)).body;
+      const page = await readPage(home());
 
-      // The sheet links are the page's own, token and all; nothing else is a link.
-      expect(page).not.toMatch(/<a href="(?!\?token=[\w-]+&amp;sheet=\w+")/);
+      // The sheet and session-view links are the page's own, with no token:
+      // the secret carries the page; nothing else is a link.
+      expect(page).not.toMatch(/<a href="(?!\?(?:sheet=\w+|session=[\w-]+)")/);
+      expect(page).not.toContain(String(address().searchParams.get('token')));
       expect(page).not.toContain('evil.example');
       expect(page).toContain('(PR url outside the pull-request shape; inspect the store)');
       expect(page).toContain(`question: see ${PR}`);
@@ -457,7 +672,7 @@ describe('startWebDashboard', () => {
 
   describe('the sheets', () => {
     const DAY = 86_400_000;
-    const sheetUrl = (sheet: string): string => `${dashboard.url}&sheet=${sheet}`;
+    const sheetUrl = (sheet: string): string => home(`?sheet=${sheet}`);
     // biome-ignore lint/suspicious/noControlCharactersInRegex: their absence is what is asserted
     const CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/;
 
@@ -481,8 +696,7 @@ describe('startWebDashboard', () => {
       });
     }
 
-    it('serves each sheet under a bar linking every sheet with the token, the current one marked', async () => {
-      const token = address().searchParams.get('token');
+    it('serves each sheet under a bar linking every sheet, the current one marked', async () => {
       for (const [sheet, title] of [
         ['overview', 'Overview'],
         ['health', 'Health'],
@@ -494,27 +708,27 @@ describe('startWebDashboard', () => {
 
         expect(reply.status).toBe(200);
         expect(reply.body).toContain(`<title>pup dashboard — ${title}</title>`);
-        expect(reply.body).toContain(`<a href="?token=${token}&amp;sheet=overview"`);
-        expect(reply.body).toContain(`<a href="?token=${token}&amp;sheet=health"`);
-        expect(reply.body).toContain(`<a href="?token=${token}&amp;sheet=debt"`);
-        expect(reply.body).toContain(`<a href="?token=${token}&amp;sheet=tasks"`);
-        expect(reply.body).toContain(`<a href="?token=${token}&amp;sheet=decisions"`);
+        expect(reply.body).toContain('<a href="?sheet=overview"');
+        expect(reply.body).toContain('<a href="?sheet=health"');
+        expect(reply.body).toContain('<a href="?sheet=debt"');
+        expect(reply.body).toContain('<a href="?sheet=tasks"');
+        expect(reply.body).toContain('<a href="?sheet=decisions"');
         expect(reply.body).toContain(`sheet=${sheet}" aria-current="page">${title}</a>`);
       }
-      expect((await get(dashboard.url)).body).toContain('aria-current="page">Overview</a>');
+      expect(await readPage(home())).toContain('aria-current="page">Overview</a>');
     });
 
-    it('refuses a sheet it does not have, and a sheet without the token', async () => {
+    it('refuses a sheet it does not have, and its stream without the secret', async () => {
       expect((await get(sheetUrl('releases'))).status).toBe(404);
-      expect((await get(`${address().origin}/?sheet=debt`)).status).toBe(403);
+      expect((await get(`${eventsUrl()}?sheet=debt`, NO_SECRET)).status).toBe(403);
     });
 
     it('renders every sheet on an empty store with a one-line hint for each chart', async () => {
-      const overview = (await get(dashboard.url)).body;
-      const debt = (await get(sheetUrl('debt'))).body;
-      const health = (await get(sheetUrl('health'))).body;
-      const tasks = (await get(sheetUrl('tasks'))).body;
-      const decisions = (await get(sheetUrl('decisions'))).body;
+      const overview = await readPage(home());
+      const debt = await readPage(sheetUrl('debt'));
+      const health = await readPage(sheetUrl('health'));
+      const tasks = await readPage(sheetUrl('tasks'));
+      const decisions = await readPage(sheetUrl('decisions'));
 
       expect(overview).not.toContain('<svg');
       expect(overview).toContain('No goal yet — `pup brief edit` writes the Destination.');
@@ -535,12 +749,14 @@ describe('startWebDashboard', () => {
     });
 
     it("leads the Overview with the brief's Destination", async () => {
-      writeBrief('## Destination\nShip the sheets.\nThen the actions.\n\n## Priorities\nsecret\n');
+      writeBrief(
+        '## Destination\nShip the sheets.\nThen the actions.\n\n## Priorities\nnot-the-destination\n',
+      );
 
-      const page = (await get(dashboard.url)).body;
+      const page = await readPage(home());
 
       expect(page).toContain('<p class="brief">Ship the sheets.\nThen the actions.</p>');
-      expect(page).not.toContain('secret');
+      expect(page).not.toContain('not-the-destination');
     });
 
     it('shows the figures pup audit stored and pup debt lists, each with its week', async () => {
@@ -566,7 +782,7 @@ describe('startWebDashboard', () => {
         old,
       );
 
-      const page = (await get(dashboard.url)).body;
+      const page = await readPage(home());
       // `pup audit` prints each figure as the after side of its transition.
       const audited = (
         metric: 'deadExports' | 'duplicatedLines' | 'coverageRatio',
@@ -614,7 +830,7 @@ describe('startWebDashboard', () => {
         origin: 'human',
       });
 
-      const page = (await get(dashboard.url)).body;
+      const page = await readPage(home());
       const merges =
         /<figcaption>Merges per week, week starting: ([^<]*)<\/figcaption>/.exec(page)?.[1] ?? '';
 
@@ -630,7 +846,7 @@ describe('startWebDashboard', () => {
       fileDebt(`Oversize diff ${evil}`, [`src/${evil}.ts`], { reason: evil, acceptedBy: evil });
       seedSession('s-evil', ['running'], evil);
 
-      for (const page of [(await get(dashboard.url)).body, (await get(sheetUrl('debt'))).body]) {
+      for (const page of [await readPage(home()), await readPage(sheetUrl('debt'))]) {
         expect(page).not.toContain('<img');
         expect(page).not.toMatch(CONTROL);
         expect(page).toContain('&lt;img src=x onerror=alert(1)&gt;');
@@ -642,7 +858,7 @@ describe('startWebDashboard', () => {
       writeBrief(`## Destination\nShip it.\n##${' '.repeat(7950)}\u2028\n`);
 
       const started = Date.now();
-      const page = (await get(dashboard.url)).body;
+      const page = await readPage(home());
 
       expect(Date.now() - started).toBeLessThan(1000);
       expect(page).toContain('<p class="brief">Ship it.');
@@ -657,7 +873,7 @@ describe('startWebDashboard', () => {
         mkdirSync(dirname(briefPath(repo)), { recursive: true });
         plant(briefPath(repo));
 
-        const page = (await get(dashboard.url)).body;
+        const page = await readPage(home());
 
         expect(page).toContain('is not a plain file pup can read');
       },
@@ -677,12 +893,12 @@ describe('startWebDashboard', () => {
         },
       );
 
-      const overview = (await get(dashboard.url)).body;
-      for (const page of [overview, (await get(sheetUrl('debt'))).body]) {
+      const overview = await readPage(home());
+      for (const page of [overview, await readPage(sheetUrl('debt'))]) {
         expect(page).not.toContain('\u202e');
       }
       expect(overview).toContain('debt #1: Nested package src/evil\ufffdgnp.ts changed');
-      expect((await get(sheetUrl('debt'))).body).toContain('<code>src/evil\ufffdgnp.ts</code>');
+      expect(await readPage(sheetUrl('debt'))).toContain('<code>src/evil\ufffdgnp.ts</code>');
     });
 
     it('treats a figure stored as Infinity as unmeasured, and draws no NaN', async () => {
@@ -697,14 +913,14 @@ describe('startWebDashboard', () => {
         projectId(repo),
       );
 
-      const page = (await get(dashboard.url)).body;
+      const page = await readPage(home());
 
       expect(page).not.toMatch(/NaN|Infinity/);
       expect(page).toContain('<div class="k">duplicated lines</div><div class="v">—</div>');
     });
 
     it('keeps streaming every sheet while another sheet cannot be rendered', async () => {
-      const debt = await openStream(`${origin()}/events${address().search}&sheet=debt`);
+      const debt = await openStream(`${origin()}/events?sheet=debt`);
       try {
         if (debt.frames.length === 0) await debt.next();
         // A reason stored as a BLOB, which the Debt sheet cannot read as text.
@@ -730,7 +946,7 @@ describe('startWebDashboard', () => {
     });
 
     it("streams a sheet's own board, and a change to it within one poll", async () => {
-      const stream = await openStream(`${origin()}/events${address().search}&sheet=debt`);
+      const stream = await openStream(`${origin()}/events?sheet=debt`);
       try {
         const first = stream.frames[0] ?? (await stream.next());
         expect(first).toContain('No open debt — nothing to pay down.');
@@ -812,6 +1028,582 @@ describe('startWebDashboard', () => {
       } finally {
         stream.close();
       }
+    });
+  });
+  describe('what it does', () => {
+    const actionUrl = (): string => `${origin()}/action`;
+
+    /** The action nonce a freshly opened stream hands the page. */
+    async function pageKey(): Promise<string> {
+      const stream = await openStream(eventsUrl());
+      try {
+        return await stream.nonce();
+      } finally {
+        stream.close();
+      }
+    }
+
+    function seedDebt(): number {
+      insertLedgerEntry(db, {
+        projectId: projectId(repo),
+        description: 'Oversize diff (812 lines) merged from session s-pr',
+        files: ['src/a.ts'],
+        reason: 'one feature',
+        acceptedBy: 'human',
+        reviewBy: 'next sprint',
+      });
+      return listLedgerEntries(db, projectId(repo))[0]?.id ?? 0;
+    }
+
+    const isOpen = (id: number): boolean =>
+      listLedgerEntries(db, projectId(repo)).some((entry) => entry.id === id);
+
+    it.each([
+      ['no secret', () => actionUrl(), (): Record<string, string> => NO_SECRET],
+      ['a wrong secret', () => actionUrl(), () => ({ 'X-Pup-Secret': 'A'.repeat(43) })],
+      [
+        'the spent token instead of the secret',
+        () => `${actionUrl()}?token=${address().searchParams.get('token')}`,
+        () => NO_SECRET,
+      ],
+      [
+        'only a cookie, as another 127.0.0.1 port could plant',
+        () => actionUrl(),
+        () => ({ ...NO_SECRET, Cookie: `pup-dashboard-${address().port}=${secret}` }),
+      ],
+      ['no Origin', () => actionUrl(), () => ({ Origin: '' })],
+      [
+        'a cross-site Sec-Fetch-Site',
+        () => actionUrl(),
+        () => ({ 'Sec-Fetch-Site': 'cross-site' }),
+      ],
+      ['a same-site Sec-Fetch-Site', () => actionUrl(), () => ({ 'Sec-Fetch-Site': 'same-site' })],
+    ])('refuses a post with %s, and changes nothing', async (_case, url, headers) => {
+      const id = seedDebt();
+      const key = await pageKey();
+
+      const reply = await post(
+        url(),
+        { action: 'debt-close', id: String(id), nonce: key },
+        headers(),
+      );
+
+      expect(reply.status).toBe(403);
+      expect(isOpen(id)).toBe(true);
+      // The key was never read, so the page still holds a good one.
+      expect(
+        (await post(actionUrl(), { action: 'debt-close', id: String(id), nonce: key })).status,
+      ).toBe(200);
+    });
+
+    it('refuses a wrong nonce, a reused one and a used confirmation, and changes nothing', async () => {
+      const id = seedDebt();
+      const key = await pageKey();
+      const fields = { action: 'debt-close', id: String(id) };
+
+      const wrong = await post(actionUrl(), { ...fields, nonce: 'A'.repeat(43) });
+      const asked = (await post(actionUrl(), { ...fields, nonce: key })).json();
+      const reused = await post(actionUrl(), { ...fields, nonce: key });
+
+      expect(wrong.status).toBe(403);
+      expect(wrong.body).toContain('nothing was done');
+      expect(reused.status).toBe(403);
+      expect(isOpen(id)).toBe(true);
+
+      const done = (
+        await post(actionUrl(), { ...fields, nonce: String(asked.confirmNonce) })
+      ).json();
+      const again = await post(actionUrl(), { ...fields, nonce: String(asked.confirmNonce) });
+
+      expect(done).toEqual({ ok: true, message: `Closed ledger entry #${id}.` });
+      expect(again.status).toBe(403);
+    });
+
+    it('refuses a post naming another origin, and one that is not a form', async () => {
+      const id = seedDebt();
+      const key = await pageKey();
+
+      const foreign = await post(
+        actionUrl(),
+        { action: 'debt-close', id: String(id), nonce: key },
+        { Origin: 'http://attacker.example' },
+      );
+      const json = await post(actionUrl(), { nonce: key }, { 'Content-Type': 'application/json' });
+
+      expect(foreign.status).toBe(403);
+      expect(json.status).toBe(415);
+      expect(isOpen(id)).toBe(true);
+    });
+
+    it.each([
+      ['kill', { session: 's-live' }, 'Kill session s-live?'],
+      ['merge', { session: 's-live' }, 'Gate session s-live and open its pull request?'],
+      ['land', { session: 's-live' }, 'Land session s-live?'],
+      ['debt-close', { id: '1' }, 'Close ledger entry #1?'],
+    ])(
+      'asks before %s runs, and runs nothing on the first post',
+      async (action, fields, question) => {
+        seedSession('s-live', ['running']);
+        const id = seedDebt();
+
+        const answer = (
+          await post(actionUrl(), { action, ...fields, nonce: await pageKey() })
+        ).json();
+
+        expect(answer.ok).toBe(true);
+        expect(String(answer.confirm)).toContain(question);
+        expect(answer.confirmNonce).toEqual(expect.any(String));
+        expect(answer.nonce).toEqual(expect.any(String));
+        expect(getSession(db, 's-live')?.state).toBe('running');
+        expect(isOpen(id)).toBe(true);
+      },
+    );
+
+    it('takes nothing new in once closing, and closes only after the action still running', async () => {
+      let finish = (_lines: string[]): void => {};
+      let started = (): void => {};
+      const running = new Promise<void>((done) => {
+        started = done;
+      });
+      vi.mocked(runAction).mockImplementationOnce(
+        () =>
+          new Promise((done) => {
+            finish = done;
+            started();
+          }),
+      );
+      const late = await pageKey();
+      const first = post(actionUrl(), { action: 'tell', message: 'hi', nonce: await pageKey() });
+      await running;
+      const calls = vi.mocked(runAction).mock.calls.length;
+
+      let closed = false;
+      const closing = dashboard.close().then(() => {
+        closed = true;
+      });
+      try {
+        const refused = await post(actionUrl(), { action: 'tell', message: 'late', nonce: late });
+        const stream = await get(eventsUrl());
+
+        expect(refused.status).toBe(503);
+        expect(refused.body).toContain('nothing was done');
+        expect(stream.status).toBe(503);
+        expect(vi.mocked(runAction).mock.calls.length).toBe(calls);
+        expect(closed).toBe(false);
+      } finally {
+        finish(['Told the conductor; the message landed.']);
+      }
+      expect((await first).json()).toMatchObject({ ok: true });
+      await closing;
+      expect(closed).toBe(true);
+    });
+
+    it('refuses debt fields `pup merge` refuses before asking, and keeps the page able to act', async () => {
+      seedSession('s-live', ['running']);
+
+      const answer = (
+        await post(actionUrl(), {
+          action: 'merge',
+          session: 's-live',
+          reason: 'one feature',
+          nonce: await pageKey(),
+        })
+      ).json();
+
+      expect(answer).toEqual({
+        ok: false,
+        message: 'A debt reason and a review-by go together; nothing was gated.',
+        nonce: expect.any(String),
+      });
+    });
+
+    it('runs a confirmation for the action and fields it was minted for and no others', async () => {
+      const id = seedDebt();
+      const fields = { action: 'debt-close', id: String(id) };
+      const asked = (await post(actionUrl(), { ...fields, nonce: await pageKey() })).json();
+      const askedAgain = (
+        await post(actionUrl(), { ...fields, nonce: String(asked.nonce) })
+      ).json();
+
+      const other = (
+        await post(actionUrl(), { ...fields, id: '999', nonce: String(asked.confirmNonce) })
+      ).json();
+      const kill = (
+        await post(actionUrl(), {
+          action: 'kill',
+          session: 's-x',
+          nonce: String(askedAgain.confirmNonce),
+        })
+      ).json();
+      // Used up by the refusal: the right fields cannot ride it afterwards.
+      const late = await post(actionUrl(), { ...fields, nonce: String(asked.confirmNonce) });
+
+      const refusal = {
+        ok: false,
+        message: 'That confirmation was for another action, or came too late; nothing was done.',
+      };
+      expect(other).toEqual(refusal);
+      expect(kill).toEqual(refusal);
+      expect(late.status).toBe(403);
+      expect(isOpen(id)).toBe(true);
+    });
+
+    it('takes a post the browser says is same-origin', async () => {
+      const id = seedDebt();
+
+      const reply = await post(
+        actionUrl(),
+        { action: 'debt-close', id: String(id), nonce: await pageKey() },
+        { 'Sec-Fetch-Site': 'same-origin' },
+      );
+
+      expect(reply.status).toBe(200);
+      expect(reply.json().confirm).toEqual(expect.any(String));
+    });
+
+    it('refuses a page nonce left unused for 30 minutes, and changes nothing', async () => {
+      const id = seedDebt();
+      const key = await pageKey();
+      const now = Date.now();
+      vi.spyOn(Date, 'now').mockReturnValue(now + 30 * 60_000 + 1);
+      try {
+        const reply = await post(actionUrl(), { action: 'debt-close', id: String(id), nonce: key });
+
+        expect(reply.status).toBe(403);
+        expect(reply.body).toContain('has lapsed');
+        expect(isOpen(id)).toBe(true);
+      } finally {
+        vi.mocked(Date.now).mockRestore();
+      }
+    });
+
+    it('holds at most 256 nonces, dropping the oldest first', async () => {
+      const id = seedDebt();
+      const oldest = await pageKey();
+      const second = await pageKey();
+      for (let served = 0; served < 255; served++) await pageKey();
+
+      const dropped = await post(actionUrl(), {
+        action: 'debt-close',
+        id: String(id),
+        nonce: oldest,
+      });
+      const kept = await post(actionUrl(), { action: 'debt-close', id: String(id), nonce: second });
+
+      expect(dropped.status).toBe(403);
+      expect(kept.status).toBe(200);
+    });
+
+    it('sweeps the nonces that lapsed whenever it mints one', async () => {
+      const id = seedDebt();
+      const key = await pageKey();
+      const now = Date.now();
+      vi.spyOn(Date, 'now').mockReturnValue(now + 30 * 60_000 + 1);
+      try {
+        await pageKey();
+      } finally {
+        vi.mocked(Date.now).mockRestore();
+      }
+
+      const reply = await post(actionUrl(), { action: 'debt-close', id: String(id), nonce: key });
+
+      expect(reply.status).toBe(403);
+    });
+
+    it('answers an action it does not have with a refusal and the next nonce', async () => {
+      const answer = (await post(actionUrl(), { action: 'deploy', nonce: await pageKey() })).json();
+
+      expect(answer).toEqual({
+        ok: false,
+        message: 'No such action; nothing was done.',
+        nonce: expect.any(String),
+      });
+    });
+
+    it('drops a post past 64 KiB unread, and changes nothing', async () => {
+      const id = seedDebt();
+      const fields = { action: 'debt-close', id: String(id), nonce: await pageKey() };
+
+      const outcome = await post(actionUrl(), { ...fields, pad: 'x'.repeat(65 * 1024) }).then(
+        (reply) => reply.status,
+        () => 'reset',
+      );
+
+      expect([413, 'reset']).toContain(outcome);
+      expect(isOpen(id)).toBe(true);
+    });
+
+    it('survives a post its client gave up on mid-body, and keeps answering', async () => {
+      const id = seedDebt();
+      await new Promise<void>((resolve) => {
+        const req = request(actionUrl(), {
+          method: 'POST',
+          headers: withSecret({
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Content-Length': '1000',
+            Origin: origin(),
+          }),
+        });
+        req.on('error', () => resolve());
+        req.write('action=debt-close', () => setTimeout(() => req.destroy(), 50));
+      });
+
+      const reply = await post(actionUrl(), {
+        action: 'debt-close',
+        id: String(id),
+        nonce: await pageKey(),
+      });
+
+      expect(reply.status).toBe(200);
+      expect(isOpen(id)).toBe(true);
+    });
+
+    it('binds a confirmation to its fields whatever order the form sends them in', async () => {
+      seedSession('s-live', ['running']);
+      const asked = (
+        await post(actionUrl(), {
+          action: 'merge',
+          session: 's-live',
+          reason: 'one feature',
+          reviewBy: 'next sprint',
+          approver: 'human',
+          nonce: await pageKey(),
+        })
+      ).json();
+
+      const ran = (
+        await post(actionUrl(), {
+          approver: 'human',
+          reviewBy: 'next sprint',
+          reason: 'one feature',
+          session: 's-live',
+          action: 'merge',
+          nonce: String(asked.confirmNonce),
+        })
+      ).json();
+
+      // Run, not refused as another action's: core answers, here that this
+      // temp repo has no stack to gate.
+      expect(ran.ok).toBe(false);
+      expect(String(ran.message)).toContain('No adapter detected for this repo');
+    });
+
+    it("shows core's refusal as the answer, and hands the page its next nonce", async () => {
+      const first = (
+        await post(actionUrl(), {
+          action: 'steer',
+          session: 's-gone',
+          message: 'hi',
+          nonce: await pageKey(),
+        })
+      ).json();
+      const second = (
+        await post(actionUrl(), {
+          action: 'answer',
+          target: 's-gone',
+          reply: '1',
+          nonce: String(first.nonce),
+        })
+      ).json();
+
+      expect(first.ok).toBe(false);
+      expect(String(first.message)).toContain('s-gone');
+      expect(second.ok).toBe(false);
+      expect(String(second.message)).toContain('s-gone');
+      expect(second.nonce).toEqual(expect.any(String));
+    });
+
+    it("shows the ledger's refusal of an entry that is not open, once confirmed", async () => {
+      const id = seedDebt();
+      const asked = (
+        await post(actionUrl(), { action: 'debt-close', id: String(id), nonce: await pageKey() })
+      ).json();
+      const missing = (
+        await post(actionUrl(), { action: 'debt-close', id: '999', nonce: String(asked.nonce) })
+      ).json();
+      const missingDone = (
+        await post(actionUrl(), {
+          action: 'debt-close',
+          id: '999',
+          nonce: String(missing.confirmNonce),
+        })
+      ).json();
+
+      expect(missingDone).toEqual({ ok: false, message: 'No open ledger entry #999.' });
+      expect(isOpen(id)).toBe(true);
+    });
+
+    it('puts the actions on the sheets: answers, a tell, launches and closes', async () => {
+      vi.mocked(hasConductorWindow).mockReturnValue(true);
+      seedSession('s-asking', ['running']);
+      appendEvent(db, 's-asking', 'question', {
+        text: 'rebase or merge?',
+        options: ['rebase', 'merge'],
+        recommended: 1,
+      });
+      insertTask(db, {
+        id: 't-planned',
+        projectId: projectId(repo),
+        spec: JSON.stringify({ id: 't-planned', goal: 'planned work', scopeIn: ['src/**'] }),
+        origin: 'human',
+      });
+      const id = seedDebt();
+
+      const overview = await readPage(home());
+      const debt = await readPage(home('?sheet=debt'));
+      const tasks = await readPage(home('?sheet=tasks'));
+
+      expect(overview).toContain(
+        'name="reply" value="1" class="recommended">1. rebase (recommended)',
+      );
+      expect(overview).toContain('<form class="act" data-action="tell">');
+      expect(overview).toContain(
+        '<form class="act" data-action="launch"><input type="hidden" name="task" value="t-planned">',
+      );
+      expect(overview).toContain(`session=s-asking">open</a>`);
+      expect(debt).toContain(
+        `<form class="act" data-action="debt-close"><input type="hidden" name="id" value="${id}">`,
+      );
+      expect(tasks).toContain(
+        'data-action="launch"><input type="hidden" name="task" value="t-planned">',
+      );
+    });
+  });
+
+  describe('the session view', () => {
+    const viewUrl = (sessionId: string): string => home(`?session=${sessionId}`);
+    const viewEvents = (sessionId: string): string => `${origin()}/events?session=${sessionId}`;
+
+    function seedWindow(sessionId: string, path: SessionState[]): void {
+      seedSession(sessionId, path);
+      db.prepare('UPDATE sessions SET tmux_target = ? WHERE id = ?').run('%5', sessionId);
+    }
+
+    afterEach(() => {
+      vi.mocked(capturePane).mockReset();
+    });
+
+    it("shows the worker's pane escaped, with a copyable attach line and its actions", async () => {
+      seedWindow('s-1', ['running']);
+      vi.mocked(capturePane).mockReturnValue(
+        '> <script>alert(1)</script>\n\u001b[31mred\u202e & done\n',
+      );
+
+      const page = await readPage(viewUrl('s-1'));
+
+      expect(capturePane).toHaveBeenCalledWith({ sessionId: 's-1', paneId: '%5' });
+      expect(page).toContain(
+        '<pre class="pane">&gt; &lt;script&gt;alert(1)&lt;/script&gt;\n\uFFFD[31mred\uFFFD &amp; done\n</pre>',
+      );
+      expect(page).not.toContain('<script>alert');
+      expect(page).not.toContain('\u001b');
+      expect(page).not.toContain('\u202e');
+      expect(page).toContain('<code id="attach">pup attach s-1</code>');
+      expect(page).toContain('<button type="button" data-copy="attach">Copy</button>');
+      for (const action of ['steer', 'merge', 'kill']) {
+        expect(page).toContain(`data-action="${action}"`);
+      }
+      expect(page).toContain('name="reason"');
+      expect(page).toContain('name="reviewBy"');
+      expect(page).toContain('name="approver"');
+    });
+
+    it('refreshes the pane over its stream as the window changes', async () => {
+      seedWindow('s-1', ['running']);
+      vi.mocked(capturePane).mockReturnValue('first <b>screen</b>');
+      const stream = await openStream(viewEvents('s-1'));
+      try {
+        const first = stream.frames[0] ?? (await stream.next());
+        expect(first).toContain('first &lt;b&gt;screen&lt;/b&gt;');
+
+        const arriving = stream.next();
+        vi.mocked(capturePane).mockReturnValue('second screen');
+        const frame = await arriving;
+
+        expect(frame).toContain('<pre class="pane">second screen</pre>');
+        expect(frame).not.toContain('first');
+      } finally {
+        stream.close();
+      }
+    });
+
+    it('says the window is gone rather than failing, when tmux has no pane', async () => {
+      seedWindow('s-1', ['running']);
+      vi.mocked(capturePane).mockImplementation(() => {
+        throw new SessionPaneMissingError('s-1', '%5', 'gone');
+      });
+
+      expect((await get(viewUrl('s-1'))).status).toBe(200);
+      expect(await readPage(viewUrl('s-1'))).toContain(
+        'No live window: its pane is gone or was never recorded.',
+      );
+    });
+
+    it('says the pane could not be read when tmux fails another way', async () => {
+      seedWindow('s-1', ['running']);
+      vi.mocked(capturePane).mockImplementation(() => {
+        throw new Error('tmux: server exited');
+      });
+
+      expect(await readPage(viewUrl('s-1'))).toContain('The pane could not be read right now.');
+    });
+
+    it('says a killed session has no window, and offers nothing to act on', async () => {
+      seedWindow('s-k', ['running', 'killed']);
+
+      const page = await readPage(viewUrl('s-k'));
+
+      expect(page).toContain('No window: the session was killed.');
+      expect(page).toContain('Killed: nothing left to act on.');
+      expect(capturePane).not.toHaveBeenCalled();
+    });
+
+    it('reads no pane for a merged session, whose kept pane id can name another window', async () => {
+      seedMerge('s-m', PR);
+      db.prepare('UPDATE sessions SET tmux_target = ? WHERE id = ?').run('%7', 's-m');
+      vi.mocked(capturePane).mockReturnValue('the operator shell');
+
+      const page = await readPage(viewUrl('s-m'));
+
+      expect(page).toContain('No window: the session merged and its window closed.');
+      expect(page).not.toContain('the operator shell');
+      expect(capturePane).not.toHaveBeenCalled();
+    });
+
+    it('links a merged session to its PR on GitHub and offers no button that merges there', async () => {
+      seedMerge('s-pr', PR);
+
+      const page = await readPage(viewUrl('s-pr'));
+      const forms = [...page.matchAll(/<form [^>]*data-action="([^"]+)"/g)].map((m) => m[1]);
+
+      expect(page).toContain(`<a href="${PR}" target="_blank" rel="noopener noreferrer">`);
+      expect(forms.sort()).toEqual(['fix', 'land', 'merge']);
+      expect(forms.every((action) => (ACTIONS as readonly string[]).includes(action ?? ''))).toBe(
+        true,
+      );
+      // The one merge is the gate's `--pr` re-gate, which opens or updates
+      // the PR; the PR itself is merged on GitHub, by its link.
+      expect(page).toContain('Re-gate the PR');
+      expect(page).not.toMatch(/<form[^>]*github/i);
+    });
+
+    it('serves the same shell for an id the store does not hold, and says so on its stream', async () => {
+      seedWindow('s-1', ['running']);
+      const shell = (body: string): string =>
+        body.replace(/nonce-?="?[^"';]+/g, '').replace(/s-(1|none)/g, '');
+
+      const held = await get(viewUrl('s-1'));
+      const missing = await get(viewUrl('s-none'));
+
+      expect(missing.status).toBe(200);
+      expect(shell(missing.body)).toBe(shell(held.body));
+      expect(await readPage(viewUrl('s-none'))).toContain(
+        '<p class="hint">No session s-none in this store.</p>',
+      );
+    });
+
+    it('answers 404 for an id outside the minted shape, which names no view', async () => {
+      expect((await get(viewUrl('s%20x'))).status).toBe(404);
     });
   });
 });

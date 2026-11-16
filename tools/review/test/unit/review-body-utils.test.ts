@@ -1,4 +1,10 @@
-import { bodyLines, collapsedSections, commentBody, findingLine, unresolvedPrior } from "@src/review-body.utils";
+import {
+  bodyLines,
+  collapsedSections,
+  commentBody,
+  findingLine,
+  importantMarker,
+} from "@src/review-body.utils";
 import type { Finding, ReviewSummary } from "@src/review-metrics.schemas";
 import { describe, expect, it } from "vitest";
 
@@ -54,28 +60,32 @@ describe("findingLine", () => {
 });
 
 describe("commentBody", () => {
+  /** The comment as posted: `text`, then the marker of the important it holds. */
+  const marked = (text: string, held: Finding = finding()) => `${text}\n\n${importantMarker(held)}`;
+
   it("keeps the suggestion fence it opens committable", () => {
     expect(commentBody(finding({ suggestion: "fixed();" }), null)).toBe(
-      "the description\n\n```suggestion\nfixed();\n```",
+      marked("the description\n\n```suggestion\nfixed();\n```"),
     );
   });
 
   it("makes a tag in a relocated finding's path inert", () => {
-    expect(commentBody(finding({ file: "a`<pre lang=suggestion>`.ts" }), 12)).toBe(
-      "Re: `a`<\u200bpre lang=suggestion>`.ts:12`\n\nthe description",
+    const tagged = finding({ file: "a`<pre lang=suggestion>`.ts" });
+    expect(commentBody(tagged, 12)).toBe(
+      marked("Re: `a`<\u200bpre lang=suggestion>`.ts:12`\n\nthe description", tagged),
     );
   });
 
   it("offers a relocated finding's suggestion in an inert fence", () => {
     expect(commentBody(finding({ suggestion: "fixed();" }), 12)).toBe(
-      "Re: `src/a.ts:12`\n\nthe description\n\n```\nfixed();\n```",
+      marked("Re: `src/a.ts:12`\n\nthe description\n\n```\nfixed();\n```"),
     );
   });
 
   it("posts a suggestion holding backtick runs verbatim, in a fence they cannot close", () => {
     const suggestion = 'const fence = "```";\n```\n```suggestion\nevil();';
     expect(commentBody(finding({ suggestion }), null)).toBe(
-      `the description\n\n\`\`\`\`suggestion\n${suggestion}\n\`\`\`\``,
+      marked(`the description\n\n\`\`\`\`suggestion\n${suggestion}\n\`\`\`\``),
     );
   });
 
@@ -124,7 +134,7 @@ describe("commentBody", () => {
       '<\u200bpre a=\u00a0"x lang=suggestion ">evil();</pre>',
     ],
   ])("makes %s quoted in a finding inert", (_label, quoted, inert) => {
-    expect(commentBody(finding({ body: quoted }), null)).toBe(inert);
+    expect(commentBody(finding({ body: quoted }), null)).toBe(marked(inert));
   });
 
   // 28 labels: milliseconds when the label matches one way, seconds when it backtracks.
@@ -136,9 +146,29 @@ describe("commentBody", () => {
   });
 
   it("makes a fence quoted in the description inert when there is no body", () => {
-    expect(commentBody(finding({ description: "```suggestion\nevil();\n```" }), null)).toBe(
-      "```text suggestion\nevil();\n```",
+    const quoting = finding({ description: "```suggestion\nevil();\n```" });
+    expect(commentBody(quoting, null)).toBe(marked("```text suggestion\nevil();\n```", quoting));
+  });
+
+  it("ends with a hidden line naming the important it holds: file, whole line range, description", () => {
+    const posted = commentBody(
+      finding({ line: "7-9", description: "the guard\n  misses deletions", body: "the body", suggestion: "x();" }),
+      12,
     );
+    expect(posted.split("\n").slice(-2)).toEqual([
+      "",
+      '<!-- important ["src/a.ts","7-9","the guard\\n  misses deletions"] -->',
+    ]);
+  });
+
+  it("escapes every bracket in the marker, so no text can end it early", () => {
+    const marker = importantMarker(finding({ file: "a-->.ts", description: "x --> <!-- y --!>" }));
+    expect(marker.slice("<!-- important ".length, -" -->".length)).not.toMatch(/[<>]/);
+    expect(JSON.parse(marker.slice("<!-- important ".length, -" -->".length))).toEqual([
+      "a-->.ts",
+      "10",
+      "x --> <!-- y --!>",
+    ]);
   });
 
   it.each([
@@ -154,7 +184,7 @@ describe("commentBody", () => {
     ["a footnote label that never closes", "[^a\\]: ```suggestion\n    evil();"],
     ["inline code opening with a backtick run", "```foo``` is wrong, and ```` ```suggestion ```` is what they wrote"],
   ])("leaves %s as written", (_label, text) => {
-    expect(commentBody(finding({ body: text }), null)).toBe(text);
+    expect(commentBody(finding({ body: text }), null)).toBe(marked(text));
   });
 });
 
@@ -243,6 +273,7 @@ describe("bodyLines", () => {
       "Not reviewed: the run left no structured output that matches the schema; re-run",
       [],
       0,
+      [],
     ).join("\n");
     expect(rendered).toContain("**Not reviewed: the run left no structured output that matches the schema; re-run.**");
     expect(rendered).toContain("Comment `@claude review` to run it again.");
@@ -258,6 +289,7 @@ describe("bodyLines", () => {
       "Review incomplete: 1 of 6 reviewers returned; re-run",
       [],
       0,
+      [],
     ).join("\n");
     expect(rendered).toContain("**Review incomplete: 1 of 6 reviewers returned; re-run.**");
     expect(rendered).toContain("- **orchestrator**: four reviewers were still out");
@@ -277,6 +309,7 @@ describe("bodyLines", () => {
       null,
       [],
       0,
+      [],
     ).join("\n");
     expect(rendered).toContain("No reviewer was spawned for the changes since abcdef0.");
     expect(rendered).toContain("- **orchestrator**: the delta is a one-line version bump");
@@ -285,13 +318,13 @@ describe("bodyLines", () => {
   });
 
   it("keeps the plain clean-bill line when the record is empty", () => {
-    expect(bodyLines(summary(), null, [], 0)).toEqual([
+    expect(bodyLines(summary(), null, [], 0, [])).toEqual([
       "No issues found. Checked correctness, security, conventions, context, maintainability, simplicity, guards, docs, spec.",
     ]);
   });
 
   it("names the skipped areas", () => {
-    const rendered = bodyLines(summary({ reviewers_spawned: ["correctness", "docs"] }), null, [], 0).join("\n");
+    const rendered = bodyLines(summary({ reviewers_spawned: ["correctness", "docs"] }), null, [], 0, []).join("\n");
     expect(rendered).toContain("Checked correctness, docs.");
     expect(rendered).toContain("Skipped security, conventions, context, maintainability, simplicity, guards.");
   });
@@ -302,6 +335,7 @@ describe("bodyLines", () => {
       null,
       [finding({ file: "gone.ts" })],
       1,
+      [],
     ).join("\n");
     expect(rendered).toContain("1 important finding on the diff below.");
     expect(rendered).toContain("1 important finding with no line in this diff to anchor to:");
@@ -309,7 +343,7 @@ describe("bodyLines", () => {
   });
 
   it("headlines no-blocking when only sub-important content exists", () => {
-    const rendered = bodyLines(summary({ findings: [finding({ tag: "nit" })] }), null, [], 0).join("\n");
+    const rendered = bodyLines(summary({ findings: [finding({ tag: "nit" })] }), null, [], 0, []).join("\n");
     expect(rendered).toContain("No blocking issues found.");
     expect(rendered).toContain("minor issue");
   });
@@ -320,6 +354,7 @@ describe("bodyLines", () => {
       null,
       [],
       0,
+      [],
     ).join("\n");
     expect(rendered).toContain("Incremental review of the changes since abcdef0.");
   });
@@ -334,7 +369,7 @@ describe("bodyLines", () => {
     const incremental = { review_mode: "incremental" as const, incremental_from_sha: "abcdef0123456789" };
 
     it("does not read a clean delta as a clean bill while a prior important is open", () => {
-      const rendered = bodyLines(summary({ ...incremental, prior_importants: [owed] }), null, [], 0).join("\n");
+      const rendered = bodyLines(summary(incremental), null, [], 0, [owed]).join("\n");
       expect(rendered).not.toContain("No issues found");
       expect(rendered).not.toContain("No blocking issues found");
       expect(rendered).toContain("1 important finding from the review of abcdef0 still open (not raised again):");
@@ -342,7 +377,7 @@ describe("bodyLines", () => {
     });
 
     it("lists it after the new importants of the round", () => {
-      const rendered = bodyLines(summary({ ...incremental, prior_importants: [owed] }), null, [], 2).join("\n");
+      const rendered = bodyLines(summary(incremental), null, [], 2, [owed]).join("\n");
       expect(rendered.indexOf("2 important findings on the diff below.")).toBeLessThan(
         rendered.indexOf("still open (not raised again)"),
       );
@@ -350,29 +385,23 @@ describe("bodyLines", () => {
 
     it("names it when no reviewer was spawned for the delta", () => {
       const rendered = bodyLines(
-        summary({ ...incremental, reviewers_spawned: [], reviewers_returned: [], prior_importants: [owed] }),
+        summary({ ...incremental, reviewers_spawned: [], reviewers_returned: [] }),
         null,
         [],
         0,
+        [owed],
       ).join("\n");
       expect(rendered).toContain("No reviewer was spawned for the changes since abcdef0.");
       expect(rendered).toContain("the guard misses deletions");
     });
 
-    it("keeps listing it when the next round copies the unresolved entries forward", () => {
-      const round1 = summary({ ...incremental, prior_importants: [owed] });
-      const round2 = summary({ ...incremental, prior_importants: unresolvedPrior(round1) });
-      const rendered = bodyLines(round2, null, [], 0).join("\n");
-      expect(rendered).not.toContain("No issues found");
-      expect(rendered).toContain("the guard misses deletions");
-    });
-
     it("says nothing about a prior important the head resolved", () => {
       const rendered = bodyLines(
-        summary({ ...incremental, prior_importants: [{ ...owed, status: "resolved" }] }),
+        summary(incremental),
         null,
         [],
         0,
+        [{ ...owed, status: "resolved" }],
       ).join("\n");
       expect(rendered).toContain("No issues found.");
       expect(rendered).not.toContain("still open");

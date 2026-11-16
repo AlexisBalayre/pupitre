@@ -5,6 +5,7 @@ import { COVERAGE, DEAD_CODE } from './debt.service.js';
 import { measureBaseline, persistBaseline } from './init.service.js';
 import { COVERAGE_RATIO_EPSILON } from './merge-gate.constants.js';
 import { projectId } from './paths.utils.js';
+import { NO_PROGRESS, type StageProgress } from './progress.utils.js';
 import { getProject } from './session.repository.js';
 import type {
   AuditOutcome,
@@ -158,13 +159,18 @@ export function auditProject(
   adapters: Adapter[],
   gateEnv?: string[],
   onRegression: 'refresh' | 'keep' = 'refresh',
+  progress: StageProgress = NO_PROGRESS,
 ): Promise<AuditOutcome> {
   const row = getProject(db, projectId(repoPath));
   const previous = row?.baseline ? (JSON.parse(row.baseline) as ProjectBaseline) : null;
-  // Not async, so measureBaseline's refusals still throw (see there).
-  return measureBaseline(db, repoPath, adapters, gateEnv).then((report) =>
-    judgeAudit(db, previous, report, onRegression),
-  );
+  // Not async, so measureBaseline's refusals still throw (see there), and
+  // before the status line is drawn over which the refusal would print.
+  const measuring = measureBaseline(db, repoPath, adapters, gateEnv);
+  progress.stage('measure baseline');
+  return measuring.then((report) => {
+    progress.stage('compare');
+    return judgeAudit(db, previous, report, onRegression);
+  });
 }
 
 function judgeAudit(

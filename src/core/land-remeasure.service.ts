@@ -14,6 +14,7 @@ import {
   measureBranch,
   resolveCommit,
 } from './merge-gate.service.js';
+import type { StageProgress } from './progress.utils.js';
 import { CRITICAL_AREAS } from './routing.utils.js';
 import { endSandboxRun, removeGateDir, sandboxLabel } from './sandbox.utils.js';
 import { decodeEvent, listEvents, type SessionRow } from './session.repository.js';
@@ -65,6 +66,7 @@ export async function remeasureMerge(
     originTip: string;
     originTipNow: () => string;
   },
+  progress: StageProgress,
 ): Promise<GateReport> {
   const { sha, head, landedOn, mergeCommit, target, prUrl, id, localSha, originTip } = merge;
   if (req.approvedBy === undefined) {
@@ -118,6 +120,7 @@ export async function remeasureMerge(
         'landed.',
     );
   }
+  progress.stage('remeasure');
   const sandbox = sandboxLabel();
   const stages: GateStageResult[] = [];
   // Where and how `runMergeGate` cuts its checkout, for its reasons.
@@ -136,8 +139,8 @@ export async function remeasureMerge(
       session,
       stages,
       join(checkoutRoot, basename(checkoutRoot)),
-      landedOn,
-      mergeCommit,
+      { targetSha: landedOn, sha: mergeCommit },
+      progress,
     );
   } finally {
     endSandboxRun();

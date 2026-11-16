@@ -26,7 +26,8 @@ export type EventType =
   | 'respawn'
   | 'scope_overlap'
   | 'utility_call'
-  | 'turn_died';
+  | 'turn_died'
+  | 'cache_hold';
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS projects (
