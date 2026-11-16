@@ -1567,11 +1567,7 @@ describe('CLI commands', () => {
         { from: 'user' },
       );
 
-      expect(logs).toEqual([
-        'Session s1 asked: rebase or merge?',
-        '  1. rebase onto main  (recommended)',
-        '  2. merge main in',
-      ]);
+      expect(logs).toEqual(['Session s1 question recorded; end your turn, a steer answers it.']);
       const { db } = resolveProject(repo);
       expect(listEvents(db, 's1').map((event) => JSON.parse(event.payload))).toContainEqual({
         text: 'rebase or merge?',
@@ -1607,16 +1603,13 @@ describe('CLI commands', () => {
         ],
         { from: 'user' },
       );
-      const asked = logs.join('\n');
       useCwd(repo);
       const status = operatorStatus().join('\n');
 
-      for (const printed of [asked, status]) {
-        // biome-ignore lint/suspicious/noControlCharactersInRegex: asserting their absence
-        expect(printed).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/);
-        expect(printed).toContain('yes; $(whoami)');
-        expect(printed).toContain('`id` no');
-      }
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: asserting their absence
+      expect(status).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/);
+      expect(status).toContain('yes; $(whoami)');
+      expect(status).toContain('`id` no');
     });
 
     it.each([

@@ -3079,7 +3079,8 @@ export function buildProgram(): Command {
       const sessionId = ownSession(db, 'done');
       if (!sessionId) return;
       markSessionDone(db, sessionId, summary);
-      console.log(`Session ${sanitizeReason(sessionId)} marked done: ${sanitizeReason(summary)}`);
+      // Decision 189: one line, no echo of the summary the worker just wrote.
+      console.log(`Session ${sanitizeReason(sessionId)} marked done.`);
     });
   session
     .command('ask <question>')
@@ -3095,7 +3096,10 @@ export function buildProgram(): Command {
       questionOrRefuse(() => {
         const asked = askedQuestion('pup session ask', question, opts);
         markSessionQuestion(db, sessionId, asked);
-        return askedLines(`Session ${sanitizeReason(sessionId)}`, asked);
+        // Decision 189: one line, no echo of the question and options the worker just wrote.
+        return [
+          `Session ${sanitizeReason(sessionId)} question recorded; end your turn, a steer answers it.`,
+        ];
       });
     });
   session
