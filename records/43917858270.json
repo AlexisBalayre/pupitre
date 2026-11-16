@@ -1,0 +1,125 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-16T17:29:24.879Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43917858270",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43917858270",
+  "actor": "AlexisBalayre",
+  "commit_sha": "26a1551180cbace6311b98a47b2373f0b262b65c",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 359,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "docs",
+    "guards"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "docs",
+    "guards"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "1035-1037",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "committedFixRound ignores a steer after the round's session_done, so a steered session gets 'fix committed Nm ago, awaiting re-gate / pup merge <id> --pr' while its worker is still working, even with the conductor running.",
+      "body": "**Concern.** `committedFixRound` treats the round as finished whenever any `session_done` follows the newest `fix_round`. It never checks whether a `steer` came after that `session_done`. A steer leaves the session in `awaiting-review`: `steerSession` only types into the pane and appends a `steer` event, and nothing on the `pup steer` path moves the state back to `running`. So after a steer the worker is busy again, but the row still qualifies. `newestGateRefused` also returns `false` as soon as it meets a `steer`, so the `!gateRefused` guard in `dashboardSession` drops away at the moment the worker resumes.\n\n**Trigger.** The conductor runs `pup merge <id> --pr` on a finished fix round, and the gate refuses it on flagged debt. `refuseGate` writes only a `gate_result` and no `merge`, so the round stays open. That line's answer is `pup steer <id> \"...\"`, and the operator or the conductor sends it. On the next `pup status`, `gateRefused` is false, the newest mark is still the `fix_round`, the old `session_done` is still found, and the branch is still past the pin. The inbox therefore prints `fix committed <age of the old session_done> ago, awaiting re-gate` with `pup merge <id> --pr`. A plain operator steer to a fix-committed session hits the same path.\n\n**Wrong result.** `needOf` checks `fixCommitted` before the `!gating` guard, so the line shows even while the conductor runs. The conductor acts on `pup status`, so it is told to re-gate a branch the worker is still changing. ADR 0102 (`docs/adr/0102-while-the-project-s-conductor-runs-a-session.md`) says \"a steer or a new `session_done` after the refusal hands it back to the conductor\". A premature re-gate holds the merge lock and runs every stage on a half-done fix. The age also counts from the old `session_done`, so the line looks overdue the moment it reappears. No test puts a steer after the round's `session_done`.\n\n```ts\nconst at = newestFirst.findIndex((row) => marks.includes(row.type));\nconst done = newestFirst.slice(0, at).find((row) => row.type === 'session_done');\n...\nconst isOpenRound = newestFirst[at]?.type === 'fix_round' && done !== undefined;\n```\n\nhttps://github.com/AlexisBalayre/pupitre/blob/26a1551180cbace6311b98a47b2373f0b262b65c/src/core/dashboard.service.ts#L1033-L1040",
+      "suggestion": "  const done = newestFirst\n    .slice(0, at)\n    .find((row) => row.type === 'session_done' || row.type === 'steer');\n  const pin = openPullRequest(newestFirst)?.sha ?? '';\n  const isOpenRound = newestFirst[at]?.type === 'fix_round' && done?.type === 'session_done';"
+    },
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "572-573",
+      "area": "simplicity",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The new `MERGE_KINDS` array is a module-level const used once, in `needOf`, for a membership check that the diff turns from two `===` terms into three.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "106",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`dashboardSession` takes a `fixRoundOf` callback that exists only to bind row, repoPath and now; passing repoPath and now as plain params and calling committedFixRound directly removes the callback type and lambda.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "904-905",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The comment \"A refused gate's line comes first, and the inbox sorts on this alone\" has no clear referent for \"this\", so the reason for the `!gateRefused` guard must be reconstructed from needOf.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.276965775000001,
+  "duration_ms": 275740,
+  "num_turns": 14,
+  "tokens": {
+    "input": 16,
+    "output": 10945,
+    "cache_read": 334639,
+    "cache_creation": 49297,
+    "total": 394897
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 108,
+      "output": 35158,
+      "cache_read": 1730716,
+      "cache_creation": 161810,
+      "cost_usd": 2.0066762
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 34,
+      "output": 8491,
+      "cache_read": 178880,
+      "cache_creation": 66694,
+      "cost_usd": 0.269601
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 176,
+      "cache_read": 0,
+      "cache_creation": 4803,
+      "cost_usd": 0.000688575
+    }
+  ],
+  "permission_denials": []
+}
