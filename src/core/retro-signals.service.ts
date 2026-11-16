@@ -1,6 +1,6 @@
 import { basename, isAbsolute, normalize, relative } from 'node:path';
 
-import { type ContextStats, contextStatsByClass, type ReplayRow } from './retro-replay.service.js';
+import { type ContextStats, contextStatsByClass } from './retro-replay.service.js';
 import {
   addCalls,
   addToolCarry,
@@ -36,7 +36,8 @@ interface CarryRow {
   carriedTokens: number;
 }
 
-interface ClassRow {
+/** The cache and compaction counts of a class, with its context statistics and replay. */
+interface ClassRow extends ContextStats {
   class: UsageClass;
   transcripts: number;
   calls: number;
@@ -48,14 +49,6 @@ interface ClassRow {
   compactions: number;
   medianContext: number;
   firstRequestFloor: number;
-  cost: number;
-  contextBeforeCompaction: number;
-  contextAfterCompaction: number;
-  growthPerRequest: number;
-  highContextCostShare: number;
-  observedThreshold: number;
-  observedReplayCost: number;
-  replay: ReplayRow[];
 }
 
 interface RepeatedRead {
