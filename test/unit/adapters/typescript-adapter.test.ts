@@ -404,6 +404,12 @@ describe('typescriptAdapter.testFiles', () => {
       {},
       ['src/a.test.ts'],
     ],
+    [
+      'an .npmrc on both sides with plain array keys',
+      { '.npmrc': 'public-hoist-pattern[]=*eslint*\nonly-built-dependencies[]=esbuild\n' },
+      {},
+      ['src/a.test.ts'],
+    ],
     ["yarn's Plug'n'Play runtime on both sides", { '.pnp.cjs': 'module.exports = {};\n' }, {}, []],
     ["pnpm's hooks file on both sides", { '.pnpmfile.cjs': 'module.exports = {};\n' }, {}, []],
     [
@@ -640,6 +646,22 @@ describe('typescriptAdapter.testFiles', () => {
     ).toEqual(expected);
   });
 
+  // Vite's most common alias: a bare `@` redirects only `@/...`, which no package is named.
+  it('reads a bare @ alias', () => {
+    const files = {
+      'package.json': plainVitest,
+      'vitest.config.ts':
+        "import { defineConfig } from 'vitest/config';\n" +
+        "export default defineConfig({ resolve: { alias: { '@': './src' } }, test: { include: ['src/**/*.test.ts'] } });\n",
+    };
+
+    expect(
+      typescriptAdapter.testFiles?.({ configPath: makeRepo(files), measurePath: makeRepo(files) }, [
+        'src/a.test.ts',
+      ]),
+    ).toEqual(['src/a.test.ts']);
+  });
+
   // Vitest then loads the first config in a directory above, which a session can write.
   it('collects nothing with no config at the root', () => {
     const repo = makeRepo({ 'package.json': plainVitest });
@@ -872,6 +894,42 @@ describe('typescriptAdapter.testFiles', () => {
       change(ctx.measurePath);
 
       expect(typescriptAdapter.testInputsIntact?.(ctx)).toBe(intact);
+    },
+  );
+
+  // A tree lists a link by its target's text and a submodule by its commit; the
+  // gate checks out the link unfollowed and the submodule as an empty directory.
+  it.each([
+    ['a link', (repo: string) => symlinkSync('pre-commit', join(repo, '.husky', 'hook'))],
+    [
+      'an uninitialised submodule',
+      (repo: string) => {
+        mkdirSync(join(repo, '.husky', 'sub'));
+        const head = sh(repo, 'git', 'rev-parse', 'HEAD');
+        sh(repo, 'git', 'update-index', '--add', '--cacheinfo', `160000,${head},.husky/sub`);
+      },
+    ],
+  ] as [string, (repo: string) => void][])(
+    'checks a dot directory holding %s the commit holds',
+    (_, add) => {
+      const ctx = branched({ ...plainRoot(), '.husky/pre-commit': 'npm test\n' }, {});
+      add(ctx.measurePath);
+      sh(ctx.measurePath, 'git', 'add', '-A', '-f');
+      sh(
+        ctx.measurePath,
+        'git',
+        '-c',
+        'user.name=t',
+        '-c',
+        'user.email=t@t',
+        'commit',
+        '-q',
+        '-m',
+        'add',
+      );
+      const measureSha = sh(ctx.measurePath, 'git', 'rev-parse', 'HEAD');
+
+      expect(typescriptAdapter.testInputsIntact?.({ ...ctx, measureSha })).toBe(true);
     },
   );
 
@@ -1117,6 +1175,7 @@ describe('typescriptAdapter.testFiles', () => {
     // biome-ignore lint/suspicious/noTemplateCurlyInString: npm's own substitution, not a JS template
     ['one with a token', '//registry.npmjs.org/:_authToken=${NPM_TOKEN}\n', true],
     ['one with a scope registry', '@scope:registry=https://npm.example.com/\n', true],
+    ['one with a plain array key', 'public-hoist-pattern[]=*eslint*\n', true],
   ])('checks a checkout beside a user .npmrc of %s', (_, npmrc, intact) => {
     const home = tempDir('pup-home-');
     if (npmrc !== undefined) writeFileSync(join(home, '.npmrc'), npmrc);
