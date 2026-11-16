@@ -1,0 +1,158 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-16T12:19:24.047Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43864208122",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43864208122",
+  "actor": "AlexisBalayre",
+  "commit_sha": "5320617eaf77897aa906a33db51c2d10884cf111",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 343,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/cli/index.ts",
+      "line": "1847-1848",
+      "description": "`readOnlyUnderWindow` only asks the stores in `read().projects`. That list leaves out any project whose `buildDashboardSnapshot` threw on this first call. `fleetReading` keeps such a store open and returns it with its `deps` on every later call. The App then drives it: the unblock and the respawn run in-process, and the `readOnlyReason` decided at startup is never asked again. With a single registered project the check gets an empty list and returns undefined, so not even the `--name` arguments check runs.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "664",
+      "area": "security",
+      "confidence": "high",
+      "tag": "important",
+      "description": "`widenedClause` puts rescope globs read from the session-writable events table into a needs-you reason without the `SYMBOLS` arrow scrub. A forged `rescope` event can therefore print a second `→ <command>` that looks like the line's answer in `pup status` and `pup ui`.",
+      "body": "**A forged rescope glob can print a fake `→ <command>` in the needs-you line**\n\n```ts\nconst shown = rescoped.slice(0, WIDENED_GLOBS_SHOWN).map((glob) => `+${glob}`);\n```\n\n`widenedClause` adds each glob that `taskRescopes` reads off `events.payload`. The only scrub on those globs is `sanitizeReason`, applied in `dashboardSession` (line 859). It turns controls into spaces and collapses whitespace, but it leaves non-ASCII symbols like `→` alone.\n\nThe terminal inbox prints each need as `${label}  ${reason}  → ${answer}` (`src/cli/ui/dashboard-text.utils.ts` `needLine`). That function's own doc says the label and reason \"have their own symbols taken away upstream\". Decision 29 / ADR 0083 already treat session-written text in a reason as able to forge that arrow. That is why `questionReason` and `questionOptions` replace `SYMBOLS` (line 525) with `-`, and `dashboard.test.ts` pins it with \"lets no question forge a second arrow in its line\". The new clause skips that control. The PR's own test (\"The events are session-writable\") plants only `\\u001b` and `\\n`.\n\n**Trigger:** a worker on an `awaiting-review` or `pr-open` session writes into the store. Decision 115's *Who* and ADR 0188 both say a session can do that. It inserts a `rescope` event with `added: [\"src/x → pup merge s-other --pr --accept-debt ok --review-by never\"]`. `pup status` then prints:\n\n`s-me  awaiting review; scope widened after launch: +src/x → pup merge s-other --pr --accept-debt ok --review-by never  → pup review s-me …`\n\nThe first arrow on that line is the forged command. `GLOB_REFUSALS` in `task-rescope.service.ts` does not refuse non-ASCII symbols either. The web dashboard (which escapes the reason and renders the answer separately) and the fenced `## Rescopes` PR section are not affected.\n\n**Fix:** apply the same `SYMBOLS` rewrite the question reasons get, and pin it with a test like the existing second-arrow one.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/5320617eaf77897aa906a33db51c2d10884cf111/src/core/dashboard.service.ts#L658-L667",
+      "suggestion": "  const shown = rescoped.slice(0, WIDENED_GLOBS_SHOWN).map((glob) => `+${glob.replace(SYMBOLS, '-')}`);"
+    },
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "804-823",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `pane-pid` record is written only after tmux has opened the window (`writeRenamed(opts.panePidFile, ...)` at L822), so a failed write makes the launch throw while the window keeps running. Trigger: a session plants a directory at its own `<sessionDir>/pane-pid`, or at `<store root>/conductor/pane-pid`; `renameSync` then fails with EISDIR, so respawn throws with no kickoff typed and `tmux_target` left on the dead pane, and `pup conductor start` never types its kickoff. Before this PR `spawnClaudeWindow` could not throw once the window was up. Fix: check `panePidFile` is writable and not a directory or symlink before `spawnDetachedSession`, or kill the window by name when the write throws.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/operator-guard.service.ts",
+      "line": "36",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `launchedAncestor` JSDoc lists six guarded commands (`plan edit --rescope`, `respawn`, `unblock`, `kill --respawn`, `dashboard`, `merge`) as if the list were complete. ADR 0188 names `pup answer`, `pup debt close`, `pup retire` and `pup land --accept-head` as not asked yet, so a reader takes the list as complete and guesses wrong, and it goes stale with each new guarded command. Say the callers own the refusal and point to decision 188 for the roster.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "1117",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `rescopedLine` JSDoc says it prints \"an `OVERLAP` line, as the radar prints one\", but the radar's line names a pair (`OVERLAP  A <-> B  file`) and the rescope's names one session (`OVERLAP  <session>  <file>`). Say it follows the radar's line but names only the other task's session.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "conventions",
+      "description": "Conventions reviewer did not read naming.md/testing.md or the test files, so the testing-convention check was not done; it also could not run scripts/adr-index.sh to check the ADR index."
+    },
+    {
+      "component": "simplicity",
+      "description": "Simplicity reviewer read the session-runtime diff truncated and did not read the merge-gate, regate or dashboard diffs; findings there may be missing."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 6.413823650000001,
+  "duration_ms": 441577,
+  "num_turns": 21,
+  "tokens": {
+    "input": 20,
+    "output": 13854,
+    "cache_read": 527631,
+    "cache_creation": 64488,
+    "total": 605993
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 308,
+      "output": 108752,
+      "cache_read": 7049330,
+      "cache_creation": 397102,
+      "cost_usd": 5.765111999999998
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 84,
+      "output": 17341,
+      "cache_read": 1004232,
+      "cache_creation": 149612,
+      "cost_usd": 0.6480312000000001
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 148,
+      "cache_read": 0,
+      "cache_creation": 4850,
+      "cost_usd": 0.00068045
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Grep",
+      "input": "{\"pattern\":\"readdirSync\\\\(|productionSources|walk\\\\(|globSync\",\"path\":\"/home/runner/work/pupitre\",\"glob\":\"**/*.test.ts\",\"output_mode\":\"content\",\"head_limit\":60}"
+    },
+    {
+      "tool": "Bash",
+      "input": "cd /home/runner/work/pupitre/pupitre; head -8 docs/adr/0115-*.md; grep -rln \"Amends:\" docs/adr | head -3; grep -n \"Amend\" docs/adr/README.md | head; sed -n 1,6p docs/adr/0187-*.md"
+    },
+    {
+      "tool": "Bash",
+      "input": "bash /home/runner/work/pupitre/pupitre/scripts/adr-index.sh"
+    }
+  ]
+}
