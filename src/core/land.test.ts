@@ -1094,21 +1094,28 @@ describe('landSession', { timeout: 20_000 }, () => {
 
     /**
      * One remeasure's stages stood in for: a measurement reporting `stages`,
-     * flagging `flags`, over the open ledger entries `held`.
+     * flagging `flags`, over the open ledger entries `held`; a bare description
+     * names no file.
      */
     function measuredAs(
       stages: GateStageResult[] = pinnedStages,
-      flags: string[] = [],
-      held: string[] = [],
+      flags: (string | Debt)[] = [],
+      held: (string | Debt)[] = [],
     ) {
+      const debt = (entry: string | Debt) =>
+        typeof entry === 'string' ? { description: entry, files: [] } : entry;
       vi.mocked(measureBranch).mockImplementationOnce(async (_db, _req, _session, reported) => {
         reported.push(...stages);
         return {
-          flaggedDebt: flags.map((description) => ({ description, files: [] })),
-          openEntries: held.map((description) => ({ description })),
+          flaggedDebt: flags.map(debt),
+          openEntries: held
+            .map(debt)
+            .map(({ description, files }) => ({ description, files: JSON.stringify(files) })),
         } as unknown as Awaited<ReturnType<typeof measureBranch>>;
       });
     }
+
+    type Debt = { description: string; files: string[] };
 
     const filed = (wording: string) => `${wording} session ${SESSION_ID}`;
     const huge = '9'.repeat(400);
@@ -1384,6 +1391,61 @@ describe('landSession', { timeout: 20_000 }, () => {
       expect(mainSha()).toBe(merge);
     });
 
+    // `debtKind` keeps a percentage's dot: `80%` and `79.6%` are one kind here.
+    it('lands a coverage gap whose percentages moved between whole and decimal', async () => {
+      const { merge } = mergeMovedHead();
+      measuredAs(
+        [...pinnedStages, { stage: 'coverage', status: 'flagged' }],
+        [filed('Coverage gap (patch coverage 80% below baseline 85%) merged from')],
+        [filed('Coverage gap (patch coverage 79.6% below baseline 85.3%) merged from')],
+      );
+
+      await remeasure();
+      expect(mainSha()).toBe(merge);
+    });
+
+    // The files of a forged binary are what the operator accepted, not its count.
+    it('refuses a forged binary on a file the accepted entry did not name', async () => {
+      mergeMovedHead();
+      const before = mainSha();
+      const wording = filed('Text files git reports as binary (1) merged from');
+      measuredAs(
+        [...pinnedStages, { stage: 'diff-size', status: 'flagged' }],
+        [{ description: wording, files: ['src/cli/foo.ts'] }],
+        [{ description: wording, files: ['vendor/bundle.min.js'] }],
+      );
+
+      await expect(remeasure()).rejects.toThrow(
+        `flagged past the accepted ${wording} or on files it did not name: ${wording}`,
+      );
+      expectNothingChanged(before);
+    });
+
+    it('lands a forged binary on a file the accepted entry named', async () => {
+      const { merge } = mergeMovedHead();
+      const wording = filed('Text files git reports as binary (1) merged from');
+      measuredAs(
+        [...pinnedStages, { stage: 'diff-size', status: 'flagged' }],
+        [{ description: wording, files: ['vendor/a.js'] }],
+        [{ description: wording, files: ['vendor/a.js', 'vendor/b.js'] }],
+      );
+
+      await remeasure();
+      expect(mainSha()).toBe(merge);
+    });
+
+    // The gate runs these two on the session's worktree; a remeasure has none.
+    it('lands when the pin passed worktree-clean and fresh-base, which it cannot rerun', async () => {
+      const { merge } = mergeMovedHead('src/fix.ts', 'export const fix = 1;\n', [
+        { stage: 'worktree-clean', status: 'pass' },
+        { stage: 'fresh-base', status: 'pass' },
+        ...pinnedStages,
+      ]);
+
+      await remeasure();
+      expect(mainSha()).toBe(merge);
+    });
+
     /** Stands in for the stages, running the real ones, then `meanwhile`. */
     function whileMeasuring(meanwhile: () => void): void {
       const real = vi.mocked(measureBranch).getMockImplementation();
@@ -1475,6 +1537,25 @@ describe('landSession', { timeout: 20_000 }, () => {
 
       await expect(remeasure()).rejects.toThrow(
         'change 1 file(s) in a critical area (src/core/land-old.ts)',
+      );
+      expectNothingChanged(before);
+    });
+
+    // From their merge-base the head would show no change: it kept one the pin
+    // had already changed back.
+    it('refuses a critical-area change a head off an older commit kept', async () => {
+      const kept = commitIn(worktree, 'src/core/land-x.ts', 'export const x = 1;\n');
+      pinned = commitIn(worktree, 'src/core/land-x.ts', 'export const x = 2;\n');
+      sh(repo, 'git', 'push', '-q', origin, BRANCH);
+      seedPrMerge();
+      sh(worktree, 'git', 'reset', '-q', '--hard', kept);
+      const later = commitIn(worktree, 'src/fix.ts', 'export const fix = 1;\n');
+      sh(repo, 'git', 'push', '-q', '-f', origin, BRANCH);
+      mergeAt(later);
+      const before = mainSha();
+
+      await expect(remeasure()).rejects.toThrow(
+        'change 1 file(s) in a critical area (src/core/land-x.ts)',
       );
       expectNothingChanged(before);
     });

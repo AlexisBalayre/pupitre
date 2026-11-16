@@ -4,7 +4,7 @@ import { basename, join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import type { Adapter } from '../adapters/types/adapter.types.js';
 import { quotePath } from './debt.service.js';
-import { currentBranch, gitDiffPaths, runGit } from './git-diff.client.js';
+import { currentBranch, runGit } from './git-diff.client.js';
 import { globToRegExp } from './glob.utils.js';
 import { DEBT_DETAIL_SAMPLES } from './merge-gate.constants.js';
 import {
@@ -70,14 +70,29 @@ export async function remeasureMerge(
 ): Promise<GateReport> {
   const { sha, head, landedOn, mergeCommit, target, prUrl, id, localSha, originTip } = merge;
   if (req.approvedBy === undefined) {
-    const critical = gitDiffPaths(req.repoPath, sha, head).filter((path) =>
-      CRITICAL_PATHS.some((area) => area.test(path)),
-    );
+    // The trees, not `gitDiffPaths`' merge-base range: the head need not
+    // descend from the pin, and from an older merge-base a head that kept a
+    // change the pin reverted would show none. Over-reporting fails closed.
+    const critical = runGit(req.repoPath, [
+      'diff',
+      '--no-ext-diff',
+      '--no-textconv',
+      '--no-color',
+      '--text',
+      '--no-relative',
+      '--no-renames',
+      '-z',
+      '--name-only',
+      sha,
+      head,
+    ])
+      .split('\0')
+      .filter((path) => path !== '' && CRITICAL_PATHS.some((area) => area.test(path)));
     if (critical.length > 0) {
       const named = critical.slice(0, DEBT_DETAIL_SAMPLES).map(quotePath).join(', ');
       const more = critical.length > DEBT_DETAIL_SAMPLES ? ', …' : '';
       throw new Error(
-        `The commits past the pin, ${sha}...${head}, change ${critical.length} file(s) in a ` +
+        `The commits past the pin, ${sha}..${head}, change ${critical.length} file(s) in a ` +
           `critical area (${named}${more}); a remeasure lands them only on the operator's ` +
           `approval: re-run with \`--remeasure --approved-by <who>\`. Nothing was landed.`,
       );
@@ -153,10 +168,12 @@ export async function remeasureMerge(
     }
   }
   // The open entries the session's own gate filed as accepted debt, by kind.
-  const accepted = new Map<string, string[]>();
+  const accepted = new Map<string, { description: string; files: string[] }[]>();
   for (const entry of measured?.openEntries ?? []) {
-    const kind = debtKind(entry.description, session.id);
-    if (kind !== undefined) accepted.set(kind, [...(accepted.get(kind) ?? []), entry.description]);
+    const kind = remeasureKind(entry.description, session.id);
+    if (kind === undefined) continue;
+    const held = { description: entry.description, files: JSON.parse(entry.files) as string[] };
+    accepted.set(kind, [...(accepted.get(kind) ?? []), held]);
   }
   const flaggedBy = new Set(
     (measured?.flaggedDebt ?? []).flatMap(
@@ -164,12 +181,14 @@ export async function remeasureMerge(
     ),
   );
   // Past a stage that failed the rest never ran, so only a full run is held
-  // to the pin's stages.
+  // to the pin's stages: all but the two the gate runs on the session's
+  // worktree, which a remeasure has none of.
   const unrun =
     measured === undefined
       ? []
       : pinnedStages.flatMap(({ stage, status }) => {
           if (status !== 'pass' && status !== 'flagged') return [];
+          if (WORKTREE_STAGES.has(stage)) return [];
           const now = stages.find((result) => result.stage === stage);
           return now === undefined || now.status === 'skipped'
             ? [`  ${stage}: ran at the pin, ${now === undefined ? 'absent' : 'skipped'} now`]
@@ -185,14 +204,21 @@ export async function remeasureMerge(
       .filter((stage) => stage.status === 'flagged' && !flaggedBy.has(stage.stage))
       .map((stage) => `  ${stage.stage}: flagged, with no debt filed for it`),
     ...(measured?.flaggedDebt ?? []).flatMap((flag) => {
-      const held = accepted.get(debtKind(flag.description, session.id) as string) ?? [];
+      const held = accepted.get(remeasureKind(flag.description, session.id) as string) ?? [];
       if (held.length === 0) return [`  flagged, never accepted: ${flag.description}`];
-      if (debtFigures(flag.description, session.id) === undefined) {
-        return [`  flagged, its figures unreadable: ${flag.description}`];
-      }
-      return held.some((entry) => noWorse(flag.description, entry, session.id))
+      const now = debtFigures(flag.description, session.id);
+      if (now === undefined) return [`  flagged, its figures unreadable: ${flag.description}`];
+      const sameFiles = DEBT_WORDINGS[now.wording]?.sameFiles === true;
+      return held.some(
+        (entry) =>
+          noWorse(flag.description, entry.description, session.id) &&
+          (!sameFiles || flag.files.every((file) => entry.files.includes(file))),
+      )
         ? []
-        : [`  flagged past the accepted ${held.join('; ')}: ${flag.description}`];
+        : [
+            `  flagged past the accepted ${held.map((entry) => entry.description).join('; ')}` +
+              `${sameFiles ? ' or on files it did not name' : ''}: ${flag.description}`,
+          ];
     }),
   ];
   if (measured === undefined || failed.length > 0) {
@@ -227,18 +253,22 @@ export async function remeasureMerge(
  * higher, -1 when lower (decision 185). Whole, so a path or a name the session
  * chose cannot supply a figure; the figures are the first captures, as many as
  * `worse` has. `stage` names the stage that files it. A wording with no figure
- * matches on its `debtKind` alone, which holds its every other word.
+ * matches on its `debtKind` alone, which holds its every other word. With
+ * `sameFiles`, a flag's files are what was accepted, not where it was found,
+ * so it passes only against an entry that named each of them.
  */
 const DEBT_WORDINGS: readonly {
   pattern: RegExp;
   worse: readonly number[];
   stage: (match: RegExpExecArray) => string;
+  sameFiles?: true;
 }[] = [
   { pattern: /^Oversize diff \((\d+) lines\) merged from$/, worse: [1], stage: () => 'diff-size' },
   {
     pattern: /^Text files git reports as binary \((\d+)\) merged from$/,
     worse: [1],
     stage: () => 'diff-size',
+    sameFiles: true,
   },
   { pattern: /^New unused exports \((\d+)\) merged from$/, worse: [1], stage: () => 'dead-code' },
   {
@@ -255,6 +285,7 @@ const DEBT_WORDINGS: readonly {
     pattern: /^Coverage unmeasured over (\d+) changed source file\(s\) in$/,
     worse: [1],
     stage: () => 'coverage',
+    sameFiles: true,
   },
   {
     pattern:
@@ -266,6 +297,7 @@ const DEBT_WORDINGS: readonly {
     pattern: /^Coverage gap \(unreported files\) merged from$/,
     worse: [],
     stage: () => 'coverage',
+    sameFiles: true,
   },
   {
     pattern: /^Coverage gap \(unreported files and patch coverage\) merged from$/,
@@ -278,6 +310,17 @@ const DEBT_WORDINGS: readonly {
     stage: (match) => `${match[2]} (${match[1]})`,
   },
 ];
+
+/** The gate's stages on the session's worktree, which a remeasure cannot run. */
+const WORKTREE_STAGES: ReadonlySet<string> = new Set(['worktree-clean', 'fresh-base']);
+
+/**
+ * `debtKind` with a percentage's `#.#` read as `#`: a figure rounded to a
+ * whole percent, `80%` beside `80.4%`, is the same kind.
+ */
+function remeasureKind(description: string, sessionId: string): string | undefined {
+  return debtKind(description, sessionId)?.replace(/#\.#%/g, '#%');
+}
 
 /** Which statuses a remeasure lands on; any other, a future one included, refuses. */
 const LANDABLE_STATUSES: ReadonlySet<string> = new Set([
@@ -320,7 +363,7 @@ function noWorse(description: string, held: string, sessionId: string): boolean 
     now === undefined ||
     then === undefined ||
     now.wording !== then.wording ||
-    debtKind(description, sessionId) !== debtKind(held, sessionId)
+    remeasureKind(description, sessionId) !== remeasureKind(held, sessionId)
   ) {
     return false;
   }
