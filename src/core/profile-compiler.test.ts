@@ -913,11 +913,16 @@ describe('the status line records the plan usage (decision 156)', () => {
 describe('the worker sandbox (decision 191)', () => {
   // The setting refuses outside macOS (ceiling 12), so these compile as on it.
   const platform = Object.getOwnPropertyDescriptor(process, 'platform') as PropertyDescriptor;
+  // The compile reads the user settings.json, so the operator's own never decides a test.
+  let home: string;
   beforeEach(() => {
     Object.defineProperty(process, 'platform', { ...platform, value: 'darwin' });
+    home = tempDir('pup-sandbox-home-');
+    vi.stubEnv('HOME', home);
   });
   afterEach(() => {
     Object.defineProperty(process, 'platform', platform);
+    vi.unstubAllEnvs();
   });
 
   /** A repo directory whose `.pupitre/project.yml` holds `content`, or none when undefined. */
@@ -961,76 +966,112 @@ describe('the worker sandbox (decision 191)', () => {
   });
 
   it('confines Bash children to the worktree, keeping the store and the main .git config unwritable', () => {
-    const home = tempDir('pup-sandbox-home-');
-    vi.stubEnv('HOME', home);
-    try {
-      const repo = repoWith('workerSandbox: true\n');
-      const store = projectPaths(repo);
-      const { sandbox } = JSON.parse(compileIn(repo).files['settings.json'] as string);
+    const repo = repoWith('workerSandbox: true\n');
+    const store = projectPaths(repo);
+    const { sandbox } = JSON.parse(compileIn(repo).files['settings.json'] as string);
 
-      expect(sandbox).toMatchObject({
-        enabled: true,
-        failIfUnavailable: true,
-        allowUnsandboxedCommands: false,
-      });
-      const adminDir = join(repo, '.git', 'worktrees', 's-1');
-      expect(sandbox.filesystem.allowWrite).toEqual([
-        join(repo, '.worktrees', 's-1'),
-        adminDir,
-        store.dbFile,
-        `${store.dbFile}-wal`,
-        `${store.dbFile}-shm`,
-        store.handoffFile('s-1'),
-        join(home, '.pupitre', 'slots'),
-      ]);
-      // A deny wins over any allow, so the store is left out of the grants, not
-      // denied: a denied store root would take state.db with it.
-      expect(sandbox.filesystem.denyWrite).toEqual(
-        [
-          join(repo, '.git', 'config'),
-          join(repo, '.git', 'config.worktree'),
-          join(repo, '.git', 'commondir'),
-          join(repo, '.git', 'hooks'),
-          join(repo, '.git', 'info'),
-          join(repo, '.git', 'modules'),
-          join(repo, '.git', 'main'),
-          join(repo, '.git', 'refs', 'main'),
-          join(repo, '.git', 'refs', 'tags', 'main'),
-          join(repo, '.git', 'refs', 'heads', 'main'),
-          join(repo, '.git', 'packed-refs'),
-          join(repo, '.git', 'refs', 'replace'),
-          join(repo, '.git', 'refs', 'remotes'),
-          join(repo, '.git', 'shallow'),
-          join(repo, '.git', 'HEAD'),
-          join(repo, '.git', 'index'),
-          join(repo, '.git', 'MERGE_HEAD'),
-          join(repo, '.git', 'ORIG_HEAD'),
-          join(repo, '.git', 'FETCH_HEAD'),
-          join(repo, '.git', 'CHERRY_PICK_HEAD'),
-          join(repo, '.git', 'MERGE_AUTOSTASH'),
-          join(repo, '.git', 'rebase-merge'),
-          join(repo, '.git', 'rebase-apply'),
-          join(repo, '.git', 'sequencer'),
-          join(adminDir, 'commondir'),
-          join(adminDir, 'gitdir'),
-          join(adminDir, 'config.worktree'),
-        ].flatMap((path) => [path, `${path}.lock`]),
-      );
-      expect(sandbox.filesystem.denyRead).toEqual(expect.arrayContaining(['~/.ssh', '~/.npmrc']));
-      expect(sandbox.network).toEqual({
-        allowedDomains: [
-          'registry.npmjs.org',
-          'registry.yarnpkg.com',
-          'pypi.org',
-          'files.pythonhosted.org',
-        ],
-        strictAllowlist: true,
-        // The web dashboard's tests listen on loopback (decision 191).
-        allowLocalBinding: true,
-      });
-    } finally {
-      vi.unstubAllEnvs();
+    expect(sandbox).toMatchObject({
+      enabled: true,
+      failIfUnavailable: true,
+      allowUnsandboxedCommands: false,
+    });
+    const adminDir = join(repo, '.git', 'worktrees', 's-1');
+    expect(sandbox.filesystem.allowWrite).toEqual([
+      join(repo, '.worktrees', 's-1'),
+      adminDir,
+      store.dbFile,
+      `${store.dbFile}-wal`,
+      `${store.dbFile}-shm`,
+      store.handoffFile('s-1'),
+    ]);
+    // A deny wins over any allow, so the store is left out of the grants, not
+    // denied: a denied store root would take state.db with it.
+    expect(sandbox.filesystem.denyWrite).toEqual(
+      [
+        join(repo, '.git', 'config'),
+        join(repo, '.git', 'config.worktree'),
+        join(repo, '.git', 'commondir'),
+        join(repo, '.git', 'hooks'),
+        join(repo, '.git', 'info'),
+        join(repo, '.git', 'modules'),
+        join(repo, '.git', 'main'),
+        join(repo, '.git', 'refs', 'main'),
+        join(repo, '.git', 'refs', 'tags', 'main'),
+        join(repo, '.git', 'refs', 'heads', 'main'),
+        join(repo, '.git', 'packed-refs'),
+        join(repo, '.git', 'refs', 'replace'),
+        join(repo, '.git', 'refs', 'remotes'),
+        join(repo, '.git', 'shallow'),
+        join(repo, '.git', 'HEAD'),
+        join(repo, '.git', 'index'),
+        join(repo, '.git', 'MERGE_HEAD'),
+        join(repo, '.git', 'ORIG_HEAD'),
+        join(repo, '.git', 'FETCH_HEAD'),
+        join(repo, '.git', 'CHERRY_PICK_HEAD'),
+        join(repo, '.git', 'MERGE_AUTOSTASH'),
+        join(repo, '.git', 'rebase-merge'),
+        join(repo, '.git', 'rebase-apply'),
+        join(repo, '.git', 'sequencer'),
+        join(adminDir, 'commondir'),
+        join(adminDir, 'gitdir'),
+        join(adminDir, 'config.worktree'),
+      ].flatMap((path) => [path, `${path}.lock`]),
+    );
+    expect(sandbox.filesystem.denyRead).toEqual(expect.arrayContaining(['~/.ssh', '~/.npmrc']));
+    expect(sandbox.network).toEqual({
+      allowedDomains: [
+        'registry.npmjs.org',
+        'registry.yarnpkg.com',
+        'pypi.org',
+        'files.pythonhosted.org',
+      ],
+      strictAllowlist: true,
+      // The web dashboard's tests listen on loopback (decision 191).
+      allowLocalBinding: true,
+    });
+  });
+
+  // A sandboxed kill(pid, 0) on an unsandboxed pid fails with EPERM (probed), so
+  // the slot protocol would reclaim a live gate's slot. Ungranted, `pup session
+  // test` cannot write the slots dir and runs slot-less.
+  it("leaves the machine's test slots out of the grants", () => {
+    const { sandbox } = JSON.parse(
+      compileIn(repoWith('workerSandbox: true\n')).files['settings.json'] as string,
+    );
+    const slots = join(home, '.pupitre', 'slots');
+
+    for (const path of sandbox.filesystem.allowWrite) {
+      expect(path === slots || path.startsWith(`${slots}/`)).toBe(false);
     }
+  });
+
+  // Claude Code joins a sandbox list from every source a worker loads, the
+  // operator's user settings included, and no compiled value takes an entry back.
+  it.each([
+    {
+      name: 'a sandbox key',
+      content: '{"sandbox":{"excludedCommands":["docker"]}}',
+      error: 'its `sandbox` key is refused',
+    },
+    { name: 'JSON that does not parse', content: '{"sandbox": ', error: 'parse as JSON' },
+  ])('refuses the compile on a user settings.json holding $name', ({ content, error }) => {
+    const settingsPath = join(home, '.claude', 'settings.json');
+    mkdirSync(dirname(settingsPath));
+    writeFileSync(settingsPath, content);
+    const compileOn = () => compileIn(repoWith('workerSandbox: true\n'));
+
+    expect(compileOn).toThrow(error);
+    expect(compileOn).toThrow(settingsPath);
+    expect(compileIn(repoWith('workerSandbox: false\n')).settings).not.toHaveProperty('sandbox');
+  });
+
+  it('compiles the sandbox beside a user settings.json without the key, or none', () => {
+    const repo = repoWith('workerSandbox: true\n');
+    expect(compileIn(repo).settings).toHaveProperty('sandbox');
+
+    mkdirSync(join(home, '.claude'));
+    writeFileSync(join(home, '.claude', 'settings.json'), '{"model":"opus","permissions":{}}');
+    expect(compileIn(repo).settings).toHaveProperty('sandbox');
   });
 
   // Claude Code's implicit grant is the main .git except `config`, `hooks` and
@@ -1162,20 +1203,25 @@ describe('the worker sandbox (decision 191)', () => {
   });
 
   it("denies the Claude credentials of a config dir the project's windows run on", () => {
-    vi.stubEnv('HOME', tempDir('pup-sandbox-home-'));
     const configDir = tempDir('pup-sandbox-config-');
     vi.stubEnv('CLAUDE_CONFIG_DIR', configDir);
-    try {
-      const repo = repoWith('workerSandbox: true\n');
-      saveSessionEnv(repo, ['CLAUDE_CONFIG_DIR']);
-      const settings = JSON.parse(compileIn(repo).files['settings.json'] as string);
-      const credentials = join(configDir, '.credentials.json');
+    const repo = repoWith('workerSandbox: true\n');
+    saveSessionEnv(repo, ['CLAUDE_CONFIG_DIR']);
+    const settings = JSON.parse(compileIn(repo).files['settings.json'] as string);
+    const credentials = join(configDir, '.credentials.json');
 
-      expect(settings.sandbox.filesystem.denyRead).toContain(credentials);
-      expect(settings.permissions.deny).toContain(`Read(/${credentials})`);
-    } finally {
-      vi.unstubAllEnvs();
-    }
+    expect(settings.sandbox.filesystem.denyRead).toContain(credentials);
+    expect(settings.permissions.deny).toContain(`Read(/${credentials})`);
+  });
+
+  it("checks the user settings.json of a config dir the project's windows run on", () => {
+    const configDir = tempDir('pup-sandbox-config-');
+    vi.stubEnv('CLAUDE_CONFIG_DIR', configDir);
+    const repo = repoWith('workerSandbox: true\n');
+    saveSessionEnv(repo, ['CLAUDE_CONFIG_DIR']);
+    writeFileSync(join(configDir, 'settings.json'), '{"sandbox":{}}');
+
+    expect(() => compileIn(repo)).toThrow(join(configDir, 'settings.json'));
   });
 
   it('refuses the compile on a malformed setting rather than launch unsandboxed', () => {

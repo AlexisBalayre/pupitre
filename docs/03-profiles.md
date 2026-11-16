@@ -112,8 +112,9 @@ The block runs every process a Bash call starts inside Claude Code's sandbox:
 - Writes allowed: the worktree and its admin dir, where the npm, pip, uv, poetry and Yarn 2+
   caches are pointed (`npm_config_cache`, `PIP_CACHE_DIR`, `UV_CACHE_DIR`, `POETRY_CACHE_DIR`,
   `YARN_GLOBAL_FOLDER` in the compiled `env`), the sandbox's `TMPDIR`, the store's `state.db`
-  files, the session's handoff document that `pup respawn` asks for, the machine's test slots,
-  and the main `.git` that a commit needs.
+  files, the session's handoff document that `pup respawn` asks for, and the main `.git` that a
+  commit needs. The machine's test slots are not granted, so a sandboxed `pup session test` runs
+  with no slot (decision 191).
 - Writes denied, within the main `.git`. Every denied path is denied with its `.lock` too,
   generated from the list: git renames the lock over the file, so content put into a lock
   another git holds lands there:
@@ -146,8 +147,11 @@ The block runs every process a Bash call starts inside Claude Code's sandbox:
   credentials of a `CLAUDE_CONFIG_DIR` the project's windows run on and the login Keychain,
   where Claude Code and gh keep their tokens on macOS.
 - Network: only the npm and PyPI registries, plus loopback, which the web dashboard's tests need.
-  Any other host is refused, and no command may leave the sandbox. The refusal holds because the
-  settings arrive by `--settings`.
+  Any other host is refused, and no command may ask to leave the sandbox.
+- The operator's user `settings.json` is loaded beside the compiled one, and Claude Code adds its
+  `sandbox` lists to the block's: a user `excludedCommands` entry would run outside the sandbox,
+  a user `allowedDomains` entry would open its host. So under the setting the compile refuses a
+  user `settings.json` that holds a `sandbox` key, or that does not parse, and names the file.
 
 The Read, Edit and Write tools, the hooks and the session process are not sandboxed. The setting
 also adds a `Read(...)` deny rule for each credential path, which keeps the Read tool, and Grep

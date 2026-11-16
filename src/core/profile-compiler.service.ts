@@ -1349,22 +1349,25 @@ jq -c --arg sid "\${PUP_SESSION_ID:-unknown}" '. + {pup_session_id: $sid}' >> '$
  *   which for `config` arms a `core.fsmonitor` and for `packed-refs` could
  *   move `main`. Of the store,
  *   only the SQLite files every `pup` command opens read-write, so `pup session
- *   done`, `ask` and the pre-commit hook's `pup session test` still run; the
- *   session's handoff document `pup respawn` asks for; and the machine's test
- *   slots `pup session test` takes (`test-slot.service.ts`).
+ *   done`, `ask` and the pre-commit hook's `pup session test` still run; and the
+ *   session's handoff document `pup respawn` asks for. The machine's test slots
+ *   are left out: a sandboxed `kill(pid, 0)` on an unsandboxed pid fails with
+ *   EPERM (probed), so the slot protocol would take a live gate for dead and
+ *   reclaim its slot. Without the grant `pup session test` runs slot-less.
  *   A deny wins over any allow, however narrow, so the store is left out of
  *   every grant rather than denied: the sandbox refuses a path no grant names.
  * - Reads: everything but the operator's credentials, which the Read tool is
  *   kept from by `credentialReadRules` instead.
  * - Network: the package registries only. `strictAllowlist` refuses any other
  *   host: the session skips permission prompts, under which an unlisted host
- *   would otherwise be let through. It holds because the settings arrive by
- *   `--settings`, never as a project settings file. Local binding stays, though
- *   on macOS it also opens every localhost port to the sandbox: the web
- *   dashboard's tests listen on loopback, and the pre-commit hook runs them
- *   inside the sandbox for any change they import.
+ *   would otherwise be let through. Claude Code honours it from `--settings`.
+ *   Local binding stays, though on macOS it also opens every localhost port to
+ *   the sandbox: the web dashboard's tests listen on loopback, and the
+ *   pre-commit hook runs them inside the sandbox for any change they import.
  * `failIfUnavailable` refuses the launch rather than run the worker
- * unsandboxed, and no command may ask to leave the sandbox.
+ * unsandboxed, and `allowUnsandboxedCommands` ignores a call's request to leave
+ * it. Each list here is the only one a worker loads, managed settings aside,
+ * because `refuseUserSandbox` keeps the operator's user settings from adding to it.
  */
 function workerSandbox(input: CompileInput, git: WorktreeGitEnv, credentials: string[]) {
   const store = projectPaths(input.repoPath);
@@ -1382,7 +1385,6 @@ function workerSandbox(input: CompileInput, git: WorktreeGitEnv, credentials: st
         `${store.dbFile}-shm`,
         // `pup respawn` steers the worker to write it, and no pup command does.
         store.handoffFile(input.sessionId),
-        join(homedir(), '.pupitre', 'slots'),
       ],
       denyWrite: [
         common('config'),
@@ -1442,6 +1444,33 @@ function workerCredentials(repoPath: string): string[] {
   return configDir === join(homedir(), '.claude')
     ? WORKER_CREDENTIALS
     : [...WORKER_CREDENTIALS, join(configDir, '.credentials.json')];
+}
+
+/**
+ * A worker loads the operator's user `settings.json` beside the compiled one
+ * (`--setting-sources user`, decision 9), and Claude Code joins a `sandbox`
+ * list from every source it loads. A user `excludedCommands`, `allowedDomains`
+ * or `allowWrite` would widen the compiled block, and no compiled value takes
+ * an entry back, so the compile refuses a user file that holds the key, or one
+ * it cannot parse to check (decision 191).
+ */
+function refuseUserSandbox(repoPath: string): void {
+  const settingsPath = join(claudeUserDir(repoPath), 'settings.json');
+  if (!existsSync(settingsPath)) return;
+  const text = readFileSync(settingsPath, 'utf8');
+  let settings: unknown;
+  try {
+    settings = JSON.parse(text);
+  } catch {
+    throw new Error(
+      `Invalid ${settingsPath}: workerSandbox needs it to parse as JSON, to check it holds no \`sandbox\` key (decision 191).`,
+    );
+  }
+  if (typeof settings === 'object' && settings !== null && 'sandbox' in settings) {
+    throw new Error(
+      `Invalid ${settingsPath}: its \`sandbox\` key is refused while workerSandbox is on, since Claude Code adds its lists to the worker's sandbox (decision 191).`,
+    );
+  }
 }
 
 /**
@@ -1529,6 +1558,7 @@ export function compileProfile(input: SessionCompileInput): CompiledProfile {
   const sandboxCredentials = workerSandboxOn(input.repoPath)
     ? workerCredentials(input.repoPath)
     : undefined;
+  if (sandboxCredentials) refuseUserSandbox(input.repoPath);
   // Additive-only invariant (docs/03-profiles.md): layer-supplied hooks are
   // appended after the compiler's security/event hooks, never allowed to replace
   // them. Spread the layer's map first, then overwrite the guarded events with

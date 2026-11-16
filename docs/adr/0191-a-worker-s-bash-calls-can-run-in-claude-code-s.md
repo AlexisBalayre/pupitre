@@ -31,7 +31,7 @@
       `sessions/<id>/handoff.md`. `pup respawn` deletes that file and steers the worker to write
       it, the scope hook keeps the Write tool from it, and no pup command writes it, so without
       the grant a sandboxed worker could never be respawned with a handoff. The machine's test
-      slots in `~/.pupitre/slots/` are allowed too.
+      slots in `~/.pupitre/slots/` are not allowed (*The test slots* below).
     - Writes denied inside those grants. In the main `.git`, exactly these. A worker's commit or
       merge writes none of them, but every ref deletion takes the `packed-refs` lock (ceiling 13).
       Every path denied here, in the main `.git` and in the admin dir alike, is denied with its
@@ -124,7 +124,10 @@
       Claude Code honours that key only from user, managed or `--settings` settings, never from
       a project settings file. A worker's compiled settings reach it as
       `claude --settings <store>/sessions/<id>/compiled/settings.json --setting-sources user`
-      (`launchArgs`), so the worktree's own `.claude/` settings are not loaded and the key holds.
+      (`launchArgs`), so the worktree's own `.claude/` settings are not loaded and the key is
+      honoured. It decides what happens to a host missing from the list, not whose list it is:
+      the operator's user settings are loaded too, and their `allowedDomains` would join this
+      one, which the compile refuses (*The operator's own sandbox settings* below).
       `allowLocalBinding` stays on, at a cost. On macOS it also lets sandboxed commands connect
       to every localhost port, which includes pup's own web dashboard, browser debug ports and
       local databases. It stays on because `src/core/web-dashboard.test.ts` listens on loopback,
@@ -132,8 +135,23 @@
       Without local binding, all 81 of its tests fail with `listen EPERM` and the worker cannot
       commit. With it, they pass. Ceiling 5 below lists the ways to turn it off.
     - `failIfUnavailable` refuses the launch when the sandbox cannot start. With
-      `allowUnsandboxedCommands: false`, Claude Code ignores a call's `dangerouslyDisableSandbox`,
-      so a worker cannot ask its way out.
+      `allowUnsandboxedCommands: false`, Claude Code ignores a call's `dangerouslyDisableSandbox`.
+      That key does not reach `excludedCommands`, whose commands run outside the sandbox. The
+      block lists none, and the compile refuses a user settings file that could add one.
+    *The operator's own sandbox settings.* A worker also loads the operator's user
+    `settings.json`, from the config dir its windows run on (decisions 9 and 106). Claude Code
+    joins a `sandbox` list from every source it loads rather than letting one replace another
+    (its documentation; not probed). So a user `excludedCommands` entry such as `docker` would
+    run that command outside the sandbox, with the home directory and the network open. A user
+    `allowedDomains` entry would open its host, and a user `allowWrite` entry would grant a path
+    no compiled entry names. No compiled value takes such an entry back: `strictAllowlist` and
+    `allowUnsandboxedCommands` are single values, and only managed settings can make their own
+    domain list the only one. Under the setting the compile therefore refuses a user
+    `settings.json` that holds a `sandbox` key, naming the key and the file, the way it refuses
+    a malformed value. It also refuses one that does not parse as JSON, since the key cannot be
+    checked there. The file is read at compile time, like the setting itself. With the key
+    absent, the compiled lists are the only ones a worker loads, managed settings aside: those
+    are the machine administrator's, and pup does not read them.
     *A deny wins.* In Claude Code's sandbox a `denyWrite` entry beats any `allowWrite` entry, even
     a narrower one. So the store is kept out of every grant rather than listed in `denyWrite`. A
     denied store root would take `state.db` with it. The first version of this decision did
@@ -184,6 +202,23 @@
     longer rewrite its own compiled hooks, which run outside the sandbox, or its recheck
     snapshots. Nor can its Write tool through a link the shell planted, which the scope hook
     refuses under the setting, short of the race in ceiling 14.
+    *The test slots (probed 2026-11-16).* An earlier version of this decision granted
+    `~/.pupitre/slots/`, so that the pre-commit hook's `pup session test` could take a slot
+    from inside the sandbox. The slot protocol tells a live holder from a dead one with
+    `kill(pid, 0)` and takes any error for death (`test-slot.service.ts`). The probe used Claude
+    Code 2.1.325 on macOS: a `claude -p` run with permissions skipped, `--setting-sources user`
+    and a `--settings` file holding a `sandbox` block. From one Bash call it ran `kill -0` and
+    Node's `process.kill(pid, 0)` on a live, unsandboxed process of the same user, the
+    session's own Claude Code. Both failed: `Operation not permitted` and `EPERM`. Node's call
+    on a child of the same Bash call succeeded, and a write to the home directory was refused,
+    so the calls ran sandboxed. Under the grant, a sandboxed worker would therefore take a live
+    gate for dead, move its `slot-N.lock` aside, delete a waiting gate's wait file, and run
+    beside the gate with nothing reported. So the slots are not granted. A sandboxed
+    `pup session test` still sees every holder as dead, but its renames and unlinks in the
+    slots dir fail and are skipped. Its first write then fails with `EPERM`, and `withTestSlot`
+    runs the tests with no slot, as it does for any unwritable slots dir. That costs isolation:
+    a sandboxed worker's test runs are not counted against the machine's slots and do not wait
+    for a gate. Decision 140 keeps the gate's run alone against unsandboxed sessions only.
     *The scope hook.* Edit and Write run outside the sandbox, with permissions skipped, and the
     scope hook only compared the path's text with the worktree. A sandboxed Bash call can create
     a symlink anywhere in the worktree, pointing at the main checkout's `project.yml` or a
@@ -264,8 +299,7 @@
        writes there and the deny cannot single out its own branch.
     3. `state.db`, `-wal` and `-shm` are an escape. A sandboxed worker can replace any of them
        with a symlink. Unsandboxed `pup`, the hooks and the gate then write through it, to wherever
-       the link points. `~/.pupitre/slots/` is the same kind of redirect: a link planted there is
-       followed by the unsandboxed gate's slot handling. The session's `handoff.md` is one more:
+       the link points. The session's `handoff.md` is one more:
        a worker can replace it with a symlink to a file the sandbox denies it, such as
        `~/.ssh/id_ed25519`, and the unsandboxed `pup respawn` then reads that file into the next
        session's handoff. Follow-up: open them all with `lstat` and `O_NOFOLLOW`.
@@ -328,4 +362,5 @@
     - A worktree-local settings file that loosens the sandbox. Claude Code ignores such a file's
       `sandbox.filesystem` entries and permission rules under `--setting-sources user`, as its
       debug log above says. Its other sandbox keys were not probed.
-    - The test slots path, which every project on the machine shares.
+    - Test slots a sandboxed worker can take part in: a liveness check that does not rest on
+      a signal the sandbox refuses, and a grant that lets the worker write only its own entries.
