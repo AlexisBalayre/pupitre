@@ -1,0 +1,96 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-16T08:24:37.176Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "43830164975",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/43830164975",
+  "actor": "AlexisBalayre",
+  "commit_sha": "b1aaa77038446cb651a9b8d10edd25c6d86b0c17",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 330,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "guards"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "guards"
+  ],
+  "reviewers_skipped": [
+    "conventions",
+    "context",
+    "maintainability",
+    "docs",
+    "spec",
+    "simplicity",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1694-1711",
+      "description": "Any lockfile above a package that has none of its own is treated as that package's workspace root. For a standalone nested package that is not a workspace member and has no lockfile on disk, the refusal names the ancestor's install. That install never installs the package, so the gate refuses again with the same message every time. The stage itself runs npm in the package directory.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "1723-1748",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The Plug'n'Play skip only looks for `.pnp.cjs`/`.pnp.js` in the gate checkout. In a Yarn Berry repo that gitignores `.pnp.*` (no zero-installs), a workspace member is refused with `yarn --cwd . install`. That install writes no `node_modules`, so the refusal repeats on every merge. The stage already failed here before this PR, since only `node_modules` is linked and the stage runs through npm. Naming the real cause (a PnP install the gate cannot link) would stop the message from pointing at an install the operator has already run.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Round 6 budget: only correctness, security and guards were spawned. conventions, docs, simplicity, context and maintainability were skipped. spec had no source, and workflow-safety had no workflow change. The consolidator was skipped because there was only one finding. The validator confirmed the only important but advised a nit, because the same scenario failed before the PR and the gate does not support PnP stages. The orchestrator retagged it as a nit."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.0148513,
+  "duration_ms": 287959,
+  "num_turns": 12,
+  "tokens": {
+    "input": 14,
+    "output": 6133,
+    "cache_read": 346260,
+    "cache_creation": 52090,
+    "total": 404497
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 96,
+      "output": 36705,
+      "cache_read": 1214653,
+      "cache_creation": 157075,
+      "cost_usd": 1.9190596000000002
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 12,
+      "output": 1988,
+      "cache_read": 59777,
+      "cache_creation": 27964,
+      "cost_usd": 0.09579170000000001
+    }
+  ],
+  "permission_denials": []
+}
