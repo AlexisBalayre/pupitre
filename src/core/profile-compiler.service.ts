@@ -127,6 +127,9 @@ const WORKER_CREDENTIALS = [
   '~/.npmrc',
   '~/.pypirc',
   '~/.claude/.credentials.json',
+  // The login Keychain, which holds Claude Code's and gh's tokens on macOS:
+  // `security find-generic-password -w` reads both from the sandbox without it.
+  '~/Library/Keychains',
 ];
 
 /**
@@ -1271,7 +1274,8 @@ jq -c --arg sid "\${PUP_SESSION_ID:-unknown}" '. + {pup_session_id: $sid}' >> '$
  *   worktree's commit. That grant is the whole `.git` but its `config`,
  *   `hooks` and every `worktrees/` entry other than this worktree's own. Within
  *   it this denies `config.worktree`, `commondir`, `info`, `modules`, `main`
- *   and its lock, `packed-refs` and its lock (either would move `main` too),
+ *   and the refs that would shadow it (`main`, `refs/main`, `refs/tags/main`)
+ *   with their locks, `packed-refs` and its lock (either would move `main` too),
  *   `refs/replace`, `refs/remotes`, `shallow` and the main checkout's state
  *   that `MAIN_CHECKOUT_STATE` lists. A worker's commit or merge writes none of
  *   these. The rest of the `.git` stays writable, including objects, `logs`,
@@ -1327,6 +1331,14 @@ function workerSandbox(input: CompileInput, git: WorktreeGitEnv, credentials: st
         // The main checkout's submodules' git dirs, each with its own config and hooks.
         // A linked worktree's submodules live in its admin dir instead.
         common('modules'),
+        // `main` and every ref git tries before `refs/heads/main` for a bare
+        // `main` (gitrevisions), with their locks: one planted there shadows it.
+        common('main'),
+        common('main.lock'),
+        common('refs', 'main'),
+        common('refs', 'main.lock'),
+        common('refs', 'tags', 'main'),
+        common('refs', 'tags', 'main.lock'),
         common('refs', 'heads', 'main'),
         common('refs', 'heads', 'main.lock'),
         common('packed-refs'),

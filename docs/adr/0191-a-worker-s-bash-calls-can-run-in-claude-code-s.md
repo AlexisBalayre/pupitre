@@ -15,7 +15,11 @@
     never a window already running. It is off by default. While it is off, the compiled settings
     are byte for byte what they were, and so is the profile hash. A value that is not a boolean
     refuses the compile, so a typo cannot launch a worker unsandboxed without anyone noticing. The
-    conductor is not sandboxed. On Linux the setting refuses the compile for now (ceiling 12).
+    conductor is not sandboxed. Outside macOS the setting refuses the compile for now
+    (ceiling 12). A worker cannot turn the setting off for the launches after it: `.pupitre/**`
+    is a protected path (`PROTECTED_PATH_GLOBS`), so the gate refuses any branch that touches
+    `project.yml`, and the main checkout's copy, which is the one read, is outside the sandbox's
+    grants and the scope hook's reach.
     *What the block allows.*
     - Writes allowed: the worktree, its admin dir under the main `.git`'s `worktrees/`, and the
       per-user temp directory Claude Code points `TMPDIR` at. Claude Code adds its own grant of
@@ -39,7 +43,9 @@
         worktree keeps its own submodules' git dirs in its admin dir, so a worker never writes
         here;
       - `info/`, `refs/replace/`, `refs/remotes/` and `shallow`;
-      - `refs/heads/main` and its `.lock`;
+      - `refs/heads/main` and every ref git tries before it for a bare `main`: `main` at the
+        `.git` root, `refs/main` and `refs/tags/main`, each with its `.lock`. Any of them, once
+        created, would shadow `main` for the operator's and the gate's unsandboxed git;
       - `packed-refs` and its `.lock`, either of which would move `main` too;
       - the main checkout's own `HEAD`, `HEAD.lock`, `index`, `index.lock`, `MERGE_HEAD`,
         `ORIG_HEAD`, `FETCH_HEAD` and `CHERRY_PICK_HEAD`. A linked worktree keeps its own copies
@@ -62,11 +68,21 @@
       directory.
     - Reads: everywhere except the operator's credentials: `~/.ssh`, `~/.gnupg`, `~/.aws`,
       `~/.config/gcloud`, `~/.config/gh`, `~/.kube`, `~/.docker`, `~/.netrc`,
-      `~/.git-credentials`, `~/.npmrc`, `~/.pypirc` and `~/.claude/.credentials.json`. A project
+      `~/.git-credentials`, `~/.npmrc`, `~/.pypirc`, `~/.claude/.credentials.json` and the
+      login Keychain, `~/Library/Keychains`. A project
       whose windows run on another `CLAUDE_CONFIG_DIR` (decision 106) keeps the Claude
       credentials in that dir, and a worker's Bash inherits the variable, so its
       `.credentials.json` is denied as well. The config dir is resolved again at compile time,
       as the launch resolved it.
+    *The Keychain (probed 2026-11-16).* On macOS, Claude Code and gh keep their tokens in the
+    login Keychain, not in the files above. With the rest of the block in force but the
+    Keychain not denied, a sandboxed `security find-generic-password -w` read both secrets
+    (exit 0, the secret sent to `/dev/null`); `gh auth token` failed only because `~/.config/gh`
+    is denied. With `~/Library/Keychains` read-denied, both lookups exit 44 (item not found).
+    curl to the registry, Node's fetch and git behaved the same with and without the deny.
+    Claude Code's sandbox settings have no switch for the Security framework's IPC, so the deny
+    on the Keychain files is the whole guard: an item the system keychain or a hardware token
+    holds was not probed.
     *The Read tool.* The sandbox's read denial binds only Bash children, and the scope hook
     matches only Edit and Write. So the setting also adds two `Read(...)` rules per credential
     path to `permissions.deny`: the path itself and its `/**`, so a directory's files are
@@ -165,7 +181,10 @@
        worktree to a fake git dir that arms `core.fsmonitor` or `core.hooksPath`. That covers a
        hook, the gate, or the operator. A nested `.git` directory planted inside the worktree does
        the same: Bash can write it, since it is inside the worktree. Unsandboxed git run from that
-       subdirectory then picks it up, the operator's own git included. pup's compiled hooks pin
+       subdirectory then picks it up, the operator's own git included. So does this worktree's
+       admin dir, which a worker's commit writes and so stays granted: its `modules/<name>/`
+       keeps each of the worktree's submodules' `config` and `hooks/`, which run in any
+       unsandboxed git that recurses into that submodule from the worktree. pup's compiled hooks pin
        their git with `WorktreeGitEnv`, which pup computes from trusted paths (decision 101).
        Follow-up: every unsandboxed git call passes a trusted `--git-dir` and `--work-tree` plus
        hardened `-c` options.
@@ -203,15 +222,15 @@
     10. A main checkout whose `.git` is a file (a separate git dir) is not covered. Every deny
         then points at a path that does not exist.
     11. The denies on paths that do not exist yet, such as the locks and the rebase dirs, were
-        probed only on macOS. Linux was not probed.
+        probed only on macOS.
     12. The grants on paths that do not exist yet were probed only on macOS too, where a literal
         allow covers creating the file. `state.db-wal` and `-shm` usually do not exist at launch:
         SQLite deletes them when the last connection closes, which every short-lived `pup`
         command does. The handoff document does not exist either. Claude Code's Linux sandbox is
         expected to grant only the paths that exist when it starts, so on Linux a sandboxed
-        `pup` may fail to open the store and the handoff may fail to write. Until Linux is
-        probed, `workerSandbox: true` refuses the compile there, and so the launch, the way a
-        malformed value does.
+        `pup` may fail to open the store and the handoff may fail to write. Until another
+        platform is probed, `workerSandbox: true` refuses the compile anywhere but macOS, and so
+        the launch, the way a malformed value does.
     *Left for follow-ups.*
     - Gaps in the read denials: `.yarnrc.yml`, `pip.conf`, cargo and gem credentials, the
       `.claude.json` in the home directory, and the transcripts.

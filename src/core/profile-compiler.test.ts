@@ -910,7 +910,7 @@ describe('the status line records the plan usage (decision 156)', () => {
 
 // Decision 191: Claude Code's Bash sandbox, behind the project's `workerSandbox` setting.
 describe('the worker sandbox (decision 191)', () => {
-  // The setting refuses on Linux (ceiling 12), so these compile as on macOS.
+  // The setting refuses outside macOS (ceiling 12), so these compile as on it.
   const platform = Object.getOwnPropertyDescriptor(process, 'platform') as PropertyDescriptor;
   beforeEach(() => {
     Object.defineProperty(process, 'platform', { ...platform, value: 'darwin' });
@@ -982,6 +982,12 @@ describe('the worker sandbox (decision 191)', () => {
         join(repo, '.git', 'hooks'),
         join(repo, '.git', 'info'),
         join(repo, '.git', 'modules'),
+        join(repo, '.git', 'main'),
+        join(repo, '.git', 'main.lock'),
+        join(repo, '.git', 'refs', 'main'),
+        join(repo, '.git', 'refs', 'main.lock'),
+        join(repo, '.git', 'refs', 'tags', 'main'),
+        join(repo, '.git', 'refs', 'tags', 'main.lock'),
         join(repo, '.git', 'refs', 'heads', 'main'),
         join(repo, '.git', 'refs', 'heads', 'main.lock'),
         join(repo, '.git', 'packed-refs'),
@@ -1035,6 +1041,12 @@ describe('the worker sandbox (decision 191)', () => {
     { name: 'remote-tracking refs', path: ['refs', 'remotes'] },
     { name: 'the shallow file', path: ['shallow'] },
     { name: "main's lock", path: ['refs', 'heads', 'main.lock'] },
+    { name: 'a root-level main, which git tries first for a bare main', path: ['main'] },
+    { name: "a root-level main's lock", path: ['main.lock'] },
+    { name: 'refs/main, which shadows refs/heads/main', path: ['refs', 'main'] },
+    { name: "refs/main's lock", path: ['refs', 'main.lock'] },
+    { name: 'a main tag, which shadows refs/heads/main', path: ['refs', 'tags', 'main'] },
+    { name: "a main tag's lock", path: ['refs', 'tags', 'main.lock'] },
     { name: "packed-refs' lock", path: ['packed-refs.lock'] },
     { name: "the main checkout's HEAD", path: ['HEAD'] },
     { name: "the main checkout's index", path: ['index'] },
@@ -1062,6 +1074,8 @@ describe('the worker sandbox (decision 191)', () => {
     expect(settings.permissions.deny).toEqual(
       expect.arrayContaining(['Read(~/.ssh)', 'Read(~/.ssh/**)', 'Read(~/.npmrc)']),
     );
+    // The login Keychain holds Claude Code's and gh's tokens on macOS.
+    expect(settings.sandbox.filesystem.denyRead).toContain('~/Library/Keychains');
     for (const path of settings.sandbox.filesystem.denyRead) {
       expect(settings.permissions.deny).toContain(`Read(${path})`);
     }

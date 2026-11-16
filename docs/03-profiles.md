@@ -117,7 +117,8 @@ The block runs every process a Bash call starts inside Claude Code's sandbox:
     of and git would follow to a config of the worker's;
   - `modules/`, the main checkout's submodules' git dirs with their own `config` and `hooks/`;
   - `info/`, `refs/replace/`, `refs/remotes/` and `shallow`;
-  - `main` and `packed-refs`, with their locks;
+  - `main` and `packed-refs`, with their locks, and the refs that would shadow `main` for a bare
+    `main`: `main` at the `.git` root, `refs/main` and `refs/tags/main`, with their locks;
   - the main checkout's own `HEAD`, `HEAD.lock`, `index`, `index.lock`, `MERGE_HEAD`,
     `ORIG_HEAD`, `FETCH_HEAD` and `CHERRY_PICK_HEAD`;
   - its `rebase-merge/`, `rebase-apply/` and `sequencer/`.
@@ -132,18 +133,20 @@ The block runs every process a Bash call starts inside Claude Code's sandbox:
 - A deny wins over any allow, so the rest of the store is kept out of every grant rather than
   denied, which refuses it just the same.
 - Reads: allowed everywhere except the operator's credential files, including the Claude
-  credentials of a `CLAUDE_CONFIG_DIR` the project's windows run on.
+  credentials of a `CLAUDE_CONFIG_DIR` the project's windows run on and the login Keychain,
+  where Claude Code and gh keep their tokens on macOS.
 - Network: only the npm and PyPI registries, plus loopback, which the web dashboard's tests need.
   Any other host is refused, and no command may leave the sandbox. The refusal holds because the
   settings arrive by `--settings`.
 
 The Read, Edit and Write tools, the hooks and the session process are not sandboxed. The setting
 also adds a `Read(...)` deny rule for each credential path, which keeps the Read tool, and Grep
-and Glob with it, from the same files; the scope hook still guards Edit and Write. A pnpm project lists `.pnpm-store/` in its `.gitignore` before turning the
-setting on, because pnpm keeps a store in the worktree when it cannot write the shared one.
-The setting was probed only on macOS. On Linux, grants of files that do not exist at launch,
-such as `state.db-wal` and the handoff document, may not hold, so until Linux is probed the
-setting refuses the compile there (decision 191, ceiling 12).
+and Glob with it, from the same files; the scope hook still guards Edit and Write. A pnpm
+project lists `.pnpm-store/` in its `.gitignore` before turning the setting on, because pnpm
+keeps a store in the worktree when it cannot write the shared one. The setting was probed only
+on macOS, and elsewhere grants of files that do not exist at launch, such as `state.db-wal` and
+the handoff document, may not hold. So until another platform is probed, the setting refuses the
+compile anywhere but macOS (decision 191, ceiling 12).
 
 ## Project brief (decision 57)
 

@@ -72,11 +72,13 @@ describe('workerSandboxOn', () => {
     expect(() => workerSandboxOn(repoWith(content))).toThrow(error);
   });
 
-  // Decision 191, ceiling 12: Linux was not probed, so the setting refuses there.
-  it.each<{ platform: NodeJS.Platform; on: boolean }>([
-    { platform: 'linux', on: true },
-    { platform: 'darwin', on: false },
-  ])('refuses the setting on Linux only ($platform)', ({ platform, on }) => {
+  // Decision 191, ceiling 12: only macOS was probed, so the setting refuses elsewhere.
+  it.each<{ platform: NodeJS.Platform; refused: boolean }>([
+    { platform: 'darwin', refused: false },
+    { platform: 'linux', refused: true },
+    { platform: 'win32', refused: true },
+    { platform: 'freebsd', refused: true },
+  ])('refuses the setting outside macOS ($platform)', ({ platform, refused }) => {
     const original = Object.getOwnPropertyDescriptor(process, 'platform') as PropertyDescriptor;
     Object.defineProperty(process, 'platform', { ...original, value: platform });
     onTestFinished(() => {
@@ -84,7 +86,7 @@ describe('workerSandboxOn', () => {
     });
     const check = () => workerSandboxOn(repoWith('workerSandbox: true\n'));
 
-    if (on) expect(check).toThrow(/refused on Linux/);
+    if (refused) expect(check).toThrow(/refused outside macOS/);
     else expect(check()).toBe(true);
     expect(workerSandboxOn(repoWith('workerSandbox: false\n'))).toBe(false);
   });
