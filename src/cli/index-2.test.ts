@@ -2008,6 +2008,7 @@ describe('CLI commands', () => {
         overrideVia: 'operator',
         base: DEFAULT_BASE_PROFILE,
         windowEnv: { vars: {}, configDir: join(home, '.claude') },
+        wait: true,
       });
       expect(logs).toEqual([
         `Fix round started for s1: the 2 open threads the CI review left on ${PR} at ${HEAD} went to a fresh window.`,

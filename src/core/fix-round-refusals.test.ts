@@ -340,7 +340,8 @@ describe('startFixRound', { timeout: 90_000 }, () => {
   const land = () =>
     landSession(db, { repoPath: repo, sessionId: SESSION_ID, adapters: [passingAdapter] });
 
-  const fix = (override = {}, overrideVia: 'operator' | 'conductor' = 'operator') =>
+  // As the CLI asks, waiting for a held merge lock; the dashboard does not.
+  const fix = (override = {}, overrideVia: 'operator' | 'conductor' = 'operator', wait = true) =>
     startFixRound(db, {
       repoPath: repo,
       sessionId: SESSION_ID,
@@ -349,6 +350,7 @@ describe('startFixRound', { timeout: 90_000 }, () => {
       pathsBase: stateBase,
       base: DEFAULT_BASE_PROFILE,
       windowEnv: { vars: {}, configDir: claudeUserDir },
+      wait,
     });
   const payloads = (type: string) =>
     listEvents(db, SESSION_ID)
@@ -732,5 +734,99 @@ describe('startFixRound', { timeout: 90_000 }, () => {
     expect(landed).toMatchObject({ prUrl: PR_URL, mergeCommit, fastForwarded: true });
     expect(sh(repo, 'git', 'rev-parse', 'main')).toBe(mergeCommit);
     expect(readFileSync(join(repo, 'src/fix.ts'), 'utf8')).toContain('fix');
+  });
+
+  // Decision 88: behind a queue of gates `pup fix` waits for the merge lock as
+  // `pup merge` and `pup land` do, rather than hand the retry to the operator.
+  describe('a merge lock another run holds', () => {
+    let lock: string;
+    let errors: ReturnType<typeof vi.spyOn>;
+    beforeEach(() => {
+      lock = join(repo, '.git', 'pup-merge.lock');
+      mkdirSync(lock);
+      writeFileSync(join(lock, 'pid'), `${process.pid}\n`);
+      errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    });
+    afterEach(() => errors.mockRestore());
+
+    it('is waited for, saying so once, and the round then starts', async () => {
+      seedPrMerge();
+      reviewOnGitHub({ threads: OPEN_THREAD });
+      setTimeout(() => rmSync(lock, { recursive: true }), 200);
+
+      await expect(fix()).resolves.toMatchObject({ prUrl: PR_URL, head: pinned, threads: 1 });
+
+      expect(errors.mock.calls).toEqual([
+        [expect.stringMatching(/^Waiting for the merge lock, held by pid \d+, for up to /)],
+      ]);
+      expect(getSession(db, SESSION_ID)?.state).toBe('running');
+      expect(existsSync(worktree)).toBe(true);
+      expect(kickoff).toHaveBeenCalledTimes(1);
+      expect(existsSync(lock)).toBe(false);
+    });
+
+    // The run that held the lock started its own round meanwhile: restoring
+    // again would name that round's worktree for removal.
+    it('refuses under it a session the holder took out of merged, restoring nothing', async () => {
+      seedPrMerge();
+      reviewOnGitHub({ threads: OPEN_THREAD });
+      setTimeout(() => {
+        db.prepare("UPDATE sessions SET state = 'running' WHERE id = ?").run(SESSION_ID);
+        rmSync(lock, { recursive: true });
+      }, 200);
+
+      await expectRefusedUnwritten(
+        /Session s1 is running now, no longer merged: a run that held the merge lock meanwhile moved it\. No fix round was started\./,
+        'running',
+      );
+      expect(existsSync(worktree)).toBe(false);
+    });
+
+    // `pup retire` leaves the session merged: only its event says the branch
+    // is gone, and restoring would bring it back.
+    it('refuses under it a session the holder retired, restoring nothing', async () => {
+      seedPrMerge();
+      reviewOnGitHub({ threads: OPEN_THREAD });
+      setTimeout(() => {
+        appendEvent(db, SESSION_ID, 'retired', { prUrl: PR_URL, supersededBy: `${PR_URL}0` });
+        rmSync(lock, { recursive: true });
+      }, 200);
+
+      await expect(fix()).rejects.toThrow(
+        /Session s1 was retired by a run that held the merge lock meanwhile\. No fix round was started\./,
+      );
+
+      expect(listEvents(db, SESSION_ID).at(-1)?.type).toBe('retired');
+      expect(getSession(db, SESSION_ID)?.state).toBe('merged');
+      expect(existsSync(worktree)).toBe(false);
+      expect(launchSession).not.toHaveBeenCalled();
+      expect(kickoff).not.toHaveBeenCalled();
+    });
+
+    // The dashboard asks for no wait: a page refuses at once where the CLI waits.
+    it('refuses at once, writing nothing, for a caller that does not wait', async () => {
+      seedPrMerge();
+      reviewOnGitHub({ threads: OPEN_THREAD });
+
+      await expect(fix({}, 'operator', false)).rejects.toThrow(
+        /Another merge is in progress: pid \d+ holds the lock/,
+      );
+
+      expect(errors).not.toHaveBeenCalled();
+      expect(getSession(db, SESSION_ID)?.state).toBe('merged');
+      expect(existsSync(worktree)).toBe(false);
+      expect(kickoff).not.toHaveBeenCalled();
+      expect(existsSync(lock)).toBe(true);
+    });
+
+    // No wait cures a lock with no holder to wait for: it is refused as before.
+    it('refuses a lock with no pid to wait for, writing nothing', async () => {
+      rmSync(join(lock, 'pid'));
+      seedPrMerge();
+      reviewOnGitHub({ threads: OPEN_THREAD });
+
+      await expectRefusedUnwritten(/pup-merge\.lock/);
+      expect(existsSync(lock)).toBe(true);
+    });
   });
 });

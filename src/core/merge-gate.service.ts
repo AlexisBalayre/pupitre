@@ -822,7 +822,7 @@ const LOCK_SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP'] as const;
 const LOAD_POLL_MS = 5000;
 
 /**
- * The longest `pup merge` and `pup land` wait for a merge lock a live process
+ * The longest `pup merge`, `pup land` and `pup fix` wait for a merge lock a live process
  * holds before refusing (decision 88): what a gate with one suite can hold it
  * for, its build, its test run and that run's one re-run each bounded by a
  * stage's timeout, plus its slot wait and its load wait. Each nested package's
