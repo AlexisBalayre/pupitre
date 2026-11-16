@@ -18,11 +18,11 @@ import {
   measureBranch,
   newestMerge,
   type PullRequestPlan,
-  pullRequestText,
   recordMerge,
   refuseGate,
   resolveCommit,
   resolveCommitIfPresent,
+  sessionPullRequestText,
   timedSince,
   withLedgerKept,
 } from './merge-gate.service.js';
@@ -222,7 +222,17 @@ export async function regateMerged(
   try {
     rewritePullRequest(req.repoPath, regate.prUrl, {
       ...pullRequest,
-      ...pullRequestText(measured.spec, session.id, report, commitSubjects, sha, ownSubject),
+      // The rewrite replaces the whole body: the rescopes the first gate
+      // listed are read again, with any taken since (decision 188).
+      ...sessionPullRequestText(
+        db,
+        session,
+        measured.spec,
+        report,
+        commitSubjects,
+        sha,
+        ownSubject,
+      ),
     });
     assertPullRequestHead(req.repoPath, regate.prUrl, pullRequest.repo, sha);
     // The push that moved the head left the new sha without the first gate's

@@ -1234,6 +1234,47 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(stored.debt?.deadExports).toEqual([{ file: 'src/legacy.ts', exportName: 'old' }]);
   });
 
+  // Read off the store's `rescope` events, as `pup plan edit --rescope` wrote
+  // them on the claiming session (decision 188).
+  it('with openPr lists the rescopes the task took in the PR body', async () => {
+    const worktree = seedSession(db, repo);
+    commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+    seedDebtBaseline({ deadExports: [] });
+    addOrigin();
+    db.prepare("INSERT INTO events (session_id, type, payload) VALUES (?, 'rescope', ?)").run(
+      SESSION_ID,
+      JSON.stringify({
+        task: `task-${SESSION_ID}`,
+        added: ['docs/**'],
+        tier: 'standard',
+        raised: false,
+        by: 'inferred-operator',
+        tty: null,
+        tmuxPane: '%12',
+      }),
+    );
+    const bodyFile = join(tempDir('pup-gh-body-'), 'body');
+
+    const outcome = await withFakeGh(
+      fakeGh([]).replace('cat >/dev/null', `cat >> ${bodyFile}`),
+      () =>
+        runMergeGate(db, {
+          repoPath: repo,
+          sessionId: SESSION_ID,
+          adapters: [debtAdapter({ deadCode: () => [] })],
+          openPr: true,
+        }),
+    );
+
+    expect(outcome.status).toBe('merged');
+    expect(readFileSync(bodyFile, 'utf8')).toMatch(
+      new RegExp(
+        `## Rescopes\\n\\n.*\\n\\n\`\`\`\`\\n- [^;]+; session ${SESSION_ID}; added docs/\\*\\*; ` +
+          'tier standard; by inferred-operator; tty none; tmux pane %12\\n````\\n',
+      ),
+    );
+  });
+
   it('with openPr refuses when origin no longer matches the recorded push target', async () => {
     const worktree = seedSession(db, repo);
     commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
@@ -1498,6 +1539,38 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         .filter((call) => call.startsWith('pr edit'))
         .at(-1);
       expect(edit).toContain('--title edit src/feature.ts --body-file');
+    });
+
+    // The rewrite replaces the whole body, so it reads the rescopes again: the
+    // one the operator took for the fix round shows (decision 188).
+    it('lists in the rewritten body a rescope taken after the first gate', async () => {
+      await gateThenFix();
+      db.prepare("INSERT INTO events (session_id, type, payload) VALUES (?, 'rescope', ?)").run(
+        SESSION_ID,
+        JSON.stringify({
+          task: `task-${SESSION_ID}`,
+          added: ['docs/**'],
+          tier: 'critical',
+          raised: false,
+          by: 'inferred-operator',
+          tty: '/dev/ttys009',
+          tmuxPane: null,
+        }),
+      );
+      const bodies = join(tempDir('pup-gh-body-'), 'bodies');
+
+      const outcome = await regate(
+        [fixChecking],
+        fakeGh([openPrOnMain]).replace('cat >/dev/null', `cat >> ${bodies}`),
+      );
+
+      expect(outcome.status).toBe('merged');
+      expect(readFileSync(bodies, 'utf8')).toMatch(
+        new RegExp(
+          `## Rescopes\\n\\n.*\\n\\n\`\`\`\`\\n- [^;]+; session ${SESSION_ID}; added docs/\\*\\*; ` +
+            'tier critical; by inferred-operator; tty /dev/ttys009; tmux pane none\\n````\\n',
+        ),
+      );
     });
 
     it('runs every stage on the new head and appends a merge event with its sha and the same PR', async () => {
@@ -2808,6 +2881,7 @@ describe('pullRequestText (decision 137)', () => {
       ownSubject === undefined ? [] : [ownSubject],
       'a'.repeat(40),
       ownSubject,
+      [],
     ).title;
   /** 79 characters of nine-letter words: the 72-character limit falls mid-word. */
   const longGoal = 'abcdefghi '.repeat(8).trim();
@@ -2873,6 +2947,80 @@ describe('pullRequestText (decision 137)', () => {
     // A closing word with no reference after it, or none at all, is kept.
     expect(title('the goal', 'Fix the closer for #12')).toBe('Fix the closer for #12');
     expect(title('the goal', 'Close the lock file')).toBe('Close the lock file');
+  });
+});
+
+// The reviewer reviews the plan; the gate held the diff to the scope the
+// claim was widened to after launch (decision 188).
+describe("the PR body's rescopes (decision 188)", () => {
+  const report = { sessionId: SESSION_ID, passed: true, sandbox: 'test', stages: [] };
+  const body = (rescopes: Parameters<typeof pullRequestText>[6]): string =>
+    pullRequestText(
+      { id: 'task-s1' as TaskId, goal: 'the goal', scopeIn: ['src/**'], acceptance: ['done'] },
+      SESSION_ID,
+      report,
+      ['Fix the retry loop'],
+      'a'.repeat(40),
+      'Fix the retry loop',
+      rescopes,
+    ).body;
+  const RESCOPE = {
+    at: '2026-11-13 10:00:00',
+    sessionId: SESSION_ID,
+    added: ['docs/**', 'src/core/merge-gate.service.ts'],
+    tier: 'critical',
+    raised: true,
+    by: 'inferred-operator',
+    tty: '/dev/ttys009',
+    tmuxPane: null,
+  };
+
+  it('lists each rescope, fenced, between the acceptance and the commits', () => {
+    const text = body([RESCOPE, { ...RESCOPE, added: ['test/**'], raised: false, tty: null }]);
+
+    expect(text).toContain(
+      [
+        '- done',
+        '',
+        '## Rescopes',
+        '',
+        'Scope-in widened after launch by `pup plan edit --rescope`; the caller is what was seen of it, not proof.',
+        '',
+        '````',
+        `- 2026-11-13 10:00:00; session ${SESSION_ID}; added docs/**, src/core/merge-gate.service.ts; ` +
+          'tier critical, raised from standard; by inferred-operator; tty /dev/ttys009; tmux pane none',
+        `- 2026-11-13 10:00:00; session ${SESSION_ID}; added test/**; tier critical; ` +
+          'by inferred-operator; tty none; tmux pane none',
+        '````',
+        '',
+        '## Commits',
+      ].join('\n'),
+    );
+  });
+
+  it('has no section when the claim was never widened', () => {
+    expect(body([])).not.toContain('## Rescopes');
+    expect(body([])).toContain('- done\n\n## Commits');
+  });
+
+  // Store text a session can write: no line it plants can close the fence or
+  // start a line of its own.
+  it('scrubs every value to one line that cannot close the fence', () => {
+    const text = body([
+      {
+        ...RESCOPE,
+        added: ['docs/**\n````\n## Approved'],
+        by: 'inferred-operator\r\n@someone',
+        tmuxPane: '%1\u001b[2K',
+      },
+    ]);
+
+    const fenced = text.split('## Rescopes')[1]?.split('## Commits')[0] ?? '';
+    expect(fenced.split('\n').filter((line) => line.startsWith('````'))).toEqual(['````', '````']);
+    expect(text).not.toContain('\n## Approved');
+    expect(text).not.toContain('\n@someone');
+    expect(text).toContain('added docs/** ```` ## Approved; tier critical');
+    expect(text).toContain('tmux pane %1 [2K');
   });
 });
 

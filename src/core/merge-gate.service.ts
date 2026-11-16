@@ -141,6 +141,7 @@ import {
 } from './session.repository.js';
 import { steerSession } from './session-lifecycle.service.js';
 import { shellWord } from './shell-quote.utils.js';
+import { type TaskRescope, taskRescopes } from './task-rescope.service.js';
 import {
   describeSlotWait,
   GATE_SLOT_WAIT_MS,
@@ -2508,7 +2509,7 @@ async function gateAndMerge(
   if (pullRequest) {
     const newPr = {
       ...pullRequest,
-      ...pullRequestText(spec, session.id, report, commitSubjects, sha, ownSubject),
+      ...sessionPullRequestText(db, session, spec, report, commitSubjects, sha, ownSubject),
     };
     try {
       // After the last stage: a live session can set the key while they run,
@@ -3644,7 +3645,8 @@ export function recordMerge(
  * The title and body pupitre writes on a PR it opens or adopts. A squash merge
  * makes the title the subject of the commit on the target (decision 137), so
  * it is `ownSubject`, the session's first non-merge commit subject, when that
- * fits, else the goal's first line.
+ * fits, else the goal's first line. `rescopes` are the task's, `taskRescopes`'s
+ * read, so a re-gate's rewrite keeps the section the first gate wrote.
  */
 export function pullRequestText(
   spec: TaskSpec,
@@ -3653,11 +3655,30 @@ export function pullRequestText(
   commitSubjects: string[],
   sha: string,
   ownSubject: string | undefined,
+  rescopes: readonly TaskRescope[],
 ): { title: string; body: string } {
   return {
     title: prTitle(spec.goal, ownSubject) || `pup session ${sessionId}`,
-    body: prBody(spec, report, commitSubjects, sha),
+    body: prBody(spec, report, commitSubjects, sha, rescopes),
   };
+}
+
+/**
+ * `pullRequestText` for `session`'s PR, with its task's rescopes read off the
+ * store (decision 188): what a gate opening or adopting the PR writes, and
+ * what a re-gate's rewrite writes again.
+ */
+export function sessionPullRequestText(
+  db: Database,
+  session: SessionRow,
+  spec: TaskSpec,
+  report: GateReport,
+  commitSubjects: string[],
+  sha: string,
+  ownSubject: string | undefined,
+): { title: string; body: string } {
+  const rescopes = taskRescopes(db, session.task_id);
+  return pullRequestText(spec, session.id, report, commitSubjects, sha, ownSubject, rescopes);
 }
 
 /**
@@ -3868,7 +3889,13 @@ function prTitle(goal: string, ownSubject: string | undefined): string {
   return cut < 0 ? '' : line.slice(0, cut).replace(/[\s,;:–—-]+$/, '');
 }
 
-function prBody(spec: TaskSpec, report: GateReport, commitSubjects: string[], sha: string): string {
+function prBody(
+  spec: TaskSpec,
+  report: GateReport,
+  commitSubjects: string[],
+  sha: string,
+  rescopes: readonly TaskRescope[],
+): string {
   // Commit subjects and gate details quote session-authored text. Fenced so
   // GitHub renders it inert — no `Closes #n` auto-closing, no @mention pings,
   // no invisible HTML comments aimed at review bots.
@@ -3881,6 +3908,7 @@ function prBody(spec: TaskSpec, report: GateReport, commitSubjects: string[], sh
     '',
     ...spec.acceptance.map((item) => `- ${item}`),
     '',
+    ...rescopeSection(rescopes),
     '## Commits',
     '',
     '````',
@@ -3897,6 +3925,37 @@ function prBody(spec: TaskSpec, report: GateReport, commitSubjects: string[], sh
     formatGateReport(report),
     '````',
   ].join('\n');
+}
+
+/**
+ * The scope-in the task's claim was widened with after launch, for the
+ * reviewer (decision 188): the gate held the diff to the widened globs, not
+ * to the plan's. Empty when there was none. Store text a session could write,
+ * so every value is scrubbed to one line, and each line opens with `- `, which
+ * no closing fence does.
+ */
+function rescopeSection(rescopes: readonly TaskRescope[]): string[] {
+  if (rescopes.length === 0) return [];
+  const line = (rescope: TaskRescope) =>
+    [
+      `- ${sanitizeReason(rescope.at)}`,
+      `session ${sanitizeReason(rescope.sessionId)}`,
+      `added ${rescope.added.map(sanitizeReason).join(', ')}`,
+      `tier ${sanitizeReason(rescope.tier)}${rescope.raised ? ', raised from standard' : ''}`,
+      `by ${sanitizeReason(rescope.by)}`,
+      `tty ${sanitizeReason(rescope.tty ?? 'none')}`,
+      `tmux pane ${sanitizeReason(rescope.tmuxPane ?? 'none')}`,
+    ].join('; ');
+  return [
+    '## Rescopes',
+    '',
+    'Scope-in widened after launch by `pup plan edit --rescope`; the caller is what was seen of it, not proof.',
+    '',
+    '````',
+    ...rescopes.map(line),
+    '````',
+    '',
+  ];
 }
 
 /**

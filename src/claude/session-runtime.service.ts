@@ -20,7 +20,7 @@ import { homedir } from 'node:os';
 import { dirname, isAbsolute, join } from 'node:path';
 
 import { runGit, verifiedWorktreeGitEnv, type WorktreeGitEnv } from '../core/git-diff.client.js';
-import { projectPaths } from '../core/paths.utils.js';
+import { projectId, projectPaths } from '../core/paths.utils.js';
 import { shellWord } from '../core/shell-quote.utils.js';
 import type { ModelRoute } from './model-ladder.constants.js';
 import {
@@ -260,11 +260,7 @@ function sessionEnvFile(repoPath: string): string {
 export function saveSessionEnv(repoPath: string, names: string[]): void {
   const refused = refusedSessionEnv(names);
   if (refused !== undefined) throw new Error(`${refused} cannot be passed to session windows.`);
-  const file = sessionEnvFile(repoPath);
-  mkdirSync(dirname(file), { recursive: true });
-  const staged = `${file}.${randomUUID()}.tmp`;
-  writeFileSync(staged, `${JSON.stringify(names)}\n`);
-  renameSync(staged, file);
+  writeRenamed(sessionEnvFile(repoPath), `${JSON.stringify(names)}\n`);
 }
 
 /**
@@ -584,9 +580,13 @@ function tmuxAt(pane: SessionPane, args: string[], input?: string): string {
   }
 }
 
+/** A pid as tmux prints `#{pane_pid}` and a launch records it: no sign, no leading zero. */
+const PANE_PID = /^[1-9]\d{0,9}$/;
+
 /**
  * Kill any stale session named `name`, then launch a fresh detached tmux
- * session running `command`, and return the id of the pane it opened in.
+ * session running `command`, and return the id of the pane it opened in and
+ * the pid of the process the pane runs.
  * Shared by `launchSession` and `launchWatcher` — tmux is pup's process
  * supervisor everywhere (decision 1), and both spawn paths need the
  * kill-then-spawn sequence to survive a re-launch.
@@ -606,14 +606,14 @@ function spawnDetachedSession(
     /** The server to open it on; the default one when unset. */
     socket?: string;
   },
-): string {
+): { paneId: string; panePid: number } {
   killIfExists(name, opts.socket);
   const printed = tmux(opts.socket, [
     'new-session',
     '-d',
     '-P',
     '-F',
-    '#{pane_id}',
+    '#{pane_id} #{pane_pid}',
     '-s',
     name,
     ...(opts.window ? ['-x', String(opts.window.x), '-y', String(opts.window.y)] : []),
@@ -625,12 +625,16 @@ function spawnDetachedSession(
     ]),
     ...opts.command,
   ]).trim();
-  // Checked where it is minted: this id is what every later command trusts,
-  // and a launch is the one place a bad one can fail loudly instead of late.
-  if (!isPaneId(printed)) {
-    throw new Error(`tmux new-session printed ${JSON.stringify(printed)}, not a pane id.`);
+  // Checked where they are minted: the id is what every later command trusts,
+  // the pid what an operator-only command's process-tree check matches, and a
+  // launch is the one place a bad one can fail loudly instead of late.
+  const [paneId = '', panePid = ''] = printed.split(' ');
+  if (!isPaneId(paneId) || !PANE_PID.test(panePid)) {
+    throw new Error(
+      `tmux new-session printed ${JSON.stringify(printed)}, not a pane id and its pid.`,
+    );
   }
-  return printed;
+  return { paneId, panePid: Number(panePid) };
 }
 
 /**
@@ -748,6 +752,8 @@ interface ClaudeWindowOptions {
   socket?: string;
   /** `nice -n` level for the window's `claude`; unset runs it at pup's own priority. */
   niceness?: string;
+  /** Where the launch records the pid its pane runs (decision 188). */
+  panePidFile: string;
 }
 
 /**
@@ -783,6 +789,8 @@ const SESSION_NICENESS = '10';
  * (the dialog is keyed on the repo root, so a worktree needs its parent seeded
  * too), resolve `claude` and `nice` on this PATH rather than the tmux server's,
  * and hand the process the same bypass-permissions, user-setting-sources argv.
+ * The pane's pid is recorded once the window is up: `nice` execs `claude`, so
+ * it is Claude Code's own pid, the one every command the window runs is under.
  */
 function spawnClaudeWindow(opts: ClaudeWindowOptions): SessionPane {
   // The command's one read of the list, so the trust and the window agree on the config dir.
@@ -793,7 +801,7 @@ function spawnClaudeWindow(opts: ClaudeWindowOptions): SessionPane {
     opts.git,
   );
   const which = (bin: string): string => execFileSync('which', [bin], { encoding: 'utf8' }).trim();
-  const paneId = spawnDetachedSession(tmuxName(opts.sessionId), {
+  const { paneId, panePid } = spawnDetachedSession(tmuxName(opts.sessionId), {
     cwd: opts.cwd,
     window: WINDOW_SIZE,
     env: {
@@ -811,6 +819,7 @@ function spawnClaudeWindow(opts: ClaudeWindowOptions): SessionPane {
     ],
     socket: opts.socket,
   });
+  writeRenamed(opts.panePidFile, String(panePid));
   return { sessionId: opts.sessionId, paneId, socket: opts.socket };
 }
 
@@ -834,6 +843,7 @@ export function launchSession(opts: LaunchOptions): SessionPane {
     // a repo the session built is refused, since its gitfile names that repo.
     git: verifiedWorktreeGitEnv(opts.repoPath, opts.worktreePath),
     niceness: SESSION_NICENESS,
+    panePidFile: sessionPanePidFile(opts.repoPath, opts.sessionId),
   });
 }
 
@@ -954,12 +964,13 @@ export function launchConductor(opts: ConductorLaunchOptions): SessionPane {
     route: opts.route,
     caller: { PUP_CONDUCTOR: opts.projectId },
     socket: conductorSocket(opts.projectId),
+    panePidFile: conductorPanePidFile(opts.repoPath),
   });
 }
 
 /**
- * Kill the conductor's window by its pinned name. No pane is recorded for it
- * — nothing types into the conductor after its kickoff — so a rename from
+ * Kill the conductor's window by its pinned name. No pane id is recorded for
+ * it — nothing types into the conductor after its kickoff — so a rename from
  * inside would leave it running, as decision 46 notes for a name-only kill;
  * the conductor is the operator's delegate, not a worker to contain.
  */
@@ -1039,10 +1050,69 @@ function recordWindowSocket(repoPath: string, sessionId: string): void {
   if (lstatSync(dir, { throwIfNoEntry: false })?.isSymbolicLink()) {
     throw new Error(`Session dir ${dir} is a symlink; refusing to record the window's socket.`);
   }
-  mkdirSync(dir, { recursive: true });
+  writeRenamed(file, defaultSocketIn(process.env.TMUX_TMPDIR));
+}
+
+/**
+ * Write `text` beside `file` and rename it over, its directory made first, so
+ * a reader never meets half of it.
+ */
+function writeRenamed(file: string, text: string): void {
+  mkdirSync(dirname(file), { recursive: true });
   const staged = `${file}.${randomUUID()}.tmp`;
-  writeFileSync(staged, defaultSocketIn(process.env.TMUX_TMPDIR));
+  writeFileSync(staged, text);
   renameSync(staged, file);
+}
+
+/** Where a session's launch records its pane's pid, beside the socket record (decision 188). */
+function sessionPanePidFile(repoPath: string, sessionId: string): string {
+  return join(projectPaths(repoPath).sessionDir(sessionId), 'pane-pid');
+}
+
+/** Where the conductor's launch records its pane's pid, beside its session cap (decision 188). */
+function conductorPanePidFile(repoPath: string): string {
+  return join(projectPaths(repoPath).root, 'conductor', 'pane-pid');
+}
+
+/** Far past any pid a launch records. */
+const PANE_PID_RECORD_MAX_BYTES = 64;
+
+/**
+ * The pane pids the launches of `sessionIds`' windows and of the project's
+ * conductor recorded, each naming its window, keyed by pid (decision 188).
+ * Each launch writes its record once its window is up, from the operator's or
+ * the conductor's `pup`, never from the window; a respawn or a fix round
+ * writes over it. A window can still write its own record, so each is read as
+ * one it wrote, and a record that is missing or not a pid as a launch writes
+ * one names nothing. A record outlives its window, and its pid is the
+ * system's to reuse once that is gone. Which sessions' windows may still be
+ * up is the caller's to choose, from their states. The conductor has no state
+ * to bound its record, and no stop, exit or reboot removes it, so it is read
+ * only while the conductor's window is up. It is read first, so a pid a
+ * session's record names too names the session's window: a guard that walks
+ * past the conductor's window still finds a session that wrote its own pid
+ * into the conductor's record.
+ */
+export function recordedPanePids(
+  repoPath: string,
+  sessionIds: readonly string[],
+): Map<number, string> {
+  const repoProjectId = projectId(repoPath);
+  const records: [file: string, window: string][] = [
+    ...(hasConductorWindow(repoProjectId)
+      ? [[conductorPanePidFile(repoPath), conductorName(repoProjectId)] as [string, string]]
+      : []),
+    ...sessionIds.map((sessionId): [string, string] => [
+      sessionPanePidFile(repoPath, sessionId),
+      tmuxName(sessionId),
+    ]),
+  ];
+  const pids = new Map<number, string>();
+  for (const [file, window] of records) {
+    const text = readSessionWritable(file, PANE_PID_RECORD_MAX_BYTES) ?? '';
+    if (PANE_PID.test(text)) pids.set(Number(text), window);
+  }
+  return pids;
 }
 
 /**
