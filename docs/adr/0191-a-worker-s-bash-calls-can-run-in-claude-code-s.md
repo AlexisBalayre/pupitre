@@ -33,8 +33,15 @@
       the grant a sandboxed worker could never be respawned with a handoff. The machine's test
       slots in `~/.pupitre/slots/` are allowed too.
     - Writes denied inside those grants. In the main `.git`, exactly these. A worker's commit or
-      merge writes none of them, but every ref deletion takes the `packed-refs` lock (ceiling 13):
-      - the main checkout's own `config.worktree`. Git reads it once
+      merge writes none of them, but every ref deletion takes the `packed-refs` lock (ceiling 13).
+      Each file here that git writes is denied with its `.lock`. Git commits a write by renaming
+      the lock over the file, and the rename goes by path. A sandboxed loop that renames its own
+      file over a lock another git holds therefore has its content land in place of that git's
+      (git internals, not probed):
+      - `config.lock`. Claude Code refuses `config` itself, but not its lock. Content landed
+        there by the operator's next config write, such as a `git push -u`, would arm a
+        `core.fsmonitor` that runs in every later git in the main checkout;
+      - the main checkout's own `config.worktree` and its lock. Git reads it once
         `extensions.worktreeConfig` is on, which `git sparse-checkout init` turns on, and a
         `core.fsmonitor` or `core.hooksPath` planted there would run in the operator's git;
       - `commondir`. A main checkout has none, but git reads `$GIT_DIR/commondir` for any git
@@ -44,17 +51,17 @@
         `hooks/`, and the operator's `git status` runs a child git in every submodule. A linked
         worktree keeps its own submodules' git dirs in its admin dir, so a worker never writes
         here;
-      - `info/`, `refs/replace/`, `refs/remotes/` and `shallow`;
+      - `info/`, `refs/replace/`, `refs/remotes/`, and `shallow` with its lock;
       - `refs/heads/main` and every ref git tries before it for a bare `main`: `main` at the
         `.git` root, `refs/main` and `refs/tags/main`, each with its `.lock`. Any of them, once
         created, would shadow `main` for the operator's and the gate's unsandboxed git;
       - `packed-refs` and its `.lock`. Git renames the lock over `packed-refs`, so content
         written into either, the lock while another git holds it included, could move `main` too;
-      - the main checkout's own `HEAD`, `HEAD.lock`, `index`, `index.lock`, `MERGE_HEAD`,
-        `ORIG_HEAD`, `FETCH_HEAD` and `CHERRY_PICK_HEAD`. A linked worktree keeps its own copies
-        of these in its admin dir. A planted lock would stall every git command in the main
-        checkout.
-      - the main checkout's `MERGE_AUTOSTASH`. It names a stash that `git merge` applies to the
+      - the main checkout's own `HEAD`, `index`, `MERGE_HEAD`, `ORIG_HEAD`, `FETCH_HEAD` and
+        `CHERRY_PICK_HEAD`, each with its lock. A linked worktree keeps its own copies of these
+        in its admin dir. A planted `HEAD.lock` or `index.lock` would stall every git command in
+        the main checkout.
+      - the main checkout's `MERGE_AUTOSTASH` and its lock. It names a stash that `git merge` applies to the
         working tree once a merge or fast-forward succeeds, whether or not `--autostash` was
         given, and `git pull --ff-only` runs that merge. Objects are writable, so a worker can
         build a stash-shaped commit and name it there. The conductor's routine pull after a
@@ -70,8 +77,8 @@
       - the main checkout's `REVERT_HEAD`, `REBASE_HEAD`, `BISECT_*`, `AUTO_MERGE`, `MERGE_MSG`
         and `SQUASH_MSG`.
 
-      In this worktree's admin dir, `commondir`, `gitdir` and `config.worktree` are denied, since
-      they say which repo and config git uses there.
+      In this worktree's admin dir, `commondir`, `gitdir`, and `config.worktree` with its lock are
+      denied, since they say which repo and config git uses there.
     - Outside every grant, and so refused: the rest of the store (the compiled hooks and decision
       63's snapshots included), the main checkout's working tree and the rest of the home
       directory.
@@ -206,10 +213,15 @@
     the pre-commit install falls back to a fresh store inside the worktree, `.pnpm-store/`.
     npm, pip, uv and poetry have no such fallback: their caches default to `~/.npm`,
     `~/Library/Caches` and `~/.cache`, which the sandbox refuses, so an install stops with
-    `EPERM` (not probed; found in review). The setting therefore also adds `npm_config_cache`,
-    `PIP_CACHE_DIR`, `UV_CACHE_DIR` and `POETRY_CACHE_DIR` to the compiled `env`, each pointed at
-    its own directory under `pup-cache/` in the worktree's admin dir. That dir is already granted,
-    stays out of `git status`, and goes with the worktree when it is removed. Each worker starts
+    `EPERM` (not probed; found in review). Nor does Yarn 2 and later, which by default keeps its
+    cache and its mirror in its global folder, `~/.yarn/berry` (found in review). The setting
+    therefore also adds `npm_config_cache`, `PIP_CACHE_DIR`, `UV_CACHE_DIR`, `POETRY_CACHE_DIR`
+    and `YARN_GLOBAL_FOLDER` to the compiled `env`, each pointed at its own directory under
+    `pup-cache/` in the worktree's admin dir. That dir is already granted, stays out of
+    `git status`, and goes with the worktree when it is removed. Yarn's `cacheFolder` is not
+    redirected. Yarn 2 and later read it only for a project-local cache, which is already in the
+    worktree, and a zero-install project commits that cache with a `.pnp.cjs` that points into
+    it. Yarn 1 reads it, but falls back to a cache in `TMPDIR` (not probed). Each worker starts
     with empty caches, so it fetches every package once, and no worker can poison another's or the
     gate's (decision 36 keeps the gate's caches apart). Corepack's home is not redirected: it only
     reads the package managers the operator already cached, and a redirect would make it fetch

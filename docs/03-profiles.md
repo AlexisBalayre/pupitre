@@ -109,20 +109,22 @@ compile.
 
 The block runs every process a Bash call starts inside Claude Code's sandbox:
 
-- Writes allowed: the worktree and its admin dir, where the npm, pip, uv and poetry caches are
-  pointed (`npm_config_cache`, `PIP_CACHE_DIR`, `UV_CACHE_DIR`, `POETRY_CACHE_DIR` in the
-  compiled `env`), the sandbox's `TMPDIR`, the store's `state.db`
+- Writes allowed: the worktree and its admin dir, where the npm, pip, uv, poetry and Yarn 2+
+  caches are pointed (`npm_config_cache`, `PIP_CACHE_DIR`, `UV_CACHE_DIR`, `POETRY_CACHE_DIR`,
+  `YARN_GLOBAL_FOLDER` in the compiled `env`), the sandbox's `TMPDIR`, the store's `state.db`
   files, the session's handoff document that `pup respawn` asks for, the machine's test slots,
   and the main `.git` that a commit needs.
-- Writes denied, within the main `.git`:
+- Writes denied, within the main `.git`. Each file git writes is denied with its `.lock`, since
+  git renames the lock over the file and content put into a lock another git holds lands there:
+  - `config`'s lock, which the operator's next config write would rename over `config`;
   - the main checkout's own `config.worktree`, and a `commondir`, which a main checkout has none
     of and git would follow to a config of the worker's;
   - `modules/`, the main checkout's submodules' git dirs with their own `config` and `hooks/`;
   - `info/`, `refs/replace/`, `refs/remotes/` and `shallow`;
-  - `main` and `packed-refs`, with their locks, and the refs that would shadow `main` for a bare
-    `main`: `main` at the `.git` root, `refs/main` and `refs/tags/main`, with their locks;
-  - the main checkout's own `HEAD`, `HEAD.lock`, `index`, `index.lock`, `MERGE_HEAD`,
-    `ORIG_HEAD`, `FETCH_HEAD` and `CHERRY_PICK_HEAD`;
+  - `main` and `packed-refs`, and the refs that would shadow `main` for a bare `main`: `main` at
+    the `.git` root, `refs/main` and `refs/tags/main`;
+  - the main checkout's own `HEAD`, `index`, `MERGE_HEAD`, `ORIG_HEAD`, `FETCH_HEAD` and
+    `CHERRY_PICK_HEAD`;
   - its `MERGE_AUTOSTASH`, a stash the operator's next merge or `git pull` would apply to the
     main checkout's working tree;
   - its `rebase-merge/`, `rebase-apply/` and `sequencer/`.
@@ -131,8 +133,8 @@ The block runs every process a Bash call starts inside Claude Code's sandbox:
   a sandboxed worker deletes no ref: `git branch -D` fails, a rebase prints an error for each
   pick, and a conflicted cherry-pick leaves `CHERRY_PICK_HEAD` behind (decision 191, ceiling 13).
   Claude Code itself refuses `config`, `hooks/` and the
-  other worktrees' admin dirs. In this worktree's admin dir, `commondir`, `gitdir` and
-  `config.worktree` are denied.
+  other worktrees' admin dirs. In this worktree's admin dir, `commondir`, `gitdir`, and
+  `config.worktree` with its lock are denied.
 - Writes left open in the main `.git` include, among others: objects, `logs/`, `rr-cache/`, `refs/tags/`,
   `refs/notes/`, the other branch refs, and the main checkout's `REVERT_HEAD`, `REBASE_HEAD`,
   `BISECT_*`, `AUTO_MERGE`, `MERGE_MSG` and `SQUASH_MSG`. Decision 191 lists the ceilings this
