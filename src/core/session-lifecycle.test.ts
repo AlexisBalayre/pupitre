@@ -96,7 +96,11 @@ import {
   type SessionRow,
   transitionSession,
 } from './session.repository.js';
-import { LockBacklogOverBudgetError, machineLoad } from './session-cap.service.js';
+import {
+  LockBacklogOverBudgetError,
+  MachineLoadedError,
+  machineLoad,
+} from './session-cap.service.js';
 import {
   LaunchRolledBackError,
   QuestionRefusedError,
@@ -2339,7 +2343,7 @@ describe('launch capacity (decisions 96, 197)', () => {
     transitionSession(db, 'timed', 'killed');
     appendEvent(db, 'timed', 'gate_result', {
       from: 'awaiting-review',
-      to: 'killed',
+      to: 'rejected',
       report: {
         sessionId: 'timed',
         passed: true,
@@ -2420,12 +2424,13 @@ describe('launch capacity (decisions 96, 197)', () => {
     );
   });
 
-  it('counts sessions awaiting review: each still needs its gate and its land', () => {
+  // Decision 144: a session in review costs memory, not turns.
+  it('does not count sessions awaiting review', () => {
     timeGate(10);
-    seedSessions(2, 'awaiting-review');
-    seedSessions(2);
+    seedSessions(4, 'awaiting-review');
+    seedSessions(3);
 
-    expect(() => launch('conductor')).toThrow(LockBacklogOverBudgetError);
+    expect(launch('conductor')).toBe('t-1');
   });
 
   it('does not count killed sessions', () => {
@@ -2541,14 +2546,19 @@ describe('launch capacity (decisions 96, 197)', () => {
       );
 
     // Work in flight drains the lock and adds no PR: holding it back only delays the drain.
-    it('goes ahead over the backlog budget, never reading the load', () => {
+    it('goes ahead over the backlog budget', () => {
       const session = mergedSession();
       timeGate(10);
       seedSessions(5);
-      vi.mocked(machineLoad).mockClear();
 
       expect(recompile(session).compiled.hash).toBeTruthy();
-      expect(machineLoad).not.toHaveBeenCalled();
+    });
+
+    it('is refused while the load is above the cores', () => {
+      const session = mergedSession();
+      vi.mocked(machineLoad).mockReturnValueOnce({ average: 9, cores: 8 });
+
+      expect(() => recompile(session)).toThrow(MachineLoadedError);
     });
 
     it('is refused under 1.5 GB of available memory', () => {

@@ -1,7 +1,7 @@
 import { availableParallelism, loadavg } from 'node:os';
 import type { Database } from 'better-sqlite3';
 import { lockBacklogBudgetMinutes } from './project-config.config.js';
-import { parseJsonOr } from './report-data.utils.js';
+import { parseJsonOr, toIsoUtc } from './report-data.utils.js';
 import {
   decodeEvent,
   listEvents,
@@ -23,6 +23,26 @@ export const UNTIMED_GATE_MS = 8 * 60_000;
 /** How many of the newest timed gate runs the median is taken over, so it follows the suite. */
 const GATE_SAMPLE = 30;
 
+/**
+ * The bounds the median gate run is held to. The reports are session-writable:
+ * thirty forged at 0 would turn the backlog off, and one forged huge would hold
+ * every launch, so neither end goes past what a real suite takes.
+ */
+export const GATE_FLOOR_MS = UNTIMED_GATE_MS / 2;
+export const GATE_CEILING_MS = 60 * 60_000;
+
+/** The most stages read from one report, which a session can write as long as it likes. */
+const STAGES_READ = 64;
+
+/**
+ * How long a PR merged by the gate counts as awaiting its land: one merged in
+ * GitHub's UI, or one `pup land` never recorded, would otherwise count forever.
+ */
+export const LAND_WINDOW_MS = 2 * 24 * 60 * 60_000;
+
+/** The most unlanded sessions `pup status` names, the rest counted. */
+const UNLANDED_SHOWN = 8;
+
 /** The merge-lock uses a session not yet through its gate still needs: its gate, then its land. */
 const USES_BEFORE_GATE = 2;
 
@@ -36,11 +56,13 @@ export interface MachineLoad {
 export interface LockBacklog {
   minutes: number;
   budgetMinutes: number;
-  /** Gates and lands the live and unlanded sessions still need. */
+  /** Gates and lands the working and unlanded sessions still need. */
   uses: number;
-  /** The median gate run's time, `UNTIMED_GATE_MS` while `gatesTimed` is 0. */
+  /** The median gate run's time within its bounds, `UNTIMED_GATE_MS` while `gatesTimed` is 0. */
   gateMs: number;
   gatesTimed: number;
+  /** The merged sessions counted for a land, for the operator to land or close a stale one. */
+  unlanded: string[];
 }
 
 /** Both signals a launch is held to, as `pup status` prints them and `pup launch` reads them. */
@@ -81,39 +103,55 @@ export function machineLoad(): MachineLoad {
 
 /**
  * The project's merge-lock backlog: every session's remaining lock uses times
- * the median gate run (decision 197). A live session, whether it awaits its
- * first gate or is back in a round after a rejection or a CI failure, still
- * needs a gate and a land; a merged one whose PR is open and not landed, its
- * land; any other, none.
+ * the median gate run (decision 197). A working session, whether it awaits its
+ * first round or is back in one after a rejection or a CI failure, still needs
+ * a gate and a land; one awaiting review, none, as decision 144 counts it; a
+ * merged one whose PR the gate opened in the last `LAND_WINDOW_MS`, with no
+ * land, retirement or close recorded since, its land; any other, none.
  */
-export function lockBacklog(db: Database, repoPath: string): LockBacklog {
-  const uses = listSessions(db).reduce((sum, session) => sum + lockUsesLeft(db, session), 0);
+export function lockBacklog(db: Database, repoPath: string, now = Date.now()): LockBacklog {
+  let uses = 0;
+  const unlanded: string[] = [];
+  for (const session of listSessions(db)) {
+    if (session.state === 'awaiting-review') continue;
+    if (holdingStates().includes(session.state)) uses += USES_BEFORE_GATE;
+    else if (awaitsLand(db, session, now)) {
+      uses += 1;
+      unlanded.push(session.id);
+    }
+  }
   const timed = gateRunTimes(db);
-  const gateMs = timed.length > 0 ? percentile(timed, 0.5) : UNTIMED_GATE_MS;
+  const gateMs =
+    timed.length > 0
+      ? Math.min(Math.max(percentile(timed, 0.5), GATE_FLOOR_MS), GATE_CEILING_MS)
+      : UNTIMED_GATE_MS;
   return {
     minutes: (uses * gateMs) / 60_000,
     budgetMinutes: lockBacklogBudgetMinutes(repoPath),
     uses,
     gateMs,
     gatesTimed: timed.length,
+    unlanded,
   };
 }
 
-function lockUsesLeft(db: Database, session: SessionRow): number {
-  if (holdingStates().includes(session.state)) return USES_BEFORE_GATE;
-  if (session.state !== 'merged') return 0;
+function awaitsLand(db: Database, session: SessionRow, now: number): boolean {
+  if (session.state !== 'merged') return false;
   const newest = newestEventOf(db, session.id, ['merge', 'landed', 'retired', 'pr_closed']);
-  if (newest?.type !== 'merge') return 0;
+  if (newest?.type !== 'merge') return false;
+  if (!(now - Date.parse(toIsoUtc(newest.created_at)) < LAND_WINDOW_MS)) return false;
   const merge = decodeEvent(newest);
   // A merge with no PR moved the target itself, under the gate's own lock use.
-  return merge.type === 'merge' && merge.prUrl !== undefined ? 1 : 0;
+  return merge.type === 'merge' && merge.prUrl !== undefined;
 }
 
 /**
  * The newest `GATE_SAMPLE` gate runs' times, newest first, each its longest
  * stage: the stages run alongside one another, so the longest is the closest
- * the report comes to the run's own time. A payload is session-writable, so a
- * time that is not a finite, non-negative number is passed over.
+ * the report comes to the run's own time. Only a report shaped like the gate's
+ * own verdict is read, a move out of review to merged or rejected; a payload
+ * is session-writable, so a time that is not a finite, non-negative number is
+ * passed over, and the median is held to its bounds.
  */
 function gateRunTimes(db: Database): number[] {
   const runs = listSessions(db)
@@ -122,20 +160,31 @@ function gateRunTimes(db: Database): number[] {
     .sort((a, b) => b.id - a.id);
   const times: number[] = [];
   for (const run of runs) {
-    const time = longestStage(parseJsonOr<unknown>(run.payload, undefined));
+    const payload = parseJsonOr<unknown>(run.payload, undefined);
+    if (!isGateVerdict(payload)) continue;
+    const time = longestStage(payload);
     if (time !== undefined) times.push(time);
     if (times.length === GATE_SAMPLE) break;
   }
   return times;
 }
 
+/** A transition the gate writes when it rules on a session in review. */
+function isGateVerdict(payload: unknown): boolean {
+  const { from, to } = (payload ?? {}) as { from?: unknown; to?: unknown };
+  return from === 'awaiting-review' && (to === 'merged' || to === 'rejected');
+}
+
 function longestStage(payload: unknown): number | undefined {
   const stages = (payload as { report?: { stages?: unknown } } | null)?.report?.stages;
   if (!Array.isArray(stages)) return undefined;
-  const times = stages
-    .map((stage) => (stage as { durationMs?: unknown } | null)?.durationMs)
-    .filter((ms): ms is number => typeof ms === 'number' && Number.isFinite(ms) && ms >= 0);
-  return times.length > 0 ? Math.max(...times) : undefined;
+  let longest: number | undefined;
+  for (const stage of stages.slice(0, STAGES_READ)) {
+    const ms = (stage as { durationMs?: unknown } | null)?.durationMs;
+    const timed = typeof ms === 'number' && Number.isFinite(ms) && ms >= 0;
+    if (timed && (longest === undefined || ms > longest)) longest = ms;
+  }
+  return longest;
 }
 
 /** Both signals: the backlog read now, beside the machine's `load`, `machineLoad()` in use. */
@@ -165,7 +214,19 @@ export function launchRoomLines(room: LaunchRoom): string[] {
   return [
     `Launch: ${verdict}`,
     `  merge-lock backlog: ${minutes(backlog.minutes)} of ${minutes(backlog.budgetMinutes)} minutes (${backlogTerms(backlog)})`,
+    ...unlandedLine(backlog.unlanded),
     `  load: ${load.average.toFixed(1)} of ${load.cores} cores`,
+  ];
+}
+
+/** The merged sessions counted for a land, so the operator can land or close a stale one. */
+function unlandedLine(unlanded: string[]): string[] {
+  if (unlanded.length === 0) return [];
+  const more = unlanded.length - UNLANDED_SHOWN;
+  const named =
+    unlanded.slice(0, UNLANDED_SHOWN).join(', ') + (more > 0 ? ` and ${more} more` : '');
+  return [
+    `    awaiting a land: ${named} (\`pup land\` records each, --abandon-closed a closed PR)`,
   ];
 }
 

@@ -408,7 +408,7 @@ describe('CLI commands', () => {
 
       expect(logs).toContain('Nothing running and nothing planned.');
       expect(logs.at(-1)).toBe(
-        'Launch: unknown, Invalid .pupitre/project.yml: lockBacklogBudgetMinutes must be a number of minutes above 0.',
+        'Launch: unknown, Invalid .pupitre/project.yml: lockBacklogBudgetMinutes must be a number of minutes above 0 and at most 1440.',
       );
       expect(process.exitCode).toBeUndefined();
     });
@@ -2074,6 +2074,7 @@ describe('CLI commands', () => {
           uses: 8,
           gateMs: 600_000,
           gatesTimed: 12,
+          unlanded: [],
         }),
       ],
       ['the load', new MachineLoadedError({ average: 9.5, cores: 8 })],

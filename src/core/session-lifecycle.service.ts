@@ -64,7 +64,12 @@ import {
   transitionSession,
   transitionSessionAlong,
 } from './session.repository.js';
-import { assertLaunchRoom, launchRoom, machineLoad } from './session-cap.service.js';
+import {
+  assertLaunchRoom,
+  launchRoom,
+  MachineLoadedError,
+  machineLoad,
+} from './session-cap.service.js';
 import {
   isRefusedSteer,
   QuestionRefusedError,
@@ -526,10 +531,11 @@ function compileSessionProfile(
  * compiled dir under the store is one the conductor's shell can write
  * (decision 47), so a round never relaunches from what it holds. A merged
  * session is not live, so a round adds a window as a launch does, and meets the
- * memory floor first, with no `--over-cap` (decision 96). Not the computed cap
- * (decision 197): the round finishes a PR already in the merge lock's backlog,
- * which drains the lock and adds no PR, so holding it back on the backlog or the
- * load would only delay the drain and leave a failing PR with nobody to fix it.
+ * memory floor first, with no `--over-cap` (decision 96). It meets the load
+ * too, as its window and its gate run add to it, but not the merge lock's
+ * backlog (decision 197): the round finishes a PR already counted there, which
+ * drains the lock and adds no PR, so holding it back on the backlog would only
+ * delay the drain and leave a failing PR with nobody to fix it.
  */
 export function recompileSessionProfile(
   db: Database,
@@ -538,6 +544,8 @@ export function recompileSessionProfile(
   paths: ProjectPaths,
 ): SessionCompile & { conflicts: ScopeConflict[] } {
   assertMemoryFloor();
+  const load = machineLoad();
+  if (load.average > load.cores) throw new MachineLoadedError(load);
   const task = readTaskSpec(db, session.task_id);
   task.knowledgeSlice = knowledgeSliceFor(
     db,

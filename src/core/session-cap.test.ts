@@ -15,6 +15,9 @@ import {
 } from './session.repository.js';
 import {
   assertLaunchRoom,
+  GATE_CEILING_MS,
+  GATE_FLOOR_MS,
+  LAND_WINDOW_MS,
   type LockBacklog,
   LockBacklogOverBudgetError,
   launchRoomLines,
@@ -55,13 +58,16 @@ describe('lockBacklog (decision 197)', () => {
 
   const merged = () => session('running', 'awaiting-review', 'merged');
 
-  /** A gate run on `id` whose stages took `stageMs`. */
+  /** A gate run on `id` whose stages took `stageMs`, written as the gate's verdict `edge`. */
   function gateRun(id: string, ...stageMs: unknown[]): void {
+    gateReport(id, { from: 'awaiting-review', to: 'merged' }, ...stageMs);
+  }
+
+  function gateReport(id: string, edge: object, ...stageMs: unknown[]): void {
     db.prepare("INSERT INTO events (session_id, type, payload) VALUES (?, 'gate_result', ?)").run(
       id,
       JSON.stringify({
-        from: 'awaiting-review',
-        to: 'merged',
+        ...edge,
         report: {
           sessionId: id,
           passed: true,
@@ -86,6 +92,14 @@ describe('lockBacklog (decision 197)', () => {
     });
   }
 
+  /** Back-date `id`'s events by `ms`, as a store holding older history has them. */
+  function age(id: string, ms: number): void {
+    db.prepare("UPDATE events SET created_at = datetime('now', ?) WHERE session_id = ?").run(
+      `-${Math.round(ms / 1000)} seconds`,
+      id,
+    );
+  }
+
   it('reads nothing queued, at the untimed gate and the default budget, on an empty store', () => {
     expect(lockBacklog(db, repo)).toEqual({
       minutes: 0,
@@ -93,6 +107,7 @@ describe('lockBacklog (decision 197)', () => {
       uses: 0,
       gateMs: UNTIMED_GATE_MS,
       gatesTimed: 0,
+      unlanded: [],
     });
   });
 
@@ -100,7 +115,6 @@ describe('lockBacklog (decision 197)', () => {
     ['queued', []],
     // A fix round puts a merged session back in `running` (`FIX_ROUND_EDGE`).
     ['running or in a fix round', ['running']],
-    ['awaiting its first gate', ['running', 'awaiting-review']],
     ['rejected', ['running', 'awaiting-review', 'rejected']],
     ['blocked', ['running', 'blocked']],
   ])('counts a gate and a land for a session %s', (_name, path) => {
@@ -109,10 +123,30 @@ describe('lockBacklog (decision 197)', () => {
     expect(lockBacklog(db, repo).uses).toBe(2);
   });
 
-  it('counts a land for a merged session whose PR has not landed', () => {
-    mergeEvent(merged(), PR);
+  // Decision 144: a session in review costs memory, not turns.
+  it('counts nothing for a session awaiting review', () => {
+    session('running', 'awaiting-review');
 
-    expect(lockBacklog(db, repo).uses).toBe(1);
+    expect(lockBacklog(db, repo).uses).toBe(0);
+  });
+
+  it('counts a land for a merged session whose PR has not landed, and names it', () => {
+    const id = merged();
+    mergeEvent(id, PR);
+
+    expect(lockBacklog(db, repo)).toMatchObject({ uses: 1, unlanded: [id] });
+  });
+
+  // A PR merged in GitHub's UI, or one `pup land` refused, records no land.
+  it('counts no land for a merge older than the window', () => {
+    const recent = merged();
+    mergeEvent(recent, PR);
+    age(recent, LAND_WINDOW_MS - 60 * 60_000);
+    const stale = merged();
+    mergeEvent(stale, PR);
+    age(stale, LAND_WINDOW_MS + 60_000);
+
+    expect(lockBacklog(db, repo)).toMatchObject({ uses: 1, unlanded: [recent] });
   });
 
   it('counts nothing for a merge that moved the target itself', () => {
@@ -168,16 +202,43 @@ describe('lockBacklog (decision 197)', () => {
   it('takes the median over the newest 30 timed runs', () => {
     const id = session('running', 'killed');
     for (let run = 0; run < 30; run++) gateRun(id, 20 * 60_000);
-    for (let run = 0; run < 30; run++) gateRun(id, 2 * 60_000);
+    for (let run = 0; run < 30; run++) gateRun(id, 5 * 60_000);
     session('running');
 
     expect(lockBacklog(db, repo)).toEqual({
-      minutes: 4,
+      minutes: 10,
       budgetMinutes: 60,
       uses: 2,
-      gateMs: 2 * 60_000,
+      gateMs: 5 * 60_000,
+      gatesTimed: 30,
+      unlanded: [],
+    });
+  });
+
+  // The reports are session-writable: a forged median neither turns the backlog off nor holds every launch.
+  it.each([
+    ['zero', 0, GATE_FLOOR_MS],
+    ['under the floor', GATE_FLOOR_MS - 1, GATE_FLOOR_MS],
+    ['huge', 1e12, GATE_CEILING_MS],
+  ])('holds a %s median to its bounds', (_name, forged, bound) => {
+    const id = session('running', 'killed');
+    for (let run = 0; run < 30; run++) gateRun(id, forged);
+    for (let live = 0; live < 8; live++) session('running');
+
+    expect(lockBacklog(db, repo)).toMatchObject({
+      gateMs: bound,
+      minutes: (16 * bound) / 60_000,
       gatesTimed: 30,
     });
+  });
+
+  it('reads at most 64 stages of a report', () => {
+    const id = session('running', 'killed');
+    const stages: number[] = Array.from({ length: 100 }, () => 5 * 60_000);
+    stages[80] = 50 * 60_000;
+    gateRun(id, ...stages);
+
+    expect(lockBacklog(db, repo).gateMs).toBe(5 * 60_000);
   });
 
   it('passes over a run with no time, or one a session wrote out of shape', () => {
@@ -198,6 +259,19 @@ describe('lockBacklog (decision 197)', () => {
     expect(lockBacklog(db, repo)).toMatchObject({ gateMs: 600_000, gatesTimed: 1 });
   });
 
+  it("reads only a report shaped like the gate's verdict on a session in review", () => {
+    const id = session('running', 'killed');
+    gateRun(id, 600_000);
+    gateReport(id, { from: 'awaiting-review', to: 'rejected' }, 900_000);
+    gateReport(id, {}, 0);
+    gateReport(id, { outcome: 'refused' }, 0);
+    gateReport(id, { from: 'merged', to: 'merged' }, 0);
+    gateReport(id, { from: 'blocked', to: 'running' }, 0);
+    gateReport(id, { from: 'awaiting-review', to: 'killed' }, 0);
+
+    expect(lockBacklog(db, repo)).toMatchObject({ gateMs: 600_000, gatesTimed: 2 });
+  });
+
   it("reads the project's budget", () => {
     mkdirSync(join(repo, '.pupitre'));
     writeFileSync(join(repo, '.pupitre', 'project.yml'), 'lockBacklogBudgetMinutes: 25\n');
@@ -213,6 +287,7 @@ describe('the launch room (decision 197)', () => {
     uses: minutes / 10,
     gateMs: 600_000,
     gatesTimed: 30,
+    unlanded: [],
     ...overrides,
   });
   const idle = { average: 1, cores: 8 };
@@ -283,6 +358,18 @@ describe('the launch room (decision 197)', () => {
       '  merge-lock backlog: 62.5 of 60 minutes (5 gates and lands to go at 12.5 minutes, the median of the last 3 gates)',
       '  load: 9.0 of 8 cores',
     ]);
+  });
+
+  it('names the merged sessions counted for a land, up to 8', () => {
+    const ids = Array.from({ length: 10 }, (_, index) => `t-${index}`);
+
+    expect(
+      launchRoomLines({ backlog: backlog(20, { unlanded: ids.slice(0, 2) }), load: idle })[2],
+    ).toBe('    awaiting a land: t-0, t-1 (`pup land` records each, --abandon-closed a closed PR)');
+    expect(launchRoomLines({ backlog: backlog(20, { unlanded: ids }), load: idle })[2]).toBe(
+      '    awaiting a land: t-0, t-1, t-2, t-3, t-4, t-5, t-6, t-7 and 2 more (`pup land` ' +
+        'records each, --abandon-closed a closed PR)',
+    );
   });
 
   it('reads the load against the cores the machine offers', () => {

@@ -109,6 +109,7 @@ describe('lockBacklogBudgetMinutes', () => {
   it('reads the budget the project gives, a fraction included', () => {
     expect(lockBacklogBudgetMinutes(repoWith('lockBacklogBudgetMinutes: 90\n'))).toBe(90);
     expect(lockBacklogBudgetMinutes(repoWith('lockBacklogBudgetMinutes: 12.5\n'))).toBe(12.5);
+    expect(lockBacklogBudgetMinutes(repoWith('lockBacklogBudgetMinutes: 1440\n'))).toBe(1440);
   });
 
   it('reads its own key beside the others', () => {
@@ -119,13 +120,13 @@ describe('lockBacklogBudgetMinutes', () => {
     expect(skipsTestsOnUntestedChanges(repo)).toBe(false);
   });
 
-  it.each(['"60"', '0', '-5', '.inf', '.nan', 'true', '[60]'])(
+  it.each(['"60"', '0', '-5', '1440.5', '100000', '.inf', '.nan', 'true', '[60]'])(
     'refuses %s rather than guess a budget',
     (value) => {
       expect(() =>
         lockBacklogBudgetMinutes(repoWith(`lockBacklogBudgetMinutes: ${value}\n`)),
       ).toThrow(
-        'Invalid .pupitre/project.yml: lockBacklogBudgetMinutes must be a number of minutes above 0.',
+        'Invalid .pupitre/project.yml: lockBacklogBudgetMinutes must be a number of minutes above 0 and at most 1440.',
       );
     },
   );

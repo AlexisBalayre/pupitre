@@ -30,6 +30,9 @@ const LOCK_BACKLOG_BUDGET_KEY = 'lockBacklogBudgetMinutes';
 /** The merge-lock backlog a launch is held under when the project sets none (decision 197). */
 export const DEFAULT_LOCK_BACKLOG_BUDGET_MINUTES = 60;
 
+/** The largest budget a project may set: a day of lock work, past which the backlog holds nothing back. */
+export const MAX_LOCK_BACKLOG_BUDGET_MINUTES = 1440;
+
 const PROJECT_CONFIG_KEYS = [SKIP_UNTESTED_KEY, WORKER_SANDBOX_KEY, LOCK_BACKLOG_BUDGET_KEY];
 
 /**
@@ -94,15 +97,16 @@ export function workerSandboxOn(repoPath: string): boolean {
 /**
  * The minutes of merge-lock work past which `pup launch` and `pup new` refuse
  * (decision 197): the project's `lockBacklogBudgetMinutes`, else
- * `DEFAULT_LOCK_BACKLOG_BUDGET_MINUTES`. A value that is not a positive number
- * throws rather than leave the default in force.
+ * `DEFAULT_LOCK_BACKLOG_BUDGET_MINUTES`. A value that is not a number above 0
+ * and at most `MAX_LOCK_BACKLOG_BUDGET_MINUTES` throws rather than leave the
+ * default in force.
  */
 export function lockBacklogBudgetMinutes(repoPath: string): number {
   const value = projectValue(repoPath, LOCK_BACKLOG_BUDGET_KEY);
   if (value === undefined) return DEFAULT_LOCK_BACKLOG_BUDGET_MINUTES;
-  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+  if (typeof value !== 'number' || !(value > 0 && value <= MAX_LOCK_BACKLOG_BUDGET_MINUTES)) {
     throw new Error(
-      `Invalid ${PROJECT_CONFIG_PATH}: ${LOCK_BACKLOG_BUDGET_KEY} must be a number of minutes above 0.`,
+      `Invalid ${PROJECT_CONFIG_PATH}: ${LOCK_BACKLOG_BUDGET_KEY} must be a number of minutes above 0 and at most ${MAX_LOCK_BACKLOG_BUDGET_MINUTES}.`,
     );
   }
   return value;
