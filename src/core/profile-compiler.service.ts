@@ -1365,9 +1365,9 @@ jq -c --arg sid "\${PUP_SESSION_ID:-unknown}" '. + {pup_session_id: $sid}' >> '$
  *   Local binding stays, though on macOS it also opens every localhost port to
  *   the sandbox: the web dashboard's tests listen on loopback, and the
  *   pre-commit hook runs them inside the sandbox for any change they import.
- *   No Unix socket: the sandbox can rename any socket under Claude Code's temp
- *   dir into a granted one and connect, so tests start tsx with
- *   `node --import tsx`, which binds none (decision 196).
+ *   No Unix socket: the sandbox can rename any socket in a dir the sandbox can
+ *   write into a granted one and connect (decision 196, ceiling 5), so tests
+ *   start tsx with `node --import tsx`, which binds none.
  * `failIfUnavailable` refuses the launch rather than run the worker
  * unsandboxed, and `allowUnsandboxedCommands` ignores a call's request to leave
  * it. `refuseUserSandbox` keeps the operator's user settings, as they stand at
