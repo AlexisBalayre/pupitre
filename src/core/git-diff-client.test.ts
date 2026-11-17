@@ -1686,14 +1686,27 @@ describe('worktree git pins (decision 101)', () => {
     vi.unstubAllEnvs();
   });
 
-  it('refuses a gitfile that is a symlink or a fifo, without blocking on the fifo', () => {
+  it('refuses a gitfile that is a symlink, a directory or a fifo, without blocking on the fifo', () => {
+    const env = { ...worktreeGitEnv(repo, worktree) };
     const copy = join(tempDir('pup-gitfile-'), 'gitfile');
     writeFileSync(copy, readFileSync(join(worktree, '.git')));
     unlinkSync(join(worktree, '.git'));
     symlinkSync(copy, join(worktree, '.git'));
     expect(() => verifiedWorktreeGitEnv(repo, worktree)).toThrow(WorktreeRepointedError);
+    // A pinned spawn refuses it too, should it be swapped in after the check.
+    expect(() => runGit(worktree, ['status', '--porcelain'], { env })).toThrow(
+      RewrittenGitDirError,
+    );
 
     unlinkSync(join(worktree, '.git'));
+    renameSync(plantedRepo(), join(worktree, '.git'));
+    expect(() => verifiedWorktreeGitEnv(repo, worktree)).toThrow(WorktreeRepointedError);
+    expect(() => runGit(worktree, ['status', '--porcelain'], { env })).toThrow(
+      RewrittenGitDirError,
+    );
+    expect(existsSync(marker)).toBe(false);
+
+    rmSync(join(worktree, '.git'), { recursive: true });
     sh(worktree, 'mkfifo', '.git');
     expect(() => verifiedWorktreeGitEnv(repo, worktree)).toThrow(WorktreeRepointedError);
   });

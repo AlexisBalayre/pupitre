@@ -620,20 +620,40 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       utimesSync(stale, later(), later());
     }
 
+    // Pup takes the admin dir from the session row, never from `.git`, so a
+    // `.git` that no longer is the regular file naming it is refused, whatever
+    // shape the session gave it.
     it.each([
-      ['a repointed gitfile', (worktree: string) => [join(worktree, '.git'), 'gitdir: ']],
+      [
+        'a gitfile repointed at a decoy repo',
+        (worktree: string, armed: string) =>
+          writeFileSync(join(worktree, '.git'), `gitdir: ${armed}\n`),
+      ],
       [
         'a rewritten commondir',
-        () => [join(repo, '.git', 'worktrees', SESSION_ID, 'commondir'), ''],
+        (_: string, armed: string) =>
+          writeFileSync(join(repo, '.git', 'worktrees', SESSION_ID, 'commondir'), `${armed}\n`),
       ],
-    ])('refuses %s before any git runs there', async (_, pointer) => {
+      [
+        'a .git swapped for a symlink to a decoy repo',
+        (worktree: string, armed: string) => {
+          rmSync(join(worktree, '.git'));
+          symlinkSync(armed, join(worktree, '.git'));
+        },
+      ],
+      [
+        'a .git swapped for a decoy directory',
+        (worktree: string, armed: string) => {
+          rmSync(join(worktree, '.git'));
+          renameSync(armed, join(worktree, '.git'));
+        },
+      ],
+    ])('refuses %s before any git runs there', async (_, plant) => {
       const worktree = seedSession(db, repo);
       // A stale branch, so the gate would take the rebase path.
       commitIn(repo, 'README.md', '# hello\n');
       commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
-      const armed = armedRepo(tempDir('pup-armed-'), 'src/app.ts');
-      const [file, prefix] = pointer(worktree) as [string, string];
-      writeFileSync(file, `${prefix}${armed}\n`);
+      plant(worktree, armedRepo(tempDir('pup-armed-'), 'src/app.ts'));
       expectPlainGitFires(worktree, join(worktree, 'src/app.ts'));
 
       await expect(merge()).rejects.toThrow(WorktreeRepointedError);

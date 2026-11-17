@@ -794,22 +794,72 @@ describe('startFixRound', { timeout: 90_000 }, () => {
     expect(sh(repo, 'git', 'worktree', 'list', '--porcelain')).not.toContain(worktree);
   });
 
+  /**
+   * A repo of the session's own: it borrows the real objects, so the round's
+   * head resolves there, and its smudge filter marks `fired` on every file a
+   * checkout from it writes.
+   */
+  function armedDecoy(fired: string): string {
+    const gitDir = join(tempDir('pup-fix-decoy-'), '.git');
+    sh(dirname(gitDir), 'git', 'init', '-q');
+    mkdirSync(join(gitDir, 'objects', 'info'), { recursive: true });
+    writeFileSync(
+      join(gitDir, 'objects', 'info', 'alternates'),
+      `${join(repo, '.git', 'objects')}\n`,
+    );
+    mkdirSync(join(gitDir, 'info'), { recursive: true });
+    writeFileSync(join(gitDir, 'info', 'attributes'), '* filter=pwn\n');
+    sh(
+      dirname(gitDir),
+      'git',
+      'config',
+      'filter.pwn.smudge',
+      `sh -c 'echo pwned >> ${fired}; cat'`,
+    );
+    return gitDir;
+  }
+
+  /** A shim case that runs the first `worktree add` for real, then `plant`, as a racing session would. */
+  const afterAdd =
+    (plant: (decoy: string) => string) =>
+    (once: string, decoy: string): string =>
+      `case " $* " in *" worktree add "*) if [ -f ${once} ]; then rm -f ${once}; REAL_GIT "$@" || exit $?; ${plant(decoy)}; exit 0; fi ;; esac`;
+  const gitfile = () => join(worktree, '.git');
+
   // The add comes before the pinned checkout (decision 101), so a checkout that
   // throws must take the new worktree with it, or every retry refuses it as an
   // earlier round's, and the refusal must say so rather than ask for a repair
   // of what is gone. The branch the add cut stays, at the head the retry
-  // starts from.
+  // starts from. A `.git` that is not the regular file reading the admin dir
+  // pup derives from the session row is refused before git reads it, so no
+  // decoy's filter runs.
   it.each([
     [
       'a read-tree that fails',
-      (once: string) =>
+      (once: string, _decoy: string) =>
         `case " $* " in *" read-tree "*) if [ -f ${once} ]; then rm -f ${once}; echo 'No space left on device' >&2; exit 128; fi ;; esac`,
       /No space left on device/,
     ],
     [
       'a commondir rewritten right after the add',
-      (once: string) =>
-        `case " $* " in *" worktree add "*) if [ -f ${once} ]; then rm -f ${once}; REAL_GIT "$@" || exit $?; echo /nonexistent/planted > ${join(repo, '.git', 'worktrees', SESSION_ID, 'commondir')}; exit 0; fi ;; esac`,
+      afterAdd(
+        (decoy) => `echo ${decoy} > ${join(repo, '.git', 'worktrees', SESSION_ID, 'commondir')}`,
+      ),
+      WorktreeRepointedError,
+    ],
+    [
+      'a .git rewritten to name a decoy repo right after the add',
+      afterAdd((decoy) => `echo gitdir: ${decoy} > ${gitfile()}`),
+      WorktreeRepointedError,
+    ],
+    [
+      'a .git swapped for a symlink to a decoy repo right after the add',
+      afterAdd((decoy) => `rm ${gitfile()} && ln -s ${decoy} ${gitfile()}`),
+      WorktreeRepointedError,
+    ],
+    [
+      'a .git swapped for a decoy directory right after the add',
+      afterAdd((decoy) => `rm ${gitfile()} && cp -R ${decoy} ${gitfile()}`),
       WorktreeRepointedError,
     ],
   ])(
@@ -819,7 +869,9 @@ describe('startFixRound', { timeout: 90_000 }, () => {
       // As the gate's teardown leaves it, so the add cuts the branch with `-b`.
       sh(repo, 'git', 'branch', '-D', BRANCH);
       reviewOnGitHub({ threads: OPEN_THREAD });
-      shimGit(shimCase);
+      const fired = join(tempDir('pup-fix-fired-'), 'fired');
+      const decoy = armedDecoy(fired);
+      shimGit((once) => shimCase(once, decoy));
       const events = listEvents(db, SESSION_ID).length;
 
       const error = await fix().catch((caught: unknown) => caught);
@@ -838,6 +890,9 @@ describe('startFixRound', { timeout: 90_000 }, () => {
       expect(existsSync(worktree)).toBe(false);
       expect(sh(repo, 'git', 'worktree', 'list', '--porcelain')).not.toContain(worktree);
       expect(sh(repo, 'git', 'rev-parse', BRANCH)).toBe(pinned);
+      // Nothing ran the decoy's filter, and the undo removed the link, not the repo it named.
+      expect(existsSync(fired)).toBe(false);
+      expect(existsSync(join(decoy, 'HEAD'))).toBe(true);
 
       await fix();
 
@@ -845,6 +900,7 @@ describe('startFixRound', { timeout: 90_000 }, () => {
       expect(readFileSync(join(worktree, 'src/feature.ts'), 'utf8')).toBe(
         'export const feature = 1;\n',
       );
+      expect(existsSync(fired)).toBe(false);
     },
   );
 
