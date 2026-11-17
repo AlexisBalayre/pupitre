@@ -1,0 +1,114 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-17T16:53:38.180Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "44130300555",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/44130300555",
+  "actor": "AlexisBalayre",
+  "commit_sha": "6977aceb412a151f0b8e711d8a08c35dfa93c83a",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 375,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "guards"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "guards"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "simplicity",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "docs/adr/0115-pup-plan-edit-rescope-lets-the-operator-widen.md",
+      "line": "257-271",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "important",
+      "description": "ADR 0115's 2026-11-17 amendment says `+`, `@` and `!` join the refused characters and that `@scope` package paths must be named outside a rescope; the change now accepts a bare `+` or `@`.",
+      "body": "**The change contradicts ADR 0115's 2026-11-17 amendment, and the PR doesn't update it.**\n\nWhat the amendment says:\n- Lines 256-261: \"`(`, `)`, `|`, `+`, `@` and `!` join the refused metacharacters\".\n- A project with `@scope` package directories \"names them outside a rescope\".\n- Line 269: \"the refusal table takes each extglob character alone\".\n\nWhat the code at this head does: the metacharacter check is now `/[[\\]{}\\\\()|!]/`. A bare `+` or `@` passes, and the new plain-path test asserts that `packages/@acme/ui/**` and `src/routes/+page.svelte` are accepted. The `@scope` sentence now says the opposite of what the code does.\n\nAGENTS.md says ADRs win over the design docs where they conflict, so a reader will trust this text over the code. The amendment also doesn't record the two other changes in this PR:\n- the new leading-`:` (git pathspec magic) refusal;\n- the empty, absolute and `.`/empty-segment refusals now sharing one message.\n\nSuggested fix: add an amendment, in the style of the earlier ones, saying:\n- `(`, `)`, `|` and `!` stay refused, `!` anywhere in the glob;\n- a bare `+` or `@` is literal, because extglob syntax needs a following `(`, which is refused;\n- a leading `:` is refused;\n- empty, absolute and `.`/empty-segment globs share one refusal.\n\nThen correct the `@scope` sentence and the *Tests* sentence to match.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/6977aceb412a151f0b8e711d8a08c35dfa93c83a/docs/adr/0115-pup-plan-edit-rescope-lets-the-operator-widen.md#L256-L271",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/task-rescope.test.ts",
+      "line": "524-527",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new `globToRegExp` bare-`+` test sits in task-rescope.test.ts, but `globToRegExp` has its own sibling suite, src/core/glob-utils.test.ts, which already holds the 'escapes regex specials' case.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/task-rescope.test.ts",
+      "line": "488-491",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The 'Git pathspec magic' comment sits above one row (`:^src`), but the unrelated `'  '` and `'./'` rows follow it with no comment of their own, so they read as part of that group.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 2,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.5016952999999997,
+  "duration_ms": 145202,
+  "num_turns": 12,
+  "tokens": {
+    "input": 12,
+    "output": 9679,
+    "cache_read": 266367,
+    "cache_creation": 46563,
+    "total": 322621
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 62,
+      "output": 20789,
+      "cache_read": 750601,
+      "cache_creation": 107505,
+      "cost_usd": 1.2433622000000004
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 36,
+      "output": 8524,
+      "cache_read": 188774,
+      "cache_creation": 61336,
+      "cost_usd": 0.2575294
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 346,
+      "cache_read": 0,
+      "cache_creation": 5044,
+      "cost_usd": 0.0008037
+    }
+  ],
+  "permission_denials": []
+}
