@@ -5,7 +5,6 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
-  realpathSync,
   symlinkSync,
   unlinkSync,
   utimesSync,
@@ -1029,38 +1028,10 @@ describe('the worker sandbox (decision 191)', () => {
       strictAllowlist: true,
       // The web dashboard's tests listen on loopback (decision 191).
       allowLocalBinding: true,
-      // tsx's IPC socket dir, and no other Unix socket (decision 196).
-      allowUnixSockets: [
-        join(realpathSync('/tmp'), `claude-${process.getuid?.()}`, `tsx-${process.geteuid?.()}`),
-      ],
+      // No allowUnixSockets: a granted dir lets a sandboxed `mv` carry in
+      // another session's socket and connect to it (decision 196).
     });
   });
-
-  // Claude Code sets the variable in its own Bash children, so a compile run
-  // from one sees it; the worker's launch strips it (decision 196).
-  it("grants tsx's socket dir under /tmp whatever CLAUDE_CODE_TMPDIR the compile sees", () => {
-    vi.stubEnv('CLAUDE_CODE_TMPDIR', tempDir('pup-claude-tmp-'));
-    const { sandbox } = JSON.parse(
-      compileIn(repoWith('workerSandbox: true\n')).files['settings.json'] as string,
-    );
-
-    expect(sandbox.network.allowUnixSockets).toEqual([
-      join(realpathSync('/tmp'), `claude-${process.getuid?.()}`, `tsx-${process.geteuid?.()}`),
-    ]);
-  });
-
-  it.each(['getuid', 'geteuid'] as const)(
-    "refuses the compile rather than grant root's tsx socket dir without process.%s",
-    (name) => {
-      const real = Object.getOwnPropertyDescriptor(process, name) as PropertyDescriptor;
-      Object.defineProperty(process, name, { ...real, value: undefined });
-      try {
-        expect(() => compileIn(repoWith('workerSandbox: true\n'))).toThrow(/uid/);
-      } finally {
-        Object.defineProperty(process, name, real);
-      }
-    },
-  );
 
   // A sandboxed kill(pid, 0) on an unsandboxed pid fails with EPERM (probed), so
   // the slot protocol would reclaim a live gate's slot. Ungranted, `pup session

@@ -898,7 +898,6 @@ describe('runSessionTest (decision 96)', () => {
 
 describe('pup session test --related, through the real CLI and vitest', () => {
   const cli = join(import.meta.dirname, '..', 'cli', 'index.ts');
-  const tsx = join(import.meta.dirname, '..', '..', 'node_modules', '.bin', 'tsx');
 
   /** A session whose worktree is a repo of `sum` and `other`, each with a test; `failing` names those whose test fails. */
   function sessionRepo(failing: string[]): {
@@ -945,7 +944,8 @@ describe('pup session test --related, through the real CLI and vitest', () => {
     return {
       repo,
       run: (...args) =>
-        spawnSync(tsx, [cli, 'session', 'test', ...args], {
+        // Not tsx's own CLI, which binds an IPC socket a sandboxed worker may not (decision 196).
+        spawnSync(process.execPath, ['--import', 'tsx', cli, 'session', 'test', ...args], {
           cwd: repo,
           encoding: 'utf8',
           env: { ...env, HOME: home, PUP_SESSION_ID: 's-related' },

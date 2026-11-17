@@ -34,7 +34,7 @@ import {
   WORKER_SUBAGENT_ENV,
 } from './profile.constants.js';
 import { ContextBudgetExceededError, InvalidProfileError } from './profile.errors.js';
-import { refuseUserSandbox, tsxSocketDir } from './profile-compiler-sandbox.service.js';
+import { refuseUserSandbox } from './profile-compiler-sandbox.service.js';
 import { workerSandboxOn } from './project-config.config.js';
 import { CRITICAL_AREAS } from './routing.utils.js';
 import { shellWord } from './shell-quote.utils.js';
@@ -1365,8 +1365,9 @@ jq -c --arg sid "\${PUP_SESSION_ID:-unknown}" '. + {pup_session_id: $sid}' >> '$
  *   Local binding stays, though on macOS it also opens every localhost port to
  *   the sandbox: the web dashboard's tests listen on loopback, and the
  *   pre-commit hook runs them inside the sandbox for any change they import.
- *   Unix sockets only in tsx's socket dir, which tsx binds on every run
- *   (decision 196).
+ *   No Unix socket: the sandbox can rename any socket under Claude Code's temp
+ *   dir into a granted one and connect, so tests start tsx with
+ *   `node --import tsx`, which binds none (decision 196).
  * `failIfUnavailable` refuses the launch rather than run the worker
  * unsandboxed, and `allowUnsandboxedCommands` ignores a call's request to leave
  * it. `refuseUserSandbox` keeps the operator's user settings, as they stand at
@@ -1423,7 +1424,6 @@ function workerSandbox(input: CompileInput, git: WorktreeGitEnv, credentials: st
       allowedDomains: WORKER_SANDBOX_DOMAINS,
       strictAllowlist: true,
       allowLocalBinding: true,
-      allowUnixSockets: [tsxSocketDir()],
     },
   };
 }

@@ -1,24 +1,6 @@
-import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { claudeUserDir } from '../claude/session-runtime.service.js';
-
-/**
- * The one directory a sandboxed worker may bind and connect Unix sockets in:
- * where tsx 4 puts the IPC socket it opens on every run,
- * `<TMPDIR>/tsx-<euid>/<pid>.pipe` (decision 196). Claude Code 2.1.326 points
- * a Bash child's `TMPDIR` at `claude-<uid>` under `CLAUDE_CODE_TMPDIR`, resolved,
- * and under `/tmp` without the variable. A worker never has it: the launch
- * strips every `CLAUDE*` variable and `--session-env` cannot name it. So the
- * compile does not read its own, which Claude Code sets when pup runs from a
- * Claude Code Bash call. Without a uid there is no dir to name, and guessing
- * root's would grant another user's.
- */
-export function tsxSocketDir(): string {
-  if (!process.getuid || !process.geteuid) {
-    throw new Error("workerSandbox needs the process uid to name tsx's socket dir (decision 196).");
-  }
-  return join(realpathSync('/tmp'), `claude-${process.getuid()}`, `tsx-${process.geteuid()}`);
-}
 
 /**
  * Allow-rule tools whose argument Claude Code 2.1.325 adds to the sandbox: an
