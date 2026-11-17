@@ -1049,6 +1049,16 @@ describe('the worker sandbox (decision 191)', () => {
     ]);
   });
 
+  it("refuses the compile rather than grant root's tsx socket dir when the uid is unknown", () => {
+    const getuid = Object.getOwnPropertyDescriptor(process, 'getuid') as PropertyDescriptor;
+    Object.defineProperty(process, 'getuid', { ...getuid, value: undefined });
+    try {
+      expect(() => compileIn(repoWith('workerSandbox: true\n'))).toThrow(/uid/);
+    } finally {
+      Object.defineProperty(process, 'getuid', getuid);
+    }
+  });
+
   // A sandboxed kill(pid, 0) on an unsandboxed pid fails with EPERM (probed), so
   // the slot protocol would reclaim a live gate's slot. Ungranted, `pup session
   // test` cannot write the slots dir and runs slot-less.

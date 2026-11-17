@@ -10,14 +10,14 @@ import { claudeUserDir } from '../claude/session-runtime.service.js';
  * and under `/tmp` without the variable. A worker never has it: the launch
  * strips every `CLAUDE*` variable and `--session-env` cannot name it. So the
  * compile does not read its own, which Claude Code sets when pup runs from a
- * Claude Code Bash call.
+ * Claude Code Bash call. Without a uid there is no dir to name, and guessing
+ * root's would grant another user's.
  */
 export function tsxSocketDir(): string {
-  return join(
-    realpathSync('/tmp'),
-    `claude-${process.getuid?.() ?? 0}`,
-    `tsx-${process.geteuid?.() ?? 0}`,
-  );
+  if (!process.getuid || !process.geteuid) {
+    throw new Error("workerSandbox needs the process uid to name tsx's socket dir (decision 194).");
+  }
+  return join(realpathSync('/tmp'), `claude-${process.getuid()}`, `tsx-${process.geteuid()}`);
 }
 
 /**

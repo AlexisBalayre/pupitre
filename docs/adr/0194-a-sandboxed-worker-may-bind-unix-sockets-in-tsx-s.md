@@ -26,8 +26,10 @@
     name it (decision 106). So the compile does not read it. Claude Code also exports the variable
     into its own Bash children, so a compile run from one would otherwise read the conductor's
     temp dir. If a tmux server started outside pup hands a worker a different `CLAUDE_CODE_TMPDIR`,
-    the grant names a directory tsx does not use. tsx then fails with `EPERM` as before, and
-    nothing is widened.
+    the grant names a directory the worker's tsx does not use, and that tsx fails with `EPERM` as
+    before. The grant is not a no-op there: it still lets the worker reach the sockets that the
+    user's other sessions put in the default directory (ceiling 1). Without a uid to name the
+    directory, the compile refuses rather than guess root's.
     *The probe (2026-11-17).* Claude Code 2.1.326 on macOS: a `claude -p` run with permissions
     skipped, every `CLAUDE*` variable unset, `--setting-sources user` and a `--settings` file
     holding a `sandbox` block like the compiled one, granting the worktree. Without the grant,
@@ -44,7 +46,29 @@
        child, and, in watch mode only, `dependency`, which adds a file to the watch list. Neither
        runs code the worker chooses (tsx 4.23.1, read from its bundle, not probed). A later tsx
        that handles more messages widens this ceiling.
-    2. The grant follows Claude Code's choice of temp dir. Should a later version move it, tsx
-       fails with `EPERM` again: the failure is closed, not a widening.
-    3. Decision 191's ceiling 5 named a Unix socket in `TMPDIR` as one way to turn off
+       The directory's entries are writable under Claude Code's own temp grant, so a worker can
+       also delete the socket of a running tsx parent, unsandboxed ones included, and bind its own
+       under that name. The parent's child then reports to the worker: the signals it caught and,
+       in watch mode, the path of every file it loads. The parent hears nothing more from it, so
+       its signal relay and its watch list stop working.
+    2. Symlinks do not carry the grant out (probed 2026-11-17). Same method as above, with a
+       throwaway listener on a socket in a fresh directory under `/private/tmp`, outside
+       `claude-<uid>`, and three granted entries beside `tsx-<euid>` (the real one was left
+       alone). As a positive control, a sandboxed bind and connect inside a granted real
+       directory both succeeded. Then, from inside the sandbox, each of these failed with
+       `EPERM`, for connect to the throwaway socket and for a bind of a new one:
+       - (a) the granted entry was a symlink to the throwaway directory, planted before Claude
+         Code started;
+       - (a') a granted real directory was removed and replaced with that symlink by the
+         sandboxed command itself, after Claude Code started;
+       - (b) inside a granted real directory, a symlink to the throwaway socket for connect, and a
+         dangling one to a new path in the throwaway directory for bind.
+       Direct connect and bind in the throwaway directory failed too. The listener saw no
+       connection, and no new socket appeared in the throwaway directory. So Claude Code does not
+       resolve a link planted in a granted entry into a grant on its target, and the sandbox
+       checks the path it resolves, not the one given. Only macOS was probed, which is the only
+       platform the setting compiles on.
+    3. The grant follows Claude Code's choice of temp dir. Should a later version move it, tsx
+       fails with `EPERM` again, while the grant keeps reaching the old directory's sockets.
+    4. Decision 191's ceiling 5 named a Unix socket in `TMPDIR` as one way to turn off
        `allowLocalBinding`. This grant does not open that way: it covers only tsx's own directory.
