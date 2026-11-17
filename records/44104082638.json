@@ -1,0 +1,84 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-17T14:34:03.945Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "44104082638",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/44104082638",
+  "actor": "AlexisBalayre",
+  "commit_sha": "9c93cf1a08bacda77a686f84f1468394255d2416",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 372,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context",
+    "maintainability",
+    "spec",
+    "simplicity",
+    "guards",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/session-handoff.test.ts",
+      "line": "330-333",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The comment's last clause, \"only opening without following the link refuses it\", is wrong for the hard-link row: O_NOFOLLOW lets a hard link through, and `soleLink: true` (the nlink check in readPlainFile, src/adapters/capability.utils.ts) is what refuses it. Suggested wording: \"only a read that refuses a link (no-follow open, sole-link check) catches it.\"",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.8207298000000001,
+  "duration_ms": 72902,
+  "num_turns": 11,
+  "tokens": {
+    "input": 10,
+    "output": 4716,
+    "cache_read": 191069,
+    "cache_creation": 34006,
+    "total": 229801
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 26,
+      "output": 8907,
+      "cache_read": 376047,
+      "cache_creation": 71496,
+      "cost_usd": 0.7129513999999999
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 18,
+      "output": 3029,
+      "cache_read": 67849,
+      "cache_creation": 28267,
+      "cost_usd": 0.1077784
+    }
+  ],
+  "permission_denials": []
+}
