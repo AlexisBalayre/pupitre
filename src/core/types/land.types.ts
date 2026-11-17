@@ -36,7 +36,7 @@ export interface LandOutcome {
   audit?: AuditOutcome;
 }
 
-/** What `pup land <session> <session> ...` did (decision 194). */
+/** What `pup land <session> <session> ...` did (decision 195). */
 export interface LandBatchOutcome {
   /** Each session landed, in the order GitHub merged them; no outcome carries an audit. */
   landed: { sessionId: string; outcome: LandOutcome }[];

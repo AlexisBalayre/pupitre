@@ -1,9 +1,9 @@
-# 0194. `pup land` takes several sessions and audits once (2026-11-17)
+# 0195. `pup land` takes several sessions and audits once (2026-11-17)
 
 - Status: accepted
 - Amends: [0084](0084-pup-land-session-closes-the-github-half-of.md), [0132](0132-pup-land-no-audit-lets-several-lands-share-one.md)
 
-194. **`pup land` takes several sessions and audits once (2026-11-17).**
+195. **`pup land` takes several sessions and audits once (2026-11-17).**
     On 2026-11-16 three PRs merged within minutes. Their three `pup land` runs each held the merge
     lock for a full audit (build, an instrumented test run of about 330 s, lint), one after
     another: about 25 minutes of lock, and only the last baseline was of any use. Decision 132's

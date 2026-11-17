@@ -2032,7 +2032,7 @@ describe('CLI commands', () => {
       expect(logs.join('\n')).not.toContain('PR opened');
     });
 
-    describe('several sessions (decision 194)', () => {
+    describe('several sessions (decision 195)', () => {
       it('lands each, prints the one audit, and fails at the end on a refused one', async () => {
         const repo = initRepoWithAdapter();
         useCwd(repo);

@@ -524,7 +524,7 @@ function printLanded(session: string, outcome: LandOutcome): void {
 }
 
 /**
- * `pup land <session> <session> ...` (decision 194): every land reported, then
+ * `pup land <session> <session> ...` (decision 195): every land reported, then
  * the one audit, then each session refused, which fails the run at the end.
  */
 async function landBatch(
@@ -2851,7 +2851,7 @@ export function buildProgram(): Command {
       if (opts.remeasure && callingConductor()) {
         return refuse('`pup land --remeasure` is operator-only.');
       }
-      // Each vouches for, or records, one PR's own head (decision 194).
+      // Each vouches for, or records, one PR's own head (decision 195).
       if (sessions.length > 1) {
         const single =
           opts.acceptHead !== undefined

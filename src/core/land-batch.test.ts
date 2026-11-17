@@ -51,7 +51,7 @@ const passingAdapter: Adapter = {
 const SESSIONS = ['s1', 's2', 's3'] as const;
 const prUrl = (n: number) => `https://github.com/owner/repo/pull/${n}`;
 
-describe('landSessions (decision 194)', { timeout: 30_000 }, () => {
+describe('landSessions (decision 195)', { timeout: 30_000 }, () => {
   let db: Database;
   let repo: string;
   let origin: string;

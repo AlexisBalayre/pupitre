@@ -22,7 +22,7 @@ import { GateInterruptedError } from './sandbox.utils.js';
 import type { LandBatchOutcome } from './types/land.types.js';
 
 /**
- * `pup land <session> <session> ...` (decision 194): several sessions whose
+ * `pup land <session> <session> ...` (decision 195): several sessions whose
  * PRs merged on GitHub, landed under one hold of the merge lock and audited
  * once, on the final target. Each session gets `landSession`'s checks,
  * fast-forward, teardown, `landed` event and steer, in the order GitHub merged
