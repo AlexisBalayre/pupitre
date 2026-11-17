@@ -5,6 +5,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   symlinkSync,
   unlinkSync,
   utimesSync,
@@ -1028,7 +1029,24 @@ describe('the worker sandbox (decision 191)', () => {
       strictAllowlist: true,
       // The web dashboard's tests listen on loopback (decision 191).
       allowLocalBinding: true,
+      // tsx's IPC socket dir, and no other Unix socket (decision 194).
+      allowUnixSockets: [
+        join(realpathSync('/tmp'), `claude-${process.getuid?.()}`, `tsx-${process.geteuid?.()}`),
+      ],
     });
+  });
+
+  // Claude Code sets the variable in its own Bash children, so a compile run
+  // from one sees it; the worker's launch strips it (decision 194).
+  it("grants tsx's socket dir under /tmp whatever CLAUDE_CODE_TMPDIR the compile sees", () => {
+    vi.stubEnv('CLAUDE_CODE_TMPDIR', tempDir('pup-claude-tmp-'));
+    const { sandbox } = JSON.parse(
+      compileIn(repoWith('workerSandbox: true\n')).files['settings.json'] as string,
+    );
+
+    expect(sandbox.network.allowUnixSockets).toEqual([
+      join(realpathSync('/tmp'), `claude-${process.getuid?.()}`, `tsx-${process.geteuid?.()}`),
+    ]);
   });
 
   // A sandboxed kill(pid, 0) on an unsandboxed pid fails with EPERM (probed), so
