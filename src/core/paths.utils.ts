@@ -1,6 +1,16 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
+import {
+  closeSync,
+  constants,
+  fchmodSync,
+  fsyncSync,
+  openSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 
 import { sanitizeReason } from '../adapters/capability.utils.js';
 import { SESSION_ID_PATTERN } from './paths.constants.js';
@@ -47,6 +57,35 @@ function sessionFragment(sessionId: string): string {
     );
   }
   return sessionId;
+}
+
+/**
+ * Write a file pup owns under the store. A session can write there too, so
+ * whatever stands at `path` may be a link it planted (decision 194). The
+ * content goes to a fresh, randomly named file beside `path`, created with
+ * O_EXCL | O_NOFOLLOW so nothing planted there is written through, then synced
+ * and renamed over `path`. The rename replaces a link without following it, and
+ * a reader sees the old file or the new one, never half of one. A directory at
+ * `path` fails the rename, and the temp file is removed. `mode`, when given, is
+ * set on the descriptor, exact whatever the umask.
+ */
+export function writeStoreFile(path: string, content: string, mode?: number): void {
+  const temp = join(dirname(path), `.${basename(path)}.${randomBytes(8).toString('hex')}.tmp`);
+  const flags = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW;
+  const fd = openSync(temp, flags, mode ?? 0o666);
+  try {
+    try {
+      if (mode !== undefined) fchmodSync(fd, mode);
+      writeFileSync(fd, content);
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    renameSync(temp, path);
+  } catch (error) {
+    rmSync(temp, { force: true });
+    throw error;
+  }
 }
 
 export function projectPaths(repoPath: string, base = join(homedir(), '.pupitre')): ProjectPaths {

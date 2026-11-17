@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, linkSync, mkdirSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import BetterSqlite3, { type Database } from 'better-sqlite3';
@@ -473,6 +473,39 @@ describe('buildDashboardSnapshot', () => {
       expect(snapshot.sessions[0]?.activity).toEqual({ kind: 'background' });
       expect(snapshot.sessions[0]?.needsHuman).toBe(false);
       expect(needsYou(snapshot)).toEqual([]);
+    });
+
+    // The session writes its events file, so it may plant a link there instead
+    // (decision 194): its row loses the activity, the dashboard stays up.
+    it('leaves activity unread for an events file swapped for a symlink', () => {
+      seedSession(db, repo, 's1');
+      transitionSession(db, 's1', 'running');
+      const target = join(tempDir('pup-elsewhere-'), 'events.jsonl');
+      writeFileSync(
+        target,
+        `${JSON.stringify({ hook_event_name: 'Notification', message: 'planted' })}\n`,
+      );
+      const paths = projectPaths(repo);
+      mkdirSync(paths.sessionDir('s1'), { recursive: true });
+      symlinkSync(target, paths.eventsFile('s1'));
+
+      expect(buildDashboardSnapshot(db, repo, NOW).sessions[0]?.activity).toBeUndefined();
+    });
+
+    // A hard link passes O_NOFOLLOW, so the link count is what gives it away.
+    it('leaves activity unread for an events file hard-linked elsewhere', () => {
+      seedSession(db, repo, 's1');
+      transitionSession(db, 's1', 'running');
+      const target = join(tempDir('pup-elsewhere-'), 'events.jsonl');
+      writeFileSync(
+        target,
+        `${JSON.stringify({ hook_event_name: 'Notification', message: 'planted' })}\n`,
+      );
+      const paths = projectPaths(repo);
+      mkdirSync(paths.sessionDir('s1'), { recursive: true });
+      linkSync(target, paths.eventsFile('s1'));
+
+      expect(buildDashboardSnapshot(db, repo, NOW).sessions[0]?.activity).toBeUndefined();
     });
 
     it('leaves activity unread for a session that is no longer running', () => {

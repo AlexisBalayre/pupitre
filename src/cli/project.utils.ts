@@ -3,7 +3,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { failureSummary, sanitizeReason } from '../adapters/capability.utils.js';
-import { openStore } from '../core/db.client.js';
+import { openStore, refuseLinkedStoreFiles } from '../core/db.client.js';
 import { runGit } from '../core/git-diff.client.js';
 import { projectId, projectPaths } from '../core/paths.utils.js';
 import type { RegisteredProject } from '../core/types/fleet.types.js';
@@ -57,11 +57,14 @@ interface ProjectRow {
  * listing because its store lost its permissions is otherwise a mystery. An
  * empty `projects` table is a store `pup status` created and is silent. A
  * store no pup has opened since `dormant_at` was added has no such column,
- * and reads as active until its next open migrates it (decision 62).
+ * and reads as active until its next open migrates it (decision 62). A store
+ * file swapped for a link is unreadable too, checked as `openStore` checks it
+ * (decision 194).
  */
 function readProjectRows(dbFile: string): ProjectRow[] {
   let db: Database.Database | undefined;
   try {
+    refuseLinkedStoreFiles(dbFile);
     db = new Database(dbFile, { readonly: true, fileMustExist: true });
     const columns = db.pragma('table_info(projects)') as { name: string }[];
     const dormantAt = columns.some((column) => column.name === 'dormant_at')

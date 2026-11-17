@@ -21,7 +21,7 @@ import {
 } from '../claude/session-runtime.service.js';
 import { getWatcherBeat } from './overlap.repository.js';
 import { WATCH_STALE_AFTER_MS } from './overlap.service.js';
-import { projectId, projectPaths } from './paths.utils.js';
+import { projectId, projectPaths, writeStoreFile } from './paths.utils.js';
 import {
   compileConductorProfile,
   snapshotUserConfigHash,
@@ -185,7 +185,9 @@ function maxSessionsFile(repoPath: string): string {
 export function maxSessions(repoPath: string): number {
   let stored: number;
   try {
-    stored = Number(readPlainFile(maxSessionsFile(repoPath), { followLinks: false }).trim());
+    stored = Number(
+      readPlainFile(maxSessionsFile(repoPath), { followLinks: false, soleLink: true }).trim(),
+    );
   } catch {
     return DEFAULT_MAX_SESSIONS;
   }
@@ -229,7 +231,9 @@ export function startConductor(
   writeCompiledProfile(compiled, outDir);
   // Stored on every start, a start without the flag included: the cap the
   // conductor's kickoff names is the one every launch is held to (decision 96).
-  writeFileSync(maxSessionsFile(req.repoPath), `${cap}\n`);
+  // The session can write there, so the cap is never written through a link
+  // planted in its place (decision 194).
+  writeStoreFile(maxSessionsFile(req.repoPath), `${cap}\n`);
   // A new conductor starts its own blocked clock: one left by a conductor
   // stopped or crashed while unreachable would name this one blocked while it
   // boots, or skip its ten minutes' grace (decision 168).
@@ -423,7 +427,7 @@ function noteConductorBox(repoPath: string, look: InputBoxLook, now: number): nu
       ? `draft ${createHash('sha256').update(look.draft).digest('hex')}`
       : 'overlay';
   try {
-    const [time, seen] = readPlainFile(file, { followLinks: false }).split('\n');
+    const [time, seen] = readPlainFile(file, { followLinks: false, soleLink: true }).split('\n');
     const since = Number(time);
     if (seen === sight && Number.isInteger(since) && since > 0 && since <= now) return since;
   } catch {

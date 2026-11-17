@@ -17,13 +17,18 @@ const PLAIN_FILE_MAX_BYTES = 1 << 20;
  *
  * `followLinks: false` refuses a symlink outright, for files only pup writes,
  * which are never one; a checkout's config may be a tracked link.
+ *
+ * `soleLink: true` also refuses a file with a second hard link, which
+ * O_NOFOLLOW lets through, for a store file a session may have planted
+ * (decision 194). Opt-in, not part of `followLinks: false`: a test slot is
+ * taken by a link, so it has two names while the take is in progress.
  */
-export function readPlainFile(path: string, { followLinks = true } = {}): string {
+export function readPlainFile(path: string, { followLinks = true, soleLink = false } = {}): string {
   const noFollow = followLinks ? 0 : constants.O_NOFOLLOW;
   const fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK | noFollow);
   try {
     const stat = fstatSync(fd);
-    if (!stat.isFile() || stat.size > PLAIN_FILE_MAX_BYTES) {
+    if (!stat.isFile() || stat.size > PLAIN_FILE_MAX_BYTES || (soleLink && stat.nlink !== 1)) {
       throw new Error(`${path} is not a plain file`);
     }
     // procfs pagemap refuses a read that is not a multiple of 8 bytes.

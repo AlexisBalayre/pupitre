@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { parse } from 'yaml';
 import { readPlainFile, sanitizeReason } from '../adapters/capability.utils.js';
 import type { GateCommand } from '../adapters/types/adapter.types.js';
@@ -21,7 +21,7 @@ import {
   worktreeGitEnv,
 } from './git-diff.client.js';
 import { globsToGrepFile } from './glob.utils.js';
-import { projectPaths } from './paths.utils.js';
+import { projectPaths, writeStoreFile } from './paths.utils.js';
 import {
   CHARS_PER_TOKEN,
   DEFAULT_CONTEXT_BUDGET_TOKENS,
@@ -515,7 +515,7 @@ const FAILING_SCENARIO_RULE =
 function shiftLeftKickoffOn(repoPath: string): boolean {
   try {
     const file = join(projectPaths(repoPath).root, 'rework', 'shift-left-kickoff');
-    return readPlainFile(file, { followLinks: false }).trim() === 'on';
+    return readPlainFile(file, { followLinks: false, soleLink: true }).trim() === 'on';
   } catch {
     // Missing, a link, or not a regular file: the setting's default, off.
     return false;
@@ -1914,14 +1914,36 @@ export function compileConductorProfile(
   return { hash, tokenEstimate, contextBudget, contextMarkdown, settings, files };
 }
 
-export function writeCompiledProfile(compiled: CompiledProfile, outDir: string): void {
-  for (const [rel, content] of Object.entries(compiled.files)) {
-    const target = join(outDir, rel);
-    mkdirSync(join(target, '..'), { recursive: true });
-    writeFileSync(target, content);
-    if (rel.endsWith('.sh')) chmodSync(target, 0o755);
+/** Make `dir`, and refuse it when what stands there is a link to one (decision 194). */
+function ensureCompiledDir(dir: string): void {
+  mkdirSync(dir, { recursive: true });
+  if (!lstatSync(dir).isDirectory()) {
+    throw new Error(
+      `${dir} is not a directory: pup does not write a compiled profile through a link.`,
+    );
   }
-  writeFileSync(join(outDir, 'profile-hash'), `${compiled.hash}\n`);
+}
+
+/**
+ * The compiled profile sits under the store, where the session it was compiled
+ * for can write, and a respawn or a fix round rewrites it. So every directory
+ * from `outDir` down is checked not to be a link, and every file is written
+ * with `writeStoreFile`, which replaces a planted link instead of following it
+ * (decision 194). Otherwise a session that swapped `compiled` for a link to
+ * `~/.claude` would have pup write its settings.json there.
+ */
+export function writeCompiledProfile(compiled: CompiledProfile, outDir: string): void {
+  ensureCompiledDir(outDir);
+  for (const [rel, content] of Object.entries(compiled.files)) {
+    let dir = outDir;
+    for (const part of dirname(rel).split('/')) {
+      if (part === '.') continue;
+      dir = join(dir, part);
+      ensureCompiledDir(dir);
+    }
+    writeStoreFile(join(outDir, rel), content, rel.endsWith('.sh') ? 0o755 : undefined);
+  }
+  writeStoreFile(join(outDir, 'profile-hash'), `${compiled.hash}\n`);
 }
 
 /**

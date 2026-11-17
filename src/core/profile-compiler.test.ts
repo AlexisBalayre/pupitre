@@ -1303,3 +1303,53 @@ describe('the worker sandbox (decision 191)', () => {
     expect(() => compileIn(repoWith('workerSandbox: "yes"\n'))).toThrow(/true or false/);
   });
 });
+
+describe('the compiled profile is written without following a link (decision 194)', () => {
+  const compiled = () => ProfileCompiler.compileProfile(makeInput());
+
+  it('replaces a scope-in.pat swapped for a symlink, and leaves its target alone', () => {
+    const outDir = join(tempDir('pup-compiled-'), 'compiled');
+    const profile = compiled();
+    ProfileCompiler.writeCompiledProfile(profile, outDir);
+    const target = join(tempDir('pup-elsewhere-'), 'target');
+    writeFileSync(target, 'untouched');
+    const pattern = join(outDir, 'hooks', 'scope-in.pat');
+    unlinkSync(pattern);
+    symlinkSync(target, pattern);
+
+    ProfileCompiler.writeCompiledProfile(profile, outDir);
+
+    expect(readFileSync(target, 'utf8')).toBe('untouched');
+    expect(lstatSync(pattern).isFile()).toBe(true);
+    expect(readFileSync(pattern, 'utf8')).toBe(profile.files['hooks/scope-in.pat']);
+    // A hook script is still executable after the rewrite.
+    expect(lstatSync(join(outDir, 'hooks', 'bash-recheck.sh')).mode & 0o777).toBe(0o755);
+  });
+
+  it('does not create a file through a dangling link', () => {
+    const outDir = join(tempDir('pup-compiled-'), 'compiled');
+    mkdirSync(outDir);
+    const target = join(tempDir('pup-elsewhere-'), 'settings.json');
+    symlinkSync(target, join(outDir, 'settings.json'));
+
+    ProfileCompiler.writeCompiledProfile(compiled(), outDir);
+
+    expect(existsSync(target)).toBe(false);
+    expect(lstatSync(join(outDir, 'settings.json')).isFile()).toBe(true);
+  });
+
+  it.each([
+    ['the compiled dir', ''],
+    ['its hooks dir', 'hooks'],
+  ])('refuses %s swapped for a link to another directory', (_, sub) => {
+    const outDir = join(tempDir('pup-compiled-'), 'compiled');
+    const elsewhere = tempDir('pup-elsewhere-');
+    if (sub) mkdirSync(outDir);
+    symlinkSync(elsewhere, join(outDir, sub));
+
+    expect(() => ProfileCompiler.writeCompiledProfile(compiled(), outDir)).toThrow(
+      'is not a directory: pup does not write a compiled profile through a link.',
+    );
+    expect(readdirSync(elsewhere)).toEqual([]);
+  });
+});

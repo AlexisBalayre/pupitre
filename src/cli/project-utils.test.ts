@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { chmodSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import Database from 'better-sqlite3';
@@ -164,6 +164,27 @@ describe('listRegisteredProjects', () => {
       chmodSync(lockedDb, 0o644);
     }
     expect(errors).toEqual([expect.stringMatching(`^Skipping unreadable store ${lockedDb}: `)]);
+  });
+
+  // A session can write under the base, so a store swapped for a link is
+  // unreadable, as `openStore` would find it: never opened (decision 194).
+  it('skips a store swapped for a symlink, saying so, and never opens what it points at', () => {
+    const base = tempDir('pup-proj-base-');
+    const repo = initRepo();
+    const id = register(base, repo);
+    const planted = initRepo();
+    const plantedDb = projectPaths(planted, base).dbFile;
+    mkdirSync(join(base, projectId(planted)));
+    const target = join(tempDir('pup-elsewhere-'), 'state.db');
+    openStore(target).close();
+    const before = readFileSync(target);
+    symlinkSync(target, plantedDb);
+
+    expect(listRegisteredProjects(base).map((project) => project.id)).toEqual([id]);
+    expect(errors).toEqual([
+      `Skipping unreadable store ${plantedDb}: ${plantedDb} is not a plain file: pup does not open its store through a link.`,
+    ]);
+    expect(readFileSync(target)).toEqual(before);
   });
 
   it('is silent about a store whose projects table is empty', () => {

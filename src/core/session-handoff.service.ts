@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync, rmSync } from 'node:fs';
+import { lstatSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
+import { readPlainFile } from '../adapters/capability.utils.js';
 import {
   kickoff,
   killSession as killTmux,
@@ -54,9 +55,23 @@ export class HandoffMissingError extends Error {
  * The handoff document, or undefined when there is none. Read as text rather
  * than hashed in place so a caller hashes the very bytes it goes on to use:
  * two reads are two chances for the file to change between them (decision 49).
+ * The session writes it, so a link it planted there is refused, not followed
+ * (decision 194).
  */
 function readHandoff(handoffPath: string): string | undefined {
-  return existsSync(handoffPath) ? readFileSync(handoffPath, 'utf8') : undefined;
+  if (!lstatSync(handoffPath, { throwIfNoEntry: false })) return undefined;
+  try {
+    return readPlainFile(handoffPath, { followLinks: false, soleLink: true });
+  } catch (error) {
+    const reason =
+      (error as NodeJS.ErrnoException).code === 'ELOOP'
+        ? 'it is a symlink'
+        : (error as Error).message;
+    throw new Error(
+      `The handoff at ${handoffPath} cannot be read as a plain file (${reason}). ` +
+        'Remove it, then write the handoff there again.',
+    );
+  }
 }
 
 function hashHandoff(document: string): string {
@@ -286,7 +301,9 @@ function relaunchWindow(
   const paths = projectPaths(repoPath, pathsBase);
   const extras = extrasFor(paths);
   const compiledDir = paths.compiledDir(sessionId);
-  const contextMarkdown = withoutCodeGraph(readFileSync(join(compiledDir, 'context.md'), 'utf8'));
+  const contextMarkdown = withoutCodeGraph(
+    readPlainFile(join(compiledDir, 'context.md'), { followLinks: false, soleLink: true }),
+  );
   // Before the kill, so a respawn refused at the top rung leaves the window
   // it would have replaced running.
   const route = respawnRoute(db, paths, session, override);

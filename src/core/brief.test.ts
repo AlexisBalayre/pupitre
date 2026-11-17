@@ -1,5 +1,5 @@
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { existsSync, linkSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -60,6 +60,38 @@ describe('the project brief on disk', () => {
     writeBrief('\n  \n\t\n');
 
     expect(readBrief(REPO)).toBeUndefined();
+  });
+
+  // The brief sits under the store, where a session can write (decision 194).
+  it('refuses a brief swapped for a symlink, for read and for edit', () => {
+    const target = join(tempDir('pup-elsewhere-'), 'secret');
+    writeFileSync(target, '## Destination\nsomeone else’s file\n');
+    mkdirSync(dirname(briefPath(REPO)), { recursive: true });
+    symlinkSync(target, briefPath(REPO));
+
+    expect(() => readBrief(REPO)).toThrow(InvalidProfileError);
+    expect(() => ensureBrief(REPO)).toThrow(/not a plain file pup can edit/);
+  });
+
+  // An editor that saves in place would write through to the other name.
+  it('refuses a brief hard-linked to a file elsewhere, for read and for edit', () => {
+    const target = join(tempDir('pup-elsewhere-'), 'bashrc');
+    writeFileSync(target, 'export PATH=/usr/bin\n');
+    mkdirSync(dirname(briefPath(REPO)), { recursive: true });
+    linkSync(target, briefPath(REPO));
+
+    expect(() => readBrief(REPO)).toThrow(InvalidProfileError);
+    expect(() => ensureBrief(REPO)).toThrow(/not a plain file pup can edit/);
+    expect(readFileSync(target, 'utf8')).toBe('export PATH=/usr/bin\n');
+  });
+
+  it('does not write the template through a dangling link', () => {
+    const target = join(tempDir('pup-elsewhere-'), 'created');
+    mkdirSync(dirname(briefPath(REPO)), { recursive: true });
+    symlinkSync(target, briefPath(REPO));
+
+    expect(() => ensureBrief(REPO)).toThrow(InvalidProfileError);
+    expect(existsSync(target)).toBe(false);
   });
 
   /**

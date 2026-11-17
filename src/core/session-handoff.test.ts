@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -194,6 +194,24 @@ describe('session handoff', () => {
     requestHandoff(db, repoPath, 's1', stateBase);
 
     expect(() => markHandoffReady(db, repoPath, 's1', stateBase)).toThrow(HandoffMissingError);
+    expect(
+      db.prepare("SELECT COUNT(*) AS n FROM events WHERE type = 'handoff_ready'").get(),
+    ).toEqual({ n: 0 });
+  });
+
+  // The session writes the handoff, so it may plant a link there instead
+  // (decision 194): pup refuses it rather than hashing what it points at.
+  it('refuses a handoff swapped for a symlink', () => {
+    requestHandoff(db, repoPath, 's1', stateBase);
+    const target = join(tempDir('pup-elsewhere-'), 'secret');
+    writeFileSync(target, 'not the session’s\n');
+    mkdirSync(paths().sessionDir('s1'), { recursive: true });
+    symlinkSync(target, paths().handoffFile('s1'));
+
+    expect(() => markHandoffReady(db, repoPath, 's1', stateBase)).toThrow(
+      `The handoff at ${paths().handoffFile('s1')} cannot be read as a plain file (it is a symlink). ` +
+        'Remove it, then write the handoff there again.',
+    );
     expect(
       db.prepare("SELECT COUNT(*) AS n FROM events WHERE type = 'handoff_ready'").get(),
     ).toEqual({ n: 0 });
