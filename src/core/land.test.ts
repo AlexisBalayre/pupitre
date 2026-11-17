@@ -1659,13 +1659,81 @@ describe('landSession', { timeout: 20_000 }, () => {
       expectNothingChanged(before);
     });
 
-    it('reads the gate config from the base, not local main holding the merge', async () => {
-      const moved = mergeMovedHead('src/app.ts', 'export const app = 2;\n');
+    /**
+     * Another PR merged on GitHub first, committing `package-lock.json` as
+     * `content`, and a fix round that took it in; then local main fast-forwarded
+     * onto the merge of a head past the pin that wrote `path` as `later`, and an
+     * environment installed in the main checkout, untracked.
+     */
+    function mergeOverLockfile(content: string, path: string, later: string) {
+      const clone = cloneOrigin();
+      commitIn(clone, 'package-lock.json', content);
+      sh(clone, 'git', 'push', '-q', 'origin', 'HEAD:main');
+      sh(worktree, 'git', 'fetch', '-q', origin, 'main');
+      sh(worktree, 'git', '-c', 'user.email=t@t', '-c', 'user.name=t', 'merge', '-q', 'FETCH_HEAD');
+      const moved = mergeMovedHead(path, later);
       sh(repo, 'git', 'fetch', '-q', origin, 'main');
       sh(repo, 'git', 'merge', '-q', '--ff-only', moved.merge);
-      // The main checkout's installed environment, which the base's checkout lacks.
       mkdirSync(join(repo, 'node_modules', 'dep'), { recursive: true });
       writeFileSync(join(repo, 'node_modules', 'dep', 'index.js'), 'module.exports = 1;\n');
+      return moved;
+    }
+
+    it('refuses to measure with an environment installed from a lockfile the base does not hold', async () => {
+      mergeOverLockfile(
+        '{"lockfileVersion": 1}\n',
+        'package-lock.json',
+        '{"lockfileVersion": 2}\n',
+      );
+      const before = mainSha();
+      const measured: string[] = [];
+      const recording: Adapter = {
+        ...passingAdapter,
+        gateCommands: (path) => {
+          measured.push(path);
+          return passingAdapter.gateCommands(path);
+        },
+      };
+
+      await expect(remeasure({ adapter: recording })).rejects.toThrow(
+        /node_modules in the main checkout was not installed from the lockfile [0-9a-f]{40} holds there, .*Nothing was landed/,
+      );
+      expect(measured).toEqual([]);
+      expectNothingChanged(before);
+    });
+
+    it.each(['.pupitre/adapter.yml', 'package.json'])(
+      'refuses when local main holds a %s the base does not',
+      async (path) => {
+        const moved = mergeMovedHead(path, '{}\n');
+        sh(repo, 'git', 'fetch', '-q', origin, 'main');
+        sh(repo, 'git', 'merge', '-q', '--ff-only', moved.merge);
+        const before = mainSha();
+        const measured: string[] = [];
+        const recording: Adapter = {
+          ...passingAdapter,
+          gateCommands: (at) => {
+            measured.push(at);
+            return passingAdapter.gateCommands(at);
+          },
+        };
+
+        await expect(remeasure({ adapter: recording })).rejects.toThrow(
+          `differ in 1 file(s) that decide which adapters measure the merge or what they run (${path})`,
+        );
+        expect(measured).toEqual([]);
+        expectNothingChanged(before);
+      },
+    );
+
+    it('reads the gate config from the base, not local main holding the merge', async () => {
+      // The main checkout's environment, installed from the lockfile the base
+      // holds, which the base's checkout lacks.
+      const moved = mergeOverLockfile(
+        '{"lockfileVersion": 1}\n',
+        'src/app.ts',
+        'export const app = 2;\n',
+      );
       const configs: string[] = [];
       const linked: boolean[] = [];
       const configAt = (path: string) => readFileSync(join(path, 'src/app.ts'), 'utf8');

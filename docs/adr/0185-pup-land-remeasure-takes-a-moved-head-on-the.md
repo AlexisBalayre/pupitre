@@ -2,7 +2,7 @@
 
 - Status: accepted
 - Amends: [0164](0164-pup-land-takes-a-moved-head-on-the-operator-s-word.md)
-- Amended by: [0198](0198-pup-land-remeasure-reads-before-from-a-checkout-of.md)
+- Amended by: [0198](0198-pup-land-remeasure-reads-its-config-and-before-from.md)
 
 185. **`pup land --remeasure` takes a moved head on the gate's word (2026-11-13).**
     Decision 164 lets a PR that GitHub merged at a head past the pin land only on the operator's

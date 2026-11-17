@@ -6,7 +6,11 @@ import type { Adapter } from '../adapters/types/adapter.types.js';
 import { quotePath } from './debt.service.js';
 import { currentBranch, rethrowIfKilled, runGit } from './git-diff.client.js';
 import { globToRegExp } from './glob.utils.js';
-import { DEBT_DETAIL_SAMPLES, GATE_COMMAND_TIMEOUT_MS } from './merge-gate.constants.js';
+import {
+  DEBT_DETAIL_SAMPLES,
+  GATE_COMMAND_TIMEOUT_MS,
+  PROTECTED_PATH_GLOBS,
+} from './merge-gate.constants.js';
 import {
   assertMergeLockHeld,
   debtKind,
@@ -33,6 +37,22 @@ interface RemeasureRequest {
 
 /** `CRITICAL_AREAS` as path matchers, for a remeasure's approval (decision 185). */
 const CRITICAL_PATHS = CRITICAL_AREAS.map(globToRegExp);
+
+/**
+ * What adapter detection reads at the repo's root, and the protected paths a
+ * custom adapter's config sits under, as path matchers (decision 198): the
+ * custom adapter's `.pupitre/adapter.yml`, the TypeScript adapter's manifest
+ * and `tsconfig.json`, and the Python adapter's manifests.
+ */
+const ADAPTER_PATHS = [
+  ...PROTECTED_PATH_GLOBS,
+  'package.json',
+  'tsconfig.json',
+  'pyproject.toml',
+  'setup.py',
+  'setup.cfg',
+  'requirements.txt',
+].map(globToRegExp);
 
 /**
  * `--remeasure` (decision 185): the gate's stages, `measureBranch`'s, run on
@@ -74,6 +94,39 @@ export async function remeasureMerge(
   progress: StageProgress,
 ): Promise<GateReport> {
   const { sha, head, landedOn, mergeCommit, target, prUrl, id, localSha, originTip } = merge;
+  const changed = (from: string, to: string) =>
+    runGit(req.repoPath, [
+      'diff',
+      '--no-ext-diff',
+      '--no-textconv',
+      '--no-color',
+      '--text',
+      '--no-relative',
+      '--no-renames',
+      '-z',
+      '--name-only',
+      from,
+      to,
+    ])
+      .split('\0')
+      .filter(Boolean);
+  // `req.adapters`, a custom adapter's commands among them, were resolved from
+  // the main checkout, which need not hold `landedOn` and past it holds the
+  // merge (decision 198). So the files that resolution reads must be as
+  // `landedOn` holds them there; no approval lets a difference through.
+  const adapterFiles = changed(landedOn, localSha).filter((path) =>
+    ADAPTER_PATHS.some((adapterPath) => adapterPath.test(path)),
+  );
+  if (adapterFiles.length > 0) {
+    const named = adapterFiles.slice(0, DEBT_DETAIL_SAMPLES).map(quotePath).join(', ');
+    const more = adapterFiles.length > DEBT_DETAIL_SAMPLES ? ', …' : '';
+    throw new Error(
+      `Local ${target} at ${localSha} and ${landedOn}, the commit the merge of ${prUrl} went ` +
+        `onto, differ in ${adapterFiles.length} file(s) that decide which adapters measure the ` +
+        `merge or what they run (${named}${more}). Those are read from the main checkout, so a ` +
+        `remeasure there would run what the difference chose. Nothing was landed.`,
+    );
+  }
   if (req.approvedBy === undefined) {
     // The trees, not `gitDiffPaths`' merge-base range: from an older merge-base
     // a head that kept a change the pin reverted would show none. GitHub merged
@@ -89,22 +142,6 @@ export async function remeasureMerge(
           `\`--remeasure --approved-by <who>\`. Nothing was landed.`,
       );
     }
-    const changed = (from: string, to: string) =>
-      runGit(req.repoPath, [
-        'diff',
-        '--no-ext-diff',
-        '--no-textconv',
-        '--no-color',
-        '--text',
-        '--no-relative',
-        '--no-renames',
-        '-z',
-        '--name-only',
-        from,
-        to,
-      ])
-        .split('\0')
-        .filter(Boolean);
     const critical = [
       ...new Set([...changed(sha, head), ...changed(pinTree, `${mergeCommit}^{tree}`)]),
     ].filter((path) => CRITICAL_PATHS.some((area) => area.test(path)));
