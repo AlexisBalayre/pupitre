@@ -2,15 +2,12 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomBytes } from 'node:crypto';
 import {
   closeSync,
-  constants,
   existsSync,
-  fstatSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
   openSync,
   readdirSync,
-  readFileSync,
   readlinkSync,
   realpathSync,
   renameSync,
@@ -81,6 +78,7 @@ import {
 } from './github.client.js';
 import { globToRegExp } from './glob.utils.js';
 import { readOriginUrl } from './init.service.js';
+import { linkStandInEnvironments } from './land-remeasure-environment.service.js';
 import {
   hasOpenLedgerEntry,
   insertLedgerEntry,
@@ -1610,7 +1608,7 @@ function refuseEscapingLinks(checkout: string, sha: string, git: WorktreeGitEnv)
  * vendored `.bin` is the branch's own and the operator's to review. Python
  * gets nothing: see decision 81's ceiling.
  */
-function linkEnvironment(repoPath: string, checkout: string, rel: string): void {
+export function linkEnvironment(repoPath: string, checkout: string, rel: string): void {
   const source = join(repoPath, rel, GATE_ENVIRONMENT_DIR);
   const local = join(checkout, rel, GATE_ENVIRONMENT_DIR);
   if (lstatSync(local, { throwIfNoEntry: false })) return;
@@ -1627,78 +1625,6 @@ function linkEnvironment(repoPath: string, checkout: string, rel: string): void 
   for (const name of readdirSync(source)) {
     if (name === '.cache' || name.startsWith('.vite')) continue;
     symlinkSync(join(source, name), join(local, name));
-  }
-}
-
-/**
- * Refuse to give a remeasure's stand-in, a checkout of `targetSha`, the main
- * checkout's `node_modules` at `rel` unless it was installed from what the
- * stand-in holds. The main checkout need not hold `targetSha`, and past it
- * holds the session's own merge: one that changed the lockfile, or what is
- * committed under `node_modules`, would have the stages measure with tools the
- * session chose, and the adapters' link checks compare against the stand-in,
- * so they would not see it (decision 198). Only where `linkEnvironment` would
- * link: the lockfile that owns `rel` must be in the same place, of the same
- * manager and the same bytes in both, and the main checkout's HEAD must commit
- * exactly what `targetSha` commits under that `node_modules`. A lockfile that
- * is no regular file, a link included, counts as none, and no lockfile refuses.
- */
-function refuseForeignEnvironment(
-  repoPath: string,
-  standIn: string,
-  targetSha: string,
-  rel: string,
-): void {
-  const local = join(standIn, rel, GATE_ENVIRONMENT_DIR);
-  if (lstatSync(local, { throwIfNoEntry: false })) return;
-  if (!existsSync(join(repoPath, rel, GATE_ENVIRONMENT_DIR))) return;
-  if (!existsSync(dirname(local))) return;
-  const main = owningLockfile(repoPath, rel);
-  const base = owningLockfile(standIn, rel);
-  const lockfile = (root: string, lock: typeof main) =>
-    lock && regularFileBytes(join(root, lock.dir, lock.manager.lockfile));
-  const mainBytes = lockfile(repoPath, main);
-  const baseBytes = lockfile(standIn, base);
-  const installedFromBase =
-    main?.dir === base?.dir &&
-    main?.manager === base?.manager &&
-    mainBytes !== undefined &&
-    baseBytes !== undefined &&
-    mainBytes.equals(baseBytes);
-  const environment = join(rel, GATE_ENVIRONMENT_DIR);
-  const committed = (rev: string) =>
-    runGit(repoPath, ['ls-tree', '-r', '-z', '--full-tree', rev])
-      .split('\0')
-      .filter((entry) => {
-        const path = entry.slice(entry.indexOf('\t') + 1);
-        return path === environment || path.startsWith(`${environment}/`);
-      })
-      .join('\0');
-  const why = !installedFromBase
-    ? `was not installed from the lockfile ${targetSha} holds there`
-    : committed('HEAD') !== committed(targetSha)
-      ? `holds other committed files than ${targetSha} does`
-      : undefined;
-  if (why === undefined) return;
-  throw new Error(
-    `${quotePath(environment)} in the main checkout ${why}, so a remeasure against ` +
-      `${targetSha} cannot measure with it: its tools could be ones the merge chose. Nothing ` +
-      'was landed.',
-  );
-}
-
-/** A file's bytes when it is a regular file, opened without following a link or blocking. */
-function regularFileBytes(path: string): Buffer | undefined {
-  let fd: number;
-  try {
-    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-  } catch {
-    return undefined;
-  }
-  try {
-    return fstatSync(fd).isFile() ? readFileSync(fd) : undefined;
-  } finally {
-    closeSync(fd);
   }
 }
 
@@ -1751,7 +1677,7 @@ function listsMember(repoPath: string, root: string, manager: typeof NPM, dir: s
  * lockfile whose workspace does not list it installs on its own, as the
  * adapter runs it: undefined, as for a package with no lockfile anywhere.
  */
-function owningLockfile(
+export function owningLockfile(
   repoPath: string,
   dir: string,
 ): { dir: string; manager: typeof NPM } | undefined {
@@ -3216,10 +3142,7 @@ export async function measureBranch(
   );
   const environments = new Set(['.', ...workspaceRoots, ...nestedPackages.map((pkg) => pkg.dir)]);
   if (targetDir !== undefined) {
-    for (const rel of environments) {
-      refuseForeignEnvironment(req.repoPath, targetDir, targetSha, rel);
-      linkEnvironment(req.repoPath, targetDir, rel);
-    }
+    linkStandInEnvironments(req.repoPath, targetDir, targetSha, environments);
   }
   for (const pkg of nestedPackages) refuseUninstalled(req.repoPath, configRoot, checkoutDir, pkg);
   for (const rel of environments) linkEnvironment(configRoot, checkoutDir, rel);
