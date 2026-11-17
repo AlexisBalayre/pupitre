@@ -123,6 +123,12 @@ pup audit                # re-stamps the baseline; run from main, it measures ma
 pup debt close <n>       # for ledger entries whose review-by names the merged task
 ```
 
+When several PRs merged close together, land them in one call: `pup land <task> <task> ...`
+lands each in the order GitHub merged them and then runs one audit on the final main, instead of
+one per land. A task that its own checks refuse is named at the end and skipped. The others land
+anyway, and the run exits non-zero. Land a PR that needs `--accept-head` or `--remeasure` on its
+own.
+
 When the PR was closed rather than merged because another PR re-landed its work, `pup land`
 refuses it and Needs you keeps it as `PR opened, not landed`. Close it out from the main
 checkout:

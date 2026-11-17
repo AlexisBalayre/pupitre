@@ -35,3 +35,15 @@ export interface LandOutcome {
   /** Absent when the land skipped it (`--no-audit`, decision 132): `pup audit` is then the operator's. */
   audit?: AuditOutcome;
 }
+
+/** What `pup land <session> <session> ...` did (decision 194). */
+export interface LandBatchOutcome {
+  /** Each session landed, in the order GitHub merged them; no outcome carries an audit. */
+  landed: { sessionId: string; outcome: LandOutcome }[];
+  /** Each session its own checks refused, with the refusal: it landed nothing. */
+  refused: { sessionId: string; reason: string }[];
+  /** The one audit after the last land; absent when none landed or `--no-audit` skipped it. */
+  audit?: AuditOutcome;
+  /** Why that audit failed: the lands stand, and `pup audit` is the operator's to re-run. */
+  auditFailure?: string;
+}

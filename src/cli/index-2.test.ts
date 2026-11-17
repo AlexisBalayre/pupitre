@@ -104,7 +104,11 @@ vi.mock('../core/merge-gate.service.js', () => ({
   countChangedLines: vi.fn(() => ({ source: 0, test: 0, docs: 0, forged: [] })),
 }));
 // The land's own git and gh work is land.test.ts's, against a real repo.
-vi.mock('../core/land.service.js', () => ({ abandonClosedSession: vi.fn(), landSession: vi.fn() }));
+vi.mock('../core/land.service.js', () => ({
+  abandonClosedSession: vi.fn(),
+  landSession: vi.fn(),
+  landSessions: vi.fn(),
+}));
 // So is the retire's, in session-retire.test.ts.
 vi.mock('../core/session-retire.service.js', () => ({ retireSession: vi.fn() }));
 // So is the fix round's, in fix-round.test.ts; `pup status` asks GitHub nothing here.
@@ -184,7 +188,7 @@ import type { SessionState } from '../core/db.client.js';
 import { insertDecisionRecord } from '../core/decision-record.repository.js';
 import { DEFAULT_BASE_PROFILE } from '../core/default-profile.constants.js';
 import { ciReviewLookup, startFixRound } from '../core/fix-round.service.js';
-import { abandonClosedSession, landSession } from '../core/land.service.js';
+import { abandonClosedSession, landSession, landSessions } from '../core/land.service.js';
 import { MergeLockLostError } from '../core/merge-gate.errors.js';
 import { projectId, projectPaths } from '../core/paths.utils.js';
 import { InvalidProfileError } from '../core/profile.errors.js';
@@ -2025,6 +2029,75 @@ describe('CLI commands', () => {
       buildProgram().parse(['status'], { from: 'user' });
 
       expect(logs.join('\n')).not.toContain('PR opened');
+    });
+
+    describe('several sessions (decision 194)', () => {
+      it('lands each, prints the one audit, and fails at the end on a refused one', async () => {
+        const repo = initRepoWithAdapter();
+        useCwd(repo);
+        const { audit, ...outcome } = landedOutcome();
+        vi.mocked(landSessions).mockResolvedValue({
+          landed: [
+            { sessionId: 's2', outcome: { ...outcome, fastForwarded: true } },
+            { sessionId: 's1', outcome: { ...outcome, fastForwarded: false } },
+          ],
+          refused: [{ sessionId: 's3', reason: 'PR is OPEN\u001b[2J on GitHub, not MERGED.' }],
+          audit,
+        });
+
+        await buildProgram().parseAsync(['land', 's1', 's2', 's3'], { from: 'user' });
+
+        expect(firstCall(landSessions)[1]).toMatchObject({
+          repoPath: repo,
+          sessionIds: ['s1', 's2', 's3'],
+        });
+        expect(landSession).not.toHaveBeenCalled();
+        const a = 'a'.repeat(40);
+        expect(logs).toContain(`Landed s2: ${PR} merged as ${a}; main fast-forwarded to ${a}.`);
+        expect(logs).toContain(`Landed s1: ${PR} merged as ${a}; main already held it at ${a}.`);
+        expect(
+          logs.filter(
+            (line) => line === 'No stored baseline yet — captured one now, like `pup init`.',
+          ),
+        ).toHaveLength(1);
+        expect(errors).toEqual(['Not landed s3: PR is OPEN [2J on GitHub, not MERGED.']);
+        expect(process.exitCode).toBe(1);
+      });
+
+      it('reports a failed audit after the lands, and fails', async () => {
+        useCwd(initRepoWithAdapter());
+        const { audit: _audit, ...outcome } = landedOutcome();
+        vi.mocked(landSessions).mockResolvedValue({
+          landed: [{ sessionId: 's1', outcome }],
+          refused: [],
+          auditFailure: 'build crashed',
+        });
+
+        await buildProgram().parseAsync(['land', 's1', 's2'], { from: 'user' });
+
+        expect(logs[0]).toMatch(/^Landed s1: /);
+        expect(errors).toEqual([
+          'The audit after the lands failed; run `pup audit`.\nbuild crashed',
+        ]);
+        expect(process.exitCode).toBe(1);
+      });
+
+      it.each([
+        [['--accept-head', 'b'.repeat(40)], '--accept-head'],
+        [['--remeasure'], '--remeasure'],
+        [['--abandon-closed'], '--abandon-closed'],
+      ])('refuses %s with several sessions, landing nothing', async (flags, flag) => {
+        useCwd(initRepoWithAdapter());
+
+        await buildProgram().parseAsync(['land', 's1', 's2', ...flags], { from: 'user' });
+
+        expect(errors).toEqual([
+          `\`pup land ${flag}\` takes one session; run it on that session alone.`,
+        ]);
+        expect(process.exitCode).toBe(1);
+        expect(landSessions).not.toHaveBeenCalled();
+        expect(abandonClosedSession).not.toHaveBeenCalled();
+      });
     });
   });
 

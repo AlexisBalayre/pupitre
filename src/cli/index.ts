@@ -69,7 +69,7 @@ import { parseGateEnv } from '../core/gate-env.utils.js';
 import { assertMainCheckout, RewrittenGitDirError } from '../core/git-diff.client.js';
 import { initProject } from '../core/init.service.js';
 import { acceptIntent, createIntent, listIntents, readIntent } from '../core/intent.service.js';
-import { abandonClosedSession, landSession } from '../core/land.service.js';
+import { abandonClosedSession, landSession, landSessions } from '../core/land.service.js';
 import { closeLedgerEntry, listLedgerEntries } from '../core/ledger.repository.js';
 import { MAX_REJECTS_BEFORE_BLOCKED } from '../core/merge-gate.constants.js';
 import { MergeLockLostError } from '../core/merge-gate.errors.js';
@@ -179,7 +179,7 @@ import type { ConductorHandle } from '../core/types/conductor.types.js';
 import type { DashboardSnapshot } from '../core/types/dashboard.types.js';
 import type { FleetReading, RegisteredProject } from '../core/types/fleet.types.js';
 import type { DebtBaseline, InitReport } from '../core/types/init.types.js';
-import type { LandOutcome } from '../core/types/land.types.js';
+import type { LandBatchOutcome, LandOutcome } from '../core/types/land.types.js';
 import type { GateReport, MergeOutcome } from '../core/types/merge-gate.types.js';
 import type { TaskId, TaskSpec } from '../core/types/profile.types.js';
 import type {
@@ -266,6 +266,13 @@ function printDecisionRecordBody(record: DecisionRecordRow): void {
   printRecordField('', record.summary);
   if (record.alternatives) printRecordField('alternatives: ', record.alternatives);
   if (record.conventions) printRecordField('conventions: ', record.conventions);
+}
+
+function printGateReport(report: GateReport): void {
+  for (const stage of report.stages) printGateStage(stage);
+  // Printed on every run, pass or fail: an operator who never sees this line
+  // cannot tell a confined gate from an unconfined one (decision 36).
+  console.log(`  ${'sandbox'.padEnd(16)} ${sanitizeReason(report.sandbox)}`);
 }
 
 /**
@@ -484,6 +491,83 @@ function printAuditOutcome(db: Database, report: AuditOutcome, repoPath: string)
   printBaselineTail(db, report, report.debtTransitions.map(formatDebtTransition));
   console.log('Baseline refreshed.');
   if (report.hasRegression) process.exitCode = 1;
+}
+
+/**
+ * What one land moved and tore down. Each peer the land could not steer was
+ * named on stderr before its audit started, so a failed audit cannot lose
+ * them (decision 99).
+ */
+function printLanded(session: string, outcome: LandOutcome): void {
+  const target = sanitizeReason(outcome.target);
+  console.log(
+    `Landed ${sanitizeReason(session)}: ${outcome.prUrl} merged as ${outcome.mergeCommit}; ` +
+      (outcome.fastForwarded
+        ? `${target} fast-forwarded to ${outcome.targetSha}.`
+        : `${target} already held it at ${outcome.targetSha}.`),
+  );
+  if (outcome.remeasure) {
+    console.log('Remeasured the merge; every stage passed:');
+    printGateReport(outcome.remeasure);
+  }
+  if (outcome.removedWorktree) console.log('Removed the session worktree.');
+  if (outcome.keptWorktree !== undefined) {
+    console.log(
+      `Kept the worktree at ${sanitizeReason(outcome.keptWorktree)} and its branch: git ` +
+        'could not remove it (a lock, most likely); remove it from the trusted checkout.',
+    );
+  }
+  if (outcome.keptBranch !== undefined) {
+    console.log(`Kept ${sanitizeReason(outcome.keptBranch)}: it holds commits ${target} does not.`);
+  }
+}
+
+/**
+ * `pup land <session> <session> ...` (decision 194): every land reported, then
+ * the one audit, then each session refused, which fails the run at the end.
+ */
+async function landBatch(
+  db: Database,
+  repoPath: string,
+  sessions: string[],
+  opts: LandOptions,
+): Promise<void> {
+  let batch: LandBatchOutcome;
+  let lockLost: MergeLockLostError | undefined;
+  try {
+    const progress = stageProgress(LAND_STAGES);
+    batch = await settled(
+      progress,
+      landSessions(
+        db,
+        {
+          repoPath,
+          sessionIds: sessions,
+          adapters: detectAdapters(repoPath),
+          gateEnv: parseGateEnv(opts.gateEnv),
+          wait: true,
+          audit: opts.audit,
+        },
+        progress,
+      ),
+    );
+  } catch (error) {
+    if (error instanceof GateInterruptedError) throw error;
+    // Landed all the same: reported, then failed on the lost lock (decision 88).
+    if (!(error instanceof MergeLockLostError)) return refuseScrubbed(error);
+    batch = error.result as LandBatchOutcome;
+    lockLost = error;
+  }
+  for (const { sessionId, outcome } of batch.landed) printLanded(sessionId, outcome);
+  if (batch.audit) printAuditOutcome(db, batch.audit, repoPath);
+  else if (batch.auditFailure !== undefined) {
+    refuseScrubbed(`The audit after the lands failed; run \`pup audit\`.\n${batch.auditFailure}`);
+  } else if (batch.landed.length === 0) console.log('Nothing landed, so no audit ran.');
+  else console.log('Audit skipped: run `pup audit` once after the last land.');
+  for (const { sessionId, reason } of batch.refused) {
+    refuseScrubbed(`Not landed ${sanitizeReason(sessionId)}: ${reason}`);
+  }
+  if (lockLost !== undefined) refuseScrubbed(lockLost);
 }
 
 function refuseKeptBaseline(report: AuditOutcome): void {
@@ -2500,13 +2584,6 @@ export function buildProgram(): Command {
         for (const s of detail.lastGateReport.stages) printGateStage(s);
       }
     });
-  function printGateReport(report: GateReport): void {
-    for (const stage of report.stages) printGateStage(stage);
-    // Printed on every run, pass or fail: an operator who never sees this line
-    // cannot tell a confined gate from an unconfined one (decision 36).
-    console.log(`  ${'sandbox'.padEnd(16)} ${sanitizeReason(report.sandbox)}`);
-  }
-
   program
     .command('merge <session>')
     .description('Run the gate pipeline and merge on pass')
@@ -2722,9 +2799,9 @@ export function buildProgram(): Command {
       },
     );
   program
-    .command('land <session>')
+    .command('land <sessions...>')
     .description(
-      'After the PR merged on GitHub: fast-forward main, clean up the session and run the audit',
+      'After the PRs merged on GitHub: fast-forward main, clean up each session and run the audit once',
     )
     .option('--gate-env <names>', GATE_ENV_DESCRIPTION)
     .option('--no-audit', 'Land without the audit; run `pup audit` once after the last land')
@@ -2744,7 +2821,7 @@ export function buildProgram(): Command {
       '--approved-by <who>',
       'with --remeasure: who approved commits past the pin that change a critical area',
     )
-    .action(async (session: string, opts: LandOptions) => {
+    .action(async (sessions: string[], opts: LandOptions) => {
       const { repoPath, db } = project();
       // The human merged the PR on GitHub already; what is left moves main to
       // what origin holds and re-stamps the baseline, so the conductor may run
@@ -2773,6 +2850,20 @@ export function buildProgram(): Command {
       if (opts.remeasure && callingConductor()) {
         return refuse('`pup land --remeasure` is operator-only.');
       }
+      // Each vouches for, or records, one PR's own head (decision 194).
+      if (sessions.length > 1) {
+        const single =
+          opts.acceptHead !== undefined
+            ? '--accept-head'
+            : opts.remeasure
+              ? '--remeasure'
+              : opts.abandonClosed
+                ? '--abandon-closed'
+                : undefined;
+        if (single !== undefined) {
+          return refuse(`\`pup land ${single}\` takes one session; run it on that session alone.`);
+        }
+      }
       if (opts.approvedBy !== undefined && !opts.remeasure) {
         return refuse('--approved-by names who approved a remeasure; pass it with --remeasure.');
       }
@@ -2780,6 +2871,8 @@ export function buildProgram(): Command {
         opts.approvedBy === undefined ? undefined : sanitizeReason(opts.approvedBy);
       if (approvedBy === '') return refuse('--approved-by needs a name, such as tg:<user>.');
       if (refusedUnsandboxed()) return;
+      if (sessions.length > 1) return landBatch(db, repoPath, sessions, opts);
+      const [session] = sessions as [string];
       if (opts.abandonClosed) {
         let abandoned: { prUrl: string; recorded: boolean };
         let abandonLockLost: MergeLockLostError | undefined;
@@ -2831,31 +2924,7 @@ export function buildProgram(): Command {
         outcome = error.result as LandOutcome;
         lockLost = error;
       }
-      // Each peer the land could not steer was named on stderr before its
-      // audit started, so a failed audit cannot lose them (decision 99).
-      const target = sanitizeReason(outcome.target);
-      console.log(
-        `Landed ${sanitizeReason(session)}: ${outcome.prUrl} merged as ${outcome.mergeCommit}; ` +
-          (outcome.fastForwarded
-            ? `${target} fast-forwarded to ${outcome.targetSha}.`
-            : `${target} already held it at ${outcome.targetSha}.`),
-      );
-      if (outcome.remeasure) {
-        console.log('Remeasured the merge; every stage passed:');
-        printGateReport(outcome.remeasure);
-      }
-      if (outcome.removedWorktree) console.log('Removed the session worktree.');
-      if (outcome.keptWorktree !== undefined) {
-        console.log(
-          `Kept the worktree at ${sanitizeReason(outcome.keptWorktree)} and its branch: git ` +
-            'could not remove it (a lock, most likely); remove it from the trusted checkout.',
-        );
-      }
-      if (outcome.keptBranch !== undefined) {
-        console.log(
-          `Kept ${sanitizeReason(outcome.keptBranch)}: it holds commits ${target} does not.`,
-        );
-      }
+      printLanded(session, outcome);
       if (outcome.audit) printAuditOutcome(db, outcome.audit, repoPath);
       else console.log('Audit skipped: run `pup audit` once after the last land.');
       if (lockLost !== undefined) refuseScrubbed(lockLost);
