@@ -22,10 +22,10 @@ vi.mock('node:fs', async (importOriginal) => {
 });
 
 import { localContext } from '@src/adapters/capability.utils.js';
+import { diskRoot } from '@src/adapters/root-files.utils.js';
 import type { DeadExport, DuplicationReport } from '@src/adapters/types/adapter.types.js';
 import type { IstanbulCoverageMap } from '@src/adapters/types/istanbul.types.js';
 import { rootCoverageReport, typescriptAdapter } from '@src/adapters/typescript.adapter.js';
-import { diskRoot } from '@src/adapters/vitest-config.utils.js';
 import { endSandboxRun, runGateChild, sandboxLabel } from '@src/core/sandbox.utils.js';
 import { sh } from '@test/helpers/git.mock.js';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
