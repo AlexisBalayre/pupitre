@@ -97,20 +97,12 @@ function rescopeReach(glob: string): Reach[] {
   return own.path === undefined ? [own] : [own, beneath(own.path)];
 }
 
-/** The pre-commit hook a worker's own commits run in a repo with no `.husky`, as this one. */
-const PRE_COMMIT = 'scripts/pre-commit';
-
 /**
- * Whether the glob, in the matcher's form, can reach `scripts/pre-commit` in
- * any case: by matching it, or as a directory above it, bare or with a
- * trailing `/`, which the edit hooks read as everything beneath it.
+ * The pre-commit hook a worker's own commits run in a repo with no `.husky`, as
+ * this one. Refused in every project pup manages: git records no tracked source
+ * for a hook it runs, so pup cannot name another project's (decision 115).
  */
-function reachesPreCommit(form: string): boolean {
-  const dir = form.replace(/\/+$/, '').toLowerCase();
-  return (
-    new RegExp(globToRegExpSource(form), 'i').test(PRE_COMMIT) || PRE_COMMIT.startsWith(`${dir}/`)
-  );
-}
+const PRE_COMMIT = 'scripts/pre-commit';
 
 /**
  * The globs a rescope refuses, stricter than a plan's (decision 115): a
@@ -119,10 +111,11 @@ function reachesPreCommit(form: string): boolean {
  * same-repo PR runs with the repo's secrets, never a path the gate protects
  * from every session, never the git hooks a worker's commits run. A glob
  * metacharacter pup's matcher reads literally is refused outright, since a
- * gitignore- or bash-style matcher reads it as a class, a set or an escape
- * and would widen past it. Each check but the first reads the glob as the
- * matcher does, `globToRegExpSource`'s trim and one leading `./` stripped, so
- * a glob cannot dress past a check in what the matcher drops. A wildcard
+ * gitignore-, bash- or extglob-style matcher reads it as a class, a set, an
+ * escape, a pattern list or a negation and would widen past it. Each check
+ * but the first reads the glob as the matcher does, `globToRegExpSource`'s
+ * trim and one leading `./` stripped, so a glob cannot dress past a check in
+ * what the matcher drops. A wildcard
  * anywhere in the first segment can match every top-level directory,
  * `.github` among them. A protected entry, a file or a directory at any
  * depth, is refused whenever the glob can share a path with it (`overlaps`).
@@ -133,10 +126,22 @@ const GLOB_REFUSALS: readonly (readonly [(raw: string, form: string) => boolean,
     (_raw, form) => /[[\]{}\\]/.test(form),
     'holds `[`, `]`, `{`, `}` or `\\`, which another matcher reads as a class, a set or an escape',
   ],
+  [
+    (_raw, form) => /[()|+@!]/.test(form),
+    'holds `(`, `)`, `|`, `+`, `@` or `!`, which an extglob matcher reads as a pattern list or a negation',
+  ],
   [(_raw, form) => form === '', 'is empty'],
   [(_raw, form) => form.startsWith('/'), 'is absolute'],
   [(_raw, form) => /^[^/]*[*?]/.test(form), 'has a wildcard in its first segment'],
   [(_raw, form) => form.split('/').includes('..'), 'has a `..` segment'],
+  [
+    (_raw, form) =>
+      form
+        .replace(/\/$/, '')
+        .split('/')
+        .some((segment) => segment === '.' || segment === ''),
+    'has a `.` or an empty segment, which a normalizing matcher drops',
+  ],
   [
     (_raw, form) => /^\.github(\/|$)/i.test(form),
     "reaches `.github`, whose workflows run with the repo's secrets",
@@ -146,12 +151,14 @@ const GLOB_REFUSALS: readonly (readonly [(raw: string, form: string) => boolean,
     `reaches a path the gate protects whatever the scope (${PROTECTED_PATH_GLOBS.join(', ')})`,
   ],
   [
-    (_raw, form) => /^\.husky(\/|$)/i.test(form),
-    "reaches `.husky`, the git hooks that check a worker's own commits",
-  ],
-  [
-    (_raw, form) => reachesPreCommit(form),
-    `reaches \`${PRE_COMMIT}\`, the hook that checks a worker's own commits`,
+    // `scripts/pre-commit` by a glob that matches it, or by a directory above
+    // it, bare or with a trailing `/`: pup's matcher reads a bare `scripts`
+    // as that one path, but a gitignore-style one reads it as all beneath.
+    (_raw, form) =>
+      /^\.husky(\/|$)/i.test(form) ||
+      new RegExp(globToRegExpSource(form), 'i').test(PRE_COMMIT) ||
+      PRE_COMMIT.startsWith(`${form.replace(/\/+$/, '').toLowerCase()}/`),
+    `reaches a git hook that checks a worker's own commits (\`.husky\`, \`${PRE_COMMIT}\`)`,
   ],
 ];
 
