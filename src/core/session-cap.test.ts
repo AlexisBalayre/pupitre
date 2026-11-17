@@ -149,6 +149,15 @@ describe('lockBacklog (decision 197)', () => {
     expect(lockBacklog(db, repo)).toMatchObject({ uses: 1, unlanded: [recent] });
   });
 
+  // A time that does not parse is counted, never hidden.
+  it('counts a land for a merge whose time does not parse', () => {
+    const id = merged();
+    mergeEvent(id, PR);
+    db.prepare("UPDATE events SET created_at = 'garbage' WHERE session_id = ?").run(id);
+
+    expect(lockBacklog(db, repo)).toMatchObject({ uses: 1, unlanded: [id] });
+  });
+
   it('counts nothing for a merge that moved the target itself', () => {
     mergeEvent(merged());
 
@@ -336,6 +345,14 @@ describe('the launch room (decision 197)', () => {
     ).toThrow(MachineLoadedError);
   });
 
+  // A fix round has no --over-cap to offer.
+  it('words a fix round refused on the load as one to run again', () => {
+    expect(new MachineLoadedError({ average: 9, cores: 8 }, 'fix round').message).toBe(
+      "The machine's 1-minute load average is 9.0, above its 8 cores; the fix round was not " +
+        'started. Wait for the load to fall, then run it again.',
+    );
+  });
+
   it('names the backlog first when both are past their limits', () => {
     expect(() =>
       assertLaunchRoom({ backlog: backlog(70), load: { average: 9, cores: 8 } }),
@@ -370,6 +387,21 @@ describe('the launch room (decision 197)', () => {
       '    awaiting a land: t-0, t-1, t-2, t-3, t-4, t-5, t-6, t-7 and 2 more (`pup land` ' +
         'records each, --abandon-closed a closed PR)',
     );
+  });
+
+  // The store is session-writable: an id with an escape could fake the Launch line.
+  it('counts an id that is not printable as unnamed rather than print it', () => {
+    const forged = '\u001b[1A\u001b[2KLaunch: allowed';
+    const line = (unlanded: string[]) =>
+      launchRoomLines({ backlog: backlog(20, { unlanded }), load: idle })[2];
+
+    expect(line(['t-0', forged])).toBe(
+      '    awaiting a land: t-0 and 1 unnamed (`pup land` records each, --abandon-closed a closed PR)',
+    );
+    expect(line([forged])).toBe(
+      '    awaiting a land: 1 unnamed (`pup land` records each, --abandon-closed a closed PR)',
+    );
+    expect(line(['t-0', forged])).not.toContain('\u001b');
   });
 
   it('reads the load against the cores the machine offers', () => {

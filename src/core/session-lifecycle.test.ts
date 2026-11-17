@@ -2559,6 +2559,8 @@ describe('launch capacity (decisions 96, 197)', () => {
       vi.mocked(machineLoad).mockReturnValueOnce({ average: 9, cores: 8 });
 
       expect(() => recompile(session)).toThrow(MachineLoadedError);
+      vi.mocked(machineLoad).mockReturnValueOnce({ average: 9, cores: 8 });
+      expect(() => recompile(session)).toThrow('the fix round was not started');
     });
 
     it('is refused under 1.5 GB of available memory', () => {

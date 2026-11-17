@@ -83,17 +83,26 @@
        session in review, which the gate's queue absorbs, as decision 144 accepted for the cap.
     3. Gate reports are written by code a session can reach (decisions 46 and 47 on the store): a
        sandboxed worker may write the store's database, and an unsandboxed one may run anything.
-       Unbounded, 30 reports forged at 0 would have made the median 0 and turned the backlog off,
-       and one forged at 10^12 would have refused every launch. The median is held to 4 to 60
-       minutes, so forged reports can move the backlog by at most that range: with 4 working
-       sessions, 32 to 480 minutes, never 0, and the default budget still refuses a ninth fresh
-       session. Only a report shaped like the gate's verdict is read, so a bare transition or a
-       refusal is not timed, but the shape is as forgeable as the times. The reports are not
-       sealed: a seal needs a key the gate can read and a session cannot, and a sandboxed worker
-       reads all of `~/.pupitre` and an unsandboxed one whatever the gate's process can, so the
-       signal stays a setting the conductor follows, not a boundary, as decision 96 says of the
-       cap. Forged `landed`, `retired` or `pr_closed` events can likewise drop a merged session's
-       land, 1 use each, for at most the 2 days it would have counted.
+       The median is the 15th of the newest 30 timed runs, so 15 reports forged at 0 would have
+       made it 0 and turned the backlog off, and 16 forged at 10^12 would have refused every
+       launch. The median is held to 4 to 60 minutes (a median that is not finite reads as the
+       untimed 8), so forged reports move the backlog within that range only: with 4 working
+       sessions, 32 to 480 minutes, never 0, and at the floor the default budget still refuses a
+       ninth fresh session. At the ceiling one working session reads 120 minutes, over the default
+       budget, so every conductor launch is refused until real runs push the forged ones out of
+       the newest 30 or the operator passes `--over-cap`; `pup status` shows the 60-minute gate
+       that explains it. Only a report shaped like the gate's verdict is read, so a bare
+       transition or a refusal is not timed, but the shape is as forgeable as the times. The
+       reports are not sealed: a seal needs a key the gate can read and a session cannot, and a
+       sandboxed worker reads all of `~/.pupitre` and an unsandboxed one whatever the gate's
+       process can, so the signal stays a setting the conductor follows, not a boundary, as
+       decision 96 says of the cap. A store writer can lower the uses themselves too: by moving
+       sessions out of the counted states, which decision 96's and 144's counts were as open to,
+       or by forging a `landed`, `retired` or `pr_closed` event, which drops a merged session's
+       land, 1 use, for at most the 2 days it would have counted. What fails safe is kept so: a
+       merge whose time does not parse is counted for its land, and a session id that is not
+       plain letters, digits, `.`, `_` and `-` is counted in `pup status` as unnamed, never
+       printed, so no escape sequence written to the store reaches the operator's terminal.
     4. Lands are timed as gates: the store records no land's time, and a land runs the same tests.
     5. The load average lags: a burst of launches is read a minute late, and a launch reads it
        before it adds its own load.
@@ -102,19 +111,21 @@
     *Tests.* The backlog is read on an empty store at the untimed gate and the default budget;
     queued, running, rejected and blocked sessions count 2 and one awaiting review 0; a merged
     session with an open PR counts 1 and is named, a local merge 0, and one landed, retired or
-    closed unmerged 0, while a re-gate after a land counts 1 again; a merge older than 2 days with no land counts
-    0; killed sessions and a merged one with no merge count 0. A run is timed by its longest
+    closed unmerged 0, while a re-gate after a land counts 1 again; a merge older than 2 days
+    with no land counts 0; killed sessions and a merged one with no merge count 0. A run is timed by its longest
     stage, of at most 64 read, the median is taken over the newest 30, malformed payloads are
     passed over, only a report on a move from review to merged or rejected is timed, a median
     forged at 0, under the floor or at 10^12 is held to 4 or 60 minutes, and the project's budget
-    is read. `pup status` names up to 8 unlanded sessions and counts the rest. The refusals' texts
+    is read; a merge whose time does not parse counts 1. `pup status` names up to 8 unlanded
+    sessions, counts the rest, and counts an id carrying an escape as unnamed. The refusals' texts
     are pinned, and kept under 300 characters at extreme figures. In the lifecycle, a launch at
     the budget goes ahead and one over it is refused for the operator and the conductor; a fifth
     fresh session on an untimed store is refused; sessions awaiting review do not count; the
     budget is read from `project.yml`; a load above the cores is refused and one at the cores is
     not; the operator's `--over-cap` passes both signals and the conductor's never does; `pup new`
     is refused before its task is written; the memory floor holds; and a fix round goes ahead over
-    the budget and is refused above the cores and on low memory.
+    the budget and is refused above the cores, worded as a round to run again, and on low
+    memory.
     The project config reads the budget with its default and up to 1440, and refuses a string, 0,
     a negative, past 1440, infinity, NaN, a boolean and a list. The CLI prints both signals and
     the verdict in `pup status`, prints `Launch: unknown` on a malformed budget, refuses a launch

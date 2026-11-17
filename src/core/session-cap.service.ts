@@ -43,6 +43,12 @@ export const LAND_WINDOW_MS = 2 * 24 * 60 * 60_000;
 /** The most unlanded sessions `pup status` names, the rest counted. */
 const UNLANDED_SHOWN = 8;
 
+/**
+ * A session id `pup status` prints as is. The store is session-writable, so an
+ * id outside it, which could carry a terminal escape, is counted, not printed.
+ */
+const PRINTABLE_ID = /^[A-Za-z0-9._-]{1,64}$/;
+
 /** The merge-lock uses a session not yet through its gate still needs: its gate, then its land. */
 const USES_BEFORE_GATE = 2;
 
@@ -84,13 +90,18 @@ export class LockBacklogOverBudgetError extends Error {
   }
 }
 
-/** A launch refused because the machine's load average is above its cores. */
+/**
+ * A launch or a fix round refused because the machine's load average is above
+ * its cores. A fix round has no `--over-cap`, so its refusal offers none.
+ */
 export class MachineLoadedError extends Error {
-  constructor(load: MachineLoad) {
+  constructor(load: MachineLoad, refused: 'launch' | 'fix round' = 'launch') {
     super(
       `The machine's 1-minute load average is ${load.average.toFixed(1)}, above its ` +
-        `${load.cores} cores; nothing was launched. Wait for the load to fall; only the ` +
-        "operator's --over-cap goes beyond.",
+        `${load.cores} cores; ` +
+        (refused === 'launch'
+          ? "nothing was launched. Wait for the load to fall; only the operator's --over-cap goes beyond."
+          : 'the fix round was not started. Wait for the load to fall, then run it again.'),
     );
     this.name = 'MachineLoadedError';
   }
@@ -121,10 +132,8 @@ export function lockBacklog(db: Database, repoPath: string, now = Date.now()): L
     }
   }
   const timed = gateRunTimes(db);
-  const gateMs =
-    timed.length > 0
-      ? Math.min(Math.max(percentile(timed, 0.5), GATE_FLOOR_MS), GATE_CEILING_MS)
-      : UNTIMED_GATE_MS;
+  const median = Math.min(Math.max(percentile(timed, 0.5), GATE_FLOOR_MS), GATE_CEILING_MS);
+  const gateMs = timed.length > 0 && Number.isFinite(median) ? median : UNTIMED_GATE_MS;
   return {
     minutes: (uses * gateMs) / 60_000,
     budgetMinutes: lockBacklogBudgetMinutes(repoPath),
@@ -139,7 +148,9 @@ function awaitsLand(db: Database, session: SessionRow, now: number): boolean {
   if (session.state !== 'merged') return false;
   const newest = newestEventOf(db, session.id, ['merge', 'landed', 'retired', 'pr_closed']);
   if (newest?.type !== 'merge') return false;
-  if (!(now - Date.parse(toIsoUtc(newest.created_at)) < LAND_WINDOW_MS)) return false;
+  // A time that does not parse is counted: dropping it would hide the session.
+  const at = Date.parse(toIsoUtc(newest.created_at));
+  if (Number.isFinite(at) && now - at >= LAND_WINDOW_MS) return false;
   const merge = decodeEvent(newest);
   // A merge with no PR moved the target itself, under the gate's own lock use.
   return merge.type === 'merge' && merge.prUrl !== undefined;
@@ -222,9 +233,16 @@ export function launchRoomLines(room: LaunchRoom): string[] {
 /** The merged sessions counted for a land, so the operator can land or close a stale one. */
 function unlandedLine(unlanded: string[]): string[] {
   if (unlanded.length === 0) return [];
-  const more = unlanded.length - UNLANDED_SHOWN;
-  const named =
-    unlanded.slice(0, UNLANDED_SHOWN).join(', ') + (more > 0 ? ` and ${more} more` : '');
+  const printable = unlanded.filter((id) => PRINTABLE_ID.test(id));
+  const unnamed = unlanded.length - printable.length;
+  const more = printable.length - UNLANDED_SHOWN;
+  const rest = [
+    more > 0 ? `${more} more` : undefined,
+    unnamed > 0 ? `${unnamed} unnamed` : undefined,
+  ].filter(Boolean);
+  const named = [printable.slice(0, UNLANDED_SHOWN).join(', '), rest.join(' and ')]
+    .filter(Boolean)
+    .join(' and ');
   return [
     `    awaiting a land: ${named} (\`pup land\` records each, --abandon-closed a closed PR)`,
   ];

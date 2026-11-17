@@ -545,7 +545,7 @@ export function recompileSessionProfile(
 ): SessionCompile & { conflicts: ScopeConflict[] } {
   assertMemoryFloor();
   const load = machineLoad();
-  if (load.average > load.cores) throw new MachineLoadedError(load);
+  if (load.average > load.cores) throw new MachineLoadedError(load, 'fix round');
   const task = readTaskSpec(db, session.task_id);
   task.knowledgeSlice = knowledgeSliceFor(
     db,
