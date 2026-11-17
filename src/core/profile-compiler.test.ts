@@ -1028,6 +1028,8 @@ describe('the worker sandbox (decision 191)', () => {
       strictAllowlist: true,
       // The web dashboard's tests listen on loopback (decision 191).
       allowLocalBinding: true,
+      // No allowUnixSockets: a granted dir lets a sandboxed `mv` carry in
+      // another session's socket and connect to it (decision 196).
     });
   });
 
