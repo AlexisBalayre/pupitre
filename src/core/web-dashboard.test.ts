@@ -1,7 +1,9 @@
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
-import { type IncomingHttpHeaders, request } from 'node:http';
+import { type IncomingHttpHeaders, type RequestOptions, request, Server } from 'node:http';
+import type { Socket } from 'node:net';
 import { dirname, join } from 'node:path';
+import { duplexPair } from 'node:stream';
 import type { Database } from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -49,12 +51,46 @@ import {
   transitionSession,
 } from './session.repository.js';
 import { STALLED_AFTER_MS } from './session-activity.constants.js';
-import { startWebDashboard, type WebDashboard } from './web-dashboard.service.js';
+import {
+  type DashboardBind,
+  startWebDashboard,
+  type WebDashboard,
+} from './web-dashboard.service.js';
 import { ACTIONS, runAction } from './web-dashboard-actions.service.js';
 import { escapeHtml } from './web-dashboard-sheet.utils.js';
 
 const POLL_MS = 300;
 const PR = 'https://github.com/o/r/pull/7';
+
+/** The dashboards the tests started, by the port each one's url names. */
+const servers = new Map<number, Server>();
+let lastPort = 40_000;
+
+/**
+ * The tests' bind: no socket, since a sandboxed worker may not listen on
+ * loopback (decision 191). Each dashboard gets a port of its own for its url,
+ * and every request reaches its server over an in-memory stream pair.
+ */
+const bind: DashboardBind = async (server) => {
+  lastPort += 1;
+  servers.set(lastPort, server);
+  return lastPort;
+};
+
+/** A request's connection to the dashboard its url names; either side's close closes the other, as a socket's would. */
+function connectionTo(url: string): Pick<RequestOptions, 'createConnection'> {
+  return {
+    createConnection: () => {
+      const server = servers.get(Number(new URL(url).port));
+      if (server === undefined) throw new Error(`No dashboard was started for ${url}`);
+      const [client, served] = duplexPair();
+      client.once('close', () => served.destroy());
+      served.once('close', () => client.destroy());
+      server.emit('connection', served);
+      return client as Socket;
+    },
+  };
+}
 
 interface Reply {
   status: number;
@@ -78,23 +114,27 @@ function handedTo(page: Reply): string | undefined {
   return /const handed = "([^"]+)";/.exec(page.body)?.[1];
 }
 
-/** One request over the real socket, with the Host header the test names. */
+/** One request, with the Host header the test names. */
 function get(url: string, headers: Record<string, string> = {}, method = 'GET'): Promise<Reply> {
   return new Promise((resolve, reject) => {
-    const req = request(url, { method, headers: withSecret(headers) }, (res) => {
-      let body = '';
-      res.setEncoding('utf8');
-      res.on('data', (chunk: string) => {
-        body += chunk;
-      });
-      res.on('end', () => resolve({ status: res.statusCode ?? 0, headers: res.headers, body }));
-    });
+    const req = request(
+      url,
+      { method, headers: withSecret(headers), ...connectionTo(url) },
+      (res) => {
+        let body = '';
+        res.setEncoding('utf8');
+        res.on('data', (chunk: string) => {
+          body += chunk;
+        });
+        res.on('end', () => resolve({ status: res.statusCode ?? 0, headers: res.headers, body }));
+      },
+    );
     req.on('error', reject);
     req.end();
   });
 }
 
-/** A form post from the page's own origin over the real socket, answered as JSON when the server got that far. */
+/** A form post from the page's own origin, answered as JSON when the server got that far. */
 function post(
   url: string,
   fields: Record<string, string>,
@@ -110,6 +150,7 @@ function post(
           Origin: new URL(url).origin,
           ...headers,
         }),
+        ...connectionTo(url),
       },
       (res) => {
         let body = '';
@@ -153,7 +194,7 @@ function openStream(
     let nonce: string | undefined;
     let waitingNonce: ((nonce: string) => void) | undefined;
     let buffer = '';
-    const req = request(url, { headers: withSecret(headers) }, (res) => {
+    const req = request(url, { headers: withSecret(headers), ...connectionTo(url) }, (res) => {
       res.setEncoding('utf8');
       res.on('data', (chunk: string) => {
         buffer += chunk;
@@ -220,7 +261,7 @@ describe('startWebDashboard', () => {
     repo = tempDir('pup-web-');
     ensureProject(db, projectId(repo), repo);
     secret = undefined;
-    dashboard = await startWebDashboard(db, repo, { pollMs: POLL_MS });
+    dashboard = await startWebDashboard(db, repo, { pollMs: POLL_MS, bind });
     secret = handedTo(await get(dashboard.url));
   });
 
@@ -285,9 +326,32 @@ describe('startWebDashboard', () => {
   const origin = (): string => address().origin;
 
   describe('who it answers', () => {
-    it('binds the loopback address and prints a url with a random token', async () => {
+    it('binds a random port on the loopback address unless told otherwise', async () => {
+      const listen = vi.spyOn(Server.prototype, 'listen').mockImplementation(function (
+        this: Server,
+        ...args: unknown[]
+      ) {
+        (args.at(-1) as () => void)();
+        return this;
+      });
+      const bound = vi
+        .spyOn(Server.prototype, 'address')
+        .mockReturnValue({ address: '127.0.0.1', family: 'IPv4', port: 41234 });
+      try {
+        const other = await startWebDashboard(db, repo, { pollMs: POLL_MS });
+        await other.close();
+
+        expect(listen).toHaveBeenCalledWith(0, '127.0.0.1', expect.any(Function));
+        expect(new URL(other.url).host).toBe('127.0.0.1:41234');
+      } finally {
+        listen.mockRestore();
+        bound.mockRestore();
+      }
+    });
+
+    it('prints a loopback url with a random token', async () => {
       const url = address();
-      const other = await startWebDashboard(db, repo, { pollMs: POLL_MS });
+      const other = await startWebDashboard(db, repo, { pollMs: POLL_MS, bind });
       try {
         expect(url.hostname).toBe('127.0.0.1');
         expect(url.searchParams.get('token')).toMatch(/^[\w-]{43}$/);
@@ -301,7 +365,7 @@ describe('startWebDashboard', () => {
     });
 
     it("hands the page the url's token opened a secret, once, kept out of cookies, and takes the token out of the address bar", async () => {
-      const other = await startWebDashboard(db, repo, { pollMs: POLL_MS });
+      const other = await startWebDashboard(db, repo, { pollMs: POLL_MS, bind });
       try {
         const opened = await get(`${other.url}&sheet=debt`, NO_SECRET);
         const handed = String(handedTo(opened));
@@ -376,7 +440,7 @@ describe('startWebDashboard', () => {
     });
 
     it('spends the token only on a page it served, so a first load it could not answer leaves it good', async () => {
-      const other = await startWebDashboard(db, repo, { pollMs: POLL_MS });
+      const other = await startWebDashboard(db, repo, { pollMs: POLL_MS, bind });
       try {
         const missing = await get(`${other.url}&sheet=releases`, NO_SECRET);
         const opened = await get(other.url, NO_SECRET);
@@ -1008,7 +1072,7 @@ describe('startWebDashboard', () => {
           return typeof value === 'function' ? value.bind(target) : value;
         },
       });
-      const idle = await startWebDashboard(counted, repo, { pollMs: POLL_MS / 10 });
+      const idle = await startWebDashboard(counted, repo, { pollMs: POLL_MS / 10, bind });
       try {
         await new Promise((resolve) => setTimeout(resolve, POLL_MS));
 
@@ -1343,6 +1407,7 @@ describe('startWebDashboard', () => {
             'Content-Length': '1000',
             Origin: origin(),
           }),
+          ...connectionTo(actionUrl()),
         });
         req.on('error', () => resolve());
         req.write('action=debt-close', () => setTimeout(() => req.destroy(), 50));

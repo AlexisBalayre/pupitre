@@ -392,3 +392,22 @@
       debug log above says. Its other sandbox keys were not probed.
     - Test slots a sandboxed worker can take part in: a liveness check that does not rest on
       a signal the sandbox refuses, and a grant that lets the worker write only its own entries.
+
+## Amendment (2026-11-17, #371)
+
+`allowLocalBinding` is off. The block shipped with it on, on 2026-11-16, because
+`src/core/web-dashboard.test.ts` listened on loopback and the pre-commit hook runs that test
+inside the sandbox; without local binding all 81 of its tests failed with `listen EPERM`. The
+flag applied to the whole session, and on macOS it also let every sandboxed command connect to
+every localhost port: pup's own web dashboard, browser debug ports and local databases.
+
+Of ceiling 5's alternatives, the first was taken. `startWebDashboard` takes a `bind`, and the
+tests pass one that listens on nothing. Each request reaches the server through
+`server.emit('connection', …)` over an in-memory `duplexPair`, so it still goes through Node's
+HTTP parser and the Host check. One test spies on `listen` to pin that the default bind takes a
+random port on `127.0.0.1`. The second alternative, a Unix socket in `TMPDIR`, decision 196
+had closed. A test pins that the compiled `network` has no `allowLocalBinding`.
+
+Ceiling 5 now reads: with `allowLocalBinding` off, any test that listens on loopback fails under
+the setting with `listen EPERM`, and so does one that binds a Unix socket (decision 196). Such a
+test must inject its requests, as the web dashboard's do, or run only in the gate.

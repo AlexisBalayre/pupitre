@@ -111,3 +111,10 @@
        granted dir is writable, a foreign socket can be moved into it, as in run 3 (i). If only a
        parent is writable, the granted dir can be renamed away and a dir of foreign sockets moved
        into its path, as in run 3 (ii).
+
+## Amendment (2026-11-17, #371)
+
+Ceiling 3 said `allowLocalBinding` stays on. It came off by another of decision 191's
+alternatives: the web dashboard's tests inject their requests rather than open a socket
+(decision 191's amendment of the same date). No socket path is granted still, so a test that
+binds a Unix socket fails under the setting as before.
