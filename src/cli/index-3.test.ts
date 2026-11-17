@@ -148,6 +148,8 @@ vi.mock('../core/session-cap.service.js', async (importOriginal) => ({
 }));
 vi.mock('../core/test-slot.service.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../core/test-slot.service.js')>()),
+  // The memory a status reads, so it does not depend on the machine running it either.
+  availableMemoryBytes: vi.fn(() => 16 * 1024 ** 3),
   runSessionTest: vi.fn(async () => 0),
   sessionTestCommand: vi.fn(() => ({ stage: 'test', command: 'pnpm', args: ['run', 'test'] })),
 }));
@@ -246,6 +248,7 @@ import {
   steerSession,
 } from '../core/session-lifecycle.service.js';
 import {
+  availableMemoryBytes,
   runSessionTest,
   SlotWaitInterruptedError,
   sessionTestCommand,
@@ -354,11 +357,12 @@ describe('CLI commands', () => {
   const conductorWindow = (repoPath: string): string => `pup-conductor-${projectId(repoPath)}`;
 
   describe('status', () => {
-    /** The launch verdict and its two signals, which end a single project's status (decision 197). */
+    /** The launch verdict, its two signals and the memory, which end a single project's status (decision 197). */
     const LAUNCH_LINES = [
       expect.stringMatching(/^Launch: /),
       expect.stringMatching(/^ {2}merge-lock backlog: /),
       expect.stringMatching(/^ {2}load: /),
+      expect.stringMatching(/^ {2}memory: /),
     ];
 
     it('reports an empty project when nothing runs and nothing is planned', () => {
@@ -378,10 +382,11 @@ describe('CLI commands', () => {
 
       buildProgram().parse(['status'], { from: 'user' });
 
-      expect(logs.slice(-3)).toEqual([
+      expect(logs.slice(-4)).toEqual([
         'Launch: allowed',
         '  merge-lock backlog: 16 of 60 minutes (2 gates and lands to go at 8 minutes each, no gate timed yet)',
         '  load: 0.5 of 8 cores',
+        '  memory: 16.0 GB available, 1.5 GB a launch needs',
       ]);
     });
 
@@ -391,10 +396,26 @@ describe('CLI commands', () => {
 
       buildProgram().parse(['status'], { from: 'user' });
 
-      expect(logs.slice(-3)).toEqual([
-        "Launch: refused (load above the cores); only the operator's --over-cap goes beyond",
+      expect(logs.slice(-4)).toEqual([
+        "Launch: refused (load above the cores); only the operator's --over-cap lifts the backlog and the load",
         '  merge-lock backlog: 0 of 60 minutes (0 gates and lands to go at 8 minutes each, no gate timed yet)',
         '  load: 12.3 of 8 cores',
+        '  memory: 16.0 GB available, 1.5 GB a launch needs',
+      ]);
+    });
+
+    // The memory floor refuses a launch as the signals do, and no override lifts it.
+    it('prints that a launch would be refused under the memory floor', () => {
+      useCwd(initRepo());
+      vi.mocked(availableMemoryBytes).mockReturnValueOnce(1.2 * 1024 ** 3);
+
+      buildProgram().parse(['status'], { from: 'user' });
+
+      expect(logs.slice(-4)).toEqual([
+        'Launch: refused (under 1.5 GB of memory available)',
+        '  merge-lock backlog: 0 of 60 minutes (0 gates and lands to go at 8 minutes each, no gate timed yet)',
+        '  load: 0.5 of 8 cores',
+        '  memory: 1.2 GB available, 1.5 GB a launch needs',
       ]);
     });
 

@@ -65,13 +65,21 @@
     as a launch does. The fix-round tests replace the load reading, as the launch tests do, so they
     do not depend on how busy the machine running them is.
     *`pup status`.* For a single project it prints, after the dashboard, `Launch: allowed` or
-    `Launch: refused (merge-lock backlog over budget, load above the cores); only the operator's
-    --over-cap goes beyond`, then `merge-lock backlog: X of Y minutes (<uses> gates and lands to go
-    at <gate> minutes, …)` and `load: L of C cores`. A budget that cannot be read prints `Launch:
-    unknown,` and why. The fleet view prints none.
+    `Launch: refused (…)`, then `merge-lock backlog: X of Y minutes (<uses> gates and lands to go
+    at <gate> minutes, …)`, `load: L of C cores` and `memory: M GB available, 1.5 GB a launch
+    needs`. The verdict counts every check `pup launch` makes, not the two signals alone: it names
+    each that refuses, the backlog over budget, the load above the cores, memory under the floor
+    and the plan's usage at its hold line (decision 156), then the override each has, `--over-cap`
+    for the two signals and `--over-limit` for the usage hold; the memory floor has none. A
+    verdict of the signals alone read `allowed` while the floor or a usage hold, which can last
+    hours, refused every launch, and a conductor that launches on `allowed` would retry a refused
+    launch for as long. A budget that cannot be read prints `Launch: unknown,` and why. The fleet
+    view prints none.
     *The conductor.* `--max-sessions` is removed, and no cap file is written. The kickoff says a
-    launch is refused while the backlog is over the project's budget or the load above the cores,
-    and its protocol launches one planned task whenever `pup status` says a launch would be
+    launch is refused while the backlog is over the project's budget, the load above the cores,
+    memory under the floor or the usage at its hold line, that the verdict in `pup status` counts
+    all four, and that after a refused launch nothing more is launched until it says allowed
+    again; its protocol launches one planned task whenever `pup status` says a launch would be
     allowed, then reads `pup status` again before the next. The start line says launches follow
     both signals. `skills/pup/SKILL.md` says the same.
     *Ceilings.*
@@ -127,6 +135,9 @@
     the budget and is refused above the cores, worded as a round to run again, and on low
     memory.
     The project config reads the budget with its default and up to 1440, and refuses a string, 0,
-    a negative, past 1440, infinity, NaN, a boolean and a list. The CLI prints both signals and
-    the verdict in `pup status`, prints `Launch: unknown` on a malformed budget, refuses a launch
+    a negative, past 1440, infinity, NaN, a boolean and a list. The verdict is pinned allowed at the memory floor and refused
+    under it, while the usage holds, and with the signals, the floor and the hold together, each
+    named with its override; the usage hold is read from a fresh reading at its hold line. The CLI
+    prints both signals, the memory and the verdict in `pup status`, refused under the floor and
+    while the usage holds, prints `Launch: unknown` on a malformed budget, refuses a launch
     with each error, and no longer takes `--max-sessions`.

@@ -1783,7 +1783,9 @@ function buildConductorContext(
       "the merge lock's backlog (the gates and lands the project's sessions still need, at the " +
       "median gate's time) is over the project's budget, while the machine's 1-minute load " +
       'average is above its cores, while it has under 1.5 GB of memory available, and ' +
-      "while the plan's 5-hour usage is at 85% or its 7-day at 90% (`pup status` shows each). " +
+      "while the plan's 5-hour usage is at 85% or its 7-day at 90%. `pup status` shows each, " +
+      'and its launch verdict counts all four. A refused launch says why: launch nothing more ' +
+      'until `pup status` says a launch would be allowed again. ' +
       'Scopes may overlap: pup names each worker the live sessions sharing its files, and ' +
       'they agree between themselves who changes what.\n' +
       '- `pup steer <session-id> "<message>"` — type into the session\'s input box instead of ' +

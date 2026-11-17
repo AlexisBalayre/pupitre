@@ -1255,6 +1255,10 @@ describe('test runs queue for a slot (decision 96)', () => {
         "machine's 1-minute load average is above its cores",
     );
     expect(context).toContain(
+      '`pup status` shows each, and its launch verdict counts all four. A refused launch says ' +
+        'why: launch nothing more until `pup status` says a launch would be allowed again.',
+    );
+    expect(context).toContain(
       'Whenever `pup status` says a launch would be allowed, launch one planned task, then read ' +
         '`pup status` again before the next. Pick tasks whose scope-in globs share no source ' +
         "file with a running session's. The project's decisions document and the file that " +

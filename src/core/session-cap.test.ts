@@ -1,11 +1,11 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import type { Database } from 'better-sqlite3';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SessionState } from './db.client.js';
 import { openStore } from './db.client.js';
-import { projectId } from './paths.utils.js';
+import { projectId, projectPaths } from './paths.utils.js';
 import {
   appendEvent,
   ensureProject,
@@ -20,6 +20,7 @@ import {
   LAND_WINDOW_MS,
   type LockBacklog,
   LockBacklogOverBudgetError,
+  launchHolds,
   launchRoomLines,
   lockBacklog,
   MachineLoadedError,
@@ -311,6 +312,8 @@ describe('the launch room (decision 197)', () => {
     ...overrides,
   });
   const idle = { average: 1, cores: 8 };
+  /** Memory above the floor and no usage hold: only the two signals decide. */
+  const clear = { memoryBytes: 16 * 1024 ** 3, usageHeld: false };
 
   it('allows a launch with the backlog at its budget and the load at the cores', () => {
     expect(() =>
@@ -371,30 +374,69 @@ describe('the launch room (decision 197)', () => {
   });
 
   it('prints both signals and the verdict for `pup status`', () => {
-    expect(launchRoomLines({ backlog: backlog(20), load: { average: 2.345, cores: 10 } })).toEqual([
+    expect(
+      launchRoomLines({ backlog: backlog(20), load: { average: 2.345, cores: 10 } }, clear),
+    ).toEqual([
       'Launch: allowed',
       '  merge-lock backlog: 20 of 60 minutes (2 gates and lands to go at 10 minutes, the median of the last 30 gates)',
       '  load: 2.3 of 10 cores',
+      '  memory: 16.0 GB available, 1.5 GB a launch needs',
     ]);
     expect(
-      launchRoomLines({
-        backlog: backlog(62.5, { uses: 5, gateMs: 750_000, gatesTimed: 3 }),
-        load: { average: 9, cores: 8 },
-      }),
+      launchRoomLines(
+        {
+          backlog: backlog(62.5, { uses: 5, gateMs: 750_000, gatesTimed: 3 }),
+          load: { average: 9, cores: 8 },
+        },
+        clear,
+      ),
     ).toEqual([
-      "Launch: refused (merge-lock backlog over budget, load above the cores); only the operator's --over-cap goes beyond",
+      "Launch: refused (merge-lock backlog over budget, load above the cores); only the operator's --over-cap lifts the backlog and the load",
       '  merge-lock backlog: 62.5 of 60 minutes (5 gates and lands to go at 12.5 minutes, the median of the last 3 gates)',
       '  load: 9.0 of 8 cores',
+      '  memory: 16.0 GB available, 1.5 GB a launch needs',
     ]);
+  });
+
+  // `pup launch` refuses on the memory floor and the usage hold too, so the
+  // verdict never reads allowed while either would refuse it.
+  it('refuses in the verdict under the memory floor and while the usage holds launches', () => {
+    const room = { backlog: backlog(20), load: idle };
+
+    expect(launchRoomLines(room, { memoryBytes: 1.2 * 1024 ** 3, usageHeld: false })).toEqual([
+      'Launch: refused (under 1.5 GB of memory available)',
+      '  merge-lock backlog: 20 of 60 minutes (2 gates and lands to go at 10 minutes, the median of the last 30 gates)',
+      '  load: 1.0 of 8 cores',
+      '  memory: 1.2 GB available, 1.5 GB a launch needs',
+    ]);
+    expect(launchRoomLines(room, { ...clear, usageHeld: true })[0]).toBe(
+      "Launch: refused (the plan's usage at its hold line); only the operator's --over-limit the usage hold",
+    );
+    expect(
+      launchRoomLines(
+        { backlog: backlog(70), load: idle },
+        { memoryBytes: 1024 ** 3, usageHeld: true },
+      )[0],
+    ).toBe(
+      "Launch: refused (merge-lock backlog over budget, under 1.5 GB of memory available, the plan's " +
+        "usage at its hold line); only the operator's --over-cap lifts the backlog and the load, " +
+        '--over-limit the usage hold',
+    );
+    expect(launchRoomLines(room, { ...clear, memoryBytes: 1.5 * 1024 ** 3 })[0]).toBe(
+      'Launch: allowed',
+    );
   });
 
   it('names the merged sessions counted for a land, up to 8', () => {
     const ids = Array.from({ length: 10 }, (_, index) => `t-${index}`);
 
     expect(
-      launchRoomLines({ backlog: backlog(20, { unlanded: ids.slice(0, 2) }), load: idle })[2],
+      launchRoomLines(
+        { backlog: backlog(20, { unlanded: ids.slice(0, 2) }), load: idle },
+        clear,
+      )[2],
     ).toBe('    awaiting a land: t-0, t-1 (`pup land` records each, --abandon-closed a closed PR)');
-    expect(launchRoomLines({ backlog: backlog(20, { unlanded: ids }), load: idle })[2]).toBe(
+    expect(launchRoomLines({ backlog: backlog(20, { unlanded: ids }), load: idle }, clear)[2]).toBe(
       '    awaiting a land: t-0, t-1, t-2, t-3, t-4, t-5, t-6, t-7 and 2 more (`pup land` ' +
         'records each, --abandon-closed a closed PR)',
     );
@@ -404,7 +446,7 @@ describe('the launch room (decision 197)', () => {
   it('counts an id that is not printable as unnamed rather than print it', () => {
     const forged = '\u001b[1A\u001b[2KLaunch: allowed';
     const line = (unlanded: string[]) =>
-      launchRoomLines({ backlog: backlog(20, { unlanded }), load: idle })[2];
+      launchRoomLines({ backlog: backlog(20, { unlanded }), load: idle }, clear)[2];
 
     expect(line(['t-0', forged])).toBe(
       '    awaiting a land: t-0 and 1 unnamed (`pup land` records each, --abandon-closed a closed PR)',
@@ -413,6 +455,34 @@ describe('the launch room (decision 197)', () => {
       '    awaiting a land: 1 unnamed (`pup land` records each, --abandon-closed a closed PR)',
     );
     expect(line(['t-0', forged])).not.toContain('\u001b');
+  });
+
+  describe('launchHolds', () => {
+    const REPO = '/repo';
+
+    beforeEach(() => {
+      vi.stubEnv('HOME', tempDir('pup-session-cap-home-'));
+    });
+
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it('reads the usage hold from a fresh reading at its hold line, and the memory available', () => {
+      expect(launchHolds(REPO).usageHeld).toBe(false);
+
+      const file = projectPaths(REPO).usageFile;
+      mkdirSync(dirname(file), { recursive: true });
+      const resetsAt = Math.floor(Date.now() / 1000) + 3600;
+      writeFileSync(
+        file,
+        JSON.stringify({ seven_day: { used_percentage: 90, resets_at: resetsAt } }),
+      );
+      const holds = launchHolds(REPO);
+
+      expect(holds.usageHeld).toBe(true);
+      expect(holds.memoryBytes).toBeGreaterThan(0);
+    });
   });
 
   it('reads the load against the cores the machine offers', () => {

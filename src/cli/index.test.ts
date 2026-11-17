@@ -2769,12 +2769,13 @@ describe('CLI commands', () => {
       buildProgram().parse(['--project', idB, 'status'], { from: 'user' });
       buildProgram().parse(['status', '--project', idB], { from: 'user' });
 
-      // Each is B's own status, its launch verdict and two signals after (decision 197).
+      // Each is B's own status, its launch verdict, two signals and memory after (decision 197).
       const status = [
         'Nothing running and nothing planned.',
         expect.stringMatching(/^Launch: /),
         expect.stringMatching(/^ {2}merge-lock backlog: /),
         expect.stringMatching(/^ {2}load: /),
+        expect.stringMatching(/^ {2}memory: /),
       ];
       expect(logs).toEqual([...status, ...status]);
       expect(process.exitCode).toBeUndefined();
@@ -2981,6 +2982,29 @@ describe('CLI commands', () => {
 
       expect(logs.find((line) => line.startsWith('usage: '))).toMatch(
         /^usage: 5h 23% \(resets .+ UTC\), 7d 41% \(resets .+ UTC\); read 0m ago$/,
+      );
+    });
+
+    // Decision 197: the verdict names every check `pup launch` makes, so it
+    // never reads allowed while the usage hold would refuse the launch.
+    it('prints that a launch would be refused while the usage holds launches', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      const file = projectPaths(repo).usageFile;
+      mkdirSync(dirname(file), { recursive: true });
+      const resetsAt = Math.floor(Date.now() / 1000) + 3600;
+      writeFileSync(
+        file,
+        JSON.stringify({
+          five_hour: { used_percentage: 91, resets_at: resetsAt },
+          seven_day: { used_percentage: 41.2, resets_at: resetsAt },
+        }),
+      );
+
+      buildProgram().parse(['status'], { from: 'user' });
+
+      expect(logs.find((line) => line.startsWith('Launch: '))).toMatch(
+        /\bthe plan's usage at its hold line\b.*; only the operator's .*--over-limit the usage hold$/,
       );
     });
   });

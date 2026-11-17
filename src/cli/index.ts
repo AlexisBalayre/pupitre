@@ -128,6 +128,7 @@ import {
 import { formatStaleAge } from '../core/session-activity.utils.js';
 import {
   LockBacklogOverBudgetError,
+  launchHolds,
   launchRoom,
   launchRoomLines,
   MachineLoadedError,
@@ -1031,13 +1032,14 @@ function operatorOnlyProject(): ProjectResolutionError {
 }
 
 /**
- * `pup status`'s word on launching (decision 197): both signals and whether a
- * launch would go ahead. A malformed `.pupitre/project.yml` is named in place
+ * `pup status`'s word on launching (decision 197): both signals, the
+ * memory floor and the usage hold, and whether a launch would go ahead. A malformed `.pupitre/project.yml` is named in place
  * of the backlog rather than end the status before it.
  */
 function printLaunchRoom(db: Database, repoPath: string): void {
   try {
-    for (const line of launchRoomLines(launchRoom(db, repoPath, machineLoad()))) console.log(line);
+    const room = launchRoom(db, repoPath, machineLoad());
+    for (const line of launchRoomLines(room, launchHolds(repoPath))) console.log(line);
   } catch (error) {
     console.log(`Launch: unknown, ${sanitizeReason((error as Error).message)}`);
   }

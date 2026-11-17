@@ -10,6 +10,8 @@ import {
   type SessionRow,
 } from './session.repository.js';
 import { holdingStates } from './session-state.utils.js';
+import { availableMemoryBytes, MIN_AVAILABLE_MEMORY_BYTES } from './test-slot.service.js';
+import { assertUsageRoom, UsageLimitReachedError } from './usage-limits.service.js';
 import { percentile } from './usage-report.service.js';
 
 /**
@@ -75,6 +77,15 @@ export interface LockBacklog {
 interface LaunchRoom {
   backlog: LockBacklog;
   load: MachineLoad;
+}
+
+/**
+ * What holds a launch beside the two signals, which `--over-cap` does not
+ * lift: the memory floor (decision 96) and the plan's usage hold (decision 156).
+ */
+interface LaunchHolds {
+  memoryBytes: number;
+  usageHeld: boolean;
 }
 
 /** A launch refused because the merge lock already has more work queued than the project's budget. */
@@ -220,23 +231,53 @@ export function assertLaunchRoom(room: LaunchRoom): void {
   if (room.load.average > room.load.cores) throw new MachineLoadedError(room.load);
 }
 
-/** `pup status`'s lines for both signals and whether a launch would go ahead. */
-export function launchRoomLines(room: LaunchRoom): string[] {
+/** The memory available now and whether the plan's usage holds launches, as `pup launch` reads them. */
+export function launchHolds(repoPath: string, now = Date.now()): LaunchHolds {
+  let usageHeld = false;
+  try {
+    assertUsageRoom(repoPath, now);
+  } catch (error) {
+    if (!(error instanceof UsageLimitReachedError)) throw error;
+    usageHeld = true;
+  }
+  return { memoryBytes: availableMemoryBytes(), usageHeld };
+}
+
+/**
+ * `pup status`'s lines for both signals, the memory floor, and whether a launch
+ * would go ahead: the verdict names every check `pup launch` makes, so it never
+ * reads `allowed` while a launch would be refused.
+ */
+export function launchRoomLines(room: LaunchRoom, holds: LaunchHolds): string[] {
   const { backlog, load } = room;
+  const capOver = backlog.minutes > backlog.budgetMinutes || load.average > load.cores;
+  const lowMemory = holds.memoryBytes < MIN_AVAILABLE_MEMORY_BYTES;
   const over = [
     backlog.minutes > backlog.budgetMinutes ? 'merge-lock backlog over budget' : undefined,
     load.average > load.cores ? 'load above the cores' : undefined,
+    lowMemory ? `under ${gigabytes(MIN_AVAILABLE_MEMORY_BYTES)} GB of memory available` : undefined,
+    holds.usageHeld ? "the plan's usage at its hold line" : undefined,
+  ].filter(Boolean);
+  const beyond = [
+    capOver ? '--over-cap lifts the backlog and the load' : undefined,
+    holds.usageHeld ? '--over-limit the usage hold' : undefined,
   ].filter(Boolean);
   const verdict =
-    over.length > 0
-      ? `refused (${over.join(', ')}); only the operator's --over-cap goes beyond`
-      : 'allowed';
+    over.length === 0
+      ? 'allowed'
+      : `refused (${over.join(', ')})` +
+        (beyond.length > 0 ? `; only the operator's ${beyond.join(', ')}` : '');
   return [
     `Launch: ${verdict}`,
     `  merge-lock backlog: ${minutes(backlog.minutes)} of ${minutes(backlog.budgetMinutes)} minutes (${backlogTerms(backlog)})`,
     ...unlandedLine(backlog.unlanded),
     `  load: ${load.average.toFixed(1)} of ${load.cores} cores`,
+    `  memory: ${gigabytes(holds.memoryBytes)} GB available, ${gigabytes(MIN_AVAILABLE_MEMORY_BYTES)} GB a launch needs`,
   ];
+}
+
+function gigabytes(bytes: number): string {
+  return (bytes / 1024 ** 3).toFixed(1);
 }
 
 /** The merged sessions counted for a land, so the operator can land or close a stale one. */
