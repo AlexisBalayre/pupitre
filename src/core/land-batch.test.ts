@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -16,7 +16,10 @@ import type { Adapter } from '../adapters/types/adapter.types.js';
 import { auditProject } from './audit.service.js';
 import { openStore } from './db.client.js';
 import { landSessions } from './land.service.js';
+import { MERGE_LOCK_DIRNAME } from './merge-gate.constants.js';
+import { MergeLockLostError } from './merge-gate.errors.js';
 import { projectId } from './paths.utils.js';
+import { NO_PROGRESS } from './progress.utils.js';
 import {
   appendEvent,
   ensureProject,
@@ -27,6 +30,7 @@ import {
   saveProjectOriginUrl,
   transitionSession,
 } from './session.repository.js';
+import type { LandBatchOutcome } from './types/land.types.js';
 
 // Real git repos, a bare origin and a sandboxed audit, as land.test.ts has;
 // the sandbox run the audit starts is ended here (decision 100).
@@ -212,6 +216,11 @@ describe('landSessions (decision 194)', { timeout: 30_000 }, () => {
       { sessionId: 's2', reason: expect.stringContaining('is OPEN on GitHub, not MERGED') },
       { sessionId: 's3', reason: expect.stringContaining(`does not contain ${'e'.repeat(40)}`) },
     ]);
+    // An earlier land may have moved main over a refused session's merge commit.
+    for (const { reason } of batch.refused) {
+      expect(reason).not.toContain('Nothing was landed');
+      expect(reason).toContain('main may already hold its merge commit');
+    }
     expect(landedEvents('s1')).toHaveLength(1);
     expect(landedEvents('s2')).toEqual([]);
     expect(landedEvents('s3')).toEqual([]);
@@ -248,6 +257,51 @@ describe('landSessions (decision 194)', { timeout: 30_000 }, () => {
     expect(batch.landed.map(({ sessionId }) => sessionId)).toEqual(['s1']);
     expect(batch.auditFailure).toBe('build crashed');
     expect(landedEvents('s1')).toHaveLength(1);
+  });
+
+  it('stops at a lock lost after the first land: no further land, no audit, the outcome thrown', async () => {
+    const m2 = mergeOnGitHub('s2');
+    const m3 = mergeOnGitHub('s3');
+    const m1 = mergeOnGitHub('s1');
+    fakeGh(
+      new Map([
+        [1, merged('s1', m1)],
+        [2, merged('s2', m2)],
+        [3, merged('s3', m3)],
+      ]),
+    );
+    // A session moves the lock away once the first land wrote its event.
+    let moved = false;
+    const progress = {
+      ...NO_PROGRESS,
+      stage: (name: string) => {
+        if (name !== 'steer' || moved) return;
+        moved = true;
+        renameSync(join(repo, '.git', MERGE_LOCK_DIRNAME), join(repo, '.git', 'moved.lock'));
+      },
+    };
+
+    const lost = await landSessions(
+      db,
+      { repoPath: repo, sessionIds: [...SESSIONS], adapters: [passingAdapter] },
+      progress,
+    ).catch((error: unknown) => error);
+
+    expect(lost).toBeInstanceOf(MergeLockLostError);
+    const batch = (lost as MergeLockLostError<LandBatchOutcome>).result;
+    expect(batch.landed.map(({ sessionId }) => sessionId)).toEqual(['s2']);
+    expect(batch.refused).toEqual([
+      { sessionId: 's3', reason: expect.stringContaining('merge lock was lost') },
+      { sessionId: 's1', reason: expect.stringContaining('merge lock was lost') },
+    ]);
+    expect(batch.audit).toBeUndefined();
+    expect(auditProject).not.toHaveBeenCalled();
+    expect(landedEvents('s2')).toHaveLength(1);
+    expect(landedEvents('s3')).toEqual([]);
+    expect(landedEvents('s1')).toEqual([]);
+    expect(sh(repo, 'git', 'rev-parse', 'main')).toBe(m1);
+    expect(existsSync(join(repo, '.worktrees', 's3'))).toBe(true);
+    expect(existsSync(join(repo, '.worktrees', 's1'))).toBe(true);
   });
 
   it('refuses the whole batch when no adapter could audit it, asking GitHub nothing', async () => {

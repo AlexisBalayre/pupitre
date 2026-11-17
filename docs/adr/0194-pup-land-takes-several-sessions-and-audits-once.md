@@ -22,13 +22,20 @@
     refreshes the baseline once (decision 88's reason holds: no gate measures against the
     baseline from before the lands or writes over the refresh). `--no-audit` still skips it.
     *A refused session.* A session that fails its own checks, before the lock or under it, is
-    reported with its refusal and skipped, and the others still land. It moves nothing and gets
-    no `landed` event, as a single refused land does. The CLI prints each land, then the audit,
-    then each refusal, and exits non-zero once all have run. Only an interrupt or a kill stops
-    the batch. When every session is refused, no lock is taken and no audit runs. An audit that
+    reported with its refusal and skipped, and the others still land. It gets no `landed` event,
+    as a single refused land does, but main may already hold its merge commit: an earlier land
+    moved main to origin's tip. Its refusal says so in place of a single land's "Nothing was
+    landed". The CLI prints each land, then the audit, then each refusal, and exits non-zero once
+    all have run. When every session is refused, no lock is taken and no audit runs. An audit that
     fails after the lands is reported, not thrown: the lands stand, their lines are printed, and
-    the run exits non-zero with `pup audit` for the operator to re-run. A lock lost under the
-    batch fails the run after its report, as decision 88 has it for one land.
+    the run exits non-zero with `pup audit` for the operator to re-run.
+    *What stops the batch.* An interrupt or a kill stops it, and so does a lost merge lock.
+    Before each land and before the audit, the batch checks that it still holds the lock as it
+    took it. Once the lock is lost, no further session lands and no audit runs, since another
+    merge or land may be running and the audit keeps the baseline it writes. The sessions not
+    yet tried are reported as refused, and the release throws `MergeLockLostError` carrying the
+    batch's outcome. The run prints that outcome and then fails, as decision 88 has it for one
+    land.
     *One session's flags stay with one session.* `--accept-head` (decision 164) and `--remeasure`
     (decision 185) vouch for one PR's moved head. `--abandon-closed` (decision 146) records one
     closed PR. Each is refused with more than one session, so an operator's word for one head
