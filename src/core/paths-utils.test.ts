@@ -1,5 +1,15 @@
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { join } from 'node:path';
+import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import { describe, expect, it } from 'vitest';
-import { projectId, projectPaths } from './paths.utils.js';
+import { projectId, projectPaths, writeStoreFile } from './paths.utils.js';
 
 describe('paths', () => {
   it('derives a stable, path-specific project id', () => {
@@ -44,5 +54,40 @@ describe('paths', () => {
         'Session id "../ [2Kevil" is not a usable path fragment',
       );
     });
+  });
+});
+
+describe('writeStoreFile (decision 194)', () => {
+  it('replaces a symlink with a fresh file and leaves its target alone', () => {
+    const dir = tempDir('pup-store-');
+    const target = join(tempDir('pup-elsewhere-'), 'target');
+    writeFileSync(target, 'untouched');
+    symlinkSync(target, join(dir, 'brief.md'));
+
+    writeStoreFile(join(dir, 'brief.md'), 'pup wrote this');
+
+    expect(readFileSync(target, 'utf8')).toBe('untouched');
+    expect(lstatSync(join(dir, 'brief.md')).isFile()).toBe(true);
+    expect(readFileSync(join(dir, 'brief.md'), 'utf8')).toBe('pup wrote this');
+  });
+
+  it('does not create the target of a dangling link', () => {
+    const dir = tempDir('pup-store-');
+    const target = join(tempDir('pup-elsewhere-'), 'created');
+    symlinkSync(target, join(dir, 'usage.json'));
+
+    writeStoreFile(join(dir, 'usage.json'), '{}');
+
+    expect(existsSync(target)).toBe(false);
+  });
+
+  it('sets the mode it is given exactly, and refuses a directory in the way', () => {
+    const dir = tempDir('pup-store-');
+    writeStoreFile(join(dir, 'hook.sh'), '#!/bin/sh\n', 0o755);
+    mkdirSync(join(dir, 'taken'));
+
+    expect(lstatSync(join(dir, 'hook.sh')).mode & 0o777).toBe(0o755);
+    expect(() => writeStoreFile(join(dir, 'taken'), 'x')).toThrow();
+    expect(lstatSync(join(dir, 'taken')).isDirectory()).toBe(true);
   });
 });

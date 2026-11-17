@@ -1,4 +1,12 @@
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import {
+  closeSync,
+  constants,
+  existsSync,
+  fstatSync,
+  openSync,
+  readFileSync,
+  statSync,
+} from 'node:fs';
 import type { Database } from 'better-sqlite3';
 
 import { sanitizeReason } from '../adapters/capability.utils.js';
@@ -866,6 +874,29 @@ function isBranchPast(repoPath: string, branch: string, sha: string): boolean {
   }
 }
 
+/**
+ * The session's events file, read as one the session may have replaced
+ * (decision 194): no link followed, no fifo blocked on, a regular file only.
+ * Undefined when it is absent or is none of those, so one session's planted
+ * link costs its row the activity and not the whole project. Any other failure
+ * throws as before, and the fleet view lists the project as unreadable.
+ */
+function readEventsFile(eventsFile: string): string | undefined {
+  let fd: number;
+  try {
+    fd = openSync(eventsFile, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT' || code === 'ELOOP') return undefined;
+    throw error;
+  }
+  try {
+    return fstatSync(fd).isFile() ? readFileSync(fd, 'utf8') : undefined;
+  } finally {
+    closeSync(fd);
+  }
+}
+
 function dashboardSession(
   db: Database,
   row: SessionRow,
@@ -880,10 +911,9 @@ function dashboardSession(
   const spec = taskSpecForDisplay(task);
   // Decision 2: hook events, never pane contents. Nothing to classify for a
   // session that is not running, or has yet to fire a hook.
-  const activity =
-    row.state === 'running' && eventsFile !== undefined && existsSync(eventsFile)
-      ? classifySessionActivity(readFileSync(eventsFile, 'utf8'))
-      : undefined;
+  const eventsText =
+    row.state === 'running' && eventsFile !== undefined ? readEventsFile(eventsFile) : undefined;
+  const activity = eventsText === undefined ? undefined : classifySessionActivity(eventsText);
   const stalledAgeMs = stall?.ageMs;
   // Only a running session has a context window to fill; a merged one's last
   // transcript is history, and reading it is I/O per row for nothing.

@@ -1,5 +1,5 @@
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -60,6 +60,26 @@ describe('the project brief on disk', () => {
     writeBrief('\n  \n\t\n');
 
     expect(readBrief(REPO)).toBeUndefined();
+  });
+
+  // The brief sits under the store, where a session can write (decision 194).
+  it('refuses a brief swapped for a symlink, for read and for edit', () => {
+    const target = join(tempDir('pup-elsewhere-'), 'secret');
+    writeFileSync(target, '## Destination\nsomeone else’s file\n');
+    mkdirSync(dirname(briefPath(REPO)), { recursive: true });
+    symlinkSync(target, briefPath(REPO));
+
+    expect(() => readBrief(REPO)).toThrow(InvalidProfileError);
+    expect(() => ensureBrief(REPO)).toThrow(/not a plain file pup can edit/);
+  });
+
+  it('does not write the template through a dangling link', () => {
+    const target = join(tempDir('pup-elsewhere-'), 'created');
+    mkdirSync(dirname(briefPath(REPO)), { recursive: true });
+    symlinkSync(target, briefPath(REPO));
+
+    expect(() => ensureBrief(REPO)).toThrow(InvalidProfileError);
+    expect(existsSync(target)).toBe(false);
   });
 
   /**

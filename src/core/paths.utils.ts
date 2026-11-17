@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { closeSync, constants, fchmodSync, openSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -47,6 +48,26 @@ function sessionFragment(sessionId: string): string {
     );
   }
   return sessionId;
+}
+
+/**
+ * Write a file pup owns under the store. A session can write there too, so
+ * whatever stands at `path` may be a link it planted (decision 194). The old
+ * entry is unlinked, never followed, and the file is created afresh with
+ * O_EXCL: an entry put back between the two fails the create instead of being
+ * written through. A directory at `path` fails the unlink. `mode`, when given,
+ * is set on the descriptor, exact whatever the umask.
+ */
+export function writeStoreFile(path: string, content: string, mode?: number): void {
+  rmSync(path, { force: true });
+  const flags = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW;
+  const fd = openSync(path, flags, mode ?? 0o666);
+  try {
+    if (mode !== undefined) fchmodSync(fd, mode);
+    writeFileSync(fd, content);
+  } finally {
+    closeSync(fd);
+  }
 }
 
 export function projectPaths(repoPath: string, base = join(homedir(), '.pupitre')): ProjectPaths {

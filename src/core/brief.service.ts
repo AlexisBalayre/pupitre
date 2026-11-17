@@ -1,7 +1,7 @@
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { lstatSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { readPlainFile } from '../adapters/capability.utils.js';
-import { projectPaths } from './paths.utils.js';
+import { projectPaths, writeStoreFile } from './paths.utils.js';
 import { InvalidProfileError } from './profile.errors.js';
 
 /**
@@ -99,10 +99,11 @@ export function readBrief(repoPath: string): string | undefined {
   // opened without blocking, so nothing can be swapped in between the check
   // and the read: a FIFO would block the reader, the dashboard's whole server
   // and every launch with it, and a device or a huge file would be read to the
-  // end before the cap below could refuse it.
+  // end before the cap below could refuse it. No link is followed: the brief
+  // sits under the store, where a session can write (decision 194).
   let raw: string;
   try {
-    raw = readPlainFile(path);
+    raw = readPlainFile(path, { followLinks: false });
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
     throw new InvalidProfileError(
@@ -127,9 +128,18 @@ export function readBrief(repoPath: string): string | undefined {
  */
 export function ensureBrief(repoPath: string): { path: string; created: boolean } {
   const path = briefPath(repoPath);
-  if (existsSync(path)) return { path, created: false };
+  // lstat, not exists: a link, even a dangling one, must not reach the editor
+  // nor be written through by the template (decision 194).
+  const stat = lstatSync(path, { throwIfNoEntry: false });
+  if (stat?.isFile()) return { path, created: false };
+  if (stat) {
+    throw new InvalidProfileError(
+      `The project brief at ${path} is not a plain file pup can edit. Remove it, then run ` +
+        '`pup brief edit` again.',
+    );
+  }
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, BRIEF_TEMPLATE);
+  writeStoreFile(path, BRIEF_TEMPLATE);
   return { path, created: true };
 }
 
