@@ -1,4 +1,4 @@
-import { writeFileSync } from 'node:fs';
+import { mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -63,5 +63,32 @@ describe('profile store', () => {
 
     expect(() => getProfileLayer(profilesDir, 'copiste')).toThrow(InvalidProfileError);
     expect(() => getProfileLayer(profilesDir, 'copiste')).toThrow(/copiste\.yml: .*`deny`/);
+  });
+
+  describe('a layer swapped for a symlink (decision 194)', () => {
+    it('refuses to read through it, for list and for show', () => {
+      const elsewhere = join(tempDir('pup-elsewhere-'), 'secret.yml');
+      writeFileSync(elsewhere, 'name: backend\ncontextBudget: 1\n');
+      symlinkSync(elsewhere, join(profilesDir, 'backend.yml'));
+
+      expect(() => listProfileLayers(profilesDir)).toThrow(InvalidProfileError);
+      expect(() => getProfileLayer(profilesDir, 'backend')).toThrow(
+        'backend.yml: is a symlink, which pup does not read a layer through',
+      );
+    });
+
+    it('refuses a dangling base.yml link rather than falling back to the built-in base', () => {
+      symlinkSync(join(profilesDir, 'nowhere.yml'), join(profilesDir, 'base.yml'));
+
+      expect(() => getProfileLayer(profilesDir, 'base')).toThrow(/base\.yml: is a symlink/);
+    });
+
+    it('refuses a layer that is not a regular file', () => {
+      mkdirSync(join(profilesDir, 'backend.yml'));
+
+      expect(() => getProfileLayer(profilesDir, 'backend')).toThrow(
+        /backend\.yml: .*not a plain file/,
+      );
+    });
   });
 });

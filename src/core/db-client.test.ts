@@ -1,3 +1,4 @@
+import { existsSync, linkSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import Database from 'better-sqlite3';
@@ -200,5 +201,54 @@ describe('openStore', () => {
       { id: 't-2' },
     ]);
     again.close();
+  });
+
+  describe('a store file swapped for a link (decision 194)', () => {
+    it.each(['', '-wal', '-shm', '-journal'])(
+      'refuses to open the store when state.db%s is a symlink, and leaves its target alone',
+      (suffix) => {
+        const dir = tempDir('pup-store-');
+        const target = join(tempDir('pup-elsewhere-'), 'target');
+        writeFileSync(target, 'untouched');
+        const dbPath = join(dir, 'state.db');
+        symlinkSync(target, `${dbPath}${suffix}`);
+
+        expect(() => openStore(dbPath)).toThrow(
+          `${dbPath}${suffix} is not a plain file: pup does not open its store through a link.`,
+        );
+        expect(readFileSync(target, 'utf8')).toBe('untouched');
+      },
+    );
+
+    it('refuses a dangling symlink, which SQLite would create its store through', () => {
+      const dir = tempDir('pup-store-');
+      const target = join(tempDir('pup-elsewhere-'), 'created');
+      symlinkSync(target, join(dir, 'state.db'));
+
+      expect(() => openStore(join(dir, 'state.db'))).toThrow(/not a plain file/);
+      expect(existsSync(target)).toBe(false);
+    });
+
+    it('refuses a -wal hard-linked to another file, which SQLite would rewrite', () => {
+      const dir = tempDir('pup-store-');
+      const target = join(tempDir('pup-elsewhere-'), 'target');
+      writeFileSync(target, 'untouched');
+      linkSync(target, join(dir, 'state.db-wal'));
+
+      expect(() => openStore(join(dir, 'state.db'))).toThrow(/state\.db-wal is not a plain file/);
+      expect(readFileSync(target, 'utf8')).toBe('untouched');
+    });
+
+    it('still opens an existing store whose files are its own', () => {
+      const dbPath = join(tempDir('pup-store-'), 'state.db');
+      const first = openStore(dbPath);
+      first.prepare("INSERT INTO projects (id, repo_path) VALUES ('p1', '/r')").run();
+
+      // The first connection holds -wal and -shm open while the second checks them.
+      const second = openStore(dbPath);
+      expect(second.prepare('SELECT id FROM projects').all()).toEqual([{ id: 'p1' }]);
+      second.close();
+      first.close();
+    });
   });
 });

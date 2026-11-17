@@ -1,4 +1,4 @@
-import { mkdirSync } from 'node:fs';
+import { lstatSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import Database from 'better-sqlite3';
 
@@ -277,8 +277,33 @@ function applyMigrations(db: Database.Database): void {
   }
 }
 
+/** The files SQLite opens beside the store, named by suffixing its path. */
+const STORE_FILE_SUFFIXES = ['', '-wal', '-shm', '-journal'];
+
+/**
+ * The store sits under `~/.pupitre/<project>/`, where a session can write
+ * (decision 194). SQLite opens its files by path and follows a symlink, and it
+ * truncates or rewrites a `-wal` it cannot read as one, so a file swapped for a
+ * link would have pup read or write wherever the link points. better-sqlite3
+ * cannot pass SQLITE_OPEN_NOFOLLOW, so each file is checked before the open:
+ * absent, or a regular file with one link. SQLite makes no hard link, so a
+ * second one means someone else put the file there.
+ */
+function refuseLinkedStoreFiles(dbPath: string): void {
+  for (const suffix of STORE_FILE_SUFFIXES) {
+    const path = `${dbPath}${suffix}`;
+    const stat = lstatSync(path, { throwIfNoEntry: false });
+    if (stat && (!stat.isFile() || stat.nlink !== 1)) {
+      throw new Error(`${path} is not a plain file: pup does not open its store through a link.`);
+    }
+  }
+}
+
 export function openStore(dbPath: string): Database.Database {
-  if (dbPath !== ':memory:') mkdirSync(dirname(dbPath), { recursive: true });
+  if (dbPath !== ':memory:') {
+    mkdirSync(dirname(dbPath), { recursive: true });
+    refuseLinkedStoreFiles(dbPath);
+  }
   const db = new Database(dbPath);
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
