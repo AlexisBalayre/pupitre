@@ -1,4 +1,13 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readlinkSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { loadavg } from 'node:os';
 import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
@@ -1512,7 +1521,7 @@ describe('landSession', { timeout: 20_000 }, () => {
 
     // The main checkout would hold another PR's change, or this merge's own, in
     // place of the merge's base, so "before" is read from a checkout of the
-    // base (decision 197). Each case's file differs between the two.
+    // base (decision 198). Each case's file differs between the two.
     it.each([
       [
         'behind it, another PR merged on GitHub first',
@@ -1584,6 +1593,116 @@ describe('landSession', { timeout: 20_000 }, () => {
         );
       },
     );
+
+    it('measures "before" before any stage runs the session\'s code', async () => {
+      const { merge } = mergeMovedHead('src/app.ts', 'export const app = 2;\n');
+      const base = sh(origin, 'git', 'rev-parse', `${merge}^1`);
+      const reads: { before: boolean; built: boolean; content: string }[] = [];
+      const rewriting: Adapter = {
+        ...passingAdapter,
+        gateCommands: () => [
+          // Marks that it ran, then rewrites "before" beside it, where no sandbox stops it.
+          {
+            stage: 'build',
+            command: 'sh',
+            args: [
+              '-c',
+              'touch built; printf "export const app = 99;\\n" > "$PWD-target/src/app.ts"; true',
+            ],
+          },
+          { stage: 'test', command: 'true', args: [] },
+          { stage: 'lint', command: 'true', args: [] },
+        ],
+        complexity: ({ measurePath, measureSha }, files) => {
+          const before = measureSha === base;
+          reads.push({
+            before,
+            built: existsSync(
+              join(before ? measurePath.replace(/-target$/, '') : measurePath, 'built'),
+            ),
+            content: readFileSync(join(measurePath, 'src/app.ts'), 'utf8'),
+          });
+          return files.map((file) => ({ file, complexity: 1 }));
+        },
+      };
+
+      await remeasure({ adapter: rewriting });
+
+      expect(reads).toEqual([
+        { before: true, built: false, content: 'export const app = 1;\n' },
+        { before: false, built: true, content: 'export const app = 2;\n' },
+      ]);
+    });
+
+    it('flags a rise against the base, not against local main holding the merge', async () => {
+      const moved = mergeMovedHead('src/app.ts', 'export const app = 40;\n');
+      sh(repo, 'git', 'fetch', '-q', origin, 'main');
+      sh(repo, 'git', 'merge', '-q', '--ff-only', moved.merge);
+      const before = mainSha();
+      // A file's figure is the number it exports: 1 at the base, 40 merged.
+      const counting: Adapter = {
+        ...passingAdapter,
+        complexity: ({ measurePath }, files) =>
+          files
+            .filter((file) => existsSync(join(measurePath, file)))
+            .map((file) => ({
+              file,
+              complexity: Number(
+                /= (\d+)/.exec(readFileSync(join(measurePath, file), 'utf8'))?.[1],
+              ),
+            })),
+      };
+
+      await expect(remeasure({ adapter: counting })).rejects.toThrow(
+        `flagged, never accepted: Complexity rise (+39 decision points) merged from session ${SESSION_ID}`,
+      );
+      expectNothingChanged(before);
+    });
+
+    it('reads the gate config from the base, not local main holding the merge', async () => {
+      const moved = mergeMovedHead('src/app.ts', 'export const app = 2;\n');
+      sh(repo, 'git', 'fetch', '-q', origin, 'main');
+      sh(repo, 'git', 'merge', '-q', '--ff-only', moved.merge);
+      // The main checkout's installed environment, which the base's checkout lacks.
+      mkdirSync(join(repo, 'node_modules', 'dep'), { recursive: true });
+      writeFileSync(join(repo, 'node_modules', 'dep', 'index.js'), 'module.exports = 1;\n');
+      const configs: string[] = [];
+      const linked: boolean[] = [];
+      const configAt = (path: string) => readFileSync(join(path, 'src/app.ts'), 'utf8');
+      const recording: Adapter = {
+        ...passingAdapter,
+        gateCommands: (path) => {
+          configs.push(`commands: ${configAt(path)}`);
+          return passingAdapter.gateCommands(path);
+        },
+        complexity: ({ configPath }, files) => {
+          configs.push(`complexity: ${configAt(configPath)}`);
+          return files.map((file) => ({ file, complexity: 1 }));
+        },
+        // The gate checkout's environment links the stand-in's, which holds the main checkout's.
+        testInputsIntact: ({ measurePath, configPath }) => {
+          const entry = join(measurePath, 'node_modules', 'dep');
+          linked.push(
+            readlinkSync(entry) === join(configPath, 'node_modules', 'dep') &&
+              realpathSync(entry) === realpathSync(join(repo, 'node_modules', 'dep')),
+          );
+          return true;
+        },
+      };
+
+      await remeasure({ adapter: recording });
+
+      expect(mainSha()).toBe(moved.merge);
+      expect(configs).toEqual([
+        'complexity: export const app = 1;\n',
+        'commands: export const app = 1;\n',
+        'complexity: export const app = 1;\n',
+        // The audit after the land reads the main checkout as it now is.
+        'commands: export const app = 2;\n',
+      ]);
+      expect(linked.length).toBeGreaterThan(0);
+      expect(linked).not.toContain(false);
+    });
 
     it('refuses when the local target moved while the stages ran', async () => {
       mergeMovedHead();

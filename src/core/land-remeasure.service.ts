@@ -38,9 +38,10 @@ const CRITICAL_PATHS = CRITICAL_AREAS.map(globToRegExp);
  * `--remeasure` (decision 185): the gate's stages, `measureBranch`'s, run on
  * the commit GitHub's merge made, against the commit it went onto on the
  * pinned target, from a gate checkout of its own and under the land's lock, as
- * `runMergeGate` runs them, with the complexity stage's "before" read from a
- * checkout of that commit beside it, wherever the local target is (decision
- * 197). The commits past the pin are the ones no gate
+ * `runMergeGate` runs them, with a checkout of that commit beside it standing
+ * in for the main checkout as the config source and the complexity stage's
+ * "before", wherever the local target is (decision 198). The commits past the
+ * pin are the ones no gate
  * measured; when they, or what the merge landed past merging the pin there,
  * change a file in a critical area, or that merge of the pin conflicts, the
  * remeasure runs only on the approval `approvedBy` names: a pass says the code builds and its
@@ -155,11 +156,12 @@ export async function remeasureMerge(
   progress.stage('remeasure');
   const sandbox = sandboxLabel();
   const stages: GateStageResult[] = [];
-  // Where and how `runMergeGate` cuts its checkout, for its reasons. The
-  // complexity stage's "before" is cut beside it at `landedOn`, which the main
-  // checkout need not hold: another PR merged since, or this merge, would hide
-  // or inflate the rise read there (decision 197). Not under the store, whose
-  // reads the sandbox denies a capability's command (decision 36).
+  // Where and how `runMergeGate` cuts its checkout, for its reasons. A
+  // checkout of `landedOn` is cut beside it and stands in for the main
+  // checkout, which need not hold it: another PR merged since would hide or
+  // inflate the complexity rise read there, and this merge itself would hand
+  // the gate the session's own config (decision 198). Not under the store,
+  // whose reads the sandbox denies a capability's command (decision 36).
   const checkoutRoot = mkdtempSync(join(realpathSync(tmpdir()), 'pup-gate-checkout-'));
   const checkoutDir = join(checkoutRoot, basename(checkoutRoot));
   let measured: Awaited<ReturnType<typeof measureBranch>>;
@@ -176,7 +178,7 @@ export async function remeasureMerge(
       session,
       stages,
       checkoutDir,
-      { targetSha: landedOn, sha: mergeCommit, beforeDir: `${checkoutDir}-before` },
+      { targetSha: landedOn, sha: mergeCommit, targetDir: `${checkoutDir}-target` },
       progress,
     );
   } finally {
