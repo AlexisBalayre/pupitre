@@ -1,0 +1,124 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-17T11:09:38.001Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "44070842720",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/44070842720",
+  "actor": "AlexisBalayre",
+  "commit_sha": "8e464235e04775a98bbf847b35d900f64bd8e1f1",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 363,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "guards",
+    "simplicity"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "guards",
+    "simplicity"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "docs/adr/0179-pup-watch-holds-a-waiting-worker-s-prompt-cache.md",
+      "line": "54-62",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "This PR edits the body of decision 179, which has already landed. `docs/adr/README.md` says a landed decision gets a dated amendment section, or a new decision that links back with `Amends:`, instead of a rewrite of its text.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/cache-hold.service.ts",
+      "line": "255-257",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new sentence in `typeHold`'s JSDoc, and the test comment at `cache-hold.test.ts:192-193`, repeat the reason `runsSessionLaunch`'s JSDoc already gives: a restarted server reissues pane ids. The AGENTS.md comments rule says to delete call-site copies of the callee's reason. Keep only the fact that nothing is read or typed unless the check passes.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "1613",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "pre-existing",
+      "description": "This PR guards only the cache hold. After a tmux server restart, the recorded `%N` pane id can still name an unrelated pane, and other code acts on it unchecked. `killSession` kills by pane id after a merge, on `pup kill` and on `pup kill --respawn`, so it can kill an operator's whole tmux session. `steerPane` can type a gate report, a peer message or a watchdog resume into an unrelated Claude Code pane. `fix-round` already kills by name for this reason. `runsSessionLaunch` could guard these paths too.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 1,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.0130336250000003,
+  "duration_ms": 160856,
+  "num_turns": 13,
+  "tokens": {
+    "input": 10,
+    "output": 6888,
+    "cache_read": 184379,
+    "cache_creation": 59228,
+    "total": 250505
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 80,
+      "output": 27040,
+      "cache_read": 1218001,
+      "cache_creation": 151908,
+      "cost_usd": 1.7219442000000005
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 52,
+      "output": 9176,
+      "cache_read": 319011,
+      "cache_creation": 66619,
+      "cost_usd": 0.2903126
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 354,
+      "cache_read": 0,
+      "cache_creation": 4797,
+      "cost_usd": 0.000776825
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "git log --oneline -8 -- docs/adr/0179-pup-watch-holds-a-waiting-worker-s-prompt-cache.md; git log --oneline -5 -- docs/adr/0115*; ls docs/adr | grep -E '^0115'; sed -n 1,12p docs/adr/0179-*.md"
+    },
+    {
+      "tool": "Bash",
+      "input": "cd /home/runner/work/pupitre/pupitre; sed -n 60,100p docs/adr/0115*.md; grep -n \"start command\\|pane_start_command\" src/claude/session-runtime.service.ts | head -20"
+    }
+  ]
+}
