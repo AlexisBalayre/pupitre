@@ -422,6 +422,11 @@ describe('rescopeTask (decision 115)', () => {
     ['src/../../etc/x', 'has a `..` segment'],
     ['..', 'has a `..` segment'],
     [' ../x', 'has a `..` segment'],
+    // A normalizing matcher drops these, reading `.github` or the hook.
+    ['././.github/**', 'has a `.` or an empty segment'],
+    ['scripts/./pre-commit', 'has a `.` or an empty segment'],
+    ['scripts//pre-commit', 'has a `.` or an empty segment'],
+    ['src//x', 'has a `.` or an empty segment'],
     ['.github/**', 'reaches `.github`'],
     ['.github/workflows/ci.yml', 'reaches `.github`'],
     ['./.GitHub', 'reaches `.github`'],

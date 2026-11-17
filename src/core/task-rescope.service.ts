@@ -135,6 +135,14 @@ const GLOB_REFUSALS: readonly (readonly [(raw: string, form: string) => boolean,
   [(_raw, form) => /^[^/]*[*?]/.test(form), 'has a wildcard in its first segment'],
   [(_raw, form) => form.split('/').includes('..'), 'has a `..` segment'],
   [
+    (_raw, form) =>
+      form
+        .replace(/\/$/, '')
+        .split('/')
+        .some((segment) => segment === '.' || segment === ''),
+    'has a `.` or an empty segment, which a normalizing matcher drops',
+  ],
+  [
     (_raw, form) => /^\.github(\/|$)/i.test(form),
     "reaches `.github`, whose workflows run with the repo's secrets",
   ],

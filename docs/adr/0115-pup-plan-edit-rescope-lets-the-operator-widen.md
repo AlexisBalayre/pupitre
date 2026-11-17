@@ -258,11 +258,14 @@
     matcher reads them literally as well, but an extglob matcher takes `@(.github)/**` for
     `.github/**` and `!(src)/**` for every directory but `src`, and a gitignore one reads a
     leading `!` as a negation; no path in this repo holds one, and a project whose paths do
-    (an `@scope` package directory) names them outside a rescope. Second, `scripts/pre-commit`
-    is this repo's hook source, yet the check refuses it in every project pup manages. git
+    (an `@scope` package directory) names them outside a rescope. A glob with a `.` or an
+    empty segment past the one leading `./` the matcher strips (`././.github/**`,
+    `scripts/./pre-commit`, `scripts//pre-commit`) is refused too, a trailing `/` aside:
+    a normalizing matcher drops those segments and reads `.github` or the hook. Second,
+    `scripts/pre-commit` is this repo's hook source, yet the check refuses it in every project pup manages. git
     runs a hook from `.git/hooks` or `core.hooksPath` and records no tracked file it came
     from, so pup cannot name another project's hook source; `.husky` is the one convention a
     path names. Refusing `scripts/pre-commit` elsewhere costs a project that one path, which
     the operator edits outside a rescope. *Tests.* The refusal table takes each extglob
-    character alone and in the two forms above; the `.husky` and `scripts/pre-commit`
-    entries are one refusal and the table reads them so.
+    character alone and in the two forms above, and the `.` and empty-segment globs; the
+    `.husky` and `scripts/pre-commit` entries are one refusal and the table reads them so.
