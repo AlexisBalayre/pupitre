@@ -158,3 +158,21 @@ Then the next task: `pup launch <task>`, or hand the order to the conductor.
   refs. Mock the git client in CLI tests rather than trusting a passing call.
 - A pre-commit that runs the full suite can hang one test for minutes under load. Run the
   suite directly, then commit.
+- The console is the only window that reads the project's `.claude/settings.json`: workers and
+  the conductor launch with `--setting-sources user` and pup's compiled settings, so decision
+  107's slimming never reaches it. On pupitre (2026-11-17) a console's first request was 45.2k
+  tokens (median of eight) against ~22k for a worker, and one console read 41.6k without the
+  block below and 24.0k with it. Hand it to the operator to add to the project's
+  `.claude/settings.json` `env` and `permissions.deny` in their own commit (the gate refuses
+  `.claude/**` from a session). It keeps `Skill`: the console uses skills.
+
+  ```json
+  {
+    "env": {
+      "CLAUDE_CODE_DISABLE_ARTIFACT": "1",
+      "CLAUDE_CODE_DISABLE_WORKFLOWS": "1",
+      "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION": "false"
+    },
+    "permissions": { "deny": ["SendFeedback", "ScheduleWakeup", "ReportFindings"] }
+  }
+  ```
