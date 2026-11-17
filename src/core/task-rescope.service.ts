@@ -112,9 +112,12 @@ const PRE_COMMIT = 'scripts/pre-commit';
  * from every session, never the git hooks a worker's commits run. A glob
  * metacharacter pup's matcher reads literally is refused outright, since a
  * gitignore-, bash- or extglob-style matcher reads it as a class, a set, an
- * escape, a pattern list or a negation and would widen past it. A bare `+`,
- * `@` or `!` is extglob syntax only before a `(`, which is refused, so
- * `src/routes/+page.svelte` and `packages/@acme/ui/**` pass. Each check
+ * escape, a pattern list or a negation and would widen past it. A bare `+`
+ * or `@` is extglob syntax only before a `(`, which is refused, so
+ * `src/routes/+page.svelte` and `packages/@acme/ui/**` pass; `!` is refused
+ * anywhere, since a leading one negates the whole glob in minimatch,
+ * picomatch and gitignore. A leading `:` is git pathspec magic (`:^src`,
+ * `:!src`), which excludes rather than names. Each check
  * but the first reads the glob as the matcher does, `globToRegExpSource`'s
  * trim and one leading `./` stripped, so a glob cannot dress past a check in
  * what the matcher drops. A wildcard
@@ -125,9 +128,10 @@ const PRE_COMMIT = 'scripts/pre-commit';
 const GLOB_REFUSALS: readonly (readonly [(raw: string, form: string) => boolean, string])[] = [
   [(raw) => CONTROL_CHAR.test(raw), 'contains a control character'],
   [
-    (_raw, form) => /[[\]{}\\()|]/.test(form),
-    'holds `[`, `]`, `{`, `}`, `\\`, `(`, `)` or `|`, which another matcher reads as a class, a set, an escape or, as in `+(a)`, `@(a)` or `!(a)`, an extglob pattern list or negation',
+    (_raw, form) => /[[\]{}\\()|!]/.test(form),
+    'holds `[`, `]`, `{`, `}`, `\\`, `(`, `)`, `|` or `!`, which another matcher reads as a class, a set, an escape, an extglob pattern list such as `+(a)` or a negation',
   ],
+  [(_raw, form) => form.startsWith(':'), 'starts with `:`, which git reads as pathspec magic'],
   [
     (_raw, form) =>
       form
