@@ -2,6 +2,7 @@
 
 - Status: accepted
 - Amends: [0096](0096-test-runs-queue-for-a-few-machine-wide.md)
+- Amended by: [0197](0197-launches-follow-the-merge-lock-s-backlog-and-the.md)
 
 144. **The session cap counts working sessions, not those awaiting review (2026-11-07).**
     Amends decision 96, which counted every session in a holding state against the cap. A

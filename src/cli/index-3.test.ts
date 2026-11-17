@@ -83,7 +83,6 @@ vi.mock('ink', async (importOriginal) => ({
 }));
 vi.mock('../core/conductor.service.js', () => ({
   ConductorTellRefusedError: class ConductorTellRefusedError extends Error {},
-  DEFAULT_MAX_SESSIONS: 4,
   NO_CONDUCTOR_RUNNING:
     'No conductor is running for this project; start one with `pup conductor start`.',
   conductorBlock: vi.fn(),
@@ -137,13 +136,16 @@ vi.mock('../core/session-lifecycle.service.js', async (importOriginal) => ({
   askedQuestion: (await importOriginal<typeof import('../core/session-lifecycle.service.js')>())
     .askedQuestion,
   recordSteerMessage: vi.fn(),
-  SessionCapReachedError: (
-    await importOriginal<typeof import('../core/session-lifecycle.service.js')>()
-  ).SessionCapReachedError,
   sessionPane: vi.fn(),
   steerSession: vi.fn(),
 }));
 // The run and its slot are test-slot.test.ts's; here only what the command hands them.
+// The machine's load reading only: a status test must not depend on how busy
+// the machine running it is (decision 197).
+vi.mock('../core/session-cap.service.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../core/session-cap.service.js')>()),
+  machineLoad: vi.fn(() => ({ average: 0.5, cores: 8 })),
+}));
 vi.mock('../core/test-slot.service.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../core/test-slot.service.js')>()),
   runSessionTest: vi.fn(async () => 0),
@@ -214,6 +216,11 @@ import {
 } from '../core/session.repository.js';
 import { STALLED_AFTER_MS } from '../core/session-activity.constants.js';
 import {
+  LockBacklogOverBudgetError,
+  MachineLoadedError,
+  machineLoad,
+} from '../core/session-cap.service.js';
+import {
   awaitHandoffReady,
   HandoffMissingError,
   isHandoffReady,
@@ -236,7 +243,6 @@ import {
   markSessionDone,
   markSessionQuestion,
   planTask,
-  SessionCapReachedError,
   steerSession,
 } from '../core/session-lifecycle.service.js';
 import {
@@ -348,12 +354,62 @@ describe('CLI commands', () => {
   const conductorWindow = (repoPath: string): string => `pup-conductor-${projectId(repoPath)}`;
 
   describe('status', () => {
+    /** The launch verdict and its two signals, which end a single project's status (decision 197). */
+    const LAUNCH_LINES = [
+      expect.stringMatching(/^Launch: /),
+      expect.stringMatching(/^ {2}merge-lock backlog: /),
+      expect.stringMatching(/^ {2}load: /),
+    ];
+
     it('reports an empty project when nothing runs and nothing is planned', () => {
       useCwd(initRepo());
 
       buildProgram().parse(['status'], { from: 'user' });
 
       expect(logs).toContain('Nothing running and nothing planned.');
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    // Decision 197: both signals a launch is held to, and the verdict they give.
+    it('prints the merge-lock backlog, the load, and that a launch would be allowed', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedSession(repo, 's1');
+
+      buildProgram().parse(['status'], { from: 'user' });
+
+      expect(logs.slice(-3)).toEqual([
+        'Launch: allowed',
+        '  merge-lock backlog: 16 of 60 minutes (2 gates and lands to go at 8 minutes each, no gate timed yet)',
+        '  load: 0.5 of 8 cores',
+      ]);
+    });
+
+    it('prints that a launch would be refused, naming the signal past its limit', () => {
+      useCwd(initRepo());
+      vi.mocked(machineLoad).mockReturnValueOnce({ average: 12.25, cores: 8 });
+
+      buildProgram().parse(['status'], { from: 'user' });
+
+      expect(logs.slice(-3)).toEqual([
+        "Launch: refused (load above the cores); only the operator's --over-cap goes beyond",
+        '  merge-lock backlog: 0 of 60 minutes (0 gates and lands to go at 8 minutes each, no gate timed yet)',
+        '  load: 12.3 of 8 cores',
+      ]);
+    });
+
+    it('names a malformed budget in place of the verdict, the status printed all the same', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      mkdirSync(join(repo, '.pupitre'), { recursive: true });
+      writeFileSync(join(repo, '.pupitre', 'project.yml'), 'lockBacklogBudgetMinutes: lots\n');
+
+      buildProgram().parse(['status'], { from: 'user' });
+
+      expect(logs).toContain('Nothing running and nothing planned.');
+      expect(logs.at(-1)).toBe(
+        'Launch: unknown, Invalid .pupitre/project.yml: lockBacklogBudgetMinutes must be a number of minutes above 0.',
+      );
       expect(process.exitCode).toBeUndefined();
     });
 
@@ -593,6 +649,7 @@ describe('CLI commands', () => {
         expect.stringMatching(/^killed +s-killed/),
         // The killed session's task is planned again.
         expect.stringMatching(/^planned +t-s-killed/),
+        ...LAUNCH_LINES,
       ]);
     });
 
@@ -608,12 +665,12 @@ describe('CLI commands', () => {
 
       buildProgram().parse(['status'], { from: 'user' });
 
-      expect(logs).toEqual(['Nothing running and nothing planned.']);
+      expect(logs).toEqual(['Nothing running and nothing planned.', ...LAUNCH_LINES]);
 
       logs.length = 0;
       buildProgram().parse(['status', '--history'], { from: 'user' });
 
-      expect(logs).toEqual([expect.stringMatching(/^merged +s-merged/)]);
+      expect(logs).toEqual([expect.stringMatching(/^merged +s-merged/), ...LAUNCH_LINES]);
     });
 
     it('drops a task from the backlog once a session claims it', () => {
@@ -725,7 +782,10 @@ describe('CLI commands', () => {
         logs.length = 0;
         useCwd(repoA);
         buildProgram().parse(['status'], { from: 'user' });
-        expect(logs).toEqual([expect.stringMatching(/^planned +t-a +planned in A/)]);
+        expect(logs).toEqual([
+          expect.stringMatching(/^planned +t-a +planned in A/),
+          ...LAUNCH_LINES,
+        ]);
       });
 
       it('leaves --project to print that one project in full', () => {
@@ -736,7 +796,10 @@ describe('CLI commands', () => {
 
         buildProgram().parse(['--project', id, 'status', '--all'], { from: 'user' });
 
-        expect(logs).toEqual([expect.stringMatching(/^planned +t-a +planned here/)]);
+        expect(logs).toEqual([
+          expect.stringMatching(/^planned +t-a +planned here/),
+          ...LAUNCH_LINES,
+        ]);
       });
 
       it('marks a project whose repo is gone missing, and never opens its store', () => {
@@ -2002,15 +2065,27 @@ describe('CLI commands', () => {
       expect(createSession).not.toHaveBeenCalled();
     });
 
-    it('prints a launch refused at the cap and exits 1 rather than throwing', () => {
+    it.each([
+      [
+        'the merge-lock backlog',
+        new LockBacklogOverBudgetError({
+          minutes: 80,
+          budgetMinutes: 60,
+          uses: 8,
+          gateMs: 600_000,
+          gatesTimed: 12,
+        }),
+      ],
+      ['the load', new MachineLoadedError({ average: 9.5, cores: 8 })],
+    ])('prints a launch refused on %s and exits 1 rather than throwing', (_signal, refusal) => {
       useCwd(initRepo());
       vi.mocked(launchTask).mockImplementation(() => {
-        throw new SessionCapReachedError(4, 4);
+        throw refusal;
       });
 
       buildProgram().parse(['launch', 't-abc'], { from: 'user' });
 
-      expect(errors).toEqual([new SessionCapReachedError(4, 4).message]);
+      expect(errors).toEqual([refusal.message]);
       expect(process.exitCode).toBe(1);
     });
 

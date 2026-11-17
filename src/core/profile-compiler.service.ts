@@ -1729,11 +1729,10 @@ const SECURITY_REVIEW_TURNS = 10;
  * of it (decision 47).
  */
 function buildConductorContext(
-  input: ConductorCompileInput & { maxSessions: number },
+  input: ConductorCompileInput,
   brief: string | undefined,
   commonDir: string,
 ): string {
-  const cap = input.maxSessions;
   const workerModel = input.workerModel ? ` --model ${input.workerModel}` : '';
   const sections = [
     `# Pupitre conductor ${input.conductorName} — project ${input.projectId}`,
@@ -1780,10 +1779,11 @@ function buildConductorContext(
       'every change.\n' +
       '- `pup plan` lists the backlog; `pup plan add "<goal>" --scope <glob>... [--accept ' +
       '<criterion>...]` adds a task, recorded as authored by the conductor.\n' +
-      `- \`pup launch <task>${workerModel}\` — one session per task. It is refused once ` +
-      `${cap} sessions are working (running, blocked or in a fix round; \`awaiting-review\` ` +
-      'sessions do not count), while the machine has under 1.5 GB of memory available, and ' +
-      "while the plan's 5-hour usage is at 85% or its 7-day at 90% (`pup status` shows it). " +
+      `- \`pup launch <task>${workerModel}\` — one session per task. It is refused while ` +
+      "the merge lock's backlog (the gates and lands the project's sessions still need, at the " +
+      "median gate's time) is over the project's budget, while the machine's 1-minute load " +
+      'average is above its cores, while it has under 1.5 GB of memory available, and ' +
+      "while the plan's 5-hour usage is at 85% or its 7-day at 90% (`pup status` shows each). " +
       'Scopes may overlap: pup names each worker the live sessions sharing its files, and ' +
       'they agree between themselves who changes what.\n' +
       '- `pup steer <session-id> "<message>"` — type into the session\'s input box instead of ' +
@@ -1808,9 +1808,9 @@ function buildConductorContext(
       'delete the lock.\n' +
       'If `pup` is not on PATH, run `node "$PUP_BIN" <command>` instead.',
     '## Protocol\n' +
-      `1. \`pup status\`, then \`pup plan\`. Keep ${cap} sessions live and working ` +
-      '(`awaiting-review` ones do not count): whenever fewer are, ' +
-      'fill the free places with planned tasks whose scope-in globs share no source file ' +
+      '1. `pup status`, then `pup plan`. Whenever `pup status` says a launch would be ' +
+      'allowed, launch one planned task, then read `pup status` again before the next. Pick ' +
+      'tasks whose scope-in globs share no source file ' +
       "with a running session's. The project's decisions document and the file that " +
       'registers CLI commands do not count as shared. Launch at most one session per backlog ' +
       'task. Launch one that shares other files only once every planned task does; pup ' +
@@ -1848,9 +1848,7 @@ exit 2
  * event hook — the conductor has no scope to enforce and no session row for
  * events to land on; its record is the sessions' events and the transcript.
  */
-export function compileConductorProfile(
-  input: ConductorCompileInput & { maxSessions: number },
-): CompiledProfile {
+export function compileConductorProfile(input: ConductorCompileInput): CompiledProfile {
   // The common dir the gate pins a session's git to (decision 101); only that field is
   // read. Resolved from `repoPath`, so a symlink on the way can bring in what `repoPath`
   // was checked for.

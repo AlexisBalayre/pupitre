@@ -16,12 +16,7 @@ import {
   windowLabel,
 } from '../claude/session-runtime.service.js';
 import { buildCodeMap, buildKnowledgeSlice } from './code-map.service.js';
-import {
-  maxSessions,
-  openConductorQuestion,
-  TELL_MAX_CHARS,
-  tellConductor,
-} from './conductor.service.js';
+import { openConductorQuestion, TELL_MAX_CHARS, tellConductor } from './conductor.service.js';
 import { windowFailureOf } from './dashboard.service.js';
 import {
   assertNoArmedGitDrivers,
@@ -58,7 +53,6 @@ import {
   getTask,
   insertSession,
   insertTask,
-  listSessions,
   listTaskSessions,
   MAX_QUESTION_OPTIONS,
   openQuestion,
@@ -70,6 +64,7 @@ import {
   transitionSession,
   transitionSessionAlong,
 } from './session.repository.js';
+import { assertLaunchRoom, launchRoom, machineLoad } from './session-cap.service.js';
 import {
   isRefusedSteer,
   QuestionRefusedError,
@@ -80,7 +75,7 @@ import {
   UnknownSessionError,
   UnknownTaskError,
 } from './session-lifecycle.errors.js';
-import { FIX_ROUND_EDGE, holdingStates, isTerminal } from './session-state.utils.js';
+import { FIX_ROUND_EDGE, isTerminal } from './session-state.utils.js';
 import { assertPlannableSpec } from './task-spec.utils.js';
 import {
   availableMemoryBytes,
@@ -100,27 +95,14 @@ import type {
 import { assertUsageRoom } from './usage-limits.service.js';
 
 /**
- * `--over-cap`: the operator's word that one more session may go past the cap
- * (decision 96); `--over-limit`, that one may start while the plan's usage
- * holds launches (decision 156). Only the operator's: a launch the conductor
- * makes ignores both.
+ * `--over-cap`: the operator's word that one more session may go past the
+ * computed cap (decisions 96, 197); `--over-limit`, that one may start while
+ * the plan's usage holds launches (decision 156). Only the operator's: a launch
+ * the conductor makes ignores both.
  */
 interface CapOverride {
   overCap?: boolean;
   overLimit?: boolean;
-}
-
-/** A launch refused because the project already has as many working sessions as its cap. */
-export class SessionCapReachedError extends Error {
-  constructor(working: number, cap: number) {
-    super(
-      `${working} sessions are working, at this project's cap of ${cap} (\`pup conductor start ` +
-        '--max-sessions` sets it; sessions awaiting review do not count); nothing was ' +
-        'launched. Wait for one to finish, or, as the operator, pass --over-cap to ' +
-        '`pup launch` or `pup new`.',
-    );
-    this.name = 'SessionCapReachedError';
-  }
 }
 
 /** A launch refused because the machine has too little memory available for another window. */
@@ -140,26 +122,25 @@ function gigabytes(bytes: number): string {
 }
 
 /**
- * Refuse a launch past the project's session cap or into a machine short of
- * memory (decision 96). Asked before anything is built, and before `pup new`
- * writes its task, so a refusal leaves nothing behind. The cap counts the
- * sessions whose windows run turns, not those awaiting review (decision 144):
- * an idle window costs memory, which the floor still weighs, and no turns.
- * `--over-cap` lifts the cap for the operator alone and never the memory
- * floor: memory is the machine's limit, the cap only the operator's choice of one.
+ * Refuse a launch past the computed cap or into a machine short of memory
+ * (decisions 96, 197). Asked before anything is built, and before `pup new`
+ * writes its task, so a refusal leaves nothing behind. The cap is the merge
+ * lock's backlog against the project's budget and the load average against the
+ * cores. `--over-cap` lifts it for the operator alone and never the memory
+ * floor: an idle window costs memory however the lock and the cores fare.
  */
 function assertRoomToLaunch(
   db: Database,
   repoPath: string,
   req: CapOverride & Pick<LaunchTaskRequest, 'overlapVia' | 'overrideVia'>,
 ): void {
-  const byOperator = launchedByOperator(req);
-  if (!(req.overCap && byOperator)) {
-    const working = holdingStates().filter((state) => state !== 'awaiting-review');
-    const count = listSessions(db, working).length;
-    const cap = maxSessions(repoPath);
-    if (count >= cap) throw new SessionCapReachedError(count, cap);
+  if (!(req.overCap && launchedByOperator(req))) {
+    assertLaunchRoom(launchRoom(db, repoPath, machineLoad()));
   }
+  assertMemoryFloor();
+}
+
+function assertMemoryFloor(): void {
   const available = availableMemoryBytes();
   if (available < MIN_AVAILABLE_MEMORY_BYTES) throw new LowMemoryError(available);
 }
@@ -545,7 +526,10 @@ function compileSessionProfile(
  * compiled dir under the store is one the conductor's shell can write
  * (decision 47), so a round never relaunches from what it holds. A merged
  * session is not live, so a round adds a window as a launch does, and meets the
- * same cap and memory floor first, with no `--over-cap` (decision 96).
+ * memory floor first, with no `--over-cap` (decision 96). Not the computed cap
+ * (decision 197): the round finishes a PR already in the merge lock's backlog,
+ * which drains the lock and adds no PR, so holding it back on the backlog or the
+ * load would only delay the drain and leave a failing PR with nobody to fix it.
  */
 export function recompileSessionProfile(
   db: Database,
@@ -553,7 +537,7 @@ export function recompileSessionProfile(
   session: SessionRow,
   paths: ProjectPaths,
 ): SessionCompile & { conflicts: ScopeConflict[] } {
-  assertRoomToLaunch(db, source.repoPath, {});
+  assertMemoryFloor();
   const task = readTaskSpec(db, session.task_id);
   task.knowledgeSlice = knowledgeSliceFor(
     db,

@@ -573,7 +573,6 @@ describe('the project brief in a compiled context', () => {
     conductorName: 'pup-conductor-proj-1',
     userConfigHash: 'user-hash-a',
     outDir: '/state/conductor/compiled',
-    maxSessions: 4,
   };
 
   /** Writes the brief for `/repo`, the repo path both fixtures above compile for. */
@@ -742,7 +741,6 @@ describe('compileConductorProfile', () => {
     workerModel: 'opus',
     userConfigHash: 'user-hash-a',
     outDir: '/state/conductor/compiled',
-    maxSessions: 4,
   };
 
   function runConductorHook(script: string, payload: object): number | null {
@@ -1240,7 +1238,8 @@ describe('test runs queue for a slot (decision 96)', () => {
     expect(bash?.hooks.map((hook) => hook.command.split('/').at(-1))).toContain('test-guard.sh');
   });
 
-  it('gives the conductor its cap and the rule it fills free places by', () => {
+  // Decision 197: the cap is computed, so the conductor reads it from `pup status`.
+  it('gives the conductor the computed cap and the rule it fills free places by', () => {
     const context = ProfileCompiler.compileConductorProfile({
       base: { name: 'base' },
       repoPath: '/repo',
@@ -1248,19 +1247,20 @@ describe('test runs queue for a slot (decision 96)', () => {
       conductorName: 'pup-conductor-proj-1',
       userConfigHash: 'user-hash-a',
       outDir: '/state/conductor/compiled',
-      maxSessions: 7,
     }).contextMarkdown;
 
     expect(context).toContain(
-      'It is refused once 7 sessions are working (running, blocked or in a fix round; ' +
-        '`awaiting-review` sessions do not count)',
+      "It is refused while the merge lock's backlog (the gates and lands the project's sessions " +
+        "still need, at the median gate's time) is over the project's budget, while the " +
+        "machine's 1-minute load average is above its cores",
     );
     expect(context).toContain(
-      'Keep 7 sessions live and working (`awaiting-review` ones do not count): whenever fewer ' +
-        'are, fill the free places with planned tasks whose ' +
-        "scope-in globs share no source file with a running session's. The project's decisions " +
-        'document and the file that registers CLI commands do not count as shared.',
+      'Whenever `pup status` says a launch would be allowed, launch one planned task, then read ' +
+        '`pup status` again before the next. Pick tasks whose scope-in globs share no source ' +
+        "file with a running session's. The project's decisions document and the file that " +
+        'registers CLI commands do not count as shared.',
     );
+    expect(context).not.toContain('sessions live');
     expect(context).toContain('`--over-cap`');
     expect(context).toContain('A session waiting there is not stalled.');
   });
@@ -1387,7 +1387,6 @@ describe('source reads go through Read (decision 112)', () => {
           conductorName: 'pup-conductor-proj-1',
           userConfigHash: 'user-hash-a',
           outDir: '/state/conductor/compiled',
-          maxSessions: 7,
         }).files,
       ),
     ).not.toContain('hooks/read-guard.sh');
@@ -1613,7 +1612,6 @@ describe('exploration goes to a subagent (decision 129)', () => {
       conductorName: 'pup-conductor-proj-1',
       userConfigHash: 'user-hash-a',
       outDir: '/state/conductor/compiled',
-      maxSessions: 4,
     }).contextMarkdown;
 
     expect(context).toContain(

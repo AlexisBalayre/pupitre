@@ -1,13 +1,4 @@
-import { execFileSync } from 'node:child_process';
-import {
-  existsSync,
-  lstatSync,
-  mkdirSync,
-  readFileSync,
-  rmSync,
-  symlinkSync,
-  writeFileSync,
-} from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -54,10 +45,8 @@ import {
   CONDUCTOR_BLOCKED_AFTER_MS,
   ConductorTellRefusedError,
   conductorBlock,
-  DEFAULT_MAX_SESSIONS,
   isConductorRunning,
   markConductorQuestion,
-  maxSessions,
   OPERATOR_QUESTIONS,
   openConductorQuestion,
   startConductor,
@@ -110,7 +99,6 @@ describe('startConductor', () => {
       model?: string;
       effort?: string;
       workerModel?: string;
-      maxSessions?: number;
       windowEnv?: { vars: Record<string, string>; configDir: string };
     } = {},
   ) {
@@ -332,70 +320,15 @@ describe('startConductor', () => {
     );
   });
 
-  // Decision 96: the start stores the cap every launch is held to, and the
-  // kickoff names it with the rule the conductor fills free places by.
-  describe('the session cap', () => {
-    it('stores the cap it was given, and the kickoff names it', () => {
-      start({ maxSessions: 7 });
+  // Decision 197: the cap is computed at each launch, so the start stores none,
+  // and the kickoff has the conductor read `pup status` before each launch.
+  it('stores no cap, and the kickoff launches while `pup status` allows', () => {
+    start();
 
-      expect(maxSessions(REPO)).toBe(7);
-      expect(String(vi.mocked(kickoff).mock.calls[0]?.[1])).toContain('Keep 7 sessions live');
-    });
-
-    it('stores the default on a start without one, replacing an earlier cap', () => {
-      start({ maxSessions: 7 });
-      start();
-
-      expect(maxSessions(REPO)).toBe(DEFAULT_MAX_SESSIONS);
-      expect(DEFAULT_MAX_SESSIONS).toBe(4);
-    });
-
-    it('reads the default before any start, and for a file holding no positive whole number', () => {
-      expect(maxSessions(REPO)).toBe(4);
-
-      start();
-      for (const garbage of ['0', '-3', '2.5', 'lots', '']) {
-        writeFileSync(join(projectPaths(REPO).root, 'conductor', 'max-sessions'), garbage);
-        expect(maxSessions(REPO)).toBe(4);
-      }
-    });
-
-    it('reads the default for a fifo planted as the cap, never blocking on it', () => {
-      start({ maxSessions: 7 });
-      const file = join(projectPaths(REPO).root, 'conductor', 'max-sessions');
-      rmSync(file);
-      execFileSync('mkfifo', [file]);
-
-      expect(maxSessions(REPO)).toBe(4);
-    });
-
-    it('reads the default for a symlink planted as the cap, never following it', () => {
-      start({ maxSessions: 7 });
-      const file = join(projectPaths(REPO).root, 'conductor', 'max-sessions');
-      const target = join(tempDir('pup-planted-'), 'cap');
-      writeFileSync(target, '9\n');
-      rmSync(file);
-      symlinkSync(target, file);
-
-      expect(maxSessions(REPO)).toBe(4);
-    });
-
-    // The session can write under the store, so the next start must replace a
-    // planted link, not write the cap through it (decision 194).
-    it('replaces a symlink planted as the cap on the next start, leaving its target alone', () => {
-      start({ maxSessions: 7 });
-      const file = join(projectPaths(REPO).root, 'conductor', 'max-sessions');
-      const target = join(tempDir('pup-planted-'), 'cap');
-      writeFileSync(target, 'untouched');
-      rmSync(file);
-      symlinkSync(target, file);
-
-      start({ maxSessions: 5 });
-
-      expect(readFileSync(target, 'utf8')).toBe('untouched');
-      expect(lstatSync(file).isFile()).toBe(true);
-      expect(maxSessions(REPO)).toBe(5);
-    });
+    expect(existsSync(join(projectPaths(REPO).root, 'conductor', 'max-sessions'))).toBe(false);
+    expect(String(vi.mocked(kickoff).mock.calls[0]?.[1])).toContain(
+      'Whenever `pup status` says a launch would be allowed',
+    );
   });
 
   it('writes nothing to the store: the conductor is not a session', () => {

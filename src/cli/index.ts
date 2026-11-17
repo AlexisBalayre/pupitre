@@ -36,7 +36,6 @@ import { waitForCiReview } from '../core/ci-wait.service.js';
 import { buildCodeMap, renderCodeMap } from '../core/code-map.service.js';
 import {
   ConductorTellRefusedError,
-  DEFAULT_MAX_SESSIONS,
   isConductorRunning,
   markConductorQuestion,
   NO_CONDUCTOR_RUNNING,
@@ -127,6 +126,13 @@ import {
   transitionSession,
 } from '../core/session.repository.js';
 import { formatStaleAge } from '../core/session-activity.utils.js';
+import {
+  LockBacklogOverBudgetError,
+  launchRoom,
+  launchRoomLines,
+  MachineLoadedError,
+  machineLoad,
+} from '../core/session-cap.service.js';
 import { dossierFileName, renderSessionDossierHtml } from '../core/session-dossier.service.js';
 import {
   awaitHandoffReady,
@@ -163,7 +169,6 @@ import {
   markSessionQuestion,
   planTask,
   recordSteerMessage,
-  SessionCapReachedError,
   steerSession,
 } from '../core/session-lifecycle.service.js';
 import { retireSession } from '../core/session-retire.service.js';
@@ -620,12 +625,18 @@ function noteAllowOverlap(passed: boolean | undefined): void {
   }
 }
 
-// Decision 96: the cap is the operator's to set, and so to exceed.
-const OVER_CAP_DESCRIPTION = 'launch past the session cap (operator only)';
+// Decisions 96, 197: the cap follows the merge lock and the load; the operator may exceed it.
+const OVER_CAP_DESCRIPTION =
+  "launch past the computed cap, the merge lock's backlog or the machine's load (operator only)";
 const OVER_LIMIT_DESCRIPTION = "launch while the plan's usage holds launches (operator only)";
 
 /** The launch errors that say the machine or the project has no room: refused, not crashed. */
-const NO_ROOM_ERRORS = [SessionCapReachedError, LowMemoryError, UsageLimitReachedError];
+const NO_ROOM_ERRORS = [
+  LockBacklogOverBudgetError,
+  MachineLoadedError,
+  LowMemoryError,
+  UsageLimitReachedError,
+];
 
 /** What the conductor launches within, for each override it may not pass. */
 const CONDUCTOR_LAUNCHES_WITHIN = {
@@ -1019,11 +1030,23 @@ function operatorOnlyProject(): ProjectResolutionError {
   );
 }
 
+/**
+ * `pup status`'s word on launching (decision 197): both signals and whether a
+ * launch would go ahead. A malformed `.pupitre/project.yml` is named in place
+ * of the backlog rather than end the status before it.
+ */
+function printLaunchRoom(db: Database, repoPath: string): void {
+  try {
+    for (const line of launchRoomLines(launchRoom(db, repoPath, machineLoad()))) console.log(line);
+  } catch (error) {
+    console.log(`Launch: unknown, ${sanitizeReason((error as Error).message)}`);
+  }
+}
+
 interface ConductorOptions extends AskOptions {
   model?: string;
   effort?: string;
   workerModel?: string;
-  maxSessions?: string;
 }
 
 interface LandOptions {
@@ -1554,10 +1577,6 @@ export function buildProgram(): Command {
       '--worker-model <model>',
       'claude model the conductor launches every session on, over the routed one',
     )
-    .option(
-      '--max-sessions <n>',
-      `most live sessions any launch may reach, stored for the project (default ${DEFAULT_MAX_SESSIONS})`,
-    )
     .option('--option <text...>', `ask: an answer to offer, up to ${MAX_QUESTION_OPTIONS}`)
     .option('--recommend <n>', 'ask: the number of the option the conductor would pick')
     .action((action: string | undefined, message: string | undefined, opts: ConductorOptions) => {
@@ -1601,10 +1620,6 @@ export function buildProgram(): Command {
       if (verb !== 'start') {
         return refuse(`Unknown conductor action \`${action}\` (expected start|stop|tell|ask).`);
       }
-      const maxSessions = Number(opts.maxSessions ?? DEFAULT_MAX_SESSIONS);
-      if (!Number.isInteger(maxSessions) || maxSessions < 1) {
-        return refuse('--max-sessions takes a whole number of at least 1.');
-      }
       const windowEnv = windowEnvOrRefuse(repoPath);
       if (windowEnv === undefined) return;
       let handle: ConductorHandle;
@@ -1617,7 +1632,6 @@ export function buildProgram(): Command {
           model: opts.model,
           effort: opts.effort,
           workerModel: opts.workerModel,
-          maxSessions,
         });
       } catch (error) {
         if (!(error instanceof LaunchRolledBackError)) throw error;
@@ -1638,7 +1652,7 @@ export function buildProgram(): Command {
         `Attach with: ${sanitizeReason(attachCommand({ conductorOf: projectId(repoPath) }))}`,
       );
       console.log(
-        `Session cap: ${maxSessions}; \`pup launch\` and \`pup new\` refuse past it, and only the operator's --over-cap goes beyond.`,
+        "Launches follow the merge lock's backlog and the machine's load (`pup status` shows both); only the operator's --over-cap goes beyond.",
       );
       // The start brings a radar up with it unless one is already sweeping —
       // the operator asked for a fleet that runs itself, not for two commands
@@ -1915,6 +1929,7 @@ export function buildProgram(): Command {
         shouldShowHistory,
         ciReviewLookup(db, repoPath),
       );
+      printLaunchRoom(db, repoPath);
     });
 
   program

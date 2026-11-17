@@ -2,7 +2,11 @@ import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, onTestFinished } from 'vitest';
-import { skipsTestsOnUntestedChanges, workerSandboxOn } from './project-config.config.js';
+import {
+  lockBacklogBudgetMinutes,
+  skipsTestsOnUntestedChanges,
+  workerSandboxOn,
+} from './project-config.config.js';
 
 /** A repo directory holding `.pupitre/project.yml` with `content`, or none when undefined. */
 function repoWith(content?: string): string {
@@ -90,4 +94,39 @@ describe('workerSandboxOn', () => {
     else expect(check()).toBe(true);
     expect(workerSandboxOn(repoWith('workerSandbox: false\n'))).toBe(false);
   });
+});
+
+// Decision 197: the minutes of merge-lock work a launch may find queued.
+describe('lockBacklogBudgetMinutes', () => {
+  it.each([
+    { name: 'no project.yml', content: undefined },
+    { name: 'an empty project.yml', content: '' },
+    { name: 'a project.yml without the key', content: 'workerSandbox: false\n' },
+  ])('reads 60 minutes with $name', ({ content }) => {
+    expect(lockBacklogBudgetMinutes(repoWith(content))).toBe(60);
+  });
+
+  it('reads the budget the project gives, a fraction included', () => {
+    expect(lockBacklogBudgetMinutes(repoWith('lockBacklogBudgetMinutes: 90\n'))).toBe(90);
+    expect(lockBacklogBudgetMinutes(repoWith('lockBacklogBudgetMinutes: 12.5\n'))).toBe(12.5);
+  });
+
+  it('reads its own key beside the others', () => {
+    const repo = repoWith(
+      'workerSandbox: false\nskipTestsOnUntestedChanges: false\nlockBacklogBudgetMinutes: 30\n',
+    );
+    expect(lockBacklogBudgetMinutes(repo)).toBe(30);
+    expect(skipsTestsOnUntestedChanges(repo)).toBe(false);
+  });
+
+  it.each(['"60"', '0', '-5', '.inf', '.nan', 'true', '[60]'])(
+    'refuses %s rather than guess a budget',
+    (value) => {
+      expect(() =>
+        lockBacklogBudgetMinutes(repoWith(`lockBacklogBudgetMinutes: ${value}\n`)),
+      ).toThrow(
+        'Invalid .pupitre/project.yml: lockBacklogBudgetMinutes must be a number of minutes above 0.',
+      );
+    },
+  );
 });
