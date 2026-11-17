@@ -53,7 +53,7 @@ const PRINTABLE_ID = /^[A-Za-z0-9._-]{1,64}$/;
 const USES_BEFORE_GATE = 2;
 
 /** The machine's 1-minute load average and the cores it is held to. */
-export interface MachineLoad {
+interface MachineLoad {
   average: number;
   cores: number;
 }
@@ -72,7 +72,7 @@ export interface LockBacklog {
 }
 
 /** Both signals a launch is held to, as `pup status` prints them and `pup launch` reads them. */
-export interface LaunchRoom {
+interface LaunchRoom {
   backlog: LockBacklog;
   load: MachineLoad;
 }
@@ -149,11 +149,20 @@ function awaitsLand(db: Database, session: SessionRow, now: number): boolean {
   const newest = newestEventOf(db, session.id, ['merge', 'landed', 'retired', 'pr_closed']);
   if (newest?.type !== 'merge') return false;
   // A time that does not parse is counted: dropping it would hide the session.
-  const at = Date.parse(toIsoUtc(newest.created_at));
+  const at = mergedAt(newest.created_at);
   if (Number.isFinite(at) && now - at >= LAND_WINDOW_MS) return false;
   const merge = decodeEvent(newest);
   // A merge with no PR moved the target itself, under the gate's own lock use.
   return merge.type === 'merge' && merge.prUrl !== undefined;
+}
+
+/** A merge's time, NaN when the store holds one that is not text or not a time. */
+function mergedAt(createdAt: string): number {
+  try {
+    return Date.parse(toIsoUtc(createdAt));
+  } catch {
+    return Number.NaN;
+  }
 }
 
 /**

@@ -158,6 +158,17 @@ describe('lockBacklog (decision 197)', () => {
     expect(lockBacklog(db, repo)).toMatchObject({ uses: 1, unlanded: [id] });
   });
 
+  // A blob reads back as a Buffer, which toIsoUtc cannot rewrite.
+  it('counts a land for a merge whose time is not text', () => {
+    const id = merged();
+    mergeEvent(id, PR);
+    db.prepare(
+      "UPDATE events SET created_at = CAST('2026-11-17 10:00:00' AS BLOB) WHERE session_id = ?",
+    ).run(id);
+
+    expect(lockBacklog(db, repo)).toMatchObject({ uses: 1, unlanded: [id] });
+  });
+
   it('counts nothing for a merge that moved the target itself', () => {
     mergeEvent(merged());
 

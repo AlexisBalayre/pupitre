@@ -28,10 +28,10 @@ const WORKER_SANDBOX_KEY = 'workerSandbox';
 const LOCK_BACKLOG_BUDGET_KEY = 'lockBacklogBudgetMinutes';
 
 /** The merge-lock backlog a launch is held under when the project sets none (decision 197). */
-export const DEFAULT_LOCK_BACKLOG_BUDGET_MINUTES = 60;
+const DEFAULT_LOCK_BACKLOG_BUDGET_MINUTES = 60;
 
 /** The largest budget a project may set: a day of lock work, past which the backlog holds nothing back. */
-export const MAX_LOCK_BACKLOG_BUDGET_MINUTES = 1440;
+const MAX_LOCK_BACKLOG_BUDGET_MINUTES = 1440;
 
 const PROJECT_CONFIG_KEYS = [SKIP_UNTESTED_KEY, WORKER_SANDBOX_KEY, LOCK_BACKLOG_BUDGET_KEY];
 
