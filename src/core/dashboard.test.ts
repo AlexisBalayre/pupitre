@@ -1652,7 +1652,9 @@ describe('needsYou', () => {
     });
 
     it("drops an awaiting-review session's question once answered", () => {
-      seedIn('s1', ['running', 'awaiting-review']);
+      seedIn('s1', ['running']);
+      appendEvent(db, 's1', 'session_done', { summary: 'done' });
+      transitionSession(db, 's1', 'awaiting-review');
       appendEvent(db, 's1', 'question', { text: 'keep main?', options: ['yes', 'no'] });
       appendEvent(db, 's1', 'answer', {
         question: 'keep main?',
@@ -1662,6 +1664,37 @@ describe('needsYou', () => {
       });
 
       expect(inbox().map((need) => need.kind)).not.toContain('question');
+    });
+
+    // The inbox lists a session once, under a question first: one asked while
+    // running must not hide the review line, nor a gate refusal behind it.
+    it('lists no question an awaiting-review session asked before it was done', () => {
+      seedIn('s1', ['running']);
+      appendEvent(db, 's1', 'question', { text: 'keep main?' });
+      appendEvent(db, 's1', 'session_done', { summary: 'done' });
+      transitionSession(db, 's1', 'awaiting-review');
+
+      expect(inbox().map((need) => need.kind)).toEqual(['awaiting-review']);
+    });
+
+    it('lists no question from an awaiting-review session that never reported done', () => {
+      seedIn('s1', ['running', 'awaiting-review']);
+      appendEvent(db, 's1', 'question', { text: 'keep main?' });
+
+      expect(inbox().map((need) => need.kind)).toEqual(['awaiting-review']);
+    });
+
+    // Only running and awaiting-review sessions carry a question: a blocked one
+    // keeps its unblock line, and any other state fails closed.
+    it.each([
+      ['blocked', ['running', 'blocked'] as SessionState[], ['blocked']],
+      ['rejected', ['running', 'awaiting-review', 'rejected'] as SessionState[], []],
+    ])('lists no question from a %s session', (_, path, kinds) => {
+      seedIn('s1', ['running']);
+      appendEvent(db, 's1', 'question', { text: 'keep main?' });
+      for (const state of path.slice(1)) transitionSession(db, 's1', state);
+
+      expect(inbox().map((need) => need.kind)).toEqual(kinds);
     });
 
     // `pup answer` refuses a terminal session, so its question has no answer.

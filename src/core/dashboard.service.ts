@@ -58,7 +58,6 @@ import {
   formatStaleAge,
   isSessionStalled,
 } from './session-activity.utils.js';
-import { isTerminal } from './session-state.utils.js';
 import { taskRescopes } from './task-rescope.service.js';
 import type {
   DashboardBaseline,
@@ -925,11 +924,16 @@ function dashboardSession(
   // Newest first, so `find` returns the latest matching event.
   const events = listEvents(db, row.id).reverse();
   const lastSteer = newestSteer(events);
-  // Any live session's, whatever its state: one awaiting review still asks
-  // while merging main or fixing what the conductor sent back. Killed or merged
-  // (landed and retired come after merged), nothing can answer it (`pup answer`
-  // refuses terminal sessions), so it must not outlive it.
-  const question = isTerminal(row.state) ? undefined : dashboardQuestion(openQuestion(db, row.id));
+  // A running session's, or one awaiting review that asked since it reported
+  // done, while merging main or fixing what a reviewer sent back. Only those:
+  // the inbox lists a session once, under a question first, so an older one
+  // must not hide a refused gate or an unblock. Any other state fails closed.
+  const asked = ['running', 'awaiting-review'].includes(row.state)
+    ? dashboardQuestion(openQuestion(db, row.id))
+    : undefined;
+  const doneId = events.find((event) => event.type === 'session_done')?.id ?? Infinity;
+  const question =
+    row.state === 'awaiting-review' && asked !== undefined && asked.id < doneId ? undefined : asked;
   const pr = row.state === 'merged' ? openPullRequest(events) : undefined;
   const openPr = pr && !isLanded(pr.target, pr.sha) ? { url: pr.url } : undefined;
   const lastGate = newestGate(events);
