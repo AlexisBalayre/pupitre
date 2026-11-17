@@ -1,0 +1,158 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-17T12:07:21.408Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "44079425175",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/44079425175",
+  "actor": "AlexisBalayre",
+  "commit_sha": "20bd543a5e40da2dd9b74014d89f5bdc7253b8ce",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 366,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/land-batch.service.ts",
+      "line": "151-162",
+      "description": "A Ctrl-C during a batch fetch never stops the batch: `fetchTarget` wraps the killed git's error in a new `Error` with no `signal`, so the batch skips that session and lands the rest.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/land.service.ts",
+      "line": "134",
+      "description": "The PR adds a new exported `interface Landable` directly in land.service.ts, and newly exports the previously private `LandRequest`, so land-batch.service.ts imports both from a service file.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/land-batch.service.ts",
+      "line": "69-85",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "A Ctrl-C that arrives while no git or tmux child is running (for example during the steer's syncSleep paste or submit waits) is silently dropped by withMergeLock's no-op listener, and the batch then lands every remaining session and runs the audit, although ADR 0195 says an interrupt stops it.",
+      "body": "**Concern.** ADR 0195 says: *\"An interrupt or a kill stops it\"*. The batch only notices an interrupt if the interrupt kills a child process, through `rethrowIfKilled` or `GateInterruptedError`. While the lock is held, `withMergeLock` installs `stayAlive = () => undefined` for SIGINT, SIGTERM and SIGHUP (`merge-gate.service.ts` L1243-1244). Its own doc says a signal that arrives *\"during pup's own synchronous work, is discarded by this listener, and the locked section runs on\"*.\n\nFor one land, a dropped signal only means that one land finishes. In a batch, the next pass of the loop just goes on:\n\n```ts\nfor (const [at, next] of order.entries()) {\n  if (!mergeLockHeld(req.repoPath)) { ... }\n  try {\n    const outcome = await landUnderLock(db, one(next.session.id), next, progress);\n```\n\nNothing records that a signal arrived. So the remaining sessions are each fast-forwarded and torn down (worktree removed, branch deleted), and each gets its `landed` event and steer.\n\n**Trigger.** Run `pup land a b c`. Land `a` reaches the `steer` stage with a running peer whose files overlap. `steerPane` spends most of its time in `syncSleep` (`Atomics.wait`) inside `awaitPasteLanded` and the Enter-verify loop (`session-runtime.service.ts` L1389-1393, L1483-1490), with no child running. The operator presses Ctrl-C there. Node receives the signal, `stayAlive` drops it, and `b` and `c` land in full. The ~330 s audit then starts. Only a second Ctrl-C during the audit, forwarded to the gate child, stops anything.\n\nWhether Ctrl-C stops the batch therefore depends on timing: it works during a git child and does nothing during pup's own work. A dropped Ctrl-C reports nothing, and the run continues as if it had succeeded.\n\nSingle-land already drops a signal the same way during its steer, but there the only consequence was finishing that one land and its audit. The batch turns the dropped signal into further lands that cannot be undone.\n\n**Fix direction.** For the lifetime of the hold, `landSessions` registers its own SIGINT/SIGTERM/SIGHUP listener that sets a flag. It checks the flag next to `mergeLockHeld` before each land and before the audit, and throws `GateInterruptedError` (or reports the untried sessions) once the flag is set.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/20bd543a5e40da2dd9b74014d89f5bdc7253b8ce/src/core/land-batch.service.ts#L69-L85",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land-batch.service.ts",
+      "line": "116",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "refusalOf, the audit catch (L94-97) and inMergeOrder's fetch catch (L157-160) turn a RewrittenGitDirError into a one-session refusal, so the batch keeps landing other sessions and runs the baseline-writing audit after the trusted checkout's .git was caught rewritten. A single land ends the run there through fatalExitCode, and ci-wait.service.ts:127 rethrows it explicitly. Each later git spawn still re-checks, so nothing reads a decoy repo; the change would be to rethrow it next to GateInterruptedError.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land.service.ts",
+      "line": "44",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The PR newly exports the constant `LAND_UNTOUCHED` from a `*.service.ts` file for `land-batch.service.ts` to import, whereas general.md §No hardcoded values and naming.md (`constants`: \"Exported constant values.\") place shared exported constants in the area's `*.constants.ts` (e.g. `merge-gate.constants.ts`, which `land-batch.service.ts` already imports from).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land-batch.service.ts",
+      "line": "89",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The call-site comment \"Under the lock, for `landSession`'s reason (decision 88)\" explains another function's rationale, and AGENTS.md §Comments and general.md §Comments (seam-duplication test) say to delete a call-site copy when the seam already states it. The `landSession` body in `land.service.ts` (the \"Under the lock too: the steer wakes the sessions…\" comment) and the `landSessions` JSDoc (lines 29-34) already carry it.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Ran one security instance, not two, despite the size gate (>400 lines): the git shell-outs are concentrated in land.service.ts and land-batch.service.ts. Skipped context (no spec, protocol or infra surface), spec (no closing issues), workflow-safety (no workflow change) and maintainability (off the default roster)."
+    },
+    {
+      "component": "conventions",
+      "description": "The reviewer did not audit the test files (src/cli/index-2.test.ts, src/core/land-batch.test.ts) or skills/pup/LOOP.md in depth, and did not read testing.md, so there was no testing-convention review."
+    },
+    {
+      "component": "security",
+      "description": "Running scripts/adr-index.sh needed approval, so the reviewer found the relevant ADRs with Glob and Grep instead. Coverage was not affected."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 3.1725812,
+  "duration_ms": 245849,
+  "num_turns": 19,
+  "tokens": {
+    "input": 18,
+    "output": 12079,
+    "cache_read": 401983,
+    "cache_creation": 57007,
+    "total": 471087
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 134,
+      "output": 47907,
+      "cache_read": 2061301,
+      "cache_creation": 227410,
+      "cost_usd": 2.6790072000000005
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 58,
+      "output": 12043,
+      "cache_read": 452623,
+      "cache_creation": 130842,
+      "cost_usd": 0.4929133
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 113,
+      "cache_read": 0,
+      "cache_creation": 4832,
+      "cost_usd": 0.0006607000000000001
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "bash /home/runner/work/pupitre/pupitre/scripts/adr-index.sh"
+    }
+  ]
+}
