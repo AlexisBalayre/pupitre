@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { listPanes, PROBE_PATH, windowSockets } from '../claude/session-runtime.service.js';
 import { openStore } from './db.client.js';
 import { listDecisionRecords } from './decision-record.repository.js';
+import { globToRegExp } from './glob.utils.js';
 import { scopeConflicts } from './overlap.service.js';
 import { InvalidProfileError } from './profile.errors.js';
 import { auditScope } from './scope-audit.utils.js';
@@ -417,16 +418,16 @@ describe('rescopeTask (decision 115)', () => {
     ['**/?*', 'has a wildcard in its first segment'],
     ['*?/**', 'has a wildcard in its first segment'],
     ['*.ts', 'has a wildcard in its first segment'],
-    ['/etc/passwd', 'is absolute'],
-    [' /etc/passwd', 'is absolute'],
+    ['/etc/passwd', 'is empty, absolute or has a `.` or an empty segment'],
+    [' /etc/passwd', 'is empty, absolute or has a `.` or an empty segment'],
     ['src/../../etc/x', 'has a `..` segment'],
     ['..', 'has a `..` segment'],
     [' ../x', 'has a `..` segment'],
     // A normalizing matcher drops these, reading `.github` or the hook.
-    ['././.github/**', 'has a `.` or an empty segment'],
-    ['scripts/./pre-commit', 'has a `.` or an empty segment'],
-    ['scripts//pre-commit', 'has a `.` or an empty segment'],
-    ['src//x', 'has a `.` or an empty segment'],
+    ['././.github/**', 'is empty, absolute or has a `.` or an empty segment'],
+    ['scripts/./pre-commit', 'is empty, absolute or has a `.` or an empty segment'],
+    ['scripts//pre-commit', 'is empty, absolute or has a `.` or an empty segment'],
+    ['src//x', 'is empty, absolute or has a `.` or an empty segment'],
     ['.github/**', 'reaches `.github`'],
     ['.github/workflows/ci.yml', 'reaches `.github`'],
     ['./.GitHub', 'reaches `.github`'],
@@ -460,26 +461,34 @@ describe('rescopeTask (decision 115)', () => {
     ['scripts/', 'reaches a git hook'],
     // pup's matcher reads these literally; a gitignore- or bash-style one
     // reads a class, a set or an escape, which could reach `.github`.
-    ['[.]github/**', 'holds `[`, `]`, `{`, `}` or `\\`'],
-    ['{docs,.github}/**', 'holds `[`, `]`, `{`, `}` or `\\`'],
-    ['\\.github/**', 'holds `[`, `]`, `{`, `}` or `\\`'],
-    ['docs/[a-z]*.md', 'holds `[`, `]`, `{`, `}` or `\\`'],
-    ['docs/x]', 'holds `[`, `]`, `{`, `}` or `\\`'],
-    ['docs/{a', 'holds `[`, `]`, `{`, `}` or `\\`'],
-    ['docs/a}', 'holds `[`, `]`, `{`, `}` or `\\`'],
-    ['docs\\x', 'holds `[`, `]`, `{`, `}` or `\\`'],
+    ['[.]github/**', 'holds `[`, `]`, `{`, `}`, `\\`, `(`, `)`, `|` or `!`'],
+    ['{docs,.github}/**', 'holds `[`, `]`, `{`, `}`, `\\`, `(`, `)`, `|` or `!`'],
+    ['\\.github/**', 'holds `[`, `]`, `{`, `}`, `\\`, `(`, `)`, `|` or `!`'],
+    ['docs/[a-z]*.md', 'holds `[`, `]`, `{`, `}`, `\\`, `(`, `)`, `|` or `!`'],
+    ['docs/x]', 'holds `[`, `]`, `{`, `}`, `\\`, `(`, `)`, `|` or `!`'],
+    ['docs/{a', 'holds `[`, `]`, `{`, `}`, `\\`, `(`, `)`, `|` or `!`'],
+    ['docs/a}', 'holds `[`, `]`, `{`, `}`, `\\`, `(`, `)`, `|` or `!`'],
+    ['docs\\x', 'holds `[`, `]`, `{`, `}`, `\\`, `(`, `)`, `|` or `!`'],
     // Literal to pup's matcher too; an extglob one reads `@(.github)/**` as
     // `.github/**` and `!(src)/**` as every directory but `src`.
-    ['docs/@(.github)/**', 'holds `(`, `)`, `|`, `+`, `@` or `!`'],
-    ['docs/!(src)/**', 'holds `(`, `)`, `|`, `+`, `@` or `!`'],
-    ['docs/(x', 'holds `(`, `)`, `|`, `+`, `@` or `!`'],
-    ['docs/x)', 'holds `(`, `)`, `|`, `+`, `@` or `!`'],
-    ['docs/a|b', 'holds `(`, `)`, `|`, `+`, `@` or `!`'],
-    ['docs/a+', 'holds `(`, `)`, `|`, `+`, `@` or `!`'],
-    ['docs/@x', 'holds `(`, `)`, `|`, `+`, `@` or `!`'],
-    ['docs/!x', 'holds `(`, `)`, `|`, `+`, `@` or `!`'],
-    ['  ', 'is empty'],
-    ['./', 'is empty'],
+    ['docs/@(.github)/**', 'holds `[`, `]`, `{`, `}`, `\\`, `(`, `)`, `|` or `!`'],
+    ['docs/!(src)/**', 'holds `[`, `]`, `{`, `}`, `\\`, `(`, `)`, `|` or `!`'],
+    ['docs/+(a)', 'holds `[`, `]`, `{`, `}`, `\\`, `(`, `)`, `|` or `!`'],
+    ['docs/@(a)', 'holds `[`, `]`, `{`, `}`, `\\`, `(`, `)`, `|` or `!`'],
+    ['docs/!(a)', 'holds `[`, `]`, `{`, `}`, `\\`, `(`, `)`, `|` or `!`'],
+    ['docs/(x', 'holds `[`, `]`, `{`, `}`, `\\`, `(`, `)`, `|` or `!`'],
+    ['docs/x)', 'holds `[`, `]`, `{`, `}`, `\\`, `(`, `)`, `|` or `!`'],
+    ['docs/a|b', 'holds `[`, `]`, `{`, `}`, `\\`, `(`, `)`, `|` or `!`'],
+    ['*(a)', 'holds `[`, `]`, `{`, `}`, `\\`, `(`, `)`, `|` or `!`'],
+    ['?(a)', 'holds `[`, `]`, `{`, `}`, `\\`, `(`, `)`, `|` or `!`'],
+    // A leading `!` negates the whole glob in minimatch, picomatch and gitignore.
+    ['docs/!x', 'holds `[`, `]`, `{`, `}`, `\\`, `(`, `)`, `|` or `!`'],
+    ['!docs/x', 'holds `[`, `]`, `{`, `}`, `\\`, `(`, `)`, `|` or `!`'],
+    [' !docs/x', 'holds `[`, `]`, `{`, `}`, `\\`, `(`, `)`, `|` or `!`'],
+    // Git pathspec magic: `:^src` and `:!src` exclude rather than name.
+    [':^src', 'starts with `:`, which git reads as pathspec magic'],
+    ['  ', 'is empty, absolute or has a `.` or an empty segment'],
+    ['./', 'is empty, absolute or has a `.` or an empty segment'],
     ['src/\u0007x', 'contains a control character'],
     ['src/\u007fx', 'contains a control character'],
     ['src/\u009bx', 'contains a control character'],
@@ -503,9 +512,18 @@ describe('rescopeTask (decision 115)', () => {
       'scripts/adr-index.sh',
       'scripts/pre-commit.md',
       'docs/scripts/pre-commit',
+      'src/routes/+page.svelte',
+      'packages/@acme/ui/**',
+      'docs/a+',
     ];
 
     expect(rescopeTask(db, 't-1', globs, CALLER)).toMatchObject({ added: globs });
+  });
+
+  // pup's matcher reads a bare `+` literally, never as a regex quantifier.
+  it('matches a bare `+` in a glob as itself', () => {
+    expect(globToRegExp('src/a+b').test('src/a+b')).toBe(true);
+    expect(globToRegExp('src/a+b').test('src/aab')).toBe(false);
   });
 
   it('takes a glob beside a protected file that can never match it', () => {
