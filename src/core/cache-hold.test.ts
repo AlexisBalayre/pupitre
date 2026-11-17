@@ -22,6 +22,7 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   steerPane: vi.fn(),
   readInputBox: vi.fn(() => 'empty'),
   pasteIntoPane: vi.fn(() => true),
+  runsSessionLaunch: vi.fn(() => true),
   submitPane: vi.fn(),
 }));
 
@@ -30,6 +31,7 @@ import {
   deadTurnError,
   pasteIntoPane,
   readInputBox,
+  runsSessionLaunch,
   steerPane,
   submitPane,
 } from '../claude/session-runtime.service.js';
@@ -110,6 +112,7 @@ describe('holdIdleCaches (decision 179)', () => {
     vi.mocked(deadTurnError).mockReturnValue(undefined);
     vi.mocked(readInputBox).mockReturnValue('empty');
     vi.mocked(pasteIntoPane).mockReturnValue(true);
+    vi.mocked(runsSessionLaunch).mockReturnValue(true);
   });
 
   afterEach(() => {
@@ -184,6 +187,21 @@ describe('holdIdleCaches (decision 179)', () => {
 
     expect(holdIdleCaches(db, repo, Date.now())).toEqual([]);
     expect(readInputBox).not.toHaveBeenCalled();
+  });
+
+  // A restarted tmux server numbers its panes from %0 again, so the recorded
+  // %7 can be one of the operator's own panes (decision 115).
+  it("types nothing into a pane that no longer runs the session's launch, and records nothing", () => {
+    seedSession(db, repo, 's1', 'awaiting-review');
+    seedEventsFile(repo, 's1', HOLD_AGE_MS);
+    vi.mocked(runsSessionLaunch).mockReturnValue(false);
+
+    expect(holdIdleCaches(db, repo, Date.now())).toEqual([]);
+    expect(runsSessionLaunch).toHaveBeenCalledWith({ sessionId: 's1', paneId: '%7' });
+    expect(readInputBox).not.toHaveBeenCalled();
+    expect(pasteIntoPane).not.toHaveBeenCalled();
+    expect(submitPane).not.toHaveBeenCalled();
+    expect(holdsOf(db, 's1')).toEqual([]);
   });
 
   it('types nothing into a box that holds a draft, and records nothing', () => {

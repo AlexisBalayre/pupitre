@@ -1444,6 +1444,31 @@ export function submitPane(pane: SessionPane): void {
   syncSleep(SUBMIT_VERIFY_MS);
 }
 
+/**
+ * Whether the pane still runs the session's launch: its start command carries
+ * the launch's `--name <tmux name>` (`launchArgs`), as the rescope's probe
+ * matches it (decision 115). A `%N` means a pane only on the server that minted
+ * it, and a restarted server numbers from `%0` again, so a recorded id can name
+ * one of the operator's own panes. tmux fixes a start command when it starts
+ * the pane, so a worker that renames its session still matches. The session's
+ * name alone is not enough here, unlike for the probe: a split or a window
+ * opened inside the session wears it and runs a shell, where typed text runs
+ * as a command. False when tmux cannot say: no such pane, or no server.
+ */
+export function runsSessionLaunch(pane: SessionPane): boolean {
+  const started = tmuxProbe(pane.socket, [
+    'display-message',
+    '-p',
+    '-t',
+    paneTarget(pane),
+    '#{pane_start_command}',
+  ]);
+  return (
+    started !== undefined &&
+    ` ${started.trimEnd()} `.includes(` --name ${tmuxName(pane.sessionId)} `)
+  );
+}
+
 /** `inputBoxState` of a fresh capture of the pane. */
 export function readInputBox(pane: SessionPane): InputBoxState {
   return inputBoxState(captureInputBox(pane));

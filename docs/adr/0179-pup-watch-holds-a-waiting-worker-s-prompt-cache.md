@@ -51,6 +51,15 @@
     their keystrokes in it and nothing is submitted. Keys typed between the paste and the Enter
     are submitted with the hold. The window is seconds long, in a pane that has been quiet for
     50 minutes.
+    Before the box is read, the recorded pane is checked against the session. A `%N` names a pane
+    only on the server that minted it, and a restarted server numbers from `%0` again, so the
+    recorded id can be one of the operator's own panes (decision 115 makes the same point for the
+    rescope probe). The hold is typed only when the pane's start command carries the launch's
+    `--name <tmux name>`, the pair that probe matches (`runsSessionLaunch`). Otherwise nothing is
+    read, typed or recorded, and the window's cache lapses. Unlike the probe, the session's name
+    alone does not match: a split or a window opened inside the session wears it, runs a shell,
+    and would run the hold as a command. Over-matching costs the probe a refused rescope. Here it
+    would type into the wrong pane.
     The events file is the session's to write, and the sweep that reads it also resumes dead
     turns and nudges the conductor, so it is read like a file the session may have replaced. It
     is opened without following a link and without blocking. Only a regular file counts, and its

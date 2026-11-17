@@ -106,6 +106,7 @@ import {
   recordedPanePids,
   refusedSessionEnv,
   resolveWindowEnv,
+  runsSessionLaunch,
   type SessionPane,
   SessionPaneMissingError,
   SteerNotDeliveredError,
@@ -2570,6 +2571,49 @@ describe('hasSessionWindow', () => {
     } finally {
       vi.mocked(execFileSync).mockImplementation(original as never);
     }
+  });
+});
+
+describe('runsSessionLaunch (decisions 115, 179)', () => {
+  const pane = { sessionId: 't-abc', paneId: '%7' };
+
+  /** Answer the pane's start command with `started`, or refuse as tmux does for a pane it has not. */
+  function withStartCommand(started: string | undefined, check: () => void): void {
+    const original = vi.mocked(execFileSync).getMockImplementation();
+    vi.mocked(execFileSync).mockImplementation((file, args, options) => {
+      if (file !== 'tmux' || !args?.includes('display-message'))
+        return (original as (...callArgs: unknown[]) => unknown)(file, args, options) as string;
+      if (started === undefined) throw new Error("can't find pane: %7");
+      return `${started}\n`;
+    });
+    try {
+      check();
+    } finally {
+      vi.mocked(execFileSync).mockImplementation(original as never);
+    }
+  }
+
+  it("matches the pane whose start command carries the session's launch name", () => {
+    const launch = `/usr/bin/nice -n 10 /fake/bin/claude --model m --name pup-t-abc --dangerously-skip-permissions`;
+    withStartCommand(launch, () => expect(runsSessionLaunch(pane)).toBe(true));
+    expect(vi.mocked(execFileSync).mock.calls.map(([, args]) => args)).toEqual([
+      ['display-message', '-p', '-t', '%7', '#{pane_start_command}'],
+    ]);
+  });
+
+  // A restarted server numbers from %0 again, so the recorded id can be the
+  // operator's shell, a split inside the session's own window, or another
+  // session's window whose name the recorded one is a prefix of.
+  it.each([
+    ["the operator's shell", '-zsh'],
+    ['a launch of another session', '/fake/bin/claude --name pup-t-abc-1 --settings s'],
+    ['the name outside a --name pair', '/fake/bin/claude --settings pup-t-abc'],
+  ])('refuses a pane that runs %s', (_what, started) => {
+    withStartCommand(started, () => expect(runsSessionLaunch(pane)).toBe(false));
+  });
+
+  it('refuses a pane tmux cannot find', () => {
+    withStartCommand(undefined, () => expect(runsSessionLaunch(pane)).toBe(false));
   });
 });
 

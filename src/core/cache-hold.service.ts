@@ -1,7 +1,12 @@
 import { closeSync, constants, fstatSync, openSync, readSync } from 'node:fs';
 import type { Database } from 'better-sqlite3';
 
-import { pasteIntoPane, readInputBox, submitPane } from '../claude/session-runtime.service.js';
+import {
+  pasteIntoPane,
+  readInputBox,
+  runsSessionLaunch,
+  submitPane,
+} from '../claude/session-runtime.service.js';
 import { SESSION_ID_PATTERN } from './paths.constants.js';
 import { projectPaths } from './paths.utils.js';
 import { toIsoUtc } from './report-data.utils.js';
@@ -247,10 +252,13 @@ function trailingHolds(newestFirst: EventRow[]): number {
  * tell's does (decision 85), and one that holds it still is false: the hold
  * never ran, and recording it would refuse every later hold of the window.
  * Enter is never pressed into a box gone from the screen, where it picks a
- * dialog's option.
+ * dialog's option. Nothing is read or typed unless the recorded pane still
+ * runs the session's launch: a restarted tmux server reissues pane ids, so the
+ * id can name one of the operator's own panes (decision 115).
  */
 function typeHold(row: SessionRow): boolean {
   const pane = sessionPane(row);
+  if (!runsSessionLaunch(pane)) return false;
   if (readInputBox(pane) !== 'empty' || !pasteIntoPane(pane, CACHE_HOLD_MESSAGE)) return false;
   submitPane(pane);
   if (readInputBox(pane) !== 'holds') return true;
