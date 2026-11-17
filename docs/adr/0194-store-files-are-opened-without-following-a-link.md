@@ -80,7 +80,7 @@
 
 ## Amendment (2026-11-17)
 
-The rule's list of writes said only the blocked-since file skips `writeStoreFile`. Three more
+The rule's list of writes said only the blocked-since file skips `writeStoreFile`. Five more
 store writes skip it as well.
 
 - The compiled hooks append to `sessions/<id>/events.jsonl` with the shell's `>>`. These are
@@ -107,6 +107,23 @@ store writes skip it as well.
   with `mktemp "$USAGE.XXXXXX"`, which is an `O_EXCL` create. It then runs `mv -f` over
   the target. The rename replaces a link at the target rather than writing through it. It
   does not fsync. This is accepted.
+- The Bash re-check script (`profile-compiler.service.ts`) keeps its before-snapshot under
+  `sessions/<id>/compiled/bash-snapshots`. It creates that directory at hook time, after the
+  compile-time directory checks have run, with `mkdir -p`, which follows a link in place of
+  `bash-snapshots`. It then makes a scratch directory there with `mktemp -d`, moves the
+  before-snapshot to `bash-snapshots/<tool_use_id>` with `mv`, and later deletes it with
+  `rm -f`. `mktemp -d` creates a fresh directory with a random name. `mv` replaces a link
+  to a file at the target, but a link to a directory makes it move the snapshot into that
+  directory. `rm -f` removes a link, not its target. So a planted link can only move the
+  directory, or one snapshot of the session's own dirty paths, to where the link points.
+  It does not write through to an existing file. This is an accepted low.
+- `pup map --open` writes `map.html` at the project root. `pup report` writes `report.html`
+  there and one dossier HTML per session, named by `dossierFileName`
+  (`src/cli/index.ts`). All three use plain `writeFileSync`, which opens with
+  `O_WRONLY | O_CREAT | O_TRUNC` and no `O_NOFOLLOW`. A link planted at any of these names
+  makes the operator's command truncate the file the link points at and fill it with the
+  rendered HTML, which carries session-controlled text. The command runs as the operator,
+  outside any sandbox. This gap is worth closing, and a follow-up task covers it.
 
 Writes outside the store are not part of this rule. These are the test slots under
 `~/.pupitre/slots` (an `O_EXCL` stage, then a hard link), the intents under the repository,
