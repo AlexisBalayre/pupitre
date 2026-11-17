@@ -101,8 +101,7 @@
        tests again.
     3. No socket path is granted, so a Unix socket in `TMPDIR` cannot stand in for local binding.
        Decision 191's ceiling 5 named it as one alternative to `allowLocalBinding`; that
-       alternative is closed. `allowLocalBinding` came off on 2026-11-17 by another one: the web
-       dashboard's tests inject their requests (decision 191).
+       alternative is closed, and `allowLocalBinding` stays on.
     4. Only macOS was probed, and the setting compiles on no other platform.
     5. The standing rule: no socket path may be granted unless neither it nor any of its ancestors
        is writable by the sandbox. An `allowUnixSockets` entry that is sandbox-writable, sits
@@ -112,3 +111,10 @@
        granted dir is writable, a foreign socket can be moved into it, as in run 3 (i). If only a
        parent is writable, the granted dir can be renamed away and a dir of foreign sockets moved
        into its path, as in run 3 (ii).
+
+## Amendment (2026-11-17, #371)
+
+Ceiling 3 said `allowLocalBinding` stays on. It came off by another of decision 191's
+alternatives: the web dashboard's tests inject their requests rather than open a socket
+(decision 191's amendment of the same date). No socket path is granted still, so a test that
+binds a Unix socket fails under the setting as before.
