@@ -2937,6 +2937,9 @@ function changesOnlyUntested(
  * and lint, a touched nested package's own scripts, the scope audit, the diff
  * size and the debt deltas. Undefined once a hard stage has recorded its
  * failure in `stages`; the caller decides what a failure does to the session.
+ * With `beforeDir`, the complexity stage's "before" reads a detached checkout
+ * of `targetSha` cut there, not the main checkout (decision 197); the caller
+ * removes it with its own checkout.
  */
 export async function measureBranch(
   db: Database,
@@ -2944,7 +2947,7 @@ export async function measureBranch(
   session: SessionRow,
   stages: GateStageResult[],
   checkoutDir: string,
-  { targetSha, sha }: { targetSha: string; sha: string },
+  { targetSha, sha, beforeDir }: { targetSha: string; sha: string; beforeDir?: string },
   progress: StageProgress = NO_PROGRESS,
 ): Promise<BranchMeasurement | undefined> {
   /** One run of a stage's command: the error it threw, `undefined` on a pass. */
@@ -3069,6 +3072,12 @@ export async function measureBranch(
   const targetHeld = measuresComplexity
     ? targetHolds(req.repoPath, targetSha, complexityPaths)
     : [];
+  // A remeasure's target sha need not be what the main checkout holds, so its
+  // "before" is cut from that sha, vetted as the gate's own checkout is
+  // (decision 197).
+  if (measuresComplexity && beforeDir !== undefined) {
+    cutGateCheckout(req.repoPath, beforeDir, targetSha);
+  }
   // `--name-only` names a rename by its new path, but moving a file out of a
   // nested package changes that package too, so its source counts: its suite
   // runs (decision 59) and the untested skip does not apply (decision 139).
@@ -3235,12 +3244,15 @@ export async function measureBranch(
     complexityAdapters.length > 0
       ? {
           // "Before" reads the main checkout, which the merge lock holds at
-          // the target branch — no historical checkout needed. What git reads
-          // of it is pinned to the target sha, never the main checkout's HEAD,
-          // which a session can detach while this runs (decision 161).
+          // the target branch — no historical checkout needed — or, with
+          // `beforeDir`, the checkout of the target sha cut there (decision
+          // 197). What git reads of it is pinned to the target sha, never the
+          // main checkout's HEAD, which a session can detach while this runs
+          // (decision 161).
           before: complexityOf(
             {
               ...localContext(req.repoPath, req.gateEnv),
+              measurePath: beforeDir ?? req.repoPath,
               measureSha: targetSha,
               configSha: targetSha,
             },

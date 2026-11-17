@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { loadavg } from 'node:os';
 import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
@@ -1510,11 +1510,14 @@ describe('landSession', { timeout: 20_000 }, () => {
       });
     }
 
-    // The complexity stage reads "before" from the main checkout, which would
-    // hold another PR's change, or this merge's own, in place of the merge's base.
+    // The main checkout would hold another PR's change, or this merge's own, in
+    // place of the merge's base, so "before" is read from a checkout of the
+    // base (decision 197). Each case's file differs between the two.
     it.each([
       [
         'behind it, another PR merged on GitHub first',
+        'src/other.ts',
+        'export const other = 1;\n',
         () => {
           const clone = cloneOrigin();
           commitIn(clone, 'src/other.ts', 'export const other = 1;\n');
@@ -1532,33 +1535,55 @@ describe('landSession', { timeout: 20_000 }, () => {
             '-q',
             'FETCH_HEAD',
           );
+          // Past the pin, a change to the file the other PR added.
           seedPrMerge(PR_URL, passingReport());
-          return mergeAt(sh(worktree, 'git', 'rev-parse', 'HEAD'));
+          return mergeAt(commitIn(worktree, 'src/other.ts', 'export const other = 2;\n'));
         },
       ],
       [
         'past it, holding the merge already',
+        'src/app.ts',
+        'export const app = 1;\n',
         () => {
-          const moved = mergeMovedHead();
+          const moved = mergeMovedHead('src/app.ts', 'export const app = 2;\n');
           sh(repo, 'git', 'fetch', '-q', origin, 'main');
           sh(repo, 'git', 'merge', '-q', '--ff-only', moved.merge);
           return moved;
         },
       ],
-    ])('refuses with local main %s, before any stage runs', async (_case, mergeOff) => {
-      const { merge } = mergeOff();
-      const before = mainSha();
-      const failing: Adapter = {
-        ...passingAdapter,
-        gateCommands: () => [{ stage: 'build', command: 'false', args: [] }],
-      };
+    ])(
+      'lands with local main %s, reading "before" at the base',
+      async (_case, path, atBase, mergeOff) => {
+        const { merge } = mergeOff();
+        const base = sh(origin, 'git', 'rev-parse', `${merge}^1`);
+        const beforeReads: { dir: string; content: string | undefined }[] = [];
+        const measuring: Adapter = {
+          ...passingAdapter,
+          complexity: ({ measurePath, measureSha }, files) => {
+            if (measureSha === base) {
+              const at = join(measurePath, path);
+              beforeReads.push({
+                dir: measurePath,
+                content: existsSync(at) ? readFileSync(at, 'utf8') : undefined,
+              });
+            }
+            return files.map((file) => ({ file, complexity: 1 }));
+          },
+        };
 
-      await expect(remeasure({ adapter: failing })).rejects.toThrow(
-        `Local main is at ${before}, not ${sh(origin, 'git', 'rev-parse', `${merge}^1`)}, the ` +
-          `commit the merge of ${PR_URL} went onto.`,
-      );
-      expectNothingChanged(before);
-    });
+        const outcome = await remeasure({ adapter: measuring });
+
+        expect(mainSha()).toBe(merge);
+        expect(outcome.remeasure?.passed).toBe(true);
+        expect(beforeReads.map(({ content }) => content)).toEqual([atBase]);
+        expect(beforeReads[0]?.dir).not.toBe(repo);
+        // Removed after, and its registration pruned with it.
+        expect(existsSync(beforeReads[0]?.dir ?? '')).toBe(false);
+        expect(sh(repo, 'git', 'worktree', 'list', '--porcelain')).not.toContain(
+          beforeReads[0]?.dir,
+        );
+      },
+    );
 
     it('refuses when the local target moved while the stages ran', async () => {
       mergeMovedHead();

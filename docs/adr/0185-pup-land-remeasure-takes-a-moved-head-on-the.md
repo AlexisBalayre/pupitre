@@ -2,6 +2,7 @@
 
 - Status: accepted
 - Amends: [0164](0164-pup-land-takes-a-moved-head-on-the-operator-s-word.md)
+- Amended by: [0197](0197-pup-land-remeasure-reads-before-from-a-checkout-of.md)
 
 185. **`pup land --remeasure` takes a moved head on the gate's word (2026-11-13).**
     Decision 164 lets a PR that GitHub merged at a head past the pin land only on the operator's
@@ -81,6 +82,8 @@
     what came before. Either way the rise read is not this merge's. A session whose merge the
     local target already holds therefore cannot be remeasured, as long as that side is read from
     the main checkout.
+    *Amended by decision 197:* a remeasure reads "before" from a checkout of the commit the merge
+    went onto, so it no longer refuses when the local target is elsewhere.
     *What it checks besides.* The PR's head ref is still read from origin and must be the head
     GitHub reports. The merge commit must still have the tree that merging that head gives
     (decision 131). The pin need not be an ancestor of the head, unlike with `--accept-head`: the

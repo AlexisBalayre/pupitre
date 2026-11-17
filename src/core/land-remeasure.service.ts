@@ -38,9 +38,9 @@ const CRITICAL_PATHS = CRITICAL_AREAS.map(globToRegExp);
  * `--remeasure` (decision 185): the gate's stages, `measureBranch`'s, run on
  * the commit GitHub's merge made, against the commit it went onto on the
  * pinned target, from a gate checkout of its own and under the land's lock, as
- * `runMergeGate` runs them, and only with the local target at that commit,
- * which the main checkout then holds for the complexity stage's "before" as
- * it does for the gate's. The commits past the pin are the ones no gate
+ * `runMergeGate` runs them, with the complexity stage's "before" read from a
+ * checkout of that commit beside it, wherever the local target is (decision
+ * 197). The commits past the pin are the ones no gate
  * measured; when they, or what the merge landed past merging the pin there,
  * change a file in a critical area, or that merge of the pin conflicts, the
  * remeasure runs only on the approval `approvedBy` names: a pass says the code builds and its
@@ -73,18 +73,6 @@ export async function remeasureMerge(
   progress: StageProgress,
 ): Promise<GateReport> {
   const { sha, head, landedOn, mergeCommit, target, prUrl, id, localSha, originTip } = merge;
-  // `measureBranch` reads the complexity stage's "before" from the main
-  // checkout, which holds the local target, not `landedOn`. Any commit between
-  // them that changed a file the merge changes would hide or inflate its rise,
-  // and a target that already holds the merge reads its own change as before.
-  if (localSha !== landedOn) {
-    throw new Error(
-      `Local ${target} is at ${localSha}, not ${landedOn}, the commit the merge of ${prUrl} ` +
-        'went onto. The complexity stage reads what the merge changed as it was before from the ' +
-        `main checkout, so a remeasure runs only with local ${target} at that commit. Nothing ` +
-        'was landed.',
-    );
-  }
   if (req.approvedBy === undefined) {
     // The trees, not `gitDiffPaths`' merge-base range: from an older merge-base
     // a head that kept a change the pin reverted would show none. GitHub merged
@@ -167,8 +155,13 @@ export async function remeasureMerge(
   progress.stage('remeasure');
   const sandbox = sandboxLabel();
   const stages: GateStageResult[] = [];
-  // Where and how `runMergeGate` cuts its checkout, for its reasons.
+  // Where and how `runMergeGate` cuts its checkout, for its reasons. The
+  // complexity stage's "before" is cut beside it at `landedOn`, which the main
+  // checkout need not hold: another PR merged since, or this merge, would hide
+  // or inflate the rise read there (decision 197). Not under the store, whose
+  // reads the sandbox denies a capability's command (decision 36).
   const checkoutRoot = mkdtempSync(join(realpathSync(tmpdir()), 'pup-gate-checkout-'));
+  const checkoutDir = join(checkoutRoot, basename(checkoutRoot));
   let measured: Awaited<ReturnType<typeof measureBranch>>;
   try {
     measured = await measureBranch(
@@ -182,8 +175,8 @@ export async function remeasureMerge(
       },
       session,
       stages,
-      join(checkoutRoot, basename(checkoutRoot)),
-      { targetSha: landedOn, sha: mergeCommit },
+      checkoutDir,
+      { targetSha: landedOn, sha: mergeCommit, beforeDir: `${checkoutDir}-before` },
       progress,
     );
   } finally {
