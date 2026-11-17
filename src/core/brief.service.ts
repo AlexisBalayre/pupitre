@@ -103,7 +103,7 @@ export function readBrief(repoPath: string): string | undefined {
   // sits under the store, where a session can write (decision 194).
   let raw: string;
   try {
-    raw = readPlainFile(path, { followLinks: false });
+    raw = readPlainFile(path, { followLinks: false, soleLink: true });
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
     throw new InvalidProfileError(

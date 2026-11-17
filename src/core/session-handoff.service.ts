@@ -60,7 +60,18 @@ export class HandoffMissingError extends Error {
  */
 function readHandoff(handoffPath: string): string | undefined {
   if (!lstatSync(handoffPath, { throwIfNoEntry: false })) return undefined;
-  return readPlainFile(handoffPath, { followLinks: false });
+  try {
+    return readPlainFile(handoffPath, { followLinks: false, soleLink: true });
+  } catch (error) {
+    const reason =
+      (error as NodeJS.ErrnoException).code === 'ELOOP'
+        ? 'it is a symlink'
+        : (error as Error).message;
+    throw new Error(
+      `The handoff at ${handoffPath} cannot be read as a plain file (${reason}). ` +
+        'Remove it, then write the handoff there again.',
+    );
+  }
 }
 
 function hashHandoff(document: string): string {
@@ -291,7 +302,7 @@ function relaunchWindow(
   const extras = extrasFor(paths);
   const compiledDir = paths.compiledDir(sessionId);
   const contextMarkdown = withoutCodeGraph(
-    readPlainFile(join(compiledDir, 'context.md'), { followLinks: false }),
+    readPlainFile(join(compiledDir, 'context.md'), { followLinks: false, soleLink: true }),
   );
   // Before the kill, so a respawn refused at the top rung leaves the window
   // it would have replaced running.

@@ -1,7 +1,9 @@
 import {
   existsSync,
+  linkSync,
   lstatSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   symlinkSync,
   writeFileSync,
@@ -89,5 +91,22 @@ describe('writeStoreFile (decision 194)', () => {
     expect(lstatSync(join(dir, 'hook.sh')).mode & 0o777).toBe(0o755);
     expect(() => writeStoreFile(join(dir, 'taken'), 'x')).toThrow();
     expect(lstatSync(join(dir, 'taken')).isDirectory()).toBe(true);
+    expect(readdirSync(dir).sort()).toEqual(['hook.sh', 'taken']);
+  });
+
+  // The rename puts a new inode in place, so the other name of a hard link a
+  // session planted keeps what it had.
+  it('replaces a hard link without writing through it', () => {
+    const dir = tempDir('pup-store-');
+    const target = join(tempDir('pup-elsewhere-'), 'target');
+    writeFileSync(target, 'untouched');
+    linkSync(target, join(dir, 'brief.md'));
+
+    writeStoreFile(join(dir, 'brief.md'), 'pup wrote this');
+
+    expect(readFileSync(target, 'utf8')).toBe('untouched');
+    expect(lstatSync(join(dir, 'brief.md')).nlink).toBe(1);
+    expect(readFileSync(join(dir, 'brief.md'), 'utf8')).toBe('pup wrote this');
+    expect(readdirSync(dir)).toEqual(['brief.md']);
   });
 });

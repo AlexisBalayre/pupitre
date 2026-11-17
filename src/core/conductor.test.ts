@@ -1,5 +1,13 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -370,6 +378,23 @@ describe('startConductor', () => {
       symlinkSync(target, file);
 
       expect(maxSessions(REPO)).toBe(4);
+    });
+
+    // The session can write under the store, so the next start must replace a
+    // planted link, not write the cap through it (decision 194).
+    it('replaces a symlink planted as the cap on the next start, leaving its target alone', () => {
+      start({ maxSessions: 7 });
+      const file = join(projectPaths(REPO).root, 'conductor', 'max-sessions');
+      const target = join(tempDir('pup-planted-'), 'cap');
+      writeFileSync(target, 'untouched');
+      rmSync(file);
+      symlinkSync(target, file);
+
+      start({ maxSessions: 5 });
+
+      expect(readFileSync(target, 'utf8')).toBe('untouched');
+      expect(lstatSync(file).isFile()).toBe(true);
+      expect(maxSessions(REPO)).toBe(5);
     });
   });
 

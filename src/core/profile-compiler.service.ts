@@ -515,7 +515,7 @@ const FAILING_SCENARIO_RULE =
 function shiftLeftKickoffOn(repoPath: string): boolean {
   try {
     const file = join(projectPaths(repoPath).root, 'rework', 'shift-left-kickoff');
-    return readPlainFile(file, { followLinks: false }).trim() === 'on';
+    return readPlainFile(file, { followLinks: false, soleLink: true }).trim() === 'on';
   } catch {
     // Missing, a link, or not a regular file: the setting's default, off.
     return false;

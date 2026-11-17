@@ -289,7 +289,7 @@ const STORE_FILE_SUFFIXES = ['', '-wal', '-shm', '-journal'];
  * absent, or a regular file with one link. SQLite makes no hard link, so a
  * second one means someone else put the file there.
  */
-function refuseLinkedStoreFiles(dbPath: string): void {
+export function refuseLinkedStoreFiles(dbPath: string): void {
   for (const suffix of STORE_FILE_SUFFIXES) {
     const path = `${dbPath}${suffix}`;
     const stat = lstatSync(path, { throwIfNoEntry: false });

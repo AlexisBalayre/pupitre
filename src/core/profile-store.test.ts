@@ -1,4 +1,4 @@
-import { mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
+import { linkSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -85,6 +85,16 @@ describe('profile store', () => {
 
     it('refuses a layer that is not a regular file', () => {
       mkdirSync(join(profilesDir, 'backend.yml'));
+
+      expect(() => getProfileLayer(profilesDir, 'backend')).toThrow(
+        /backend\.yml: .*not a plain file/,
+      );
+    });
+
+    it('refuses a layer hard-linked to a file elsewhere', () => {
+      const elsewhere = join(tempDir('pup-elsewhere-'), 'secret.yml');
+      writeFileSync(elsewhere, 'name: backend\ncontextBudget: 1\n');
+      linkSync(elsewhere, join(profilesDir, 'backend.yml'));
 
       expect(() => getProfileLayer(profilesDir, 'backend')).toThrow(
         /backend\.yml: .*not a plain file/,

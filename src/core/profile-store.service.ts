@@ -18,7 +18,9 @@ const LAYER_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
  */
 function loadLayerFile(profilesDir: string, fileName: string): ProfileLayer {
   try {
-    return parseProfileLayer(readPlainFile(join(profilesDir, fileName), { followLinks: false }));
+    return parseProfileLayer(
+      readPlainFile(join(profilesDir, fileName), { followLinks: false, soleLink: true }),
+    );
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     const linked = (error as NodeJS.ErrnoException).code === 'ELOOP';

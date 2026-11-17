@@ -1,10 +1,12 @@
 import {
   chmodSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -286,6 +288,26 @@ describe('pup retro', () => {
     expect(files.markdown).toBe(join(outDir, 'retro-2026-10-21.md'));
     expect(statSync(files.json).mode & 0o777).toBe(0o600);
     expect(statSync(outDir).mode & 0o777).toBe(0o700);
+  });
+
+  // The default folder is under the store, where a session can write, so a
+  // report planted as a link is replaced, never written through (decision 194).
+  it('replaces a report swapped for a symlink, leaving its target alone', () => {
+    transcript([call('r1', 0)]);
+    const outDir = join(claudeDir, 'out');
+    mkdirSync(outDir);
+    const target = join(claudeDir, 'elsewhere');
+    writeFileSync(target, 'untouched');
+    symlinkSync(target, join(outDir, 'retro-2026-10-21.md'));
+    symlinkSync(join(claudeDir, 'never'), join(outDir, 'retro-2026-10-21.json'));
+
+    const files = writeRetro(retro(), REPO, outDir, new Date('2026-10-21T08:00:00Z'));
+
+    expect(readFileSync(target, 'utf8')).toBe('untouched');
+    expect(lstatSync(files.markdown).isFile()).toBe(true);
+    expect(statSync(files.markdown).mode & 0o777).toBe(0o600);
+    expect(lstatSync(files.json).isFile()).toBe(true);
+    expect(statSync(join(claudeDir, 'never'), { throwIfNoEntry: false })).toBeUndefined();
   });
 });
 

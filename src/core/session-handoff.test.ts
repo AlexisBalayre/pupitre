@@ -208,7 +208,10 @@ describe('session handoff', () => {
     mkdirSync(paths().sessionDir('s1'), { recursive: true });
     symlinkSync(target, paths().handoffFile('s1'));
 
-    expect(() => markHandoffReady(db, repoPath, 's1', stateBase)).toThrow(/ELOOP/);
+    expect(() => markHandoffReady(db, repoPath, 's1', stateBase)).toThrow(
+      `The handoff at ${paths().handoffFile('s1')} cannot be read as a plain file (it is a symlink). ` +
+        'Remove it, then write the handoff there again.',
+    );
     expect(
       db.prepare("SELECT COUNT(*) AS n FROM events WHERE type = 'handoff_ready'").get(),
     ).toEqual({ n: 0 });

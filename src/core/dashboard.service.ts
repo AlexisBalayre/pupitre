@@ -876,8 +876,8 @@ function isBranchPast(repoPath: string, branch: string, sha: string): boolean {
 
 /**
  * The session's events file, read as one the session may have replaced
- * (decision 194): no link followed, no fifo blocked on, a regular file only.
- * Undefined when it is absent or is none of those, so one session's planted
+ * (decision 194): no link followed, no fifo blocked on, a regular file with
+ * one link only. Undefined when it is absent or is none of those, so one session's planted
  * link costs its row the activity and not the whole project. Any other failure
  * throws as before, and the fleet view lists the project as unreadable.
  */
@@ -891,7 +891,8 @@ function readEventsFile(eventsFile: string): string | undefined {
     throw error;
   }
   try {
-    return fstatSync(fd).isFile() ? readFileSync(fd, 'utf8') : undefined;
+    const stat = fstatSync(fd);
+    return stat.isFile() && stat.nlink === 1 ? readFileSync(fd, 'utf8') : undefined;
   } finally {
     closeSync(fd);
   }
