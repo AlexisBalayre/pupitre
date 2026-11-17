@@ -1660,18 +1660,23 @@ describe('landSession', { timeout: 20_000 }, () => {
       expectNothingChanged(before);
     });
 
-    /**
-     * Another PR merged on GitHub first, committing `package-lock.json` as
-     * `content`, and a fix round that took it in; then local main fast-forwarded
-     * onto the merge of a head past the pin that wrote `path` as `later`, and an
-     * environment installed in the main checkout, untracked.
-     */
-    function mergeOverLockfile(content: string, path: string, later: string) {
+    /** Another PR merged on GitHub first, committing `path` as `content`, and a fix round took it in. */
+    function baseHolds(path: string, content: string) {
       const clone = cloneOrigin();
-      commitIn(clone, 'package-lock.json', content);
+      commitIn(clone, path, content);
       sh(clone, 'git', 'push', '-q', 'origin', 'HEAD:main');
       sh(worktree, 'git', 'fetch', '-q', origin, 'main');
       sh(worktree, 'git', '-c', 'user.email=t@t', '-c', 'user.name=t', 'merge', '-q', 'FETCH_HEAD');
+    }
+
+    /**
+     * The base holds `package-lock.json` as `content` (`baseHolds`); then local
+     * main fast-forwarded onto the merge of a head past the pin that wrote
+     * `path` as `later`, and an environment installed in the main checkout,
+     * untracked.
+     */
+    function mergeOverLockfile(content: string, path: string, later: string) {
+      baseHolds('package-lock.json', content);
       const moved = mergeMovedHead(path, later);
       sh(repo, 'git', 'fetch', '-q', origin, 'main');
       sh(repo, 'git', 'merge', '-q', '--ff-only', moved.merge);
@@ -1733,37 +1738,15 @@ describe('landSession', { timeout: 20_000 }, () => {
     const adapterRefusal =
       'path(s) that decide which adapters measure the merge or what they run otherwise than';
 
-    it.each(['.pupitre/adapter.yml', 'package.json', 'package-lock.json', 'uv.lock'])(
-      'refuses when local main holds a %s the base does not',
-      async (path) => {
-        const moved = mergeMovedHead(path, '{}\n');
-        sh(repo, 'git', 'fetch', '-q', origin, 'main');
-        sh(repo, 'git', 'merge', '-q', '--ff-only', moved.merge);
-        const before = mainSha();
-        const measured: string[] = [];
-        const recording: Adapter = {
-          ...passingAdapter,
-          gateCommands: (at) => {
-            measured.push(at);
-            return passingAdapter.gateCommands(at);
-          },
-        };
-
-        const refusal = remeasure({ adapter: recording });
-        await expect(refusal).rejects.toThrow(`holds 1 ${adapterRefusal}`);
-        await expect(refusal).rejects.toThrow(`or as a link (${path}).`);
-        expect(measured).toEqual([]);
-        expectNothingChanged(before);
-      },
-    );
-
-    it('refuses when local main reaches the adapter config through a committed link', async () => {
-      // `.pupitre` links to `cfg`, so the diff names neither `.pupitre/**` path.
-      seedPrMerge(PR_URL, passingReport(pinnedStages));
-      commitIn(worktree, 'cfg/adapter.yml', '{}\n');
-      symlinkSync('cfg', join(worktree, '.pupitre'));
-      const later = commitIn(worktree, 'src/fix.ts', 'export const fix = 1;\n');
-      const moved = mergeAt(later);
+    it.each([
+      '.pupitre/adapter.yml',
+      '.Pupitre/adapter.yml',
+      'package.json',
+      'Package.json',
+      'package-lock.json',
+      'uv.lock',
+    ])('refuses when local main holds a %s the base does not', async (path) => {
+      const moved = mergeMovedHead(path, '{}\n');
       sh(repo, 'git', 'fetch', '-q', origin, 'main');
       sh(repo, 'git', 'merge', '-q', '--ff-only', moved.merge);
       const before = mainSha();
@@ -1777,8 +1760,85 @@ describe('landSession', { timeout: 20_000 }, () => {
       };
 
       const refusal = remeasure({ adapter: recording });
-      await expect(refusal).rejects.toThrow(adapterRefusal);
-      await expect(refusal).rejects.toThrow('or as a link (.pupitre).');
+      await expect(refusal).rejects.toThrow(`holds 1 ${adapterRefusal}`);
+      await expect(refusal).rejects.toThrow(`or as a link (${path}).`);
+      expect(measured).toEqual([]);
+      expectNothingChanged(before);
+    });
+
+    /** What is staged in the worktree, committed; the new HEAD sha. */
+    function commitStaged(): string {
+      sh(
+        worktree,
+        'git',
+        '-c',
+        'user.email=l@test',
+        '-c',
+        'user.name=land',
+        'commit',
+        '-q',
+        '-m',
+        'link',
+      );
+      return sh(worktree, 'git', 'rev-parse', 'HEAD');
+    }
+
+    /** `file` committed in the worktree, then `path` as a link to `target`; the new HEAD sha. */
+    function commitLink(path: string, target: string, file: string): string {
+      commitIn(worktree, file, '{}\n');
+      symlinkSync(target, join(worktree, path));
+      sh(worktree, 'git', 'add', '--', path);
+      return commitStaged();
+    }
+
+    it.each([
+      {
+        // The diff names neither `.pupitre/**` path, only `.pupitre` and `cfg/adapter.yml`.
+        name: '`.pupitre` linked to a `cfg` holding `adapter.yml`',
+        named: '.pupitre',
+        commit: () => commitLink('.pupitre', 'cfg', 'cfg/adapter.yml'),
+      },
+      {
+        name: '`.PUPITRE` linked to a `cfg` holding `adapter.yml`',
+        named: '.PUPITRE',
+        commit: () => commitLink('.PUPITRE', 'cfg', 'cfg/adapter.yml'),
+      },
+      {
+        name: "the base's `package.json` turned into a link",
+        named: 'package.json',
+        commit: () => {
+          baseHolds('package.json', '{}\n');
+          rmSync(join(worktree, 'package.json'));
+          return commitLink('package.json', 'cfg/package.json', 'cfg/package.json');
+        },
+      },
+      {
+        name: 'a submodule at `.pupitre`',
+        named: '.pupitre',
+        commit: () => {
+          const gitlink = `160000,${sh(worktree, 'git', 'rev-parse', 'HEAD')},.pupitre`;
+          sh(worktree, 'git', 'update-index', '--add', '--cacheinfo', gitlink);
+          return commitStaged();
+        },
+      },
+    ])('refuses when local main commits $name', async (link) => {
+      seedPrMerge(PR_URL, passingReport(pinnedStages));
+      const moved = mergeAt(link.commit());
+      sh(repo, 'git', 'fetch', '-q', origin, 'main');
+      sh(repo, 'git', 'merge', '-q', '--ff-only', moved.merge);
+      const before = mainSha();
+      const measured: string[] = [];
+      const recording: Adapter = {
+        ...passingAdapter,
+        gateCommands: (at) => {
+          measured.push(at);
+          return passingAdapter.gateCommands(at);
+        },
+      };
+
+      const refusal = remeasure({ adapter: recording });
+      await expect(refusal).rejects.toThrow(`holds 1 ${adapterRefusal}`);
+      await expect(refusal).rejects.toThrow(`or as a link (${link.named}).`);
       expect(measured).toEqual([]);
       expectNothingChanged(before);
     });

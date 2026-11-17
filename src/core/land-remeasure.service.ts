@@ -39,31 +39,60 @@ interface RemeasureRequest {
 const CRITICAL_PATHS = CRITICAL_AREAS.map(globToRegExp);
 
 /**
+ * A path as a case- and normalization-insensitive filesystem such as APFS
+ * reads it, for matching (decision 198): NFKD, so U+212A KELVIN SIGN is `K`,
+ * then upper- and lowercased, which folds more letters onto ASCII (`ı`) than
+ * lowercasing alone. Folding too much only refuses more.
+ */
+function foldPath(path: string): string {
+  return path.normalize('NFKD').toUpperCase().toLowerCase();
+}
+
+/** `glob` and each directory above it up to its first wildcard: a link at any of them redirects it. */
+function withLinkAncestors(glob: string): string[] {
+  const segments = glob.split('/');
+  const wildcard = segments.findIndex((segment) => /[*?]/.test(segment));
+  const literal = segments.slice(0, wildcard === -1 ? segments.length : wildcard);
+  return [glob, ...literal.map((_, depth) => literal.slice(0, depth + 1).join('/'))];
+}
+
+/**
  * What adapter detection and the commands it picks read at the repo's root,
- * and the protected paths a custom adapter's config sits under, the bare
- * directories included, as path matchers (decision 198): the custom adapter's
- * `.pupitre/adapter.yml`, the TypeScript adapter's manifest, `tsconfig.json`,
- * lockfiles and Plug'n'Play loaders, and the Python adapter's manifests and
- * lockfiles.
+ * and the protected paths a custom adapter's config sits under, each with the
+ * directories above it, as folded path matchers (decision 198): the custom
+ * adapter's `.pupitre/adapter.yml`; the TypeScript adapter's manifest,
+ * workspace, `tsconfig.json`, lockfiles, package-manager config and Plug'n'Play
+ * loaders; and the Python adapter's manifests, lockfiles and pinned version.
  */
 const ADAPTER_PATHS = [
-  ...PROTECTED_PATH_GLOBS,
-  ...PROTECTED_PATH_GLOBS.map((glob) => glob.replace(/\/\*\*$/, '')),
-  'package.json',
-  'tsconfig.json',
-  'pnpm-lock.yaml',
-  'yarn.lock',
-  'package-lock.json',
-  '.pnp.cjs',
-  '.pnp.js',
-  'pyproject.toml',
-  'setup.py',
-  'setup.cfg',
-  'requirements.txt',
-  'uv.lock',
-  'poetry.lock',
-  'Pipfile',
-].map(globToRegExp);
+  ...new Set(
+    [
+      ...PROTECTED_PATH_GLOBS,
+      'package.json',
+      'pnpm-workspace.yaml',
+      'tsconfig.json',
+      'pnpm-lock.yaml',
+      'yarn.lock',
+      'package-lock.json',
+      'bun.lock',
+      'bun.lockb',
+      '.yarnrc.yml',
+      '.npmrc',
+      '.pnp.cjs',
+      '.pnp.js',
+      '.pnp.loader.mjs',
+      'pyproject.toml',
+      'setup.py',
+      'setup.cfg',
+      'requirements.txt',
+      'uv.lock',
+      'poetry.lock',
+      'Pipfile',
+      'Pipfile.lock',
+      '.python-version',
+    ].flatMap(withLinkAncestors),
+  ),
+].map((glob) => globToRegExp(foldPath(glob)));
 
 /** Git's tree modes for a symlink and a submodule. */
 const LINK_MODES = new Set(['120000', '160000']);
@@ -135,7 +164,7 @@ export async function remeasureMerge(
     .filter((entry) => LINK_MODES.has(entry.slice(0, entry.indexOf(' '))))
     .map((entry) => entry.slice(entry.indexOf('\t') + 1));
   const adapterFiles = [...new Set([...changed(landedOn, localSha), ...linked])].filter((path) =>
-    ADAPTER_PATHS.some((adapterPath) => adapterPath.test(path)),
+    ADAPTER_PATHS.some((adapterPath) => adapterPath.test(foldPath(path))),
   );
   if (adapterFiles.length > 0) {
     const named = adapterFiles.slice(0, DEBT_DETAIL_SAMPLES).map(quotePath).join(', ');
