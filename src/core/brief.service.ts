@@ -129,9 +129,10 @@ export function readBrief(repoPath: string): string | undefined {
 export function ensureBrief(repoPath: string): { path: string; created: boolean } {
   const path = briefPath(repoPath);
   // lstat, not exists: a link, even a dangling one, must not reach the editor
-  // nor be written through by the template (decision 194).
+  // nor be written through by the template (decision 194). A hard link is one
+  // too: an editor that saves in place would change the other name's file.
   const stat = lstatSync(path, { throwIfNoEntry: false });
-  if (stat?.isFile()) return { path, created: false };
+  if (stat?.isFile() && stat.nlink === 1) return { path, created: false };
   if (stat) {
     throw new InvalidProfileError(
       `The project brief at ${path} is not a plain file pup can edit. Remove it, then run ` +

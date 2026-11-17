@@ -33,15 +33,20 @@
       reclaim a live one. When a file is absent, the reader checks with lstat, not exists, so a
       dangling link reaches the refusal. Otherwise `pup profile show base` would fall back to
       the built-in base, and `pup brief edit` would write the template through the link.
-    - Every write goes through `writeStoreFile` (`paths.utils.ts`): the compiled profile,
+    - Writes go through `writeStoreFile` (`paths.utils.ts`): the compiled profile,
       `brief.md`, the conductor's `max-sessions` and the retro reports. It creates a randomly
       named temp file in the same directory with `O_CREAT | O_EXCL | O_NOFOLLOW`, writes and
       fsyncs it, then renames it over the target. A rename replaces a link, symbolic or hard,
       without following it. A reader sees the old file or the new one, never part of one. A
       directory at the target fails the rename, and the temp file is removed. A mode such as a
-      hook script's or a retro's `0600` is set on the descriptor. `writeCompiledProfile` also
-      refuses its output directory, and every directory below it, when what stands there is
-      not a real directory.
+      hook script's or a retro's `0600` is set on the descriptor. One write does not go
+      through it: the conductor's blocked-since file is removed and then created with `wx`.
+      That is safe too, because an `O_EXCL` create never follows a link. `writeCompiledProfile`
+      also refuses its output directory, and every directory below it, when what stands there
+      is not a real directory.
+    - `ensureBrief` hands the brief to `$EDITOR` only when it is a regular file with one link.
+      An editor that saves in place would otherwise write through a hard link to the other
+      file.
     - The refusal fits the reader. The store, a profile layer, the brief, the handoff and the
       respawn's context throw and name the file. The handoff's message says to remove the file
       and write the handoff again. The dashboard gives that session's row no activity and keeps

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, linkSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -71,6 +71,18 @@ describe('the project brief on disk', () => {
 
     expect(() => readBrief(REPO)).toThrow(InvalidProfileError);
     expect(() => ensureBrief(REPO)).toThrow(/not a plain file pup can edit/);
+  });
+
+  // An editor that saves in place would write through to the other name.
+  it('refuses a brief hard-linked to a file elsewhere, for read and for edit', () => {
+    const target = join(tempDir('pup-elsewhere-'), 'bashrc');
+    writeFileSync(target, 'export PATH=/usr/bin\n');
+    mkdirSync(dirname(briefPath(REPO)), { recursive: true });
+    linkSync(target, briefPath(REPO));
+
+    expect(() => readBrief(REPO)).toThrow(InvalidProfileError);
+    expect(() => ensureBrief(REPO)).toThrow(/not a plain file pup can edit/);
+    expect(readFileSync(target, 'utf8')).toBe('export PATH=/usr/bin\n');
   });
 
   it('does not write the template through a dangling link', () => {
