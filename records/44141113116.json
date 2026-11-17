@@ -1,0 +1,224 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-17T17:57:55.385Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "44141113116",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/44141113116",
+  "actor": "AlexisBalayre",
+  "commit_sha": "c622b4f18a103aec33edab7750f95e2e78a60d64",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 376,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/land-remeasure.service.ts",
+      "line": "70",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "ADAPTER_PATHS takes all of PROTECTED_PATH_GLOBS (`.claude/**`, `.pupitre/**`), so a committed symlink anywhere under `.claude/` refuses every remeasure with no override, even with local main at landedOn, a case that landed before this PR. Any `.claude/**` difference between local main and landedOn refuses too, though nothing in the remeasure reads `.claude/` from the main checkout.",
+      "body": "**Concern.** The adapter-input refusal is meant to cover what adapter resolution reads from the main checkout. ADR 0198 justifies the protected paths only as holding \"the custom adapter's `.pupitre/adapter.yml`\". But the list spreads all of `PROTECTED_PATH_GLOBS` (`['.claude/**', '.pupitre/**']`, `src/core/merge-gate.constants.ts:101`):\n\n```ts\n    [\n      ...PROTECTED_PATH_GLOBS,\n      'package.json',\n```\n\nNothing on the remeasure path reads `.claude/` from the main checkout. `detectAdapters` reads `.pupitre/adapter.yml`, the root manifests and the Python manifests. The only `.claude` reads in `src/` are profile compilation at session launch and `SKIPPED_DIRS` in the TypeScript adapter.\n\n**Triggers.**\n1. **Link scan (regression).** A target repo commits an in-repo symlink under `.claude/`, such as `.claude/skills -> ../.agents/skills`. The `ls-tree` scan at L162-168 lists every `120000`/`160000` entry of `localSha` and matches it against `.claude/**`, whether or not the path changed. So every `pup land --remeasure` for that repo refuses, even with `localSha === landedOn`. Before this PR that case passed the main-at-landedOn guard. The refusal at L172 runs before the `approvedBy` check, so no approval gets past it.\n2. **Diff.** Any `.claude/**` change between landedOn and local main refuses the remeasure. The error tells the operator these paths \"decide which adapters measure the merge\", which is false for them. The operator then has to move local main by hand, which is the friction this PR removes.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/c622b4f18a103aec33edab7750f95e2e78a60d64/src/core/land-remeasure.service.ts#L67-L95\n\n**Fix.** Keep only `.pupitre/**`. The suggestion does that, and `withLinkAncestors` still adds the bare `.pupitre`, so the existing `.pupitre`/`.PUPITRE` link and submodule tests keep refusing.",
+      "suggestion": "      '.pupitre/**',"
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "3081-3088",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "With targetDir, capabilityContext.configPath becomes the random mkdtemp stand-in. Every capability child keys its persistent toolchain cache on that path, so each `pup land --remeasure` creates a new pup-toolchain-cache/<hash> dir in the system temp dir that is never reused or removed.",
+      "body": "**Concern.** On a remeasure, `measureBranch` sets `configPath: configRoot`, which is `${checkoutDir}-target` under a fresh `mkdtemp` root (`land-remeasure.service.ts:251-252,267`):\n\n```ts\nif (targetDir !== undefined) cutGateCheckout(req.repoPath, targetDir, targetSha);\nconst configRoot = targetDir ?? req.repoPath;\nconst capabilityContext: CapabilityContext = {\n  measurePath: checkoutDir,\n  configPath: configRoot,\n```\n\nCapability children pass `repoPath: ctx.configPath` to `runGateChild`: TS coverage (`typescript.adapter.ts:758-760`), the custom adapter (`custom.adapter.ts:78`) and Python (`python.adapter.ts:226`). `gateInvocation` then calls `toolchainCacheDir(repoPath)` (`sandbox.utils.ts:387`), which keys on `projectId(resolvePath(repoPath))`, a sha256 of the path. It runs `ensurePrivateDir` on `<tmpdir>/pup-toolchain-cache/<key>` and its npm, corepack, pip and uv subdirs.\n\nThat function's own doc says the dir \"outlives the run\" and that \"a directory that starts empty every time is worse than no redirect at all\". With a random key, each remeasure gets a cold cache that is never reused. Nothing removes it either: the remeasure's `finally` removes only `checkoutRoot`, and `endSandboxRun` removes only the scratch and policy dirs. ADR 0198 accepts that a remeasure's capabilities \"start from a cache of their own\", but it does not mention that the dir is left behind.\n\n**Trigger.** Any `pup land --remeasure` whose adapters run a capability child, for example TS coverage in a TypeScript repo. Each run leaves a new cache tree in system temp, holding whatever corepack, npm, pip or uv downloaded into it.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/c622b4f18a103aec33edab7750f95e2e78a60d64/src/core/merge-gate.service.ts#L3081-L3088\n\n**Fix options.** Key the cache on the main checkout for a remeasure, for example with a separate cache-key path on `CapabilityContext` that capability children pass as `repoPath`. Or have the remeasure's `finally` also remove `<tmpdir>/pup-toolchain-cache/<projectId(targetDir)>`.",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land-remeasure-environment.service.ts",
+      "line": "70-82",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The committed node_modules check compares `ls-tree HEAD` of the main checkout against landedOn. HEAD is movable: decision 161 moved trusted reads off it, and this PR's own comment in measureBranch says never to read it. Pinning to `localSha`, which the remeasure already holds, would remove the window. Today it is defense in depth only, since a session able to swap HEAD can also write the gitignored node_modules directly.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land-remeasure.service.ts",
+      "line": "47-49",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "foldPath does not strip default-ignorable code points such as U+200C. On an HFS+ volume, or an opt-in casefold directory on older Linux kernels, a merge adding `.pupi‌tre/adapter.yml` passes the adapter-input refusal and is read as `.pupitre/adapter.yml`. Default APFS is not affected. Adding `.replace(/\\p{Default_Ignorable_Code_Point}/gu, '')` only refuses more.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land.test.ts",
+      "line": "1794-1842",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "None of the 'refuses when local main commits $name' cases reaches the ls-tree link scan (land-remeasure.service.ts L162-168). Each one adds or changes the link in the merge, so the diff already refuses, and dropping `...linked` from the Set would pass every test. Add a case where landedOn and local main commit the same `.pupitre -> cfg` link and the merge changes only `cfg/adapter.yml`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land-remeasure-environment.service.ts",
+      "line": "73-75",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The committed-files filter matches the exact spelling `<rel>/node_modules`. On case-insensitive APFS, a local-main commit adding `NODE_MODULES/.bin/vitest` lands in the installed node_modules but is not listed, so the stand-in links it. foldPath and the TypeScript adapter's `/i` NODE_MODULES_PATH fold case for this reason.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0185-pup-land-remeasure-takes-a-moved-head-on-the.md",
+      "line": "5",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The PR adds `- Amended by: [0198](...)` to the header of landed ADR 0185. docs/adr/README.md:22-23 says not to add `Amended by:` lines to a landed decision, because the amending decision's `Amends:` line is the link. Drop the line; 0198 already carries `Amends: 0185`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0185-pup-land-remeasure-takes-a-moved-head-on-the.md",
+      "line": "85",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The PR edits the body of landed ADR 0185 with an inline '*Amended by decision 198:*' note. docs/adr/README.md:19-21 says an amendment is an appended section (dated, with the PR) or a new decision linked through `Amends:`, and that it does not rewrite the landed text. 0198 already is that amendment, so the note is redundant.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land-remeasure-environment.service.ts",
+      "line": "91-104",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "regularFileBytes is a one-caller open/O_NOFOLLOW/fstat/read helper that largely duplicates `readPlainFile(path, { followLinks: false })` in src/adapters/capability.utils.ts:26. Two caveats: readPlainFile caps reads at 1 MiB and returns strings.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "3153-3159",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`await Promise.allSettled([measuredBefore])` wraps a single promise only to rethrow a GateInterruptedError. `await measuredBefore.catch((e) => { if (e instanceof GateInterruptedError) throw e; })` removes the one-element array, the `early` binding and the status/reason checks.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "3078-3081",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The comment above `cutGateCheckout(req.repoPath, targetDir, targetSha)` repeats the new measureBranch JSDoc and ADR 0198. Keep only the clause the JSDoc lacks: past landedOn, the main checkout holds the session's own merge.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": null,
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The comment above `const workspaceRoots` in measureBranch restates the JSDoc of linkStandInEnvironments/refuseForeignEnvironment. Keep only the non-obvious part: the gate checkout links from the stand-in because adapters check their links against it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land-remeasure.service.ts",
+      "line": null,
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The extended comment above `mkdtempSync(...)` says a checkout of landedOn \"is cut beside it\", but measureBranch does the cut. It also repeats the rationale already in the remeasureMerge and measureBranch JSDoc and ADR 0198. Trim it to this site's own reason: not under the store, whose reads the sandbox denies a capability's command (decision 36).",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 1,
+  "comments_posted_actual": 2,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 6.817818699999997,
+  "duration_ms": 446033,
+  "num_turns": 19,
+  "tokens": {
+    "input": 18,
+    "output": 21192,
+    "cache_read": 440269,
+    "cache_creation": 66586,
+    "total": 528065
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 302,
+      "output": 126545,
+      "cache_read": 6299693,
+      "cache_creation": 494036,
+      "cost_usd": 6.461984599999997
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 44,
+      "output": 8766,
+      "cache_read": 259249,
+      "cache_creation": 96451,
+      "cost_usd": 0.3548004
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 666,
+      "cache_read": 0,
+      "cache_creation": 5604,
+      "cost_usd": 0.0010337
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "git -C /home/runner/work/pupitre/pupitre log --summary --format= -- .claude .pupitre"
+    }
+  ]
+}
