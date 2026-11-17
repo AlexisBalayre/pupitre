@@ -31,7 +31,6 @@ import {
 import { SESSION_ID_PATTERN } from './paths.constants.js';
 import { mainLandedMessage } from './profile-compiler.service.js';
 import { NO_PROGRESS, type StageProgress } from './progress.utils.js';
-import { GateInterruptedError } from './sandbox.utils.js';
 import {
   appendEvent,
   getSession,
@@ -46,12 +45,12 @@ import {
   isRegisteredWorktree,
   pinnedPullRequest,
 } from './session-teardown.service.js';
-import type { LandBatchOutcome, LandOutcome } from './types/land.types.js';
+import type { LandOutcome } from './types/land.types.js';
 
-const LAND_UNTOUCHED = 'Nothing was landed.';
+export const LAND_UNTOUCHED = 'Nothing was landed.';
 const LAND_USE: OriginUse = { command: '`pup land`', untouched: LAND_UNTOUCHED };
 
-interface LandRequest {
+export interface LandRequest {
   repoPath: string;
   sessionId: string;
   adapters: Adapter[];
@@ -122,157 +121,7 @@ export async function landSession(
   );
 }
 
-/**
- * `pup land <session> <session> ...` (decision 194): several sessions whose
- * PRs merged on GitHub, landed under one hold of the merge lock and audited
- * once, on the final target. Each session gets `landSession`'s checks,
- * fast-forward, teardown, `landed` event and steer, in the order GitHub merged
- * them. A session its own checks refuse, before the lock or under it, is
- * returned with the refusal and the rest go on; only an interrupt, a kill or
- * a lost merge lock stops them. The audit runs under the lock once at least
- * one landed, and a failed one is returned rather than thrown, since every
- * land before it stands. A moved head is one session's question, so this
- * takes neither `acceptHead` nor `remeasure`. A lock lost under the lands
- * stops the batch before the next land and before the audit, and the release
- * then throws `MergeLockLostError` carrying the batch outcome (decision 88).
- */
-export async function landSessions(
-  db: Database,
-  req: Omit<LandRequest, 'sessionId' | 'acceptHead' | 'remeasure' | 'approvedBy'> & {
-    sessionIds: string[];
-  },
-  progress: StageProgress = NO_PROGRESS,
-): Promise<LandBatchOutcome> {
-  if (req.audit !== false) assertAuditable(req);
-  // The flags that vouch for one session's head never ride along, whatever
-  // the caller's object holds past its type.
-  const one = (sessionId: string): LandRequest => ({
-    ...req,
-    sessionId,
-    acceptHead: undefined,
-    remeasure: false,
-    approvedBy: undefined,
-  });
-  const refused: LandBatchOutcome['refused'] = [];
-  const landable: Landable[] = [];
-  for (const sessionId of new Set(req.sessionIds)) {
-    progress.stage('read PR');
-    try {
-      landable.push(checkLanding(db, one(sessionId)));
-    } catch (error) {
-      refused.push(refusalOf(sessionId, error));
-    }
-  }
-  if (landable.length === 0) return { landed: [], refused };
-  return withMergeLock(
-    req.repoPath,
-    async (): Promise<LandBatchOutcome> => {
-      const landed: LandBatchOutcome['landed'] = [];
-      const order = inMergeOrder(req.repoPath, landable);
-      for (const [at, next] of order.entries()) {
-        // A lost lock is the whole batch's: another merge or land may be
-        // running, so nothing more moves and the release throws (decision 88).
-        if (!mergeLockHeld(req.repoPath)) {
-          const untried = order.slice(at).map(({ session }) => ({
-            sessionId: session.id,
-            reason: `Not tried: the merge lock was lost under the batch. ${BATCH_UNTOUCHED}`,
-          }));
-          return { landed, refused: [...refused, ...untried] };
-        }
-        try {
-          const outcome = await landUnderLock(db, one(next.session.id), next, progress);
-          landed.push({ sessionId: next.session.id, outcome });
-        } catch (error) {
-          refused.push(refusalOf(next.session.id, error));
-        }
-      }
-      if (landed.length === 0 || req.audit === false) return { landed, refused };
-      // The audit keeps the baseline it writes, so never without the lock.
-      if (!mergeLockHeld(req.repoPath)) return { landed, refused };
-      // Under the lock, for `landSession`'s reason (decision 88).
-      progress.stage('audit');
-      try {
-        const audit = await auditProject(db, req.repoPath, req.adapters, req.gateEnv, 'keep');
-        return { landed, refused, audit };
-      } catch (error) {
-        if (error instanceof GateInterruptedError) throw error;
-        rethrowIfKilled(error);
-        return { landed, refused, auditFailure: messageOf(error) };
-      }
-    },
-    req.wait ? MERGE_LOCK_WAIT_MS : 0,
-    progress,
-  );
-}
-
-/**
- * What a refused session in a batch is left with: an earlier land moves the
- * local target to origin's tip, which may hold this session's merge commit.
- */
-const BATCH_UNTOUCHED =
-  'No `landed` event was recorded for it, and main may already hold its merge commit.';
-
-/**
- * One session's refusal in a batch; an interrupt or a kill is the whole run's.
- * "Nothing was landed" holds for one land, not in a batch, so it is reworded.
- */
-function refusalOf(sessionId: string, error: unknown): LandBatchOutcome['refused'][number] {
-  if (error instanceof GateInterruptedError) throw error;
-  rethrowIfKilled(error);
-  return { sessionId, reason: messageOf(error).replaceAll(LAND_UNTOUCHED, BATCH_UNTOUCHED) };
-}
-
-/** Whether this run still holds `repoPath`'s merge lock as it took it. */
-function mergeLockHeld(repoPath: string): boolean {
-  try {
-    assertMergeLockHeld(repoPath, 'the next step of the batch');
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-/**
- * The landable sessions in the order GitHub merged them: after each, the ones
- * whose merge commit descends from its. Origin's target is fetched once per
- * origin and target first, as GitHub made those commits; a fetch that fails
- * keeps the order given, and each land's own fetch then refuses. Only the
- * order rests on this read: each land still checks its own merge commit.
- */
-function inMergeOrder(repoPath: string, landable: Landable[]): Landable[] {
-  const fetched = new Set<string>();
-  for (const { originUrl, target } of landable) {
-    const key = `${originUrl}\n${target}`;
-    if (fetched.has(key)) continue;
-    fetched.add(key);
-    try {
-      fetchTarget(
-        repoPath,
-        originUrl,
-        target,
-        resolveCommit(repoPath, `refs/heads/${target}`),
-        undefined,
-      );
-    } catch (error) {
-      if (error instanceof GateInterruptedError) throw error;
-      rethrowIfKilled(error);
-    }
-  }
-  const earlier = (one: Landable) =>
-    landable.filter(
-      (other) => other !== one && isAncestor(repoPath, other.mergeCommit, one.mergeCommit),
-    ).length;
-  return landable
-    .map((one) => ({ one, after: earlier(one) }))
-    .sort((a, b) => a.after - b.after)
-    .map(({ one }) => one);
-}
-
-function assertAuditable(req: { repoPath: string; adapters: Adapter[] }): void {
+export function assertAuditable(req: { repoPath: string; adapters: Adapter[] }): void {
   if (req.adapters.length === 0) {
     throw new Error(
       `No adapter for ${req.repoPath}; the audit after the land would measure nothing. ` +
@@ -282,13 +131,7 @@ function assertAuditable(req: { repoPath: string; adapters: Adapter[] }): void {
 }
 
 /** A session `checkLanding` passed: what GitHub says merged it, read before the lock. */
-interface Landable {
-  session: SessionRow;
-  id: string;
-  prUrl: string;
-  sha: string;
-  target: string;
-  originUrl: string;
+export interface Landable extends Omit<PinnedPullRequest, 'repo'> {
   head: string;
   mergeCommit: string;
   pullRef: string;
@@ -298,7 +141,7 @@ interface Landable {
  * Every refusal `pup land` makes before the merge lock: the session and its
  * pinned PR, then what GitHub says of it (decisions 84, 86, 146, 164, 185).
  */
-function checkLanding(db: Database, req: LandRequest): Landable {
+export function checkLanding(db: Database, req: LandRequest): Landable {
   const { session, id, prUrl, sha, target, originUrl, repo } = landablePullRequest(db, req);
   if (req.audit !== false) assertAuditable(req);
   if (req.remeasure && req.adapters.length === 0) {
@@ -412,7 +255,7 @@ function checkLanding(db: Database, req: LandRequest): Landable {
  * the fast-forward, the teardown, the `landed` event and the steer. The audit
  * is the caller's, once per hold of the lock.
  */
-async function landUnderLock(
+export async function landUnderLock(
   db: Database,
   req: LandRequest,
   landable: Landable,
@@ -582,6 +425,17 @@ async function landUnderLock(
   return outcome;
 }
 
+/** A merged session and the PR its newest merge pinned, as `landablePullRequest` reads them. */
+interface PinnedPullRequest {
+  session: SessionRow;
+  id: string;
+  prUrl: string;
+  sha: string;
+  target: string;
+  originUrl: string;
+  repo: string;
+}
+
 /**
  * The checks `pup land` and `pup land --abandon-closed` share before asking
  * GitHub: a merged session whose newest merge opened a PR of the repo origin
@@ -590,15 +444,7 @@ async function landUnderLock(
 function landablePullRequest(
   db: Database,
   req: { repoPath: string; sessionId: string },
-): {
-  session: SessionRow;
-  id: string;
-  prUrl: string;
-  sha: string;
-  target: string;
-  originUrl: string;
-  repo: string;
-} {
+): PinnedPullRequest {
   const session = getSession(db, req.sessionId);
   const id = sanitizeReason(req.sessionId);
   if (!session) throw new Error(`No session ${id}. Nothing was landed.`);
@@ -743,7 +589,7 @@ function steerOverlappingSessions(
  * With `pullRef`, the PR's head ref GitHub keeps, fetched in the same call,
  * so an accepted head is read from origin (decision 164).
  */
-function fetchTarget(
+export function fetchTarget(
   repoPath: string,
   originUrl: string,
   target: string,

@@ -15,7 +15,7 @@ import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import type { Adapter } from '../adapters/types/adapter.types.js';
 import { auditProject } from './audit.service.js';
 import { openStore } from './db.client.js';
-import { landSessions } from './land.service.js';
+import { landSessions } from './land-batch.service.js';
 import { MERGE_LOCK_DIRNAME } from './merge-gate.constants.js';
 import { MergeLockLostError } from './merge-gate.errors.js';
 import { projectId } from './paths.utils.js';
@@ -302,6 +302,34 @@ describe('landSessions (decision 194)', { timeout: 30_000 }, () => {
     expect(sh(repo, 'git', 'rev-parse', 'main')).toBe(m1);
     expect(existsSync(join(repo, '.worktrees', 's3'))).toBe(true);
     expect(existsSync(join(repo, '.worktrees', 's1'))).toBe(true);
+  });
+
+  it('runs no audit on a lock lost during the last land, and throws the outcome', async () => {
+    const m1 = mergeOnGitHub('s1');
+    fakeGh(new Map([[1, merged('s1', m1)]]));
+    // The lock moves away during the only land's steer: after it, only the audit is left.
+    const progress = {
+      ...NO_PROGRESS,
+      stage: (name: string) => {
+        if (name === 'steer') {
+          renameSync(join(repo, '.git', MERGE_LOCK_DIRNAME), join(repo, '.git', 'moved.lock'));
+        }
+      },
+    };
+
+    const lost = await landSessions(
+      db,
+      { repoPath: repo, sessionIds: ['s1'], adapters: [passingAdapter] },
+      progress,
+    ).catch((error: unknown) => error);
+
+    expect(lost).toBeInstanceOf(MergeLockLostError);
+    const batch = (lost as MergeLockLostError<LandBatchOutcome>).result;
+    expect(batch.landed.map(({ sessionId }) => sessionId)).toEqual(['s1']);
+    expect(batch.refused).toEqual([]);
+    expect(batch.audit).toBeUndefined();
+    expect(auditProject).not.toHaveBeenCalled();
+    expect(landedEvents('s1')).toHaveLength(1);
   });
 
   it('refuses the whole batch when no adapter could audit it, asking GitHub nothing', async () => {
