@@ -274,4 +274,11 @@
     gets the same answer over a HEAD git refuses to open. A refusal raised with no
     advice of its own still closes on the repair advice, word for word. A
     conductor whose target moves right after the add cuts a clean checkout at the old tip, and
-    the next start moves it to the new one.
+    the next start moves it to the new one. A launch or fix round whose new worktree's `.git`
+    is rewritten right after the add, to name a decoy repo, or swapped for a symlink to it or
+    for a copy of it, is refused like the `commondir` case. The decoy's smudge filter never
+    fires, and the retry leaves it unfired too. A gate whose worktree `.git` has been
+    repointed, symlinked or swapped for an armed repo refuses with nothing fired, and the
+    session stays awaiting review. A `.git` symlink or directory fails
+    `verifiedWorktreeGitEnv`, and a pinned spawn refuses it too if it is swapped in after
+    that check.

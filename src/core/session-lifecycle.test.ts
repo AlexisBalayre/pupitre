@@ -678,31 +678,74 @@ describe('launchTask armed-driver guard', () => {
     expect(gitIn(repo, 'branch', '--list', 'pup/t-1')).toBe('');
   });
 
+  /**
+   * A repo of the session's own: it borrows the real objects, so the launch's
+   * commit resolves there, and its smudge filter marks `fired` on every file a
+   * checkout from it writes.
+   */
+  function armedDecoy(): string {
+    const gitDir = join(tempDir('pup-decoy-'), '.git');
+    gitIn(dirname(gitDir), 'init', '-q');
+    mkdirSync(join(gitDir, 'objects', 'info'), { recursive: true });
+    writeFileSync(
+      join(gitDir, 'objects', 'info', 'alternates'),
+      `${join(repo, '.git', 'objects')}\n`,
+    );
+    mkdirSync(join(gitDir, 'info'), { recursive: true });
+    writeFileSync(join(gitDir, 'info', 'attributes'), '* filter=pwn\n');
+    gitIn(dirname(gitDir), 'config', 'filter.pwn.smudge', `sh -c 'echo pwned >> ${fired}; cat'`);
+    return gitDir;
+  }
+
+  /** A shim case that runs the first `worktree add` for real, then `plant`, as a racing session would. */
+  const afterAdd =
+    (plant: (decoy: string) => string) =>
+    (once: string, decoy: string): string =>
+      `case " $* " in *" worktree add "*) if [ -f ${once} ]; then rm -f ${once}; ${realGit()} "$@" || exit $?; ${plant(decoy)}; exit 0; fi ;; esac`;
+  const gitfile = () => join(repo, '.worktrees', 't-1', '.git');
+
   // The add comes before the pinned checkout (decision 101), so a checkout that
-  // throws (a commondir rewritten in between, a full disk) must take the
+  // throws (a pointer rewritten in between, a full disk) must take the
   // worktree and branch with it, or the retry fails on both (decision 40), and
-  // the refusal must say so rather than ask for a repair of what is gone.
+  // the refusal must say so rather than ask for a repair of what is gone. A
+  // `.git` that is not the regular file reading the admin dir pup derives from
+  // its own record is refused before git reads it, so no decoy's filter runs.
   it.each([
     [
       'a read-tree that fails',
-      (once: string) =>
+      (once: string, _decoy: string) =>
         `case " $* " in *" read-tree "*) if [ -f ${once} ]; then rm -f ${once}; echo 'No space left on device' >&2; exit 128; fi ;; esac`,
       /No space left on device/,
     ],
     [
       'a commondir rewritten right after the add',
-      (once: string) =>
-        `case " $* " in *" worktree add "*) if [ -f ${once} ]; then rm -f ${once}; ${realGit()} "$@" || exit $?; echo ${tempDir('pup-elsewhere-')}/.git > ${join(repo, '.git', 'worktrees', 't-1', 'commondir')}; exit 0; fi ;; esac`,
+      afterAdd((decoy) => `echo ${decoy} > ${join(repo, '.git', 'worktrees', 't-1', 'commondir')}`),
+      WorktreeRepointedError,
+    ],
+    [
+      'a .git rewritten to name a decoy repo right after the add',
+      afterAdd((decoy) => `echo gitdir: ${decoy} > ${gitfile()}`),
+      WorktreeRepointedError,
+    ],
+    [
+      'a .git swapped for a symlink to a decoy repo right after the add',
+      afterAdd((decoy) => `rm ${gitfile()} && ln -s ${decoy} ${gitfile()}`),
+      WorktreeRepointedError,
+    ],
+    [
+      'a .git swapped for a decoy directory right after the add',
+      afterAdd((decoy) => `rm ${gitfile()} && cp -R ${decoy} ${gitfile()}`),
       WorktreeRepointedError,
     ],
   ])('undoes the add on %s, says so, and the retry launches', (_, shimCase, refusal) => {
     planTask(db, { repoPath: repo, task: spec() });
+    const decoy = armedDecoy();
     const shim = tempDir('pup-git-');
     const once = join(shim, 'once');
     writeFileSync(once, '');
     writeFileSync(
       join(shim, 'git'),
-      ['#!/bin/sh', shimCase(once), `exec ${realGit()} "$@"`].join('\n'),
+      ['#!/bin/sh', shimCase(once, decoy), `exec ${realGit()} "$@"`].join('\n'),
       { mode: 0o755 },
     );
     vi.stubEnv('PATH', `${shim}:${process.env.PATH}`);
@@ -722,9 +765,13 @@ describe('launchTask armed-driver guard', () => {
     expect(existsSync(join(repo, '.worktrees', 't-1'))).toBe(false);
     expect(gitIn(repo, 'worktree', 'list', '--porcelain')).not.toContain('.worktrees');
     expect(gitIn(repo, 'branch', '--list', 'pup/t-1')).toBe('');
+    // Nothing ran the decoy's filter, and the undo removed the link, not the repo it named.
+    expect(existsSync(fired)).toBe(false);
+    expect(existsSync(join(decoy, 'HEAD'))).toBe(true);
 
     expect(launch()).toBe('t-1');
     expect(existsSync(join(repo, '.worktrees', 't-1', 'src/core/github.client.ts'))).toBe(true);
+    expect(existsSync(fired)).toBe(false);
   });
 
   // `worktree prune` keeps a locked registration and says nothing, so the
