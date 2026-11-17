@@ -1,0 +1,84 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-17T14:43:21.766Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "44105846285",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/44105846285",
+  "actor": "AlexisBalayre",
+  "commit_sha": "cc4346a7dbdc8a9b9eca9bedfb61dc9c2dd0fe7d",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 371,
+  "action": "review",
+  "reviewers_spawned": [
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "context",
+    "maintainability",
+    "spec",
+    "simplicity",
+    "guards",
+    "workflow-safety"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "a2aaecca7b392307e7002da376773157b179600d",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "docs/adr/0191-a-worker-s-bash-calls-can-run-in-claude-code-s.md",
+      "line": "131-142",
+      "description": "Decisions 191 and 196 had already landed, and this PR rewrites their text in place (191's allowLocalBinding paragraph and ceiling 5, 196's ceiling 3) when it should add a dated amendment or a new decision with `Amends:`.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "The delta since a2aaecc changes prose only: it restores the landed text of ADRs 0191 and 0196 and appends a dated amendment to each. Spawned review-conventions and review-docs. Skipped correctness, security, simplicity, guards, context, maintainability and workflow-safety: the delta changes no logic, adds no source files or helpers, and touches no trust boundary or workflow. Skipped spec: there is no spec source."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.5074446,
+  "duration_ms": 45797,
+  "num_turns": 10,
+  "tokens": {
+    "input": 12,
+    "output": 3808,
+    "cache_read": 251958,
+    "cache_creation": 36677,
+    "total": 292455
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 12,
+      "output": 3808,
+      "cache_read": 251958,
+      "cache_creation": 36677,
+      "cost_usd": 0.42001560000000004
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 10,
+      "output": 1490,
+      "cache_read": 41640,
+      "cache_creation": 27338,
+      "cost_usd": 0.08742899999999999
+    }
+  ],
+  "permission_denials": []
+}
