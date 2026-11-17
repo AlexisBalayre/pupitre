@@ -77,3 +77,38 @@
     *Cost.* An operator who keeps profile layers or the brief as symlinks into a dotfiles
     repository must copy them in instead. The same goes for a hard link. A store file is a new
     inode after each rewrite, not the old one overwritten. Each write costs an fsync.
+
+## Amendment (2026-11-17)
+
+The rule's list of writes said only the blocked-since file skips `writeStoreFile`. Three more
+store writes skip it as well.
+
+- The compiled hooks append to `sessions/<id>/events.jsonl` with the shell's `>>`. These are
+  `hooks/event-log.sh` on PostToolUse, Stop and Notification, and the Bash re-check script's
+  `scope_violation` line (`profile-compiler.service.ts`). `>>` opens with `O_APPEND | O_CREAT`
+  and no `O_NOFOLLOW`, so it follows a link. A link planted at `events.jsonl` makes every hook
+  call append one JSON line to the file the link points at. Part of that line is the tool
+  input, which the session controls. The hook runs in Claude Code's process, outside the
+  Bash sandbox. Only the dashboard's read of the file refuses the link. This gap is worth
+  closing, and a follow-up task covers it.
+- `writeRenamed` (`src/claude/session-runtime.service.ts`) writes `session-env.json` at the
+  project root, `sessions/<id>/pane-pid`, `conductor/pane-pid` and the socket record
+  `sessions/<id>/tmux-socket`. It writes a temp file named `<target>.<uuid>.tmp` with plain
+  `writeFileSync` and renames it over the target. The rename replaces a link at the target
+  without following it. The random name leaves no temp path to plant a link at in advance.
+  It differs from `writeStoreFile` in three ways. It does not fsync. It does not remove the
+  temp file when the rename fails. Its `mkdirSync({ recursive: true })` follows a link in
+  place of a parent directory. `recordWindowSocket` refuses a symlinked session directory
+  before it writes, but the pane-pid writes do not check, and neither does the conductor's
+  directory. A linked parent is the gap already listed for `sessions/<id>` and the project
+  root. This is an accepted low. A torn or stale pid or socket record affects only the
+  session that owns it.
+- The status line script `hooks/statusline.sh` writes `usage.json` by creating a temp file
+  with `mktemp "$USAGE.XXXXXX"`, which is an `O_EXCL` create. It then runs `mv -f` over
+  the target. The rename replaces a link at the target rather than writing through it. It
+  does not fsync. This is accepted.
+
+Writes outside the store are not part of this rule. These are the test slots under
+`~/.pupitre/slots` (an `O_EXCL` stage, then a hard link), the intents under the repository,
+the merge lock under `.git`, the gate child's sandbox profile in an `mkdtemp` directory, and
+`preseedTrust`'s `~/.claude.json`.
