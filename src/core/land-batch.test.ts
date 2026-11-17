@@ -332,6 +332,43 @@ describe('landSessions (decision 195)', { timeout: 30_000 }, () => {
     expect(landedEvents('s1')).toHaveLength(1);
   });
 
+  // A terminal Ctrl-C under the lock kills only the child git (decision 88);
+  // its failure is the only sign of it, so it ends the batch, never one land.
+  it.each([
+    { fetch: 1, what: 'the ordering fetch', landed: [] },
+    { fetch: 3, what: "the second land's fetch", landed: ['s2'] },
+  ])('stops the batch at a Ctrl-C killing $what: no further land, no audit', async (row) => {
+    const m2 = mergeOnGitHub('s2');
+    const m3 = mergeOnGitHub('s3');
+    const m1 = mergeOnGitHub('s1');
+    fakeGh(
+      new Map([
+        [1, merged('s1', m1)],
+        [2, merged('s2', m2)],
+        [3, merged('s3', m3)],
+      ]),
+    );
+    const realGit = sh(repo, 'sh', '-c', 'command -v git');
+    const dir = tempDir('pup-land-batch-git-');
+    const count = join(dir, 'fetches');
+    writeFileSync(
+      join(dir, 'git'),
+      '#!/bin/sh\ncase " $* " in\n  *" fetch "*)\n' +
+        `    n=$(($(cat '${count}' 2>/dev/null || echo 0) + 1)); echo "$n" > '${count}'\n` +
+        `    [ "$n" = ${row.fetch} ] && kill -INT $$ ;;\nesac\nexec '${realGit}' "$@"\n`,
+      { mode: 0o755 },
+    );
+    process.env.PATH = `${dir}:${process.env.PATH}`;
+
+    const failure = await landAll().catch((error: unknown) => error);
+
+    expect(failure).toMatchObject({ signal: 'SIGINT' });
+    for (const id of SESSIONS) {
+      expect(landedEvents(id)).toHaveLength(row.landed.includes(id) ? 1 : 0);
+    }
+    expect(auditProject).not.toHaveBeenCalled();
+  });
+
   it('refuses the whole batch when no adapter could audit it, asking GitHub nothing', async () => {
     await expect(
       landSessions(db, { repoPath: repo, sessionIds: [...SESSIONS], adapters: [] }),

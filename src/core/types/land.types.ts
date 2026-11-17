@@ -1,3 +1,5 @@
+import type { Adapter } from '../../adapters/types/adapter.types.js';
+import type { SessionRow } from '../session.repository.js';
 import type { AuditOutcome } from './audit.types.js';
 import type { GateReport } from './merge-gate.types.js';
 
@@ -46,4 +48,48 @@ export interface LandBatchOutcome {
   audit?: AuditOutcome;
   /** Why that audit failed: the lands stand, and `pup audit` is the operator's to re-run. */
   auditFailure?: string;
+}
+
+export interface LandRequest {
+  repoPath: string;
+  sessionId: string;
+  adapters: Adapter[];
+  gateEnv?: string[];
+  /** Wait for a merge lock a live run holds, as `pup land` does, rather than refuse (decision 88). */
+  wait?: boolean;
+  /** `false` lands without the audit, so several lands share one `pup audit` (decision 132). */
+  audit?: boolean;
+  /**
+   * The operator's word for a head the PR merged at past the pin (decision
+   * 164): the full sha GitHub reports, after reading the commits between them.
+   */
+  acceptHead?: string;
+  /**
+   * The gate's word for a head the PR merged at past the pin (decision 185):
+   * its stages run on the merge commit under the lock, and only a pass lands.
+   */
+  remeasure?: boolean;
+  /**
+   * Who approved a remeasure whose commits past the pin touch a critical area
+   * (decision 185), scrubbed by the caller; the land event records it.
+   */
+  approvedBy?: string;
+}
+
+/** A merged session and the PR its newest merge pinned, as `landablePullRequest` reads them. */
+export interface PinnedPullRequest {
+  session: SessionRow;
+  id: string;
+  prUrl: string;
+  sha: string;
+  target: string;
+  originUrl: string;
+  repo: string;
+}
+
+/** A session `checkLanding` passed: what GitHub says merged it, read before the lock. */
+export interface Landable extends Omit<PinnedPullRequest, 'repo'> {
+  head: string;
+  mergeCommit: string;
+  pullRef: string;
 }

@@ -6,8 +6,6 @@ import {
   checkLanding,
   fetchTarget,
   LAND_UNTOUCHED,
-  type Landable,
-  type LandRequest,
   landUnderLock,
 } from './land.service.js';
 import {
@@ -19,7 +17,7 @@ import {
 } from './merge-gate.service.js';
 import { NO_PROGRESS, type StageProgress } from './progress.utils.js';
 import { GateInterruptedError } from './sandbox.utils.js';
-import type { LandBatchOutcome } from './types/land.types.js';
+import type { Landable, LandBatchOutcome, LandRequest } from './types/land.types.js';
 
 /**
  * `pup land <session> <session> ...` (decision 195): several sessions whose

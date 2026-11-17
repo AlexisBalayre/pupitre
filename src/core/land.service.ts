@@ -31,13 +31,7 @@ import {
 import { SESSION_ID_PATTERN } from './paths.constants.js';
 import { mainLandedMessage } from './profile-compiler.service.js';
 import { NO_PROGRESS, type StageProgress } from './progress.utils.js';
-import {
-  appendEvent,
-  getSession,
-  isPrClosedOnRecord,
-  listSessions,
-  type SessionRow,
-} from './session.repository.js';
+import { appendEvent, getSession, isPrClosedOnRecord, listSessions } from './session.repository.js';
 import { steerSession } from './session-lifecycle.service.js';
 import {
   assertStillMerged,
@@ -45,36 +39,10 @@ import {
   isRegisteredWorktree,
   pinnedPullRequest,
 } from './session-teardown.service.js';
-import type { LandOutcome } from './types/land.types.js';
+import type { Landable, LandOutcome, LandRequest, PinnedPullRequest } from './types/land.types.js';
 
 export const LAND_UNTOUCHED = 'Nothing was landed.';
 const LAND_USE: OriginUse = { command: '`pup land`', untouched: LAND_UNTOUCHED };
-
-export interface LandRequest {
-  repoPath: string;
-  sessionId: string;
-  adapters: Adapter[];
-  gateEnv?: string[];
-  /** Wait for a merge lock a live run holds, as `pup land` does, rather than refuse (decision 88). */
-  wait?: boolean;
-  /** `false` lands without the audit, so several lands share one `pup audit` (decision 132). */
-  audit?: boolean;
-  /**
-   * The operator's word for a head the PR merged at past the pin (decision
-   * 164): the full sha GitHub reports, after reading the commits between them.
-   */
-  acceptHead?: string;
-  /**
-   * The gate's word for a head the PR merged at past the pin (decision 185):
-   * its stages run on the merge commit under the lock, and only a pass lands.
-   */
-  remeasure?: boolean;
-  /**
-   * Who approved a remeasure whose commits past the pin touch a critical area
-   * (decision 185), scrubbed by the caller; the land event records it.
-   */
-  approvedBy?: string;
-}
 
 /**
  * `pup land <session>` (decision 84): the GitHub half of a `--pr` merge. Every
@@ -128,13 +96,6 @@ export function assertAuditable(req: { repoPath: string; adapters: Adapter[] }):
         'Nothing was landed.',
     );
   }
-}
-
-/** A session `checkLanding` passed: what GitHub says merged it, read before the lock. */
-export interface Landable extends Omit<PinnedPullRequest, 'repo'> {
-  head: string;
-  mergeCommit: string;
-  pullRef: string;
 }
 
 /**
@@ -425,17 +386,6 @@ export async function landUnderLock(
   return outcome;
 }
 
-/** A merged session and the PR its newest merge pinned, as `landablePullRequest` reads them. */
-interface PinnedPullRequest {
-  session: SessionRow;
-  id: string;
-  prUrl: string;
-  sha: string;
-  target: string;
-  originUrl: string;
-  repo: string;
-}
-
 /**
  * The checks `pup land` and `pup land --abandon-closed` share before asking
  * GitHub: a merged session whose newest merge opened a PR of the repo origin
@@ -622,6 +572,7 @@ export function fetchTarget(
       return pullRef === undefined ? { tip } : { tip, pullHead: tipOf('refs/heads/pull') };
     });
   } catch (error) {
+    rethrowIfKilled(error);
     throw new Error(
       `Fetching ${fetched} from ${sanitizeReason(originUrl)} failed. Nothing was landed.\n` +
         failureSummary(error),
