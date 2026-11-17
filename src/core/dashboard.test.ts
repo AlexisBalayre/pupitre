@@ -1629,6 +1629,101 @@ describe('needsYou', () => {
       ]);
     });
 
+    // A session that reported done still asks, while merging main or fixing
+    // what the conductor sent back, and nothing else reaches the operator.
+    it('lists a question an awaiting-review session asked after it was done', () => {
+      seedIn('s1', ['running']);
+      appendEvent(db, 's1', 'session_done', { summary: 'done' });
+      transitionSession(db, 's1', 'awaiting-review');
+      appendEvent(db, 's1', 'question', { text: 'keep main?', options: ['yes', 'no'] });
+      const asked = newestEventId(db);
+
+      expect(inbox()).toEqual([
+        {
+          kind: 'question',
+          sessionId: 's1',
+          label: 's1',
+          reason: `question #${asked}: keep main?`,
+          answer: `pup answer s1 <n> --question ${asked}, or pup answer s1 "..." --question ${asked}`,
+          questionId: asked,
+          options: ['yes', 'no'],
+        },
+      ]);
+    });
+
+    it("drops an awaiting-review session's question once answered", () => {
+      seedIn('s1', ['running']);
+      appendEvent(db, 's1', 'session_done', { summary: 'done' });
+      transitionSession(db, 's1', 'awaiting-review');
+      appendEvent(db, 's1', 'question', { text: 'keep main?', options: ['yes', 'no'] });
+      appendEvent(db, 's1', 'answer', {
+        question: 'keep main?',
+        questionId: newestEventId(db),
+        text: 'yes',
+        option: 1,
+      });
+
+      expect(inbox().map((need) => need.kind)).not.toContain('question');
+    });
+
+    // The inbox lists a session once, under a question first: one asked while
+    // running must not hide the review line, nor a gate refusal behind it.
+    it('lists no question an awaiting-review session asked before it was done', () => {
+      seedIn('s1', ['running']);
+      appendEvent(db, 's1', 'question', { text: 'keep main?' });
+      appendEvent(db, 's1', 'session_done', { summary: 'done' });
+      transitionSession(db, 's1', 'awaiting-review');
+
+      expect(inbox().map((need) => need.kind)).toEqual(['awaiting-review']);
+    });
+
+    it('lists no question from an awaiting-review session that never reported done', () => {
+      seedIn('s1', ['running', 'awaiting-review']);
+      appendEvent(db, 's1', 'question', { text: 'keep main?' });
+
+      expect(inbox().map((need) => need.kind)).toEqual(['awaiting-review']);
+    });
+
+    // Only running and awaiting-review sessions carry a question: a blocked one
+    // keeps its unblock line, and any other state fails closed.
+    it.each([
+      ['blocked', ['running', 'blocked'] as SessionState[], ['blocked']],
+      ['rejected', ['running', 'awaiting-review', 'rejected'] as SessionState[], []],
+    ])('lists no question from a %s session', (_, path, kinds) => {
+      seedIn('s1', ['running']);
+      appendEvent(db, 's1', 'question', { text: 'keep main?' });
+      for (const state of path.slice(1)) transitionSession(db, 's1', state);
+
+      expect(inbox().map((need) => need.kind)).toEqual(kinds);
+    });
+
+    // `pup answer` refuses a terminal session, so its question has no answer.
+    it.each([
+      ['killed', () => seedIn('s1', ['running', 'awaiting-review', 'killed'])],
+      [
+        'landed',
+        () => {
+          seedMerge('s1', 'https://github.com/o/r/pull/7');
+          seedLanded('s1');
+        },
+      ],
+      [
+        'retired',
+        () => {
+          seedMerge('s1', 'https://github.com/o/r/pull/7');
+          appendEvent(db, 's1', 'retired', {
+            prUrl: 'https://github.com/o/r/pull/7',
+            supersededBy: 'https://github.com/o/r/pull/8',
+          });
+        },
+      ],
+    ])('lists no question from a %s session', (_, seed) => {
+      seed();
+      appendEvent(db, 's1', 'question', { text: 'keep main?' });
+
+      expect(inbox().map((need) => need.kind)).not.toContain('question');
+    });
+
     it("lists the running conductor's question first", () => {
       vi.mocked(hasConductorWindow).mockReturnValue(true);
       seedIn('s1', ['running', 'blocked']);

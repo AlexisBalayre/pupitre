@@ -924,10 +924,16 @@ function dashboardSession(
   // Newest first, so `find` returns the latest matching event.
   const events = listEvents(db, row.id).reverse();
   const lastSteer = newestSteer(events);
-  // Like activity: a question is a running session's. Killed or merged, nothing
-  // can answer it (steers refuse terminal sessions), so it must not outlive it.
+  // A running session's, or one awaiting review that asked since it reported
+  // done, while merging main or fixing what a reviewer sent back. Only those:
+  // the inbox lists a session once, under a question first, so an older one
+  // must not hide a refused gate or an unblock. Any other state fails closed.
+  const asked = ['running', 'awaiting-review'].includes(row.state)
+    ? dashboardQuestion(openQuestion(db, row.id))
+    : undefined;
+  const doneId = events.find((event) => event.type === 'session_done')?.id ?? Infinity;
   const question =
-    row.state === 'running' ? dashboardQuestion(openQuestion(db, row.id)) : undefined;
+    row.state === 'awaiting-review' && asked !== undefined && asked.id < doneId ? undefined : asked;
   const pr = row.state === 'merged' ? openPullRequest(events) : undefined;
   const openPr = pr && !isLanded(pr.target, pr.sha) ? { url: pr.url } : undefined;
   const lastGate = newestGate(events);
