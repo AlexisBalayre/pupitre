@@ -1,6 +1,14 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  linkSync,
+  mkdirSync,
+  rmSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -314,6 +322,29 @@ describe('session handoff', () => {
 
     expect(() => respawnSessionWithTestPaths()).toThrow(
       /Handoff for s1 at .*handoff\.md is not the document it signalled/,
+    );
+    expect(killSession).not.toHaveBeenCalled();
+    expect(kickoff).not.toHaveBeenCalled();
+  });
+
+  // A session may swap its signalled handoff for a link to a file it cannot
+  // read itself, so the unsandboxed respawn would paste that file into the next
+  // window (decision 194). The target holds exactly the signalled bytes, so the
+  // hash check would pass: only opening without following the link refuses it.
+  it.each([
+    ['symlink', symlinkSync, 'it is a symlink'],
+    ['hard link', linkSync, 'is not a plain file'],
+  ] as const)('refuses to respawn on a handoff swapped for a %s', (_kind, link, reason) => {
+    writeCompiled();
+    handoffRound('half the work is done\n');
+    const target = join(tempDir('pup-elsewhere-'), 'secret');
+    writeFileSync(target, 'half the work is done\n');
+    const handoffPath = paths().handoffFile('s1');
+    rmSync(handoffPath);
+    link(target, handoffPath);
+
+    expect(() => respawnSessionWithTestPaths()).toThrow(
+      new RegExp(`^The handoff at ${handoffPath} cannot be read as a plain file \\(.*${reason}`),
     );
     expect(killSession).not.toHaveBeenCalled();
     expect(kickoff).not.toHaveBeenCalled();
