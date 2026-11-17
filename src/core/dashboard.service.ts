@@ -58,6 +58,7 @@ import {
   formatStaleAge,
   isSessionStalled,
 } from './session-activity.utils.js';
+import { isTerminal } from './session-state.utils.js';
 import { taskRescopes } from './task-rescope.service.js';
 import type {
   DashboardBaseline,
@@ -924,10 +925,11 @@ function dashboardSession(
   // Newest first, so `find` returns the latest matching event.
   const events = listEvents(db, row.id).reverse();
   const lastSteer = newestSteer(events);
-  // Like activity: a question is a running session's. Killed or merged, nothing
-  // can answer it (steers refuse terminal sessions), so it must not outlive it.
-  const question =
-    row.state === 'running' ? dashboardQuestion(openQuestion(db, row.id)) : undefined;
+  // Any live session's, whatever its state: one awaiting review still asks
+  // while merging main or fixing what the conductor sent back. Killed or merged
+  // (landed and retired come after merged), nothing can answer it (`pup answer`
+  // refuses terminal sessions), so it must not outlive it.
+  const question = isTerminal(row.state) ? undefined : dashboardQuestion(openQuestion(db, row.id));
   const pr = row.state === 'merged' ? openPullRequest(events) : undefined;
   const openPr = pr && !isLanded(pr.target, pr.sha) ? { url: pr.url } : undefined;
   const lastGate = newestGate(events);
