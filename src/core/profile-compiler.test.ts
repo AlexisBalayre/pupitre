@@ -1029,7 +1029,7 @@ describe('the worker sandbox (decision 191)', () => {
       strictAllowlist: true,
       // The web dashboard's tests listen on loopback (decision 191).
       allowLocalBinding: true,
-      // tsx's IPC socket dir, and no other Unix socket (decision 194).
+      // tsx's IPC socket dir, and no other Unix socket (decision 196).
       allowUnixSockets: [
         join(realpathSync('/tmp'), `claude-${process.getuid?.()}`, `tsx-${process.geteuid?.()}`),
       ],
@@ -1037,7 +1037,7 @@ describe('the worker sandbox (decision 191)', () => {
   });
 
   // Claude Code sets the variable in its own Bash children, so a compile run
-  // from one sees it; the worker's launch strips it (decision 194).
+  // from one sees it; the worker's launch strips it (decision 196).
   it("grants tsx's socket dir under /tmp whatever CLAUDE_CODE_TMPDIR the compile sees", () => {
     vi.stubEnv('CLAUDE_CODE_TMPDIR', tempDir('pup-claude-tmp-'));
     const { sandbox } = JSON.parse(
@@ -1049,15 +1049,18 @@ describe('the worker sandbox (decision 191)', () => {
     ]);
   });
 
-  it("refuses the compile rather than grant root's tsx socket dir when the uid is unknown", () => {
-    const getuid = Object.getOwnPropertyDescriptor(process, 'getuid') as PropertyDescriptor;
-    Object.defineProperty(process, 'getuid', { ...getuid, value: undefined });
-    try {
-      expect(() => compileIn(repoWith('workerSandbox: true\n'))).toThrow(/uid/);
-    } finally {
-      Object.defineProperty(process, 'getuid', getuid);
-    }
-  });
+  it.each(['getuid', 'geteuid'] as const)(
+    "refuses the compile rather than grant root's tsx socket dir without process.%s",
+    (name) => {
+      const real = Object.getOwnPropertyDescriptor(process, name) as PropertyDescriptor;
+      Object.defineProperty(process, name, { ...real, value: undefined });
+      try {
+        expect(() => compileIn(repoWith('workerSandbox: true\n'))).toThrow(/uid/);
+      } finally {
+        Object.defineProperty(process, name, real);
+      }
+    },
+  );
 
   // A sandboxed kill(pid, 0) on an unsandboxed pid fails with EPERM (probed), so
   // the slot protocol would reclaim a live gate's slot. Ungranted, `pup session

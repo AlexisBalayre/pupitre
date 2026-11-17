@@ -1366,7 +1366,7 @@ jq -c --arg sid "\${PUP_SESSION_ID:-unknown}" '. + {pup_session_id: $sid}' >> '$
  *   the sandbox: the web dashboard's tests listen on loopback, and the
  *   pre-commit hook runs them inside the sandbox for any change they import.
  *   Unix sockets only in tsx's socket dir, which tsx binds on every run
- *   (decision 194).
+ *   (decision 196).
  * `failIfUnavailable` refuses the launch rather than run the worker
  * unsandboxed, and `allowUnsandboxedCommands` ignores a call's request to leave
  * it. `refuseUserSandbox` keeps the operator's user settings, as they stand at
