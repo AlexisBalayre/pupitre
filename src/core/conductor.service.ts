@@ -21,7 +21,7 @@ import {
 } from '../claude/session-runtime.service.js';
 import { getWatcherBeat } from './overlap.repository.js';
 import { WATCH_STALE_AFTER_MS } from './overlap.service.js';
-import { projectId, projectPaths, writeStoreFile } from './paths.utils.js';
+import { projectId, projectPaths } from './paths.utils.js';
 import {
   compileConductorProfile,
   snapshotUserConfigHash,
@@ -163,37 +163,6 @@ function sameText(a: string, b: string): boolean {
   return left.length === right.length && timingSafeEqual(left, right);
 }
 
-/** How many live sessions a launch may reach when no conductor start set it (decision 96). */
-export const DEFAULT_MAX_SESSIONS = 4;
-
-/**
- * Where `pup conductor start --max-sessions` keeps the cap, beside the
- * conductor's other state. Derived here rather than added to `projectPaths`:
- * this module is its only consumer.
- */
-function maxSessionsFile(repoPath: string): string {
-  return join(projectPaths(repoPath).root, 'conductor', 'max-sessions');
-}
-
-/**
- * The most live sessions a launch may reach in this project: the cap the last
- * conductor start stored, else `DEFAULT_MAX_SESSIONS`. A file that holds no
- * positive whole number, a symlink, or one that is not a regular file, reads
- * as the default rather than as no cap; a fifo planted there is never opened
- * to block on, nor a link followed.
- */
-export function maxSessions(repoPath: string): number {
-  let stored: number;
-  try {
-    stored = Number(
-      readPlainFile(maxSessionsFile(repoPath), { followLinks: false, soleLink: true }).trim(),
-    );
-  } catch {
-    return DEFAULT_MAX_SESSIONS;
-  }
-  return Number.isInteger(stored) && stored > 0 ? stored : DEFAULT_MAX_SESSIONS;
-}
-
 /**
  * Compile the conductor's profile and open its window in the main checkout,
  * then type its context in as the opening prompt. One conductor per project:
@@ -210,11 +179,8 @@ export function maxSessions(repoPath: string): number {
  * start that succeeds brings the conflict radar up with it (`startRadarWith`)
  * and says in the handle whether it did.
  */
-export function startConductor(
-  req: StartConductorRequest & { maxSessions?: number },
-): ConductorHandle {
+export function startConductor(req: StartConductorRequest): ConductorHandle {
   const pid = projectId(req.repoPath);
-  const cap = req.maxSessions ?? DEFAULT_MAX_SESSIONS;
   const name = conductorName(pid);
   const outDir = projectPaths(req.repoPath).conductorCompiledDir;
   const compiled = compileConductorProfile({
@@ -225,15 +191,9 @@ export function startConductor(
     workerModel: req.workerModel,
     userConfigHash: snapshotUserConfigHash(req.windowEnv.configDir),
     outDir,
-    maxSessions: cap,
   });
   mkdirSync(outDir, { recursive: true });
   writeCompiledProfile(compiled, outDir);
-  // Stored on every start, a start without the flag included: the cap the
-  // conductor's kickoff names is the one every launch is held to (decision 96).
-  // The session can write there, so the cap is never written through a link
-  // planted in its place (decision 194).
-  writeStoreFile(maxSessionsFile(req.repoPath), `${cap}\n`);
   // A new conductor starts its own blocked clock: one left by a conductor
   // stopped or crashed while unreachable would name this one blocked while it
   // boots, or skip its ten minutes' grace (decision 168).
@@ -388,7 +348,7 @@ export function tellConductor(repoPath: string, message: string): boolean {
  */
 export const CONDUCTOR_BLOCKED_AFTER_MS = 10 * 60_000;
 
-/** Where the first look that found the conductor unreachable is kept, with what it saw; derived as `maxSessionsFile` is. */
+/** Where the first look that found the conductor unreachable is kept, with what it saw; derived from the project's store root. */
 function blockedSinceFile(repoPath: string): string {
   return join(projectPaths(repoPath).root, 'conductor', 'blocked-since');
 }

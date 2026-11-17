@@ -27,6 +27,13 @@ vi.mock('../claude/utility.service.js', () => ({
   runUtility: vi.fn(() => ({ ok: false, output: 'mocked out in tests' })),
 }));
 
+// The machine's load reading only: a fix round meets the load (decision 197),
+// and a test must not depend on how busy the machine running it is.
+vi.mock('./session-cap.service.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./session-cap.service.js')>()),
+  machineLoad: vi.fn(() => ({ average: 0, cores: 8 })),
+}));
+
 import {
   BOT,
   BRANCH,

@@ -80,7 +80,6 @@ vi.mock('ink', async (importOriginal) => ({
 }));
 vi.mock('../core/conductor.service.js', () => ({
   ConductorTellRefusedError: class ConductorTellRefusedError extends Error {},
-  DEFAULT_MAX_SESSIONS: 4,
   NO_CONDUCTOR_RUNNING:
     'No conductor is running for this project; start one with `pup conductor start`.',
   isConductorRunning: vi.fn(() => false),
@@ -137,9 +136,6 @@ vi.mock('../core/session-lifecycle.service.js', async (importOriginal) => ({
   markSessionQuestion: vi.fn(),
   planTask: vi.fn(),
   recordSteerMessage: vi.fn(),
-  SessionCapReachedError: (
-    await importOriginal<typeof import('../core/session-lifecycle.service.js')>()
-  ).SessionCapReachedError,
   sessionPane: vi.fn(),
   steerSession: vi.fn(),
 }));

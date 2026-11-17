@@ -94,7 +94,6 @@ vi.mock('ink', async (importOriginal) => ({
 }));
 vi.mock('../core/conductor.service.js', async (importOriginal) => ({
   ConductorTellRefusedError: class ConductorTellRefusedError extends Error {},
-  DEFAULT_MAX_SESSIONS: 4,
   // The store write, not a boundary: what it records is what `pup status` reads.
   markConductorQuestion: (await importOriginal<typeof import('../core/conductor.service.js')>())
     .markConductorQuestion,
@@ -167,9 +166,6 @@ vi.mock('../core/session-lifecycle.service.js', async (importOriginal) => ({
   ).markSessionQuestion,
   planTask: vi.fn(),
   recordSteerMessage: vi.fn(),
-  SessionCapReachedError: (
-    await importOriginal<typeof import('../core/session-lifecycle.service.js')>()
-  ).SessionCapReachedError,
   sessionPane: vi.fn(),
   steerSession: vi.fn(),
 }));
@@ -1391,7 +1387,7 @@ describe('CLI commands', () => {
         /^Attach with: tmux -L pup-conductor-([0-9a-f]{12}) attach -t '=pup-conductor-\1:'$/,
       );
       expect(logs[2]).toBe(
-        "Session cap: 4; `pup launch` and `pup new` refuse past it, and only the operator's --over-cap goes beyond.",
+        "Launches follow the merge lock's backlog and the machine's load (`pup status` shows both); only the operator's --over-cap goes beyond.",
       );
       expect(logs).toHaveLength(3);
       expect(process.exitCode).toBeUndefined();
@@ -1427,32 +1423,6 @@ describe('CLI commands', () => {
         'Conflict radar started with it (tmux: pup-watch-p1) — it runs the turn watchdog.',
       );
       expect(logs).toHaveLength(4);
-    });
-
-    // Decision 96: the start stores the cap every launch is held to.
-    it('hands the start the --max-sessions cap, and 4 without the flag', () => {
-      useCwd(initRepo());
-      vi.mocked(startConductor).mockReturnValue({ name: 'pup-conductor-p1', paneId: '%3' });
-
-      buildProgram().parse(['conductor', 'start', '--max-sessions', '7'], { from: 'user' });
-      buildProgram().parse(['conductor', 'start'], { from: 'user' });
-
-      const calls = vi.mocked(startConductor).mock.calls;
-      expect(calls[0]?.[0]).toMatchObject({ maxSessions: 7 });
-      expect(calls[1]?.[0]).toMatchObject({ maxSessions: 4 });
-      expect(logs).toContain(
-        "Session cap: 7; `pup launch` and `pup new` refuse past it, and only the operator's --over-cap goes beyond.",
-      );
-    });
-
-    it.each(['0', '-2', '2.5', 'many'])('refuses --max-sessions %s, starting nothing', (cap) => {
-      useCwd(initRepo());
-
-      buildProgram().parse(['conductor', 'start', '--max-sessions', cap], { from: 'user' });
-
-      expect(errors).toEqual(['--max-sessions takes a whole number of at least 1.']);
-      expect(process.exitCode).toBe(1);
-      expect(startConductor).not.toHaveBeenCalled();
     });
 
     it('stops the conductor', () => {
@@ -2799,10 +2769,15 @@ describe('CLI commands', () => {
       buildProgram().parse(['--project', idB, 'status'], { from: 'user' });
       buildProgram().parse(['status', '--project', idB], { from: 'user' });
 
-      expect(logs).toEqual([
+      // Each is B's own status, its launch verdict, two signals and memory after (decision 197).
+      const status = [
         'Nothing running and nothing planned.',
-        'Nothing running and nothing planned.',
-      ]);
+        expect.stringMatching(/^Launch: /),
+        expect.stringMatching(/^ {2}merge-lock backlog: /),
+        expect.stringMatching(/^ {2}load: /),
+        expect.stringMatching(/^ {2}memory: /),
+      ];
+      expect(logs).toEqual([...status, ...status]);
       expect(process.exitCode).toBeUndefined();
     });
 
@@ -3007,6 +2982,29 @@ describe('CLI commands', () => {
 
       expect(logs.find((line) => line.startsWith('usage: '))).toMatch(
         /^usage: 5h 23% \(resets .+ UTC\), 7d 41% \(resets .+ UTC\); read 0m ago$/,
+      );
+    });
+
+    // Decision 197: the verdict names every check `pup launch` makes, so it
+    // never reads allowed while the usage hold would refuse the launch.
+    it('prints that a launch would be refused while the usage holds launches', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      const file = projectPaths(repo).usageFile;
+      mkdirSync(dirname(file), { recursive: true });
+      const resetsAt = Math.floor(Date.now() / 1000) + 3600;
+      writeFileSync(
+        file,
+        JSON.stringify({
+          five_hour: { used_percentage: 91, resets_at: resetsAt },
+          seven_day: { used_percentage: 41.2, resets_at: resetsAt },
+        }),
+      );
+
+      buildProgram().parse(['status'], { from: 'user' });
+
+      expect(logs.find((line) => line.startsWith('Launch: '))).toMatch(
+        /\bthe plan's usage at its hold line\b.*; only the operator's .*--over-limit the usage hold$/,
       );
     });
   });

@@ -46,6 +46,13 @@ vi.mock('./test-slot.service.js', async (importOriginal) => ({
   availableMemoryBytes: vi.fn(() => 64 * 1024 ** 3),
 }));
 
+// The machine's load reading only: a launch test must not depend on how busy
+// the machine running it is (decision 197).
+vi.mock('./session-cap.service.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./session-cap.service.js')>()),
+  machineLoad: vi.fn(() => ({ average: 0, cores: 8 })),
+}));
+
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import {
   conductorRun,
@@ -90,6 +97,11 @@ import {
   transitionSession,
 } from './session.repository.js';
 import {
+  LockBacklogOverBudgetError,
+  MachineLoadedError,
+  machineLoad,
+} from './session-cap.service.js';
+import {
   LaunchRolledBackError,
   QuestionRefusedError,
   TaskAlreadyClaimedError,
@@ -113,7 +125,6 @@ import {
   planTask,
   recompileSessionProfile,
   recordSteerMessage,
-  SessionCapReachedError,
   sessionPane,
   steerSession,
 } from './session-lifecycle.service.js';
@@ -2274,7 +2285,7 @@ describe('launchTask and the project brief', () => {
   });
 });
 
-describe('launch capacity (decision 96)', () => {
+describe('launch capacity (decisions 96, 197)', () => {
   let db: Database;
   let repo: string;
 
@@ -2318,11 +2329,31 @@ describe('launch capacity (decision 96)', () => {
     }
   }
 
-  /** The cap `pup conductor start --max-sessions` stores. */
-  function setCap(cap: number): void {
-    const file = join(projectPaths(repo).root, 'conductor', 'max-sessions');
-    mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(file, `${cap}\n`);
+  /** A gate run timed at `minutes`, on a killed session that holds no lock use itself. */
+  function timeGate(minutes: number): void {
+    insertTask(db, { id: 't-timed', projectId: projectId(repo), spec: JSON.stringify(spec()) });
+    insertSession(db, {
+      id: 'timed',
+      taskId: 't-timed',
+      worktreePath: join(repo, '.worktrees', 'timed'),
+      branch: 'pup/timed',
+      profileHash: 'hash',
+    });
+    transitionSession(db, 'timed', 'running');
+    transitionSession(db, 'timed', 'killed');
+    appendEvent(db, 'timed', 'gate_result', {
+      from: 'awaiting-review',
+      to: 'rejected',
+      report: {
+        sessionId: 'timed',
+        passed: true,
+        sandbox: 'none',
+        stages: [
+          { stage: 'tests', status: 'pass', durationMs: minutes * 60_000 },
+          { stage: 'lint', status: 'pass', durationMs: 1_000 },
+        ],
+      },
+    });
   }
 
   const launch = (by: 'operator' | 'conductor', overCap = false): string => {
@@ -2338,37 +2369,107 @@ describe('launch capacity (decision 96)', () => {
     });
   };
 
-  it('launches below the default cap of four', () => {
+  const OVER_BUDGET =
+    "The merge lock's backlog is 80 minutes, over the project's budget of 60 (8 gates and " +
+    'lands to go at 10 minutes, the only gate timed); nothing was launched.';
+
+  it('launches with the backlog at its budget', () => {
+    timeGate(10);
     seedSessions(3);
 
     expect(launch('operator')).toBe('t-1');
   });
 
   it.each(['operator', 'conductor'] as const)(
-    'refuses the %s at the cap, naming it and launching nothing',
+    'refuses the %s over the budget, naming the backlog in minutes and launching nothing',
     (by) => {
+      timeGate(10);
       seedSessions(4);
 
-      expect(() => launch(by)).toThrow(
-        "4 sessions are working, at this project's cap of 4 (`pup conductor start " +
-          '--max-sessions` sets it; sessions awaiting review do not count); nothing was launched.',
-      );
+      expect(() => launch(by)).toThrow(OVER_BUDGET);
       expect(launchSession).not.toHaveBeenCalled();
       expect(getSession(db, 't-1')).toBeUndefined();
       expect(listBacklogTasks(db, projectId(repo)).map((t) => t.id)).toContain('t-1');
     },
   );
 
-  it('lets the operator past the cap with --over-cap', () => {
+  // With no gate timed, a use is taken as 8 minutes: four sessions, the old cap.
+  it('refuses a fifth fresh session on an untimed store and the default budget', () => {
+    seedSessions(3);
+    expect(launch('conductor')).toBe('t-1');
+
+    seedSessions(1, 'blocked');
+    planTask(db, { repoPath: repo, task: spec({ id: 't-2' as TaskId }) });
+    expect(() =>
+      launchTask(db, {
+        repoPath: repo,
+        base: DEFAULT_BASE_PROFILE,
+        taskId: 't-2',
+        windowEnv: { vars: {}, configDir: join(repo, '.claude') },
+        overlapVia: 'conductor',
+      }),
+    ).toThrow(
+      "The merge lock's backlog is 80 minutes, over the project's budget of 60 (10 gates and " +
+        'lands to go at 8 minutes each, no gate timed yet);',
+    );
+  });
+
+  it("reads the budget from the project's .pupitre/project.yml", () => {
+    commitIn(repo, '.pupitre/project.yml', 'lockBacklogBudgetMinutes: 30\n');
+    timeGate(10);
+    seedSessions(2);
+
+    expect(() => launch('conductor')).toThrow(
+      "The merge lock's backlog is 40 minutes, over the project's budget of 30",
+    );
+  });
+
+  // Decision 144: a session in review costs memory, not turns.
+  it('does not count sessions awaiting review', () => {
+    timeGate(10);
+    seedSessions(4, 'awaiting-review');
+    seedSessions(3);
+
+    expect(launch('conductor')).toBe('t-1');
+  });
+
+  it('does not count killed sessions', () => {
+    timeGate(10);
+    seedSessions(3);
+    seedSessions(4, 'killed');
+
+    expect(launch('operator')).toBe('t-1');
+  });
+
+  it('refuses while the load is above the cores, naming both', () => {
+    vi.mocked(machineLoad).mockReturnValueOnce({ average: 9.46, cores: 8 });
+
+    expect(() => launch('conductor')).toThrow(
+      "The machine's 1-minute load average is 9.5, above its 8 cores; nothing was launched.",
+    );
+    expect(launchSession).not.toHaveBeenCalled();
+  });
+
+  it('launches with the load at the cores', () => {
+    vi.mocked(machineLoad).mockReturnValueOnce({ average: 8, cores: 8 });
+
+    expect(launch('conductor')).toBe('t-1');
+  });
+
+  it('lets the operator past both signals with --over-cap', () => {
+    timeGate(10);
     seedSessions(4);
+    vi.mocked(machineLoad).mockReturnValueOnce({ average: 20, cores: 8 });
 
     expect(launch('operator', true)).toBe('t-1');
   });
 
-  it('never lets the conductor past the cap, --over-cap or not', () => {
+  it('never lets the conductor past, --over-cap or not', () => {
+    timeGate(10);
     seedSessions(4);
 
-    expect(() => launch('conductor', true)).toThrow(SessionCapReachedError);
+    expect(() => launch('conductor', true)).toThrow(LockBacklogOverBudgetError);
+    vi.mocked(machineLoad).mockReturnValueOnce({ average: 20, cores: 8 });
     expect(() =>
       launchTask(db, {
         repoPath: repo,
@@ -2378,50 +2479,11 @@ describe('launch capacity (decision 96)', () => {
         overlapVia: 'conductor',
         overCap: true,
       }),
-    ).toThrow(SessionCapReachedError);
+    ).toThrow(LockBacklogOverBudgetError);
   });
 
-  it('counts live sessions only, not killed ones', () => {
-    seedSessions(3);
-    seedSessions(2, 'killed');
-
-    expect(launch('operator')).toBe('t-1');
-  });
-
-  it('does not count sessions awaiting review (decision 144)', () => {
-    setCap(2);
-    seedSessions(2, 'awaiting-review');
-    seedSessions(1);
-
-    expect(launch('conductor')).toBe('t-1');
-  });
-
-  it('refuses at a cap of 2 with two running sessions', () => {
-    setCap(2);
-    seedSessions(2);
-
-    expect(() => launch('conductor')).toThrow("2 sessions are working, at this project's cap of 2");
-  });
-
-  it('counts a blocked session, which a human sends back to running', () => {
-    setCap(2);
-    seedSessions(1);
-    seedSessions(1, 'blocked');
-    seedSessions(2, 'awaiting-review');
-
-    expect(() => launch('conductor')).toThrow(SessionCapReachedError);
-  });
-
-  it('keeps the memory floor with only sessions awaiting review', () => {
-    setCap(2);
-    seedSessions(2, 'awaiting-review');
-    vi.mocked(availableMemoryBytes).mockReturnValueOnce(1.2 * 1024 ** 3);
-
-    expect(() => launch('conductor')).toThrow(LowMemoryError);
-    expect(launchSession).not.toHaveBeenCalled();
-  });
-
-  it('refuses `pup new` at the cap before writing its task', () => {
+  it('refuses `pup new` over the budget before writing its task', () => {
+    timeGate(10);
     seedSessions(4);
 
     expect(() =>
@@ -2431,7 +2493,7 @@ describe('launch capacity (decision 96)', () => {
         task: spec(),
         windowEnv: { vars: {}, configDir: join(repo, '.claude') },
       }),
-    ).toThrow(SessionCapReachedError);
+    ).toThrow(LockBacklogOverBudgetError);
     expect(getTask(db, 't-1')).toBeUndefined();
   });
 
@@ -2483,18 +2545,22 @@ describe('launch capacity (decision 96)', () => {
         projectPaths(repo),
       );
 
-    it('goes ahead below the cap, its own merged session not counted', () => {
+    // Work in flight drains the lock and adds no PR: holding it back only delays the drain.
+    it('goes ahead over the backlog budget', () => {
       const session = mergedSession();
-      seedSessions(3);
+      timeGate(10);
+      seedSessions(5);
 
       expect(recompile(session).compiled.hash).toBeTruthy();
     });
 
-    it('is refused at the cap', () => {
+    it('is refused while the load is above the cores', () => {
       const session = mergedSession();
-      seedSessions(4);
+      vi.mocked(machineLoad).mockReturnValueOnce({ average: 9, cores: 8 });
 
-      expect(() => recompile(session)).toThrow(SessionCapReachedError);
+      expect(() => recompile(session)).toThrow(MachineLoadedError);
+      vi.mocked(machineLoad).mockReturnValueOnce({ average: 9, cores: 8 });
+      expect(() => recompile(session)).toThrow('the fix round was not started');
     });
 
     it('is refused under 1.5 GB of available memory', () => {

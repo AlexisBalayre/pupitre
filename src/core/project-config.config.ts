@@ -21,19 +21,30 @@ const SKIP_UNTESTED_KEY = 'skipTestsOnUntestedChanges';
  */
 const WORKER_SANDBOX_KEY = 'workerSandbox';
 
-const PROJECT_CONFIG_KEYS = [SKIP_UNTESTED_KEY, WORKER_SANDBOX_KEY];
+/**
+ * The key that sets how many minutes of merge-lock work the live sessions may
+ * have ahead of them before a launch is refused (decision 197).
+ */
+const LOCK_BACKLOG_BUDGET_KEY = 'lockBacklogBudgetMinutes';
+
+/** The merge-lock backlog a launch is held under when the project sets none (decision 197). */
+const DEFAULT_LOCK_BACKLOG_BUDGET_MINUTES = 60;
+
+/** The largest budget a project may set: a day of lock work, past which the backlog holds nothing back. */
+const MAX_LOCK_BACKLOG_BUDGET_MINUTES = 1440;
+
+const PROJECT_CONFIG_KEYS = [SKIP_UNTESTED_KEY, WORKER_SANDBOX_KEY, LOCK_BACKLOG_BUDGET_KEY];
 
 /**
- * One boolean setting, or `fallback` when the repo has no `.pupitre/project.yml`
- * or the file leaves the key out. A malformed file throws: an unknown key or a
- * value that is not a boolean would otherwise leave the default in force
- * without anyone noticing.
+ * One setting's raw value, undefined when the repo has no `.pupitre/project.yml`
+ * or the file leaves the key out. A malformed file throws: an unknown key would
+ * otherwise leave the default in force without anyone noticing.
  */
-function projectSetting(repoPath: string, key: string, fallback: boolean): boolean {
+function projectValue(repoPath: string, key: string): unknown {
   const configPath = join(repoPath, PROJECT_CONFIG_PATH);
-  if (!existsSync(configPath)) return fallback;
+  if (!existsSync(configPath)) return undefined;
   const raw = parse(readFileSync(configPath, 'utf8')) as unknown;
-  if (raw === null) return fallback;
+  if (raw === null) return undefined;
   if (typeof raw !== 'object' || Array.isArray(raw)) {
     throw new Error(`Invalid ${PROJECT_CONFIG_PATH}: expected a mapping of settings.`);
   }
@@ -43,7 +54,15 @@ function projectSetting(repoPath: string, key: string, fallback: boolean): boole
       `Invalid ${PROJECT_CONFIG_PATH}: unknown key(s) ${unknown.join(', ')} (valid: ${PROJECT_CONFIG_KEYS.join(', ')}).`,
     );
   }
-  const value = (raw as Record<string, unknown>)[key];
+  return (raw as Record<string, unknown>)[key];
+}
+
+/**
+ * One boolean setting, or `fallback` when the project gives none. A value that
+ * is not a boolean throws rather than leave the default in force.
+ */
+function projectSetting(repoPath: string, key: string, fallback: boolean): boolean {
+  const value = projectValue(repoPath, key);
   if (value === undefined) return fallback;
   if (typeof value !== 'boolean') {
     throw new Error(`Invalid ${PROJECT_CONFIG_PATH}: ${key} must be true or false.`);
@@ -73,4 +92,22 @@ export function workerSandboxOn(repoPath: string): boolean {
     );
   }
   return on;
+}
+
+/**
+ * The minutes of merge-lock work past which `pup launch` and `pup new` refuse
+ * (decision 197): the project's `lockBacklogBudgetMinutes`, else
+ * `DEFAULT_LOCK_BACKLOG_BUDGET_MINUTES`. A value that is not a number above 0
+ * and at most `MAX_LOCK_BACKLOG_BUDGET_MINUTES` throws rather than leave the
+ * default in force.
+ */
+export function lockBacklogBudgetMinutes(repoPath: string): number {
+  const value = projectValue(repoPath, LOCK_BACKLOG_BUDGET_KEY);
+  if (value === undefined) return DEFAULT_LOCK_BACKLOG_BUDGET_MINUTES;
+  if (typeof value !== 'number' || !(value > 0 && value <= MAX_LOCK_BACKLOG_BUDGET_MINUTES)) {
+    throw new Error(
+      `Invalid ${PROJECT_CONFIG_PATH}: ${LOCK_BACKLOG_BUDGET_KEY} must be a number of minutes above 0 and at most ${MAX_LOCK_BACKLOG_BUDGET_MINUTES}.`,
+    );
+  }
+  return value;
 }
