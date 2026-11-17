@@ -238,7 +238,8 @@
     segment. `scripts/pre-commit` sits under a directory other files share, so a glob is
     refused when it matches the path in any case (`scripts/**`, `scripts/*`,
     `scripts/pre-*`) or names a directory above it, bare or with a trailing `/`
-    (`scripts`, `scripts/`), which the edit hooks read as everything beneath it;
+    (`scripts`, `scripts/`): pup's matcher reads a trailing `/` as everything beneath it
+    and a bare `scripts` as that one path, but a gitignore-style matcher reads both wide;
     `scripts/adr-index.sh`, `scripts/pre-commit.md` and `docs/scripts/pre-commit` pass.
     The sentence that git hook directories are code an operator may mean a task to change
     no longer holds for these two. Second, a glob holding `[`, `]`, `{`, `}` or `\` is
@@ -252,3 +253,16 @@
     and each metacharacter alone and in the three `.github` forms the rescope used to take,
     which it now refuses; the plain-path test takes the near misses named above,
     `.huskyrc` and `docs/.husky/x` among them.
+    *Amendment (2026-11-17): the extglob characters are refused too, and the hook path is
+    named.* First, `(`, `)`, `|`, `+`, `@` and `!` join the refused metacharacters. pup's
+    matcher reads them literally as well, but an extglob matcher takes `@(.github)/**` for
+    `.github/**` and `!(src)/**` for every directory but `src`, and a gitignore one reads a
+    leading `!` as a negation; no path in this repo holds one, and a project whose paths do
+    (an `@scope` package directory) names them outside a rescope. Second, `scripts/pre-commit`
+    is this repo's hook source, yet the check refuses it in every project pup manages. git
+    runs a hook from `.git/hooks` or `core.hooksPath` and records no tracked file it came
+    from, so pup cannot name another project's hook source; `.husky` is the one convention a
+    path names. Refusing `scripts/pre-commit` elsewhere costs a project that one path, which
+    the operator edits outside a rescope. *Tests.* The refusal table takes each extglob
+    character alone and in the two forms above; the `.husky` and `scripts/pre-commit`
+    entries are one refusal and the table reads them so.
