@@ -1,0 +1,141 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-17T16:41:17.917Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "44128052552",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/44128052552",
+  "actor": "AlexisBalayre",
+  "commit_sha": "73e37756441fbd4e4ac446c685e3e4467a91ac1b",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 373,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "b93d3232bfa70686caa2fef88bc69c9c4c2d176a",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "1782-1812",
+      "description": "The conductor now launches whenever `pup status` says a launch would be allowed. But `pup status` prints `Launch: allowed` while the memory floor or the plan's usage hold would still refuse the launch. The kickoff also says `pup status` shows each limit, including the 1.5 GB floor, which it never prints.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/session-cap.service.ts",
+      "line": "258-283",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "With about 1.45 GB up to just under 1.5 GB of memory available, `pup status` prints `Launch: refused (under 1.5 GB of memory available)` beside `memory: 1.5 GB available, 1.5 GB a launch needs`. This happens because `gigabytes()` rounds with toFixed(1). Round down (e.g. `Math.floor(bytes / 1024 ** 3 * 10) / 10`) or print two decimals so the line agrees with the verdict.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-cap.service.ts",
+      "line": "262",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "When only the usage hold refuses, the verdict reads `only the operator's --over-limit the usage hold`, a clause with no verb. Say `--over-limit lifts the usage hold` so it reads correctly on its own and after the `--over-cap` clause. The pinned strings in session-cap.test.ts and index.test.ts need the same change.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-cap.service.ts",
+      "line": "252-257",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`capOver` repeats the backlog and load comparisons the `over` list already makes, so the `--over-cap` clause can drift from the reasons listed. Compute `backlogOver` and `loadOver` once, use them in `over`, and set `capOver = backlogOver || loadOver`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-cap.service.ts",
+      "line": "235",
+      "area": "simplicity",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "No caller passes `launchHolds`'s `now` parameter: the CLI and both tests call it with the repo path alone. Drop the parameter and pass `Date.now()` to `assertUsageRoom` inside.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-cap.service.ts",
+      "line": "82-89, 252-253",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The new booleans `usageHeld`, `capOver` and `lowMemory` don't start with is/has/should/can, as general.md §Type safety requires. Rename them, e.g. `isUsageHeld`, `isCapOver`, `isMemoryLow`.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.2698591250000002,
+  "duration_ms": 94457,
+  "num_turns": 14,
+  "tokens": {
+    "input": 12,
+    "output": 8774,
+    "cache_read": 295002,
+    "cache_creation": 56625,
+    "total": 360413
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 30,
+      "output": 13539,
+      "cache_read": 482469,
+      "cache_creation": 92283,
+      "cost_usd": 0.9986838
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 30,
+      "output": 6964,
+      "cache_read": 163170,
+      "cache_creation": 73779,
+      "cost_usd": 0.27046449999999994
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 213,
+      "cache_read": 0,
+      "cache_creation": 4833,
+      "cost_usd": 0.000710825
+    }
+  ],
+  "permission_denials": []
+}
