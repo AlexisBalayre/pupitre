@@ -1,0 +1,118 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-17T16:45:05.399Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "44128613879",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/44128613879",
+  "actor": "AlexisBalayre",
+  "commit_sha": "73e37756441fbd4e4ac446c685e3e4467a91ac1b",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 373,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/session-cap.service.ts",
+      "line": "313-315",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`minutes()` rounds a backlog just past the budget down to the budget. A backlog in (60, 60.05) prints as \"The merge lock's backlog is 60.0 minutes, over the project's budget of 60\" in the refusal, and as \"60.0 of 60 minutes\" next to `Launch: refused (merge-lock backlog over budget)` in `pup status`. Gate times are whole milliseconds, so for example 8 uses at a median between 450,001 and 450,374 ms land in that range. Round up (e.g. `(Math.ceil(value * 10) / 10).toFixed(1)`) so a refused value always prints above the budget.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/usage-limits.service.ts",
+      "line": "85",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Three comments still refer to the session cap this PR removed: usage-limits.service.ts:85 explains its link and fifo safety as 'as `maxSessions` reads its file', a function that no longer exists; session-runtime.service.ts:1139 places the conductor's pid file 'beside its session cap', a file no longer written; capability.utils.ts:9 still lists 'the session cap under the store'. A reader following any of them finds nothing.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "conventions",
+      "description": "The conventions reviewer read only session-cap.service.ts, general.md, naming.md and part of ADR 0197. It did not read the src/cli/index.ts diff, the other changed services, testing.md or the test files, so checks on cli thinness, test layout and ADR index were partly unverified there. The guards reviewer covered ADR numbering and cli thinness instead."
+    },
+    {
+      "component": "orchestrator",
+      "description": "Skipped review-context (no spec, protocol or infra surface touched), review-spec (no closing issue or spec source), review-workflow-safety (no workflow change) and review-maintainability (off the default roster)."
+    }
+  ],
+  "duplicates_merged": 2,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.8735101299999997,
+  "duration_ms": 174695,
+  "num_turns": 17,
+  "tokens": {
+    "input": 12,
+    "output": 12617,
+    "cache_read": 276838,
+    "cache_creation": 56019,
+    "total": 345486
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 114,
+      "output": 43028,
+      "cache_read": 1809915,
+      "cache_creation": 220792,
+      "cost_usd": 2.495016
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 52,
+      "output": 10195,
+      "cache_read": 407041,
+      "cache_creation": 94107,
+      "cost_usd": 0.3780256
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 192,
+      "cache_read": 1933,
+      "cache_creation": 2824,
+      "cost_usd": 0.00046853
+    }
+  ],
+  "permission_denials": []
+}
