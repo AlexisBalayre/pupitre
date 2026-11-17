@@ -6,7 +6,11 @@ import type { Adapter } from '../adapters/types/adapter.types.js';
 import { quotePath } from './debt.service.js';
 import { currentBranch, rethrowIfKilled, runGit } from './git-diff.client.js';
 import { globToRegExp } from './glob.utils.js';
-import { DEBT_DETAIL_SAMPLES, GATE_COMMAND_TIMEOUT_MS } from './merge-gate.constants.js';
+import {
+  DEBT_DETAIL_SAMPLES,
+  GATE_COMMAND_TIMEOUT_MS,
+  PROTECTED_PATH_GLOBS,
+} from './merge-gate.constants.js';
 import {
   assertMergeLockHeld,
   debtKind,
@@ -60,8 +64,8 @@ function withLinkAncestors(glob: string): string[] {
 
 /**
  * What adapter detection and the commands it picks read at the repo's root,
- * and `.pupitre/**`, where a custom adapter's config sits, each with the
- * directories above it, as folded path matchers (decision 198): the custom
+ * and the protected paths but `.claude/**`, which no adapter reads, each with
+ * the directories above it, as folded path matchers (decision 198): the custom
  * adapter's `.pupitre/adapter.yml`; the TypeScript adapter's manifest,
  * workspace, `tsconfig.json`, lockfiles, package-manager config and Plug'n'Play
  * loaders; and the Python adapter's manifests, lockfiles and pinned version.
@@ -69,7 +73,7 @@ function withLinkAncestors(glob: string): string[] {
 const ADAPTER_PATHS = [
   ...new Set(
     [
-      '.pupitre/**',
+      ...PROTECTED_PATH_GLOBS.filter((glob) => glob !== '.claude/**'),
       'package.json',
       'pnpm-workspace.yaml',
       'tsconfig.json',
@@ -272,13 +276,18 @@ export async function remeasureMerge(
     );
   } finally {
     endSandboxRun();
-    // A capability's child keys its toolchain cache on its `configPath`, the
-    // stand-in, whose path no later run shares, so its cache goes with it.
-    removeGateDir(join(realpathSync(tmpdir()), TOOLCHAIN_CACHE_DIRNAME, projectId(targetDir)));
     // Swallowed, as the gate's is: the registration goes with the next prune.
     try {
       removeGateDir(checkoutRoot);
       runGit(req.repoPath, ['worktree', 'prune']);
+    } catch {
+      // see above
+    }
+    // A capability's child keys its toolchain cache on its `configPath`, the
+    // stand-in, whose path no later run shares, so its cache goes with it.
+    // Swallowed too: a cache left behind changes nothing measured.
+    try {
+      removeGateDir(join(realpathSync(tmpdir()), TOOLCHAIN_CACHE_DIRNAME, projectId(targetDir)));
     } catch {
       // see above
     }

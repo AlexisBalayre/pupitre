@@ -1,6 +1,7 @@
 import {
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   readlinkSync,
   realpathSync,
@@ -66,6 +67,7 @@ import { gitDiffPaths } from './git-diff.client.js';
 import { initProject } from './init.service.js';
 import { landSession } from './land.service.js';
 import { insertLedgerEntry } from './ledger.repository.js';
+import { PROTECTED_PATH_GLOBS } from './merge-gate.constants.js';
 import { MergeLockLostError } from './merge-gate.errors.js';
 import { measureBranch, runMergeGate, withScratchGitDir } from './merge-gate.service.js';
 import { projectId } from './paths.utils.js';
@@ -1750,6 +1752,10 @@ describe('landSession', { timeout: 20_000 }, () => {
       'Package.json',
       'package-lock.json',
       'uv.lock',
+      // A file under each protected path but `.claude/**`, which no adapter reads.
+      ...PROTECTED_PATH_GLOBS.filter((glob) => glob !== '.claude/**').map((glob) =>
+        glob.replace(/\*+/g, 'x'),
+      ),
     ])('refuses when local main holds a %s the base does not', async (path) => {
       const moved = mergeMovedHead(path, '{}\n');
       sh(repo, 'git', 'fetch', '-q', origin, 'main');
@@ -1870,16 +1876,18 @@ describe('landSession', { timeout: 20_000 }, () => {
 
     it("removes the toolchain cache a capability's child keyed on the stand-in", async () => {
       const { merge } = mergeMovedHead();
+      const cacheRoot = join(realpathSync(tmpdir()), TOOLCHAIN_CACHE_DIRNAME);
+      const removing = () =>
+        existsSync(cacheRoot)
+          ? readdirSync(cacheRoot).filter((name) => name.startsWith('pup-removing-'))
+          : [];
+      const removingBefore = removing();
       const caches: string[] = [];
       const recording: Adapter = {
         ...passingAdapter,
         complexity: async ({ measurePath, configPath }, files) => {
           await runGateChild('true', [], { cwd: measurePath, repoPath: configPath });
-          const cache = join(
-            realpathSync(tmpdir()),
-            TOOLCHAIN_CACHE_DIRNAME,
-            projectId(configPath),
-          );
+          const cache = join(cacheRoot, projectId(configPath));
           if (configPath.endsWith('-target') && existsSync(cache)) caches.push(cache);
           return files.map((file) => ({ file, complexity: 1 }));
         },
@@ -1890,6 +1898,7 @@ describe('landSession', { timeout: 20_000 }, () => {
       expect(mainSha()).toBe(merge);
       expect(caches.length).toBeGreaterThan(0);
       expect(caches.filter((cache) => existsSync(cache))).toEqual([]);
+      expect(removing().filter((name) => !removingBefore.includes(name))).toEqual([]);
     });
 
     it('reads the gate config from the base, not local main holding the merge', async () => {

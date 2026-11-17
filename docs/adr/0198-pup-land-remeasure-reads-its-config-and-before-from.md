@@ -76,14 +76,15 @@
     the CLI before the land, from the main checkout, and in the past case that is the merge itself.
     `.pupitre/**` is in no critical area, so `--approved-by` does not cover it. So the remeasure
     refuses before any stage when the local target's committed tree and `landedOn`'s differ in a
-    file that resolution, or the commands it picks, reads: a path under `.pupitre/`, which holds the
-    custom adapter's `adapter.yml`, or at the root the `package.json`,
+    file that resolution, or the commands it picks, reads: a protected path (`PROTECTED_PATH_GLOBS`,
+    which holds the custom adapter's `.pupitre/adapter.yml`) other than `.claude/**`, so a protected
+    config path added later is guarded too, or at the root the `package.json`,
     `pnpm-workspace.yaml`, `tsconfig.json`, `pnpm-lock.yaml`, `yarn.lock`, `package-lock.json`,
     `bun.lock`, `bun.lockb`, `.yarnrc.yml`, `.npmrc`, `.pnp.cjs`, `.pnp.js`, `.pnp.loader.mjs`,
     `pyproject.toml`, `setup.py`, `setup.cfg`, `requirements.txt`, `uv.lock`, `poetry.lock`,
     `Pipfile`, `Pipfile.lock` or `.python-version` the built-in adapters detect by or run with.
     Each counts with every directory above it, up to its first wildcard, so the bare `.pupitre`
-    counts. The other protected path, `.claude/**`, does not: nothing on the remeasure path reads it
+    counts, and so would the directories of a deeper protected glob added later. `.claude/**` does not: nothing on the remeasure path reads it
     from the main checkout, and a repo that commits a link under it, such as `.claude/skills`,
     would otherwise refuse every remeasure with no override. It
     refuses as well when the local target's tree commits any of those paths as a symlink or a
@@ -124,4 +125,6 @@
     to the bytes the base holds, or under committed `node_modules` files the base does not hold
     refuses the same way. With local main fast-forwarded onto a merge whose base commits
     `.claude/skills` as a link, the remeasure lands. A capability's child run with the stand-in as
-    its `configPath` creates its toolchain cache, and the cache is gone after the land.
+    its `configPath` creates its toolchain cache, and the cache is gone after the land, with no
+    `pup-removing-*` entry left beside it. The refusal covers a file under each protected path but
+    `.claude/**`.
