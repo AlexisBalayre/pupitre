@@ -9,11 +9,16 @@ import {
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { loadavg } from 'node:os';
+import { loadavg, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { afterAll, afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
-import { endSandboxRun, GateInterruptedError } from './sandbox.utils.js';
+import {
+  endSandboxRun,
+  GateInterruptedError,
+  runGateChild,
+  TOOLCHAIN_CACHE_DIRNAME,
+} from './sandbox.utils.js';
 
 vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../claude/session-runtime.service.js')>()),
@@ -1841,6 +1846,50 @@ describe('landSession', { timeout: 20_000 }, () => {
       await expect(refusal).rejects.toThrow(`or as a link (${link.named}).`);
       expect(measured).toEqual([]);
       expectNothingChanged(before);
+    });
+
+    // No adapter reads `.claude/`, so a link a repo commits there refuses nothing.
+    it('lands when local main commits a link under `.claude`', async () => {
+      const clone = cloneOrigin();
+      commitIn(clone, '.agents/skills/a.md', 'skill\n');
+      mkdirSync(join(clone, '.claude'));
+      symlinkSync('../.agents/skills', join(clone, '.claude', 'skills'));
+      sh(clone, 'git', 'add', '--', '.claude/skills');
+      sh(clone, 'git', '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'link');
+      sh(clone, 'git', 'push', '-q', 'origin', 'HEAD:main');
+      sh(worktree, 'git', 'fetch', '-q', origin, 'main');
+      sh(worktree, 'git', '-c', 'user.email=t@t', '-c', 'user.name=t', 'merge', '-q', 'FETCH_HEAD');
+      const moved = mergeMovedHead();
+      sh(repo, 'git', 'fetch', '-q', origin, 'main');
+      sh(repo, 'git', 'merge', '-q', '--ff-only', moved.merge);
+
+      await remeasure();
+
+      expect(mainSha()).toBe(moved.merge);
+    });
+
+    it("removes the toolchain cache a capability's child keyed on the stand-in", async () => {
+      const { merge } = mergeMovedHead();
+      const caches: string[] = [];
+      const recording: Adapter = {
+        ...passingAdapter,
+        complexity: async ({ measurePath, configPath }, files) => {
+          await runGateChild('true', [], { cwd: measurePath, repoPath: configPath });
+          const cache = join(
+            realpathSync(tmpdir()),
+            TOOLCHAIN_CACHE_DIRNAME,
+            projectId(configPath),
+          );
+          if (configPath.endsWith('-target') && existsSync(cache)) caches.push(cache);
+          return files.map((file) => ({ file, complexity: 1 }));
+        },
+      };
+
+      await remeasure({ adapter: recording });
+
+      expect(mainSha()).toBe(merge);
+      expect(caches.length).toBeGreaterThan(0);
+      expect(caches.filter((cache) => existsSync(cache))).toEqual([]);
     });
 
     it('reads the gate config from the base, not local main holding the merge', async () => {

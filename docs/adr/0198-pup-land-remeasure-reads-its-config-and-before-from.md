@@ -29,7 +29,10 @@
     too; that refusal names the main checkout as where to install, and a land, not a merge, as what
     did not happen. What git reads through the stand-in stays pinned: `configSha` is `targetSha`.
     A capability's child is keyed to the toolchain cache by its `configPath`, so a remeasure's
-    capabilities start from a cache of their own; a stage's child keeps the repo's.
+    capabilities start from a cache of their own; a stage's child keeps the repo's. No later run
+    shares the stand-in's path, so the remeasure's `finally` removes that cache with the checkouts.
+    Keying it on the repo instead would take a field on the capability context, which this change
+    does not touch.
     *The installed environment.* Nothing installs the stand-in, so it is the main checkout's. Each
     `node_modules` the gate links is linked into the stand-in first, entry by entry, from the main
     checkout's, as `linkEnvironment` links the gate checkout. The gate checkout then links the
@@ -73,14 +76,16 @@
     the CLI before the land, from the main checkout, and in the past case that is the merge itself.
     `.pupitre/**` is in no critical area, so `--approved-by` does not cover it. So the remeasure
     refuses before any stage when the local target's committed tree and `landedOn`'s differ in a
-    file that resolution, or the commands it picks, reads: a protected path (`PROTECTED_PATH_GLOBS`,
-    which holds the custom adapter's `.pupitre/adapter.yml`), or at the root the `package.json`,
+    file that resolution, or the commands it picks, reads: a path under `.pupitre/`, which holds the
+    custom adapter's `adapter.yml`, or at the root the `package.json`,
     `pnpm-workspace.yaml`, `tsconfig.json`, `pnpm-lock.yaml`, `yarn.lock`, `package-lock.json`,
     `bun.lock`, `bun.lockb`, `.yarnrc.yml`, `.npmrc`, `.pnp.cjs`, `.pnp.js`, `.pnp.loader.mjs`,
     `pyproject.toml`, `setup.py`, `setup.cfg`, `requirements.txt`, `uv.lock`, `poetry.lock`,
     `Pipfile`, `Pipfile.lock` or `.python-version` the built-in adapters detect by or run with.
-    Each counts with every directory above it, up to its first wildcard, so the bare `.pupitre` and
-    `.claude` count, and so would the directories of a deeper protected glob added later. It
+    Each counts with every directory above it, up to its first wildcard, so the bare `.pupitre`
+    counts. The other protected path, `.claude/**`, does not: nothing on the remeasure path reads it
+    from the main checkout, and a repo that commits a link under it, such as `.claude/skills`,
+    would otherwise refuse every remeasure with no override. It
     refuses as well when the local target's tree commits any of those paths as a symlink or a
     submodule. A link there would have resolution read files no difference names: `.pupitre`
     linked to `cfg/` reads `cfg/adapter.yml`. That holds even when `landedOn` commits the same link,
@@ -117,4 +122,6 @@
     a submodule at `.pupitre`. With local main fast-forwarded onto a merge that changed none of those, an
     environment beside a working-tree lockfile the base does not hold, beside a lockfile that links
     to the bytes the base holds, or under committed `node_modules` files the base does not hold
-    refuses the same way.
+    refuses the same way. With local main fast-forwarded onto a merge whose base commits
+    `.claude/skills` as a link, the remeasure lands. A capability's child run with the stand-in as
+    its `configPath` creates its toolchain cache, and the cache is gone after the land.

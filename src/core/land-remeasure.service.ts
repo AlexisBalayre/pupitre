@@ -6,11 +6,7 @@ import type { Adapter } from '../adapters/types/adapter.types.js';
 import { quotePath } from './debt.service.js';
 import { currentBranch, rethrowIfKilled, runGit } from './git-diff.client.js';
 import { globToRegExp } from './glob.utils.js';
-import {
-  DEBT_DETAIL_SAMPLES,
-  GATE_COMMAND_TIMEOUT_MS,
-  PROTECTED_PATH_GLOBS,
-} from './merge-gate.constants.js';
+import { DEBT_DETAIL_SAMPLES, GATE_COMMAND_TIMEOUT_MS } from './merge-gate.constants.js';
 import {
   assertMergeLockHeld,
   debtKind,
@@ -19,9 +15,15 @@ import {
   resolveCommit,
   withScratchGitDir,
 } from './merge-gate.service.js';
+import { projectId } from './paths.utils.js';
 import type { StageProgress } from './progress.utils.js';
 import { CRITICAL_AREAS } from './routing.utils.js';
-import { endSandboxRun, removeGateDir, sandboxLabel } from './sandbox.utils.js';
+import {
+  endSandboxRun,
+  removeGateDir,
+  sandboxLabel,
+  TOOLCHAIN_CACHE_DIRNAME,
+} from './sandbox.utils.js';
 import { decodeEvent, listEvents, type SessionRow } from './session.repository.js';
 import type { GateReport, GateStageResult } from './types/merge-gate.types.js';
 
@@ -58,7 +60,7 @@ function withLinkAncestors(glob: string): string[] {
 
 /**
  * What adapter detection and the commands it picks read at the repo's root,
- * and the protected paths a custom adapter's config sits under, each with the
+ * and `.pupitre/**`, where a custom adapter's config sits, each with the
  * directories above it, as folded path matchers (decision 198): the custom
  * adapter's `.pupitre/adapter.yml`; the TypeScript adapter's manifest,
  * workspace, `tsconfig.json`, lockfiles, package-manager config and Plug'n'Play
@@ -67,7 +69,7 @@ function withLinkAncestors(glob: string): string[] {
 const ADAPTER_PATHS = [
   ...new Set(
     [
-      ...PROTECTED_PATH_GLOBS,
+      '.pupitre/**',
       'package.json',
       'pnpm-workspace.yaml',
       'tsconfig.json',
@@ -250,6 +252,7 @@ export async function remeasureMerge(
   // whose reads the sandbox denies a capability's command (decision 36).
   const checkoutRoot = mkdtempSync(join(realpathSync(tmpdir()), 'pup-gate-checkout-'));
   const checkoutDir = join(checkoutRoot, basename(checkoutRoot));
+  const targetDir = `${checkoutDir}-target`;
   let measured: Awaited<ReturnType<typeof measureBranch>>;
   try {
     measured = await measureBranch(
@@ -264,11 +267,14 @@ export async function remeasureMerge(
       session,
       stages,
       checkoutDir,
-      { targetSha: landedOn, sha: mergeCommit, targetDir: `${checkoutDir}-target` },
+      { targetSha: landedOn, sha: mergeCommit, targetDir },
       progress,
     );
   } finally {
     endSandboxRun();
+    // A capability's child keys its toolchain cache on its `configPath`, the
+    // stand-in, whose path no later run shares, so its cache goes with it.
+    removeGateDir(join(realpathSync(tmpdir()), TOOLCHAIN_CACHE_DIRNAME, projectId(targetDir)));
     // Swallowed, as the gate's is: the registration goes with the next prune.
     try {
       removeGateDir(checkoutRoot);
