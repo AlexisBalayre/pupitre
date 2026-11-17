@@ -1,0 +1,118 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-17T18:27:26.923Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "44147388085",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/44147388085",
+  "actor": "AlexisBalayre",
+  "commit_sha": "6ff44da6aa6ba6754e5b961d8bbf52c390a5f41f",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 376,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "guards",
+    "simplicity"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "guards",
+    "simplicity"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "c622b4f18a103aec33edab7750f95e2e78a60d64",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/land-remeasure.service.ts",
+      "line": "70",
+      "description": "ADAPTER_PATHS takes all of PROTECTED_PATH_GLOBS (`.claude/**`, `.pupitre/**`), so a committed symlink anywhere under `.claude/` refuses every remeasure with no override, even with local main at landedOn, a case that landed before this PR. Any `.claude/**` difference between local main and landedOn refuses too, though nothing in the remeasure reads `.claude/` from the main checkout.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "3081-3088",
+      "description": "With targetDir, capabilityContext.configPath becomes the random mkdtemp stand-in. Every capability child keys its persistent toolchain cache on that path, so each `pup land --remeasure` creates a new pup-toolchain-cache/<hash> dir in the system temp dir that is never reused or removed.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "docs/adr/0198-pup-land-remeasure-reads-its-config-and-before-from.md",
+      "line": "86-90",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The ADR 0198 edit leaves one line far past the file's wrap width (\"counts, and so would ... nothing on the remeasure path reads it\"). It also strands \"It\" at the end of the next line, so \"It refuses as well when...\" reads as if `.claude/**` were its subject. Re-wrap the paragraph.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0198-pup-land-remeasure-reads-its-config-and-before-from.md",
+      "line": "32-35",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "ADR 0198's new sentence \"Keying it on the repo instead would take a field on the capability context, which this change does not touch\" describes an option that was not taken. It goes stale once that field exists, and the comment in the finally block already gives the reason.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.160837925,
+  "duration_ms": 161374,
+  "num_turns": 16,
+  "tokens": {
+    "input": 12,
+    "output": 9085,
+    "cache_read": 286173,
+    "cache_creation": 54063,
+    "total": 349333
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 90,
+      "output": 29616,
+      "cache_read": 1650311,
+      "cache_creation": 164971,
+      "cost_usd": 1.9097861999999997
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 38,
+      "output": 6534,
+      "cache_read": 200489,
+      "cache_creation": 65977,
+      "cost_usd": 0.25040740000000006
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 114,
+      "cache_read": 0,
+      "cache_creation": 4697,
+      "cost_usd": 0.000644325
+    }
+  ],
+  "permission_denials": []
+}
