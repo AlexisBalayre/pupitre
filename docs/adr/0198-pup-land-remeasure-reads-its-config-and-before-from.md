@@ -35,12 +35,14 @@
     checkout's, as `linkEnvironment` links the gate checkout. The gate checkout then links the
     stand-in's, which is what an adapter checks its links against, so that check cannot tell an
     environment the merge chose from the base's. Past `landedOn`, the operator may have installed
-    the merge's lockfile on main. So before linking each one, the remeasure refuses unless it was
-    installed from what the stand-in holds: the lockfile that owns that directory is in the same
-    place, of the same manager and the same bytes in the main checkout's working tree as in the
-    stand-in, and the main checkout's HEAD commits exactly what `landedOn` commits under that
-    `node_modules`. A lockfile that is no regular file, a link included, counts as none, and none
-    refuses. A `package.json` the merge changed without its lockfile is not caught here: an install
+    the merge's lockfile on main. So before linking each one, the remeasure refuses unless the
+    working tree's owning lockfile matches `landedOn`'s: in the same place, of the same manager and
+    the same bytes in the main checkout's working tree as in the stand-in. It also refuses unless
+    the main checkout's HEAD commits exactly what `landedOn` commits under that `node_modules`. The
+    lockfile match is a proxy: it does not show that the environment was installed from that
+    lockfile, only that the working tree holds the one the base holds, and an install the operator
+    ran from another one is theirs, as in a gate run. A lockfile that is no regular file, a link
+    included, counts as none, and none refuses. A `package.json` the merge changed without its lockfile is not caught here: an install
     from an unchanged lockfile installs what the base declared. Python gets no environment, as
     decision 81's ceiling says for the gate checkout. Python's capabilities run in the gate
     checkout, where no venv is linked, and Python has no complexity capability, so a venv in the
@@ -70,12 +72,20 @@
     *Which adapters run.* The adapter list, a custom adapter's commands among them, is resolved by
     the CLI before the land, from the main checkout, and in the past case that is the merge itself.
     `.pupitre/**` is in no critical area, so `--approved-by` does not cover it. So the remeasure
-    refuses before any stage when the local target's tree and `landedOn`'s differ in a file that
-    resolution reads: a protected path (`PROTECTED_PATH_GLOBS`, which holds the custom adapter's
-    `.pupitre/adapter.yml`), or the root `package.json`, `tsconfig.json`, `pyproject.toml`,
-    `setup.py`, `setup.cfg` or `requirements.txt` the built-in adapters detect by. No approval lets
-    that through. The difference is the two trees', so it counts a change on either side, behind as
-    well as past. Resolving the adapters from the stand-in instead was not taken: the land is handed
+    refuses before any stage when the local target's committed tree and `landedOn`'s differ in a
+    file that resolution, or the commands it picks, reads: a protected path (`PROTECTED_PATH_GLOBS`,
+    which holds the custom adapter's `.pupitre/adapter.yml`) or the bare `.pupitre` or `.claude`
+    itself, or at the root the `package.json`, `tsconfig.json`, `pnpm-lock.yaml`, `yarn.lock`,
+    `package-lock.json`, `.pnp.cjs`, `.pnp.js`, `pyproject.toml`, `setup.py`, `setup.cfg`,
+    `requirements.txt`, `uv.lock`, `poetry.lock` or `Pipfile` the built-in adapters detect by or
+    run with. It refuses as well when the local target's tree commits any of those paths as a
+    symlink or a submodule. A link there would have resolution read files no difference names:
+    `.pupitre` linked to `cfg/` reads `cfg/adapter.yml`. That holds even when `landedOn` commits the
+    same link, which fails closed. No approval lets any of it through. The difference is the two
+    trees', so it counts a change on either side, behind as well as past. Only the local target's
+    commit is compared; the main checkout's uncommitted files stay trusted as the operator's own, as
+    the gate trusts them (decision 29). The list is kept beside the check rather than exported from
+    each adapter, which this change does not touch. Resolving the adapters from the stand-in instead was not taken: the land is handed
     the adapters, as the gate is, and the tests drive it through that. The audit after a land reads
     the main checkout as it now is, as it always has.
     *The gate is unchanged.* `runMergeGate` and the re-gate pass no `targetDir`, so a gate run reads
@@ -95,4 +105,9 @@
     read the base's file at the path they are given. The gate checkout's `node_modules` entry links
     the stand-in's, and resolves to the main checkout's. With a merge that changed the lockfile on
     local main, the remeasure refuses before `gateCommands` is called and changes nothing. So it does
-    with a merge that changed `.pupitre/adapter.yml` or `package.json`.
+    with a merge that changed `.pupitre/adapter.yml`, `package.json`, `package-lock.json` or
+    `uv.lock`, and with one whose head commits `.pupitre` as a link to a `cfg/` holding
+    `adapter.yml`. With local main fast-forwarded onto a merge that changed none of those, an
+    environment beside a working-tree lockfile the base does not hold, beside a lockfile that links
+    to the bytes the base holds, or under committed `node_modules` files the base does not hold
+    refuses the same way.

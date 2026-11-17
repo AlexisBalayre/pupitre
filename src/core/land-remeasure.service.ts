@@ -39,20 +39,34 @@ interface RemeasureRequest {
 const CRITICAL_PATHS = CRITICAL_AREAS.map(globToRegExp);
 
 /**
- * What adapter detection reads at the repo's root, and the protected paths a
- * custom adapter's config sits under, as path matchers (decision 198): the
- * custom adapter's `.pupitre/adapter.yml`, the TypeScript adapter's manifest
- * and `tsconfig.json`, and the Python adapter's manifests.
+ * What adapter detection and the commands it picks read at the repo's root,
+ * and the protected paths a custom adapter's config sits under, the bare
+ * directories included, as path matchers (decision 198): the custom adapter's
+ * `.pupitre/adapter.yml`, the TypeScript adapter's manifest, `tsconfig.json`,
+ * lockfiles and Plug'n'Play loaders, and the Python adapter's manifests and
+ * lockfiles.
  */
 const ADAPTER_PATHS = [
   ...PROTECTED_PATH_GLOBS,
+  ...PROTECTED_PATH_GLOBS.map((glob) => glob.replace(/\/\*\*$/, '')),
   'package.json',
   'tsconfig.json',
+  'pnpm-lock.yaml',
+  'yarn.lock',
+  'package-lock.json',
+  '.pnp.cjs',
+  '.pnp.js',
   'pyproject.toml',
   'setup.py',
   'setup.cfg',
   'requirements.txt',
+  'uv.lock',
+  'poetry.lock',
+  'Pipfile',
 ].map(globToRegExp);
+
+/** Git's tree modes for a symlink and a submodule. */
+const LINK_MODES = new Set(['120000', '160000']);
 
 /**
  * `--remeasure` (decision 185): the gate's stages, `measureBranch`'s, run on
@@ -113,18 +127,24 @@ export async function remeasureMerge(
   // `req.adapters`, a custom adapter's commands among them, were resolved from
   // the main checkout, which need not hold `landedOn` and past it holds the
   // merge (decision 198). So the files that resolution reads must be as
-  // `landedOn` holds them there; no approval lets a difference through.
-  const adapterFiles = changed(landedOn, localSha).filter((path) =>
+  // `landedOn` holds them there; no approval lets a difference through. A link
+  // at or above one of them would read files no difference names, so a
+  // committed symlink or submodule there refuses too.
+  const linked = runGit(req.repoPath, ['ls-tree', '-r', '-z', '--full-tree', localSha])
+    .split('\0')
+    .filter((entry) => LINK_MODES.has(entry.slice(0, entry.indexOf(' '))))
+    .map((entry) => entry.slice(entry.indexOf('\t') + 1));
+  const adapterFiles = [...new Set([...changed(landedOn, localSha), ...linked])].filter((path) =>
     ADAPTER_PATHS.some((adapterPath) => adapterPath.test(path)),
   );
   if (adapterFiles.length > 0) {
     const named = adapterFiles.slice(0, DEBT_DETAIL_SAMPLES).map(quotePath).join(', ');
     const more = adapterFiles.length > DEBT_DETAIL_SAMPLES ? ', …' : '';
     throw new Error(
-      `Local ${target} at ${localSha} and ${landedOn}, the commit the merge of ${prUrl} went ` +
-        `onto, differ in ${adapterFiles.length} file(s) that decide which adapters measure the ` +
-        `merge or what they run (${named}${more}). Those are read from the main checkout, so a ` +
-        `remeasure there would run what the difference chose. Nothing was landed.`,
+      `Local ${target} at ${localSha} holds ${adapterFiles.length} path(s) that decide which ` +
+        `adapters measure the merge or what they run otherwise than ${landedOn}, the commit the ` +
+        `merge of ${prUrl} went onto, does, or as a link (${named}${more}). Those are read from ` +
+        `the main checkout, so a remeasure there could run what the merge chose. Nothing was landed.`,
     );
   }
   if (req.approvedBy === undefined) {

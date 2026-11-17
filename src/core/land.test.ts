@@ -6,6 +6,7 @@ import {
   realpathSync,
   renameSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { loadavg } from 'node:os';
@@ -1679,12 +1680,38 @@ describe('landSession', { timeout: 20_000 }, () => {
       return moved;
     }
 
-    it('refuses to measure with an environment installed from a lockfile the base does not hold', async () => {
-      mergeOverLockfile(
-        '{"lockfileVersion": 1}\n',
-        'package-lock.json',
-        '{"lockfileVersion": 2}\n',
-      );
+    const lockfileV1 = '{"lockfileVersion": 1}\n';
+    const notFromBase = /was not installed from the lockfile [0-9a-f]{40} holds there, /;
+
+    it.each([
+      {
+        name: 'a working-tree lockfile the base does not hold',
+        path: 'src/app.ts',
+        content: 'export const app = 2;\n',
+        alter: () => writeFileSync(join(repo, 'package-lock.json'), '{"lockfileVersion": 2}\n'),
+        reason: notFromBase,
+      },
+      {
+        name: 'a lockfile that links to the bytes the base holds',
+        path: 'src/app.ts',
+        content: 'export const app = 2;\n',
+        alter: () => {
+          writeFileSync(join(repo, 'lock-copy.json'), lockfileV1);
+          rmSync(join(repo, 'package-lock.json'));
+          symlinkSync('lock-copy.json', join(repo, 'package-lock.json'));
+        },
+        reason: notFromBase,
+      },
+      {
+        name: 'committed node_modules files the base does not hold',
+        path: 'node_modules/dep/index.js',
+        content: 'module.exports = 1;\n',
+        alter: () => {},
+        reason: /holds other committed files than [0-9a-f]{40} does, /,
+      },
+    ])('refuses to measure with an environment beside $name', async (environment) => {
+      mergeOverLockfile(lockfileV1, environment.path, environment.content);
+      environment.alter();
       const before = mainSha();
       const measured: string[] = [];
       const recording: Adapter = {
@@ -1695,14 +1722,18 @@ describe('landSession', { timeout: 20_000 }, () => {
         },
       };
 
-      await expect(remeasure({ adapter: recording })).rejects.toThrow(
-        /node_modules in the main checkout was not installed from the lockfile [0-9a-f]{40} holds there, .*Nothing was landed/,
-      );
+      const refusal = remeasure({ adapter: recording });
+      await expect(refusal).rejects.toThrow(/^node_modules in the main checkout /);
+      await expect(refusal).rejects.toThrow(environment.reason);
+      await expect(refusal).rejects.toThrow(/Nothing was landed\.$/);
       expect(measured).toEqual([]);
       expectNothingChanged(before);
     });
 
-    it.each(['.pupitre/adapter.yml', 'package.json'])(
+    const adapterRefusal =
+      'path(s) that decide which adapters measure the merge or what they run otherwise than';
+
+    it.each(['.pupitre/adapter.yml', 'package.json', 'package-lock.json', 'uv.lock'])(
       'refuses when local main holds a %s the base does not',
       async (path) => {
         const moved = mergeMovedHead(path, '{}\n');
@@ -1718,13 +1749,39 @@ describe('landSession', { timeout: 20_000 }, () => {
           },
         };
 
-        await expect(remeasure({ adapter: recording })).rejects.toThrow(
-          `differ in 1 file(s) that decide which adapters measure the merge or what they run (${path})`,
-        );
+        const refusal = remeasure({ adapter: recording });
+        await expect(refusal).rejects.toThrow(`holds 1 ${adapterRefusal}`);
+        await expect(refusal).rejects.toThrow(`or as a link (${path}).`);
         expect(measured).toEqual([]);
         expectNothingChanged(before);
       },
     );
+
+    it('refuses when local main reaches the adapter config through a committed link', async () => {
+      // `.pupitre` links to `cfg`, so the diff names neither `.pupitre/**` path.
+      seedPrMerge(PR_URL, passingReport(pinnedStages));
+      commitIn(worktree, 'cfg/adapter.yml', '{}\n');
+      symlinkSync('cfg', join(worktree, '.pupitre'));
+      const later = commitIn(worktree, 'src/fix.ts', 'export const fix = 1;\n');
+      const moved = mergeAt(later);
+      sh(repo, 'git', 'fetch', '-q', origin, 'main');
+      sh(repo, 'git', 'merge', '-q', '--ff-only', moved.merge);
+      const before = mainSha();
+      const measured: string[] = [];
+      const recording: Adapter = {
+        ...passingAdapter,
+        gateCommands: (at) => {
+          measured.push(at);
+          return passingAdapter.gateCommands(at);
+        },
+      };
+
+      const refusal = remeasure({ adapter: recording });
+      await expect(refusal).rejects.toThrow(adapterRefusal);
+      await expect(refusal).rejects.toThrow('or as a link (.pupitre).');
+      expect(measured).toEqual([]);
+      expectNothingChanged(before);
+    });
 
     it('reads the gate config from the base, not local main holding the merge', async () => {
       // The main checkout's environment, installed from the lockfile the base
