@@ -146,8 +146,9 @@ The block runs every process a Bash call starts inside Claude Code's sandbox:
 - Reads: allowed everywhere except the operator's credential files, including the Claude
   credentials of a `CLAUDE_CONFIG_DIR` the project's windows run on and the login Keychain,
   where Claude Code and gh keep their tokens on macOS.
-- Network: only the npm and PyPI registries, plus loopback, which the web dashboard's tests need.
-  Any other host is refused, and no command may ask to leave the sandbox.
+- Network: only the npm and PyPI registries. Any other host is refused, loopback included, so a
+  test that listens on a port fails with `listen EPERM`: the web dashboard's tests inject their
+  requests instead. No command may ask to leave the sandbox.
 - The operator's user `settings.json` is loaded beside the compiled one, and Claude Code adds its
   `sandbox` lists to the block's: a user `excludedCommands` entry would run outside the sandbox,
   a user `allowedDomains` entry would open its host. It also adds the paths of `Edit(...)` allow

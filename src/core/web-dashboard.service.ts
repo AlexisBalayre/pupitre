@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import type { Database } from 'better-sqlite3';
 
@@ -40,6 +40,20 @@ export interface WebDashboard {
 }
 
 /**
+ * Puts the dashboard's server where requests reach it, and resolves to the
+ * port its url names. A test hands the server in-memory connections instead
+ * of a socket, since a sandboxed worker may not listen on loopback (decision 191).
+ */
+export type DashboardBind = (server: Server) => Promise<number>;
+
+/** A random port on the loopback address. */
+const bindLoopback: DashboardBind = (server) =>
+  new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, LOOPBACK, () => resolve((server.address() as AddressInfo).port));
+  });
+
+/**
  * `pup dashboard` (decision 91): one page on 127.0.0.1, on a random port,
  * behind a token minted for this run. The threat is the operator's own
  * browser: any page it has open can make it request a loopback url, and a
@@ -74,7 +88,10 @@ export interface WebDashboard {
 export async function startWebDashboard(
   db: Database,
   repoPath: string,
-  { pollMs = DASHBOARD_POLL_MS }: { pollMs?: number } = {},
+  {
+    pollMs = DASHBOARD_POLL_MS,
+    bind = bindLoopback,
+  }: { pollMs?: number; bind?: DashboardBind } = {},
 ): Promise<WebDashboard> {
   const streams = new Map<ServerResponse, View>();
   const lastBody = new Map<string, string>();
@@ -131,7 +148,7 @@ export async function startWebDashboard(
     }
   };
 
-  // Set once the socket is bound; no request is read before then.
+  // Set once the server is bound; no request is read before then.
   let port = 0;
   // Set by `close`: from then on nothing new is taken in, so the store it is
   // about to hand back outlives every action that reached it.
@@ -202,10 +219,7 @@ export async function startWebDashboard(
       else res.end();
     }
   });
-  port = await new Promise<number>((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(0, LOOPBACK, () => resolve((server.address() as AddressInfo).port));
-  });
+  port = await bind(server);
 
   const poll = setInterval(() => {
     const open = new Map([...streams.values()].map((view) => [viewKey(view), view]));

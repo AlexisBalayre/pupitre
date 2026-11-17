@@ -1026,11 +1026,12 @@ describe('the worker sandbox (decision 191)', () => {
         'files.pythonhosted.org',
       ],
       strictAllowlist: true,
-      // The web dashboard's tests listen on loopback (decision 191).
-      allowLocalBinding: true,
       // No allowUnixSockets: a granted dir lets a sandboxed `mv` carry in
       // another session's socket and connect to it (decision 196).
     });
+    // On macOS local binding opens every localhost port to the sandbox; the web
+    // dashboard's tests listen on no socket instead (decision 191).
+    expect(sandbox.network).not.toHaveProperty('allowLocalBinding');
   });
 
   // A sandboxed kill(pid, 0) on an unsandboxed pid fails with EPERM (probed), so

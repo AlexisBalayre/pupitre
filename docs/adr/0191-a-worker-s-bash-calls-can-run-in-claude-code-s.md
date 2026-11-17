@@ -128,12 +128,18 @@
       honoured. It decides what happens to a host missing from the list, not whose list it is:
       the operator's user settings are loaded too, and their `allowedDomains` would join this
       one, which the compile refuses (*The operator's own sandbox settings* below).
-      `allowLocalBinding` stays on, at a cost. On macOS it also lets sandboxed commands connect
-      to every localhost port, which includes pup's own web dashboard, browser debug ports and
-      local databases. It stays on because `src/core/web-dashboard.test.ts` listens on loopback,
-      and the pre-commit hook runs that test inside the sandbox for any staged file it imports.
-      Without local binding, all 81 of its tests fail with `listen EPERM` and the worker cannot
-      commit. With it, they pass. Ceiling 5 below lists the ways to turn it off.
+      `allowLocalBinding` is off. On macOS it would also let sandboxed commands connect to every
+      localhost port, which includes pup's own web dashboard, browser debug ports and local
+      databases. The block first shipped with it on, on 2026-11-16, because
+      `src/core/web-dashboard.test.ts` listened on loopback, and the pre-commit hook runs that test
+      inside the sandbox for any staged file it imports. Without local binding, all 81 of its
+      tests failed with `listen EPERM` and the worker could not commit. It came off on 2026-11-17:
+      `startWebDashboard` takes a `bind`, and the tests pass one that listens on nothing. Each
+      request reaches the server through `server.emit('connection', …)` over an in-memory
+      `duplexPair`, so it still goes through Node's HTTP parser and the Host check. One test spies
+      on `listen` to pin that the default bind takes a random port on `127.0.0.1`. A Unix socket
+      in `TMPDIR` was the other way out, and decision 196 closed it. A test pins that the
+      compiled `network` has no `allowLocalBinding`.
     - `failIfUnavailable` refuses the launch when the sandbox cannot start. With
       `allowUnsandboxedCommands: false`, Claude Code ignores a call's `dangerouslyDisableSandbox`.
       That key does not reach `excludedCommands`, whose commands run outside the sandbox. The
@@ -340,11 +346,9 @@
 
        All three are ceilings. The deny also names `main` itself, so a project that merges into
        another branch is not covered.
-    5. `allowLocalBinding` applies to the whole session, not only to the tests that need it.
-       Alternatives:
-       - tests that inject requests rather than open a socket;
-       - a Unix socket in `TMPDIR`;
-       - socket tests that run only in the gate.
+    5. With `allowLocalBinding` off, any test that listens on loopback fails under the setting
+       with `listen EPERM`, and so does one that binds a Unix socket (decision 196). Such a test
+       must inject its requests, as the web dashboard's do, or run only in the gate.
     6. Objects. `objects/` must stay writable, since a commit writes there. A worker can
        therefore forge `objects/info/commit-graph`, or rewrite a loose object or a pack's `.idx`.
        Either changes the history the gate reads without touching a ref. Denying `refs/replace/`

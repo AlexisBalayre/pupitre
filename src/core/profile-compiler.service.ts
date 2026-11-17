@@ -1362,9 +1362,9 @@ jq -c --arg sid "\${PUP_SESSION_ID:-unknown}" '. + {pup_session_id: $sid}' >> '$
  * - Network: the package registries only. `strictAllowlist` refuses any other
  *   host: the session skips permission prompts, under which an unlisted host
  *   would otherwise be let through. Claude Code honours it from `--settings`.
- *   Local binding stays, though on macOS it also opens every localhost port to
- *   the sandbox: the web dashboard's tests listen on loopback, and the
- *   pre-commit hook runs them inside the sandbox for any change they import.
+ *   No local binding, which on macOS would also open every localhost port to
+ *   the sandbox: the web dashboard's tests reach its server over in-memory
+ *   streams, so the pre-commit hook runs them with no listen.
  *   No Unix socket: the sandbox can rename any socket in a dir the sandbox can
  *   write into a granted one and connect (decision 196, ceiling 5), so tests
  *   start tsx with `node --import tsx`, which binds none.
@@ -1423,7 +1423,6 @@ function workerSandbox(input: CompileInput, git: WorktreeGitEnv, credentials: st
     network: {
       allowedDomains: WORKER_SANDBOX_DOMAINS,
       strictAllowlist: true,
-      allowLocalBinding: true,
     },
   };
 }
