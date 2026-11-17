@@ -6,7 +6,11 @@ import type { Adapter } from '../adapters/types/adapter.types.js';
 import { quotePath } from './debt.service.js';
 import { currentBranch, rethrowIfKilled, runGit } from './git-diff.client.js';
 import { globToRegExp } from './glob.utils.js';
-import { DEBT_DETAIL_SAMPLES, GATE_COMMAND_TIMEOUT_MS } from './merge-gate.constants.js';
+import {
+  DEBT_DETAIL_SAMPLES,
+  GATE_COMMAND_TIMEOUT_MS,
+  PROTECTED_PATH_GLOBS,
+} from './merge-gate.constants.js';
 import {
   assertMergeLockHeld,
   debtKind,
@@ -15,9 +19,15 @@ import {
   resolveCommit,
   withScratchGitDir,
 } from './merge-gate.service.js';
+import { projectId } from './paths.utils.js';
 import type { StageProgress } from './progress.utils.js';
 import { CRITICAL_AREAS } from './routing.utils.js';
-import { endSandboxRun, removeGateDir, sandboxLabel } from './sandbox.utils.js';
+import {
+  endSandboxRun,
+  removeGateDir,
+  sandboxLabel,
+  TOOLCHAIN_CACHE_DIRNAME,
+} from './sandbox.utils.js';
 import { decodeEvent, listEvents, type SessionRow } from './session.repository.js';
 import type { GateReport, GateStageResult } from './types/merge-gate.types.js';
 
@@ -35,12 +45,72 @@ interface RemeasureRequest {
 const CRITICAL_PATHS = CRITICAL_AREAS.map(globToRegExp);
 
 /**
+ * A path as a case- and normalization-insensitive filesystem such as APFS
+ * reads it, for matching (decision 198): NFKD, so U+212A KELVIN SIGN is `K`,
+ * then upper- and lowercased, which folds more letters onto ASCII (`ı`) than
+ * lowercasing alone. Folding too much only refuses more.
+ */
+function foldPath(path: string): string {
+  return path.normalize('NFKD').toUpperCase().toLowerCase();
+}
+
+/** `glob` and each directory above it up to its first wildcard: a link at any of them redirects it. */
+function withLinkAncestors(glob: string): string[] {
+  const segments = glob.split('/');
+  const wildcard = segments.findIndex((segment) => /[*?]/.test(segment));
+  const literal = segments.slice(0, wildcard === -1 ? segments.length : wildcard);
+  return [glob, ...literal.map((_, depth) => literal.slice(0, depth + 1).join('/'))];
+}
+
+/**
+ * What adapter detection and the commands it picks read at the repo's root,
+ * and the protected paths but `.claude/**`, which no adapter reads, each with
+ * the directories above it, as folded path matchers (decision 198): the custom
+ * adapter's `.pupitre/adapter.yml`; the TypeScript adapter's manifest,
+ * workspace, `tsconfig.json`, lockfiles, package-manager config and Plug'n'Play
+ * loaders; and the Python adapter's manifests, lockfiles and pinned version.
+ */
+const ADAPTER_PATHS = [
+  ...new Set(
+    [
+      ...PROTECTED_PATH_GLOBS.filter((glob) => glob !== '.claude/**'),
+      'package.json',
+      'pnpm-workspace.yaml',
+      'tsconfig.json',
+      'pnpm-lock.yaml',
+      'yarn.lock',
+      'package-lock.json',
+      'bun.lock',
+      'bun.lockb',
+      '.yarnrc.yml',
+      '.npmrc',
+      '.pnp.cjs',
+      '.pnp.js',
+      '.pnp.loader.mjs',
+      'pyproject.toml',
+      'setup.py',
+      'setup.cfg',
+      'requirements.txt',
+      'uv.lock',
+      'poetry.lock',
+      'Pipfile',
+      'Pipfile.lock',
+      '.python-version',
+    ].flatMap(withLinkAncestors),
+  ),
+].map((glob) => globToRegExp(foldPath(glob)));
+
+/** Git's tree modes for a symlink and a submodule. */
+const LINK_MODES = new Set(['120000', '160000']);
+
+/**
  * `--remeasure` (decision 185): the gate's stages, `measureBranch`'s, run on
  * the commit GitHub's merge made, against the commit it went onto on the
  * pinned target, from a gate checkout of its own and under the land's lock, as
- * `runMergeGate` runs them, and only with the local target at that commit,
- * which the main checkout then holds for the complexity stage's "before" as
- * it does for the gate's. The commits past the pin are the ones no gate
+ * `runMergeGate` runs them, with a checkout of that commit beside it standing
+ * in for the main checkout as the config source and the complexity stage's
+ * "before", wherever the local target is (decision 198). The commits past the
+ * pin are the ones no gate
  * measured; when they, or what the merge landed past merging the pin there,
  * change a file in a critical area, or that merge of the pin conflicts, the
  * remeasure runs only on the approval `approvedBy` names: a pass says the code builds and its
@@ -73,16 +143,43 @@ export async function remeasureMerge(
   progress: StageProgress,
 ): Promise<GateReport> {
   const { sha, head, landedOn, mergeCommit, target, prUrl, id, localSha, originTip } = merge;
-  // `measureBranch` reads the complexity stage's "before" from the main
-  // checkout, which holds the local target, not `landedOn`. Any commit between
-  // them that changed a file the merge changes would hide or inflate its rise,
-  // and a target that already holds the merge reads its own change as before.
-  if (localSha !== landedOn) {
+  const changed = (from: string, to: string) =>
+    runGit(req.repoPath, [
+      'diff',
+      '--no-ext-diff',
+      '--no-textconv',
+      '--no-color',
+      '--text',
+      '--no-relative',
+      '--no-renames',
+      '-z',
+      '--name-only',
+      from,
+      to,
+    ])
+      .split('\0')
+      .filter(Boolean);
+  // `req.adapters`, a custom adapter's commands among them, were resolved from
+  // the main checkout, which need not hold `landedOn` and past it holds the
+  // merge (decision 198). So the files that resolution reads must be as
+  // `landedOn` holds them there; no approval lets a difference through. A link
+  // at or above one of them would read files no difference names, so a
+  // committed symlink or submodule there refuses too.
+  const linked = runGit(req.repoPath, ['ls-tree', '-r', '-z', '--full-tree', localSha])
+    .split('\0')
+    .filter((entry) => LINK_MODES.has(entry.slice(0, entry.indexOf(' '))))
+    .map((entry) => entry.slice(entry.indexOf('\t') + 1));
+  const adapterFiles = [...new Set([...changed(landedOn, localSha), ...linked])].filter((path) =>
+    ADAPTER_PATHS.some((adapterPath) => adapterPath.test(foldPath(path))),
+  );
+  if (adapterFiles.length > 0) {
+    const named = adapterFiles.slice(0, DEBT_DETAIL_SAMPLES).map(quotePath).join(', ');
+    const more = adapterFiles.length > DEBT_DETAIL_SAMPLES ? ', …' : '';
     throw new Error(
-      `Local ${target} is at ${localSha}, not ${landedOn}, the commit the merge of ${prUrl} ` +
-        'went onto. The complexity stage reads what the merge changed as it was before from the ' +
-        `main checkout, so a remeasure runs only with local ${target} at that commit. Nothing ` +
-        'was landed.',
+      `Local ${target} at ${localSha} holds ${adapterFiles.length} path(s) that decide which ` +
+        `adapters measure the merge or what they run otherwise than ${landedOn}, the commit the ` +
+        `merge of ${prUrl} went onto, does, or as a link (${named}${more}). Those are read from ` +
+        `the main checkout, so a remeasure there could run what the merge chose. Nothing was landed.`,
     );
   }
   if (req.approvedBy === undefined) {
@@ -100,22 +197,6 @@ export async function remeasureMerge(
           `\`--remeasure --approved-by <who>\`. Nothing was landed.`,
       );
     }
-    const changed = (from: string, to: string) =>
-      runGit(req.repoPath, [
-        'diff',
-        '--no-ext-diff',
-        '--no-textconv',
-        '--no-color',
-        '--text',
-        '--no-relative',
-        '--no-renames',
-        '-z',
-        '--name-only',
-        from,
-        to,
-      ])
-        .split('\0')
-        .filter(Boolean);
     const critical = [
       ...new Set([...changed(sha, head), ...changed(pinTree, `${mergeCommit}^{tree}`)]),
     ].filter((path) => CRITICAL_PATHS.some((area) => area.test(path)));
@@ -167,8 +248,15 @@ export async function remeasureMerge(
   progress.stage('remeasure');
   const sandbox = sandboxLabel();
   const stages: GateStageResult[] = [];
-  // Where and how `runMergeGate` cuts its checkout, for its reasons.
+  // Where and how `runMergeGate` cuts its checkout, for its reasons. A
+  // checkout of `landedOn` is cut beside it and stands in for the main
+  // checkout, which need not hold it: another PR merged since would hide or
+  // inflate the complexity rise read there, and this merge itself would hand
+  // the gate the session's own config (decision 198). Not under the store,
+  // whose reads the sandbox denies a capability's command (decision 36).
   const checkoutRoot = mkdtempSync(join(realpathSync(tmpdir()), 'pup-gate-checkout-'));
+  const checkoutDir = join(checkoutRoot, basename(checkoutRoot));
+  const targetDir = `${checkoutDir}-target`;
   let measured: Awaited<ReturnType<typeof measureBranch>>;
   try {
     measured = await measureBranch(
@@ -182,8 +270,8 @@ export async function remeasureMerge(
       },
       session,
       stages,
-      join(checkoutRoot, basename(checkoutRoot)),
-      { targetSha: landedOn, sha: mergeCommit },
+      checkoutDir,
+      { targetSha: landedOn, sha: mergeCommit, targetDir },
       progress,
     );
   } finally {
@@ -192,6 +280,14 @@ export async function remeasureMerge(
     try {
       removeGateDir(checkoutRoot);
       runGit(req.repoPath, ['worktree', 'prune']);
+    } catch {
+      // see above
+    }
+    // A capability's child keys its toolchain cache on its `configPath`, the
+    // stand-in, whose path no later run shares, so its cache goes with it.
+    // Swallowed too: a cache left behind changes nothing measured.
+    try {
+      removeGateDir(join(realpathSync(tmpdir()), TOOLCHAIN_CACHE_DIRNAME, projectId(targetDir)));
     } catch {
       // see above
     }

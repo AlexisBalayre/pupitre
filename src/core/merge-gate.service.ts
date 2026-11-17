@@ -78,6 +78,7 @@ import {
 } from './github.client.js';
 import { globToRegExp } from './glob.utils.js';
 import { readOriginUrl } from './init.service.js';
+import { linkStandInEnvironments } from './land-remeasure-environment.service.js';
 import {
   hasOpenLedgerEntry,
   insertLedgerEntry,
@@ -1607,7 +1608,7 @@ function refuseEscapingLinks(checkout: string, sha: string, git: WorktreeGitEnv)
  * vendored `.bin` is the branch's own and the operator's to review. Python
  * gets nothing: see decision 81's ceiling.
  */
-function linkEnvironment(repoPath: string, checkout: string, rel: string): void {
+export function linkEnvironment(repoPath: string, checkout: string, rel: string): void {
   const source = join(repoPath, rel, GATE_ENVIRONMENT_DIR);
   const local = join(checkout, rel, GATE_ENVIRONMENT_DIR);
   if (lstatSync(local, { throwIfNoEntry: false })) return;
@@ -1676,7 +1677,7 @@ function listsMember(repoPath: string, root: string, manager: typeof NPM, dir: s
  * lockfile whose workspace does not list it installs on its own, as the
  * adapter runs it: undefined, as for a package with no lockfile anywhere.
  */
-function owningLockfile(
+export function owningLockfile(
   repoPath: string,
   dir: string,
 ): { dir: string; manager: typeof NPM } | undefined {
@@ -1705,20 +1706,27 @@ function owningLockfile(
  * it cannot find, which reads as the branch's fault. It throws, like a
  * timeout under load: the operator installs, with the manager and in the
  * directory the owning lockfile names, npm in the package itself when none
- * owns it, and the session has nothing to fix (decision 138).
+ * owns it, and the session has nothing to fix (decision 138). Read from
+ * `config`, the main checkout or a remeasure's stand-in for it given the main
+ * checkout's environment (decision 198); the install is named in `repoPath`.
  */
-function refuseUninstalled(repoPath: string, checkout: string, pkg: NestedPackage): void {
+function refuseUninstalled(
+  repoPath: string,
+  config: string,
+  checkout: string,
+  pkg: NestedPackage,
+): void {
   if (pkg.commands.length === 0) return;
-  if (existsSync(join(repoPath, pkg.dir, GATE_ENVIRONMENT_DIR))) return;
+  if (existsSync(join(config, pkg.dir, GATE_ENVIRONMENT_DIR))) return;
   if (lstatSync(join(checkout, pkg.dir, GATE_ENVIRONMENT_DIR), { throwIfNoEntry: false })) return;
   // Parsed without a guard: the adapter read `commands` from this same file.
   const manifest: { dependencies?: object; devDependencies?: object } = JSON.parse(
-    readPlainFile(join(repoPath, pkg.dir, 'package.json')),
+    readPlainFile(join(config, pkg.dir, 'package.json')),
   );
   const declared = Object.keys({ ...manifest.dependencies, ...manifest.devDependencies });
   // Nothing to install: a manager writes the lockfile and no `node_modules`.
   if (declared.length === 0) return;
-  const lock = owningLockfile(repoPath, pkg.dir);
+  const lock = owningLockfile(config, pkg.dir);
   // Yarn's Plug'n'Play runtime resolves from its cache and no install writes
   // a `node_modules`: the stages resolve through the one the pinned tree holds.
   if (
@@ -1735,17 +1743,27 @@ function refuseUninstalled(repoPath: string, checkout: string, pkg: NestedPackag
   const root = lock?.dir ?? '.';
   if (
     root !== pkg.dir &&
-    declared.every((name) => existsSync(join(repoPath, root, GATE_ENVIRONMENT_DIR, name)))
+    declared.every((name) => existsSync(join(config, root, GATE_ENVIRONMENT_DIR, name)))
   ) {
     return;
   }
   // No lockfile owns it: npm in the package itself, as the adapter runs it.
   const { dir, manager } = lock ?? { dir: pkg.dir, manager: NPM };
+  // A remeasure's stand-in has only what was linked into it from the main
+  // checkout, and what lands there is a land, not a merge.
+  const [where, outcome, retry] =
+    config === repoPath
+      ? ['in the main checkout', 'nothing was merged', 'merge again']
+      : [
+          'in the main checkout to link into the checkout of the target',
+          'nothing was landed',
+          'remeasure again',
+        ];
   throw new Error(
-    `${quotePath(pkg.dir)} has no ${GATE_ENVIRONMENT_DIR} in the main checkout, so its ` +
+    `${quotePath(pkg.dir)} has no ${GATE_ENVIRONMENT_DIR} ${where}, so its ` +
       `${pkg.commands.map((c) => c.stage).join(' and ')} stages cannot find their tools; ` +
-      `nothing was merged. Install it with \`${manager.name} ${manager.dirFlag} ` +
-      `${shellWord(quotePath(dir))} install\` in ${shellWord(repoPath)}, then merge again.`,
+      `${outcome}. Install it with \`${manager.name} ${manager.dirFlag} ` +
+      `${shellWord(quotePath(dir))} install\` in ${shellWord(repoPath)}, then ${retry}.`,
   );
 }
 
@@ -2937,6 +2955,9 @@ function changesOnlyUntested(
  * and lint, a touched nested package's own scripts, the scope audit, the diff
  * size and the debt deltas. Undefined once a hard stage has recorded its
  * failure in `stages`; the caller decides what a failure does to the session.
+ * With `targetDir`, a detached checkout of `targetSha` cut there stands in for
+ * the main checkout as the trusted config source and the complexity stage's
+ * "before" (decision 198); the caller removes it with its own checkout.
  */
 export async function measureBranch(
   db: Database,
@@ -2944,7 +2965,7 @@ export async function measureBranch(
   session: SessionRow,
   stages: GateStageResult[],
   checkoutDir: string,
-  { targetSha, sha }: { targetSha: string; sha: string },
+  { targetSha, sha, targetDir }: { targetSha: string; sha: string; targetDir?: string },
   progress: StageProgress = NO_PROGRESS,
 ): Promise<BranchMeasurement | undefined> {
   /** One run of a stage's command: the error it threw, `undefined` on a pass. */
@@ -3050,9 +3071,17 @@ export async function measureBranch(
   // is read from the main checkout's repo, never through the checkout's admin
   // dir, which a session can rewrite after the cut (decision 101).
   cutGateCheckout(req.repoPath, checkoutDir, sha);
+  // A remeasure's target sha need not be what the main checkout holds: past
+  // it, the main checkout holds the session's own merge. So a checkout of the
+  // target sha, vetted as the gate's own is, stands in for it wherever this
+  // reads config or "before" (decision 198). What git reads through it is
+  // still pinned, and its admin dir and `.git` file are outside every write a
+  // sandboxed stage is granted.
+  if (targetDir !== undefined) cutGateCheckout(req.repoPath, targetDir, targetSha);
+  const configRoot = targetDir ?? req.repoPath;
   const capabilityContext: CapabilityContext = {
     measurePath: checkoutDir,
-    configPath: req.repoPath,
+    configPath: configRoot,
     measureSha: sha,
     configSha: targetSha,
     ...(req.gateEnv?.length ? { gateEnv: req.gateEnv } : {}),
@@ -3069,6 +3098,26 @@ export async function measureBranch(
   const targetHeld = measuresComplexity
     ? targetHolds(req.repoPath, targetSha, complexityPaths)
     : [];
+  const complexityAdapters = req.adapters.filter((a) => a.complexity);
+  const complexityOf = async (
+    ctx: CapabilityContext,
+    files: string[],
+  ): Promise<FileComplexity[]> => {
+    const measuredFiles: FileComplexity[] = [];
+    for (const adapter of complexityAdapters) {
+      measuredFiles.push(...((await adapter.complexity?.(ctx, files)) ?? []));
+    }
+    return measuredFiles;
+  };
+  // "Before" reads the config root, which the merge lock holds at the target
+  // branch, or the remeasure cut at it — no other historical checkout needed.
+  // What git reads of it is pinned to the target sha, never the main
+  // checkout's HEAD, which a session can detach while this runs (decision 161).
+  const measureBefore = () =>
+    complexityOf(
+      { ...localContext(configRoot, req.gateEnv), measureSha: targetSha, configSha: targetSha },
+      complexityPaths,
+    );
   // `--name-only` names a rename by its new path, but moving a file out of a
   // nested package changes that package too, so its source counts: its suite
   // runs (decision 59) and the untested skip does not apply (decision 139).
@@ -3084,17 +3133,33 @@ export async function measureBranch(
   // parent out of the checkout (decision 81). A package with no environment
   // to link is refused before anything is linked. A member's workspace root,
   // where the lockfile that installs it sits, is linked too: its dependencies
-  // are hoisted there.
-  for (const pkg of nestedPackages) refuseUninstalled(req.repoPath, checkoutDir, pkg);
+  // are hoisted there. A remeasure's stand-in is given the main checkout's
+  // environment first, only where it was installed from the stand-in's own
+  // lockfile, and the gate checkout links the stand-in's, which is what the
+  // adapters check its links against (decision 198).
   const workspaceRoots = nestedPackages.map(
-    (pkg) => owningLockfile(req.repoPath, pkg.dir)?.dir ?? '.',
+    (pkg) => owningLockfile(configRoot, pkg.dir)?.dir ?? '.',
   );
-  for (const rel of new Set(['.', ...workspaceRoots, ...nestedPackages.map((pkg) => pkg.dir)])) {
-    linkEnvironment(req.repoPath, checkoutDir, rel);
+  const environments = new Set(['.', ...workspaceRoots, ...nestedPackages.map((pkg) => pkg.dir)]);
+  if (targetDir !== undefined) {
+    linkStandInEnvironments(req.repoPath, targetDir, targetSha, environments);
   }
-  // Resolved from the trusted main checkout, not the session's worktree: a
+  for (const pkg of nestedPackages) refuseUninstalled(req.repoPath, configRoot, checkoutDir, pkg);
+  for (const rel of environments) linkEnvironment(configRoot, checkoutDir, rel);
+  // A remeasure's "before" is measured now, before any stage runs the
+  // session's code, which could rewrite the stand-in where pup does not
+  // sandbox; nothing reads its figure again (decision 198).
+  let measuredBefore: Promise<FileComplexity[]> | undefined;
+  if (measuresComplexity && targetDir !== undefined) {
+    measuredBefore = measureBefore();
+    const [early] = await Promise.allSettled([measuredBefore]);
+    if (early.status === 'rejected' && early.reason instanceof GateInterruptedError) {
+      throw early.reason;
+    }
+  }
+  // Resolved from the trusted config root, not the session's worktree: a
   // session that deletes a script fails that stage instead of skipping it.
-  const commands = primary?.gateCommands(req.repoPath) ?? [];
+  const commands = primary?.gateCommands(configRoot) ?? [];
   const commandFor = (stage: GateStage) => commands.find((c) => c.stage === stage);
   const notMeasured = (stage: string): GateStageResult => ({
     stage,
@@ -3121,7 +3186,7 @@ export async function measureBranch(
   // does every change in a project that turned the skip off (decision 139).
   const untested =
     nestedPackages.length === 0 &&
-    skipsTestsOnUntestedChanges(req.repoPath) &&
+    skipsTestsOnUntestedChanges(configRoot) &&
     changesOnlyUntested(req.repoPath, targetSha, sha, changedPaths);
   // A stage nothing could have measured says so, as on any other change: the
   // test stage without a test command.
@@ -3219,33 +3284,11 @@ export async function measureBranch(
     }
   }
   const staticDebt = measureStaticDebt(req.adapters, capabilityContext);
-  const complexityAdapters = req.adapters.filter((a) => a.complexity);
-  const complexityOf = async (
-    ctx: CapabilityContext,
-    files: string[],
-  ): Promise<FileComplexity[]> => {
-    const measuredFiles: FileComplexity[] = [];
-    for (const adapter of complexityAdapters) {
-      measuredFiles.push(...((await adapter.complexity?.(ctx, files)) ?? []));
-    }
-    return measuredFiles;
-  };
   const complexityStarted = Date.now();
   const complexity =
     complexityAdapters.length > 0
       ? {
-          // "Before" reads the main checkout, which the merge lock holds at
-          // the target branch — no historical checkout needed. What git reads
-          // of it is pinned to the target sha, never the main checkout's HEAD,
-          // which a session can detach while this runs (decision 161).
-          before: complexityOf(
-            {
-              ...localContext(req.repoPath, req.gateEnv),
-              measureSha: targetSha,
-              configSha: targetSha,
-            },
-            complexityPaths,
-          ),
+          before: measuredBefore ?? measureBefore(),
           after: complexityOf(capabilityContext, changedPaths),
         }
       : undefined;

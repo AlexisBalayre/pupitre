@@ -1,9 +1,25 @@
-import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
-import { loadavg } from 'node:os';
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { loadavg, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { afterAll, afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
-import { endSandboxRun, GateInterruptedError } from './sandbox.utils.js';
+import {
+  endSandboxRun,
+  GateInterruptedError,
+  runGateChild,
+  TOOLCHAIN_CACHE_DIRNAME,
+} from './sandbox.utils.js';
 
 vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../claude/session-runtime.service.js')>()),
@@ -51,6 +67,7 @@ import { gitDiffPaths } from './git-diff.client.js';
 import { initProject } from './init.service.js';
 import { landSession } from './land.service.js';
 import { insertLedgerEntry } from './ledger.repository.js';
+import { PROTECTED_PATH_GLOBS } from './merge-gate.constants.js';
 import { MergeLockLostError } from './merge-gate.errors.js';
 import { measureBranch, runMergeGate, withScratchGitDir } from './merge-gate.service.js';
 import { projectId } from './paths.utils.js';
@@ -1510,11 +1527,14 @@ describe('landSession', { timeout: 20_000 }, () => {
       });
     }
 
-    // The complexity stage reads "before" from the main checkout, which would
-    // hold another PR's change, or this merge's own, in place of the merge's base.
+    // The main checkout would hold another PR's change, or this merge's own, in
+    // place of the merge's base, so "before" is read from a checkout of the
+    // base (decision 198). Each case's file differs between the two.
     it.each([
       [
         'behind it, another PR merged on GitHub first',
+        'src/other.ts',
+        'export const other = 1;\n',
         () => {
           const clone = cloneOrigin();
           commitIn(clone, 'src/other.ts', 'export const other = 1;\n');
@@ -1532,32 +1552,399 @@ describe('landSession', { timeout: 20_000 }, () => {
             '-q',
             'FETCH_HEAD',
           );
+          // Past the pin, a change to the file the other PR added.
           seedPrMerge(PR_URL, passingReport());
-          return mergeAt(sh(worktree, 'git', 'rev-parse', 'HEAD'));
+          return mergeAt(commitIn(worktree, 'src/other.ts', 'export const other = 2;\n'));
         },
       ],
       [
         'past it, holding the merge already',
+        'src/app.ts',
+        'export const app = 1;\n',
         () => {
-          const moved = mergeMovedHead();
+          const moved = mergeMovedHead('src/app.ts', 'export const app = 2;\n');
           sh(repo, 'git', 'fetch', '-q', origin, 'main');
           sh(repo, 'git', 'merge', '-q', '--ff-only', moved.merge);
           return moved;
         },
       ],
-    ])('refuses with local main %s, before any stage runs', async (_case, mergeOff) => {
-      const { merge } = mergeOff();
-      const before = mainSha();
-      const failing: Adapter = {
+    ])(
+      'lands with local main %s, reading "before" at the base',
+      async (_case, path, atBase, mergeOff) => {
+        const { merge } = mergeOff();
+        const base = sh(origin, 'git', 'rev-parse', `${merge}^1`);
+        const beforeReads: { dir: string; content: string | undefined }[] = [];
+        const measuring: Adapter = {
+          ...passingAdapter,
+          complexity: ({ measurePath, measureSha }, files) => {
+            if (measureSha === base) {
+              const at = join(measurePath, path);
+              beforeReads.push({
+                dir: measurePath,
+                content: existsSync(at) ? readFileSync(at, 'utf8') : undefined,
+              });
+            }
+            return files.map((file) => ({ file, complexity: 1 }));
+          },
+        };
+
+        const outcome = await remeasure({ adapter: measuring });
+
+        expect(mainSha()).toBe(merge);
+        expect(outcome.remeasure?.passed).toBe(true);
+        expect(beforeReads.map(({ content }) => content)).toEqual([atBase]);
+        expect(beforeReads[0]?.dir).not.toBe(repo);
+        // Removed after, and its registration pruned with it.
+        expect(existsSync(beforeReads[0]?.dir ?? '')).toBe(false);
+        expect(sh(repo, 'git', 'worktree', 'list', '--porcelain')).not.toContain(
+          beforeReads[0]?.dir,
+        );
+      },
+    );
+
+    it('measures "before" before any stage runs the session\'s code', async () => {
+      const { merge } = mergeMovedHead('src/app.ts', 'export const app = 2;\n');
+      const base = sh(origin, 'git', 'rev-parse', `${merge}^1`);
+      const reads: { before: boolean; built: boolean; content: string }[] = [];
+      const rewriting: Adapter = {
         ...passingAdapter,
-        gateCommands: () => [{ stage: 'build', command: 'false', args: [] }],
+        gateCommands: () => [
+          // Marks that it ran, then rewrites "before" beside it, where no sandbox stops it.
+          {
+            stage: 'build',
+            command: 'sh',
+            args: [
+              '-c',
+              'touch built; printf "export const app = 99;\\n" > "$PWD-target/src/app.ts"; true',
+            ],
+          },
+          { stage: 'test', command: 'true', args: [] },
+          { stage: 'lint', command: 'true', args: [] },
+        ],
+        complexity: ({ measurePath, measureSha }, files) => {
+          const before = measureSha === base;
+          reads.push({
+            before,
+            built: existsSync(
+              join(before ? measurePath.replace(/-target$/, '') : measurePath, 'built'),
+            ),
+            content: readFileSync(join(measurePath, 'src/app.ts'), 'utf8'),
+          });
+          return files.map((file) => ({ file, complexity: 1 }));
+        },
       };
 
-      await expect(remeasure({ adapter: failing })).rejects.toThrow(
-        `Local main is at ${before}, not ${sh(origin, 'git', 'rev-parse', `${merge}^1`)}, the ` +
-          `commit the merge of ${PR_URL} went onto.`,
+      await remeasure({ adapter: rewriting });
+
+      expect(reads).toEqual([
+        { before: true, built: false, content: 'export const app = 1;\n' },
+        { before: false, built: true, content: 'export const app = 2;\n' },
+      ]);
+    });
+
+    it('flags a rise against the base, not against local main holding the merge', async () => {
+      const moved = mergeMovedHead('src/app.ts', 'export const app = 40;\n');
+      sh(repo, 'git', 'fetch', '-q', origin, 'main');
+      sh(repo, 'git', 'merge', '-q', '--ff-only', moved.merge);
+      const before = mainSha();
+      // A file's figure is the number it exports: 1 at the base, 40 merged.
+      const counting: Adapter = {
+        ...passingAdapter,
+        complexity: ({ measurePath }, files) =>
+          files
+            .filter((file) => existsSync(join(measurePath, file)))
+            .map((file) => ({
+              file,
+              complexity: Number(
+                /= (\d+)/.exec(readFileSync(join(measurePath, file), 'utf8'))?.[1],
+              ),
+            })),
+      };
+
+      await expect(remeasure({ adapter: counting })).rejects.toThrow(
+        `flagged, never accepted: Complexity rise (+39 decision points) merged from session ${SESSION_ID}`,
       );
       expectNothingChanged(before);
+    });
+
+    /** Another PR merged on GitHub first, committing `path` as `content`, and a fix round took it in. */
+    function baseHolds(path: string, content: string) {
+      const clone = cloneOrigin();
+      commitIn(clone, path, content);
+      sh(clone, 'git', 'push', '-q', 'origin', 'HEAD:main');
+      sh(worktree, 'git', 'fetch', '-q', origin, 'main');
+      sh(worktree, 'git', '-c', 'user.email=t@t', '-c', 'user.name=t', 'merge', '-q', 'FETCH_HEAD');
+    }
+
+    /**
+     * The base holds `package-lock.json` as `content` (`baseHolds`); then local
+     * main fast-forwarded onto the merge of a head past the pin that wrote
+     * `path` as `later`, and an environment installed in the main checkout,
+     * untracked.
+     */
+    function mergeOverLockfile(content: string, path: string, later: string) {
+      baseHolds('package-lock.json', content);
+      const moved = mergeMovedHead(path, later);
+      sh(repo, 'git', 'fetch', '-q', origin, 'main');
+      sh(repo, 'git', 'merge', '-q', '--ff-only', moved.merge);
+      mkdirSync(join(repo, 'node_modules', 'dep'), { recursive: true });
+      writeFileSync(join(repo, 'node_modules', 'dep', 'index.js'), 'module.exports = 1;\n');
+      return moved;
+    }
+
+    const lockfileV1 = '{"lockfileVersion": 1}\n';
+    const notFromBase = /was not installed from the lockfile [0-9a-f]{40} holds there, /;
+
+    it.each([
+      {
+        name: 'a working-tree lockfile the base does not hold',
+        path: 'src/app.ts',
+        content: 'export const app = 2;\n',
+        alter: () => writeFileSync(join(repo, 'package-lock.json'), '{"lockfileVersion": 2}\n'),
+        reason: notFromBase,
+      },
+      {
+        name: 'a lockfile that links to the bytes the base holds',
+        path: 'src/app.ts',
+        content: 'export const app = 2;\n',
+        alter: () => {
+          writeFileSync(join(repo, 'lock-copy.json'), lockfileV1);
+          rmSync(join(repo, 'package-lock.json'));
+          symlinkSync('lock-copy.json', join(repo, 'package-lock.json'));
+        },
+        reason: notFromBase,
+      },
+      {
+        name: 'committed node_modules files the base does not hold',
+        path: 'node_modules/dep/index.js',
+        content: 'module.exports = 1;\n',
+        alter: () => {},
+        reason: /holds other committed files than [0-9a-f]{40} does, /,
+      },
+    ])('refuses to measure with an environment beside $name', async (environment) => {
+      mergeOverLockfile(lockfileV1, environment.path, environment.content);
+      environment.alter();
+      const before = mainSha();
+      const measured: string[] = [];
+      const recording: Adapter = {
+        ...passingAdapter,
+        gateCommands: (path) => {
+          measured.push(path);
+          return passingAdapter.gateCommands(path);
+        },
+      };
+
+      const refusal = remeasure({ adapter: recording });
+      await expect(refusal).rejects.toThrow(/^node_modules in the main checkout /);
+      await expect(refusal).rejects.toThrow(environment.reason);
+      await expect(refusal).rejects.toThrow(/Nothing was landed\.$/);
+      expect(measured).toEqual([]);
+      expectNothingChanged(before);
+    });
+
+    const adapterRefusal =
+      'path(s) that decide which adapters measure the merge or what they run otherwise than';
+
+    it.each([
+      '.pupitre/adapter.yml',
+      '.Pupitre/adapter.yml',
+      'package.json',
+      'Package.json',
+      'package-lock.json',
+      'uv.lock',
+      // A file under each protected path but `.claude/**`, which no adapter reads.
+      ...PROTECTED_PATH_GLOBS.filter((glob) => glob !== '.claude/**').map((glob) =>
+        glob.replace(/\*+/g, 'x'),
+      ),
+    ])('refuses when local main holds a %s the base does not', async (path) => {
+      const moved = mergeMovedHead(path, '{}\n');
+      sh(repo, 'git', 'fetch', '-q', origin, 'main');
+      sh(repo, 'git', 'merge', '-q', '--ff-only', moved.merge);
+      const before = mainSha();
+      const measured: string[] = [];
+      const recording: Adapter = {
+        ...passingAdapter,
+        gateCommands: (at) => {
+          measured.push(at);
+          return passingAdapter.gateCommands(at);
+        },
+      };
+
+      const refusal = remeasure({ adapter: recording });
+      await expect(refusal).rejects.toThrow(`holds 1 ${adapterRefusal}`);
+      await expect(refusal).rejects.toThrow(`or as a link (${path}).`);
+      expect(measured).toEqual([]);
+      expectNothingChanged(before);
+    });
+
+    /** What is staged in the worktree, committed; the new HEAD sha. */
+    function commitStaged(): string {
+      sh(
+        worktree,
+        'git',
+        '-c',
+        'user.email=l@test',
+        '-c',
+        'user.name=land',
+        'commit',
+        '-q',
+        '-m',
+        'link',
+      );
+      return sh(worktree, 'git', 'rev-parse', 'HEAD');
+    }
+
+    /** `file` committed in the worktree, then `path` as a link to `target`; the new HEAD sha. */
+    function commitLink(path: string, target: string, file: string): string {
+      commitIn(worktree, file, '{}\n');
+      symlinkSync(target, join(worktree, path));
+      sh(worktree, 'git', 'add', '--', path);
+      return commitStaged();
+    }
+
+    it.each([
+      {
+        // The diff names neither `.pupitre/**` path, only `.pupitre` and `cfg/adapter.yml`.
+        name: '`.pupitre` linked to a `cfg` holding `adapter.yml`',
+        named: '.pupitre',
+        commit: () => commitLink('.pupitre', 'cfg', 'cfg/adapter.yml'),
+      },
+      {
+        name: '`.PUPITRE` linked to a `cfg` holding `adapter.yml`',
+        named: '.PUPITRE',
+        commit: () => commitLink('.PUPITRE', 'cfg', 'cfg/adapter.yml'),
+      },
+      {
+        name: "the base's `package.json` turned into a link",
+        named: 'package.json',
+        commit: () => {
+          baseHolds('package.json', '{}\n');
+          rmSync(join(worktree, 'package.json'));
+          return commitLink('package.json', 'cfg/package.json', 'cfg/package.json');
+        },
+      },
+      {
+        name: 'a submodule at `.pupitre`',
+        named: '.pupitre',
+        commit: () => {
+          const gitlink = `160000,${sh(worktree, 'git', 'rev-parse', 'HEAD')},.pupitre`;
+          sh(worktree, 'git', 'update-index', '--add', '--cacheinfo', gitlink);
+          return commitStaged();
+        },
+      },
+    ])('refuses when local main commits $name', async (link) => {
+      seedPrMerge(PR_URL, passingReport(pinnedStages));
+      const moved = mergeAt(link.commit());
+      sh(repo, 'git', 'fetch', '-q', origin, 'main');
+      sh(repo, 'git', 'merge', '-q', '--ff-only', moved.merge);
+      const before = mainSha();
+      const measured: string[] = [];
+      const recording: Adapter = {
+        ...passingAdapter,
+        gateCommands: (at) => {
+          measured.push(at);
+          return passingAdapter.gateCommands(at);
+        },
+      };
+
+      const refusal = remeasure({ adapter: recording });
+      await expect(refusal).rejects.toThrow(`holds 1 ${adapterRefusal}`);
+      await expect(refusal).rejects.toThrow(`or as a link (${link.named}).`);
+      expect(measured).toEqual([]);
+      expectNothingChanged(before);
+    });
+
+    // No adapter reads `.claude/`, so a link a repo commits there refuses nothing.
+    it('lands when local main commits a link under `.claude`', async () => {
+      const clone = cloneOrigin();
+      commitIn(clone, '.agents/skills/a.md', 'skill\n');
+      mkdirSync(join(clone, '.claude'));
+      symlinkSync('../.agents/skills', join(clone, '.claude', 'skills'));
+      sh(clone, 'git', 'add', '--', '.claude/skills');
+      sh(clone, 'git', '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'link');
+      sh(clone, 'git', 'push', '-q', 'origin', 'HEAD:main');
+      sh(worktree, 'git', 'fetch', '-q', origin, 'main');
+      sh(worktree, 'git', '-c', 'user.email=t@t', '-c', 'user.name=t', 'merge', '-q', 'FETCH_HEAD');
+      const moved = mergeMovedHead();
+      sh(repo, 'git', 'fetch', '-q', origin, 'main');
+      sh(repo, 'git', 'merge', '-q', '--ff-only', moved.merge);
+
+      await remeasure();
+
+      expect(mainSha()).toBe(moved.merge);
+    });
+
+    it("removes the toolchain cache a capability's child keyed on the stand-in", async () => {
+      const { merge } = mergeMovedHead();
+      const cacheRoot = join(realpathSync(tmpdir()), TOOLCHAIN_CACHE_DIRNAME);
+      const removing = () =>
+        existsSync(cacheRoot)
+          ? readdirSync(cacheRoot).filter((name) => name.startsWith('pup-removing-'))
+          : [];
+      const removingBefore = removing();
+      const caches: string[] = [];
+      const recording: Adapter = {
+        ...passingAdapter,
+        complexity: async ({ measurePath, configPath }, files) => {
+          await runGateChild('true', [], { cwd: measurePath, repoPath: configPath });
+          const cache = join(cacheRoot, projectId(configPath));
+          if (configPath.endsWith('-target') && existsSync(cache)) caches.push(cache);
+          return files.map((file) => ({ file, complexity: 1 }));
+        },
+      };
+
+      await remeasure({ adapter: recording });
+
+      expect(mainSha()).toBe(merge);
+      expect(caches.length).toBeGreaterThan(0);
+      expect(caches.filter((cache) => existsSync(cache))).toEqual([]);
+      expect(removing().filter((name) => !removingBefore.includes(name))).toEqual([]);
+    });
+
+    it('reads the gate config from the base, not local main holding the merge', async () => {
+      // The main checkout's environment, installed from the lockfile the base
+      // holds, which the base's checkout lacks.
+      const moved = mergeOverLockfile(
+        '{"lockfileVersion": 1}\n',
+        'src/app.ts',
+        'export const app = 2;\n',
+      );
+      const configs: string[] = [];
+      const linked: boolean[] = [];
+      const configAt = (path: string) => readFileSync(join(path, 'src/app.ts'), 'utf8');
+      const recording: Adapter = {
+        ...passingAdapter,
+        gateCommands: (path) => {
+          configs.push(`commands: ${configAt(path)}`);
+          return passingAdapter.gateCommands(path);
+        },
+        complexity: ({ configPath }, files) => {
+          configs.push(`complexity: ${configAt(configPath)}`);
+          return files.map((file) => ({ file, complexity: 1 }));
+        },
+        // The gate checkout's environment links the stand-in's, which holds the main checkout's.
+        testInputsIntact: ({ measurePath, configPath }) => {
+          const entry = join(measurePath, 'node_modules', 'dep');
+          linked.push(
+            readlinkSync(entry) === join(configPath, 'node_modules', 'dep') &&
+              realpathSync(entry) === realpathSync(join(repo, 'node_modules', 'dep')),
+          );
+          return true;
+        },
+      };
+
+      await remeasure({ adapter: recording });
+
+      expect(mainSha()).toBe(moved.merge);
+      expect(configs).toEqual([
+        'complexity: export const app = 1;\n',
+        'commands: export const app = 1;\n',
+        'complexity: export const app = 1;\n',
+        // The audit after the land reads the main checkout as it now is.
+        'commands: export const app = 2;\n',
+      ]);
+      expect(linked.length).toBeGreaterThan(0);
+      expect(linked).not.toContain(false);
     });
 
     it('refuses when the local target moved while the stages ran', async () => {
