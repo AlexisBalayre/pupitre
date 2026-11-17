@@ -1,0 +1,116 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-17T12:48:18.531Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "44086069250",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/44086069250",
+  "actor": "AlexisBalayre",
+  "commit_sha": "d5b9de001f55f7b480530d6adde20ce970c49d75",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 366,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "conventions",
+    "docs",
+    "simplicity",
+    "guards"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "conventions",
+    "docs",
+    "simplicity",
+    "guards"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "20bd543a5e40da2dd9b74014d89f5bdc7253b8ce",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/land-batch.service.ts",
+      "line": "69-85",
+      "description": "A Ctrl-C that arrives while no git or tmux child is running (for example during the steer's syncSleep paste or submit waits) is silently dropped by withMergeLock's no-op listener, and the batch then lands every remaining session and runs the audit, although ADR 0195 says an interrupt stops it.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/land-batch.service.ts",
+      "line": "77-85",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The delta adds a new way for a batch to stop mid-way: `await stopIfInterrupted();` before each land throws `GateInterruptedError` at the operator's Ctrl-C. landBatch rethrows it (`if (error instanceof GateInterruptedError) throw error;`, src/cli/index.ts:556), so the batch's outcome is never printed. Example: `pup land s1 s2 s3`, Ctrl-C during s2's steer waits. The run prints only `Interrupted by SIGINT; every stage child was stopped.` and exits 130. It does not say that s1 and s2 landed, that s3 was not tried, or which sessions were refused before the lock. The message also claims children were stopped when none ran. The lost-lock path in the same loop reports untried sessions as refused; the interrupt path gives the operator nothing to tell which sessions to re-run. This differs from the earlier audit-time nit: the trigger is between lands, and what goes missing is the landed/untried/refused lists, not the audit result. One fix: throw an error that carries `{ landed, refused: [...refused, ...untried] }`, as MergeLockLostError does, and print it in landBatch before failing with the signal's exit code.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land-batch.service.ts",
+      "line": "142-145",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new `INTERRUPTS` constant and the `Interrupt` alias (lines 142-145) repeat `LOCK_SIGNALS` in src/core/merge-gate.service.ts:820. That one is `['SIGINT','SIGTERM','SIGHUP'] as const`, and its doc comment says it lists the signals node outlives while holding the lock. The doc comment on `INTERRUPTS` says the same thing. Simpler alternative: export `LOCK_SIGNALS` from merge-gate and import it here, deriving the type with `(typeof LOCK_SIGNALS)[number]` as merge-gate does at line 2858. That deletes the `INTERRUPTS` constant and the `Interrupt` alias. It also keeps this list in step with the signals `withMergeLock` actually holds, which is the reason the comment gives for the constant. land-batch.service.ts already imports from merge-gate, so there is no new dependency edge. The trade-off is that the same list already appears in test-slot.service.ts:296 and sandbox.utils.ts:451, so it is already duplicated in the codebase. That is why this is only a nit.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Skipped security (the delta adds an in-process signal listener and no trust boundary), context (no spec, protocol or infra surface), spec (no closing issues), workflow-safety (no workflow change) and maintainability (off the default roster)."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.2617704500000002,
+  "duration_ms": 144511,
+  "num_turns": 13,
+  "tokens": {
+    "input": 12,
+    "output": 7963,
+    "cache_read": 284579,
+    "cache_creation": 47888,
+    "total": 340442
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 30,
+      "output": 18096,
+      "cache_read": 445474,
+      "cache_creation": 85088,
+      "cost_usd": 1.0202388
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 34,
+      "output": 5641,
+      "cache_read": 167387,
+      "cache_creation": 67072,
+      "cost_usd": 0.2408967
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 113,
+      "cache_read": 0,
+      "cache_creation": 4626,
+      "cost_usd": 0.00063495
+    }
+  ],
+  "permission_denials": []
+}
