@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { endSandboxRun } from './sandbox.utils.js';
+import { endSandboxRun, GateInterruptedError } from './sandbox.utils.js';
 
 // The real audit, so a test can count it and make it throw.
 vi.mock('./audit.service.js', async (importOriginal) => {
@@ -367,6 +367,49 @@ describe('landSessions (decision 195)', { timeout: 30_000 }, () => {
       expect(landedEvents(id)).toHaveLength(row.landed.includes(id) ? 1 : 0);
     }
     expect(auditProject).not.toHaveBeenCalled();
+  });
+
+  // A Ctrl-C during pup's own work, such as a steer's waits, kills no child,
+  // and the lock's listener discards it; the batch records it itself.
+  it.each([
+    { sessionIds: [...SESSIONS], what: 'the next land', landed: ['s2'] },
+    { sessionIds: ['s1'], what: 'the audit', landed: ['s1'] },
+  ])('stops before $what at an interrupt that killed no child', async (row) => {
+    const m2 = mergeOnGitHub('s2');
+    const m3 = mergeOnGitHub('s3');
+    const m1 = mergeOnGitHub('s1');
+    fakeGh(
+      new Map([
+        [1, merged('s1', m1)],
+        [2, merged('s2', m2)],
+        [3, merged('s3', m3)],
+      ]),
+    );
+    const before = process.listeners('SIGINT');
+    let sent = false;
+    const progress = {
+      ...NO_PROGRESS,
+      stage: (name: string) => {
+        if (name !== 'steer' || sent) return;
+        sent = true;
+        // Delivered once the event loop turns, as a real signal's listener is.
+        setImmediate(() => process.emit('SIGINT', 'SIGINT'));
+      },
+    };
+
+    const failure = await landSessions(
+      db,
+      { repoPath: repo, sessionIds: row.sessionIds, adapters: [passingAdapter] },
+      progress,
+    ).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(GateInterruptedError);
+    expect(failure).toMatchObject({ signal: 'SIGINT' });
+    for (const id of SESSIONS) {
+      expect(landedEvents(id)).toHaveLength(row.landed.includes(id) ? 1 : 0);
+    }
+    expect(auditProject).not.toHaveBeenCalled();
+    expect(process.listeners('SIGINT')).toEqual(before);
   });
 
   it('refuses the whole batch when no adapter could audit it, asking GitHub nothing', async () => {

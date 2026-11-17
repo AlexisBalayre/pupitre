@@ -30,8 +30,12 @@
     fails after the lands is reported, not thrown: the lands stand, their lines are printed, and
     the run exits non-zero with `pup audit` for the operator to re-run.
     *What stops the batch.* An interrupt or a kill stops it, and so does a lost merge lock.
-    Before each land and before the audit, the batch checks that it still holds the lock as it
-    took it. Once the lock is lost, no further session lands and no audit runs, since another
+    Decision 88's lock keeps node alive through a signal and discards one that kills no child,
+    for example during a steer's waits. For one land that only lets the land finish, but a batch
+    would land every session after it. So the batch records any interrupt under the lock itself,
+    and before each land and before the audit it stops on one with `GateInterruptedError`, as a
+    killed child does. Before each land and before the audit, the batch also checks that it still
+    holds the lock as it took it. Once the lock is lost, no further session lands and no audit runs, since another
     merge or land may be running and the audit keeps the baseline it writes. The sessions not
     yet tried are reported as refused, and the release throws `MergeLockLostError` carrying the
     batch's outcome. The run prints that outcome and then fails, as decision 88 has it for one
