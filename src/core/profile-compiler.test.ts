@@ -5,6 +5,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  symlinkSync,
   unlinkSync,
   utimesSync,
   writeFileSync,
@@ -12,7 +13,7 @@ import {
 import { dirname, join } from 'node:path';
 import { makeInput } from '@test/helpers/profile-compiler.mock.js';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { saveSessionEnv } from '../claude/session-runtime.service.js';
 import { DEFAULT_BASE_PROFILE } from './default-profile.constants.js';
 import { projectPaths } from './paths.utils.js';
@@ -905,5 +906,400 @@ describe('the status line records the plan usage (decision 156)', () => {
       command: join(outDir, 'hooks/statusline.sh'),
     });
     expect(compiled.files['hooks/statusline.sh']).toContain(`USAGE='${usageFile()}'`);
+  });
+});
+
+// Decision 191: Claude Code's Bash sandbox, behind the project's `workerSandbox` setting.
+describe('the worker sandbox (decision 191)', () => {
+  // The setting refuses outside macOS (ceiling 12), so these compile as on it.
+  const platform = Object.getOwnPropertyDescriptor(process, 'platform') as PropertyDescriptor;
+  // The compile reads the user settings.json, so the operator's own never decides a test.
+  let home: string;
+  beforeEach(() => {
+    Object.defineProperty(process, 'platform', { ...platform, value: 'darwin' });
+    home = tempDir('pup-sandbox-home-');
+    vi.stubEnv('HOME', home);
+  });
+  afterEach(() => {
+    Object.defineProperty(process, 'platform', platform);
+    vi.unstubAllEnvs();
+  });
+
+  /** A repo directory whose `.pupitre/project.yml` holds `content`, or none when undefined. */
+  function repoWith(content?: string): string {
+    const repo = tempDir('pup-sandbox-repo-');
+    if (content !== undefined) {
+      mkdirSync(join(repo, '.pupitre'));
+      writeFileSync(join(repo, '.pupitre', 'project.yml'), content);
+    }
+    return repo;
+  }
+
+  function compileIn(repo: string) {
+    return ProfileCompiler.compileProfile(
+      makeInput({ repoPath: repo, worktreePath: join(repo, '.worktrees', 's-1') }),
+    );
+  }
+
+  /** The project-config file is the only difference, so `repo` alone names the input. */
+  function compiledText(content: string | undefined, file: string): string {
+    const repo = repoWith(content);
+    const text = compileIn(repo).files[file] as string;
+    return text.replaceAll(repo, '<repo>');
+  }
+
+  it.each(['settings.json', 'hooks/scope-enforce.sh'])(
+    'compiles the same %s bytes as a project without the setting while it is off',
+    (file) => {
+      const without = compiledText(undefined, file);
+
+      expect(compiledText('workerSandbox: false\n', file)).toBe(without);
+      expect(compiledText('skipTestsOnUntestedChanges: false\n', file)).toBe(without);
+    },
+  );
+
+  it('adds no sandbox block and no cache redirect while it is off', () => {
+    const settings = JSON.parse(compiledText(undefined, 'settings.json'));
+
+    expect(settings).not.toHaveProperty('sandbox');
+    expect(settings.env).not.toHaveProperty('npm_config_cache');
+  });
+
+  it('confines Bash children to the worktree, keeping the store and the main .git config unwritable', () => {
+    const repo = repoWith('workerSandbox: true\n');
+    const store = projectPaths(repo);
+    const { sandbox } = JSON.parse(compileIn(repo).files['settings.json'] as string);
+
+    expect(sandbox).toMatchObject({
+      enabled: true,
+      failIfUnavailable: true,
+      allowUnsandboxedCommands: false,
+    });
+    const adminDir = join(repo, '.git', 'worktrees', 's-1');
+    expect(sandbox.filesystem.allowWrite).toEqual([
+      join(repo, '.worktrees', 's-1'),
+      adminDir,
+      store.dbFile,
+      `${store.dbFile}-wal`,
+      `${store.dbFile}-shm`,
+      store.handoffFile('s-1'),
+    ]);
+    // A deny wins over any allow, so the store is left out of the grants, not
+    // denied: a denied store root would take state.db with it.
+    expect(sandbox.filesystem.denyWrite).toEqual(
+      [
+        join(repo, '.git', 'config'),
+        join(repo, '.git', 'config.worktree'),
+        join(repo, '.git', 'commondir'),
+        join(repo, '.git', 'hooks'),
+        join(repo, '.git', 'info'),
+        join(repo, '.git', 'modules'),
+        join(repo, '.git', 'main'),
+        join(repo, '.git', 'refs', 'main'),
+        join(repo, '.git', 'refs', 'tags', 'main'),
+        join(repo, '.git', 'refs', 'heads', 'main'),
+        join(repo, '.git', 'packed-refs'),
+        join(repo, '.git', 'refs', 'replace'),
+        join(repo, '.git', 'refs', 'remotes'),
+        join(repo, '.git', 'shallow'),
+        join(repo, '.git', 'HEAD'),
+        join(repo, '.git', 'index'),
+        join(repo, '.git', 'MERGE_HEAD'),
+        join(repo, '.git', 'ORIG_HEAD'),
+        join(repo, '.git', 'FETCH_HEAD'),
+        join(repo, '.git', 'CHERRY_PICK_HEAD'),
+        join(repo, '.git', 'MERGE_AUTOSTASH'),
+        join(repo, '.git', 'rebase-merge'),
+        join(repo, '.git', 'rebase-apply'),
+        join(repo, '.git', 'sequencer'),
+        join(adminDir, 'commondir'),
+        join(adminDir, 'gitdir'),
+        join(adminDir, 'config.worktree'),
+      ].flatMap((path) => [path, `${path}.lock`]),
+    );
+    expect(sandbox.filesystem.denyRead).toEqual(expect.arrayContaining(['~/.ssh', '~/.npmrc']));
+    expect(sandbox.network).toEqual({
+      allowedDomains: [
+        'registry.npmjs.org',
+        'registry.yarnpkg.com',
+        'pypi.org',
+        'files.pythonhosted.org',
+      ],
+      strictAllowlist: true,
+      // The web dashboard's tests listen on loopback (decision 191).
+      allowLocalBinding: true,
+    });
+  });
+
+  // A sandboxed kill(pid, 0) on an unsandboxed pid fails with EPERM (probed), so
+  // the slot protocol would reclaim a live gate's slot. Ungranted, `pup session
+  // test` cannot write the slots dir and runs slot-less.
+  it("leaves the machine's test slots out of the grants", () => {
+    const { sandbox } = JSON.parse(
+      compileIn(repoWith('workerSandbox: true\n')).files['settings.json'] as string,
+    );
+    const slots = join(home, '.pupitre', 'slots');
+
+    for (const path of sandbox.filesystem.allowWrite) {
+      expect(path === slots || path.startsWith(`${slots}/`)).toBe(false);
+    }
+  });
+
+  // Claude Code joins the sandbox's lists from every source a worker loads, the
+  // operator's user settings included: a `sandbox` key's lists, additional
+  // directories and Edit and WebFetch allow rules. No compiled value takes an
+  // entry back, and a value the compile cannot check refuses too.
+  it.each([
+    {
+      name: 'a sandbox key',
+      content: '{"sandbox":{"excludedCommands":["docker"]}}',
+      error: 'its `sandbox` key is refused',
+    },
+    { name: 'a null sandbox', content: '{"sandbox":null}', error: 'its `sandbox` key is refused' },
+    {
+      name: 'a sandbox that is not an object',
+      content: '{"sandbox":true}',
+      error: 'its `sandbox` key is refused',
+    },
+    {
+      name: 'an Edit allow rule',
+      content: '{"permissions":{"allow":["Bash(npm test:*)","Edit(/tmp/**)"]}}',
+      error: 'rule "Edit(/tmp/**)" is refused',
+    },
+    {
+      name: 'a Write allow rule',
+      content: '{"permissions":{"allow":["Write(~/notes/**)"]}}',
+      error: 'rule "Write(~/notes/**)" is refused',
+    },
+    {
+      name: 'a WebFetch domain allow rule',
+      content: '{"permissions":{"allow":["WebFetch(domain:example.com)"]}}',
+      error: 'rule "WebFetch(domain:example.com)" is refused',
+    },
+    {
+      name: 'additional directories',
+      content: '{"permissions":{"additionalDirectories":["/tmp"]}}',
+      error: 'its `permissions.additionalDirectories` is refused',
+    },
+    {
+      name: 'permissions that are not an object',
+      content: '{"permissions":["Edit(/tmp/**)"]}',
+      error: 'its `permissions` must be an object',
+    },
+    {
+      name: 'null permissions',
+      content: '{"permissions":null}',
+      error: 'its `permissions` must be an object',
+    },
+    {
+      name: 'allow rules that are not a list',
+      content: '{"permissions":{"allow":"Edit(/tmp/**)"}}',
+      error: 'its `permissions.allow` must be a list',
+    },
+    {
+      name: 'an allow rule that is not a string',
+      content: '{"permissions":{"allow":[{"Edit":"/tmp/**"}]}}',
+      error: 'not a rule string',
+    },
+    { name: 'a JSON value not an object', content: '[]', error: 'hold a JSON object' },
+    { name: 'JSON that does not parse', content: '{"sandbox": ', error: 'read it as JSON' },
+  ])('refuses the compile on a user settings.json holding $name', ({ content, error }) => {
+    const settingsPath = join(home, '.claude', 'settings.json');
+    mkdirSync(dirname(settingsPath));
+    writeFileSync(settingsPath, content);
+    const compileOn = () => compileIn(repoWith('workerSandbox: true\n'));
+
+    expect(compileOn).toThrow(error);
+    expect(compileOn).toThrow(settingsPath);
+    expect(compileIn(repoWith('workerSandbox: false\n')).settings).not.toHaveProperty('sandbox');
+  });
+
+  it('refuses the compile on a user settings.json it cannot read', () => {
+    const settingsPath = join(home, '.claude', 'settings.json');
+    mkdirSync(settingsPath, { recursive: true });
+
+    const compileOn = () => compileIn(repoWith('workerSandbox: true\n'));
+    expect(compileOn).toThrow('read it as JSON');
+    expect(compileOn).toThrow(settingsPath);
+  });
+
+  it('refuses an Edit allow rule spelled with whitespace around its tool name', () => {
+    const settingsPath = join(home, '.claude', 'settings.json');
+    mkdirSync(dirname(settingsPath));
+    const repo = repoWith('workerSandbox: true\n');
+
+    for (const rule of [' Edit(x)', 'Edit (x)']) {
+      writeFileSync(settingsPath, JSON.stringify({ permissions: { allow: [rule] } }));
+      expect(() => compileIn(repo)).toThrow(`rule ${JSON.stringify(rule)} is refused`);
+    }
+  });
+
+  it('compiles the sandbox beside a user settings.json that adds nothing to it, or none', () => {
+    const repo = repoWith('workerSandbox: true\n');
+    expect(compileIn(repo).settings).toHaveProperty('sandbox');
+
+    mkdirSync(join(home, '.claude'));
+    writeFileSync(
+      join(home, '.claude', 'settings.json'),
+      JSON.stringify({
+        model: 'opus',
+        permissions: { allow: ['Bash(npm test:*)', 'Read(~/docs/**)'], deny: ['Edit(/etc/**)'] },
+      }),
+    );
+    expect(compileIn(repo).settings).toHaveProperty('sandbox');
+  });
+
+  // Claude Code's implicit grant is the main .git except `config`, `hooks` and
+  // the other worktrees' `worktrees/` entries. These denies narrow it further,
+  // to paths a worker's commit or merge does not write.
+  it.each([
+    {
+      name: "the main checkout's config.worktree, read under extensions.worktreeConfig",
+      path: ['config.worktree'],
+    },
+    { name: 'a commondir, which git would follow to a planted config', path: ['commondir'] },
+    { name: "the submodules' git dirs, with their own config and hooks", path: ['modules'] },
+    { name: 'replace refs, which swap the object a name resolves to', path: ['refs', 'replace'] },
+    { name: 'remote-tracking refs', path: ['refs', 'remotes'] },
+    { name: 'the shallow file', path: ['shallow'] },
+    { name: "main's lock", path: ['refs', 'heads', 'main.lock'] },
+    { name: 'a root-level main, which git tries first for a bare main', path: ['main'] },
+    { name: "a root-level main's lock", path: ['main.lock'] },
+    { name: 'refs/main, which shadows refs/heads/main', path: ['refs', 'main'] },
+    { name: "refs/main's lock", path: ['refs', 'main.lock'] },
+    { name: 'a main tag, which shadows refs/heads/main', path: ['refs', 'tags', 'main'] },
+    { name: "a main tag's lock", path: ['refs', 'tags', 'main.lock'] },
+    { name: "packed-refs' lock", path: ['packed-refs.lock'] },
+    { name: "the main checkout's HEAD", path: ['HEAD'] },
+    { name: "the main checkout's index", path: ['index'] },
+    { name: 'MERGE_HEAD', path: ['MERGE_HEAD'] },
+    { name: 'ORIG_HEAD', path: ['ORIG_HEAD'] },
+    { name: 'FETCH_HEAD', path: ['FETCH_HEAD'] },
+    { name: 'CHERRY_PICK_HEAD', path: ['CHERRY_PICK_HEAD'] },
+    {
+      name: "MERGE_AUTOSTASH, which the operator's next pull applies to the main checkout",
+      path: ['MERGE_AUTOSTASH'],
+    },
+    { name: 'a rebase todo, whose exec lines run on --continue', path: ['rebase-merge'] },
+    { name: 'an am or apply-style rebase', path: ['rebase-apply'] },
+    { name: 'a cherry-pick or revert sequence', path: ['sequencer'] },
+    { name: "the index lock, which stalls the main checkout's git", path: ['index.lock'] },
+    { name: "HEAD's lock", path: ['HEAD.lock'] },
+  ])('denies writes to $name in the main .git', ({ path }) => {
+    const repo = repoWith('workerSandbox: true\n');
+    const { sandbox } = JSON.parse(compileIn(repo).files['settings.json'] as string);
+
+    expect(sandbox.filesystem.denyWrite).toContain(join(repo, '.git', ...path));
+    expect(sandbox.filesystem.allowWrite).not.toContain(join(repo, '.git', ...path));
+  });
+
+  // Git renames a lock over its file by path, so content a worker puts into a
+  // lock the operator's git holds lands in the file (decision 191).
+  it('denies the lock of every path it denies', () => {
+    const repo = repoWith('workerSandbox: true\n');
+    const { sandbox } = JSON.parse(compileIn(repo).files['settings.json'] as string);
+    const denied: string[] = sandbox.filesystem.denyWrite;
+
+    expect(denied).toContain(join(repo, '.git', 'config.lock'));
+    for (const path of denied.filter((entry) => !entry.endsWith('.lock'))) {
+      expect(denied).toContain(`${path}.lock`);
+    }
+  });
+
+  // The sandbox refuses ~/.npm and ~/.cache; the admin dir is granted and goes with the worktree.
+  it('points the package caches into the worktree admin dir the sandbox grants', () => {
+    const repo = repoWith('workerSandbox: true\n');
+    const settings = JSON.parse(compileIn(repo).files['settings.json'] as string);
+    const caches = join(repo, '.git', 'worktrees', 's-1', 'pup-cache');
+
+    expect(settings.env).toMatchObject({
+      npm_config_cache: join(caches, 'npm'),
+      PIP_CACHE_DIR: join(caches, 'pip'),
+      UV_CACHE_DIR: join(caches, 'uv'),
+      POETRY_CACHE_DIR: join(caches, 'poetry'),
+      YARN_GLOBAL_FOLDER: join(caches, 'yarn'),
+    });
+    expect(settings.sandbox.filesystem.allowWrite).toContain(
+      join(repo, '.git', 'worktrees', 's-1'),
+    );
+  });
+
+  // Edit and Write run outside the sandbox and would follow a link sandboxed Bash planted.
+  it('refuses an Edit or Write through a symlink in the worktree', () => {
+    const repo = repoWith('workerSandbox: true\n');
+    const worktree = join(repo, '.worktrees', 's-1');
+    const outDir = tempDir('pup-sandbox-out-');
+    ProfileCompiler.writeCompiledProfile(
+      ProfileCompiler.compileProfile(makeInput({ repoPath: repo, worktreePath: worktree, outDir })),
+      outDir,
+    );
+    mkdirSync(join(worktree, 'src', 'net'), { recursive: true });
+    symlinkSync(join(repo, '.pupitre', 'project.yml'), join(worktree, 'src', 'net', 'retry.ts'));
+    symlinkSync(join(repo, '.pupitre'), join(worktree, 'src', 'net', 'linked'));
+    const write = (path: string) =>
+      spawnSync('/bin/sh', [join(outDir, 'hooks', 'scope-enforce.sh')], {
+        input: JSON.stringify({
+          tool_name: 'Write',
+          tool_input: { file_path: join(worktree, path) },
+        }),
+        encoding: 'utf8',
+      });
+
+    for (const path of ['src/net/retry.ts', 'src/net/linked/project.yml', 'src//net/./linked']) {
+      const result = write(path);
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain('is a symlink');
+    }
+    expect(write('src/net/new/file.ts').status).toBe(0);
+    // sed strips `./` after an embedded LF, so the walk would test `src/evil\nproject.yml`.
+    symlinkSync(join(repo, '.pupitre'), join(worktree, 'src', 'evil\n.'));
+    for (const path of ['src/evil\n./project.yml', 'src/net/file.ts\n', 'src/net/a\rb.ts']) {
+      const result = write(path);
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain('control character');
+    }
+    expect(readFileSync(join(repo, '.pupitre', 'project.yml'), 'utf8')).toBe(
+      'workerSandbox: true\n',
+    );
+  });
+
+  it('keeps the Read tool from the credentials the sandbox keeps from Bash', () => {
+    const repo = repoWith('workerSandbox: true\n');
+    const settings = JSON.parse(compileIn(repo).files['settings.json'] as string);
+
+    expect(settings.permissions.deny).toEqual(
+      expect.arrayContaining(['Read(~/.ssh)', 'Read(~/.ssh/**)', 'Read(~/.npmrc)']),
+    );
+    // The login Keychain holds Claude Code's and gh's tokens on macOS.
+    expect(settings.sandbox.filesystem.denyRead).toContain('~/Library/Keychains');
+    for (const path of settings.sandbox.filesystem.denyRead) {
+      expect(settings.permissions.deny).toContain(`Read(${path})`);
+    }
+  });
+
+  it("denies the Claude credentials of a config dir the project's windows run on", () => {
+    const configDir = tempDir('pup-sandbox-config-');
+    vi.stubEnv('CLAUDE_CONFIG_DIR', configDir);
+    const repo = repoWith('workerSandbox: true\n');
+    saveSessionEnv(repo, ['CLAUDE_CONFIG_DIR']);
+    const settings = JSON.parse(compileIn(repo).files['settings.json'] as string);
+    const credentials = join(configDir, '.credentials.json');
+
+    expect(settings.sandbox.filesystem.denyRead).toContain(credentials);
+    expect(settings.permissions.deny).toContain(`Read(/${credentials})`);
+  });
+
+  it("checks the user settings.json of a config dir the project's windows run on", () => {
+    const configDir = tempDir('pup-sandbox-config-');
+    vi.stubEnv('CLAUDE_CONFIG_DIR', configDir);
+    const repo = repoWith('workerSandbox: true\n');
+    saveSessionEnv(repo, ['CLAUDE_CONFIG_DIR']);
+    writeFileSync(join(configDir, 'settings.json'), '{"sandbox":{}}');
+
+    expect(() => compileIn(repo)).toThrow(join(configDir, 'settings.json'));
+  });
+
+  it('refuses the compile on a malformed setting rather than launch unsandboxed', () => {
+    expect(() => compileIn(repoWith('workerSandbox: "yes"\n'))).toThrow(/true or false/);
   });
 });

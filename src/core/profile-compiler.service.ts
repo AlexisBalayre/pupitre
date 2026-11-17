@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { parse } from 'yaml';
 import { readPlainFile, sanitizeReason } from '../adapters/capability.utils.js';
@@ -9,6 +10,7 @@ import {
   type ModelRoute,
   SECURITY_REVIEW_EFFORT,
 } from '../claude/model-ladder.constants.js';
+import { claudeUserDir } from '../claude/session-runtime.service.js';
 import { CONTROL_CHARS, readBrief, workerBrief } from './brief.service.js';
 import {
   GIT_SAFE_CONFIG,
@@ -32,6 +34,8 @@ import {
   WORKER_SUBAGENT_ENV,
 } from './profile.constants.js';
 import { ContextBudgetExceededError, InvalidProfileError } from './profile.errors.js';
+import { refuseUserSandbox } from './profile-compiler-sandbox.service.js';
+import { workerSandboxOn } from './project-config.config.js';
 import { CRITICAL_AREAS } from './routing.utils.js';
 import { shellWord } from './shell-quote.utils.js';
 import { scopeInFiles } from './task-spec.utils.js';
@@ -101,6 +105,88 @@ const WORKER_UNUSED_TOOLS = [
  * go by skill name, with no wildcard (decision 107).
  */
 const SKILL_TOOL = 'Skill';
+
+/**
+ * What a sandboxed worker may not read (decision 191): the operator's
+ * credentials, none of which a worker's task needs. Claude Code has no
+ * built-in list; `~/` is the home directory in sandbox paths and permission
+ * rules alike. The registry tokens go too: the registries are the hosts a
+ * worker can reach, and a token read there could publish to them. A public
+ * install needs none. `workerCredentials` adds the Claude credentials of a
+ * config dir the project moved.
+ */
+const WORKER_CREDENTIALS = [
+  '~/.ssh',
+  '~/.gnupg',
+  '~/.aws',
+  '~/.config/gcloud',
+  '~/.config/gh',
+  '~/.kube',
+  '~/.docker',
+  '~/.netrc',
+  '~/.git-credentials',
+  '~/.npmrc',
+  '~/.pypirc',
+  '~/.claude/.credentials.json',
+  // The login Keychain, which holds Claude Code's and gh's tokens on macOS:
+  // `security find-generic-password -w` reads both from the sandbox without it.
+  '~/Library/Keychains',
+];
+
+/**
+ * The main checkout's own state in the main `.git` that a worker denies
+ * (decision 191). A linked worktree keeps its copies of these in its admin dir,
+ * so a worker's commit or merge writes none of them here. The rebase and
+ * sequencer dirs carry a todo whose `exec` lines run on the operator's
+ * `--continue`. `MERGE_AUTOSTASH` names a stash the operator's next merge or
+ * `git pull` applies to the main checkout's working tree once it succeeds.
+ * `workerSandbox` denies each with its lock; a planted `HEAD.lock` or
+ * `index.lock` stalls every git command in the main checkout. The rest of the main checkout's state is not denied: `REVERT_HEAD`,
+ * `REBASE_HEAD`, `BISECT_*`, `AUTO_MERGE`, `MERGE_MSG` and `SQUASH_MSG`.
+ */
+const MAIN_CHECKOUT_STATE = [
+  'HEAD',
+  'index',
+  'MERGE_HEAD',
+  'ORIG_HEAD',
+  'FETCH_HEAD',
+  'CHERRY_PICK_HEAD',
+  'MERGE_AUTOSTASH',
+  'rebase-merge',
+  'rebase-apply',
+  'sequencer',
+];
+
+/**
+ * The hosts a sandboxed worker's Bash children may reach (decision 191): the
+ * package registries of the ecosystems pup ships adapters for, which a first
+ * commit's pre-commit install fetches from. The model's own traffic is the
+ * session process's, outside the sandbox.
+ */
+const WORKER_SANDBOX_DOMAINS = [
+  'registry.npmjs.org',
+  'registry.yarnpkg.com',
+  'pypi.org',
+  'files.pythonhosted.org',
+];
+
+/**
+ * The package caches a sandboxed worker's installs write, pointed into its
+ * worktree's admin dir (decision 191): the sandbox refuses their home-directory
+ * defaults, and the admin dir is already granted and goes with the worktree.
+ * pnpm needs none, since it falls back to a store in the worktree, nor does
+ * Yarn 1, which falls back to one in `TMPDIR`. Yarn 2+'s global folder holds
+ * its global cache and mirror; its `cacheFolder` is left alone, since a project
+ * that keeps its cache in the repo has it in the worktree already. Corepack's
+ * home is left alone: it only reads the operator's cached package managers.
+ */
+const WORKER_CACHE_VARS: Record<string, string> = {
+  npm_config_cache: 'npm',
+  PIP_CACHE_DIR: 'pip',
+  UV_CACHE_DIR: 'uv',
+  POETRY_CACHE_DIR: 'poetry',
+  YARN_GLOBAL_FOLDER: 'yarn',
+};
 
 /** What a session's compile takes beyond the task: launch-time facts (decisions 96, 99). */
 type SessionCompileInput = CompileInput & { peers?: SessionPeer[]; testCommand?: GateCommand };
@@ -752,12 +838,51 @@ merge_of_target() {
 }
 
 /**
+ * The scope hook's refusal of a path through a symlink in the worktree, from
+ * its first component down to the first that does not exist yet. A path with a
+ * control character is refused first, from the raw payload: `$(...)` drops
+ * trailing newlines and sed rewrites line by line, so the walk would test
+ * another path than the one the tool opens.
+ */
+const SYMLINK_CHECK_SHELL = `# Decision 191: sandboxed Bash can plant a symlink that this Edit or Write,
+# outside the sandbox, would follow; no component of the path may be one.
+# Checked on the raw payload: $(...) drops trailing newlines and sed rewrites
+# per line, so a control character would make the walk test another path.
+if ! printf '%s' "$INPUT" | jq -e '.tool_input.file_path | test("[[:cntrl:]]") | not' >/dev/null 2>&1; then
+  echo "BLOCKED: under the worker sandbox, Edit and Write refuse a path with a control character." >&2; exit 2
+fi
+LINK_PATH=$WORKTREE
+LINK_REST=$REL
+while [ -n "$LINK_REST" ]; do
+  LINK_SEG=\${LINK_REST%%/*}
+  case "$LINK_REST" in */*) LINK_REST=\${LINK_REST#*/} ;; *) LINK_REST= ;; esac
+  [ -z "$LINK_SEG" ] && continue
+  LINK_PATH=$LINK_PATH/$LINK_SEG
+  if [ -L "$LINK_PATH" ]; then
+    echo "BLOCKED: $LINK_PATH is a symlink; under the worker sandbox, Edit and Write do not go through one." >&2; exit 2
+  fi
+  [ -e "$LINK_PATH" ] || break
+done
+`;
+
+/**
  * Scope enforcement. Task-controlled patterns live in sidecar files read via
  * `grep -E -f`, so no glob value is ever interpolated into shell source; only
  * Pupitre-owned, validated paths are. REL is normalized and parent traversal
  * is denied before matching.
+ *
+ * Under the worker sandbox, a path that runs through a symlink in the worktree
+ * is refused too (decision 191): sandboxed Bash can plant one, and Edit and
+ * Write, which run outside the sandbox, would follow it to a file the sandbox
+ * denies, such as the main checkout's `project.yml` or a compiled hook. Without
+ * the sandbox, Bash writes those files directly, so the check is compiled only
+ * with it and a project that leaves it off keeps the same hook.
  */
-function buildScopeHookScript(input: CompileInput, git: WorktreeGitEnv): string {
+function buildScopeHookScript(
+  input: CompileInput,
+  git: WorktreeGitEnv,
+  sandboxed: boolean,
+): string {
   const hooksDir = join(input.outDir, 'hooks');
   return `#!/bin/sh
 # PreToolUse(Edit|Write) scope enforcement — generated by the Pupitre profile compiler.
@@ -780,7 +905,7 @@ case "/$REL/" in *"/../"*) echo "BLOCKED: path traversal is not allowed." >&2; e
 if printf '%s\\n' "$REL" | grep -qiE '^\\.claude/'; then
   echo "BLOCKED: .claude/ is owned by Pupitre and read-only for sessions." >&2; exit 2
 fi
-${worktreeGitShell(git)}
+${sandboxed ? SYMLINK_CHECK_SHELL : ''}${worktreeGitShell(git)}
 # Out of scope, an Edit still goes through when all it does is resolve a conflict
 # a merge of the target left in the file (decision 99). The replaced text is
 # exactly one conflict block, from its <<<<<<< line to its >>>>>>> line, with one
@@ -1200,6 +1325,142 @@ jq -c --arg sid "\${PUP_SESSION_ID:-unknown}" '. + {pup_session_id: $sid}' >> '$
 }
 
 /**
+ * Claude Code's Bash sandbox for a worker of a project that turned it on
+ * (decision 191). It holds every process a Bash call starts, and nothing else:
+ * Read, Edit and Write, the hooks and the session process stay outside it.
+ * - Writes: the worktree, its admin dir (where `workerCacheEnv` points the
+ *   package caches), the per-user temp directory Claude
+ *   Code points `TMPDIR` at, and the main `.git` Claude Code grants a linked
+ *   worktree's commit. That grant is the whole `.git` but its `config`,
+ *   `hooks` and every `worktrees/` entry other than this worktree's own. Within
+ *   it this denies `config` again, `config.worktree`, `commondir`, `info`,
+ *   `modules`, `main` and the refs that would shadow it (`main`, `refs/main`,
+ *   `refs/tags/main`), `packed-refs`, `refs/replace`, `refs/remotes`, `shallow`
+ *   and the main checkout's state that `MAIN_CHECKOUT_STATE` lists. A worker's
+ *   commit or merge writes none of
+ *   these, but every ref deletion takes the `packed-refs` lock first, so a
+ *   sandboxed worker deletes no ref, pseudorefs such as `CHERRY_PICK_HEAD`
+ *   included (the decision's ceiling 13). The rest of the `.git` stays
+ *   writable, including objects, `logs`, `rr-cache`, `refs/tags`,
+ *   `refs/notes` and the state files that list leaves out. In the admin dir, `commondir`, `gitdir`
+ *   and `config.worktree` are denied: they say which repo and config git uses
+ *   there. Every denied path is denied with its `.lock`, generated so no entry
+ *   misses it: git commits a write by renaming the lock over the file, by path,
+ *   so content a worker puts into a lock another git holds lands in the file,
+ *   which for `config` arms a `core.fsmonitor` and for `packed-refs` could
+ *   move `main`. Of the store,
+ *   only the SQLite files every `pup` command opens read-write, so `pup session
+ *   done`, `ask` and the pre-commit hook's `pup session test` still run; and the
+ *   session's handoff document `pup respawn` asks for. The machine's test slots
+ *   are left out: a sandboxed `kill(pid, 0)` on an unsandboxed pid fails with
+ *   EPERM (probed), so the slot protocol would take a live gate for dead and
+ *   reclaim its slot. Without the grant `pup session test` runs slot-less.
+ *   A deny wins over any allow, however narrow, so the store is left out of
+ *   every grant rather than denied: the sandbox refuses a path no grant names.
+ * - Reads: everything but the operator's credentials, which the Read tool is
+ *   kept from by `credentialReadRules` instead.
+ * - Network: the package registries only. `strictAllowlist` refuses any other
+ *   host: the session skips permission prompts, under which an unlisted host
+ *   would otherwise be let through. Claude Code honours it from `--settings`.
+ *   Local binding stays, though on macOS it also opens every localhost port to
+ *   the sandbox: the web dashboard's tests listen on loopback, and the
+ *   pre-commit hook runs them inside the sandbox for any change they import.
+ * `failIfUnavailable` refuses the launch rather than run the worker
+ * unsandboxed, and `allowUnsandboxedCommands` ignores a call's request to leave
+ * it. `refuseUserSandbox` keeps the operator's user settings, as they stand at
+ * the compile, from adding to a list here; managed settings can still add.
+ */
+function workerSandbox(input: CompileInput, git: WorktreeGitEnv, credentials: string[]) {
+  const store = projectPaths(input.repoPath);
+  const common = (...path: string[]) => join(git.GIT_COMMON_DIR, ...path);
+  return {
+    enabled: true,
+    failIfUnavailable: true,
+    allowUnsandboxedCommands: false,
+    filesystem: {
+      allowWrite: [
+        input.worktreePath,
+        git.GIT_DIR,
+        store.dbFile,
+        `${store.dbFile}-wal`,
+        `${store.dbFile}-shm`,
+        // `pup respawn` steers the worker to write it, and no pup command does.
+        store.handoffFile(input.sessionId),
+      ],
+      denyWrite: [
+        common('config'),
+        // The main checkout's own per-worktree config, read once
+        // extensions.worktreeConfig is on (`git sparse-checkout init` turns it on).
+        common('config.worktree'),
+        // A main checkout has none; git follows a planted one to a config of the worker's.
+        common('commondir'),
+        common('hooks'),
+        common('info'),
+        // The main checkout's submodules' git dirs, each with its own config and hooks.
+        // A linked worktree's submodules live in its admin dir instead.
+        common('modules'),
+        // `main` and every ref git tries before `refs/heads/main` for a bare
+        // `main` (gitrevisions): one planted there shadows it.
+        common('main'),
+        common('refs', 'main'),
+        common('refs', 'tags', 'main'),
+        common('refs', 'heads', 'main'),
+        common('packed-refs'),
+        common('refs', 'replace'),
+        common('refs', 'remotes'),
+        common('shallow'),
+        ...MAIN_CHECKOUT_STATE.map((name) => common(name)),
+        join(git.GIT_DIR, 'commondir'),
+        join(git.GIT_DIR, 'gitdir'),
+        join(git.GIT_DIR, 'config.worktree'),
+        // Git renames a lock over its file by path, so a lock is as good as the file.
+      ].flatMap((path) => [path, `${path}.lock`]),
+      denyRead: credentials,
+    },
+    network: {
+      allowedDomains: WORKER_SANDBOX_DOMAINS,
+      strictAllowlist: true,
+      allowLocalBinding: true,
+    },
+  };
+}
+
+/** `WORKER_CACHE_VARS`, each aimed at its own directory in the worktree's admin dir. */
+function workerCacheEnv(git: WorktreeGitEnv): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(WORKER_CACHE_VARS).map(([name, dir]) => [
+      name,
+      join(git.GIT_DIR, 'pup-cache', dir),
+    ]),
+  );
+}
+
+/**
+ * The credentials a sandboxed worker may not read (decision 191). A project
+ * whose windows run on another `CLAUDE_CONFIG_DIR` (decision 106) keeps the
+ * Claude credentials there, and the worker's Bash inherits the variable.
+ */
+function workerCredentials(repoPath: string): string[] {
+  const configDir = claudeUserDir(repoPath);
+  return configDir === join(homedir(), '.claude')
+    ? WORKER_CREDENTIALS
+    : [...WORKER_CREDENTIALS, join(configDir, '.credentials.json')];
+}
+
+/**
+ * The sandbox holds only Bash children, so the Read tool, and Grep and Glob
+ * with it, is kept from the credentials by deny rules, which hold with
+ * permissions skipped (decision 191). `//` roots an absolute path in a rule;
+ * the `/**` form reaches the files inside a directory.
+ */
+function credentialReadRules(credentials: string[]): string[] {
+  return credentials.flatMap((path) => {
+    const rule = path.startsWith('~/') ? path : `/${path}`;
+    return [`Read(${rule})`, `Read(${rule}/**)`];
+  });
+}
+
+/**
  * `peers` are the live sessions sharing files with this one at its launch
  * (decision 99); a launch-time fact like the knowledge slice, so it is
  * compiled into the context and its hash rather than stored with the task.
@@ -1268,6 +1529,10 @@ export function compileProfile(input: SessionCompileInput): CompiledProfile {
     { matcher: 'TaskOutput', hooks: [bashRecheck] },
   ];
 
+  const sandboxCredentials = workerSandboxOn(input.repoPath)
+    ? workerCredentials(input.repoPath)
+    : undefined;
+  if (sandboxCredentials) refuseUserSandbox(input.repoPath);
   // Additive-only invariant (docs/03-profiles.md): layer-supplied hooks are
   // appended after the compiler's security/event hooks, never allowed to replace
   // them. Spread the layer's map first, then overwrite the guarded events with
@@ -1296,13 +1561,21 @@ export function compileProfile(input: SessionCompileInput): CompiledProfile {
           ...WORKER_UNUSED_TOOLS,
           ...(merged.skills?.length ? [] : [SKILL_TOOL]),
           ...(merged.deny ?? []),
+          ...credentialReadRules(sandboxCredentials ?? []),
         ]),
       ],
     },
     // The operator's MEMORY.md is theirs, not the task's (decision 149).
     autoMemoryEnabled: false,
-    env: { ...SLIM_CONTEXT_ENV, ...WORKER_SLIM_CONTEXT_ENV, ...WORKER_SUBAGENT_ENV },
+    env: {
+      ...SLIM_CONTEXT_ENV,
+      ...WORKER_SLIM_CONTEXT_ENV,
+      ...WORKER_SUBAGENT_ENV,
+      ...(sandboxCredentials ? workerCacheEnv(git) : {}),
+    },
     statusLine: { type: 'command', command: hookPath('statusline.sh') },
+    // Last and only when on, so a project that leaves it off compiles the same bytes.
+    ...(sandboxCredentials ? { sandbox: workerSandbox(input, git, sandboxCredentials) } : {}),
   };
 
   const scopeIn = input.task.scopeIn.filter((g) => g.trim());
@@ -1310,7 +1583,7 @@ export function compileProfile(input: SessionCompileInput): CompiledProfile {
   const files: Record<string, string> = {
     'context.md': contextMarkdown,
     'settings.json': `${JSON.stringify(settings, null, 2)}\n`,
-    'hooks/scope-enforce.sh': buildScopeHookScript(input, git),
+    'hooks/scope-enforce.sh': buildScopeHookScript(input, git, sandboxCredentials !== undefined),
     'hooks/bash-guard.sh': buildBashGuardScript(),
     'hooks/bash-recheck.sh': buildBashRecheckScript(input, git),
     'hooks/read-guard.sh': buildReadGuardScript(input, git),

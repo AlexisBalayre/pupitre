@@ -100,6 +100,76 @@ for a plain write into `.claude/` and reads no scope file at all.
 The merge gate's diff-vs-scope audit is still the authority. What the gate cannot see yet is
 listed in decision 63's ceilings.
 
+## Bash sandbox (decision 191)
+
+Off by default. A project turns it on with `workerSandbox: true` in `.pupitre/project.yml`, and
+every worker launched after that gets a `sandbox` block in its compiled `settings.json`. While the
+setting is off the settings and the scope hook are byte for byte unchanged. A value that is not a boolean refuses the
+compile.
+
+The block runs every process a Bash call starts inside Claude Code's sandbox:
+
+- Writes allowed: the worktree and its admin dir, where the npm, pip, uv, poetry and Yarn 2+
+  caches are pointed (`npm_config_cache`, `PIP_CACHE_DIR`, `UV_CACHE_DIR`, `POETRY_CACHE_DIR`,
+  `YARN_GLOBAL_FOLDER` in the compiled `env`), the sandbox's `TMPDIR`, the store's `state.db`
+  files, the session's handoff document that `pup respawn` asks for, and the main `.git` that a
+  commit needs. The machine's test slots are not granted, so a sandboxed `pup session test` runs
+  with no slot (decision 191).
+- Writes denied, within the main `.git`. Every denied path is denied with its `.lock` too,
+  generated from the list: git renames the lock over the file, so content put into a lock
+  another git holds lands there:
+  - `config`, which Claude Code refuses as well, and its lock, which it does not;
+  - the main checkout's own `config.worktree`, and a `commondir`, which a main checkout has none
+    of and git would follow to a config of the worker's;
+  - `modules/`, the main checkout's submodules' git dirs with their own `config` and `hooks/`;
+  - `info/`, `refs/replace/`, `refs/remotes/` and `shallow`;
+  - `main` and `packed-refs`, and the refs that would shadow `main` for a bare `main`: `main` at
+    the `.git` root, `refs/main` and `refs/tags/main`;
+  - the main checkout's own `HEAD`, `index`, `MERGE_HEAD`, `ORIG_HEAD`, `FETCH_HEAD` and
+    `CHERRY_PICK_HEAD`;
+  - its `MERGE_AUTOSTASH`, a stash the operator's next merge or `git pull` would apply to the
+    main checkout's working tree;
+  - its `rebase-merge/`, `rebase-apply/` and `sequencer/`.
+
+  A worker's commit writes none of these, but every ref deletion takes the `packed-refs` lock, so
+  a sandboxed worker deletes no ref: `git branch -D` fails, a rebase prints an error for each
+  pick, and a conflicted cherry-pick leaves `CHERRY_PICK_HEAD` behind (decision 191, ceiling 13).
+  Claude Code itself refuses `config`, `hooks/` and the
+  other worktrees' admin dirs. In this worktree's admin dir, `commondir`, `gitdir` and
+  `config.worktree` are denied, each with its lock.
+- Writes left open in the main `.git` include, among others: objects, `logs/`, `rr-cache/`, `refs/tags/`,
+  `refs/notes/`, the other branch refs, and the main checkout's `REVERT_HEAD`, `REBASE_HEAD`,
+  `BISECT_*`, `AUTO_MERGE`, `MERGE_MSG` and `SQUASH_MSG`. Decision 191 lists the ceilings this
+  leaves.
+- A deny wins over any allow, so the rest of the store is kept out of every grant rather than
+  denied, which refuses it just the same.
+- Reads: allowed everywhere except the operator's credential files, including the Claude
+  credentials of a `CLAUDE_CONFIG_DIR` the project's windows run on and the login Keychain,
+  where Claude Code and gh keep their tokens on macOS.
+- Network: only the npm and PyPI registries, plus loopback, which the web dashboard's tests need.
+  Any other host is refused, and no command may ask to leave the sandbox.
+- The operator's user `settings.json` is loaded beside the compiled one, and Claude Code adds its
+  `sandbox` lists to the block's: a user `excludedCommands` entry would run outside the sandbox,
+  a user `allowedDomains` entry would open its host. It also adds the paths of `Edit(...)` allow
+  rules and `permissions.additionalDirectories` to the write list, and the hosts of
+  `WebFetch(domain:...)` allow rules to the network list. So under the setting the compile
+  refuses a user `settings.json` that holds a `sandbox` key, `permissions.additionalDirectories`
+  or an `Edit(...)`, `Write(...)` or `WebFetch(...)` allow rule, naming the key or rule and the
+  file. `Bash(...)` and other rules stay allowed. A file it cannot read, parse or check (a
+  `permissions` or `allow` of the wrong type) refuses too. The file is read at compile time
+  only: a key or rule added later reaches already-compiled profiles until the next compile.
+
+The Read, Edit and Write tools, the hooks and the session process are not sandboxed. The setting
+also adds a `Read(...)` deny rule for each credential path, which keeps the Read tool, and Grep
+and Glob with it, from the same files, a symlink to them included (probed); the scope hook still guards Edit and Write, and under the
+setting it also refuses a path that runs through a symlink in the worktree, which sandboxed Bash
+could plant to send Edit or Write past the sandbox. A pnpm
+project lists `.pnpm-store/` in its `.gitignore` before turning the setting on, because pnpm
+keeps a store in the worktree when it cannot write the shared one. The setting was probed only
+on macOS, and elsewhere grants of files that do not exist at launch, such as `state.db-wal` and
+the handoff document, may not hold. So until another platform is probed, the setting refuses the
+compile anywhere but macOS (decision 191, ceiling 12).
+
 ## Project brief (decision 57)
 
 The operator's direction for the project, in free Markdown at `~/.pupitre/<id>/brief.md` and
