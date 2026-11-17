@@ -158,3 +158,33 @@ Then the next task: `pup launch <task>`, or hand the order to the conductor.
   refs. Mock the git client in CLI tests rather than trusting a passing call.
 - A pre-commit that runs the full suite can hang one test for minutes under load. Run the
   suite directly, then commit.
+- Of the windows pup works with, the console alone reads the project's `.claude/settings.json`:
+  workers and the conductor launch with `--setting-sources user` and pup's compiled settings,
+  so decision 107's slimming never reaches it. Hand the block below to the operator to add to
+  that file's `env` and `permissions.deny`; do not apply it yourself, the operator commits it
+  (the gate refuses `.claude/**` from a session). What each entry turns off:
+  - `CLAUDE_CODE_DISABLE_ARTIFACT`: the Artifact tool and most of the saving. The console called
+    it 11 times across its 12 transcripts; leave this line out to keep publishing pages.
+  - `CLAUDE_CODE_DISABLE_WORKFLOWS`: the Workflow tool, never called by the console.
+  - `CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION`: the next prompt suggested in the input box after
+    each turn; it costs a request per turn, not first-request tokens.
+  - deny `SendFeedback`: the feedback tool, never called by the console.
+
+  `ScheduleWakeup` (26 console calls, `/loop` waits) and `ReportFindings` (review skills) stay.
+  Measured on pupitre on 2026-11-17 as `pup usage`'s first-request floor: `input_tokens +
+  cache_creation_input_tokens + cache_read_input_tokens` in the `message.usage` of a
+  transcript's first assistant record with non-zero usage. The console's median was 45.2k over
+  its 11 transcripts since 2026-10-26, a worker's 17.4k over 290 since decision 107. Three
+  interactive consoles on a scratch copy of the project config read 41.6k, 43.6k and 43.6k
+  without the block and 26.5k each with it, so expect a console near 28k.
+
+  ```json
+  {
+    "env": {
+      "CLAUDE_CODE_DISABLE_ARTIFACT": "1",
+      "CLAUDE_CODE_DISABLE_WORKFLOWS": "1",
+      "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION": "false"
+    },
+    "permissions": { "deny": ["SendFeedback"] }
+  }
+  ```
