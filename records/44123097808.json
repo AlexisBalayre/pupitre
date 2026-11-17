@@ -1,0 +1,189 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-17T16:17:58.842Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "44123097808",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/44123097808",
+  "actor": "AlexisBalayre",
+  "commit_sha": "b93d3232bfa70686caa2fef88bc69c9c4c2d176a",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 373,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "1782-1812",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The conductor now launches whenever `pup status` says a launch would be allowed. But `pup status` prints `Launch: allowed` while the memory floor or the plan's usage hold would still refuse the launch. The kickoff also says `pup status` shows each limit, including the 1.5 GB floor, which it never prints.",
+      "body": "The new conductor protocol makes the verdict from `pup status` the trigger for a launch:\n\n```ts\n'1. `pup status`, then `pup plan`. Whenever `pup status` says a launch would be ' +\n'allowed, launch one planned task, then read `pup status` again before the next. Pick ' +\n```\n\nhttps://github.com/AlexisBalayre/pupitre/blob/b93d3232bfa70686caa2fef88bc69c9c4c2d176a/src/core/profile-compiler.service.ts#L1810-L1812\n\nThat verdict is built by `launchRoomLines`, which looks only at the backlog and the load. When neither is over its limit it prints `allowed`:\n\nhttps://github.com/AlexisBalayre/pupitre/blob/b93d3232bfa70686caa2fef88bc69c9c4c2d176a/src/core/session-cap.service.ts#L224-L240\n\n`printLaunchRoom` (`src/cli/index.ts` L1033-1043) prints these lines unchanged. `pup launch` refuses on two more checks: `assertMemoryFloor()` (under 1.5 GB available) in `assertRoomToLaunch`, and the usage hold (5-hour usage at 85% or 7-day at 90%). The CLI treats both as no-room refusals (`NO_ROOM_ERRORS`).\n\n**Trigger:** a usage hold is active, which can last hours, or available memory drops under 1.5 GB, while the backlog and the load are both under their limits. `pup status` prints `Launch: allowed`. The conductor follows step 1 and runs `pup launch`, which is refused. It reads `pup status` again, sees `allowed` again, and repeats this for as long as the hold lasts. The kickoff has no instruction for a launch refusal. The old protocol did not check memory or usage either, but it never had a status line saying `allowed` while launch refuses.\n\nThe kickoff's Commands bullet also now ends with \"(`pup status` shows each)\" right after naming the 1.5 GB memory floor:\n\nhttps://github.com/AlexisBalayre/pupitre/blob/b93d3232bfa70686caa2fef88bc69c9c4c2d176a/src/core/profile-compiler.service.ts#L1782-L1786\n\nNo status path prints available memory. The usage line shows percentages but never says launches are on hold. Before this PR the text said \"(`pup status` shows it)\" about the usage limit alone, which was accurate.\n\n**Fix (either works):** fold the memory floor and the usage hold into the `launchRoomLines` verdict, e.g. `refused (under 1.5 GB of memory available)`. Or change step 1 to launch only when status allows it and no usage hold is shown, say what to do on a refusal, and drop \"shows each\" for memory.",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-cap.service.ts",
+      "line": "220",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The load check `load.average > load.cores` is written three times: in assertLaunchRoom, launchRoomLines, and the fix-round check in session-lifecycle.service.ts:548. The backlog check `minutes > budgetMinutes` is written twice. A threshold change has to edit every copy, or the `pup status` verdict drifts from what launch enforces. Use one isLoaded/isOverBudget helper each.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-cap.service.ts",
+      "line": "243-258",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "unlandedLine keeps four counters (printable, unnamed, more, rest) and joins with ' and ' twice, so it can print \"a, b and 3 more and 1 unnamed\". Print the first printable ids plus a single \"(+N more)\" count of everything else, and keep the PRINTABLE_ID filter.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-cap.service.ts",
+      "line": "136",
+      "area": "simplicity",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`Number.isFinite(median)` can never be false: longestStage keeps only finite non-negative times, and percentile returns one of them. Drop the dead check so readers don't hunt for a NaN path that doesn't exist.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-cap.service.ts",
+      "line": "80-108",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "LockBacklogOverBudgetError and MachineLoadedError are Error subclasses declared inline in a service file. general.md §Code layout puts Error subclasses in the area's errors file, like session-lifecycle.errors.ts.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-cap.service.ts",
+      "line": "61-72",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The exported interface LockBacklog is declared in a *.service.ts file. general.md §Type separation puts exported types in a *.types.ts file.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/session-cap.service.ts",
+      "line": "21-50",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The gate-time bounds and windows (UNTIMED_GATE_MS, GATE_FLOOR_MS, GATE_CEILING_MS, LAND_WINDOW_MS, GATE_SAMPLE, STAGES_READ, …) live in the service file. general.md §No hardcoded values puts them in the area's *.constants.ts.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/usage-limits.service.ts",
+      "line": "85",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "This comment says the file is read \"as `maxSessions` reads its file\", but this PR deleted `maxSessions`, so the comparison now points at nothing. Name readPlainFile's options instead, or drop the clause.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/claude/session-runtime.service.ts",
+      "line": "1139",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "This JSDoc places the conductor's pid file \"beside its session cap (decision 188)\", but this PR stopped writing conductor/max-sessions. A reader looking for the cap file in the store finds nothing.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0197-launches-follow-the-merge-lock-s-backlog-and-the.md",
+      "line": "4-8",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "ADRs 0194, 0183, 0156 and 0168 still describe conductor/max-sessions and maxSessions in the present tense and get no \"Amended by 0197\" back-link. A reader of those ADRs is told about a cap file that no longer exists.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 3.721639375,
+  "duration_ms": 276195,
+  "num_turns": 18,
+  "tokens": {
+    "input": 14,
+    "output": 15534,
+    "cache_read": 354151,
+    "cache_creation": 71649,
+    "total": 441348
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 178,
+      "output": 59240,
+      "cache_read": 2925832,
+      "cache_creation": 273794,
+      "cost_usd": 3.3545954000000004
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 42,
+      "output": 9094,
+      "cache_read": 256864,
+      "cache_creation": 99761,
+      "cost_usd": 0.3661129000000001
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 533,
+      "cache_read": 0,
+      "cache_creation": 5315,
+      "cost_usd": 0.0009310750000000001
+    }
+  ],
+  "permission_denials": []
+}
