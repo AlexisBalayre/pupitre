@@ -108,7 +108,7 @@ export function readBrief(repoPath: string): string | undefined {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
     throw new InvalidProfileError(
       `The project brief at ${path} is not a plain file pup can read. ` +
-        'Replace it with `pup brief edit`.',
+        'Remove it, then run `pup brief edit` to start a new one.',
     );
   }
   const text = raw.replace(CONTROL_CHARS, '');
