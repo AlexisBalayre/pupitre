@@ -11,6 +11,7 @@ import { landSession } from './land.service.js';
 import { closeLedgerEntry } from './ledger.repository.js';
 import { MergeLockLostError } from './merge-gate.errors.js';
 import { newestMerge, runMergeGate } from './merge-gate.service.js';
+import { NO_PROGRESS, type StageProgress } from './progress.utils.js';
 import { sandboxLabel } from './sandbox.utils.js';
 import {
   answerConductorQuestion,
@@ -217,16 +218,24 @@ async function mergeAction(
       'No adapter detected for this repo (supported stacks: TypeScript, Python, or a .pupitre/adapter.yml).',
     );
   }
+  // The gate's notes, a flaky pass's kept output among them, reach the page's
+  // lines as they reach the CLI's terminal, and the server's log still.
+  const notes: string[] = [];
+  const progress: StageProgress = {
+    ...NO_PROGRESS,
+    note: (line) => {
+      notes.push(sanitizeReason(line));
+      NO_PROGRESS.note(line);
+    },
+  };
   let outcome: MergeOutcome;
   let lost = '';
   try {
-    outcome = await runMergeGate(db, {
-      repoPath,
-      sessionId: session,
-      adapters,
-      acceptDebt,
-      openPr: true,
-    });
+    outcome = await runMergeGate(
+      db,
+      { repoPath, sessionId: session, adapters, acceptDebt, openPr: true },
+      progress,
+    );
   } catch (error) {
     if (!(error instanceof MergeLockLostError)) throw error;
     outcome = error.result as MergeOutcome;
@@ -260,7 +269,7 @@ async function mergeAction(
     outcome.decisionRecordId === undefined
       ? []
       : [`Drafted decision record #${outcome.decisionRecordId}; the Decisions sheet lists it.`];
-  const lines = [verdict, ...stages, ...candidates, ...record];
+  const lines = [verdict, ...stages, ...notes, ...candidates, ...record];
   // Shown, and then refused: what the gate did stands, but unprotected (decision 88).
   if (lost) throw new Error([...lines, lost].join('\n'));
   if (outcome.status !== 'merged') throw new Error(lines.join('\n'));
@@ -308,6 +317,14 @@ async function landAction(db: Database, repoPath: string, session: string): Prom
   }
   const target = sanitizeReason(outcome.target);
   const audit = outcome.audit;
+  // A failed baseline test run prints where it kept its whole output on the
+  // server's stderr only; the clause leads the stage's detail, so the page,
+  // which is never published, says it as the CLI's terminal does.
+  const keptTest = audit?.baseline.stages
+    .find(({ stage, status }) => stage === 'test' && status === 'fail')
+    ?.detail?.split('\n')[0];
+  const testOutput =
+    keptTest === undefined ? [] : [`The baseline test run failed; ${sanitizeReason(keptTest)}.`];
   const kept =
     audit === undefined
       ? []
@@ -340,6 +357,7 @@ async function landAction(db: Database, repoPath: string, session: string): Prom
         `Could not tell ${sanitizeReason(sessionId)} that ${target} moved: ${sanitizeReason(reason)}. ` +
         `Steer it to take ${target} in.`,
     ),
+    ...testOutput,
     ...(audit === undefined
       ? ['Audit skipped: run `pup audit` once after the last land.']
       : kept.length > 0

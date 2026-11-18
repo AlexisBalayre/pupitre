@@ -269,12 +269,14 @@ async function measureStages(
   const covered =
     test && test.adapter === coverageAdapter ? test.adapter.coveredTest?.(ctx) : undefined;
   // A failed test run keeps its whole output in the project's directory, which
-  // the store already holds, and the clause saying where reaches the land's
-  // line through the coverage gap below: its tail is often a fixture's noise.
-  let keptTest = 'its output was not kept';
+  // the store already holds: its tail is often a fixture's noise. The clause
+  // saying where is a line of its own on the operator's terminal, never in a
+  // finding or a gap's reason, which `pup audit --sweep` puts in the sweep
+  // task's goal and its PR body publishes on GitHub.
   const keepTest = (output: string): string => {
-    keptTest = keepFullOutput(projectPaths(repoPath).root, 'test', [output]);
-    return keptTest;
+    const kept = keepFullOutput(projectPaths(repoPath).root, 'test', [output]);
+    console.error(`The baseline test run failed; ${kept}.`);
+    return kept;
   };
   try {
     // Lint and the static debt capabilities only read the checkout, so they
@@ -323,9 +325,7 @@ async function measureStages(
       ? undefined
       : tested?.status === 'pass'
         ? covered.report()
-        : {
-            unavailable: `the instrumented test run failed, so its coverage is not read; ${keptTest}`,
-          };
+        : { unavailable: 'the instrumented test run failed, so its coverage is not read' };
     const { debt, gaps } = await measureCoverage(staticDebt, detected, ctx, folded);
     // A capability that could not measure says why (decision 29); that reason is
     // the whole point of running init before any session does.

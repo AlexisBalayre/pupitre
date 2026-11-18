@@ -813,10 +813,12 @@ describe('landSession', { timeout: 20_000 }, () => {
     ]);
   });
 
-  // Its tail was a fixture's git noise (#325): the land's line says where the
-  // whole of the failed instrumented run is kept instead.
+  // Its tail was a fixture's git noise (#325): the land prints where the whole
+  // of the failed instrumented run is kept instead.
   it('says where it kept the whole output of an instrumented run that failed', async () => {
     vi.stubEnv('HOME', tempDir('pup-land-home-'));
+    const printed = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    onTestFinished(() => printed.mockRestore());
     const store = projectPaths(repo).root;
     mkdirSync(store, { recursive: true });
     let script = 'exit 0';
@@ -851,10 +853,15 @@ describe('landSession', { timeout: 20_000 }, () => {
     });
 
     const kept = join(store, 'test-output.log');
+    // The reason reaches a sweep task's goal, which a PR body publishes: the
+    // path is a line of its own on the operator's terminal instead.
     expect(outcome.audit?.unmeasured).toEqual([
-      'fake: coverage not measured — the instrumented test run failed, so its coverage is not ' +
-        `read; full output: ${kept}`,
+      'fake: coverage not measured — the instrumented test run failed, so its coverage is not read',
     ]);
+    expect(printed).toHaveBeenCalledWith(`The baseline test run failed; full output: ${kept}.`);
+    // The dashboard's land, whose stderr is the server's, reads the clause here.
+    const tested = outcome.audit?.baseline.stages.find(({ stage }) => stage === 'test');
+    expect(tested?.detail?.split('\n')[0]).toBe(`full output: ${kept}`);
     const output = readFileSync(kept, 'utf8');
     expect(output.startsWith('FAIL  src/a.test.ts > adds\n')).toBe(true);
     expect(output.match(/fatal: no merge base found/g)).toHaveLength(100);
