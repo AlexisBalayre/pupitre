@@ -1,0 +1,111 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-18T14:40:25.937Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "44325909502",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/44325909502",
+  "actor": "AlexisBalayre",
+  "commit_sha": "f6c4b0d94a1a4b17edb49cdea107dabf8d0fbea6",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 385,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "guards"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "guards"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "simplicity",
+    "workflow-safety"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "7d5c3b10ccf994cc811e9c076d632082d9f4695c",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "2909-2917",
+      "description": "A flaky pass now writes an absolute path into the operator's home store (`~/.pupitre/<projectId>/sessions/<id>/test-output.log`, or `full output not kept: no directory at <dir>`). That detail goes into the passed gate report, which is the body of the PR posted to GitHub.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/init.service.ts",
+      "line": "326-328",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The baseline coverage gap reason now ends with `full output: ~/.pupitre/<projectId>/test-output.log` (absolute). That reason feeds the audit findings, `pup audit --sweep` puts them into the sweep task's goal (`buildSweepTask`), and `prBody` publishes the goal under `## Goal`, so a gated sweep PR names the operator's store path on GitHub. The same goal already carries the repo path via the `test fails at baseline … on <repoPath>` finding, so only the store location and projectId are new; keeping the path out of `gap.reason` (a separate local line) avoids it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "2912",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "A web dashboard merge (`mergeAction`, src/core/web-dashboard-actions.service.ts:223) passes no `progress`, so the flaky pass's new kept-output note goes only to the `pup web` server's stderr via `NO_PROGRESS.note`. The page builds its lines from stage details only, so a dashboard user is no longer told where the first run's full output was kept.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.9685723250000005,
+  "duration_ms": 202337,
+  "num_turns": 14,
+  "tokens": {
+    "input": 14,
+    "output": 7642,
+    "cache_read": 266319,
+    "cache_creation": 46512,
+    "total": 320487
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 104,
+      "output": 28554,
+      "cache_read": 1688334,
+      "cache_creation": 149672,
+      "cost_usd": 1.7970588000000003
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 32,
+      "output": 5033,
+      "cache_read": 178492,
+      "cache_creation": 41033,
+      "cost_usd": 0.17082570000000002
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 193,
+      "cache_read": 0,
+      "cache_creation": 4729,
+      "cost_usd": 0.000687825
+    }
+  ],
+  "permission_denials": []
+}
