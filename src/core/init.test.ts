@@ -181,7 +181,10 @@ describe('initProject', () => {
 
       const result = await initProject(db, repo, [makeAdapter({ coverage, coveredTest })]);
 
-      expect(result.baseline.stages.find((s) => s.stage === 'test')?.status).toBe('fail');
+      const tested = result.baseline.stages.find((s) => s.stage === 'test');
+      expect(tested?.status).toBe('fail');
+      // An in-memory store made no project directory, and none is made for it.
+      expect(tested?.detail).toMatch(/^full output not kept: no directory at \S+\n/);
       expect(result.baseline.debt?.coverageRatio).toBeUndefined();
       expect(result.baseline.gaps).toEqual([{ adapterId: 'fake', capability: 'coverage' }]);
       expect(result.findings).toContainEqual(

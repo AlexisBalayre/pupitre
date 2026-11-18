@@ -31,6 +31,7 @@ import type {
   DeadExport,
   DepGraph,
   DuplicationReport,
+  FailingTest,
   FileComplexity,
   GateCommand,
   GateStage,
@@ -547,6 +548,45 @@ function instrumentedRun(ctx: CapabilityContext): CoveredTestRun | CapabilityUna
   };
 }
 
+/**
+ * A failed test or test file as vitest's summary names it, ` FAIL  <file> > <test>`
+ * or ` FAIL  <file> [ <file> ]` for a file that failed as a whole, past a
+ * project's label (`|name|`, or the padded one a coloured run prints); or the
+ * header jest prints over a file's failures, `FAIL <file> (1.2 s)`.
+ */
+const RUNNER_FAIL_LINE =
+  /^\s*FAIL\s+(?:\|[^|]+\|\s+|\S+ {2,}(?=\S))?(\S+)(?: > (.+?)| \[ .+ \]| \([\d.]+ m?s\))?\s*$/;
+/** jest's header over a file whose every test passed. */
+const JEST_PASS_LINE = /^\s*PASS\s/;
+/** A failed test under jest's `FAIL` header, `● <describe> › <test>`. */
+const JEST_FAILED_TEST = /^\s*● (.+?)\s*$/;
+/** jest's `●` blocks that name no test: logged output, and a file that failed as a whole. */
+const JEST_NOT_A_TEST = new Set(['Console', 'Test suite failed to run']);
+
+/** The failed tests vitest's or jest's summary in `output` names, in order, each once. */
+function failingTests(output: string): FailingTest[] {
+  const named = new Map<string, FailingTest>();
+  const key = (file: string, test?: string): string => JSON.stringify([file, test ?? null]);
+  // The file whose jest header the lines below sit under; a `PASS` header ends it.
+  let jestFile: string | undefined;
+  for (const line of output.split('\n')) {
+    const fail = RUNNER_FAIL_LINE.exec(line);
+    if (fail?.[1]) {
+      const [, file, test] = fail;
+      named.set(key(file, test), test ? { file, test } : { file });
+      jestFile = test ? undefined : file;
+      continue;
+    }
+    if (JEST_PASS_LINE.test(line)) jestFile = undefined;
+    const test = jestFile && JEST_FAILED_TEST.exec(line)?.[1];
+    if (!jestFile || !test || JEST_NOT_A_TEST.has(test)) continue;
+    // A header whose tests are named is no file that failed as a whole.
+    named.delete(key(jestFile));
+    named.set(key(jestFile, test), { file: jestFile, test });
+  }
+  return [...named.values()];
+}
+
 export const typescriptAdapter: Adapter = {
   id: 'typescript',
 
@@ -799,4 +839,6 @@ export const typescriptAdapter: Adapter = {
     const run = instrumentedRun(ctx);
     return isUnavailable(run) ? undefined : run;
   },
+
+  failingTests,
 };

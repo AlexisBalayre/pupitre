@@ -17,6 +17,7 @@ import type {
   CapabilityUnavailable,
   CoverageReport,
   DeadExport,
+  FailingTest,
   GateCommand,
   GateStage,
 } from './types/adapter.types.js';
@@ -233,6 +234,23 @@ function runCapability(
 }
 
 /**
+ * A failed test or test file in pytest's short test summary, which it prints by
+ * default (`-rfE`): `FAILED <file>::<test> - <message>`, or `ERROR <file>` for
+ * a file that failed to collect. The message is pytest's, after the first ` - `.
+ */
+const PYTEST_SUMMARY_LINE = /^(?:FAILED|ERROR) (.+?\.py)(?:::(.+?))?(?: - .*)?\s*$/;
+
+/** The failed tests pytest's short summary in `output` names, in order, each once. */
+function failingTests(output: string): FailingTest[] {
+  const named = new Map<string, FailingTest>();
+  for (const line of output.split('\n')) {
+    const [, file, test] = PYTEST_SUMMARY_LINE.exec(line) ?? [];
+    if (file) named.set(JSON.stringify([file, test ?? null]), test ? { file, test } : { file });
+  }
+  return [...named.values()];
+}
+
+/**
  * Python toolchain (docs/06): detect + build/test/lint, plus the shelled-out
  * debt capabilities the repo's own config declares — vulture for dead code,
  * pytest-cov for coverage (decision 25). An undeclared or failing tool returns
@@ -387,4 +405,6 @@ export const pythonAdapter: Adapter = {
       removeGateDir(outDir);
     }
   },
+
+  failingTests,
 };

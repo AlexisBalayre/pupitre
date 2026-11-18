@@ -121,6 +121,7 @@ import { insertLedgerEntry, listLedgerEntries } from './ledger.repository.js';
 import { DUPLICATION_RULE_ID } from './merge-gate.constants.js';
 import { MergeLockHeldError, SessionNotReviewableError } from './merge-gate.errors.js';
 import { runMergeGate as runGate } from './merge-gate.service.js';
+import { projectPaths } from './paths.utils.js';
 import {
   getProject,
   getSession,
@@ -665,8 +666,10 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       then +
       '; fi; touch .ran-once; printf " FAIL  src/a.test.ts > times out under load\\n"; exit 1';
 
+    // The failed tests named as a TypeScript repo's are, from vitest's summary.
     const adapterWith = (stage: 'build' | 'test' | 'lint', script: string): Adapter => ({
       ...passingAdapter,
+      failingTests: typescriptAdapter.failingTests,
       gateCommands: () =>
         passingAdapter
           .gateCommands(repo)
@@ -679,14 +682,40 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     const runsOf = (marker: string): number =>
       vi.mocked(spawn).mock.calls.filter(([, args]) => args?.includes(marker)).length;
 
+    /**
+     * The gated session's directory under a home of the test's own, made as
+     * pup makes it when it launches the session; answers the test stage's
+     * kept output there.
+     */
+    const ownSessionDir = (): string => {
+      vi.stubEnv('HOME', tempDir('pup-output-home-'));
+      const dir = projectPaths(repo).sessionDir(SESSION_ID);
+      mkdirSync(dir, { recursive: true });
+      return join(dir, 'test-output.log');
+    };
+
+    /**
+     * A suite that fails `src/a.test.ts > adds` and all of `src/b.test.ts`,
+     * then prints 2700 chars of a fixture's git on stderr, and ends with `end`.
+     */
+    const failsUnderNoise = (end: string): string =>
+      'printf " FAIL  src/a.test.ts > adds\\n FAIL  src/b.test.ts [ src/b.test.ts ]\\n"; ' +
+      'i=0; while [ $i -lt 100 ]; do echo "fatal: no merge base found" >&2; i=$((i+1)); done; ' +
+      end;
+
     it('passes a test stage that passes on its re-run, named flaky with what failed', async () => {
       const worktree = seedSession(db, repo);
       commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+
+      const kept = ownSessionDir();
+      const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      onTestFinished(() => errors.mockRestore());
 
       const outcome = await merge(adapterWith('test', failsOnce('exit 0')));
 
       expect(outcome.status).toBe('merged');
       expect(runsOf('test-run')).toBe(2);
+      // A passed report is the PR's body, so it names no path on this machine.
       expect(untimed(outcome.report.stages)).toContainEqual({
         stage: 'test',
         status: 'pass',
@@ -694,6 +723,10 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
           'flaky — failed, then passed on its one re-run; failing the first time: ' +
           'src/a.test.ts > times out under load',
       });
+      expect(errors).toHaveBeenCalledWith(
+        `The test stage failed, then passed on its re-run (full output: ${kept}).`,
+      );
+      expect(readFileSync(kept, 'utf8')).toBe('FAIL  src/a.test.ts > times out under load\n');
     });
 
     it('rejects a test stage that fails its re-run too, naming both runs’ failures', async () => {
@@ -701,7 +734,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
 
       const outcome = await merge(
-        adapterWith('test', failsOnce('printf "FAILED tests/b.py::test_other\\n"; exit 1')),
+        adapterWith('test', failsOnce('printf " FAIL  src/b.test.ts > other\\n"; exit 1')),
       );
 
       expect(outcome.status).toBe('rejected');
@@ -709,9 +742,63 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       const stage = outcome.report.stages.at(-1);
       expect(stage).toMatchObject({ stage: 'test', status: 'fail' });
       expect(stage?.detail).toMatch(
-        /^failed twice — failing the first time: src\/a\.test\.ts > times out under load; on the re-run: tests\/b\.py::test_other\n/,
+        /^failed twice — failing the first time: src\/a\.test\.ts > times out under load; on the re-run: src\/b\.test\.ts > other\nfull output not kept: no directory at /,
       );
       expect(steerPane).toHaveBeenCalled();
+    });
+
+    // The tail a detail keeps was a fixture's git noise, which named no test
+    // (#325): the adapter reads the runner's summary from the whole output, and
+    // the whole output is kept in the session's directory, named in the detail.
+    it('names the failing test files and tests of a failed test stage and keeps its whole output', async () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      const kept = ownSessionDir();
+
+      const outcome = await merge(adapterWith('test', failsUnderNoise('exit 1')));
+
+      expect(outcome.status).toBe('rejected');
+      const detail = outcome.report.stages.at(-1)?.detail ?? '';
+      const named = 'src/a.test.ts > adds; src/b.test.ts';
+      expect(detail.split('\n').slice(0, 2)).toEqual([
+        `failed twice — failing the first time: ${named}; on the re-run: ${named}`,
+        `full output: ${kept}`,
+      ]);
+      // The tail itself holds only the noise.
+      expect(detail).not.toMatch(/FAIL {2}src/);
+      const output = readFileSync(kept, 'utf8');
+      expect(output).toMatch(/^--- run 1 of 2 ---\nFAIL {2}src\/a\.test\.ts > adds\n/);
+      expect(output).toContain('\n\n--- run 2 of 2 ---\nFAIL  src/a.test.ts > adds\n');
+      expect(output.match(/fatal: no merge base found/g)).toHaveLength(200);
+    });
+
+    it('names the failing tests of a test stage it does not re-run, and keeps its output', async () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+      const kept = ownSessionDir();
+
+      const outcome = await merge(adapterWith('test', failsUnderNoise('exit 2')));
+
+      expect(runsOf('test-run')).toBe(1);
+      expect(outcome.report.stages.at(-1)?.detail?.split('\n').slice(0, 2)).toEqual([
+        'failing: src/a.test.ts > adds; src/b.test.ts',
+        `full output: ${kept}`,
+      ]);
+      expect(readFileSync(kept, 'utf8')).toMatch(/^FAIL {2}src\/a\.test\.ts > adds\n/);
+    });
+
+    it('says a test stage’s adapter that cannot read its runner’s summary names none', async () => {
+      const worktree = seedSession(db, repo);
+      commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+
+      const outcome = await merge({
+        ...adapterWith('test', failsUnderNoise('exit 2')),
+        failingTests: undefined,
+      });
+
+      expect(outcome.report.stages.at(-1)?.detail).toMatch(
+        /^failing: none named — its adapter cannot read the runner's summary\nfull output not kept: /,
+      );
     });
 
     // A Ctrl-C reaches the gate's child with pup itself, and a stage timeout
@@ -782,7 +869,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       (firstFailures === undefined
         ? ''
         : `, on its re-run; failing the first time: ${firstFailures}`) +
-      '; nothing was merged; run pup merge again when the load falls.';
+      '; nothing was merged; run pup merge again when the load falls; full output';
 
     /** Loaded only once the gate has started the test run: the run's own load. */
     const loadedByTheRun = (): number => (runsOf('test-run') > 0 ? availableParallelism() * 4 : 0);
