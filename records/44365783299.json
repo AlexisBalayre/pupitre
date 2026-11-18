@@ -1,0 +1,187 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-18T18:10:43.928Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "44365783299",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/44365783299",
+  "actor": "AlexisBalayre",
+  "commit_sha": "0b546cabf60d6cda35a79702e2ed00883aca0870",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 393,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/web-dashboard-overview.service.ts",
+      "line": "419",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "Needs you reasons are now clipped to 100 characters, on the grounds that 'the whole question is on the session's view'. The conductor's own question (sessionId 'conductor') has no session view, and unminted sessions get no view link. Their question text (up to 300 characters after sanitizeReason) is now cut to about 86 characters with nowhere on the dashboard to read the rest. The conductor's question still renders its answer forms right there.",
+      "body": "**The conductor's question gets clipped, and its full text is shown nowhere else.**\n\nThis line clips every Needs you reason with `clipWords`:\n\n```ts\n      `<span class=\"reason\">${escapeHtml(clipWords(need.reason))}</span>` +\n```\n\n`needsSection`'s doc justifies the clip with \"the whole question is on the session's view\". That is only true for lines that carry a view link.\n\n**How to trigger it:** the conductor asks a question longer than about 86 characters.\n- `pup conductor ask` accepts questions of several hundred characters.\n- `sanitizeReason` keeps up to 300 code points.\n- `needsYou` emits the question with `sessionId: CONDUCTOR_TARGET` and the reason `question #N: <text>`.\n\n**What goes wrong:**\n- `open` is `''` for the conductor (`need.sessionId !== CONDUCTOR_TARGET`), so the line has no view link.\n- The conductor has no session view, and `conductorSection` does not print the question.\n- `answerForms` still renders on this line, so the operator is asked to answer a question they can only read up to the ellipsis.\n- An unminted session (`label` is `UNMINTED_LABEL`) also has no `open` link, so its clipped question is not on the page either.\n\nBefore this PR the line printed `escapeHtml(need.reason)` in full.\n\n**Fix:** clip only a question line that links to a view holding the full text. The finding on this same line about the decision-188 scope clause has the same root. The suggestion below covers both: it clips only `question` lines that have a view link.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/0b546cabf60d6cda35a79702e2ed00883aca0870/src/core/web-dashboard-overview.service.ts#L412-L419",
+      "suggestion": "      `<span class=\"reason\">${escapeHtml(need.kind === 'question' && open !== '' ? clipWords(need.reason) : need.reason)}</span>` +"
+    },
+    {
+      "file": "src/core/web-dashboard-overview.service.ts",
+      "line": "419",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "Every Needs you reason is now cut at 100 characters. For awaiting-review, fix-committed and pr-open lines, needOf adds widenedClause(session.rescoped) to the reason; clipWords drops the decision-188 'scope widened after launch' globs and the (+N more) count, which no other web dashboard view shows.",
+      "body": "**Clipping drops the decision-188 scope-widened clause from merge lines.**\n\n```ts\n      `<span class=\"reason\">${escapeHtml(clipWords(need.reason))}</span>` +\n```\n\nFor `awaiting-review`, `fix-committed` and `pr-open` lines, `needOf` appends `widenedClause(session.rescoped)` to the reason (`MERGE_KINDS` in `src/core/dashboard.service.ts`, L602 and L617; the clause is built at L728-735).\n\nDecision 188 (`docs/adr/0188-operator-only-commands-refuse-a-caller-under-a.md`, L98-102) says:\n\n> the web dashboard that renders the same lines, append `; scope widened after launch: +<glob>, ...` to the lines whose next act is the merge ... showing three globs and counting the rest\n\nThe base reason plus the clause prefix already take about 45 characters.\n\n**How to trigger it:** a session awaiting review that was rescoped with `src/core/web-dashboard-overview.service.ts` and `src/core/web-dashboard.service.ts`. Its reason is about 124 characters:\n\n```\nawaiting review; scope widened after launch: +src/core/web-dashboard-overview.service.ts, +src/core/web-dashboard.service.ts\n```\n\n**What goes wrong:**\n- `clipWords` cuts at the space before the second glob, so the page shows `...+src/core/web-dashboard-overview.service.ts…`.\n- With three globs, the `(+N more)` count is lost as well.\n- No `web-dashboard-*.service.ts` file reads `rescoped`, so the widened scope is shown nowhere else on the dashboard.\n- The operator who is about to merge from the Overview can no longer see the scope the merge was gated on.\n- No test covers a rescoped line.\n\n**Fix:** clip only session-written question text, and leave the reasons pup builds whole. The suggestion on the conductor-question finding for this same line does both. The ADR 0098 amendment sentence \"Needs you reasons are cut\" would then need narrowing to questions.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/0b546cabf60d6cda35a79702e2ed00883aca0870/src/core/web-dashboard-overview.service.ts#L419-L419",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard-overview.service.ts",
+      "line": "332-335",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Status strip counts an open PR twice: with one open PR and nothing else waiting it reads '1 need you · 1 open PRs', because count(view.needs.length, 'need you') includes pr-open lines that the open PRs count also counts; the pup ui tab title deliberately excludes pr-open (terminal-status.manager.ts:61-63), so the two disagree. Count view.needs.filter((n) => n.kind !== 'pr-open').length.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard-overview.service.ts",
+      "line": "132",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The 1-minute load average (`load ${load.average.toFixed(1)} of ${load.cores} cores`) is now part of the streamed Overview body, which is diffed on every 2 s poll; whenever its first decimal moves the board's innerHTML is replaced, wiping a text selection (e.g. a `pup answer …` command being copied from Needs you) and flashing the 'holding' banner while a field is being typed in.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard-overview.service.ts",
+      "line": "416-422",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The removed Open pull requests row printed the PR session's goal; its replacement (the pr-open Needs you line plus prFacts) prints only the id, reason, link, CI review state and debt, and merged sessions are filtered out of Sessions, so a PR's goal no longer appears anywhere on the Overview. Consider adding goalLine(pr.goal) in prFacts.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard-sheet.utils.ts",
+      "line": "64-67",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "clipWords only hard-cuts a long word when it is the first one; a short word followed by a token past the cap falls back to the last space, so a reason like 'question #12: <a 90-character URL>' renders as 'question #12…' with none of the question. Fall back to the hard cut when the word boundary would keep only a small part of head (e.g. boundary > CARD_TEXT_CHARS / 2).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard-overview.service.ts",
+      "line": "318-324",
+      "area": "simplicity",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "prSessionOf(need, prs) has one caller (needsSection) and a one-line body (`need.kind === 'pr-open' ? prs.get(need.sessionId) : undefined`), against general.md §Altitude / YAGNI; inline it at the call site with its WHY as one comment, and update pullRequestsSection's 'see prSessionOf' pointer.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard-overview.service.ts",
+      "line": "308-312",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "openPrs builds a Map<string, DashboardSession> though statusStrip and pullRequestsSection only read .size; needsSection could look the session up in view.snapshot.sessions for each pr-open need, letting openPrs become a plain count.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard-overview.service.ts",
+      "line": "renderOverview JSDoc",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "renderOverview's JSDoc still lists 'the open PRs not already in Needs you', but pullRequestsSection is now only a count of open PRs, each on its own Needs you line; say 'the open PR count' as the ADR amendment does.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [
+    {
+      "file": "src/core/web-dashboard-overview.service.ts",
+      "line": "317-323",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The claim 'every open PR has its own Needs you line' (prSessionOf JSDoc, needsSection/pullRequestsSection JSDoc, the hint line, and the ADR 0098 amendment) is false for a merged session in a fix round, whose fix-committed line wins, so its PR link and CI state disappear.",
+      "refutation": "openPr is set only for row.state === 'merged' (dashboard.service.ts L994) and fixCommitted only for row.state === 'awaiting-review' (L999-1000), so they never coexist. question, top-rung, stalled and gate-refused also need non-merged states. Every merged session with openPr therefore falls through to the pr-open line, and a fix-round session (back in running/awaiting-review) has no openPr and is not in the open-PRs count."
+    }
+  ],
+  "process_issues": [],
+  "duplicates_merged": 1,
+  "comments_posted_actual": 2,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 3.631701425000001,
+  "duration_ms": 290002,
+  "num_turns": 17,
+  "tokens": {
+    "input": 12,
+    "output": 16778,
+    "cache_read": 271434,
+    "cache_creation": 55147,
+    "total": 343371
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 176,
+      "output": 56512,
+      "cache_read": 2794874,
+      "cache_creation": 274095,
+      "cost_usd": 3.2258348
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 50,
+      "output": 11068,
+      "cache_read": 358663,
+      "cache_creation": 103292,
+      "cost_usd": 0.4048763000000001
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 678,
+      "cache_read": 0,
+      "cache_creation": 5209,
+      "cost_usd": 0.000990325
+    }
+  ],
+  "permission_denials": []
+}
