@@ -109,7 +109,7 @@ import {
   SessionNotReviewableError,
 } from './merge-gate.errors.js';
 import { SESSION_ID_PATTERN } from './paths.constants.js';
-import { projectPaths, writeStoreFile } from './paths.utils.js';
+import { projectPaths } from './paths.utils.js';
 import {
   formatElapsed,
   MERGE_LOCK_STAGE,
@@ -143,6 +143,7 @@ import {
 } from './session.repository.js';
 import { steerSession } from './session-lifecycle.service.js';
 import { shellWord } from './shell-quote.utils.js';
+import { keepFullOutput } from './stage-output.utils.js';
 import { type TaskRescope, taskRescopes } from './task-rescope.service.js';
 import {
   describeSlotWait,
@@ -238,32 +239,6 @@ function failingTestNames(adapter: Adapter | undefined, error: unknown): string 
     .slice(0, FAILED_TEST_NAMES_MAX)
     .map(({ file, test }) => (test === undefined ? file : `${file} > ${test}`));
   return plainDetail(names.join('; ') + (more > 0 ? ` (+${more} more)` : ''));
-}
-
-/**
- * Keep a failed test stage's whole output, each failed run of it in turn, in
- * `<dir>/<stage>-output.log`, since its detail keeps only the tail; answers
- * the clause saying where, or why it was not kept. Written as every file pup
- * owns under the store is (`writeStoreFile`, decision 194), only into a
- * directory pup made, never one this makes. The stage's next failure
- * overwrites it, so the store holds one file per stage, not one per run.
- */
-function keepFullOutput(dir: string, stage: string, runs: unknown[]): string {
-  if (!existsSync(dir)) return `full output not kept: no directory at ${dir}`;
-  const name = stage.replace(/[^\w.-]+/g, '-').replace(/^-+|-+$/g, '');
-  const path = join(dir, `${name}-output.log`);
-  const output = runs
-    .map((run, i) => {
-      const header = runs.length > 1 ? `--- run ${i + 1} of ${runs.length} ---\n` : '';
-      return header + commandFailureOutput(run);
-    })
-    .join('\n\n');
-  try {
-    writeStoreFile(path, `${output}\n`);
-    return `full output: ${path}`;
-  } catch (error) {
-    return `full output not kept: ${failureSummary(error)}`;
-  }
 }
 
 /** A changed path's new mode, and the path it was renamed or copied from if git paired one. */
@@ -2920,7 +2895,7 @@ export async function measureBranch(
     if (command.stage !== 'test') {
       return timedSince(started, { stage, status: 'fail', detail: commandFailureDetail(first) });
     }
-    const keptFirst = keepFullOutput(sessionDir, stage, [first]);
+    const keptFirst = keepFullOutput(sessionDir, stage, [commandFailureOutput(first)]);
     refuseTimeoutUnderLoad(first, loadBeforeSuites, session.id, keptFirst);
     const firstFailures = failingTestNames(primary, first);
     if (!isRerunnable(first)) {
@@ -2940,7 +2915,7 @@ export async function measureBranch(
           `${firstFailures} (${keptFirst})`,
       });
     }
-    const kept = keepFullOutput(sessionDir, stage, [first, rerun]);
+    const kept = keepFullOutput(sessionDir, stage, [first, rerun].map(commandFailureOutput));
     // A first run that failed on its own and a re-run the load ran out: the
     // re-run's timeout says no more about the code than a first run's would,
     // and the first run's failures are still what the operator needs to read.

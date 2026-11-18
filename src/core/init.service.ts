@@ -9,7 +9,7 @@ import { appendBaselineHistory, hasBaselineHistoryEntry } from './baseline-histo
 import { measureCoverage, measureStaticDebt } from './debt.service.js';
 import { runGit } from './git-diff.client.js';
 import { GATE_COMMAND_TIMEOUT_MS, GATE_OUTPUT_TAIL_CHARS } from './merge-gate.constants.js';
-import { projectId } from './paths.utils.js';
+import { projectId, projectPaths } from './paths.utils.js';
 import { GateInterruptedError, runGateChild, sandboxLabel } from './sandbox.utils.js';
 import {
   countProjectSessions,
@@ -18,6 +18,7 @@ import {
   saveProjectBaseline,
   saveProjectOriginUrl,
 } from './session.repository.js';
+import { keepFullOutput } from './stage-output.utils.js';
 import type { DebtGap } from './types/debt.types.js';
 import type {
   BaselineStageResult,
@@ -138,11 +139,16 @@ function recordOriginUrl(
   );
 }
 
+/**
+ * One baseline stage. `keep`, when given, is handed a failed run's whole output
+ * and answers the clause saying where it was kept, which leads the detail.
+ */
 async function runBaselineStage(
   repoPath: string,
   stage: string,
   command: { command: string; args: string[]; writablePaths?: string[] },
   gateEnv?: string[],
+  keep?: (output: string) => string,
 ): Promise<BaselineStageResult> {
   const start = Date.now();
   try {
@@ -160,11 +166,14 @@ async function runBaselineStage(
   } catch (error) {
     if (error instanceof GateInterruptedError) throw error;
     const failure = error as { stdout?: string; stderr?: string; message?: string };
-    const output = `${failure.stdout ?? ''}${failure.stderr ?? ''}`.trim();
+    const output =
+      `${failure.stdout ?? ''}${failure.stderr ?? ''}`.trim() ||
+      (failure.message ?? 'command failed');
+    const kept = keep ? `${keep(output)}\n` : '';
     return {
       stage,
       status: 'fail',
-      detail: (output || (failure.message ?? 'command failed')).slice(-GATE_OUTPUT_TAIL_CHARS),
+      detail: kept + output.slice(-GATE_OUTPUT_TAIL_CHARS),
       durationMs: Date.now() - start,
     };
   }
@@ -245,8 +254,9 @@ async function measureStages(
   const run = (
     stage: GateStage,
     command: (Omit<GateCommand, 'stage'> & { writablePaths?: string[] }) | undefined,
+    keep?: (output: string) => string,
   ): Promise<BaselineStageResult> | undefined =>
-    command && runBaselineStage(repoPath, stage, command, gateEnv);
+    command && runBaselineStage(repoPath, stage, command, gateEnv, keep);
   const commandFor = (stage: GateStage) => commands.find((c) => c.stage === stage);
 
   // Build first and alone: the test run and lint read what it produced.
@@ -258,12 +268,20 @@ async function measureStages(
   const coverageAdapter = detected.find((a) => a.coverage);
   const covered =
     test && test.adapter === coverageAdapter ? test.adapter.coveredTest?.(ctx) : undefined;
+  // A failed test run keeps its whole output in the project's directory, which
+  // the store already holds, and the clause saying where reaches the land's
+  // line through the coverage gap below: its tail is often a fixture's noise.
+  let keptTest = 'its output was not kept';
+  const keepTest = (output: string): string => {
+    keptTest = keepFullOutput(projectPaths(repoPath).root, 'test', [output]);
+    return keptTest;
+  };
   try {
     // Lint and the static debt capabilities only read the checkout, so they
     // run alongside the test run; each settles before anything is read, so no
     // child outlives a refusal (decision 95).
     const running = [
-      run('test', covered ?? test),
+      run('test', covered ?? test, keepTest),
       run('lint', commandFor('lint')),
       measureStaticDebt(detected, ctx),
     ] as const;
@@ -305,7 +323,9 @@ async function measureStages(
       ? undefined
       : tested?.status === 'pass'
         ? covered.report()
-        : { unavailable: 'the instrumented test run failed, so its coverage is not read' };
+        : {
+            unavailable: `the instrumented test run failed, so its coverage is not read; ${keptTest}`,
+          };
     const { debt, gaps } = await measureCoverage(staticDebt, detected, ctx, folded);
     // A capability that could not measure says why (decision 29); that reason is
     // the whole point of running init before any session does.

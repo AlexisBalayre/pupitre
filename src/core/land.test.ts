@@ -70,7 +70,7 @@ import { insertLedgerEntry } from './ledger.repository.js';
 import { PROTECTED_PATH_GLOBS } from './merge-gate.constants.js';
 import { MergeLockLostError } from './merge-gate.errors.js';
 import { measureBranch, runMergeGate, withScratchGitDir } from './merge-gate.service.js';
-import { projectId } from './paths.utils.js';
+import { projectId, projectPaths } from './paths.utils.js';
 import { LAND_STAGES, stageProgress } from './progress.utils.js';
 import {
   appendEvent,
@@ -811,6 +811,53 @@ describe('landSession', { timeout: 20_000 }, () => {
       'stage 6/7, steer',
       'stage 7/7, audit',
     ]);
+  });
+
+  // Its tail was a fixture's git noise (#325): the land's line says where the
+  // whole of the failed instrumented run is kept instead.
+  it('says where it kept the whole output of an instrumented run that failed', async () => {
+    vi.stubEnv('HOME', tempDir('pup-land-home-'));
+    const store = projectPaths(repo).root;
+    mkdirSync(store, { recursive: true });
+    let script = 'exit 0';
+    const covering: Adapter = {
+      ...passingAdapter,
+      coverage: () => ({ files: {} }),
+      coveredTest: () => ({
+        command: 'sh',
+        args: ['-c', script],
+        writablePaths: [],
+        report: () => ({ files: { 'src/app.ts': { covered: [1], instrumented: [1, 2] } } }),
+        dispose: () => undefined,
+      }),
+    };
+    await initProject(db, repo, [covering]);
+    script =
+      "echo ' FAIL  src/a.test.ts > adds'; " +
+      'i=0; while [ $i -lt 100 ]; do echo "fatal: no merge base found" >&2; i=$((i+1)); done; exit 1';
+    seedPrMerge();
+    const merge = mergeOnGitHub();
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: pinned,
+      mergeCommit: { oid: merge },
+    });
+
+    const outcome = await landSession(db, {
+      repoPath: repo,
+      sessionId: SESSION_ID,
+      adapters: [covering],
+    });
+
+    const kept = join(store, 'test-output.log');
+    expect(outcome.audit?.unmeasured).toEqual([
+      'fake: coverage not measured — the instrumented test run failed, so its coverage is not ' +
+        `read; full output: ${kept}`,
+    ]);
+    const output = readFileSync(kept, 'utf8');
+    expect(output.startsWith('FAIL  src/a.test.ts > adds\n')).toBe(true);
+    expect(output.match(/fatal: no merge base found/g)).toHaveLength(100);
   });
 
   it('records the accepted head and the pin on the landed event', async () => {
