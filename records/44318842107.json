@@ -1,0 +1,124 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-18T14:03:30.692Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "44318842107",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/44318842107",
+  "actor": "AlexisBalayre",
+  "commit_sha": "7d5c3b10ccf994cc811e9c076d632082d9f4695c",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 385,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "2909-2917",
+      "description": "A flaky pass now writes an absolute path into the operator's home store (`~/.pupitre/<projectId>/sessions/<id>/test-output.log`, or `full output not kept: no directory at <dir>`). That detail goes into the passed gate report, which is the body of the PR posted to GitHub.",
+      "status": "unresolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/adapters/python.adapter.ts",
+      "line": "241",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "PYTEST_SUMMARY_LINE's file group `(.+?\\.py)` also matches spaces. A captured-log ERROR line in a pytest failure report whose message ends in a `.py` path (e.g. `ERROR    root:conf.py:12 cannot read settings.py`) is read as a failing file, listed in the gate's `failing:` detail, and uses one of the 10 name slots. `(\\S+?\\.py)` avoids it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/init.service.ts",
+      "line": "172-176",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "When the baseline test run isn't instrumented (jest, or a vitest script with flags), the `full output: <path>` clause goes at the head of the detail. `pup init` / `pup audit` print only the detail's last line (`printInitReport`, src/cli/index.ts:376), so the file is written but no output names it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "636",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `plainDetail` JSDoc still says \"an adapter's own text reaches flagged stages only, which are refused and never steered\", then adds \"but for the failing tests it names\". Those names are adapter text on the test stage, which is steered, so the stated rule no longer holds. A maintainer deciding whether adapter text needs `plainDetail` could trust the old rule.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 3.6825965249999997,
+  "duration_ms": 329715,
+  "num_turns": 15,
+  "tokens": {
+    "input": 12,
+    "output": 11346,
+    "cache_read": 264853,
+    "cache_creation": 50361,
+    "total": 326572
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 132,
+      "output": 67179,
+      "cache_read": 2796649,
+      "cache_creation": 228170,
+      "cost_usd": 3.1953707999999996
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 54,
+      "output": 11100,
+      "cache_read": 527524,
+      "cache_creation": 129091,
+      "cost_usd": 0.4865879
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 88,
+      "cache_read": 0,
+      "cache_creation": 4749,
+      "cost_usd": 0.000637825
+    }
+  ],
+  "permission_denials": []
+}
