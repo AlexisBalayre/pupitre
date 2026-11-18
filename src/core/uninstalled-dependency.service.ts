@@ -75,13 +75,25 @@ export function owningLockfile(
 }
 
 /**
+ * Whether `dir` under `root` holds a Yarn Plug'n'Play runtime, a link counted
+ * as one: the stages would load it as they would a file.
+ */
+function holdsPnpRuntime(root: string, dir: string): boolean {
+  return ['.pnp.cjs', '.pnp.js'].some((name) =>
+    lstatSync(join(root, dir, name), { throwIfNoEntry: false }),
+  );
+}
+
+/**
  * Refuse a nested package whose stages would run with no environment: one
  * the trusted manifest gives a dependency that resolves from no
  * `node_modules` the gate links, the package's own or, for a workspace
  * member, its workspace root's, and the pinned tree commits none either.
- * A package whose owning lockfile sits beside a Yarn Plug'n'Play runtime in
- * the pinned tree is never refused: it resolves from yarn's cache, and the
- * install this would name writes no `node_modules` to clear the refusal.
+ * A package whose owning lockfile is yarn's and sits beside a Plug'n'Play
+ * runtime is never refused: it resolves from yarn's cache, and the install
+ * this would name writes no `node_modules` to clear the refusal. The runtime
+ * is looked for in `config`, never in the pinned tree, which the session
+ * writes and could commit one to so as to skip the refusal at will.
  * `linkEnvironment` would link nothing, and the stage would fail on a runner
  * it cannot find, which reads as the branch's fault. It throws, like a
  * timeout under load: the operator installs, with the manager and in the
@@ -108,15 +120,8 @@ export function refuseUninstalled(
   if (declared.length === 0) return;
   const lock = owningLockfile(config, pkg.dir);
   // Yarn's Plug'n'Play runtime resolves from its cache and no install writes
-  // a `node_modules`: the stages resolve through the one the pinned tree holds.
-  if (
-    lock &&
-    ['.pnp.cjs', '.pnp.js'].some((name) =>
-      lstatSync(join(checkout, lock.dir, name), { throwIfNoEntry: false }),
-    )
-  ) {
-    return;
-  }
+  // a `node_modules`.
+  if (lock?.manager.name === 'yarn' && holdsPnpRuntime(config, lock.dir)) return;
   // Only a member, with no lockfile of its own, has its dependencies hoisted:
   // to the workspace root holding its lockfile. A package no lockfile owns
   // still resolves from the repo root's. The gate links both.
