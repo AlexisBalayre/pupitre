@@ -134,6 +134,61 @@ describe('the Debt sheet', () => {
     expect(page).toContain('review by 2099-01-01, accepted by alexis, held 1 day');
   });
 
+  it('lists every entry once, in one table filtered by text and kind and paged 25 rows at a time', () => {
+    for (let i = 1; i <= 29; i++) {
+      file(
+        `Oversize diff (${i} lines) merged from session s-${i}`,
+        [`src/f${i}.ts`],
+        '2026-10-20 00:00:00',
+      );
+    }
+    file('hand-filed shortcut', ['src/f1.ts', 'src/f2.ts'], '2026-01-01 00:00:00');
+
+    const page = renderDebtSheet(readDebtSheet(db, REPO, NOW));
+    const rows = page.match(/<tr data-row[^>]*>/g) ?? [];
+
+    expect(page).not.toContain('Pay down next');
+    expect(page.match(/<table/g)).toHaveLength(1);
+    expect(page.match(/>Close #/g)).toHaveLength(30);
+    expect(rows).toHaveLength(30);
+    expect(rows.filter((row) => !row.endsWith(' hidden>'))).toHaveLength(25);
+    // The oldest entry weighs its files heaviest, so the table opens on it.
+    expect(rows[0]).toBe('<tr data-row data-kind="other">');
+    expect(rows[1]).toBe('<tr data-row data-kind="oversize diff">');
+    expect(rows.at(-1)).toBe('<tr data-row data-kind="oversize diff" hidden>');
+    expect(page).toContain(
+      '<div class="browse" data-list="debt" data-page-size="25" data-paging="pages">',
+    );
+    expect(page).toContain(
+      '<input type="search" data-filter="text" aria-label="Filter by text, file or reason"',
+    );
+    expect(page).toContain(
+      '<select data-filter="kind" aria-label="Kind"><option value="">every kind</option>' +
+        '<option value="oversize diff">oversize diff</option><option value="complexity rise">complexity rise</option>' +
+        '<option value="duplicated lines">duplicated lines</option><option value="other">other</option></select>',
+    );
+    expect(page).toContain(
+      '<button type="button" data-step="-1" disabled>Previous</button>' +
+        '<span data-status aria-live="polite">1–25 of 30</span>' +
+        '<button type="button" data-step="1">Next</button>',
+    );
+  });
+
+  it('names three files of an entry in full and keeps the rest behind a closed details element', () => {
+    file(
+      'wide',
+      ['src/a.ts', 'src/b.ts', 'src/c.ts', 'src/d.ts', 'src/e.ts'],
+      '2026-10-25 00:00:00',
+    );
+
+    const page = renderDebtSheet(readDebtSheet(db, REPO, NOW));
+
+    expect(page).toContain(
+      '<td><code>src/a.ts</code> <code>src/b.ts</code> <code>src/c.ts</code>' +
+        '<details><summary>2 more</summary><code>src/d.ts</code> <code>src/e.ts</code></details></td>',
+    );
+  });
+
   it('says there is nothing to pay down on an empty ledger, with no chart', () => {
     const page = renderDebtSheet(readDebtSheet(db, REPO, NOW));
 

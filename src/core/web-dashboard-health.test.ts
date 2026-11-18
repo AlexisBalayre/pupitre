@@ -129,6 +129,21 @@ describe('the Health sheet', () => {
     expect(page).toContain('2 merged, oldest first');
   });
 
+  it("lists every snapshot's figures newest first, inside a closed details element", () => {
+    capture('2026-10-01T00:00:00.000Z', { dead: 4, lines: 100, ratio: 0.8 });
+    capture('2026-10-03T00:00:00.000Z', { lines: 120, ratio: 0.82 });
+
+    const page = render();
+    const list = /<details>(.*?)<\/details>/.exec(page)?.[1] ?? '';
+
+    expect(page).not.toMatch(/<details[^>]* open/);
+    expect(list).toContain('<summary>Every snapshot&#39;s figures, 2, newest first</summary>');
+    expect(list).toContain(
+      '<tr><td>2026-10-03 00:00</td><td>82%</td><td>not measured</td><td>120</td></tr>' +
+        '<tr><td>2026-10-01 00:00</td><td>80%</td><td>4</td><td>100</td></tr>',
+    );
+  });
+
   it('breaks the line at a snapshot that left a metric unmeasured, and at a rule change, never drawing a zero', () => {
     capture('2026-10-01T00:00:00.000Z', { lines: 100, ratio: 0.8 });
     capture('2026-10-02T00:00:00.000Z', { lines: 110, ratio: 0.81 });
@@ -166,7 +181,12 @@ describe('the Health sheet', () => {
     land('s-gap', '2026-10-04 00:00:00', 'https://evil.example/x');
 
     const page = render();
-    const rows = [...page.matchAll(/<tr><td>([^<]*)<\/td><td>(.*?)<\/td><td>(.*?)<\/td><\/tr>/g)];
+    // The moves table; the snapshot list is its own table, behind its details element.
+    const rows = [
+      ...page
+        .replace(/<details>.*?<\/details>/, '')
+        .matchAll(/<tr><td>([^<]*)<\/td><td>(.*?)<\/td><td>(.*?)<\/td><\/tr>/g),
+    ];
 
     expect(rows.map(([, at]) => at)).toEqual(['2026-10-07 00:00', '2026-10-03 00:00']);
     expect(rows[0]?.[2]).toBe(
@@ -195,7 +215,12 @@ describe('the Health sheet', () => {
     land('s-a', '2026-10-04 00:00:00');
 
     const page = render();
-    const rows = [...page.matchAll(/<tr><td>([^<]*)<\/td><td>(.*?)<\/td><td>(.*?)<\/td><\/tr>/g)];
+    // The moves table; the snapshot list is its own table, behind its details element.
+    const rows = [
+      ...page
+        .replace(/<details>.*?<\/details>/, '')
+        .matchAll(/<tr><td>([^<]*)<\/td><td>(.*?)<\/td><td>(.*?)<\/td><\/tr>/g),
+    ];
 
     expect(rows.map(([, at]) => at)).toEqual(['2026-10-03 00:00', '2026-10-05 00:00']);
     expect(rows[0]?.[3]).toContain('<span class="sid">s-b</span>');

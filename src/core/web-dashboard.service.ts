@@ -24,7 +24,13 @@ import {
   renderSessionBoard,
   renderSessionHead,
 } from './web-dashboard-session.service.js';
-import { escapeHtml, hint, SHEETS, type SheetName } from './web-dashboard-sheet.utils.js';
+import {
+  escapeHtml,
+  hint,
+  listWindow,
+  SHEETS,
+  type SheetName,
+} from './web-dashboard-sheet.utils.js';
 import { readTasksSheet, renderTasksSheet } from './web-dashboard-tasks.service.js';
 
 /** How often the server re-reads the store for the open streams (decision 91). */
@@ -128,7 +134,7 @@ export async function startWebDashboard(
       case 'debt':
         return renderDebtSheet(readDebtSheet(db, repoPath, now));
       case 'decisions':
-        return renderDecisionsSheet(readDecisionsSheet(db, repoPath, now));
+        return renderDecisionsSheet(readDecisionsSheet(db));
       case 'health':
         return renderHealthSheet(readHealthSheet(db, repoPath));
       case 'overview':
@@ -312,8 +318,11 @@ interface PageParts {
  * it back while the operator types into a field on the board and saying so;
  * reports whether the stream is up; and posts each action form with the
  * secret and the nonce the stream handed it, asks before an irreversible one,
- * and shows the answer as text. The sheet bar is plain links, so a sheet opens as its own page with
- * its own stream, in the same tab, which keeps the secret (decision 98).
+ * and shows the answer as text. It filters and pages each list a sheet marks browsable over the
+ * rows the board already holds, by `listWindow`'s own source, and keeps each list's filters and
+ * page across board swaps; a filter's text holds no board, and asks the server nothing. The sheet
+ * bar is plain links, so a sheet opens as its own page with its own stream, in the same tab, which
+ * keeps the secret (decision 98).
  */
 function renderDashboardPage(
   repoPath: string,
@@ -352,7 +361,6 @@ ${CHART_CSS}
   .tile .k { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
   .tile .v { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
   .tile .d { color: var(--ink-2); font-size: 12px; }
-  .tile figcaption { display: none; }
   .strip ul { list-style: none; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: 8px; }
   .strip li {
     background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
@@ -361,7 +369,16 @@ ${CHART_CSS}
   .strip .v { font-size: 18px; font-weight: 600; color: var(--ink); font-variant-numeric: tabular-nums; }
   .strip li.launch { flex-basis: 100%; padding: 0; background: none; border: 0; font-size: 12px; }
   .more { margin-top: 8px; font-size: 12px; }
-  ol.paydown { padding-left: 20px; }
+  /* A list the script filters and pages hides rows by the attribute, whatever display a rule gives them. */
+  [hidden] { display: none !important; }
+  .browse .filters, .browse .pager { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 8px 0; font-size: 12px; }
+  .browse .filters input { flex: 1 1 240px; }
+  .browse input, .browse select, .browse .pager button {
+    font: inherit; font-size: 12px; padding: 4px 8px; border-radius: 4px;
+    border: 1px solid var(--border); background: var(--surface); color: var(--ink);
+  }
+  .browse .pager button { cursor: pointer; }
+  .browse .pager button:disabled { cursor: default; color: var(--muted); }
   details summary { cursor: pointer; color: var(--ink-2); }
   table.moves { border-collapse: collapse; width: 100%; font-size: 12px; }
   table.moves th { text-align: left; color: var(--muted); font-weight: 600; }
@@ -446,7 +463,51 @@ ${CHART_CSS}
   // window took focus from, the operator gone to the terminal, is not in use.
   const typing = () =>
     (document.hasFocus() && board.contains(document.activeElement) && document.activeElement.matches('input')) ||
-    [...board.querySelectorAll('input:not([type="hidden"])')].some((field) => field.value !== field.defaultValue);
+    [...board.querySelectorAll('input:not([type="hidden"]):not([data-filter])')].some((field) => field.value !== field.defaultValue);
+  // Each browsable list's filters and page, by its name: read off the rows the board holds, so
+  // they survive every swap and never reach the server.
+  const listWindow = ${listWindow.toString()};
+  const views = new Map();
+  const viewOf = (list) => {
+    if (!views.has(list.dataset.list)) views.set(list.dataset.list, { text: '', kind: '', page: 0, shown: 0 });
+    return views.get(list.dataset.list);
+  };
+  const browse = (list) => {
+    const view = viewOf(list);
+    const rows = [...list.querySelectorAll('[data-row]')];
+    const shown = listWindow(
+      rows.map((row) => ({ text: row.textContent, kind: row.dataset.kind ?? '' })),
+      view,
+      Number(list.dataset.pageSize),
+      list.dataset.paging,
+    );
+    view.page = shown.page;
+    rows.forEach((row, i) => { row.hidden = !shown.shown[i]; });
+    for (const group of list.querySelectorAll('[data-group]')) group.hidden = group.querySelector('[data-row]:not([hidden])') === null;
+    for (const status of list.querySelectorAll('[data-status]')) status.textContent = shown.status;
+    for (const button of list.querySelectorAll('button[data-step]')) button.disabled = button.dataset.step === '-1' ? shown.atStart : shown.atEnd;
+    for (const field of list.querySelectorAll('[data-filter]')) if (field.value !== view[field.dataset.filter]) field.value = view[field.dataset.filter];
+  };
+  board.addEventListener('input', (event) => {
+    const field = event.target.closest('[data-filter]');
+    if (!field) return;
+    const list = field.closest('[data-list]');
+    const view = viewOf(list);
+    view[field.dataset.filter] = field.value;
+    view.page = 0;
+    view.shown = 0;
+    browse(list);
+  });
+  board.addEventListener('click', (event) => {
+    const button = event.target.closest('button[data-step]');
+    if (!button) return;
+    const list = button.closest('[data-list]');
+    const view = viewOf(list);
+    const step = button.dataset.step;
+    if (list.dataset.paging === 'pages') view.page += Number(step);
+    else view.shown = step === 'all' ? list.querySelectorAll('[data-row]').length : Math.max(view.shown, Number(list.dataset.pageSize)) + Number(step);
+    browse(list);
+  });
   // A board held back is said beside 'live', so a page kept stale is never taken for a live one.
   const flush = () => {
     if (held === undefined) return;
@@ -455,6 +516,7 @@ ${CHART_CSS}
     if (waiting) return;
     board.innerHTML = held;
     held = undefined;
+    board.querySelectorAll('[data-list]').forEach(browse);
   };
   const show = (next) => {
     held = next;

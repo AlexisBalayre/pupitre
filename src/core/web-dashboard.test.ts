@@ -60,7 +60,7 @@ import {
   type WebDashboard,
 } from './web-dashboard.service.js';
 import { ACTIONS, runAction } from './web-dashboard-actions.service.js';
-import { clipWords, escapeHtml } from './web-dashboard-sheet.utils.js';
+import { clipWords, escapeHtml, type ListView, listWindow } from './web-dashboard-sheet.utils.js';
 
 const POLL_MS = 300;
 const PR = 'https://github.com/o/r/pull/7';
@@ -502,6 +502,12 @@ describe('startWebDashboard', () => {
       expect((await get(`${origin()}/action`)).status).toBe(405);
     });
 
+    it('takes no post at a sheet, nor at a sheet with a query its filters could ask', async () => {
+      for (const search of ['?sheet=debt', '?sheet=decisions&q=x', '?sheet=tasks&page=2']) {
+        expect((await get(home(search), {}, 'POST')).status).toBe(405);
+      }
+    });
+
     it('serves nothing but the page and its stream', async () => {
       const reply = await get(`${address().origin}/other`);
 
@@ -631,8 +637,8 @@ describe('startWebDashboard', () => {
       expect(page).toContain('t-planned');
       expect(page).not.toContain('accepted by alexis');
       const debtSheet = await readPage(home('?sheet=debt'));
-      expect(debtSheet).toMatch(/#1<\/span><span class="state state-blocked">overdue/);
-      expect(debtSheet).toContain('accepted by alexis, review by 2000-01-01');
+      expect(debtSheet).toMatch(/#1<\/span> [^<]*<span class="state state-blocked">overdue/);
+      expect(debtSheet).toContain('review by 2000-01-01, accepted by alexis');
     });
 
     it('puts the review in the inbox when no conductor runs to gate it', async () => {
@@ -913,6 +919,23 @@ describe('startWebDashboard', () => {
       });
     }
 
+    it('filters and pages in its own script, which asks the server for nothing new', async () => {
+      const page = (await get(sheetUrl('debt'))).body;
+      const script = /<script nonce="[^"]+">([\s\S]*?)<\/script>/.exec(page)?.[1] ?? '';
+
+      // The same source the server rendered the first window with, and it parses as one script.
+      expect(script).toContain(`const listWindow = ${listWindow.toString()};`);
+      expect(() => new Function(script)).not.toThrow();
+      expect([...script.matchAll(/fetch\('(\w+)'/g)].map(([, path]) => path)).toEqual([
+        'events',
+        'action',
+      ]);
+      expect(script.match(/method: /g)).toHaveLength(1);
+      // A filter holding text never holds the board back.
+      expect(script).toContain('input:not([type="hidden"]):not([data-filter])');
+      expect(script).toContain("board.querySelectorAll('[data-list]').forEach(browse)");
+    });
+
     it('serves each sheet under a bar linking every sheet, the current one marked', async () => {
       for (const [sheet, title] of [
         ['overview', 'Overview'],
@@ -962,7 +985,6 @@ describe('startWebDashboard', () => {
       expect(tasks).toContain('No session has reached a PR yet.');
       expect(decisions).not.toContain('<svg');
       expect(decisions).toContain('No decision recorded yet — each merge records one.');
-      expect(decisions).toContain('No source under src/ to map.');
     });
 
     it("leads the Overview with the brief's Destination", async () => {
@@ -1022,8 +1044,9 @@ describe('startWebDashboard', () => {
       expect(tile('coverage')).toBe(`${audited('coverageRatio', 0.8234)} | +2.3 pt in 7 days`);
       expect(tile('unused exports')).toBe(`${audited('deadExports', 3)} | -2 in 7 days`);
       expect(tile('duplicated lines')).toBe(`${audited('duplicatedLines', 130)} | +10 in 7 days`);
-      // Value, change and sparkline only: its per-capture line is the chart's hover, not text.
-      expect(page).toContain('.tile figcaption { display: none; }');
+      // Value, change and sparkline only: its per-capture line is for a screen reader, not on the page.
+      expect(page).not.toMatch(/figcaption \{[^}]*display: none/);
+      expect(page).toMatch(/figure\.chart figcaption \{[^}]*clip-path: inset\(50%\)/);
       expect(page).toContain('<title>coverage by capture:');
       expect(page).toContain(`sheet=debt">Debt sheet: what to pay down next →</a>`);
     });
@@ -1866,5 +1889,74 @@ describe('startWebDashboard', () => {
     it('answers 404 for an id outside the minted shape, which names no view', async () => {
       expect((await get(viewUrl('s%20x'))).status).toBe(404);
     });
+  });
+});
+
+describe('listWindow', () => {
+  const ROWS = Array.from({ length: 30 }, (_, i) => ({
+    text: `Entry ${i} ${i % 2 === 0 ? 'Even' : 'odd'}`,
+    kind: i < 10 ? 'a' : 'b',
+  }));
+  const view = (over: Partial<ListView> = {}): ListView => ({
+    text: '',
+    kind: '',
+    page: 0,
+    shown: 0,
+    ...over,
+  });
+  const indexes = (shown: boolean[]): number[] => shown.flatMap((on, i) => (on ? [i] : []));
+
+  it('keeps the rows holding every word of the text, in any case, and of the kind asked', () => {
+    const even = listWindow(ROWS, view({ text: '  even ENTRY ' }), 25, 'pages');
+    const evenB = listWindow(ROWS, view({ text: 'even', kind: 'b' }), 25, 'pages');
+
+    expect(indexes(even.shown)).toEqual(ROWS.flatMap((_, i) => (i % 2 === 0 ? [i] : [])));
+    expect(even.status).toBe('1–15 of 15');
+    expect(indexes(evenB.shown)).toEqual([10, 12, 14, 16, 18, 20, 22, 24, 26, 28]);
+    expect(listWindow(ROWS, view({ text: 'nowhere' }), 25, 'pages')).toMatchObject({
+      status: 'none match',
+      atStart: true,
+      atEnd: true,
+    });
+  });
+
+  it('steps through pages of its size, a page past either end held at that end', () => {
+    const first = listWindow(ROWS, view(), 25, 'pages');
+    const second = listWindow(ROWS, view({ page: 1 }), 25, 'pages');
+
+    expect(indexes(first.shown)).toEqual([...Array(25).keys()]);
+    expect(first).toMatchObject({ page: 0, status: '1–25 of 30', atStart: true, atEnd: false });
+    expect(indexes(second.shown)).toEqual([25, 26, 27, 28, 29]);
+    expect(second).toMatchObject({ page: 1, status: '26–30 of 30', atStart: false, atEnd: true });
+    expect(listWindow(ROWS, view({ page: 9 }), 25, 'pages').page).toBe(1);
+    expect(listWindow(ROWS, view({ page: -3 }), 25, 'pages').page).toBe(0);
+  });
+
+  it('shows the first of its size, then as many as asked, or every one', () => {
+    expect(listWindow(ROWS, view(), 20, 'more')).toMatchObject({
+      status: '20 of 30 shown',
+      atEnd: false,
+    });
+    expect(indexes(listWindow(ROWS, view({ shown: 40, page: 5 }), 20, 'more').shown)).toEqual([
+      ...Array(30).keys(),
+    ]);
+    expect(listWindow(ROWS, view({ shown: Infinity }), 10, 'all')).toMatchObject({
+      status: '30 of 30 shown',
+      atEnd: true,
+    });
+  });
+
+  it('runs the same from its own source, as the page script carries it', () => {
+    const carried = new Function(`return ${listWindow.toString()}`)() as typeof listWindow;
+
+    for (const [over, paging] of [
+      [{ text: 'odd' }, 'pages'],
+      [{ kind: 'a', page: 1 }, 'pages'],
+      [{ shown: 25 }, 'more'],
+    ] as const) {
+      expect(carried(ROWS, view(over), 10, paging)).toEqual(
+        listWindow(ROWS, view(over), 10, paging),
+      );
+    }
   });
 });

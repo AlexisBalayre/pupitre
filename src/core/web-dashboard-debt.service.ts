@@ -5,7 +5,14 @@ import { listLedgerEntries, listOverdueLedgerEntries } from './ledger.repository
 import { projectId } from './paths.utils.js';
 import { asStringArray, parseJsonOr, toIsoUtc } from './report-data.utils.js';
 import { actionButton } from './web-dashboard-actions.service.js';
-import { DAY_MS, escapeHtml, hint, oneLine, section } from './web-dashboard-sheet.utils.js';
+import {
+  browsable,
+  DAY_MS,
+  escapeHtml,
+  hint,
+  oneLine,
+  section,
+} from './web-dashboard-sheet.utils.js';
 
 /** One open ledger entry as the Debt sheet reads it, every string already through `oneLine`. */
 export interface DebtSheetEntry {
@@ -21,7 +28,7 @@ export interface DebtSheetEntry {
   overdue: boolean;
 }
 
-/** A file on the pay-down list: its open entries, oldest first, and what they weigh together. */
+/** A file on the pay-down ranking: its open entries, oldest first, and what they weigh together. */
 interface RankedFile {
   file: string;
   weight: number;
@@ -29,10 +36,13 @@ interface RankedFile {
 }
 
 const TOP_FILES = 10;
-const PAY_DOWN_FILES = 5;
-/** An entry this many days old weighs twice a fresh one on the pay-down list. */
+/** Rows a page of the entries table shows. */
+const PAGE_ROWS = 25;
+/** Files a row names in full; the rest wait behind its closed details, still read by the text filter. */
+const FILES_SHOWN = 3;
+/** An entry this many days old weighs twice a fresh one on the pay-down ranking. */
 const WEIGHT_DOUBLING_DAYS = 30;
-/** Where the pay-down list puts an entry that names no file, so it is not left off. */
+/** Where the pay-down ranking puts an entry that names no file, so it is not left off. */
 const NO_FILE = '(no file named)';
 
 /**
@@ -107,10 +117,11 @@ export function payDownRanking(entries: DebtSheetEntry[]): RankedFile[] {
 }
 
 /**
- * The Debt sheet: how much is open and of what kind and age, where it sits,
- * and the files to pay down first, each entry with why it was accepted, until
- * when and by whom. The whole ledger follows, folded, for the entries the
- * ranking leaves below its cut.
+ * The Debt sheet: how much is open and of what kind and age, the files
+ * carrying the most, then one table of every open entry with why it was
+ * accepted, until when and by whom, filtered by text and kind and paged in
+ * the browser. The table opens in pay-down order: the entries of the file
+ * `payDownRanking` puts first, oldest first, then the next file's.
  */
 export function renderDebtSheet(entries: DebtSheetEntry[]): string {
   if (entries.length === 0) {
@@ -147,9 +158,13 @@ export function renderDebtSheet(entries: DebtSheetEntry[]): string {
         ),
     ),
     section('Files carrying the most', topFiles(ranked)),
-    section('Pay down next', payDownList(ranked.slice(0, PAY_DOWN_FILES))),
-    section('All open entries', ledgerList(entries)),
+    section('Open entries', ledgerTable(payDownOrder(ranked))),
   ].join('\n');
+}
+
+/** Each entry once, where the heaviest file it names puts it on the pay-down ranking. */
+function payDownOrder(ranked: RankedFile[]): DebtSheetEntry[] {
+  return [...new Set(ranked.flatMap((file) => file.entries))];
 }
 
 /** `other` has no prefix, so every entry finds a kind, and an age band likewise. */
@@ -174,7 +189,7 @@ function countBy(
   }));
 }
 
-/** The files with the most open entries, by count alone; the pay-down list is where age weighs. */
+/** The files with the most open entries, by count alone; the table's pay-down order is where age weighs. */
 function topFiles(ranked: RankedFile[]): string {
   const named = ranked
     .filter((file) => file.file !== NO_FILE)
@@ -191,40 +206,47 @@ function days(n: number): string {
   return `${n} ${n === 1 ? 'day' : 'days'}`;
 }
 
-function payDownList(ranked: RankedFile[]): string {
-  const rows = ranked.map(
-    (file) =>
-      `<li class="entry"><div class="meta">${file.file === NO_FILE ? `<span class="hint">${escapeHtml(NO_FILE)}</span>` : `<code>${escapeHtml(file.file)}</code>`}` +
-      `<span class="hint">${escapeHtml(`weight ${Math.round(file.weight * 10) / 10}, ${file.entries.length} open`)}</span></div>` +
-      file.entries.map(entryLines).join('') +
-      '</li>',
+function ledgerTable(entries: DebtSheetEntry[]): string {
+  return browsable(
+    {
+      name: 'debt',
+      size: PAGE_ROWS,
+      paging: 'pages',
+      search: 'Filter by text, file or reason',
+      kinds: { label: 'Kind', values: KINDS.map((kind) => kind.label) },
+    },
+    entries.map((entry) => ({ kind: kindOf(entry), html: (attrs) => entryRow(entry, attrs) })),
+    (rows) =>
+      '<table class="moves"><thead><tr><th>Entry</th><th>Files</th><th>Accepted</th><th></th></tr></thead>' +
+      `<tbody>${rows.map((row) => row.html).join('')}</tbody></table>`,
   );
-  return `<ol class="paydown">${rows.join('')}</ol>`;
 }
 
-function entryLines(entry: DebtSheetEntry): string {
+function entryRow(entry: DebtSheetEntry, attrs: string): string {
   return (
-    `<div class="desc"><span class="sid">#${escapeHtml(entry.id)}</span> ${escapeHtml(entry.description)}` +
-    `${entry.overdue ? ' <span class="state state-blocked">overdue</span>' : ''}</div>` +
-    `<div class="fact">${escapeHtml(`reason: ${entry.reason}`)}</div>` +
-    `<div class="fact">${escapeHtml(`review by ${entry.reviewBy}, accepted by ${entry.acceptedBy}, held ${days(entry.ageDays)}`)}</div>` +
-    closeButton(entry)
+    `<tr${attrs}><td><span class="sid">#${escapeHtml(entry.id)}</span> ${escapeHtml(entry.description)}` +
+    `${entry.overdue ? ' <span class="state state-blocked">overdue</span>' : ''}` +
+    `<div class="fact">${escapeHtml(`reason: ${entry.reason}`)}</div></td>` +
+    `<td>${filesCell(entry.files)}</td>` +
+    `<td class="fact">${escapeHtml(`review by ${entry.reviewBy}, accepted by ${entry.acceptedBy}, held ${days(entry.ageDays)}`)}</td>` +
+    `<td>${closeButton(entry)}</td></tr>`
+  );
+}
+
+function filesCell(files: string[]): string {
+  if (files.length === 0) return `<span class="hint">${escapeHtml(NO_FILE)}</span>`;
+  const code = (some: string[]): string =>
+    some.map((file) => `<code>${escapeHtml(file)}</code>`).join(' ');
+  const rest = files.slice(FILES_SHOWN);
+  return (
+    code(files.slice(0, FILES_SHOWN)) +
+    (rest.length === 0
+      ? ''
+      : `<details><summary>${rest.length} more</summary>${code(rest)}</details>`)
   );
 }
 
 /** `pup debt close <id>`, which the page asks to confirm before it runs (decision 91). */
 function closeButton(entry: DebtSheetEntry): string {
   return actionButton('debt-close', { id: entry.id }, `Close #${entry.id}`);
-}
-
-function ledgerList(entries: DebtSheetEntry[]): string {
-  const rows = entries.map(
-    (entry) =>
-      `<li class="entry${entry.overdue ? ' overdue' : ''}"><div class="meta"><span class="sid">#${escapeHtml(entry.id)}</span>` +
-      `${entry.overdue ? '<span class="state state-blocked">overdue</span>' : ''}</div>` +
-      `<div class="desc">${escapeHtml(entry.description)}</div>` +
-      `<div class="fact">accepted by ${escapeHtml(entry.acceptedBy)}, review by ${escapeHtml(entry.reviewBy)}</div>` +
-      `${closeButton(entry)}</li>`,
-  );
-  return `<details><summary>${escapeHtml(`${entries.length} open, oldest first`)}</summary><ul class="rows">${rows.join('')}</ul></details>`;
 }

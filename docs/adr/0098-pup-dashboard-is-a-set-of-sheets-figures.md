@@ -123,3 +123,36 @@
     quiet on an unchanged store), the section order, a PR session listed once, Planned capped at
     three with its count and link, goals and questions cut at a word, the tile figure line hidden,
     and every sheet's title naming the sheet first.
+    *Amendment (2026-11-18, the PR from branch `pup/t-mwmd08k7`, Dashboard audit task 2 of 3).*
+    The Debt, Decisions, Health and Tasks sheets stop printing everything they read. No chart's
+    figure line is visible text on any sheet: `CHART_CSS` hides every `figure.chart figcaption`
+    visually (clipped to a pixel, not `display: none`, so a screen reader still reads it), and the
+    SVG keeps its `role="img"` and `<title>`; this replaces the Overview's `.tile figcaption` rule
+    above. A long list is browsable: `browsable` (in `web-dashboard-sheet.utils.ts`) marks its rows
+    `data-row`, renders its text and kind filters and its pager, and hides the rows past its first
+    window, so the sheet is short before any script runs. Its window is `listWindow`, a
+    self-contained function the page's script carries as its own source (`listWindow.toString()`)
+    and runs over the rows the board already holds, so the server's first render and every filter
+    after agree. The page keeps each list's filters and page by name across board swaps and
+    re-applies them after each one; a filter holding text does not hold the board back, as a field
+    with unsent text does. Nothing is a form and nothing asks the server: no route, query parameter
+    or write path is added, and `/action` stays the only post (decisions 91, 188). The Debt sheet
+    is its summary and two charts, the files carrying the most, then one table of the open entries
+    in pay-down order (the pay-down ranking's heaviest file's entries, oldest first, each once),
+    25 rows a page, with a text filter and a kind filter; the "Pay down next" list it repeated is
+    gone. A row names three of its files and keeps the rest behind a closed `<details>`, which the
+    text filter still reads. The Decisions sheet shows the newest 20 records under the day each was
+    made, 20 more per press, and a search over every record's summary, alternatives, files and
+    session; the grouping by module, its chart and the module map (decision 167) are dropped, with
+    `web-dashboard-module-map.service.ts` and `chart.utils`' treemap, which only it used. Health's
+    list of every snapshot's figures sits in a closed `<details>` under its charts. The Tasks
+    sheet's backlog is one line per task, its scope on the line's hover, its overlap said only when
+    there is one, the first 10 shown and a control showing all. On this repository's data (141 open
+    entries naming 8.6 files on average, 426 decisions) the Debt sheet's page is 25 rows of about
+    four lines and the Decisions sheet's 20 records, under the audit's 4,000 px and 6,000 px.
+    Tests: `listWindow`'s filters, pages, clamping and status, and that its carried source runs the
+    same; the page script carrying it, parsing, fetching only `events` and `action`, and a sheet
+    with a query answering a post with 405; the Debt table's one row and one Close per entry, its
+    pay-down order, filters, 25-row page and capped files; Decisions' day groups, its first 20 and
+    its control; Health's closed snapshot list; the backlog's one-line rows and show-all control;
+    and the figure line kept for a screen reader, not hidden from it.

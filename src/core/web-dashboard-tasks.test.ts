@@ -194,7 +194,7 @@ describe('the Tasks sheet', () => {
     expect(page).toContain('<title>Gate failures per stage:');
   });
 
-  it('lists the backlog in store order, each goal cut to its first sentence, with its scope', () => {
+  it('lists the backlog in store order, one line per task, its scope on hover', () => {
     plan('t-b', 'Second task. With more said.', ['src/b/**'], ['src/b/gen/**']);
     plan('t-a', 'First task!\nAnd a second line.', ['docs/**']);
     db.prepare("UPDATE tasks SET created_at = '2026-01-02 00:00:00' WHERE id = 't-a'").run();
@@ -203,10 +203,33 @@ describe('the Tasks sheet', () => {
     const page = render();
 
     expect(page.indexOf('>t-b<')).toBeLessThan(page.indexOf('>t-a<'));
-    expect(page).toContain('<div class="goal">Second task.</div>');
-    expect(page).toContain('<div class="goal">First task!</div>');
-    expect(page).toContain('scope: <code>src/b/**</code> · not <code>src/b/gen/**</code>');
+    expect(page).toContain(
+      '<li class="task" data-row title="scope: src/b/** · not src/b/gen/**"><span class="sid">t-b</span>' +
+        '<span class="goal">Second task.</span>',
+    );
+    expect(page).toContain(
+      '<li class="task" data-row title="scope: docs/**"><span class="sid">t-a</span><span class="goal">First task!</span>',
+    );
+    // Spans only: nothing in a line breaks it into a block.
+    expect(page).not.toMatch(/<li class="task"[^>]*>(?:(?!<\/li>).)*<div/);
     expect(page).not.toContain('With more said');
+  });
+
+  it('shows the first 10 backlog tasks, and every one on a press', () => {
+    for (let i = 1; i <= 12; i++) plan(`t-${i}`, `Task ${i}.`, ['src/**']);
+
+    const page = render();
+    const rows = page.match(/<li class="task"[^>]*>/g) ?? [];
+
+    expect(rows).toHaveLength(12);
+    expect(rows.filter((row) => row.includes(' data-row hidden '))).toHaveLength(2);
+    expect(page).toContain(
+      '<div class="browse" data-list="backlog" data-page-size="10" data-paging="all">',
+    );
+    expect(page).toContain(
+      '<span data-status aria-live="polite">10 of 12 shown</span><button type="button" data-step="all">Show all 12</button>',
+    );
+    expect(page).not.toContain('data-filter');
   });
 
   it('names each live session a backlog task would share tracked files with', () => {
@@ -227,7 +250,9 @@ describe('the Tasks sheet', () => {
     expect(page).toContain(
       'overlaps s-live on src/a.ts, src/b.ts; s-wide on src/a.ts, src/b.ts, src/c.ts and 1 more',
     );
-    expect(page).toContain('no overlap with a live session');
+    expect(page).toMatch(
+      /<span class="sid">t-docs<\/span><span class="goal">Touch docs\.<\/span><form/,
+    );
     expect(page).not.toContain('s-done on');
   });
 
@@ -239,7 +264,7 @@ describe('the Tasks sheet', () => {
     const page = render();
 
     expect(page.match(/Overlaps not read/g)).toHaveLength(1);
-    expect(page).not.toContain('no overlap with a live session');
+    expect(page).not.toContain('overlaps ');
   });
 
   it('escapes every store string, markup and control characters alike', () => {

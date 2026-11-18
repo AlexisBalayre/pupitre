@@ -16,6 +16,8 @@ import {
 import { holdingStates } from './session-state.utils.js';
 import { actionButton } from './web-dashboard-actions.service.js';
 import {
+  browsable,
+  clipWords,
   DAY_MS,
   escapeHtml,
   hint,
@@ -27,6 +29,8 @@ import {
 
 const WEEK_MS = 7 * DAY_MS;
 const GATE_WEEKS = 8;
+/** Backlog tasks the sheet lists before its show-all control. */
+const BACKLOG_SHOWN = 10;
 /** Shared files an overlap names before it says how many more there are. */
 const OVERLAP_FILES_SHOWN = 3;
 
@@ -299,7 +303,7 @@ function elapsed(ms: number): string {
 
 /**
  * The Tasks sheet (decision 166): how the gate has gone over the last eight
- * weeks, the backlog with whom each task would share files, then every session
+ * weeks, the backlog one line per task with whom it would share files, then every session
  * that reached a PR with its gate runs, steers, respawns, re-gates and times.
  */
 export function renderTasksSheet(view: TasksView): string {
@@ -333,29 +337,34 @@ function gateSection({ passRate, runs, failures }: TasksView): string {
 
 function backlogSection({ backlog, overlapError }: TasksView): string {
   return listSection('Backlog', backlog, 'Nothing planned — `pup plan` adds a task.', (tasks) => {
-    const rows = tasks.map(
-      (task) =>
-        `<li class="task"><div class="meta"><span class="sid">${escapeHtml(task.id)}</span></div>` +
-        `<div class="goal">${escapeHtml(task.goal || '(no goal recorded)')}</div>` +
-        `<div class="fact">scope: ${globs(task.scope)}${task.scopeOut.length === 0 ? '' : ` · not ${globs(task.scopeOut)}`}</div>` +
-        (overlapError === undefined
-          ? `<div class="fact">${escapeHtml(overlapText(task))}</div>`
-          : '') +
+    const rows = tasks.map((task) => ({
+      html: (attrs: string) =>
+        `<li class="task"${attrs} title="${escapeHtml(scopeText(task))}"><span class="sid">${escapeHtml(task.id)}</span>` +
+        `<span class="goal">${escapeHtml(clipWords(task.goal || '(no goal recorded)'))}</span>` +
+        (task.overlaps.length === 0
+          ? ''
+          : `<span class="fact">${escapeHtml(overlapText(task))}</span>`) +
         actionButton('launch', { task: task.id }, 'Launch') +
         '</li>',
-    );
+    }));
     return (
       (overlapError === undefined ? '' : hint(overlapError)) +
-      `<ul class="rows">${rows.join('')}</ul>`
+      browsable(
+        { name: 'backlog', size: BACKLOG_SHOWN, paging: 'all' },
+        rows,
+        (shown) => `<ul class="rows inline">${shown.map((row) => row.html).join('')}</ul>`,
+      )
     );
   });
 }
 
-const globs = (list: string[]): string =>
-  list.map((glob) => `<code>${escapeHtml(glob)}</code>`).join(' ');
+/** A task's scope, as the hover on its line names it. */
+function scopeText({ scope, scopeOut }: BacklogTask): string {
+  return `scope: ${scope.join(' ')}${scopeOut.length === 0 ? '' : ` · not ${scopeOut.join(' ')}`}`;
+}
 
+/** The live sessions a task would share files with; said only when there is one. */
 function overlapText({ overlaps }: BacklogTask): string {
-  if (overlaps.length === 0) return 'no overlap with a live session';
   return `overlaps ${overlaps
     .map(({ session, files }) => {
       const more = files.length - OVERLAP_FILES_SHOWN;
