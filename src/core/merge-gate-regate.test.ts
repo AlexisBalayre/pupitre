@@ -784,6 +784,87 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect((await merge()).status).toBe('rejected');
       expect(existsSync(marker)).toBe(false);
     });
+
+    // The gate's own diffs run in the main checkout, where `sub`'s repo is
+    // `.git/modules/sub`, and read the `.gitmodules` the branch carries and the
+    // shared config. Plain git there drops the bump and runs the module's
+    // drivers; the gate lists the bump and runs none (decision 201).
+    function plantSubmodule(gitmodules: string): void {
+      const fire = `sh -c 'echo pwned >> ${marker}; cat'`;
+      const sub = tempDir('pup-sub-');
+      armedRepo(sub, 'app.ts');
+      const before = sh(sub, 'git', 'rev-parse', 'HEAD').trim();
+      writeFileSync(join(sub, 'app.ts'), 'export const app = 2;\n');
+      sh(sub, 'git', '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qam', 'bump');
+      const after = sh(sub, 'git', 'rev-parse', 'HEAD').trim();
+      sh(repo, 'git', 'update-index', '--add', '--cacheinfo', `160000,${before},src/sub`);
+      sh(repo, 'git', 'commit', '-q', '-m', 'gitlink');
+      // An unpopulated submodule, so a later `git add .` keeps the gitlink.
+      mkdirSync(join(repo, 'src/sub'));
+
+      const worktree = seedSession(db, repo, { scopeIn: ['src/**', '.gitmodules'] });
+      commitIn(repo, 'README.md', '# hello\n');
+      sh(worktree, 'git', 'update-index', '--cacheinfo', `160000,${after},src/sub`);
+      writeFileSync(
+        join(worktree, '.gitmodules'),
+        `[submodule "sub"]\n\tpath = src/sub\n${gitmodules}`,
+      );
+      sh(worktree, 'git', 'add', '.gitmodules');
+      sh(worktree, 'git', 'commit', '-q', '-m', 'bump');
+
+      const modules = join(repo, '.git', 'modules');
+      mkdirSync(modules);
+      renameSync(join(sub, '.git'), join(modules, 'sub'));
+      const own = (key: string, value: string) =>
+        sh(repo, 'git', 'config', '--file', join(modules, 'sub', 'config'), key, value);
+      own('diff.external', fire);
+      own('diff.pwn.textconv', fire);
+      own('core.fsmonitor', fire);
+      writeFileSync(join(modules, 'sub', 'info', 'attributes'), '* diff=pwn filter=pwn\n');
+      for (const [key, value] of [
+        ['submodule.recurse', 'true'],
+        ['fetch.recurseSubmodules', 'yes'],
+        ['push.recurseSubmodules', 'on-demand'],
+        ['diff.submodule', 'diff'],
+        ['diff.ignoreSubmodules', 'all'],
+        ['status.submoduleSummary', 'true'],
+        ['submodule.sub.url', `ext::sh -c touch% ${marker}`],
+        ['submodule.sub.update', `!touch ${marker}`],
+      ] as const)
+        sh(repo, 'git', 'config', key, value);
+
+      sh(repo, 'git', 'diff', '--ignore-submodules=none', `main...${BRANCH}`, '--', 'src/sub');
+      expect(existsSync(marker)).toBe(true);
+      rmSync(marker);
+    }
+
+    it('lists a gitlink bump under submodule config the session planted and runs nothing it names', async () => {
+      plantSubmodule(
+        `\tignore = all\n\tfetchRecurseSubmodules = true\n\turl = ext::sh -c touch% ${marker}\n`,
+      );
+      expect(sh(repo, 'git', 'diff', '--name-only', `main...${BRANCH}`)).toBe('.gitmodules\n');
+
+      expect((await merge()).status).toBe('merged');
+      const merged = listEvents(db, SESSION_ID).find((event) => event.type === 'merge');
+      expect(JSON.parse(merged?.payload ?? '{}')).toMatchObject({
+        files: expect.arrayContaining(['.gitmodules', 'src/sub']),
+      });
+      expect(existsSync(marker)).toBe(false);
+    });
+
+    // Git itself refuses a `!command` update from a `.gitmodules`, recursion
+    // or not, so the rebase stops on it and the gate rejects (decision 201).
+    it('rejects a .gitmodules update command at the rebase and runs nothing', async () => {
+      plantSubmodule(`\tupdate = !touch ${marker}\n`);
+
+      const outcome = await merge();
+      expect(outcome.status).toBe('rejected');
+      expect(outcome.report?.stages.at(-1)).toMatchObject({
+        stage: 'fresh-base',
+        detail: expect.stringContaining("invalid value for 'submodule.sub.update'"),
+      });
+      expect(existsSync(marker)).toBe(false);
+    });
   });
 
   it('hard-fails changes outside the task scope', async () => {

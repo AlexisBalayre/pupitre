@@ -452,7 +452,12 @@ function worktreeConfigState(
  * fast-forwards with plumbing that never reads it (decision 80).
  * `submodule.recurse` would have the rebase and that checkout recurse into a
  * `.git/modules/<name>` repo whose own config and attributes no driver check
- * reads, so it is pinned off (decision 80). `worktree.useRelativePaths` is
+ * reads, so it is pinned off (decision 80). `fetch.recurseSubmodules` and
+ * `push.recurseSubmodules` are pinned off by name as well, so the pin does not
+ * rest on `submodule.recurse` being read after them. `diff.submodule` is pinned
+ * to `short`: at `diff` a patch over a gitlink runs a child git in
+ * `.git/modules/<name>`, whose own `diff.external` or textconv then runs
+ * (decision 201). `worktree.useRelativePaths` is
  * pinned off so pup's `worktree add` writes the absolute gitfile the pointer
  * checks match exactly, whatever the operator's global config says (Git 2.48+;
  * an older git ignores the key; decision 101).
@@ -517,6 +522,12 @@ export const GIT_SAFE_CONFIG = [
   'pull.twohead=ort',
   '-c',
   'submodule.recurse=false',
+  '-c',
+  'fetch.recurseSubmodules=false',
+  '-c',
+  'push.recurseSubmodules=no',
+  '-c',
+  'diff.submodule=short',
   '-c',
   'core.useReplaceRefs=false',
   '-c',
@@ -615,6 +626,11 @@ export function pinnedGitEnv(): NodeJS.ProcessEnv {
  * files the coverage report instruments. `--no-relative` keeps every listing
  * the root's, whatever subdirectory a shared-config `core.worktree` runs git
  * from, as `diff.relative=false` in `GIT_SAFE_CONFIG` does for a call without it.
+ * `--ignore-submodules=none` keeps a gitlink change listed: a
+ * `diff.ignoreSubmodules` in the shared config, or a `submodule.<name>.ignore`
+ * in a `.gitmodules` git reads from the checkout, its index or HEAD, drops it
+ * otherwise, and only the flag outranks the file (decision 201). Every diff
+ * here compares two commits or two blobs, so it starts no git in a submodule.
  */
 const DIFF_SAFE_FLAGS = [
   '--no-ext-diff',
@@ -622,6 +638,7 @@ const DIFF_SAFE_FLAGS = [
   '--no-color',
   '--text',
   '--no-relative',
+  '--ignore-submodules=none',
 ] as const;
 
 /**
