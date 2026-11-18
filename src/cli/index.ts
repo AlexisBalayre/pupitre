@@ -11,6 +11,7 @@ import { createElement } from 'react';
 import { stringify } from 'yaml';
 import { detectAdapters } from '../adapters/adapter.registry.js';
 import { failureSummary, formatDuration, sanitizeReason } from '../adapters/capability.utils.js';
+import { conductorRecap, sessionRecap } from '../claude/compact-recap.service.js';
 import {
   attachCommand,
   attachWindow,
@@ -1571,7 +1572,7 @@ export function buildProgram(): Command {
   program
     .command('conductor [action] [message]')
     .description(
-      'Start a Claude session that plans, launches, steers and reports on sessions, or type a message into it (start|stop|tell <message>); the conductor asks the operator with ask <question>',
+      'Start a Claude session that plans, launches, steers and reports on sessions, or type a message into it (start|stop|tell <message>); the conductor asks the operator with ask <question>; recap prints the fleet as the store and git hold it',
     )
     .option('--model <model>', 'claude model for the conductor itself (default claude-opus-5-5)')
     .option('--effort <effort>', 'effort for the conductor itself (default high)')
@@ -1602,6 +1603,15 @@ export function buildProgram(): Command {
       if (opts.option !== undefined || opts.recommend !== undefined) {
         return refuse('Only `pup conductor ask` takes --option and --recommend.');
       }
+      // The fleet's live state, which the conductor's SessionStart hook prints
+      // after a compaction in place of what the summary remembers (decision
+      // 199). Read-only, so the operator may run it too; a session has its own.
+      if (verb === 'recap') {
+        if (callingSession(db)) return refuse('A session reads its own with `pup session recap`.');
+        if (message !== undefined) return refuse('`pup conductor recap` takes no message.');
+        for (const line of conductorRecap(db, repoPath)) console.log(line);
+        return;
+      }
       // The conductor holds every operator power but the merge, so only the
       // operator starts one — a session or a conductor minting a conductor
       // would be a session launching sessions under another name (decision 47).
@@ -1620,7 +1630,9 @@ export function buildProgram(): Command {
         return;
       }
       if (verb !== 'start') {
-        return refuse(`Unknown conductor action \`${action}\` (expected start|stop|tell|ask).`);
+        return refuse(
+          `Unknown conductor action \`${action}\` (expected start|stop|tell|ask|recap).`,
+        );
       }
       const windowEnv = windowEnvOrRefuse(repoPath);
       if (windowEnv === undefined) return;
@@ -3393,6 +3405,17 @@ export function buildProgram(): Command {
           `Session ${sanitizeReason(sessionId)} question recorded; end your turn, a steer answers it.`,
         ];
       });
+    });
+  session
+    .command('recap')
+    .description(
+      "Print the session's state, last gate result and open question as the store holds them (run by the compact hook)",
+    )
+    .action(() => {
+      const { db } = project();
+      const sessionId = ownSession(db, 'recap');
+      if (!sessionId) return;
+      for (const line of sessionRecap(db, sessionId)) console.log(line);
     });
   session
     .command('test [args...]')

@@ -954,21 +954,45 @@ describe('compileConductorProfile', () => {
     expect(context).not.toContain('pass the diff in its prompt');
   });
 
-  it('wires an edit block and the bash guard, and no scope or event hooks', () => {
+  it('wires an edit block, the bash guard and the compact recap, and no scope or event hooks', () => {
     const compiled = ProfileCompiler.compileConductorProfile(conductorInput);
 
     const preToolUse = compiled.settings.hooks.PreToolUse ?? [];
     expect(preToolUse.map((e) => e.matcher)).toEqual(['Edit|Write', 'Bash']);
     expect(preToolUse[0]?.hooks[0]?.command).toContain('edit-block.sh');
     expect(preToolUse[1]?.hooks[0]?.command).toContain('bash-guard.sh');
-    expect(Object.keys(compiled.settings.hooks)).toEqual(['PreToolUse']);
+    expect(Object.keys(compiled.settings.hooks)).toEqual(['PreToolUse', 'SessionStart']);
     expect(Object.keys(compiled.files).sort()).toEqual([
       'context.md',
       'hooks/bash-guard.sh',
+      'hooks/compact-recap.sh',
       'hooks/edit-block.sh',
       'hooks/statusline.sh',
       'settings.json',
     ]);
+  });
+
+  // Decision 199: after a compaction the conductor restarts from the fleet as it is.
+  it('runs `pup conductor recap` from the main checkout on SessionStart after a compaction only', () => {
+    const compiled = ProfileCompiler.compileConductorProfile(conductorInput);
+
+    const settings = JSON.parse(compiled.files['settings.json'] as string);
+    expect(settings.hooks.SessionStart).toEqual([
+      {
+        matcher: 'compact',
+        hooks: [
+          {
+            type: 'command',
+            command: join(conductorInput.outDir, 'hooks', 'compact-recap.sh'),
+            timeout: expect.any(Number),
+          },
+        ],
+      },
+    ]);
+    const script = compiled.files['hooks/compact-recap.sh'] as string;
+    expect(script).toContain(`cd -P -- '${conductorInput.repoPath}'`);
+    expect(script).toContain('pup conductor recap');
+    expect(script).toMatch(/\| head -c \d+\nexit 0\n$/);
   });
 
   it('denies the tools that open a screen pup cannot answer (decision 74)', () => {
