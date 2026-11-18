@@ -7,6 +7,7 @@ import { CHART_CSS } from './chart.utils.js';
 import { PAGE_SHELL_CSS } from './page-shell.constants.js';
 import { PAGE_THEME_CSS } from './page-theme.constants.js';
 import { SESSION_ID_PATTERN } from './paths.constants.js';
+import { machineLoad } from './session-cap.service.js';
 import {
   createDashboardAccess,
   hardening,
@@ -91,7 +92,13 @@ export async function startWebDashboard(
   {
     pollMs = DASHBOARD_POLL_MS,
     bind = bindLoopback,
-  }: { pollMs?: number; bind?: DashboardBind } = {},
+    load = machineLoad,
+  }: {
+    pollMs?: number;
+    bind?: DashboardBind;
+    /** The machine's load the Overview's launch verdict is read at; a test holds it steady. */
+    load?: typeof machineLoad;
+  } = {},
 ): Promise<WebDashboard> {
   const streams = new Map<ServerResponse, View>();
   const lastBody = new Map<string, string>();
@@ -124,7 +131,7 @@ export async function startWebDashboard(
       case 'health':
         return renderHealthSheet(readHealthSheet(db, repoPath));
       case 'overview':
-        return renderOverview(readOverview(db, repoPath, now), hrefOf('debt'), sessionHref);
+        return renderOverview(readOverview(db, repoPath, now, load()), hrefOf, sessionHref);
       case 'tasks':
         return renderTasksSheet(readTasksSheet(db, repoPath, now));
     }
@@ -322,12 +329,15 @@ function renderDashboardPage(
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer">
-<title>pup dashboard — ${escapeHtml(title)}</title>
+<title>${escapeHtml(title)} — pup dashboard</title>
 <style nonce="${nonce}">
 ${PAGE_THEME_CSS}
 ${PAGE_SHELL_CSS}
 ${CHART_CSS}
   body { overflow-wrap: anywhere; }
+  /* Wider and denser than the shared shell: a sheet is read at a glance, its first screen acted from. */
+  main { max-width: 960px; padding-bottom: 32px; }
+  main > section { margin-top: 20px; }
   nav.sheets { display: flex; gap: 4px; flex-wrap: wrap; padding: 8px 20px 0; border-bottom: 1px solid var(--grid); }
   nav.sheets a {
     padding: 6px 10px; color: var(--ink-2); text-decoration: none; font-size: 12px;
@@ -341,7 +351,14 @@ ${CHART_CSS}
   .tile .k { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
   .tile .v { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
   .tile .d { color: var(--ink-2); font-size: 12px; }
-  .tile figcaption { font-size: 11px; color: var(--muted); }
+  .tile figcaption { display: none; }
+  .strip ul { list-style: none; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: 8px; }
+  .strip li {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+    padding: 6px 12px; color: var(--ink-2);
+  }
+  .strip .v { font-size: 18px; font-weight: 600; color: var(--ink); font-variant-numeric: tabular-nums; }
+  .strip li.launch { flex-basis: 100%; padding: 0; background: none; border: 0; font-size: 12px; }
   .more { margin-top: 8px; font-size: 12px; }
   ol.paydown { padding-left: 20px; }
   details summary { cursor: pointer; color: var(--ink-2); }
@@ -356,11 +373,17 @@ ${CHART_CSS}
     background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
     padding: 10px 12px; margin-bottom: 8px;
   }
+  ul.rows.inline > li, div.inline { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .inline .goal { flex: 1; margin-top: 0; }
+  .inline form.act { margin-top: 0; }
+  div.inline form.act { flex: 1 1 200px; }
+  div.inline form.act input[type="text"] { flex-basis: 120px; }
   h3.state-group { font-size: 12px; font-weight: 600; margin: 14px 0 6px; color: var(--ink-2); }
   .sid { font-weight: 600; }
   .need .reason { color: var(--ink-2); }
   .need.need-question, .need.need-blocked, .need.need-stalled { border-left: 3px solid var(--debt-2); }
-  .answer, .goal, .fact, .desc { margin-top: 4px; }
+  .need .answer { margin-left: 8px; }
+  .goal, .fact, .desc { margin-top: 4px; }
   .fact { color: var(--ink-2); font-size: 12px; }
   .debt { color: var(--debt-3); }
   code {
