@@ -657,6 +657,54 @@ describe('buildDashboardSnapshot', () => {
       expect(buildDashboardSnapshot(db, repo, NOW).sessions[0]?.contextTokens).toBe(90_000);
     });
 
+    // Decision 200: the compaction point is the compiled window less Claude Code's buffer.
+    describe('compaction point', () => {
+      function seedRunningWith(settings: string | undefined): void {
+        seedSession(db, repo, 's1', {
+          transcriptPath: seedTranscript(
+            transcriptDir(join(repo, '.worktrees', 's1'), join(homedir(), '.claude')),
+            90_000,
+          ),
+        });
+        transitionSession(db, 's1', 'running');
+        if (settings === undefined) return;
+        const compiled = projectPaths(repo).compiledDir('s1');
+        mkdirSync(compiled, { recursive: true });
+        writeFileSync(join(compiled, 'settings.json'), settings);
+      }
+      const compactAt = () => buildDashboardSnapshot(db, repo, NOW).sessions[0]?.compactAtTokens;
+
+      it('reads the window a running session was compiled with, less the 33k buffer', () => {
+        seedRunningWith(JSON.stringify({ autoCompactWindow: 150_000 }));
+
+        expect(compactAt()).toBe(117_000);
+      });
+
+      it.each([
+        { name: 'no compiled settings', settings: undefined },
+        { name: 'settings without a window', settings: '{"env":{}}' },
+        { name: 'settings that are not JSON', settings: '{' },
+        { name: 'JSON null', settings: 'null' },
+        { name: 'a window Claude Code would not take', settings: '{"autoCompactWindow":5000}' },
+        { name: 'a window that is not a number', settings: '{"autoCompactWindow":"150000"}' },
+      ])('reads no compaction point from $name', ({ settings }) => {
+        seedRunningWith(settings);
+
+        expect(compactAt()).toBeUndefined();
+      });
+
+      it('follows no link the session planted in place of its settings', () => {
+        seedRunningWith(undefined);
+        const planted = join(tempDir('pup-dash-planted-settings-'), 'settings.json');
+        writeFileSync(planted, JSON.stringify({ autoCompactWindow: 150_000 }));
+        const compiled = projectPaths(repo).compiledDir('s1');
+        mkdirSync(compiled, { recursive: true });
+        symlinkSync(planted, join(compiled, 'settings.json'));
+
+        expect(compactAt()).toBeUndefined();
+      });
+    });
+
     // A window on a config dir `--session-env` names writes its transcript
     // there, and its launch stamps the row with that dir (decision 106).
     it('reads the transcript of a session on a named config dir', () => {

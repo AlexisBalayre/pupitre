@@ -1,7 +1,6 @@
 import { sanitizeReason } from '../../adapters/capability.utils.js';
 import { routeLabel } from '../../core/dashboard.service.js';
 import { formatStaleAge } from '../../core/session-activity.utils.js';
-import { RESPAWN_SUGGEST_TOKENS } from '../../core/session-handoff.service.js';
 import type { DashboardNeed, DashboardSession } from '../../core/types/dashboard.types.js';
 import type { FleetBlock } from '../../core/types/fleet.types.js';
 import { optionLines } from './question.utils.js';
@@ -90,17 +89,17 @@ function deadTurnLabel(session: DashboardSession): string {
 
 /**
  * How full the context window is, rounded to the thousand nobody reads past,
- * and the respawn to type once it is full enough to matter (decision 18).
+ * and how far it is from the compaction that resets it (decision 200). Size
+ * alone suggests no respawn: the compaction is the reset.
  */
 export function contextLabel(session: DashboardSession): string {
   const tokens = session.contextTokens;
   if (tokens === undefined) return '';
-  // No command around an id outside the minted shape, here as in the inbox (decision 83).
-  const suggestion =
-    tokens > RESPAWN_SUGGEST_TOKENS && session.isMintedId
-      ? ` — consider \`pup respawn ${session.id}\``
-      : '';
-  return `ctx ~${Math.round(tokens / 1000)}k${suggestion}`;
+  const label = `ctx ~${Math.round(tokens / 1000)}k`;
+  const compactAt = session.compactAtTokens;
+  if (compactAt === undefined) return label;
+  const left = Math.round((compactAt - tokens) / 1000);
+  return left > 0 ? `${label} — compacts in ~${left}k` : `${label} — at compaction`;
 }
 
 /** The last gate run that left a report: the verdict, and what failed if it did. */

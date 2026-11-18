@@ -35,7 +35,7 @@ import {
 } from './profile.constants.js';
 import { ContextBudgetExceededError, InvalidProfileError } from './profile.errors.js';
 import { refuseUserSandbox } from './profile-compiler-sandbox.service.js';
-import { workerSandboxOn } from './project-config.config.js';
+import { autoCompactWindowTokens, workerSandboxOn } from './project-config.config.js';
 import { CRITICAL_AREAS } from './routing.utils.js';
 import { shellWord } from './shell-quote.utils.js';
 import { scopeInFiles } from './task-spec.utils.js';
@@ -1689,6 +1689,8 @@ export function compileProfile(input: SessionCompileInput): CompiledProfile {
     },
     // The operator's MEMORY.md is theirs, not the task's (decision 149).
     autoMemoryEnabled: false,
+    // The project's window, not the operator's: a flag settings file outranks theirs (decision 200).
+    autoCompactWindow: autoCompactWindowTokens(input.repoPath),
     env: {
       ...SLIM_CONTEXT_ENV,
       ...WORKER_SLIM_CONTEXT_ENV,
@@ -2019,6 +2021,8 @@ export function compileConductorProfile(input: ConductorCompileInput): CompiledP
       SessionStart: [compactRecapEntry(hookPath('compact-recap.sh'))],
     },
     permissions: { deny: UNANSWERABLE_TOOLS },
+    // The project's window, as a worker's is (decision 200).
+    autoCompactWindow: autoCompactWindowTokens(input.repoPath),
     env: SLIM_CONTEXT_ENV,
     statusLine: { type: 'command', command: hookPath('statusline.sh') },
   };

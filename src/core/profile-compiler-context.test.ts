@@ -1006,12 +1006,19 @@ describe('compileConductorProfile', () => {
 
   // Decision 107: the conductor gets a worker's env block and keeps its tools.
   // Decision 149: and keeps the operator's memory, connectors and browser.
+  // Decision 200: its compaction window is the project's.
   it('turns off the Artifact and Workflow tools and prompt suggestions, and nothing else', () => {
     const compiled = ProfileCompiler.compileConductorProfile(conductorInput);
 
     const settings = JSON.parse(compiled.files['settings.json'] as string);
     expect(settings.env).toEqual(SLIM_ENV);
-    expect(Object.keys(settings).sort()).toEqual(['env', 'hooks', 'permissions', 'statusLine']);
+    expect(Object.keys(settings).sort()).toEqual([
+      'autoCompactWindow',
+      'env',
+      'hooks',
+      'permissions',
+      'statusLine',
+    ]);
   });
 
   // No code graph for the conductor either (decision 186).
@@ -1658,5 +1665,58 @@ describe('exploration goes to a subagent (decision 129)', () => {
     );
     expect(context).not.toContain('what a diff or PR changes');
     expect(context).toContain('`subagent_type: "general-purpose"`, `model: "opus"`');
+  });
+});
+
+describe('the compaction window comes from the project (decision 200)', () => {
+  /** A repo directory whose `.pupitre/project.yml` holds `content`, or none when undefined. */
+  function repoWith(content?: string): string {
+    const repo = tempDir('pup-compact-window-repo-');
+    if (content !== undefined) {
+      mkdirSync(join(repo, '.pupitre'));
+      writeFileSync(join(repo, '.pupitre', 'project.yml'), content);
+    }
+    return repo;
+  }
+
+  const workerWindow = (repo: string) =>
+    JSON.parse(
+      ProfileCompiler.compileProfile(
+        makeInput({ repoPath: repo, worktreePath: join(repo, '.worktrees', 's-1') }),
+      ).files['settings.json'] as string,
+    ).autoCompactWindow;
+
+  const conductorWindow = (repo: string) =>
+    JSON.parse(
+      ProfileCompiler.compileConductorProfile({
+        base: { name: 'base' },
+        repoPath: repo,
+        projectId: 'proj-1',
+        conductorName: 'pup-conductor-proj-1',
+        workerModel: 'opus',
+        userConfigHash: 'user-hash-a',
+        outDir: join(repo, 'conductor', 'compiled'),
+      }).files['settings.json'] as string,
+    ).autoCompactWindow;
+
+  it('compiles 150000 into a worker and the conductor when the project sets none', () => {
+    const repo = repoWith(undefined);
+
+    expect(workerWindow(repo)).toBe(150_000);
+    expect(conductorWindow(repo)).toBe(150_000);
+  });
+
+  it("compiles the project's autoCompactWindow into a worker and the conductor", () => {
+    const repo = repoWith('autoCompactWindow: 200000\n');
+
+    expect(workerWindow(repo)).toBe(200_000);
+    expect(conductorWindow(repo)).toBe(200_000);
+  });
+
+  it('refuses to compile a window Claude Code would not take', () => {
+    const repo = repoWith('autoCompactWindow: 50000\n');
+
+    expect(() => workerWindow(repo)).toThrow('autoCompactWindow must be a whole number');
+    expect(() => conductorWindow(repo)).toThrow('autoCompactWindow must be a whole number');
   });
 });

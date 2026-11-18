@@ -177,7 +177,6 @@ vi.mock('../core/test-slot.service.js', async (importOriginal) => ({
 }));
 vi.mock('../core/session-handoff.service.js', () => ({
   HANDOFF_WAIT_DEFAULT_MS: 10 * 60 * 1000,
-  RESPAWN_SUGGEST_TOKENS: 120_000,
   awaitHandoffReady: vi.fn(),
   HandoffMissingError: class HandoffMissingError extends Error {
     constructor(sessionId: string, handoffPath: string) {

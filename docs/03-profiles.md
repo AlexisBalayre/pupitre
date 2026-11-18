@@ -229,6 +229,17 @@ just then, so the window restarts from the record rather than from what the summ
   it is capped, and it always exits 0. A read that fails says `unreadable` or `unknown` and names
   the command to retry. A layer's `SessionStart` hooks run after it, never in its place.
 
+## Compaction window (decision 200)
+
+Both the worker's and the conductor's settings carry `autoCompactWindow`, read at compile time
+from the `autoCompactWindow` key of `.pupitre/project.yml`: a whole number of tokens from 100000
+to 1000000, 150000 when the project sets none. The compiled settings are a `--settings` file, so
+they outrank the operator's `~/.claude/settings.json`, and a session no longer runs on whatever
+window the operator set there. Claude Code keeps a 33k buffer under the window, so 150000
+compacts near 117k. An edit takes effect at the next launch or `pup fix` round, never at a
+respawn, which reuses the stored settings, nor in a window already open. `pup status` reads the
+window from the session's compiled settings and prints how far `ctx ~Nk` is from that point.
+
 ## Context budget rules
 
 - Compiler prints the token count of the compiled context and refuses to compile past the cap.
