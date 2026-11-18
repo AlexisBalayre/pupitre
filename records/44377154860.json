@@ -1,0 +1,105 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-18T19:12:13.856Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "44377154860",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/44377154860",
+  "actor": "AlexisBalayre",
+  "commit_sha": "58ed4a0cd571c2239ee0b82ff63281946ec30b74",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 396,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "simplicity",
+    "guards"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "simplicity",
+    "guards"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/cli/index-2.test.ts",
+      "line": "2594-2604",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "Test adequacy: reverting `process.on` back to `process.once` passes both new dashboard-stop tests, because they call the captured listener directly instead of delivering the signal.",
+      "body": "**Concern.** The main CLI change here keeps the stop listener with `process.on` instead of `process.once`. The source comment at `src/cli/index.ts` L1966-1970 gives the reason: during a merge-lock action, `withMergeLock` registers its own no-op `stayAlive` listener. A once-listener is gone after the first Ctrl-C, so the second Ctrl-C would reach only `stayAlive` and do nothing.\n\nNeither new test would catch that regression:\n\n- `addedListener` (L2481-2489) reads the listener from `process.listeners(signal)`. For a `once` registration, Node's `listeners()` returns the *unwrapped* original function, so `runDashboard` returns the same `stop` under both `on` and `once`.\n- The test then calls it directly:\n\n```ts\nstop('SIGINT');\n...\nexpect(() => stop('SIGINT')).toThrow('exited');\nexpect(exit).toHaveBeenCalledWith(130);\n```\n\nA direct call never runs the once-wrapper, so the wrapper never removes itself. The mutant `process.once('SIGINT', stop); process.once('SIGTERM', stop);` at `src/cli/index.ts` L1987-1988 passes both tests, yet in real use it brings back the bug this PR fixes.\n\n**Fix.** Deliver both signals in this test through the emitter: `process.emit('SIGINT', 'SIGINT')` at L2594, and `expect(() => process.emit('SIGINT', 'SIGINT')).toThrow('exited')` at L2602. `src/core/land-batch.test.ts` L396 already sends signals this way.\n\n- `emit` calls listeners synchronously, so the mocked exit's `'exited'` error still comes out of it.\n- Under `once`, the second emit finds no listener and throws nothing, so the test fails as it should.\n- `const stop` at L2592 then has no reader. Keep `await runDashboard()` for its registration checks and drop the binding.\n\n<https://github.com/AlexisBalayre/pupitre/blob/58ed4a0cd571c2239ee0b82ff63281946ec30b74/src/cli/index-2.test.ts#L2592-L2604>",
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index-2.test.ts",
+      "line": "2475",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The first new 'dashboard stop' CLI test (live stream plus half-sent post over an in-memory duplexPair, about 65 lines) re-proves what the new web-dashboard.test.ts test 'closes at once past a live stream and a post that never finishes its body' already proves; the CLI-only behaviour is covered by the second test.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.3658913750000004,
+  "duration_ms": 231056,
+  "num_turns": 19,
+  "tokens": {
+    "input": 24,
+    "output": 10374,
+    "cache_read": 549155,
+    "cache_creation": 47253,
+    "total": 606806
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 100,
+      "output": 35876,
+      "cache_read": 1769109,
+      "cache_creation": 173590,
+      "cost_usd": 2.0814508000000007
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 40,
+      "output": 7471,
+      "cache_read": 269960,
+      "cache_creation": 72791,
+      "cost_usd": 0.28376349999999995
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 180,
+      "cache_read": 0,
+      "cache_creation": 4695,
+      "cost_usd": 0.0006770750000000001
+    }
+  ],
+  "permission_denials": []
+}
