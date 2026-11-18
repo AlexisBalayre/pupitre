@@ -1,0 +1,192 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-18T13:52:09.319Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "44317012028",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/44317012028",
+  "actor": "AlexisBalayre",
+  "commit_sha": "7d5c3b10ccf994cc811e9c076d632082d9f4695c",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 385,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "2909-2917",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "A flaky pass now writes an absolute path into the operator's home store (`~/.pupitre/<projectId>/sessions/<id>/test-output.log`, or `full output not kept: no directory at <dir>`). That detail goes into the passed gate report, which is the body of the PR posted to GitHub.",
+      "body": "When a test stage fails once and then passes its re-run, the passing detail now ends with `keptFirst`:\n\n```ts\ndetail:\n  `flaky — failed, then passed on its one re-run; failing the first time: ` +\n  `${firstFailures} (${keptFirst})`,\n```\n\n`keepFullOutput` (`src/core/stage-output.utils.ts`) returns `full output: <path>`, where the path is `projectPaths(repoPath).sessionDir(id)`. That resolves to `join(homedir(), '.pupitre', projectId, 'sessions', …)`. If the directory is missing it returns `full output not kept: no directory at <dir>` instead. Either way the string holds an absolute path on the operator's machine.\n\nA flaky pass is still a passed gate, so the text reaches GitHub:\n\n- `formatGateReport` appends every stage's detail, whatever its status. Its own comment says \"this text is the PR body … as well as the terminal report\".\n- `prBody` puts that report under `## Gate report`.\n- `openPullRequest` / `rewritePullRequest` publish it through `gh pr create/edit --body-file -`. `regate.service.ts` takes the same route.\n\nThe result: every PR-mode merge with a flaky test publishes the operator's home directory (with the username), the project id and the session id on GitHub. The path it names is one no reviewer can open. Before this PR the flaky detail held only the failing test names.\n\nADR 0201 says the path is printed in the gate's detail, but it doesn't address the passed report becoming a published PR body. A failing gate's detail is only steered to the local session, so it isn't affected.\n\nOne way to fix it: keep the path only in the failing details, which stay local, and leave it out of the flaky pass detail. If the operator should still see it, tell them through `progress.note`. The flaky test in `merge-gate-open-pr.test.ts` (around L706-724) that asserts `(full output: ${kept})` would change with it.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/7d5c3b10ccf994cc811e9c076d632082d9f4695c/src/core/merge-gate.service.ts#L2909-L2917",
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/typescript.adapter.ts",
+      "line": "557-558",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "jest headers aren't matched in two cases: a `displayName` printed without a TTY (`FAIL unit src/a.test.ts`, one space) and `--logHeapUsage` (`FAIL src/a.test.ts (5.1 s, 50 MB heap size)`). `RUNNER_FAIL_LINE` matches neither, so the detail says \"none named in the runner's summary\" even though jest named every failing test.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/typescript.adapter.ts",
+      "line": "568-587",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`jestFile` isn't cleared at jest's `Test Suites:` totals. A later `●` block, such as `--detectOpenHandles` printing `●  TCPSERVERWRAP`, is then read as a failing test of the last FAIL file. Clearing `jestFile` on `/^\\s*Test Suites:/` fixes it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/python.adapter.ts",
+      "line": "241",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The pytest FAILED parser ends the test name at the first ` - `, so a string parametrize id like `test_x[a - b]` is named `test_x[a`. Two cases sharing that prefix also collapse into one entry.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/init.service.ts",
+      "line": "274-278",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "A standalone `pup audit` takes no merge lock, but it writes the same `~/.pupitre/<projectId>/test-output.log` as a land's audit. If both fail while overlapping, one run's printed `full output: <path>` points at the other run's output.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/failing-tests.test.ts",
+      "line": "1-76",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "This new test file sits under `src/adapters/`, covers two adapters at once and imports by relative path. testing.md §The mirror rule puts one test per source file under `test/unit/` with `@src/…` imports, so these cases belong in `test/unit/adapters/{python,typescript}-adapter.test.ts`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/init.service.ts",
+      "line": "142-154",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Three pieces carry one string out of `runBaselineStage`: the `keep` callback, `run`'s third argument and the mutable `keptTest` closure with its placeholder. Having the test stage call `keepFullOutput` itself and return the kept clause on its result would remove all three.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0094-worker-windows-run-at-nice-10-workers-run.md",
+      "line": null,
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "ADR 0094 still says failing tests are named from generic runner lines, including go's `--- FAIL:`. This PR made that false: each adapter now reads its own runner's summary, and there is no go adapter. 0201 amends 0094, but a reader of 0094 alone gets no pointer to it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0201-a-failed-test-run-names-its-failing-tests.md",
+      "line": "24-26",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "\"The gate's detail leads with `failing: file > test; …`\" is true only for a failure that isn't re-run. A re-run failure's detail leads with `failed twice — failing the first time: …`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/adapters/typescript.adapter.ts",
+      "line": "557-562",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "The failing-test regexes end in `(.+?)…\\s*$`, so a long line of spaces in the session's test output makes them backtrack quadratically; the same applies to `PYTEST_SUMMARY_LINE` in `python.adapter.ts:241`. That stalls pup's event loop while it holds the merge lock. The old `FAILED_TEST_LINE` had the same shape, and this change newly reaches it on the path that doesn't re-run. Matching `line.trimEnd()` and dropping the trailing `\\s*` fixes it.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 3.9343812249999996,
+  "duration_ms": 336442,
+  "num_turns": 15,
+  "tokens": {
+    "input": 14,
+    "output": 13893,
+    "cache_read": 332597,
+    "cache_creation": 50249,
+    "total": 396753
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 162,
+      "output": 76493,
+      "cache_read": 3164241,
+      "cache_creation": 251301,
+      "cost_usd": 3.5706081999999992
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 52,
+      "output": 10071,
+      "cache_read": 360127,
+      "cache_creation": 90418,
+      "cost_usd": 0.3628717
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 470,
+      "cache_read": 0,
+      "cache_creation": 5329,
+      "cost_usd": 0.000901325
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "git ls-tree -d --name-only HEAD test/ test/unit/"
+    }
+  ]
+}
