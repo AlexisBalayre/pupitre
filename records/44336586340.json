@@ -1,0 +1,138 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-18T15:38:45.444Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "44336586340",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/44336586340",
+  "actor": "AlexisBalayre",
+  "commit_sha": "4fead76211af9e9f5b063616fd2bc1ac9f7c3a76",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 388,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "simplicity"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "simplicity"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "guards",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "docs/adr/0205-the-gate-s-history-reads-ignore-a-planted-info.md",
+      "line": "14-25",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The ADR's list of what reads history outside the sandbox leaves out the conductor's security-review git (`securityReviewGit` in profile-compiler.service.ts). That git does not go through runGit and has neither GIT_GRAFT_FILE nor GIT_SHALLOW_FILE (nor core.commitGraph=false). A planted info/grafts can therefore shrink the three-dot diff the security reviewer reads to a harmless subset of the branch while the gate, which is pinned, still merges the whole branch.",
+      "body": "**Concern.** The ADR says the reads that touch history outside the sandbox are decision 203's list: the gate, `pup land`, the diff client and the ADR-number check. It says all of them go through `runGit`, `runGitBytes` or `pinnedGitEnv` and so already ignore both files. Its *Ceilings* (L61-65) add only `safe_git` and codegraph's git.\n\nA third reader appears in neither place: the security review that the compiled conductor context tells the conductor to run before `pup merge --pr` on a critical-area branch. The conductor runs this git in its own Bash, so `runGit` and `spawnOptions` never apply to it:\n\n```ts\n`GIT_NO_LAZY_FETCH=1 git --no-replace-objects -C / --git-dir=${shellWord(commonDir)}`,\n'-c core.useReplaceRefs=false -c core.fsmonitor= -c core.hooksPath=/dev/null',\n```\n\nhttps://github.com/AlexisBalayre/pupitre/blob/4fead76211af9e9f5b063616fd2bc1ac9f7c3a76/src/core/profile-compiler.service.ts#L1835-L1846\n\nThe review uses it to run `diff --numstat` and `diff --function-context` over `<target-id>...<head-id>`:\n\nhttps://github.com/AlexisBalayre/pupitre/blob/4fead76211af9e9f5b063616fd2bc1ac9f7c3a76/src/core/profile-compiler.service.ts#L1758-L1765\n\nNo `GIT_GRAFT_FILE`, `GIT_SHALLOW_FILE` or `core.commitGraph=false` is set for it:\n- not in the command;\n- not in the conductor profile's settings `env`;\n- not by anything under `src/claude/`.\n\n`--no-replace-objects` and `core.useReplaceRefs=false` turn off replace refs only, not `info/grafts`. Decision 89's ceiling sentence about this git covers only transports, so \"Decision 89's ceilings still hold\" does not cover it.\n\n**Trigger.** A session can write `info/grafts` itself (the ADR says so at L9-10; decision 191's deny applies only to Bash, and only when the setting is on).\n1. Main has moved past the fork to T. The session commits C1, the change it wants to hide, then C2, a harmless one.\n2. It writes `info/grafts` with `T <T's parent> C1`.\n3. For the review's git, `merge-base(T, C2)` is now C1. The numstat lists only C2's files, so it is not empty and the review goes ahead.\n4. The reviewer sees only C2 and returns clean.\n5. `pup merge --pr` runs the pinned gate. The gate reads the real history and merges C1 together with C2.\n\nThis PR's own grafts control shows the same bend: plain git's `diff main...pup/s1` comes back empty. A planted `shallow` file only makes the review fail with no merge base, which fails closed.\n\n**Fix.** Pin the review's git the way decision 89 pins `runGit`:\n\n```ts\n`GIT_NO_LAZY_FETCH=1 GIT_GRAFT_FILE=/dev/null/no-grafts GIT_SHALLOW_FILE=/dev/null/no-shallow git --no-replace-objects -C / --git-dir=${shellWord(commonDir)}`,\n'-c core.useReplaceRefs=false -c core.commitGraph=false -c core.fsmonitor= -c core.hooksPath=/dev/null',\n```\n\nIf that is out of scope, at least name this git under *Ceilings* (L61-65) and stop presenting decision 203's list as every history read outside the sandbox.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/4fead76211af9e9f5b063616fd2bc1ac9f7c3a76/docs/adr/0205-the-gate-s-history-reads-ignore-a-planted-info.md#L14-L25",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate-history.test.ts",
+      "line": "65-71",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Main's amended tip is also the base of every branch commit, so main never moves past the fork, and the planted graft is a cycle rather than \"a target tip once a branch forks\", as the comment and the ADR describe it. Every pinned run therefore takes fresh-base's \"already based on main\" path, and the auto-rebase/merge-target path never runs under a plant. To cover that path, add a later-dated main commit after seedSession; otherwise reword the comment.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate-history.test.ts",
+      "line": "49-56",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The onTestFinished cleanup of the toolchain cache in beforeEach repeats what tempDir() (test/helpers/temp-dir.mock.ts) already does, and does it with the non-realpath tmpdir(). Drop it and its rmSync/tmpdir/projectId/TOOLCHAIN_CACHE_DIRNAME imports, as merge-gate-fresh-base.test.ts does.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate-history.test.ts",
+      "line": "51-58",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "beforeEach writes out the body of initRepo() from test/helpers/merge-gate.mock.ts by hand (tempDir, git init, two configs, the src/app.ts commit). Siblings call `repo = initRepo()` and then add their own commits.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "The consolidator grouped two importants (correctness, ADR L61-65; security, ADR L14-18) as one root cause: the unpinned securityReviewGit. One opus validator checked both ADR locations and confirmed the finding. They were then merged into one security finding at L14-25, with the Ceilings location in its body, so the PR does not get two comments for one concern."
+    },
+    {
+      "component": "orchestrator",
+      "description": "Skipped: review-guards (no non-test source changed), review-context (no spec, protocol or infra surface), review-spec (no closing issue or spec source), review-workflow-safety (no workflow change), review-maintainability (off the default roster)."
+    }
+  ],
+  "duplicates_merged": 1,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 3.0352439749999998,
+  "duration_ms": 342036,
+  "num_turns": 13,
+  "tokens": {
+    "input": 12,
+    "output": 11909,
+    "cache_read": 270961,
+    "cache_creation": 50108,
+    "total": 332990
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 142,
+      "output": 55032,
+      "cache_read": 2607678,
+      "cache_creation": 211482,
+      "cost_usd": 2.8304776
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 32,
+      "output": 4693,
+      "cache_read": 179478,
+      "cache_creation": 55648,
+      "cost_usd": 0.20406180000000002
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 127,
+      "cache_read": 0,
+      "cache_creation": 5127,
+      "cost_usd": 0.0007045749999999999
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "git -C /home/runner/work/pupitre/pupitre diff c3f8fece2d2064f736e22d9adcb27fb12cdc8415 4fead76211af9e9f5b063616fd2bc1ac9f7c3a76 --stat"
+    }
+  ]
+}
