@@ -404,7 +404,7 @@ describe('runAction', () => {
       fastForwarded: false,
       keptWorktree: '/repo/.worktrees/s-1',
       keptBranch: 'pup/s-1',
-      audit: { unmeasured: [], heldOnRegression: false },
+      audit: { unmeasured: [], heldOnRegression: false, baseline: { stages: [] } },
     } as never);
 
     await expect(runAction(DB, REPO, 'land', { session: 's-1' })).resolves.toEqual([
@@ -413,6 +413,38 @@ describe('runAction', () => {
       'Kept pup/s-1: it holds commits main does not.',
       'The audit ran; the Health sheet shows its figures.',
     ]);
+  });
+
+  // The audit's failed test run says where it kept its whole output only on
+  // the server's stderr: the page, never published, shows the clause that
+  // leads the stage's detail, as the CLI's terminal does.
+  it('says where a land kept the whole output of the audit’s failed test run', async () => {
+    vi.mocked(landSession).mockResolvedValue({
+      prUrl: PR,
+      mergeCommit: 'm1',
+      target: 'main',
+      targetSha: 'm1',
+      fastForwarded: true,
+      audit: {
+        unmeasured: [],
+        heldOnRegression: true,
+        baseline: {
+          stages: [
+            { stage: 'build', status: 'fail', detail: 'tsc failed', durationMs: 1 },
+            {
+              stage: 'test',
+              status: 'fail',
+              detail: 'full output: /s/\u001b[31mtest-output.log\nFAIL  a.test.ts > adds',
+              durationMs: 1,
+            },
+          ],
+        },
+      },
+    } as never);
+
+    await expect(runAction(DB, REPO, 'land', { session: 's-1' })).rejects.toThrow(
+      /^Landed s-1: .*\nThe baseline test run failed; full output: \/s\/ \[31mtest-output\.log\.\nBaseline kept: the measurement regressed/,
+    );
   });
 
   it('reports what the gate did and then refuses when the lock was lost under it', async () => {
@@ -479,7 +511,7 @@ describe('runAction', () => {
   it.each([
     [
       'held the baseline over a regression',
-      { unmeasured: [], heldOnRegression: true },
+      { unmeasured: [], heldOnRegression: true, baseline: { stages: [] } },
       'Baseline kept: the measurement regressed, and a land does not move the bar over a regression; run `pup audit` to accept it or fix it first.',
     ],
     [
@@ -488,6 +520,7 @@ describe('runAction', () => {
         unmeasured: ['duplication: not measured'],
         heldOnRegression: false,
         previous: { capturedAt: '2026-11-01' },
+        baseline: { stages: [] },
       },
       'duplication: not measured\nBaseline kept: a debt metric was not measured, so the baseline from 2026-11-01 still stands.',
     ],

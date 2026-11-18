@@ -859,6 +859,9 @@ describe('landSession', { timeout: 20_000 }, () => {
       'fake: coverage not measured — the instrumented test run failed, so its coverage is not read',
     ]);
     expect(printed).toHaveBeenCalledWith(`The baseline test run failed; full output: ${kept}.`);
+    // The dashboard's land, whose stderr is the server's, reads the clause here.
+    const tested = outcome.audit?.baseline.stages.find(({ stage }) => stage === 'test');
+    expect(tested?.detail?.split('\n')[0]).toBe(`full output: ${kept}`);
     const output = readFileSync(kept, 'utf8');
     expect(output.startsWith('FAIL  src/a.test.ts > adds\n')).toBe(true);
     expect(output.match(/fatal: no merge base found/g)).toHaveLength(100);

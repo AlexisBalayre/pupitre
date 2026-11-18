@@ -317,6 +317,14 @@ async function landAction(db: Database, repoPath: string, session: string): Prom
   }
   const target = sanitizeReason(outcome.target);
   const audit = outcome.audit;
+  // A failed baseline test run prints where it kept its whole output on the
+  // server's stderr only; the clause leads the stage's detail, so the page,
+  // which is never published, says it as the CLI's terminal does.
+  const keptTest = audit?.baseline.stages
+    .find(({ stage, status }) => stage === 'test' && status === 'fail')
+    ?.detail?.split('\n')[0];
+  const testOutput =
+    keptTest === undefined ? [] : [`The baseline test run failed; ${sanitizeReason(keptTest)}.`];
   const kept =
     audit === undefined
       ? []
@@ -349,6 +357,7 @@ async function landAction(db: Database, repoPath: string, session: string): Prom
         `Could not tell ${sanitizeReason(sessionId)} that ${target} moved: ${sanitizeReason(reason)}. ` +
         `Steer it to take ${target} in.`,
     ),
+    ...testOutput,
     ...(audit === undefined
       ? ['Audit skipped: run `pup audit` once after the last land.']
       : kept.length > 0

@@ -32,7 +32,9 @@
     shows the gate's notes among its lines. `pup init`, `pup audit` and the land print it as a line
     of their own on the operator's terminal, `The baseline test run failed; full output: <path>.`,
     never in the coverage gap's reason: `pup audit --sweep` puts its findings in the sweep task's
-    goal, and that goal is published in the sweep's PR body. Only directories
+    goal, and that goal is published in the sweep's PR body. The same clause leads the failed
+    test stage's detail, and the web dashboard's land shows that line among its own, since the
+    land's terminal there is the server's. Only directories
     pup already made are written into: a missing one says `full output not kept: no directory at
     <dir>` and is not created. The next failure of the same stage overwrites the file, so the
     store holds one file per stage, not one per run.
