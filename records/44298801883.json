@@ -1,0 +1,127 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-18T11:56:40.696Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "44298801883",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/44298801883",
+  "actor": "AlexisBalayre",
+  "commit_sha": "4a9fb625268fdc6ed86eab7dee55137ca2c3c3c2",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 380,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/uninstalled-dependency.service.ts",
+      "line": "152-165",
+      "description": "In a remeasure, `config` is a fresh checkout of `targetSha`, which never holds a gitignored `.pnp.cjs`, so the new Plug'n'Play branch never fires there and the refusal still tells the operator to run `yarn --cwd . install`, which the PR says can never clear it.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/uninstalled-dependency.service.ts",
+      "line": "94-100",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`isPackageName` still accepts `.bin`, `.pnpm` and a bare scope such as `@types`. All three always exist under an installed `node_modules`, so a manifest that declares one skips the refusal. To close it, require exactly two segments for a scoped name and reject any segment that starts with `.`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0081-the-gate-s-stages-run-on-a-private.md",
+      "line": "77",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The ADR 0081 amendment heading says the Plug'n'Play runtime \"is trusted only from the main checkout\". In a remeasure the code trusts it from the stand-in (`config`), and the main checkout's runtime never skips the refusal. \"from the config checkout\" would match the code.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0081-the-gate-s-stages-run-on-a-private.md",
+      "line": "77",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new ADR 0081 amendment is dated but cites only #330, not this PR. docs/adr/README.md §Reading and writing asks for an amendment \"dated, with the PR\", so it should name #380.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Kept one correctness and one security instance, as in round 1: about 140 of the diff's lines are a byte-identical move. Skipped context (no infra or protocol surface), maintainability (off the default roster), spec (no closing issue) and workflow-safety (no workflow change). Dropped a docs nit about the 'the target' wording in the Plug'n'Play error: its reviewer said the wording is correct wherever it is reachable."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.6721905250000002,
+  "duration_ms": 134122,
+  "num_turns": 14,
+  "tokens": {
+    "input": 12,
+    "output": 9074,
+    "cache_read": 303352,
+    "cache_creation": 55532,
+    "total": 367970
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 38,
+      "output": 26774,
+      "cache_read": 486231,
+      "cache_creation": 113441,
+      "cost_usd": 1.3666792
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 40,
+      "output": 8562,
+      "cache_read": 232925,
+      "cache_creation": 78334,
+      "cost_usd": 0.3048275
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 163,
+      "cache_read": 0,
+      "cache_creation": 4817,
+      "cost_usd": 0.000683825
+    }
+  ],
+  "permission_denials": []
+}
