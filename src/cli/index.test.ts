@@ -3185,6 +3185,75 @@ describe('CLI commands', () => {
       expect(criteria).toBeGreaterThan(logs.findIndex((line) => line.startsWith('acceptance:')));
       expect(criteria).toBeLessThan(logs.indexOf('files:'));
     });
+
+    // A criterion may hold 500 characters and `sanitizeReason` cuts at 300:
+    // the rest goes on in a continuation line, broken at a space.
+    it('prints a criterion over 300 characters whole', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedSession(repo, 's-long');
+      const { db } = resolveProject(repo);
+      const long = `${'word '.repeat(70)}${'x'.repeat(140)} end`;
+      db.prepare('UPDATE tasks SET spec = ?').run(
+        JSON.stringify({
+          goal: 'g',
+          scopeIn: ['**'],
+          acceptance: ['a'],
+          ticket: {
+            ref: '#412',
+            type: 'feature',
+            labels: ['design-approved'],
+            triggers: [],
+            criteria: [long],
+          },
+        }),
+      );
+      transitionSession(db, 's-long', 'running');
+      transitionSession(db, 's-long', 'awaiting-review');
+      db.close();
+
+      buildProgram().parse(['review', 's-long'], { from: 'user' });
+
+      const criteria = logs.indexOf('ticket #412 slice criteria:');
+      expect(logs.slice(criteria + 1, criteria + 3)).toEqual([
+        `  - ${'word '.repeat(59)}word`,
+        `    ${'word '.repeat(10)}${'x'.repeat(140)} end`,
+      ]);
+      expect(logs[criteria + 3]).toMatch(/^rejections:/);
+    });
+
+    // `sanitizeReason` drops only control characters: a stored ticket holding
+    // one a reader cannot see is refused by the spec read, printing none of it.
+    it('refuses a ticket holding a bidi override, printing no criterion', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedSession(repo, 's-bidi');
+      const { db } = resolveProject(repo);
+      db.prepare('UPDATE tasks SET spec = ?').run(
+        JSON.stringify({
+          goal: 'g',
+          scopeIn: ['**'],
+          acceptance: ['a'],
+          ticket: {
+            ref: '#412',
+            type: 'feature',
+            labels: ['design-approved'],
+            triggers: [],
+            criteria: ['pass‮liaf'],
+          },
+        }),
+      );
+      transitionSession(db, 's-bidi', 'running');
+      transitionSession(db, 's-bidi', 'awaiting-review');
+      db.close();
+
+      buildProgram().parse(['review', 's-bidi'], { from: 'user' });
+
+      expect(process.exitCode).toBe(1);
+      expect(errors.join('\n')).toContain('Ticket #412 holds a character no reader sees');
+      expect(logs.join('\n')).not.toContain('‮');
+      expect(logs).not.toContain('ticket #412 slice criteria:');
+    });
   });
 
   // Every path a command takes to a project's repo holds it as a main checkout

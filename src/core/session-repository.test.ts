@@ -617,6 +617,20 @@ describe('task spec decoding', () => {
         expect(editTaskSpec(db, 't-1', { goal: 'sharper' })).toBe('updated');
         expect(readTaskSpec(db, 't-1').ticket).toEqual(ticket);
       });
+
+      // The edit copies the ticket without touching it, so a stored ticket
+      // that fails a check does not block repairing the other fields.
+      it('edits the other fields of a task whose stored ticket fails a check', () => {
+        const unapproved = { ...ticket, labels: ['ready'] };
+        stored(JSON.stringify({ ...valid, ticket: unapproved }));
+
+        expect(editTaskSpec(db, 't-1', { goal: 'sharper' })).toBe('updated');
+        expect(JSON.parse(getTask(db, 't-1')?.spec ?? '{}')).toMatchObject({
+          goal: 'sharper',
+          ticket: unapproved,
+        });
+        expect(() => readTaskSpec(db, 't-1')).toThrow('has no design-approved label');
+      });
     });
   });
 
