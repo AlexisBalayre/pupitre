@@ -1,0 +1,175 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-18T16:06:31.369Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "44342578551",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/44342578551",
+  "actor": "AlexisBalayre",
+  "commit_sha": "04795ac3344d9e30465a81d95fea9893c1413d82",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 390,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/task-spec.utils.ts",
+      "line": "126-129",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "assertPlannableSpec's JSDoc still calls it \"the subset of compileProfile's validation\" that \"compilation re-checks\". Compile now calls this function directly, and the JSDoc never mentions the ticket checks it now runs, so a reader of the seam does not learn that it refuses invisible characters.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0040-a-task-can-exist-before-a-session-the.md",
+      "line": "54-56",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "ADR 0040 still says the glob check runs in assertPlannableSpec \"and again in validateInput\", but validateInput now only delegates to assertPlannableSpec. ADR 0206 amends only 0187, so either list 0040 in its amends line or reword 0040's phrase.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/task-spec.utils.ts",
+      "line": "46-53",
+      "area": "simplicity",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "INVISIBLE_CHAR is a second hand-written copy of FORMAT_CHARS (fix-round.service.ts:93). The import cycle the comment gives as the reason only exists because FORMAT_CHARS lives in a heavy service. Moving it to a leaf module (e.g. next to sanitizeReason) would let task-spec.utils, fix-round and ci-wait share one regex, and the comment explaining the copy could go.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "2516-2526",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "AGENTS.md §Module boundaries says src/cli/ stays thin. The new criterion-wrapping logic in pup review sits in the CLI handler: it collapses whitespace, splits with a lookahead regex and tracks a continuation prefix, all tied to sanitizeReason's 300 cut and decision 187's 500 cap. A small pure helper in src/core/ could hold it, leaving the CLI to print the pieces.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "2513-2527",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The word-break loop in pup review (two-alternative lookahead regex, prefix flip, `?? ['']` fallback) is more than the 500-character cap needs, since a criterion spans at most two lines. Either cut fixed 300-code-point chunks with `/.{1,300}/gu`, or give sanitizeReason an optional max and print `sanitizeReason(criterion, 500)`; the second removes the loop entirely.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "257-261",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new validateInput comment repeats the callee's docs (the allow-all glob rule and the invisible-ticket rule), which AGENTS.md §Comments rules out at a call site. Only \"specs outlive the command that wrote them (decision 40), so this runs on every compile\" adds anything; trim it to that.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/task-spec.utils.ts",
+      "line": "85-103",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The per-field tuple table, flatMap and U+XXXX hex formatting in assertTicketBounds exist only to name each field in the error. Testing one array of all ticket text against INVISIBLE_CHAR would drop them and the \"names every field\" test, at the cost of a less specific message. Optional: keep it if you value the diagnostic.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0187-a-task-carries-a-copy-of-its-ticket-and-the.md",
+      "line": "34-35",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "ADR 0187 still says pup review prints the criteria \"one per line\", but a criterion over 300 characters now spans continuation lines. 0187 has no pointer to 0206, so a reader of 0187 alone gets the old behaviour.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.test.ts",
+      "line": "3189-3190",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The comment on the \"prints a criterion over 300 characters whole\" test repeats the ADR's 500/300 fact and the splitting rule, which the toEqual assertion already pins. Delete it under AGENTS.md §Comments.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.952477625,
+  "duration_ms": 153796,
+  "num_turns": 12,
+  "tokens": {
+    "input": 12,
+    "output": 10496,
+    "cache_read": 284548,
+    "cache_creation": 52317,
+    "total": 347373
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 84,
+      "output": 27440,
+      "cache_read": 1125895,
+      "cache_creation": 122533,
+      "cost_usd": 1.543931
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 46,
+      "output": 12473,
+      "cache_read": 381763,
+      "cache_creation": 97733,
+      "cost_usd": 0.4073308
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 1128,
+      "cache_read": 0,
+      "cache_creation": 5213,
+      "cost_usd": 0.001215825
+    }
+  ],
+  "permission_denials": []
+}
