@@ -860,6 +860,23 @@ describe('landSession', { timeout: 20_000 }, () => {
     expect(output.match(/fatal: no merge base found/g)).toHaveLength(100);
   });
 
+  it('records no accepted head nor pin on a gated land', async () => {
+    seedPrMerge();
+    const merge = mergeOnGitHub();
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: pinned,
+      mergeCommit: { oid: merge },
+    });
+
+    await landSession(db, { repoPath: repo, sessionId: SESSION_ID, adapters: [passingAdapter] });
+
+    expect(landedEvents().map((row) => JSON.parse(row.payload))).toEqual([
+      { sha: merge, target: 'main', prUrl: PR_URL },
+    ]);
+  });
+
   it('records the accepted head and the pin on the landed event', async () => {
     seedPrMerge();
     const later = commitIn(worktree, 'src/fix.ts', 'export const fix = 1;\n');
