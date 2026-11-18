@@ -1,0 +1,114 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-18T17:30:09.603Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "44358569107",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/44358569107",
+  "actor": "AlexisBalayre",
+  "commit_sha": "4b8cbc1874ecdc7f79b16c28cbb234feba0f284d",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 392,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "guards",
+    "simplicity"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "guards",
+    "simplicity"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/init.service.ts",
+      "line": "276-280",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "When the dashboard's Land button triggers a baseline test failure, the page no longer says where the full output was kept. `keepTest` now sends that clause only to the dashboard server's stderr.",
+      "body": "**Regression for a land started from the dashboard.** Before this PR, the kept-output clause (`full output: <path>`) sat at the end of the coverage gap's reason. That reason reaches `audit.unmeasured`. `landAction` renders `audit.unmeasured.map(sanitizeReason)` as the page's lines, so a land run from the web dashboard showed the operator where the failed instrumented run's output was kept. The base `land.test.ts` asserted that the path was in `unmeasured`.\n\nThis PR removes the clause from the reason and prints it with a bare `console.error` inside `keepTest`:\n\n```ts\nconst keepTest = (output: string): string => {\n  const kept = keepFullOutput(projectPaths(repoPath).root, 'test', [output]);\n  console.error(`The baseline test run failed; ${kept}.`);\n  return kept;\n};\n```\n\n`landAction` calls `landSession` with no progress, and `keepTest` writes to `console.error` directly rather than through a `progress.note`. Nothing can collect the line, so on the dashboard it only reaches the stderr of the process running `pup dashboard`.\n\n**Trigger:** the operator presses Land on the dashboard. The stored baseline has coverage, and the post-land audit's instrumented test run fails. The page shows `coverage not measured — the instrumented test run failed, so its coverage is not read`, but not where the output was kept.\n\nThis PR fixes the same gap for the dashboard *merge* by collecting the gate's notes into `mergeAction`'s lines, and its comment there treats \"the server's log still\" as not enough. The dashboard land, the one route where the path used to be on the page, now goes without it. The dashboard page is not published, so the path can safely appear there. One fix: thread a note sink, e.g. the `progress` that `auditProject` already takes, through `measureBaseline` down to `keepTest`, defaulting to `console.error`. `landAction` could then collect the line the way `mergeAction` now does.\n\n- https://github.com/AlexisBalayre/pupitre/blob/4b8cbc1874ecdc7f79b16c28cbb234feba0f284d/src/core/init.service.ts#L276-L280\n- https://github.com/AlexisBalayre/pupitre/blob/4b8cbc1874ecdc7f79b16c28cbb234feba0f284d/src/core/web-dashboard-actions.service.ts#L320-L329",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/init.service.ts",
+      "line": "313",
+      "area": "security",
+      "confidence": "high",
+      "tag": "pre-existing",
+      "description": "A failing baseline stage's finding still ends with `on ${repoPath}`, the operator's absolute checkout path, usually under their home directory. `pup audit --sweep` copies findings into the sweep task's goal, and prBody publishes that goal on GitHub. That is the route this PR closes for the store path. Dropping `on ${repoPath}` from the finding would close it.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.000588,
+  "duration_ms": 164340,
+  "num_turns": 14,
+  "tokens": {
+    "input": 12,
+    "output": 8391,
+    "cache_read": 263038,
+    "cache_creation": 45341,
+    "total": 316782
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 106,
+      "output": 26742,
+      "cache_read": 1560919,
+      "cache_creation": 154416,
+      "cost_usd": 1.7555508
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 44,
+      "output": 7088,
+      "cache_read": 255000,
+      "cache_creation": 59170,
+      "cost_usd": 0.24439300000000003
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 131,
+      "cache_read": 0,
+      "cache_creation": 4628,
+      "cost_usd": 0.0006442
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "git -C /home/runner/work/pupitre/pupitre diff 29a90a9808159e7fe24f2c5a0cfd44faa0b4e567..4b8cbc1874ecdc7f79b16c28cbb234feba0f284d --stat"
+    },
+    {
+      "tool": "Bash",
+      "input": "git -C /home/runner/work/pupitre/pupitre diff 29a90a9808159e7fe24f2c5a0cfd44faa0b4e567..HEAD -- src/core/init.service.ts src/core/web-dashboard-actions.service.ts"
+    }
+  ]
+}
