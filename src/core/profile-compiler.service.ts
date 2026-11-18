@@ -1819,13 +1819,18 @@ function conductorModelsSection(workerModel: string | undefined, commonDir: stri
  * can point at a decoy with harmless refs (decision 101). `--git-dir` still reads a
  * `commondir` file planted in the common dir, and git's refs read it even under
  * GIT_COMMON_DIR, so the command refuses while one exists in any form, a symlink included.
+ * History is pinned as `runGit` pins it (decisions 89 and 205): a planted `info/grafts`
+ * could move the three-dot diff's merge base onto a branch commit and hide every commit
+ * before it, so the graft and shallow files name paths that cannot exist, and the
+ * commit-graph, whose parents a session can write too, is not read.
  */
 function securityReviewGit(commonDir: string, args: string): string {
   const pointer = shellWord(join(commonDir, 'commondir'));
   return [
     `test ! -e ${pointer} && test ! -L ${pointer} &&`,
-    `GIT_NO_LAZY_FETCH=1 git --no-replace-objects -C / --git-dir=${shellWord(commonDir)}`,
-    '-c core.useReplaceRefs=false -c core.fsmonitor= -c core.hooksPath=/dev/null',
+    'GIT_NO_LAZY_FETCH=1 GIT_GRAFT_FILE=/dev/null/no-grafts GIT_SHALLOW_FILE=/dev/null/no-shallow',
+    `git --no-replace-objects -C / --git-dir=${shellWord(commonDir)}`,
+    '-c core.useReplaceRefs=false -c core.commitGraph=false -c core.fsmonitor= -c core.hooksPath=/dev/null',
     ...['ext', 'fd', 'file', 'git', 'http', 'https', 'ssh'].map(
       (name) => `-c protocol.${name}.allow=never`,
     ),
