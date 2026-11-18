@@ -60,7 +60,9 @@ export function clipWords(text: string): string {
   const chars = [...text];
   if (chars.length <= CARD_TEXT_CHARS) return text;
   const head = chars.slice(0, CARD_TEXT_CHARS).join('');
-  const boundary = /\s/.test(chars[CARD_TEXT_CHARS] ?? '') ? head.length : head.search(/\s\S*$/);
+  // A cut falling just before a space keeps the word that ends there.
+  const next = chars.slice(CARD_TEXT_CHARS, CARD_TEXT_CHARS + 1).join('');
+  const boundary = /\s/.test(next) ? head.length : head.search(/\s\S*$/);
   const kept = boundary > 0 ? head.slice(0, boundary) : head;
   return `${kept.replace(/[\s,;:]+$/, '')}…`;
 }

@@ -295,7 +295,7 @@ export function renderOverview(
     statusStrip(view),
     needsSection(view, sessionHref),
     sessionsSection(view, sessionHref),
-    pullRequestsSection(view, sessionHref),
+    pullRequestsSection(view),
     conductorSection(view.snapshot),
     plannedSection(view.snapshot, hrefOf('tasks')),
     goalSection(view.goal),
@@ -312,16 +312,14 @@ function openPrs(view: OverviewView): Map<string, DashboardSession> {
 }
 
 /**
- * The session a Needs you line is about, when it has a PR open: not the
- * conductor's lines, which name no session.
+ * The session a PR's Needs you line is about. Only a merged session has a PR
+ * open, and a merged session has no other line, so every open PR has this one.
  */
 function prSessionOf(
   need: DashboardNeed,
   prs: Map<string, DashboardSession>,
 ): DashboardSession | undefined {
-  return need.kind === 'conductor' || need.sessionId === CONDUCTOR_TARGET
-    ? undefined
-    : prs.get(need.sessionId);
+  return need.kind === 'pr-open' ? prs.get(need.sessionId) : undefined;
 }
 
 /** The counts the page leads with, and the launch verdict `pup status` prints. */
@@ -392,8 +390,8 @@ function deliverySection(view: OverviewView): string {
  * card's (the whole question is on the session's view), and, for a line about a
  * session or the conductor the store names in the minted shape, the way to act
  * on it: a question's options and an answer in words, and a session's view. A
- * session with a PR open carries the PR's row here, which Open pull requests
- * then leaves out.
+ * PR's line, whose answer is its link, carries the PR's CI review state and
+ * debt too, so Open pull requests only counts them.
  */
 function needsSection(view: OverviewView, sessionHref: (sessionId: string) => string): string {
   const { needs } = view;
@@ -420,31 +418,17 @@ function needsSection(view: OverviewView, sessionHref: (sessionId: string) => st
       `<li class="need need-${escapeHtml(need.kind)}"><span class="sid">${escapeHtml(need.label)}</span>${open} ` +
       `<span class="reason">${escapeHtml(clipWords(need.reason))}</span>` +
       `<span class="answer">${textOrPrLink(need.answer)}</span>` +
-      (pr === undefined ? '' : prFacts(pr, view, need.kind !== 'pr-open')) +
+      (pr === undefined ? '' : prFacts(pr, view)) +
       `${answer}</li>`
     );
   });
   return section('Needs you', `<ul class="rows">${items.join('')}</ul>`);
 }
 
-/**
- * What an open PR's row says beyond its session: its link, unless the line
- * is the PR's own, whose answer is the link, its CI review state and the debt
- * it filed.
- */
-function prFacts(session: DashboardSession, view: OverviewView, withLink: boolean): string {
+/** What an open PR's line says beyond its link: its CI review state and the debt it filed. */
+function prFacts(session: DashboardSession, view: OverviewView): string {
   const review = escapeHtml(reviewState(session, view.fixRounds.get(session.id)));
-  return (
-    `<div class="fact">${withLink ? `${prLink(session)} ` : ''}${review}</div>` +
-    debtOf(session, view.openDebt)
-  );
-}
-
-function prLink(session: DashboardSession): string {
-  const url = session.openPr?.url;
-  return url === undefined
-    ? `<code>${escapeHtml('(PR url outside the pull-request shape; inspect the store)')}</code>`
-    : textOrPrLink(url);
+  return `<div class="fact">${review}</div>${debtOf(session, view.openDebt)}`;
 }
 
 function conductorSection(snapshot: DashboardSnapshot): string {
@@ -555,28 +539,13 @@ function debtOf(session: DashboardSession, openDebt: WebDebtEntry[]): string {
     .join('');
 }
 
-/** The open PRs, less those whose session Needs you lists, which carry their row there. */
-function pullRequestsSection(
-  view: OverviewView,
-  sessionHref: (sessionId: string) => string,
-): string {
-  const prs = openPrs(view);
-  if (prs.size === 0) return section('Open pull requests', hint('No PR waits to land.'));
-  const listed = new Set(view.needs.flatMap((need) => prSessionOf(need, prs)?.id ?? []));
-  const rest = [...prs.values()].filter((session) => !listed.has(session.id));
-  if (rest.length === 0) {
-    return section('Open pull requests', hint(`${prs.size} open, each listed under Needs you.`));
-  }
-  const rows = rest.map(
-    (session) =>
-      `<li class="session"><div class="meta"><span class="sid">${escapeHtml(labelOf(session))}</span>` +
-      `${session.isMintedId ? viewLink(session.id, sessionHref) : ''}</div>` +
-      goalLine(session.goal) +
-      prFacts(session, view, true) +
-      '</li>',
+/** How many PRs are open: each has its own Needs you line (see `prSessionOf`), which shows its row. */
+function pullRequestsSection(view: OverviewView): string {
+  const open = openPrs(view).size;
+  return section(
+    'Open pull requests',
+    hint(open === 0 ? 'No PR waits to land.' : `${open} open, each listed under Needs you.`),
   );
-  const others = listed.size === 0 ? '' : hint(`${listed.size} more listed under Needs you.`);
-  return section('Open pull requests', `<ul class="rows">${rows.join('')}</ul>${others}`);
 }
 
 /**

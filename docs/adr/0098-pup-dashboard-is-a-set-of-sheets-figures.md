@@ -99,8 +99,9 @@
     verdict line `pup status` prints under `Launch:` (`launchRoomLines` over `launchRoom` and
     `launchHolds`) with the load beside it, to one decimal, so the board now changes when the load
     does. Then Needs you, each line's answer beside its reason and the way to act on it; then the
-    live sessions; then the open PRs, less any whose session a Needs you line names, since that
-    line carries the PR's link, CI review state and debt itself. The conductor, Planned, the goal,
+    live sessions; then the open PRs' count. Only a merged session has a PR open and a merged
+    session has no other Needs you line, so every open PR has its own line there, its link as the
+    answer, its CI review state and debt beneath, and is not listed again. The conductor, Planned, the goal,
     the four figure tiles and the Delivery charts follow, in that order. A tile prints its value,
     change and sparkline: the page hides a tile's figure line (`.tile figcaption`), and the
     sparkline's SVG `<title>` still names every capture on hover. Planned prints the count, the

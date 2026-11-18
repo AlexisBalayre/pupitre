@@ -662,18 +662,36 @@ describe('startWebDashboard', () => {
       expect(strip).toContain(escapeHtml(`${verdict}; load 0.5 of 8 cores`));
     });
 
+    it('names a config it cannot read in place of the verdict, as pup status does', async () => {
+      mkdirSync(join(repo, '.pupitre'), { recursive: true });
+      writeFileSync(join(repo, '.pupitre', 'project.yml'), 'lockBacklogBudgetMinutes: lots\n');
+
+      const page = await readPage(home());
+
+      expect(page).toContain(
+        escapeHtml(
+          'Launch: unknown, Invalid .pupitre/project.yml: lockBacklogBudgetMinutes must be a number of minutes above 0 and at most 1440.',
+        ),
+      );
+      expect(page).toContain('<h2>Needs you');
+    });
+
     it('lists the first three planned tasks, the count, and a link to the rest', async () => {
       for (const n of [1, 2, 3, 4, 5]) {
         insertTask(db, {
           id: `t-plan${n}`,
           projectId: projectId(repo),
           spec: JSON.stringify({ id: `t-plan${n}`, goal: `planned ${n}`, scopeIn: ['src/**'] }),
-          origin: 'human',
+          origin: n === 2 ? 'conductor' : 'human',
         });
       }
 
       const page = await readPage(home());
       const planned = page.slice(page.indexOf('<h2>Planned'), page.indexOf('<h2>Goal'));
+      // Who asked, unless the operator did.
+      expect(planned.match(/<span class="branch">from [^<]*<\/span>/g)).toEqual([
+        '<span class="branch">from conductor</span>',
+      ]);
 
       expect(planned).toContain(
         '5 planned · <a href="?sheet=tasks">show all on the Tasks sheet →</a>',
@@ -702,9 +720,19 @@ describe('startWebDashboard', () => {
       expect(cutAtWord(question)).toBe(true);
       expect(clipWords('short goal')).toBe('short goal');
       expect(clipWords('x'.repeat(150))).toBe(`${'x'.repeat(100)}…`);
+      // A cut falling just before a space keeps the word that ends at the cap.
+      expect(clipWords(`${'a'.repeat(95)} bbbb cc`)).toBe(`${'a'.repeat(95)} bbbb…`);
       // The question's text prints once: the session's row points at its Needs you line.
       expect(page).toContain('question — see Needs you');
       expect(page.match(/word59/g)).toBeNull();
+    });
+
+    it('says a card has no goal rather than printing an empty line', async () => {
+      seedSession('s-blank', ['running'], '');
+
+      const page = await readPage(home());
+
+      expect(page).toContain('<div class="goal">(no goal recorded)</div>');
     });
 
     // Decision 168: the look `pup conductor tell` refuses on, held past ten minutes.
