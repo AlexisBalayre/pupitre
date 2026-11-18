@@ -1,5 +1,5 @@
 import type { Database } from 'better-sqlite3';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 
 // Every core call the actions make is faked: what is under test is that each
 // action reaches the one its CLI command reaches, with the same arguments,
@@ -147,6 +147,7 @@ const CASES: {
         acceptDebt: { reason: 'one feature', reviewBy: '2027-01-01', acceptedBy: 'human' },
         openPr: true,
       },
+      expect.anything(),
     ],
     lines: [
       `Gate passed; ${PR} carries this gate report — merge it on GitHub, then land s-1.`,
@@ -315,6 +316,26 @@ describe('runAction', () => {
       [undefined, true],
       [{ reason: 'r', reviewBy: 'q1', acceptedBy: 'tg: [31mana' }, true],
     ]);
+  });
+
+  // A flaky pass's report is a PR's body, so the gate names where it kept the
+  // first run's output only in a note; the page shows its notes as the CLI does.
+  it('shows the gate’s notes, scrubbed, after the stages', async () => {
+    const printed = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    onTestFinished(() => printed.mockRestore());
+    vi.mocked(runMergeGate).mockImplementation(async (_db, _req, progress) => {
+      progress?.note(
+        'The test stage failed, then passed on its re-run (full output: /s/\u001b[31mt.log).',
+      );
+      return gate('merged', [{ stage: 'test', status: 'pass', detail: 'flaky' }]);
+    });
+
+    await expect(runAction(DB, REPO, 'merge', { session: 's-1' })).resolves.toEqual([
+      `Gate passed; ${PR} carries this gate report — merge it on GitHub, then land s-1.`,
+      'test: pass — flaky',
+      'The test stage failed, then passed on its re-run (full output: /s/ [31mt.log).',
+    ]);
+    expect(printed).toHaveBeenCalledOnce();
   });
 
   it('shows a flagged gate as a refusal naming the flags', async () => {

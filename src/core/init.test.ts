@@ -178,6 +178,8 @@ describe('initProject', () => {
     it('fails the test stage and leaves coverage unmeasured when that run fails', async () => {
       const { coveredTest, report, dispose } = covering('exit 1');
       const coverage = vi.fn(() => ({ files: {} }));
+      const printed = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      onTestFinished(() => printed.mockRestore());
 
       const result = await initProject(db, repo, [makeAdapter({ coverage, coveredTest })]);
 
@@ -189,6 +191,14 @@ describe('initProject', () => {
       expect(result.baseline.gaps).toEqual([{ adapterId: 'fake', capability: 'coverage' }]);
       expect(result.findings).toContainEqual(
         expect.stringContaining('coverage not measured — the instrumented test run failed'),
+      );
+      // A finding becomes a sweep task's goal, which a PR body publishes: the
+      // store's path is printed on the operator's terminal instead.
+      expect(result.findings.join('\n')).not.toContain('full output');
+      expect(printed).toHaveBeenCalledWith(
+        expect.stringMatching(
+          /^The baseline test run failed; full output not kept: no directory at \S+\.$/,
+        ),
       );
       expect(report).not.toHaveBeenCalled();
       expect(coverage).not.toHaveBeenCalled();

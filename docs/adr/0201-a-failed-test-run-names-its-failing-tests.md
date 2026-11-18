@@ -28,8 +28,11 @@
     `state.db`. The path is printed in a failing gate's detail and in the timeout-under-load
     refusal. Both stay on the operator's machine. A flaky pass's detail names its failures but
     no path, because a passed report is the PR's body and is published on GitHub. The gate prints
-    that path as a progress note in the operator's terminal instead. For the land it is printed at the end of the coverage gap, `the instrumented test run failed,
-    so its coverage is not read; full output: <path>`, which is the land's line. Only directories
+    that path as a progress note in the operator's terminal instead, and the web dashboard's merge
+    shows the gate's notes among its lines. `pup init`, `pup audit` and the land print it as a line
+    of their own on the operator's terminal, `The baseline test run failed; full output: <path>.`,
+    never in the coverage gap's reason: `pup audit --sweep` puts its findings in the sweep task's
+    goal, and that goal is published in the sweep's PR body. Only directories
     pup already made are written into: a missing one says `full output not kept: no directory at
     <dir>` and is not created. The next failure of the same stage overwrites the file, so the
     store holds one file per stage, not one per run.
