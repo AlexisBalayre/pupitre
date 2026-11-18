@@ -1,0 +1,84 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-18T18:41:52.492Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "44372149172",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/44372149172",
+  "actor": "AlexisBalayre",
+  "commit_sha": "4616875d850052a3550271aa78598573fc33e93d",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 394,
+  "action": "review",
+  "reviewers_spawned": [
+    "docs",
+    "conventions"
+  ],
+  "reviewers_returned": [
+    "docs",
+    "conventions"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "context",
+    "maintainability",
+    "spec",
+    "simplicity",
+    "guards",
+    "workflow-safety"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "7393e0276b0b87928af1b739a09c6d6a7e21ead8",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "docs/adr/0204-fresh-base-and-pup-land-refuse-a-worktree-mid-rebase-or-merge.md",
+      "line": "50",
+      "description": "The amendment heading cites `#393`, but this PR is #394. #393 is an unrelated PR, \"Make the dashboard Overview a Now page (Dashboard audit 1 of 3)\".",
+      "status": "resolved"
+    }
+  ],
+  "findings": [],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "The delta is one line in an ADR heading (#393 -> #394), so only docs and conventions ran. Skipped: correctness and simplicity (no logic and no new construct), security (no trust boundary), guards (no non-test source), context, maintainability (off the default roster), spec (no closing issue), workflow-safety (no workflow change). Neither reviewer found anything, so no consolidator or validator was spawned."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.38714489999999996,
+  "duration_ms": 29950,
+  "num_turns": 9,
+  "tokens": {
+    "input": 10,
+    "output": 2593,
+    "cache_read": 196143,
+    "cache_creation": 31847,
+    "total": 230593
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 10,
+      "output": 2593,
+      "cache_read": 196143,
+      "cache_creation": 31847,
+      "cost_usd": 0.3459046
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 8,
+      "output": 436,
+      "cache_read": 32218,
+      "cache_creation": 13457,
+      "cost_usd": 0.04124030000000001
+    }
+  ],
+  "permission_denials": []
+}
