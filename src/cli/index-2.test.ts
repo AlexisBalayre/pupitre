@@ -2475,26 +2475,27 @@ describe('CLI commands', () => {
 
   describe('dashboard stop', () => {
     const PORT = 41_234;
-    type Stop = (signal: NodeJS.Signals) => void;
 
     /** The one listener the command added for `signal`, removed again so it outlives no test. */
-    function addedListener(signal: 'SIGINT' | 'SIGTERM', before: unknown[]): Stop {
+    function addedListener(signal: 'SIGINT' | 'SIGTERM', before: unknown[]): unknown {
       const added = process.listeners(signal).filter((listener) => !before.includes(listener));
       onTestFinished(() => {
         for (const listener of added) process.off(signal, listener);
       });
       expect(added).toHaveLength(1);
-      return added[0] as Stop;
+      return added[0];
     }
 
-    /** `pup dashboard`, and the one stop it hands both signals. */
-    async function runDashboard(): Promise<Stop> {
+    /**
+     * `pup dashboard`, checked to hand both signals one stop. Tests send the
+     * signals through `process.emit`, never by calling that stop: `listeners()`
+     * unwraps a once-listener, so only a delivered signal tells `on` from `once`.
+     */
+    async function runDashboard(): Promise<void> {
       const sigints = process.listeners('SIGINT');
       const sigterms = process.listeners('SIGTERM');
       await buildProgram().parseAsync(['dashboard'], { from: 'user' });
-      const stop = addedListener('SIGINT', sigints);
-      expect(addedListener('SIGTERM', sigterms)).toBe(stop);
-      return stop;
+      expect(addedListener('SIGTERM', sigterms)).toBe(addedListener('SIGINT', sigints));
     }
 
     /** Connections to `server` over an in-memory pair, either side's close closing the other (decision 191). */
@@ -2526,7 +2527,7 @@ describe('CLI commands', () => {
         });
       });
       useCwd(initRepo());
-      const stop = await runDashboard();
+      await runDashboard();
       const url = new URL(String(logs[0]).replace('Dashboard on ', ''));
       const via = connectionTo(server as Server);
       const page = await new Promise<string>((resolve, reject) => {
@@ -2568,7 +2569,7 @@ describe('CLI commands', () => {
       await reached;
 
       const at = Date.now();
-      stop('SIGINT');
+      process.emit('SIGINT', 'SIGINT');
       await ended;
       await vi.waitFor(() => expect(store?.open).toBe(false), { timeout: 5_000 });
 
@@ -2589,9 +2590,9 @@ describe('CLI commands', () => {
         throw new Error('exited');
       });
       useCwd(initRepo());
-      const stop = await runDashboard();
+      await runDashboard();
 
-      stop('SIGINT');
+      process.emit('SIGINT', 'SIGINT');
 
       expect(logs.slice(2)).toEqual([
         'stopping...',
@@ -2599,7 +2600,8 @@ describe('CLI commands', () => {
       ]);
       expect(exit).not.toHaveBeenCalled();
 
-      expect(() => stop('SIGINT')).toThrow('exited');
+      // Under once the listener would be gone here, and nothing would exit.
+      expect(() => process.emit('SIGINT', 'SIGINT')).toThrow('exited');
       expect(exit).toHaveBeenCalledWith(130);
       expect(logs.at(-1)).toBe('Stopped without waiting for the running action.');
     });
