@@ -1,0 +1,135 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-18T11:23:47.653Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "44293330750",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/44293330750",
+  "actor": "AlexisBalayre",
+  "commit_sha": "11d8623b73d9e3cdae8f082f583b4f6ffab35cdb",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 379,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs",
+    "context"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs",
+    "context"
+  ],
+  "reviewers_skipped": [
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/claude/compact-recap.service.ts",
+      "line": "140-151",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "openPrLines counts a session as having an open PR for as long as its newest merge/landed/retired/pr_closed event is a merge with a prUrl. There is no time window and no landed check. A PR merged in GitHub's UI that `pup land` never recorded therefore stays on the conductor's 'Open PRs' list forever. This is the stale-state failure ADR 0199 is meant to fix. The sibling reader awaitsLand (session-cap.service.ts:158-168) runs the same query and adds LAND_WINDOW_MS for this exact case (ADR 0197).",
+      "body": "**A PR merged on GitHub but never `pup land`-ed is listed as open in every conductor recap, forever.**\n\n`openPrLines` treats a session as having an open PR when its newest `merge`/`landed`/`retired`/`pr_closed` event is a `merge` with a `prUrl`:\n\nhttps://github.com/AlexisBalayre/pupitre/blob/11d8623b73d9e3cdae8f082f583b4f6ffab35cdb/src/claude/compact-recap.service.ts#L140-L151\n\n```ts\nconst newest = newestEventOf(db, session.id, ['merge', 'landed', 'retired', 'pr_closed']);\nif (newest?.type !== 'merge') return [];\n```\n\nOnly three commands close that record. `pup land` writes `landed`, `pup retire` writes `retired`, and `pup land --abandon-closed` writes `pr_closed`. Nothing reads GitHub and writes one of them by itself. A PR merged in GitHub's UI, whose land was never run or was refused, keeps a `merge` as its newest event for good.\n\nThe codebase already handles this case elsewhere. `awaitsLand` in `src/core/session-cap.service.ts:158-168` runs the same query and bounds it with `LAND_WINDOW_MS`. Its JSDoc says: *\"one merged in GitHub's UI, or one `pup land` never recorded, would otherwise count forever\"*. ADR 0197 counted about 20 such stale merges in live data (247 merged sessions against 227 lands).\n\n**Trigger:** the operator merges a PR on GitHub and never runs `pup land`. From then on, every conductor compaction prints that session under `Open PRs (...)`. The list fills with dead PRs, and its `… N more` tail keeps growing. The recap sits under a heading that says it wins over the summary, so the conductor takes \"this PR is still open\" as ground truth. It may then wait on the PR's CI or keep asking the operator to merge it. ADR 0199 exists to prevent exactly this kind of stale state.\n\n**Fix options:**\n- Apply the same `LAND_WINDOW_MS` bound that `awaitsLand` uses.\n- Check the pin's ancestry against the local target, as the dashboard's `ancestry()` does. This needs no network.\n- Label these lines \"awaiting land\" instead of \"open\".\n\nWhichever you choose, update ADR 0199's definition of an open PR (lines 28-29) to state the bound.",
+      "suggestion": null
+    },
+    {
+      "file": "src/claude/compact-recap.service.ts",
+      "line": "166-175",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "When `pup merge --pr` succeeds, it removes the session's worktree (`git worktree remove --force`, merge-gate.service.ts:2592). So for every open PR outside a CI fix round, the worktree head read fails in verifiedWorktreeGitEnv because `.git` is missing, and the line prints `worktree unreadable`. Docs/ADR 0199 define `unreadable` as a failed read the conductor should retry. Here nothing failed: the worktree is gone on purpose. The result is that the common case looks like an error on every PR line. The drift flag only works in fix rounds or for kept worktrees, and the test at compact-recap.test.ts:245 fakes a `merged` session that still has a live worktree, which the real flow never produces. Suggested fix: when `session.worktree_path` does not exist (lstat), print `worktree gone (torn down at merge)` instead of `unreadable`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0199-a-compaction-restarts-from-live-state-read-by-a.md",
+      "line": "38-39",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The ADR's bounds paragraph says \"Each list it prints is capped at 12 entries, the rest counted\". That holds for the conductor's lists and the failed gate stages, but the worker's git lists are capped at 10 commits and 20 files (as the ADR's own lines 19-21 say), so a reader sizing worker output gets the wrong cap. Reword to \"The conductor's lists and the failed stages are capped at 12 entries, the rest counted.\"",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/index.ts",
+      "line": "1606-1608",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new comment on the `recap` branch restates what `conductorRecap`'s JSDoc, docs/03-profiles.md and ADR 0199 already say, and the `refuse` message on the next line covers the session refusal. Drop it, or cut it to a one-line \"decision 199\" pointer.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 4.739624725000001,
+  "duration_ms": 320688,
+  "num_turns": 18,
+  "tokens": {
+    "input": 14,
+    "output": 14451,
+    "cache_read": 362086,
+    "cache_creation": 56860,
+    "total": 433411
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 238,
+      "output": 86092,
+      "cache_read": 4348388,
+      "cache_creation": 304407,
+      "cost_usd": 4.285084599999999
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 66,
+      "output": 13347,
+      "cache_read": 484043,
+      "cache_creation": 108736,
+      "cost_usd": 0.4538463
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 170,
+      "cache_read": 0,
+      "cache_creation": 4869,
+      "cost_usd": 0.000693825
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "gh pr view 379 --repo AlexisBalayre/pupitre"
+    }
+  ]
+}
