@@ -11,7 +11,8 @@ import { dirname, join } from 'node:path';
 import { quotePath } from './debt.service.js';
 import { runGit } from './git-diff.client.js';
 import { GATE_ENVIRONMENT_DIR } from './merge-gate.constants.js';
-import { linkEnvironment, owningLockfile } from './merge-gate.service.js';
+import { linkEnvironment } from './merge-gate.service.js';
+import { owningLockfile } from './uninstalled-dependency.service.js';
 
 /**
  * Give a remeasure's stand-in, a checkout of `targetSha`, the main checkout's

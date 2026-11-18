@@ -1375,6 +1375,28 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect((await merge(nestedAdapter())).status).toBe('merged');
     });
 
+    // The runtime is looked for in the main checkout: one only the branch
+    // commits is the session's to write, and would skip the refusal at will.
+    it("refuses a member whose Plug'n'Play runtime only the branch commits", async () => {
+      commitIn(
+        repo,
+        'tools/review/package.json',
+        JSON.stringify({
+          scripts: { test: 'true', typecheck: 'true' },
+          devDependencies: { vitest: '^3.0.0' },
+        }),
+      );
+      commitIn(repo, 'package.json', JSON.stringify({ workspaces: { packages: ['tools/*'] } }));
+      commitIn(repo, 'yarn.lock', '__metadata:\n  version: 8\n');
+      const worktree = seedSession(db, repo, { scopeIn: [...NESTED_SCOPE.scopeIn, '.pnp.cjs'] });
+      commitIn(worktree, '.pnp.cjs', '#!/usr/bin/env node\n');
+      commitIn(worktree, 'tools/review/src/r.ts', 'export const r = 1;\n');
+
+      await expect(merge(nestedAdapter())).rejects.toThrow(
+        /tools\/review has no node_modules.*`yarn --cwd \. install`/,
+      );
+    });
+
     // A manager installing a package with no dependencies writes its lockfile
     // and no node_modules, so there is no install to ask for.
     it('runs a package with its own lockfile and no dependencies', async () => {
