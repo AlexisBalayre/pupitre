@@ -47,7 +47,7 @@
     `land-refusals.test.ts` plants each entry under a PR GitHub merged and shows the land
     refuse naming it, changing nothing.
 
-## Amendment (2026-11-18, #393)
+## Amendment (2026-11-18, #394)
 
 A follow-up to #389. The fresh-base detail for a rebase whose abort also failed told every
 reader to run `git rebase --abort` in the session worktree, then merge the target. That report
