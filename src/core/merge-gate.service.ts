@@ -28,6 +28,7 @@ import {
   sanitizeReason,
 } from '../adapters/capability.utils.js';
 import type {
+  Adapter,
   CapabilityContext,
   CapabilityUnavailable,
   CoverageReport,
@@ -108,6 +109,7 @@ import {
   SessionNotReviewableError,
 } from './merge-gate.errors.js';
 import { SESSION_ID_PATTERN } from './paths.constants.js';
+import { projectPaths, writeStoreFile } from './paths.utils.js';
 import {
   formatElapsed,
   MERGE_LOCK_STAGE,
@@ -195,7 +197,8 @@ const CONTROL_CHARS = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/g;
  * not just the steer. It is the only route an escape takes into a stage that
  * steers: git C-quotes a control byte in a pathname whatever `core.quotePath`
  * says, `quotePath` already sanitizes the scope audit's, and an adapter's own
- * text reaches flagged stages only, which are refused and never steered.
+ * text reaches flagged stages only, which are refused and never steered, but
+ * for the failing tests it names, which pass through here too.
  */
 export function plainDetail(detail: string): string {
   return detail.replace(CSI_ESCAPE, '').replace(CONTROL_CHARS, ' ').trimEnd();
@@ -215,27 +218,52 @@ function commandFailureDetail(error: unknown): string {
   return commandFailureOutput(error).slice(-GATE_OUTPUT_TAIL_CHARS);
 }
 
-/**
- * The line each common runner opens a failed test with: vitest's `FAIL` and
- * `×`, jest's `✕` and `●`, pytest's `FAILED`, go's `--- FAIL:`. A line, not a
- * parse — the names are for the operator to read, never for anything to act on.
- */
-const FAILED_TEST_LINE = /^\s*(?:FAIL|FAILED|×|✕|✗|●|--- FAIL:)\s+(.+?)\s*$/;
 /** Enough names to tell one flake from a broken suite, few enough to read. */
 const FAILED_TEST_NAMES_MAX = 10;
 
-/** The failed tests a failed test stage's output names, deduplicated. */
-function failingTestNames(error: unknown): string {
-  const names = [
-    ...new Set(
-      commandFailureOutput(error)
-        .split('\n')
-        .flatMap((line) => FAILED_TEST_LINE.exec(line)?.[1] ?? []),
-    ),
-  ];
-  if (names.length === 0) return 'none named in its output';
-  const more = names.length - FAILED_TEST_NAMES_MAX;
-  return names.slice(0, FAILED_TEST_NAMES_MAX).join('; ') + (more > 0 ? ` (+${more} more)` : '');
+/**
+ * The failed tests a failed test run names, `<file> > <test>`, or the file
+ * alone when it failed as a whole. Read by the adapter whose runner it is, from
+ * that runner's own summary (`failingTests`), never by core from the free text:
+ * the tail a detail keeps is often a fixture's stderr, not the runner's verdict.
+ * The names are for the operator and the session to read, never for anything
+ * to act on, and plain like the rest of a detail.
+ */
+function failingTestNames(adapter: Adapter | undefined, error: unknown): string {
+  if (!adapter?.failingTests) return "none named — its adapter cannot read the runner's summary";
+  const named = adapter.failingTests(commandFailureOutput(error));
+  if (named.length === 0) return "none named in the runner's summary";
+  const more = named.length - FAILED_TEST_NAMES_MAX;
+  const names = named
+    .slice(0, FAILED_TEST_NAMES_MAX)
+    .map(({ file, test }) => (test === undefined ? file : `${file} > ${test}`));
+  return plainDetail(names.join('; ') + (more > 0 ? ` (+${more} more)` : ''));
+}
+
+/**
+ * Keep a failed test stage's whole output, each failed run of it in turn, in
+ * `<dir>/<stage>-output.log`, since its detail keeps only the tail; answers
+ * the clause saying where, or why it was not kept. Written as every file pup
+ * owns under the store is (`writeStoreFile`, decision 194), only into a
+ * directory pup made, never one this makes. The stage's next failure
+ * overwrites it, so the store holds one file per stage, not one per run.
+ */
+function keepFullOutput(dir: string, stage: string, runs: unknown[]): string {
+  if (!existsSync(dir)) return `full output not kept: no directory at ${dir}`;
+  const name = stage.replace(/[^\w.-]+/g, '-').replace(/^-+|-+$/g, '');
+  const path = join(dir, `${name}-output.log`);
+  const output = runs
+    .map((run, i) => {
+      const header = runs.length > 1 ? `--- run ${i + 1} of ${runs.length} ---\n` : '';
+      return header + commandFailureOutput(run);
+    })
+    .join('\n\n');
+  try {
+    writeStoreFile(path, `${output}\n`);
+    return `full output: ${path}`;
+  } catch (error) {
+    return `full output not kept: ${failureSummary(error)}`;
+  }
 }
 
 /** A changed path's new mode, and the path it was renamed or copied from if git paired one. */
@@ -2624,20 +2652,19 @@ function refuseTimeoutUnderLoad(
   error: unknown,
   loadBefore: number,
   sessionId: string,
-  firstRun?: unknown,
+  kept: string,
+  firstFailures?: string,
 ): void {
   if ((error as { code?: string }).code !== 'ETIMEDOUT') return;
   const cores = availableParallelism();
   const load = oneMinuteLoad();
   if (Math.min(loadBefore, load) < cores || !otherTestRunGoing(sessionId)) return;
-  const firstFailures =
-    firstRun === undefined
-      ? ''
-      : `, on its re-run; failing the first time: ${failingTestNames(firstRun)}`;
+  const onRerun =
+    firstFailures === undefined ? '' : `, on its re-run; failing the first time: ${firstFailures}`;
   throw new Error(
     `The test stage timed out under load ${load.toFixed(1)}, at or over the machine's ` +
-      `${cores} cores, with other test runs going${firstFailures}; nothing was merged; run ` +
-      'pup merge again when the load falls.',
+      `${cores} cores, with other test runs going${onRerun}; nothing was merged; run ` +
+      `pup merge again when the load falls; ${kept}.`,
   );
 }
 
@@ -2866,6 +2893,8 @@ export async function measureBranch(
    * machine's cores and so no evidence, rather than a temporal dead zone.
    */
   let loadBeforeSuites = 0;
+  /** Where a failed test run's whole output is kept: the gated session's own directory. */
+  const sessionDir = projectPaths(req.repoPath).sessionDir(session.id);
 
   /**
    * Runs one hard stage to its result. A failed test
@@ -2876,7 +2905,8 @@ export async function measureBranch(
    * neither is a test run that ended other than by the runner's own failing
    * exit (`isRerunnable`). A test run, the first or the re-run, timed out
    * under load throws instead of failing (`refuseTimeoutUnderLoad`, decision
-   * 138).
+   * 138). A failed test run names its failed tests, as the adapter reads them,
+   * and where its whole output is kept, in the session's directory.
    */
   const commandStage = async (
     stage: string,
@@ -2887,28 +2917,40 @@ export async function measureBranch(
     const started = Date.now();
     const first = await runCommand(command, cwd);
     if (first === undefined) return timedSince(started, { stage, status: 'pass' });
-    if (command.stage === 'test') refuseTimeoutUnderLoad(first, loadBeforeSuites, session.id);
-    if (command.stage !== 'test' || !isRerunnable(first)) {
+    if (command.stage !== 'test') {
       return timedSince(started, { stage, status: 'fail', detail: commandFailureDetail(first) });
     }
+    const keptFirst = keepFullOutput(sessionDir, stage, [first]);
+    refuseTimeoutUnderLoad(first, loadBeforeSuites, session.id, keptFirst);
+    const firstFailures = failingTestNames(primary, first);
+    if (!isRerunnable(first)) {
+      return timedSince(started, {
+        stage,
+        status: 'fail',
+        detail: `failing: ${firstFailures}\n${keptFirst}\n${commandFailureDetail(first)}`,
+      });
+    }
     const rerun = await runCommand(command, cwd);
-    // A first run that failed on its own and a re-run the load ran out: the
-    // re-run's timeout says no more about the code than a first run's would,
-    // and the first run's failures are still what the operator needs to read.
-    if (rerun !== undefined) refuseTimeoutUnderLoad(rerun, loadBeforeSuites, session.id, first);
     if (rerun === undefined) {
       return timedSince(started, {
         stage,
         status: 'pass',
-        detail: `flaky — failed, then passed on its one re-run; failing the first time: ${failingTestNames(first)}`,
+        detail:
+          `flaky — failed, then passed on its one re-run; failing the first time: ` +
+          `${firstFailures} (${keptFirst})`,
       });
     }
+    const kept = keepFullOutput(sessionDir, stage, [first, rerun]);
+    // A first run that failed on its own and a re-run the load ran out: the
+    // re-run's timeout says no more about the code than a first run's would,
+    // and the first run's failures are still what the operator needs to read.
+    refuseTimeoutUnderLoad(rerun, loadBeforeSuites, session.id, kept, firstFailures);
     return timedSince(started, {
       stage,
       status: 'fail',
       detail:
-        `failed twice — failing the first time: ${failingTestNames(first)}; ` +
-        `on the re-run: ${failingTestNames(rerun)}\n${commandFailureDetail(rerun)}`,
+        `failed twice — failing the first time: ${firstFailures}; ` +
+        `on the re-run: ${failingTestNames(primary, rerun)}\n${kept}\n${commandFailureDetail(rerun)}`,
     });
   };
 

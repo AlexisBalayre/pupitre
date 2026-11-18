@@ -131,6 +131,14 @@ export interface CapabilityUnavailable {
  */
 type Awaitable<T> = T | Promise<T>;
 
+/** One failed test a runner's summary names. */
+export interface FailingTest {
+  /** The test file, as the runner prints it. */
+  file: string;
+  /** The test's full name within `file`; absent when the file failed as a whole, as on an import error. */
+  test?: string;
+}
+
 /**
  * The test stage's own suite run with line coverage on, so one run answers for
  * both (decision 95). The caller runs `command` in place of the test stage's,
@@ -193,6 +201,13 @@ export interface Adapter {
    * split; a `false` either time counts no file as test (decision 143).
    */
   testInputsIntact?(ctx: CapabilityContext): boolean;
+  /**
+   * The failed tests a failed test run's whole output names, read from the
+   * summary this adapter's runner prints, deduplicated in its order. For the
+   * operator and the session to read, never for the gate to act on. Without it
+   * the gate says its adapter cannot name them.
+   */
+  failingTests?(output: string): FailingTest[];
   /**
    * The nested packages `files` touch, which every capability above leaves
    * out: the gate runs their own scripts and names what was dropped
