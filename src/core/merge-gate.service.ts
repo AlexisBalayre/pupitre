@@ -2881,7 +2881,9 @@ export async function measureBranch(
    * exit (`isRerunnable`). A test run, the first or the re-run, timed out
    * under load throws instead of failing (`refuseTimeoutUnderLoad`, decision
    * 138). A failed test run names its failed tests, as the adapter reads them,
-   * and where its whole output is kept, in the session's directory.
+   * and where its whole output is kept, in the session's directory. A flaky
+   * pass's detail names no path: a passed report is the PR's body, published
+   * on GitHub, so the path reaches the operator as a progress note instead.
    */
   const commandStage = async (
     stage: string,
@@ -2907,12 +2909,11 @@ export async function measureBranch(
     }
     const rerun = await runCommand(command, cwd);
     if (rerun === undefined) {
+      progress.note(`The ${stage} stage failed, then passed on its re-run (${keptFirst}).`);
       return timedSince(started, {
         stage,
         status: 'pass',
-        detail:
-          `flaky — failed, then passed on its one re-run; failing the first time: ` +
-          `${firstFailures} (${keptFirst})`,
+        detail: `flaky — failed, then passed on its one re-run; failing the first time: ${firstFailures}`,
       });
     }
     const kept = keepFullOutput(sessionDir, stage, [first, rerun].map(commandFailureOutput));

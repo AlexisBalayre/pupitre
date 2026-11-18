@@ -708,18 +708,24 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
 
       const kept = ownSessionDir();
+      const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      onTestFinished(() => errors.mockRestore());
 
       const outcome = await merge(adapterWith('test', failsOnce('exit 0')));
 
       expect(outcome.status).toBe('merged');
       expect(runsOf('test-run')).toBe(2);
+      // A passed report is the PR's body, so it names no path on this machine.
       expect(untimed(outcome.report.stages)).toContainEqual({
         stage: 'test',
         status: 'pass',
         detail:
           'flaky — failed, then passed on its one re-run; failing the first time: ' +
-          `src/a.test.ts > times out under load (full output: ${kept})`,
+          'src/a.test.ts > times out under load',
       });
+      expect(errors).toHaveBeenCalledWith(
+        `The test stage failed, then passed on its re-run (full output: ${kept}).`,
+      );
       expect(readFileSync(kept, 'utf8')).toBe('FAIL  src/a.test.ts > times out under load\n');
     });
 

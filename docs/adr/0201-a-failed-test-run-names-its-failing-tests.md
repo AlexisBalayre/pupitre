@@ -25,8 +25,10 @@
     header, is written to `<dir>/<stage>-output.log` through `writeStoreFile` (decision 194). The
     gate writes into the session's directory. `pup init`, `pup audit` and the land's audit
     (decision 95) write into the project's directory, `~/.pupitre/<projectId>`, which holds
-    `state.db`. The path is printed in the gate's detail and in the timeout-under-load refusal.
-    For the land it is printed at the end of the coverage gap, `the instrumented test run failed,
+    `state.db`. The path is printed in a failing gate's detail and in the timeout-under-load
+    refusal. Both stay on the operator's machine. A flaky pass's detail names its failures but
+    no path, because a passed report is the PR's body and is published on GitHub. The gate prints
+    that path as a progress note in the operator's terminal instead. For the land it is printed at the end of the coverage gap, `the instrumented test run failed,
     so its coverage is not read; full output: <path>`, which is the land's line. Only directories
     pup already made are written into: a missing one says `full output not kept: no directory at
     <dir>` and is not created. The next failure of the same stage overwrites the file, so the
