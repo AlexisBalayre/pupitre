@@ -38,7 +38,7 @@ import { refuseUserSandbox } from './profile-compiler-sandbox.service.js';
 import { autoCompactWindowTokens, workerSandboxOn } from './project-config.config.js';
 import { CRITICAL_AREAS } from './routing.utils.js';
 import { shellWord } from './shell-quote.utils.js';
-import { scopeInFiles } from './task-spec.utils.js';
+import { assertPlannableSpec, scopeInFiles } from './task-spec.utils.js';
 import type { ConductorCompileInput } from './types/conductor.types.js';
 import type {
   CompiledProfile,
@@ -254,23 +254,11 @@ function estimateTokens(text: string): number {
 }
 
 function validateInput(input: CompileInput, git: WorktreeGitEnv): void {
-  const scopeIn = input.task.scopeIn.filter((g) => g.trim());
-  if (scopeIn.length === 0) {
-    throw new InvalidProfileError(
-      'Task scope-in is empty; a session with no scope can edit nothing.',
-    );
-  }
-  // The scope files are line-oriented and read by `grep -qE -f`, where a blank
-  // line is a pattern matching everything — so one newline inside a glob turns
-  // the Edit/Write hook into allow-all. Specs now outlive the command that
-  // wrote them (decision 40), so this is checked on every compile.
-  for (const glob of [...input.task.scopeIn, ...(input.task.scopeOut ?? [])]) {
-    if (/[\r\n\0]/.test(glob)) {
-      throw new InvalidProfileError(
-        `Scope glob contains a control character: ${JSON.stringify(glob)}`,
-      );
-    }
-  }
+  // Specs outlive the command that wrote them (decision 40), so the checks
+  // `pup plan add` ran are run on every compile: a glob that would turn the
+  // scope hook into allow-all, and a ticket whose text the kickoff would carry
+  // where no reader sees it (decision 187).
+  assertPlannableSpec(input.task);
   for (const [label, path] of [
     ['worktreePath', input.worktreePath],
     ['eventsFile', input.eventsFile],
@@ -1831,13 +1819,18 @@ function conductorModelsSection(workerModel: string | undefined, commonDir: stri
  * can point at a decoy with harmless refs (decision 101). `--git-dir` still reads a
  * `commondir` file planted in the common dir, and git's refs read it even under
  * GIT_COMMON_DIR, so the command refuses while one exists in any form, a symlink included.
+ * History is pinned as `runGit` pins it (decisions 89 and 205): a planted `info/grafts`
+ * could move the three-dot diff's merge base onto a branch commit and hide every commit
+ * before it, so the graft and shallow files name paths that cannot exist, and the
+ * commit-graph, whose parents a session can write too, is not read.
  */
 function securityReviewGit(commonDir: string, args: string): string {
   const pointer = shellWord(join(commonDir, 'commondir'));
   return [
     `test ! -e ${pointer} && test ! -L ${pointer} &&`,
-    `GIT_NO_LAZY_FETCH=1 git --no-replace-objects -C / --git-dir=${shellWord(commonDir)}`,
-    '-c core.useReplaceRefs=false -c core.fsmonitor= -c core.hooksPath=/dev/null',
+    'GIT_NO_LAZY_FETCH=1 GIT_GRAFT_FILE=/dev/null/no-grafts GIT_SHALLOW_FILE=/dev/null/no-shallow',
+    `git --no-replace-objects -C / --git-dir=${shellWord(commonDir)}`,
+    '-c core.useReplaceRefs=false -c core.commitGraph=false -c core.fsmonitor= -c core.hooksPath=/dev/null',
     ...['ext', 'fd', 'file', 'git', 'http', 'https', 'ssh'].map(
       (name) => `-c protocol.${name}.allow=never`,
     ),

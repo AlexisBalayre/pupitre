@@ -232,4 +232,33 @@ describe('assertPlannableSpec with a ticket (decision 187)', () => {
         'one of its criteria is over 500 characters.',
     );
   });
+
+  // Ticket text reaches the kickoff and `pup review`, whose scrubbing drops
+  // only control characters: what a reader cannot see is refused here, the one
+  // check every reader of a stored ticket goes through.
+  it.each<[string, Partial<TaskTicket>, string]>([
+    ['a bidi override', { criteria: ['ok', 'pass‮liaf'] }, 'its criteria (U+202E)'],
+    ['a zero-width space', { design: 'ship​it' }, 'its design note (U+200B)'],
+    ['a byte-order mark', { labels: ['design-approved', '﻿ready'] }, 'its labels (U+FEFF)'],
+    ['a tag character', { criteria: ['done\u{E0069}\u{E0067}'] }, 'its criteria (U+E0069)'],
+    ['the tag block start', { triggers: ['\u{E0000}'] }, 'its triggers (U+E0000)'],
+    ['a bidi isolate', { type: 'bug⁦' as TicketType }, 'its type (U+2066)'],
+  ])('refuses a ticket holding %s, naming the field and the character', (_, ticket, where) => {
+    const check = () => assertPlannableSpec(approved(ticket));
+    expect(check).toThrow('Ticket #412 holds a character no reader sees, in ');
+    expect(check).toThrow(where);
+  });
+
+  it('names every field holding one at once', () => {
+    expect(() => assertPlannableSpec(approved({ design: 'a‍b', criteria: ['⁧c'] }))).toThrow(
+      'Ticket #412 holds a character no reader sees, in its design note (U+200D), ' +
+        'its criteria (U+2067): remove it from the issue and write the ticket again.',
+    );
+  });
+
+  it('takes ticket text with no invisible character, accents and symbols included', () => {
+    expect(() =>
+      assertPlannableSpec(approved({ design: 'Élan — naïve façade → 日本語', criteria: ['± ok'] })),
+    ).not.toThrow();
+  });
 });

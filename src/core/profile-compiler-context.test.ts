@@ -891,8 +891,10 @@ describe('compileConductorProfile', () => {
     expect(context).not.toContain('xhigh"');
     const pinned =
       '`test ! -e /repo/.git/commondir && test ! -L /repo/.git/commondir && ' +
-      'GIT_NO_LAZY_FETCH=1 git --no-replace-objects -C / --git-dir=/repo/.git ' +
-      '-c core.useReplaceRefs=false -c core.fsmonitor= -c core.hooksPath=/dev/null ' +
+      'GIT_NO_LAZY_FETCH=1 GIT_GRAFT_FILE=/dev/null/no-grafts ' +
+      'GIT_SHALLOW_FILE=/dev/null/no-shallow git --no-replace-objects -C / --git-dir=/repo/.git ' +
+      '-c core.useReplaceRefs=false -c core.commitGraph=false -c core.fsmonitor= ' +
+      '-c core.hooksPath=/dev/null ' +
       '-c protocol.ext.allow=never -c protocol.fd.allow=never -c protocol.file.allow=never ' +
       '-c protocol.git.allow=never -c protocol.http.allow=never -c protocol.https.allow=never ' +
       '-c protocol.ssh.allow=never ';
@@ -1145,6 +1147,69 @@ describe('compileConductorProfile', () => {
     unlinkSync(pointer);
     symlinkSync('/nonexistent', pointer);
     expect(run(resolve)).toMatchObject({ status: 1, stdout: '' });
+  });
+
+  // Decision 205: a planted `info/grafts` that gives main's tip a branch commit as a second
+  // parent moves the three-dot diff's merge base onto that commit, so plain git, the control,
+  // diffs only the commits after it; a planted `shallow` file cuts the branch off main, so
+  // plain git finds no merge base. The review's git reads past both and sees the whole branch.
+  it('reads the whole branch past a planted info/grafts or shallow file', () => {
+    const env: NodeJS.ProcessEnv = {
+      ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_'))),
+      GIT_CONFIG_GLOBAL: '/dev/null',
+      GIT_CONFIG_SYSTEM: '/dev/null',
+      GIT_AUTHOR_NAME: 't',
+      GIT_AUTHOR_EMAIL: 't@example.com',
+      GIT_COMMITTER_NAME: 't',
+      GIT_COMMITTER_EMAIL: 't@example.com',
+    };
+    const repo = realpathSync(tempDir('pup-conductor-history-'));
+    const git = (args: string[], dated: NodeJS.ProcessEnv = {}) =>
+      spawnSync('git', args, { cwd: repo, env: { ...env, ...dated }, encoding: 'utf8' });
+    // Main's tip is dated after the branch, as a target tip is once a branch forks.
+    const commit = (file: string, text: string, day: number) => {
+      const date = `${1_767_225_600 + day * 86_400} +0000`;
+      writeFileSync(join(repo, file), text);
+      git(['add', file]);
+      git(['commit', '-qm', file], { GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date });
+      return git(['rev-parse', 'HEAD']).stdout.trim();
+    };
+    git(['init', '-q', '-b', 'main']);
+    const fork = commit('a.txt', 'safe\n', 1);
+    git(['switch', '-qc', 'pup/s-1']);
+    const hidden = commit('a.txt', 'evil\n', 2);
+    const head = commit('b.txt', 'harmless\n', 3);
+    git(['switch', '-q', 'main']);
+    const target = commit('c.txt', 'main\n', 4);
+
+    const context = ProfileCompiler.compileConductorProfile({
+      ...conductorInput,
+      repoPath: repo,
+    }).contextMarkdown;
+    const [, numstat, diff] = [...context.matchAll(/`(test ! -e [^`]+)`/g)].map(
+      (match) => match[1] ?? '',
+    );
+    const run = (command = '') =>
+      spawnSync(
+        'sh',
+        ['-c', command.replaceAll('<target-id>', target).replaceAll('<head-id>', head)],
+        { env, encoding: 'utf8' },
+      );
+    const plain = () => git(['diff', '--numstat', `${target}...${head}`]);
+    const whole = '1\t1\ta.txt\n1\t0\tb.txt\n';
+
+    const grafts = join(repo, '.git', 'info', 'grafts');
+    mkdirSync(join(repo, '.git', 'info'), { recursive: true });
+    writeFileSync(grafts, `${target} ${fork} ${hidden}\n`);
+    expect(plain().stdout).toBe('1\t0\tb.txt\n');
+    expect(run(numstat)).toMatchObject({ status: 0, stdout: whole });
+    expect(run(diff).stdout).toContain('+evil');
+    unlinkSync(grafts);
+
+    writeFileSync(join(repo, '.git', 'shallow'), `${head}\n`);
+    expect(plain()).toMatchObject({ status: 128, stdout: '' });
+    expect(run(numstat)).toMatchObject({ status: 0, stdout: whole });
+    expect(run(diff).stdout).toContain('+evil');
   });
 
   it('refuses to compile past the context budget', () => {

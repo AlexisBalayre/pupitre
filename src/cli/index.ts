@@ -2513,8 +2513,17 @@ export function buildProgram(): Command {
       // it changed (decision 187).
       if (detail.spec.ticket) {
         console.log(`ticket ${sanitizeReason(detail.spec.ticket.ref)} slice criteria:`);
-        for (const criterion of detail.spec.ticket.criteria)
-          console.log(`  - ${sanitizeReason(criterion)}`);
+        // A criterion may hold 500 characters (decision 187) and `sanitizeReason`
+        // cuts at 300, so a long one goes on in continuation lines, each broken
+        // at a space where it can be and none long enough to be cut.
+        for (const criterion of detail.spec.ticket.criteria) {
+          let prefix = '  - ';
+          const words = criterion.replace(/\s+/g, ' ').trim();
+          for (const piece of words.match(/.{1,300}(?= |$)|.{1,300}/gu) ?? ['']) {
+            console.log(`${prefix}${sanitizeReason(piece)}`);
+            prefix = '    ';
+          }
+        }
       }
       console.log(
         `rejections: ${detail.entry.rejectCount}  scope violations: ${detail.entry.scopeViolations}  overlaps: ${detail.entry.overlaps}`,
