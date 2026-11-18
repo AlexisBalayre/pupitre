@@ -457,7 +457,7 @@ function worktreeConfigState(
  * rest on `submodule.recurse` being read after them. `diff.submodule` is pinned
  * to `short`: at `diff` a patch over a gitlink runs a child git in
  * `.git/modules/<name>`, whose own `diff.external` or textconv then runs
- * (decision 201). `worktree.useRelativePaths` is
+ * (decision 203). `worktree.useRelativePaths` is
  * pinned off so pup's `worktree add` writes the absolute gitfile the pointer
  * checks match exactly, whatever the operator's global config says (Git 2.48+;
  * an older git ignores the key; decision 101).
@@ -629,7 +629,7 @@ export function pinnedGitEnv(): NodeJS.ProcessEnv {
  * `--ignore-submodules=none` keeps a gitlink change listed: a
  * `diff.ignoreSubmodules` in the shared config, or a `submodule.<name>.ignore`
  * in a `.gitmodules` git reads from the checkout, its index or HEAD, drops it
- * otherwise, and only the flag outranks the file (decision 201). Every diff
+ * otherwise, and only the flag outranks the file (decision 203). Every diff
  * here compares two commits or two blobs, so it starts no git in a submodule.
  */
 const DIFF_SAFE_FLAGS = [

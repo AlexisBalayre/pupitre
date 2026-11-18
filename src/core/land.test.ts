@@ -963,7 +963,7 @@ describe('landSession', { timeout: 20_000 }, () => {
   // The land fetches, moves main and diffs what landed in the main checkout,
   // where `sub`'s repo is `.git/modules/sub`, under the `.gitmodules` the
   // branch carries and the shared config. Plain git there runs the module's
-  // drivers; the land runs none and still sees the bump land (decision 201).
+  // drivers; the land runs none and still sees the bump land (decision 203).
   it('lands a gitlink bump under submodule config the session planted, running nothing it names', async () => {
     const marker = join(tempDir('pup-land-fired-'), 'fired');
     const fire = `sh -c 'echo fired >> ${marker}; cat'`;

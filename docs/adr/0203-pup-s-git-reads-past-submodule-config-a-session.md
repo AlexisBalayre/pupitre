@@ -1,10 +1,10 @@
-# 0201. Pup's git reads past submodule config a session planted (2026-11-18)
+# 0203. Pup's git reads past submodule config a session planted (2026-11-18)
 
 - Status: accepted
 - Amends: [0073](0073-git-has-one-entry-point-rungit-in-git.md)
 - Amends: [0101](0101-git-in-a-session-worktree-runs-pinned-to.md)
 
-201. **Pup's git reads past submodule config a session planted (2026-11-18).**
+203. **Pup's git reads past submodule config a session planted (2026-11-18).**
     The gate, `pup land` and the diff client run git outside any sandbox, in the main checkout,
     over a branch a session wrote. A session can plant submodule config that such a run reads:
     - a `.gitmodules` on its branch or in its index, carrying `submodule.<name>.url`,

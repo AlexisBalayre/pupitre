@@ -361,7 +361,7 @@ describe('gitDiffAddedLines under a session-armed diff driver', () => {
 // its sandbox reads: a `.gitmodules` on its branch, a `.git/modules/<name>`
 // repo whose own config arms drivers no driver check reads, and recursion keys
 // in the shared config (decision 41's exposure). Plain git honours them; the
-// diff client reads past every one and runs nothing they name (decision 201).
+// diff client reads past every one and runs nothing they name (decision 203).
 describe('the diff client under submodule config a session planted', () => {
   let repo: string;
   let marker: string;

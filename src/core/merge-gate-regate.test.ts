@@ -788,7 +788,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     // The gate's own diffs run in the main checkout, where `sub`'s repo is
     // `.git/modules/sub`, and read the `.gitmodules` the branch carries and the
     // shared config. Plain git there drops the bump and runs the module's
-    // drivers; the gate lists the bump and runs none (decision 201).
+    // drivers; the gate lists the bump and runs none (decision 203).
     function plantSubmodule(gitmodules: string): void {
       const fire = `sh -c 'echo pwned >> ${marker}; cat'`;
       const sub = tempDir('pup-sub-');
@@ -853,7 +853,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     });
 
     // Git itself refuses a `!command` update from a `.gitmodules`, recursion
-    // or not, so the rebase stops on it and the gate rejects (decision 201).
+    // or not, so the rebase stops on it and the gate rejects (decision 203).
     it('rejects a .gitmodules update command at the rebase and runs nothing', async () => {
       plantSubmodule(`\tupdate = !touch ${marker}\n`);
 
