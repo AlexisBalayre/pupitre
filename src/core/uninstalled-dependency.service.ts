@@ -56,6 +56,8 @@ function listsMember(repoPath: string, root: string, manager: typeof NPM, dir: s
  * nearest one above when its workspace lists `dir`. A package below a
  * lockfile whose workspace does not list it installs on its own, as the
  * adapter runs it: undefined, as for a package with no lockfile anywhere.
+ * The walk ends where `dirname` stops changing, at `.` for a relative `dir`
+ * and at `/` for an absolute one.
  */
 export function owningLockfile(
   repoPath: string,
@@ -70,7 +72,7 @@ export function owningLockfile(
         ? { dir: rel, manager }
         : undefined;
     }
-    if (rel === '.') return undefined;
+    if (dirname(rel) === rel) return undefined;
   }
 }
 
@@ -85,6 +87,19 @@ function holdsPnpRuntime(root: string, dir: string): boolean {
 }
 
 /**
+ * Whether a manifest's dependency name is one an install writes under
+ * `node_modules`: `name` or `@scope/name`, with no segment empty, `.` or
+ * `..`, which would name `node_modules` itself or a directory above it.
+ */
+function isPackageName(name: string): boolean {
+  const segments = name.split('/');
+  return (
+    segments.length <= (name.startsWith('@') ? 2 : 1) &&
+    segments.every((segment) => segment !== '' && segment !== '.' && segment !== '..')
+  );
+}
+
+/**
  * Refuse a nested package whose stages would run with no environment: one
  * the trusted manifest gives a dependency that resolves from no
  * `node_modules` the gate links, the package's own or, for a workspace
@@ -93,7 +108,8 @@ function holdsPnpRuntime(root: string, dir: string): boolean {
  * runtime is never refused: it resolves from yarn's cache, and the install
  * this would name writes no `node_modules` to clear the refusal. The runtime
  * is looked for in `config`, never in the pinned tree, which the session
- * writes and could commit one to so as to skip the refusal at will.
+ * writes and could commit one to so as to skip the refusal at will. A
+ * dependency whose name is no package name resolves from nothing.
  * `linkEnvironment` would link nothing, and the stage would fail on a runner
  * it cannot find, which reads as the branch's fault. It throws, like a
  * timeout under load: the operator installs, with the manager and in the
@@ -128,7 +144,9 @@ export function refuseUninstalled(
   const root = lock?.dir ?? '.';
   if (
     root !== pkg.dir &&
-    declared.every((name) => existsSync(join(config, root, GATE_ENVIRONMENT_DIR, name)))
+    declared.every(
+      (name) => isPackageName(name) && existsSync(join(config, root, GATE_ENVIRONMENT_DIR, name)),
+    )
   ) {
     return;
   }

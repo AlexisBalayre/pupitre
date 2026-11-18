@@ -3,7 +3,7 @@ import { dirname, join } from 'node:path';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { NestedPackage } from '../adapters/types/adapter.types.js';
-import { refuseUninstalled } from './uninstalled-dependency.service.js';
+import { owningLockfile, refuseUninstalled } from './uninstalled-dependency.service.js';
 
 const MEMBER: NestedPackage = {
   dir: 'tools/review',
@@ -63,6 +63,51 @@ describe('refuseUninstalled', () => {
       write(checkout, '.pnp.cjs');
 
       expect(refuse).toThrow(/has no node_modules.*`pnpm --dir \. install`/);
+    });
+  });
+
+  describe('dependency names', () => {
+    // `..` and the empty string name the root's node_modules itself or a
+    // directory above it, which always exists.
+    it.each(['..', '', '.', '../node_modules', 'a/b', '@scope/a/b'])(
+      'refuses a member declaring %j, which names no package',
+      (name) => {
+        write(repo, 'package-lock.json', '{}\n');
+        write(repo, 'package.json', JSON.stringify({ workspaces: ['tools/*'] }));
+        mkdirSync(join(repo, 'node_modules', 'vitest'), { recursive: true });
+        mkdirSync(join(repo, 'node_modules', 'a', 'b'), { recursive: true });
+        mkdirSync(join(repo, 'node_modules', '@scope', 'a', 'b'), { recursive: true });
+        declare({ [name]: '^1.0.0' });
+
+        expect(refuse).toThrow(/has no node_modules.*`npm --prefix \. install`/);
+      },
+    );
+
+    it('runs a member whose scoped dependency the root has', () => {
+      write(repo, 'package-lock.json', '{}\n');
+      write(repo, 'package.json', JSON.stringify({ workspaces: ['tools/*'] }));
+      mkdirSync(join(repo, 'node_modules', '@scope', 'a'), { recursive: true });
+      declare({ '@scope/a': '^1.0.0' });
+
+      expect(refuse).not.toThrow();
+    });
+  });
+});
+
+describe('owningLockfile', () => {
+  // `dirname('/')` is `/`: a walk that stopped only at `.` never ended.
+  it('ends its walk on an absolute path with no lockfile', () => {
+    expect(owningLockfile(tempDir('pup-uninstalled-abs-'), '/no/lockfile/here')).toBeUndefined();
+  });
+
+  it("finds the workspace root's lockfile above a member", () => {
+    const repo = tempDir('pup-uninstalled-member-');
+    write(repo, 'package-lock.json', '{}\n');
+    write(repo, 'package.json', JSON.stringify({ workspaces: ['tools/*'] }));
+
+    expect(owningLockfile(repo, 'tools/review')).toEqual({
+      dir: '.',
+      manager: expect.objectContaining({ name: 'npm' }),
     });
   });
 });
