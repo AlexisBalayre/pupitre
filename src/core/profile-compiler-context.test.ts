@@ -867,7 +867,7 @@ describe('compileConductorProfile', () => {
     );
     expect(context).not.toContain('a CI fix round, a stall');
     expect(context).toContain('A launch refused at the top rung of its ladder');
-    // Decision 201: the one top-rung refusal the conductor lifts, and only for these two classes.
+    // Decision 202: the one top-rung refusal the conductor lifts, and only for these two classes.
     expect(context).toContain(
       'when `pup fix <session-id>` is refused at the top rung and an open thread names a ' +
         'security hole',

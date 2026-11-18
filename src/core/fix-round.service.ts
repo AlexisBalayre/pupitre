@@ -128,7 +128,7 @@ interface FixRoundRequest extends ProfileSource {
   /**
    * `--finding`: the conductor's word that an open thread is a security hole
    * or a wrong result, which runs a round refused at the top rung there again
-   * (decision 201). Refused on any other round, from any other caller and
+   * (decision 202). Refused on any other round, from any other caller and
    * beside an override.
    */
   finding?: FindingClass;
@@ -824,7 +824,7 @@ function reviewVerdict(
  * retries one that failed (decision 92). A top-rung refusal is
  * reworded for this command: the respawn the session's refusal names is for a
  * running window, and a merged session has none. The conductor's `--finding`
- * runs that refused round on the top rung again (decision 201), and nothing
+ * runs that refused round on the top rung again (decision 202), and nothing
  * else: it is refused on a round below the top, from the operator, and beside a
  * named model or effort, which would pick a route past the ladder. It is asked
  * only once a thread of the bot's is open, each of which is an important

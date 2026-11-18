@@ -381,7 +381,7 @@ function knowledgeSliceFor(
  * refused for the operator to decide, and an explicit model or effort the
  * operator names is that decision, recorded as an override; the conductor's
  * `--worker-model` is an override too, but never that decision. `staysAtTop`
- * is the conductor's `pup fix --finding` (decision 201): the window runs on the
+ * is the conductor's `pup fix --finding` (decision 202): the window runs on the
  * top rung again rather than being refused. A task re-tiered since its last window
  * starts its new ladder from the bottom. `failureOf` is asked only of a window
  * there is.
@@ -434,7 +434,7 @@ export function respawnRoute(
  * on a respawn. The conductor runs `pup fix` too, and an override it names
  * never lifts a top-rung refusal, as on its launches. `staysAtTop` runs a round
  * that would be refused there on the top rung again: the conductor's
- * `--finding` round (decision 201), which the caller has vetted.
+ * `--finding` round (decision 202), which the caller has vetted.
  */
 export function fixRoundRoute(
   db: Database,

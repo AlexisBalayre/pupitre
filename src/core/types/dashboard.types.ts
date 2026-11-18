@@ -219,7 +219,7 @@ export interface DashboardSession {
   /**
    * The CI fix round a running or awaiting-review session is in: who ran
    * `pup fix`, and the class of finding the conductor named to take it past the
-   * top rung, when it did (decision 201). Absent outside a round, and on a
+   * top rung, when it did (decision 202). Absent outside a round, and on a
    * round from before that decision, which recorded no starter.
    */
   fixRound?: { startedBy: 'operator' | 'conductor'; finding?: FindingClass };

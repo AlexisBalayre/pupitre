@@ -420,7 +420,7 @@ function dashboardRoute(
  * A session's route in one line, for `pup status`, `pup ui` and the web
  * dashboard alike: model and effort, the rung out of the ladder's, and why it
  * last climbed (decision 92), then who started the fix round the session is
- * in and the finding that took it past the top rung, if one did (decision 201).
+ * in and the finding that took it past the top rung, if one did (decision 202).
  */
 export function routeLabel(session: DashboardSession): string {
   const route = session.route;
@@ -1145,7 +1145,7 @@ function committedFixRound(
 
 /**
  * Who started the CI fix round a session is in, and the finding the conductor
- * named to take it past the top rung (decision 201): read off the newest of its
+ * named to take it past the top rung (decision 202): read off the newest of its
  * `fix_round`, `merge`, `landed` and `retired` events, when that is a
  * `fix_round`. The store is session-writable, so only a starter and a class
  * pup writes are read back; a round from before that decision recorded none.

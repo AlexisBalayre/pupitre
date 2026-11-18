@@ -3922,7 +3922,7 @@ describe('CLI commands', () => {
     });
   });
 
-  // Decision 201: only the conductor, from its own window, names a finding's
+  // Decision 202: only the conductor, from its own window, names a finding's
   // class to run a fix round past the top rung of its ladder.
   describe('fix --finding', () => {
     const NOT_CONDUCTOR =

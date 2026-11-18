@@ -1779,7 +1779,7 @@ function conductorModelsSection(workerModel: string | undefined, commonDir: stri
       : 'Launch with plain `pup launch <task>`, naming no model or effort: the ladder is ' +
         'what decides them. ') +
     "A launch refused at the top rung of its ladder is the operator's to decide: report it, " +
-    'never retry it. A CI fix round is the one exception (decision 201): when ' +
+    'never retry it. A CI fix round is the one exception (decision 202): when ' +
     '`pup fix <session-id>` is refused at the top rung and an open thread names a security ' +
     'hole (a sandbox or scope escape, a gate evasion, a leaked secret) or a wrong result (code ' +
     'that computes, returns or writes the wrong thing), run ' +

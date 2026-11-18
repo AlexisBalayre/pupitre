@@ -158,7 +158,7 @@ export type ClimbReason = 'gate-rejection' | 'repeat-fix-round' | 'turn-death' |
 /**
  * The classes `pup fix --finding` takes, the conductor's word that an open
  * thread is a security hole or a wrong result: the only findings that run a
- * round past the top rung of its ladder (decision 201).
+ * round past the top rung of its ladder (decision 202).
  */
 export const FINDING_CLASSES: readonly FindingClass[] = ['security', 'wrong-result'];
 

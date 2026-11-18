@@ -23,7 +23,7 @@ export interface RouteOverride {
 
 /**
  * The class of finding the conductor names on `pup fix --finding`, the only
- * kind that takes a round past the top rung of a session's ladder (decision 201).
+ * kind that takes a round past the top rung of a session's ladder (decision 202).
  */
 export type FindingClass = 'security' | 'wrong-result';
 

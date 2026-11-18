@@ -217,7 +217,7 @@ describe('startConductor', () => {
     const [, prompt] = vi.mocked(kickoff).mock.calls[0] ?? [];
     expect(prompt).toContain('`pup ci wait <session-id>`');
     expect(prompt).toContain('run `pup fix <session-id>`');
-    // Decision 201: a top-rung refusal is reported unless the Models rule lets it through.
+    // Decision 202: a top-rung refusal is reported unless the Models rule lets it through.
     expect(prompt).toContain(
       'A round refused at the top rung of its ladder is reported, unless the Models section ' +
         'lets `--finding` run it.',

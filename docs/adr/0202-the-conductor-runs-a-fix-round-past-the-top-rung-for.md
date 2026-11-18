@@ -1,9 +1,9 @@
-# 0201. The conductor runs a fix round past the top rung for a security or wrong-result finding (2026-11-18)
+# 0202. The conductor runs a fix round past the top rung for a security or wrong-result finding (2026-11-18)
 
 - Status: accepted
 - Amends: [0092](0092-pup-routes-every-window-s-model-and-effort.md)
 
-201. **The conductor runs a fix round past the top rung for a security or wrong-result finding
+202. **The conductor runs a fix round past the top rung for a security or wrong-result finding
     (2026-11-18).**
     Decision 92 refuses a repeat CI fix round (decision 90) once the session's worker is on the
     top rung of its ladder, and only the operator's explicit `--model`/`--effort` gets past it. On

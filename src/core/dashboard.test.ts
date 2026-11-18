@@ -1159,7 +1159,7 @@ describe('buildDashboardSnapshot', () => {
         expect(sessions.map(routeLabel)).toEqual(['', '']);
       });
 
-      // Decision 201: a round past the top rung is the conductor's call, shown as such.
+      // Decision 202: a round past the top rung is the conductor's call, shown as such.
       const ROUND = { prUrl: 'https://github.com/o/r/pull/1', head: 'abc', threads: ['PRRT_1'] };
 
       it("names a running round's starter and the class that took it past the top rung", () => {

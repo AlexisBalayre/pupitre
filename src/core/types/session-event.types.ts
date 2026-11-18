@@ -93,8 +93,8 @@ export interface EventPayloads {
    * comment the kickoff read on it, so the gate never buries or resolves a
    * reply posted since; absent when no thread's comments carried one.
    * `startedBy` is who ran `pup fix`, absent on a round from before decision
-   * 201. `finding` is the class the conductor named to take the round past the
-   * top rung of its ladder, set on such a round alone (decision 201).
+   * 202. `finding` is the class the conductor named to take the round past the
+   * top rung of its ladder, set on such a round alone (decision 202).
    */
   fix_round: {
     prUrl: string;

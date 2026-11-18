@@ -2945,7 +2945,7 @@ export function buildProgram(): Command {
           );
         }
         // It takes a round past the top rung, which only the operator decided
-        // until decision 201: the marker names the conductor, and the process
+        // until decision 202: the marker names the conductor, and the process
         // tree, asked past the conductor's own window, must find no session's
         // above the caller (decision 188).
         const conductorWindow = windowLabel({ conductorOf: projectId(repoPath) });
