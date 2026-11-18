@@ -1,0 +1,142 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-18T16:34:12.107Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "44347772244",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/44347772244",
+  "actor": "AlexisBalayre",
+  "commit_sha": "96ba1e515ec578a3ae67cb7bc2707db69f9448bc",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 389,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "guards",
+    "simplicity"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "guards",
+    "simplicity"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/land.service.ts",
+      "line": "240-247",
+      "description": "A session plants `rebase-merge/` in its admin dir with `head-name` = `refs/heads/main` and `orig-head` = a commit it wrote. `pup land` then refuses and tells the operator to \"finish or abort it in that worktree\". If the operator runs `git rebase --abort` from their shell, it sets `refs/heads/main` to `orig-head`, the move the ADR 0204 probe records. The operator's git runs outside the sandbox, which ADR 0191 says refuses this write for the worker. So `main` ends up on unmeasured session content, with no gate in between.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "2273-2277",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The fresh-base refusal tells the reader to run `git rebase --abort` (and `git merge --abort`, `git cherry-pick --abort`) in the worktree. `pup merge` and `pup review` also print that detail to the conductor or operator, who run git unsandboxed. An abort over a planted `rebase-merge/` there moves the ref `head-name` names, `main` included, to the planted `orig-head`. This is the hazard 5718a94 fixed in the land message.",
+      "body": "**The fresh-base refusal still offers abort to readers who run git unsandboxed.**\n\n```ts\ndetail:\n  `${sanitizeReason(inProgress)} is in this worktree's git dir: a rebase, merge, ` +\n  'cherry-pick or revert is in progress, and the gate runs no git through it. Finish ' +\n  'it, or abort it (`git rebase --abort`, `git merge --abort`, `git cherry-pick ' +\n  '--abort`), or delete the file if no git operation is in progress, then commit.',\n```\n<https://github.com/AlexisBalayre/pupitre/blob/96ba1e515ec578a3ae67cb7bc2707db69f9448bc/src/core/merge-gate.service.ts#L2268-L2281>\n\nADR 204 keeps abort in this message because \"the gate's message goes to the worker\" ([ADR 204 L32-L33](https://github.com/AlexisBalayre/pupitre/blob/96ba1e515ec578a3ae67cb7bc2707db69f9448bc/docs/adr/0204-fresh-base-and-pup-land-refuse-a-worktree-mid-rebase-or-merge.md#L32-L33)). The worker isn't the only reader, though:\n- **`pup merge` prints it.** `failed()` → `rejectOrBlock` steers the report to the worker. `pup merge` then also prints the same report to whoever ran it, via `printGateReport(outcome.report)` (`src/cli/index.ts:2671` → `printGateStage`). That is the operator, or the conductor with `--pr`.\n- **`pup review` prints it.** It shows the stored copy (`src/cli/index.ts:2537-2539`).\n- **A blocked session hands it to the human.** At the reject cap, or after a failed steer, the CLI prints \"Gate failed; session parked as blocked — needs a human. Address it…\" (`src/cli/index.ts:2746-2749`). The detail is an imperative with no addressee, so the human is the one told to abort.\n\nThose readers' git runs outside the worker sandbox (ADR 191). ADR 204's own probe shows that `git rebase --abort` over a planted `rebase-merge/` (`head-name` = `refs/heads/main`) moves `main` to the planted `orig-head`. 5718a94 removed exactly this advice from the land message.\n\n**Trigger:** a worker plants `rebase-merge/` and runs `pup session done`. The conductor or operator runs `pup merge`, sees `fresh-base FAIL … abort it (git rebase --abort …)`, and follows it in the worktree.\n\n**Fix:** keep finish or abort for the session itself, and tell anyone else to delete only. Then correct ADR 204 L32-L33 to match.",
+      "suggestion": "        detail:\n          `${sanitizeReason(inProgress)} is in this worktree's git dir: a rebase, merge, ` +\n          'cherry-pick or revert is in progress, and the gate runs no git through it. From ' +\n          'this session only, finish or abort it, or delete the file if none is in progress, ' +\n          'then commit. Outside the session, delete it without running git there: an abort ' +\n          \"or continue acts on its head-name, orig-head and todo with the runner's rights.\","
+    },
+    {
+      "file": "src/core/merge-gate-in-progress.test.ts",
+      "line": "51-86",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Each case seeds a session with no open PR, so fresh-base only takes the rebase branch. The open-PR merge path, which the code comment and ADR 204 say the check covers, is never exercised. Moving the check into the rebase-only `else` would still pass all five cases. One `it.each` case seeded as an open PR (as merge-gate-open-pr.test.ts does) would pin where the check sits.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "2166-2172",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The JSDoc on `IN_PROGRESS_GIT_STATE` calls it the state git keeps during a cherry-pick or revert, but `CHERRY_PICK_HEAD` and `REVERT_HEAD` aren't in the list, and ADR 204 leaves them out on purpose. A maintainer could read the omission as a bug, or assume those two are covered.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate-in-progress.test.ts",
+      "line": "53-56",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The test comment says the gate's rebase \"refuses over the dir before the abort runs\", which is the pre-fix behaviour. The check now fires before any git runs, as the test title says, and the comment covers only the dir entries, not the planted `MERGE_HEAD`/`REBASE_HEAD` files.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate-in-progress.test.ts",
+      "line": "51-86",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The five state names are copied by hand into both this test's table and land-refusals.test.ts. The file-or-dir choice is also encoded twice. If someone adds a sixth name to `IN_PROGRESS_GIT_STATE`, it stays untested until both tables are edited. Iterating the exported const would remove both copies.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.5946319499999997,
+  "duration_ms": 250665,
+  "num_turns": 14,
+  "tokens": {
+    "input": 12,
+    "output": 12343,
+    "cache_read": 282013,
+    "cache_creation": 51659,
+    "total": 346027
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 102,
+      "output": 41572,
+      "cache_read": 1818896,
+      "cache_creation": 199840,
+      "cost_usd": 2.3498042
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 32,
+      "output": 6326,
+      "cache_read": 174613,
+      "cache_creation": 65329,
+      "cost_usd": 0.2441078
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 212,
+      "cache_read": 0,
+      "cache_creation": 4910,
+      "cost_usd": 0.00071995
+    }
+  ],
+  "permission_denials": []
+}
