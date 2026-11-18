@@ -467,10 +467,14 @@ describe('landSession', { timeout: 20_000 }, () => {
       else writeFileSync(planted, `${pinned}\n`);
       const mainBefore = mainSha();
 
-      await expect(land()).rejects.toThrow(
-        `${planted} is in session ${SESSION_ID}'s worktree git dir`,
-      );
+      const failure = await land().catch((error: unknown) => error);
 
+      const message = String(failure);
+      expect(message).toContain(`${planted} is in session ${SESSION_ID}'s worktree git dir`);
+      // The operator's git is unsandboxed: an abort there would follow the
+      // session's head-name and orig-head, so only deletion is offered.
+      expect(message).toContain('Delete it without running git in that worktree');
+      expect(message).not.toMatch(/finish|abort it/i);
       expectNothingChanged(mainBefore);
       expect(hasTrackingRef()).toBe(false);
     },

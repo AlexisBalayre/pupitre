@@ -234,14 +234,17 @@ export async function landUnderLock(
   // Before anything moves and before the teardown's git in the worktree: a
   // session left in, or planting, a rebase or merge is not torn down under
   // it (decision 204). A worktree already gone has no admin dir to hold any.
+  // The operator's git runs unsandboxed, so the message offers only deletion.
   const inProgress = inProgressGitState(
     worktreeGitEnv(req.repoPath, session.worktree_path).GIT_DIR,
   );
   if (inProgress) {
     throw new Error(
       `${sanitizeReason(inProgress)} is in session ${id}'s worktree git dir: a rebase, merge, ` +
-        'cherry-pick or revert is in progress there, or the session planted its state. Inspect ' +
-        'it, finish or abort it in that worktree or delete it, then re-run `pup land`. ' +
+        'cherry-pick or revert was left in progress there, or the session planted its state. ' +
+        'Delete it without running git in that worktree, then re-run `pup land`: an abort or ' +
+        "continue there acts on the session's head-name, orig-head and todo with your rights " +
+        'and can move any branch, main included. ' +
         LAND_UNTOUCHED,
     );
   }
