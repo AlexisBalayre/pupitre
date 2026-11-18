@@ -1,6 +1,7 @@
 import type { SessionState } from '../db.client.js';
 import type { OverlapPair } from './overlap.types.js';
 import type { SessionActivity } from './session-activity.types.js';
+import type { FindingClass } from './session-lifecycle.types.js';
 
 /**
  * Every string in a snapshot has already been through `sanitizeReason`: the
@@ -215,6 +216,13 @@ export interface DashboardSession {
   gateRefused?: boolean;
   /** Absent on a session launched before routing, or a row whose route does not read back. */
   route?: DashboardRoute;
+  /**
+   * The CI fix round a running or awaiting-review session is in: who ran
+   * `pup fix`, and the class of finding the conductor named to take it past the
+   * top rung, when it did (decision 201). Absent outside a round, and on a
+   * round from before that decision, which recorded no starter.
+   */
+  fixRound?: { startedBy: 'operator' | 'conductor'; finding?: FindingClass };
   /** The newest few stored events, oldest of them first — the order they happened in. */
   recentEvents: DashboardEvent[];
   /**

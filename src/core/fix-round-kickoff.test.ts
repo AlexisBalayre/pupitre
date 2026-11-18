@@ -70,6 +70,7 @@ import {
   transitionSession,
 } from './session.repository.js';
 import { markSessionDone } from './session-lifecycle.service.js';
+import type { FindingClass } from './types/session-lifecycle.types.js';
 
 // The file's temp dirs, its children's included, go to a TMPDIR of its own,
 // which must hold no pup-* entry once every test has removed its own
@@ -359,12 +360,17 @@ describe('startFixRound', { timeout: 90_000 }, () => {
   const _land = () =>
     landSession(db, { repoPath: repo, sessionId: SESSION_ID, adapters: [passingAdapter] });
 
-  const fix = (override = {}, overrideVia: 'operator' | 'conductor' = 'operator') =>
+  const fix = (
+    override = {},
+    overrideVia: 'operator' | 'conductor' = 'operator',
+    finding?: FindingClass,
+  ) =>
     startFixRound(db, {
       repoPath: repo,
       sessionId: SESSION_ID,
       override,
       overrideVia,
+      ...(finding === undefined ? {} : { finding }),
       pathsBase: stateBase,
       base: DEFAULT_BASE_PROFILE,
       windowEnv: { vars: {}, configDir: claudeUserDir },
@@ -404,11 +410,15 @@ describe('startFixRound', { timeout: 90_000 }, () => {
   };
 
   /** Run a fix round expected to refuse, and assert it wrote and launched nothing. */
-  async function expectRefusedUnwritten(refusal: RegExp, state = 'merged'): Promise<void> {
+  async function expectRefusedUnwritten(
+    refusal: RegExp,
+    state = 'merged',
+    call: () => Promise<unknown> = fix,
+  ): Promise<void> {
     const events = listEvents(db, SESSION_ID).length;
     const head = sh(repo, 'git', 'rev-parse', BRANCH);
 
-    await expect(fix()).rejects.toThrow(refusal);
+    await expect(call()).rejects.toThrow(refusal);
 
     expect(listEvents(db, SESSION_ID)).toHaveLength(events);
     expect(getSession(db, SESSION_ID)?.state).toBe(state);
@@ -473,7 +483,13 @@ describe('startFixRound', { timeout: 90_000 }, () => {
     expect(sh(worktree, 'git', 'rev-parse', 'HEAD')).toBe(pinned);
     expect(sh(worktree, 'git', 'symbolic-ref', 'HEAD')).toBe(`refs/heads/${BRANCH}`);
     expect(payloads('fix_round')).toEqual([
-      { prUrl: PR_URL, head: pinned, threads: ['PRRT_open1', 'PRRT_open2'], rejectBase: 0 },
+      {
+        prUrl: PR_URL,
+        head: pinned,
+        threads: ['PRRT_open1', 'PRRT_open2'],
+        rejectBase: 0,
+        startedBy: 'operator',
+      },
     ]);
     expect(payloads('gate_result').at(-1)).toEqual({
       from: 'merged',
@@ -533,7 +549,7 @@ describe('startFixRound', { timeout: 90_000 }, () => {
 
     expect(await fix()).toEqual({ prUrl: PR_URL, head: pinned, threads: 1 });
     expect(payloads('fix_round')).toEqual([
-      { prUrl: PR_URL, head: pinned, threads: ['PRRT_left'], rejectBase: 0 },
+      { prUrl: PR_URL, head: pinned, threads: ['PRRT_left'], rejectBase: 0, startedBy: 'operator' },
     ]);
     expect(prompt()).toContain('### Thread 1 of 1: PRRT_left, at src/feature.ts:1');
     expect(prompt()).not.toContain('PRRT_moved');
@@ -592,6 +608,7 @@ describe('startFixRound', { timeout: 90_000 }, () => {
         threads: ['PRRT_reopened'],
         newestComments: { PRRT_reopened: '6865023174' },
         rejectBase: 0,
+        startedBy: 'operator',
       },
     ]);
     expect(prompt()).toContain(
@@ -945,6 +962,8 @@ describe('startFixRound', { timeout: 90_000 }, () => {
       rung: 2,
       rung_reason: 'repeat-fix-round',
     });
+    expect(payloads('fix_round').at(-1)).toMatchObject({ startedBy: 'operator' });
+    expect(payloads('fix_round').at(-1)).not.toHaveProperty('finding');
   });
 
   it('refuses a repeat on the top rung unless the operator names a route', async () => {
@@ -966,6 +985,64 @@ describe('startFixRound', { timeout: 90_000 }, () => {
       model: 'claude-opus-5-5',
       effort: 'max',
     });
+  });
+
+  // Decision 201: a security hole or a wrong result does not wait on the console.
+  it("runs a top-rung repeat there again on the conductor's --finding, recording the class", async () => {
+    const top = LADDERS.standard.length - 1;
+    seedPrMerge();
+    recordSessionRoute(db, SESSION_ID, routeAt(top));
+    seedFinishedRound();
+    reviewOnGitHub({ threads: OPEN_THREAD });
+
+    await fix({}, 'conductor', 'security');
+
+    expect(vi.mocked(launchSession).mock.calls[0]?.[0].route).toMatchObject({
+      model: LADDERS.standard[top]?.model,
+      effort: LADDERS.standard[top]?.effort,
+    });
+    expect(getSession(db, SESSION_ID)).toMatchObject({ state: 'running', rung: top });
+    expect(payloads('fix_round').at(-1)).toMatchObject({
+      startedBy: 'conductor',
+      finding: 'security',
+    });
+  });
+
+  it('refuses a top-rung repeat to the conductor without --finding, and --finding to anyone else', async () => {
+    seedPrMerge();
+    recordSessionRoute(db, SESSION_ID, routeAt(LADDERS.standard.length - 1));
+    seedFinishedRound();
+    reviewOnGitHub({ threads: OPEN_THREAD });
+
+    await expectRefusedUnwritten(
+      /top rung .*`pup fix s1 --model <model> --effort <effort>`, or fix the PR by hand\. No fix round was started\.$/,
+      'merged',
+      () => fix({}, 'conductor'),
+    );
+    await expectRefusedUnwritten(
+      /`--finding` is the conductor's; .*No fix round was started\.$/,
+      'merged',
+      () => fix({}, 'operator', 'wrong-result'),
+    );
+    await expectRefusedUnwritten(
+      /`--finding` keeps the round on the top rung .* takes no `--model` or `--effort`/,
+      'merged',
+      () => fix({ model: 'claude-opus-5-5' }, 'conductor', 'security'),
+    );
+  });
+
+  // So a round recording a class is always one past the top, which a retro counts.
+  it('refuses --finding on a round that climbs, which the top rung does not refuse', async () => {
+    seedPrMerge();
+    recordSessionRoute(db, SESSION_ID, routeAt(1));
+    seedFinishedRound();
+    reviewOnGitHub({ threads: OPEN_THREAD });
+
+    await expectRefusedUnwritten(
+      /not refused at the top rung .*run `pup fix s1` without it\. No fix round was started\.$/,
+      'merged',
+      () => fix({}, 'conductor', 'security'),
+    );
   });
 
   // The stored count stays the lifetime one; the cap and the outcome count the round's.

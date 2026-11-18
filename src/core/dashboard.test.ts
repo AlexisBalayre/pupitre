@@ -1158,6 +1158,60 @@ describe('buildDashboardSnapshot', () => {
         expect(sessions.map((session) => session.route)).toEqual([undefined, undefined]);
         expect(sessions.map(routeLabel)).toEqual(['', '']);
       });
+
+      // Decision 201: a round past the top rung is the conductor's call, shown as such.
+      const ROUND = { prUrl: 'https://github.com/o/r/pull/1', head: 'abc', threads: ['PRRT_1'] };
+
+      it("names a running round's starter and the class that took it past the top rung", () => {
+        seedSession(db, repo, 's1');
+        recordSessionRoute(db, 's1', CRITICAL_TOP);
+        transitionSession(db, 's1', 'running');
+        appendEvent(db, 's1', 'fix_round', {
+          ...ROUND,
+          rejectBase: 0,
+          startedBy: 'conductor',
+          finding: 'security',
+        });
+
+        const [session] = buildDashboardSnapshot(db, repo, NOW).sessions;
+
+        expect(session?.fixRound).toEqual({ startedBy: 'conductor', finding: 'security' });
+        expect(session && routeLabel(session)).toBe(
+          'claude-opus-5-5 xhigh, rung 2/2; fix round by the conductor, past the top rung ' +
+            'for a security finding',
+        );
+      });
+
+      it('names the starter alone on a round within the ladder, and only while it is open', () => {
+        seedSession(db, repo, 's-open');
+        transitionSession(db, 's-open', 'running');
+        appendEvent(db, 's-open', 'fix_round', { ...ROUND, rejectBase: 0, startedBy: 'operator' });
+        seedSession(db, repo, 's-gated');
+        transitionSession(db, 's-gated', 'running');
+        appendEvent(db, 's-gated', 'fix_round', { ...ROUND, rejectBase: 0, startedBy: 'operator' });
+        appendEvent(db, 's-gated', 'merge', { branch: 'pup/s-gated', target: 'main', files: [] });
+        seedSession(db, repo, 's-before');
+        transitionSession(db, 's-before', 'running');
+        appendEvent(db, 's-before', 'fix_round', { ...ROUND, rejectBase: 0 });
+        seedSession(db, repo, 's-forged');
+        transitionSession(db, 's-forged', 'running');
+        // The store is session-writable: a class pup never records is not shown.
+        db.prepare("INSERT INTO events (session_id, type, payload) VALUES (?, 'fix_round', ?)").run(
+          's-forged',
+          JSON.stringify({ startedBy: 'conductor', finding: '\u001b[31mevil' }),
+        );
+
+        const rounds = Object.fromEntries(
+          buildDashboardSnapshot(db, repo, NOW).sessions.map((s) => [s.id, s.fixRound]),
+        );
+
+        expect(rounds).toEqual({
+          's-open': { startedBy: 'operator' },
+          's-gated': undefined,
+          's-before': undefined,
+          's-forged': { startedBy: 'conductor' },
+        });
+      });
     });
 
     it('flags a blocked session as needing a human', () => {

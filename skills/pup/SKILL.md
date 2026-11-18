@@ -67,8 +67,11 @@ on the rung the session's last window ran on; every later round on the PR climbs
 `pup ui` and the dashboard show each session's model, effort and rung. A failure on the top rung
 refuses the next launch or respawn and lists the task under Needs you as `top-rung`: re-plan it,
 or pass `--model` and `--effort` to `pup launch`, `pup respawn` or `pup kill --respawn`. An
-explicit choice is recorded as an override and kept by later respawns. pup never picks a Fable
-model or `--effort max`.
+explicit choice is recorded as an override and kept by later respawns. A repeat fix round
+refused on the top rung is the operator's too, but for one case (decision 201): the conductor
+may run `pup fix <task> --finding security|wrong-result` when an open thread is a security hole
+or a wrong result. That round stays on the top rung, and `pup status` shows who started it and
+the class. pup never picks a Fable model or `--effort max`.
 
 ## Tiers you must respect
 

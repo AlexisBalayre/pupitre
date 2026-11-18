@@ -1,5 +1,6 @@
 import type { SessionState } from '../db.client.js';
 import type { GateReport } from './merge-gate.types.js';
+import type { FindingClass } from './session-lifecycle.types.js';
 
 /**
  * What a state transition adds to the `gate_result` it logs: the gate run that
@@ -91,6 +92,9 @@ export interface EventPayloads {
    * maps each thread to the `fullDatabaseId`, a decimal string, of the newest
    * comment the kickoff read on it, so the gate never buries or resolves a
    * reply posted since; absent when no thread's comments carried one.
+   * `startedBy` is who ran `pup fix`, absent on a round from before decision
+   * 201. `finding` is the class the conductor named to take the round past the
+   * top rung of its ladder, set on such a round alone (decision 201).
    */
   fix_round: {
     prUrl: string;
@@ -98,6 +102,8 @@ export interface EventPayloads {
     threads: string[];
     rejectBase: number;
     newestComments?: Record<string, string>;
+    startedBy?: 'operator' | 'conductor';
+    finding?: FindingClass;
   };
   /**
    * `pup plan edit --rescope` widened the session's task (decision 115): the

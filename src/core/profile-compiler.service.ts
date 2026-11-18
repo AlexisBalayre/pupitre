@@ -1779,7 +1779,14 @@ function conductorModelsSection(workerModel: string | undefined, commonDir: stri
       : 'Launch with plain `pup launch <task>`, naming no model or effort: the ladder is ' +
         'what decides them. ') +
     "A launch refused at the top rung of its ladder is the operator's to decide: report it, " +
-    'never retry it.\n' +
+    'never retry it. A CI fix round is the one exception (decision 201): when ' +
+    '`pup fix <session-id>` is refused at the top rung and an open thread names a security ' +
+    'hole (a sandbox or scope escape, a gate evasion, a leaked secret) or a wrong result (code ' +
+    'that computes, returns or writes the wrong thing), run ' +
+    '`pup fix <session-id> --finding security` or `--finding wrong-result`, the class of that ' +
+    'thread. The round stays on the top rung, and pup records the class and that you started ' +
+    'it. Any other refused round (style, naming, a test gap, a design question) is still the ' +
+    "operator's: report it.\n" +
     '- Security review: before `pup merge <session-id> --pr` on a session whose diff touches ' +
     'the gate, git, tmux or the store (any critical area above), run ' +
     `\`${resolve}\`, where \`<target>\` is the branch the main checkout is on. It refuses ` +
