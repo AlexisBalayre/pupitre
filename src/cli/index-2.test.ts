@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, linkSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import Database from 'better-sqlite3';
@@ -896,6 +896,30 @@ describe('CLI commands', () => {
       expect(errors.join('\n')).toContain(projectPaths(repo).briefFile);
       expect(errors.join('\n')).toContain('pup brief edit');
       expect(logs).toEqual([]);
+      expect(process.exitCode).toBe(1);
+    });
+
+    // `ensureBrief` refuses a link (decision 194); `edit` says so in one line
+    // naming the file, as `show` does, not with a stack trace (decision 57).
+    it.each([
+      ['a symlink', symlinkSync],
+      ['a hard link', linkSync],
+    ])('refuses to edit a brief that is %s, in one line', (_kind, link) => {
+      const repo = initRepo();
+      useCwd(repo);
+      const target = join(tempDir('pup-elsewhere-'), 'other');
+      writeFileSync(target, 'someone else\n');
+      mkdirSync(projectPaths(repo).root, { recursive: true });
+      link(target, projectPaths(repo).briefFile);
+      vi.stubEnv('EDITOR', 'true');
+
+      expect(() => buildProgram().parse(['brief', 'edit'], { from: 'user' })).not.toThrow();
+
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toContain(projectPaths(repo).briefFile);
+      expect(errors[0]).toContain('not a plain file');
+      expect(logs).toEqual([]);
+      expect(readFileSync(target, 'utf8')).toBe('someone else\n');
       expect(process.exitCode).toBe(1);
     });
 

@@ -70,6 +70,8 @@ describe('the project brief on disk', () => {
     symlinkSync(target, briefPath(REPO));
 
     expect(() => readBrief(REPO)).toThrow(InvalidProfileError);
+    // The fix it names must be one that works: `pup brief edit` refuses a link too.
+    expect(() => readBrief(REPO)).toThrow(/Remove it, then run `pup brief edit`/);
     expect(() => ensureBrief(REPO)).toThrow(/not a plain file pup can edit/);
   });
 

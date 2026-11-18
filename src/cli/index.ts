@@ -1742,7 +1742,16 @@ export function buildProgram(): Command {
       if (verb !== 'edit') {
         return refuse(`Unknown brief action \`${action}\` (expected show|edit).`);
       }
-      const { path, created } = ensureBrief(repoPath);
+      let path: string;
+      let created: boolean;
+      try {
+        ({ path, created } = ensureBrief(repoPath));
+      } catch (error) {
+        // A brief that is a link or not a regular file: one line naming the
+        // file, as `show` refuses it, not a stack trace (decisions 57, 194).
+        if (!(error instanceof InvalidProfileError)) throw error;
+        return refuse(error.message);
+      }
       const editor = process.env.EDITOR || process.env.VISUAL || 'vi';
       const edit = spawnSync(editor, [path], { stdio: 'inherit' });
       if (edit.error || edit.status !== 0) {
