@@ -64,6 +64,17 @@ describe('refuseUninstalled', () => {
 
       expect(refuse).toThrow(/has no node_modules.*`pnpm --dir \. install`/);
     });
+
+    // A repo that gitignores `.pnp.*` installs a runtime the pinned tree never
+    // holds; asking for that install again would refuse on every merge.
+    it("names the Plug'n'Play install the gate cannot link, not another install", () => {
+      yarnWorkspace();
+      write(repo, '.pnp.cjs');
+
+      expect(refuse).toThrow(
+        /tools\/review resolves through the Yarn Plug'n'Play install in \., whose \.pnp\.cjs the pinned tree does not commit.*nothing was merged\. Another `yarn install` does not clear this/,
+      );
+    });
   });
 
   describe('dependency names', () => {

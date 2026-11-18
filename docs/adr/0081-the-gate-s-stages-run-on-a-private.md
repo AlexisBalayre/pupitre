@@ -74,3 +74,24 @@
     unremovable leaves the outcome standing. Two existing tests change because they encoded the
     old contract: the capability context's `measurePath` and the nested-package `pwd` now name
     the gate's checkout, not the worktree.
+    *Amendment (2026-11-18, follow-up to #330): a Plug'n'Play runtime is trusted only from the
+    main checkout, and one the gate cannot link is named as such.* #330 refuses, before any
+    stage, a nested package whose dependencies no linked `node_modules` holds, and skipped the
+    refusal for a package whose owning lockfile sat beside a `.pnp.cjs` or `.pnp.js` in the
+    pinned tree, which the session writes: a branch committing one skipped it at will (low,
+    security review). The runtime is now looked for in the config checkout, the main checkout
+    or a remeasure's stand-in for it (decision 198), and only beside a `yarn.lock`. When the
+    pinned tree holds it too, as a zero-install repo commits it, the stages run as before. When
+    it does not, as in a Yarn Berry repo that gitignores `.pnp.*`, the refusal used to name
+    `yarn --cwd <root> install`, an install the operator had already run, which writes no
+    `node_modules` and so refused on every merge (CI review of b1aaa770); it now names the
+    cause, a Plug'n'Play install the gate cannot link, and the two ways out: commit the
+    Plug'n'Play files, or set `nodeLinker: node-modules`. The walk up to the owning lockfile
+    ends where `dirname` stops changing, so an absolute directory ends at `/` instead of
+    looping, and a manifest dependency named `''`, `.`, `..` or with more segments than
+    `@scope/name`, which would name `node_modules` itself or a directory above it, resolves
+    from nothing. *Tests.* `uninstalled-dependency.test.ts` holds a runtime in both checkouts
+    passing, one only the branch holds and one beside a pnpm lockfile refused with the
+    install, one only the main checkout holds refused with the Plug'n'Play cause, each bad
+    name refused, a scoped name passing, and the walk ending on an absolute path; the gate's
+    checkout tests refuse a branch that commits the runtime.

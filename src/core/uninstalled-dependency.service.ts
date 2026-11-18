@@ -105,10 +105,13 @@ function isPackageName(name: string): boolean {
  * `node_modules` the gate links, the package's own or, for a workspace
  * member, its workspace root's, and the pinned tree commits none either.
  * A package whose owning lockfile is yarn's and sits beside a Plug'n'Play
- * runtime is never refused: it resolves from yarn's cache, and the install
- * this would name writes no `node_modules` to clear the refusal. The runtime
- * is looked for in `config`, never in the pinned tree, which the session
- * writes and could commit one to so as to skip the refusal at will. A
+ * runtime is not refused for its `node_modules`: it resolves from yarn's
+ * cache, and the install this would name writes none to clear the refusal.
+ * The runtime is looked for in `config`, never in the pinned tree alone,
+ * which the session writes and could commit one to so as to skip the
+ * refusal at will. When the pinned tree lacks it, as a repo that gitignores
+ * `.pnp.*` has, the refusal names a Plug'n'Play install the gate cannot
+ * link, not an install the operator already ran. A
  * dependency whose name is no package name resolves from nothing.
  * `linkEnvironment` would link nothing, and the stage would fail on a runner
  * it cannot find, which reads as the branch's fault. It throws, like a
@@ -135,9 +138,31 @@ export function refuseUninstalled(
   // Nothing to install: a manager writes the lockfile and no `node_modules`.
   if (declared.length === 0) return;
   const lock = owningLockfile(config, pkg.dir);
+  const stages = `${pkg.commands.map((c) => c.stage).join(' and ')} stages`;
+  // A remeasure's stand-in has only what was linked into it from the main
+  // checkout, and what lands there is a land, not a merge.
+  const [where, outcome, retry] =
+    config === repoPath
+      ? ['in the main checkout', 'nothing was merged', 'merge again']
+      : [
+          'in the main checkout to link into the checkout of the target',
+          'nothing was landed',
+          'remeasure again',
+        ];
   // Yarn's Plug'n'Play runtime resolves from its cache and no install writes
-  // a `node_modules`.
-  if (lock?.manager.name === 'yarn' && holdsPnpRuntime(config, lock.dir)) return;
+  // a `node_modules`: the stages resolve through the one the pinned tree holds.
+  if (lock?.manager.name === 'yarn' && holdsPnpRuntime(config, lock.dir)) {
+    if (holdsPnpRuntime(checkout, lock.dir)) return;
+    throw new Error(
+      `${quotePath(pkg.dir)} resolves through the Yarn Plug'n'Play install in ` +
+        `${quotePath(lock.dir)}, whose .pnp.cjs the pinned tree does not commit; the gate ` +
+        `links only a ${GATE_ENVIRONMENT_DIR}, so its ${stages} cannot find their tools; ` +
+        `${outcome}. Another \`yarn install\` does not clear this: commit the Plug'n'Play ` +
+        `files (zero-installs), or set \`nodeLinker: node-modules\` in its .yarnrc.yml and ` +
+        `run \`yarn --cwd ${shellWord(quotePath(lock.dir))} install\` in ` +
+        `${shellWord(repoPath)}, then ${retry}.`,
+    );
+  }
   // Only a member, with no lockfile of its own, has its dependencies hoisted:
   // to the workspace root holding its lockfile. A package no lockfile owns
   // still resolves from the repo root's. The gate links both.
@@ -152,19 +177,9 @@ export function refuseUninstalled(
   }
   // No lockfile owns it: npm in the package itself, as the adapter runs it.
   const { dir, manager } = lock ?? { dir: pkg.dir, manager: NPM };
-  // A remeasure's stand-in has only what was linked into it from the main
-  // checkout, and what lands there is a land, not a merge.
-  const [where, outcome, retry] =
-    config === repoPath
-      ? ['in the main checkout', 'nothing was merged', 'merge again']
-      : [
-          'in the main checkout to link into the checkout of the target',
-          'nothing was landed',
-          'remeasure again',
-        ];
   throw new Error(
-    `${quotePath(pkg.dir)} has no ${GATE_ENVIRONMENT_DIR} ${where}, so its ` +
-      `${pkg.commands.map((c) => c.stage).join(' and ')} stages cannot find their tools; ` +
+    `${quotePath(pkg.dir)} has no ${GATE_ENVIRONMENT_DIR} ${where}, so its ${stages} ` +
+      'cannot find their tools; ' +
       `${outcome}. Install it with \`${manager.name} ${manager.dirFlag} ` +
       `${shellWord(quotePath(dir))} install\` in ${shellWord(repoPath)}, then ${retry}.`,
   );
