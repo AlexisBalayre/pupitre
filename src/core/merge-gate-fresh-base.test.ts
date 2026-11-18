@@ -227,7 +227,13 @@ describe('fresh-base on a branch no open PR holds (decision 190)', { timeout: 20
     const stage = freshBase(outcome.report.stages);
     expect(stage?.status).toBe('fail');
     expect(stage?.detail).toContain('Auto-rebase onto main failed and so did its abort');
+    // The rebase stopped on its conflict and nothing aborted it: its dir is named.
+    expect(stage?.detail).toMatch(/rebase-merge is left in this worktree's git dir/);
     expect(stage?.detail).toContain('`git merge refs/heads/main`');
+    // `pup merge`, `pup review` and a blocked session show it to unsandboxed readers.
+    expect(stage?.detail).toContain('Anyone else should inspect that state without running git');
+    // The advice, not the failed commands' own output it quotes after it.
+    expect(stage?.detail?.split('\n')[0]).not.toMatch(/rebase --abort/);
     expect(revParse(repo, BRANCH)).toBe(tip);
     expect(revParse(repo, 'main')).toBe(target);
   });

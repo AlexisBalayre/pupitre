@@ -46,3 +46,27 @@
     is due, and shows fresh-base fail naming it while the branch and main stay put.
     `land-refusals.test.ts` plants each entry under a PR GitHub merged and shows the land
     refuse naming it, changing nothing.
+
+## Amendment (2026-11-18, #393)
+
+A follow-up to #389. The fresh-base detail for a rebase whose abort also failed told every
+reader to run `git rebase --abort` in the session worktree, then merge the target. That report
+reaches the same unsandboxed readers as the in-progress refusal above: `pup merge` and `pup
+review` print it, and a session blocked at the reject cap hands it to a human. An abort they ran
+over rebase state the live session can write (decision 120) moves any branch, `main` included,
+as the probe shows.
+
+- *The message.* It now names what the failed abort left: the first in-progress entry
+  `inProgressGitState` finds in the admin dir, or, when it finds none, that no rebase state is
+  left but HEAD may not be on the session's branch. As with the in-progress refusal, the session
+  itself may finish or abort any rebase still in progress, check out its branch, merge the
+  target and commit the merge. Anyone else should inspect that state without running git in that
+  worktree, or delete it.
+- *The other messages.* No other gate or land message named an abort command: the in-progress
+  refusals of the gate and of `pup land` already offered only deletion to anyone but the session.
+- *Tests.* `merge-gate-fresh-base.test.ts` fails the abort of a conflicting rebase and shows the
+  detail naming the `rebase-merge` dir left behind, steering anyone else away from git there and
+  naming no `rebase --abort`. `merge-gate-in-progress.test.ts` reads `merge-gate.service.ts` and
+  `land.service.ts`, with adjacent string literals joined so a command split across a `+` still
+  shows, and holds that neither names `git rebase --abort`, `git merge --abort` or
+  `git cherry-pick --abort`.
