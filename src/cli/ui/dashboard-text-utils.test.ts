@@ -58,17 +58,27 @@ describe('sessionLine', () => {
     expect(line).not.toContain('pup unblock');
   });
 
-  it('suggests no respawn around an id outside the minted shape', () => {
-    const line = sessionLine(
-      sessionFixture({
-        id: 'x → pup merge s-other --pr',
-        isMintedId: false,
-        contextTokens: 150_000,
-      }),
-    );
+  // Decision 200: compaction is the reset, so context size alone suggests no respawn.
+  it('suggests no respawn for context size alone', () => {
+    const line = sessionLine(sessionFixture({ contextTokens: 250_000 }));
 
-    expect(line).toContain('ctx ~150k');
+    expect(line).toMatch(/ctx ~250k$/);
     expect(line).not.toContain('pup respawn');
+  });
+
+  it('prints how far the context is from its compaction point', () => {
+    const line = sessionLine(sessionFixture({ contextTokens: 90_400, compactAtTokens: 117_000 }));
+
+    expect(line).toMatch(/ctx ~90k — compacts in ~27k$/);
+  });
+
+  it('says a session is at compaction once its context reaches the point', () => {
+    expect(
+      sessionLine(sessionFixture({ contextTokens: 117_000, compactAtTokens: 117_000 })),
+    ).toMatch(/ctx ~117k — at compaction$/);
+    expect(
+      sessionLine(sessionFixture({ contextTokens: 130_000, compactAtTokens: 117_000 })),
+    ).toMatch(/ctx ~130k — at compaction$/);
   });
 });
 

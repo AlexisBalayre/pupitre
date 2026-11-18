@@ -30,12 +30,6 @@ import type { RouteOverride } from './types/session-lifecycle.types.js';
 const HANDOFF_POLL_MS = 5_000;
 export const HANDOFF_WAIT_DEFAULT_MS = 10 * 60 * 1000;
 
-/**
- * Suggest a respawn above this context size. Conservative for 200k-window
- * models; sessions on larger windows can simply ignore the hint.
- */
-export const RESPAWN_SUGGEST_TOKENS = 120_000;
-
 function syncSleep(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }

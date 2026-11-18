@@ -7,6 +7,7 @@ import {
   readFileSync,
   statSync,
 } from 'node:fs';
+import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 
 import { sanitizeReason } from '../adapters/capability.utils.js';
@@ -30,6 +31,10 @@ import { getWatcherBeat, listOverlaps } from './overlap.repository.js';
 import { WATCH_STALE_AFTER_MS } from './overlap.service.js';
 import { SESSION_ID_PATTERN } from './paths.constants.js';
 import { type ProjectPaths, projectId, projectPaths } from './paths.utils.js';
+import {
+  MAX_AUTO_COMPACT_WINDOW_TOKENS,
+  MIN_AUTO_COMPACT_WINDOW_TOKENS,
+} from './project-config.config.js';
 import { asStringArray, displayStages, parseJsonOr, toIsoUtc } from './report-data.utils.js';
 import {
   asTier,
@@ -107,6 +112,7 @@ export function buildDashboardSnapshot(
       row,
       task,
       eventsFileOf(paths, row.id),
+      settingsFileOf(paths, row.id),
       stalls.get(row.id),
       isLanded,
       newest ? topRungFailure(db, paths, row, task, now) : undefined,
@@ -215,6 +221,13 @@ interface StalledSession {
  */
 function eventsFileOf(paths: ProjectPaths, sessionId: string): string | undefined {
   return SESSION_ID_PATTERN.test(sessionId) ? paths.eventsFile(sessionId) : undefined;
+}
+
+/** The settings a session's window was compiled with, for a minted id only, like its events file. */
+function settingsFileOf(paths: ProjectPaths, sessionId: string): string | undefined {
+  return SESSION_ID_PATTERN.test(sessionId)
+    ? join(paths.compiledDir(sessionId), 'settings.json')
+    : undefined;
 }
 
 /**
@@ -875,16 +888,17 @@ function isBranchPast(repoPath: string, branch: string, sha: string): boolean {
 }
 
 /**
- * The session's events file, read as one the session may have replaced
- * (decision 194): no link followed, no fifo blocked on, a regular file with
- * one link only. Undefined when it is absent or is none of those, so one session's planted
- * link costs its row the activity and not the whole project. Any other failure
- * throws as before, and the fleet view lists the project as unreadable.
+ * A file in the session's store directory, its events file or its compiled
+ * settings, read as one the session may have replaced (decision 194): no link
+ * followed, no fifo blocked on, a regular file with one link only. Undefined
+ * when it is absent or is none of those, so one session's planted link costs
+ * its row the activity and not the whole project. Any other failure throws as
+ * before, and the fleet view lists the project as unreadable.
  */
-function readEventsFile(eventsFile: string): string | undefined {
+function readSessionFile(path: string): string | undefined {
   let fd: number;
   try {
-    fd = openSync(eventsFile, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code === 'ENOENT' || code === 'ELOOP') return undefined;
@@ -898,11 +912,42 @@ function readEventsFile(eventsFile: string): string | undefined {
   }
 }
 
+/**
+ * The tokens Claude Code keeps free under `autoCompactWindow`, so a window
+ * compacts at the window less this (decision 200, probed on Claude Code 2.1.327).
+ */
+const AUTOCOMPACT_BUFFER_TOKENS = 33_000;
+
+/**
+ * Where a session's window compacts: the `autoCompactWindow` its compiled
+ * settings carry, less Claude Code's buffer (decision 200). Undefined for a
+ * session compiled before that decision, and for settings that are not JSON or
+ * carry a window Claude Code would not take: the file is in a store the
+ * sessions can write, so its value is checked rather than printed as found.
+ */
+function compactionPoint(settingsFile: string): number | undefined {
+  const text = readSessionFile(settingsFile);
+  if (text === undefined) return undefined;
+  let window: unknown;
+  try {
+    window = (JSON.parse(text) as { autoCompactWindow?: unknown } | null)?.autoCompactWindow;
+  } catch {
+    return undefined;
+  }
+  return typeof window === 'number' &&
+    Number.isInteger(window) &&
+    window >= MIN_AUTO_COMPACT_WINDOW_TOKENS &&
+    window <= MAX_AUTO_COMPACT_WINDOW_TOKENS
+    ? window - AUTOCOMPACT_BUFFER_TOKENS
+    : undefined;
+}
+
 function dashboardSession(
   db: Database,
   row: SessionRow,
   task: TaskRow | undefined,
   eventsFile: string | undefined,
+  settingsFile: string | undefined,
   stall: StalledSession | undefined,
   isLanded: (target: string | undefined, sha: string | undefined) => boolean,
   topReached: string | undefined,
@@ -913,7 +958,7 @@ function dashboardSession(
   // Decision 2: hook events, never pane contents. Nothing to classify for a
   // session that is not running, or has yet to fire a hook.
   const eventsText =
-    row.state === 'running' && eventsFile !== undefined ? readEventsFile(eventsFile) : undefined;
+    row.state === 'running' && eventsFile !== undefined ? readSessionFile(eventsFile) : undefined;
   const activity = eventsText === undefined ? undefined : classifySessionActivity(eventsText);
   const stalledAgeMs = stall?.ageMs;
   // Only a running session has a context window to fill; a merged one's last
@@ -921,6 +966,10 @@ function dashboardSession(
   const transcripts = transcriptDirOf(row.worktree_path, row.transcript_path, claudeDir);
   const contextTokens =
     row.state === 'running' && transcripts ? latestContextTokens(transcripts) : undefined;
+  const compactAtTokens =
+    contextTokens !== undefined && settingsFile !== undefined
+      ? compactionPoint(settingsFile)
+      : undefined;
   // Newest first, so `find` returns the latest matching event.
   const events = listEvents(db, row.id).reverse();
   const lastSteer = newestSteer(events);
@@ -970,6 +1019,7 @@ function dashboardSession(
     ...(stalledAgeMs === undefined ? {} : { stalledAgeMs }),
     ...(deadTurn ? { deadTurn } : {}),
     ...(contextTokens === undefined ? {} : { contextTokens }),
+    ...(compactAtTokens === undefined ? {} : { compactAtTokens }),
     ...(lastSteer ? { lastSteer } : {}),
     ...(question === undefined ? {} : { question }),
     ...(openPr === undefined ? {} : { openPr }),

@@ -44,10 +44,10 @@ const AUTO_COMPACT_WINDOW_KEY = 'autoCompactWindow';
 const DEFAULT_AUTO_COMPACT_WINDOW_TOKENS = 150_000;
 
 /** The smallest window Claude Code accepts. */
-const MIN_AUTO_COMPACT_WINDOW_TOKENS = 100_000;
+export const MIN_AUTO_COMPACT_WINDOW_TOKENS = 100_000;
 
 /** The largest context window a model has: a window past it would never compact. */
-const MAX_AUTO_COMPACT_WINDOW_TOKENS = 1_000_000;
+export const MAX_AUTO_COMPACT_WINDOW_TOKENS = 1_000_000;
 
 const PROJECT_CONFIG_KEYS = [
   SKIP_UNTESTED_KEY,

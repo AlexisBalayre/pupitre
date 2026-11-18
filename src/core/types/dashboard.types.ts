@@ -179,6 +179,12 @@ export interface DashboardSession {
   deadTurn?: DashboardDeadTurn;
   /** Tokens the last turn carried, for running sessions with a transcript. */
   contextTokens?: number;
+  /**
+   * Tokens at which a running session's window compacts: the
+   * `autoCompactWindow` its compiled settings carry, less Claude Code's
+   * buffer (decision 200). Absent when those settings carry no window.
+   */
+  compactAtTokens?: number;
   lastSteer?: DashboardSteer;
   /**
    * The question the session asked with `pup session ask` that no steer or
