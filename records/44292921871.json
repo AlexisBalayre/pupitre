@@ -1,0 +1,92 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-18T11:17:31.376Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "44292921871",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/44292921871",
+  "actor": "AlexisBalayre",
+  "commit_sha": "11d8623b73d9e3cdae8f082f583b4f6ffab35cdb",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 379,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "simplicity",
+    "guards",
+    "workflow-safety"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "9a920f39461bed05b128900e338e282863d1d1a5",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/claude/compact-recap.service.ts",
+      "line": "175",
+      "description": "`openPrLines` prints `session.state` without `sanitizeReason`. A worker that writes the store can put newlines and its own instructions into the conductor's context, right under the hook's \"this wins over the summary\" heading.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/claude/compact-recap.service.ts",
+      "line": "177",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "If a worker writes a BLOB into `sessions.state`, better-sqlite3 returns it as a Buffer, and `sanitizeReason(session.state)` throws `reason.replace is not a function`. That makes the whole `pup conductor recap` fail (line 57 has the same problem for `pup session recap`). Wrap it as `sanitizeReason(String(session.state))`, the way `reject_count` already is.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.9561339,
+  "duration_ms": 72016,
+  "num_turns": 11,
+  "tokens": {
+    "input": 10,
+    "output": 4005,
+    "cache_read": 212340,
+    "cache_creation": 40538,
+    "total": 256893
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 38,
+      "output": 11950,
+      "cache_read": 385696,
+      "cache_creation": 88935,
+      "cost_usd": 0.8825801999999999
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 8,
+      "output": 987,
+      "cache_read": 26127,
+      "cache_creation": 24422,
+      "cost_usd": 0.07355370000000001
+    }
+  ],
+  "permission_denials": []
+}
