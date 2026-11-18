@@ -44,9 +44,20 @@ const TICKET_LIST_CAPS: [
 ];
 
 /**
- * Refuse a ticket whose reference is not a tracker's, or that is over a cap
- * (decision 187). Refused rather than cut: a design or a criterion cut short
- * would tell the session less than the operator approved.
+ * What a reader cannot see in ticket text: format characters (bidi overrides,
+ * zero-width characters and U+FEFF among them) and the other default-ignorable
+ * code points, the tag block included, which spells out text no one sees. The
+ * class `FORMAT_CHARS` strips from a fix round's threads, kept here rather than
+ * imported, since the fix round's service reads the store that reads this file.
+ */
+const INVISIBLE_CHAR = /[\p{Cf}\p{Default_Ignorable_Code_Point}]/u;
+
+/**
+ * Refuse a ticket whose reference is not a tracker's, that is over a cap, or
+ * whose text holds a character no reader sees (decision 187). Refused rather
+ * than cut or stripped: a design or a criterion cut short would tell the
+ * session less than the operator approved, and one stripped would differ from
+ * the text the operator read on the tracker.
  */
 function assertTicketBounds(ticket: TaskTicket): void {
   if (!TICKET_REF.test(ticket.ref)) {
@@ -70,6 +81,25 @@ function assertTicketBounds(ticket: TaskTicket): void {
   }
   if (over.length > 0) {
     throw new InvalidProfileError(`Ticket ${ticket.ref} is over a cap: ${over.join('; ')}.`);
+  }
+  const texts: [field: string, text: string[]][] = [
+    ['type', [ticket.type]],
+    ['design note', [ticket.design ?? '']],
+    ['labels', ticket.labels],
+    ['triggers', ticket.triggers],
+    ['criteria', ticket.criteria],
+  ];
+  const hidden = texts.flatMap(([field, text]) => {
+    const char = INVISIBLE_CHAR.exec(text.join(''))?.[0];
+    if (char === undefined) return [];
+    const point = (char.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, '0');
+    return [`its ${field} (U+${point})`];
+  });
+  if (hidden.length > 0) {
+    throw new InvalidProfileError(
+      `Ticket ${ticket.ref} holds a character no reader sees, in ${hidden.join(', ')}: ` +
+        'remove it from the issue and write the ticket again.',
+    );
   }
 }
 

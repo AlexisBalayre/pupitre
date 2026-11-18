@@ -525,6 +525,11 @@ type TaskSpecPatch = Partial<Pick<TaskSpec, 'goal' | 'scopeIn' | 'scopeOut' | 'a
  * and the failure would surface at launch. The stored spec is not validated
  * first: edit is how a row that fails it gets repaired. A dropped task is
  * unknown, as `pup plan` no longer lists it (decision 147).
+ *
+ * The ticket is copied, never edited, so it is not re-checked either: a stored
+ * ticket that fails a check newer than its row would otherwise refuse every
+ * edit, even one that repairs a field the check has nothing to say about.
+ * Launch, the gate and review still refuse it through `readTaskSpec`.
  */
 export function editTaskSpec(
   db: Database,
@@ -541,7 +546,7 @@ export function editTaskSpec(
     scopeOut: patch.scopeOut ?? spec.scopeOut,
     acceptance: patch.acceptance ?? spec.acceptance,
   };
-  assertPlannableSpec(edited);
+  assertPlannableSpec({ ...edited, ticket: undefined });
   return updateTaskSpec(db, id, JSON.stringify(edited), patch.tier) ? 'updated' : 'claimed';
 }
 
