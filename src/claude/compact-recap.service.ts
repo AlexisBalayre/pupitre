@@ -142,7 +142,9 @@ function openPrLines(db: Database, repoPath: string, sessions: SessionRow[]): st
       const newest = newestEventOf(db, session.id, ['merge', 'landed', 'retired', 'pr_closed']);
       if (newest?.type !== 'merge') return [];
       const merge = decodeEvent(newest);
-      return merge.type === 'merge' && merge.prUrl ? [{ session, merge, at: newest.id }] : [];
+      return merge.type === 'merge' && merge.prUrl
+        ? [{ session, merge, prUrl: merge.prUrl, at: newest.id }]
+        : [];
     })
     .sort((a, b) => b.at - a.at);
   if (open.length === 0) return ['Open PRs: none.'];
@@ -150,7 +152,7 @@ function openPrLines(db: Database, repoPath: string, sessions: SessionRow[]): st
     'Open PRs (pin = the head the gate measured; pushed = origin/<branch>; worktree = its head now):',
   ];
   const deadline = Date.now() + RECAP_GIT_BUDGET_MS;
-  for (const { session, merge } of open.slice(0, MAX_LISTED)) {
+  for (const { session, merge, prUrl } of open.slice(0, MAX_LISTED)) {
     const pin = merge.sha ? short(merge.sha) : 'none';
     const pushed = readHead(deadline, (read) =>
       runGit(
@@ -170,7 +172,7 @@ function openPrLines(db: Database, repoPath: string, sessions: SessionRow[]): st
         ? ' (worktree past the pin: not gated yet)'
         : '';
     lines.push(
-      `  ${sanitizeReason(session.id)} ${session.state} ${sanitizeReason(merge.prUrl ?? '')} ` +
+      `  ${sanitizeReason(session.id)} ${session.state} ${sanitizeReason(prUrl)} ` +
         `pin ${pin} pushed ${pushed} worktree ${worktree}${drift}`,
     );
   }

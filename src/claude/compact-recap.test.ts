@@ -11,6 +11,7 @@ import { projectId } from '../core/paths.utils.js';
 import {
   appendEvent,
   ensureProject,
+  incrementRejectCount,
   insertSession,
   insertTask,
   transitionSession,
@@ -131,6 +132,25 @@ describe('compact recap', () => {
       expect(line).not.toContain('\u001b');
     });
 
+    it('reads a bare failed verdict, one rejection, and a question with nothing but its id', () => {
+      const id = session('running', 'awaiting-review');
+      incrementRejectCount(db, id);
+      db.prepare("INSERT INTO events (session_id, type, payload) VALUES (?, 'gate_result', ?)").run(
+        id,
+        JSON.stringify({ report: { passed: false, stages: [] } }),
+      );
+      // A question stored before its text was required.
+      db.prepare("INSERT INTO events (session_id, type, payload) VALUES (?, 'question', '{}')").run(
+        id,
+      );
+
+      const [state, gate, question] = sessionRecap(db, id);
+
+      expect(state).toBe(`Session state: awaiting-review (${id}), 1 rejection.`);
+      expect(gate).toMatch(/^Last gate: failed, \d{4}-\d\d-\d\d \d\d:\d\d:\d\d UTC\.$/);
+      expect(question).toMatch(/^Unanswered question to the operator \(#\d+\): $/);
+    });
+
     it('says the state is unknown for an id the store does not hold', () => {
       expect(sessionRecap(db, 'ghost')).toEqual([
         'Session state: unknown — no session ghost in the store.',
@@ -245,6 +265,113 @@ describe('compact recap', () => {
       writeFileSync(join(lock, 'status'), '{torn');
       expect(conductorRecap(db, repo)).toContain(
         'Merge lock: held by pid 99999999 (gone: the next run reclaims it).',
+      );
+    });
+
+    it('lists open PRs newest first, skips a merge that opened none, and says a pinless one has none', () => {
+      const older = session('running', 'awaiting-review', 'merged');
+      appendEvent(db, older, 'merge', {
+        branch: `pup/${older}`,
+        target: 'main',
+        files: [],
+        prUrl: PR,
+      });
+      const local = session('running', 'awaiting-review', 'merged');
+      appendEvent(db, local, 'merge', {
+        branch: `pup/${local}`,
+        sha: 'a'.repeat(40),
+        target: 'main',
+        files: [],
+      });
+      const newer = session('running', 'awaiting-review', 'merged');
+      appendEvent(db, newer, 'merge', {
+        branch: `pup/${newer}`,
+        sha: 'b'.repeat(40),
+        target: 'main',
+        files: [],
+        prUrl: `${PR}8`,
+      });
+
+      const lines = conductorRecap(db, repo);
+      const open = lines.findIndex((line) => line.startsWith('Open PRs ('));
+
+      expect(lines.slice(open + 1, open + 4)).toEqual([
+        `  ${newer} merged ${PR}8 pin ${'b'.repeat(12)} pushed unreadable worktree unreadable`,
+        `  ${older} merged ${PR} pin none pushed unreadable worktree unreadable`,
+        'Merge lock: free.',
+      ]);
+    });
+
+    it('caps the open PRs and counts the rest', () => {
+      for (let i = 0; i < 14; i++) {
+        const id = session('running', 'awaiting-review', 'merged');
+        appendEvent(db, id, 'merge', { branch: `pup/${id}`, target: 'main', files: [], prUrl: PR });
+      }
+
+      const lines = conductorRecap(db, repo);
+
+      expect(lines.filter((line) => line.includes(` merged ${PR} pin none`))).toHaveLength(12);
+      expect(lines).toContain('  … 2 more');
+    });
+
+    it('reads no head once the git budget is spent', () => {
+      const id = session('running', 'awaiting-review', 'merged');
+      appendEvent(db, id, 'merge', { branch: `pup/${id}`, target: 'main', files: [], prUrl: PR });
+      // A pushed head git would read, were there budget left.
+      git(repo, 'init', '-q', '-b', 'main');
+      git(
+        repo,
+        '-c',
+        'user.name=t',
+        '-c',
+        'user.email=t@t',
+        'commit',
+        '-q',
+        '--allow-empty',
+        '-m',
+        'base',
+      );
+      git(repo, 'update-ref', `refs/remotes/origin/pup/${id}`, 'HEAD');
+      const pushed = `  ${id} merged ${PR} pin none pushed ${git(repo, 'rev-parse', 'HEAD').slice(0, 12)}`;
+      expect(conductorRecap(db, repo).some((line) => line.startsWith(pushed))).toBe(true);
+      // Each clock read lands past the last one's budget.
+      let now = 0;
+      const clock = vi.spyOn(Date, 'now').mockImplementation(() => (now += 10_000));
+
+      try {
+        expect(conductorRecap(db, repo)).toContain(
+          `  ${id} merged ${PR} pin none pushed unreadable worktree unreadable`,
+        );
+      } finally {
+        clock.mockRestore();
+      }
+    });
+
+    it('says the lock is held by no pid when its pid file is missing or not a pid', () => {
+      const lock = join(repo, '.git', MERGE_LOCK_DIRNAME);
+      mkdirSync(lock, { recursive: true });
+
+      expect(conductorRecap(db, repo)).toContain('Merge lock: held, by no pid it recorded.');
+
+      writeFileSync(join(lock, 'pid'), 'pid 42\n');
+      expect(conductorRecap(db, repo)).toContain('Merge lock: held, by no pid it recorded.');
+
+      // A pid and no status beside it: a lock an earlier pup took.
+      writeFileSync(join(lock, 'pid'), `${process.pid}\n`);
+      expect(conductorRecap(db, repo)).toContain(`Merge lock: held by pid ${process.pid}.`);
+    });
+
+    it('names what a holder runs without a stage, and counts one it may not signal as live', () => {
+      const lock = join(repo, '.git', MERGE_LOCK_DIRNAME);
+      mkdirSync(lock, { recursive: true });
+      writeFileSync(join(lock, 'pid'), '1\n');
+      writeFileSync(
+        join(lock, 'status'),
+        JSON.stringify({ command: 'pup merge s3', since: 0, stage: '' }),
+      );
+
+      expect(conductorRecap(db, repo)).toContain(
+        'Merge lock: held by pid 1 running `pup merge s3`.',
       );
     });
   });
