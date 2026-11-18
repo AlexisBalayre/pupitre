@@ -33,7 +33,28 @@ const DEFAULT_LOCK_BACKLOG_BUDGET_MINUTES = 60;
 /** The largest budget a project may set: a day of lock work, past which the backlog holds nothing back. */
 const MAX_LOCK_BACKLOG_BUDGET_MINUTES = 1440;
 
-const PROJECT_CONFIG_KEYS = [SKIP_UNTESTED_KEY, WORKER_SANDBOX_KEY, LOCK_BACKLOG_BUDGET_KEY];
+/**
+ * The key that sets the `autoCompactWindow` pup compiles into every worker's
+ * and the conductor's settings (decision 200), so no session runs on whatever
+ * window the operator's own settings name.
+ */
+const AUTO_COMPACT_WINDOW_KEY = 'autoCompactWindow';
+
+/** The window a session compacts in when the project sets none: the 2026-11-16 study's choice (decision 200). */
+const DEFAULT_AUTO_COMPACT_WINDOW_TOKENS = 150_000;
+
+/** The smallest window Claude Code accepts. */
+const MIN_AUTO_COMPACT_WINDOW_TOKENS = 100_000;
+
+/** The largest context window a model has: a window past it would never compact. */
+const MAX_AUTO_COMPACT_WINDOW_TOKENS = 1_000_000;
+
+const PROJECT_CONFIG_KEYS = [
+  SKIP_UNTESTED_KEY,
+  WORKER_SANDBOX_KEY,
+  LOCK_BACKLOG_BUDGET_KEY,
+  AUTO_COMPACT_WINDOW_KEY,
+];
 
 /**
  * One setting's raw value, undefined when the repo has no `.pupitre/project.yml`
@@ -110,4 +131,25 @@ export function lockBacklogBudgetMinutes(repoPath: string): number {
     );
   }
   return value;
+}
+
+/**
+ * The `autoCompactWindow` every session is compiled with (decision 200): the
+ * project's own, else `DEFAULT_AUTO_COMPACT_WINDOW_TOKENS`. A value that is not
+ * a whole number of tokens from `MIN_AUTO_COMPACT_WINDOW_TOKENS` to
+ * `MAX_AUTO_COMPACT_WINDOW_TOKENS` throws rather than leave the default in force.
+ */
+export function autoCompactWindowTokens(repoPath: string): number {
+  const value = projectValue(repoPath, AUTO_COMPACT_WINDOW_KEY);
+  if (value === undefined) return DEFAULT_AUTO_COMPACT_WINDOW_TOKENS;
+  if (
+    !Number.isInteger(value) ||
+    (value as number) < MIN_AUTO_COMPACT_WINDOW_TOKENS ||
+    (value as number) > MAX_AUTO_COMPACT_WINDOW_TOKENS
+  ) {
+    throw new Error(
+      `Invalid ${PROJECT_CONFIG_PATH}: ${AUTO_COMPACT_WINDOW_KEY} must be a whole number of tokens from ${MIN_AUTO_COMPACT_WINDOW_TOKENS} to ${MAX_AUTO_COMPACT_WINDOW_TOKENS}.`,
+    );
+  }
+  return value as number;
 }

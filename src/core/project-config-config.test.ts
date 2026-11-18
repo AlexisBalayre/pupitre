@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import {
+  autoCompactWindowTokens,
   lockBacklogBudgetMinutes,
   skipsTestsOnUntestedChanges,
   workerSandboxOn,
@@ -127,6 +128,38 @@ describe('lockBacklogBudgetMinutes', () => {
         lockBacklogBudgetMinutes(repoWith(`lockBacklogBudgetMinutes: ${value}\n`)),
       ).toThrow(
         'Invalid .pupitre/project.yml: lockBacklogBudgetMinutes must be a number of minutes above 0 and at most 1440.',
+      );
+    },
+  );
+});
+
+// Decision 200: the window every session is compiled to compact in.
+describe('autoCompactWindowTokens', () => {
+  it.each([
+    { name: 'no project.yml', content: undefined },
+    { name: 'an empty project.yml', content: '' },
+    { name: 'a project.yml without the key', content: 'workerSandbox: false\n' },
+  ])('reads 150000 with $name', ({ content }) => {
+    expect(autoCompactWindowTokens(repoWith(content))).toBe(150_000);
+  });
+
+  it('reads the window the project gives, both bounds included', () => {
+    expect(autoCompactWindowTokens(repoWith('autoCompactWindow: 120000\n'))).toBe(120_000);
+    expect(autoCompactWindowTokens(repoWith('autoCompactWindow: 100000\n'))).toBe(100_000);
+    expect(autoCompactWindowTokens(repoWith('autoCompactWindow: 1000000\n'))).toBe(1_000_000);
+  });
+
+  it('reads its own key beside the others', () => {
+    const repo = repoWith('lockBacklogBudgetMinutes: 30\nautoCompactWindow: 200000\n');
+    expect(autoCompactWindowTokens(repo)).toBe(200_000);
+    expect(lockBacklogBudgetMinutes(repo)).toBe(30);
+  });
+
+  it.each(['"150000"', '99999', '1000001', '150000.5', '.inf', '.nan', 'auto', 'true', '[150000]'])(
+    'refuses %s rather than guess a window',
+    (value) => {
+      expect(() => autoCompactWindowTokens(repoWith(`autoCompactWindow: ${value}\n`))).toThrow(
+        'Invalid .pupitre/project.yml: autoCompactWindow must be a whole number of tokens from 100000 to 1000000.',
       );
     },
   );
