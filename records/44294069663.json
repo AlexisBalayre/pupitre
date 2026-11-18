@@ -1,0 +1,139 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-18T11:27:18.202Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "44294069663",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/44294069663",
+  "actor": "AlexisBalayre",
+  "commit_sha": "d993cc8dc254c406740f14dfd3dc39ce6fead9b4",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 380,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/uninstalled-dependency.service.ts",
+      "line": "152-165",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "In a remeasure, `config` is a fresh checkout of `targetSha`, which never holds a gitignored `.pnp.cjs`, so the new Plug'n'Play branch never fires there and the refusal still tells the operator to run `yarn --cwd . install`, which the PR says can never clear it.",
+      "body": "The Plug'n'Play message only fires when `config` holds the runtime:\n\n```ts\nif (lock?.manager.name === 'yarn' && holdsPnpRuntime(config, lock.dir)) {\n  if (holdsPnpRuntime(checkout, lock.dir)) return;\n  throw new Error(`... resolves through the Yarn Plug'n'Play install ...`);\n}\n```\n\nIn a remeasure, `config` is the stand-in. `runMergeGate` sets `configRoot = targetDir ?? req.repoPath` and calls `refuseUninstalled(req.repoPath, configRoot, checkoutDir, pkg)`. Nothing gives the stand-in a Plug'n'Play runtime:\n- `cutGateCheckout` checks out only the tracked files of `targetSha`, so a gitignored `.pnp.cjs` never lands there.\n- `linkStandInEnvironments` links only the main checkout's `node_modules`, and only where one exists. A Plug'n'Play repo has none.\n\nSo in a Yarn Berry repo that gitignores `.pnp.*`:\n1. `holdsPnpRuntime(standIn, lock.dir)` is false, and the new branch is skipped.\n2. The hoisted `node_modules` check fails.\n3. The generic refusal fires: \"Install it with `yarn --cwd . install` in <repo>, then remeasure again.\"\n\nThat is the repeat-install loop commit 4 fixes for merges. The PnP message's own `${outcome}`/`${retry}` wording and the ADR 0081 amendment (\"the config checkout, the main checkout or a remeasure's stand-in for it\") show the fix was meant to cover remeasures too. The JSDoc at L112-114 says the same.\n\nThe path is narrow, since the original merge gate usually refuses first. It is still reachable when the target past the pin gives the package commands or dependencies, or when the original gate ran before #330.\n\nOne possible fix: choose the message from the main checkout too, e.g. `[config, repoPath].some((root) => holdsPnpRuntime(root, lock.dir))`, and keep the skip tied to `config` and `checkout`.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/d993cc8dc254c406740f14dfd3dc39ce6fead9b4/src/core/uninstalled-dependency.service.ts#L152-L165",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/uninstalled-dependency.service.ts",
+      "line": "156-163",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`holdsPnpRuntime` also accepts Yarn 1's `.pnp.js`, but the refusal names `.pnp.cjs` and advises `nodeLinker: node-modules` in `.yarnrc.yml`. Yarn 1 ignores that setting, so in a Yarn 1 Plug'n'Play repo that gitignores `.pnp.js` the advice cannot clear the refusal.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/uninstalled-dependency.service.ts",
+      "line": "84",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`holdsPnpRuntime` inlines the new path fragments `'.pnp.cjs'` and `'.pnp.js'`. general.md §No hardcoded values puts path fragments in the area's `*.constants.ts`, and `merge-gate.constants.ts` already holds the lockfile names.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/uninstalled-dependency.service.ts",
+      "line": "102-123",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `refuseUninstalled` JSDoc grew by insertion and now reads out of order. The `linkEnvironment` rationale seems to follow only the bad-name sentence, and the Plug'n'Play sentence repeats the throw message. Move the Plug'n'Play and bad-name sentences after the decision 138 rationale.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Ran one correctness and one security instance although the diff is about 499 changed lines: about 140 of them are a byte-identical move, so the new logic is about 200 lines in one file. Skipped context (no infra or protocol surface), maintainability (off the default roster), spec (no closing issue; #330 is only referenced) and workflow-safety (no workflow change). Dropped a simplicity nit that named no cost, and a low-confidence docs nit on the L152-153 comment."
+    },
+    {
+      "component": "guards",
+      "description": "The sandbox denied a grep across the whole repository root, so the guards reviewer searched src/, test/, scripts/ and docs/ one by one. A guard outside those directories would not have been seen."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.951266505,
+  "duration_ms": 204086,
+  "num_turns": 14,
+  "tokens": {
+    "input": 14,
+    "output": 11329,
+    "cache_read": 283821,
+    "cache_creation": 48827,
+    "total": 343991
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 66,
+      "output": 31614,
+      "cache_read": 761299,
+      "cache_creation": 151741,
+      "cost_usd": 1.6899898
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 40,
+      "output": 7625,
+      "cache_read": 216868,
+      "cache_creation": 65098,
+      "cost_usd": 0.2607618
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 253,
+      "cache_read": 1933,
+      "cache_creation": 2951,
+      "cost_usd": 0.000514905
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Grep",
+      "input": "{\"pattern\":\"readdirSync|globSync|glob\\\\(\",\"path\":\"/home/runner/work/pupitre\",\"glob\":\"**/*.test.ts\",\"output_mode\":\"content\",\"head_limit\":40}"
+    }
+  ]
+}
