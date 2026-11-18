@@ -1,0 +1,115 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-18T18:23:00.705Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "44368287050",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/44368287050",
+  "actor": "AlexisBalayre",
+  "commit_sha": "7393e0276b0b87928af1b739a09c6d6a7e21ead8",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 394,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "guards",
+    "simplicity"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "guards",
+    "simplicity"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "docs/adr/0204-fresh-base-and-pup-land-refuse-a-worktree-mid-rebase-or-merge.md",
+      "line": "50",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The amendment heading cites `#393`, but this PR is #394. #393 is an unrelated PR, \"Make the dashboard Overview a Now page (Dashboard audit 1 of 3)\".",
+      "body": "The amendment heading cites the wrong PR. This change is #394, but the heading reads `## Amendment (2026-11-18, #393)`. #393 is an unrelated open dashboard PR, \"Make the dashboard Overview a Now page (Dashboard audit 1 of 3)\".\n\n`docs/adr/README.md` says a later change \"appends an amendment section to it (dated, with the PR)\". Sibling amendments carry the number of the PR that wrote them, for example `(2026-11-17, #371)` and `(2026-11-16, #348)`. Anyone following this amendment's citation from ADR 0204 ends up on a dashboard PR and can't trace the fresh-base message change. The body's \"A follow-up to #389\" is correct.\n\n<https://github.com/AlexisBalayre/pupitre/blob/7393e0276b0b87928af1b739a09c6d6a7e21ead8/docs/adr/0204-fresh-base-and-pup-land-refuse-a-worktree-mid-rebase-or-merge.md#L50>",
+      "suggestion": "## Amendment (2026-11-18, #394)"
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "2348",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "When inProgressGitState finds nothing, the detail says no rebase state is left, then tells anyone else to inspect 'that state' or 'delete it', which points at nothing (or could be read as the worktree).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate-in-progress.test.ts",
+      "line": "101",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The no-abort guard only bans `rebase|merge|cherry-pick --abort`, so a future gate or land message advising `git rebase --continue`/`--skip`, `git revert --abort` or `git am --abort` passes it, although the gate's own text says a continue acts on head-name/orig-head just like an abort and can move main.",
+      "body": null,
+      "suggestion": "    expect(source).not.toMatch(/\\b(?:rebase|merge|cherry-pick|revert|am)\\s+--(?:abort|continue|skip)\\b/);"
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 3,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.6080985750000003,
+  "duration_ms": 160079,
+  "num_turns": 14,
+  "tokens": {
+    "input": 14,
+    "output": 7735,
+    "cache_read": 317583,
+    "cache_creation": 43771,
+    "total": 369103
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 76,
+      "output": 25836,
+      "cache_read": 873750,
+      "cache_creation": 105266,
+      "cost_usd": 1.349417
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 38,
+      "output": 7128,
+      "cache_read": 203800,
+      "cache_creation": 66451,
+      "cost_usd": 0.2578635
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 400,
+      "cache_read": 0,
+      "cache_creation": 4943,
+      "cost_usd": 0.000818075
+    }
+  ],
+  "permission_denials": []
+}
