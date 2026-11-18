@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -442,6 +442,43 @@ describe('landSession', { timeout: 20_000 }, () => {
 
     expectNothingChanged(mainBefore);
   });
+
+  // The teardown would run git in a worktree whose rebase or merge state the
+  // session can write (decision 204).
+  it.each([
+    ['rebase-merge', 'dir'],
+    ['rebase-apply', 'dir'],
+    ['sequencer', 'dir'],
+    ['MERGE_HEAD', 'file'],
+    ['REBASE_HEAD', 'file'],
+  ])(
+    'refuses a worktree whose git dir holds %s, naming it and changing nothing',
+    async (name, kind) => {
+      seedPrMerge();
+      const merge = mergeOnGitHub();
+      fakeGh({
+        state: 'MERGED',
+        baseRefName: 'main',
+        headRefOid: pinned,
+        mergeCommit: { oid: merge },
+      });
+      const planted = join(realpathSync(join(repo, '.git')), 'worktrees', SESSION_ID, name);
+      if (kind === 'dir') mkdirSync(planted);
+      else writeFileSync(planted, `${pinned}\n`);
+      const mainBefore = mainSha();
+
+      const failure = await land().catch((error: unknown) => error);
+
+      const message = String(failure);
+      expect(message).toContain(`${planted} is in session ${SESSION_ID}'s worktree git dir`);
+      // The operator's git is unsandboxed: an abort there would follow the
+      // session's head-name and orig-head, so only deletion is offered.
+      expect(message).toContain('Delete it without running git in that worktree');
+      expect(message).not.toMatch(/finish|abort it/i);
+      expectNothingChanged(mainBefore);
+      expect(hasTrackingRef()).toBe(false);
+    },
+  );
 
   it('keeps a regressed baseline for pup audit rather than re-stamping it', async () => {
     seedPrMerge();
