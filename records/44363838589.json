@@ -1,0 +1,94 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-18T17:57:14.002Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "44363838589",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/44363838589",
+  "actor": "AlexisBalayre",
+  "commit_sha": "10390dfa10334c3d1bc00f1022934574ff5451da",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 392,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "guards",
+    "simplicity"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "guards",
+    "simplicity"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "4b8cbc1874ecdc7f79b16c28cbb234feba0f284d",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/init.service.ts",
+      "line": "276-280",
+      "description": "When the dashboard's Land button triggers a baseline test failure, the page no longer says where the full output was kept. `keepTest` now sends that clause only to the dashboard server's stderr.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "docs/adr/0201-a-failed-test-run-names-its-failing-tests.md",
+      "line": "35-37",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "ADR 0201 has already landed, but the new sentence about the dashboard's land is written into its decision text. `docs/adr/README.md` says a landed decision gets a dated amendment section (with the PR) or a new ADR that links back with `Amends:`, and that the landed text is not rewritten. Moving the sentence into an `Amendment (2026-11-18, PR #392)` section keeps the original decision readable as it was made.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.5618904999999998,
+  "duration_ms": 116996,
+  "num_turns": 16,
+  "tokens": {
+    "input": 14,
+    "output": 7871,
+    "cache_read": 324507,
+    "cache_creation": 46051,
+    "total": 378443
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 86,
+      "output": 20643,
+      "cache_read": 1074366,
+      "cache_creation": 115705,
+      "cost_usd": 1.3447551999999998
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 44,
+      "output": 6275,
+      "cache_read": 223398,
+      "cache_creation": 52783,
+      "cost_usd": 0.2171353
+    }
+  ],
+  "permission_denials": []
+}
