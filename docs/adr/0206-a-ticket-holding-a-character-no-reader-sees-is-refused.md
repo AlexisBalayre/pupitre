@@ -1,9 +1,9 @@
-# 0204. A ticket holding a character no reader sees is refused (2026-11-18)
+# 0206. A ticket holding a character no reader sees is refused (2026-11-18)
 
 - Status: accepted
 - Amends: [0187](0187-a-task-carries-a-copy-of-its-ticket-and-the.md)
 
-204. **A ticket holding a character no reader sees is refused (2026-11-18).**
+206. **A ticket holding a character no reader sees is refused (2026-11-18).**
     A ticket's text is anyone's who files an issue, and decision 187 copies it into every
     kickoff of its slices and prints its criteria in `pup review`. The kickoff's `quoted` and
     review's `sanitizeReason` drop only C0 and C1 controls, so a bidi override, a zero-width
