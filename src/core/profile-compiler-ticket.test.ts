@@ -78,6 +78,19 @@ describe("a ticket's design in the kickoff (decision 187)", () => {
     expect(section(context)).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u2028\u2029]/);
   });
 
+  // `quoted` drops only control characters: what a reader cannot see is
+  // refused by the plannable check the compile runs, so it never reaches a line.
+  it.each([
+    ['a bidi override', { design: 'pass‮liaf' }],
+    ['a zero-width space', { criteria: ['ship​it'] }],
+    ['a byte-order mark', { design: '﻿note' }],
+    ['a tag character', { criteria: ['done\u{E0069}\u{E0067}'] }],
+  ])('refuses to compile a ticket holding %s', (_, text) => {
+    expect(() => kickoff({ ...ticket, ...text })).toThrow(
+      'Ticket #412 holds a character no reader sees',
+    );
+  });
+
   it('leaves out a design note the ticket does not have', () => {
     const context = kickoff({ ...ticket, type: 'bug', design: undefined });
 

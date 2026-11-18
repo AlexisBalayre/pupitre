@@ -3221,6 +3221,39 @@ describe('CLI commands', () => {
       ]);
       expect(logs[criteria + 3]).toMatch(/^rejections:/);
     });
+
+    // `sanitizeReason` drops only control characters: a stored ticket holding
+    // one a reader cannot see is refused by the spec read, printing none of it.
+    it('refuses a ticket holding a bidi override, printing no criterion', () => {
+      const repo = initRepo();
+      useCwd(repo);
+      seedSession(repo, 's-bidi');
+      const { db } = resolveProject(repo);
+      db.prepare('UPDATE tasks SET spec = ?').run(
+        JSON.stringify({
+          goal: 'g',
+          scopeIn: ['**'],
+          acceptance: ['a'],
+          ticket: {
+            ref: '#412',
+            type: 'feature',
+            labels: ['design-approved'],
+            triggers: [],
+            criteria: ['pass‮liaf'],
+          },
+        }),
+      );
+      transitionSession(db, 's-bidi', 'running');
+      transitionSession(db, 's-bidi', 'awaiting-review');
+      db.close();
+
+      buildProgram().parse(['review', 's-bidi'], { from: 'user' });
+
+      expect(process.exitCode).toBe(1);
+      expect(errors.join('\n')).toContain('Ticket #412 holds a character no reader sees');
+      expect(logs.join('\n')).not.toContain('‮');
+      expect(logs).not.toContain('ticket #412 slice criteria:');
+    });
   });
 
   // Every path a command takes to a project's repo holds it as a main checkout

@@ -38,7 +38,7 @@ import { refuseUserSandbox } from './profile-compiler-sandbox.service.js';
 import { autoCompactWindowTokens, workerSandboxOn } from './project-config.config.js';
 import { CRITICAL_AREAS } from './routing.utils.js';
 import { shellWord } from './shell-quote.utils.js';
-import { scopeInFiles } from './task-spec.utils.js';
+import { assertPlannableSpec, scopeInFiles } from './task-spec.utils.js';
 import type { ConductorCompileInput } from './types/conductor.types.js';
 import type {
   CompiledProfile,
@@ -254,23 +254,11 @@ function estimateTokens(text: string): number {
 }
 
 function validateInput(input: CompileInput, git: WorktreeGitEnv): void {
-  const scopeIn = input.task.scopeIn.filter((g) => g.trim());
-  if (scopeIn.length === 0) {
-    throw new InvalidProfileError(
-      'Task scope-in is empty; a session with no scope can edit nothing.',
-    );
-  }
-  // The scope files are line-oriented and read by `grep -qE -f`, where a blank
-  // line is a pattern matching everything — so one newline inside a glob turns
-  // the Edit/Write hook into allow-all. Specs now outlive the command that
-  // wrote them (decision 40), so this is checked on every compile.
-  for (const glob of [...input.task.scopeIn, ...(input.task.scopeOut ?? [])]) {
-    if (/[\r\n\0]/.test(glob)) {
-      throw new InvalidProfileError(
-        `Scope glob contains a control character: ${JSON.stringify(glob)}`,
-      );
-    }
-  }
+  // Specs outlive the command that wrote them (decision 40), so the checks
+  // `pup plan add` ran are run on every compile: a glob that would turn the
+  // scope hook into allow-all, and a ticket whose text the kickoff would carry
+  // where no reader sees it (decision 187).
+  assertPlannableSpec(input.task);
   for (const [label, path] of [
     ['worktreePath', input.worktreePath],
     ['eventsFile', input.eventsFile],
