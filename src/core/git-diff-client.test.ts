@@ -357,6 +357,95 @@ describe('gitDiffAddedLines under a session-armed diff driver', () => {
   });
 });
 
+// A session can plant every piece of submodule config a later git run outside
+// its sandbox reads: a `.gitmodules` on its branch, a `.git/modules/<name>`
+// repo whose own config arms drivers no driver check reads, and recursion keys
+// in the shared config (decision 41's exposure). Plain git honours them; the
+// diff client reads past every one and runs nothing they name (decision 203).
+describe('the diff client under submodule config a session planted', () => {
+  let repo: string;
+  let marker: string;
+
+  const git = (...args: string[]) =>
+    execFileSync('git', args, { cwd: repo, encoding: 'utf8', env: GIT_ENV, stdio: 'pipe' });
+
+  beforeEach(() => {
+    marker = join(tempDir('pup-diff-fired-'), 'fired');
+    const fire = `sh -c 'echo fired >> ${marker}; cat'`;
+    const sub = makeRepo();
+    writeFileSync(join(sub, 'app.ts'), 'one\n');
+    const head = () =>
+      execFileSync('git', ['rev-parse', 'HEAD'], { cwd: sub, encoding: 'utf8', env: GIT_ENV });
+    commitAll(sub, 'one');
+    const before = head();
+    writeFileSync(join(sub, 'app.ts'), 'two\n');
+    commitAll(sub, 'two');
+    const after = head();
+
+    repo = makeRepo();
+    writeFileSync(join(repo, 'a.ts'), 'one\n');
+    writeFileSync(
+      join(repo, '.gitmodules'),
+      `[submodule "sub"]\n\tpath = src/sub\n\turl = ext::sh -c touch% ${marker}\n` +
+        `\tupdate = !touch ${marker}\n`,
+    );
+    sh(repo, 'git', 'update-index', '--add', '--cacheinfo', `160000,${before.trim()},src/sub`);
+    // Named, since `git add .` would stage the gitlink's missing directory as its deletion.
+    sh(repo, 'git', 'add', 'a.ts', '.gitmodules');
+    sh(repo, 'git', 'commit', '-q', '-m', 'base');
+    sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
+    sh(repo, 'git', 'update-index', '--cacheinfo', `160000,${after.trim()},src/sub`);
+    writeFileSync(
+      join(repo, '.gitmodules'),
+      `[submodule "sub"]\n\tpath = src/sub\n\tignore = all\n\tfetchRecurseSubmodules = true\n`,
+    );
+    sh(repo, 'git', 'add', '.gitmodules');
+    sh(repo, 'git', 'commit', '-q', '-m', 'bump');
+
+    // The submodule's own repo, where git looks for `sub` once no `src/sub/.git` exists.
+    const modules = join(repo, '.git', 'modules');
+    mkdirSync(modules);
+    renameSync(join(sub, '.git'), join(modules, 'sub'));
+    const own = (key: string, value: string) =>
+      sh(repo, 'git', 'config', '--file', join(modules, 'sub', 'config'), key, value);
+    own('diff.external', fire);
+    own('diff.pwn.textconv', fire);
+    own('filter.pwn.clean', fire);
+    own('core.fsmonitor', fire);
+    writeFileSync(join(modules, 'sub', 'info', 'attributes'), '* diff=pwn filter=pwn\n');
+
+    for (const [key, value] of [
+      ['submodule.recurse', 'true'],
+      ['fetch.recurseSubmodules', 'yes'],
+      ['push.recurseSubmodules', 'on-demand'],
+      ['diff.submodule', 'diff'],
+      ['diff.ignoreSubmodules', 'all'],
+      ['status.submoduleSummary', 'true'],
+    ])
+      sh(repo, 'git', 'config', key as string, value as string);
+  });
+
+  it('is honoured by plain git, which drops the gitlink and runs the planted driver', () => {
+    expect(git('diff', '--name-only', 'main...feature')).toBe('.gitmodules\n');
+    // Only the flag outranks the `.gitmodules` entry, the config alone does not.
+    expect(git('-c', 'diff.ignoreSubmodules=none', 'diff', '--name-only', 'main...feature')).toBe(
+      '.gitmodules\n',
+    );
+    git('diff', '--ignore-submodules=none', 'main...feature', '--', 'src/sub');
+    expect(existsSync(marker)).toBe(true);
+  });
+
+  it('lists the gitlink change and runs nothing the plant names', () => {
+    expect(gitDiffPaths(repo, 'main', 'feature')).toEqual(['.gitmodules', 'src/sub']);
+    expect(gitDiffNumstat(repo, 'main', 'feature').map((stat) => stat.path)).toEqual([
+      '.gitmodules',
+      'src/sub',
+    ]);
+    expect(gitDiffAddedLines(repo, 'main', 'feature')).toMatchObject({ 'src/sub': [1] });
+    expect(existsSync(marker)).toBe(false);
+  });
+});
+
 // Under `diff.renames=copies` a new file copied from one the branch changes is
 // scored as its edits from that file's old content, so a 300-line file counted
 // as a few lines and slipped under the oversize flag (decision 113).

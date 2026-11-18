@@ -960,6 +960,86 @@ describe('landSession', { timeout: 20_000 }, () => {
     expect(landedEvents()).toHaveLength(1);
   });
 
+  // The land fetches, moves main and diffs what landed in the main checkout,
+  // where `sub`'s repo is `.git/modules/sub`, under the `.gitmodules` the
+  // branch carries and the shared config. Plain git there runs the module's
+  // drivers; the land runs none and still sees the bump land (decision 203).
+  it('lands a gitlink bump under submodule config the session planted, running nothing it names', async () => {
+    const marker = join(tempDir('pup-land-fired-'), 'fired');
+    const fire = `sh -c 'echo fired >> ${marker}; cat'`;
+    const sub = tempDir('pup-land-sub-');
+    sh(sub, 'git', 'init', '-q');
+    const before = commitIn(sub, 'app.ts', 'one\n');
+    const after = commitIn(sub, 'app.ts', 'two\n');
+    // The project's own submodule, named in its `.gitmodules`.
+    writeFileSync(join(repo, '.gitmodules'), '[submodule "sub"]\n\tpath = src/sub\n');
+    sh(repo, 'git', 'add', '.gitmodules');
+    sh(repo, 'git', 'update-index', '--add', '--cacheinfo', `160000,${before},src/sub`);
+    const commit = (dir: string, message: string) =>
+      sh(dir, 'git', '-c', 'user.email=l@test', '-c', 'user.name=land', 'commit', '-qm', message);
+    commit(repo, 'gitlink');
+    sh(repo, 'git', 'push', '-q', origin, 'main');
+    sh(worktree, 'git', 'reset', '-q', '--hard', 'main');
+    sh(worktree, 'git', 'update-index', '--cacheinfo', `160000,${after},src/sub`);
+    writeFileSync(
+      join(worktree, '.gitmodules'),
+      `[submodule "sub"]\n\tpath = src/sub\n\tignore = all\n\tfetchRecurseSubmodules = true\n` +
+        `\turl = ext::sh -c touch% ${marker}\n`,
+    );
+    sh(worktree, 'git', 'add', '.gitmodules');
+    commit(worktree, 'bump');
+    pinned = sh(worktree, 'git', 'rev-parse', 'HEAD');
+    sh(repo, 'git', 'push', '-q', '-f', origin, BRANCH);
+
+    const modules = join(repo, '.git', 'modules');
+    mkdirSync(modules);
+    renameSync(join(sub, '.git'), join(modules, 'sub'));
+    const own = (key: string, value: string) =>
+      sh(repo, 'git', 'config', '--file', join(modules, 'sub', 'config'), key, value);
+    own('diff.external', fire);
+    own('diff.pwn.textconv', fire);
+    own('filter.pwn.clean', fire);
+    own('core.fsmonitor', fire);
+    writeFileSync(join(modules, 'sub', 'info', 'attributes'), '* diff=pwn filter=pwn\n');
+    for (const [key, value] of [
+      ['submodule.recurse', 'true'],
+      ['fetch.recurseSubmodules', 'yes'],
+      ['push.recurseSubmodules', 'on-demand'],
+      ['diff.submodule', 'diff'],
+      ['diff.ignoreSubmodules', 'all'],
+      ['status.submoduleSummary', 'true'],
+      ['submodule.sub.url', `ext::sh -c touch% ${marker}`],
+      ['submodule.sub.update', `!touch ${marker}`],
+    ] as const)
+      sh(repo, 'git', 'config', key, value);
+    sh(repo, 'git', 'diff', '--ignore-submodules=none', `main...${pinned}`, '--', 'src/sub');
+    expect(existsSync(marker)).toBe(true);
+    rmSync(marker);
+
+    seedPrMerge();
+    const merge = mergeOnGitHub();
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: pinned,
+      mergeCommit: { oid: merge },
+    });
+    const landedOn = mainSha();
+    vi.mocked(gitDiffPaths).mockClear();
+
+    await land();
+
+    expect(mainSha()).toBe(merge);
+    expect(landedEvents()).toHaveLength(1);
+    const landed = vi
+      .mocked(gitDiffPaths)
+      .mock.calls.findIndex(
+        ([path, from, to]) => path === repo && from === landedOn && to === merge,
+      );
+    expect(vi.mocked(gitDiffPaths).mock.results[landed]?.value).toEqual(['.gitmodules', 'src/sub']);
+    expect(existsSync(marker)).toBe(false);
+  });
+
   // GitHub resolved the conflict its own way: no merge of the pin gives that tree.
   it('refuses a squash of a pin that conflicts with the moved main, changing nothing', async () => {
     seedPrMerge();
