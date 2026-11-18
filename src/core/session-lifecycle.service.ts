@@ -380,7 +380,9 @@ function knowledgeSliceFor(
  * reason it climbed. A failure on the top rung climbs nowhere: the window is
  * refused for the operator to decide, and an explicit model or effort the
  * operator names is that decision, recorded as an override; the conductor's
- * `--worker-model` is an override too, but never that decision. A task re-tiered since its last window
+ * `--worker-model` is an override too, but never that decision. `staysAtTop`
+ * is the conductor's `pup fix --finding` (decision 202): the window runs on the
+ * top rung again rather than being refused. A task re-tiered since its last window
  * starts its new ladder from the bottom. `failureOf` is asked only of a window
  * there is.
  */
@@ -391,10 +393,11 @@ function nextWindowRoute(
   failureOf: (previous: SessionRow) => ClimbReason | 'blocked' | undefined,
   override: RouteOverride,
   operatorDecides = true,
+  staysAtTop = false,
 ): SessionRoute {
   const climb = climbFrom(tier, previous, previous && failureOf(previous));
   const isOverride = override.model !== undefined || override.effort !== undefined;
-  if (climb.topReached && !(isOverride && operatorDecides)) {
+  if (climb.topReached && !(isOverride && operatorDecides) && !staysAtTop) {
     throw new TopRungReachedError(subject, tier, climb.topReached);
   }
   const { model, effort } = routeFor(tier, climb.rung, override);
@@ -429,7 +432,9 @@ export function respawnRoute(
  * for a repeat round or the retry of a killed one that failed, as
  * `fixRoundFailure` reads them (decision 92), with an override kept or named as
  * on a respawn. The conductor runs `pup fix` too, and an override it names
- * never lifts a top-rung refusal, as on its launches.
+ * never lifts a top-rung refusal, as on its launches. `staysAtTop` runs a round
+ * that would be refused there on the top rung again: the conductor's
+ * `--finding` round (decision 202), which the caller has vetted.
  */
 export function fixRoundRoute(
   db: Database,
@@ -437,6 +442,7 @@ export function fixRoundRoute(
   session: SessionRow,
   override: RouteOverride,
   overrideVia: 'operator' | 'conductor',
+  staysAtTop = false,
 ): SessionRoute {
   return sessionWindowRoute(
     db,
@@ -444,6 +450,7 @@ export function fixRoundRoute(
     () => windowFailureOf(db, paths, session, Date.now(), fixRoundFailure),
     override,
     overrideVia === 'operator',
+    staysAtTop,
   );
 }
 
@@ -459,6 +466,7 @@ function sessionWindowRoute(
   failureOf: () => ClimbReason | 'blocked' | undefined,
   override: RouteOverride,
   isOperator: boolean,
+  staysAtTop = false,
 ): SessionRoute {
   const named = override.model !== undefined || override.effort !== undefined;
   const kept =
@@ -476,6 +484,7 @@ function sessionWindowRoute(
     failureOf,
     named ? override : kept,
     named && isOperator,
+    staysAtTop,
   );
 }
 

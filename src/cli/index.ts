@@ -102,7 +102,7 @@ import { renderReportHtml } from '../core/report.service.js';
 import { buildRetro, retroWindowStart, writeRetro } from '../core/retro.service.js';
 import { formatRetro, serializeRetro } from '../core/retro-signals.service.js';
 import { buildReviewQueue, buildSessionReview } from '../core/review.service.js';
-import { asTier, taskTier } from '../core/routing.utils.js';
+import { asTier, FINDING_CLASSES, taskTier } from '../core/routing.utils.js';
 import {
   GateInterruptedError,
   sandboxLabel,
@@ -2926,11 +2926,39 @@ export function buildProgram(): Command {
     )
     .option('--model <model>', MODEL_OVERRIDE_DESCRIPTION)
     .option('--effort <effort>', EFFORT_OVERRIDE_DESCRIPTION)
-    .action(async (session: string, opts: RouteOverride) => {
+    .option(
+      '--finding <class>',
+      `the conductor's only: an open thread is a ${FINDING_CLASSES.join(' or ')} finding, so a round refused at the top rung runs there again`,
+    )
+    .action(async (session: string, opts: RouteOverride & { finding?: string }) => {
       const { repoPath, db } = project();
       // A session must not set off a worker kickoff built from reviewer text.
       if (callingSession(db)) {
         return refuse('`pup fix` is refused to sessions; the operator or the conductor runs it.');
+      }
+      const finding = FINDING_CLASSES.find((known) => known === opts.finding);
+      if (opts.finding !== undefined) {
+        if (finding === undefined) {
+          return refuse(
+            `\`--finding\` takes ${FINDING_CLASSES.join(' or ')}, not ` +
+              `${sanitizeReason(opts.finding)}. No fix round was started.`,
+          );
+        }
+        // It takes a round past the top rung, which only the operator decided
+        // until decision 202: the marker names the conductor, and the process
+        // tree, asked past the conductor's own window, must find no session's
+        // above the caller (decision 188).
+        const conductorWindow = windowLabel({ conductorOf: projectId(repoPath) });
+        if (
+          callingConductor() !== projectId(repoPath) ||
+          launchedAncestor(db, repoPath, conductorWindow) !== undefined
+        ) {
+          return refuse(
+            "`pup fix --finding` is the conductor's alone, and this caller is not it, or runs " +
+              "under a session's window, or `ps` could not tell; the operator lifts a top-rung " +
+              'refusal with `--model` and `--effort`. No fix round was started.',
+          );
+        }
       }
       let outcome: FixRoundOutcome;
       try {
@@ -2946,6 +2974,7 @@ export function buildProgram(): Command {
               sessionId: session,
               override: { model: opts.model, effort: opts.effort },
               overrideVia: callingConductor() ? 'conductor' : 'operator',
+              ...(finding === undefined ? {} : { finding }),
               wait: true,
             },
             progress,

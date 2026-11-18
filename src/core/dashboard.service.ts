@@ -40,6 +40,7 @@ import {
   asTier,
   type ClimbReason,
   climbFrom,
+  FINDING_CLASSES,
   fixRoundWindow,
   taskTier,
   windowFailure,
@@ -418,14 +419,21 @@ function dashboardRoute(
 /**
  * A session's route in one line, for `pup status`, `pup ui` and the web
  * dashboard alike: model and effort, the rung out of the ladder's, and why it
- * last climbed (decision 92).
+ * last climbed (decision 92), then who started the fix round the session is
+ * in and the finding that took it past the top rung, if one did (decision 202).
  */
 export function routeLabel(session: DashboardSession): string {
   const route = session.route;
-  if (!route) return '';
+  const round = session.fixRound;
+  const roundText = round
+    ? `fix round by the ${round.startedBy}` +
+      (round.finding ? `, past the top rung for a ${round.finding} finding` : '')
+    : '';
+  if (!route) return roundText;
   const climbed = route.reason ? ` after ${route.reason}` : '';
   const override = route.override ? ' (override)' : '';
-  return `${route.model} ${route.effort}, rung ${route.rung}/${route.rungs}${climbed}${override}`;
+  const rung = `${route.model} ${route.effort}, rung ${route.rung}/${route.rungs}${climbed}${override}`;
+  return roundText ? `${rung}; ${roundText}` : rung;
 }
 
 /**
@@ -994,6 +1002,9 @@ function dashboardSession(
   // stall the session has worked its way out of since.
   const deadTurn = stall && newestDeadTurn(events, stall.stalledAt);
   const route = dashboardRoute(row, topReached);
+  const fixRound = ['running', 'awaiting-review'].includes(row.state)
+    ? roundStarter(events)
+    : undefined;
   const rescoped = taskRescopes(db, row.task_id).flatMap((rescope) => rescope.added);
   return {
     // The store is session-writable and, since the fleet view (decision 60),
@@ -1027,6 +1038,7 @@ function dashboardSession(
     ...(lastGate ? { lastGate } : {}),
     ...(gateRefused ? { gateRefused } : {}),
     ...(route ? { route } : {}),
+    ...(fixRound === undefined ? {} : { fixRound }),
     recentEvents: events.slice(0, RECENT_EVENT_COUNT).reverse().map(dashboardEvent),
     // An open question idles the worker as surely as a block (decision 93).
     needsHuman:
@@ -1129,6 +1141,25 @@ function committedFixRound(
   if (!isOpenRound || !isBranchPast(repoPath, session.branch, pin)) return undefined;
   const endedAt = Date.parse(toIsoUtc(done.created_at));
   return Number.isFinite(endedAt) ? { ageMs: Math.max(0, now - endedAt) } : undefined;
+}
+
+/**
+ * Who started the CI fix round a session is in, and the finding the conductor
+ * named to take it past the top rung (decision 202): read off the newest of its
+ * `fix_round`, `merge`, `landed` and `retired` events, when that is a
+ * `fix_round`. The store is session-writable, so only a starter and a class
+ * pup writes are read back; a round from before that decision recorded none.
+ */
+function roundStarter(newestFirst: EventRow[]): DashboardSession['fixRound'] {
+  const marks = ['fix_round', 'merge', 'landed', 'retired'];
+  const row = newestFirst.find((event) => marks.includes(event.type));
+  if (row?.type !== 'fix_round') return undefined;
+  const event = decodeEvent(row);
+  if (event.type !== 'other') return undefined;
+  const { startedBy, finding } = event.fields;
+  if (startedBy !== 'operator' && startedBy !== 'conductor') return undefined;
+  const named = FINDING_CLASSES.find((known) => known === finding);
+  return { startedBy, ...(named === undefined ? {} : { finding: named }) };
 }
 
 /**

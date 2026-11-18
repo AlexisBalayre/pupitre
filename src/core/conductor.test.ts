@@ -217,6 +217,11 @@ describe('startConductor', () => {
     const [, prompt] = vi.mocked(kickoff).mock.calls[0] ?? [];
     expect(prompt).toContain('`pup ci wait <session-id>`');
     expect(prompt).toContain('run `pup fix <session-id>`');
+    // Decision 202: a top-rung refusal is reported unless the Models rule lets it through.
+    expect(prompt).toContain(
+      'A round refused at the top rung of its ladder is reported, unless the Models section ' +
+        'lets `--finding` run it.',
+    );
     expect(prompt).toContain('Stop pushing rounds for non-blocking minors alone');
     expect(prompt).toContain("ready for the operator's merge click");
     expect(prompt).toContain('Never merge on GitHub');

@@ -198,6 +198,7 @@ import { isConductorRunning } from '../core/conductor.service.js';
 import type { SessionState } from '../core/db.client.js';
 import { insertDecisionRecord } from '../core/decision-record.repository.js';
 import { DEFAULT_BASE_PROFILE } from '../core/default-profile.constants.js';
+import { startFixRound } from '../core/fix-round.service.js';
 import { insertLedgerEntry } from '../core/ledger.repository.js';
 import { MergeLockLostError } from '../core/merge-gate.errors.js';
 import { runMergeGate } from '../core/merge-gate.service.js';
@@ -3918,6 +3919,86 @@ describe('CLI commands', () => {
 
         expect(firstCall(runMergeGate)[1].acceptDebt?.acceptedBy).toBe('[2Jtg:alexis');
       });
+    });
+  });
+
+  // Decision 202: only the conductor, from its own window, names a finding's
+  // class to run a fix round past the top rung of its ladder.
+  describe('fix --finding', () => {
+    const NOT_CONDUCTOR =
+      "`pup fix --finding` is the conductor's alone, and this caller is not it, or runs " +
+      "under a session's window, or `ps` could not tell; the operator lifts a top-rung " +
+      'refusal with `--model` and `--effort`. No fix round was started.';
+
+    it('passes the class on from the conductor under its own window', async () => {
+      const repo = initRepo();
+      useCwd(repo);
+      vi.stubEnv('PUP_CONDUCTOR', projectId(repo));
+      underPane(conductorWindow);
+      vi.mocked(startFixRound).mockResolvedValue({
+        prUrl: 'https://x/pull/7',
+        head: 'c',
+        threads: 1,
+      });
+
+      await buildProgram().parseAsync(['fix', 's1', '--finding', 'wrong-result'], { from: 'user' });
+
+      expect(errors).toEqual([]);
+      expect(firstCall(startFixRound)[1]).toMatchObject({
+        sessionId: 's1',
+        override: {},
+        overrideVia: 'conductor',
+        finding: 'wrong-result',
+      });
+    });
+
+    it.each([
+      ['the operator', () => undefined],
+      [
+        'a session under its window, its marker forged',
+        (repo: string) => {
+          vi.stubEnv('PUP_CONDUCTOR', projectId(repo));
+          underPane(() => 'pup-s9');
+        },
+      ],
+      [
+        'a caller when `ps` fails',
+        (repo: string) => {
+          vi.stubEnv('PUP_CONDUCTOR', projectId(repo));
+          vi.mocked(listProcesses).mockReturnValue(undefined);
+        },
+      ],
+      [
+        "another project's conductor",
+        () => {
+          vi.stubEnv('PUP_CONDUCTOR', 'p-other');
+        },
+      ],
+    ])('refuses --finding to %s, starting nothing', async (_who, arrange) => {
+      const repo = initRepo();
+      useCwd(repo);
+      arrange(repo);
+
+      await buildProgram().parseAsync(['fix', 's1', '--finding', 'security'], { from: 'user' });
+
+      expect(errors).toEqual([NOT_CONDUCTOR]);
+      expect(process.exitCode).toBe(1);
+      expect(startFixRound).not.toHaveBeenCalled();
+    });
+
+    it('refuses a class it does not know, its control characters gone', async () => {
+      const repo = initRepo();
+      useCwd(repo);
+      vi.stubEnv('PUP_CONDUCTOR', projectId(repo));
+
+      await buildProgram().parseAsync(['fix', 's1', '--finding', 'style\u001b[2J'], {
+        from: 'user',
+      });
+
+      expect(errors).toEqual([
+        '`--finding` takes security or wrong-result, not style [2J. No fix round was started.',
+      ]);
+      expect(startFixRound).not.toHaveBeenCalled();
     });
   });
 });

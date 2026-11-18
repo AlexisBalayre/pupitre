@@ -79,7 +79,7 @@ import {
 } from './session-lifecycle.service.js';
 import { FIX_ROUND_EDGE } from './session-state.utils.js';
 import type { EventPayloads, SessionEvent } from './types/session-event.types.js';
-import type { RouteOverride } from './types/session-lifecycle.types.js';
+import type { FindingClass, RouteOverride } from './types/session-lifecycle.types.js';
 
 const FIX_USE: OriginUse = { command: '`pup fix`', untouched: 'No fix round was started.' };
 const NOT_STARTED = FIX_USE.untouched;
@@ -123,8 +123,15 @@ interface FixRoundRequest extends ProfileSource {
   sessionId: string;
   /** `--model`/`--effort` over the climbed rung's (decision 92). */
   override?: RouteOverride;
-  /** Who named `override`; only the operator's lifts a top-rung refusal. */
+  /** Who ran `pup fix`, recorded on the round; only the operator's override lifts a top-rung refusal. */
   overrideVia: 'operator' | 'conductor';
+  /**
+   * `--finding`: the conductor's word that an open thread is a security hole
+   * or a wrong result, which runs a round refused at the top rung there again
+   * (decision 202). Refused on any other round, from any other caller and
+   * beside an override.
+   */
+  finding?: FindingClass;
   /** Where the store's per-session files live; `~/.pupitre` unless a test moves them. */
   pathsBase?: string;
   /** Wait for a merge lock a live run holds, as `pup fix` does, rather than refuse (decision 88). */
@@ -268,6 +275,8 @@ export async function startFixRound(
         head,
         threads: threads.map((thread) => thread.id),
         ...(newest.length > 0 ? { newestComments: Object.fromEntries(newest) } : {}),
+        startedBy: req.overrideVia,
+        ...(req.finding === undefined ? {} : { finding: req.finding }),
       });
     },
     req.wait ? MERGE_LOCK_WAIT_MS : 0,
@@ -814,7 +823,12 @@ function reviewVerdict(
  * The fix round's route, on the rung before it unless it repeats a round or
  * retries one that failed (decision 92). A top-rung refusal is
  * reworded for this command: the respawn the session's refusal names is for a
- * running window, and a merged session has none.
+ * running window, and a merged session has none. The conductor's `--finding`
+ * runs that refused round on the top rung again (decision 202), and nothing
+ * else: it is refused on a round below the top, from the operator, and beside a
+ * named model or effort, which would pick a route past the ladder. It is asked
+ * only once a thread of the bot's is open, each of which is an important
+ * finding (decision 90).
  */
 function routeOrRefuse(
   db: Database,
@@ -822,19 +836,43 @@ function routeOrRefuse(
   session: SessionRow,
   req: FixRoundRequest,
 ): SessionRoute {
+  const id = sanitizeReason(session.id);
+  const override = req.override ?? {};
+  if (req.finding !== undefined) {
+    if (req.overrideVia !== 'conductor') {
+      throw new Error(
+        "`--finding` is the conductor's; the operator lifts a top-rung refusal with " +
+          `\`pup fix ${id} --model <model> --effort <effort>\`. ${NOT_STARTED}`,
+      );
+    }
+    if (override.model !== undefined || override.effort !== undefined) {
+      throw new Error(
+        '`--finding` keeps the round on the top rung of its ladder, so it takes no ' +
+          `\`--model\` or \`--effort\`. ${NOT_STARTED}`,
+      );
+    }
+  }
+  let route: SessionRoute | undefined;
   try {
-    return fixRoundRoute(db, paths, session, req.override ?? {}, req.overrideVia);
+    route = fixRoundRoute(db, paths, session, override, req.overrideVia);
   } catch (error) {
     if (!(error instanceof TopRungReachedError)) throw error;
-    const id = sanitizeReason(session.id);
+  }
+  if (route !== undefined && req.finding !== undefined) {
     throw new Error(
-      `Session ${id}'s worker ran on the top rung of its ladder, and this round follows a ` +
-        'round the gate already merged, or retries one that failed, which climbs one, so pup ' +
-        "does not start it there. It is the operator's to decide: " +
-        `\`pup fix ${id} --model <model> --effort <effort>\`, or fix the PR by hand. ` +
-        NOT_STARTED,
+      `Session ${id}'s round is not refused at the top rung of its ladder, and \`--finding\` ` +
+        `lifts only that refusal: run \`pup fix ${id}\` without it. ${NOT_STARTED}`,
     );
   }
+  if (route !== undefined) return route;
+  if (req.finding !== undefined) return fixRoundRoute(db, paths, session, {}, 'conductor', true);
+  throw new Error(
+    `Session ${id}'s worker ran on the top rung of its ladder, and this round follows a ` +
+      'round the gate already merged, or retries one that failed, which climbs one, so pup ' +
+      "does not start it there. It is the operator's to decide: " +
+      `\`pup fix ${id} --model <model> --effort <effort>\`, or fix the PR by hand. ` +
+      NOT_STARTED,
+  );
 }
 
 /**

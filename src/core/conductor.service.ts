@@ -63,7 +63,8 @@ export const CI_REVIEW_LOOP = [
   '3. Open threads (`→ pup fix <session-id>`): run `pup fix <session-id>`. When its worker is ' +
     'done, review and gate it with `pup merge <session-id> --pr` as any finished session, then ' +
     'back to 1. pup replies on each thread and resolves the ones the worker fixed; you never ' +
-    'reply, comment or resolve on GitHub yourself.',
+    'reply, comment or resolve on GitHub yourself. A round refused at the top rung of its ' +
+    'ladder is reported, unless the Models section lets `--finding` run it.',
   '4. Stop pushing rounds for non-blocking minors alone: the minor issues in the review body ' +
     'never take a round. A review with no open thread is not sent back for them.',
   "5. A clean review (`→ ready for the operator's merge click`): report the PR to the operator " +

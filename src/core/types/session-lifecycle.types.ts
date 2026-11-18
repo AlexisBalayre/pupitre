@@ -21,6 +21,12 @@ export interface RouteOverride {
   effort?: string;
 }
 
+/**
+ * The class of finding the conductor names on `pup fix --finding`, the only
+ * kind that takes a round past the top rung of a session's ladder (decision 202).
+ */
+export type FindingClass = 'security' | 'wrong-result';
+
 export interface LaunchTaskRequest {
   repoPath: string;
   base: ProfileLayer;
