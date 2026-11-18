@@ -21,16 +21,19 @@
     runs:
     - at the top of the gate's fresh-base stage, before any git runs in the worktree, on the
       rebase and the merge paths and when the branch is already based. The stage fails,
-      naming the file, and tells the worker to finish or abort the operation, or to delete the
-      file if none is in progress;
+      naming the file. It tells the session itself to finish or abort the operation, or to
+      delete the file if none is in progress, and anyone else to delete it without running
+      git in that worktree;
     - in `landUnderLock`, after the already-landed check and before the fetch, so the refusal
       moves no ref and the teardown runs no git under that state. The operator reads the
       message, with "Nothing was landed.", and it tells them only to delete the entry without
       running git in that worktree. Their git runs outside the worker sandbox (decision 191),
       so an abort there would move whatever ref the planted `head-name` names, `main` included,
       to the planted `orig-head`, and a `--continue` would run a planted todo's `exec` lines.
-      The gate's message goes to the worker, whose own abort or continue gains it no rights it
-      lacks, so it still offers them.
+      The gate's message is steered to the worker, whose own abort or continue gains it no
+      rights it lacks, so it offers them to the session. `pup merge` and `pup review` print
+      the same report to the operator or conductor, and a session blocked at the reject cap
+      hands it to a human, all unsandboxed, so it tells anyone but the session to delete only.
       A worktree that is already gone has no admin dir and passes.
     `CHERRY_PICK_HEAD`, `REVERT_HEAD` and `BISECT_*` are not checked: neither the rebase, its
     abort, the plumbing merge nor the teardown reads them.

@@ -2272,9 +2272,11 @@ async function gateAndMerge(
         status: 'fail',
         detail:
           `${sanitizeReason(inProgress)} is in this worktree's git dir: a rebase, merge, ` +
-          'cherry-pick or revert is in progress, and the gate runs no git through it. Finish ' +
-          'it, or abort it (`git rebase --abort`, `git merge --abort`, `git cherry-pick ' +
-          '--abort`), or delete the file if no git operation is in progress, then commit.',
+          'cherry-pick or revert is in progress, and the gate runs no git through it. The ' +
+          'session itself may finish or abort it, or delete the file if none is in progress, ' +
+          'then commit. Anyone else should delete it without running git in that worktree: an ' +
+          'abort or continue there acts on its head-name, orig-head and todo with their rights ' +
+          'and can move any branch, main included.',
       }),
     );
     return failed();

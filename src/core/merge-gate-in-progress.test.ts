@@ -80,6 +80,8 @@ describe('fresh-base over rebase or merge state in the worktree (decision 204)',
       const stage = outcome.report.stages.find((entry) => entry.stage === 'fresh-base');
       expect(stage?.status).toBe('fail');
       expect(stage?.detail).toContain(`${planted} is in this worktree's git dir`);
+      // `pup merge`, `pup review` and a blocked session show it to unsandboxed readers.
+      expect(stage?.detail).toContain('Anyone else should delete it without running git');
       expect(revParse(repo, BRANCH)).toBe(tip);
       expect(revParse(repo, 'main')).toBe(target);
     },
