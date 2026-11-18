@@ -269,3 +269,19 @@
     the operator edits outside a rescope. *Tests.* The refusal table takes each extglob
     character alone and in the two forms above, and the `.` and empty-segment globs; the
     `.husky` and `scripts/pre-commit` entries are one refusal and the table reads them so.
+    *Amendment (2026-11-17, #375): a bare `+` or `@` is accepted, and a leading `:` is
+    refused.* The amendment above refused `+` and `@` with the other extglob characters,
+    which cost a project its `@scope` package directories and route files named `+page`.
+    An extglob matcher reads `+` and `@` as syntax only before a `(`, which is refused, so
+    `src/routes/+page.svelte` and `packages/@acme/ui/**` pass while `+(a)` and `@(a)` stay
+    refused through their `(`; the sentence that such a project names them outside a
+    rescope no longer holds. The refused metacharacters are now `[`, `]`, `{`, `}`, `\`,
+    `(`, `)`, `|` and `!`, in one refusal. `!` stays refused anywhere, not only before a
+    `(`, since a leading one negates the whole glob in minimatch, picomatch and gitignore.
+    A glob starting with `:` is refused too: git reads it as pathspec magic (`:^src`,
+    `:!src`), which excludes rather than names. An empty glob, an absolute one and one with
+    a `.` or an empty segment are refused by the one segment check and share its message,
+    since an empty or absolute glob has an empty segment; the first-segment wildcard and
+    `..` refusals are unchanged. *Tests.* The refusal table takes `!docs/x`, `*(a)`,
+    `?(a)` and `:^src`, the plain-path test takes `src/routes/+page.svelte` and
+    `packages/@acme/ui/**`, and a matcher test holds that pup reads a bare `+` literally.
