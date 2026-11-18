@@ -1,0 +1,146 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-18T16:21:14.829Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "44345097515",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/44345097515",
+  "actor": "AlexisBalayre",
+  "commit_sha": "b9f4080c6f374cb0ce3daad423e63f3cf2085509",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 388,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "simplicity",
+    "guards"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "simplicity",
+    "guards"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "docs/adr/0205-the-gate-s-history-reads-ignore-a-planted-info.md",
+      "line": "14-25",
+      "description": "The ADR's list of what reads history outside the sandbox leaves out the conductor's security-review git (`securityReviewGit` in profile-compiler.service.ts). That git does not go through runGit and has neither GIT_GRAFT_FILE nor GIT_SHALLOW_FILE (nor core.commitGraph=false). A planted info/grafts can therefore shrink the three-dot diff the security reviewer reads to a harmless subset of the branch while the gate, which is pinned, still merges the whole branch.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "docs/adr/0205-the-gate-s-history-reads-ignore-a-planted-info.md",
+      "line": "39-40",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "'A planted `shallow` file can only cut the branch off the target, so the review finds no merge base and fails closed' is not true in general. Removing parent edges can move the merge base onto an older commit instead of leaving none. Trigger: the target tip is a merge whose second-parent line forks below the branch's fork point, and a shallow edge cuts the first-parent commit above that fork. The merge base then drops to the older fork, and a file that was reverted on main between the two forks and re-added on the branch has the same content at the base and the tip, so the diff hides it. The pin now covers this case. Only the description of the old exposure is too narrow, and it understates how much the unpinned review could miss.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "1829-1832",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`securityReviewGit` now writes `GIT_GRAFT_FILE=/dev/null/no-grafts` and `GIT_SHALLOW_FILE=/dev/null/no-shallow` as string literals. `GIT_HISTORY_ENV` in src/core/git-diff.client.ts L571-576 already holds those same two values, so the next change to the sentinel paths has to be made in two places. Export `GIT_HISTORY_ENV` and build the shell prefix from it (`Object.entries(GIT_HISTORY_ENV).map(([k, v]) => `${k}=${v}`)`). That also removes the `GIT_NO_LAZY_FETCH=1` literal.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler-context.test.ts",
+      "line": "1158-1168",
+      "area": "simplicity",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The new test repeats the 8-line scrubbed `env` object (every `GIT_*` variable filtered out, then the config, author and committer pins) that the prior test at L1096-1104 builds identically, along with its `git` helper, so the two copies have to be kept in sync by hand. Lift `env` into a `describe`-scope constant that both tests reuse.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "1746-1753",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "The security review's diff command never pins `diff.submodule` (no `-c diff.submodule=short`, no `--submodule=short`). A session can set `diff.submodule=diff` in the shared config and bump a gitlink on its branch. The review's diff then spawns a child `git diff` in `<common>/modules/<name>`, which does not inherit `--no-ext-diff`/`--no-textconv`, so that repo's `diff.external` runs in the reviewer's Bash outside the sandbox. Decision 203 pinned this for runGit in `GIT_SAFE_CONFIG`. Fix: add `'-c diff.submodule=short'` to securityReviewGit.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Skipped: review-context (no spec, protocol or infra surface), review-spec (no closing issue or spec source), review-workflow-safety (no workflow change), review-maintainability (off the default roster). No important findings survived, so no validators were spawned."
+    },
+    {
+      "component": "security",
+      "description": "bash scripts/adr-index.sh was refused under the CI lock, so the reviewer found ADRs 0089, 0191 and 0203 with Glob/Grep instead. It may have missed another ADR that already accepts the pre-existing diff.submodule finding."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.2973405000000002,
+  "duration_ms": 225268,
+  "num_turns": 15,
+  "tokens": {
+    "input": 14,
+    "output": 11422,
+    "cache_read": 332665,
+    "cache_creation": 54949,
+    "total": 399050
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 76,
+      "output": 39529,
+      "cache_read": 1292116,
+      "cache_creation": 159891,
+      "cost_usd": 2.0136092000000003
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 40,
+      "output": 7301,
+      "cache_read": 235346,
+      "cache_creation": 74567,
+      "cost_usd": 0.2830421
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 169,
+      "cache_read": 0,
+      "cache_creation": 4836,
+      "cost_usd": 0.0006892000000000001
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "bash /home/runner/work/pupitre/pupitre/scripts/adr-index.sh"
+    }
+  ]
+}
