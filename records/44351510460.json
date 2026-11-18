@@ -1,0 +1,103 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-18T16:50:49.065Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "44351510460",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/44351510460",
+  "actor": "AlexisBalayre",
+  "commit_sha": "7e286049ba262c91e9883b0f54079e21bf3a00f5",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 389,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "docs",
+    "conventions",
+    "guards"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "docs",
+    "conventions",
+    "guards"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "simplicity",
+    "workflow-safety"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "96ba1e515ec578a3ae67cb7bc2707db69f9448bc",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "2273-2277",
+      "description": "The fresh-base refusal tells the reader to run `git rebase --abort` (and `git merge --abort`, `git cherry-pick --abort`) in the worktree. `pup merge` and `pup review` also print that detail to the conductor or operator, who run git unsandboxed. An abort over a planted `rebase-merge/` there moves the ref `head-name` names, `main` included, to the planted `orig-head`. This is the hazard 5718a94 fixed in the land message.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "2347-2351",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "The fresh-base detail \"Auto-rebase failed and so did its abort\" still tells every reader to run `git rebase --abort` in the worktree. That is the advice this PR removed from the in-progress-state message. The same report reaches `pup merge`/`pup review` operators and humans handed a blocked session, all outside the sandbox. Their abort runs over rebase state the live session can write (decision 120), so it can move any branch, main included.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Incremental round 3 over a 3-file, 21-line delta. Context and maintainability were not spawned because their gates did not hold. Spec did not run (no closing issue), nor workflow-safety (no workflow change), nor simplicity (the delta adds no file, helper, option or branch). The consolidator was skipped because only one finding came back."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.9798398,
+  "duration_ms": 86404,
+  "num_turns": 14,
+  "tokens": {
+    "input": 12,
+    "output": 5934,
+    "cache_read": 260467,
+    "cache_creation": 43061,
+    "total": 309474
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 36,
+      "output": 13059,
+      "cache_read": 364419,
+      "cache_creation": 71792,
+      "cost_usd": 0.8223508
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 24,
+      "output": 3723,
+      "cache_read": 131860,
+      "cache_creation": 42810,
+      "cost_usd": 0.157489
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "git -C /home/runner/work/pupitre/pupitre diff 96ba1e515ec578a3ae67cb7bc2707db69f9448bc..HEAD"
+    }
+  ]
+}
