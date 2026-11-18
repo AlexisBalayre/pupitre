@@ -2339,15 +2339,26 @@ async function gateAndMerge(
           rethrowIfKilled(abortError);
           // A rebase that never started, or an abort a lock held off, may leave
           // the worktree mid-rebase on a detached HEAD: no merge goes over it.
+          // Unsandboxed readers get the report too, so only the session is
+          // offered git there (decision 204).
           const onto = shellWord(`refs/heads/${sanitizeReason(target)}`);
+          const left = inProgressGitState(worktreeEnv.GIT_DIR);
+          const state = left
+            ? `${sanitizeReason(left)} is left in this worktree's git dir`
+            : `no rebase state is left in ${sanitizeReason(worktreeEnv.GIT_DIR)}, but HEAD may ` +
+              `not be on ${session.branch}`;
           stages.push(
             timedSince(started, {
               stage: 'fresh-base',
               status: 'fail',
               detail:
-                `Auto-rebase onto ${sanitizeReason(target)} failed and so did its abort. Run ` +
-                `\`git rebase --abort\` if a rebase is still in progress, then \`git merge ` +
-                `${onto}\`, resolve any conflicts, and commit the merge.\n` +
+                `Auto-rebase onto ${sanitizeReason(target)} failed and so did its abort: ` +
+                `${state}. The session itself may finish or abort any rebase still in ` +
+                `progress, check out ${session.branch}, then \`git merge ${onto}\`, resolve ` +
+                'any conflicts, and commit the merge. Anyone else should inspect that state ' +
+                'without running git in that worktree, or delete it: an abort or continue ' +
+                'there acts on its head-name, orig-head and todo with their rights and can ' +
+                'move any branch, main included.\n' +
                 `${commandFailureDetail(error)}\n${commandFailureDetail(abortError)}`,
             }),
           );

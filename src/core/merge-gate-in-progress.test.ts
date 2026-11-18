@@ -1,4 +1,4 @@
-import { mkdirSync, realpathSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -86,4 +86,18 @@ describe('fresh-base over rebase or merge state in the worktree (decision 204)',
       expect(revParse(repo, 'main')).toBe(target);
     },
   );
+});
+
+// Every gate and land report reaches readers whose git runs outside the
+// sandbox, over state the session can write (decision 204): no message there
+// names an abort. The source is read with adjacent string literals joined, so
+// a command split across a `+` is caught too.
+describe('gate and land messages name no abort command (decision 204)', () => {
+  it.each(['merge-gate.service.ts', 'land.service.ts'])('%s names none', (file) => {
+    const source = readFileSync(join(import.meta.dirname, file), 'utf8').replace(
+      /['`]\s*\+\s*['`]/g,
+      '',
+    );
+    expect(source).not.toMatch(/\b(?:rebase|merge|cherry-pick)\s+--abort\b/);
+  });
 });
