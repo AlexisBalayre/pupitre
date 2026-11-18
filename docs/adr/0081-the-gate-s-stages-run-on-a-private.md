@@ -86,12 +86,17 @@
     `yarn --cwd <root> install`, an install the operator had already run, which writes no
     `node_modules` and so refused on every merge (CI review of b1aaa770); it now names the
     cause, a Plug'n'Play install the gate cannot link, and the two ways out: commit the
-    Plug'n'Play files, or set `nodeLinker: node-modules`. The walk up to the owning lockfile
+    Plug'n'Play files, or set `nodeLinker: node-modules`. A remeasure's stand-in holds only
+    the target's tracked files, never a gitignored runtime, so the cause is named from the
+    main checkout's runtime too; that runtime never skips the refusal, since past the target
+    the main checkout holds the session's own merge. The walk up to the owning lockfile
     ends where `dirname` stops changing, so an absolute directory ends at `/` instead of
     looping, and a manifest dependency named `''`, `.`, `..` or with more segments than
     `@scope/name`, which would name `node_modules` itself or a directory above it, resolves
     from nothing. *Tests.* `uninstalled-dependency.test.ts` holds a runtime in both checkouts
     passing, one only the branch holds and one beside a pnpm lockfile refused with the
-    install, one only the main checkout holds refused with the Plug'n'Play cause, each bad
+    install, one only the main checkout holds refused with the Plug'n'Play cause, in a merge
+    and in a remeasure, one only the main checkout and the branch hold refused in a
+    remeasure, one the stand-in and the branch hold passing, each bad
     name refused, a scoped name passing, and the walk ending on an absolute path; the gate's
     checkout tests refuse a branch that commits the runtime.

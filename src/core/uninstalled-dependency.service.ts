@@ -109,9 +109,10 @@ function isPackageName(name: string): boolean {
  * cache, and the install this would name writes none to clear the refusal.
  * The runtime is looked for in `config`, never in the pinned tree alone,
  * which the session writes and could commit one to so as to skip the
- * refusal at will. When the pinned tree lacks it, as a repo that gitignores
- * `.pnp.*` has, the refusal names a Plug'n'Play install the gate cannot
- * link, not an install the operator already ran. A
+ * refusal at will. When either lacks it, as a repo that gitignores `.pnp.*`
+ * has, and so a remeasure's stand-in, which holds only tracked files, the
+ * refusal names a Plug'n'Play install the gate cannot link, found in
+ * `config` or the main checkout, not an install the operator already ran. A
  * dependency whose name is no package name resolves from nothing.
  * `linkEnvironment` would link nothing, and the stage would fail on a runner
  * it cannot find, which reads as the branch's fault. It throws, like a
@@ -150,12 +151,21 @@ export function refuseUninstalled(
           'remeasure again',
         ];
   // Yarn's Plug'n'Play runtime resolves from its cache and no install writes
-  // a `node_modules`: the stages resolve through the one the pinned tree holds.
-  if (lock?.manager.name === 'yarn' && holdsPnpRuntime(config, lock.dir)) {
-    if (holdsPnpRuntime(checkout, lock.dir)) return;
+  // a `node_modules`: the stages resolve through the one the pinned tree holds,
+  // trusted only beside one in `config`. A remeasure's stand-in holds only
+  // tracked files, never a gitignored runtime, so the main checkout's names
+  // the cause too; it never skips the refusal, since past the target it holds
+  // the session's own merge.
+  if (
+    lock?.manager.name === 'yarn' &&
+    [config, repoPath].some((root) => holdsPnpRuntime(root, lock.dir))
+  ) {
+    const pinned = holdsPnpRuntime(checkout, lock.dir);
+    if (pinned && holdsPnpRuntime(config, lock.dir)) return;
     throw new Error(
       `${quotePath(pkg.dir)} resolves through the Yarn Plug'n'Play install in ` +
-        `${quotePath(lock.dir)}, whose .pnp.cjs the pinned tree does not commit; the gate ` +
+        `${quotePath(lock.dir)}, whose .pnp.cjs ${pinned ? 'the target' : 'the pinned tree'} ` +
+        `does not commit; the gate ` +
         `links only a ${GATE_ENVIRONMENT_DIR}, so its ${stages} cannot find their tools; ` +
         `${outcome}. Another \`yarn install\` does not clear this: commit the Plug'n'Play ` +
         `files (zero-installs), or set \`nodeLinker: node-modules\` in its .yarnrc.yml and ` +

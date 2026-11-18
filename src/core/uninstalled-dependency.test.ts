@@ -23,12 +23,12 @@ describe('refuseUninstalled', () => {
   // branch, which the session wrote.
   let repo: string;
   let checkout: string;
-  const declare = (dependencies: Record<string, string>): void =>
-    write(repo, 'tools/review/package.json', JSON.stringify({ devDependencies: dependencies }));
-  const yarnWorkspace = (): void => {
-    write(repo, 'package.json', JSON.stringify({ workspaces: ['tools/*'] }));
-    write(repo, 'yarn.lock', '__metadata:\n  version: 8\n');
-    declare({ vitest: '^3.0.0' });
+  const declare = (dependencies: Record<string, string>, root = repo): void =>
+    write(root, 'tools/review/package.json', JSON.stringify({ devDependencies: dependencies }));
+  const yarnWorkspace = (root = repo): void => {
+    write(root, 'package.json', JSON.stringify({ workspaces: ['tools/*'] }));
+    write(root, 'yarn.lock', '__metadata:\n  version: 8\n');
+    declare({ vitest: '^3.0.0' }, root);
   };
   const refuse = (): void => refuseUninstalled(repo, repo, checkout, MEMBER);
 
@@ -74,6 +74,41 @@ describe('refuseUninstalled', () => {
       expect(refuse).toThrow(
         /tools\/review resolves through the Yarn Plug'n'Play install in \., whose \.pnp\.cjs the pinned tree does not commit.*nothing was merged\. Another `yarn install` does not clear this/,
       );
+    });
+
+    // A remeasure's stand-in is a checkout of the target's tracked files, so a
+    // gitignored runtime is only ever in the main checkout.
+    describe('in a remeasure', () => {
+      let standIn: string;
+      const remeasure = (): void => refuseUninstalled(repo, standIn, checkout, MEMBER);
+
+      beforeEach(() => {
+        standIn = tempDir('pup-uninstalled-stand-in-');
+        yarnWorkspace();
+        yarnWorkspace(standIn);
+        write(repo, '.pnp.cjs');
+      });
+
+      it("names the Plug'n'Play install the gate cannot link, not another install", () => {
+        expect(remeasure).toThrow(
+          /whose \.pnp\.cjs the pinned tree does not commit.*nothing was landed\. Another `yarn install` does not clear this.*then remeasure again/,
+        );
+      });
+
+      // Past the target the main checkout holds the session's own merge: its
+      // runtime names the cause but never skips the refusal.
+      it('refuses a member whose runtime the stand-in lacks, though the branch commits one', () => {
+        write(checkout, '.pnp.cjs');
+
+        expect(remeasure).toThrow(/whose \.pnp\.cjs the target does not commit/);
+      });
+
+      it('runs a zero-install member whose runtime the stand-in and the branch hold', () => {
+        write(standIn, '.pnp.cjs');
+        write(checkout, '.pnp.cjs');
+
+        expect(remeasure).not.toThrow();
+      });
     });
   });
 
