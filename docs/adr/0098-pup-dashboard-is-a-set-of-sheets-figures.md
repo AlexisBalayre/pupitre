@@ -93,3 +93,33 @@
     Debt sheet cannot render, a baseline of `1e999` shows as unmeasured with no
     NaN, every chart draws no NaN for infinite values or ±1e308, and the bounded history lists
     the newest captures oldest first.
+    *Amendment (2026-11-18, the PR from branch `pup/t-mwmd07sf`, Dashboard audit task 1 of 3).*
+    The Overview is a "Now" page: what to act on leads, and the figures come after it. It opens on
+    one status strip: sessions running, awaiting review and needing the operator, open PRs, and the
+    verdict line `pup status` prints under `Launch:` (`launchRoomLines` over `launchRoom` and
+    `launchHolds`) with the load beside it, to one decimal, so the board now changes when the load
+    does. Then Needs you, each line's answer beside its reason and the way to act on it; then the
+    live sessions; then the open PRs' count. Only a merged session has a PR open and a merged
+    session has no other Needs you line, so every open PR has its own line there, its link as the
+    answer, its CI review state and debt beneath, and is not listed again. The conductor, Planned, the goal,
+    the four figure tiles and the Delivery charts follow, in that order. A tile prints its value,
+    change and sparkline: the page hides a tile's figure line (`.tile figcaption`), and the
+    sparkline's SVG `<title>` still names every capture on hover. Planned prints the count, the
+    first three tasks in queue order with their launch, and a link to the Tasks sheet for the rest.
+    Goals on a card, and a Needs you question that links to its session's view, are cut at the last
+    word boundary within 100 characters with an ellipsis (`clipWords`), never mid-word; the whole
+    text is on the session's view or the Tasks sheet. The conductor's question and an unminted
+    session's have no view and print whole, as do the reasons pup builds, so a merge line keeps its
+    decision-188 `scope widened after launch` globs and count. A session row with an open question points at its Needs you line rather than
+    printing the question twice. The page title leads with the sheet's name (`Overview — pup
+    dashboard`), set in the shell before any board arrives. To keep the page short, a session row
+    prints its facts on one line, a Planned task and the conductor sit on one row with their
+    actions, the verdict is a plain line under the strip's counts, and the dashboard's column is
+    960 px wide with 20 px between sections, over the shared shell's 760 px and 28 px. On this
+    repository's data at 1512x812 the Overview measured about 1,460 px and 300 words, the strip and
+    Needs you within the first screen. The page stays read-only apart from its
+    existing actions (decisions 91, 188). Tests in `web-dashboard.test.ts`: the strip's counts and
+    verdict with an injected steady load (`startWebDashboard`'s `load`, which keeps the stream
+    quiet on an unchanged store), the section order, a PR session listed once, Planned capped at
+    three with its count and link, goals and questions cut at a word, the tile figure line hidden,
+    and every sheet's title naming the sheet first.

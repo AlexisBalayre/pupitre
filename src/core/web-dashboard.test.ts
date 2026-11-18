@@ -14,6 +14,7 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   capturePane: vi.fn(() => ''),
   hasConductorWindow: vi.fn(() => false),
   conductorPane: vi.fn(() => undefined),
+  conductorRun: vi.fn(() => 'run-1'),
   readInputBoxLook: vi.fn(() => ({ state: 'empty', draft: '' })),
 }));
 // Real unless a test holds one action open, to see what a shutdown does meanwhile.
@@ -33,6 +34,7 @@ import {
 import { formatDebtTransition } from './audit.service.js';
 import { appendBaselineHistory } from './baseline-history.repository.js';
 import { briefPath } from './brief.service.js';
+import { markConductorQuestion } from './conductor.service.js';
 import { buildDashboardSnapshot, needsYou } from './dashboard.service.js';
 import type { SessionState } from './db.client.js';
 import { openStore } from './db.client.js';
@@ -51,16 +53,19 @@ import {
   transitionSession,
 } from './session.repository.js';
 import { STALLED_AFTER_MS } from './session-activity.constants.js';
+import { launchHolds, launchRoom, launchRoomLines } from './session-cap.service.js';
 import {
   type DashboardBind,
   startWebDashboard,
   type WebDashboard,
 } from './web-dashboard.service.js';
 import { ACTIONS, runAction } from './web-dashboard-actions.service.js';
-import { escapeHtml } from './web-dashboard-sheet.utils.js';
+import { clipWords, escapeHtml } from './web-dashboard-sheet.utils.js';
 
 const POLL_MS = 300;
 const PR = 'https://github.com/o/r/pull/7';
+/** A load that holds still, so the Overview's launch line moves only with the store. */
+const steadyLoad = () => ({ average: 0.5, cores: 8 });
 
 /** The dashboards the tests started, by the port each one's url names. */
 const servers = new Map<number, Server>();
@@ -261,7 +266,7 @@ describe('startWebDashboard', () => {
     repo = tempDir('pup-web-');
     ensureProject(db, projectId(repo), repo);
     secret = undefined;
-    dashboard = await startWebDashboard(db, repo, { pollMs: POLL_MS, bind });
+    dashboard = await startWebDashboard(db, repo, { pollMs: POLL_MS, load: steadyLoad, bind });
     secret = handedTo(await get(dashboard.url));
   });
 
@@ -338,7 +343,7 @@ describe('startWebDashboard', () => {
         .spyOn(Server.prototype, 'address')
         .mockReturnValue({ address: '127.0.0.1', family: 'IPv4', port: 41234 });
       try {
-        const other = await startWebDashboard(db, repo, { pollMs: POLL_MS });
+        const other = await startWebDashboard(db, repo, { pollMs: POLL_MS, load: steadyLoad });
         await other.close();
 
         expect(listen).toHaveBeenCalledWith(0, '127.0.0.1', expect.any(Function));
@@ -351,7 +356,7 @@ describe('startWebDashboard', () => {
 
     it('prints a loopback url with a random token', async () => {
       const url = address();
-      const other = await startWebDashboard(db, repo, { pollMs: POLL_MS, bind });
+      const other = await startWebDashboard(db, repo, { pollMs: POLL_MS, load: steadyLoad, bind });
       try {
         expect(url.hostname).toBe('127.0.0.1');
         expect(url.searchParams.get('token')).toMatch(/^[\w-]{43}$/);
@@ -365,13 +370,13 @@ describe('startWebDashboard', () => {
     });
 
     it("hands the page the url's token opened a secret, once, kept out of cookies, and takes the token out of the address bar", async () => {
-      const other = await startWebDashboard(db, repo, { pollMs: POLL_MS, bind });
+      const other = await startWebDashboard(db, repo, { pollMs: POLL_MS, load: steadyLoad, bind });
       try {
         const opened = await get(`${other.url}&sheet=debt`, NO_SECRET);
         const handed = String(handedTo(opened));
 
         expect(opened.status).toBe(200);
-        expect(opened.body).toContain('<title>pup dashboard — Debt</title>');
+        expect(opened.body).toContain('<title>Debt — pup dashboard</title>');
         expect(handed).toMatch(/^[\w-]{43}$/);
         expect(handed).not.toBe(new URL(other.url).searchParams.get('token'));
         expect(opened.headers['set-cookie']).toBeUndefined();
@@ -440,7 +445,7 @@ describe('startWebDashboard', () => {
     });
 
     it('spends the token only on a page it served, so a first load it could not answer leaves it good', async () => {
-      const other = await startWebDashboard(db, repo, { pollMs: POLL_MS, bind });
+      const other = await startWebDashboard(db, repo, { pollMs: POLL_MS, load: steadyLoad, bind });
       try {
         const missing = await get(`${other.url}&sheet=releases`, NO_SECRET);
         const opened = await get(other.url, NO_SECRET);
@@ -586,8 +591,21 @@ describe('startWebDashboard', () => {
         expect(page).toContain(escapeHtml(need.answer));
       }
       expect(page).not.toContain(escapeHtml('pup review s-review'));
-      expect(at('Needs you')).toBeLessThan(at('Conductor'));
-      expect(at('Conductor')).toBeLessThan(at('Sessions'));
+      // What to act on first, then what is running and what waits to land;
+      // the goal and the figures after all of it.
+      const order = [
+        '<section class="strip">',
+        '<h2>Needs you',
+        '<h2>Sessions',
+        '<h2>Open pull requests',
+        '<h2>Conductor',
+        '<h2>Planned',
+        '<h2>Goal',
+        '<h2>Figures',
+        '<h2>Delivery',
+      ].map((heading) => page.indexOf(heading));
+      expect(order.every((index) => index > 0)).toBe(true);
+      expect([...order].sort((a, b) => a - b)).toEqual(order);
       // The conductor, attach command included: only the operator serves this page.
       expect(page).toContain(escapeHtml(snapshot.conductor.attachCommand));
       // Live sessions grouped by state; finished ones left to history, as `pup status` does.
@@ -600,10 +618,15 @@ describe('startWebDashboard', () => {
       );
       expect(page).not.toContain('<span class="sid">s-done</span>');
       expect(page).toContain('last steer: kickoff by conductor');
-      // The open PR, as a link, with its CI review state and the debt it filed.
-      expect(page).toContain(`<a href="${PR}" target="_blank" rel="noopener noreferrer">`);
-      expect(page).toContain('CI review: re-gated after 1 fix round; last gate: passed at');
-      expect(page).toMatch(/debt #1: Oversize diff \(812 lines\) merged from session s-pr/);
+      // The open PR on its Needs you line, as a link, with its CI review state
+      // and the debt it filed; Open pull requests does not list it again.
+      const prLine = page.slice(page.indexOf('need-pr-open'));
+      const prRow = prLine.slice(0, prLine.indexOf('</li>'));
+      expect(prRow).toContain(`<a href="${PR}" target="_blank" rel="noopener noreferrer">`);
+      expect(prRow).toContain('CI review: re-gated after 1 fix round; last gate: passed at');
+      expect(prRow).toMatch(/debt #1: Oversize diff \(812 lines\) merged from session s-pr/);
+      expect(page.match(/<span class="sid">s-pr<\/span>/g)).toHaveLength(1);
+      expect(page).toContain('1 open, each listed under Needs you.');
       // The planned task; the open ledger, overdue marked, is the Debt sheet's.
       expect(page).toContain('t-planned');
       expect(page).not.toContain('accepted by alexis');
@@ -618,6 +641,136 @@ describe('startWebDashboard', () => {
       const page = await readPage(home());
 
       expect(page).toContain(escapeHtml('pup review s-review then pup merge s-review --pr'));
+    });
+
+    it('opens on one status strip: the counts, then the launch verdict with the load', async () => {
+      seedSession('s-run', ['running']);
+      seedSession('s-review', ['running', 'awaiting-review']);
+      seedMerge('s-pr', PR);
+
+      const page = await readPage(home());
+      const snapshot = buildDashboardSnapshot(db, repo, Date.now());
+      const start = page.indexOf('<section class="strip">');
+      const strip = page.slice(start, page.indexOf('</section>', start));
+      const [verdict] = launchRoomLines(launchRoom(db, repo, steadyLoad()), launchHolds(repo));
+
+      expect(start).toBeGreaterThan(0);
+      expect(start).toBeLessThan(page.indexOf('<h2>Needs you'));
+      expect(strip).toContain('<span class="v">1</span> running');
+      expect(strip).toContain('<span class="v">1</span> awaiting review');
+      expect(strip).toContain(`<span class="v">${needsYou(snapshot).length}</span> need you`);
+      expect(strip).toContain('<span class="v">1</span> open PRs');
+      expect(verdict).toMatch(/^Launch: /);
+      expect(strip).toContain(escapeHtml(`${verdict}; load 0.5 of 8 cores`));
+    });
+
+    it('names a config it cannot read in place of the verdict, as pup status does', async () => {
+      mkdirSync(join(repo, '.pupitre'), { recursive: true });
+      writeFileSync(join(repo, '.pupitre', 'project.yml'), 'lockBacklogBudgetMinutes: lots\n');
+
+      const page = await readPage(home());
+
+      expect(page).toContain(
+        escapeHtml(
+          'Launch: unknown, Invalid .pupitre/project.yml: lockBacklogBudgetMinutes must be a number of minutes above 0 and at most 1440.',
+        ),
+      );
+      expect(page).toContain('<h2>Needs you');
+    });
+
+    it('lists the first three planned tasks, the count, and a link to the rest', async () => {
+      for (const n of [1, 2, 3, 4, 5]) {
+        insertTask(db, {
+          id: `t-plan${n}`,
+          projectId: projectId(repo),
+          spec: JSON.stringify({ id: `t-plan${n}`, goal: `planned ${n}`, scopeIn: ['src/**'] }),
+          origin: n === 2 ? 'conductor' : 'human',
+        });
+      }
+
+      const page = await readPage(home());
+      const planned = page.slice(page.indexOf('<h2>Planned'), page.indexOf('<h2>Goal'));
+      // Who asked, unless the operator did.
+      expect(planned.match(/<span class="branch">from [^<]*<\/span>/g)).toEqual([
+        '<span class="branch">from conductor</span>',
+      ]);
+
+      expect(planned).toContain(
+        '5 planned · <a href="?sheet=tasks">show all on the Tasks sheet →</a>',
+      );
+      expect(planned.match(/<span class="sid">t-plan\d<\/span>/g)).toEqual([
+        '<span class="sid">t-plan1</span>',
+        '<span class="sid">t-plan2</span>',
+        '<span class="sid">t-plan3</span>',
+      ]);
+    });
+
+    it('cuts a long goal and a long question at a word, never mid-word', async () => {
+      const words = Array.from({ length: 60 }, (_, i) => `word${i}`).join(' ');
+      seedSession('s-long', ['running'], words);
+      appendEvent(db, 's-long', 'question', { text: words });
+
+      const page = await readPage(home());
+      const goal = /<div class="goal">([^<]*)<\/div>/.exec(page)?.[1] ?? '';
+      const question = /<span class="reason">question #\d+: ([^<]*)<\/span>/.exec(page)?.[1] ?? '';
+      // Whole words of the text, then the ellipsis that marks the cut.
+      const cutAtWord = (shown: string): boolean =>
+        shown.endsWith('…') && `${words} `.startsWith(`${shown.slice(0, -1)} `);
+
+      expect(goal).toBe(clipWords(words));
+      expect(cutAtWord(goal)).toBe(true);
+      expect(cutAtWord(question)).toBe(true);
+      expect(clipWords('short goal')).toBe('short goal');
+      expect(clipWords('x'.repeat(150))).toBe(`${'x'.repeat(100)}…`);
+      // A cut falling just before a space keeps the word that ends at the cap.
+      expect(clipWords(`${'a'.repeat(95)} bbbb cc`)).toBe(`${'a'.repeat(95)} bbbb…`);
+      // The question's text prints once: the session's row points at its Needs you line.
+      expect(page).toContain('question — see Needs you');
+      expect(page.match(/word59/g)).toBeNull();
+    });
+
+    // No view holds the conductor's question, so its line is the only place to read it.
+    it("prints the conductor's question whole", async () => {
+      vi.mocked(hasConductorWindow).mockReturnValue(true);
+      const words = Array.from({ length: 30 }, (_, i) => `word${i}`).join(' ');
+      markConductorQuestion(db, repo, 'run-1', { text: words });
+
+      const page = await readPage(home());
+
+      expect(page).toMatch(new RegExp(`<span class="reason">question #\\d+: ${words}</span>`));
+    });
+
+    // Decision 188: the scope a merge is gated on, three globs and a count.
+    it('prints a merge line with its widened scope whole', async () => {
+      seedSession('s-wide', ['running', 'awaiting-review']);
+      appendEvent(db, 's-wide', 'rescope', {
+        task: 't-s-wide',
+        added: [
+          'src/core/web-dashboard-overview.service.ts',
+          'src/core/web-dashboard.service.ts',
+          'docs/adr/0098-pup-dashboard-is-a-set-of-sheets-figures.md',
+          'src/core/web-dashboard-sheet.utils.ts',
+        ],
+        tier: 'standard',
+        raised: false,
+        by: 'inferred-operator',
+        tty: null,
+        tmuxPane: null,
+      });
+
+      const page = await readPage(home());
+      const [need] = needsYou(buildDashboardSnapshot(db, repo, Date.now()));
+
+      expect(need?.reason).toMatch(/\(\+1 more\)$/);
+      expect(page).toContain(`<span class="reason">${escapeHtml(need?.reason ?? '')}</span>`);
+    });
+
+    it('says a card has no goal rather than printing an empty line', async () => {
+      seedSession('s-blank', ['running'], '');
+
+      const page = await readPage(home());
+
+      expect(page).toContain('<div class="goal">(no goal recorded)</div>');
     });
 
     // Decision 168: the look `pup conductor tell` refuses on, held past ten minutes.
@@ -730,7 +883,7 @@ describe('startWebDashboard', () => {
       expect(page).not.toContain(String(address().searchParams.get('token')));
       expect(page).not.toContain('evil.example');
       expect(page).toContain('(PR url outside the pull-request shape; inspect the store)');
-      expect(page).toContain(`question: see ${PR}`);
+      expect(page).toMatch(new RegExp(`question #\\d+: see ${PR}`));
     });
   });
 
@@ -771,7 +924,7 @@ describe('startWebDashboard', () => {
         const reply = await get(sheetUrl(sheet as string));
 
         expect(reply.status).toBe(200);
-        expect(reply.body).toContain(`<title>pup dashboard — ${title}</title>`);
+        expect(reply.body).toContain(`<title>${title} — pup dashboard</title>`);
         expect(reply.body).toContain('<a href="?sheet=overview"');
         expect(reply.body).toContain('<a href="?sheet=health"');
         expect(reply.body).toContain('<a href="?sheet=debt"');
@@ -869,7 +1022,9 @@ describe('startWebDashboard', () => {
       expect(tile('coverage')).toBe(`${audited('coverageRatio', 0.8234)} | +2.3 pt in 7 days`);
       expect(tile('unused exports')).toBe(`${audited('deadExports', 3)} | -2 in 7 days`);
       expect(tile('duplicated lines')).toBe(`${audited('duplicatedLines', 130)} | +10 in 7 days`);
-      expect(page).toContain('<figcaption>coverage by capture:');
+      // Value, change and sparkline only: its per-capture line is the chart's hover, not text.
+      expect(page).toContain('.tile figcaption { display: none; }');
+      expect(page).toContain('<title>coverage by capture:');
       expect(page).toContain(`sheet=debt">Debt sheet: what to pay down next →</a>`);
     });
 
@@ -1000,7 +1155,7 @@ describe('startWebDashboard', () => {
           seedSession('s-new', ['running']);
           appendEvent(db, 's-new', 'question', { text: 'still live?' });
 
-          expect(await arriving).toContain('question: still live?');
+          expect(await arriving).toMatch(/question #\d+: still live\?/);
         } finally {
           overview.close();
         }
@@ -1039,7 +1194,7 @@ describe('startWebDashboard', () => {
         const frame = await arriving;
 
         expect(Date.now() - changedAt).toBeLessThanOrEqual(POLL_MS * 2);
-        expect(frame).toContain('question: which way?');
+        expect(frame).toMatch(/question #\d+: which way\?/);
       } finally {
         stream.close();
       }
@@ -1072,7 +1227,11 @@ describe('startWebDashboard', () => {
           return typeof value === 'function' ? value.bind(target) : value;
         },
       });
-      const idle = await startWebDashboard(counted, repo, { pollMs: POLL_MS / 10, bind });
+      const idle = await startWebDashboard(counted, repo, {
+        pollMs: POLL_MS / 10,
+        load: steadyLoad,
+        bind,
+      });
       try {
         await new Promise((resolve) => setTimeout(resolve, POLL_MS));
 

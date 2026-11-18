@@ -48,6 +48,25 @@ export function textOrPrLink(text: string): string {
   return `<a href="${escapeHtml(text)}" target="_blank" rel="noopener noreferrer">${escapeHtml(text)}</a>`;
 }
 
+/** How many characters of a goal a card on a sheet shows. */
+const CARD_TEXT_CHARS = 100;
+
+/**
+ * A card's text cut at the last word boundary within `CARD_TEXT_CHARS`, an
+ * ellipsis marking the cut, so no card ends mid-word; a single longer word is
+ * cut where the cap falls. Counted in code points, so no surrogate pair splits.
+ */
+export function clipWords(text: string): string {
+  const chars = [...text];
+  if (chars.length <= CARD_TEXT_CHARS) return text;
+  const head = chars.slice(0, CARD_TEXT_CHARS).join('');
+  // A cut falling just before a space keeps the word that ends there.
+  const next = chars.slice(CARD_TEXT_CHARS, CARD_TEXT_CHARS + 1).join('');
+  const boundary = /\s/.test(next) ? head.length : head.search(/\s\S*$/);
+  const kept = boundary > 0 ? head.slice(0, boundary) : head;
+  return `${kept.replace(/[\s,;:]+$/, '')}…`;
+}
+
 /** What a sheet shows for a session id outside the minted shape, which it never prints. */
 export const UNMINTED_LABEL = '(unminted session id)';
 

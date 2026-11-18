@@ -20,6 +20,12 @@ import { countLedgerEntriesSince, listLedgerEntries } from './ledger.repository.
 import { projectId } from './paths.utils.js';
 import { displayText, parseJsonOr, toIsoUtc } from './report-data.utils.js';
 import { getProject } from './session.repository.js';
+import {
+  launchHolds,
+  launchRoom,
+  launchRoomLines,
+  type machineLoad,
+} from './session-cap.service.js';
 import type {
   DashboardBaseline,
   DashboardNeed,
@@ -29,10 +35,12 @@ import type {
 import type { DebtBaseline, ProjectBaseline } from './types/init.types.js';
 import { actionButton, answerForms, textAction } from './web-dashboard-actions.service.js';
 import {
+  clipWords,
   DAY_MS,
   escapeHtml,
   GATE_METRICS,
   hint,
+  type SheetName,
   section,
   textOrPrLink,
   UNMINTED_LABEL,
@@ -42,6 +50,11 @@ const WEEK_MS = 7 * DAY_MS;
 const MERGE_WEEKS = 8;
 /** Captures a figure tile's sparkline draws, newest last. */
 const TREND_CAPTURES = 8;
+/** Planned tasks the Overview lists; the Tasks sheet lists them all. */
+const PLANNED_SHOWN = 3;
+
+/** The machine's load as `pup launch` reads it. */
+type MachineLoad = ReturnType<typeof machineLoad>;
 
 /** One open ledger entry as the page lists it, every field already through `sanitizeReason`. */
 interface WebDebtEntry {
@@ -70,10 +83,17 @@ interface OverviewView {
   tiles: FigureTile[];
   tasks: { done: number; inFlight: number; planned: number };
   merges: ChartDatum[];
+  /** `pup status`'s launch verdict, with the load it was read at. */
+  launch: string;
 }
 
-/** The store's reading for one render of the Overview. */
-export function readOverview(db: Database, repoPath: string, now: number): OverviewView {
+/** The store's reading, and the machine's `load`, for one render of the Overview. */
+export function readOverview(
+  db: Database,
+  repoPath: string,
+  now: number,
+  load: MachineLoad,
+): OverviewView {
   const pid = projectId(repoPath);
   const snapshot = buildDashboardSnapshot(db, repoPath, now);
   const fixRounds = new Map(
@@ -97,7 +117,22 @@ export function readOverview(db: Database, repoPath: string, now: number): Overv
     tiles: figureTiles(db, pid, snapshot, now),
     tasks: taskCounts(snapshot),
     merges: mergesPerWeek(db, now),
+    launch: launchVerdict(db, repoPath, load),
   };
+}
+
+/**
+ * The verdict line `pup status` prints under `Launch:`, every check `pup
+ * launch` makes named in it, and the load beside it; a config it cannot read
+ * is said in its place, as `pup status` says it (decision 197).
+ */
+function launchVerdict(db: Database, repoPath: string, load: MachineLoad): string {
+  try {
+    const [verdict] = launchRoomLines(launchRoom(db, repoPath, load), launchHolds(repoPath));
+    return `${verdict}; load ${load.average.toFixed(1)} of ${load.cores} cores`;
+  } catch (error) {
+    return `Launch: unknown, ${sanitizeReason((error as Error).message)}`;
+  }
 }
 
 /**
@@ -240,29 +275,66 @@ function mergesPerWeek(db: Database, now: number): ChartDatum[] {
 const STATE_ORDER = ['blocked', 'running', 'awaiting-review', 'queued', 'rejected'];
 
 /**
- * The Overview: the goal and the figures first, then the live sections `pup
- * status` prints. Nothing in it is time-relative beyond what the snapshot
- * holds and the day the weeks end on, so an unchanged store renders the same
- * string and the stream stays quiet. `debtHref` is the Debt sheet's url and
+ * The Overview, a page to act from: the status strip, what needs the operator
+ * with each line's action beside it, the running sessions, the open PRs not
+ * already in Needs you, the conductor and the first planned tasks; then the
+ * goal, the figures and the delivery charts. Nothing in it is time-relative
+ * beyond what the snapshot holds, the day the weeks end on and the load the
+ * strip prints, so an unchanged store on a steady machine renders the same
+ * string and the stream stays quiet. `hrefOf` is a sheet's url and
  * `sessionHref` a session view's, where that session's actions are; a
  * question is answered here, the conductor told, and a planned task launched
  * (decision 91).
  */
 export function renderOverview(
   view: OverviewView,
-  debtHref: string,
+  hrefOf: (sheet: SheetName) => string,
   sessionHref: (sessionId: string) => string,
 ): string {
   return [
-    goalSection(view.goal),
-    figuresSection(view.tiles, debtHref),
-    deliverySection(view),
-    needsSection(view.needs, sessionHref),
-    conductorSection(view.snapshot),
+    statusStrip(view),
+    needsSection(view, sessionHref),
     sessionsSection(view, sessionHref),
-    pullRequestsSection(view, sessionHref),
-    plannedSection(view.snapshot),
+    pullRequestsSection(view),
+    conductorSection(view.snapshot),
+    plannedSection(view.snapshot, hrefOf('tasks')),
+    goalSection(view.goal),
+    figuresSection(view.tiles, hrefOf('debt')),
+    deliverySection(view),
   ].join('\n');
+}
+
+/** The sessions with a PR open, by id. */
+function openPrs(view: OverviewView): Map<string, DashboardSession> {
+  return new Map(
+    view.snapshot.sessions.filter((s) => s.openPr !== undefined).map((s) => [s.id, s]),
+  );
+}
+
+/**
+ * The session a PR's Needs you line is about. Only a merged session has a PR
+ * open, and a merged session has no other line, so every open PR has this one.
+ */
+function prSessionOf(
+  need: DashboardNeed,
+  prs: Map<string, DashboardSession>,
+): DashboardSession | undefined {
+  return need.kind === 'pr-open' ? prs.get(need.sessionId) : undefined;
+}
+
+/** The counts the page leads with, and the launch verdict `pup status` prints. */
+function statusStrip(view: OverviewView): string {
+  const { sessions } = view.snapshot;
+  const count = (n: number, label: string): string =>
+    `<li><span class="v">${n}</span> ${escapeHtml(label)}</li>`;
+  return (
+    '<section class="strip"><ul>' +
+    count(sessions.filter((s) => s.state === 'running').length, 'running') +
+    count(sessions.filter((s) => s.state === 'awaiting-review').length, 'awaiting review') +
+    count(view.needs.length, 'need you') +
+    count(openPrs(view).size, 'open PRs') +
+    `<li class="launch">${escapeHtml(view.launch)}</li></ul></section>`
+  );
 }
 
 function goalSection(goal: OverviewView['goal']): string {
@@ -272,6 +344,11 @@ function goalSection(goal: OverviewView['goal']): string {
   );
 }
 
+/**
+ * Each tile's value, its week's change and, from two captures on, its
+ * sparkline; the shell hides the sparkline's figure line, and its SVG title
+ * keeps every capture as the hover.
+ */
 function figuresSection(tiles: FigureTile[], debtHref: string): string {
   const cells = tiles.map(
     (tile) =>
@@ -309,12 +386,19 @@ function deliverySection(view: OverviewView): string {
 }
 
 /**
- * Each line with its answer as text, and, for a line about a session or the
- * conductor the store names in the minted shape, the way to act on it: a
- * question's options and an answer in words, and a session's view.
+ * Each line with its answer as text beside its reason, and, for a line about a
+ * session or the conductor the store names in the minted shape, the way to act
+ * on it: a question's options and an answer in words, and a session's view. A
+ * PR's line, whose answer is its link, carries the PR's CI review state and
+ * debt too, so Open pull requests only counts them. Only a question that links
+ * to its session's view, which holds the whole text, is cut at a word like a
+ * card's: the conductor's and an unminted session's have no view, and the
+ * reasons pup builds carry the decision-188 widened scope whole.
  */
-function needsSection(needs: DashboardNeed[], sessionHref: (sessionId: string) => string): string {
+function needsSection(view: OverviewView, sessionHref: (sessionId: string) => string): string {
+  const { needs } = view;
   if (needs.length === 0) return section('Needs you', hint('Nothing waits on you.'));
+  const prs = openPrs(view);
   const items = needs.map((need) => {
     const named = need.label === need.sessionId && need.kind !== 'conductor';
     // A question line names the event it shows, which the answer is bound to:
@@ -331,20 +415,29 @@ function needsSection(needs: DashboardNeed[], sessionHref: (sessionId: string) =
       named && need.sessionId !== CONDUCTOR_TARGET
         ? ` ${viewLink(need.sessionId, sessionHref)}`
         : '';
+    const pr = prSessionOf(need, prs);
     return (
       `<li class="need need-${escapeHtml(need.kind)}"><span class="sid">${escapeHtml(need.label)}</span>${open} ` +
-      `<span class="reason">${escapeHtml(need.reason)}</span>` +
-      `<div class="answer">${textOrPrLink(need.answer)}</div>${answer}</li>`
+      `<span class="reason">${escapeHtml(need.kind === 'question' && open !== '' ? clipWords(need.reason) : need.reason)}</span>` +
+      `<span class="answer">${textOrPrLink(need.answer)}</span>` +
+      (pr === undefined ? '' : prFacts(pr, view)) +
+      `${answer}</li>`
     );
   });
   return section('Needs you', `<ul class="rows">${items.join('')}</ul>`);
 }
 
+/** What an open PR's line says beyond its link: its CI review state and the debt it filed. */
+function prFacts(session: DashboardSession, view: OverviewView): string {
+  const review = escapeHtml(reviewState(session, view.fixRounds.get(session.id)));
+  return `<div class="fact">${review}</div>${debtOf(session, view.openDebt)}`;
+}
+
 function conductorSection(snapshot: DashboardSnapshot): string {
   const { conductor } = snapshot;
   const body = conductor.running
-    ? `<p>running <span class="hint">attach:</span> <code>${escapeHtml(conductor.attachCommand)}</code></p>` +
-      textAction('tell', {}, 'message', 'a message for the conductor', 'Tell')
+    ? `<div class="inline"><p>running <span class="hint">attach:</span> <code>${escapeHtml(conductor.attachCommand)}</code></p>` +
+      `${textAction('tell', {}, 'message', 'a message for the conductor', 'Tell')}</div>`
     : hint('not running — `pup conductor start` starts it');
   return section('Conductor', body);
 }
@@ -370,13 +463,15 @@ function sessionsSection(view: OverviewView, sessionHref: (sessionId: string) =>
   return section('Sessions', groups.join(''));
 }
 
+/** A live session's card: its id and branch, its goal, then its facts on one line and the debt it filed. */
 function sessionRow(
   session: DashboardSession,
   openDebt: WebDebtEntry[],
   sessionHref: (sessionId: string) => string,
 ): string {
   const facts = [
-    session.question === undefined ? '' : `question: ${session.question.text}`,
+    // The question itself, and its answers, are on the session's Needs you line.
+    session.question === undefined ? '' : 'question — see Needs you',
     activityText(session),
     routeLabel(session),
     session.rejectCount > 0 ? `${session.rejectCount} rejections` : '',
@@ -388,11 +483,16 @@ function sessionRow(
     `<li class="session"><div class="meta"><span class="sid">${escapeHtml(labelOf(session))}</span>` +
     `<span class="branch">${escapeHtml(session.branch)}</span>` +
     `${session.isMintedId ? viewLink(session.id, sessionHref) : ''}</div>` +
-    `<div class="goal">${escapeHtml(session.goal || '(no goal recorded)')}</div>` +
-    facts.map((fact) => `<div class="fact">${escapeHtml(fact)}</div>`).join('') +
+    goalLine(session.goal) +
+    (facts.length === 0 ? '' : `<div class="fact">${escapeHtml(facts.join(' · '))}</div>`) +
     debtOf(session, openDebt) +
     '</li>'
   );
+}
+
+/** A card's goal, cut at a word boundary: the whole of it is on the session's view or the Tasks sheet. */
+function goalLine(goal: string): string {
+  return `<div class="goal">${escapeHtml(clipWords(goal || '(no goal recorded)'))}</div>`;
 }
 
 function labelOf(session: DashboardSession): string {
@@ -441,28 +541,13 @@ function debtOf(session: DashboardSession, openDebt: WebDebtEntry[]): string {
     .join('');
 }
 
-function pullRequestsSection(
-  view: OverviewView,
-  sessionHref: (sessionId: string) => string,
-): string {
-  const open = view.snapshot.sessions.filter((s) => s.openPr !== undefined);
-  if (open.length === 0) return section('Open pull requests', hint('No PR waits to land.'));
-  const rows = open.map((session) => {
-    const url = session.openPr?.url;
-    const link =
-      url === undefined
-        ? `<code>${escapeHtml('(PR url outside the pull-request shape; inspect the store)')}</code>`
-        : textOrPrLink(url);
-    return (
-      `<li class="session"><div class="meta"><span class="sid">${escapeHtml(labelOf(session))}</span>${link}` +
-      `${session.isMintedId ? viewLink(session.id, sessionHref) : ''}</div>` +
-      `<div class="goal">${escapeHtml(session.goal || '(no goal recorded)')}</div>` +
-      `<div class="fact">${escapeHtml(reviewState(session, view.fixRounds.get(session.id)))}</div>` +
-      debtOf(session, view.openDebt) +
-      '</li>'
-    );
-  });
-  return section('Open pull requests', `<ul class="rows">${rows.join('')}</ul>`);
+/** How many PRs are open: each has its own Needs you line (see `prSessionOf`), which shows its row. */
+function pullRequestsSection(view: OverviewView): string {
+  const open = openPrs(view).size;
+  return section(
+    'Open pull requests',
+    hint(open === 0 ? 'No PR waits to land.' : `${open} open, each listed under Needs you.`),
+  );
 }
 
 /**
@@ -482,14 +567,19 @@ function reviewState(session: DashboardSession, rounds: number | undefined): str
   return `CI review: ${regated}${gate ? `; ${gate}` : ''}`;
 }
 
-function plannedSection(snapshot: DashboardSnapshot): string {
-  if (snapshot.backlog.length === 0) return section('Planned', hint('Nothing planned.'));
-  const rows = snapshot.backlog.map(
-    (task) =>
-      `<li class="session"><div class="meta"><span class="sid">${escapeHtml(task.id)}</span>` +
-      `${task.origin === 'human' ? '' : `<span class="branch">from ${escapeHtml(task.origin)}</span>`}</div>` +
-      `<div class="goal">${escapeHtml(task.goal || '(no goal recorded)')}</div>` +
-      `${actionButton('launch', { task: task.id }, 'Launch')}</li>`,
-  );
-  return section('Planned', `<ul class="rows">${rows.join('')}</ul>`);
+/** The count planned and the first few tasks, each with its launch; the rest are the Tasks sheet's. */
+function plannedSection(snapshot: DashboardSnapshot, tasksHref: string): string {
+  const { backlog } = snapshot;
+  if (backlog.length === 0) return section('Planned', hint('Nothing planned.'));
+  const rows = backlog
+    .slice(0, PLANNED_SHOWN)
+    .map(
+      (task) =>
+        `<li class="session"><div class="meta"><span class="sid">${escapeHtml(task.id)}</span>` +
+        `${task.origin === 'human' ? '' : `<span class="branch">from ${escapeHtml(task.origin)}</span>`}</div>` +
+        goalLine(task.goal) +
+        `${actionButton('launch', { task: task.id }, 'Launch')}</li>`,
+    );
+  const lead = `<p class="lead">${backlog.length} planned · <a href="${escapeHtml(tasksHref)}">show all on the Tasks sheet →</a></p>`;
+  return section('Planned', `${lead}<ul class="rows inline">${rows.join('')}</ul>`);
 }
