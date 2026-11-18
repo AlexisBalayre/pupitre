@@ -19,6 +19,7 @@ import { DEFAULT_BASE_PROFILE } from './default-profile.constants.js';
 import { projectPaths } from './paths.utils.js';
 import {
   HOOK_TIMEOUT_SECONDS,
+  RECHECK_HASH_MAX_BYTES,
   SLIM_CONTEXT_ENV,
   WORKER_SUBAGENT_ENV,
 } from './profile.constants.js';
@@ -95,6 +96,26 @@ describe('generated bash re-check (decision 63)', () => {
         ...env,
       },
     });
+  }
+
+  /**
+   * A sleep in `bin` that records each length it is asked for. Only the deadline's
+   * watcher sleeps, so these are the seconds the hook gave each bounded read: its
+   * own deadline arithmetic, which no machine load moves, unlike the wall time of
+   * the whole spawn.
+   */
+  function recordSleeps(bin: string): () => number[] {
+    const log = join(root, 'sleeps');
+    const realSleep = spawnSync('/bin/sh', ['-c', 'command -v sleep'], {
+      encoding: 'utf8',
+    });
+    writeFileSync(
+      join(bin, 'sleep'),
+      `#!/bin/sh\necho "$1" >> '${log}'\nexec ${realSleep.stdout.trim()} "$@"\n`,
+      { mode: 0o755 },
+    );
+    return () =>
+      existsSync(log) ? readFileSync(log, 'utf8').split('\n').filter(Boolean).map(Number) : [];
   }
 
   function hook(phase: string, command: string, id = 'toolu_01abc') {
@@ -278,7 +299,8 @@ describe('generated bash re-check (decision 63)', () => {
 
   // The shared config is the session's to write (decision 41's exposure), and git
   // opens what an include names before it runs any command. The test's timeout
-  // sits well past the hook's, so a hook that blocks reads as slow or null.
+  // sits well past the hook's, so a hook that blocks reads as null; one that
+  // ends gave no read longer than the deadline.
   it('refuses within the hook timeout while the repo config includes a fifo', () => {
     const fifo = join(root, 'included');
     spawnSync('mkfifo', [fifo]);
@@ -286,19 +308,22 @@ describe('generated bash re-check (decision 63)', () => {
       cwd: repo,
       env: GIT_ENV,
     });
+    const bin = join(root, 'bin');
+    mkdirSync(bin);
+    const sleeps = recordSleeps(bin);
 
-    const started = Date.now();
     const result = run(
       {
         hook_event_name: 'PostToolUse',
         tool_use_id: 'toolu_01fifo',
         tool_input: { command: 'x' },
       },
-      {},
+      { PATH: `${bin}:${process.env.PATH}` },
       15_000,
     );
     expect(result.status).toBe(2);
-    expect(Date.now() - started).toBeLessThan(HOOK_TIMEOUT_SECONDS * 1000);
+    expect(sleeps().length).toBeGreaterThan(0);
+    expect(Math.max(...sleeps())).toBeLessThanOrEqual(ProfileCompiler.HOOK_READ_DEADLINE_SECONDS);
     expect(result.stderr).toContain('outran the hook deadline');
     expect(result.stderr).toContain('SCOPE CHECK FAILED: could not read git status');
   }, 30_000);
@@ -337,10 +362,10 @@ describe('generated bash re-check (decision 63)', () => {
       `#!/bin/sh\nfor arg; do last=$arg; done\nif [ "$last" = '${written}' ]; then rm -f "$last" && mkfifo "$last"; fi\nexec ${realWc.stdout.trim()} "$@"\n`,
       { mode: 0o755 },
     );
+    const sleeps = recordSleeps(bin);
     expect(hook('PreToolUse', 'x', 'toolu_01wc').status).toBe(0);
     writeFileSync(written, 'pwned\n');
 
-    const started = Date.now();
     const result = run(
       {
         hook_event_name: 'PostToolUse',
@@ -352,7 +377,8 @@ describe('generated bash re-check (decision 63)', () => {
     );
     expect(lstatSync(written).isFIFO()).toBe(true);
     expect(result.status).toBe(2);
-    expect(Date.now() - started).toBeLessThan(HOOK_TIMEOUT_SECONDS * 1000);
+    expect(sleeps().length).toBeGreaterThan(0);
+    expect(Math.max(...sleeps())).toBeLessThanOrEqual(ProfileCompiler.HOOK_READ_DEADLINE_SECONDS);
     expect(result.stderr).toContain('SCOPE CHECK FAILED: the check ran out of time');
   }, 30_000);
 
@@ -378,6 +404,7 @@ describe('generated bash re-check (decision 63)', () => {
       `#!/bin/sh\nfor arg; do last=$arg; done\nif [ "$last" = '${slow}' ]; then exec ${realSleep.stdout.trim()} 30; fi\nexec ${realWc.stdout.trim()} "$@"\n`,
       { mode: 0o755 },
     );
+    const sleeps = recordSleeps(bin);
     const slowed = { PATH: `${bin}:${process.env.PATH}` };
     const payload = (phase: string) => ({
       hook_event_name: phase,
@@ -387,23 +414,24 @@ describe('generated bash re-check (decision 63)', () => {
 
     expect(run(payload('PreToolUse'), slowed, 15_000).status).toBe(0);
     writeFileSync(target, 'changed by the call\n');
-    const started = Date.now();
     const result = run(payload('PostToolUse'), slowed, 15_000);
     expect(result.status).toBe(2);
-    expect(Date.now() - started).toBeLessThan(HOOK_TIMEOUT_SECONDS * 1000);
+    expect(sleeps().length).toBeGreaterThan(0);
+    expect(Math.max(...sleeps())).toBeLessThanOrEqual(ProfileCompiler.HOOK_READ_DEADLINE_SECONDS);
     expect(result.stderr).toContain('SCOPE CHECK FAILED: the check ran out of time');
   }, 30_000);
 
   // The clock is whole seconds, so a read that starts late in the deadline's last
   // second still sleeps that whole second before it is killed. The date on the
-  // hook's PATH is a clock whose seconds turn as the hook records its deadline; a
-  // wc on the first dirty path returns just before the last of them ends, and one
-  // on the second never returns. Killed a second ahead of the hook timeout, the
-  // read leaves the refusal most of that second.
+  // hook's PATH is a clock that stands at its start until a wc on the first dirty
+  // path, too large to hash, turns it to the deadline's last second; a wc on the
+  // second never returns. Started within that second and given one more, the
+  // read is killed before the second after the deadline ends, a second ahead of
+  // the hook timeout, which leaves the refusal that second.
   it('refuses with a second to spare a read that starts as the deadline ends', () => {
-    const slow = join(worktree, 'src/cli/decoy.ts');
+    const first = join(worktree, 'src/cli/decoy.ts');
     const target = join(worktree, 'src/cli/index.ts');
-    writeFileSync(slow, 'dirty before the call\n');
+    writeFileSync(first, 'dirty before the call\n');
     writeFileSync(target, 'dirty before the call\n');
     const clock = join(root, 'clock');
     const deadline = ProfileCompiler.HOOK_READ_DEADLINE_SECONDS;
@@ -424,9 +452,10 @@ describe('generated bash re-check (decision 63)', () => {
       join(bin, 'wc'),
       `#!/bin/sh
 for arg; do last=$arg; done
-if [ "$last" = '${slow}' ]; then
-  python3 -c 'import os, sys, time; time.sleep(max(0, os.stat(sys.argv[1]).st_mtime + float(sys.argv[2]) - time.time()))' '${clock}' ${deadline - 0.3}
+if [ "$last" = '${first}' ]; then
   echo ${1000 + deadline - 1} > '${clock}'
+  echo ${RECHECK_HASH_MAX_BYTES + 1}
+  exit 0
 elif [ "$last" = '${target}' ]; then
   echo ${1000 + deadline} > '${clock}'
   exec ${realSleep.stdout.trim()} 30
@@ -435,8 +464,8 @@ exec ${realWc.stdout.trim()} "$@"
 `,
       { mode: 0o755 },
     );
+    const sleeps = recordSleeps(bin);
 
-    const started = Date.now();
     const result = run(
       {
         hook_event_name: 'PostToolUse',
@@ -447,8 +476,15 @@ exec ${realWc.stdout.trim()} "$@"
       15_000,
     );
     expect(result.status).toBe(2);
-    expect(Date.now() - started).toBeLessThan(HOOK_TIMEOUT_SECONDS * 1000 - 500);
     expect(result.stderr).toContain('SCOPE CHECK FAILED: the check ran out of time');
+    // Every read before the clock turned had the whole deadline; the last, in its
+    // final second, had that second.
+    const given = sleeps();
+    const last = given.pop();
+    expect(given).toEqual(given.map(() => deadline));
+    expect(last).toBe(1);
+    // Started before second 1000 + deadline, killed before 1000 + deadline + 1.
+    expect(deadline + Number(last)).toBeLessThanOrEqual(HOOK_TIMEOUT_SECONDS - 1);
   }, 30_000);
 
   it('refuses after the call, and never blocks it, when the clock reads as no number', () => {
