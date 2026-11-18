@@ -2164,6 +2164,33 @@ async function mergeTargetInto(
 }
 
 /**
+ * The state git keeps in a worktree's admin dir while a rebase, merge,
+ * cherry-pick or revert is in progress there (decision 204). The session can
+ * write all of it, and git acts on it: `git rebase` refuses over a rebase dir
+ * the gate's abort then runs through, which moves the branch `head-name` names
+ * to `orig-head`, whatever ref and commit those are.
+ */
+const IN_PROGRESS_GIT_STATE = [
+  'rebase-merge',
+  'rebase-apply',
+  'REBASE_HEAD',
+  'MERGE_HEAD',
+  'sequencer',
+];
+
+/**
+ * The path of the first in-progress state entry in `gitDir`, or undefined when
+ * it holds none. Any entry counts, a symlink or a file where git keeps a dir
+ * included, as git's own checks of most of them are mere existence.
+ */
+export function inProgressGitState(gitDir: string): string | undefined {
+  const found = IN_PROGRESS_GIT_STATE.find((name) =>
+    lstatSync(join(gitDir, name), { throwIfNoEntry: false }),
+  );
+  return found === undefined ? undefined : join(gitDir, found);
+}
+
+/**
  * Whether the branch already holds a merge of the target: a merge commit the
  * target lacks with a parent the target contains, as a worker's `git merge
  * main` writes. A rebase would drop that merge and replay the commits under
@@ -2234,6 +2261,24 @@ async function gateAndMerge(
   const branchRef = `refs/heads/${session.branch}`;
   progress.stage('fresh-base');
   started = Date.now();
+  // Before any git runs in the worktree, on every path: the rebase and its
+  // abort act on this state, and the merge's worktree refresh would leave it
+  // for the worker's next commit to finish (decision 204).
+  const inProgress = inProgressGitState(worktreeEnv.GIT_DIR);
+  if (inProgress) {
+    stages.push(
+      timedSince(started, {
+        stage: 'fresh-base',
+        status: 'fail',
+        detail:
+          `${sanitizeReason(inProgress)} is in this worktree's git dir: a rebase, merge, ` +
+          'cherry-pick or revert is in progress, and the gate runs no git through it. Finish ' +
+          'it, or abort it (`git rebase --abort`, `git merge --abort`, `git cherry-pick ' +
+          '--abort`), or delete the file if no git operation is in progress, then commit.',
+      }),
+    );
+    return failed();
+  }
   const targetSha = resolveCommit(req.repoPath, `refs/heads/${target}`);
   // An open PR's commits are what its review and CI read, so its branch takes
   // the target as a merge commit and is never rewritten (decision 105). A

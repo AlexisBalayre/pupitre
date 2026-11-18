@@ -9,6 +9,7 @@ import {
   gitDiffPaths,
   rethrowIfKilled,
   runGit,
+  worktreeGitEnv,
 } from './git-diff.client.js';
 import { assertGhAvailable, originRepoSlug, readPullRequestLanding } from './github.client.js';
 import { remeasureMerge } from './land-remeasure.service.js';
@@ -19,6 +20,7 @@ import {
   assertPullRequestOf,
   assertTargetName,
   fastForward,
+  inProgressGitState,
   isAncestor,
   MERGE_LOCK_WAIT_MS,
   newestMerge,
@@ -228,6 +230,20 @@ export async function landUnderLock(
   assertStillMerged(db, session.id, id, LAND_USE);
   if (newestMerge(db, session.id) === 'landed') {
     throw new Error(`Session ${id} has already landed.`);
+  }
+  // Before anything moves and before the teardown's git in the worktree: a
+  // session left in, or planting, a rebase or merge is not torn down under
+  // it (decision 204). A worktree already gone has no admin dir to hold any.
+  const inProgress = inProgressGitState(
+    worktreeGitEnv(req.repoPath, session.worktree_path).GIT_DIR,
+  );
+  if (inProgress) {
+    throw new Error(
+      `${sanitizeReason(inProgress)} is in session ${id}'s worktree git dir: a rebase, merge, ` +
+        'cherry-pick or revert is in progress there, or the session planted its state. Inspect ' +
+        'it, finish or abort it in that worktree or delete it, then re-run `pup land`. ' +
+        LAND_UNTOUCHED,
+    );
   }
   progress.stage('fetch');
   const localSha = resolveCommit(req.repoPath, `refs/heads/${target}`);
