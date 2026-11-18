@@ -51,10 +51,11 @@ export function sessionRecap(db: Database, sessionId: string): string[] {
   if (!session)
     return [`Session state: unknown — no session ${sanitizeReason(sessionId)} in the store.`];
   const fixRound = currentFixRound(db, session.id);
-  // No CHECK constraint holds `state` to its type, and SQLite's INTEGER affinity
-  // keeps a non-numeric `reject_count` as text: both are scrubbed like the rest.
+  // No CHECK constraint holds `state` to its type, so a BLOB comes back a Buffer,
+  // and SQLite's INTEGER affinity keeps a non-numeric `reject_count` as text:
+  // both are stringified, then scrubbed like the rest.
   return [
-    `Session state: ${sanitizeReason(session.state)} (${sanitizeReason(session.id)})` +
+    `Session state: ${sanitizeReason(String(session.state))} (${sanitizeReason(session.id)})` +
       `${fixRound ? `, in a CI fix round since ${utc(fixRound.created_at)}` : ''}` +
       `, ${sanitizeReason(String(session.reject_count))} rejection${session.reject_count === 1 ? '' : 's'}.`,
     lastGateLine(db, session.id),
@@ -174,8 +175,8 @@ function openPrLines(db: Database, repoPath: string, sessions: SessionRow[]): st
         ? ' (worktree past the pin: not gated yet)'
         : '';
     lines.push(
-      `  ${sanitizeReason(session.id)} ${sanitizeReason(session.state)} ${sanitizeReason(prUrl)} ` +
-        `pin ${pin} pushed ${pushed} worktree ${worktree}${drift}`,
+      `  ${sanitizeReason(session.id)} ${sanitizeReason(String(session.state))} ${sanitizeReason(prUrl)}` +
+        ` pin ${pin} pushed ${pushed} worktree ${worktree}${drift}`,
     );
   }
   if (open.length > MAX_LISTED) lines.push(`  … ${open.length - MAX_LISTED} more`);
