@@ -37,7 +37,8 @@ type View = { sheet: SheetName } | { session: string };
 export interface WebDashboard {
   /** The page, token included: the one url that opens it, in one browser, once. */
   url: string;
-  close: () => Promise<void>;
+  /** Stops the server; `onWait` is called first when an action still running holds the close. */
+  close: (onWait?: () => void) => Promise<void>;
 }
 
 /**
@@ -242,16 +243,16 @@ export async function startWebDashboard(
 
   return {
     url: `http://${LOOPBACK}:${port}/?token=${access.token}`,
-    // Intake stops first, every nonce with it, then an action still running
-    // finishes: the gate's own cleanup runs under its lock, and the caller
-    // closes the store once this resolves.
-    close: async () => {
+    // Intake stops first, every nonce and every half-sent post with it, then
+    // an action still running finishes: the gate's own cleanup runs under its
+    // lock, and the caller closes the store once this resolves.
+    close: async (onWait) => {
       closing = true;
       clearInterval(poll);
       for (const stream of streams.keys()) stream.end();
       streams.clear();
       desk.clear();
-      await desk.settle();
+      await desk.settle(onWait);
       server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));
     },

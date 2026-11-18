@@ -50,17 +50,19 @@ interface ActionAnswer {
 interface ActionDesk {
   /** A page nonce, for a stream that holds the secret. */
   mint: () => string;
-  /** Every nonce handed out, dropped: the secret they rode on was revoked. */
+  /** Every nonce handed out, dropped, and every post still sending its body cut off: the secret they rode on was revoked. */
   clear: () => void;
   /** A request to `/action` that carries the secret, from a page served at `origin`. */
   handle: (req: IncomingMessage, res: ServerResponse, origin: string) => void;
-  /** Settles once every post still running has been answered. */
-  settle: () => Promise<unknown>;
+  /** Settles once every post still running has been answered; `onWait` is called first when an action is running. */
+  settle: (onWait?: () => void) => Promise<unknown>;
 }
 
 export function createActionDesk(db: Database, repoPath: string): ActionDesk {
   const nonces = new Map<string, NonceGrant>();
   const running = new Set<Promise<unknown>>();
+  // The posts of `running` whose body is still coming in: nothing of theirs ran yet.
+  const reading = new Set<IncomingMessage>();
 
   // Every mint sweeps what lapsed and, past the cap, drops the oldest first,
   // so pages served and never used cannot grow the map without end.
@@ -149,7 +151,9 @@ export function createActionDesk(db: Database, repoPath: string): ActionDesk {
     }
     // Held by `settle` until the answer is written, so neither the store nor
     // the connection goes before it.
+    reading.add(req);
     const answered = readBody(req)
+      .finally(() => reading.delete(req))
       .then(async (body) => {
         if (body === undefined) return refuse(res, 413, 'Too large.');
         const answer = await act(new URLSearchParams(body));
@@ -176,10 +180,19 @@ export function createActionDesk(db: Database, repoPath: string): ActionDesk {
 
   return {
     mint: () => mint({ kind: 'page', mintedAt: Date.now() }),
-    clear: () => nonces.clear(),
+    // A post still sending its body has spent no nonce and run nothing, and its
+    // body may never come: a page left holding a half-sent post would otherwise
+    // hold `settle`, and with it the server's close, for good.
+    clear: () => {
+      nonces.clear();
+      for (const req of reading) req.destroy();
+    },
     handle,
-    // Until none is left, not only those running when it was called.
-    settle: async () => {
+    // Until none is left, not only those running when it was called. A post
+    // cut off mid-body is still in `running` until it unwinds, so only one
+    // past its body counts as a running action to wait for.
+    settle: async (onWait) => {
+      if (running.size > reading.size) onWait?.();
       while (running.size > 0) await Promise.allSettled([...running]);
     },
   };
@@ -229,5 +242,7 @@ function readBody(req: IncomingMessage): Promise<string | undefined> {
     });
     req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
     req.on('error', reject);
+    // After 'end' this is a no-op; before it, the post was cut off or given up.
+    req.on('close', () => reject(new Error('The post closed before its body ended.')));
   });
 }
