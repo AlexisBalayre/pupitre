@@ -236,9 +236,9 @@ from the `autoCompactWindow` key of `.pupitre/project.yml`: a whole number of to
 to 1000000, 150000 when the project sets none. The compiled settings are a `--settings` file, so
 they outrank the operator's `~/.claude/settings.json`, and a session no longer runs on whatever
 window the operator set there. Claude Code keeps a 33k buffer under the window, so 150000
-compacts near 117k. An edit takes effect at the next launch or respawn, never in a window
-already open. `pup status` reads the window from the session's compiled settings and prints how
-far `ctx ~Nk` is from that point.
+compacts near 117k. An edit takes effect at the next launch or `pup fix` round, never at a
+respawn, which reuses the stored settings, nor in a window already open. `pup status` reads the
+window from the session's compiled settings and prints how far `ctx ~Nk` is from that point.
 
 ## Context budget rules
 

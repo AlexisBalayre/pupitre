@@ -1,12 +1,12 @@
-# 0200. Compaction is the default context reset; respawn is for a change of model, rules or topic, or a wedged window (2026-11-18, supersedes decision 18's rationale)
+# 0200. Compaction is the default context reset; respawn is for a change of model or topic, or a wedged window (2026-11-18, supersedes decision 18's rationale)
 
 - Status: accepted
 - Amends: [0018](0018-context-is-optimized-by-handoff-respawn-not-in.md)
 - Amends: [0192](0192-pup-retro-replays-each-transcript-under-lower-compaction.md)
 - Amends: [0199](0199-a-compaction-restarts-from-live-state-read-by-a.md)
 
-200. **Compaction is the default context reset; respawn is for a change of model, rules or topic,
-    or a wedged window (2026-11-18, supersedes decision 18's rationale).**
+200. **Compaction is the default context reset; respawn is for a change of model or topic, or a
+    wedged window (2026-11-18, supersedes decision 18's rationale).**
     Decision 18 made handoff-respawn the way to reset a window, on the claim that a handoff the
     agent writes keeps more than Claude Code's compaction summary does. A study on 2026-11-16 of
     the month since 2026-10-17 (349 worker, 26 conductor and 14 console transcripts) tested that
@@ -45,12 +45,16 @@
     mechanism, unchanged) are for a window that a compaction would carry the wrong things into:
     - a change of model or effort (`--model`, `--effort`, the routing ladder of decision 92),
       which takes a new process;
-    - a change of rules: a profile, brief or project-config edit, the compaction window
-      included, lands only in a freshly compiled window (decision 57);
     - a change of topic: the task is re-scoped or re-planned, so the old window's context is
       noise the summary would keep;
     - a wedged window: a session stuck in a loop, repeating a failure or past a dead turn, where
       a summary of that window carries the wedge with it.
+    *Not a respawn case.* A change of rules, a profile, brief or project-config edit with the
+    compaction window included, reaches a session only at its next launch or `pup fix` round. A
+    respawn resends the stored context and settings and recompiles nothing (decisions 115 and
+    183), so it keeps the old window. A session compiled before this decision carries no
+    `autoCompactWindow` until then, runs on the operator's user window, and `pup status` shows a
+    bare `ctx ~Nk` for it.
     *Rejected.* Keeping the 120k respawn suggestion. Following it costs an operator action per
     session for the same fidelity, and the compaction near 117k now resets the window anyway. Lowering the window below 150000:
     the replay's savings at 120k are an upper bound (decision 192 does not price the summarizing
