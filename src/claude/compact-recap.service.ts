@@ -51,10 +51,12 @@ export function sessionRecap(db: Database, sessionId: string): string[] {
   if (!session)
     return [`Session state: unknown — no session ${sanitizeReason(sessionId)} in the store.`];
   const fixRound = currentFixRound(db, session.id);
+  // No CHECK constraint holds `state` to its type, and SQLite's INTEGER affinity
+  // keeps a non-numeric `reject_count` as text: both are scrubbed like the rest.
   return [
-    `Session state: ${session.state} (${sanitizeReason(session.id)})` +
+    `Session state: ${sanitizeReason(session.state)} (${sanitizeReason(session.id)})` +
       `${fixRound ? `, in a CI fix round since ${utc(fixRound.created_at)}` : ''}` +
-      `, ${session.reject_count} rejection${session.reject_count === 1 ? '' : 's'}.`,
+      `, ${sanitizeReason(String(session.reject_count))} rejection${session.reject_count === 1 ? '' : 's'}.`,
     lastGateLine(db, session.id),
     questionLine('Unanswered question to the operator', openQuestion(db, session.id)),
   ];
@@ -172,7 +174,7 @@ function openPrLines(db: Database, repoPath: string, sessions: SessionRow[]): st
         ? ' (worktree past the pin: not gated yet)'
         : '';
     lines.push(
-      `  ${sanitizeReason(session.id)} ${session.state} ${sanitizeReason(prUrl)} ` +
+      `  ${sanitizeReason(session.id)} ${sanitizeReason(session.state)} ${sanitizeReason(prUrl)} ` +
         `pin ${pin} pushed ${pushed} worktree ${worktree}${drift}`,
     );
   }
