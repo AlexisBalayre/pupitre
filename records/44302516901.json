@@ -1,0 +1,192 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-18T12:22:41.526Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "44302516901",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/44302516901",
+  "actor": "AlexisBalayre",
+  "commit_sha": "ab5f27200b8eaeebdbcd17f53b5c9951fee53721",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 383,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs",
+    "context"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs",
+    "context"
+  ],
+  "reviewers_skipped": [
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "docs/03-profiles.md",
+      "line": "239-240",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "Docs and ADR 0200 say an `autoCompactWindow` or other rule edit reaches a window at its next respawn, but `relaunchWindow` reuses the stored `compiled/settings.json` and recompiles nothing, so a respawn keeps the old window (or none).",
+      "body": "**A respawn does not apply an `autoCompactWindow` edit, but the docs say it does.**\n\n`docs/03-profiles.md` says \"An edit takes effect at the next launch or respawn, never in a window already open.\" ADR 0200's \"When respawn is still the right tool\" list also gives \"a change of rules: a profile, brief or project-config edit, the compaction window included, lands only in a freshly compiled window\" as a reason to run `pup respawn` (<https://github.com/AlexisBalayre/pupitre/blob/ab5f27200b8eaeebdbcd17f53b5c9951fee53721/docs/adr/0200-compaction-is-the-default-context-reset-respawn-is.md#L44-L49>).\n\nA respawn compiles nothing. `relaunchWindow` reads the stored `context.md` and launches with the settings already on disk:\n\n```ts\nsettingsPath: join(compiledDir, 'settings.json'),\n```\n<https://github.com/AlexisBalayre/pupitre/blob/ab5f27200b8eaeebdbcd17f53b5c9951fee53721/src/core/session-handoff.service.ts#L286-L337>\n\nEvery respawn entry point goes through it: `pup respawn`, `pup kill --respawn` and the UI action. Only a fresh launch and a `pup fix` round (`recompileSessionProfile`) recompile. ADR 0183 already corrected this same claim (\"a respawn resends the stored context and recompiles nothing\"), and so does ADR 0115 (\"only `pup fix` recompiles a profile\").\n\nWhat goes wrong:\n- An operator edits `autoCompactWindow` in `.pupitre/project.yml` and runs `pup respawn <id>`, as the ADR advises. The new window still compacts at the old value.\n- A session compiled before this PR has no `autoCompactWindow` at all. A respawn leaves it on the operator's user window, and `pup status` shows a bare `ctx ~Nk` for it.\n\nThe fix is to correct both passages to say the next launch or `pup fix` round. For example, in `docs/03-profiles.md`: \"An edit takes effect at the next launch or `pup fix` round, never at a respawn, which reuses the stored settings, nor in a window already open.\" Then drop the project-config/compaction-window clause from ADR 0200's respawn list, or reword it the same way. The other option, making respawn recompile, would reverse earlier decisions and needs its own ADR.",
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/dashboard-text.utils.ts",
+      "line": "95-103",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "pup pins only `autoCompactWindow`: if the operator has turned auto-compact off (user settings or an inherited `DISABLE_AUTO_COMPACT`), windows never compact, `pup status` prints `at compaction` indefinitely, and the removed 120k respawn hint no longer flags them; pinning auto-compact on in the compiled settings/env would close this.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "226-231",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`settingsFileOf` reads through a new `compiled/` path component: a session that replaces `compiled` with a regular file makes `openSync` fail with ENOTDIR, which `readSessionFile` rethrows, so one row marks the whole project unreadable; treating ENOTDIR like ENOENT/ELOOP keeps the cost to that row.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/project-config.config.ts",
+      "line": "47-50",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The window is accepted up to 1,000,000 whatever the routed model's context: with `autoCompactWindow: 300000` on a 200k-context model, Claude Code likely compacts near the model limit while `pup status` computes 267k and prints a distance that never arrives.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/cli/ui/dashboard-text.utils.ts",
+      "line": "101",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`left` is rounded before the `> 0` test, so a session 1–499 tokens short of its compaction point is labelled `at compaction` early; compare `compactAt > tokens` before rounding.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/types/dashboard.types.ts",
+      "line": "182",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `compactAtTokens` doc says it is absent only when the settings carry no window, but it is also absent with no context reading, a non-minted id, an unreadable or planted file, or an out-of-range window.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "890-897",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`readSessionFile`'s doc now covers the settings file too, but still says a planted link \"costs its row the activity\"; for the settings file it costs the compaction hint, so \"costs its row that reading\" fits both.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/profile-compiler.service.ts",
+      "line": "2024",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The conductor's comment \"The project's window, as a worker's is (decision 200)\" only points at the worker's comment, which carries the WHY; drop it or state the WHY (a flag settings file outranks the operator's).",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "review-spec skipped: the PR names no closing issue, no --spec, and no closing keyword. review-workflow-safety skipped: no .github/workflows change. review-maintainability skipped: not on the standard roster. Dropped as below the finding bar: two simplicity nits whose reviewer conceded the construct was defensible (range re-check in compactionPoint; settingsFileOf mirroring eventsFileOf), and one docs nit on the contextLabel history sentence."
+    },
+    {
+      "component": "validator",
+      "description": "The validator for the auto-compact-disabled finding confirmed the mechanism but judged it an operator opt-out with only a misleading label, so I downgraded it from important to nit. Both validators reported `git diff`/`git show` calls blocked for approval; they used `gh pr diff` and head files instead."
+    }
+  ],
+  "duplicates_merged": 1,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.6784121500000007,
+  "duration_ms": 260511,
+  "num_turns": 18,
+  "tokens": {
+    "input": 16,
+    "output": 14761,
+    "cache_read": 429696,
+    "cache_creation": 58507,
+    "total": 502980
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 112,
+      "output": 40820,
+      "cache_read": 1585014,
+      "cache_creation": 192236,
+      "cost_usd": 2.2705518000000016
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 48,
+      "output": 11186,
+      "cache_read": 333664,
+      "cache_creation": 104682,
+      "cost_usd": 0.40702739999999993
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 355,
+      "cache_read": 0,
+      "cache_creation": 5242,
+      "cost_usd": 0.00083295
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "git -C /home/runner/work/pupitre/pupitre diff 553f554fda83f61277c8252acb4745fdd41437fb..HEAD --stat"
+    },
+    {
+      "tool": "Bash",
+      "input": "git -C /home/runner/work/pupitre/pupitre diff 553f554fda83f61277c8252acb4745fdd41437fb..HEAD -- docs/03-profiles.md docs/adr/0200-compaction-is-the-default-context-reset-respawn-is.md src/core/session"
+    },
+    {
+      "tool": "Bash",
+      "input": "git -C /home/runner/work/pupitre/pupitre log --oneline 553f554fda83f61277c8252acb4745fdd41437fb..HEAD -- docs/03-profiles.md docs/adr/0200-compaction-is-the-default-context-reset-respawn-is.md src/cor"
+    },
+    {
+      "tool": "Bash",
+      "input": "git -C /home/runner/work/pupitre/pupitre show ab5f272 -- src/cli/ui/dashboard-text.utils.ts"
+    }
+  ]
+}
