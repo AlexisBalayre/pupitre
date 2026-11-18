@@ -1,0 +1,115 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-18T15:52:49.406Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "44339728398",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/44339728398",
+  "actor": "AlexisBalayre",
+  "commit_sha": "07b8840de6d40426633bf8b329421e8d6627be08",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 389,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "guards",
+    "simplicity"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "guards",
+    "simplicity"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/land.service.ts",
+      "line": "240-247",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "A session plants `rebase-merge/` in its admin dir with `head-name` = `refs/heads/main` and `orig-head` = a commit it wrote. `pup land` then refuses and tells the operator to \"finish or abort it in that worktree\". If the operator runs `git rebase --abort` from their shell, it sets `refs/heads/main` to `orig-head`, the move the ADR 0204 probe records. The operator's git runs outside the sandbox, which ADR 0191 says refuses this write for the worker. So `main` ends up on unmeasured session content, with no gate in between.",
+      "body": "**The new land refusal tells the trusted operator to run the operation the session controls.**\n\n```ts\n`${sanitizeReason(inProgress)} is in session ${id}'s worktree git dir: a rebase, merge, ` +\n  'cherry-pick or revert is in progress there, or the session planted its state. Inspect ' +\n  'it, finish or abort it in that worktree or delete it, then re-run `pup land`. ' +\n```\n<https://github.com/AlexisBalayre/pupitre/blob/07b8840de6d40426633bf8b329421e8d6627be08/src/core/land.service.ts#L240-L247>\n\n**Why the abort is unsafe here:**\n- This PR's own ADR 0204 (*Probe*) shows that `git rebase --abort` over a planted `rebase-merge/` with `head-name` = `refs/heads/main` \"moves `refs/heads/main` back to that commit and checks `main` out in the worktree\".\n- `orig-head` is whatever the session writes, and the object store is writable by the worker (ADR 0191), so it can name a commit the session built.\n- ADR 0191 (*The live probe*) denies the worker's write to `refs/heads/main`. That is why the gate-side message, which the sandboxed worker reads, carries much less risk.\n- The operator who reads the land message runs git **unsandboxed**. ADR 0101 also notes that git the operator runs unpinned in a worktree follows the session's pointers.\n- If the operator follows \"abort it in that worktree\", git moves `main` to the session's chosen commit with the operator's rights, and no gate measures it first. \"Finish\" (a `--continue`) is no safer: ADR 0191 ceiling 1 notes that a planted todo's `exec` lines run on an unsandboxed `--continue`.\n\n**Trigger:** `pup land <session>` under `workerSandbox: true`, after the session planted `rebase-merge/` (`head-name` = `refs/heads/main`, `orig-head` = its commit), with the operator following the printed advice.\n\n**Fix:** for the operator, only deleting the entry is safe. Have the message say so and stop offering finish or abort.\n\n(The git-internals step rests on the ADR 0204 probe, so this is at medium confidence.)",
+      "suggestion": "  if (inProgress) {\n    throw new Error(\n      `${sanitizeReason(inProgress)} is in session ${id}'s worktree git dir: a rebase, merge, ` +\n        'cherry-pick or revert was left in progress there, or the session planted its state. ' +\n        'Delete it without running git in that worktree (an abort or continue there runs the ' +\n        \"session's head-name and orig-head with your rights, and can move any branch, main \" +\n        'included), then re-run `pup land`. ' +\n        LAND_UNTOUCHED,\n    );\n  }"
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "2275-2282",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The fresh-base refusal claims to detect a cherry-pick or revert in progress and lists `git cherry-pick --abort`, but `CHERRY_PICK_HEAD` and `REVERT_HEAD` are not checked; only a multi-commit one is caught, through `sequencer/`. It also leaves out `git revert --abort` and `git am --abort` (`rebase-apply/` is what `git am` leaves), and it says \"the file\" where three of the entries are directories.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/land.service.ts",
+      "line": "242-244",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The land refusal claims to detect a cherry-pick or revert in progress, but these are caught only when they leave `sequencer/` (a multi-commit one), since `CHERRY_PICK_HEAD` and `REVERT_HEAD` are not checked.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.315093,
+  "duration_ms": 252739,
+  "num_turns": 15,
+  "tokens": {
+    "input": 18,
+    "output": 10613,
+    "cache_read": 378426,
+    "cache_creation": 45666,
+    "total": 434723
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 86,
+      "output": 39380,
+      "cache_read": 1275631,
+      "cache_creation": 176438,
+      "cost_usd": 2.0622582
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 36,
+      "output": 5924,
+      "cache_read": 220866,
+      "cache_creation": 68258,
+      "cost_usd": 0.25204360000000003
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 382,
+      "cache_read": 0,
+      "cache_creation": 4800,
+      "cost_usd": 0.0007911999999999999
+    }
+  ],
+  "permission_denials": []
+}
