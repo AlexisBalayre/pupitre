@@ -211,6 +211,24 @@ existed — no section, no change to any hash.
   the next conductor start and never in a window already open. `pup brief edit` names the
   conductor and sessions still running on the brief as it was.
 
+## Compact recap (decision 199)
+
+Both the worker's and the conductor's settings carry a `SessionStart` hook matched on `compact`,
+`hooks/compact-recap.sh`. After a compaction it prints the live state under the summary, read
+just then, so the window restarts from the record rather than from what the summary kept of it.
+
+- A **worker's** reads git in shell first, pinned and deadlined like the other worktree hooks:
+  the branch head, the commits past the main checkout's HEAD and the uncommitted files. Then
+  `pup session recap` supplies the store's side: the state, rejections, any CI fix round, the last
+  gate verdict and the unanswered question.
+- The **conductor's** runs `pup conductor recap` from the main checkout: the sessions by state;
+  each open PR with its gate pin, `origin/<branch>` as pup last pushed it, and the worktree's
+  head, flagged when the worktree is past the pin; the merge lock's holder; and its own open
+  question. The operator can run it too.
+- The hook is read-only and makes no network call. Its output is cut at 5000 bytes, each list in
+  it is capped, and it always exits 0. A read that fails says `unreadable` or `unknown` and names
+  the command to retry. A layer's `SessionStart` hooks run after it, never in its place.
+
 ## Context budget rules
 
 - Compiler prints the token count of the compiled context and refuses to compile past the cap.
