@@ -106,9 +106,11 @@
     change and sparkline: the page hides a tile's figure line (`.tile figcaption`), and the
     sparkline's SVG `<title>` still names every capture on hover. Planned prints the count, the
     first three tasks in queue order with their launch, and a link to the Tasks sheet for the rest.
-    Goals on a card and Needs you reasons are cut at the last word boundary within 100 characters
-    with an ellipsis (`clipWords`), never mid-word; the whole text is on the session's view or the
-    Tasks sheet. A session row with an open question points at its Needs you line rather than
+    Goals on a card, and a Needs you question that links to its session's view, are cut at the last
+    word boundary within 100 characters with an ellipsis (`clipWords`), never mid-word; the whole
+    text is on the session's view or the Tasks sheet. The conductor's question and an unminted
+    session's have no view and print whole, as do the reasons pup builds, so a merge line keeps its
+    decision-188 `scope widened after launch` globs and count. A session row with an open question points at its Needs you line rather than
     printing the question twice. The page title leads with the sheet's name (`Overview — pup
     dashboard`), set in the shell before any board arrives. To keep the page short, a session row
     prints its facts on one line, a Planned task and the conductor sit on one row with their

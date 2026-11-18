@@ -14,6 +14,7 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   capturePane: vi.fn(() => ''),
   hasConductorWindow: vi.fn(() => false),
   conductorPane: vi.fn(() => undefined),
+  conductorRun: vi.fn(() => 'run-1'),
   readInputBoxLook: vi.fn(() => ({ state: 'empty', draft: '' })),
 }));
 // Real unless a test holds one action open, to see what a shutdown does meanwhile.
@@ -33,6 +34,7 @@ import {
 import { formatDebtTransition } from './audit.service.js';
 import { appendBaselineHistory } from './baseline-history.repository.js';
 import { briefPath } from './brief.service.js';
+import { markConductorQuestion } from './conductor.service.js';
 import { buildDashboardSnapshot, needsYou } from './dashboard.service.js';
 import type { SessionState } from './db.client.js';
 import { openStore } from './db.client.js';
@@ -725,6 +727,42 @@ describe('startWebDashboard', () => {
       // The question's text prints once: the session's row points at its Needs you line.
       expect(page).toContain('question — see Needs you');
       expect(page.match(/word59/g)).toBeNull();
+    });
+
+    // No view holds the conductor's question, so its line is the only place to read it.
+    it("prints the conductor's question whole", async () => {
+      vi.mocked(hasConductorWindow).mockReturnValue(true);
+      const words = Array.from({ length: 30 }, (_, i) => `word${i}`).join(' ');
+      markConductorQuestion(db, repo, 'run-1', { text: words });
+
+      const page = await readPage(home());
+
+      expect(page).toMatch(new RegExp(`<span class="reason">question #\\d+: ${words}</span>`));
+    });
+
+    // Decision 188: the scope a merge is gated on, three globs and a count.
+    it('prints a merge line with its widened scope whole', async () => {
+      seedSession('s-wide', ['running', 'awaiting-review']);
+      appendEvent(db, 's-wide', 'rescope', {
+        task: 't-s-wide',
+        added: [
+          'src/core/web-dashboard-overview.service.ts',
+          'src/core/web-dashboard.service.ts',
+          'docs/adr/0098-pup-dashboard-is-a-set-of-sheets-figures.md',
+          'src/core/web-dashboard-sheet.utils.ts',
+        ],
+        tier: 'standard',
+        raised: false,
+        by: 'inferred-operator',
+        tty: null,
+        tmuxPane: null,
+      });
+
+      const page = await readPage(home());
+      const [need] = needsYou(buildDashboardSnapshot(db, repo, Date.now()));
+
+      expect(need?.reason).toMatch(/\(\+1 more\)$/);
+      expect(page).toContain(`<span class="reason">${escapeHtml(need?.reason ?? '')}</span>`);
     });
 
     it('says a card has no goal rather than printing an empty line', async () => {

@@ -386,12 +386,14 @@ function deliverySection(view: OverviewView): string {
 }
 
 /**
- * Each line with its answer as text beside its reason, cut at a word like a
- * card's (the whole question is on the session's view), and, for a line about a
+ * Each line with its answer as text beside its reason, and, for a line about a
  * session or the conductor the store names in the minted shape, the way to act
  * on it: a question's options and an answer in words, and a session's view. A
  * PR's line, whose answer is its link, carries the PR's CI review state and
- * debt too, so Open pull requests only counts them.
+ * debt too, so Open pull requests only counts them. Only a question that links
+ * to its session's view, which holds the whole text, is cut at a word like a
+ * card's: the conductor's and an unminted session's have no view, and the
+ * reasons pup builds carry the decision-188 widened scope whole.
  */
 function needsSection(view: OverviewView, sessionHref: (sessionId: string) => string): string {
   const { needs } = view;
@@ -416,7 +418,7 @@ function needsSection(view: OverviewView, sessionHref: (sessionId: string) => st
     const pr = prSessionOf(need, prs);
     return (
       `<li class="need need-${escapeHtml(need.kind)}"><span class="sid">${escapeHtml(need.label)}</span>${open} ` +
-      `<span class="reason">${escapeHtml(clipWords(need.reason))}</span>` +
+      `<span class="reason">${escapeHtml(need.kind === 'question' && open !== '' ? clipWords(need.reason) : need.reason)}</span>` +
       `<span class="answer">${textOrPrLink(need.answer)}</span>` +
       (pr === undefined ? '' : prFacts(pr, view)) +
       `${answer}</li>`
