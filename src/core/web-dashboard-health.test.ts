@@ -111,10 +111,10 @@ describe('the Health sheet', () => {
     const page = render();
 
     expect(page).toContain(
-      '<figcaption>coverage by snapshot: 2026-10-01 00:00 80% · 2026-10-03 00:00 82% · 2026-10-05 00:00 82%</figcaption>',
+      '<figcaption class="sr-only">coverage by snapshot: 2026-10-01 00:00 80% · 2026-10-03 00:00 82% · 2026-10-05 00:00 82%</figcaption>',
     );
     expect(page).toContain(
-      '<figcaption>unused exports by snapshot: 2026-10-01 00:00 4 · 2026-10-03 00:00 4 · 2026-10-05 00:00 2</figcaption>',
+      '<figcaption class="sr-only">unused exports by snapshot: 2026-10-01 00:00 4 · 2026-10-03 00:00 4 · 2026-10-05 00:00 2</figcaption>',
     );
     // Placed by time across the plot (x 8 to 552), scaled to the series' own range (y 112 to 16).
     expect(lines(page, 'unused exports by snapshot')).toEqual(['8,16 280,16 552,112']);
@@ -251,7 +251,7 @@ describe('the Health sheet', () => {
     expect(page).toContain('<span class="sid">(unminted session id)</span>');
     // The capture whose time does not parse has no place on the axis.
     expect(page).toContain(
-      '<figcaption>duplicated lines by snapshot: 2026-10-01 00:00 1</figcaption>',
+      '<figcaption class="sr-only">duplicated lines by snapshot: 2026-10-01 00:00 1</figcaption>',
     );
   });
 });

@@ -29,7 +29,7 @@ export const CHART_CSS = `  figure.chart { margin: 4px 0 0; }
   figure.chart .hit { stroke: transparent; stroke-width: 8; }
   figure.chart .axis { fill: var(--muted); font: 11px system-ui, -apple-system, sans-serif; }
   figure.chart .value { fill: var(--ink-2); font: 11px system-ui, -apple-system, sans-serif; }
-  figure.chart figcaption {
+  .sr-only {
     position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; border: 0;
     overflow: hidden; clip-path: inset(50%); white-space: nowrap;
   }
@@ -56,7 +56,7 @@ const drawable = (value: number): number => (Number.isFinite(value) ? Math.max(0
 /**
  * The SVG and its figure line, one text with its title: every value in words,
  * so the numbers read without the chart, to a screen reader or in a text-only
- * browser. `CHART_CSS` hides the line from sight, where it would repeat the
+ * browser. Its `.sr-only` class (in `CHART_CSS`) hides the line from sight, where it would repeat the
  * drawing at length (decision 98's 2026-11-18 amendment); a hover names each mark.
  */
 function figure(
@@ -71,7 +71,7 @@ function figure(
   return (
     `<figure class="${className}"><svg viewBox="0 0 ${width} ${height}" role="img">` +
     `<title>${escapeHtml(caption)}</title>${marks}</svg>` +
-    `<figcaption>${escapeHtml(caption)}</figcaption></figure>`
+    `<figcaption class="sr-only">${escapeHtml(caption)}</figcaption></figure>`
   );
 }
 

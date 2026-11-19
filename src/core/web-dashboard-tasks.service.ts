@@ -16,7 +16,6 @@ import {
 import { holdingStates } from './session-state.utils.js';
 import { actionButton } from './web-dashboard-actions.service.js';
 import {
-  browsable,
   clipWords,
   DAY_MS,
   escapeHtml,
@@ -29,8 +28,6 @@ import {
 
 const WEEK_MS = 7 * DAY_MS;
 const GATE_WEEKS = 8;
-/** Backlog tasks the sheet lists before its show-all control. */
-const BACKLOG_SHOWN = 10;
 /** Shared files an overlap names before it says how many more there are. */
 const OVERLAP_FILES_SHOWN = 3;
 
@@ -337,23 +334,19 @@ function gateSection({ passRate, runs, failures }: TasksView): string {
 
 function backlogSection({ backlog, overlapError }: TasksView): string {
   return listSection('Backlog', backlog, 'Nothing planned — `pup plan` adds a task.', (tasks) => {
-    const rows = tasks.map((task) => ({
-      html: (attrs: string) =>
-        `<li class="task"${attrs} title="${escapeHtml(scopeText(task))}"><span class="sid">${escapeHtml(task.id)}</span>` +
+    const rows = tasks.map(
+      (task) =>
+        `<li class="task" title="${escapeHtml(scopeText(task))}"><span class="sid">${escapeHtml(task.id)}</span>` +
         `<span class="goal">${escapeHtml(clipWords(task.goal || '(no goal recorded)'))}</span>` +
         (task.overlaps.length === 0
           ? ''
           : `<span class="fact">${escapeHtml(overlapText(task))}</span>`) +
         actionButton('launch', { task: task.id }, 'Launch') +
         '</li>',
-    }));
+    );
     return (
       (overlapError === undefined ? '' : hint(overlapError)) +
-      browsable(
-        { name: 'backlog', size: BACKLOG_SHOWN, paging: 'all' },
-        rows,
-        (shown) => `<ul class="rows inline">${shown.map((row) => row.html).join('')}</ul>`,
-      )
+      `<ul class="rows inline">${rows.join('')}</ul>`
     );
   });
 }

@@ -185,11 +185,11 @@ describe('the Tasks sheet', () => {
 
     expect(page).toContain('Gate runs in the last 8 weeks: 4, 2 passed.');
     expect(page).toContain(
-      '<figcaption>Gate pass rate per week, week starting: 09-15 no run · 09-22 no run · ' +
+      '<figcaption class="sr-only">Gate pass rate per week, week starting: 09-15 no run · 09-22 no run · ' +
         '09-29 no run · 10-06 no run · 10-13 no run · 10-20 0% · 10-27 50% · 11-03 100%</figcaption>',
     );
     expect(page).toContain(
-      '<figcaption>Gate failures per stage: diff-size 1 · lint 1 · tests 1</figcaption>',
+      '<figcaption class="sr-only">Gate failures per stage: diff-size 1 · lint 1 · tests 1</figcaption>',
     );
     expect(page).toContain('<title>Gate failures per stage:');
   });
@@ -204,32 +204,15 @@ describe('the Tasks sheet', () => {
 
     expect(page.indexOf('>t-b<')).toBeLessThan(page.indexOf('>t-a<'));
     expect(page).toContain(
-      '<li class="task" data-row title="scope: src/b/** · not src/b/gen/**"><span class="sid">t-b</span>' +
+      '<li class="task" title="scope: src/b/** · not src/b/gen/**"><span class="sid">t-b</span>' +
         '<span class="goal">Second task.</span>',
     );
     expect(page).toContain(
-      '<li class="task" data-row title="scope: docs/**"><span class="sid">t-a</span><span class="goal">First task!</span>',
+      '<li class="task" title="scope: docs/**"><span class="sid">t-a</span><span class="goal">First task!</span>',
     );
     // Spans only: nothing in a line breaks it into a block.
     expect(page).not.toMatch(/<li class="task"[^>]*>(?:(?!<\/li>).)*<div/);
     expect(page).not.toContain('With more said');
-  });
-
-  it('shows the first 10 backlog tasks, and every one on a press', () => {
-    for (let i = 1; i <= 12; i++) plan(`t-${i}`, `Task ${i}.`, ['src/**']);
-
-    const page = render();
-    const rows = page.match(/<li class="task"[^>]*>/g) ?? [];
-
-    expect(rows).toHaveLength(12);
-    expect(rows.filter((row) => row.includes(' data-row hidden '))).toHaveLength(2);
-    expect(page).toContain(
-      '<div class="browse" data-list="backlog" data-page-size="10" data-paging="all">',
-    );
-    expect(page).toContain(
-      '<span data-status aria-live="polite">10 of 12 shown</span><button type="button" data-step="all">Show all 12</button>',
-    );
-    expect(page).not.toContain('data-filter');
   });
 
   it('names each live session a backlog task would share tracked files with', () => {

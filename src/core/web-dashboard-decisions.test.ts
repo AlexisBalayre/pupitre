@@ -73,7 +73,7 @@ describe('the Decisions sheet', () => {
 
     const page = sheet();
 
-    expect(page).toContain('3 decisions, newest first; the search reads every one.');
+    expect(page).toContain('3 decisions, newest first.');
     expect(page.match(/<h3 class="state-group">[^<]*<\/h3>/g)).toEqual([
       '<h3 class="state-group">2026-11-03</h3>',
       '<h3 class="state-group">2026-11-02</h3>',
@@ -93,40 +93,17 @@ describe('the Decisions sheet', () => {
     expect(torn).toContain('#1</span> s-1</div>');
   });
 
-  it('opens on the newest 20 with a search box and a control that shows 20 more', () => {
+  it('shows only the newest 20 records', () => {
     for (let i = 1; i <= 25; i++) decide(`s-${i}`, `decision ${i}`, []);
-    // The oldest on a day of its own, so its whole group starts hidden.
     dated('s-1', '2026-01-01 00:00:00');
 
     const page = sheet();
-    const all = rows(page);
 
-    expect(all).toHaveLength(25);
-    expect(all.filter((row) => !row.includes(' hidden'))).toHaveLength(20);
-    expect(all.slice(0, 20).every((row) => row === '<li class="decision" data-row>')).toBe(true);
-    expect(all.slice(20).every((row) => row === '<li class="decision" data-row hidden>')).toBe(
-      true,
-    );
-    expect(page).toContain(
-      '<div class="browse" data-list="decisions" data-page-size="20" data-paging="more">',
-    );
-    expect(page).toContain(
-      '<input type="search" data-filter="text" aria-label="Search summaries, alternatives, files and sessions"',
-    );
-    expect(page).not.toContain('data-filter="kind"');
-    expect(page).toContain('<span data-status aria-live="polite">20 of 25 shown</span>');
-    expect(page).toContain('<button type="button" data-step="20">Show 20 more</button>');
-    expect(page).toMatch(
-      /<div data-group hidden><h3 class="state-group">2026-01-01<\/h3><ul class="rows"><li class="decision" data-row hidden>/,
-    );
-  });
-
-  it('disables the control once every record shows', () => {
-    decide('s-1', 'only', []);
-
-    expect(sheet()).toContain(
-      '<button type="button" data-step="20" disabled>Show 20 more</button>',
-    );
+    expect(page).toContain('25 decisions; the newest 20 shown.');
+    expect(rows(page)).toHaveLength(20);
+    expect(rows(page).every((row) => row === '<li class="decision">')).toBe(true);
+    expect(page).not.toMatch(/data-|hidden|2026-01-01/);
+    expect(page).not.toContain('decision 1<');
   });
 
   it('escapes every store string and file name, markup and control characters alike', () => {

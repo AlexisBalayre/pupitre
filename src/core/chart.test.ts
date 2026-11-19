@@ -27,7 +27,9 @@ describe('chart.utils', () => {
 
     expect(svg).toMatch(/^<figure class="chart[^"]*"><svg viewBox="[\d. ]+" role="img"><title>/);
     expect(svg).toContain('<title>Merges: 10-05 2 · 10-12 0 · 10-19 5</title>');
-    expect(svg).toContain('<figcaption>Merges: 10-05 2 · 10-12 0 · 10-19 5</figcaption>');
+    expect(svg).toContain(
+      '<figcaption class="sr-only">Merges: 10-05 2 · 10-12 0 · 10-19 5</figcaption>',
+    );
   });
 
   it('draws one mark per non-zero bar, scaled to the largest', () => {
@@ -93,7 +95,9 @@ describe('chart.utils', () => {
   });
 
   it('draws an empty series as an empty frame, not a throw', () => {
-    expect(lineChart([], { title: 'None' })).toContain('<figcaption>None: </figcaption>');
+    expect(lineChart([], { title: 'None' })).toContain(
+      '<figcaption class="sr-only">None: </figcaption>',
+    );
     expect(sparkline([], { title: 'None' })).not.toContain('<circle');
   });
 
@@ -120,7 +124,9 @@ describe('chart.utils', () => {
       { title: 'Lines' },
     );
 
-    expect(svg).toContain('<figcaption>Lines: a 1 · b 3 · c not measured · d 2 · e 2</figcaption>');
+    expect(svg).toContain(
+      '<figcaption class="sr-only">Lines: a 1 · b 3 · c not measured · d 2 · e 2</figcaption>',
+    );
     // Two lines: a to b, then d alone (a dot) after the gap, e alone after the break.
     expect([...svg.matchAll(/<polyline class="line" points="([^"]*)"/g)].map(([, p]) => p)).toEqual(
       ['8,112 116.8,16'],
@@ -136,12 +142,12 @@ describe('chart.utils', () => {
   it('draws a time series measured nowhere as a frame with no line', () => {
     const svg = timeLineChart([{ at: 0, label: 'a', value: undefined }], [], { title: 'None' });
 
-    expect(svg).toContain('<figcaption>None: a not measured</figcaption>');
+    expect(svg).toContain('<figcaption class="sr-only">None: a not measured</figcaption>');
     expect(svg).not.toMatch(/<polyline|<circle|NaN/);
   });
 
   it("keeps a chart's figure line for a screen reader, not on the page", () => {
-    const rule = /figure\.chart figcaption \{([^}]*)\}/.exec(CHART_CSS)?.[1] ?? '';
+    const rule = /\.sr-only \{([^}]*)\}/.exec(CHART_CSS)?.[1] ?? '';
 
     expect(rule).toContain('position: absolute;');
     expect(rule).toContain('clip-path: inset(50%);');

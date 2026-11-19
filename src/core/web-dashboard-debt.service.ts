@@ -5,14 +5,7 @@ import { listLedgerEntries, listOverdueLedgerEntries } from './ledger.repository
 import { projectId } from './paths.utils.js';
 import { asStringArray, parseJsonOr, toIsoUtc } from './report-data.utils.js';
 import { actionButton } from './web-dashboard-actions.service.js';
-import {
-  browsable,
-  DAY_MS,
-  escapeHtml,
-  hint,
-  oneLine,
-  section,
-} from './web-dashboard-sheet.utils.js';
+import { DAY_MS, escapeHtml, hint, oneLine, section } from './web-dashboard-sheet.utils.js';
 
 /** One open ledger entry as the Debt sheet reads it, every string already through `oneLine`. */
 export interface DebtSheetEntry {
@@ -36,9 +29,7 @@ interface RankedFile {
 }
 
 const TOP_FILES = 10;
-/** Rows a page of the entries table shows. */
-const PAGE_ROWS = 25;
-/** Files a row names in full; the rest wait behind its closed details, still read by the text filter. */
+/** Files a row names in full; the rest wait behind its closed details. */
 const FILES_SHOWN = 3;
 /** An entry this many days old weighs twice a fresh one on the pay-down ranking. */
 const WEIGHT_DOUBLING_DAYS = 30;
@@ -207,24 +198,15 @@ function days(n: number): string {
 }
 
 function ledgerTable(entries: DebtSheetEntry[]): string {
-  return browsable(
-    {
-      name: 'debt',
-      size: PAGE_ROWS,
-      paging: 'pages',
-      search: 'Filter by text, file or reason',
-      kinds: { label: 'Kind', values: KINDS.map((kind) => kind.label) },
-    },
-    entries.map((entry) => ({ kind: kindOf(entry), html: (attrs) => entryRow(entry, attrs) })),
-    (rows) =>
-      '<table class="moves"><thead><tr><th>Entry</th><th>Files</th><th>Accepted</th><th></th></tr></thead>' +
-      `<tbody>${rows.map((row) => row.html).join('')}</tbody></table>`,
+  return (
+    '<table class="moves"><thead><tr><th>Entry</th><th>Files</th><th>Accepted</th><th></th></tr></thead>' +
+    `<tbody>${entries.map(entryRow).join('')}</tbody></table>`
   );
 }
 
-function entryRow(entry: DebtSheetEntry, attrs: string): string {
+function entryRow(entry: DebtSheetEntry): string {
   return (
-    `<tr${attrs}><td><span class="sid">#${escapeHtml(entry.id)}</span> ${escapeHtml(entry.description)}` +
+    `<tr><td><span class="sid">#${escapeHtml(entry.id)}</span> ${escapeHtml(entry.description)}` +
     `${entry.overdue ? ' <span class="state state-blocked">overdue</span>' : ''}` +
     `<div class="fact">${escapeHtml(`reason: ${entry.reason}`)}</div></td>` +
     `<td>${filesCell(entry.files)}</td>` +
