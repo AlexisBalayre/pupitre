@@ -1963,11 +1963,29 @@ export function buildProgram(): Command {
       const dashboard = await startWebDashboard(db, repoPath);
       console.log(`Dashboard on ${dashboard.url}`);
       console.log('Anyone holding this url reads the page; Ctrl-C stops the server.');
-      const stop = (): void => {
-        void dashboard.close().then(() => db.close());
+      // Kept on, not once: an action running under the merge lock holds its
+      // own listener on these signals, so with this one gone a second Ctrl-C
+      // would meet only that one and do nothing. The first signal waits for a
+      // running action (decision 188); a second exits without it, leaving the
+      // merge lock to the next run, which reclaims it once this pid is gone.
+      let stopping = false;
+      const stop = (signal: NodeJS.Signals): void => {
+        if (stopping) {
+          console.log('Stopped without waiting for the running action.');
+          process.exit(128 + osConstants.signals[signal]);
+        }
+        stopping = true;
+        console.log('stopping...');
+        void dashboard
+          .close(() =>
+            console.log(
+              'Waiting for the running action to finish; Ctrl-C again stops now, leaving it unfinished.',
+            ),
+          )
+          .then(() => db.close());
       };
-      process.once('SIGINT', stop);
-      process.once('SIGTERM', stop);
+      process.on('SIGINT', stop);
+      process.on('SIGTERM', stop);
       if (!opts.open) return;
       // Detached and unwaited: a browser xdg-open starts in the foreground
       // would hold a synchronous call, and with it the server, until it quits.

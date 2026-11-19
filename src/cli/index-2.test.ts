@@ -1,6 +1,9 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, linkSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { type RequestOptions, request, type Server } from 'node:http';
+import type { Socket } from 'node:net';
 import { join } from 'node:path';
+import { duplexPair } from 'node:stream';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
@@ -117,7 +120,8 @@ vi.mock('../core/fix-round.service.js', () => ({
 }));
 // The wait's gh reads and clock are ci-wait.test.ts's.
 vi.mock('../core/ci-wait.service.js', () => ({ waitForCiReview: vi.fn() }));
-// The server and its socket are web-dashboard.test.ts's; here it binds nothing.
+// The server and its socket are web-dashboard.test.ts's; here it binds nothing,
+// and the one test that serves the real one hands it in-memory connections.
 vi.mock('../core/web-dashboard.service.js', () => ({ startWebDashboard: vi.fn() }));
 // The browser opener is `pup dashboard --open`'s one boundary; every other
 // call, the fixtures' git included, runs for real.
@@ -208,6 +212,7 @@ import {
 } from '../core/session-lifecycle.service.js';
 import { retireSession } from '../core/session-retire.service.js';
 import type { LandOutcome } from '../core/types/land.types.js';
+import { startWebDashboard } from '../core/web-dashboard.service.js';
 import { buildProgram } from './index.js';
 import { resolveProject } from './project.utils.js';
 
@@ -2465,6 +2470,140 @@ describe('CLI commands', () => {
         '  s1  CI review status reads clean on its head (any repo workflow can set it): read ' +
           `the PR, then your merge click  → ${PR}`,
       );
+    });
+  });
+
+  describe('dashboard stop', () => {
+    const PORT = 41_234;
+
+    /** The one listener the command added for `signal`, removed again so it outlives no test. */
+    function addedListener(signal: 'SIGINT' | 'SIGTERM', before: unknown[]): unknown {
+      const added = process.listeners(signal).filter((listener) => !before.includes(listener));
+      onTestFinished(() => {
+        for (const listener of added) process.off(signal, listener);
+      });
+      expect(added).toHaveLength(1);
+      return added[0];
+    }
+
+    /**
+     * `pup dashboard`, checked to hand both signals one stop. Tests send the
+     * signals through `process.emit`, never by calling that stop: `listeners()`
+     * unwraps a once-listener, so only a delivered signal tells `on` from `once`.
+     */
+    async function runDashboard(): Promise<void> {
+      const sigints = process.listeners('SIGINT');
+      const sigterms = process.listeners('SIGTERM');
+      await buildProgram().parseAsync(['dashboard'], { from: 'user' });
+      expect(addedListener('SIGTERM', sigterms)).toBe(addedListener('SIGINT', sigints));
+    }
+
+    /** Connections to `server` over an in-memory pair, either side's close closing the other (decision 191). */
+    function connectionTo(server: Server): Pick<RequestOptions, 'createConnection'> {
+      return {
+        createConnection: () => {
+          const [client, served] = duplexPair();
+          client.once('close', () => served.destroy());
+          served.once('close', () => client.destroy());
+          server.emit('connection', served);
+          return client as Socket;
+        },
+      };
+    }
+
+    it('stops on a first SIGINT within 5 seconds while a page holds a live stream and a half-sent post', async () => {
+      const real = await vi.importActual<typeof import('../core/web-dashboard.service.js')>(
+        '../core/web-dashboard.service.js',
+      );
+      let server: Server | undefined;
+      let store: Database.Database | undefined;
+      vi.mocked(startWebDashboard).mockImplementation((db, repoPath) => {
+        store = db;
+        return real.startWebDashboard(db, repoPath, {
+          bind: async (bound) => {
+            server = bound;
+            return PORT;
+          },
+        });
+      });
+      useCwd(initRepo());
+      await runDashboard();
+      const url = new URL(String(logs[0]).replace('Dashboard on ', ''));
+      const via = connectionTo(server as Server);
+      const page = await new Promise<string>((resolve, reject) => {
+        request(url, via, (res) => {
+          let body = '';
+          res.setEncoding('utf8');
+          res.on('data', (chunk: string) => {
+            body += chunk;
+          });
+          res.on('end', () => resolve(body));
+        })
+          .on('error', reject)
+          .end();
+      });
+      const headers = { 'X-Pup-Secret': /const handed = "([^"]+)";/.exec(page)?.[1] ?? '' };
+      // Wrapped, or the open would wait on the end it hands over.
+      const { ended } = await new Promise<{ ended: Promise<void> }>((opened, reject) => {
+        request(`${url.origin}/events`, { headers, ...via }, (res) => {
+          opened({ ended: new Promise((done) => res.on('end', done)) });
+          res.resume();
+        })
+          .on('error', reject)
+          .end();
+      });
+      // Headers and the start of a body, then nothing: a page left mid-send.
+      const reached = new Promise((done) => server?.once('request', done));
+      const half = request(`${url.origin}/action`, {
+        method: 'POST',
+        headers: {
+          ...headers,
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Content-Length': '100',
+          Origin: url.origin,
+        },
+        ...via,
+      });
+      half.on('error', () => undefined);
+      half.write('nonce=');
+      await reached;
+
+      const at = Date.now();
+      process.emit('SIGINT', 'SIGINT');
+      await ended;
+      await vi.waitFor(() => expect(store?.open).toBe(false), { timeout: 5_000 });
+
+      expect(Date.now() - at).toBeLessThan(5_000);
+      expect(logs.slice(2)).toEqual(['stopping...']);
+    }, 10_000);
+
+    it('says it waits for a running action, and a second Ctrl-C exits without it', async () => {
+      vi.mocked(startWebDashboard).mockResolvedValue({
+        url: `http://127.0.0.1:${PORT}/?token=t0k3n`,
+        // An action that outlives the test: the close never gets past it.
+        close: (onWait) => {
+          onWait?.();
+          return new Promise(() => undefined);
+        },
+      });
+      const exit = vi.spyOn(process, 'exit').mockImplementation(() => {
+        throw new Error('exited');
+      });
+      useCwd(initRepo());
+      await runDashboard();
+
+      process.emit('SIGINT', 'SIGINT');
+
+      expect(logs.slice(2)).toEqual([
+        'stopping...',
+        'Waiting for the running action to finish; Ctrl-C again stops now, leaving it unfinished.',
+      ]);
+      expect(exit).not.toHaveBeenCalled();
+
+      // Under once the listener would be gone here, and nothing would exit.
+      expect(() => process.emit('SIGINT', 'SIGINT')).toThrow('exited');
+      expect(exit).toHaveBeenCalledWith(130);
+      expect(logs.at(-1)).toBe('Stopped without waiting for the running action.');
     });
   });
 });

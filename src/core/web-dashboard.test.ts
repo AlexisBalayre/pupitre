@@ -1382,7 +1382,7 @@ describe('startWebDashboard', () => {
       },
     );
 
-    it('takes nothing new in once closing, and closes only after the action still running', async () => {
+    it('takes nothing new in once closing, and closes only after the action still running, saying it waits', async () => {
       let finish = (_lines: string[]): void => {};
       let started = (): void => {};
       const running = new Promise<void>((done) => {
@@ -1401,13 +1401,15 @@ describe('startWebDashboard', () => {
       const calls = vi.mocked(runAction).mock.calls.length;
 
       let closed = false;
-      const closing = dashboard.close().then(() => {
+      const onWait = vi.fn();
+      const closing = dashboard.close(onWait).then(() => {
         closed = true;
       });
       try {
         const refused = await post(actionUrl(), { action: 'tell', message: 'late', nonce: late });
         const stream = await get(eventsUrl());
 
+        expect(onWait).toHaveBeenCalledOnce();
         expect(refused.status).toBe(503);
         expect(refused.body).toContain('nothing was done');
         expect(stream.status).toBe(503);
@@ -1419,6 +1421,35 @@ describe('startWebDashboard', () => {
       expect((await first).json()).toMatchObject({ ok: true });
       await closing;
       expect(closed).toBe(true);
+    });
+
+    it('closes at once past a live stream and a post that never finishes its body, waiting on neither', async () => {
+      const stream = await openStream(eventsUrl());
+      const ended = new Promise<void>((done) => stream.ended(done));
+      // Headers and the start of a body, then nothing: a page left mid-send.
+      const server = servers.get(Number(address().port)) as Server;
+      const reached = new Promise((done) => server.once('request', done));
+      const half = request(actionUrl(), {
+        method: 'POST',
+        headers: withSecret({
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Content-Length': '100',
+          Origin: origin(),
+        }),
+        ...connectionTo(actionUrl()),
+      });
+      half.on('error', () => undefined);
+      half.write('nonce=');
+      await reached;
+      const onWait = vi.fn();
+
+      // A close the half-sent post held would never resolve, and time the test out.
+      const at = Date.now();
+      await dashboard.close(onWait);
+      await ended;
+
+      expect(Date.now() - at).toBeLessThan(5_000);
+      expect(onWait).not.toHaveBeenCalled();
     });
 
     it('refuses debt fields `pup merge` refuses before asking, and keeps the page able to act', async () => {
