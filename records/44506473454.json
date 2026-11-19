@@ -1,0 +1,98 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-19T10:38:36.509Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "44506473454",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/44506473454",
+  "actor": "AlexisBalayre",
+  "commit_sha": "115161b758d0ee2608bd32f13284f82217c4fbd6",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 397,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "guards"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "guards"
+  ],
+  "reviewers_skipped": [
+    "conventions",
+    "context",
+    "maintainability",
+    "docs",
+    "spec",
+    "simplicity",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/web-dashboard-tasks.service.ts",
+      "line": "339-345",
+      "description": "Moving the backlog's scope into a `title` attribute takes it out of the text the `data-list` filter searches, so filtering the backlog by a path or glob now matches nothing.",
+      "status": "unresolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/web-dashboard-tasks.service.ts",
+      "line": "340",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The backlog line now cuts each task's goal to 100 characters with `clipWords`. Overview's Planned list already cuts it the same way and a planned task has no session view, so the rest of a long goal is shown nowhere in the dashboard, and the page filter can't find those words.",
+      "body": "The backlog row now renders the goal clipped:\n\n```ts\n`<span class=\"goal\">${escapeHtml(clipWords(task.goal || '(no goal recorded)'))}</span>` +\n```\n<https://github.com/AlexisBalayre/pupitre/blob/115161b758d0ee2608bd32f13284f82217c4fbd6/src/core/web-dashboard-tasks.service.ts#L339-L341>\n\n`readTasksSheet` already cuts the goal to its first sentence (`firstSentence`, L122). `clipWords` then cuts that sentence at `CARD_TEXT_CHARS = 100` (`web-dashboard-sheet.utils.ts:52-68`). Before this PR the Tasks sheet printed the first sentence whole. It was the only place in the dashboard that showed a planned task's goal in full, because Overview's Planned rows are clipped too.\n\nTwo existing statements depend on that, and neither is true for a planned task after this change:\n- the `goalLine` comment: \"the whole of it is on the session's view or the Tasks sheet\" (<https://github.com/AlexisBalayre/pupitre/blob/115161b758d0ee2608bd32f13284f82217c4fbd6/src/core/web-dashboard-overview.service.ts#L493-L496>)\n- ADR 0098's first amendment: \"the whole text is on the session's view or the Tasks sheet\" (<https://github.com/AlexisBalayre/pupitre/blob/115161b758d0ee2608bd32f13284f82217c4fbd6/docs/adr/0098-pup-dashboard-is-a-set-of-sheets-figures.md#L109-L111>)\n\nThe new `title` attribute holds only the scope. The `data-list` filter reads only `textContent` (`web-dashboard.service.ts:501`).\n\n**Trigger:** `pup plan` a task whose first sentence is longer than 100 characters, then open the Tasks sheet. The line ends in `…`, and no page in the dashboard shows the remaining words. Typing one of them into the backlog filter matches nothing. The new amendment says only \"one line per task\", which describes the layout and doesn't decide to cut the goal. No test checks for the cut.\n\n**Fix:** print the first sentence uncut, as before, and drop the `clipWords` import; the inline row still wraps. Alternatively, keep the cut, put the whole sentence somewhere the filter reads it, and update the `goalLine` comment and the ADR line.",
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Round 4 runs only the importants budget, so conventions, docs, context, simplicity and maintainability were skipped. Spec was skipped because the PR closes no issue, and workflow-safety because no workflow changed. Correctness ran as 2 instances because the diff spans 14 files across src/core and docs. Security ran as 1 instance because the diff adds only 328 lines and its trust surface is limited to HTML escaping. The consolidator was not spawned because only one finding came back, so there was nothing to group."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.2058860000000005,
+  "duration_ms": 180168,
+  "num_turns": 12,
+  "tokens": {
+    "input": 12,
+    "output": 8356,
+    "cache_read": 270822,
+    "cache_creation": 48501,
+    "total": 327691
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 118,
+      "output": 30178,
+      "cache_read": 1711143,
+      "cache_creation": 209007,
+      "cost_usd": 2.1367985999999997
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 12,
+      "output": 2207,
+      "cache_read": 78059,
+      "cache_creation": 15675,
+      "cost_usd": 0.0690874
+    }
+  ],
+  "permission_denials": []
+}
