@@ -338,6 +338,8 @@ function backlogSection({ backlog, overlapError }: TasksView): string {
       (task) =>
         `<li class="task" title="${escapeHtml(scopeText(task))}"><span class="sid">${escapeHtml(task.id)}</span>` +
         `<span class="goal">${escapeHtml(clipWords(task.goal || '(no goal recorded)'))}</span>` +
+        // The page's filter reads row text, which a title holds none of; a hidden copy keeps the scope findable.
+        `<span hidden>${escapeHtml(scopeText(task))}</span>` +
         (task.overlaps.length === 0
           ? ''
           : `<span class="fact">${escapeHtml(overlapText(task))}</span>`) +
@@ -351,7 +353,7 @@ function backlogSection({ backlog, overlapError }: TasksView): string {
   });
 }
 
-/** A task's scope, as the hover on its line names it. */
+/** A task's scope, as the hover on its line names it and the filter finds it. */
 function scopeText({ scope, scopeOut }: BacklogTask): string {
   return `scope: ${scope.join(' ')}${scopeOut.length === 0 ? '' : ` · not ${scopeOut.join(' ')}`}`;
 }

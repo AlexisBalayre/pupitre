@@ -8,6 +8,7 @@ import { PAGE_SHELL_CSS } from './page-shell.constants.js';
 import { PAGE_THEME_CSS } from './page-theme.constants.js';
 import { SESSION_ID_PATTERN } from './paths.constants.js';
 import { machineLoad } from './session-cap.service.js';
+import type { ListWindow } from './types/web-dashboard.types.js';
 import {
   createDashboardAccess,
   hardening,
@@ -303,16 +304,13 @@ interface PageParts {
   secret?: string;
 }
 
-/** Rows a marked list shows per page. */
+/**
+ * Rows a marked list shows per page. Twenty inline rows fit one laptop screen
+ * under the sheet's figures, so a page reads without scrolling and Next is the
+ * only way down, while a backlog or a debt ledger of usual size still shows
+ * whole on its first page.
+ */
 const LIST_PAGE_ROWS = 20;
-
-/** What a marked list shows: the rows matched, its page of them, and how many pages there are. */
-export interface ListWindow {
-  shown: number[];
-  matched: number;
-  page: number;
-  pages: number;
-}
 
 /**
  * The rows of a marked list that show: those whose text holds every word
@@ -479,6 +477,7 @@ ${CHART_CSS}
   const secret = sessionStorage.getItem('pup-dashboard-secret');
   let key;
   let held;
+  let pressing = false;
   let busy = false;
   const say = (text, refused) => {
     outcome.textContent = text;
@@ -541,7 +540,7 @@ ${CHART_CSS}
   });
   // A board held back is said beside 'live', so a page kept stale is never taken for a live one.
   const flush = () => {
-    if (held === undefined) return;
+    if (held === undefined || pressing) return;
     const waiting = typing();
     holding.hidden = !waiting;
     if (waiting) return;
@@ -554,6 +553,14 @@ ${CHART_CSS}
     flush();
   };
   board.addEventListener('focusout', () => setTimeout(flush));
+  // Pressing a board button takes focus off a filter before the click lands,
+  // and that focusout's flush would swap the button out from under it: the
+  // first Next or Launch would do nothing. The board waits for the press to
+  // end, then for its click to run, before it swaps.
+  board.addEventListener('pointerdown', (event) => { pressing = event.target.closest('button') !== null; });
+  const released = () => setTimeout(() => { pressing = false; flush(); });
+  window.addEventListener('pointerup', released);
+  window.addEventListener('pointercancel', released);
   if (secret === null) {
     live.textContent = 'no key';
     return say('This tab holds no key: the url pup dashboard printed opens one tab, once, and links in that tab keep it.', true);
