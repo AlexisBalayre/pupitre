@@ -346,7 +346,7 @@ function backlogSection({ backlog, overlapError }: TasksView): string {
     );
     return (
       (overlapError === undefined ? '' : hint(overlapError)) +
-      `<ul class="rows">${rows.join('')}</ul>`
+      `<ul class="rows" data-list="backlog">${rows.join('')}</ul>`
     );
   });
 }
@@ -374,7 +374,7 @@ function sessionTable(sessions: PrSession[]): string {
       `<td>${escapeHtml(s.toLanded === undefined ? 'not landed' : elapsed(s.toLanded))}</td></tr>`,
   );
   return (
-    '<table class="moves"><thead><tr><th>Session</th><th>PR</th><th>Gate runs</th><th>Steers</th>' +
+    '<table class="moves" data-list="sessions"><thead><tr><th>Session</th><th>PR</th><th>Gate runs</th><th>Steers</th>' +
     '<th>Respawns</th><th>Re-gates</th><th>Launch to merge</th><th>Launch to landed</th></tr></thead>' +
     `<tbody>${rows.join('')}</tbody></table>`
   );
