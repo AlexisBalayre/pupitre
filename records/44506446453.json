@@ -1,0 +1,97 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-19T10:34:48.036Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "44506446453",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/44506446453",
+  "actor": "AlexisBalayre",
+  "commit_sha": "115161b758d0ee2608bd32f13284f82217c4fbd6",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 397,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context",
+    "maintainability",
+    "spec",
+    "simplicity",
+    "guards",
+    "workflow-safety"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "e67ca8aafff1358a8f97ca456d5f6810dd665178",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/web-dashboard-tasks.service.ts",
+      "line": "339-345",
+      "description": "Moving the backlog's scope into a `title` attribute takes it out of the text the `data-list` filter searches, so filtering the backlog by a path or glob now matches nothing.",
+      "status": "unresolved"
+    },
+    {
+      "file": "src/core/web-dashboard-tasks.service.ts",
+      "line": "349",
+      "description": "Adding `inline` to the backlog list lets `ul.rows.inline > li { display: flex }` (0,2,2) override `[data-list] li[hidden] { display: none }` (0,2,1), so the page's filter and pager never hide a backlog row",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/web-dashboard-decisions.service.ts",
+      "line": "41-42",
+      "description": "The Decisions filter no longer finds a record by its date: the day moved out of each row into the group's <h3>, and the page script searches only the row text.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Security, simplicity and guards were not spawned. The delta is +9/-4: a CSS selector, a time-string format and two test assertions. It crosses no trust boundary, adds no file, helper or branch, and changes no source a guard test scans. The consolidator and validators were not spawned because the reviewers returned no findings."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.7617670000000001,
+  "duration_ms": 62640,
+  "num_turns": 12,
+  "tokens": {
+    "input": 12,
+    "output": 4975,
+    "cache_read": 259291,
+    "cache_creation": 39976,
+    "total": 304254
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 28,
+      "output": 7823,
+      "cache_read": 368835,
+      "cache_creation": 64312,
+      "cost_usd": 0.6718270000000001
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 16,
+      "output": 1689,
+      "cache_read": 69530,
+      "cache_creation": 26426,
+      "cost_usd": 0.08994
+    }
+  ],
+  "permission_denials": []
+}
