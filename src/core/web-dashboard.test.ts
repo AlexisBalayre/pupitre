@@ -56,11 +56,16 @@ import { STALLED_AFTER_MS } from './session-activity.constants.js';
 import { launchHolds, launchRoom, launchRoomLines } from './session-cap.service.js';
 import {
   type DashboardBind,
+  type ListWindow,
+  listWindow,
   startWebDashboard,
   type WebDashboard,
 } from './web-dashboard.service.js';
 import { ACTIONS, runAction } from './web-dashboard-actions.service.js';
+import { type DebtSheetEntry, renderDebtSheet } from './web-dashboard-debt.service.js';
+import { renderDecisionsSheet } from './web-dashboard-decisions.service.js';
 import { clipWords, escapeHtml } from './web-dashboard-sheet.utils.js';
+import { renderTasksSheet } from './web-dashboard-tasks.service.js';
 
 const POLL_MS = 300;
 const PR = 'https://github.com/o/r/pull/7';
@@ -1866,5 +1871,154 @@ describe('startWebDashboard', () => {
     it('answers 404 for an id outside the minted shape, which names no view', async () => {
       expect((await get(viewUrl('s%20x'))).status).toBe(404);
     });
+  });
+
+  describe('the lists it filters and pages', () => {
+    it('serves the filter it unit-tests, run as the page runs it, over the marked lists', async () => {
+      insertLedgerEntry(db, {
+        projectId: projectId(repo),
+        description: 'Oversize diff merged from session s-9',
+        files: ['src/a.ts'],
+        reason: 'r',
+        acceptedBy: 'alexis',
+        reviewBy: '2999-01-01',
+      });
+
+      const shell = (await get(home('?sheet=debt'))).body;
+      const source = /function listWindow\([\s\S]*?\n {2}const lists = /.exec(shell)?.[0] ?? '';
+      const shipped = new Function(
+        `${source.replace(/\n {2}const lists = $/, '')}; return listWindow;`,
+      )() as typeof listWindow;
+
+      expect(source).toContain(String(listWindow));
+      expect(shipped(['Alpha beta', 'gamma', 'BETA delta'], 'beta', 0, 1)).toEqual(
+        listWindow(['Alpha beta', 'gamma', 'BETA delta'], 'beta', 0, 1),
+      );
+      expect(shell).toContain('<input type="search" data-find placeholder="Filter"');
+      expect(shell).toContain(':not([data-find])');
+      expect(await readPage(home('?sheet=debt'))).toMatch(
+        /<ul class="rows" data-list="debt"><li class="entry">.*Oversize diff merged from session s-9/s,
+      );
+    });
+  });
+});
+
+describe('listWindow', () => {
+  const texts = ['Fix the gate', 'Debt in src/a.ts', 'gate flakes on CI', 'Docs'];
+
+  it('shows every row, one page, for no text typed or only spaces', () => {
+    const all: ListWindow = { shown: [0, 1, 2, 3], matched: 4, page: 0, pages: 1 };
+
+    expect(listWindow(texts, '', 0, 20)).toEqual(all);
+    expect(listWindow(texts, '   ', 0, 20)).toEqual(all);
+  });
+
+  it('keeps the rows holding every word typed, case aside, in their order', () => {
+    expect(listWindow(texts, 'GATE', 0, 20).shown).toEqual([0, 2]);
+    expect(listWindow(texts, 'gate  ci', 0, 20).shown).toEqual([2]);
+    expect(listWindow(texts, 'src/a.ts', 0, 20).shown).toEqual([1]);
+    expect(listWindow(texts, 'release', 0, 20)).toEqual({
+      shown: [],
+      matched: 0,
+      page: 0,
+      pages: 1,
+    });
+  });
+
+  it('pages the rows matched and holds a page asked for to the pages there are', () => {
+    const many = Array.from({ length: 45 }, (_, i) => `row ${i}`);
+
+    expect(listWindow(many, '', 1, 20)).toEqual({
+      shown: Array.from({ length: 20 }, (_, i) => i + 20),
+      matched: 45,
+      page: 1,
+      pages: 3,
+    });
+    expect(listWindow(many, '', 9, 20)).toMatchObject({ shown: [40, 41, 42, 43, 44], page: 2 });
+    expect(listWindow(many, '', -1, 20)).toMatchObject({ page: 0 });
+    // Narrowing the text past the page it was on lands on its last page.
+    expect(listWindow(many, 'row 4', 2, 20)).toEqual({
+      shown: [4, 14, 24, 34, 40, 41, 42, 43, 44],
+      matched: 9,
+      page: 0,
+      pages: 1,
+    });
+  });
+});
+
+describe('the lists the sheets mark for the page to filter', () => {
+  const rowsIn = (page: string, list: string): number => {
+    const start = page.indexOf(`data-list="${list}"`);
+    const body = page.slice(start, page.indexOf('</section>', start));
+    return [...body.matchAll(/<li\b|<tr><td>/g)].length;
+  };
+
+  it('marks every open debt entry in the ledger, and not the capped pay-down list', () => {
+    const entry = (id: string): DebtSheetEntry => ({
+      id,
+      description: `entry ${id}`,
+      reason: 'r',
+      acceptedBy: 'alexis',
+      reviewBy: '2999-01-01',
+      files: ['src/a.ts'],
+      ageDays: 1,
+      overdue: false,
+    });
+
+    const page = renderDebtSheet(['1', '2', '3'].map(entry));
+
+    expect(rowsIn(page, 'debt')).toBe(3);
+    expect(page).toContain('<ol class="paydown"><li class="entry"><div');
+  });
+
+  it('marks every decision as a row of one list, each module a group of it', () => {
+    const record = (id: number, module: string) => ({
+      id,
+      session: 's-1',
+      when: '',
+      summary: [`decision ${id}`],
+      alternatives: [],
+      files: [],
+      module,
+    });
+
+    const page = renderDecisionsSheet({
+      records: [record(3, 'src/core'), record(2, 'src/cli'), record(1, 'src/core')],
+      map: { files: [], unread: 0, capped: false, mergesSince: '2026-10-19' },
+    });
+
+    expect(rowsIn(page, 'decisions')).toBe(3);
+    expect([...page.matchAll(/<div data-group><h3 class="state-group">/g)]).toHaveLength(2);
+  });
+
+  it('marks every backlog task and every session that reached a PR', () => {
+    const page = renderTasksSheet({
+      backlog: ['t-1', 't-2'].map((id) => ({
+        id,
+        goal: `goal ${id}`,
+        scope: ['src/**'],
+        scopeOut: [],
+        overlaps: [],
+      })),
+      sessions: ['s-1', 's-2', 's-3'].map((session) => ({
+        session,
+        prUrl: PR,
+        gates: 1,
+        failed: 0,
+        steers: 0,
+        respawns: 0,
+        regates: 0,
+        mergedAt: 0,
+        toMerge: 60_000,
+        toLanded: undefined,
+      })),
+      passRate: [],
+      runs: { total: 0, passed: 0 },
+      failures: [],
+    });
+
+    expect(rowsIn(page, 'backlog')).toBe(2);
+    expect(rowsIn(page, 'sessions')).toBe(3);
+    expect(page).toContain('<table class="moves" data-list="sessions"><thead><tr><th>');
   });
 });

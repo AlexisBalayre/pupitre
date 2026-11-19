@@ -226,5 +226,5 @@ function ledgerList(entries: DebtSheetEntry[]): string {
       `<div class="fact">accepted by ${escapeHtml(entry.acceptedBy)}, review by ${escapeHtml(entry.reviewBy)}</div>` +
       `${closeButton(entry)}</li>`,
   );
-  return `<details><summary>${escapeHtml(`${entries.length} open, oldest first`)}</summary><ul class="rows">${rows.join('')}</ul></details>`;
+  return `<details><summary>${escapeHtml(`${entries.length} open, oldest first`)}</summary><ul class="rows" data-list="debt">${rows.join('')}</ul></details>`;
 }

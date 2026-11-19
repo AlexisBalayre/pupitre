@@ -109,13 +109,13 @@ function timelineSection(records: DecisionSheetRecord[]): string {
       `${plural(records.length, 'decision', 'decisions')} across ${plural(groups.size, 'module', 'modules')}, each under the directory most of its files sit in, newest first.`,
     )}</p>` +
       barChart(ranked, { title: `Decisions by module, top ${TOP_MODULES}`, layout: 'rows' }) +
-      [...groups]
+      `<div data-list="decisions">${[...groups]
         .map(
           ([module, held]) =>
-            `<h3 class="state-group">${escapeHtml(`${module} — ${held.length}`)}</h3>` +
-            `<ul class="rows">${held.map(decisionRow).join('')}</ul>`,
+            `<div data-group><h3 class="state-group">${escapeHtml(`${module} — ${held.length}`)}</h3>` +
+            `<ul class="rows">${held.map(decisionRow).join('')}</ul></div>`,
         )
-        .join(''),
+        .join('')}</div>`,
   );
 }
 
