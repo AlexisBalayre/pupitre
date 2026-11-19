@@ -1900,6 +1900,10 @@ describe('startWebDashboard', () => {
       );
       expect(shell).toContain('<input type="search" data-find placeholder="Filter"');
       expect(shell).toContain(':not([data-find])');
+      // An inline row's flex layout would outrank the hide rule, so it skips hidden rows.
+      expect(shell).toContain('[data-list] li[hidden], [data-list] tr[hidden]');
+      expect(shell).toMatch(/ul\.rows\.inline > li:not\(\[hidden\]\)[^{]*\{ display: flex;/);
+      expect(shell).not.toMatch(/ul\.rows\.inline > li[,\s]/);
       expect(await readPage(home('?sheet=debt'))).toMatch(
         /<table class="moves" data-list="debt"><thead>.*Oversize diff merged from session s-9/s,
       );

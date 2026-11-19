@@ -80,7 +80,8 @@ describe('the Decisions sheet', () => {
     ]);
     expect(page.indexOf('newest call')).toBeLessThan(page.indexOf('middle call'));
     expect(page.indexOf('middle call')).toBeLessThan(page.indexOf('oldest call'));
-    expect(page).toContain('#1</span> s-1, 09:15 UTC</div>');
+    // The day stays in the row too: the page's filter reads row text, not the group's heading.
+    expect(page).toContain('#1</span> s-1, 2026-11-02 09:15 UTC</div>');
     expect(page).toContain(
       '<div class="fact">alternatives: keep it</div><div class="fact">or drop it</div>',
     );

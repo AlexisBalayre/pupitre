@@ -409,7 +409,7 @@ ${CHART_CSS}
     background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
     padding: 10px 12px; margin-bottom: 8px;
   }
-  ul.rows.inline > li, div.inline { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  ul.rows.inline > li:not([hidden]), div.inline { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
   .inline .goal { flex: 1; margin-top: 0; }
   .inline form.act { margin-top: 0; }
   div.inline form.act { flex: 1 1 200px; }

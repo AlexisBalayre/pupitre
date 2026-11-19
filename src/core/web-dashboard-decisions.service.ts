@@ -12,7 +12,7 @@ interface DecisionSheetRecord {
   session: string;
   /** `YYYY-MM-DD` UTC, the day it is grouped under; `NO_DAY` when the stored time does not parse. */
   day: string;
-  /** `, HH:MM UTC`; empty when the stored time does not parse. */
+  /** `, YYYY-MM-DD HH:MM UTC`, the day kept in the row so the page's filter finds it; empty when the stored time does not parse. */
   time: string;
   /** Each a line of the stored text, as `pup log` prints it. */
   summary: string[];
@@ -39,7 +39,7 @@ export function readDecisionsSheet(db: Database): DecisionSheetRecord[] {
       id: row.id,
       session: SESSION_ID_PATTERN.test(row.session_id) ? row.session_id : UNMINTED_LABEL,
       day: dated ? at.toISOString().slice(0, 10) : NO_DAY,
-      time: dated ? `, ${at.toISOString().slice(11, 16)} UTC` : '',
+      time: dated ? `, ${at.toISOString().slice(0, 16).replace('T', ' ')} UTC` : '',
       summary: lines(row.summary),
       alternatives: lines(row.alternatives),
       files: [...new Set(asStringArray(parseJsonOr<unknown>(row.files, [])).map(oneLine))].filter(
