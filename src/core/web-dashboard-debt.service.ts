@@ -110,9 +110,9 @@ export function payDownRanking(entries: DebtSheetEntry[]): RankedFile[] {
 /**
  * The Debt sheet: how much is open and of what kind and age, the files
  * carrying the most, then one table of every open entry with why it was
- * accepted, until when and by whom, filtered by text and kind and paged in
- * the browser. The table opens in pay-down order: the entries of the file
- * `payDownRanking` puts first, oldest first, then the next file's.
+ * accepted, until when and by whom. The table opens in pay-down order: the
+ * entries of the file `payDownRanking` puts first, oldest first, then the
+ * next file's.
  */
 export function renderDebtSheet(entries: DebtSheetEntry[]): string {
   if (entries.length === 0) {
