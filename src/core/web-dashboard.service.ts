@@ -303,6 +303,39 @@ interface PageParts {
   secret?: string;
 }
 
+/** Rows a marked list shows per page. */
+const LIST_PAGE_ROWS = 20;
+
+/** What a marked list shows: the rows matched, its page of them, and how many pages there are. */
+export interface ListWindow {
+  shown: number[];
+  matched: number;
+  page: number;
+  pages: number;
+}
+
+/**
+ * The rows of a marked list that show: those whose text holds every word
+ * typed, case aside, then the page of `size` asked for, held to the pages
+ * there are. The page script runs this very source, so it names nothing
+ * outside itself.
+ */
+export function listWindow(texts: string[], query: string, page: number, size: number): ListWindow {
+  const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+  const matched = texts.flatMap((text, i) => {
+    const folded = text.toLowerCase();
+    return words.every((word) => folded.includes(word)) ? [i] : [];
+  });
+  const pages = Math.max(1, Math.ceil(matched.length / size));
+  const at = Math.min(Math.max(0, page), pages - 1);
+  return {
+    shown: matched.slice(at * size, (at + 1) * size),
+    matched: matched.length,
+    page: at,
+    pages,
+  };
+}
+
 /**
  * The page around a board. The script and the style carry the response's
  * nonce, the only source the CSP admits for either (decision 91). The script
@@ -312,7 +345,11 @@ interface PageParts {
  * it back while the operator types into a field on the board and saying so;
  * reports whether the stream is up; and posts each action form with the
  * secret and the nonce the stream handed it, asks before an irreversible one,
- * and shows the answer as text. The sheet bar is plain links, so a sheet opens as its own page with
+ * and shows the answer as text. Each list a sheet marks with `data-list`
+ * gets a filter field and a pager over its rows, its items or its table's
+ * body rows, run here in the
+ * page, so nothing typed into one leaves it; its text and page outlive the
+ * board swaps. The sheet bar is plain links, so a sheet opens as its own page with
  * its own stream, in the same tab, which keeps the secret (decision 98).
  */
 function renderDashboardPage(
@@ -407,6 +444,15 @@ ${CHART_CSS}
     font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre; overflow-x: auto;
     background: var(--page); border: 1px solid var(--grid); border-radius: 6px; padding: 10px; margin: 0;
   }
+  [data-list] li[hidden], [data-list] tr[hidden], [data-group][hidden] { display: none; }
+  .list-tools { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin: 6px 0 8px; font-size: 12px; }
+  .list-tools input { flex: 1 1 200px; }
+  .list-tools input, .list-tools button {
+    font: inherit; padding: 4px 8px; border-radius: 4px;
+    border: 1px solid var(--border); background: var(--surface); color: var(--ink);
+  }
+  .list-tools button { cursor: pointer; }
+  .list-tools output { color: var(--muted); }
   @media (max-width: 480px) { header, main, nav.sheets { padding-left: 12px; padding-right: 12px; } }
 </style>
 </head>
@@ -442,9 +488,57 @@ ${CHART_CSS}
   // A field in focus, or one holding text not yet sent: focus leaving it for
   // its button must not swap the form out from under the click. A field the
   // window took focus from, the operator gone to the terminal, is not in use.
+  // A list's filter holds the board only while in focus: its text is kept
+  // and put back after the swap, so none is lost.
   const typing = () =>
     (document.hasFocus() && board.contains(document.activeElement) && document.activeElement.matches('input')) ||
-    [...board.querySelectorAll('input:not([type="hidden"])')].some((field) => field.value !== field.defaultValue);
+    [...board.querySelectorAll('input:not([type="hidden"]):not([data-find])')].some((field) => field.value !== field.defaultValue);
+  ${listWindow}
+  const lists = new Map();
+  const showList = (list) => {
+    const state = lists.get(list.dataset.list);
+    const rows = [...list.querySelectorAll('li, tbody > tr')];
+    const view = listWindow(rows.map((row) => row.textContent), state.query, state.page, ${LIST_PAGE_ROWS});
+    state.page = view.page;
+    const shown = new Set(view.shown);
+    rows.forEach((row, i) => { row.hidden = !shown.has(i); });
+    for (const group of list.querySelectorAll('[data-group]')) {
+      group.hidden = group.querySelector('li:not([hidden])') === null;
+    }
+    const tools = list.previousElementSibling;
+    tools.querySelector('output').textContent =
+      view.matched + ' of ' + rows.length + (view.pages > 1 ? ', page ' + (view.page + 1) + ' of ' + view.pages : '');
+    tools.querySelector('[data-step="-1"]').disabled = view.page === 0;
+    tools.querySelector('[data-step="1"]').disabled = view.page === view.pages - 1;
+  };
+  const markLists = () => {
+    for (const list of board.querySelectorAll('[data-list]')) {
+      if (!lists.has(list.dataset.list)) lists.set(list.dataset.list, { query: '', page: 0 });
+      const tools = document.createElement('div');
+      tools.className = 'list-tools';
+      tools.innerHTML =
+        '<input type="search" data-find placeholder="Filter" aria-label="Filter this list">' +
+        '<button type="button" data-step="-1">Previous</button><button type="button" data-step="1">Next</button>' +
+        '<output aria-live="polite"></output>';
+      tools.querySelector('input').value = lists.get(list.dataset.list).query;
+      list.before(tools);
+      showList(list);
+    }
+  };
+  board.addEventListener('input', (event) => {
+    const field = event.target.closest('input[data-find]');
+    if (!field) return;
+    const list = field.parentElement.nextElementSibling;
+    Object.assign(lists.get(list.dataset.list), { query: field.value, page: 0 });
+    showList(list);
+  });
+  board.addEventListener('click', (event) => {
+    const step = event.target.closest('.list-tools button[data-step]');
+    if (!step) return;
+    const list = step.parentElement.nextElementSibling;
+    lists.get(list.dataset.list).page += Number(step.dataset.step);
+    showList(list);
+  });
   // A board held back is said beside 'live', so a page kept stale is never taken for a live one.
   const flush = () => {
     if (held === undefined) return;
@@ -453,6 +547,7 @@ ${CHART_CSS}
     if (waiting) return;
     board.innerHTML = held;
     held = undefined;
+    markLists();
   };
   const show = (next) => {
     held = next;

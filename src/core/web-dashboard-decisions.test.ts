@@ -93,17 +93,23 @@ describe('the Decisions sheet', () => {
     expect(torn).toContain('#1</span> s-1</div>');
   });
 
-  it('shows only the newest 20 records', () => {
+  it('serves every record, newest first, as one list the page searches and pages, each day a group', () => {
     for (let i = 1; i <= 25; i++) decide(`s-${i}`, `decision ${i}`, []);
     dated('s-1', '2026-01-01 00:00:00');
 
     const page = sheet();
 
-    expect(page).toContain('25 decisions; the newest 20 shown.');
-    expect(rows(page)).toHaveLength(20);
+    expect(page).toContain('25 decisions, newest first.');
+    expect(page.match(/data-list="[^"]*"/g)).toEqual(['data-list="decisions"']);
+    expect(rows(page)).toHaveLength(25);
+    // The page hides records past its page; the sheet serves every one.
     expect(rows(page).every((row) => row === '<li class="decision">')).toBe(true);
-    expect(page).not.toMatch(/data-|hidden|2026-01-01/);
-    expect(page).not.toContain('decision 1<');
+    expect(page.match(/<div data-group><h3 class="state-group">/g)).toHaveLength(2);
+    expect(page.indexOf('<h3 class="state-group">2026-01-01</h3>')).toBeGreaterThan(
+      page.lastIndexOf('decision 25<'),
+    );
+    // The oldest record is the last row.
+    expect(page.indexOf('decision 1<')).toBeGreaterThan(page.lastIndexOf('<li'));
   });
 
   it('escapes every store string and file name, markup and control characters alike', () => {

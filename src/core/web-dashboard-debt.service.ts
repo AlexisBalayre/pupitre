@@ -110,9 +110,9 @@ export function payDownRanking(entries: DebtSheetEntry[]): RankedFile[] {
 /**
  * The Debt sheet: how much is open and of what kind and age, the files
  * carrying the most, then one table of every open entry with why it was
- * accepted, until when and by whom. The table opens in pay-down order: the
- * entries of the file `payDownRanking` puts first, oldest first, then the
- * next file's.
+ * accepted, until when and by whom, marked as a list the page filters and
+ * pages. The table opens in pay-down order: the entries of the file
+ * `payDownRanking` puts first, oldest first, then the next file's.
  */
 export function renderDebtSheet(entries: DebtSheetEntry[]): string {
   if (entries.length === 0) {
@@ -199,7 +199,7 @@ function days(n: number): string {
 
 function ledgerTable(entries: DebtSheetEntry[]): string {
   return (
-    '<table class="moves"><thead><tr><th>Entry</th><th>Files</th><th>Accepted</th><th></th></tr></thead>' +
+    '<table class="moves" data-list="debt"><thead><tr><th>Entry</th><th>Files</th><th>Accepted</th><th></th></tr></thead>' +
     `<tbody>${entries.map(entryRow).join('')}</tbody></table>`
   );
 }

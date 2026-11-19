@@ -134,7 +134,7 @@ describe('the Debt sheet', () => {
     expect(page).toContain('review by 2099-01-01, accepted by alexis, held 1 day');
   });
 
-  it('lists every entry once, in one table in pay-down order', () => {
+  it('lists every entry once, in one table in pay-down order the page filters and pages', () => {
     for (let i = 1; i <= 29; i++) {
       file(
         `Oversize diff (${i} lines) merged from session s-${i}`,
@@ -148,8 +148,11 @@ describe('the Debt sheet', () => {
     const rows = page.match(/<tr><td><span class="sid">#\d+<\/span> [^<]*/g) ?? [];
 
     expect(page).not.toContain('Pay down next');
-    expect(page).not.toMatch(/data-(row|kind|list|filter|step)|<tr[^>]*hidden/);
     expect(page.match(/<table/g)).toHaveLength(1);
+    expect(page.match(/data-list="[^"]*"/g)).toEqual(['data-list="debt"']);
+    expect(page).toContain('<table class="moves" data-list="debt"><thead>');
+    // The page hides rows past its page; the sheet serves every one.
+    expect(page).not.toMatch(/<tr[^>]*hidden/);
     expect(page.match(/>Close #/g)).toHaveLength(30);
     expect(rows).toHaveLength(30);
     // The oldest entry weighs its files heaviest, so the table opens on it.

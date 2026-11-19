@@ -20,8 +20,6 @@ interface DecisionSheetRecord {
   files: string[];
 }
 
-/** Records the sheet shows, the newest. */
-const RECORDS_SHOWN = 20;
 const NO_DAY = '(no date recorded)';
 
 /** Multi-line prose as `pup log` prints it: each line scrubbed on its own, blank ones dropped. */
@@ -51,32 +49,30 @@ export function readDecisionsSheet(db: Database): DecisionSheetRecord[] {
   });
 }
 
-/** The Decisions sheet: the newest records under the day each was made. */
+/** The Decisions sheet: every record under the day it was made, filtered and paged in the page. */
 export function renderDecisionsSheet(records: DecisionSheetRecord[]): string {
   if (records.length === 0) {
     return section('Decisions', hint('No decision recorded yet — each merge records one.'));
   }
-  const shown = records.slice(0, RECORDS_SHOWN);
-  const lead =
-    records.length === 1
-      ? '1 decision.'
-      : records.length > shown.length
-        ? `${records.length} decisions; the newest ${shown.length} shown.`
-        : `${records.length} decisions, newest first.`;
-  return section('Decisions', `<p class="lead">${escapeHtml(lead)}</p>${byDay(shown)}`);
+  const lead = records.length === 1 ? '1 decision.' : `${records.length} decisions, newest first.`;
+  return section('Decisions', `<p class="lead">${escapeHtml(lead)}</p>${byDay(records)}`);
 }
 
-/** The records under a heading per day, in their order. */
+/**
+ * The records under a heading per day, in their order, marked as one list:
+ * the page's filter searches them all and its pager shows a page at a time,
+ * the newest first, hiding a day none of whose records show.
+ */
 function byDay(records: DecisionSheetRecord[]): string {
   const days = new Map<string, DecisionSheetRecord[]>();
   for (const record of records) days.set(record.day, [...(days.get(record.day) ?? []), record]);
-  return [...days]
+  return `<div data-list="decisions">${[...days]
     .map(
       ([day, held]) =>
-        `<h3 class="state-group">${escapeHtml(day)}</h3>` +
-        `<ul class="rows">${held.map(decisionRow).join('')}</ul>`,
+        `<div data-group><h3 class="state-group">${escapeHtml(day)}</h3>` +
+        `<ul class="rows">${held.map(decisionRow).join('')}</ul></div>`,
     )
-    .join('');
+    .join('')}</div>`;
 }
 
 function decisionRow(record: DecisionSheetRecord): string {

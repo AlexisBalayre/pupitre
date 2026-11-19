@@ -123,23 +123,27 @@
     quiet on an unchanged store), the section order, a PR session listed once, Planned capped at
     three with its count and link, goals and questions cut at a word, the tile figure line hidden,
     and every sheet's title naming the sheet first.
-    *Amendment (2026-11-18, the PR from branch `pup/t-mwmd08k7`, Dashboard audit task 2 of 3).*
+    *Amendment (2026-11-18, PR #397, Dashboard audit task 2 of 3).*
     The Debt, Decisions, Health and Tasks sheets stop printing everything they read. No chart's
-    figure line is visible text on any sheet: it carries `CHART_CSS`'s `.sr-only` class (clipped
-    to a pixel, not `display: none`, so a screen reader still reads it), and the SVG keeps its
+    figure line is visible text on any sheet: it carries `CHART_CSS`'s `.sr-only` class (clipped to
+    a pixel, not `display: none`, so a screen reader still reads it), and the SVG keeps its
     `role="img"` and `<title>`; this replaces the Overview's `.tile figcaption` rule above. The Debt
     sheet is its summary and two charts, the files carrying the most, then one table of the open
     entries in pay-down order (the pay-down ranking's heaviest file's entries, oldest first, each
     once); the "Pay down next" list it repeated is gone. A row names three of its files and keeps
-    the rest behind a closed `<details>`. The Decisions sheet shows the newest 20 records under the
-    day each was made and says how many there are; the grouping by module, its chart and the module
-    map (decision 167) are dropped, with `web-dashboard-module-map.service.ts` and `chart.utils`'
-    treemap, which only it used. Health's list of every snapshot's figures sits in a closed
-    `<details>` under its charts. The Tasks sheet's backlog is one line per task, its scope on the
-    line's hover, its overlap said only when there is one. Filtering, searching and paging the Debt
-    table and the Decisions records are left to a follow-up task, so the Debt table still lists
-    every open entry and older records are read with `pup log`. Nothing new is asked of the server:
-    no route, query parameter or write path, and `/action` stays the only post (decisions 91, 188).
-    Tests: the Debt table's one row and one Close per entry, its pay-down order and capped files;
-    Decisions' day groups and its newest 20; Health's closed snapshot list; the backlog's one-line
-    rows; and the figure line kept for a screen reader, not hidden from it.
+    the rest behind a closed `<details>`. The Decisions sheet lists every record under the day it
+    was made, each day a `data-group`, and says how many there are; the grouping by module, its
+    chart and the module map (decision 167) are dropped, with `web-dashboard-module-map.service.ts`
+    and `chart.utils`' treemap, which only it used. Health's list of every snapshot's figures sits
+    in a closed `<details>` under its charts. The Tasks sheet's backlog is one line per task, its
+    scope on the line's hover, its overlap said only when there is one. The Debt table, the
+    Decisions records and the backlog each carry the `data-list` mark PR #398 added, so the page
+    script filters them by the words typed and pages them 20 rows at a time: the Decisions sheet
+    opens on its newest 20, the Debt table on the first 20 of its pay-down order. There is no
+    separate kind control: a named debt kind is the start of its entries' descriptions, so typing it
+    filters by it. Every row is still served, and the filter and pager run only in the page over it.
+    Nothing new is asked of the server: no route, query parameter or write path, and `/action` stays
+    the only post (decisions 91, 188). Tests: the Debt table's one row and one Close per entry, its
+    pay-down order and capped files; Decisions' day groups and every record in one marked list; each
+    sheet's one `data-list`; Health's closed snapshot list; the backlog's one-line rows; and the
+    figure line kept for a screen reader, not hidden from it.
