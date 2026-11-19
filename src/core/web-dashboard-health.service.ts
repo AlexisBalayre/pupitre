@@ -208,7 +208,8 @@ function movements(view: HealthView, lines: Series[]): Movement[] {
 
 /**
  * The Health sheet (decision 98): one line per gate metric across every
- * capture, each session's merge marked on the time axis, the captures that
+ * capture, each session's merge marked on the time axis, every capture's
+ * figures folded under the charts, the captures that
  * moved a metric most with the sessions merged since the capture before, and
  * every merge with its pull request. Nothing in it is relative to now, so an
  * unchanged store renders the same board.
@@ -264,7 +265,26 @@ function metricsSection({ captures, merges }: HealthView, lines: Series[]): stri
             format: metric.format,
           });
         })
-        .join(''),
+        .join('') +
+      snapshotList(captures),
+  );
+}
+
+/** Every capture's figures, newest first, folded: the charts' numbers as text, opened on demand. */
+function snapshotList(captures: HealthCapture[]): string {
+  const rows = [...captures].reverse().map(
+    (capture) =>
+      `<tr><td>${escapeHtml(capture.label)}</td>` +
+      GATE_METRICS.map((metric) => {
+        const value = capture.figures[metric.key];
+        return `<td>${escapeHtml(value === undefined ? 'not measured' : metric.format(value))}</td>`;
+      }).join('') +
+      '</tr>',
+  );
+  return (
+    `<details><summary>${escapeHtml(`Every snapshot's figures, ${captures.length}, newest first`)}</summary>` +
+    `<table class="moves"><thead><tr><th>Snapshot (UTC)</th>${GATE_METRICS.map((metric) => `<th>${escapeHtml(metric.label)}</th>`).join('')}</tr></thead>` +
+    `<tbody>${rows.join('')}</tbody></table></details>`
   );
 }
 

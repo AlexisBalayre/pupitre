@@ -185,16 +185,16 @@ describe('the Tasks sheet', () => {
 
     expect(page).toContain('Gate runs in the last 8 weeks: 4, 2 passed.');
     expect(page).toContain(
-      '<figcaption>Gate pass rate per week, week starting: 09-15 no run · 09-22 no run · ' +
+      '<figcaption class="sr-only">Gate pass rate per week, week starting: 09-15 no run · 09-22 no run · ' +
         '09-29 no run · 10-06 no run · 10-13 no run · 10-20 0% · 10-27 50% · 11-03 100%</figcaption>',
     );
     expect(page).toContain(
-      '<figcaption>Gate failures per stage: diff-size 1 · lint 1 · tests 1</figcaption>',
+      '<figcaption class="sr-only">Gate failures per stage: diff-size 1 · lint 1 · tests 1</figcaption>',
     );
     expect(page).toContain('<title>Gate failures per stage:');
   });
 
-  it('lists the backlog in store order, each goal cut to its first sentence, with its scope', () => {
+  it('lists the backlog in store order, one line per task, its scope on hover', () => {
     plan('t-b', 'Second task. With more said.', ['src/b/**'], ['src/b/gen/**']);
     plan('t-a', 'First task!\nAnd a second line.', ['docs/**']);
     db.prepare("UPDATE tasks SET created_at = '2026-01-02 00:00:00' WHERE id = 't-a'").run();
@@ -203,9 +203,15 @@ describe('the Tasks sheet', () => {
     const page = render();
 
     expect(page.indexOf('>t-b<')).toBeLessThan(page.indexOf('>t-a<'));
-    expect(page).toContain('<div class="goal">Second task.</div>');
-    expect(page).toContain('<div class="goal">First task!</div>');
-    expect(page).toContain('scope: <code>src/b/**</code> · not <code>src/b/gen/**</code>');
+    expect(page).toContain(
+      '<li class="task" title="scope: src/b/** · not src/b/gen/**"><span class="sid">t-b</span>' +
+        '<span class="goal">Second task.</span>',
+    );
+    expect(page).toContain(
+      '<li class="task" title="scope: docs/**"><span class="sid">t-a</span><span class="goal">First task!</span>',
+    );
+    // Spans only: nothing in a line breaks it into a block.
+    expect(page).not.toMatch(/<li class="task"[^>]*>(?:(?!<\/li>).)*<div/);
     expect(page).not.toContain('With more said');
   });
 
@@ -227,7 +233,9 @@ describe('the Tasks sheet', () => {
     expect(page).toContain(
       'overlaps s-live on src/a.ts, src/b.ts; s-wide on src/a.ts, src/b.ts, src/c.ts and 1 more',
     );
-    expect(page).toContain('no overlap with a live session');
+    expect(page).toMatch(
+      /<span class="sid">t-docs<\/span><span class="goal">Touch docs\.<\/span><form/,
+    );
     expect(page).not.toContain('s-done on');
   });
 
@@ -239,7 +247,7 @@ describe('the Tasks sheet', () => {
     const page = render();
 
     expect(page.match(/Overlaps not read/g)).toHaveLength(1);
-    expect(page).not.toContain('no overlap with a live session');
+    expect(page).not.toContain('overlaps ');
   });
 
   it('escapes every store string, markup and control characters alike', () => {

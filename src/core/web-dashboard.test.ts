@@ -636,8 +636,8 @@ describe('startWebDashboard', () => {
       expect(page).toContain('t-planned');
       expect(page).not.toContain('accepted by alexis');
       const debtSheet = await readPage(home('?sheet=debt'));
-      expect(debtSheet).toMatch(/#1<\/span><span class="state state-blocked">overdue/);
-      expect(debtSheet).toContain('accepted by alexis, review by 2000-01-01');
+      expect(debtSheet).toMatch(/#1<\/span> [^<]*<span class="state state-blocked">overdue/);
+      expect(debtSheet).toContain('review by 2000-01-01, accepted by alexis');
     });
 
     it('puts the review in the inbox when no conductor runs to gate it', async () => {
@@ -967,7 +967,6 @@ describe('startWebDashboard', () => {
       expect(tasks).toContain('No session has reached a PR yet.');
       expect(decisions).not.toContain('<svg');
       expect(decisions).toContain('No decision recorded yet — each merge records one.');
-      expect(decisions).toContain('No source under src/ to map.');
     });
 
     it("leads the Overview with the brief's Destination", async () => {
@@ -1027,8 +1026,9 @@ describe('startWebDashboard', () => {
       expect(tile('coverage')).toBe(`${audited('coverageRatio', 0.8234)} | +2.3 pt in 7 days`);
       expect(tile('unused exports')).toBe(`${audited('deadExports', 3)} | -2 in 7 days`);
       expect(tile('duplicated lines')).toBe(`${audited('duplicatedLines', 130)} | +10 in 7 days`);
-      // Value, change and sparkline only: its per-capture line is the chart's hover, not text.
-      expect(page).toContain('.tile figcaption { display: none; }');
+      // Value, change and sparkline only: its per-capture line is for a screen reader, not on the page.
+      expect(page).not.toMatch(/figcaption \{[^}]*display: none/);
+      expect(page).toMatch(/\.sr-only \{[^}]*clip-path: inset\(50%\)/);
       expect(page).toContain('<title>coverage by capture:');
       expect(page).toContain(`sheet=debt">Debt sheet: what to pay down next →</a>`);
     });
@@ -1056,9 +1056,13 @@ describe('startWebDashboard', () => {
 
       const page = await readPage(home());
       const merges =
-        /<figcaption>Merges per week, week starting: ([^<]*)<\/figcaption>/.exec(page)?.[1] ?? '';
+        /<figcaption class="sr-only">Merges per week, week starting: ([^<]*)<\/figcaption>/.exec(
+          page,
+        )?.[1] ?? '';
 
-      expect(page).toContain('<figcaption>Tasks: done 2 · in flight 1 · planned 1</figcaption>');
+      expect(page).toContain(
+        '<figcaption class="sr-only">Tasks: done 2 · in flight 1 · planned 1</figcaption>',
+      );
       expect(merges.split(' · ').map((week) => Number(week.split(' ')[1]))).toEqual([
         0, 0, 0, 0, 0, 1, 0, 1,
       ]);
@@ -1896,8 +1900,12 @@ describe('startWebDashboard', () => {
       );
       expect(shell).toContain('<input type="search" data-find placeholder="Filter"');
       expect(shell).toContain(':not([data-find])');
+      // An inline row's flex layout would outrank the hide rule, so it skips hidden rows.
+      expect(shell).toContain('[data-list] li[hidden], [data-list] tr[hidden]');
+      expect(shell).toMatch(/ul\.rows\.inline > li:not\(\[hidden\]\)[^{]*\{ display: flex;/);
+      expect(shell).not.toMatch(/ul\.rows\.inline > li[,\s]/);
       expect(await readPage(home('?sheet=debt'))).toMatch(
-        /<ul class="rows" data-list="debt"><li class="entry">.*Oversize diff merged from session s-9/s,
+        /<table class="moves" data-list="debt"><thead>.*Oversize diff merged from session s-9/s,
       );
     });
   });
@@ -1953,7 +1961,7 @@ describe('the lists the sheets mark for the page to filter', () => {
     return [...body.matchAll(/<li\b|<tr><td>/g)].length;
   };
 
-  it('marks every open debt entry in the ledger, and not the capped pay-down list', () => {
+  it('marks every open debt entry as a row of its one table', () => {
     const entry = (id: string): DebtSheetEntry => ({
       id,
       description: `entry ${id}`,
@@ -1968,24 +1976,25 @@ describe('the lists the sheets mark for the page to filter', () => {
     const page = renderDebtSheet(['1', '2', '3'].map(entry));
 
     expect(rowsIn(page, 'debt')).toBe(3);
-    expect(page).toContain('<ol class="paydown"><li class="entry"><div');
+    expect(page).toContain('<table class="moves" data-list="debt"><thead>');
   });
 
-  it('marks every decision as a row of one list, each module a group of it', () => {
-    const record = (id: number, module: string) => ({
+  it('marks every decision as a row of one list, each day a group of it', () => {
+    const record = (id: number, day: string) => ({
       id,
       session: 's-1',
-      when: '',
+      day,
+      time: '',
       summary: [`decision ${id}`],
       alternatives: [],
       files: [],
-      module,
     });
 
-    const page = renderDecisionsSheet({
-      records: [record(3, 'src/core'), record(2, 'src/cli'), record(1, 'src/core')],
-      map: { files: [], unread: 0, capped: false, mergesSince: '2026-10-19' },
-    });
+    const page = renderDecisionsSheet([
+      record(3, '2026-11-03'),
+      record(2, '2026-11-03'),
+      record(1, '2026-11-02'),
+    ]);
 
     expect(rowsIn(page, 'decisions')).toBe(3);
     expect([...page.matchAll(/<div data-group><h3 class="state-group">/g)]).toHaveLength(2);

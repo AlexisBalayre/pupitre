@@ -128,7 +128,7 @@ export async function startWebDashboard(
       case 'debt':
         return renderDebtSheet(readDebtSheet(db, repoPath, now));
       case 'decisions':
-        return renderDecisionsSheet(readDecisionsSheet(db, repoPath, now));
+        return renderDecisionsSheet(readDecisionsSheet(db));
       case 'health':
         return renderHealthSheet(readHealthSheet(db, repoPath));
       case 'overview':
@@ -389,7 +389,6 @@ ${CHART_CSS}
   .tile .k { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
   .tile .v { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
   .tile .d { color: var(--ink-2); font-size: 12px; }
-  .tile figcaption { display: none; }
   .strip ul { list-style: none; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: 8px; }
   .strip li {
     background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
@@ -398,7 +397,6 @@ ${CHART_CSS}
   .strip .v { font-size: 18px; font-weight: 600; color: var(--ink); font-variant-numeric: tabular-nums; }
   .strip li.launch { flex-basis: 100%; padding: 0; background: none; border: 0; font-size: 12px; }
   .more { margin-top: 8px; font-size: 12px; }
-  ol.paydown { padding-left: 20px; }
   details summary { cursor: pointer; color: var(--ink-2); }
   table.moves { border-collapse: collapse; width: 100%; font-size: 12px; }
   table.moves th { text-align: left; color: var(--muted); font-weight: 600; }
@@ -411,7 +409,7 @@ ${CHART_CSS}
     background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
     padding: 10px 12px; margin-bottom: 8px;
   }
-  ul.rows.inline > li, div.inline { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  ul.rows.inline > li:not([hidden]), div.inline { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
   .inline .goal { flex: 1; margin-top: 0; }
   .inline form.act { margin-top: 0; }
   div.inline form.act { flex: 1 1 200px; }
