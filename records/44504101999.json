@@ -1,0 +1,107 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-19T10:24:14.610Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "44504101999",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/44504101999",
+  "actor": "AlexisBalayre",
+  "commit_sha": "e67ca8aafff1358a8f97ca456d5f6810dd665178",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 397,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/web-dashboard-tasks.service.ts",
+      "line": "349",
+      "description": "Adding `inline` to the backlog list lets `ul.rows.inline > li { display: flex }` (0,2,2) override `[data-list] li[hidden] { display: none }` (0,2,1), so the page's filter and pager never hide a backlog row",
+      "status": "unresolved"
+    },
+    {
+      "file": "src/core/web-dashboard-decisions.service.ts",
+      "line": "41-42",
+      "description": "The Decisions filter no longer finds a record by its date: the day moved out of each row into the group's <h3>, and the page script searches only the row text.",
+      "status": "unresolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/web-dashboard-tasks.service.ts",
+      "line": "339-345",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "Moving the backlog's scope into a `title` attribute takes it out of the text the `data-list` filter searches, so filtering the backlog by a path or glob now matches nothing.",
+      "body": "**The backlog filter can no longer find a task by its scope.**\n\nThe page script filters a `data-list` by each row's `textContent`. `textContent` never includes attribute values:\n\n```ts\nconst view = listWindow(rows.map((row) => row.textContent), state.query, state.page, ${LIST_PAGE_ROWS});\n```\n\n(`src/core/web-dashboard.service.ts` L501. `listWindow` at L323-337 only checks whether each typed word appears in that text.)\n\nAt the merge base, after #398's filter landed, each backlog row had its scope as text:\n\n```ts\n`<div class=\"fact\">scope: ${globs(task.scope)}${task.scopeOut.length === 0 ? '' : ` · not ${globs(task.scopeOut)}`}</div>` +\n```\n\nThis PR moves the scope into `title=\"${escapeHtml(scopeText(task))}\"` on the `<li>`, and `scopeText` is used nowhere else. Nothing else in the row puts the scope back as text. The overlap `<span>` names files only when the task overlaps a live session.\n\n**Trigger.** On the Tasks sheet, the operator types a scope path such as `src/cli` into the Backlog filter. At the merge base that showed the tasks scoped to the CLI. Now the counter reads `0 of N`, unless the path happens to appear in a task's id or goal. The scope is still visible on hover, so the empty result is puzzling. A smaller loss comes from the same change: `clipWords` now cuts the goal at `CARD_TEXT_CHARS`, so a goal word past the cut can no longer be found.\n\nThe ADR 0098 amendment says the backlog is filtered \"by the words typed\", and it does not mention dropping scope from the search. No test covers this: the tasks test only checks the `title` markup, and the `listWindow` tests run on plain strings.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/e67ca8aafff1358a8f97ca456d5f6810dd665178/src/core/web-dashboard-tasks.service.ts#L337-L345\nhttps://github.com/AlexisBalayre/pupitre/blob/e67ca8aafff1358a8f97ca456d5f6810dd665178/src/core/web-dashboard.service.ts#L501-L501\n\n**Fix.** Keep the line visually one row, but also put the scope in it as visually hidden text. `.sr-only` is now in `CHART_CSS`, which loads on every sheet, and it is absolutely positioned, so it stays out of the flex row. Screen readers then get the scope as well, which a `title` does not reliably give them:\n\n```ts\n`<span class=\"goal\">${escapeHtml(clipWords(task.goal || '(no goal recorded)'))}</span>` +\n`<span class=\"sr-only\">${escapeHtml(scopeText(task))}</span>` +\n```",
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "The review-consolidator was not spawned, because the reviewers returned only one finding and there was nothing to deduplicate. That finding went straight to validation."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.4827114000000012,
+  "duration_ms": 195213,
+  "num_turns": 19,
+  "tokens": {
+    "input": 14,
+    "output": 12020,
+    "cache_read": 341191,
+    "cache_creation": 55188,
+    "total": 408413
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 106,
+      "output": 33465,
+      "cache_read": 1568159,
+      "cache_creation": 197557,
+      "cost_usd": 2.1367048000000004
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 52,
+      "output": 8677,
+      "cache_read": 417951,
+      "cache_creation": 86935,
+      "cost_usd": 0.34600660000000005
+    }
+  ],
+  "permission_denials": []
+}
