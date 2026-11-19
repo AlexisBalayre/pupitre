@@ -1,0 +1,114 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-19T10:19:54.321Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "44504070158",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/44504070158",
+  "actor": "AlexisBalayre",
+  "commit_sha": "e67ca8aafff1358a8f97ca456d5f6810dd665178",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 397,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/web-dashboard-debt.service.ts",
+      "line": "111-116",
+      "description": "The `renderDebtSheet` JSDoc still says the table is \"filtered by text and kind and paged in the browser\", but the second commit removed that script; the sheet renders a plain table.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/web-dashboard-tasks.service.ts",
+      "line": "349",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "Adding `inline` to the backlog list lets `ul.rows.inline > li { display: flex }` (0,2,2) override `[data-list] li[hidden] { display: none }` (0,2,1), so the page's filter and pager never hide a backlog row",
+      "body": "**Concern.** The change marks the backlog `<ul class=\"rows inline\" data-list=\"backlog\">`. The page script's `showList` filters and pages a list by setting `row.hidden = true` on rows outside the current window. A hidden row only disappears because of the shell rule `[data-list] li[hidden], [data-list] tr[hidden], [data-group][hidden] { display: none; }` in `src/core/web-dashboard.service.ts` L447. The same stylesheet also has `ul.rows.inline > li, div.inline { display: flex; ... }` at L412.\n\nBoth are author rules, so specificity decides. `ul.rows.inline > li` is (0,2,2): two classes and two types. `[data-list] li[hidden]` is (0,2,1): two attributes and one type. The `display: flex` rule wins on every backlog `<li>`, including hidden ones. The browser's built-in `[hidden] { display: none }` ranks below any author rule, so it cannot save them either.\n\n**Trigger.** The backlog has more than `LIST_PAGE_ROWS` (20) tasks, or the operator types into the backlog's Filter field. Every task stays on screen while the counter says something like `3 of 25` or `page 1 of 2`. Previous and Next appear to do nothing.\n\nBefore this change the list was `class=\"rows\"`, and `ul.rows > li` sets no `display`, so the hidden rule applied. No other `data-list` list uses `rows inline`: the overview's Planned list has that class but no `data-list`. The Debt table and the Sessions table are unaffected, because no rule sets `display` on their `tr` elements. No test catches this, because the tests check markup, not the CSS cascade.\n\n```ts\n`<ul class=\"rows inline\" data-list=\"backlog\">${rows.join('')}</ul>`\n```\n```css\nul.rows.inline > li, div.inline { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }\n[data-list] li[hidden], [data-list] tr[hidden], [data-group][hidden] { display: none; }\n```\n\nhttps://github.com/AlexisBalayre/pupitre/blob/e67ca8aafff1358a8f97ca456d5f6810dd665178/src/core/web-dashboard-tasks.service.ts#L339-L350\nhttps://github.com/AlexisBalayre/pupitre/blob/e67ca8aafff1358a8f97ca456d5f6810dd665178/src/core/web-dashboard.service.ts#L412-L412\nhttps://github.com/AlexisBalayre/pupitre/blob/e67ca8aafff1358a8f97ca456d5f6810dd665178/src/core/web-dashboard.service.ts#L447-L447\n\n**Fix.** The cleanest fix is in the shell CSS in `web-dashboard.service.ts` L412. Keep the flex layout off hidden rows, so the hide rule still applies to any later `inline` list that carries `data-list`:\n\n```css\nul.rows.inline > li:not([hidden]), div.inline { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }\n```",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/web-dashboard-decisions.service.ts",
+      "line": "41-42",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The Decisions filter no longer finds a record by its date: the day moved out of each row into the group's <h3>, and the page script searches only the row text.",
+      "body": "**Concern.** At the merge base, each decision row's meta read `s-1, 2026-11-03 10:00 UTC`. That text sat inside the `<li>`, and the list was already a filterable `data-list=\"decisions\"`, so typing `2026-11-03` or `2026-11` into the Decisions filter matched those records. This PR splits the timestamp: `day` goes only into the group heading, and the row keeps only `, HH:MM UTC`:\n\n```ts\nday: dated ? at.toISOString().slice(0, 10) : NO_DAY,\ntime: dated ? `, ${at.toISOString().slice(11, 16)} UTC` : '',\n```\n\n```ts\n`<div data-group><h3 class=\"state-group\">${escapeHtml(day)}</h3>` +\n`<ul class=\"rows\">${held.map(decisionRow).join('')}</ul></div>`\n```\n\nThe page script in `src/core/web-dashboard.service.ts` (`showList`, around L500-L501) passes `listWindow` only the `textContent` of `list.querySelectorAll('li, tbody > tr')`. The `<h3>` is outside every `<li>`, so the date is not in any text the filter searches. The `[data-group]` loop only hides a group once all its rows are hidden; it never reads the heading.\n\n**Trigger.** The operator opens the Decisions sheet and types a date, such as `2026-11-03`, into the Filter field. The counter reads `0 of N`, and every row and day group is hidden, although records from that day exist. Before this PR the same query showed them. The new tests only check the markup, so nothing catches this.\n\n**Fix.** Keep the full date in the row's meta as well as in the heading, so it stays searchable. The heading still groups the rows:\n\n```ts\ntime: dated ? `, ${at.toISOString().slice(0, 16).replace('T', ' ')} UTC` : '',\n```\n\nThe `time` JSDoc at L15 becomes `` `, YYYY-MM-DD HH:MM UTC` ``. The assertion `'#1</span> s-1, 09:15 UTC</div>'` in `web-dashboard-decisions.test.ts` L83 becomes `'#1</span> s-1, 2026-11-02 09:15 UTC</div>'`.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/e67ca8aafff1358a8f97ca456d5f6810dd665178/src/core/web-dashboard-decisions.service.ts#L41-L42\nhttps://github.com/AlexisBalayre/pupitre/blob/e67ca8aafff1358a8f97ca456d5f6810dd665178/src/core/web-dashboard.service.ts#L500-L501",
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 2,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.4900029250000006,
+  "duration_ms": 169573,
+  "num_turns": 20,
+  "tokens": {
+    "input": 20,
+    "output": 13544,
+    "cache_read": 485081,
+    "cache_creation": 58586,
+    "total": 557231
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 110,
+      "output": 31489,
+      "cache_read": 1340603,
+      "cache_creation": 208857,
+      "cost_usd": 2.1183836
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 40,
+      "output": 7600,
+      "cache_read": 296720,
+      "cache_creation": 106096,
+      "cost_usd": 0.370992
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 90,
+      "cache_read": 0,
+      "cache_creation": 4657,
+      "cost_usd": 0.000627325
+    }
+  ],
+  "permission_denials": []
+}
