@@ -200,19 +200,26 @@ import {
 } from '../core/usage-limits.service.js';
 import { buildUsageReport, claudeDirsOf, formatUsageReport } from '../core/usage-report.service.js';
 import { startWebDashboard } from '../core/web-dashboard.service.js';
+import { ProjectResolutionError } from './errors/project.errors.js';
 import { runOrReportNoAdapter } from './no-adapter-guard.utils.js';
 import { askedFleet, readOnlyUnderWindow, refusedUnderWindow } from './operator-guard.utils.js';
 import {
   enclosingProject,
   fleetProjects,
   listRegisteredProjects,
-  ProjectResolutionError,
-  type ResolvedProject,
   registryLine,
   resolveProject,
 } from './project.utils.js';
-import type { ActionDeps } from './ui/actions.service.js';
-import { App, type AppProps } from './ui/app.component.js';
+import type { ActionDeps } from './types/actions.types.js';
+import type { AppProps } from './types/app.types.js';
+import type {
+  ConductorOptions,
+  ExpectedLaunchError,
+  LandOptions,
+  PlanOptions,
+} from './types/command.types.js';
+import type { ResolvedProject } from './types/project.types.js';
+import { App } from './ui/app.component.js';
 import {
   fleetLines,
   goalColumn,
@@ -802,9 +809,6 @@ function refusedUnsandboxed(): boolean {
   }
 }
 
-/** An error class a launch answers for rather than crashes on. */
-type ExpectedLaunchError = new (...args: never[]) => Error;
-
 /**
  * The tail every command that opens a session shares. A launch whose kickoff
  * the window refused has already undone itself in core, and leaves the task
@@ -1041,30 +1045,6 @@ function printLaunchRoom(db: Database, repoPath: string): void {
   } catch (error) {
     console.log(`Launch: unknown, ${sanitizeReason((error as Error).message)}`);
   }
-}
-
-interface ConductorOptions extends AskOptions {
-  model?: string;
-  effort?: string;
-  workerModel?: string;
-}
-
-interface LandOptions {
-  gateEnv?: string;
-  audit: boolean;
-  acceptHead?: string;
-  abandonClosed?: boolean;
-  remeasure?: boolean;
-  approvedBy?: string;
-}
-
-interface PlanOptions {
-  scope?: string[];
-  scopeOut?: string[];
-  accept?: string[];
-  goal?: string;
-  tier?: string;
-  rescope?: boolean;
 }
 
 /**

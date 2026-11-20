@@ -255,9 +255,10 @@ import {
 } from '../core/test-slot.service.js';
 import type { MergeOutcome } from '../core/types/merge-gate.types.js';
 import { startWebDashboard } from '../core/web-dashboard.service.js';
+import { ProjectResolutionError } from './errors/project.errors.js';
 import { buildProgram, fatalExitCode } from './index.js';
-import { ProjectResolutionError, resolveProject } from './project.utils.js';
-import type { DashboardReading, ProjectReading } from './ui/use-snapshot.hook.js';
+import { resolveProject } from './project.utils.js';
+import type { DashboardReading, ProjectReading } from './types/snapshot.types.js';
 
 describe('CLI commands', () => {
   const originalExitCode = process.exitCode;

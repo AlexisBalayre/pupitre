@@ -2,9 +2,9 @@ import { Box, Text } from 'ink';
 import type { ReactNode } from 'react';
 import { routeLabel } from '../../core/dashboard.service.js';
 import type { DashboardQuestion, DashboardSession } from '../../core/types/dashboard.types.js';
-import { STATE_COLOURS } from './dashboard.constants.js';
+import { STATE_COLOURS } from '../constants/dashboard.constants.js';
+import type { DetailRow } from '../types/controls.types.js';
 import { originMarker } from './dashboard-text.utils.js';
-import type { DetailRow } from './use-controls.hook.js';
 
 /**
  * Everything behind one row: what the task is for, where it may write, what

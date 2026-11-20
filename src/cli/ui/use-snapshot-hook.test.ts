@@ -3,9 +3,10 @@ import { cleanup, render } from 'ink-testing-library';
 import { createElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DashboardSnapshot } from '../../core/types/dashboard.types.js';
-import type { ActionDeps } from './actions.service.js';
-import { SNAPSHOT_REFRESH_MS } from './dashboard.constants.js';
-import { type DashboardReading, useSnapshot } from './use-snapshot.hook.js';
+import { SNAPSHOT_REFRESH_MS } from '../constants/dashboard.constants.js';
+import type { ActionDeps } from '../types/actions.types.js';
+import type { DashboardReading } from '../types/snapshot.types.js';
+import { useSnapshot } from './use-snapshot.hook.js';
 
 function readingWith(projectId: string): DashboardReading {
   const snapshot: DashboardSnapshot = {

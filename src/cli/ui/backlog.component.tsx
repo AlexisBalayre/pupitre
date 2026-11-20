@@ -4,7 +4,7 @@ import {
   ID_COLUMN_CHARS,
   PROJECT_COLUMN_CHARS,
   STATE_COLUMN_CHARS,
-} from './dashboard.constants.js';
+} from '../constants/dashboard.constants.js';
 import { goalColumn, originMarker, trailing } from './dashboard-text.utils.js';
 
 /**

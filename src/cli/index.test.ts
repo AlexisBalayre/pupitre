@@ -266,8 +266,9 @@ import {
 } from '../core/session-lifecycle.service.js';
 import { RESUME_MESSAGE } from '../core/turn-watchdog.service.js';
 import { UsageLimitReachedError } from '../core/usage-limits.service.js';
+import { ProjectResolutionError } from './errors/project.errors.js';
 import { buildProgram, fatalExitCode } from './index.js';
-import { ProjectResolutionError, resolveProject } from './project.utils.js';
+import { resolveProject } from './project.utils.js';
 import { Radar } from './ui/radar.component.js';
 
 /** The event id of the newest question in `repo`'s store: what the inbox shows the operator. */

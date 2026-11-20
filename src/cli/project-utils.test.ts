@@ -7,11 +7,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { openStore } from '../core/db.client.js';
 import { projectId, projectPaths } from '../core/paths.utils.js';
 import { ensureProject } from '../core/session.repository.js';
+import { ProjectResolutionError } from './errors/project.errors.js';
 import {
   enclosingProject,
   fleetProjects,
   listRegisteredProjects,
-  ProjectResolutionError,
   registryLine,
   resolveProject,
 } from './project.utils.js';

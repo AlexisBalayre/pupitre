@@ -35,15 +35,16 @@ vi.mock('./actions.service.js', () => ({
 }));
 
 import type { DashboardSession, DashboardSnapshot } from '../../core/types/dashboard.types.js';
+import { MERGE_LOG_LINES } from '../constants/dashboard.constants.js';
+import type { ActionDeps, MergeHandlers } from '../types/actions.types.js';
+import type { DashboardReading } from '../types/snapshot.types.js';
 import {
-  type ActionDeps,
   answerSelected,
   attachTo,
   conductorAttachTarget,
   interruptSelected,
   killSelected,
   launchSelected,
-  type MergeHandlers,
   respawnSelected,
   runMerge,
   selectedBlockedReason,
@@ -53,8 +54,6 @@ import {
   unblockSelected,
 } from './actions.service.js';
 import { App } from './app.component.js';
-import { MERGE_LOG_LINES } from './dashboard.constants.js';
-import type { DashboardReading } from './use-snapshot.hook.js';
 
 const DEPS = { db: {}, repoPath: '/repo', pupBin: '/abs/pup.js' } as unknown as ActionDeps;
 

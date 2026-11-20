@@ -6,7 +6,7 @@ import {
   PROJECT_COLUMN_CHARS,
   STATE_COLOURS,
   STATE_COLUMN_CHARS,
-} from './dashboard.constants.js';
+} from '../constants/dashboard.constants.js';
 import {
   activityLabel,
   contextLabel,

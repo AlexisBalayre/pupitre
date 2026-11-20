@@ -59,8 +59,8 @@ import {
   steerSession,
 } from '../../core/session-lifecycle.service.js';
 import type { DashboardSnapshot } from '../../core/types/dashboard.types.js';
+import type { ActionDeps } from '../types/actions.types.js';
 import {
-  type ActionDeps,
   answerSelected,
   attachTo,
   conductorAttachTarget,

@@ -6,7 +6,8 @@ import type {
   DashboardSession,
   DashboardSnapshot,
 } from '../../core/types/dashboard.types.js';
-import type { ActionDeps } from './actions.service.js';
+import type { ActionDeps } from '../types/actions.types.js';
+import type { DashboardReading } from '../types/snapshot.types.js';
 import { App } from './app.component.js';
 import { Backlog } from './backlog.component.js';
 import { Debt } from './debt.component.js';
@@ -17,7 +18,6 @@ import { MergeLogPane } from './merge-log.component.js';
 import { Prompt, promptLines } from './prompt.component.js';
 import { Radar } from './radar.component.js';
 import { Sessions } from './sessions.component.js';
-import type { DashboardReading } from './use-snapshot.hook.js';
 
 /**
  * Every component renders one fixture snapshot and is asserted on the frame

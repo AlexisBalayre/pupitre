@@ -1,8 +1,7 @@
 import { useEffect, useMemo } from 'react';
+import type { DashboardReading } from '../types/snapshot.types.js';
+import type { StatusStream } from '../types/terminal.types.js';
 import { createTerminalStatus } from './terminal-status.manager.js';
-import type { DashboardReading } from './use-snapshot.hook.js';
-
-type StatusStream = { isTTY?: boolean; write: (chunk: string) => unknown };
 
 /**
  * Keeps the terminal tab in step with the snapshot on screen (decision 97).

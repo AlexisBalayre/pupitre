@@ -7,23 +7,8 @@ import { openStore, refuseLinkedStoreFiles } from '../core/db.client.js';
 import { runGit } from '../core/git-diff.client.js';
 import { projectId, projectPaths } from '../core/paths.utils.js';
 import type { RegisteredProject } from '../core/types/fleet.types.js';
-
-export interface ResolvedProject {
-  repoPath: string;
-  db: Database.Database;
-}
-
-/**
- * The CLI refuses with this message and exit 1, no stack: every case is the
- * operator's to resolve (cd into a repo, `pup init`, or `--project <id>`),
- * not a bug (decision 43).
- */
-export class ProjectResolutionError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'ProjectResolutionError';
-  }
-}
+import { ProjectResolutionError } from './errors/project.errors.js';
+import type { ProjectRow, ResolvedProject } from './types/project.types.js';
 
 const INIT_HINT = 'run pup init from the repo you want to control.';
 
@@ -40,12 +25,6 @@ function repoRoot(cwd: string): string {
     stdio: ['ignore', 'pipe', 'pipe'],
   }).trim();
   return commonDir.replace(/\/\.git\/?$/, '');
-}
-
-interface ProjectRow {
-  id: string;
-  repo_path: string;
-  dormant_at: string | null;
 }
 
 /**
