@@ -1,0 +1,111 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-20T12:48:29.317Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "44738432422",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/44738432422",
+  "actor": "AlexisBalayre",
+  "commit_sha": "43829133f3c9864b6c575d143b8fb16385d343fd",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 412,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "conventions",
+    "guards",
+    "docs",
+    "simplicity"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "conventions",
+    "guards",
+    "docs",
+    "simplicity"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/cli/index.test.ts",
+      "line": "164-166",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The `vi.mock('../core/session-lifecycle.service.js')` factory still has a `LowMemoryError` entry. It is typed against `errors/session-lifecycle.errors.js`, but `importOriginal` returns the service module, which no longer exports `LowMemoryError`, so the entry is `undefined` and nothing reads it. The same entry sits in `src/cli/index-2.test.ts` L140-142 and `src/cli/index-3.test.ts` L134-136. Delete it in all three files.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/errors/session.errors.ts",
+      "line": "19",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `MalformedTaskSpecError` JSDoc says the SyntaxError message \"is swallowed here\", but after the move this file holds only the class. The code that drops the message is in `session.repository.ts`, so name that file or drop \"here\".",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Skipped review-security: the change only moves code, and every class body was confirmed identical, so no trust boundary changes. Skipped review-context (no spec, protocol or infra surface), review-spec (no closing issues or spec source), review-workflow-safety (no workflow change) and review-maintainability (off the default roster at standard depth). Dropped one simplicity nit: it proposed moving `WorktreeConfigCause` back into the errors file, which contradicts the PR's declared layout rule that types live in `types/`."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.717222025,
+  "duration_ms": 124764,
+  "num_turns": 14,
+  "tokens": {
+    "input": 14,
+    "output": 8905,
+    "cache_read": 275972,
+    "cache_creation": 46463,
+    "total": 331354
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 66,
+      "output": 21571,
+      "cache_read": 968035,
+      "cache_creation": 142630,
+      "cost_usd": 1.4778299999999998
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 44,
+      "output": 6442,
+      "cache_read": 240742,
+      "cache_creation": 60063,
+      "cost_usd": 0.23873970000000003
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 142,
+      "cache_read": 0,
+      "cache_creation": 4649,
+      "cost_usd": 0.000652325
+    }
+  ],
+  "permission_denials": []
+}
