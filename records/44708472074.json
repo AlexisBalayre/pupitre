@@ -1,0 +1,86 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-20T09:12:53.568Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "44708472074",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/44708472074",
+  "actor": "AlexisBalayre",
+  "commit_sha": "8677d6d423567a36aeb2f21d9dda5ac70569f9ff",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 399,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "docs",
+    "conventions",
+    "guards"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "docs",
+    "conventions",
+    "guards"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context",
+    "maintainability",
+    "spec",
+    "simplicity",
+    "workflow-safety"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "ca598e207608a580f81c1226903073ebfc7217f2",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/web-dashboard.service.ts",
+      "line": "560-563",
+      "description": "A right-click (or Ctrl-click on macOS) on any board button sets `pressing`, the native context menu swallows the pointerup, and the board then holds back every later push while the header still says 'live' and the held notice stays hidden.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "conventions",
+      "description": "The conventions reviewer reported that the text of docs/conventions/general.md and naming.md was not injected into its context. It judged the 5-line delta against AGENTS.md and testing.md only."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.8458161999999999,
+  "duration_ms": 54008,
+  "num_turns": 11,
+  "tokens": {
+    "input": 10,
+    "output": 3652,
+    "cache_read": 186169,
+    "cache_creation": 53302,
+    "total": 243133
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 18,
+      "output": 6499,
+      "cache_read": 210688,
+      "cache_creation": 74400,
+      "cost_usd": 0.7040956
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 26,
+      "output": 3586,
+      "cache_read": 100336,
+      "cache_creation": 38310,
+      "cost_usd": 0.14172059999999997
+    }
+  ],
+  "permission_denials": []
+}
