@@ -35,6 +35,9 @@
     from GitHub. The clone checks that its HEAD equals `baseSha` before the brief is sent. This
     fixes the spike's base drift and removes GitHub from what the sandbox can reach, so it needs
     no push credential.
+    That offline install runs `better-sqlite3`'s `node-gyp rebuild`, and the egress rule blocks
+    nodejs.org (`docs/spikes/2026-11-16-container-worker.md`, L137-150). So the template must
+    carry `python3`, `make`, `g++`, the Node headers and `npm_config_nodedir` pointing at them.
     The sandbox may reach the model API (`api.anthropic.com`) and nothing else. Dependencies
     come from the template's pre-filled pnpm store with `pnpm install --offline`. The npm
     registry is closed because the spike showed it accepts authenticated writes and so is an
@@ -64,6 +67,13 @@
     in the next turn's message, because the shim cannot wait for the host. `pup session recap`
     reads the store, so the host writes its answer into the sandbox before each turn, and the
     shim prints that file.
+    The replay offset lives on the host, per sandbox, beside the session's host `events.jsonl`.
+    When a session continues in a fresh sandbox after the 1-hour limit, the new sandbox has a new
+    `events.jsonl`, so the offset resets to 0 with it. A replay can still repeat a line, for
+    example when the host stops between replaying and saving the offset. So replayed `done`,
+    `ask` and `handoff-done` must be idempotent. `markSessionDone` and `markHandoffReady`
+    (`src/core/session-handoff.service.ts`) read the host's handoff file, so the executor must
+    fetch the handoff document to the host before it replays a `handoff-done` or `done` line.
     The end of a turn comes from the executor, not from a pane. That is the exit of
     `claude -p` together with its result line. After each turn, the transcript is copied back to
     the session's host directory.
@@ -75,6 +85,10 @@
     - a worker waiting on a steer or an operator answer is paused, and resumed when one arrives;
     - a session that outlives its sandbox continues in a fresh sandbox, cloned from the host
       bundle plus its last result bundle, with the transcript restored.
+    The pause rests on two assumptions that are unverified. One is that paused time does not
+    count toward the 1-hour limit. The other is that a paused sandbox does not hold one of the 10
+    concurrent slots. If either is false, the launcher's count and the pause rule change. The
+    first trial measures both.
     The worker runs from the `claude` template as headless `claude -p`, one process per turn. The
     session continues with `--resume <session id>`. That headless use is what amends decision 1
     for remote workers. Local sessions stay interactive `claude` in tmux, and
