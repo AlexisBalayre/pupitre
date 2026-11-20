@@ -141,3 +141,24 @@
     prints both signals, the memory and the verdict in `pup status`, refused under the floor and
     while the usage holds, prints `Launch: unknown` on a malformed budget, refuses a launch
     with each error, and no longer takes `--max-sessions`.
+
+## Amendment (2026-11-20, loadAllowanceFactor)
+
+A project can raise the load a launch is allowed. `.pupitre/project.yml` takes an optional
+`loadAllowanceFactor`, a number from 1 to 3, and `assertLaunchRoom` refuses a launch only when the
+1-minute load average is above the cores times it. Left out, the factor is 1 and nothing changes.
+A value outside 1 to 3, or not a number, also falls back to 1 rather than throw, so no setting can
+lower the allowance under the cores. The factor is read in `launchRoom` beside the budget, and the
+refusal and `pup status`'s load line name it whenever it is not 1, for example
+`load: 11.0 of 8 cores times loadAllowanceFactor 1.5 (12)`.
+
+What is unchanged: the gate's own wait for load (`merge-gate.service.ts`) still waits on the cores
+alone, and a fix round, whose check `session-lifecycle.service.ts` makes on `machineLoad()`
+directly, is still refused above the cores. The web dashboard's launch line likewise prints the
+load against the cores without the factor.
+
+*Tests.* The project config reads 1 with no file, an empty file and no key, reads 1, 1.5, 2 and 3,
+and falls back to 1 on a string, 0, 0.99, a negative, 3.01, infinity, NaN, a boolean, a list and
+null. At 1.5 on 8 cores a launch is allowed at a load of 11 and refused at 13, the refusal and the
+status lines naming the factor; with no factor or one out of bounds a load of 9 is refused; the
+refusal naming a factor stays under 300 characters at extreme figures.

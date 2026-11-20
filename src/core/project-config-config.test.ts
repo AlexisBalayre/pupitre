@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import {
   autoCompactWindowTokens,
+  loadAllowanceFactor,
   lockBacklogBudgetMinutes,
   skipsTestsOnUntestedChanges,
   workerSandboxOn,
@@ -161,6 +162,28 @@ describe('autoCompactWindowTokens', () => {
       expect(() => autoCompactWindowTokens(repoWith(`autoCompactWindow: ${value}\n`))).toThrow(
         'Invalid .pupitre/project.yml: autoCompactWindow must be a whole number of tokens from 100000 to 1000000.',
       );
+    },
+  );
+});
+
+// Decision 197's amendment of 2026-11-20: the cores times this is the load a launch is allowed.
+describe('loadAllowanceFactor', () => {
+  it.each([
+    { name: 'no project.yml', content: undefined },
+    { name: 'an empty project.yml', content: '' },
+    { name: 'a project.yml without the key', content: 'lockBacklogBudgetMinutes: 30\n' },
+  ])('reads 1 with $name', ({ content }) => {
+    expect(loadAllowanceFactor(repoWith(content))).toBe(1);
+  });
+
+  it.each([1, 1.5, 2, 3])('reads %s, from 1 to 3', (value) => {
+    expect(loadAllowanceFactor(repoWith(`loadAllowanceFactor: ${value}\n`))).toBe(value);
+  });
+
+  it.each(['"2"', '0', '0.99', '-2', '3.01', '.inf', '.nan', 'true', '[2]', 'null'])(
+    'falls back to 1 on %s',
+    (value) => {
+      expect(loadAllowanceFactor(repoWith(`loadAllowanceFactor: ${value}\n`))).toBe(1);
     },
   );
 });
