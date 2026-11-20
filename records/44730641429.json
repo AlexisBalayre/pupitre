@@ -1,0 +1,138 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-20T11:51:30.483Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "44730641429",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/44730641429",
+  "actor": "AlexisBalayre",
+  "commit_sha": "0bb2ee25d40944d774c4885e1b04b41619215504",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 406,
+  "action": "review",
+  "reviewers_spawned": [
+    "docs",
+    "conventions",
+    "context"
+  ],
+  "reviewers_returned": [
+    "docs",
+    "conventions",
+    "context"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "maintainability",
+    "spec",
+    "simplicity",
+    "guards",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "docs/adr/0207-a-worker-runs-behind-an-executor-seam-and-the.md",
+      "line": "46-53",
+      "description": "The ADR says copying remote lines into the host `events.jsonl` gives 'the path into `state.db`'. Nothing folds `events.jsonl` lines into the store (decision 63: 'no code path folds hook lines into that table'). The remote `session done`/`session ask` shim only appends to a file, so the host never records a done, an open question or a review transition.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "docs/adr/0207-a-worker-runs-behind-an-executor-seam-and-the.md",
+      "line": "56-63",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The replay paragraph says the host replays each `pup_signal` line \"through the same function the local command calls\". For `handoff-done` that function is `markHandoffReady` in `src/core/session-handoff.service.ts` (L167-177). It does not just append an event. It reads the handoff document from the host's `projectPaths(...).handoffFile(sessionId)` and throws `HandoffMissingError` if that file is absent. It then stores `hash: hashHandoff(document)`. A remote worker writes the handoff document inside the sandbox. The ADR never says it is copied to the host, and the only copy-back it names is the transcript. An implementer following the text would replay `handoff-done` on the host and get a refusal every time, which the ADR then tells the worker about next turn, so a remote handoff would never register. `markSessionDone` and `markSessionQuestion` have no such dependency on a host file, so the paragraph is right for those two only. The ADR should either list the handoff document among the files the host fetches before replaying, or say that `handoff-done` is not replayed this way for a remote worker.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0207-a-worker-runs-behind-an-executor-seam-and-the.md",
+      "line": "59",
+      "area": "context",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The ADR replays each `pup_signal` line \"once per line by the `readEvents` offset\" (L61-62), but it does not say where that offset lives, and it breaks across the lifecycle it describes at L76-77. When a session outlives its 1-hour sandbox, it continues in a fresh sandbox with an empty sandbox-local `events.jsonl`. If the host keeps its old byte or line offset, it skips the first lines the new sandbox writes, so a `pup session done` or `ask` never reaches `state.db`. The offset has to be per sandbox, or reset on restart. The replay targets are also not idempotent. `markSessionDone` in `src/core/session-lifecycle.service.ts` L742-745 appends a `session_done` event and then calls `transitionSession(..., 'awaiting-review')` unconditionally. If the host crashes between replaying a line and saving the offset, the line replays twice. The ADR should say the offset is persisted with the session and tied to the sandbox generation, and that it is saved in the same step as the replay.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0207-a-worker-runs-behind-an-executor-seam-and-the.md",
+      "line": "38",
+      "area": "context",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The ADR says dependencies come from the template's pre-filled pnpm store via `pnpm install --offline`, with only `api.anthropic.com` reachable. Spike L137-150 shows that `better-sqlite3` has a `binding.gyp`, so pnpm runs `node-gyp rebuild` on every install. That needs python3, make and g++, and it needs Node headers. The spike got the headers from nodejs.org, which this egress rule blocks, and avoided the download with `npm_config_nodedir=/usr/local`. An offline install in the sandbox fails the same way unless the template carries the toolchain and the Node headers and sets `nodedir`. The ADR does not list this among the template's duties. The glibc >= 2.38 constraint on the prebuilt binary is likewise unmentioned. An implementer following the ADR hits a failed launch that the text says can only be fixed by rebuilding the template.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0207-a-worker-runs-behind-an-executor-seam-and-the.md",
+      "line": "75",
+      "area": "context",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The ADR relies on pausing a sandbox while it waits for a steer or an operator answer, and on resuming it later, alongside a hard 1-hour maximum lifetime (L71-77). It does not say whether paused time counts toward the 1 hour. It also does not say whether a paused sandbox keeps the 10-concurrent slot that the launcher counts at L70-71. That is E2B behavior I cannot confirm here. If paused time counts, an operator answer that arrives hours later is always handled by the fresh-sandbox path. If a paused sandbox holds a slot, the launcher's count is wrong in the other direction. The ADR should state which one it assumes.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 1,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.878263375,
+  "duration_ms": 92029,
+  "num_turns": 12,
+  "tokens": {
+    "input": 12,
+    "output": 7437,
+    "cache_read": 268926,
+    "cache_creation": 43363,
+    "total": 319738
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 12,
+      "output": 7437,
+      "cache_read": 268926,
+      "cache_creation": 43363,
+      "cost_usd": 0.5494772
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 38,
+      "output": 9774,
+      "cache_read": 341076,
+      "cache_creation": 78436,
+      "cost_usd": 0.32801359999999996
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 325,
+      "cache_read": 0,
+      "cache_creation": 4879,
+      "cost_usd": 0.000772575
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "bash /home/runner/work/pupitre/pupitre/scripts/adr-index.sh"
+    },
+    {
+      "tool": "Bash",
+      "input": "bash /home/runner/work/pupitre/pupitre/scripts/adr-index.sh"
+    }
+  ]
+}
