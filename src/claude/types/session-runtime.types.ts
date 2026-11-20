@@ -114,9 +114,9 @@ export interface ClaudeWindowOptions {
 
 /**
  * A window pup opened: a session's, a project's conductor, or its conflict
- * radar. Which name it wears and which server it is on are this module's to
- * know — a caller names the window it means and gets back a label to print or
- * an argv to run.
+ * radar. Which name it wears and which server it is on are
+ * `session-runtime.service`'s to know — a caller names the window it means and
+ * gets back a label to print or an argv to run.
  */
 export type WindowTarget = { sessionId: string } | { conductorOf: string } | { watcherOf: string };
 
