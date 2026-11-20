@@ -71,9 +71,10 @@
     When a session continues in a fresh sandbox after the 1-hour limit, the new sandbox has a new
     `events.jsonl`, so the offset resets to 0 with it. A replay can still repeat a line, for
     example when the host stops between replaying and saving the offset. So replayed `done`,
-    `ask` and `handoff-done` must be idempotent. `markSessionDone` and `markHandoffReady`
-    (`src/core/session-handoff.service.ts`) read the host's handoff file, so the executor must
-    fetch the handoff document to the host before it replays a `handoff-done` or `done` line.
+    `ask` and `handoff-done` must be idempotent. `markHandoffReady`
+    (`src/core/session-handoff.service.ts`) reads the host's handoff file and throws
+    `HandoffMissingError` without it, so the executor must fetch the handoff document to the
+    host before it replays a `handoff-done` line.
     The end of a turn comes from the executor, not from a pane. That is the exit of
     `claude -p` together with its result line. After each turn, the transcript is copied back to
     the session's host directory.
