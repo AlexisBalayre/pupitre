@@ -58,8 +58,8 @@ const USES_BEFORE_GATE = 2;
 interface MachineLoad {
   average: number;
   cores: number;
-  /** The project's `loadAllowanceFactor` the cores are multiplied by, 1 when absent. */
-  factor?: number;
+  /** The project's `loadAllowanceFactor` the cores are multiplied by: set once by `launchRoom`, from the project's config. */
+  factor: number;
 }
 
 /** The merge-lock work the project's sessions have ahead of them (decision 197). */
@@ -122,7 +122,7 @@ export class MachineLoadedError extends Error {
 
 /** The 1-minute load average, 0 on a platform with none, against the cores the gate's own wait uses. */
 export function machineLoad(): MachineLoad {
-  return { average: loadavg()[0] ?? 0, cores: availableParallelism() };
+  return { average: loadavg()[0] ?? 0, cores: availableParallelism(), factor: 1 };
 }
 
 /**
@@ -224,7 +224,11 @@ function longestStage(payload: unknown): number | undefined {
  * Both signals: the backlog read now, beside the machine's `load`,
  * `machineLoad()` in use, held to the project's `loadAllowanceFactor`.
  */
-export function launchRoom(db: Database, repoPath: string, load: MachineLoad): LaunchRoom {
+export function launchRoom(
+  db: Database,
+  repoPath: string,
+  load: Omit<MachineLoad, 'factor'>,
+): LaunchRoom {
   return {
     backlog: lockBacklog(db, repoPath),
     load: { ...load, factor: loadAllowanceFactor(repoPath) },
@@ -233,14 +237,14 @@ export function launchRoom(db: Database, repoPath: string, load: MachineLoad): L
 
 /** Whether the load is above the cores times the project's factor. */
 function overLoad(load: MachineLoad): boolean {
-  return load.average > load.cores * (load.factor ?? 1);
+  return load.average > load.cores * load.factor;
 }
 
 /** The load allowed, as a refusal and `pup status` name it: the cores, and the factor when it is not 1. */
 function allowance(load: MachineLoad): string {
-  const factor = load.factor ?? 1;
-  if (factor === 1) return `${load.cores} cores`;
-  return `${load.cores} cores times loadAllowanceFactor ${minutes(factor)} (${minutes(load.cores * factor)})`;
+  if (load.factor === 1) return `${load.cores} cores`;
+  const product = Number((load.cores * load.factor).toFixed(2));
+  return `${load.cores} cores times loadAllowanceFactor ${load.factor} (${product})`;
 }
 
 /** Refuse a launch while either signal is past its limit, the backlog named first. */
@@ -274,9 +278,7 @@ export function launchRoomLines(room: LaunchRoom, holds: LaunchHolds): string[] 
   const lowMemory = holds.memoryBytes < MIN_AVAILABLE_MEMORY_BYTES;
   const over = [
     backlog.minutes > backlog.budgetMinutes ? 'merge-lock backlog over budget' : undefined,
-    overLoad(load)
-      ? `load above the ${(load.factor ?? 1) === 1 ? 'cores' : 'allowance'}`
-      : undefined,
+    overLoad(load) ? `load above the ${load.factor === 1 ? 'cores' : 'allowance'}` : undefined,
     lowMemory ? `under ${gigabytes(MIN_AVAILABLE_MEMORY_BYTES)} GB of memory available` : undefined,
     holds.usageHeld ? "the plan's usage at its hold line" : undefined,
   ].filter(Boolean);
