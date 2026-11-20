@@ -1,5 +1,7 @@
 import { availableParallelism, loadavg } from 'node:os';
 import type { Database } from 'better-sqlite3';
+import { LockBacklogOverBudgetError, MachineLoadedError } from './errors/session-cap.errors.js';
+import { UsageLimitReachedError } from './errors/usage-limits.errors.js';
 import { loadAllowanceFactor, lockBacklogBudgetMinutes } from './project-config.config.js';
 import { parseJsonOr, toIsoUtc } from './report-data.utils.js';
 import {
@@ -11,7 +13,7 @@ import {
 } from './session.repository.js';
 import { holdingStates } from './session-state.utils.js';
 import { availableMemoryBytes, MIN_AVAILABLE_MEMORY_BYTES } from './test-slot.service.js';
-import { assertUsageRoom, UsageLimitReachedError } from './usage-limits.service.js';
+import { assertUsageRoom } from './usage-limits.service.js';
 import { percentile } from './usage-report.service.js';
 
 /**
@@ -55,7 +57,7 @@ const PRINTABLE_ID = /^[A-Za-z0-9._-]{1,64}$/;
 const USES_BEFORE_GATE = 2;
 
 /** The machine's 1-minute load average and the cores it is held to. */
-interface MachineLoad {
+export interface MachineLoad {
   average: number;
   cores: number;
   /** The project's `loadAllowanceFactor` the cores are multiplied by, 1 when absent. */
@@ -88,36 +90,6 @@ interface LaunchRoom {
 interface LaunchHolds {
   memoryBytes: number;
   usageHeld: boolean;
-}
-
-/** A launch refused because the merge lock already has more work queued than the project's budget. */
-export class LockBacklogOverBudgetError extends Error {
-  constructor(backlog: LockBacklog) {
-    super(
-      `The merge lock's backlog is ${minutes(backlog.minutes)} minutes, over the project's ` +
-        `budget of ${minutes(backlog.budgetMinutes)} (${backlogTerms(backlog)}); nothing was ` +
-        'launched. lockBacklogBudgetMinutes in .pupitre/project.yml sets the budget; only the ' +
-        "operator's --over-cap goes beyond.",
-    );
-    this.name = 'LockBacklogOverBudgetError';
-  }
-}
-
-/**
- * A launch or a fix round refused because the machine's load average is above
- * its cores. A fix round has no `--over-cap`, so its refusal offers none.
- */
-export class MachineLoadedError extends Error {
-  constructor(load: MachineLoad, refused: 'launch' | 'fix round' = 'launch') {
-    super(
-      `The machine's 1-minute load average is ${load.average.toFixed(1)}, above its ` +
-        `${allowance(load)}; ` +
-        (refused === 'launch'
-          ? "nothing was launched. Wait for the load to fall; only the operator's --over-cap goes beyond."
-          : 'the fix round was not started. Wait for the load to fall, then run it again.'),
-    );
-    this.name = 'MachineLoadedError';
-  }
 }
 
 /** The 1-minute load average, 0 on a platform with none, against the cores the gate's own wait uses. */
@@ -237,7 +209,7 @@ function overLoad(load: MachineLoad): boolean {
 }
 
 /** The load allowed, as a refusal and `pup status` name it: the cores, and the factor when it is not 1. */
-function allowance(load: MachineLoad): string {
+export function allowance(load: MachineLoad): string {
   const factor = load.factor ?? 1;
   if (factor === 1) return `${load.cores} cores`;
   return `${load.cores} cores times loadAllowanceFactor ${minutes(factor)} (${minutes(load.cores * factor)})`;
@@ -321,7 +293,7 @@ function unlandedLine(unlanded: string[]): string[] {
 }
 
 /** The backlog's sum, kept short: a refusal is printed clipped at 300 characters. */
-function backlogTerms(backlog: LockBacklog): string {
+export function backlogTerms(backlog: LockBacklog): string {
   const gate = minutes(backlog.gateMs / 60_000);
   const measure =
     backlog.gatesTimed === 0
@@ -332,6 +304,6 @@ function backlogTerms(backlog: LockBacklog): string {
   return `${backlog.uses} gates and lands to go at ${gate} ${measure}`;
 }
 
-function minutes(value: number): string {
+export function minutes(value: number): string {
   return Number.isInteger(value) ? String(value) : value.toFixed(1);
 }

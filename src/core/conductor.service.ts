@@ -19,6 +19,12 @@ import {
   submitPane,
 } from '../claude/session-runtime.service.js';
 import type { InputBoxLook } from '../claude/types/pane.types.js';
+import { ConductorTellRefusedError } from './errors/conductor.errors.js';
+import {
+  isRefusedSteer,
+  QuestionRefusedError,
+  rollBackRefusedLaunch,
+} from './errors/session-lifecycle.errors.js';
 import { getWatcherBeat } from './overlap.repository.js';
 import { WATCH_STALE_AFTER_MS } from './overlap.service.js';
 import { projectId, projectPaths } from './paths.utils.js';
@@ -34,11 +40,6 @@ import {
   type QuestionEvent,
   type StoredQuestion,
 } from './session.repository.js';
-import {
-  isRefusedSteer,
-  QuestionRefusedError,
-  rollBackRefusedLaunch,
-} from './session-lifecycle.errors.js';
 import type { ConductorHandle, StartConductorRequest } from './types/conductor.types.js';
 import type { ConductorBlocked } from './types/dashboard.types.js';
 import type { EventPayloads } from './types/session-event.types.js';
@@ -286,14 +287,6 @@ export const TELL_MAX_CHARS = 800;
 /** The refusal `pup attach` and `pup conductor tell` share when no conductor runs. */
 export const NO_CONDUCTOR_RUNNING =
   'No conductor is running for this project; start one with `pup conductor start`.';
-
-/** A tell refused before anything was typed: nothing reached the conductor. */
-export class ConductorTellRefusedError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'ConductorTellRefusedError';
-  }
-}
 
 /**
  * Type `message` into the conductor's input box and submit it, answering

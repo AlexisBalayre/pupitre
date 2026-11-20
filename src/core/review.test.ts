@@ -5,6 +5,7 @@ import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import type { Database } from 'better-sqlite3';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { openStore } from './db.client.js';
+import { MalformedTaskSpecError } from './errors/session.errors.js';
 import { buildReviewQueue, buildSessionReview } from './review.service.js';
 import {
   appendEvent,
@@ -12,7 +13,6 @@ import {
   incrementRejectCount,
   insertSession,
   insertTask,
-  MalformedTaskSpecError,
   transitionSession,
 } from './session.repository.js';
 import type { TaskId, TaskSpec } from './types/profile.types.js';

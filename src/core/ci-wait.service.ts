@@ -1,7 +1,8 @@
 import type { Database } from 'better-sqlite3';
 import { sanitizeReason } from '../adapters/capability.utils.js';
+import { RewrittenGitDirError } from './errors/git-diff.errors.js';
 import { FORMAT_CHARS } from './fix-round.service.js';
-import { RewrittenGitDirError, rethrowIfKilled } from './git-diff.client.js';
+import { rethrowIfKilled } from './git-diff.client.js';
 import {
   assertGhAvailable,
   isCutOffByNode,

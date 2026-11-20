@@ -9,6 +9,7 @@ import { LADDERS, SECURITY_REVIEW_EFFORT } from '../claude/constants/model-ladde
 import { claudeUserDir } from '../claude/session-runtime.service.js';
 import type { ModelRoute } from '../claude/types/model-ladder.types.js';
 import { CONTROL_CHARS, readBrief, workerBrief } from './brief.service.js';
+import { ContextBudgetExceededError, InvalidProfileError } from './errors/profile.errors.js';
 import {
   GIT_SAFE_CONFIG,
   POINTER_MAX_BYTES,
@@ -30,7 +31,6 @@ import {
   WORKER_SLIM_CONTEXT_ENV,
   WORKER_SUBAGENT_ENV,
 } from './profile.constants.js';
-import { ContextBudgetExceededError, InvalidProfileError } from './profile.errors.js';
 import { refuseUserSandbox } from './profile-compiler-sandbox.service.js';
 import { autoCompactWindowTokens, workerSandboxOn } from './project-config.config.js';
 import { CRITICAL_AREAS } from './routing.utils.js';

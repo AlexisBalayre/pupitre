@@ -12,6 +12,7 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { Readable } from 'node:stream';
+import { GateInterruptedError, UndeclaredSandboxError } from './errors/sandbox.errors.js';
 import { CACHE_VAR_SUBDIRS, gateChildEnv } from './gate-env.utils.js';
 import { projectId } from './paths.utils.js';
 import { grantWithin, resolvePath, writeProfile } from './sandbox-profile.utils.js';
@@ -122,18 +123,7 @@ const MODE_LABELS: Record<SandboxMode, string> = {
  * whose code the children run, and a session must not be able to declare its
  * own containment. Any value but `vm` is no declaration at all.
  */
-const DECLARATION_VAR = 'PUP_SANDBOX';
-
-/** A refusal with operator instructions in it, so the CLI prints it as one line. */
-export class UndeclaredSandboxError extends Error {
-  constructor() {
-    super(
-      `No sandbox on ${process.platform}, so gate children would run unconfined; refusing. ` +
-        `Set ${DECLARATION_VAR}=vm if this machine is a disposable VM that is itself the sandbox.`,
-    );
-    this.name = 'UndeclaredSandboxError';
-  }
-}
+export const DECLARATION_VAR = 'PUP_SANDBOX';
 
 /**
  * Off darwin, read on every call rather than cached with the probe: there is
@@ -448,7 +438,7 @@ function collect(stream: Readable | null, limit: number, overflow: () => void): 
   return chunks;
 }
 
-type InterruptSignal = 'SIGINT' | 'SIGTERM' | 'SIGHUP';
+export type InterruptSignal = 'SIGINT' | 'SIGTERM' | 'SIGHUP';
 
 /**
  * How long a child pup forwarded an interrupt to has to exit before its group
@@ -456,19 +446,6 @@ type InterruptSignal = 'SIGINT' | 'SIGTERM' | 'SIGHUP';
  * the operator's Ctrl-C still ends the gate when a child ignores it.
  */
 const INTERRUPT_GRACE_MS = 5_000;
-
-/**
- * A gate child pup stopped because pup itself was interrupted: no stage
- * result, so no caller reports it as one. The gate, `pup init` and `pup audit`
- * unwind on it, record nothing, and the CLI exits as the signal would have
- * (decision 95).
- */
-export class GateInterruptedError extends Error {
-  constructor(readonly signal: InterruptSignal) {
-    super(`Interrupted by ${signal}; every stage child was stopped.`);
-    this.name = 'GateInterruptedError';
-  }
-}
 
 interface LiveChild {
   child: ChildProcess;

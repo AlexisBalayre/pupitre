@@ -32,16 +32,15 @@ vi.mock('node:fs', async (importOriginal) => {
 });
 
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
+import { GateInterruptedError, UndeclaredSandboxError } from './errors/sandbox.errors.js';
 import { projectId } from './paths.utils.js';
 import {
   endSandboxRun,
-  GateInterruptedError,
   isSandboxSupported,
   removeGateDir,
   runGateChild,
   sandboxLabel,
   TOOLCHAIN_CACHE_DIRNAME,
-  UndeclaredSandboxError,
 } from './sandbox.utils.js';
 
 // A test worker exits without the `exit` event the run's removal waits for,

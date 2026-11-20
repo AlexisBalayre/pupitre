@@ -38,7 +38,6 @@ import { briefPath, ensureBrief, readBrief } from '../core/brief.service.js';
 import { waitForCiReview } from '../core/ci-wait.service.js';
 import { buildCodeMap, renderCodeMap } from '../core/code-map.service.js';
 import {
-  ConductorTellRefusedError,
   isConductorRunning,
   markConductorQuestion,
   NO_CONDUCTOR_RUNNING,
@@ -64,18 +63,42 @@ import {
   updateDecisionRecordSummary,
 } from '../core/decision-record.repository.js';
 import { DEFAULT_BASE_PROFILE } from '../core/default-profile.constants.js';
+import { ConductorTellRefusedError } from '../core/errors/conductor.errors.js';
+import { RewrittenGitDirError } from '../core/errors/git-diff.errors.js';
 import { IntentRefusedError } from '../core/errors/intent.errors.js';
+import { MergeLockLostError } from '../core/errors/merge-gate.errors.js';
+import { InvalidProfileError } from '../core/errors/profile.errors.js';
+import { UnknownProfileError } from '../core/errors/profile-store.errors.js';
+import { GateInterruptedError, UndeclaredSandboxError } from '../core/errors/sandbox.errors.js';
+import { MalformedTaskSpecError } from '../core/errors/session.errors.js';
+import {
+  LockBacklogOverBudgetError,
+  MachineLoadedError,
+} from '../core/errors/session-cap.errors.js';
+import { HandoffMissingError } from '../core/errors/session-handoff.errors.js';
+import {
+  isRefusedSteer,
+  LaunchRolledBackError,
+  LowMemoryError,
+  QuestionRefusedError,
+  TaskAlreadyClaimedError,
+  TerminalSessionError,
+  TopRungReachedError,
+  UnknownSessionError,
+  UnknownTaskError,
+} from '../core/errors/session-lifecycle.errors.js';
+import { SlotWaitInterruptedError } from '../core/errors/test-slot.errors.js';
+import { UsageLimitReachedError } from '../core/errors/usage-limits.errors.js';
 import { ciReviewLookup, type FixRoundOutcome, startFixRound } from '../core/fix-round.service.js';
 import { fleetReading, readFleet, readFleetProjects } from '../core/fleet.service.js';
 import { parseGateEnv } from '../core/gate-env.utils.js';
-import { assertMainCheckout, RewrittenGitDirError } from '../core/git-diff.client.js';
+import { assertMainCheckout } from '../core/git-diff.client.js';
 import { initProject } from '../core/init.service.js';
 import { acceptIntent, createIntent, listIntents, readIntent } from '../core/intent.service.js';
 import { abandonClosedSession, landSession } from '../core/land.service.js';
 import { landSessions } from '../core/land-batch.service.js';
 import { closeLedgerEntry, listLedgerEntries } from '../core/ledger.repository.js';
 import { MAX_REJECTS_BEFORE_BLOCKED } from '../core/merge-gate.constants.js';
-import { MergeLockLostError } from '../core/merge-gate.errors.js';
 import { runMergeGate } from '../core/merge-gate.service.js';
 import { renderMindMapHtml } from '../core/mind-map.service.js';
 import { launchedAncestor, mergeCallerAncestor } from '../core/operator-guard.service.js';
@@ -86,8 +109,6 @@ import {
   WATCH_INTERVAL_MS,
 } from '../core/overlap.service.js';
 import { projectId, projectPaths } from '../core/paths.utils.js';
-import { InvalidProfileError } from '../core/profile.errors.js';
-import { UnknownProfileError } from '../core/profile-store.errors.js';
 import { getProfileLayer, listProfileLayers } from '../core/profile-store.service.js';
 import {
   AUDIT_STAGES,
@@ -105,11 +126,7 @@ import { buildRetro, retroWindowStart, writeRetro } from '../core/retro.service.
 import { formatRetro, serializeRetro } from '../core/retro-signals.service.js';
 import { buildReviewQueue, buildSessionReview } from '../core/review.service.js';
 import { asTier, FINDING_CLASSES, taskTier } from '../core/routing.utils.js';
-import {
-  GateInterruptedError,
-  sandboxLabel,
-  UndeclaredSandboxError,
-} from '../core/sandbox.utils.js';
+import { sandboxLabel } from '../core/sandbox.utils.js';
 import {
   dropTask,
   editTaskSpec,
@@ -120,40 +137,26 @@ import {
   listBacklogTasks,
   listSessions,
   MAX_QUESTION_OPTIONS,
-  MalformedTaskSpecError,
   taskSpecForDisplay,
   transitionSession,
 } from '../core/session.repository.js';
 import { formatStaleAge } from '../core/session-activity.utils.js';
 import {
-  LockBacklogOverBudgetError,
   launchHolds,
   launchRoom,
   launchRoomLines,
-  MachineLoadedError,
   machineLoad,
 } from '../core/session-cap.service.js';
 import { dossierFileName, renderSessionDossierHtml } from '../core/session-dossier.service.js';
 import {
   awaitHandoffReady,
   HANDOFF_WAIT_DEFAULT_MS,
-  HandoffMissingError,
   hardRespawnSession,
   isHandoffReady,
   markHandoffReady,
   requestHandoff,
   respawnSession,
 } from '../core/session-handoff.service.js';
-import {
-  isRefusedSteer,
-  LaunchRolledBackError,
-  QuestionRefusedError,
-  TaskAlreadyClaimedError,
-  TerminalSessionError,
-  TopRungReachedError,
-  UnknownSessionError,
-  UnknownTaskError,
-} from '../core/session-lifecycle.errors.js';
 import {
   answerConductorQuestion,
   answerSessionQuestion,
@@ -163,7 +166,6 @@ import {
   interruptSession,
   killedFixRoundMessage,
   killSession,
-  LowMemoryError,
   launchTask,
   markSessionDone,
   markSessionQuestion,
@@ -173,12 +175,7 @@ import {
 } from '../core/session-lifecycle.service.js';
 import { retireSession } from '../core/session-retire.service.js';
 import { rescopeTask } from '../core/task-rescope.service.js';
-import {
-  describeSlotWait,
-  runSessionTest,
-  SlotWaitInterruptedError,
-  sessionTestCommand,
-} from '../core/test-slot.service.js';
+import { describeSlotWait, runSessionTest, sessionTestCommand } from '../core/test-slot.service.js';
 import { sweepDeadTurns } from '../core/turn-watchdog.service.js';
 import type { AuditOutcome } from '../core/types/audit.types.js';
 import type { ConductorHandle } from '../core/types/conductor.types.js';
@@ -195,11 +192,7 @@ import type {
 } from '../core/types/session-event.types.js';
 import type { NewSessionRequest, RouteOverride } from '../core/types/session-lifecycle.types.js';
 import type { RetireOutcome } from '../core/types/session-retire.types.js';
-import {
-  readUsage,
-  UsageLimitReachedError,
-  usageStatusLine,
-} from '../core/usage-limits.service.js';
+import { readUsage, usageStatusLine } from '../core/usage-limits.service.js';
 import { buildUsageReport, claudeDirsOf, formatUsageReport } from '../core/usage-report.service.js';
 import { startWebDashboard } from '../core/web-dashboard.service.js';
 import { ProjectResolutionError } from './errors/project.errors.js';

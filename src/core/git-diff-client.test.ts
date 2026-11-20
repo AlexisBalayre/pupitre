@@ -18,6 +18,12 @@ import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   ArmedGitDriverError,
+  RewrittenGitDirError,
+  SharedWorktreeKeyError,
+  WorktreeConfigError,
+  WorktreeRepointedError,
+} from './errors/git-diff.errors.js';
+import {
   armedGitDrivers,
   assertMainCheckout,
   assertNoArmedGitDrivers,
@@ -32,13 +38,9 @@ import {
   gitDiffNumstat,
   gitDiffPaths,
   pinnedGitEnv,
-  RewrittenGitDirError,
   rethrowIfKilled,
   runGit,
-  SharedWorktreeKeyError,
   verifiedWorktreeGitEnv,
-  WorktreeConfigError,
-  WorktreeRepointedError,
   worktreeGitEnv,
 } from './git-diff.client.js';
 import {

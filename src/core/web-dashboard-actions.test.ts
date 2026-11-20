@@ -33,12 +33,13 @@ vi.mock('./session-lifecycle.service.js', async (importOriginal) => ({
 import { detectAdapters } from '../adapters/adapter.registry.js';
 import { tellConductor } from './conductor.service.js';
 import { DEFAULT_BASE_PROFILE } from './default-profile.constants.js';
+import { MergeLockLostError } from './errors/merge-gate.errors.js';
+import { UndeclaredSandboxError } from './errors/sandbox.errors.js';
 import { startFixRound } from './fix-round.service.js';
 import { landSession } from './land.service.js';
 import { closeLedgerEntry } from './ledger.repository.js';
-import { MergeLockLostError } from './merge-gate.errors.js';
 import { newestMerge, runMergeGate } from './merge-gate.service.js';
-import { sandboxLabel, UndeclaredSandboxError } from './sandbox.utils.js';
+import { sandboxLabel } from './sandbox.utils.js';
 import {
   answerConductorQuestion,
   answerSessionQuestion,

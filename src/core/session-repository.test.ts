@@ -3,7 +3,8 @@ import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import type { Database } from 'better-sqlite3';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { openStore } from './db.client.js';
-import { InvalidProfileError } from './profile.errors.js';
+import { InvalidProfileError } from './errors/profile.errors.js';
+import { InvalidTransitionError, MalformedTaskSpecError } from './errors/session.errors.js';
 import {
   appendEvent,
   claimingSession,
@@ -14,7 +15,6 @@ import {
   findSessionByWorktree,
   getSession,
   getTask,
-  InvalidTransitionError,
   incrementRejectCount,
   insertSession,
   insertTask,
@@ -24,7 +24,6 @@ import {
   listSessions,
   listTaskSessions,
   listTasks,
-  MalformedTaskSpecError,
   readTaskSpec,
   recordSessionRoute,
   rescopeTaskSpec,

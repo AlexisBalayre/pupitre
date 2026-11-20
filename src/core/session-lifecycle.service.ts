@@ -18,12 +18,24 @@ import type { SessionPane } from '../claude/types/session-runtime.types.js';
 import { buildCodeMap, buildKnowledgeSlice } from './code-map.service.js';
 import { openConductorQuestion, TELL_MAX_CHARS, tellConductor } from './conductor.service.js';
 import { windowFailureOf } from './dashboard.service.js';
+import { WorktreeRepointedError } from './errors/git-diff.errors.js';
+import { MachineLoadedError } from './errors/session-cap.errors.js';
+import {
+  isRefusedSteer,
+  LowMemoryError,
+  QuestionRefusedError,
+  rollBackRefusedLaunch,
+  TaskAlreadyClaimedError,
+  TerminalSessionError,
+  TopRungReachedError,
+  UnknownSessionError,
+  UnknownTaskError,
+} from './errors/session-lifecycle.errors.js';
 import {
   assertNoArmedGitDrivers,
   assertNoWorktreeConfig,
   checkoutPinned,
   runGit,
-  WorktreeRepointedError,
   worktreeGitEnv,
 } from './git-diff.client.js';
 import { filesWorthANotice, scopeConflicts } from './overlap.service.js';
@@ -64,22 +76,7 @@ import {
   transitionSession,
   transitionSessionAlong,
 } from './session.repository.js';
-import {
-  assertLaunchRoom,
-  launchRoom,
-  MachineLoadedError,
-  machineLoad,
-} from './session-cap.service.js';
-import {
-  isRefusedSteer,
-  QuestionRefusedError,
-  rollBackRefusedLaunch,
-  TaskAlreadyClaimedError,
-  TerminalSessionError,
-  TopRungReachedError,
-  UnknownSessionError,
-  UnknownTaskError,
-} from './session-lifecycle.errors.js';
+import { assertLaunchRoom, launchRoom, machineLoad } from './session-cap.service.js';
 import { FIX_ROUND_EDGE, isTerminal } from './session-state.utils.js';
 import { assertPlannableSpec } from './task-spec.utils.js';
 import {
@@ -108,22 +105,6 @@ import { assertUsageRoom } from './usage-limits.service.js';
 interface CapOverride {
   overCap?: boolean;
   overLimit?: boolean;
-}
-
-/** A launch refused because the machine has too little memory available for another window. */
-export class LowMemoryError extends Error {
-  constructor(available: number) {
-    super(
-      `Only ${gigabytes(available)} GB of memory is available, under the ` +
-        `${gigabytes(MIN_AVAILABLE_MEMORY_BYTES)} GB a launch needs; nothing was launched. ` +
-        'Wait for a session or a test run to finish, then launch again.',
-    );
-    this.name = 'LowMemoryError';
-  }
-}
-
-function gigabytes(bytes: number): string {
-  return (bytes / 1024 ** 3).toFixed(1);
 }
 
 /**

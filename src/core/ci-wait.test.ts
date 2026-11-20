@@ -14,7 +14,7 @@ import type { Database } from 'better-sqlite3';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { type CiWaitClock, waitForCiReview } from './ci-wait.service.js';
 import { openStore } from './db.client.js';
-import { RewrittenGitDirError } from './git-diff.client.js';
+import { RewrittenGitDirError } from './errors/git-diff.errors.js';
 import { projectId } from './paths.utils.js';
 import { CI_WAIT_STAGES, stageProgress } from './progress.utils.js';
 import {

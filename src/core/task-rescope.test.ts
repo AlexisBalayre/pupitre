@@ -3,9 +3,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { listPanes, PROBE_PATH, windowSockets } from '../claude/session-runtime.service.js';
 import { openStore } from './db.client.js';
 import { listDecisionRecords } from './decision-record.repository.js';
+import { InvalidProfileError } from './errors/profile.errors.js';
 import { globToRegExp } from './glob.utils.js';
 import { scopeConflicts } from './overlap.service.js';
-import { InvalidProfileError } from './profile.errors.js';
 import { auditScope } from './scope-audit.utils.js';
 import {
   ensureProject,

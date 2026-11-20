@@ -2,6 +2,7 @@ import { chmodSync, mkdirSync, statSync, utimesSync, writeFileSync } from 'node:
 import { join } from 'node:path';
 import { SteerNotDeliveredError } from '@src/claude/errors/session-runtime.errors.js';
 import { resolveProject } from '@src/cli/project.utils.js';
+import { LaunchRolledBackError } from '@src/core/errors/session-lifecycle.errors.js';
 import { runGit } from '@src/core/git-diff.client.js';
 import { insertLedgerEntry } from '@src/core/ledger.repository.js';
 import { projectId, projectPaths } from '@src/core/paths.utils.js';
@@ -16,7 +17,6 @@ import {
   transitionSession,
 } from '@src/core/session.repository.js';
 import { STALLED_AFTER_MS } from '@src/core/session-activity.constants.js';
-import { LaunchRolledBackError } from '@src/core/session-lifecycle.errors.js';
 import { afterAll, vi } from 'vitest';
 import { tempDir } from './temp-dir.mock.js';
 

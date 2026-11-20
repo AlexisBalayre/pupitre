@@ -1,10 +1,11 @@
-import { LADDERS } from '../claude/constants/model-ladder.constants.js';
+import { LADDERS } from '../../claude/constants/model-ladder.constants.js';
 import {
   SessionPaneMissingError,
   SteerNotDeliveredError,
-} from '../claude/errors/session-runtime.errors.js';
-import type { ModelRoute, Tier } from '../claude/types/model-ladder.types.js';
-import type { ClimbReason } from './routing.utils.js';
+} from '../../claude/errors/session-runtime.errors.js';
+import type { ModelRoute, Tier } from '../../claude/types/model-ladder.types.js';
+import type { ClimbReason } from '../routing.utils.js';
+import { MIN_AVAILABLE_MEMORY_BYTES } from '../test-slot.service.js';
 
 export class UnknownTaskError extends Error {
   constructor(taskId: string) {
@@ -134,4 +135,20 @@ export class QuestionRefusedError extends Error {
     super(message);
     this.name = 'QuestionRefusedError';
   }
+}
+
+/** A launch refused because the machine has too little memory available for another window. */
+export class LowMemoryError extends Error {
+  constructor(available: number) {
+    super(
+      `Only ${gigabytes(available)} GB of memory is available, under the ` +
+        `${gigabytes(MIN_AVAILABLE_MEMORY_BYTES)} GB a launch needs; nothing was launched. ` +
+        'Wait for a session or a test run to finish, then launch again.',
+    );
+    this.name = 'LowMemoryError';
+  }
+}
+
+function gigabytes(bytes: number): string {
+  return (bytes / 1024 ** 3).toFixed(1);
 }
