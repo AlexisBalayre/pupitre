@@ -43,14 +43,27 @@
     sandbox's network rules to that one host, it refuses to launch.
     The model API is still a channel to whatever account owns the token. That is decision 12's
     question, below.
-    *The event channel.* Inside the sandbox, the compiled hooks append to a sandbox-local
-    `events.jsonl`, using the same `jq` line `profile-compiler.service.ts` writes today. The
-    `pup` shim's `session done` and `session ask` append to that file too.
-    The host polls `readEvents(offset)`. It replaces each line's `pup_session_id` with the
-    session id the host launched, and it appends the lines to the session's host
-    `events.jsonl` (`paths.eventsFile`). Every existing reader then sees a remote session exactly
-    as it sees a local one: the lifecycle, the dashboard, the turn watchdog and the path into
-    `state.db`.
+    *The event channel.* Two kinds of line leave the sandbox, and only one of them is a file copy.
+    Hook lines: inside the sandbox, the compiled hooks append to a sandbox-local `events.jsonl`,
+    using the same `jq` line `profile-compiler.service.ts` writes today. The host polls
+    `readEvents(offset)`. It replaces each line's `pup_session_id` with the session id the host
+    launched, and it appends the line to the session's host `events.jsonl` (`paths.eventsFile`).
+    That file reaches no further than it does for a local session. No code path folds its lines
+    into `state.db` (decision 63). The dashboard and the turn watchdog read its mtime.
+    `classifySessionActivity` reads its `Stop` and `Notification` `idle_prompt` lines. Decision
+    63's `scope_violation` lines stay in it. The host copies every hook line and parses only
+    those types.
+    Session signals: locally, `pup session done`, `ask` and `handoff-done` write the store and
+    no file. They call `markSessionDone` (a `session_done` event and the move to
+    awaiting-review), `markSessionQuestion` (a `question` event) and `markHandoffReady`. In the
+    sandbox, the `pup` shim appends each call as one `pup_signal` line to the sandbox's
+    `events.jsonl`. The host executor does not copy a `pup_signal` line. It replays the line
+    through the same function the local command calls, for the session id it launched, once
+    per line by the `readEvents` offset. A remote done, question or handoff then reaches
+    `state.db` the way a local one does. A signal that function refuses is told to the worker
+    in the next turn's message, because the shim cannot wait for the host. `pup session recap`
+    reads the store, so the host writes its answer into the sandbox before each turn, and the
+    shim prints that file.
     The end of a turn comes from the executor, not from a pane. That is the exit of
     `claude -p` together with its result line. After each turn, the transcript is copied back to
     the session's host directory.
