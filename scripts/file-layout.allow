@@ -1,7 +1,3 @@
-src/adapters/custom-adapter.constants.ts
-src/adapters/custom-adapter.errors.ts
-src/adapters/python-debt.constants.ts
-src/adapters/typescript-debt.constants.ts
 src/claude/model-ladder.constants.ts
 src/cli/ui/dashboard.constants.ts
 src/core/default-profile.constants.ts

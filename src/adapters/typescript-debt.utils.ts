@@ -1,7 +1,9 @@
 import ts from 'typescript';
+import { DUPLICATION_WINDOW_LINES } from './constants/typescript-debt.constants.js';
 import type { DeadExport, DuplicateBlock, DuplicationReport } from './types/adapter.types.js';
-import { DUPLICATION_WINDOW_LINES } from './typescript-debt.constants.js';
-import { isTestFile, type PathAliases, resolveImport } from './typescript-source.utils.js';
+import type { NormalizedLine, UsageMarks } from './types/typescript-debt.types.js';
+import type { PathAliases } from './types/typescript-source.types.js';
+import { isTestFile, resolveImport } from './typescript-source.utils.js';
 
 function parse(file: string, content: string): ts.SourceFile {
   const kind =
@@ -11,13 +13,6 @@ function parse(file: string, content: string): ts.SourceFile {
 
 function exportKey(file: string, name: string): string {
   return `${file}\u0000${name}`;
-}
-
-interface UsageMarks {
-  /** `file\0exportName` pairs imported somewhere in the repo. */
-  used: Set<string>;
-  /** Files whose whole export surface counts as used (namespace import, `export *`, side-effect import). */
-  fullyUsed: Set<string>;
 }
 
 function collectUsage(
@@ -129,12 +124,6 @@ export function findDeadExports(
     }
   }
   return dead;
-}
-
-interface NormalizedLine {
-  text: string;
-  /** 1-based line number in the original file. */
-  line: number;
 }
 
 /** Last line of an import statement: `… from '<spec>';` or a bare `import '<spec>';`. */

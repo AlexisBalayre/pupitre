@@ -1,5 +1,6 @@
 import { dirname, join, normalize } from 'node:path';
 import ts from 'typescript';
+import type { PathAliases } from './types/typescript-source.types.js';
 
 export const SOURCE_EXTENSIONS = ['.ts', '.tsx', '.mts', '.cts', '.js', '.mjs', '.cjs', '.jsx'];
 
@@ -68,14 +69,6 @@ export function isInNestedPackage(file: string, nested: Set<string>): boolean {
   const dirs = file.split('/').slice(0, -1);
   return dirs.some((_, i) => nested.has(dirs.slice(0, i + 1).join('/')));
 }
-
-/**
- * A tsconfig's `compilerOptions.paths`: pattern -> substitutions, each already
- * joined to the repo-relative directory it resolves from (`baseUrl`, else the
- * tsconfig's own, which is the repo root), in longest-wildcard-prefix-first
- * order. A Map, so no specifier can reach a prototype key.
- */
-export type PathAliases = Map<string, string[]>;
 
 /**
  * Bounds on the `paths` honoured from one tsconfig. The tsconfig is the

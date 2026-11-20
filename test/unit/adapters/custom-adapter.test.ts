@@ -5,7 +5,7 @@ import { loadCustomAdapter } from '@src/adapters/custom.adapter.js';
 import {
   CustomAdapterCommandError,
   CustomAdapterConfigError,
-} from '@src/adapters/custom-adapter.errors.js';
+} from '@src/adapters/errors/custom-adapter.errors.js';
 import { endSandboxRun, UndeclaredSandboxError } from '@src/core/sandbox.utils.js';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import { afterAll, describe, expect, it, onTestFinished, vi } from 'vitest';
