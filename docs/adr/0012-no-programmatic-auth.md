@@ -9,7 +9,7 @@
     the dialog on the git common-dir ROOT, not the launch cwd (verified on 2.1.218), so
     the worktree's main repo root is seeded alongside the worktree path (2026-07-23).
 
-## Amendment (2026-11-20)
+## Amendment (2026-11-20, #407)
 
 Remote workers. A worker in a remote sandbox cannot use the operator's interactive
 subscription login, so the rule above cannot hold there as written. It narrows as follows.
@@ -21,8 +21,9 @@ subscription login, so the rule above cannot hold there as written. It narrows a
   worker and passes it into that sandbox's environment, and nowhere else.
 - *Where it may not be written.* Never to the store, events, logs, PR bodies, the gate
   report or the repo.
-- *The gate and CI check.* The merge gate and the CI review refuse a branch whose diff
-  contains the key, or scrub it from the diff before anything is written or posted.
+- *The gate and CI check.* The merge gate refuses a branch whose diff contains the key. It
+  recognises the key because pup holds its value in its own environment at gate time. The CI
+  review is told never to quote the key.
 - *Local workers.* They keep the interactive login and are unchanged.
 - *Who launches.* Launching a remote worker is operator-only, like every launch.
 - *Rotation and leaks.* The operator rotates the key. A leak is handled by revoking it; its
