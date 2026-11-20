@@ -312,13 +312,13 @@ describe('the launch room (decision 197)', () => {
     unlanded: [],
     ...overrides,
   });
-  const idle = { average: 1, cores: 8 };
+  const idle = { average: 1, cores: 8, factor: 1 };
   /** Memory above the floor and no usage hold: only the two signals decide. */
   const clear = { memoryBytes: 16 * 1024 ** 3, usageHeld: false };
 
   it('allows a launch with the backlog at its budget and the load at the cores', () => {
     expect(() =>
-      assertLaunchRoom({ backlog: backlog(60), load: { average: 8, cores: 8 } }),
+      assertLaunchRoom({ backlog: backlog(60), load: { average: 8, cores: 8, factor: 1 } }),
     ).not.toThrow();
   });
 
@@ -343,26 +343,26 @@ describe('the launch room (decision 197)', () => {
       new LockBacklogOverBudgetError({ ...huge, gateMs: UNTIMED_GATE_MS, gatesTimed: 0 }).message
         .length,
     ).toBeLessThanOrEqual(300);
-    expect(new MachineLoadedError({ average: 1234.5, cores: 1024 }).message.length).toBeLessThan(
-      300,
-    );
+    expect(
+      new MachineLoadedError({ average: 1234.5, cores: 1024, factor: 1 }).message.length,
+    ).toBeLessThan(300);
   });
 
   it('refuses above the cores, naming the load and the cores', () => {
     expect(() =>
-      assertLaunchRoom({ backlog: backlog(10), load: { average: 8.04, cores: 8 } }),
+      assertLaunchRoom({ backlog: backlog(10), load: { average: 8.04, cores: 8, factor: 1 } }),
     ).toThrow(
       "The machine's 1-minute load average is 8.0, above its 8 cores; nothing was launched. " +
         "Wait for the load to fall; only the operator's --over-cap goes beyond.",
     );
     expect(() =>
-      assertLaunchRoom({ backlog: backlog(10), load: { average: 9, cores: 8 } }),
+      assertLaunchRoom({ backlog: backlog(10), load: { average: 9, cores: 8, factor: 1 } }),
     ).toThrow(MachineLoadedError);
   });
 
   // A fix round has no --over-cap to offer.
   it('words a fix round refused on the load as one to run again', () => {
-    expect(new MachineLoadedError({ average: 9, cores: 8 }, 'fix round').message).toBe(
+    expect(new MachineLoadedError({ average: 9, cores: 8, factor: 1 }, 'fix round').message).toBe(
       "The machine's 1-minute load average is 9.0, above its 8 cores; the fix round was not " +
         'started. Wait for the load to fall, then run it again.',
     );
@@ -370,13 +370,16 @@ describe('the launch room (decision 197)', () => {
 
   it('names the backlog first when both are past their limits', () => {
     expect(() =>
-      assertLaunchRoom({ backlog: backlog(70), load: { average: 9, cores: 8 } }),
+      assertLaunchRoom({ backlog: backlog(70), load: { average: 9, cores: 8, factor: 1 } }),
     ).toThrow(LockBacklogOverBudgetError);
   });
 
   it('prints both signals and the verdict for `pup status`', () => {
     expect(
-      launchRoomLines({ backlog: backlog(20), load: { average: 2.345, cores: 10 } }, clear),
+      launchRoomLines(
+        { backlog: backlog(20), load: { average: 2.345, cores: 10, factor: 1 } },
+        clear,
+      ),
     ).toEqual([
       'Launch: allowed',
       '  merge-lock backlog: 20 of 60 minutes (2 gates and lands to go at 10 minutes, the median of the last 30 gates)',
@@ -387,7 +390,7 @@ describe('the launch room (decision 197)', () => {
       launchRoomLines(
         {
           backlog: backlog(62.5, { uses: 5, gateMs: 750_000, gatesTimed: 3 }),
-          load: { average: 9, cores: 8 },
+          load: { average: 9, cores: 8, factor: 1 },
         },
         clear,
       ),
@@ -534,6 +537,25 @@ describe("the project's loadAllowanceFactor (decision 197's amendment of 2026-11
 
       expect(roomAt(9).load.factor).toBe(1);
     }
+  });
+
+  it('prints the factor as written and the product to two decimals', () => {
+    writeFileSync(join(repo, '.pupitre', 'project.yml'), 'loadAllowanceFactor: 1.25\n');
+    const room = launchRoom(db, repo, { average: 9, cores: 6 });
+
+    expect(room.load.factor).toBe(1.25);
+    expect(launchRoomLines(room, clear)[2]).toBe(
+      '  load: 9.0 of 6 cores times loadAllowanceFactor 1.25 (7.5)',
+    );
+    expect(() => assertLaunchRoom(room)).toThrow(
+      'above its 6 cores times loadAllowanceFactor 1.25 (7.5);',
+    );
+    expect(new MachineLoadedError({ average: 20, cores: 6, factor: 2.75 }).message).toContain(
+      '6 cores times loadAllowanceFactor 2.75 (16.5)',
+    );
+    expect(new MachineLoadedError({ average: 20, cores: 7, factor: 1.125 }).message).toContain(
+      '7 cores times loadAllowanceFactor 1.125 (7.88)',
+    );
   });
 
   it('keeps a refusal naming the factor whole at extreme figures', () => {

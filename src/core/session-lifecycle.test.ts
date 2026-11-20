@@ -2444,7 +2444,7 @@ describe('launch capacity (decisions 96, 197)', () => {
   });
 
   it('refuses while the load is above the cores, naming both', () => {
-    vi.mocked(machineLoad).mockReturnValueOnce({ average: 9.46, cores: 8 });
+    vi.mocked(machineLoad).mockReturnValueOnce({ average: 9.46, cores: 8, factor: 1 });
 
     expect(() => launch('conductor')).toThrow(
       "The machine's 1-minute load average is 9.5, above its 8 cores; nothing was launched.",
@@ -2453,7 +2453,7 @@ describe('launch capacity (decisions 96, 197)', () => {
   });
 
   it('launches with the load at the cores', () => {
-    vi.mocked(machineLoad).mockReturnValueOnce({ average: 8, cores: 8 });
+    vi.mocked(machineLoad).mockReturnValueOnce({ average: 8, cores: 8, factor: 1 });
 
     expect(launch('conductor')).toBe('t-1');
   });
@@ -2461,7 +2461,7 @@ describe('launch capacity (decisions 96, 197)', () => {
   it('lets the operator past both signals with --over-cap', () => {
     timeGate(10);
     seedSessions(4);
-    vi.mocked(machineLoad).mockReturnValueOnce({ average: 20, cores: 8 });
+    vi.mocked(machineLoad).mockReturnValueOnce({ average: 20, cores: 8, factor: 1 });
 
     expect(launch('operator', true)).toBe('t-1');
   });
@@ -2471,7 +2471,7 @@ describe('launch capacity (decisions 96, 197)', () => {
     seedSessions(4);
 
     expect(() => launch('conductor', true)).toThrow(LockBacklogOverBudgetError);
-    vi.mocked(machineLoad).mockReturnValueOnce({ average: 20, cores: 8 });
+    vi.mocked(machineLoad).mockReturnValueOnce({ average: 20, cores: 8, factor: 1 });
     expect(() =>
       launchTask(db, {
         repoPath: repo,
@@ -2558,10 +2558,10 @@ describe('launch capacity (decisions 96, 197)', () => {
 
     it('is refused while the load is above the cores', () => {
       const session = mergedSession();
-      vi.mocked(machineLoad).mockReturnValueOnce({ average: 9, cores: 8 });
+      vi.mocked(machineLoad).mockReturnValueOnce({ average: 9, cores: 8, factor: 1 });
 
       expect(() => recompile(session)).toThrow(MachineLoadedError);
-      vi.mocked(machineLoad).mockReturnValueOnce({ average: 9, cores: 8 });
+      vi.mocked(machineLoad).mockReturnValueOnce({ average: 9, cores: 8, factor: 1 });
       expect(() => recompile(session)).toThrow('the fix round was not started');
     });
 
