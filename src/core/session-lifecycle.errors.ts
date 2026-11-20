@@ -1,8 +1,9 @@
-import { LADDERS, type ModelRoute, type Tier } from '../claude/model-ladder.constants.js';
+import { LADDERS } from '../claude/constants/model-ladder.constants.js';
 import {
   SessionPaneMissingError,
   SteerNotDeliveredError,
-} from '../claude/session-runtime.service.js';
+} from '../claude/errors/session-runtime.errors.js';
+import type { ModelRoute, Tier } from '../claude/types/model-ladder.types.js';
 import type { ClimbReason } from './routing.utils.js';
 
 export class UnknownTaskError extends Error {

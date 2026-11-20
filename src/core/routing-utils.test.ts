@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { LADDERS } from '../claude/model-ladder.constants.js';
+import { LADDERS } from '../claude/constants/model-ladder.constants.js';
 import { globToRegExp } from './glob.utils.js';
 import {
   asTier,

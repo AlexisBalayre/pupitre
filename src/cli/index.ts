@@ -13,23 +13,25 @@ import { detectAdapters } from '../adapters/adapter.registry.js';
 import { failureSummary, formatDuration, sanitizeReason } from '../adapters/capability.utils.js';
 import { conductorRecap, sessionRecap } from '../claude/compact-recap.service.js';
 import {
+  ConfigDirRefusedError,
+  SessionPaneMissingError,
+  SteerNotDeliveredError,
+} from '../claude/errors/session-runtime.errors.js';
+import {
   attachCommand,
   attachWindow,
   CONDUCTOR_RUN_VAR,
-  ConfigDirRefusedError,
   conductorName,
   hasSessionWindow,
   killWatcher,
   launchWatcher,
   refusedSessionEnv,
   resolveWindowEnv,
-  SessionPaneMissingError,
-  SteerNotDeliveredError,
   saveSessionEnv,
   sessionEnvAllowed,
-  type WindowEnv,
   windowLabel,
 } from '../claude/session-runtime.service.js';
+import type { WindowEnv } from '../claude/types/session-runtime.types.js';
 import { ADR_NUMBER_STAGE } from '../core/adr-number.service.js';
 import { auditProject, buildSweepTask, formatDebtTransition } from '../core/audit.service.js';
 import { briefPath, ensureBrief, readBrief } from '../core/brief.service.js';

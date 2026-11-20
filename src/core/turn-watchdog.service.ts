@@ -1,12 +1,8 @@
 import type { Database } from 'better-sqlite3';
 
 import { sanitizeReason } from '../adapters/capability.utils.js';
-import {
-  conductorPane,
-  deadTurnError,
-  SessionPaneMissingError,
-  steerPane,
-} from '../claude/session-runtime.service.js';
+import { SessionPaneMissingError } from '../claude/errors/session-runtime.errors.js';
+import { conductorPane, deadTurnError, steerPane } from '../claude/session-runtime.service.js';
 import { holdIdleCaches, isHoldTurnOpen, lastPrompt } from './cache-hold.service.js';
 import { findStalledSessions } from './dashboard.service.js';
 import { projectId, projectPaths } from './paths.utils.js';

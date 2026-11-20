@@ -1,11 +1,11 @@
 import type { Database } from 'better-sqlite3';
-import type { Tier } from '../claude/model-ladder.constants.js';
 import {
   listPanes,
   PROBE_PATH,
   windowLabel,
   windowSockets,
 } from '../claude/session-runtime.service.js';
+import type { Tier } from '../claude/types/model-ladder.types.js';
 import { insertDecisionRecord } from './decision-record.repository.js';
 import { globToRegExpSource } from './glob.utils.js';
 import { PROTECTED_PATH_GLOBS } from './merge-gate.constants.js';

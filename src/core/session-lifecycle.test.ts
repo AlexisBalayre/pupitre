@@ -55,13 +55,15 @@ vi.mock('./session-cap.service.js', async (importOriginal) => ({
 
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import {
+  SessionPaneMissingError,
+  SteerNotDeliveredError,
+} from '../claude/errors/session-runtime.errors.js';
+import {
   conductorRun,
   interruptPane,
   kickoff,
   killSession as killTmux,
   launchSession,
-  SessionPaneMissingError,
-  SteerNotDeliveredError,
   steerPane,
   transcriptDir,
 } from '../claude/session-runtime.service.js';

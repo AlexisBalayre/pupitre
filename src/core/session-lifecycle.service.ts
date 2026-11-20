@@ -3,18 +3,18 @@ import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { detectAdapters } from '../adapters/adapter.registry.js';
 import { sanitizeReason } from '../adapters/capability.utils.js';
-import type { Tier } from '../claude/model-ladder.constants.js';
+import { SessionPaneMissingError } from '../claude/errors/session-runtime.errors.js';
 import {
   interruptPane,
   kickoff,
   killSession as killTmux,
   launchSession,
-  type SessionPane,
-  SessionPaneMissingError,
   steerPane,
   transcriptDir,
   windowLabel,
 } from '../claude/session-runtime.service.js';
+import type { Tier } from '../claude/types/model-ladder.types.js';
+import type { SessionPane } from '../claude/types/session-runtime.types.js';
 import { buildCodeMap, buildKnowledgeSlice } from './code-map.service.js';
 import { openConductorQuestion, TELL_MAX_CHARS, tellConductor } from './conductor.service.js';
 import { windowFailureOf } from './dashboard.service.js';

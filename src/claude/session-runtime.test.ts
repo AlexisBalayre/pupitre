@@ -73,12 +73,16 @@ vi.mock('node:fs', async (importOriginal) => {
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import { verifiedWorktreeGitEnv, WorktreeRepointedError } from '../core/git-diff.client.js';
 import { projectId, projectPaths } from '../core/paths.utils.js';
-import { CONDUCTOR_ROUTE, LADDERS, type ModelRoute } from './model-ladder.constants.js';
+import { CONDUCTOR_ROUTE, LADDERS } from './constants/model-ladder.constants.js';
+import {
+  ConfigDirRefusedError,
+  SessionPaneMissingError,
+  SteerNotDeliveredError,
+} from './errors/session-runtime.errors.js';
 import {
   attachArgs,
   attachCommand,
   attachWindow,
-  ConfigDirRefusedError,
   capturePane,
   claudeUserDir,
   conductorName,
@@ -107,9 +111,6 @@ import {
   refusedSessionEnv,
   resolveWindowEnv,
   runsSessionLaunch,
-  type SessionPane,
-  SessionPaneMissingError,
-  SteerNotDeliveredError,
   saveSessionEnv,
   steerPane,
   submitPane,
@@ -117,6 +118,8 @@ import {
   windowLabel,
   windowSockets,
 } from './session-runtime.service.js';
+import type { ModelRoute } from './types/model-ladder.types.js';
+import type { SessionPane } from './types/session-runtime.types.js';
 
 beforeEach(() => {
   vi.clearAllMocks();

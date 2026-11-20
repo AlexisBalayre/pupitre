@@ -1,15 +1,10 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import type { TranscriptUsage } from './types/transcript.types.js';
 
 // Context size comes from transcript JSONL usage fields, never pane scraping
 // (decision 2). The newest assistant entry's input+cache tokens are what the
 // model actually carried into its last turn.
-
-interface TranscriptUsage {
-  input_tokens?: number;
-  cache_read_input_tokens?: number;
-  cache_creation_input_tokens?: number;
-}
 
 function newestTranscript(transcriptDir: string): string | undefined {
   try {

@@ -5,8 +5,8 @@ import {
   kickoff,
   killSession as killTmux,
   launchSession,
-  type SessionPane,
 } from '../claude/session-runtime.service.js';
+import type { SessionPane } from '../claude/types/session-runtime.types.js';
 import { type CiReviewLookup, openThreadCount } from './dashboard.service.js';
 import {
   assertNoArmedGitDrivers,

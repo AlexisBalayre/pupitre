@@ -22,76 +22,29 @@ import { dirname, isAbsolute, join } from 'node:path';
 import { runGit, verifiedWorktreeGitEnv, type WorktreeGitEnv } from '../core/git-diff.client.js';
 import { projectId, projectPaths } from '../core/paths.utils.js';
 import { shellWord } from '../core/shell-quote.utils.js';
-import type { ModelRoute } from './model-ladder.constants.js';
 import {
-  hasUnsubmittedInput,
-  type InputBoxLook,
-  type InputBoxState,
-  inputBoxLook,
-  inputBoxState,
-  pasteLanded,
-} from './pane.utils.js';
+  ConfigDirRefusedError,
+  SessionPaneMissingError,
+  SteerNotDeliveredError,
+} from './errors/session-runtime.errors.js';
+import { hasUnsubmittedInput, inputBoxLook, inputBoxState, pasteLanded } from './pane.utils.js';
+import type { InputBoxLook, InputBoxState } from './types/pane.types.js';
+import type {
+  ClaudeWindowOptions,
+  ConductorLaunchOptions,
+  LaunchOptions,
+  ProbeFailure,
+  SessionPane,
+  WindowEnv,
+  WindowTarget,
+} from './types/session-runtime.types.js';
 
 // The only module that launches and drives Claude Code. Transport is tmux
 // (decision 1); state comes from hooks + transcripts, never pane scraping.
 // Sessions inherit the user's ~/.claude login (decision 9) — no tokens.
 
-export interface LaunchOptions {
-  sessionId: string;
-  /**
-   * The project's main checkout, as the caller was handed it: the repo the
-   * window's pointers are checked against and trust is seeded on. Never
-   * derived from `worktreePath`, which a respawn reads from a store row a
-   * session can write (decision 101).
-   */
-  repoPath: string;
-  worktreePath: string;
-  /** What the launching command resolved, handed to the window unread again (decision 106). */
-  env: WindowEnv;
-  /** Compiled settings.json path, passed to `claude --settings`. */
-  settingsPath: string;
-  /** The model and effort the window runs on: its rung, or the operator's override (decision 92). */
-  route: ModelRoute;
-}
-
-export interface ConductorLaunchOptions {
-  projectId: string;
-  /** The main checkout: the conductor reads the repo, edits nothing, and launches from here. */
-  repoPath: string;
-  /** What `pup conductor start` resolved, handed to the window unread again (decision 106). */
-  env: WindowEnv;
-  settingsPath: string;
-  route: ModelRoute;
-  /**
-   * This run's token, the conductor server's `PUP_CONDUCTOR_RUN` and read
-   * back by `conductorRun`: what seals the run's questions, so a row a session
-   * wrote into the store, or one an earlier run asked, is never relayed.
-   */
-  run: string;
-}
-
 /** The variable a conductor window carries its run's token in. */
 export const CONDUCTOR_RUN_VAR = 'PUP_CONDUCTOR_RUN';
-
-/**
- * The pane a session was launched into. Every later command is addressed to
- * `paneId`, never to the session: a session target resolves to the session's
- * ACTIVE pane, and the agent holds `$TMUX`, so one `split-window` from inside
- * moved paste-buffer, send-keys and capture-pane into a shell of its own
- * (decision 46). A pane id (`%N`) is server-unique and never reissued, so a
- * split, a swap-pane or a rename-session cannot move it onto another pane.
- */
-export interface SessionPane {
-  sessionId: string;
-  paneId: string;
-  /**
-   * The tmux server the pane lives on, as a `-L` socket label; absent for the
-   * default server every session and the operator share. Only the conductor
-   * sets it: its window is off the default socket so no session can reach it
-   * (decision 47).
-   */
-  socket?: string;
-}
 
 const CLAUDE_JSON = join(homedir(), '.claude.json');
 
@@ -336,21 +289,6 @@ function sessionEnv(repoPath: string): Record<string, string> {
   );
 }
 
-/**
- * The launching shell's `CLAUDE_CONFIG_DIR` is not a dir a window may run on:
- * the operator's to fix, so a launch refuses on it rather than crashing. The
- * message quotes the shell's value.
- */
-export class ConfigDirRefusedError extends Error {
-  constructor(value: string, reason: string) {
-    super(
-      `CLAUDE_CONFIG_DIR is ${JSON.stringify(value)}, which --session-env passes to every ` +
-        `window: ${reason}.`,
-    );
-    this.name = 'ConfigDirRefusedError';
-  }
-}
-
 /** Links one path may pass through before pup takes it for a loop: Linux's own limit. */
 const MAX_PATH_LINKS = 40;
 
@@ -439,24 +377,6 @@ function namedConfigDir(vars: Record<string, string>): string | undefined {
 }
 
 /**
- * What a command hands every window it opens (decision 106), resolved once
- * where the command starts and passed down to the window, so the hash it
- * records, the trust it seeds and the window's `-e` agree on one dir: a list
- * read twice could be rewritten by a session between the reads.
- */
-export interface WindowEnv {
-  /** Each recorded name the launching shell has a value for, as the window's own `-e`. */
-  vars: Record<string, string>;
-  /**
-   * The Claude Code config dir the window runs on: the launching shell's
-   * `CLAUDE_CONFIG_DIR` when `--session-env` names it, `~/.claude` otherwise.
-   * What the launch hashes for decision 9's drift check, and where the
-   * window's `.claude.json` and transcripts live.
-   */
-  configDir: string;
-}
-
-/**
  * Read the list and check the dir it names, once: throws
  * `ConfigDirRefusedError` before the caller has cut, stored or killed anything.
  */
@@ -530,34 +450,6 @@ function pinned(name: string): string {
 
 function isPaneId(value: string): boolean {
   return /^%\d+$/.test(value);
-}
-
-/**
- * The session's pane, or a refusal. Raised before anything is sent: a pane
- * that was never recorded, or that is not a pane id — a row from before panes
- * were pinned holds the session name, which tmux would resolve to the active
- * pane — cannot be steered, and one tmux reports gone cannot be either. The
- * session runs on untouched, or is already gone; either way nothing landed
- * anywhere else.
- */
-export class SessionPaneMissingError extends Error {
-  readonly sessionId: string;
-  readonly paneId: string | null;
-
-  constructor(sessionId: string, paneId: string | null, reason: 'unrecorded' | 'gone') {
-    super(
-      paneId === null
-        ? `Session ${sessionId} has no pane recorded at launch; nothing was sent.`
-        : reason === 'unrecorded'
-          ? `Session ${sessionId} recorded ${JSON.stringify(paneId)} as its pane, which is not ` +
-            'a tmux pane id (it was launched before panes were pinned); nothing was sent. ' +
-            `Respawn it: \`pup kill --respawn ${sessionId}\`.`
-          : `Session ${sessionId}'s pane ${paneId} no longer exists; nothing was sent.`,
-    );
-    this.name = 'SessionPaneMissingError';
-    this.sessionId = sessionId;
-    this.paneId = paneId;
-  }
 }
 
 /**
@@ -745,45 +637,6 @@ export function launchArgs(
   ];
 }
 
-interface ClaudeWindowOptions {
-  sessionId: string;
-  /** Where the window opens: a session's worktree, the conductor's main checkout. */
-  cwd: string;
-  /** What the launching command resolved: the window's named variables and config dir. */
-  env: WindowEnv;
-  settingsPath: string;
-  route: ModelRoute;
-  /**
-   * The one variable that names the caller — `PUP_SESSION_ID` or
-   * `PUP_CONDUCTOR` — which is all that separates a session's window from the
-   * conductor's: the guards tell the two apart by which is set (decision 47).
-   */
-  caller: Record<string, string>;
-  /**
-   * Handed to the server this launch starts, through the client's environment
-   * rather than its argv: tmux makes a starting client's environment the
-   * server's global one, which the window inherits. Reaches nothing when the
-   * server is already up, so a caller kills it first and checks it landed.
-   */
-  serverEnv?: Record<string, string>;
-  /**
-   * A session window's admin and common dirs, checked before it opens
-   * (decision 101): trust is seeded on their repo, and the window gets
-   * `WINDOW_GIT_CONFIG`. Never the window's environment itself: every process
-   * the session runs would inherit them, and a `git init` or `git clone` a
-   * test or a package manager runs in another dir would act on the session's
-   * repo. Absent for the conductor, whose checkout is no linked worktree of a
-   * session's.
-   */
-  git?: WorktreeGitEnv;
-  /** The tmux server to open it on: the conductor's own, or the default one. */
-  socket?: string;
-  /** `nice -n` level for the window's `claude`; unset runs it at pup's own priority. */
-  niceness?: string;
-  /** Where the launch records the pid its pane runs (decision 188). */
-  panePidFile: string;
-}
-
 /**
  * Config a session window's git takes from its environment (decision 101). A
  * gitlink in the index over a `.git` of the session's makes `status` and
@@ -902,14 +755,6 @@ export function conductorName(repoProjectId: string): string {
 function conductorSocket(repoProjectId: string): string {
   return conductorName(repoProjectId);
 }
-
-/**
- * A window pup opened: a session's, a project's conductor, or its conflict
- * radar. Which name it wears and which server it is on are this module's to
- * know — a caller names the window it means and gets back a label to print or
- * an argv to run.
- */
-export type WindowTarget = { sessionId: string } | { conductorOf: string } | { watcherOf: string };
 
 /** What the window is called: what a peer addresses it by, and what the operator reads. */
 export function windowLabel(target: WindowTarget): string {
@@ -1227,9 +1072,6 @@ const PANE_FORMAT = '#{pane_id}\t#{pane_start_command}\t#{session_name}';
 /** Far past any line tmux writes for why it failed; the refusal quotes this much. */
 const PROBE_FAILURE_MAX_CHARS = 200;
 
-/** Why a server's panes could not be listed: no tmux on `PROBE_PATH`, or what tmux said. */
-type ProbeFailure = { noTmux: true } | { noTmux: false; detail: string };
-
 /**
  * Every pane on the server at `socket`, as `PANE_FORMAT` lines, or why there
  * are none to read: a server that is not running or did not answer in time
@@ -1317,38 +1159,6 @@ export function conductorPane(repoProjectId: string): SessionPane | undefined {
   return paneId === undefined
     ? undefined
     : { sessionId: conductorId(repoProjectId), paneId, socket };
-}
-
-/**
- * A steer that was not submitted: its paste never showed up whole in the
- * session's input box (the box was then cleared), or the box held text Ctrl-U
- * could not clear, or no box was on screen at all, so nothing was pasted.
- * Either way nothing was submitted and the session runs on untouched.
- */
-export class SteerNotDeliveredError extends Error {
-  readonly sessionId: string;
-
-  constructor(
-    sessionId: string,
-    chars: number,
-    reason: 'never-landed' | 'box-not-cleared' | 'box-absent' = 'never-landed',
-  ) {
-    super(
-      reason === 'never-landed'
-        ? `Steer to session ${sessionId} did not land: its input box never held the whole ` +
-            `${chars}-char message. Cleared the box and submitted nothing; the session is ` +
-            'still running with an empty prompt.'
-        : reason === 'box-not-cleared'
-          ? `Steer to session ${sessionId} did not land: its input box held text that Ctrl-U ` +
-            `could not clear, so the ${chars}-char message was not pasted. Nothing was ` +
-            'submitted; the session is still running with the box as it was.'
-          : `Steer to session ${sessionId} did not land: its input box is not on screen (a ` +
-            `dialog or menu holds the pane), so the ${chars}-char message was not pasted and ` +
-            'no key was pressed. The session runs on; answer what its window shows, then steer again.',
-    );
-    this.name = 'SteerNotDeliveredError';
-    this.sessionId = sessionId;
-  }
 }
 
 /**

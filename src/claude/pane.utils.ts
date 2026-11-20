@@ -13,6 +13,8 @@
  * draft, which is what refused every post-turn steer (addendum to decision 45).
  */
 
+import type { InputBoxLook, InputBoxState, PaneRow } from './types/pane.types.js';
+
 const INPUT_PROMPT = /^❯(.*)$/;
 /** The box's top and bottom borders: the prompt row sits right under the top one. */
 const BOX_BORDER = /^─/;
@@ -40,17 +42,6 @@ const ESCAPE = /\u001b\[[0-9;:?]*[ -/]*[@-~]/g;
 /** The CSI escape that carries styling, and the params that set and clear dim. */
 // biome-ignore lint/suspicious/noControlCharactersInRegex: matching them is the point
 const SGR = /^\u001b\[([0-9;:]*)m$/;
-
-/** One captured row, escapes removed. */
-interface PaneRow {
-  /** Every character the row shows — the structure is read from this. */
-  text: string;
-  /**
-   * The same row with each dim character blanked, so offsets into `text` still
-   * hold: what the row shows minus what Claude Code only suggests.
-   */
-  typed: string;
-}
 
 /**
  * The pane's rows. Dim is tracked across the whole capture, from the top and
@@ -145,8 +136,6 @@ export function hasUnsubmittedInput(pane: string): boolean {
   return content.length > 0 && !PLACEHOLDER_PREFIX.test(content);
 }
 
-export type InputBoxState = 'empty' | 'holds' | 'absent';
-
 /**
  * What the input box shows: nothing unsubmitted, some text, or no box at all.
  * A pane with no box (a dialog, a selector) is kept apart from an empty one:
@@ -164,18 +153,6 @@ export function inputBoxState(pane: string): InputBoxState {
   const above = rows[promptIndex - 1];
   if (above === undefined || !BOX_BORDER.test(above.text)) return 'absent';
   return hasUnsubmittedInput(pane) ? 'holds' : 'empty';
-}
-
-/** One look at the box: its state, and the draft it shows when it holds one. */
-export interface InputBoxLook {
-  state: InputBoxState;
-  /**
-   * The draft's text with every space and line break dropped, so one draft
-   * reads the same however the pane wraps it: `pup attach` resizes the
-   * conductor's window to the operator's terminal (decision 168). Empty
-   * unless the box holds text.
-   */
-  draft: string;
 }
 
 export function inputBoxLook(pane: string): InputBoxLook {

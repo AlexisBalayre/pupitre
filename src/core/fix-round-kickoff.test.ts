@@ -48,7 +48,7 @@ import {
   type ThreadSeed,
 } from '@test/helpers/fix-round.mock.js';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
-import { LADDERS } from '../claude/model-ladder.constants.js';
+import { LADDERS } from '../claude/constants/model-ladder.constants.js';
 import { kickoff, killSession, launchSession } from '../claude/session-runtime.service.js';
 import { openStore } from './db.client.js';
 import { DEFAULT_BASE_PROFILE } from './default-profile.constants.js';
