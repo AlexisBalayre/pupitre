@@ -1,0 +1,111 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-20T11:57:18.664Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "44731458279",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/44731458279",
+  "actor": "AlexisBalayre",
+  "commit_sha": "72ab983569a4f76774d2df1ed34304dc343b8df1",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 409,
+  "action": "review",
+  "reviewers_spawned": [
+    "docs",
+    "conventions"
+  ],
+  "reviewers_returned": [
+    "docs",
+    "conventions"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "context",
+    "maintainability",
+    "spec",
+    "simplicity",
+    "guards",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "docs/adr/0207-a-worker-runs-behind-an-executor-seam-and-the.md",
+      "line": "74-76",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The ADR says markSessionDone and markHandoffReady (session-handoff.service.ts) both read the host's handoff file, but markSessionDone lives in session-lifecycle.service.ts and reads no handoff, so only a replayed handoff-done needs the document fetched first.",
+      "body": "The new sentence says `markSessionDone` and `markHandoffReady` (`src/core/session-handoff.service.ts`) \"read the host's handoff file\", so the executor must fetch the handoff before replaying a `handoff-done` **or `done`** line. Only half of that matches the code:\n\n- `markSessionDone` is defined in `src/core/session-lifecycle.service.ts` (L742-745), not in the handoff service. It only appends a `session_done` event and calls `transitionSession`. Nothing on the `done` path reads a handoff, including the `pup session done` CLI handler (`src/cli/index.ts` L3324-3333).\n- `markHandoffReady` ([session-handoff.service.ts L167-177](https://github.com/AlexisBalayre/pupitre/blob/72ab983569a4f76774d2df1ed34304dc343b8df1/src/core/session-handoff.service.ts#L167-L177)) is the only one that calls `readHandoff`, and it throws `HandoffMissingError` when the file is missing.\n\nThe cost: someone implementing the executor from this ADR would add a fetch step before every `done` replay, and would look for handoff reading in the wrong module. ADRs override the design docs, so this wording becomes the requirement.\n\n<https://github.com/AlexisBalayre/pupitre/blob/72ab983569a4f76774d2df1ed34304dc343b8df1/docs/adr/0207-a-worker-runs-behind-an-executor-seam-and-the.md#L74-L76>",
+      "suggestion": "    `ask` and `handoff-done` must be idempotent. `markHandoffReady`\n    (`src/core/session-handoff.service.ts`) reads the host's handoff file and throws\n    `HandoffMissingError` without it, so the executor must fetch the handoff document to the\n    host before it replays a `handoff-done` line."
+    },
+    {
+      "file": "docs/adr/0207-a-worker-runs-behind-an-executor-seam-and-the.md",
+      "line": "38-91",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "docs/adr/README.md L19-21 says a landed decision gets a dated amendment section (with the PR) rather than rewritten text, but these three additions are spliced into ADR 0207's landed body with no marker, so readers can't tell them from the original decision. Wrap them as `*Amendment (2026-11-20, #409): ...*`, as ADR 0161 L72 does.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0207-a-worker-runs-behind-an-executor-seam-and-the.md",
+      "line": "38-40",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "\"That offline install\" comes before the sentence that introduces `pnpm install --offline` (L41-42), so \"that\" has nothing to refer to yet. Move the paragraph after the pnpm-store sentences, or open it with \"The offline `pnpm install` runs...\".",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.609807775,
+  "duration_ms": 74010,
+  "num_turns": 9,
+  "tokens": {
+    "input": 12,
+    "output": 5352,
+    "cache_read": 238340,
+    "cache_creation": 33414,
+    "total": 277118
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 12,
+      "output": 5352,
+      "cache_read": 238340,
+      "cache_creation": 33414,
+      "cost_usd": 0.422068
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 30,
+      "output": 5532,
+      "cache_read": 174022,
+      "cache_creation": 45720,
+      "cost_usd": 0.18708219999999998
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 138,
+      "cache_read": 0,
+      "cache_creation": 4707,
+      "cost_usd": 0.0006575750000000001
+    }
+  ],
+  "permission_denials": []
+}
