@@ -23,6 +23,9 @@
     `claude-opus-5-5 xhigh`, and critical runs `claude-opus-5-5 high` → `claude-opus-5-5 xhigh`.
     The Sonnet rungs add `--fallback-model claude-opus-5-5`. Every window's argv carries both
     `--model` and `--effort`, so the operator's settings never decide a worker's effort.
+    *Amended 2026-11-20 (#403):* the ladder is now written once in
+    `src/claude/constants/model-ladder.constants.ts`, where #403 moved it from
+    `src/claude/model-ladder.constants.ts`. The ladders themselves are unchanged.
     A window climbs exactly one rung on a relaunch of its task, or a respawn of its session
     (`pup respawn`, `pup kill --respawn`), after the window it replaces ran into a gate
     rejection, a dead turn (`turn_died`), or a stall. A stall is measured as the stall bar measures one (decision 35): on
