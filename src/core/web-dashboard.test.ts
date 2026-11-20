@@ -1903,6 +1903,8 @@ describe('startWebDashboard', () => {
       expect(shell).toContain("pressing = event.target.closest('button') !== null;");
       expect(shell).toContain('if (held === undefined || pressing) return;');
       expect(shell).toContain("window.addEventListener('pointerup', released);");
+      // A right-click's context menu takes the pointerup on macOS; the press must still end.
+      expect(shell).toContain("window.addEventListener('contextmenu', released);");
       // An inline row's flex layout would outrank the hide rule, so it skips hidden rows.
       expect(shell).toContain('[data-list] li[hidden], [data-list] tr[hidden]');
       expect(shell).toMatch(/ul\.rows\.inline > li:not\(\[hidden\]\)[^{]*\{ display: flex;/);

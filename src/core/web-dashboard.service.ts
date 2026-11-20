@@ -556,11 +556,13 @@ ${CHART_CSS}
   // Pressing a board button takes focus off a filter before the click lands,
   // and that focusout's flush would swap the button out from under it: the
   // first Next or Launch would do nothing. The board waits for the press to
-  // end, then for its click to run, before it swaps.
+  // end, then for its click to run, before it swaps. A context menu opened by
+  // the press takes its release on macOS, so the menu ends the press too.
   board.addEventListener('pointerdown', (event) => { pressing = event.target.closest('button') !== null; });
   const released = () => setTimeout(() => { pressing = false; flush(); });
   window.addEventListener('pointerup', released);
   window.addEventListener('pointercancel', released);
+  window.addEventListener('contextmenu', released);
   if (secret === null) {
     live.textContent = 'no key';
     return say('This tab holds no key: the url pup dashboard printed opens one tab, once, and links in that tab keep it.', true);
