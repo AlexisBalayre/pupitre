@@ -399,7 +399,7 @@ describe('CLI commands', () => {
 
     it('prints that a launch would be refused, naming the signal past its limit', () => {
       useCwd(initRepo());
-      vi.mocked(machineLoad).mockReturnValueOnce({ average: 12.25, cores: 8 });
+      vi.mocked(machineLoad).mockReturnValueOnce({ average: 12.25, cores: 8, factor: 1 });
 
       buildProgram().parse(['status'], { from: 'user' });
 
@@ -2105,7 +2105,7 @@ describe('CLI commands', () => {
           unlanded: [],
         }),
       ],
-      ['the load', new MachineLoadedError({ average: 9.5, cores: 8 })],
+      ['the load', new MachineLoadedError({ average: 9.5, cores: 8, factor: 1 })],
     ])('prints a launch refused on %s and exits 1 rather than throwing', (_signal, refusal) => {
       useCwd(initRepo());
       vi.mocked(launchTask).mockImplementation(() => {

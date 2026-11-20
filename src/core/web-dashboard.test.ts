@@ -69,7 +69,7 @@ import { renderTasksSheet } from './web-dashboard-tasks.service.js';
 const POLL_MS = 300;
 const PR = 'https://github.com/o/r/pull/7';
 /** A load that holds still, so the Overview's launch line moves only with the store. */
-const steadyLoad = () => ({ average: 0.5, cores: 8 });
+const steadyLoad = () => ({ average: 0.5, cores: 8, factor: 1 });
 
 /** The dashboards the tests started, by the port each one's url names. */
 const servers = new Map<number, Server>();
