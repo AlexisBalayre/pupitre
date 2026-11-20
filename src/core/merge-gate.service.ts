@@ -42,10 +42,17 @@ import { ADR_NUMBER_STAGE, adrNumberStage } from './adr-number.service.js';
 import { patchCoverage } from './coverage.utils.js';
 import { judgeDebt, measureCoverage, measureStaticDebt, quotePath } from './debt.service.js';
 import { draftDecisionRecord } from './decision-record.service.js';
+import { ArmedGitDriverError } from './errors/git-diff.errors.js';
+import {
+  MergeLockHeldError,
+  MergeLockLostError,
+  SessionNotReviewableError,
+} from './errors/merge-gate.errors.js';
+import { GateInterruptedError } from './errors/sandbox.errors.js';
+import { SlotWaitInterruptedError } from './errors/test-slot.errors.js';
 import { answerFixRoundThreads } from './fix-round.service.js';
 import { readBlobs } from './git-blobs.client.js';
 import {
-  ArmedGitDriverError,
   armedGitDrivers,
   assertMainCheckout,
   assertNoArmedGitDrivers,
@@ -101,11 +108,6 @@ import {
   PR_TITLE_MAX_CHARS,
   UNTESTED_PATH_GLOBS,
 } from './merge-gate.constants.js';
-import {
-  MergeLockHeldError,
-  MergeLockLostError,
-  SessionNotReviewableError,
-} from './merge-gate.errors.js';
 import { SESSION_ID_PATTERN } from './paths.constants.js';
 import { projectPaths } from './paths.utils.js';
 import {
@@ -116,13 +118,7 @@ import {
 } from './progress.utils.js';
 import { skipsTestsOnUntestedChanges } from './project-config.config.js';
 import { mergeToRegate, planRegate, type RegatePlan, regateMerged } from './regate.service.js';
-import {
-  endSandboxRun,
-  GateInterruptedError,
-  removeGateDir,
-  runGateChild,
-  sandboxLabel,
-} from './sandbox.utils.js';
+import { endSandboxRun, removeGateDir, runGateChild, sandboxLabel } from './sandbox.utils.js';
 import { auditScope } from './scope-audit.utils.js';
 import {
   appendEvent,
@@ -146,7 +142,6 @@ import { type TaskRescope, taskRescopes } from './task-rescope.service.js';
 import {
   describeSlotWait,
   GATE_SLOT_WAIT_MS,
-  SlotWaitInterruptedError,
   testRunsElsewhere,
   withTestSlot,
 } from './test-slot.service.js';

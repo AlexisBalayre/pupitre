@@ -1,6 +1,6 @@
 import { sanitizeReason } from '../adapters/capability.utils.js';
+import { InvalidProfileError } from './errors/profile.errors.js';
 import { globToRegExp } from './glob.utils.js';
-import { InvalidProfileError } from './profile.errors.js';
 import { scopedPaths } from './scope-audit.utils.js';
 import type { TaskSpec, TaskTicket } from './types/profile.types.js';
 

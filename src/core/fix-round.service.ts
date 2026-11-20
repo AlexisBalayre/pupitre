@@ -8,13 +8,18 @@ import {
 } from '../claude/session-runtime.service.js';
 import type { SessionPane } from '../claude/types/session-runtime.types.js';
 import { type CiReviewLookup, openThreadCount } from './dashboard.service.js';
+import { WorktreeRepointedError } from './errors/git-diff.errors.js';
+import {
+  isRefusedSteer,
+  rollBackRefusedLaunch,
+  TopRungReachedError,
+} from './errors/session-lifecycle.errors.js';
 import {
   assertNoArmedGitDrivers,
   assertNoWorktreeConfig,
   checkoutPinned,
   rethrowIfKilled,
   runGit,
-  WorktreeRepointedError,
   worktreeGitEnv,
 } from './git-diff.client.js';
 import {
@@ -62,11 +67,6 @@ import {
   type SessionRow,
   transitionSessionAlong,
 } from './session.repository.js';
-import {
-  isRefusedSteer,
-  rollBackRefusedLaunch,
-  TopRungReachedError,
-} from './session-lifecycle.errors.js';
 import {
   fixRoundRoute,
   killSession,

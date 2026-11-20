@@ -84,7 +84,6 @@ vi.mock('ink', async (importOriginal) => ({
   render: vi.fn(),
 }));
 vi.mock('../core/conductor.service.js', () => ({
-  ConductorTellRefusedError: class ConductorTellRefusedError extends Error {},
   NO_CONDUCTOR_RUNNING:
     'No conductor is running for this project; start one with `pup conductor start`.',
   conductorBlock: vi.fn(),
@@ -93,6 +92,9 @@ vi.mock('../core/conductor.service.js', () => ({
   startConductor: vi.fn(),
   stopConductor: vi.fn(),
   tellConductor: vi.fn(() => true),
+}));
+vi.mock('../core/errors/conductor.errors.js', () => ({
+  ConductorTellRefusedError: class ConductorTellRefusedError extends Error {},
 }));
 vi.mock('../core/git-diff.client.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../core/git-diff.client.js')>()),
@@ -129,8 +131,9 @@ vi.mock('../core/session-lifecycle.service.js', async (importOriginal) => ({
   createSession: vi.fn(),
   interruptSession: vi.fn(),
   killSession: vi.fn(),
-  LowMemoryError: (await importOriginal<typeof import('../core/session-lifecycle.service.js')>())
-    .LowMemoryError,
+  LowMemoryError: (
+    await importOriginal<typeof import('../core/errors/session-lifecycle.errors.js')>()
+  ).LowMemoryError,
   launchTask: vi.fn(),
   markSessionDone: vi.fn(),
   markSessionQuestion: vi.fn(),
@@ -158,16 +161,18 @@ vi.mock('../core/test-slot.service.js', async (importOriginal) => ({
 vi.mock('../core/session-handoff.service.js', () => ({
   HANDOFF_WAIT_DEFAULT_MS: 10 * 60 * 1000,
   awaitHandoffReady: vi.fn(),
-  HandoffMissingError: class HandoffMissingError extends Error {
-    constructor(sessionId: string, handoffPath: string) {
-      super(`No handoff at ${handoffPath} for ${sessionId}.`);
-    }
-  },
   hardRespawnSession: vi.fn(),
   isHandoffReady: vi.fn(),
   markHandoffReady: vi.fn(),
   requestHandoff: vi.fn(),
   respawnSession: vi.fn(),
+}));
+vi.mock('../core/errors/session-handoff.errors.js', () => ({
+  HandoffMissingError: class HandoffMissingError extends Error {
+    constructor(sessionId: string, handoffPath: string) {
+      super(`No handoff at ${handoffPath} for ${sessionId}.`);
+    }
+  },
 }));
 
 import {
@@ -199,38 +204,14 @@ import { isConductorRunning } from '../core/conductor.service.js';
 import type { SessionState } from '../core/db.client.js';
 import { insertDecisionRecord } from '../core/decision-record.repository.js';
 import { DEFAULT_BASE_PROFILE } from '../core/default-profile.constants.js';
-import { startFixRound } from '../core/fix-round.service.js';
-import { insertLedgerEntry } from '../core/ledger.repository.js';
-import { MergeLockLostError } from '../core/merge-gate.errors.js';
-import { runMergeGate } from '../core/merge-gate.service.js';
-import { replaceOverlaps } from '../core/overlap.repository.js';
-import { projectId } from '../core/paths.utils.js';
-import { GateInterruptedError, UndeclaredSandboxError } from '../core/sandbox.utils.js';
-import {
-  appendEvent,
-  ensureProject,
-  getSession,
-  getTask,
-  insertTask,
-  listBacklogTasks,
-  MalformedTaskSpecError,
-  recordSessionRoute,
-  transitionSession,
-} from '../core/session.repository.js';
-import { STALLED_AFTER_MS } from '../core/session-activity.constants.js';
+import { MergeLockLostError } from '../core/errors/merge-gate.errors.js';
+import { GateInterruptedError, UndeclaredSandboxError } from '../core/errors/sandbox.errors.js';
+import { MalformedTaskSpecError } from '../core/errors/session.errors.js';
 import {
   LockBacklogOverBudgetError,
   MachineLoadedError,
-  machineLoad,
-} from '../core/session-cap.service.js';
-import {
-  awaitHandoffReady,
-  HandoffMissingError,
-  isHandoffReady,
-  markHandoffReady,
-  requestHandoff,
-  respawnSession,
-} from '../core/session-handoff.service.js';
+} from '../core/errors/session-cap.errors.js';
+import { HandoffMissingError } from '../core/errors/session-handoff.errors.js';
 import {
   LaunchRolledBackError,
   TaskAlreadyClaimedError,
@@ -238,7 +219,32 @@ import {
   TopRungReachedError,
   UnknownSessionError,
   UnknownTaskError,
-} from '../core/session-lifecycle.errors.js';
+} from '../core/errors/session-lifecycle.errors.js';
+import { SlotWaitInterruptedError } from '../core/errors/test-slot.errors.js';
+import { startFixRound } from '../core/fix-round.service.js';
+import { insertLedgerEntry } from '../core/ledger.repository.js';
+import { runMergeGate } from '../core/merge-gate.service.js';
+import { replaceOverlaps } from '../core/overlap.repository.js';
+import { projectId } from '../core/paths.utils.js';
+import {
+  appendEvent,
+  ensureProject,
+  getSession,
+  getTask,
+  insertTask,
+  listBacklogTasks,
+  recordSessionRoute,
+  transitionSession,
+} from '../core/session.repository.js';
+import { STALLED_AFTER_MS } from '../core/session-activity.constants.js';
+import { machineLoad } from '../core/session-cap.service.js';
+import {
+  awaitHandoffReady,
+  isHandoffReady,
+  markHandoffReady,
+  requestHandoff,
+  respawnSession,
+} from '../core/session-handoff.service.js';
 import {
   createSession,
   interruptSession,
@@ -251,7 +257,6 @@ import {
 import {
   availableMemoryBytes,
   runSessionTest,
-  SlotWaitInterruptedError,
   sessionTestCommand,
 } from '../core/test-slot.service.js';
 import type { MergeOutcome } from '../core/types/merge-gate.types.js';

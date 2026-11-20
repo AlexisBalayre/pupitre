@@ -3,13 +3,9 @@ import { mkdirSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { UsageLimitReachedError } from './errors/usage-limits.errors.js';
 import { projectPaths } from './paths.utils.js';
-import {
-  assertUsageRoom,
-  readUsage,
-  UsageLimitReachedError,
-  usageStatusLine,
-} from './usage-limits.service.js';
+import { assertUsageRoom, readUsage, usageStatusLine } from './usage-limits.service.js';
 
 const REPO = '/repo';
 const NOW = Date.UTC(2026, 10, 8, 12, 0);

@@ -80,9 +80,21 @@ import {
   ArmedGitDriverError,
   WorktreeConfigError,
   WorktreeRepointedError,
-} from './git-diff.client.js';
+} from './errors/git-diff.errors.js';
+import { InvalidProfileError } from './errors/profile.errors.js';
+import { LockBacklogOverBudgetError, MachineLoadedError } from './errors/session-cap.errors.js';
+import {
+  LaunchRolledBackError,
+  LowMemoryError,
+  QuestionRefusedError,
+  TaskAlreadyClaimedError,
+  TerminalSessionError,
+  TopRungReachedError,
+  UnknownSessionError,
+  UnknownTaskError,
+} from './errors/session-lifecycle.errors.js';
+import { UsageLimitReachedError } from './errors/usage-limits.errors.js';
 import { projectId, projectPaths } from './paths.utils.js';
-import { InvalidProfileError } from './profile.errors.js';
 import { snapshotUserConfigHash } from './profile-compiler.service.js';
 import {
   appendEvent,
@@ -98,20 +110,7 @@ import {
   type SessionRow,
   transitionSession,
 } from './session.repository.js';
-import {
-  LockBacklogOverBudgetError,
-  MachineLoadedError,
-  machineLoad,
-} from './session-cap.service.js';
-import {
-  LaunchRolledBackError,
-  QuestionRefusedError,
-  TaskAlreadyClaimedError,
-  TerminalSessionError,
-  TopRungReachedError,
-  UnknownSessionError,
-  UnknownTaskError,
-} from './session-lifecycle.errors.js';
+import { machineLoad } from './session-cap.service.js';
 import {
   answerConductorQuestion,
   answerSessionQuestion,
@@ -121,7 +120,6 @@ import {
   fixRoundRoute,
   interruptSession,
   killSession,
-  LowMemoryError,
   launchTask,
   markSessionQuestion,
   planTask,
@@ -132,7 +130,6 @@ import {
 } from './session-lifecycle.service.js';
 import { availableMemoryBytes } from './test-slot.service.js';
 import type { TaskId, TaskSpec } from './types/profile.types.js';
-import { UsageLimitReachedError } from './usage-limits.service.js';
 
 // Test repos must not inherit the developer's global git config nor GIT_DIR & co.
 // — when this suite runs inside a git hook (pre-commit), those would redirect

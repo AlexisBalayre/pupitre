@@ -39,6 +39,7 @@ import { SteerNotDeliveredError } from '../../claude/errors/session-runtime.erro
 import { saveSessionEnv } from '../../claude/session-runtime.service.js';
 import { startConductor, stopConductor } from '../../core/conductor.service.js';
 import { openStore } from '../../core/db.client.js';
+import { LaunchRolledBackError } from '../../core/errors/session-lifecycle.errors.js';
 import {
   ensureProject,
   getSession,
@@ -51,7 +52,6 @@ import {
   requestHandoff,
   respawnSession,
 } from '../../core/session-handoff.service.js';
-import { LaunchRolledBackError } from '../../core/session-lifecycle.errors.js';
 import {
   answerSessionQuestion,
   interruptSession,

@@ -8,10 +8,12 @@ import { afterAll, beforeEach, describe, expect, it, onTestFinished, vi } from '
 import type { Adapter } from '../adapters/types/adapter.types.js';
 import { listBaselineHistory } from './baseline-history.repository.js';
 import { openStore } from './db.client.js';
-import { BrokenToolchainError, initProject, NoAdapterError } from './init.service.js';
+import { BrokenToolchainError, NoAdapterError } from './errors/init.errors.js';
+import { UndeclaredSandboxError } from './errors/sandbox.errors.js';
+import { initProject } from './init.service.js';
 import { DUPLICATION_RULE_ID } from './merge-gate.constants.js';
 import { projectId } from './paths.utils.js';
-import { endSandboxRun, UndeclaredSandboxError } from './sandbox.utils.js';
+import { endSandboxRun } from './sandbox.utils.js';
 import {
   ensureProject,
   getProject,

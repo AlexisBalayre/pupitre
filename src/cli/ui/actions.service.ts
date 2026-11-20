@@ -8,13 +8,13 @@ import {
 import { startConductor, stopConductor } from '../../core/conductor.service.js';
 import { blockedReason } from '../../core/dashboard.service.js';
 import { DEFAULT_BASE_PROFILE } from '../../core/default-profile.constants.js';
+import { LaunchRolledBackError } from '../../core/errors/session-lifecycle.errors.js';
 import { getSession, transitionSession } from '../../core/session.repository.js';
 import {
   isHandoffReady,
   requestHandoff,
   respawnSession,
 } from '../../core/session-handoff.service.js';
-import { LaunchRolledBackError } from '../../core/session-lifecycle.errors.js';
 import {
   answerSessionQuestion,
   interruptSession,

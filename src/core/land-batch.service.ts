@@ -1,5 +1,6 @@
 import type { Database } from 'better-sqlite3';
 import { auditProject } from './audit.service.js';
+import { GateInterruptedError } from './errors/sandbox.errors.js';
 import { rethrowIfKilled } from './git-diff.client.js';
 import {
   assertAuditable,
@@ -16,7 +17,6 @@ import {
   withMergeLock,
 } from './merge-gate.service.js';
 import { NO_PROGRESS, type StageProgress } from './progress.utils.js';
-import { GateInterruptedError } from './sandbox.utils.js';
 import type { Landable, LandBatchOutcome, LandRequest } from './types/land.types.js';
 
 /**

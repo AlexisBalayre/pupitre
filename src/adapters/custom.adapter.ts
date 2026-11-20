@@ -1,12 +1,8 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parse } from 'yaml';
-import {
-  GateInterruptedError,
-  runGateChild,
-  runGateChildSync,
-  UndeclaredSandboxError,
-} from '../core/sandbox.utils.js';
+import { GateInterruptedError, UndeclaredSandboxError } from '../core/errors/sandbox.errors.js';
+import { runGateChild, runGateChildSync } from '../core/sandbox.utils.js';
 import { failureSummary } from './capability.utils.js';
 import {
   CUSTOM_ADAPTER_CONFIG_PATH,

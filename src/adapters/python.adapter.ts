@@ -1,8 +1,9 @@
 import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { GateInterruptedError } from '../core/errors/sandbox.errors.js';
 import { globToRegExp, globToRegExpSource } from '../core/glob.utils.js';
-import { GateInterruptedError, removeGateDir, runGateChild } from '../core/sandbox.utils.js';
+import { removeGateDir, runGateChild } from '../core/sandbox.utils.js';
 import { failureSummary } from './capability.utils.js';
 import {
   DEBT_COMMAND_MAX_BUFFER_BYTES,
