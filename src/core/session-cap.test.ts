@@ -21,6 +21,7 @@ import {
   type LockBacklog,
   LockBacklogOverBudgetError,
   launchHolds,
+  launchRoom,
   launchRoomLines,
   lockBacklog,
   MachineLoadedError,
@@ -490,5 +491,54 @@ describe('the launch room (decision 197)', () => {
 
     expect(load.average).toBeGreaterThanOrEqual(0);
     expect(Number.isInteger(load.cores) && load.cores >= 1).toBe(true);
+  });
+});
+
+describe("the project's loadAllowanceFactor (decision 197's amendment of 2026-11-20)", () => {
+  const clear = { memoryBytes: 16 * 1024 ** 3, usageHeld: false };
+  let db: Database;
+  let repo: string;
+
+  beforeEach(() => {
+    db = openStore(':memory:');
+    repo = tempDir('pup-session-cap-factor-');
+    ensureProject(db, projectId(repo), repo);
+    mkdirSync(join(repo, '.pupitre'));
+  });
+
+  const roomAt = (average: number) => launchRoom(db, repo, { average, cores: 8 });
+
+  it('allows a launch at 11 and refuses one at 13 on 8 cores at 1.5, naming the factor', () => {
+    writeFileSync(join(repo, '.pupitre', 'project.yml'), 'loadAllowanceFactor: 1.5\n');
+
+    expect(() => assertLaunchRoom(roomAt(11))).not.toThrow();
+    expect(launchRoomLines(roomAt(11), clear).slice(0, 1)).toEqual(['Launch: allowed']);
+    expect(launchRoomLines(roomAt(11), clear)[2]).toBe(
+      '  load: 11.0 of 8 cores times loadAllowanceFactor 1.5 (12)',
+    );
+    expect(() => assertLaunchRoom(roomAt(13))).toThrow(
+      "The machine's 1-minute load average is 13.0, above its 8 cores times loadAllowanceFactor " +
+        "1.5 (12); nothing was launched. Wait for the load to fall; only the operator's " +
+        '--over-cap goes beyond.',
+    );
+    expect(launchRoomLines(roomAt(13), clear)[0]).toBe(
+      "Launch: refused (load above the allowance); only the operator's --over-cap lifts the backlog and the load",
+    );
+  });
+
+  it('holds the load to the cores with no factor set or one outside 1 to 3', () => {
+    expect(roomAt(9).load.factor).toBe(1);
+    expect(() => assertLaunchRoom(roomAt(9))).toThrow(MachineLoadedError);
+    for (const value of ['0.5', '3.5', 'lots', 'true', '[2]']) {
+      writeFileSync(join(repo, '.pupitre', 'project.yml'), `loadAllowanceFactor: ${value}\n`);
+
+      expect(roomAt(9).load.factor).toBe(1);
+    }
+  });
+
+  it('keeps a refusal naming the factor whole at extreme figures', () => {
+    expect(
+      new MachineLoadedError({ average: 1234.5, cores: 1024, factor: 2.75 }).message.length,
+    ).toBeLessThan(300);
   });
 });

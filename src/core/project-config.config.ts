@@ -34,6 +34,18 @@ const DEFAULT_LOCK_BACKLOG_BUDGET_MINUTES = 60;
 const MAX_LOCK_BACKLOG_BUDGET_MINUTES = 1440;
 
 /**
+ * The key that raises the load a launch is allowed to the cores times its
+ * value (decision 197's amendment of 2026-11-20).
+ */
+const LOAD_ALLOWANCE_FACTOR_KEY = 'loadAllowanceFactor';
+
+/** The factor in force when the project sets none, or one outside its bounds. */
+const DEFAULT_LOAD_ALLOWANCE_FACTOR = 1;
+
+/** The largest factor a project may set. */
+const MAX_LOAD_ALLOWANCE_FACTOR = 3;
+
+/**
  * The key that sets the `autoCompactWindow` pup compiles into every worker's
  * and the conductor's settings (decision 200), so no session runs on whatever
  * window the operator's own settings name.
@@ -53,6 +65,7 @@ const PROJECT_CONFIG_KEYS = [
   SKIP_UNTESTED_KEY,
   WORKER_SANDBOX_KEY,
   LOCK_BACKLOG_BUDGET_KEY,
+  LOAD_ALLOWANCE_FACTOR_KEY,
   AUTO_COMPACT_WINDOW_KEY,
 ];
 
@@ -131,6 +144,20 @@ export function lockBacklogBudgetMinutes(repoPath: string): number {
     );
   }
   return value;
+}
+
+/**
+ * What the cores are multiplied by for the load a launch is allowed (decision
+ * 197's amendment of 2026-11-20): the project's
+ * `loadAllowanceFactor`, else `DEFAULT_LOAD_ALLOWANCE_FACTOR`. A value that is
+ * not a number from 1 to `MAX_LOAD_ALLOWANCE_FACTOR` falls back to the default,
+ * so no setting can lower the allowance under the cores.
+ */
+export function loadAllowanceFactor(repoPath: string): number {
+  const value = projectValue(repoPath, LOAD_ALLOWANCE_FACTOR_KEY);
+  return typeof value === 'number' && value >= 1 && value <= MAX_LOAD_ALLOWANCE_FACTOR
+    ? value
+    : DEFAULT_LOAD_ALLOWANCE_FACTOR;
 }
 
 /**

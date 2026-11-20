@@ -1,6 +1,6 @@
 import { availableParallelism, loadavg } from 'node:os';
 import type { Database } from 'better-sqlite3';
-import { lockBacklogBudgetMinutes } from './project-config.config.js';
+import { loadAllowanceFactor, lockBacklogBudgetMinutes } from './project-config.config.js';
 import { parseJsonOr, toIsoUtc } from './report-data.utils.js';
 import {
   decodeEvent,
@@ -58,6 +58,8 @@ const USES_BEFORE_GATE = 2;
 interface MachineLoad {
   average: number;
   cores: number;
+  /** The project's `loadAllowanceFactor` the cores are multiplied by, 1 when absent. */
+  factor?: number;
 }
 
 /** The merge-lock work the project's sessions have ahead of them (decision 197). */
@@ -109,7 +111,7 @@ export class MachineLoadedError extends Error {
   constructor(load: MachineLoad, refused: 'launch' | 'fix round' = 'launch') {
     super(
       `The machine's 1-minute load average is ${load.average.toFixed(1)}, above its ` +
-        `${load.cores} cores; ` +
+        `${allowance(load)}; ` +
         (refused === 'launch'
           ? "nothing was launched. Wait for the load to fall; only the operator's --over-cap goes beyond."
           : 'the fix round was not started. Wait for the load to fall, then run it again.'),
@@ -218,9 +220,27 @@ function longestStage(payload: unknown): number | undefined {
   return longest;
 }
 
-/** Both signals: the backlog read now, beside the machine's `load`, `machineLoad()` in use. */
+/**
+ * Both signals: the backlog read now, beside the machine's `load`,
+ * `machineLoad()` in use, held to the project's `loadAllowanceFactor`.
+ */
 export function launchRoom(db: Database, repoPath: string, load: MachineLoad): LaunchRoom {
-  return { backlog: lockBacklog(db, repoPath), load };
+  return {
+    backlog: lockBacklog(db, repoPath),
+    load: { ...load, factor: loadAllowanceFactor(repoPath) },
+  };
+}
+
+/** Whether the load is above the cores times the project's factor. */
+function overLoad(load: MachineLoad): boolean {
+  return load.average > load.cores * (load.factor ?? 1);
+}
+
+/** The load allowed, as a refusal and `pup status` name it: the cores, and the factor when it is not 1. */
+function allowance(load: MachineLoad): string {
+  const factor = load.factor ?? 1;
+  if (factor === 1) return `${load.cores} cores`;
+  return `${load.cores} cores times loadAllowanceFactor ${minutes(factor)} (${minutes(load.cores * factor)})`;
 }
 
 /** Refuse a launch while either signal is past its limit, the backlog named first. */
@@ -228,7 +248,7 @@ export function assertLaunchRoom(room: LaunchRoom): void {
   if (room.backlog.minutes > room.backlog.budgetMinutes) {
     throw new LockBacklogOverBudgetError(room.backlog);
   }
-  if (room.load.average > room.load.cores) throw new MachineLoadedError(room.load);
+  if (overLoad(room.load)) throw new MachineLoadedError(room.load);
 }
 
 /** The memory available now and whether the plan's usage holds launches, as `pup launch` reads them. */
@@ -250,11 +270,13 @@ export function launchHolds(repoPath: string, now = Date.now()): LaunchHolds {
  */
 export function launchRoomLines(room: LaunchRoom, holds: LaunchHolds): string[] {
   const { backlog, load } = room;
-  const capOver = backlog.minutes > backlog.budgetMinutes || load.average > load.cores;
+  const capOver = backlog.minutes > backlog.budgetMinutes || overLoad(load);
   const lowMemory = holds.memoryBytes < MIN_AVAILABLE_MEMORY_BYTES;
   const over = [
     backlog.minutes > backlog.budgetMinutes ? 'merge-lock backlog over budget' : undefined,
-    load.average > load.cores ? 'load above the cores' : undefined,
+    overLoad(load)
+      ? `load above the ${(load.factor ?? 1) === 1 ? 'cores' : 'allowance'}`
+      : undefined,
     lowMemory ? `under ${gigabytes(MIN_AVAILABLE_MEMORY_BYTES)} GB of memory available` : undefined,
     holds.usageHeld ? "the plan's usage at its hold line" : undefined,
   ].filter(Boolean);
@@ -271,7 +293,7 @@ export function launchRoomLines(room: LaunchRoom, holds: LaunchHolds): string[] 
     `Launch: ${verdict}`,
     `  merge-lock backlog: ${minutes(backlog.minutes)} of ${minutes(backlog.budgetMinutes)} minutes (${backlogTerms(backlog)})`,
     ...unlandedLine(backlog.unlanded),
-    `  load: ${load.average.toFixed(1)} of ${load.cores} cores`,
+    `  load: ${load.average.toFixed(1)} of ${allowance(load)}`,
     `  memory: ${gigabytes(holds.memoryBytes)} GB available, ${gigabytes(MIN_AVAILABLE_MEMORY_BYTES)} GB a launch needs`,
   ];
 }
