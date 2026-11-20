@@ -1,0 +1,95 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-20T09:16:39.087Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "44708508704",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/44708508704",
+  "actor": "AlexisBalayre",
+  "commit_sha": "8677d6d423567a36aeb2f21d9dda5ac70569f9ff",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 399,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/web-dashboard-tasks.service.ts",
+      "line": "342",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The hidden span copies all of scopeText(task), labels included, so every backlog row now holds the word 'scope:' and every row with an excluded path holds ' · not '. Typing 'scope' or 'not' into the Backlog filter then matches those rows whatever their goal. Putting only the glob lists in the hidden span (scope and scopeOut joined) would fix it.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "review-security skipped: the only new trust-boundary surface is a hidden span rendered through escapeHtml, the same way as the neighbouring title attribute. review-spec skipped: the PR closes no issue. review-context, review-maintainability and review-workflow-safety skipped: their gates do not hold."
+    },
+    {
+      "component": "orchestrator",
+      "description": "review-consolidator not spawned: after the simplicity reviewer's two self-conceded optional trims were dropped under the finding bar, a single finding survived, so there was nothing to deduplicate."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.0637317999999998,
+  "duration_ms": 135017,
+  "num_turns": 13,
+  "tokens": {
+    "input": 12,
+    "output": 7087,
+    "cache_read": 269849,
+    "cache_creation": 44103,
+    "total": 321051
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 26,
+      "output": 14872,
+      "cache_read": 385095,
+      "cache_creation": 71152,
+      "cost_usd": 0.862632
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 28,
+      "output": 5014,
+      "cache_read": 167488,
+      "cache_creation": 53662,
+      "cost_usd": 0.20109979999999997
+    }
+  ],
+  "permission_denials": []
+}
