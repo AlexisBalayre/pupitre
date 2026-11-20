@@ -1,10 +1,6 @@
 import { useStdout } from 'ink';
 import { useEffect, useState } from 'react';
-
-interface TerminalSize {
-  rows: number;
-  columns: number;
-}
+import type { TerminalSize } from '../types/terminal.types.js';
 
 const sizeOf = (stdout: NodeJS.WriteStream): TerminalSize => ({
   rows: stdout.rows ?? Number.POSITIVE_INFINITY,

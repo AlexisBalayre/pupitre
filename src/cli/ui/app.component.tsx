@@ -1,6 +1,9 @@
 import { Box, Text } from 'ink';
 import { radarView } from '../../core/overlap.service.js';
 import { isTerminal } from '../../core/session-state.utils.js';
+import type { AppProps } from '../types/app.types.js';
+import type { LiveRow, PlannedRow } from '../types/controls.types.js';
+import type { ProjectReading } from '../types/snapshot.types.js';
 import { Backlog } from './backlog.component.js';
 import { Debt } from './debt.component.js';
 import { Detail } from './detail.component.js';
@@ -10,8 +13,8 @@ import { MergeLogPane } from './merge-log.component.js';
 import { Prompt, promptLines } from './prompt.component.js';
 import { Radar } from './radar.component.js';
 import { Sessions } from './sessions.component.js';
-import { type LiveRow, type PlannedRow, useControls } from './use-controls.hook.js';
-import { type DashboardReading, type ProjectReading, useSnapshot } from './use-snapshot.hook.js';
+import { useControls } from './use-controls.hook.js';
+import { useSnapshot } from './use-snapshot.hook.js';
 import { useTerminalSize } from './use-terminal-size.hook.js';
 import { useTerminalStatus } from './use-terminal-status.hook.js';
 import { moreLine, sectionShare, usedLines, windowStart } from './viewport.utils.js';
@@ -35,14 +38,6 @@ import { moreLine, sectionShare, usedLines, windowStart } from './viewport.utils
  * blocks are held to a quarter of what is left each, and the table windows
  * around the cursor in the rest.
  */
-export interface AppProps {
-  /** One look at every store on screen, each with the deps its rows' keys write through. */
-  read: () => DashboardReading;
-  showAttach: boolean;
-  /** Set for a session or the conductor: the dashboard, and no controls. */
-  readOnlyReason?: string;
-}
-
 export function App({ read, showAttach, readOnlyReason }: AppProps) {
   const { reading, readAt, refresh } = useSnapshot(read);
   const { projects, unreadable } = reading;

@@ -3,7 +3,6 @@ import { sanitizeReason } from '../../adapters/capability.utils.js';
 import {
   attachWindow,
   resolveWindowEnv,
-  type WindowTarget,
   windowLabel,
 } from '../../claude/session-runtime.service.js';
 import { startConductor, stopConductor } from '../../core/conductor.service.js';
@@ -25,7 +24,12 @@ import {
   steerSession,
 } from '../../core/session-lifecycle.service.js';
 import type { DashboardSnapshot } from '../../core/types/dashboard.types.js';
-import type { FleetStore } from '../../core/types/fleet.types.js';
+import type {
+  ActionDeps,
+  ActionResult,
+  AttachTarget,
+  MergeHandlers,
+} from '../types/actions.types.js';
 
 /**
  * Every write `pup ui` can make, and the only place it makes one. Each function
@@ -41,14 +45,6 @@ import type { FleetStore } from '../../core/types/fleet.types.js';
  * down the render and leave the terminal on the alternate buffer. So every
  * action answers with a line, and a line that reports a failure says so.
  */
-
-export type ActionDeps = FleetStore;
-
-export interface ActionResult {
-  message: string;
-  /** The action did not happen; the status bar says so in red. */
-  failed?: boolean;
-}
 
 /**
  * Run one action and turn whatever it throws into a status line. Core functions
@@ -277,14 +273,6 @@ export function toggleConductor(
   });
 }
 
-/** A tmux window this screen can hand the terminal over to. */
-export interface AttachTarget {
-  /** What the status bar calls it while the operator is away. */
-  label: string;
-  /** The window, for the runtime to attach to: its socket and pin are the runtime's to spell. */
-  window: WindowTarget;
-}
-
 export function sessionAttachTarget(sessionId: string): AttachTarget {
   return { label: windowLabel({ sessionId }), window: { sessionId } };
 }
@@ -331,12 +319,6 @@ export function attachTo(target: AttachTarget): ActionResult {
 function drawableLine(line: string): string {
   // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping them is the point
   return [...line.replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ')].slice(0, 500).join('');
-}
-
-/** Where a merge child's output goes, line by line, as the gate produces it. */
-export interface MergeHandlers {
-  onLine: (line: string) => void;
-  onExit: (code: number | null) => void;
 }
 
 /**

@@ -1,5 +1,5 @@
 import { Box, Text } from 'ink';
-import type { ControlPrompt } from './use-controls.hook.js';
+import type { ControlPrompt } from '../types/controls.types.js';
 import { wrapLines } from './viewport.utils.js';
 
 const CONFIRM_HINT = ' (y/n, Esc cancels)';

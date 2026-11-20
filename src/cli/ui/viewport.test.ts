@@ -2,7 +2,7 @@ import { cleanup, render } from 'ink-testing-library';
 import { createElement } from 'react';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { DashboardSession, DashboardSnapshot } from '../../core/types/dashboard.types.js';
-import type { ActionDeps } from './actions.service.js';
+import type { ActionDeps } from '../types/actions.types.js';
 import { App } from './app.component.js';
 import { clip, windowStart } from './viewport.utils.js';
 

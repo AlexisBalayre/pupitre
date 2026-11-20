@@ -1,5 +1,5 @@
 import { Box, Text } from 'ink';
-import type { MergeLog } from './use-controls.hook.js';
+import type { MergeLog } from '../types/controls.types.js';
 
 /**
  * What the merge child is printing, as it prints it. The gate is minutes of

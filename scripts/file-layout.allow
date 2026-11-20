@@ -1,5 +1,4 @@
 src/claude/model-ladder.constants.ts
-src/cli/ui/dashboard.constants.ts
 src/core/default-profile.constants.ts
 src/core/merge-gate.constants.ts
 src/core/merge-gate.errors.ts

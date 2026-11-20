@@ -1,5 +1,5 @@
 import { Box, Text } from 'ink';
-import type { ControlStatus } from './use-controls.hook.js';
+import type { ControlStatus } from '../types/controls.types.js';
 
 /**
  * What the last key did, and what the operator may press next. The status line

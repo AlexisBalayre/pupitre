@@ -1,5 +1,6 @@
 import { needsYou } from '../../core/dashboard.service.js';
-import type { DashboardReading } from './use-snapshot.hook.js';
+import type { DashboardReading } from '../types/snapshot.types.js';
+import type { SessionStatus, TerminalStatus } from '../types/terminal.types.js';
 
 /**
  * The fleet in the terminal tab while `pup ui` runs (decision 97): an OSC 2
@@ -20,17 +21,6 @@ const GREEN = '#34c759';
 
 /** The longest value written into a title or a status line. */
 const MAX_VALUE_CHARS = 80;
-
-interface SessionStatus {
-  status: string;
-  indicator: string;
-  detail: string;
-}
-
-interface TerminalStatus {
-  title: string;
-  session: SessionStatus;
-}
 
 /**
  * A value as one inert run of text. Task goals and reasons come from a store a
