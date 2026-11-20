@@ -5,12 +5,9 @@ import { dirname, join } from 'node:path';
 import { parse } from 'yaml';
 import { readPlainFile, sanitizeReason } from '../adapters/capability.utils.js';
 import type { GateCommand } from '../adapters/types/adapter.types.js';
-import {
-  LADDERS,
-  type ModelRoute,
-  SECURITY_REVIEW_EFFORT,
-} from '../claude/model-ladder.constants.js';
+import { LADDERS, SECURITY_REVIEW_EFFORT } from '../claude/constants/model-ladder.constants.js';
 import { claudeUserDir } from '../claude/session-runtime.service.js';
+import type { ModelRoute } from '../claude/types/model-ladder.types.js';
 import { CONTROL_CHARS, readBrief, workerBrief } from './brief.service.js';
 import {
   GIT_SAFE_CONFIG,

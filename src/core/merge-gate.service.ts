@@ -36,10 +36,8 @@ import type {
   GateStage,
   NestedPackage,
 } from '../adapters/types/adapter.types.js';
-import {
-  killSession as killTmux,
-  SteerNotDeliveredError,
-} from '../claude/session-runtime.service.js';
+import { SteerNotDeliveredError } from '../claude/errors/session-runtime.errors.js';
+import { killSession as killTmux } from '../claude/session-runtime.service.js';
 import { ADR_NUMBER_STAGE, adrNumberStage } from './adr-number.service.js';
 import { patchCoverage } from './coverage.utils.js';
 import { judgeDebt, measureCoverage, measureStaticDebt, quotePath } from './debt.service.js';

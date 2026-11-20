@@ -1,6 +1,6 @@
 import { chmodSync, mkdirSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { SteerNotDeliveredError } from '@src/claude/session-runtime.service.js';
+import { SteerNotDeliveredError } from '@src/claude/errors/session-runtime.errors.js';
 import { resolveProject } from '@src/cli/project.utils.js';
 import { runGit } from '@src/core/git-diff.client.js';
 import { insertLedgerEntry } from '@src/core/ledger.repository.js';

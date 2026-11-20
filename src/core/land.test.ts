@@ -60,7 +60,8 @@ vi.mock('./audit.service.js', async (importOriginal) => {
 import { BRANCH, commitIn, ORIGIN_URL, PR_URL, SESSION_ID, sh } from '@test/helpers/land.mock.js';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import type { Adapter } from '../adapters/types/adapter.types.js';
-import { SteerNotDeliveredError, steerPane } from '../claude/session-runtime.service.js';
+import { SteerNotDeliveredError } from '../claude/errors/session-runtime.errors.js';
+import { steerPane } from '../claude/session-runtime.service.js';
 import { auditProject } from './audit.service.js';
 import { openStore } from './db.client.js';
 import { gitDiffPaths } from './git-diff.client.js';

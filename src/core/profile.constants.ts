@@ -1,4 +1,4 @@
-import { WORKER_SUBAGENT_ROUTE } from '../claude/model-ladder.constants.js';
+import { WORKER_SUBAGENT_ROUTE } from '../claude/constants/model-ladder.constants.js';
 
 /** Default hard cap for a compiled context when no layer sets contextBudget (docs/03-profiles.md). */
 export const DEFAULT_CONTEXT_BUDGET_TOKENS = 6000;

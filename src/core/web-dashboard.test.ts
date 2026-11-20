@@ -24,12 +24,12 @@ vi.mock('./web-dashboard-actions.service.js', async (importOriginal) => {
 });
 
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
+import { SessionPaneMissingError } from '../claude/errors/session-runtime.errors.js';
 import {
   capturePane,
   conductorPane,
   hasConductorWindow,
   readInputBoxLook,
-  SessionPaneMissingError,
 } from '../claude/session-runtime.service.js';
 import { formatDebtTransition } from './audit.service.js';
 import { appendBaselineHistory } from './baseline-history.repository.js';

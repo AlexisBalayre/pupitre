@@ -25,7 +25,10 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
 }));
 
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
-import type { InputBoxLook, InputBoxState } from '../claude/pane.utils.js';
+import {
+  SessionPaneMissingError,
+  SteerNotDeliveredError,
+} from '../claude/errors/session-runtime.errors.js';
 import {
   conductorPane,
   conductorRun,
@@ -36,10 +39,9 @@ import {
   launchWatcher,
   pasteIntoPane,
   readInputBoxLook,
-  SessionPaneMissingError,
-  SteerNotDeliveredError,
   submitPane,
 } from '../claude/session-runtime.service.js';
+import type { InputBoxLook, InputBoxState } from '../claude/types/pane.types.js';
 import {
   CI_REVIEW_LOOP,
   CONDUCTOR_BLOCKED_AFTER_MS,
