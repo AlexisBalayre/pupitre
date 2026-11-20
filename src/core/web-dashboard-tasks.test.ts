@@ -15,6 +15,7 @@ import {
   transitionSession,
 } from './session.repository.js';
 import type { GateReport } from './types/merge-gate.types.js';
+import { listWindow } from './web-dashboard.service.js';
 import { firstSentence, readTasksSheet, renderTasksSheet } from './web-dashboard-tasks.service.js';
 
 const PR = 'https://github.com/o/r/pull/7';
@@ -215,6 +216,22 @@ describe('the Tasks sheet', () => {
     expect(page).not.toContain('With more said');
   });
 
+  it('keeps a backlog task findable by its scope, which the filter reads from row text', () => {
+    plan('t-b', 'Second task.', ['src/b/**'], ['src/b/gen/**']);
+    plan('t-a', 'First task.', ['docs/**']);
+
+    // The page's filter matches each row's textContent: its text with the tags dropped.
+    const rows = [...render().matchAll(/<li class="task"[^>]*>(.*?)<\/li>/g)].map(([, row = '']) =>
+      row.replace(/<[^>]*>/g, ' '),
+    );
+    const ids = (query: string) =>
+      listWindow(rows, query, 0, rows.length).shown.map((i) => /t-[ab]/.exec(rows[i] ?? '')?.[0]);
+
+    expect(ids('src/b/gen/**')).toEqual(['t-b']);
+    expect(ids('docs/')).toEqual(['t-a']);
+    expect(ids('scope:')).toHaveLength(2);
+  });
+
   it('names each live session a backlog task would share tracked files with', () => {
     sh(repo, 'git', 'init', '-q', '-b', 'main');
     for (const file of ['src/a.ts', 'src/b.ts', 'src/c.ts', 'src/d.ts', 'src/e.ts', 'docs/x.md']) {
@@ -234,7 +251,7 @@ describe('the Tasks sheet', () => {
       'overlaps s-live on src/a.ts, src/b.ts; s-wide on src/a.ts, src/b.ts, src/c.ts and 1 more',
     );
     expect(page).toMatch(
-      /<span class="sid">t-docs<\/span><span class="goal">Touch docs\.<\/span><form/,
+      /<span class="sid">t-docs<\/span><span class="goal">Touch docs\.<\/span><span hidden>[^<]*<\/span><form/,
     );
     expect(page).not.toContain('s-done on');
   });

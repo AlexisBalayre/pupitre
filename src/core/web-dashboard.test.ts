@@ -56,7 +56,6 @@ import { STALLED_AFTER_MS } from './session-activity.constants.js';
 import { launchHolds, launchRoom, launchRoomLines } from './session-cap.service.js';
 import {
   type DashboardBind,
-  type ListWindow,
   listWindow,
   startWebDashboard,
   type WebDashboard,
@@ -1900,6 +1899,12 @@ describe('startWebDashboard', () => {
       );
       expect(shell).toContain('<input type="search" data-find placeholder="Filter"');
       expect(shell).toContain(':not([data-find])');
+      // A filter's focusout must not swap the board before a Next or Launch press's click lands.
+      expect(shell).toContain("pressing = event.target.closest('button') !== null;");
+      expect(shell).toContain('if (held === undefined || pressing) return;');
+      expect(shell).toContain("window.addEventListener('pointerup', released);");
+      // A right-click's context menu takes the pointerup on macOS; the press must still end.
+      expect(shell).toContain("window.addEventListener('contextmenu', released);");
       // An inline row's flex layout would outrank the hide rule, so it skips hidden rows.
       expect(shell).toContain('[data-list] li[hidden], [data-list] tr[hidden]');
       expect(shell).toMatch(/ul\.rows\.inline > li:not\(\[hidden\]\)[^{]*\{ display: flex;/);
@@ -1915,7 +1920,7 @@ describe('listWindow', () => {
   const texts = ['Fix the gate', 'Debt in src/a.ts', 'gate flakes on CI', 'Docs'];
 
   it('shows every row, one page, for no text typed or only spaces', () => {
-    const all: ListWindow = { shown: [0, 1, 2, 3], matched: 4, page: 0, pages: 1 };
+    const all = { shown: [0, 1, 2, 3], matched: 4, page: 0, pages: 1 };
 
     expect(listWindow(texts, '', 0, 20)).toEqual(all);
     expect(listWindow(texts, '   ', 0, 20)).toEqual(all);
