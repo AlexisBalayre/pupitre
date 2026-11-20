@@ -1,0 +1,117 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-20T11:32:01.641Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "44728019806",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/44728019806",
+  "actor": "AlexisBalayre",
+  "commit_sha": "cef218ea30752574e1a6bb4dca9a5c411076de1b",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 406,
+  "action": "review",
+  "reviewers_spawned": [
+    "docs",
+    "conventions",
+    "context"
+  ],
+  "reviewers_returned": [
+    "docs",
+    "conventions",
+    "context"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "maintainability",
+    "spec",
+    "simplicity",
+    "guards",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "docs/adr/0207-a-worker-runs-behind-an-executor-seam-and-the.md",
+      "line": "46-53",
+      "area": "context",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The ADR says copying remote lines into the host `events.jsonl` gives 'the path into `state.db`'. Nothing folds `events.jsonl` lines into the store (decision 63: 'no code path folds hook lines into that table'). The remote `session done`/`session ask` shim only appends to a file, so the host never records a done, an open question or a review transition.",
+      "body": "**Concern.** The event channel treats the per-session `events.jsonl` as the way hook events and session signals reach `state.db`. It is not.\n\n- The hook script (`buildEventHookScript`, `src/core/profile-compiler.service.ts` ~L1324-1329) only does `jq -c ... >> '${input.eventsFile}'`.\n- ADR 0063 states: \"The violation is in the session's `events.jsonl`, not in the store's `events` table: no code path folds hook lines into that table\".\n- The store's `events` rows come from direct repository writes (`INSERT INTO events` in `src/core/session.repository.ts` ~L684 and ~L742).\n- ADR 0035 and the dashboard use `events.jsonl` only for mtime and stall detection.\n\nThe ADR also says the `pup` shim's `session done` and `session ask` 'append to that file too', and the spike's shim did the same. Locally, `session done` and `session ask` are store operations. They set state, open a question and move the session to awaiting-review. An implementer who follows the ADR will build a remote worker that finishes or asks a question and leaves no trace in `state.db`. Only the dashboard and the watchdog, which read the file, would see it. The watchdog may then stall-kill a worker that is waiting on an answer.\n\nThe ADR must say that the host executor, not the file copy, replays `done`, `ask` and the other signals through the same store functions the local `pup session ...` commands use. It must also say which hook-line types the host ingests. Either that, or it stops claiming that every existing reader and the path into `state.db` just work.\n\nCode: https://github.com/AlexisBalayre/pupitre/blob/cef218ea30752574e1a6bb4dca9a5c411076de1b/docs/adr/0207-a-worker-runs-behind-an-executor-seam-and-the.md#L46-L53",
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0207-a-worker-runs-behind-an-executor-seam-and-the.md",
+      "line": "4, 60-68",
+      "area": "context",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The ADR amends only decision 1, but it also changes decision 4's steer model (remote steer becomes the next `claude -p` turn, with no pane check) and decision 45's whole-paste guarantee. The sandbox's lack of the host's compiled hooks (`settings.json` scope, bash and read guards) is not stated either: the spike found the container did not load them, so scope was enforced only at the gate. Callers of the seam could assume decision 45 and the hook enforcement hold remotely.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0207-a-worker-runs-behind-an-executor-seam-and-the.md",
+      "line": "12",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "\"Decision 191's in-process sandbox\" mislabels decision 191's mechanism. Decision 191 turns on Claude Code's own sandbox around a worker's Bash calls (a `sandbox` block in the compiled `settings.json`), not an in-process one. An implementer could look for a Node-level sandbox; suggest \"Decision 191's Claude Code sandbox (`workerSandbox`)\".",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.8889804499999998,
+  "duration_ms": 111913,
+  "num_turns": 12,
+  "tokens": {
+    "input": 14,
+    "output": 7723,
+    "cache_read": 294818,
+    "cache_creation": 36897,
+    "total": 339452
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 14,
+      "output": 7723,
+      "cache_read": 294818,
+      "cache_creation": 36897,
+      "cost_usd": 0.5086556
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 44,
+      "output": 11369,
+      "cache_read": 356929,
+      "cache_creation": 92057,
+      "cost_usd": 0.37961340000000005
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 214,
+      "cache_read": 0,
+      "cache_creation": 4834,
+      "cost_usd": 0.00071145
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "bash /home/runner/work/pupitre/pupitre/scripts/adr-index.sh"
+    }
+  ]
+}
