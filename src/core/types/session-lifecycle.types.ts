@@ -1,5 +1,5 @@
-import type { Tier } from '../../claude/model-ladder.constants.js';
-import type { WindowEnv } from '../../claude/session-runtime.service.js';
+import type { Tier } from '../../claude/types/model-ladder.types.js';
+import type { WindowEnv } from '../../claude/types/session-runtime.types.js';
 import type { ProfileLayer, TaskSpec } from './profile.types.js';
 
 export interface PlanTaskRequest {

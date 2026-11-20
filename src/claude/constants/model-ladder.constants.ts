@@ -1,3 +1,5 @@
+import type { ModelRoute, Tier } from '../types/model-ladder.types.js';
+
 // The models and efforts pup launches `claude` on (decision 92). Every window
 // pup opens and every utility call passes both `--model` and `--effort`, so the
 // operator's own settings (`model`, `effortLevel`), which every session
@@ -9,20 +11,6 @@
 const OPUS_MODEL = 'claude-opus-5-5';
 const SONNET_MODEL = 'claude-sonnet-5-5';
 const HAIKU_MODEL = 'claude-haiku-5-5';
-
-/** What one `claude` runs on. */
-export interface ModelRoute {
-  model: string;
-  effort: string;
-  /** `--fallback-model`, set on the Sonnet rungs: an overloaded Sonnet hands the turn to Opus. */
-  fallbackModel?: string;
-}
-
-/**
- * A task's risk class, derived from its scope-in by `tierForScope` unless the
- * operator set one with `pup plan add|edit --tier`.
- */
-export type Tier = 'standard' | 'critical';
 
 export const TIERS: readonly Tier[] = ['standard', 'critical'];
 

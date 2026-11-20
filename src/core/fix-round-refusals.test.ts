@@ -51,11 +51,11 @@ import {
   type ThreadSeed,
 } from '@test/helpers/fix-round.mock.js';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
+import { SteerNotDeliveredError } from '../claude/errors/session-runtime.errors.js';
 import {
   kickoff,
   killSession,
   launchSession,
-  SteerNotDeliveredError,
   steerPane,
 } from '../claude/session-runtime.service.js';
 import { openStore } from './db.client.js';

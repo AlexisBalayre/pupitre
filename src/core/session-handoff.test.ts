@@ -22,11 +22,11 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
 }));
 
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
+import { SessionPaneMissingError } from '../claude/errors/session-runtime.errors.js';
 import {
   kickoff,
   killSession,
   launchSession,
-  SessionPaneMissingError,
   steerPane,
 } from '../claude/session-runtime.service.js';
 import { openStore } from './db.client.js';

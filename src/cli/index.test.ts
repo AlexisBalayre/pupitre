@@ -17,20 +17,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // multi-stage merge-gate orchestration) — everything else (sqlite repositories,
 // profile-store file reads) is exercised for real, per docs/conventions/testing.md.
 vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
-  SessionPaneMissingError: class SessionPaneMissingError extends Error {
-    readonly sessionId: string;
-    constructor(sessionId: string, paneId: string) {
-      super(`Session ${sessionId}'s pane ${paneId} no longer exists; nothing was sent.`);
-      this.sessionId = sessionId;
-    }
-  },
-  SteerNotDeliveredError: class SteerNotDeliveredError extends Error {
-    readonly sessionId: string;
-    constructor(sessionId: string, chars: number) {
-      super(`Steer to session ${sessionId} did not land: ${chars} chars`);
-      this.sessionId = sessionId;
-    }
-  },
   conductorName: (repoProjectId: string) => `pup-conductor-${repoProjectId}`,
   // The running conductor's run token, read from its window: none unless a
   // test puts a conductor up.
@@ -73,9 +59,6 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
     .resolveWindowEnv,
   claudeUserDir: (await importOriginal<typeof import('../claude/session-runtime.service.js')>())
     .claudeUserDir,
-  ConfigDirRefusedError: (
-    await importOriginal<typeof import('../claude/session-runtime.service.js')>()
-  ).ConfigDirRefusedError,
   sessionEnvAllowed: (await importOriginal<typeof import('../claude/session-runtime.service.js')>())
     .sessionEnvAllowed,
   readSessionEnv: (await importOriginal<typeof import('../claude/session-runtime.service.js')>())
@@ -84,6 +67,25 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
     .refusedSessionEnv,
   saveSessionEnv: (await importOriginal<typeof import('../claude/session-runtime.service.js')>())
     .saveSessionEnv,
+}));
+vi.mock('../claude/errors/session-runtime.errors.js', async (importOriginal) => ({
+  SessionPaneMissingError: class SessionPaneMissingError extends Error {
+    readonly sessionId: string;
+    constructor(sessionId: string, paneId: string) {
+      super(`Session ${sessionId}'s pane ${paneId} no longer exists; nothing was sent.`);
+      this.sessionId = sessionId;
+    }
+  },
+  SteerNotDeliveredError: class SteerNotDeliveredError extends Error {
+    readonly sessionId: string;
+    constructor(sessionId: string, chars: number) {
+      super(`Steer to session ${sessionId} did not land: ${chars} chars`);
+      this.sessionId = sessionId;
+    }
+  },
+  ConfigDirRefusedError: (
+    await importOriginal<typeof import('../claude/errors/session-runtime.errors.js')>()
+  ).ConfigDirRefusedError,
 }));
 // `render` takes over the terminal and never returns until the operator quits,
 // which is the one boundary `pup ui` has; the dashboard it would draw is tested
@@ -210,14 +212,16 @@ import {
   worktreeOf,
 } from '@test/helpers/cli-index.mock.js';
 import {
+  SessionPaneMissingError,
+  SteerNotDeliveredError,
+} from '../claude/errors/session-runtime.errors.js';
+import {
   conductorRun,
   deadTurnError,
   launchWatcher,
   listPanes,
   listProcesses,
   recordedPanePids,
-  SessionPaneMissingError,
-  SteerNotDeliveredError,
   saveSessionEnv,
   steerPane,
   transcriptDir,

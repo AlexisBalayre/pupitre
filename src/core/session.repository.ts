@@ -1,6 +1,6 @@
 import type { Database } from 'better-sqlite3';
 import { sanitizeReason } from '../adapters/capability.utils.js';
-import type { Tier } from '../claude/model-ladder.constants.js';
+import type { Tier } from '../claude/types/model-ladder.types.js';
 import type { EventType, SessionState } from './db.client.js';
 import { InvalidProfileError } from './errors/profile.errors.js';
 import { InvalidTransitionError, MalformedTaskSpecError } from './errors/session.errors.js';

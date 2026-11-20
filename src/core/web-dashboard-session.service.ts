@@ -1,6 +1,6 @@
 import type { Database } from 'better-sqlite3';
-
-import { capturePane, SessionPaneMissingError } from '../claude/session-runtime.service.js';
+import { SessionPaneMissingError } from '../claude/errors/session-runtime.errors.js';
+import { capturePane } from '../claude/session-runtime.service.js';
 import { buildDashboardSnapshot, routeLabel } from './dashboard.service.js';
 import { displayText } from './report-data.utils.js';
 import { getSession } from './session.repository.js';

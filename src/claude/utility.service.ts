@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
-import { UTILITY_ROUTE } from './model-ladder.constants.js';
+import { UTILITY_ROUTE } from './constants/model-ladder.constants.js';
+import type { UtilityResult } from './types/utility.types.js';
 
 // Gate-time Claude work is a one-shot `claude -p` call (decision 11): fixed
 // prompt in, text out, no tools, no session state. Uses the operator's normal
@@ -19,11 +20,6 @@ const UTILITY_TIMEOUT_MS = 120_000;
 // `claude` 2.1.322 in the repo: cache hit 53% of ~22.2k tokens, now 78% of ~3.1k.
 const UTILITY_FLAGS = ['--tools', '', '--strict-mcp-config', '--safe-mode'];
 const UTILITY_ENV = { CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS: '1' };
-
-export interface UtilityResult {
-  ok: boolean;
-  output: string;
-}
 
 export function runUtility(prompt: string, timeoutMs = UTILITY_TIMEOUT_MS): UtilityResult {
   try {

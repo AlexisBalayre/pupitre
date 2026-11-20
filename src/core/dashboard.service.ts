@@ -11,10 +11,10 @@ import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 
 import { sanitizeReason } from '../adapters/capability.utils.js';
-import { LADDERS } from '../claude/model-ladder.constants.js';
+import { LADDERS } from '../claude/constants/model-ladder.constants.js';
+import { ConfigDirRefusedError } from '../claude/errors/session-runtime.errors.js';
 import {
   attachCommand,
-  ConfigDirRefusedError,
   claudeUserDir,
   conductorName,
   transcriptDir,

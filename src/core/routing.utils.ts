@@ -1,4 +1,5 @@
-import { LADDERS, type ModelRoute, TIERS, type Tier } from '../claude/model-ladder.constants.js';
+import { LADDERS, TIERS } from '../claude/constants/model-ladder.constants.js';
+import type { ModelRoute, Tier } from '../claude/types/model-ladder.types.js';
 import type { SessionEvent } from './types/session-event.types.js';
 import type { FindingClass } from './types/session-lifecycle.types.js';
 

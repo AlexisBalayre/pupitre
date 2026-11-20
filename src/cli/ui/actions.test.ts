@@ -35,7 +35,8 @@ vi.mock('../../core/conductor.service.js', () => ({
 
 import { spawnSync } from 'node:child_process';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
-import { SteerNotDeliveredError, saveSessionEnv } from '../../claude/session-runtime.service.js';
+import { SteerNotDeliveredError } from '../../claude/errors/session-runtime.errors.js';
+import { saveSessionEnv } from '../../claude/session-runtime.service.js';
 import { startConductor, stopConductor } from '../../core/conductor.service.js';
 import { openStore } from '../../core/db.client.js';
 import { LaunchRolledBackError } from '../../core/errors/session-lifecycle.errors.js';

@@ -1,4 +1,4 @@
-import type { WindowTarget } from '../../claude/session-runtime.service.js';
+import type { WindowTarget } from '../../claude/types/session-runtime.types.js';
 import type { FleetStore } from '../../core/types/fleet.types.js';
 
 export type ActionDeps = FleetStore;

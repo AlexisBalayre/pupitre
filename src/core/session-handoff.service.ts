@@ -8,8 +8,8 @@ import {
   killSession as killTmux,
   launchSession,
   steerPane,
-  type WindowEnv,
 } from '../claude/session-runtime.service.js';
+import type { WindowEnv } from '../claude/types/session-runtime.types.js';
 import { HandoffMissingError } from './errors/session-handoff.errors.js';
 import { verifiedWorktreeGitEnv } from './git-diff.client.js';
 import { assertMintedRow } from './merge-gate.service.js';

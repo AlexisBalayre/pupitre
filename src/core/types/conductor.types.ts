@@ -1,5 +1,5 @@
 import type { Database } from 'better-sqlite3';
-import type { WindowEnv } from '../../claude/session-runtime.service.js';
+import type { WindowEnv } from '../../claude/types/session-runtime.types.js';
 import type { ProfileLayer } from './profile.types.js';
 
 export interface StartConductorRequest {

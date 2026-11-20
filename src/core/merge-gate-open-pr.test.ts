@@ -114,7 +114,8 @@ import {
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import type { Adapter, CapabilityContext } from '../adapters/types/adapter.types.js';
 import { typescriptAdapter } from '../adapters/typescript.adapter.js';
-import { SteerNotDeliveredError, steerPane } from '../claude/session-runtime.service.js';
+import { SteerNotDeliveredError } from '../claude/errors/session-runtime.errors.js';
+import { steerPane } from '../claude/session-runtime.service.js';
 import { openStore } from './db.client.js';
 import { ArmedGitDriverError } from './errors/git-diff.errors.js';
 import { MergeLockHeldError, SessionNotReviewableError } from './errors/merge-gate.errors.js';

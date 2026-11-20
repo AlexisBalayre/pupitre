@@ -3,8 +3,7 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { readPlainFile } from '../adapters/capability.utils.js';
-import { CONDUCTOR_ROUTE } from '../claude/model-ladder.constants.js';
-import type { InputBoxLook } from '../claude/pane.utils.js';
+import { CONDUCTOR_ROUTE } from '../claude/constants/model-ladder.constants.js';
 import {
   CONDUCTOR_RUN_VAR,
   conductorName,
@@ -19,6 +18,7 @@ import {
   readInputBoxLook,
   submitPane,
 } from '../claude/session-runtime.service.js';
+import type { InputBoxLook } from '../claude/types/pane.types.js';
 import { ConductorTellRefusedError } from './errors/conductor.errors.js';
 import {
   isRefusedSteer,
