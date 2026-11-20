@@ -4,12 +4,12 @@ import { join } from 'node:path';
 import { globToRegExp, globToRegExpSource } from '../core/glob.utils.js';
 import { GateInterruptedError, removeGateDir, runGateChild } from '../core/sandbox.utils.js';
 import { failureSummary } from './capability.utils.js';
-import { coveragePyToCoverageReport } from './python-coverage.utils.js';
 import {
   DEBT_COMMAND_MAX_BUFFER_BYTES,
   DEBT_COMMAND_TIMEOUT_MS,
   VULTURE_DEAD_CODE_EXIT,
-} from './python-debt.constants.js';
+} from './constants/python-debt.constants.js';
+import { coveragePyToCoverageReport } from './python-coverage.utils.js';
 import { parseVultureOutput } from './python-debt.utils.js';
 import type {
   Adapter,

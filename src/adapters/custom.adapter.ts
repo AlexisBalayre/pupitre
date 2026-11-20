@@ -11,8 +11,11 @@ import { failureSummary } from './capability.utils.js';
 import {
   CUSTOM_ADAPTER_CONFIG_PATH,
   CUSTOM_COMMAND_TIMEOUT_MS,
-} from './custom-adapter.constants.js';
-import { CustomAdapterCommandError, CustomAdapterConfigError } from './custom-adapter.errors.js';
+} from './constants/custom-adapter.constants.js';
+import {
+  CustomAdapterCommandError,
+  CustomAdapterConfigError,
+} from './errors/custom-adapter.errors.js';
 import type {
   Adapter,
   CapabilityContext,

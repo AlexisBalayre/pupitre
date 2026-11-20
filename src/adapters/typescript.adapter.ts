@@ -15,6 +15,7 @@ import { GATE_ENVIRONMENT_DIR } from '../core/merge-gate.constants.js';
 import { GateInterruptedError, removeGateDir, runGateChild } from '../core/sandbox.utils.js';
 import { failureSummary, isUnavailable, readPlainFile } from './capability.utils.js';
 import { configLoadsAFile } from './config-module.utils.js';
+import { COVERAGE_RUN_TIMEOUT_MS } from './constants/typescript-debt.constants.js';
 import { nestedPackageDirs } from './git-tree.client.js';
 import {
   PACKAGE_MANAGER_CONFIG,
@@ -40,31 +41,19 @@ import type {
   RootFiles,
 } from './types/adapter.types.js';
 import type { IstanbulCoverageMap } from './types/istanbul.types.js';
+import type { PackageManifest } from './types/package-manifest.types.js';
+import type { PathAliases } from './types/typescript-source.types.js';
 import { istanbulToCoverageReport } from './typescript-coverage.utils.js';
-import { COVERAGE_RUN_TIMEOUT_MS } from './typescript-debt.constants.js';
 import { findDeadExports, findDuplication, measureComplexity } from './typescript-debt.utils.js';
 import {
   isCoverageExcluded,
   isInNestedPackage,
   isSourceFile,
-  type PathAliases,
   parsePathAliases,
   resolveImport,
   SOURCE_EXTENSIONS,
 } from './typescript-source.utils.js';
 import { vitestCollection } from './vitest-config.utils.js';
-
-interface PackageManifest {
-  name?: unknown;
-  scripts?: Record<string, string>;
-  dependencies?: Record<string, string>;
-  devDependencies?: Record<string, string>;
-  main?: string;
-  module?: string;
-  types?: string;
-  bin?: string | Record<string, string>;
-  exports?: unknown;
-}
 
 const GATE_STAGES: GateStage[] = ['build', 'test', 'lint'];
 
