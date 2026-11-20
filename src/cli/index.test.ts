@@ -92,8 +92,10 @@ vi.mock('ink', async (importOriginal) => ({
   ...(await importOriginal<typeof import('ink')>()),
   render: vi.fn(),
 }));
-vi.mock('../core/conductor.service.js', async (importOriginal) => ({
+vi.mock('../core/errors/conductor.errors.js', () => ({
   ConductorTellRefusedError: class ConductorTellRefusedError extends Error {},
+}));
+vi.mock('../core/conductor.service.js', async (importOriginal) => ({
   // The store write, not a boundary: what it records is what `pup status` reads.
   markConductorQuestion: (await importOriginal<typeof import('../core/conductor.service.js')>())
     .markConductorQuestion,
@@ -157,8 +159,6 @@ vi.mock('../core/session-lifecycle.service.js', async (importOriginal) => ({
   createSession: vi.fn(),
   interruptSession: vi.fn(),
   killSession: vi.fn(),
-  LowMemoryError: (await importOriginal<typeof import('../core/session-lifecycle.service.js')>())
-    .LowMemoryError,
   launchTask: vi.fn(),
   markSessionDone: vi.fn(),
   markSessionQuestion: (
@@ -175,14 +175,16 @@ vi.mock('../core/test-slot.service.js', async (importOriginal) => ({
   runSessionTest: vi.fn(async () => 0),
   sessionTestCommand: vi.fn(() => ({ stage: 'test', command: 'pnpm', args: ['run', 'test'] })),
 }));
-vi.mock('../core/session-handoff.service.js', () => ({
-  HANDOFF_WAIT_DEFAULT_MS: 10 * 60 * 1000,
-  awaitHandoffReady: vi.fn(),
+vi.mock('../core/errors/session-handoff.errors.js', () => ({
   HandoffMissingError: class HandoffMissingError extends Error {
     constructor(sessionId: string, handoffPath: string) {
       super(`No handoff at ${handoffPath} for ${sessionId}.`);
     }
   },
+}));
+vi.mock('../core/session-handoff.service.js', () => ({
+  HANDOFF_WAIT_DEFAULT_MS: 10 * 60 * 1000,
+  awaitHandoffReady: vi.fn(),
   hardRespawnSession: vi.fn(),
   isHandoffReady: vi.fn(),
   markHandoffReady: vi.fn(),
@@ -223,7 +225,6 @@ import {
 } from '../claude/session-runtime.service.js';
 import { waitForCiReview } from '../core/ci-wait.service.js';
 import {
-  ConductorTellRefusedError,
   conductorBlock,
   isConductorRunning,
   markConductorQuestion,
@@ -232,12 +233,16 @@ import {
   tellConductor,
 } from '../core/conductor.service.js';
 import { DEFAULT_BASE_PROFILE } from '../core/default-profile.constants.js';
+import { ConductorTellRefusedError } from '../core/errors/conductor.errors.js';
+import { RewrittenGitDirError } from '../core/errors/git-diff.errors.js';
+import { InvalidProfileError } from '../core/errors/profile.errors.js';
+import { LaunchRolledBackError } from '../core/errors/session-lifecycle.errors.js';
+import { UsageLimitReachedError } from '../core/errors/usage-limits.errors.js';
 import { startFixRound } from '../core/fix-round.service.js';
-import { gitDiffPaths, RewrittenGitDirError } from '../core/git-diff.client.js';
+import { gitDiffPaths } from '../core/git-diff.client.js';
 import { intentTemplate } from '../core/intent.service.js';
 import { runMergeGate } from '../core/merge-gate.service.js';
 import { projectId, projectPaths } from '../core/paths.utils.js';
-import { InvalidProfileError } from '../core/profile.errors.js';
 import {
   appendEvent,
   ensureProject,
@@ -255,7 +260,6 @@ import {
   requestHandoff,
   respawnSession,
 } from '../core/session-handoff.service.js';
-import { LaunchRolledBackError } from '../core/session-lifecycle.errors.js';
 import {
   createSession,
   killSession,
@@ -265,7 +269,6 @@ import {
   steerSession,
 } from '../core/session-lifecycle.service.js';
 import { RESUME_MESSAGE } from '../core/turn-watchdog.service.js';
-import { UsageLimitReachedError } from '../core/usage-limits.service.js';
 import { ProjectResolutionError } from './errors/project.errors.js';
 import { buildProgram, fatalExitCode } from './index.js';
 import { resolveProject } from './project.utils.js';

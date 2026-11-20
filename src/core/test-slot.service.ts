@@ -15,6 +15,7 @@ import { join } from 'node:path';
 import { detectAdapters } from '../adapters/adapter.registry.js';
 import { formatDuration, readPlainFile, sanitizeReason } from '../adapters/capability.utils.js';
 import type { GateCommand } from '../adapters/types/adapter.types.js';
+import { SlotWaitExpiredError, SlotWaitInterruptedError } from './errors/test-slot.errors.js';
 import { GATE_COMMAND_TIMEOUT_MS } from './merge-gate.constants.js';
 
 // The machine is what 6 to 8 workers share, and test runs are what saturate it
@@ -65,9 +66,6 @@ export const COMMIT_TEST_ENV = 'PUP_COMMIT_TEST';
 
 /** `pup session test`'s status when no slot came free in time: sysexits' EX_TEMPFAIL, retry. */
 export const SLOTS_BUSY_STATUS = 75;
-
-/** Thrown out of `withTestSlot` when a session's wait runs out, so nothing runs. */
-class SlotWaitExpiredError extends Error {}
 
 /** Who takes a slot: the merge gate goes first, a worker's `pup session test` after it. */
 type SlotHolderKind = 'gate' | 'worker';
@@ -290,18 +288,10 @@ function release(path: string, token: string): void {
   }
 }
 
-type WaitSignal = 'SIGINT' | 'SIGTERM' | 'SIGHUP';
+export type WaitSignal = 'SIGINT' | 'SIGTERM' | 'SIGHUP';
 
 /** The signals that end a wait: closing the terminal sends a SIGHUP. */
 const WAIT_SIGNALS: readonly WaitSignal[] = ['SIGINT', 'SIGTERM', 'SIGHUP'];
-
-/** A wait for a slot that an interrupt of pup's own ended: nothing ran. */
-export class SlotWaitInterruptedError extends Error {
-  constructor(readonly signal: WaitSignal) {
-    super(`Interrupted by ${signal} while waiting for a test slot; nothing ran.`);
-    this.name = 'SlotWaitInterruptedError';
-  }
-}
 
 /**
  * Run `fn` once it holds one of the machine's test slots, and free the slot

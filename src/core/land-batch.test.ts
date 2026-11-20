@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { endSandboxRun, GateInterruptedError } from './sandbox.utils.js';
+import { endSandboxRun } from './sandbox.utils.js';
 
 // The real audit, so a test can count it and make it throw.
 vi.mock('./audit.service.js', async (importOriginal) => {
@@ -15,9 +15,10 @@ import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import type { Adapter } from '../adapters/types/adapter.types.js';
 import { auditProject } from './audit.service.js';
 import { openStore } from './db.client.js';
+import { MergeLockLostError } from './errors/merge-gate.errors.js';
+import { GateInterruptedError } from './errors/sandbox.errors.js';
 import { landSessions } from './land-batch.service.js';
 import { MERGE_LOCK_DIRNAME } from './merge-gate.constants.js';
-import { MergeLockLostError } from './merge-gate.errors.js';
 import { projectId } from './paths.utils.js';
 import { NO_PROGRESS } from './progress.utils.js';
 import {

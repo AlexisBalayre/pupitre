@@ -43,7 +43,6 @@ import {
 import {
   CI_REVIEW_LOOP,
   CONDUCTOR_BLOCKED_AFTER_MS,
-  ConductorTellRefusedError,
   conductorBlock,
   isConductorRunning,
   markConductorQuestion,
@@ -56,11 +55,12 @@ import {
 } from './conductor.service.js';
 import { openStore } from './db.client.js';
 import { DEFAULT_BASE_PROFILE } from './default-profile.constants.js';
+import { ConductorTellRefusedError } from './errors/conductor.errors.js';
+import { LaunchRolledBackError, QuestionRefusedError } from './errors/session-lifecycle.errors.js';
 import { recordWatcherBeat } from './overlap.repository.js';
 import { WATCH_STALE_AFTER_MS } from './overlap.service.js';
 import { projectId, projectPaths } from './paths.utils.js';
 import { appendEvent, openQuestion } from './session.repository.js';
-import { LaunchRolledBackError, QuestionRefusedError } from './session-lifecycle.errors.js';
 
 const REPO = '/repo';
 

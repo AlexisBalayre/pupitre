@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { NoAdapterError } from '../core/init.service.js';
+import { NoAdapterError } from '../core/errors/init.errors.js';
 import { runOrReportNoAdapter } from './no-adapter-guard.utils.js';
 
 describe('runOrReportNoAdapter', () => {

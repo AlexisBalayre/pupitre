@@ -10,7 +10,7 @@ import {
   readBrief,
   workerBrief,
 } from './brief.service.js';
-import { InvalidProfileError } from './profile.errors.js';
+import { InvalidProfileError } from './errors/profile.errors.js';
 
 const REPO = '/repo';
 

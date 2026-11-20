@@ -6,9 +6,10 @@ import type { Adapter, CoverageReport } from '../adapters/types/adapter.types.js
 import { auditProject, buildSweepTask, formatDebtTransition } from './audit.service.js';
 import { listBaselineHistory } from './baseline-history.repository.js';
 import { openStore } from './db.client.js';
+import { UndeclaredSandboxError } from './errors/sandbox.errors.js';
 import { initProject } from './init.service.js';
 import { projectId } from './paths.utils.js';
-import { endSandboxRun, UndeclaredSandboxError } from './sandbox.utils.js';
+import { endSandboxRun } from './sandbox.utils.js';
 import { getProject, saveProjectBaseline } from './session.repository.js';
 import type { ProjectBaseline } from './types/init.types.js';
 import type { TaskId } from './types/profile.types.js';

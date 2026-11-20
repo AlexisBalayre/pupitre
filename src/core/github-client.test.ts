@@ -15,7 +15,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { assertMainCheckout, RewrittenGitDirError } from './git-diff.client.js';
+import { RewrittenGitDirError } from './errors/git-diff.errors.js';
+import { assertMainCheckout } from './git-diff.client.js';
 import {
   commentOnPullRequest,
   isCutOffByNode,

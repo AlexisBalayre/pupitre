@@ -2,7 +2,8 @@ import type { Database } from 'better-sqlite3';
 import { sanitizeReason } from '../adapters/capability.utils.js';
 import type { Tier } from '../claude/model-ladder.constants.js';
 import type { EventType, SessionState } from './db.client.js';
-import { InvalidProfileError } from './profile.errors.js';
+import { InvalidProfileError } from './errors/profile.errors.js';
+import { InvalidTransitionError, MalformedTaskSpecError } from './errors/session.errors.js';
 import { asStringArray, parseJsonOr } from './report-data.utils.js';
 import { canTransition, claimedStates } from './session-state.utils.js';
 import { assertPlannableSpec } from './task-spec.utils.js';
@@ -52,33 +53,6 @@ export interface SessionRoute {
   effort: string;
   reason?: string;
   override: boolean;
-}
-
-export class InvalidTransitionError extends Error {
-  constructor(from: SessionState, to: SessionState) {
-    super(`Illegal session transition ${from} -> ${to}.`);
-    this.name = 'InvalidTransitionError';
-  }
-}
-
-/**
- * A stored spec a command that acts on it cannot use: not JSON, the wrong shape,
- * or failing the checks `pup plan add` runs. An InvalidProfileError, so every
- * command that already refuses an unplannable spec refuses this one too.
- *
- * The message is store text: it names the task id, and through
- * `assertPlannableSpec` the glob that failed, so whoever prints it scrubs it
- * (decision 68). What it never carries is the raw blob — a SyntaxError's
- * message quotes the bytes it choked on, and that one is swallowed here.
- */
-export class MalformedTaskSpecError extends InvalidProfileError {
-  constructor(
-    readonly taskId: string,
-    reason: string,
-  ) {
-    super(`Task ${taskId} has an unusable spec: ${reason}`);
-    this.name = 'MalformedTaskSpecError';
-  }
 }
 
 export interface NewSessionInput {

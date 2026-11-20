@@ -126,15 +126,16 @@ import { killSession, steerPane } from '../claude/session-runtime.service.js';
 import { runUtility } from '../claude/utility.service.js';
 import { openStore } from './db.client.js';
 import { listDecisionRecords } from './decision-record.repository.js';
-import { RewrittenGitDirError } from './git-diff.client.js';
-import { initProject } from './init.service.js';
-import { insertLedgerEntry, listLedgerEntries } from './ledger.repository.js';
-import { DUPLICATION_RULE_ID } from './merge-gate.constants.js';
+import { RewrittenGitDirError } from './errors/git-diff.errors.js';
 import {
   MergeLockHeldError,
   MergeLockLostError,
   SessionNotReviewableError,
-} from './merge-gate.errors.js';
+} from './errors/merge-gate.errors.js';
+import { GateInterruptedError, UndeclaredSandboxError } from './errors/sandbox.errors.js';
+import { initProject } from './init.service.js';
+import { insertLedgerEntry, listLedgerEntries } from './ledger.repository.js';
+import { DUPLICATION_RULE_ID } from './merge-gate.constants.js';
 import {
   assertMergeLockHeld,
   countChangedLines,
@@ -147,7 +148,6 @@ import {
   withScratchGitDir,
 } from './merge-gate.service.js';
 import { MERGE_STAGES, stageProgress } from './progress.utils.js';
-import { GateInterruptedError, UndeclaredSandboxError } from './sandbox.utils.js';
 import {
   appendEvent,
   getProject,

@@ -1,8 +1,8 @@
 import { lstatSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { readPlainFile } from '../adapters/capability.utils.js';
+import { InvalidProfileError } from './errors/profile.errors.js';
 import { projectPaths, writeStoreFile } from './paths.utils.js';
-import { InvalidProfileError } from './profile.errors.js';
 
 /**
  * The project brief: the operator's direction, written once and carried into

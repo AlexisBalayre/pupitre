@@ -71,7 +71,8 @@ vi.mock('node:fs', async (importOriginal) => {
 });
 
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
-import { verifiedWorktreeGitEnv, WorktreeRepointedError } from '../core/git-diff.client.js';
+import { WorktreeRepointedError } from '../core/errors/git-diff.errors.js';
+import { verifiedWorktreeGitEnv } from '../core/git-diff.client.js';
 import { projectId, projectPaths } from '../core/paths.utils.js';
 import { CONDUCTOR_ROUTE, LADDERS, type ModelRoute } from './model-ladder.constants.js';
 import {

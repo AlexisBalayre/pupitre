@@ -5,6 +5,7 @@ import type { Database } from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SessionState } from './db.client.js';
 import { openStore } from './db.client.js';
+import { LockBacklogOverBudgetError, MachineLoadedError } from './errors/session-cap.errors.js';
 import { projectId, projectPaths } from './paths.utils.js';
 import {
   appendEvent,
@@ -19,11 +20,9 @@ import {
   GATE_FLOOR_MS,
   LAND_WINDOW_MS,
   type LockBacklog,
-  LockBacklogOverBudgetError,
   launchHolds,
   launchRoomLines,
   lockBacklog,
-  MachineLoadedError,
   machineLoad,
   UNTIMED_GATE_MS,
 } from './session-cap.service.js';

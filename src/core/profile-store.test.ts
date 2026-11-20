@@ -3,8 +3,8 @@ import { join } from 'node:path';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { DEFAULT_BASE_PROFILE } from './default-profile.constants.js';
-import { InvalidProfileError } from './profile.errors.js';
-import { UnknownProfileError } from './profile-store.errors.js';
+import { InvalidProfileError } from './errors/profile.errors.js';
+import { UnknownProfileError } from './errors/profile-store.errors.js';
 import { getProfileLayer, listProfileLayers } from './profile-store.service.js';
 
 describe('profile store', () => {

@@ -60,6 +60,7 @@ import {
 } from '../claude/session-runtime.service.js';
 import { openStore } from './db.client.js';
 import { DEFAULT_BASE_PROFILE } from './default-profile.constants.js';
+import { LaunchRolledBackError } from './errors/session-lifecycle.errors.js';
 import { startFixRound } from './fix-round.service.js';
 import { landSession } from './land.service.js';
 import { runMergeGate } from './merge-gate.service.js';
@@ -76,7 +77,6 @@ import {
   saveProjectOriginUrl,
   transitionSession,
 } from './session.repository.js';
-import { LaunchRolledBackError } from './session-lifecycle.errors.js';
 import {
   killSession as killPupSession,
   markSessionDone,

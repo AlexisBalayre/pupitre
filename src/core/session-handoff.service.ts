@@ -10,6 +10,7 @@ import {
   steerPane,
   type WindowEnv,
 } from '../claude/session-runtime.service.js';
+import { HandoffMissingError } from './errors/session-handoff.errors.js';
 import { verifiedWorktreeGitEnv } from './git-diff.client.js';
 import { assertMintedRow } from './merge-gate.service.js';
 import { type ProjectPaths, projectPaths } from './paths.utils.js';
@@ -32,17 +33,6 @@ export const HANDOFF_WAIT_DEFAULT_MS = 10 * 60 * 1000;
 
 function syncSleep(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
-
-/** Thrown when `handoff-done` is run before the handoff document exists. */
-export class HandoffMissingError extends Error {
-  constructor(sessionId: string, handoffPath: string) {
-    super(
-      `No handoff at ${handoffPath}. Write the document for ${sessionId} before running ` +
-        '`pup session handoff-done`.',
-    );
-    this.name = 'HandoffMissingError';
-  }
 }
 
 /**

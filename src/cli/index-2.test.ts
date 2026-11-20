@@ -81,8 +81,10 @@ vi.mock('ink', async (importOriginal) => ({
   ...(await importOriginal<typeof import('ink')>()),
   render: vi.fn(),
 }));
-vi.mock('../core/conductor.service.js', () => ({
+vi.mock('../core/errors/conductor.errors.js', () => ({
   ConductorTellRefusedError: class ConductorTellRefusedError extends Error {},
+}));
+vi.mock('../core/conductor.service.js', () => ({
   NO_CONDUCTOR_RUNNING:
     'No conductor is running for this project; start one with `pup conductor start`.',
   isConductorRunning: vi.fn(() => false),
@@ -129,12 +131,10 @@ vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>();
   return { ...actual, execFileSync: vi.fn(actual.execFileSync), spawn: vi.fn(actual.spawn) };
 });
-vi.mock('../core/session-lifecycle.service.js', async (importOriginal) => ({
+vi.mock('../core/session-lifecycle.service.js', () => ({
   createSession: vi.fn(),
   interruptSession: vi.fn(),
   killSession: vi.fn(),
-  LowMemoryError: (await importOriginal<typeof import('../core/session-lifecycle.service.js')>())
-    .LowMemoryError,
   launchTask: vi.fn(),
   markSessionDone: vi.fn(),
   markSessionQuestion: vi.fn(),
@@ -149,14 +149,16 @@ vi.mock('../core/test-slot.service.js', async (importOriginal) => ({
   runSessionTest: vi.fn(async () => 0),
   sessionTestCommand: vi.fn(() => ({ stage: 'test', command: 'pnpm', args: ['run', 'test'] })),
 }));
-vi.mock('../core/session-handoff.service.js', () => ({
-  HANDOFF_WAIT_DEFAULT_MS: 10 * 60 * 1000,
-  awaitHandoffReady: vi.fn(),
+vi.mock('../core/errors/session-handoff.errors.js', () => ({
   HandoffMissingError: class HandoffMissingError extends Error {
     constructor(sessionId: string, handoffPath: string) {
       super(`No handoff at ${handoffPath} for ${sessionId}.`);
     }
   },
+}));
+vi.mock('../core/session-handoff.service.js', () => ({
+  HANDOFF_WAIT_DEFAULT_MS: 10 * 60 * 1000,
+  awaitHandoffReady: vi.fn(),
   hardRespawnSession: vi.fn(),
   isHandoffReady: vi.fn(),
   markHandoffReady: vi.fn(),
@@ -186,13 +188,18 @@ import { isConductorRunning } from '../core/conductor.service.js';
 import type { SessionState } from '../core/db.client.js';
 import { insertDecisionRecord } from '../core/decision-record.repository.js';
 import { DEFAULT_BASE_PROFILE } from '../core/default-profile.constants.js';
+import { MergeLockLostError } from '../core/errors/merge-gate.errors.js';
+import { InvalidProfileError } from '../core/errors/profile.errors.js';
+import { GateInterruptedError } from '../core/errors/sandbox.errors.js';
+import {
+  LaunchRolledBackError,
+  TerminalSessionError,
+  UnknownSessionError,
+} from '../core/errors/session-lifecycle.errors.js';
 import { ciReviewLookup, startFixRound } from '../core/fix-round.service.js';
 import { abandonClosedSession, landSession } from '../core/land.service.js';
 import { landSessions } from '../core/land-batch.service.js';
-import { MergeLockLostError } from '../core/merge-gate.errors.js';
 import { projectId, projectPaths } from '../core/paths.utils.js';
-import { InvalidProfileError } from '../core/profile.errors.js';
-import { GateInterruptedError } from '../core/sandbox.utils.js';
 import {
   appendEvent,
   ensureProject,
@@ -200,11 +207,6 @@ import {
   listEvents,
   transitionSession,
 } from '../core/session.repository.js';
-import {
-  LaunchRolledBackError,
-  TerminalSessionError,
-  UnknownSessionError,
-} from '../core/session-lifecycle.errors.js';
 import {
   createSession,
   recordSteerMessage,

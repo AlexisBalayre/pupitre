@@ -15,7 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { loadCustomAdapter } from '../adapters/custom.adapter.js';
 import { BRIEF_MAX_CHARS, BRIEF_TEMPLATE, briefPath } from './brief.service.js';
 import { DEFAULT_BASE_PROFILE } from './default-profile.constants.js';
-import { ContextBudgetExceededError, InvalidProfileError } from './profile.errors.js';
+import { ContextBudgetExceededError, InvalidProfileError } from './errors/profile.errors.js';
 import * as ProfileCompiler from './profile-compiler.service.js';
 import type { CompileInput, TaskSpec } from './types/profile.types.js';
 

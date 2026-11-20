@@ -7,10 +7,12 @@ import {
 import type { Adapter, GateCommand, GateStage } from '../adapters/types/adapter.types.js';
 import { appendBaselineHistory, hasBaselineHistoryEntry } from './baseline-history.repository.js';
 import { measureCoverage, measureStaticDebt } from './debt.service.js';
+import { BrokenToolchainError, NoAdapterError } from './errors/init.errors.js';
+import { GateInterruptedError } from './errors/sandbox.errors.js';
 import { runGit } from './git-diff.client.js';
 import { GATE_COMMAND_TIMEOUT_MS, GATE_OUTPUT_TAIL_CHARS } from './merge-gate.constants.js';
 import { projectId, projectPaths } from './paths.utils.js';
-import { GateInterruptedError, runGateChild, sandboxLabel } from './sandbox.utils.js';
+import { runGateChild, sandboxLabel } from './sandbox.utils.js';
 import {
   countProjectSessions,
   ensureProject,
@@ -26,30 +28,6 @@ import type {
   MeasuredBaseline,
   ProjectBaseline,
 } from './types/init.types.js';
-
-export class NoAdapterError extends Error {
-  constructor(repoPath: string) {
-    super(
-      `No adapter detected for ${repoPath} (supported stacks: TypeScript, Python, or a .pupitre/adapter.yml).`,
-    );
-    this.name = 'NoAdapterError';
-  }
-}
-
-/**
- * A stage died before measuring anything: the package manager it runs through
- * could not load from pup's toolchain cache. Stored, that FAIL becomes the bar
- * the next merge gates against (decision 55), so the capture stops instead.
- */
-export class BrokenToolchainError extends Error {
-  constructor(stage: string, installPath: string) {
-    super(
-      `${stage} could not load its package manager from the toolchain cache: ${installPath} is broken. ` +
-        'No baseline stored — move that directory aside and re-run.',
-    );
-    this.name = 'BrokenToolchainError';
-  }
-}
 
 /**
  * Origin's URL exactly as the config stores it, `undefined` when the repo has

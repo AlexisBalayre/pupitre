@@ -30,7 +30,9 @@ import {
   steerPane,
 } from '../claude/session-runtime.service.js';
 import { openStore } from './db.client.js';
-import { WorktreeRepointedError } from './git-diff.client.js';
+import { WorktreeRepointedError } from './errors/git-diff.errors.js';
+import { HandoffMissingError } from './errors/session-handoff.errors.js';
+import { TopRungReachedError } from './errors/session-lifecycle.errors.js';
 import { projectPaths } from './paths.utils.js';
 import {
   appendEvent,
@@ -43,14 +45,12 @@ import {
   transitionSession,
 } from './session.repository.js';
 import {
-  HandoffMissingError,
   hardRespawnSession,
   isHandoffReady,
   markHandoffReady,
   requestHandoff,
   respawnSession,
 } from './session-handoff.service.js';
-import { TopRungReachedError } from './session-lifecycle.errors.js';
 
 /** What a command resolved for its windows; the window itself is mocked here. */
 const WINDOW_ENV = { vars: {}, configDir: '/home/.claude' };

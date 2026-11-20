@@ -116,10 +116,10 @@ import type { Adapter, CapabilityContext } from '../adapters/types/adapter.types
 import { typescriptAdapter } from '../adapters/typescript.adapter.js';
 import { SteerNotDeliveredError, steerPane } from '../claude/session-runtime.service.js';
 import { openStore } from './db.client.js';
-import { ArmedGitDriverError } from './git-diff.client.js';
+import { ArmedGitDriverError } from './errors/git-diff.errors.js';
+import { MergeLockHeldError, SessionNotReviewableError } from './errors/merge-gate.errors.js';
 import { insertLedgerEntry, listLedgerEntries } from './ledger.repository.js';
 import { DUPLICATION_RULE_ID } from './merge-gate.constants.js';
-import { MergeLockHeldError, SessionNotReviewableError } from './merge-gate.errors.js';
 import { runMergeGate as runGate } from './merge-gate.service.js';
 import { projectPaths } from './paths.utils.js';
 import {

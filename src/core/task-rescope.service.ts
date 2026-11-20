@@ -7,10 +7,10 @@ import {
   windowSockets,
 } from '../claude/session-runtime.service.js';
 import { insertDecisionRecord } from './decision-record.repository.js';
+import { InvalidProfileError } from './errors/profile.errors.js';
 import { globToRegExpSource } from './glob.utils.js';
 import { PROTECTED_PATH_GLOBS } from './merge-gate.constants.js';
 import { scopeConflicts } from './overlap.service.js';
-import { InvalidProfileError } from './profile.errors.js';
 import { asStringArray, parseJsonOr } from './report-data.utils.js';
 import { asTier, taskTier, tierForScope } from './routing.utils.js';
 import {

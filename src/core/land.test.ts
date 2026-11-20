@@ -14,12 +14,7 @@ import { loadavg, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { afterAll, afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
-import {
-  endSandboxRun,
-  GateInterruptedError,
-  runGateChild,
-  TOOLCHAIN_CACHE_DIRNAME,
-} from './sandbox.utils.js';
+import { endSandboxRun, runGateChild, TOOLCHAIN_CACHE_DIRNAME } from './sandbox.utils.js';
 
 vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../claude/session-runtime.service.js')>()),
@@ -63,12 +58,14 @@ import type { Adapter } from '../adapters/types/adapter.types.js';
 import { SteerNotDeliveredError, steerPane } from '../claude/session-runtime.service.js';
 import { auditProject } from './audit.service.js';
 import { openStore } from './db.client.js';
+import { MergeLockLostError } from './errors/merge-gate.errors.js';
+import { GateInterruptedError } from './errors/sandbox.errors.js';
+import { TerminalSessionError } from './errors/session-lifecycle.errors.js';
 import { gitDiffPaths } from './git-diff.client.js';
 import { initProject } from './init.service.js';
 import { landSession } from './land.service.js';
 import { insertLedgerEntry } from './ledger.repository.js';
 import { PROTECTED_PATH_GLOBS } from './merge-gate.constants.js';
-import { MergeLockLostError } from './merge-gate.errors.js';
 import { measureBranch, runMergeGate, withScratchGitDir } from './merge-gate.service.js';
 import { projectId, projectPaths } from './paths.utils.js';
 import { LAND_STAGES, stageProgress } from './progress.utils.js';
@@ -82,7 +79,6 @@ import {
   saveProjectOriginUrl,
   transitionSession,
 } from './session.repository.js';
-import { TerminalSessionError } from './session-lifecycle.errors.js';
 import { HELD_SLOT_ENV } from './test-slot.service.js';
 import type { ProjectBaseline } from './types/init.types.js';
 import type { LandOutcome } from './types/land.types.js';

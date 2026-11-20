@@ -1,4 +1,4 @@
-import { NoAdapterError } from '../core/init.service.js';
+import { NoAdapterError } from '../core/errors/init.errors.js';
 
 /** Shared by init/audit: both baseline a repo and refuse the same way when no adapter fits. */
 export function runOrReportNoAdapter<TResult>(fn: () => TResult): TResult | undefined {

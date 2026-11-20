@@ -105,7 +105,7 @@ import { typescriptAdapter } from '../adapters/typescript.adapter.js';
 import { killSession, steerPane } from '../claude/session-runtime.service.js';
 import { runUtility } from '../claude/utility.service.js';
 import { openStore } from './db.client.js';
-import { ArmedGitDriverError, WorktreeConfigError } from './git-diff.client.js';
+import { ArmedGitDriverError, WorktreeConfigError } from './errors/git-diff.errors.js';
 import { listLedgerEntries } from './ledger.repository.js';
 import { DUPLICATION_RULE_ID } from './merge-gate.constants.js';
 import { runMergeGate as runGate } from './merge-gate.service.js';

@@ -17,6 +17,7 @@ import { basename, join } from 'node:path';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { openStore } from './db.client.js';
+import { SlotWaitInterruptedError } from './errors/test-slot.errors.js';
 import { projectId, projectPaths } from './paths.utils.js';
 import { ensureProject, insertSession, insertTask } from './session.repository.js';
 import {
@@ -29,7 +30,6 @@ import {
   SESSION_SLOT_WAIT_MS,
   SLOTS_BUSY_STATUS,
   type SlotHolder,
-  SlotWaitInterruptedError,
   sessionTestCommand,
   type TestSlotOptions,
   testRunsElsewhere,
