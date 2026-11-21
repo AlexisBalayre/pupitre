@@ -105,3 +105,8 @@
     reason. The conductor defaults to Opus 5.5 at high and takes `--effort`. The kickoff names the
     areas, the ladders and the xhigh security-review subagent, and `runUtility`'s argv carries
     Haiku at low.
+    *Amended 2026-11-21 (#413):* `CRITICAL_AREAS` in `src/core/routing.utils.ts` grew from the 12
+    original globs to about 30 entries. The added ones cover the folders the types, constants and
+    errors extracted out of critical files moved to (`src/core/types/`, `src/core/constants/`,
+    `src/core/errors/`), so a file moved out of a critical area stays critical. A future
+    extraction out of a critical file needs its own entry; the routing test asserts it.

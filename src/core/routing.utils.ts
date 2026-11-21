@@ -9,7 +9,8 @@ import type { FindingClass } from './types/session-lifecycle.types.js';
  * hooks or profile compilation (decision 92). A task whose scope-in can name
  * any path one of these names is critical; every other task is standard.
  * An area matches by path, so the types, constants and errors extracted out of
- * its files into `src/core/{types,constants,errors}/` are named beside it.
+ * its files into `src/core/{types,constants,errors}/` are named beside it, and
+ * a future extraction out of a critical file needs its own entry here (the routing test asserts it).
  */
 export const CRITICAL_AREAS: readonly string[] = [
   'src/core/merge-gate*',
