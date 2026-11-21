@@ -1,6 +1,7 @@
 import type { ChildProcess } from 'node:child_process';
 import { type Key, useApp, useInput } from 'ink';
 import { useRef, useState } from 'react';
+import { InterruptSignal } from '../../core/enums/interrupt-signal.enums.js';
 import { HANDOFF_WAIT_DEFAULT_MS } from '../../core/session-handoff.service.js';
 import { HANDOFF_POLL_MS, MERGE_LOG_LINES } from '../constants/dashboard.constants.js';
 import type { ActionDeps, ActionResult, AttachTarget } from '../types/actions.types.js';
@@ -308,7 +309,7 @@ export function useControls({
     // this process and strands the lock directory it would have released.
     if (busy) {
       if (input === 'q' && mergeChild.current) {
-        mergeChild.current.kill('SIGTERM');
+        mergeChild.current.kill(InterruptSignal.Sigterm);
         mergeChild.current = undefined;
         exit();
       }

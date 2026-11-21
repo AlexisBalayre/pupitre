@@ -34,6 +34,8 @@ vi.mock('./actions.service.js', () => ({
   unblockSelected: vi.fn(() => ({ message: 'Unblocked.' })),
 }));
 
+import { GateStageStatus } from '../../core/enums/gate-stage-status.enums.js';
+import { InterruptSignal } from '../../core/enums/interrupt-signal.enums.js';
 import type { DashboardSession, DashboardSnapshot } from '../../core/types/dashboard.types.js';
 import { MERGE_LOG_LINES } from '../constants/dashboard.constants.js';
 import type { ActionDeps, MergeHandlers } from '../types/actions.types.js';
@@ -493,7 +495,7 @@ describe('dashboard controls', () => {
 
       await press(instance, 'q');
 
-      expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+      expect(child.kill).toHaveBeenCalledWith(InterruptSignal.Sigterm);
       instance.unmount();
     });
 
@@ -668,7 +670,7 @@ describe('dashboard controls', () => {
           acceptance: ['the pane opens'],
           lastGate: {
             passed: true,
-            stages: [{ stage: 'coverage', status: 'pass' }],
+            stages: [{ stage: 'coverage', status: GateStageStatus.Pass }],
             at: '2026-09-13T10:00:00.000Z',
           },
           recentEvents: [{ type: 'steer', at: '2026-09-13T09:00:00.000Z', detail: 'kickoff' }],

@@ -2,7 +2,13 @@ import { join } from 'node:path';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import type { Database } from 'better-sqlite3';
 import { beforeEach, describe, expect, it } from 'vitest';
+import { GateStage } from '../adapters/enums/gate-stage.enums.js';
+import { Tier } from '../claude/enums/tier.enums.js';
 import { openStore } from './db.client.js';
+import { ClimbReason } from './enums/climb-reason.enums.js';
+import { EventType } from './enums/event-type.enums.js';
+import { GateStageStatus } from './enums/gate-stage-status.enums.js';
+import { MergeStatus } from './enums/merge-status.enums.js';
 import { InvalidProfileError } from './errors/profile.errors.js';
 import { InvalidTransitionError, MalformedTaskSpecError } from './errors/session.errors.js';
 import {
@@ -63,7 +69,9 @@ describe('session repository', () => {
     transitionSession(db, 's1', 'awaiting-review');
     expect(getSession(db, 's1')?.state).toBe('awaiting-review');
     const events = db
-      .prepare("SELECT payload FROM events WHERE session_id = 's1' AND type = 'gate_result'")
+      .prepare(
+        `SELECT payload FROM events WHERE session_id = 's1' AND type = '${EventType.GateResult}'`,
+      )
       .all() as { payload: string }[];
     expect(events).toHaveLength(2);
     expect(JSON.parse(events[1]?.payload ?? '{}')).toMatchObject({
@@ -109,7 +117,7 @@ describe('session repository', () => {
 
   it('appends a null-session event without a foreign-key error', () => {
     expect(() =>
-      appendEvent(db, null, 'utility_call', { kind: 'gate-reviewer', ok: true }),
+      appendEvent(db, null, EventType.UtilityCall, { kind: 'gate-reviewer', ok: true }),
     ).not.toThrow();
   });
 
@@ -140,9 +148,9 @@ describe('session repository', () => {
       threads: ['PRRT_1'],
       rejectBase: 0,
     };
-    appendEvent(db, 's1', 'fix_round', round);
+    appendEvent(db, 's1', EventType.FixRound, round);
     expect(listEvents(db, 's1').at(-1)).toMatchObject({
-      type: 'fix_round',
+      type: EventType.FixRound,
       payload: JSON.stringify(round),
     });
   });
@@ -150,13 +158,13 @@ describe('session repository', () => {
   it('lists a session events oldest first with raw JSON payloads', () => {
     seedSession(db, 's1');
     seedSession(db, 's2');
-    appendEvent(db, 's1', 'steer', { kind: 'manual' });
-    appendEvent(db, 's2', 'interrupt', { steered: false });
-    appendEvent(db, 's1', 'session_done', { summary: 'shipped' });
+    appendEvent(db, 's1', EventType.Steer, { kind: 'manual' });
+    appendEvent(db, 's2', EventType.Interrupt, { steered: false });
+    appendEvent(db, 's1', EventType.SessionDone, { summary: 'shipped' });
 
     const rows = listEvents(db, 's1');
 
-    expect(rows.map((e) => e.type)).toEqual(['steer', 'session_done']);
+    expect(rows.map((e) => e.type)).toEqual([EventType.Steer, EventType.SessionDone]);
     expect(rows[1]?.payload).toBe(JSON.stringify({ summary: 'shipped' }));
   });
 });
@@ -419,20 +427,20 @@ describe('task tier and session route (decision 92)', () => {
   });
 
   it('stores the tier a task is planned with, and none when the scope decides it', () => {
-    insertTask(db, { id: 't-1', projectId: 'proj-1', spec: '{}', tier: 'critical' });
+    insertTask(db, { id: 't-1', projectId: 'proj-1', spec: '{}', tier: Tier.Critical });
     insertTask(db, { id: 't-2', projectId: 'proj-1', spec: '{}' });
 
-    expect(getTask(db, 't-1')?.tier).toBe('critical');
+    expect(getTask(db, 't-1')?.tier).toBe(Tier.Critical);
     expect(getTask(db, 't-2')?.tier).toBeNull();
   });
 
   it('sets the tier on edit, and keeps it when an edit does not name one', () => {
     insertTask(db, { id: 't-1', projectId: 'proj-1', spec: JSON.stringify(SPEC) });
 
-    expect(editTaskSpec(db, 't-1', { tier: 'critical' })).toBe('updated');
+    expect(editTaskSpec(db, 't-1', { tier: Tier.Critical })).toBe('updated');
     expect(editTaskSpec(db, 't-1', { goal: 'sharper' })).toBe('updated');
 
-    expect(getTask(db, 't-1')?.tier).toBe('critical');
+    expect(getTask(db, 't-1')?.tier).toBe(Tier.Critical);
     expect(readTaskSpec(db, 't-1').goal).toBe('sharper');
   });
 
@@ -441,21 +449,21 @@ describe('task tier and session route (decision 92)', () => {
     session('s1');
     transitionSession(db, 's1', 'running');
 
-    expect(editTaskSpec(db, 't-1', { tier: 'critical' })).toBe('claimed');
+    expect(editTaskSpec(db, 't-1', { tier: Tier.Critical })).toBe('claimed');
     expect(getTask(db, 't-1')?.tier).toBeNull();
   });
 
   it('records the route a session launched on, and a respawn rewrites it', () => {
     insertTask(db, { id: 't-1', projectId: 'proj-1', spec: '{}' });
     session('s1', {
-      tier: 'standard',
+      tier: Tier.Standard,
       rung: 0,
       model: 'claude-sonnet-5-5',
       effort: 'medium',
       override: false,
     });
     expect(routeOf('s1')).toEqual({
-      tier: 'standard',
+      tier: Tier.Standard,
       rung: 0,
       model: 'claude-sonnet-5-5',
       effort: 'medium',
@@ -464,20 +472,20 @@ describe('task tier and session route (decision 92)', () => {
     });
 
     recordSessionRoute(db, 's1', {
-      tier: 'standard',
+      tier: Tier.Standard,
       rung: 1,
       model: 'claude-opus-5-5',
       effort: 'xhigh',
-      reason: 'stall',
+      reason: ClimbReason.Stall,
       override: true,
     });
 
     expect(routeOf('s1')).toEqual({
-      tier: 'standard',
+      tier: Tier.Standard,
       rung: 1,
       model: 'claude-opus-5-5',
       effort: 'xhigh',
-      rung_reason: 'stall',
+      rung_reason: ClimbReason.Stall,
       route_override: 1,
     });
   });
@@ -718,30 +726,30 @@ describe('task spec decoding', () => {
 
 describe('decodeEvent', () => {
   const gate = (payload: unknown) =>
-    decodeEvent({ type: 'gate_result', payload: JSON.stringify(payload) });
+    decodeEvent({ type: EventType.GateResult, payload: JSON.stringify(payload) });
 
   it('reads a gate run as its verdict and stages', () => {
     expect(
       gate({
-        outcome: 'refused',
+        outcome: MergeStatus.Refused,
         report: {
           sessionId: 's1',
           passed: false,
           sandbox: 'none',
           stages: [
-            { stage: 'lint', status: 'pass' },
-            { stage: 'tests', status: 'fail', detail: '2 failing' },
+            { stage: GateStage.Lint, status: GateStageStatus.Pass },
+            { stage: 'tests', status: GateStageStatus.Fail, detail: '2 failing' },
           ],
         },
       }),
     ).toEqual({
       type: 'gate_result',
-      outcome: 'refused',
+      outcome: MergeStatus.Refused,
       report: {
         passed: false,
         stages: [
-          { stage: 'lint', status: 'pass' },
-          { stage: 'tests', status: 'fail', detail: '2 failing' },
+          { stage: GateStage.Lint, status: GateStageStatus.Pass },
+          { stage: 'tests', status: GateStageStatus.Fail, detail: '2 failing' },
         ],
       },
     });
@@ -757,7 +765,7 @@ describe('decodeEvent', () => {
   });
 
   it('reads a torn payload as a gate result without a report instead of throwing', () => {
-    const event = decodeEvent({ type: 'gate_result', payload: '{"report":' });
+    const event = decodeEvent({ type: EventType.GateResult, payload: '{"report":' });
 
     expect(event).toEqual({ type: 'gate_result' });
   });
@@ -774,11 +782,11 @@ describe('decodeEvent', () => {
         passed: 'yes',
         stages: [
           null,
-          'lint',
-          { stage: 'build' },
-          { stage: 7, status: 'pass' },
-          { stage: 'tests', status: 'fail', detail: 42 },
-          { stage: 'lint', status: 'pass' },
+          GateStage.Lint,
+          { stage: GateStage.Build },
+          { stage: 7, status: GateStageStatus.Pass },
+          { stage: 'tests', status: GateStageStatus.Fail, detail: 42 },
+          { stage: GateStage.Lint, status: GateStageStatus.Pass },
         ],
       },
     });
@@ -788,15 +796,15 @@ describe('decodeEvent', () => {
       report: {
         passed: false,
         stages: [
-          { stage: 'tests', status: 'fail' },
-          { stage: 'lint', status: 'pass' },
+          { stage: 'tests', status: GateStageStatus.Fail },
+          { stage: GateStage.Lint, status: GateStageStatus.Pass },
         ],
       },
     });
   });
 
   it('reads stages that are not an array as none', () => {
-    expect(gate({ report: { passed: true, stages: { stage: 'lint' } } })).toEqual({
+    expect(gate({ report: { passed: true, stages: { stage: GateStage.Lint } } })).toEqual({
       type: 'gate_result',
       report: { passed: true, stages: [] },
     });
@@ -805,23 +813,26 @@ describe('decodeEvent', () => {
   // Decision 68: the decoder hands each renderer the store text as it was.
   it('leaves control characters for the renderer to scrub', () => {
     expect(
-      decodeEvent({ type: 'question', payload: JSON.stringify({ text: '\u001b[2Jwhich one?' }) }),
+      decodeEvent({
+        type: EventType.Question,
+        payload: JSON.stringify({ text: '\u001b[2Jwhich one?' }),
+      }),
     ).toEqual({ type: 'question', text: '\u001b[2Jwhich one?' });
   });
 
   it('reads a field of the wrong type as absent', () => {
     expect(
-      decodeEvent({ type: 'steer', payload: JSON.stringify({ kind: 5, by: 'conductor' }) }),
+      decodeEvent({ type: EventType.Steer, payload: JSON.stringify({ kind: 5, by: 'conductor' }) }),
     ).toEqual({ type: 'steer', by: 'conductor' });
     expect(
-      decodeEvent({ type: 'session_done', payload: JSON.stringify({ summary: ['done'] }) }),
+      decodeEvent({ type: EventType.SessionDone, payload: JSON.stringify({ summary: ['done'] }) }),
     ).toEqual({ type: 'session_done' });
   });
 
   it('reads a merge, keeping only the string members of its file list', () => {
     expect(
       decodeEvent({
-        type: 'merge',
+        type: EventType.Merge,
         payload: JSON.stringify({
           branch: 'pup/s1',
           target: 'main',
@@ -835,13 +846,16 @@ describe('decodeEvent', () => {
       files: ['src/a.ts'],
       prUrl: 'https://github.com/o/r/pull/1',
     });
-    expect(decodeEvent({ type: 'merge', payload: '{}' })).toEqual({ type: 'merge', files: [] });
+    expect(decodeEvent({ type: EventType.Merge, payload: '{}' })).toEqual({
+      type: 'merge',
+      files: [],
+    });
   });
 
   it('reads a merge with its pinned sha and the commits left behind', () => {
     expect(
       decodeEvent({
-        type: 'merge',
+        type: EventType.Merge,
         payload: JSON.stringify({
           branch: 'pup/s1',
           sha: 'abc123',
@@ -858,32 +872,32 @@ describe('decodeEvent', () => {
       leftBehind: 2,
     });
     expect(
-      decodeEvent({ type: 'merge', payload: JSON.stringify({ sha: 7, leftBehind: '2' }) }),
+      decodeEvent({ type: EventType.Merge, payload: JSON.stringify({ sha: 7, leftBehind: '2' }) }),
     ).toEqual({ type: 'merge', files: [] });
   });
 
   it('reads a dead turn and a handoff signal', () => {
     expect(
       decodeEvent({
-        type: 'turn_died',
+        type: EventType.TurnDied,
         payload: JSON.stringify({ reason: 'API Error', stalledAt: '2026-10-06T10:00:00Z' }),
       }),
     ).toEqual({ type: 'turn_died', reason: 'API Error', stalledAt: '2026-10-06T10:00:00Z' });
-    expect(decodeEvent({ type: 'handoff_ready', payload: '{"hash":"abc"}' })).toEqual({
+    expect(decodeEvent({ type: EventType.HandoffReady, payload: '{"hash":"abc"}' })).toEqual({
       type: 'handoff_ready',
       hash: 'abc',
     });
   });
 
   it('keeps the payload of a type nothing reads by field', () => {
-    expect(decodeEvent({ type: 'interrupt', payload: '{"steered":false}' })).toEqual({
+    expect(decodeEvent({ type: EventType.Interrupt, payload: '{"steered":false}' })).toEqual({
       type: 'other',
-      eventType: 'interrupt',
+      eventType: EventType.Interrupt,
       fields: { steered: false },
     });
-    expect(decodeEvent({ type: 'interrupt', payload: 'not json' })).toEqual({
+    expect(decodeEvent({ type: EventType.Interrupt, payload: 'not json' })).toEqual({
       type: 'other',
-      eventType: 'interrupt',
+      eventType: EventType.Interrupt,
       fields: {},
     });
   });

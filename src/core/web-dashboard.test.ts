@@ -15,7 +15,7 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   hasConductorWindow: vi.fn(() => false),
   conductorPane: vi.fn(() => undefined),
   conductorRun: vi.fn(() => 'run-1'),
-  readInputBoxLook: vi.fn(() => ({ state: 'empty', draft: '' })),
+  readInputBoxLook: vi.fn(() => ({ state: InputBoxState.Empty, draft: '' })),
 }));
 // Real unless a test holds one action open, to see what a shutdown does meanwhile.
 vi.mock('./web-dashboard-actions.service.js', async (importOriginal) => {
@@ -24,6 +24,9 @@ vi.mock('./web-dashboard-actions.service.js', async (importOriginal) => {
 });
 
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
+import { GateStage } from '../adapters/enums/gate-stage.enums.js';
+import { InputBoxState } from '../claude/enums/input-box-state.enums.js';
+import { Tier } from '../claude/enums/tier.enums.js';
 import { SessionPaneMissingError } from '../claude/errors/session-runtime.errors.js';
 import {
   capturePane,
@@ -40,6 +43,11 @@ import { STALLED_AFTER_MS } from './constants/session-activity.constants.js';
 import { ACTIONS } from './constants/web-dashboard-actions.constants.js';
 import { buildDashboardSnapshot, needsYou } from './dashboard.service.js';
 import { openStore } from './db.client.js';
+import { ClimbReason } from './enums/climb-reason.enums.js';
+import { DebtMetric } from './enums/debt-metric.enums.js';
+import { EventType } from './enums/event-type.enums.js';
+import { GateStageStatus } from './enums/gate-stage-status.enums.js';
+import { StageDelta } from './enums/stage-delta.enums.js';
 import { persistBaseline } from './init.service.js';
 import { insertLedgerEntry, listLedgerEntries } from './ledger.repository.js';
 import { projectId, projectPaths } from './paths.utils.js';
@@ -278,7 +286,7 @@ describe('startWebDashboard', () => {
     vi.unstubAllEnvs();
     vi.mocked(hasConductorWindow).mockReset();
     vi.mocked(conductorPane).mockReturnValue(undefined);
-    vi.mocked(readInputBoxLook).mockReturnValue({ state: 'empty', draft: '' });
+    vi.mocked(readInputBoxLook).mockReturnValue({ state: InputBoxState.Empty, draft: '' });
   });
 
   function seedSession(
@@ -306,7 +314,7 @@ describe('startWebDashboard', () => {
   /** A `--pr` merge whose pinned sha this temp dir, no git repo, cannot show landed. */
   function seedMerge(sessionId: string, prUrl: string): void {
     seedSession(sessionId, ['running', 'awaiting-review', 'merged']);
-    appendEvent(db, sessionId, 'merge', {
+    appendEvent(db, sessionId, EventType.Merge, {
       branch: `pup/${sessionId}`,
       sha: 'f'.repeat(40),
       target: 'main',
@@ -401,7 +409,7 @@ describe('startWebDashboard', () => {
 
     it('serves the page as a shell holding nothing from the store', async () => {
       seedSession('s-asking', ['running']);
-      appendEvent(db, 's-asking', 'question', { text: 'rebase or merge?' });
+      appendEvent(db, 's-asking', EventType.Question, { text: 'rebase or merge?' });
 
       const shell = (await get(home(), NO_SECRET)).body;
 
@@ -541,17 +549,17 @@ describe('startWebDashboard', () => {
     it("matches pup status's reading of the same store, section by section", async () => {
       vi.mocked(hasConductorWindow).mockReturnValue(true);
       seedMerge('s-pr', PR);
-      appendEvent(db, 's-pr', 'gate_result', {
+      appendEvent(db, 's-pr', EventType.GateResult, {
         from: 'merged',
         to: 'merged',
         report: {
           sessionId: 's-pr',
           passed: true,
           sandbox: 'none',
-          stages: [{ stage: 'build', status: 'pass' }],
+          stages: [{ stage: GateStage.Build, status: GateStageStatus.Pass }],
         },
       });
-      appendEvent(db, 's-pr', 'merge', {
+      appendEvent(db, 's-pr', EventType.Merge, {
         branch: 'pup/s-pr',
         sha: 'e'.repeat(40),
         target: 'main',
@@ -562,8 +570,8 @@ describe('startWebDashboard', () => {
       seedSession('s-blocked', ['running', 'blocked']);
       incrementRejectCount(db, 's-blocked');
       seedSession('s-asking', ['running']);
-      appendEvent(db, 's-asking', 'steer', { kind: 'kickoff', by: 'conductor' });
-      appendEvent(db, 's-asking', 'question', { text: 'rebase or merge?' });
+      appendEvent(db, 's-asking', EventType.Steer, { kind: 'kickoff', by: 'conductor' });
+      appendEvent(db, 's-asking', EventType.Question, { text: 'rebase or merge?' });
       seedSession('s-done', ['running', 'killed']);
       insertTask(db, {
         id: 't-planned',
@@ -710,7 +718,7 @@ describe('startWebDashboard', () => {
     it('cuts a long goal and a long question at a word, never mid-word', async () => {
       const words = Array.from({ length: 60 }, (_, i) => `word${i}`).join(' ');
       seedSession('s-long', ['running'], words);
-      appendEvent(db, 's-long', 'question', { text: words });
+      appendEvent(db, 's-long', EventType.Question, { text: words });
 
       const page = await readPage(home());
       const goal = /<div class="goal">([^<]*)<\/div>/.exec(page)?.[1] ?? '';
@@ -745,7 +753,7 @@ describe('startWebDashboard', () => {
     // Decision 188: the scope a merge is gated on, three globs and a count.
     it('prints a merge line with its widened scope whole', async () => {
       seedSession('s-wide', ['running', 'awaiting-review']);
-      appendEvent(db, 's-wide', 'rescope', {
+      appendEvent(db, 's-wide', EventType.Rescope, {
         task: 't-s-wide',
         added: [
           'src/core/web-dashboard-overview.service.ts',
@@ -753,7 +761,7 @@ describe('startWebDashboard', () => {
           'docs/adr/0098-pup-dashboard-is-a-set-of-sheets-figures.md',
           'src/core/web-dashboard-sheet.utils.ts',
         ],
-        tier: 'standard',
+        tier: Tier.Standard,
         raised: false,
         by: 'inferred-operator',
         tty: null,
@@ -779,7 +787,7 @@ describe('startWebDashboard', () => {
     it('lists a conductor nothing reaches under Needs you, with the attach line', async () => {
       vi.mocked(hasConductorWindow).mockReturnValue(true);
       vi.mocked(conductorPane).mockReturnValue({ sessionId: 'c', paneId: '%3', socket: 'sock' });
-      vi.mocked(readInputBoxLook).mockReturnValue({ state: 'holds', draft: 'draft' });
+      vi.mocked(readInputBoxLook).mockReturnValue({ state: InputBoxState.Holds, draft: 'draft' });
       // The first look starts the clock; the page's own look, a quarter-hour on, finds it held.
       buildDashboardSnapshot(db, repo, Date.now() - 15 * 60_000);
 
@@ -796,7 +804,7 @@ describe('startWebDashboard', () => {
 
     it('escapes a goal and a question holding markup and control characters', async () => {
       seedSession('s1', ['running'], '<img src=x onerror=alert(1)>\u001b[31mred\u009b2J');
-      appendEvent(db, 's1', 'question', { text: '</script><script>alert(2)</script>' });
+      appendEvent(db, 's1', EventType.Question, { text: '</script><script>alert(2)</script>' });
 
       const page = await readPage(home());
 
@@ -837,11 +845,11 @@ describe('startWebDashboard', () => {
     it('says what each session runs on, its rung, and why it climbed there', async () => {
       seedSession('s-climbed', ['running']);
       recordSessionRoute(db, 's-climbed', {
-        tier: 'critical',
+        tier: Tier.Critical,
         rung: 1,
         model: 'claude-opus-5-5',
         effort: 'xhigh',
-        reason: 'turn-death',
+        reason: ClimbReason.TurnDeath,
         override: false,
       });
       seedSession('s-old', ['running']);
@@ -875,7 +883,7 @@ describe('startWebDashboard', () => {
       seedMerge('s-evil', 'https://evil.example/x" onclick="alert(1)');
       seedMerge('s-js', 'javascript:alert(1)//github.com/o/r/pull/1');
       seedSession('s-ask', ['running']);
-      appendEvent(db, 's-ask', 'question', { text: `see ${PR}` });
+      appendEvent(db, 's-ask', EventType.Question, { text: `see ${PR}` });
 
       const page = await readPage(home());
 
@@ -1002,12 +1010,14 @@ describe('startWebDashboard', () => {
 
       const page = await readPage(home());
       // `pup audit` prints each figure as the after side of its transition.
-      const audited = (
-        metric: 'deadExports' | 'duplicatedLines' | 'coverageRatio',
-        value: number,
-      ) =>
+      const audited = (metric: DebtMetric, value: number) =>
         /-> (\S+)/.exec(
-          formatDebtTransition({ metric, before: value, after: value, delta: 'unchanged' }),
+          formatDebtTransition({
+            metric,
+            before: value,
+            after: value,
+            delta: StageDelta.Unchanged,
+          }),
         )?.[1];
       const tile = (label: string): string =>
         new RegExp(
@@ -1020,9 +1030,13 @@ describe('startWebDashboard', () => {
       expect(tile('open debt')).toBe(
         `${listLedgerEntries(db, projectId(repo)).length} | 1 filed in 7 days`,
       );
-      expect(tile('coverage')).toBe(`${audited('coverageRatio', 0.8234)} | +2.3 pt in 7 days`);
-      expect(tile('unused exports')).toBe(`${audited('deadExports', 3)} | -2 in 7 days`);
-      expect(tile('duplicated lines')).toBe(`${audited('duplicatedLines', 130)} | +10 in 7 days`);
+      expect(tile('coverage')).toBe(
+        `${audited(DebtMetric.CoverageRatio, 0.8234)} | +2.3 pt in 7 days`,
+      );
+      expect(tile('unused exports')).toBe(`${audited(DebtMetric.DeadExports, 3)} | -2 in 7 days`);
+      expect(tile('duplicated lines')).toBe(
+        `${audited(DebtMetric.DuplicatedLines, 130)} | +10 in 7 days`,
+      );
       // Value, change and sparkline only: its per-capture line is for a screen reader, not on the page.
       expect(page).not.toMatch(/figcaption \{[^}]*display: none/);
       expect(page).toMatch(/\.sr-only \{[^}]*clip-path: inset\(50%\)/);
@@ -1033,7 +1047,7 @@ describe('startWebDashboard', () => {
     it('counts tasks done, in flight and planned, and merges per week by first merge', async () => {
       seedMerge('s-a', PR);
       seedMerge('s-b', PR);
-      appendEvent(db, 's-b', 'merge', {
+      appendEvent(db, 's-b', EventType.Merge, {
         branch: 'pup/s-b',
         sha: 'e'.repeat(40),
         target: 'main',
@@ -1041,7 +1055,7 @@ describe('startWebDashboard', () => {
         prUrl: PR,
       });
       db.prepare(
-        "UPDATE events SET created_at = datetime('now', '-15 days') WHERE session_id = 's-b' AND type = 'merge' AND id = (SELECT MIN(id) FROM events WHERE session_id = 's-b' AND type = 'merge')",
+        `UPDATE events SET created_at = datetime('now', '-15 days') WHERE session_id = 's-b' AND type = '${EventType.Merge}' AND id = (SELECT MIN(id) FROM events WHERE session_id = 's-b' AND type = '${EventType.Merge}')`,
       ).run();
       seedSession('s-run', ['running']);
       insertTask(db, {
@@ -1159,7 +1173,7 @@ describe('startWebDashboard', () => {
 
           const arriving = overview.next();
           seedSession('s-new', ['running']);
-          appendEvent(db, 's-new', 'question', { text: 'still live?' });
+          appendEvent(db, 's-new', EventType.Question, { text: 'still live?' });
 
           expect(await arriving).toMatch(/question #\d+: still live\?/);
         } finally {
@@ -1196,7 +1210,7 @@ describe('startWebDashboard', () => {
         const arriving = stream.next();
         const changedAt = Date.now();
         seedSession('s-new', ['running']);
-        appendEvent(db, 's-new', 'question', { text: 'which way?' });
+        appendEvent(db, 's-new', EventType.Question, { text: 'which way?' });
         const frame = await arriving;
 
         expect(Date.now() - changedAt).toBeLessThanOrEqual(POLL_MS * 2);
@@ -1698,7 +1712,7 @@ describe('startWebDashboard', () => {
     it('puts the actions on the sheets: answers, a tell, launches and closes', async () => {
       vi.mocked(hasConductorWindow).mockReturnValue(true);
       seedSession('s-asking', ['running']);
-      appendEvent(db, 's-asking', 'question', {
+      appendEvent(db, 's-asking', EventType.Question, {
         text: 'rebase or merge?',
         options: ['rebase', 'merge'],
         recommended: 1,

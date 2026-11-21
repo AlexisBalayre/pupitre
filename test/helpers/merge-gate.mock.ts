@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { GateStage } from '@src/adapters/enums/gate-stage.enums.js';
 import type { Adapter } from '@src/adapters/types/adapter.types.js';
 import {
   ensureProject,
@@ -91,13 +92,17 @@ export const passingAdapter: Adapter = {
   id: 'fake',
   detect: () => true,
   gateCommands: () =>
-    (['build', 'test', 'lint'] as const).map((stage) => ({ stage, command: 'true', args: [] })),
+    [GateStage.Build, GateStage.Test, GateStage.Lint].map((stage) => ({
+      stage,
+      command: 'true',
+      args: [],
+    })),
 };
 
 export const failingBuildAdapter: Adapter = {
   id: 'fake',
   detect: () => true,
-  gateCommands: () => [{ stage: 'build', command: 'false', args: [] }],
+  gateCommands: () => [{ stage: GateStage.Build, command: 'false', args: [] }],
 };
 
 export function debtAdapter(overrides: Partial<Adapter> = {}): Adapter {

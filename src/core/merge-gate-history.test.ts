@@ -29,6 +29,8 @@ import {
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import { openStore } from './db.client.js';
 import { getDecisionRecord } from './decision-record.repository.js';
+import { GateStageStatus } from './enums/gate-stage-status.enums.js';
+import { MergeStatus } from './enums/merge-status.enums.js';
 import { runMergeGate } from './merge-gate.service.js';
 import { projectId } from './paths.utils.js';
 import { TOOLCHAIN_CACHE_DIRNAME } from './sandbox.utils.js';
@@ -130,10 +132,10 @@ describe('the merge gate under a planted info/grafts or shallow file', { timeout
 
     const outcome = await merge();
 
-    expect(outcome).toMatchObject({ status: 'refused', rejectCount: 0 });
+    expect(outcome).toMatchObject({ status: MergeStatus.Refused, rejectCount: 0 });
     expect(stage(outcome, 'adr-number')).toEqual({
       stage: 'adr-number',
-      status: 'fail',
+      status: GateStageStatus.Fail,
       detail:
         'ADR numbers already taken:\n' +
         '  docs/adr/0001-mine.md: decision 0001 is already on the target; renumber it 0002, ' +
@@ -152,10 +154,10 @@ describe('the merge gate under a planted info/grafts or shallow file', { timeout
 
     const outcome = await merge();
 
-    expect(outcome).toMatchObject({ status: 'rejected', rejectCount: 1 });
+    expect(outcome).toMatchObject({ status: MergeStatus.Rejected, rejectCount: 1 });
     expect(stage(outcome, 'scope-audit')).toEqual({
       stage: 'scope-audit',
-      status: 'fail',
+      status: GateStageStatus.Fail,
       detail: 'Out-of-scope changes:\n  notes.txt (outside scope-in)',
     });
   });
@@ -172,7 +174,7 @@ describe('the merge gate under a planted info/grafts or shallow file', { timeout
 
     const outcome = await merge();
 
-    expect(outcome.status).toBe('merged');
+    expect(outcome.status).toBe(MergeStatus.Merged);
     expect(tipOf('main')).toBe(tip);
     const record = getDecisionRecord(db, outcome.decisionRecordId as number);
     expect(record?.summary).toContain('edit src/feature.ts | edit src/more.ts');

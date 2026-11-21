@@ -13,7 +13,8 @@
  * draft, which is what refused every post-turn steer (addendum to decision 45).
  */
 
-import type { InputBoxLook, InputBoxState, PaneRow } from './types/pane.types.js';
+import { InputBoxState } from './enums/input-box-state.enums.js';
+import type { InputBoxLook, PaneRow } from './types/pane.types.js';
 
 const INPUT_PROMPT = /^❯(.*)$/;
 /** The box's top and bottom borders: the prompt row sits right under the top one. */
@@ -151,13 +152,13 @@ export function inputBoxState(pane: string): InputBoxState {
     if (INPUT_PROMPT.test(row.text)) promptIndex = index;
   });
   const above = rows[promptIndex - 1];
-  if (above === undefined || !BOX_BORDER.test(above.text)) return 'absent';
-  return hasUnsubmittedInput(pane) ? 'holds' : 'empty';
+  if (above === undefined || !BOX_BORDER.test(above.text)) return InputBoxState.Absent;
+  return hasUnsubmittedInput(pane) ? InputBoxState.Holds : InputBoxState.Empty;
 }
 
 export function inputBoxLook(pane: string): InputBoxLook {
   const state = inputBoxState(pane);
-  const draft = state === 'holds' ? (inputBoxText(pane) ?? '').replace(/\s+/g, '') : '';
+  const draft = state === InputBoxState.Holds ? (inputBoxText(pane) ?? '').replace(/\s+/g, '') : '';
   return { state, draft };
 }
 

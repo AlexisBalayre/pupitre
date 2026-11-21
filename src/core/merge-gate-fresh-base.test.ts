@@ -33,6 +33,9 @@ import {
 } from '@test/helpers/merge-gate.mock.js';
 import { steerPane } from '../claude/session-runtime.service.js';
 import { openStore } from './db.client.js';
+import { GateStageStatus } from './enums/gate-stage-status.enums.js';
+import { InterruptSignal } from './enums/interrupt-signal.enums.js';
+import { MergeStatus } from './enums/merge-status.enums.js';
 import { runMergeGate } from './merge-gate.service.js';
 import { getSession } from './session.repository.js';
 import { HELD_SLOT_ENV } from './test-slot.service.js';
@@ -91,9 +94,9 @@ describe('fresh-base on a branch no open PR holds (decision 190)', { timeout: 20
 
     const outcome = await merge();
 
-    expect(outcome.status).toBe('merged');
+    expect(outcome.status).toBe(MergeStatus.Merged);
     expect(freshBase(outcome.report.stages)).toMatchObject({
-      status: 'pass',
+      status: GateStageStatus.Pass,
       detail: 'auto-merged main',
     });
     expect(parents(repo, 'main')).toEqual([resolved, movedMain]);
@@ -114,9 +117,9 @@ describe('fresh-base on a branch no open PR holds (decision 190)', { timeout: 20
 
     const outcome = await merge();
 
-    expect(outcome.status).toBe('merged');
+    expect(outcome.status).toBe(MergeStatus.Merged);
     expect(freshBase(outcome.report.stages)).toMatchObject({
-      status: 'pass',
+      status: GateStageStatus.Pass,
       detail: 'auto-merged main after the auto-rebase hit conflicts',
     });
     expect(parents(repo, 'main')).toEqual([tip, target]);
@@ -135,11 +138,11 @@ describe('fresh-base on a branch no open PR holds (decision 190)', { timeout: 20
 
     const outcome = await merge();
 
-    expect(outcome.status).toBe('rejected');
+    expect(outcome.status).toBe(MergeStatus.Rejected);
     expect(outcome.rejectCount).toBe(1);
     expect(getSession(db, SESSION_ID)?.state).toBe('running');
     const stage = freshBase(outcome.report.stages);
-    expect(stage?.status).toBe('fail');
+    expect(stage?.status).toBe(GateStageStatus.Fail);
     expect(stage?.detail).toContain('Auto-merge of main hit conflicts');
     expect(stage?.detail).toContain('`git merge refs/heads/main`');
     expect(vi.mocked(steerPane).mock.calls[0]?.[1]).toContain('git merge refs/heads/main');
@@ -190,7 +193,11 @@ describe('fresh-base on a branch no open PR holds (decision 190)', { timeout: 20
   const isRebase = (args: string[]): boolean =>
     args.includes('rebase') && !args.includes('--abort');
   const isAbort = (args: string[]): boolean => args.includes('rebase') && args.includes('--abort');
-  const interrupt = { message: 'Command failed: git rebase', signal: 'SIGINT', status: null };
+  const interrupt = {
+    message: 'Command failed: git rebase',
+    signal: InterruptSignal.Sigint,
+    status: null,
+  };
 
   // With `runFirst`, the killed git does its work first: the rebase stops on its
   // conflict and its abort succeeds, so only the interrupt check stands between
@@ -223,9 +230,9 @@ describe('fresh-base on a branch no open PR holds (decision 190)', { timeout: 20
 
     const outcome = await merge();
 
-    expect(outcome.status).toBe('rejected');
+    expect(outcome.status).toBe(MergeStatus.Rejected);
     const stage = freshBase(outcome.report.stages);
-    expect(stage?.status).toBe('fail');
+    expect(stage?.status).toBe(GateStageStatus.Fail);
     expect(stage?.detail).toContain('Auto-rebase onto main failed and so did its abort');
     // The rebase stopped on its conflict and nothing aborted it: its dir is named.
     expect(stage?.detail).toMatch(/rebase-merge is left in this worktree's git dir/);
@@ -259,7 +266,7 @@ describe('fresh-base on a branch no open PR holds (decision 190)', { timeout: 20
 
       // No merge of the target among them, so the branch is still rebased.
       expect(freshBase(outcome.report.stages)).toMatchObject({
-        status: 'pass',
+        status: GateStageStatus.Pass,
         detail: 'auto-rebased onto main',
       });
       return vi

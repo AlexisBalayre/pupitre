@@ -1,13 +1,14 @@
 import type { Database } from 'better-sqlite3';
+import { Tier } from '../claude/enums/tier.enums.js';
 import {
   listPanes,
   PROBE_PATH,
   windowLabel,
   windowSockets,
 } from '../claude/session-runtime.service.js';
-import type { Tier } from '../claude/types/model-ladder.types.js';
 import { PROTECTED_PATH_GLOBS } from './constants/merge-gate.constants.js';
 import { insertDecisionRecord } from './decision-record.repository.js';
+import { EventType } from './enums/event-type.enums.js';
 import { InvalidProfileError } from './errors/profile.errors.js';
 import { globToRegExpSource } from './glob.utils.js';
 import { scopeConflicts } from './overlap.service.js';
@@ -304,11 +305,18 @@ export function rescopeTask(
       // relaunch routes from the task's, a fix round from the session's.
       // Raised on what the rescope adds, never on the old globs: a task the
       // operator pinned standard over a critical scope (decision 92) stays so.
-      const raised = tierForScope(added) === 'critical' && raiseToCritical(db, taskId, sessionId);
+      const raised =
+        tierForScope(added) === Tier.Critical && raiseToCritical(db, taskId, sessionId);
       const tier = routedTier(db, taskId, sessionId, widened.scopeIn);
-      appendEvent(db, sessionId, 'rescope', { task: taskId, added, tier, raised, ...caller });
+      appendEvent(db, sessionId, EventType.Rescope, {
+        task: taskId,
+        added,
+        tier,
+        raised,
+        ...caller,
+      });
       if (overlaps.length > 0) {
-        appendEvent(db, sessionId, 'scope_overlap', {
+        appendEvent(db, sessionId, EventType.ScopeOverlap, {
           via: 'rescope',
           accepted: overlaps.map((conflict) => ({
             session: conflict.sessionId,
@@ -340,9 +348,13 @@ export function taskRescopes(db: Database, taskId: string): TaskRescope[] {
     .prepare(
       `SELECT events.session_id, events.payload, events.created_at FROM events
        JOIN sessions ON sessions.id = events.session_id
-       WHERE sessions.task_id = ? AND events.type = 'rescope' ORDER BY events.id`,
+       WHERE sessions.task_id = ? AND events.type = ? ORDER BY events.id`,
     )
-    .all(taskId) as { session_id: string; payload: string; created_at: string }[];
+    .all(taskId, EventType.Rescope) as {
+    session_id: string;
+    payload: string;
+    created_at: string;
+  }[];
   return rows.map((row) => {
     const fields = parseJsonOr<Record<string, unknown>>(row.payload, {});
     const text = (key: string): string | null =>

@@ -1,3 +1,5 @@
+import { EventType } from '../enums/event-type.enums.js';
+import type { MergeStatus } from '../enums/merge-status.enums.js';
 import type { GateReport } from './merge-gate.types.js';
 import type { SessionState } from './session.types.js';
 import type { FindingClass } from './session-lifecycle.types.js';
@@ -36,14 +38,14 @@ export interface RescopeCaller {
  * hooks append them to its events file, never to the store.
  */
 export interface EventPayloads {
-  gate_result:
+  [EventType.GateResult]:
     | ({ from: SessionState; to: SessionState } & TransitionPayload)
-    | { outcome: 'refused'; report: GateReport };
+    | { outcome: MergeStatus.Refused; report: GateReport };
   /**
    * `sha` is the commit the gate pinned and landed (decision 80); `leftBehind`
    * counts the commits the branch gained after the pin, set only when it moved.
    */
-  merge: {
+  [EventType.Merge]: {
     branch: string;
     sha?: string;
     target: string;
@@ -60,7 +62,7 @@ export interface EventPayloads {
    * pin, the passing report of the stages run on the merge commit, and who
    * approved a critical-area change when one did (decision 185).
    */
-  landed: { sha: string; target: string; prUrl: string } & (
+  [EventType.Landed]: { sha: string; target: string; prUrl: string } & (
     | { acceptedHead?: never; remeasuredHead?: never; pinned?: never }
     | { acceptedHead: string; remeasuredHead?: never; pinned: string }
     | {
@@ -76,14 +78,14 @@ export interface EventPayloads {
    * operator named as its successor merged, and removed the session's worktree
    * and branch (decision 141).
    */
-  retired: { prUrl: string; supersededBy: string };
+  [EventType.Retired]: { prUrl: string; supersededBy: string };
   /**
    * The operator's `pup land --abandon-closed` saw the session's PR closed
    * unmerged on GitHub; `sha` is the commit the merge it closes out pinned. The
    * ADR-number check stops counting the PR (decision 146) until a newer merge
    * event re-opens its claim.
    */
-  pr_closed: { prUrl: string; sha: string };
+  [EventType.PrClosed]: { prUrl: string; sha: string };
   /**
    * `pup fix` handed the PR's CI review back to the session's worker
    * (decision 90): the head the bot reviewed, the ids of the open threads the
@@ -96,7 +98,7 @@ export interface EventPayloads {
    * 202. `finding` is the class the conductor named to take the round past the
    * top rung of its ladder, set on such a round alone (decision 202).
    */
-  fix_round: {
+  [EventType.FixRound]: {
     prUrl: string;
     head: string;
     threads: string[];
@@ -110,10 +112,15 @@ export interface EventPayloads {
    * globs it appended to scope-in, what was seen of the caller, the tier the
    * session's next window runs on, and whether the rescope raised it to critical.
    */
-  rescope: { task: string; added: string[]; tier: string; raised: boolean } & RescopeCaller;
-  steer: { kind: string; by?: string; delivered?: boolean };
-  interrupt: { steered: boolean };
-  session_done: { summary: string };
+  [EventType.Rescope]: {
+    task: string;
+    added: string[];
+    tier: string;
+    raised: boolean;
+  } & RescopeCaller;
+  [EventType.Steer]: { kind: string; by?: string; delivered?: boolean };
+  [EventType.Interrupt]: { steered: boolean };
+  [EventType.SessionDone]: { summary: string };
   /**
    * `options` are the answers the asker offers, at most four, and `recommended`
    * the 1-based one it would pick (decision 93). Both are absent on a
@@ -121,35 +128,38 @@ export interface EventPayloads {
    * `pup conductor ask`'s proof that the run holding the token asked it,
    * at this row and no other.
    */
-  question: { text: string; options?: string[]; recommended?: number; seal?: string };
+  [EventType.Question]: { text: string; options?: string[]; recommended?: number; seal?: string };
   /**
    * `pup answer` delivered an answer to the open question (decision 93): the
    * question it answers, quoted and by its event id, the text delivered, and
    * the 1-based option the operator picked when they picked one. The id is what
    * closes the question: one asked while the answer was typed stays open.
    */
-  answer: { question: string; questionId: number; text: string; option?: number };
+  [EventType.Answer]: { question: string; questionId: number; text: string; option?: number };
   /**
    * A conductor run starts, recorded before its window opens (decision 93):
    * the run a conductor question was asked in ends here, so the previous run's
    * stays out of the inbox.
    */
-  conductor_start: { name: string };
-  handoff_ready: { hash: string };
-  respawn: { delivered: boolean; handoffBytes?: number; hard?: boolean };
-  scope_overlap: { via: string; accepted: { session: string; files: string[] }[] };
-  utility_call: { kind: string; ok: boolean; detail?: string };
+  [EventType.ConductorStart]: { name: string };
+  [EventType.HandoffReady]: { hash: string };
+  [EventType.Respawn]: { delivered: boolean; handoffBytes?: number; hard?: boolean };
+  [EventType.ScopeOverlap]: { via: string; accepted: { session: string; files: string[] }[] };
+  [EventType.UtilityCall]: { kind: string; ok: boolean; detail?: string };
   /** `stalledAt` for a session's dead turn, `target` for the conductor's (decision 47). */
-  turn_died: { reason: string; refusal?: string } & ({ stalledAt: string } | { target: string });
+  [EventType.TurnDied]: { reason: string; refusal?: string } & (
+    | { stalledAt: string }
+    | { target: string }
+  );
   /**
    * The watcher held an idle worker's prompt cache, its events file quiet
    * `idleMs` and `eventsBytes` long, where the hold's turn starts writing
    * (decision 179).
    */
-  cache_hold: { idleMs: number; eventsBytes: number };
-  tool_call: Record<string, unknown>;
-  scope_violation: { path: string; reason?: string; command?: string };
-  config_drift: Record<string, unknown>;
+  [EventType.CacheHold]: { idleMs: number; eventsBytes: number };
+  [EventType.ToolCall]: Record<string, unknown>;
+  [EventType.ScopeViolation]: { path: string; reason?: string; command?: string };
+  [EventType.ConfigDrift]: Record<string, unknown>;
 }
 
 /** `pup session ask`'s and `pup conductor ask`'s options, as commander hands them in. */
@@ -200,4 +210,4 @@ export type SessionEvent =
   | { type: 'question'; text?: string; options?: string[]; recommended?: number; seal?: string }
   | { type: 'turn_died'; reason?: string; stalledAt?: string; refusal?: string }
   | { type: 'handoff_ready'; hash?: string }
-  | { type: 'other'; eventType: string; fields: Record<string, unknown> };
+  | { type: 'other'; eventType: EventType; fields: Record<string, unknown> };

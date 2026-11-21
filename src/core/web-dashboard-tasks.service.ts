@@ -3,6 +3,8 @@ import type { Database } from 'better-sqlite3';
 import { sanitizeReason } from '../adapters/capability.utils.js';
 import { barChart } from './chart.utils.js';
 import { SESSION_ID_PATTERN } from './constants/paths.constants.js';
+import { EventType } from './enums/event-type.enums.js';
+import { GateStageStatus } from './enums/gate-stage-status.enums.js';
 import { runGit } from './git-diff.client.js';
 import { projectId } from './paths.utils.js';
 import { asStringArray, displayText, toIsoUtc } from './report-data.utils.js';
@@ -79,10 +81,17 @@ export function readTasksSheet(db: Database, repoPath: string, now: number): Tas
     .prepare(
       `SELECT e.session_id, e.type, e.payload, e.created_at, s.created_at AS launched_at
        FROM events e JOIN sessions s ON s.id = e.session_id JOIN tasks t ON t.id = s.task_id
-       WHERE t.project_id = ? AND e.type IN ('gate_result', 'steer', 'respawn', 'merge', 'landed')
+       WHERE t.project_id = ? AND e.type IN (?, ?, ?, ?, ?)
        ORDER BY e.id`,
     )
-    .all(pid) as (Pick<EventRow, 'type' | 'payload' | 'created_at'> & {
+    .all(
+      pid,
+      EventType.GateResult,
+      EventType.Steer,
+      EventType.Respawn,
+      EventType.Merge,
+      EventType.Landed,
+    ) as (Pick<EventRow, 'type' | 'payload' | 'created_at'> & {
     session_id: string;
     launched_at: string;
   })[];
@@ -110,7 +119,9 @@ export function readTasksSheet(db: Database, repoPath: string, now: number): Tas
       bucket.runs += 1;
       if (passed) bucket.passed += 1;
       else {
-        const stopped = stages.filter((s) => s.status === 'fail' || s.status === 'flagged');
+        const stopped = stages.filter(
+          (s) => s.status === GateStageStatus.Fail || s.status === GateStageStatus.Flagged,
+        );
         for (const stage of new Set(stopped.map((s) => storeText(s.stage)))) {
           failures.set(stage, (failures.get(stage) ?? 0) + 1);
         }
@@ -120,9 +131,9 @@ export function readTasksSheet(db: Database, repoPath: string, now: number): Tas
     } else if (event.type === 'merge') {
       tally.mergedAt ??= row.created_at;
       tally.prUrl ??= event.prUrl;
-    } else if (row.type === 'respawn') {
+    } else if (row.type === EventType.Respawn) {
       tally.respawns += 1;
-    } else if (row.type === 'landed') {
+    } else if (row.type === EventType.Landed) {
       tally.landedAt ??= row.created_at;
     }
   }

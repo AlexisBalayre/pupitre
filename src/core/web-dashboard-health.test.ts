@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { appendBaselineHistory } from './baseline-history.repository.js';
 import { DUPLICATION_RULE_ID } from './constants/merge-gate.constants.js';
 import { openStore } from './db.client.js';
+import { EventType } from './enums/event-type.enums.js';
 import { projectId } from './paths.utils.js';
 import { appendEvent, ensureProject, insertSession, insertTask } from './session.repository.js';
 import { readHealthSheet, renderHealthSheet } from './web-dashboard-health.service.js';
@@ -61,26 +62,24 @@ describe('the Health sheet', () => {
       profileHash: 'hash',
     });
     for (let i = 0; i <= extra; i++) {
-      appendEvent(db, sessionId, 'merge', {
+      appendEvent(db, sessionId, EventType.Merge, {
         branch: `pup/${sessionId}`,
         target: 'main',
         files: [],
         ...(prUrl !== undefined ? { prUrl } : {}),
       });
     }
-    db.prepare("UPDATE events SET created_at = ? WHERE session_id = ? AND type = 'merge'").run(
-      at,
-      sessionId,
-    );
+    db.prepare(
+      `UPDATE events SET created_at = ? WHERE session_id = ? AND type = '${EventType.Merge}'`,
+    ).run(at, sessionId);
   }
 
   /** `pup land` bringing a `--pr` session's work onto the target at `at`. */
   function land(sessionId: string, at: string, prUrl = PR): void {
-    appendEvent(db, sessionId, 'landed', { sha: 'a'.repeat(40), target: 'main', prUrl });
-    db.prepare("UPDATE events SET created_at = ? WHERE session_id = ? AND type = 'landed'").run(
-      at,
-      sessionId,
-    );
+    appendEvent(db, sessionId, EventType.Landed, { sha: 'a'.repeat(40), target: 'main', prUrl });
+    db.prepare(
+      `UPDATE events SET created_at = ? WHERE session_id = ? AND type = '${EventType.Landed}'`,
+    ).run(at, sessionId);
   }
 
   /** The `points` of every polyline in the chart titled `title`, one string per line. */

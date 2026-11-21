@@ -1,5 +1,6 @@
 import { sanitizeReason } from '../../adapters/capability.utils.js';
 import { routeLabel } from '../../core/dashboard.service.js';
+import { SessionActivityKind } from '../../core/enums/session-activity-kind.enums.js';
 import { formatStaleAge } from '../../core/session-activity.utils.js';
 import type { DashboardNeed, DashboardSession } from '../../core/types/dashboard.types.js';
 import type { FleetBlock } from '../../core/types/fleet.types.js';
@@ -55,13 +56,15 @@ export function activityLabel(session: DashboardSession): string {
   if (session.stalledAgeMs !== undefined) {
     return deadTurnLabel(session) || `STALLED (${formatStaleAge(session.stalledAgeMs)})`;
   }
-  if (session.activity.kind === 'awaiting-input') {
+  if (session.activity.kind === SessionActivityKind.AwaitingInput) {
     const detail = session.activity.detail;
     return `WAITING ON INPUT${detail ? ` (${sanitizeReason(detail)})` : ''}`;
   }
-  if (session.activity.kind === 'idle') return 'idle (turn ended, no done signal)';
+  if (session.activity.kind === SessionActivityKind.Idle)
+    return 'idle (turn ended, no done signal)';
   // Decision 103: a turn that ended on its own background shell is still at work on it.
-  if (session.activity.kind === 'background') return 'working on a background shell';
+  if (session.activity.kind === SessionActivityKind.Background)
+    return 'working on a background shell';
   return '';
 }
 

@@ -54,12 +54,17 @@ vi.mock('./audit.service.js', async (importOriginal) => {
 
 import { BRANCH, commitIn, ORIGIN_URL, PR_URL, SESSION_ID, sh } from '@test/helpers/land.mock.js';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
+import { GateStage } from '../adapters/enums/gate-stage.enums.js';
 import type { Adapter } from '../adapters/types/adapter.types.js';
 import { SteerNotDeliveredError } from '../claude/errors/session-runtime.errors.js';
 import { steerPane } from '../claude/session-runtime.service.js';
 import { auditProject } from './audit.service.js';
 import { PROTECTED_PATH_GLOBS } from './constants/merge-gate.constants.js';
 import { openStore } from './db.client.js';
+import { EventType } from './enums/event-type.enums.js';
+import { GateStageStatus } from './enums/gate-stage-status.enums.js';
+import { InterruptSignal } from './enums/interrupt-signal.enums.js';
+import { MergeStatus } from './enums/merge-status.enums.js';
 import { MergeLockLostError } from './errors/merge-gate.errors.js';
 import { GateInterruptedError } from './errors/sandbox.errors.js';
 import { TerminalSessionError } from './errors/session-lifecycle.errors.js';
@@ -97,9 +102,9 @@ const passingAdapter: Adapter = {
   id: 'fake',
   detect: () => true,
   gateCommands: () => [
-    { stage: 'build', command: 'true', args: [] },
-    { stage: 'test', command: 'true', args: [] },
-    { stage: 'lint', command: 'true', args: [] },
+    { stage: GateStage.Build, command: 'true', args: [] },
+    { stage: GateStage.Test, command: 'true', args: [] },
+    { stage: GateStage.Lint, command: 'true', args: [] },
   ],
 };
 
@@ -163,7 +168,7 @@ describe('landSession', { timeout: 20_000 }, () => {
   function seedPrMerge(prUrl: string | null = PR_URL, report?: GateReport): void {
     // The gate files its report on the way to merged, before the merge event.
     transitionSession(db, SESSION_ID, 'merged', report === undefined ? undefined : { report });
-    appendEvent(db, SESSION_ID, 'merge', {
+    appendEvent(db, SESSION_ID, EventType.Merge, {
       branch: BRANCH,
       sha: pinned,
       target: 'main',
@@ -210,7 +215,8 @@ describe('landSession', { timeout: 20_000 }, () => {
     landSession(db, { repoPath: repo, sessionId: SESSION_ID, adapters: [passingAdapter] });
   const mainSha = () => sh(repo, 'git', 'rev-parse', 'main');
   const hasTrackingRef = () => sh(repo, 'git', 'for-each-ref', 'refs/remotes/origin/main') !== '';
-  const landedEvents = () => listEvents(db, SESSION_ID).filter((row) => row.type === 'landed');
+  const landedEvents = () =>
+    listEvents(db, SESSION_ID).filter((row) => row.type === EventType.Landed);
 
   /** Nothing a refusal may touch moved. */
   function expectNothingChanged(mainBefore: string): void {
@@ -277,7 +283,7 @@ describe('landSession', { timeout: 20_000 }, () => {
       vi.mocked(steerPane).mock.calls.filter(([pane]) => pane.paneId === `%${id}`);
     const steerEvents = (id: string) =>
       listEvents(db, id)
-        .filter((row) => row.type === 'steer')
+        .filter((row) => row.type === EventType.Steer)
         .map((row) => JSON.parse(row.payload));
 
     beforeEach(() => {
@@ -494,7 +500,7 @@ describe('landSession', { timeout: 20_000 }, () => {
         const gated = await gate;
 
         expect(outcome.audit?.baseline.debt?.duplicatedLines).toBe(10);
-        expect(gated?.status).toBe('merged');
+        expect(gated?.status).toBe(MergeStatus.Merged);
         expect(gated?.report.stages.find((s) => s.stage === 'duplication')?.detail).toContain(
           '(baseline 10)',
         );
@@ -509,7 +515,7 @@ describe('landSession', { timeout: 20_000 }, () => {
     it('stops on an interrupt during a steer, with the land already recorded', async () => {
       seedPeer('s2', 'src/feature.ts');
       vi.mocked(steerPane).mockImplementation(() => {
-        throw Object.assign(new Error('tmux interrupted'), { signal: 'SIGINT' });
+        throw Object.assign(new Error('tmux interrupted'), { signal: InterruptSignal.Sigint });
       });
 
       await expect(landMerged()).rejects.toThrow('tmux interrupted');
@@ -545,7 +551,9 @@ describe('landSession', { timeout: 20_000 }, () => {
     // failed audit would never be sent (decision 88).
     it('steers before an audit that throws, which a re-run then refuses', async () => {
       seedPeer('s2', 'src/feature.ts');
-      vi.mocked(auditProject).mockRejectedValueOnce(new GateInterruptedError('SIGINT'));
+      vi.mocked(auditProject).mockRejectedValueOnce(
+        new GateInterruptedError(InterruptSignal.Sigint),
+      );
 
       await expect(landMerged()).rejects.toThrow(GateInterruptedError);
 
@@ -615,7 +623,7 @@ describe('landSession', { timeout: 20_000 }, () => {
 
     it('tells a branch with an open PR to merge main in, never to rebase or force-push', async () => {
       seedPeer('s2', 'src/feature.ts');
-      appendEvent(db, 's2', 'merge', {
+      appendEvent(db, 's2', EventType.Merge, {
         branch: 'pup/s2',
         sha: sh(repo, 'git', 'rev-parse', 'pup/s2'),
         target: 'main',
@@ -857,7 +865,7 @@ describe('landSession', { timeout: 20_000 }, () => {
     ]);
     expect(printed).toHaveBeenCalledWith(`The baseline test run failed; full output: ${kept}.`);
     // The dashboard's land, whose stderr is the server's, reads the clause here.
-    const tested = outcome.audit?.baseline.stages.find(({ stage }) => stage === 'test');
+    const tested = outcome.audit?.baseline.stages.find(({ stage }) => stage === GateStage.Test);
     expect(tested?.detail?.split('\n')[0]).toBe(`full output: ${kept}`);
     const output = readFileSync(kept, 'utf8');
     expect(output.startsWith('FAIL  src/a.test.ts > adds\n')).toBe(true);
@@ -1096,9 +1104,12 @@ describe('landSession', { timeout: 20_000 }, () => {
     });
 
     /** The stages the pin's gate ran, every one passing. */
-    const pinnedStages: GateStageResult[] = ['build', 'test', 'lint', 'scope-audit'].map(
-      (stage) => ({ stage, status: 'pass' }),
-    );
+    const pinnedStages: GateStageResult[] = [
+      GateStage.Build,
+      GateStage.Test,
+      GateStage.Lint,
+      'scope-audit',
+    ].map((stage) => ({ stage, status: GateStageStatus.Pass }));
 
     /** A passing gate report of `stages`. */
     const passingReport = (stages: GateStageResult[] = pinnedStages): GateReport => ({
@@ -1153,10 +1164,10 @@ describe('landSession', { timeout: 20_000 }, () => {
       expect(outcome.remeasure).toMatchObject({ sessionId: SESSION_ID, passed: true });
       expect(outcome.remeasure?.stages.map(({ stage, status }) => [stage, status])).toEqual(
         expect.arrayContaining([
-          ['build', 'pass'],
-          ['test', 'pass'],
-          ['lint', 'pass'],
-          ['scope-audit', 'pass'],
+          [GateStage.Build, GateStageStatus.Pass],
+          [GateStage.Test, GateStageStatus.Pass],
+          [GateStage.Lint, GateStageStatus.Pass],
+          ['scope-audit', GateStageStatus.Pass],
         ]),
       );
       const [event] = landedEvents().map((row) => JSON.parse(row.payload));
@@ -1186,7 +1197,7 @@ describe('landSession', { timeout: 20_000 }, () => {
       const before = mainSha();
       const failing: Adapter = {
         ...passingAdapter,
-        gateCommands: () => [{ stage: 'build', command: 'false', args: [] }],
+        gateCommands: () => [{ stage: GateStage.Build, command: 'false', args: [] }],
       };
 
       await expect(remeasure({ adapter: failing })).rejects.toThrow(
@@ -1290,13 +1301,13 @@ describe('landSession', { timeout: 20_000 }, () => {
     // The land reads the stages itself, not only that a measurement came back,
     // and lands on the statuses it knows only.
     it.each([
-      ['fail', /did not pass:\n {2}build: boom\n/],
+      [GateStageStatus.Fail, /did not pass:\n {2}build: boom\n/],
       ['timeout', /did not pass:\n {2}build: boom\n/],
     ])('refuses a measurement that came back with a %s stage', async (status, refusal) => {
       mergeMovedHead();
       const before = mainSha();
       measuredAs([
-        { stage: 'build', status: status as GateStageResult['status'], detail: 'boom' },
+        { stage: GateStage.Build, status: status as GateStageResult['status'], detail: 'boom' },
         ...pinnedStages.slice(1),
       ]);
 
@@ -1374,7 +1385,7 @@ describe('landSession', { timeout: 20_000 }, () => {
       mergeMovedHead();
       const before = mainSha();
       measuredAs(
-        [...pinnedStages, { stage: 'complexity', status: 'flagged' }],
+        [...pinnedStages, { stage: 'complexity', status: GateStageStatus.Flagged }],
         [filed('Oversize diff (651 lines) merged from')],
         [filed('Oversize diff (700 lines) merged from')],
       );
@@ -1388,7 +1399,7 @@ describe('landSession', { timeout: 20_000 }, () => {
     it('refuses a stage the pin ran that the remeasure did not', async () => {
       mergeMovedHead();
       const before = mainSha();
-      measuredAs(pinnedStages.filter(({ stage }) => stage !== 'lint'));
+      measuredAs(pinnedStages.filter(({ stage }) => stage !== GateStage.Lint));
 
       await expect(remeasure()).rejects.toThrow(
         /did not pass:\n {2}lint: ran at the pin, absent now\n/,
@@ -1404,7 +1415,7 @@ describe('landSession', { timeout: 20_000 }, () => {
       const untested: Adapter = {
         ...passingAdapter,
         gateCommands: (path) =>
-          passingAdapter.gateCommands(path).filter(({ stage }) => stage !== 'test'),
+          passingAdapter.gateCommands(path).filter(({ stage }) => stage !== GateStage.Test),
       };
 
       await expect(remeasure({ adapter: untested })).rejects.toThrow(
@@ -1416,7 +1427,7 @@ describe('landSession', { timeout: 20_000 }, () => {
     it('refuses a stage flagged at the pin that the remeasure did not run', async () => {
       mergeMovedHead(undefined, undefined, [
         ...pinnedStages,
-        { stage: 'diff-size', status: 'flagged' },
+        { stage: 'diff-size', status: GateStageStatus.Flagged },
       ]);
       const before = mainSha();
       measuredAs(pinnedStages);
@@ -1444,7 +1455,7 @@ describe('landSession', { timeout: 20_000 }, () => {
     // pin: what came after it measured something else, or nothing.
     it('holds the merge to the report before the pin, not a failing one after it', async () => {
       const { merge } = mergeMovedHead();
-      appendEvent(db, SESSION_ID, 'gate_result', {
+      appendEvent(db, SESSION_ID, EventType.GateResult, {
         from: 'merged',
         to: 'merged',
         report: { ...passingReport([]), passed: false },
@@ -1457,7 +1468,7 @@ describe('landSession', { timeout: 20_000 }, () => {
 
     /** A `merge` event naming `sha`, as `recordMerge` writes it. */
     const recordPin = (sha: string) =>
-      appendEvent(db, SESSION_ID, 'merge', {
+      appendEvent(db, SESSION_ID, EventType.Merge, {
         branch: BRANCH,
         sha,
         target: 'main',
@@ -1481,7 +1492,7 @@ describe('landSession', { timeout: 20_000 }, () => {
     // its merge event; an event another hand writes then carries no report.
     it('reads the report past an event of another type before the merge', async () => {
       transitionSession(db, SESSION_ID, 'merged', { report: passingReport() });
-      appendEvent(db, SESSION_ID, 'steer', { kind: 'peer' });
+      appendEvent(db, SESSION_ID, EventType.Steer, { kind: 'peer' });
       recordPin(pinned);
       const { merge } = mergeAt(commitIn(worktree, 'src/fix.ts', 'export const fix = 1;\n'));
       measuredAs();
@@ -1493,7 +1504,7 @@ describe('landSession', { timeout: 20_000 }, () => {
     it('holds the merge to the report of the newest merge naming the pin', async () => {
       mergeMovedHead(undefined, undefined, pinnedStages.slice(0, 3));
       // A re-gate re-pinning the same sha, its report listing scope-audit.
-      appendEvent(db, SESSION_ID, 'gate_result', {
+      appendEvent(db, SESSION_ID, EventType.GateResult, {
         from: 'merged',
         to: 'merged',
         report: passingReport(),
@@ -1510,7 +1521,7 @@ describe('landSession', { timeout: 20_000 }, () => {
 
     it('holds the merge to the report before the pin, not a passing one after it', async () => {
       mergeMovedHead();
-      appendEvent(db, SESSION_ID, 'gate_result', {
+      appendEvent(db, SESSION_ID, EventType.GateResult, {
         from: 'merged',
         to: 'merged',
         report: passingReport(pinnedStages.filter(({ stage }) => stage !== 'scope-audit')),
@@ -1526,12 +1537,12 @@ describe('landSession', { timeout: 20_000 }, () => {
 
     it('refuses when the report before the pin went into a state other than merged', async () => {
       transitionSession(db, SESSION_ID, 'merged', { report: passingReport() });
-      appendEvent(db, SESSION_ID, 'gate_result', {
+      appendEvent(db, SESSION_ID, EventType.GateResult, {
         from: 'merged',
         to: 'blocked',
         report: passingReport(),
       });
-      appendEvent(db, SESSION_ID, 'merge', {
+      appendEvent(db, SESSION_ID, EventType.Merge, {
         branch: BRANCH,
         sha: pinned,
         target: 'main',
@@ -1547,7 +1558,7 @@ describe('landSession', { timeout: 20_000 }, () => {
 
     it.each([
       ['an empty', [], 'build, test, lint'],
-      ['a partial', pinnedStages.filter(({ stage }) => stage !== 'test'), 'test'],
+      ['a partial', pinnedStages.filter(({ stage }) => stage !== GateStage.Test), GateStage.Test],
     ])('refuses %s pin report', async (_case, stages, unlisted) => {
       mergeMovedHead(undefined, undefined, stages);
       const before = mainSha();
@@ -1562,7 +1573,7 @@ describe('landSession', { timeout: 20_000 }, () => {
     it('lands a flag whose every figure is no worse than an accepted one', async () => {
       const { merge } = mergeMovedHead();
       measuredAs(
-        [...pinnedStages, { stage: 'coverage', status: 'flagged' }],
+        [...pinnedStages, { stage: 'coverage', status: GateStageStatus.Flagged }],
         [filed('Coverage gap (patch coverage 61.5% below baseline 70%) merged from')],
         [filed('Coverage gap (patch coverage 60.5% below baseline 70%) merged from')],
       );
@@ -1575,7 +1586,7 @@ describe('landSession', { timeout: 20_000 }, () => {
     it('lands a coverage gap whose percentages moved between whole and decimal', async () => {
       const { merge } = mergeMovedHead();
       measuredAs(
-        [...pinnedStages, { stage: 'coverage', status: 'flagged' }],
+        [...pinnedStages, { stage: 'coverage', status: GateStageStatus.Flagged }],
         [filed('Coverage gap (patch coverage 80% below baseline 85%) merged from')],
         [filed('Coverage gap (patch coverage 79.6% below baseline 85.3%) merged from')],
       );
@@ -1590,7 +1601,7 @@ describe('landSession', { timeout: 20_000 }, () => {
       const before = mainSha();
       const wording = filed('Text files git reports as binary (1) merged from');
       measuredAs(
-        [...pinnedStages, { stage: 'diff-size', status: 'flagged' }],
+        [...pinnedStages, { stage: 'diff-size', status: GateStageStatus.Flagged }],
         [{ description: wording, files: ['src/cli/foo.ts'] }],
         [{ description: wording, files: ['vendor/bundle.min.js'] }],
       );
@@ -1608,7 +1619,7 @@ describe('landSession', { timeout: 20_000 }, () => {
       const wording = filed('Coverage gap (unreported files and patch coverage) merged from');
       const files = ['src/a.ts', 'src/b.ts'];
       measuredAs(
-        [...pinnedStages, { stage: 'coverage', status: 'flagged' }],
+        [...pinnedStages, { stage: 'coverage', status: GateStageStatus.Flagged }],
         [{ description: wording, files }],
         [{ description: wording, files }],
       );
@@ -1631,7 +1642,7 @@ describe('landSession', { timeout: 20_000 }, () => {
       const before = mainSha();
       const wording = filed('Text files git reports as binary (1) merged from');
       measuredAs(
-        [...pinnedStages, { stage: 'diff-size', status: 'flagged' }],
+        [...pinnedStages, { stage: 'diff-size', status: GateStageStatus.Flagged }],
         [{ description: wording, files: ['vendor/a'] }],
         [{ description: wording, files }],
       );
@@ -1644,7 +1655,7 @@ describe('landSession', { timeout: 20_000 }, () => {
       const { merge } = mergeMovedHead();
       const wording = filed('Text files git reports as binary (1) merged from');
       measuredAs(
-        [...pinnedStages, { stage: 'diff-size', status: 'flagged' }],
+        [...pinnedStages, { stage: 'diff-size', status: GateStageStatus.Flagged }],
         [{ description: wording, files: ['vendor/a.js'] }],
         [{ description: wording, files: ['vendor/a.js', 'vendor/b.js'] }],
       );
@@ -1656,8 +1667,8 @@ describe('landSession', { timeout: 20_000 }, () => {
     // The gate runs these two on the session's worktree; a remeasure has none.
     it('lands when the pin passed worktree-clean and fresh-base, which it cannot rerun', async () => {
       const { merge } = mergeMovedHead('src/fix.ts', 'export const fix = 1;\n', [
-        { stage: 'worktree-clean', status: 'pass' },
-        { stage: 'fresh-base', status: 'pass' },
+        { stage: 'worktree-clean', status: GateStageStatus.Pass },
+        { stage: 'fresh-base', status: GateStageStatus.Pass },
         ...pinnedStages,
       ]);
 
@@ -1759,15 +1770,15 @@ describe('landSession', { timeout: 20_000 }, () => {
         gateCommands: () => [
           // Marks that it ran, then rewrites "before" beside it, where no sandbox stops it.
           {
-            stage: 'build',
+            stage: GateStage.Build,
             command: 'sh',
             args: [
               '-c',
               'touch built; printf "export const app = 99;\\n" > "$PWD-target/src/app.ts"; true',
             ],
           },
-          { stage: 'test', command: 'true', args: [] },
-          { stage: 'lint', command: 'true', args: [] },
+          { stage: GateStage.Test, command: 'true', args: [] },
+          { stage: GateStage.Lint, command: 'true', args: [] },
         ],
         complexity: ({ measurePath, measureSha }, files) => {
           const before = measureSha === base;
@@ -2256,7 +2267,7 @@ describe('landSession', { timeout: 20_000 }, () => {
       const before = mainSha();
       const failing: Adapter = {
         ...passingAdapter,
-        gateCommands: () => [{ stage: 'build', command: 'false', args: [] }],
+        gateCommands: () => [{ stage: GateStage.Build, command: 'false', args: [] }],
       };
 
       await expect(remeasure({ adapter: failing })).rejects.toThrow(
@@ -2337,7 +2348,7 @@ describe('landSession', { timeout: 20_000 }, () => {
     ])('lands "%s" flagged by %s against the same accepted', async (wording, stage) => {
       const { merge } = mergeMovedHead();
       measuredAs(
-        [...pinnedStages, { stage, status: 'flagged' }],
+        [...pinnedStages, { stage, status: GateStageStatus.Flagged }],
         [filed(wording)],
         [filed(wording)],
       );

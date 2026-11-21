@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-
+import { Tier } from '../../claude/enums/tier.enums.js';
+import { ClimbReason } from '../../core/enums/climb-reason.enums.js';
+import { SessionActivityKind } from '../../core/enums/session-activity-kind.enums.js';
 import type { DashboardNeed, DashboardSession } from '../../core/types/dashboard.types.js';
 import { activityLabel, needLines, sessionLine } from './dashboard-text.utils.js';
 
@@ -28,12 +30,12 @@ describe('sessionLine', () => {
     const line = sessionLine(
       sessionFixture({
         route: {
-          tier: 'standard',
+          tier: Tier.Standard,
           model: 'claude-sonnet-5-5',
           effort: 'high',
           rung: 2,
           rungs: 4,
-          reason: 'gate-rejection',
+          reason: ClimbReason.GateRejection,
           override: false,
         },
       }),
@@ -85,7 +87,9 @@ describe('sessionLine', () => {
 describe('activityLabel', () => {
   it('says what a session waiting on input is waiting for', () => {
     const label = activityLabel(
-      sessionFixture({ activity: { kind: 'awaiting-input', detail: 'Bash permission' } }),
+      sessionFixture({
+        activity: { kind: SessionActivityKind.AwaitingInput, detail: 'Bash permission' },
+      }),
     );
 
     expect(label).toBe('WAITING ON INPUT (Bash permission)');
@@ -99,7 +103,7 @@ describe('activityLabel', () => {
   it("strips what a terminal would obey out of the hook's own message", () => {
     const label = activityLabel(
       sessionFixture({
-        activity: { kind: 'awaiting-input', detail: '\u001b[2Jneeds permission' },
+        activity: { kind: SessionActivityKind.AwaitingInput, detail: '\u001b[2Jneeds permission' },
       }),
     );
 
@@ -108,9 +112,9 @@ describe('activityLabel', () => {
 
   // Decision 103: neither idle nor waiting on the operator.
   it('says a session whose turn ended on its own background shell is working on it', () => {
-    expect(activityLabel(sessionFixture({ activity: { kind: 'background' } }))).toBe(
-      'working on a background shell',
-    );
+    expect(
+      activityLabel(sessionFixture({ activity: { kind: SessionActivityKind.Background } })),
+    ).toBe('working on a background shell');
   });
 
   it('is empty for a session that has fired no hook to classify', () => {

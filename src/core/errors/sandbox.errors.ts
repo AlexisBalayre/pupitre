@@ -1,5 +1,5 @@
+import type { InterruptSignal } from '../enums/interrupt-signal.enums.js';
 import { DECLARATION_VAR } from '../sandbox.utils.js';
-import type { InterruptSignal } from '../types/sandbox.types.js';
 
 /** A refusal with operator instructions in it, so the CLI prints it as one line. */
 export class UndeclaredSandboxError extends Error {

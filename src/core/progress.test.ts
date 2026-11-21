@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { GateStage } from '../adapters/enums/gate-stage.enums.js';
 import { formatElapsed, NO_PROGRESS, stageProgress } from './progress.utils.js';
 
-const STAGES = ['plan', 'merge lock', 'build'] as const;
+const STAGES = ['plan', 'merge lock', GateStage.Build] as const;
 
 /** A stream that keeps what it is handed, on a terminal or off one. */
 function capture(isTTY: boolean) {
@@ -42,7 +43,7 @@ describe('stageProgress', () => {
     progress.stage('plan');
     progress.stage('merge lock');
     clock += 65_000;
-    progress.stage('build');
+    progress.stage(GateStage.Build);
     vi.advanceTimersByTime(5_000);
     progress.note('Waiting for the merge lock, held by pid 7, for up to 60.0s.');
     progress.end();
@@ -61,7 +62,7 @@ describe('stageProgress', () => {
     const stream = capture(true);
     const progress = stageProgress(STAGES, stream, now);
 
-    progress.stage('build');
+    progress.stage(GateStage.Build);
     clock += 1_000;
     vi.advanceTimersByTime(1_000);
     progress.note('a line of its own');
@@ -83,7 +84,7 @@ describe('stageProgress', () => {
     const own = stream.write;
     const progress = stageProgress(STAGES, stream, now);
 
-    progress.stage('build');
+    progress.stage(GateStage.Build);
     stream.write('a printer that knows nothing of the line\n');
     stream.write('half a row');
     vi.advanceTimersByTime(1_000);
@@ -132,7 +133,7 @@ describe('stageProgress', () => {
     const unwatch = progress.watch((label) => labels.push(label));
     progress.stage('merge lock');
     unwatch();
-    progress.stage('build');
+    progress.stage(GateStage.Build);
 
     expect(labels).toEqual(['stage 1/3, plan', 'stage 2/3, merge lock']);
   });

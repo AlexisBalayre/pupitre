@@ -2,12 +2,14 @@ import { mkdtempSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import type { Database } from 'better-sqlite3';
+import { GateStage } from '../adapters/enums/gate-stage.enums.js';
 import {
   DEBT_DETAIL_SAMPLES,
   GATE_COMMAND_TIMEOUT_MS,
   PROTECTED_PATH_GLOBS,
 } from './constants/merge-gate.constants.js';
 import { quotePath } from './debt.service.js';
+import { GateStageStatus } from './enums/gate-stage-status.enums.js';
 import { currentBranch, rethrowIfKilled, runGit } from './git-diff.client.js';
 import { globToRegExp } from './glob.utils.js';
 import {
@@ -226,7 +228,7 @@ export async function remeasureMerge(
   const pinnedStages = gated.report.stages;
   // Every gate run lists these three, run or skipped: a report without one is
   // no full run's, and would hold the merge to nothing there.
-  const unlisted = ['build', 'test', 'lint'].filter(
+  const unlisted = [GateStage.Build, GateStage.Test, GateStage.Lint].filter(
     (name) => !pinnedStages.some(({ stage }) => stage === name),
   );
   if (unlisted.length > 0) {
@@ -303,7 +305,9 @@ export async function remeasureMerge(
     .filter(({ stage, status }) => RAN_STATUSES.has(status) && !WORKTREE_STAGES.has(stage))
     .flatMap(({ stage }) => {
       const now = stages.find((result) => result.stage === stage)?.status ?? 'absent';
-      return ['absent', 'skipped'].includes(now) ? [`  ${stage}: ran at the pin, ${now} now`] : [];
+      return now === 'absent' || now === GateStageStatus.Skipped
+        ? [`  ${stage}: ran at the pin, ${now} now`]
+        : [];
     });
   const failed = [
     ...stages
@@ -312,7 +316,7 @@ export async function remeasureMerge(
     ...unrun,
     // A flagged stage the ledger can judge only through the debt it filed.
     ...stages
-      .filter((stage) => stage.status === 'flagged' && !flaggedBy.has(stage.stage))
+      .filter((stage) => stage.status === GateStageStatus.Flagged && !flaggedBy.has(stage.stage))
       .map((stage) => `  ${stage.stage}: flagged, with no debt filed for it`),
     ...flaggedDebt.flatMap((flag) => {
       const held = accepted.get(remeasureKind(flag.description, session.id) as string) ?? [];
@@ -461,7 +465,7 @@ const DEBT_WORDINGS: readonly {
 ];
 
 /** The statuses of a stage that ran at the pin, which must run again. */
-const RAN_STATUSES: ReadonlySet<string> = new Set(['pass', 'flagged']);
+const RAN_STATUSES: ReadonlySet<string> = new Set([GateStageStatus.Pass, GateStageStatus.Flagged]);
 
 /** The gate's stages on the session's worktree, which a remeasure cannot run. */
 const WORKTREE_STAGES: ReadonlySet<string> = new Set(['worktree-clean', 'fresh-base']);
@@ -489,10 +493,10 @@ function pathList(raw: string): string[] | undefined {
 /** Which statuses a remeasure lands on; any other, a future one included, refuses. */
 const LANDABLE_STATUSES: ReadonlySet<string> = new Set([
   // As the gate passes them: a stage with no command, the untested skip.
-  'pass',
-  'skipped',
+  GateStageStatus.Pass,
+  GateStageStatus.Skipped,
   // Judged against the ledger, as `flaggedDebt`.
-  'flagged',
+  GateStageStatus.Flagged,
 ]);
 
 /**

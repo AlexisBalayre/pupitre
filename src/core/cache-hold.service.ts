@@ -1,6 +1,6 @@
 import { closeSync, constants, fstatSync, openSync, readSync } from 'node:fs';
 import type { Database } from 'better-sqlite3';
-
+import { InputBoxState } from '../claude/enums/input-box-state.enums.js';
 import {
   pasteIntoPane,
   readInputBox,
@@ -8,6 +8,8 @@ import {
   submitPane,
 } from '../claude/session-runtime.service.js';
 import { SESSION_ID_PATTERN } from './constants/paths.constants.js';
+import { EventType } from './enums/event-type.enums.js';
+import { SessionActivityKind } from './enums/session-activity-kind.enums.js';
 import { projectPaths } from './paths.utils.js';
 import { toIsoUtc } from './report-data.utils.js';
 import { appendEvent, listEvents, listSessions, openQuestion } from './session.repository.js';
@@ -67,7 +69,11 @@ export const CACHE_HOLD_EVENTS_TAIL_BYTES = 1 << 20;
  * resume, all recorded as steers; a respawn's kickoff is recorded as the
  * respawn.
  */
-const PROMPT_EVENTS: ReadonlySet<string> = new Set(['steer', 'respawn', 'cache_hold']);
+const PROMPT_EVENTS: ReadonlySet<EventType> = new Set([
+  EventType.Steer,
+  EventType.Respawn,
+  EventType.CacheHold,
+]);
 
 /**
  * Hold every worker window that is waiting on someone else and whose cache is
@@ -95,7 +101,7 @@ export function holdIdleCaches(db: Database, repoPath: string, now: number): str
     try {
       const due = holdDue(db, row, paths.eventsFile(row.id), now);
       if (due === undefined || !typeHold(row)) continue;
-      appendEvent(db, row.id, 'cache_hold', {
+      appendEvent(db, row.id, EventType.CacheHold, {
         idleMs: Math.round(due.idleMs),
         eventsBytes: due.eventsBytes,
       });
@@ -144,7 +150,7 @@ function holdDue(
     if (prompt && Date.parse(toIsoUtc(prompt.created_at)) >= Math.floor(stat.mtimeMs / 1000) * 1000)
       return undefined;
     if (trailingHolds(events) >= CACHE_HOLD_LIMIT) return undefined;
-    return classifySessionActivity(readTail(fd, stat.size)).kind === 'idle'
+    return classifySessionActivity(readTail(fd, stat.size)).kind === SessionActivityKind.Idle
       ? { idleMs, eventsBytes: stat.size }
       : undefined;
   } finally {
@@ -234,7 +240,7 @@ export function lastPrompt(newestFirst: EventRow[]): EventRow | undefined {
 
 /** The holds since anything else was recorded for the session, newest first. */
 function trailingHolds(newestFirst: EventRow[]): number {
-  const other = newestFirst.findIndex((event) => event.type !== 'cache_hold');
+  const other = newestFirst.findIndex((event) => event.type !== EventType.CacheHold);
   return other === -1 ? newestFirst.length : other;
 }
 
@@ -253,9 +259,10 @@ function trailingHolds(newestFirst: EventRow[]): number {
 function typeHold(row: SessionRow): boolean {
   const pane = sessionPane(row);
   if (!runsSessionLaunch(pane)) return false;
-  if (readInputBox(pane) !== 'empty' || !pasteIntoPane(pane, CACHE_HOLD_MESSAGE)) return false;
+  if (readInputBox(pane) !== InputBoxState.Empty || !pasteIntoPane(pane, CACHE_HOLD_MESSAGE))
+    return false;
   submitPane(pane);
-  if (readInputBox(pane) !== 'holds') return true;
+  if (readInputBox(pane) !== InputBoxState.Holds) return true;
   submitPane(pane);
-  return readInputBox(pane) !== 'holds';
+  return readInputBox(pane) !== InputBoxState.Holds;
 }

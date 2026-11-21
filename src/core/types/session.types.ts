@@ -1,4 +1,5 @@
-import type { Tier } from '../../claude/types/model-ladder.types.js';
+import type { Tier } from '../../claude/enums/tier.enums.js';
+import type { EventType } from '../enums/event-type.enums.js';
 import type { TaskSpec } from './profile.types.js';
 import type { SessionEvent } from './session-event.types.js';
 
@@ -10,24 +11,6 @@ export type SessionState =
   | 'killed'
   | 'rejected'
   | 'blocked';
-
-type EventType =
-  | 'tool_call'
-  | 'scope_violation'
-  | 'gate_result'
-  | 'merge'
-  | 'steer'
-  | 'interrupt'
-  | 'config_drift'
-  | 'session_done'
-  | 'question'
-  | 'answer'
-  | 'handoff_ready'
-  | 'respawn'
-  | 'scope_overlap'
-  | 'utility_call'
-  | 'turn_died'
-  | 'cache_hold';
 
 export interface SessionRow {
   id: string;
@@ -94,28 +77,10 @@ export interface TaskRow {
   created_at: string;
 }
 
-/**
- * Every type the store holds: the schema's, `landed`, which `pup land` writes
- * (decision 84), `fix_round`, which `pup fix` writes (decision 90), `rescope`,
- * which `pup plan edit --rescope` writes (decision 115), `retired`, which `pup
- * retire` writes (decision 141), `pr_closed`, which `pup land --abandon-closed`
- * writes (decision 146), and `conductor_start`, the ones `EventType` has yet to
- * join. The `events.type` column takes any text: no CHECK constraint names the
- * types.
- */
-export type StoredEventType =
-  | EventType
-  | 'landed'
-  | 'fix_round'
-  | 'rescope'
-  | 'retired'
-  | 'pr_closed'
-  | 'conductor_start';
-
 export interface EventRow {
   id: number;
   session_id: string | null;
-  type: StoredEventType;
+  type: EventType;
   /** JSON object; shape depends on `type`. */
   payload: string;
   created_at: string;

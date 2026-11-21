@@ -178,7 +178,11 @@ vi.mock('../core/session-lifecycle.service.js', async (importOriginal) => ({
 vi.mock('../core/test-slot.service.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../core/test-slot.service.js')>()),
   runSessionTest: vi.fn(async () => 0),
-  sessionTestCommand: vi.fn(() => ({ stage: 'test', command: 'pnpm', args: ['run', 'test'] })),
+  sessionTestCommand: vi.fn(() => ({
+    stage: GateStage.Test,
+    command: 'pnpm',
+    args: ['run', GateStage.Test],
+  })),
 }));
 vi.mock('../core/session-handoff.service.js', () => ({
   HANDOFF_WAIT_DEFAULT_MS: 10 * 60 * 1000,
@@ -214,6 +218,8 @@ import {
   seedStalledSession,
   worktreeOf,
 } from '@test/helpers/cli-index.mock.js';
+import { GateStage } from '../adapters/enums/gate-stage.enums.js';
+import { Tier } from '../claude/enums/tier.enums.js';
 import {
   SessionPaneMissingError,
   SteerNotDeliveredError,
@@ -241,6 +247,9 @@ import {
 } from '../core/conductor.service.js';
 import { DEFAULT_BASE_PROFILE } from '../core/constants/default-profile.constants.js';
 import { STALLED_AFTER_MS } from '../core/constants/session-activity.constants.js';
+import { EventType } from '../core/enums/event-type.enums.js';
+import { GateStageStatus } from '../core/enums/gate-stage-status.enums.js';
+import { MergeStatus } from '../core/enums/merge-status.enums.js';
 import { ConductorTellRefusedError } from '../core/errors/conductor.errors.js';
 import { RewrittenGitDirError } from '../core/errors/git-diff.errors.js';
 import { InvalidProfileError } from '../core/errors/profile.errors.js';
@@ -285,7 +294,9 @@ import { Radar } from './ui/radar.component.js';
 function newestQuestionId(repo: string): number {
   const { db } = resolveProject(repo);
   try {
-    const row = db.prepare("SELECT max(id) AS id FROM events WHERE type = 'question'").get();
+    const row = db
+      .prepare(`SELECT max(id) AS id FROM events WHERE type = '${EventType.Question}'`)
+      .get();
     return (row as { id: number }).id;
   } finally {
     db.close();
@@ -428,7 +439,7 @@ describe('CLI commands', () => {
       const { db } = resolveProject(repo);
       const types = listEvents(db, 's-dead').map((event) => event.type);
       db.close();
-      expect(types).toEqual(expect.arrayContaining(['turn_died', 'steer']));
+      expect(types).toEqual(expect.arrayContaining([EventType.TurnDied, EventType.Steer]));
     });
 
     // The sweep types into panes and records resumes in the watcher's name:
@@ -997,7 +1008,7 @@ describe('CLI commands', () => {
         "Widened t-1's scope-in with docs/**; recorded on session s1; tier critical.",
       );
       expect(JSON.parse(getTask(db, 't-1')?.spec ?? '{}').scopeIn).toEqual(['src/**', 'docs/**']);
-      expect(listEvents(db, 's1').map((event) => event.type)).toContain('rescope');
+      expect(listEvents(db, 's1').map((event) => event.type)).toContain(EventType.Rescope);
       expect(logs.join('\n')).toContain('session s1');
       expect(logs.join('\n')).toContain('files: docs/**');
     });
@@ -1005,7 +1016,9 @@ describe('CLI commands', () => {
     // The operator is inferred from absent markers, so the event keeps what
     // was seen of the caller rather than claiming who it was.
     const rescopeEvent = (db: ReturnType<typeof claimed>) =>
-      JSON.parse(listEvents(db, 's1').find((event) => event.type === 'rescope')?.payload ?? '{}');
+      JSON.parse(
+        listEvents(db, 's1').find((event) => event.type === EventType.Rescope)?.payload ?? '{}',
+      );
 
     it('records the caller as an inferred operator, with its tmux pane and no terminal', () => {
       const repo = initRepo();
@@ -1059,7 +1072,7 @@ describe('CLI commands', () => {
       const repo = initRepo();
       useCwd(repo);
       const db = claimed(repo, 'merged', ['docs/**']);
-      db.prepare("UPDATE sessions SET tier = 'standard', rung = 1 WHERE id = ?").run('s1');
+      db.prepare(`UPDATE sessions SET tier = '${Tier.Standard}', rung = 1 WHERE id = ?`).run('s1');
 
       buildProgram().parse(
         ['plan', 'edit', 't-1', '--rescope', '--scope', 'src/core/merge-gate.service.ts'],
@@ -1070,7 +1083,7 @@ describe('CLI commands', () => {
         "Widened t-1's scope-in with src/core/merge-gate.service.ts; recorded on session s1; " +
           'tier critical, raised from standard.',
       );
-      expect(getSession(db, 's1')?.tier).toBe('critical');
+      expect(getSession(db, 's1')?.tier).toBe(Tier.Critical);
     });
 
     it('refuses a glob with a wildcard in its first segment', () => {
@@ -1210,7 +1223,10 @@ describe('CLI commands', () => {
           'OVERLAP  s2  docs/a.md (+1 more)\n' +
           'Recorded as overlaps; the next fix round introduces the workers.',
       );
-      expect(listEvents(db, 's1').map((event) => event.type)).toEqual(['rescope', 'scope_overlap']);
+      expect(listEvents(db, 's1').map((event) => event.type)).toEqual([
+        EventType.Rescope,
+        EventType.ScopeOverlap,
+      ]);
       expect(process.exitCode).toBeUndefined();
     });
   });
@@ -1731,7 +1747,7 @@ describe('CLI commands', () => {
         expect(process.exitCode).toBe(1);
         const { db } = resolveProject(repo);
         expect(
-          db.prepare("SELECT count(*) AS n FROM events WHERE type = 'question'").get(),
+          db.prepare(`SELECT count(*) AS n FROM events WHERE type = '${EventType.Question}'`).get(),
         ).toEqual({ n: 0 });
         db.close();
       });
@@ -1865,7 +1881,7 @@ describe('CLI commands', () => {
       const { db } = resolveProject(repo);
       transitionSession(db, 's1', 'running');
       db.prepare("UPDATE sessions SET tmux_target = '%7' WHERE id = 's1'").run();
-      appendEvent(db, 's1', 'question', {
+      appendEvent(db, 's1', EventType.Question, {
         text: 'rebase or merge?',
         options: ['rebase onto main', 'merge main in'],
         recommended: 1,
@@ -1897,7 +1913,7 @@ describe('CLI commands', () => {
       );
       expect(logs).toEqual(['Answered session s1: merge main in']);
       const { db } = resolveProject(repo);
-      expect(listEvents(db, 's1').map((event) => event.type)).toContain('answer');
+      expect(listEvents(db, 's1').map((event) => event.type)).toContain(EventType.Answer);
       db.close();
 
       logs.length = 0;
@@ -2061,7 +2077,10 @@ describe('CLI commands', () => {
       useCwd(repo);
       const read = readQuestion(repo);
       const { db } = resolveProject(repo);
-      appendEvent(db, 's1', 'question', { text: 'squash or keep?', options: ['squash', 'keep'] });
+      appendEvent(db, 's1', EventType.Question, {
+        text: 'squash or keep?',
+        options: ['squash', 'keep'],
+      });
       db.close();
 
       buildProgram().parse(['answer', 's1', '1', ...read], { from: 'user' });
@@ -2093,7 +2112,7 @@ describe('CLI commands', () => {
       useCwd(repo);
       conductorUp();
       const { db } = resolveProject(repo);
-      appendEvent(db, null, 'question', { text: 'merge s-9 ungated?', options: ['yes'] });
+      appendEvent(db, null, EventType.Question, { text: 'merge s-9 ungated?', options: ['yes'] });
       db.close();
 
       buildProgram().parse(['answer', 'conductor', '1', ...readQuestion(repo)], { from: 'user' });
@@ -3122,12 +3141,12 @@ describe('CLI commands', () => {
   describe('merge refused by a failed stage', () => {
     function refusedOn(stage: string): void {
       vi.mocked(runMergeGate).mockResolvedValue({
-        status: 'refused',
+        status: MergeStatus.Refused,
         report: {
           sessionId: 's1',
           passed: false,
           sandbox: 'sandbox-exec (macOS)',
-          stages: [{ stage, status: 'fail', detail: 'taken' }],
+          stages: [{ stage, status: GateStageStatus.Fail, detail: 'taken' }],
         },
         rejectCount: 0,
       });

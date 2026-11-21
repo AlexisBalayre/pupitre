@@ -1,4 +1,5 @@
 import { STALLED_AFTER_MS } from './constants/session-activity.constants.js';
+import { SessionActivityKind } from './enums/session-activity-kind.enums.js';
 import type { SessionActivity } from './types/session-activity.types.js';
 
 /**
@@ -29,17 +30,17 @@ export function classifySessionActivity(eventsJsonl: string): SessionActivity {
   for (const event of eventsJsonl.split('\n').flatMap(parseEvent).reverse()) {
     const activity = activityOf(event);
     if (event.hook_event_name === 'Stop' || isIdlePrompt(event)) {
-      if (inTurn) return { kind: 'idle' };
+      if (inTurn) return { kind: SessionActivityKind.Idle };
       ended = true;
       inTurn = event.hook_event_name === 'Stop';
     } else if (!ended) {
       if (activity) return activity;
     } else if (activity) {
       inTurn = true;
-      if (launchedUnstopped(event, stopped)) return { kind: 'background' };
+      if (launchedUnstopped(event, stopped)) return { kind: SessionActivityKind.Background };
     }
   }
-  return { kind: ended ? 'idle' : 'unknown' };
+  return { kind: ended ? SessionActivityKind.Idle : SessionActivityKind.Unknown };
 }
 
 function parseEvent(line: string): Record<string, unknown>[] {
@@ -59,11 +60,11 @@ function activityOf(event: Record<string, unknown>): SessionActivity | undefined
   switch (event.hook_event_name) {
     case 'Notification':
       return {
-        kind: 'awaiting-input',
+        kind: SessionActivityKind.AwaitingInput,
         ...(typeof event.message === 'string' ? { detail: event.message } : {}),
       };
     case 'PostToolUse':
-      return { kind: 'working' };
+      return { kind: SessionActivityKind.Working };
     default:
       return undefined;
   }

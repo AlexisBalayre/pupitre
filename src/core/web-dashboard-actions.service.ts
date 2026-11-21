@@ -2,11 +2,15 @@ import type { Database } from 'better-sqlite3';
 
 import { detectAdapters } from '../adapters/adapter.registry.js';
 import { sanitizeReason } from '../adapters/capability.utils.js';
+import { GateStage } from '../adapters/enums/gate-stage.enums.js';
 import { resolveWindowEnv } from '../claude/session-runtime.service.js';
 import { tellConductor } from './conductor.service.js';
 import { DEFAULT_BASE_PROFILE } from './constants/default-profile.constants.js';
 import { CONFIRMED_ACTIONS } from './constants/web-dashboard-actions.constants.js';
 import { CONDUCTOR_TARGET, openThreadCount } from './dashboard.service.js';
+import { BaselineStageStatus } from './enums/baseline-stage-status.enums.js';
+import { GateStageStatus } from './enums/gate-stage-status.enums.js';
+import { MergeStatus } from './enums/merge-status.enums.js';
 import { MergeLockLostError } from './errors/merge-gate.errors.js';
 import { startFixRound } from './fix-round.service.js';
 import { landSession } from './land.service.js';
@@ -228,19 +232,19 @@ async function mergeAction(
     (stage) =>
       `${sanitizeReason(stage.stage)}: ${stage.status}${stage.detail ? ` — ${sanitizeReason(stage.detail)}` : ''}`,
   );
-  const failed = outcome.report.stages.find((stage) => stage.status === 'fail');
+  const failed = outcome.report.stages.find((stage) => stage.status === GateStageStatus.Fail);
   const flagged = outcome.report.stages
-    .filter((stage) => stage.status === 'flagged')
+    .filter((stage) => stage.status === GateStageStatus.Flagged)
     .map((stage) => sanitizeReason(stage.stage))
     .join(', ');
   const verdict =
-    outcome.status === 'merged'
+    outcome.status === MergeStatus.Merged
       ? `Gate passed; ${outcome.prUrl ?? 'the pull request'} carries this gate report — merge it on GitHub, then land ${id}.`
-      : outcome.status === 'refused'
+      : outcome.status === MergeStatus.Refused
         ? failed
           ? `Merge refused: ${sanitizeReason(failed.stage)} failed, which accepting debt does not cover. Steer the session to fix it.`
           : `Merge refused: ${flagged} flagged. Accept it as debt with a reason and a review-by, or steer the session to address the flags.`
-        : outcome.status === 'rejected'
+        : outcome.status === MergeStatus.Rejected
           ? `Gate failed; report re-injected into the session (rejection ${outcome.rejectCount}/2).`
           : `Gate failed; session parked as blocked — needs a human, then \`pup unblock ${id}\`.`;
   const candidates = (outcome.debtCandidates ?? []).map(
@@ -254,7 +258,7 @@ async function mergeAction(
   const lines = [verdict, ...stages, ...notes, ...candidates, ...record];
   // Shown, and then refused: what the gate did stands, but unprotected (decision 88).
   if (lost) throw new Error([...lines, lost].join('\n'));
-  if (outcome.status !== 'merged') throw new Error(lines.join('\n'));
+  if (outcome.status !== MergeStatus.Merged) throw new Error(lines.join('\n'));
   return lines;
 }
 
@@ -303,7 +307,7 @@ async function landAction(db: Database, repoPath: string, session: string): Prom
   // server's stderr only; the clause leads the stage's detail, so the page,
   // which is never published, says it as the CLI's terminal does.
   const keptTest = audit?.baseline.stages
-    .find(({ stage, status }) => stage === 'test' && status === 'fail')
+    .find(({ stage, status }) => stage === GateStage.Test && status === BaselineStageStatus.Fail)
     ?.detail?.split('\n')[0];
   const testOutput =
     keptTest === undefined ? [] : [`The baseline test run failed; ${sanitizeReason(keptTest)}.`];

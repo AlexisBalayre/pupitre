@@ -3,38 +3,31 @@ import { sanitizeReason } from '../adapters/capability.utils.js';
 import type { Adapter } from '../adapters/types/adapter.types.js';
 import { COVERAGE_RATIO_EPSILON } from './constants/merge-gate.constants.js';
 import { COVERAGE, DEAD_CODE } from './debt.service.js';
+import { BaselineStageStatus } from './enums/baseline-stage-status.enums.js';
+import { DebtMetric } from './enums/debt-metric.enums.js';
+import { StageDelta } from './enums/stage-delta.enums.js';
 import { measureBaseline, persistBaseline } from './init.service.js';
 import { projectId } from './paths.utils.js';
 import { NO_PROGRESS } from './progress.utils.js';
 import { getProject } from './session.repository.js';
-import type {
-  AuditOutcome,
-  DebtMetric,
-  DebtTransition,
-  StageDelta,
-  StageTransition,
-} from './types/audit.types.js';
+import type { AuditOutcome, DebtTransition, StageTransition } from './types/audit.types.js';
 import type { DebtGap } from './types/debt.types.js';
-import type {
-  BaselineStageStatus,
-  DebtBaseline,
-  MeasuredBaseline,
-  ProjectBaseline,
-} from './types/init.types.js';
+import type { DebtBaseline, MeasuredBaseline, ProjectBaseline } from './types/init.types.js';
 import type { TaskId, TaskSpec } from './types/profile.types.js';
 import type { StageProgress } from './types/progress.types.js';
 
 function classifyDelta(before: BaselineStageStatus, after: BaselineStageStatus): StageDelta {
-  if (before === after) return 'unchanged';
-  if (before === 'pass') return 'regressed';
-  if (after === 'pass') return 'improved';
-  return 'changed';
+  if (before === after) return StageDelta.Unchanged;
+  if (before === BaselineStageStatus.Pass) return StageDelta.Regressed;
+  if (after === BaselineStageStatus.Pass) return StageDelta.Improved;
+  return StageDelta.Changed;
 }
 
 function compareBaselines(previous: ProjectBaseline, fresh: ProjectBaseline): StageTransition[] {
   return fresh.stages.map((stage) => {
     // A stage absent from the old baseline was never measured — same as skipped.
-    const before = previous.stages.find((s) => s.stage === stage.stage)?.status ?? 'skipped';
+    const before =
+      previous.stages.find((s) => s.stage === stage.stage)?.status ?? BaselineStageStatus.Skipped;
     return {
       stage: stage.stage,
       before,
@@ -51,9 +44,9 @@ function classifyDebtDelta(
   worseDirection: 'higher' | 'lower',
   epsilon = 0,
 ): StageDelta {
-  if (Math.abs(after - before) <= epsilon) return 'unchanged';
+  if (Math.abs(after - before) <= epsilon) return StageDelta.Unchanged;
   const rose = after > before;
-  return rose === (worseDirection === 'higher') ? 'regressed' : 'improved';
+  return rose === (worseDirection === 'higher') ? StageDelta.Regressed : StageDelta.Improved;
 }
 
 /**
@@ -81,15 +74,15 @@ function compareDebt(
       delta: classifyDebtDelta(before, after, worseDirection, epsilon),
     });
   };
-  push('deadExports', previous?.deadExports?.length, fresh?.deadExports?.length, 'higher');
+  push(DebtMetric.DeadExports, previous?.deadExports?.length, fresh?.deadExports?.length, 'higher');
   // Two counts produced by different rules have nothing to diff — reporting the
   // rule change as an improvement would mask a real rise underneath it, the same
   // reason decision 34 leaves out a metric missing from either side.
   if (previous?.duplicationRule === fresh?.duplicationRule) {
-    push('duplicatedLines', previous?.duplicatedLines, fresh?.duplicatedLines, 'higher');
+    push(DebtMetric.DuplicatedLines, previous?.duplicatedLines, fresh?.duplicatedLines, 'higher');
   }
   push(
-    'coverageRatio',
+    DebtMetric.CoverageRatio,
     previous?.coverageRatio,
     fresh?.coverageRatio,
     'lower',
@@ -99,20 +92,20 @@ function compareDebt(
 }
 
 const DEBT_METRIC_LABELS: Record<DebtMetric, string> = {
-  deadExports: 'dead-code',
-  duplicatedLines: 'duplication',
-  coverageRatio: 'coverage',
+  [DebtMetric.DeadExports]: 'dead-code',
+  [DebtMetric.DuplicatedLines]: 'duplication',
+  [DebtMetric.CoverageRatio]: 'coverage',
 };
 
 function formatDebtValue(metric: DebtMetric, value: number): string {
-  return metric === 'coverageRatio' ? `${Math.round(value * 1000) / 10}%` : String(value);
+  return metric === DebtMetric.CoverageRatio ? `${Math.round(value * 1000) / 10}%` : String(value);
 }
 
 /** One printable "label  before -> after  MARKER" line per debt transition; cli just prints it. */
 export function formatDebtTransition(t: DebtTransition): string {
   const label = DEBT_METRIC_LABELS[t.metric];
   const move = `${formatDebtValue(t.metric, t.before)} -> ${formatDebtValue(t.metric, t.after)}`;
-  const marker = t.delta === 'unchanged' ? '' : `  ${t.delta.toUpperCase()}`;
+  const marker = t.delta === StageDelta.Unchanged ? '' : `  ${t.delta.toUpperCase()}`;
   return `${label.padEnd(8)} ${move.padEnd(16)}${marker}`;
 }
 
@@ -191,8 +184,8 @@ function judgeAudit(
   const transitions = previous ? compareBaselines(previous, report.baseline) : [];
   const debtTransitions = previous ? compareDebt(previous.debt, report.baseline.debt) : [];
   const hasRegression =
-    transitions.some((t) => t.delta === 'regressed') ||
-    debtTransitions.some((t) => t.delta === 'regressed');
+    transitions.some((t) => t.delta === StageDelta.Regressed) ||
+    debtTransitions.some((t) => t.delta === StageDelta.Regressed);
   const heldOnRegression = hasRegression && onRegression === 'keep';
   if (unmeasured.length === 0 && !heldOnRegression) {
     persistBaseline(db, report.projectId, report.baseline);

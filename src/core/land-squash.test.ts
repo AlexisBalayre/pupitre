@@ -31,9 +31,11 @@ vi.mock('./audit.service.js', async (importOriginal) => {
 
 import { BRANCH, commitIn, ORIGIN_URL, PR_URL, SESSION_ID, sh } from '@test/helpers/land.mock.js';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
+import { GateStage } from '../adapters/enums/gate-stage.enums.js';
 import type { Adapter } from '../adapters/types/adapter.types.js';
 import { auditProject } from './audit.service.js';
 import { openStore } from './db.client.js';
+import { EventType } from './enums/event-type.enums.js';
 import { assertGhAvailable } from './github.client.js';
 import { abandonClosedSession, landSession } from './land.service.js';
 import { withScratchGitDir } from './merge-gate.service.js';
@@ -61,9 +63,9 @@ const passingAdapter: Adapter = {
   id: 'fake',
   detect: () => true,
   gateCommands: () => [
-    { stage: 'build', command: 'true', args: [] },
-    { stage: 'test', command: 'true', args: [] },
-    { stage: 'lint', command: 'true', args: [] },
+    { stage: GateStage.Build, command: 'true', args: [] },
+    { stage: GateStage.Test, command: 'true', args: [] },
+    { stage: GateStage.Lint, command: 'true', args: [] },
   ],
 };
 
@@ -126,7 +128,7 @@ describe('landSession', { timeout: 20_000 }, () => {
   /** What the gate's `--pr` merge leaves: the session merged, its PR on the event. */
   function seedPrMerge(prUrl: string | null = PR_URL): void {
     transitionSession(db, SESSION_ID, 'merged');
-    appendEvent(db, SESSION_ID, 'merge', {
+    appendEvent(db, SESSION_ID, EventType.Merge, {
       branch: BRANCH,
       sha: pinned,
       target: 'main',
@@ -173,7 +175,8 @@ describe('landSession', { timeout: 20_000 }, () => {
     landSession(db, { repoPath: repo, sessionId: SESSION_ID, adapters: [passingAdapter] });
   const mainSha = () => sh(repo, 'git', 'rev-parse', 'main');
   const hasTrackingRef = () => sh(repo, 'git', 'for-each-ref', 'refs/remotes/origin/main') !== '';
-  const landedEvents = () => listEvents(db, SESSION_ID).filter((row) => row.type === 'landed');
+  const landedEvents = () =>
+    listEvents(db, SESSION_ID).filter((row) => row.type === EventType.Landed);
 
   /** Nothing a refusal may touch moved. */
   function expectNothingChanged(mainBefore: string): void {
@@ -642,7 +645,8 @@ describe('landSession', { timeout: 20_000 }, () => {
   // Decision 146: any session can close a peer's PR with the shared gh login,
   // so only the operator's --abandon-closed frees the numbers it holds.
   describe('a PR closed unmerged', () => {
-    const closedEvents = () => listEvents(db, SESSION_ID).filter((row) => row.type === 'pr_closed');
+    const closedEvents = () =>
+      listEvents(db, SESSION_ID).filter((row) => row.type === EventType.PrClosed);
     const abandon = () => abandonClosedSession(db, { repoPath: repo, sessionId: SESSION_ID });
 
     it('refuses a plain land, records nothing and names --abandon-closed', async () => {
@@ -687,7 +691,7 @@ describe('landSession', { timeout: 20_000 }, () => {
       seedPrMerge();
       fakeGh({ state: 'CLOSED', mergeCommit: null });
       vi.mocked(assertGhAvailable).mockImplementationOnce(() => {
-        appendEvent(db, SESSION_ID, 'merge', {
+        appendEvent(db, SESSION_ID, EventType.Merge, {
           branch: BRANCH,
           sha: 'f'.repeat(40),
           target: 'main',
@@ -708,7 +712,7 @@ describe('landSession', { timeout: 20_000 }, () => {
     // ADR numbers the record freed.
     it('refuses a land of a PR reopened at the pin, naming the re-gate', async () => {
       seedPrMerge();
-      appendEvent(db, SESSION_ID, 'pr_closed', { prUrl: PR_URL, sha: pinned });
+      appendEvent(db, SESSION_ID, EventType.PrClosed, { prUrl: PR_URL, sha: pinned });
       const before = mainSha();
       fakeGh({ state: 'OPEN', headRefOid: pinned, mergeCommit: null });
 

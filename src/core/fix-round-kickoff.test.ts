@@ -49,9 +49,13 @@ import {
 } from '@test/helpers/fix-round.mock.js';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import { LADDERS } from '../claude/constants/model-ladder.constants.js';
+import { Tier } from '../claude/enums/tier.enums.js';
 import { kickoff, killSession, launchSession } from '../claude/session-runtime.service.js';
 import { DEFAULT_BASE_PROFILE } from './constants/default-profile.constants.js';
 import { openStore } from './db.client.js';
+import { ClimbReason } from './enums/climb-reason.enums.js';
+import { EventType } from './enums/event-type.enums.js';
+import { MergeStatus } from './enums/merge-status.enums.js';
 import { WorktreeRepointedError } from './errors/git-diff.errors.js';
 import { startFixRound } from './fix-round.service.js';
 import { landSession } from './land.service.js';
@@ -304,7 +308,7 @@ describe('startFixRound', { timeout: 90_000 }, () => {
   function seedPrMerge(event: Record<string, unknown> = {}): void {
     sh(repo, 'git', 'worktree', 'remove', '--force', worktree);
     transitionSession(db, SESSION_ID, 'merged');
-    appendEvent(db, SESSION_ID, 'merge', {
+    appendEvent(db, SESSION_ID, EventType.Merge, {
       branch: BRANCH,
       sha: pinned,
       target: 'main',
@@ -322,7 +326,11 @@ describe('startFixRound', { timeout: 90_000 }, () => {
       adapters: [passingAdapter],
       openPr: true,
     });
-    expect(outcome).toMatchObject({ status: 'merged', prUrl: PR_URL, prWasAdopted: true });
+    expect(outcome).toMatchObject({
+      status: MergeStatus.Merged,
+      prUrl: PR_URL,
+      prWasAdopted: true,
+    });
   }
 
   /** GitHub merging PR #7 at `head` onto origin's main, as `pup land` then reads it. */
@@ -375,14 +383,14 @@ describe('startFixRound', { timeout: 90_000 }, () => {
       base: DEFAULT_BASE_PROFILE,
       windowEnv: { vars: {}, configDir: claudeUserDir },
     });
-  const payloads = (type: string) =>
+  const payloads = (type: EventType) =>
     listEvents(db, SESSION_ID)
       .filter((row) => row.type === type)
       .map((row) => JSON.parse(row.payload) as Record<string, unknown>);
   const prompt = (): string => vi.mocked(kickoff).mock.calls.at(-1)?.[1] ?? '';
   /** A window recorded on `rung` of the standard ladder, as a launch records it. */
   const routeAt = (rung: number) => ({
-    tier: 'standard' as const,
+    tier: Tier.Standard,
     rung,
     model: 'claude-sonnet-5-5',
     effort: 'medium',
@@ -393,14 +401,14 @@ describe('startFixRound', { timeout: 90_000 }, () => {
    * older head, so the review's threads now carry ids it never saw.
    */
   const seedFinishedRound = () => {
-    appendEvent(db, SESSION_ID, 'fix_round', {
+    appendEvent(db, SESSION_ID, EventType.FixRound, {
       prUrl: PR_URL,
       head: '1'.repeat(40),
       threads: ['PRRT_round1'],
       rejectBase: 0,
     });
-    appendEvent(db, SESSION_ID, 'respawn', { delivered: true });
-    appendEvent(db, SESSION_ID, 'merge', {
+    appendEvent(db, SESSION_ID, EventType.Respawn, { delivered: true });
+    appendEvent(db, SESSION_ID, EventType.Merge, {
       branch: BRANCH,
       sha: pinned,
       target: 'main',
@@ -482,7 +490,7 @@ describe('startFixRound', { timeout: 90_000 }, () => {
     expect(getSession(db, SESSION_ID)?.state).toBe('running');
     expect(sh(worktree, 'git', 'rev-parse', 'HEAD')).toBe(pinned);
     expect(sh(worktree, 'git', 'symbolic-ref', 'HEAD')).toBe(`refs/heads/${BRANCH}`);
-    expect(payloads('fix_round')).toEqual([
+    expect(payloads(EventType.FixRound)).toEqual([
       {
         prUrl: PR_URL,
         head: pinned,
@@ -491,16 +499,16 @@ describe('startFixRound', { timeout: 90_000 }, () => {
         startedBy: 'operator',
       },
     ]);
-    expect(payloads('gate_result').at(-1)).toEqual({
+    expect(payloads(EventType.GateResult).at(-1)).toEqual({
       from: 'merged',
       to: 'running',
       kind: 'fix-round',
     });
-    expect(payloads('respawn')).toEqual([{ delivered: true }]);
+    expect(payloads(EventType.Respawn)).toEqual([{ delivered: true }]);
     // By name only: the pane the gate recorded may be another window's by now.
     expect(vi.mocked(killSession).mock.calls).toEqual([[SESSION_ID]]);
     // A first round stays on the rung its last window ran on (decision 92).
-    const rung0 = LADDERS.standard[0];
+    const rung0 = LADDERS[Tier.Standard][0];
     expect(vi.mocked(launchSession).mock.calls[0]?.[0]).toMatchObject({
       sessionId: SESSION_ID,
       worktreePath: worktree,
@@ -548,7 +556,7 @@ describe('startFixRound', { timeout: 90_000 }, () => {
     });
 
     expect(await fix()).toEqual({ prUrl: PR_URL, head: pinned, threads: 1 });
-    expect(payloads('fix_round')).toEqual([
+    expect(payloads(EventType.FixRound)).toEqual([
       { prUrl: PR_URL, head: pinned, threads: ['PRRT_left'], rejectBase: 0, startedBy: 'operator' },
     ]);
     expect(prompt()).toContain('### Thread 1 of 1: PRRT_left, at src/feature.ts:1');
@@ -601,7 +609,7 @@ describe('startFixRound', { timeout: 90_000 }, () => {
     expect(await fix()).toEqual({ prUrl: PR_URL, head: pinned, threads: 1 });
     // The newest comment the kickoff read on the thread, whoever wrote it: the
     // gate tells a reply the worker never saw by a greater id.
-    expect(payloads('fix_round')).toEqual([
+    expect(payloads(EventType.FixRound)).toEqual([
       {
         prUrl: PR_URL,
         head: pinned,
@@ -780,7 +788,7 @@ describe('startFixRound', { timeout: 90_000 }, () => {
 
   it('refuses a session that already landed', async () => {
     seedPrMerge();
-    appendEvent(db, SESSION_ID, 'landed', { sha: pinned, target: 'main', prUrl: PR_URL });
+    appendEvent(db, SESSION_ID, EventType.Landed, { sha: pinned, target: 'main', prUrl: PR_URL });
     reviewOnGitHub({ threads: OPEN_THREAD });
 
     await expectRefusedUnwritten(/has already landed/);
@@ -953,22 +961,22 @@ describe('startFixRound', { timeout: 90_000 }, () => {
 
     await fix();
 
-    const rung2 = LADDERS.standard[2];
+    const rung2 = LADDERS[Tier.Standard][2];
     expect(vi.mocked(launchSession).mock.calls[0]?.[0].route).toMatchObject({
       model: rung2?.model,
       effort: rung2?.effort,
     });
     expect(getSession(db, SESSION_ID)).toMatchObject({
       rung: 2,
-      rung_reason: 'repeat-fix-round',
+      rung_reason: ClimbReason.RepeatFixRound,
     });
-    expect(payloads('fix_round').at(-1)).toMatchObject({ startedBy: 'operator' });
-    expect(payloads('fix_round').at(-1)).not.toHaveProperty('finding');
+    expect(payloads(EventType.FixRound).at(-1)).toMatchObject({ startedBy: 'operator' });
+    expect(payloads(EventType.FixRound).at(-1)).not.toHaveProperty('finding');
   });
 
   it('refuses a repeat on the top rung unless the operator names a route', async () => {
     seedPrMerge();
-    recordSessionRoute(db, SESSION_ID, routeAt(LADDERS.standard.length - 1));
+    recordSessionRoute(db, SESSION_ID, routeAt(LADDERS[Tier.Standard].length - 1));
     seedFinishedRound();
     reviewOnGitHub({ threads: OPEN_THREAD });
 
@@ -989,7 +997,7 @@ describe('startFixRound', { timeout: 90_000 }, () => {
 
   // Decision 202: a security hole or a wrong result does not wait on the console.
   it("runs a top-rung repeat there again on the conductor's --finding, recording the class", async () => {
-    const top = LADDERS.standard.length - 1;
+    const top = LADDERS[Tier.Standard].length - 1;
     seedPrMerge();
     recordSessionRoute(db, SESSION_ID, routeAt(top));
     seedFinishedRound();
@@ -998,11 +1006,11 @@ describe('startFixRound', { timeout: 90_000 }, () => {
     await fix({}, 'conductor', 'security');
 
     expect(vi.mocked(launchSession).mock.calls[0]?.[0].route).toMatchObject({
-      model: LADDERS.standard[top]?.model,
-      effort: LADDERS.standard[top]?.effort,
+      model: LADDERS[Tier.Standard][top]?.model,
+      effort: LADDERS[Tier.Standard][top]?.effort,
     });
     expect(getSession(db, SESSION_ID)).toMatchObject({ state: 'running', rung: top });
-    expect(payloads('fix_round').at(-1)).toMatchObject({
+    expect(payloads(EventType.FixRound).at(-1)).toMatchObject({
       startedBy: 'conductor',
       finding: 'security',
     });
@@ -1010,7 +1018,7 @@ describe('startFixRound', { timeout: 90_000 }, () => {
 
   it('refuses a top-rung repeat to the conductor without --finding, and --finding to anyone else', async () => {
     seedPrMerge();
-    recordSessionRoute(db, SESSION_ID, routeAt(LADDERS.standard.length - 1));
+    recordSessionRoute(db, SESSION_ID, routeAt(LADDERS[Tier.Standard].length - 1));
     seedFinishedRound();
     reviewOnGitHub({ threads: OPEN_THREAD });
 
@@ -1051,7 +1059,7 @@ describe('startFixRound', { timeout: 90_000 }, () => {
     db.prepare('UPDATE sessions SET reject_count = 2 WHERE id = ?').run(SESSION_ID);
     reviewOnGitHub({ threads: OPEN_THREAD });
     await fix();
-    expect(payloads('fix_round').at(-1)).toMatchObject({ rejectBase: 2 });
+    expect(payloads(EventType.FixRound).at(-1)).toMatchObject({ rejectBase: 2 });
     markSessionDone(db, SESSION_ID, 'fixed');
 
     const outcome = await runMergeGate(db, {
@@ -1061,7 +1069,7 @@ describe('startFixRound', { timeout: 90_000 }, () => {
       openPr: true,
     });
 
-    expect(outcome).toMatchObject({ status: 'rejected', rejectCount: 1 });
+    expect(outcome).toMatchObject({ status: MergeStatus.Rejected, rejectCount: 1 });
     expect(getSession(db, SESSION_ID)).toMatchObject({ state: 'running', reject_count: 3 });
   });
 });

@@ -22,6 +22,7 @@ import {
   SLIM_CONTEXT_ENV,
   WORKER_SUBAGENT_ENV,
 } from './constants/profile.constants.js';
+import { EventType } from './enums/event-type.enums.js';
 import { projectPaths } from './paths.utils.js';
 import * as ProfileCompiler from './profile-compiler.service.js';
 
@@ -139,7 +140,7 @@ describe('generated bash re-check (decision 63)', () => {
       .split('\n')
       .filter(Boolean)
       .map((line) => JSON.parse(line) as Record<string, string>)
-      .filter((event) => event.type === 'scope_violation');
+      .filter((event) => event.type === EventType.ScopeViolation);
   }
 
   const heredoc = (path: string) =>
@@ -153,7 +154,7 @@ describe('generated bash re-check (decision 63)', () => {
     expect(result.stderr).toContain(command);
     expect(violations()).toEqual([
       {
-        type: 'scope_violation',
+        type: EventType.ScopeViolation,
         pup_session_id: 's-1',
         path: 'src/cli/index.ts',
         reason: 'outside-scope-in',

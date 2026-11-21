@@ -1,8 +1,11 @@
 import type { Database } from 'better-sqlite3';
 import { beforeEach, describe, expect, it } from 'vitest';
-
+import { GateStage } from '../adapters/enums/gate-stage.enums.js';
 import { openStore } from './db.client.js';
 import { insertDecisionRecord } from './decision-record.repository.js';
+import { EventType } from './enums/event-type.enums.js';
+import { GateStageStatus } from './enums/gate-stage-status.enums.js';
+import { MergeStatus } from './enums/merge-status.enums.js';
 import { projectId } from './paths.utils.js';
 import {
   appendEvent,
@@ -73,23 +76,23 @@ describe('renderSessionDossierHtml', () => {
 
   it('embeds the timeline oldest first with typed titles and gate stages', () => {
     const session = seedSession(db, 's1', { goal: 'goal' });
-    appendEvent(db, 's1', 'steer', { kind: 'kickoff' });
+    appendEvent(db, 's1', EventType.Steer, { kind: 'kickoff' });
     // A report with neither transition nor outcome: no writer stores one
     // today, but the store holds whatever an older pup wrote.
     db.prepare(
-      "INSERT INTO events (session_id, type, payload) VALUES ('s1', 'gate_result', ?)",
+      `INSERT INTO events (session_id, type, payload) VALUES ('s1', '${EventType.GateResult}', ?)`,
     ).run(
       JSON.stringify({
         report: {
           sessionId: 's1',
           passed: false,
           sandbox: 'none',
-          stages: [{ stage: 'test', status: 'fail', detail: '2 failing' }],
+          stages: [{ stage: GateStage.Test, status: GateStageStatus.Fail, detail: '2 failing' }],
         },
       }),
     );
-    appendEvent(db, 's1', 'gate_result', { from: 'running', to: 'awaiting-review' });
-    appendEvent(db, 's1', 'session_done', { summary: 'widget shipped' });
+    appendEvent(db, 's1', EventType.GateResult, { from: 'running', to: 'awaiting-review' });
+    appendEvent(db, 's1', EventType.SessionDone, { summary: 'widget shipped' });
 
     const data = embeddedData(renderSessionDossierHtml(db, REPO, session));
 
@@ -100,7 +103,7 @@ describe('renderSessionDossierHtml', () => {
       'done',
     ]);
     expect(data.timeline[1].stages).toEqual([
-      { stage: 'test', status: 'fail', detail: '2 failing' },
+      { stage: GateStage.Test, status: GateStageStatus.Fail, detail: '2 failing' },
     ]);
     expect(data.timeline[3].body).toBe('widget shipped');
   });
@@ -117,8 +120,8 @@ describe('renderSessionDossierHtml', () => {
 
   it('titles a refused gate run as refused even when a report rides along', () => {
     const session = seedSession(db, 's1', { goal: 'goal' });
-    appendEvent(db, 's1', 'gate_result', {
-      outcome: 'refused',
+    appendEvent(db, 's1', EventType.GateResult, {
+      outcome: MergeStatus.Refused,
       report: { sessionId: 's1', passed: false, sandbox: 'none', stages: [] },
     });
 
@@ -129,7 +132,7 @@ describe('renderSessionDossierHtml', () => {
 
   it('embeds what landed from the merge event: target, files, PR URL', () => {
     const session = seedSession(db, 's1', { goal: 'goal' });
-    appendEvent(db, 's1', 'merge', {
+    appendEvent(db, 's1', EventType.Merge, {
       branch: 'pup/s1',
       target: 'main',
       files: ['src/a.ts', 'src/b.ts'],
@@ -147,7 +150,7 @@ describe('renderSessionDossierHtml', () => {
 
   it("prints the merge's pinned sha on its merge line", () => {
     const session = seedSession(db, 's1', { goal: 'goal' });
-    appendEvent(db, 's1', 'merge', {
+    appendEvent(db, 's1', EventType.Merge, {
       branch: 'pup/s1',
       sha: 'abc123',
       target: 'main',
@@ -162,7 +165,7 @@ describe('renderSessionDossierHtml', () => {
 
   it('drops a PR URL whose scheme is not http(s) before it can reach an anchor', () => {
     const session = seedSession(db, 's1', { goal: 'goal' });
-    appendEvent(db, 's1', 'merge', {
+    appendEvent(db, 's1', EventType.Merge, {
       branch: 'pup/s1',
       target: 'main',
       files: [],
@@ -197,7 +200,7 @@ describe('renderSessionDossierHtml', () => {
 
   it('renders an event type nothing special-cases as its type plus raw payload', () => {
     const session = seedSession(db, 's1', { goal: 'goal' });
-    appendEvent(db, 's1', 'scope_violation', { path: 'docs/00.md' });
+    appendEvent(db, 's1', EventType.ScopeViolation, { path: 'docs/00.md' });
 
     const data = embeddedData(renderSessionDossierHtml(db, REPO, session));
 
@@ -209,8 +212,8 @@ describe('renderSessionDossierHtml', () => {
 
   it('renders a question and a dead turn as the payload they were stored with', () => {
     const session = seedSession(db, 's1', { goal: 'goal' });
-    appendEvent(db, 's1', 'question', { text: 'which table?' });
-    appendEvent(db, 's1', 'turn_died', {
+    appendEvent(db, 's1', EventType.Question, { text: 'which table?' });
+    appendEvent(db, 's1', EventType.TurnDied, {
       reason: 'API Error',
       stalledAt: '2026-10-06T10:00:00Z',
       refusal: 'pane gone',
@@ -226,7 +229,7 @@ describe('renderSessionDossierHtml', () => {
 
   it('normalises event and session timestamps to ISO UTC', () => {
     const session = seedSession(db, 's1', { goal: 'goal' });
-    appendEvent(db, 's1', 'session_done', { summary: 'done' });
+    appendEvent(db, 's1', EventType.SessionDone, { summary: 'done' });
     db.prepare('UPDATE sessions SET created_at = ? WHERE id = ?').run('2026-08-03 12:36:05', 's1');
     db.prepare('UPDATE events SET created_at = ?').run('2026-08-04 09:00:00');
 
@@ -242,7 +245,7 @@ describe('renderSessionDossierHtml', () => {
     const session = seedSession(db, 's-evil', {
       goal: 'Fix </script><script>alert(1)</script> and <img onerror=alert(2) src=x>',
     });
-    appendEvent(db, 's-evil', 'session_done', { summary: '</script> in a summary' });
+    appendEvent(db, 's-evil', EventType.SessionDone, { summary: '</script> in a summary' });
 
     const html = renderSessionDossierHtml(db, REPO, session);
 

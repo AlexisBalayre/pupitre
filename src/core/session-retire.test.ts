@@ -13,6 +13,7 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import { killSession } from '../claude/session-runtime.service.js';
 import { openStore } from './db.client.js';
+import { EventType } from './enums/event-type.enums.js';
 import { projectId } from './paths.utils.js';
 import {
   appendEvent,
@@ -116,7 +117,7 @@ describe('retireSession', { timeout: 20_000 }, () => {
   /** What the gate's `--pr` merge leaves: the session merged, its PR on the event. */
   function seedPrMerge(prUrl: string | null = PR_URL): void {
     transitionSession(db, SESSION_ID, 'merged');
-    appendEvent(db, SESSION_ID, 'merge', {
+    appendEvent(db, SESSION_ID, EventType.Merge, {
       branch: BRANCH,
       sha: pinned,
       target: 'main',
@@ -173,7 +174,8 @@ describe('retireSession', { timeout: 20_000 }, () => {
 
   const retire = (supersededBy = SUPERSEDING_URL, sessionId = SESSION_ID) =>
     retireSession(db, { repoPath: repo, sessionId, supersededBy });
-  const retiredEvents = () => listEvents(db, SESSION_ID).filter((row) => row.type === 'retired');
+  const retiredEvents = () =>
+    listEvents(db, SESSION_ID).filter((row) => row.type === EventType.Retired);
   const hasBranch = () => sh(repo, 'git', 'branch', '--list', BRANCH) !== '';
 
   /** Nothing a refusal may touch moved. */
@@ -295,10 +297,9 @@ describe('retireSession', { timeout: 20_000 }, () => {
     transitionSession(db, SESSION_ID, 'merged');
     // Written raw: a target-less merge is an old or torn row no writer makes now.
     const payload = { branch: BRANCH, files: [], prUrl: PR_URL, ...pin };
-    db.prepare("INSERT INTO events (session_id, type, payload) VALUES (?, 'merge', ?)").run(
-      SESSION_ID,
-      JSON.stringify(payload).replace('PINNED', pinned),
-    );
+    db.prepare(
+      `INSERT INTO events (session_id, type, payload) VALUES (?, '${EventType.Merge}', ?)`,
+    ).run(SESSION_ID, JSON.stringify(payload).replace('PINNED', pinned));
     fakeGh(closed);
 
     await expect(retire()).rejects.toThrow(
@@ -333,7 +334,7 @@ describe('retireSession', { timeout: 20_000 }, () => {
 
     await expect(
       retireWhileLockHeld(() =>
-        appendEvent(db, SESSION_ID, 'merge', {
+        appendEvent(db, SESSION_ID, EventType.Merge, {
           branch: BRANCH,
           sha: 'd'.repeat(40),
           target: 'main',
@@ -354,7 +355,11 @@ describe('retireSession', { timeout: 20_000 }, () => {
 
     await expect(
       retireWhileLockHeld(() =>
-        appendEvent(db, SESSION_ID, 'landed', { sha: pinned, target: 'main', prUrl: PR_URL }),
+        appendEvent(db, SESSION_ID, EventType.Landed, {
+          sha: pinned,
+          target: 'main',
+          prUrl: PR_URL,
+        }),
       ),
     ).rejects.toThrow(
       'Session s1 recorded a landed event while `pup retire` waited for the merge lock',
@@ -381,7 +386,11 @@ describe('retireSession', { timeout: 20_000 }, () => {
 
   it('refuses a session that has landed', async () => {
     seedPrMerge();
-    appendEvent(db, SESSION_ID, 'landed', { sha: 'c'.repeat(40), target: 'main', prUrl: PR_URL });
+    appendEvent(db, SESSION_ID, EventType.Landed, {
+      sha: 'c'.repeat(40),
+      target: 'main',
+      prUrl: PR_URL,
+    });
 
     await expect(retire()).rejects.toThrow('Session s1 has already landed.');
     expectNothingChanged();
@@ -523,7 +532,7 @@ describe('session teardown helpers', { timeout: 20_000 }, () => {
   });
 
   function seedMerge(pin: { sha?: string; target: string; prUrl?: string }): void {
-    appendEvent(db, SESSION_ID, 'merge', { branch: BRANCH, files: [], ...pin });
+    appendEvent(db, SESSION_ID, EventType.Merge, { branch: BRANCH, files: [], ...pin });
   }
 
   it('pinnedPullRequest returns the PR, the pinned sha and the target of the newest merge', () => {
@@ -537,7 +546,7 @@ describe('session teardown helpers', { timeout: 20_000 }, () => {
 
   it('pinnedPullRequest refuses a session that has landed', () => {
     seedMerge({ sha: SHA, target: 'main', prUrl: PR_URL });
-    appendEvent(db, SESSION_ID, 'landed', { sha: SHA, target: 'main', prUrl: PR_URL });
+    appendEvent(db, SESSION_ID, EventType.Landed, { sha: SHA, target: 'main', prUrl: PR_URL });
     expect(() => pinnedPullRequest(db, SESSION_ID, 's1', NOTHING)).toThrow(
       'Session s1 has already landed.',
     );

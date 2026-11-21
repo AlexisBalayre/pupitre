@@ -1,3 +1,4 @@
+import type { InputBoxState } from '../enums/input-box-state.enums.js';
 /** One captured row, escapes removed. */
 export interface PaneRow {
   /** Every character the row shows — the structure is read from this. */
@@ -8,8 +9,6 @@ export interface PaneRow {
    */
   typed: string;
 }
-
-export type InputBoxState = 'empty' | 'holds' | 'absent';
 
 /** One look at the box: its state, and the draft it shows when it holds one. */
 export interface InputBoxLook {

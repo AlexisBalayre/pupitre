@@ -1,4 +1,5 @@
 import { sanitizeReason } from '../../adapters/capability.utils.js';
+import type { EventType } from '../../core/enums/event-type.enums.js';
 import type { EventPayloads } from '../../core/types/session-event.types.js';
 
 /**
@@ -20,7 +21,7 @@ export function optionLines(options: readonly string[], recommended?: number): s
 }
 
 /** What an asking command echoes: the question as stored, its options numbered under it. */
-export function askedLines(who: string, asked: EventPayloads['question']): string[] {
+export function askedLines(who: string, asked: EventPayloads[EventType.Question]): string[] {
   return [
     `${who} asked: ${sanitizeReason(asked.text)}`,
     ...optionLines(asked.options ?? [], asked.recommended).map((line) => `  ${line}`),

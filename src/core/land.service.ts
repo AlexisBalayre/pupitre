@@ -5,6 +5,7 @@ import { windowLabel } from '../claude/session-runtime.service.js';
 import { auditProject } from './audit.service.js';
 import { COMMIT_SHA, GATE_COMMAND_TIMEOUT_MS } from './constants/merge-gate.constants.js';
 import { SESSION_ID_PATTERN } from './constants/paths.constants.js';
+import { EventType } from './enums/event-type.enums.js';
 import {
   assertNoArmedGitDrivers,
   currentBranch,
@@ -357,7 +358,7 @@ export async function landUnderLock(
   appendEvent(
     db,
     session.id,
-    'landed',
+    EventType.Landed,
     head === sha
       ? landed
       : remeasured === undefined
@@ -471,7 +472,7 @@ export async function abandonClosedSession(
         );
       }
       if (isPrClosedOnRecord(db, session.id)) return { prUrl, recorded: false };
-      appendEvent(db, session.id, 'pr_closed', { prUrl, sha });
+      appendEvent(db, session.id, EventType.PrClosed, { prUrl, sha });
       return { prUrl, recorded: true };
     },
     req.wait ? MERGE_LOCK_WAIT_MS : 0,

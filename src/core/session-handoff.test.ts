@@ -22,6 +22,7 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
 }));
 
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
+import { Tier } from '../claude/enums/tier.enums.js';
 import { SessionPaneMissingError } from '../claude/errors/session-runtime.errors.js';
 import {
   kickoff,
@@ -30,6 +31,8 @@ import {
   steerPane,
 } from '../claude/session-runtime.service.js';
 import { openStore } from './db.client.js';
+import { ClimbReason } from './enums/climb-reason.enums.js';
+import { EventType } from './enums/event-type.enums.js';
 import { WorktreeRepointedError } from './errors/git-diff.errors.js';
 import { HandoffMissingError } from './errors/session-handoff.errors.js';
 import { TopRungReachedError } from './errors/session-lifecycle.errors.js';
@@ -170,7 +173,9 @@ describe('session handoff', () => {
 
     expect(() => requestHandoff(db, repoPath, 's1', stateBase)).toThrow(SessionPaneMissingError);
     expect(steerPane).not.toHaveBeenCalled();
-    expect(db.prepare("SELECT COUNT(*) AS n FROM events WHERE type = 'steer'").get()).toEqual({
+    expect(
+      db.prepare(`SELECT COUNT(*) AS n FROM events WHERE type = '${EventType.Steer}'`).get(),
+    ).toEqual({
       n: 0,
     });
   });
@@ -190,7 +195,9 @@ describe('session handoff', () => {
   it('records the hash of the document it is signalling for', () => {
     handoffRound('half the work is done\n');
 
-    const event = db.prepare("SELECT payload FROM events WHERE type = 'handoff_ready'").get() as {
+    const event = db
+      .prepare(`SELECT payload FROM events WHERE type = '${EventType.HandoffReady}'`)
+      .get() as {
       payload: string;
     };
     expect(JSON.parse(event.payload)).toEqual({
@@ -203,7 +210,7 @@ describe('session handoff', () => {
 
     expect(() => markHandoffReady(db, repoPath, 's1', stateBase)).toThrow(HandoffMissingError);
     expect(
-      db.prepare("SELECT COUNT(*) AS n FROM events WHERE type = 'handoff_ready'").get(),
+      db.prepare(`SELECT COUNT(*) AS n FROM events WHERE type = '${EventType.HandoffReady}'`).get(),
     ).toEqual({ n: 0 });
   });
 
@@ -221,7 +228,7 @@ describe('session handoff', () => {
         'Remove it, then write the handoff there again.',
     );
     expect(
-      db.prepare("SELECT COUNT(*) AS n FROM events WHERE type = 'handoff_ready'").get(),
+      db.prepare(`SELECT COUNT(*) AS n FROM events WHERE type = '${EventType.HandoffReady}'`).get(),
     ).toEqual({ n: 0 });
   });
 
@@ -250,7 +257,7 @@ describe('session handoff', () => {
   // The `by` of a steer is whatever PUP_SESSION_ID the typing process carried,
   // so a session can put the marker there; only the request's own `kind` asks.
   it('is not ready when only a non-request steer carries the marker', () => {
-    appendEvent(db, 's1', 'steer', { kind: 'message', by: 'handoff-request' });
+    appendEvent(db, 's1', EventType.Steer, { kind: 'message', by: 'handoff-request' });
     writeHandoff();
     markHandoffReady(db, repoPath, 's1', stateBase);
 
@@ -281,7 +288,9 @@ describe('session handoff', () => {
     expect(prompt).toContain('# task context');
     expect(prompt).toContain('## Handoff from your previous run');
     expect(prompt).toContain('half the work is done');
-    const event = db.prepare("SELECT payload FROM events WHERE type = 'respawn'").get() as {
+    const event = db
+      .prepare(`SELECT payload FROM events WHERE type = '${EventType.Respawn}'`)
+      .get() as {
       payload: string;
     };
     expect(JSON.parse(event.payload)).toMatchObject({ delivered: true });
@@ -361,7 +370,9 @@ describe('session handoff', () => {
     expect(prompt).toMatch(/previous run .* killed/i);
     expect(prompt).toContain('git status');
     expect(prompt).not.toContain('## Handoff from your previous run');
-    const event = db.prepare("SELECT payload FROM events WHERE type = 'respawn'").get() as {
+    const event = db
+      .prepare(`SELECT payload FROM events WHERE type = '${EventType.Respawn}'`)
+      .get() as {
       payload: string;
     };
     expect(JSON.parse(event.payload)).toMatchObject({ delivered: true, hard: true });
@@ -426,14 +437,14 @@ describe('session handoff', () => {
   // from the window it replaces as a relaunch climbs from the session before.
   describe('model routing', () => {
     const STANDARD_FIRST: SessionRoute = {
-      tier: 'standard',
+      tier: Tier.Standard,
       rung: 0,
       model: 'claude-sonnet-5-5',
       effort: 'medium',
       override: false,
     };
     const CRITICAL_TOP: SessionRoute = {
-      tier: 'critical',
+      tier: Tier.Critical,
       rung: 1,
       model: 'claude-opus-5-5',
       effort: 'xhigh',
@@ -469,25 +480,25 @@ describe('session handoff', () => {
         fallbackModel: 'claude-opus-5-5',
       });
       expect(routeColumns()).toEqual({
-        tier: 'standard',
+        tier: Tier.Standard,
         rung: 1,
         model: 'claude-sonnet-5-5',
         effort: 'high',
-        rung_reason: 'gate-rejection',
+        rung_reason: ClimbReason.GateRejection,
         route_override: 0,
       });
     });
 
     it('climbs after a dead turn the watcher recorded, and only once for it', () => {
       recordSessionRoute(db, 's1', STANDARD_FIRST);
-      appendEvent(db, 's1', 'turn_died', { reason: 'API Error: 529', stalledAt: 'x' });
+      appendEvent(db, 's1', EventType.TurnDied, { reason: 'API Error: 529', stalledAt: 'x' });
 
       hardRespawnSession(db, repoPath, 's1', WINDOW_ENV, stateBase);
-      expect(routeColumns()).toMatchObject({ rung: 1, rung_reason: 'turn-death' });
+      expect(routeColumns()).toMatchObject({ rung: 1, rung_reason: ClimbReason.TurnDeath });
 
       // The death was answered by that respawn; the next window ran into nothing.
       hardRespawnSession(db, repoPath, 's1', WINDOW_ENV, stateBase);
-      expect(routeColumns()).toMatchObject({ rung: 1, rung_reason: 'turn-death' });
+      expect(routeColumns()).toMatchObject({ rung: 1, rung_reason: ClimbReason.TurnDeath });
     });
 
     it('climbs on a hard respawn of a window stalled past the bar', () => {
@@ -500,7 +511,7 @@ describe('session handoff', () => {
 
       hardRespawnSession(db, repoPath, 's1', WINDOW_ENV, stateBase);
 
-      expect(routeColumns()).toMatchObject({ rung: 1, rung_reason: 'stall' });
+      expect(routeColumns()).toMatchObject({ rung: 1, rung_reason: ClimbReason.Stall });
     });
 
     it('counts a stall once, though the new window has not fired a hook yet', () => {
@@ -514,12 +525,12 @@ describe('session handoff', () => {
       hardRespawnSession(db, repoPath, 's1', WINDOW_ENV, stateBase);
       hardRespawnSession(db, repoPath, 's1', WINDOW_ENV, stateBase);
 
-      expect(routeColumns()).toMatchObject({ rung: 1, rung_reason: 'stall' });
+      expect(routeColumns()).toMatchObject({ rung: 1, rung_reason: ClimbReason.Stall });
     });
 
     it('records the respawn when the kickoff paste fails, so a retry does not climb again', () => {
       recordSessionRoute(db, 's1', STANDARD_FIRST);
-      appendEvent(db, 's1', 'turn_died', { reason: 'API Error: 529', stalledAt: 'x' });
+      appendEvent(db, 's1', EventType.TurnDied, { reason: 'API Error: 529', stalledAt: 'x' });
       vi.mocked(kickoff).mockImplementationOnce(() => {
         throw new Error('paste never landed');
       });
@@ -529,8 +540,10 @@ describe('session handoff', () => {
       );
       hardRespawnSession(db, repoPath, 's1', WINDOW_ENV, stateBase);
 
-      expect(routeColumns()).toMatchObject({ rung: 1, rung_reason: 'turn-death' });
-      const events = db.prepare("SELECT payload FROM events WHERE type = 'respawn'").all();
+      expect(routeColumns()).toMatchObject({ rung: 1, rung_reason: ClimbReason.TurnDeath });
+      const events = db
+        .prepare(`SELECT payload FROM events WHERE type = '${EventType.Respawn}'`)
+        .all();
       expect(events[0]).toEqual({ payload: expect.stringContaining('"delivered":false') });
     });
 
@@ -570,7 +583,7 @@ describe('session handoff', () => {
 
       expect(launchedRoute()).toEqual({ model: 'claude-opus-5-5', effort: 'high' });
       expect(routeColumns()).toMatchObject({
-        tier: 'critical',
+        tier: Tier.Critical,
         rung: 1,
         effort: 'high',
         route_override: 1,
@@ -602,7 +615,7 @@ describe('session handoff', () => {
         rung: 1,
         model: 'claude-opus-5-5',
         effort: 'low',
-        rung_reason: 'gate-rejection',
+        rung_reason: ClimbReason.GateRejection,
         route_override: 1,
       });
     });
@@ -617,7 +630,7 @@ describe('session handoff', () => {
         effort: 'medium',
         fallbackModel: 'claude-opus-5-5',
       });
-      expect(routeColumns()).toMatchObject({ tier: 'standard', rung: 0 });
+      expect(routeColumns()).toMatchObject({ tier: Tier.Standard, rung: 0 });
     });
   });
 

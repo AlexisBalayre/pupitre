@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Adapter, CapabilityContext } from '../adapters/types/adapter.types.js';
 import { DUPLICATION_RULE_ID } from './constants/merge-gate.constants.js';
 import { judgeDebt, measureCoverage, measureStaticDebt } from './debt.service.js';
+import { GateStageStatus } from './enums/gate-stage-status.enums.js';
 import type { DebtMeasurement, DebtVerdict, GateDebtMeasurement } from './types/debt.types.js';
 import type { DebtBaseline } from './types/init.types.js';
 import type { GateStageResult } from './types/merge-gate.types.js';
@@ -246,7 +247,7 @@ describe('judgeDebt', () => {
         measured: {},
         expected: {
           stage: 'dead-code',
-          status: 'skipped',
+          status: GateStageStatus.Skipped,
           detail: 'not measured — adapter cannot detect dead code',
         },
       },
@@ -261,7 +262,7 @@ describe('judgeDebt', () => {
         },
         expected: {
           stage: 'dead-code',
-          status: 'skipped',
+          status: GateStageStatus.Skipped,
           detail: 'not measured — knip missing',
         },
       },
@@ -277,7 +278,7 @@ describe('judgeDebt', () => {
         },
         expected: {
           stage: 'dead-code',
-          status: 'skipped',
+          status: GateStageStatus.Skipped,
           detail: 'not measured — ts: knip missing; python: vulture missing',
         },
       },
@@ -289,7 +290,7 @@ describe('judgeDebt', () => {
         baseline: {},
         expected: {
           stage: 'dead-code',
-          status: 'skipped',
+          status: GateStageStatus.Skipped,
           detail: 'not measured — no debt baseline; run `pup init`',
         },
       },
@@ -299,7 +300,11 @@ describe('judgeDebt', () => {
       {
         measured: { debt: { deadExports: [LEGACY_EXPORT] } },
         baseline: { deadExports: [LEGACY_EXPORT] },
-        expected: { stage: 'dead-code', status: 'pass', detail: 'no new unused exports' },
+        expected: {
+          stage: 'dead-code',
+          status: GateStageStatus.Pass,
+          detail: 'no new unused exports',
+        },
       },
     ],
     [
@@ -309,7 +314,7 @@ describe('judgeDebt', () => {
         baseline: { deadExports: [LEGACY_EXPORT] },
         expected: {
           stage: 'dead-code',
-          status: 'flagged',
+          status: GateStageStatus.Flagged,
           detail: '1 new unused export(s): src/feature.ts#feature',
         },
       },
@@ -328,7 +333,7 @@ describe('judgeDebt', () => {
         baseline: { deadExports: [LEGACY_EXPORT] },
         expected: {
           stage: 'dead-code',
-          status: 'skipped',
+          status: GateStageStatus.Skipped,
           detail:
             'python not measured — vulture missing; the adapters that did measure found no new unused exports',
         },
@@ -346,7 +351,7 @@ describe('judgeDebt', () => {
         baseline: { deadExports: [LEGACY_EXPORT] },
         expected: {
           stage: 'dead-code',
-          status: 'flagged',
+          status: GateStageStatus.Flagged,
           detail:
             '1 new unused export(s): src/feature.ts#feature; python not measured — vulture missing',
         },
@@ -406,7 +411,7 @@ describe('judgeDebt', () => {
         measured: {},
         expected: {
           stage: 'duplication',
-          status: 'skipped',
+          status: GateStageStatus.Skipped,
           detail: 'not measured — adapter cannot detect duplication',
         },
       },
@@ -418,7 +423,7 @@ describe('judgeDebt', () => {
         baseline: {},
         expected: {
           stage: 'duplication',
-          status: 'skipped',
+          status: GateStageStatus.Skipped,
           detail: 'not measured — no debt baseline; run `pup init`',
         },
       },
@@ -430,7 +435,7 @@ describe('judgeDebt', () => {
         baseline: { duplicatedLines: 12, duplicationRule: DUPLICATION_RULE_ID },
         expected: {
           stage: 'duplication',
-          status: 'pass',
+          status: GateStageStatus.Pass,
           detail: '8 duplicated lines (baseline 12)',
         },
       },
@@ -444,7 +449,7 @@ describe('judgeDebt', () => {
         baseline: { duplicatedLines: 12, duplicationRule: DUPLICATION_RULE_ID },
         expected: {
           stage: 'duplication',
-          status: 'pass',
+          status: GateStageStatus.Pass,
           detail: '8 duplicated lines (baseline 12); 17 test-fixture block(s) not counted',
         },
       },
@@ -460,7 +465,7 @@ describe('judgeDebt', () => {
         baseline: { duplicatedLines: 12, duplicationRule: DUPLICATION_RULE_ID },
         expected: {
           stage: 'duplication',
-          status: 'pass',
+          status: GateStageStatus.Pass,
           detail: '8 duplicated lines (baseline 12)',
         },
       },
@@ -484,7 +489,7 @@ describe('judgeDebt', () => {
         baseline: { duplicatedLines: 4, duplicationRule: DUPLICATION_RULE_ID },
         expected: {
           stage: 'duplication',
-          status: 'flagged',
+          status: GateStageStatus.Flagged,
           detail: 'duplicated lines rose from 4 to 16 (e.g. src/feature.ts:3 ≈ src/app.ts:9)',
         },
       },
@@ -514,7 +519,7 @@ describe('judgeDebt', () => {
 
       expect(stageOf(verdict, 'duplication')).toEqual({
         stage: 'duplication',
-        status: 'skipped',
+        status: GateStageStatus.Skipped,
         detail:
           'not measured — the stored baseline counts duplication a different way; run `pup audit`',
       });
@@ -559,7 +564,7 @@ describe('judgeDebt', () => {
         measured: {},
         expected: {
           stage: 'complexity',
-          status: 'skipped',
+          status: GateStageStatus.Skipped,
           detail: 'not measured — adapter cannot measure complexity',
         },
       },
@@ -576,7 +581,7 @@ describe('judgeDebt', () => {
             targetHolds: ['src/feature.ts'],
           },
         },
-        expected: { stage: 'complexity', status: 'pass', detail: COMPLEXITY_PASS },
+        expected: { stage: 'complexity', status: GateStageStatus.Pass, detail: COMPLEXITY_PASS },
       },
     ],
     [
@@ -591,7 +596,7 @@ describe('judgeDebt', () => {
             targetHolds: ['src/feature.ts'],
           },
         },
-        expected: { stage: 'complexity', status: 'pass', detail: COMPLEXITY_PASS },
+        expected: { stage: 'complexity', status: GateStageStatus.Pass, detail: COMPLEXITY_PASS },
       },
     ],
     [
@@ -608,7 +613,7 @@ describe('judgeDebt', () => {
         },
         expected: {
           stage: 'complexity',
-          status: 'flagged',
+          status: GateStageStatus.Flagged,
           detail: 'complexity rose sharply in 1 touched file(s): src/feature.ts (+38)',
         },
       },
@@ -625,7 +630,7 @@ describe('judgeDebt', () => {
             targetHolds: [],
           },
         },
-        expected: { stage: 'complexity', status: 'pass', detail: COMPLEXITY_PASS },
+        expected: { stage: 'complexity', status: GateStageStatus.Pass, detail: COMPLEXITY_PASS },
       },
     ],
     [
@@ -640,7 +645,7 @@ describe('judgeDebt', () => {
             targetHolds: [],
           },
         },
-        expected: { stage: 'complexity', status: 'pass', detail: COMPLEXITY_PASS },
+        expected: { stage: 'complexity', status: GateStageStatus.Pass, detail: COMPLEXITY_PASS },
       },
     ],
     [
@@ -657,7 +662,7 @@ describe('judgeDebt', () => {
         },
         expected: {
           stage: 'complexity',
-          status: 'flagged',
+          status: GateStageStatus.Flagged,
           detail:
             'complexity rose sharply in 1 touched file(s): src/feature.ts (new file, 51 decision points)',
         },
@@ -678,7 +683,7 @@ describe('judgeDebt', () => {
         },
         expected: {
           stage: 'complexity',
-          status: 'flagged',
+          status: GateStageStatus.Flagged,
           detail: 'complexity rose sharply in 1 touched file(s): src/feature.ts (+16)',
         },
       },
@@ -695,7 +700,7 @@ describe('judgeDebt', () => {
             targetHolds: ['src/other.ts'],
           },
         },
-        expected: { stage: 'complexity', status: 'pass', detail: COMPLEXITY_PASS },
+        expected: { stage: 'complexity', status: GateStageStatus.Pass, detail: COMPLEXITY_PASS },
       },
     ],
     [
@@ -712,7 +717,7 @@ describe('judgeDebt', () => {
         },
         expected: {
           stage: 'complexity',
-          status: 'flagged',
+          status: GateStageStatus.Flagged,
           detail: 'complexity rose sharply in 1 touched file(s): src/kept2.ts (+50)',
         },
       },
@@ -731,7 +736,7 @@ describe('judgeDebt', () => {
         },
         expected: {
           stage: 'complexity',
-          status: 'flagged',
+          status: GateStageStatus.Flagged,
           detail: 'complexity rose sharply in 1 touched file(s): src/copied.ts (+50)',
         },
       },
@@ -750,7 +755,7 @@ describe('judgeDebt', () => {
         },
         expected: {
           stage: 'complexity',
-          status: 'flagged',
+          status: GateStageStatus.Flagged,
           detail: 'complexity rose sharply in 1 touched file(s): src/feature.ts (+40)',
         },
       },
@@ -772,7 +777,7 @@ describe('judgeDebt', () => {
         },
         expected: {
           stage: 'complexity',
-          status: 'flagged',
+          status: GateStageStatus.Flagged,
           detail: 'complexity rose sharply in 1 touched file(s): src/feature.ts (+40)',
         },
       },
@@ -789,7 +794,7 @@ describe('judgeDebt', () => {
             targetHolds: [],
           },
         },
-        expected: { stage: 'complexity', status: 'pass', detail: COMPLEXITY_PASS },
+        expected: { stage: 'complexity', status: GateStageStatus.Pass, detail: COMPLEXITY_PASS },
       },
     ],
     [
@@ -806,7 +811,7 @@ describe('judgeDebt', () => {
         },
         expected: {
           stage: 'complexity',
-          status: 'pass',
+          status: GateStageStatus.Pass,
           detail: `${COMPLEXITY_PASS}; copies not paired: git's copy detection ran past 30 s`,
         },
       },
@@ -853,7 +858,7 @@ describe('judgeDebt', () => {
         measured: {},
         expected: {
           stage: 'coverage',
-          status: 'skipped',
+          status: GateStageStatus.Skipped,
           detail: 'not measured — adapter cannot measure coverage',
         },
       },
@@ -867,7 +872,7 @@ describe('judgeDebt', () => {
         baseline: COVERAGE_BAR,
         expected: {
           stage: 'coverage',
-          status: 'skipped',
+          status: GateStageStatus.Skipped,
           detail: 'not measured — instrumented run crashed',
         },
       },
@@ -885,7 +890,7 @@ describe('judgeDebt', () => {
         baseline: COVERAGE_BAR,
         expected: {
           stage: 'coverage',
-          status: 'flagged',
+          status: GateStageStatus.Flagged,
           detail: '1 changed source file(s) went unmeasured — threshold not met',
         },
       },
@@ -897,7 +902,7 @@ describe('judgeDebt', () => {
         baseline: COVERAGE_BAR,
         expected: {
           stage: 'coverage',
-          status: 'flagged',
+          status: GateStageStatus.Flagged,
           detail:
             '1 changed source file(s) went unmeasured — the instrumented run reported no instrumentable lines',
         },
@@ -913,7 +918,7 @@ describe('judgeDebt', () => {
         baseline: {},
         expected: {
           stage: 'coverage',
-          status: 'skipped',
+          status: GateStageStatus.Skipped,
           detail: 'not measured — no coverage baseline; run `pup init`',
         },
       },
@@ -929,7 +934,7 @@ describe('judgeDebt', () => {
         baseline: COVERAGE_BAR,
         expected: {
           stage: 'coverage',
-          status: 'pass',
+          status: GateStageStatus.Pass,
           detail: 'no instrumentable changed lines',
         },
       },
@@ -946,7 +951,7 @@ describe('judgeDebt', () => {
         baseline: COVERAGE_BAR,
         expected: {
           stage: 'coverage',
-          status: 'pass',
+          status: GateStageStatus.Pass,
           detail: 'patch coverage 100% (baseline 80%)',
         },
       },
@@ -963,7 +968,7 @@ describe('judgeDebt', () => {
         baseline: COVERAGE_BAR,
         expected: {
           stage: 'coverage',
-          status: 'flagged',
+          status: GateStageStatus.Flagged,
           detail: 'patch coverage 0% below repo baseline 80% (uncovered: src/feature.ts:1)',
         },
       },
@@ -983,7 +988,7 @@ describe('judgeDebt', () => {
         baseline: COVERAGE_BAR,
         expected: {
           stage: 'coverage',
-          status: 'flagged',
+          status: GateStageStatus.Flagged,
           detail:
             '1 changed source file(s) never reached the coverage report — no test loads them, or coverage config excludes them: src/feature.ts',
         },
@@ -1000,7 +1005,7 @@ describe('judgeDebt', () => {
         baseline: COVERAGE_BAR,
         expected: {
           stage: 'coverage',
-          status: 'pass',
+          status: GateStageStatus.Pass,
           detail: 'no instrumentable changed lines',
         },
       },

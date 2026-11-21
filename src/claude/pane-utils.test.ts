@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-
+import { InputBoxState } from './enums/input-box-state.enums.js';
 import { hasUnsubmittedInput, inputBoxLook, inputBoxState, pasteLanded } from './pane.utils.js';
 
 // Fixtures are trimmed captures from live Claude Code 2.1.218, 2.1.263 and
@@ -118,16 +118,18 @@ const LONG_MESSAGE = `FIRSTWORD ${'tok '.repeat(700)}LASTWORD`;
 
 describe('inputBoxState', () => {
   it('reads an empty box, and one showing only a suggestion, as empty', () => {
-    expect(inputBoxState(SUBMITTED_PANE)).toBe('empty');
-    expect(inputBoxState(IDLE_PLACEHOLDER_PANE)).toBe('empty');
+    expect(inputBoxState(SUBMITTED_PANE)).toBe(InputBoxState.Empty);
+    expect(inputBoxState(IDLE_PLACEHOLDER_PANE)).toBe(InputBoxState.Empty);
   });
 
   it('reads a box holding a draft as holding text', () => {
-    expect(inputBoxState(PENDING_PANE)).toBe('holds');
+    expect(inputBoxState(PENDING_PANE)).toBe(InputBoxState.Holds);
   });
 
   it('reads a pane with no input box, such as a dialog, as absent', () => {
-    expect(inputBoxState('Accessing workspace:\n ❯ 1. Yes, I trust this folder')).toBe('absent');
+    expect(inputBoxState('Accessing workspace:\n ❯ 1. Yes, I trust this folder')).toBe(
+      InputBoxState.Absent,
+    );
   });
 
   // Right after a submit the prompt is echoed at column 0 with the box's own
@@ -141,22 +143,25 @@ describe('inputBoxState', () => {
       ' ❯ 1. Wait for the limit to reset',
       '   2. Switch model',
     ].join('\n');
-    expect(inputBoxState(pane)).toBe('absent');
+    expect(inputBoxState(pane)).toBe(InputBoxState.Absent);
   });
 });
 
 describe('inputBoxLook', () => {
   it('gives the state, and no draft unless the box holds text', () => {
-    expect(inputBoxLook(STYLED_EMPTY_PANE)).toEqual({ state: 'empty', draft: '' });
-    expect(inputBoxLook(STYLED_SUGGESTION_PANE)).toEqual({ state: 'empty', draft: '' });
+    expect(inputBoxLook(STYLED_EMPTY_PANE)).toEqual({ state: InputBoxState.Empty, draft: '' });
+    expect(inputBoxLook(STYLED_SUGGESTION_PANE)).toEqual({ state: InputBoxState.Empty, draft: '' });
     expect(inputBoxLook('Accessing workspace:\n ❯ 1. Yes, I trust this folder')).toEqual({
-      state: 'absent',
+      state: InputBoxState.Absent,
       draft: '',
     });
   });
 
   it("gives a held draft's text with its spaces and line breaks dropped", () => {
-    expect(inputBoxLook(STYLED_DRAFT_PANE)).toEqual({ state: 'holds', draft: 'drafttext' });
+    expect(inputBoxLook(STYLED_DRAFT_PANE)).toEqual({
+      state: InputBoxState.Holds,
+      draft: 'drafttext',
+    });
   });
 
   // `pup attach` resizes the conductor's window to the operator's terminal.

@@ -14,16 +14,13 @@ import { constants, freemem, homedir } from 'node:os';
 import { join } from 'node:path';
 import { detectAdapters } from '../adapters/adapter.registry.js';
 import { formatDuration, readPlainFile, sanitizeReason } from '../adapters/capability.utils.js';
+import { GateStage } from '../adapters/enums/gate-stage.enums.js';
 import type { GateCommand } from '../adapters/types/adapter.types.js';
 import { GATE_COMMAND_TIMEOUT_MS } from './constants/merge-gate.constants.js';
+import { InterruptSignal } from './enums/interrupt-signal.enums.js';
+import { SlotHolderKind } from './enums/slot-holder-kind.enums.js';
 import { SlotWaitExpiredError, SlotWaitInterruptedError } from './errors/test-slot.errors.js';
-import type {
-  SlotHolder,
-  SlotHolderKind,
-  SlotRecord,
-  TestSlotOptions,
-  WaitSignal,
-} from './types/test-slot.types.js';
+import type { SlotHolder, SlotRecord, TestSlotOptions } from './types/test-slot.types.js';
 
 // The machine is what 6 to 8 workers share, and test runs are what saturate it
 // (decision 96): sessions think and edit freely, and every test run waits for
@@ -110,11 +107,11 @@ function readRecord(path: string): SlotRecord | undefined {
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
     // Put in place whole by a link or a rename, so unparseable text is no write in progress.
-    return { kind: 'worker', label: '', pid: 0, token: '' };
+    return { kind: SlotHolderKind.Worker, label: '', pid: 0, token: '' };
   }
   const record = raw as Partial<SlotRecord>;
   return {
-    kind: record.kind === 'gate' ? 'gate' : 'worker',
+    kind: record.kind === SlotHolderKind.Gate ? SlotHolderKind.Gate : SlotHolderKind.Worker,
     label: typeof record.label === 'string' ? record.label : '',
     pid: typeof record.pid === 'number' ? record.pid : 0,
     token: typeof record.token === 'string' ? record.token : '',
@@ -255,7 +252,11 @@ function release(path: string, token: string): void {
 }
 
 /** The signals that end a wait: closing the terminal sends a SIGHUP. */
-const WAIT_SIGNALS: readonly WaitSignal[] = ['SIGINT', 'SIGTERM', 'SIGHUP'];
+const WAIT_SIGNALS: readonly InterruptSignal[] = [
+  InterruptSignal.Sigint,
+  InterruptSignal.Sigterm,
+  InterruptSignal.Sighup,
+];
 
 /**
  * Run `fn` once it holds one of the machine's test slots, and free the slot
@@ -312,11 +313,13 @@ async function acquire(record: SlotRecord, options: TestSlotOptions): Promise<st
   const slots = options.slots ?? TEST_SLOTS;
   mkdirSync(dir, { recursive: true });
   const waitFile =
-    record.kind === 'gate' ? join(dir, `gate-${record.pid}-${record.token}.wait`) : undefined;
+    record.kind === SlotHolderKind.Gate
+      ? join(dir, `gate-${record.pid}-${record.token}.wait`)
+      : undefined;
   // A wait can be long, and the merge lock keeps node alive through a signal
   // (`withMergeLock`): with no child to forward it to, an interrupt has to
   // end the wait here, or a Ctrl-C does nothing until a slot frees.
-  let interrupted: WaitSignal | undefined;
+  let interrupted: InterruptSignal | undefined;
   let wake: () => void = () => undefined;
   const listeners = WAIT_SIGNALS.map((signal) => {
     const listener = (): void => {
@@ -339,7 +342,9 @@ async function acquire(record: SlotRecord, options: TestSlotOptions): Promise<st
         (holder): holder is SlotRecord => holder !== undefined,
       );
       const gatesAhead = waitFile ? [] : waitingGates(dir);
-      const gatesRunning = waitFile ? [] : held.filter((holder) => holder.kind === 'gate');
+      const gatesRunning = waitFile
+        ? []
+        : held.filter((holder) => holder.kind === SlotHolderKind.Gate);
       if (gatesAhead.length === 0 && gatesRunning.length === 0 && held.length < slots) {
         const slot = take(dir, slots, record);
         if (slot) return slot;
@@ -380,11 +385,11 @@ async function acquire(record: SlotRecord, options: TestSlotOptions): Promise<st
  */
 export function describeSlotWait(holders: SlotHolder[], gatesAhead: SlotHolder[]): string {
   const named = (holder: SlotHolder): string =>
-    `${holder.kind === 'gate' ? 'the merge gate for' : 'session'} ${sanitizeReason(holder.label)} (pid ${holder.pid})`;
+    `${holder.kind === SlotHolderKind.Gate ? 'the merge gate for' : 'session'} ${sanitizeReason(holder.label)} (pid ${holder.pid})`;
   const ahead = gatesAhead.length > 0 ? `; ${gatesAhead.map(named).join(' and ')} waits first` : '';
-  const gates = holders.filter((holder) => holder.kind === 'gate');
+  const gates = holders.filter((holder) => holder.kind === SlotHolderKind.Gate);
   if (gates.length > 0) {
-    const sessions = holders.filter((holder) => holder.kind !== 'gate');
+    const sessions = holders.filter((holder) => holder.kind !== SlotHolderKind.Gate);
     const beside = sessions.length > 0 ? `, beside ${sessions.map(named).join(' and ')}` : '';
     const runs = gates.length > 1 ? 'their test runs' : 'its test run';
     return `Waiting for ${gates.map(named).join(' and ')} to end ${runs}${beside}${ahead}.`;
@@ -402,7 +407,7 @@ export function describeSlotWait(holders: SlotHolder[], gatesAhead: SlotHolder[]
 export function sessionTestCommand(repoPath: string): GateCommand | undefined {
   return detectAdapters(repoPath)[0]
     ?.gateCommands(repoPath)
-    .find((command) => command.stage === 'test');
+    .find((command) => command.stage === GateStage.Test);
 }
 
 /** The option, before the files, that turns `pup session test` into a run of the related tests. */
@@ -415,7 +420,7 @@ const RELATED_FLAG = '--related';
  * command is used. The CLI passes `--related`, unknown to it, on as an argument.
  */
 const RELATED_TEST_COMMAND: GateCommand = {
-  stage: 'test',
+  stage: GateStage.Test,
   command: 'pnpm',
   args: ['exec', 'vitest', 'related', '--run', '--passWithNoTests'],
 };
@@ -474,7 +479,7 @@ export async function runSessionTest(req: {
     (process.env[COMMIT_TEST_ENV] ? Number.POSITIVE_INFINITY : SESSION_SLOT_WAIT_MS);
   try {
     return await withTestSlot(
-      { kind: 'worker', label: req.sessionId },
+      { kind: SlotHolderKind.Worker, label: req.sessionId },
       () =>
         new Promise<number>((resolve, reject) => {
           const child = spawn(command.command, [...command.args, ...separator, ...args], {
@@ -485,11 +490,11 @@ export async function runSessionTest(req: {
           const forward = (signal: NodeJS.Signals): void => {
             child.kill(signal);
           };
-          process.on('SIGINT', forward);
-          process.on('SIGTERM', forward);
+          process.on(InterruptSignal.Sigint, forward);
+          process.on(InterruptSignal.Sigterm, forward);
           const settle = (): void => {
-            process.off('SIGINT', forward);
-            process.off('SIGTERM', forward);
+            process.off(InterruptSignal.Sigint, forward);
+            process.off(InterruptSignal.Sigterm, forward);
           };
           child.on('error', (error) => {
             settle();

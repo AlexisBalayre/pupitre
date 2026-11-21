@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { detectAdapters } from '../adapters/adapter.registry.js';
 import { sanitizeReason } from '../adapters/capability.utils.js';
+import type { Tier } from '../claude/enums/tier.enums.js';
 import { SessionPaneMissingError } from '../claude/errors/session-runtime.errors.js';
 import {
   interruptPane,
@@ -13,12 +14,13 @@ import {
   transcriptDir,
   windowLabel,
 } from '../claude/session-runtime.service.js';
-import type { Tier } from '../claude/types/model-ladder.types.js';
 import type { SessionPane } from '../claude/types/session-runtime.types.js';
 import { buildCodeMap, buildKnowledgeSlice } from './code-map.service.js';
 import { openConductorQuestion, TELL_MAX_CHARS, tellConductor } from './conductor.service.js';
 import { SESSION_ID_PATTERN } from './constants/paths.constants.js';
 import { windowFailureOf } from './dashboard.service.js';
+import type { ClimbReason } from './enums/climb-reason.enums.js';
+import { EventType } from './enums/event-type.enums.js';
 import { WorktreeRepointedError } from './errors/git-diff.errors.js';
 import { MachineLoadedError } from './errors/session-cap.errors.js';
 import {
@@ -77,7 +79,6 @@ import {
 import type { ScopeConflict } from './types/overlap.types.js';
 import type { ProjectPaths } from './types/paths.types.js';
 import type { SessionId, TaskSpec } from './types/profile.types.js';
-import type { ClimbReason } from './types/routing.types.js';
 import type { QuestionEvent, SessionRoute, SessionRow } from './types/session.types.js';
 import type { AskOptions, EventPayloads } from './types/session-event.types.js';
 import type {
@@ -236,7 +237,7 @@ export function recordOverlaps(
   via: 'operator' | 'conductor',
 ): void {
   if (conflicts.length === 0) return;
-  appendEvent(db, sessionId, 'scope_overlap', {
+  appendEvent(db, sessionId, EventType.ScopeOverlap, {
     via,
     accepted: conflicts.map((conflict) => ({ session: conflict.sessionId, files: conflict.files })),
   });
@@ -683,7 +684,7 @@ function deliverKickoff(
   }
   // Recorded before the rollback below, and kept through it: a launch that was
   // undone still leaves on the session it killed the trace of why.
-  appendEvent(db, sessionId, 'steer', { kind: 'kickoff', delivered });
+  appendEvent(db, sessionId, EventType.Steer, { kind: 'kickoff', delivered });
   if (!delivered) {
     throw rollBackRefusedLaunch(
       () => killSession(db, sessionId),
@@ -696,7 +697,7 @@ function deliverKickoff(
 
 /** Mark a session done (run by the agent via `pup session done`). */
 export function markSessionDone(db: Database, sessionId: string, summary: string): void {
-  appendEvent(db, sessionId, 'session_done', { summary });
+  appendEvent(db, sessionId, EventType.SessionDone, { summary });
   transitionSession(db, sessionId, 'awaiting-review', { summary });
 }
 
@@ -710,9 +711,9 @@ export function markSessionDone(db: Database, sessionId: string, summary: string
 export function markSessionQuestion(
   db: Database,
   sessionId: string,
-  question: EventPayloads['question'],
+  question: EventPayloads[EventType.Question],
 ): void {
-  appendEvent(db, sessionId, 'question', question);
+  appendEvent(db, sessionId, EventType.Question, question);
 }
 
 /**
@@ -724,7 +725,7 @@ export function askedQuestion(
   command: string,
   text: string | undefined,
   opts: AskOptions,
-): EventPayloads['question'] {
+): EventPayloads[EventType.Question] {
   const options = opts.option ?? [];
   if (!text?.trim()) throw new QuestionRefusedError(`${command} needs the question itself.`);
   if (options.length > MAX_QUESTION_OPTIONS) {
@@ -768,7 +769,7 @@ function paneLine(text: string): string {
  * A number past the options is refused rather than sent as words, since it is
  * a slip, not an answer. Both texts are scrubbed, never cut: they are typed into a pane.
  */
-function resolveAnswer(asked: QuestionEvent, reply: string): EventPayloads['answer'] {
+function resolveAnswer(asked: QuestionEvent, reply: string): EventPayloads[EventType.Answer] {
   const question = paneLine(asked.text ?? '');
   const words = reply.trim();
   if (words === '')
@@ -828,7 +829,7 @@ const FREE_ANSWER_ROOM = 200;
 export function conductorQuestion(
   text: string | undefined,
   opts: AskOptions,
-): EventPayloads['question'] {
+): EventPayloads[EventType.Question] {
   const asked = askedQuestion('pup conductor ask', text, opts);
   const question = paneLine(asked.text);
   const answers: AnswerWords[] = [
@@ -861,7 +862,7 @@ export function answerSessionQuestion(
   sessionId: string,
   questionId: number,
   reply: string,
-): EventPayloads['answer'] {
+): EventPayloads[EventType.Answer] {
   requireLiveSession(db, sessionId, 'answer');
   const asked = questionRead(
     openQuestion(db, sessionId),
@@ -870,7 +871,7 @@ export function answerSessionQuestion(
   );
   const answer = resolveAnswer(asked, reply);
   steerSession(db, sessionId, answerMessage(answer), { kind: 'answer', by: 'operator' });
-  appendEvent(db, sessionId, 'answer', answer);
+  appendEvent(db, sessionId, EventType.Answer, answer);
   return answer;
 }
 
@@ -887,7 +888,7 @@ export function answerConductorQuestion(
   repoPath: string,
   questionId: number,
   reply: string,
-): EventPayloads['answer'] {
+): EventPayloads[EventType.Answer] {
   const asked = questionRead(
     openConductorQuestion(db, repoPath),
     questionId,
@@ -900,7 +901,7 @@ export function answerConductorQuestion(
         'text after a second Enter, or left the screen; the question stays open. Look with `pup attach`.',
     );
   }
-  appendEvent(db, null, 'answer', answer);
+  appendEvent(db, null, EventType.Answer, answer);
   return answer;
 }
 
@@ -939,7 +940,7 @@ export function steerSession(
   record?: SteerRecord,
 ): void {
   steerPane(sessionPane(requireLiveSession(db, sessionId, 'steer')), message);
-  if (record) appendEvent(db, sessionId, 'steer', record);
+  if (record) appendEvent(db, sessionId, EventType.Steer, record);
 }
 
 /**
@@ -951,7 +952,7 @@ export function steerSession(
  */
 export function recordSteerMessage(db: Database, sessionId: string, by: string): void {
   requireLiveSession(db, sessionId, 'steer');
-  appendEvent(db, sessionId, 'steer', { kind: 'message', by });
+  appendEvent(db, sessionId, EventType.Steer, { kind: 'message', by });
 }
 
 /**
@@ -976,14 +977,14 @@ export function interruptSession(
     } catch (error) {
       // Escape already landed, so the interrupt is on record; only the steer
       // is refused.
-      appendEvent(db, sessionId, 'interrupt', { steered: false });
+      appendEvent(db, sessionId, EventType.Interrupt, { steered: false });
       throw error;
     }
   }
-  appendEvent(db, sessionId, 'interrupt', { steered: Boolean(message) });
+  appendEvent(db, sessionId, EventType.Interrupt, { steered: Boolean(message) });
   // The message is a real steer — record it as one too, so last-steer queries
   // see it no matter which path delivered it.
-  if (message) appendEvent(db, sessionId, 'steer', { kind: 'interrupt', by });
+  if (message) appendEvent(db, sessionId, EventType.Steer, { kind: 'interrupt', by });
 }
 
 /**

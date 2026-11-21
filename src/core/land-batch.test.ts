@@ -12,10 +12,13 @@ vi.mock('./audit.service.js', async (importOriginal) => {
 
 import { commitIn, ORIGIN_URL, sh } from '@test/helpers/land.mock.js';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
+import { GateStage } from '../adapters/enums/gate-stage.enums.js';
 import type { Adapter } from '../adapters/types/adapter.types.js';
 import { auditProject } from './audit.service.js';
 import { MERGE_LOCK_DIRNAME } from './constants/merge-gate.constants.js';
 import { openStore } from './db.client.js';
+import { EventType } from './enums/event-type.enums.js';
+import { InterruptSignal } from './enums/interrupt-signal.enums.js';
 import { MergeLockLostError } from './errors/merge-gate.errors.js';
 import { GateInterruptedError } from './errors/sandbox.errors.js';
 import { landSessions } from './land-batch.service.js';
@@ -43,9 +46,9 @@ const passingAdapter: Adapter = {
   id: 'fake',
   detect: () => true,
   gateCommands: () => [
-    { stage: 'build', command: 'true', args: [] },
-    { stage: 'test', command: 'true', args: [] },
-    { stage: 'lint', command: 'true', args: [] },
+    { stage: GateStage.Build, command: 'true', args: [] },
+    { stage: GateStage.Test, command: 'true', args: [] },
+    { stage: GateStage.Lint, command: 'true', args: [] },
   ],
 };
 
@@ -99,7 +102,7 @@ describe('landSessions (decision 195)', { timeout: 30_000 }, () => {
       transitionSession(db, id, 'running');
       transitionSession(db, id, 'awaiting-review');
       transitionSession(db, id, 'merged');
-      appendEvent(db, id, 'merge', {
+      appendEvent(db, id, EventType.Merge, {
         branch: `pup/${id}`,
         sha,
         target: 'main',
@@ -163,7 +166,7 @@ describe('landSessions (decision 195)', { timeout: 30_000 }, () => {
   });
   const landedEvents = (id: string) =>
     listEvents(db, id)
-      .filter((row) => row.type === 'landed')
+      .filter((row) => row.type === EventType.Landed)
       .map((row) => JSON.parse(row.payload));
   const landAll = () =>
     landSessions(db, { repoPath: repo, sessionIds: [...SESSIONS], adapters: [passingAdapter] });
@@ -363,7 +366,7 @@ describe('landSessions (decision 195)', { timeout: 30_000 }, () => {
 
     const failure = await landAll().catch((error: unknown) => error);
 
-    expect(failure).toMatchObject({ signal: 'SIGINT' });
+    expect(failure).toMatchObject({ signal: InterruptSignal.Sigint });
     for (const id of SESSIONS) {
       expect(landedEvents(id)).toHaveLength(row.landed.includes(id) ? 1 : 0);
     }
@@ -386,7 +389,7 @@ describe('landSessions (decision 195)', { timeout: 30_000 }, () => {
         [3, merged('s3', m3)],
       ]),
     );
-    const before = process.listeners('SIGINT');
+    const before = process.listeners(InterruptSignal.Sigint);
     let sent = false;
     const progress = {
       ...NO_PROGRESS,
@@ -394,7 +397,7 @@ describe('landSessions (decision 195)', { timeout: 30_000 }, () => {
         if (name !== 'steer' || sent) return;
         sent = true;
         // Delivered once the event loop turns, as a real signal's listener is.
-        setImmediate(() => process.emit('SIGINT', 'SIGINT'));
+        setImmediate(() => process.emit(InterruptSignal.Sigint, InterruptSignal.Sigint));
       },
     };
 
@@ -405,12 +408,12 @@ describe('landSessions (decision 195)', { timeout: 30_000 }, () => {
     ).catch((error: unknown) => error);
 
     expect(failure).toBeInstanceOf(GateInterruptedError);
-    expect(failure).toMatchObject({ signal: 'SIGINT' });
+    expect(failure).toMatchObject({ signal: InterruptSignal.Sigint });
     for (const id of SESSIONS) {
       expect(landedEvents(id)).toHaveLength(row.landed.includes(id) ? 1 : 0);
     }
     expect(auditProject).not.toHaveBeenCalled();
-    expect(process.listeners('SIGINT')).toEqual(before);
+    expect(process.listeners(InterruptSignal.Sigint)).toEqual(before);
   });
 
   it('refuses the whole batch when no adapter could audit it, asking GitHub nothing', async () => {

@@ -1,6 +1,7 @@
 import type { Database } from 'better-sqlite3';
 import { sanitizeReason } from '../adapters/capability.utils.js';
-import type { Tier } from '../claude/types/model-ladder.types.js';
+import { Tier } from '../claude/enums/tier.enums.js';
+import { EventType } from './enums/event-type.enums.js';
 import { InvalidProfileError } from './errors/profile.errors.js';
 import { InvalidTransitionError, MalformedTaskSpecError } from './errors/session.errors.js';
 import { asStringArray, parseJsonOr } from './report-data.utils.js';
@@ -16,7 +17,6 @@ import type {
   SessionRoute,
   SessionRow,
   SessionState,
-  StoredEventType,
   StoredQuestion,
   TaskRow,
   TaskSpecPatch,
@@ -286,14 +286,14 @@ export function rescopeTaskSpec(db: Database, id: string, spec: string): boolean
  */
 export function raiseToCritical(db: Database, taskId: string, sessionId: string): boolean {
   const task = db
-    .prepare("UPDATE tasks SET tier = 'critical' WHERE id = ? AND tier = 'standard'")
-    .run(taskId);
+    .prepare('UPDATE tasks SET tier = ? WHERE id = ? AND tier = ?')
+    .run(Tier.Critical, taskId, Tier.Standard);
   const session = db
     .prepare(
-      `UPDATE sessions SET tier = 'critical', rung = NULL, rung_reason = NULL
-        WHERE id = ? AND tier = 'standard'`,
+      `UPDATE sessions SET tier = ?, rung = NULL, rung_reason = NULL
+        WHERE id = ? AND tier = ?`,
     )
-    .run(sessionId);
+    .run(Tier.Critical, sessionId, Tier.Standard);
   return task.changes + session.changes > 0;
 }
 
@@ -537,10 +537,10 @@ function logTransition(
   { from, to }: { from: SessionState; to: SessionState },
   eventPayload: TransitionPayload,
 ): void {
-  appendEvent(db, sessionId, 'gate_result', { from, to, ...eventPayload });
+  appendEvent(db, sessionId, EventType.GateResult, { from, to, ...eventPayload });
 }
 
-export function appendEvent<TType extends StoredEventType>(
+export function appendEvent<TType extends EventType>(
   db: Database,
   sessionId: string | null,
   type: TType,
@@ -564,7 +564,7 @@ export function listEvents(db: Database, sessionId: string): EventRow[] {
 export function newestEventOf(
   db: Database,
   sessionId: string,
-  types: readonly StoredEventType[],
+  types: readonly EventType[],
 ): EventRow | undefined {
   return listEvents(db, sessionId)
     .reverse()
@@ -577,7 +577,9 @@ export function newestEventOf(
  * event is `pr_closed`. A re-gate's newer `merge` ends the record.
  */
 export function isPrClosedOnRecord(db: Database, sessionId: string): boolean {
-  return newestEventOf(db, sessionId, ['merge', 'pr_closed'])?.type === 'pr_closed';
+  return (
+    newestEventOf(db, sessionId, [EventType.Merge, EventType.PrClosed])?.type === EventType.PrClosed
+  );
 }
 
 /**
@@ -586,8 +588,12 @@ export function isPrClosedOnRecord(db: Database, sessionId: string): boolean {
  * `fix_round`. A round ends at the merge its re-gate records.
  */
 export function currentFixRound(db: Database, sessionId: string): EventRow | undefined {
-  const newest = newestEventOf(db, sessionId, ['fix_round', 'merge', 'landed']);
-  return newest?.type === 'fix_round' ? newest : undefined;
+  const newest = newestEventOf(db, sessionId, [
+    EventType.FixRound,
+    EventType.Merge,
+    EventType.Landed,
+  ]);
+  return newest?.type === EventType.FixRound ? newest : undefined;
 }
 
 /**
@@ -595,7 +601,7 @@ export function currentFixRound(db: Database, sessionId: string): EventRow | und
  * transaction the id is known in: a copy of the row at another id, or its
  * payload under another, is no longer sealed.
  */
-export function appendSealedEvent<TType extends StoredEventType>(
+export function appendSealedEvent<TType extends EventType>(
   db: Database,
   sessionId: string | null,
   type: TType,
@@ -642,17 +648,26 @@ export function openQuestion(
   const rows = db
     .prepare(
       `SELECT id, type, payload FROM events WHERE session_id IS ?
-         AND type IN ('question', 'steer', 'answer', 'fix_round', 'respawn', 'session_done',
-                      'gate_result', 'conductor_start')
+         AND type IN (?, ?, ?, ?, ?, ?, ?, ?)
          ORDER BY id DESC`,
     )
-    .iterate(sessionId) as IterableIterator<Pick<EventRow, 'id' | 'type' | 'payload'>>;
+    .iterate(
+      sessionId,
+      EventType.Question,
+      EventType.Steer,
+      EventType.Answer,
+      EventType.FixRound,
+      EventType.Respawn,
+      EventType.SessionDone,
+      EventType.GateResult,
+      EventType.ConductorStart,
+    ) as IterableIterator<Pick<EventRow, 'id' | 'type' | 'payload'>>;
   // The questions an answer named: an answer closes the one it names, so a
   // question asked while the answer was being typed stays open.
   const answered = new Set<number>();
   for (const row of rows) {
     const event = decodeEvent(row);
-    if (event.type === 'other' && event.eventType === 'answer') {
+    if (event.type === 'other' && event.eventType === EventType.Answer) {
       const named = event.fields.questionId;
       // One written before answers named their question closes all before it.
       if (!Number.isSafeInteger(named)) return undefined;
@@ -691,7 +706,7 @@ export function decodeEvent(row: Pick<EventRow, 'type' | 'payload'>): SessionEve
     return typeof value === 'string' ? value : undefined;
   };
   switch (row.type) {
-    case 'gate_result':
+    case EventType.GateResult:
       return {
         type: 'gate_result',
         report: decodeGateReport(fields.report),
@@ -700,7 +715,7 @@ export function decodeEvent(row: Pick<EventRow, 'type' | 'payload'>): SessionEve
         outcome: text('outcome'),
         reason: text('reason'),
       };
-    case 'merge':
+    case EventType.Merge:
       return {
         type: 'merge',
         sha: text('sha'),
@@ -711,11 +726,11 @@ export function decodeEvent(row: Pick<EventRow, 'type' | 'payload'>): SessionEve
           ? (fields.leftBehind as number)
           : undefined,
       };
-    case 'steer':
+    case EventType.Steer:
       return { type: 'steer', kind: text('kind'), by: text('by') };
-    case 'session_done':
+    case EventType.SessionDone:
       return { type: 'session_done', summary: text('summary') };
-    case 'question':
+    case EventType.Question:
       return {
         type: 'question',
         text: text('text'),
@@ -725,7 +740,7 @@ export function decodeEvent(row: Pick<EventRow, 'type' | 'payload'>): SessionEve
           : undefined,
         seal: text('seal'),
       };
-    case 'turn_died':
+    case EventType.TurnDied:
       // Keys in the order the watchdog writes them: the dossier prints this
       // event as the JSON it was stored as.
       return {
@@ -734,7 +749,7 @@ export function decodeEvent(row: Pick<EventRow, 'type' | 'payload'>): SessionEve
         stalledAt: text('stalledAt'),
         refusal: text('refusal'),
       };
-    case 'handoff_ready':
+    case EventType.HandoffReady:
       return { type: 'handoff_ready', hash: text('hash') };
     default:
       return { type: 'other', eventType: row.type, fields };

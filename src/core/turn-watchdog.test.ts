@@ -19,6 +19,7 @@ import { conductorPane, deadTurnError, steerPane } from '../claude/session-runti
 import type { SessionPane } from '../claude/types/session-runtime.types.js';
 import { STALLED_AFTER_MS } from './constants/session-activity.constants.js';
 import { openStore } from './db.client.js';
+import { EventType } from './enums/event-type.enums.js';
 import { projectId, projectPaths } from './paths.utils.js';
 import {
   appendEvent,
@@ -95,7 +96,7 @@ function appendHookEvents(repo: string, sessionId: string, events: object[], age
 
 /** A cache hold recorded as `holdIdleCaches` records one: its turn writes past the file as it is. */
 function recordHold(db: Database, repo: string, sessionId: string): void {
-  appendEvent(db, sessionId, 'cache_hold', {
+  appendEvent(db, sessionId, EventType.CacheHold, {
     idleMs: 3_000_000,
     eventsBytes: statSync(projectPaths(repo).eventsFile(sessionId)).size,
   });
@@ -106,7 +107,7 @@ function stallStampOf(repo: string, sessionId: string): string {
   return new Date(statSync(projectPaths(repo).eventsFile(sessionId)).mtimeMs).toISOString();
 }
 
-function eventsOfType(db: Database, sessionId: string, type: string) {
+function eventsOfType(db: Database, sessionId: string, type: EventType) {
   return listEvents(db, sessionId)
     .filter((event) => event.type === type)
     .map((event) => JSON.parse(event.payload));
@@ -149,15 +150,15 @@ describe('sweepDeadTurns', () => {
       expect(deadTurnError).toHaveBeenCalledWith({ sessionId: 's1', paneId: '%7' });
       expect(steerPane).toHaveBeenCalledTimes(1);
       expect(steerPane).toHaveBeenCalledWith({ sessionId: 's1', paneId: '%7' }, RESUME_MESSAGE);
-      expect(eventsOfType(db, 's1', 'turn_died')).toEqual([
+      expect(eventsOfType(db, 's1', EventType.TurnDied)).toEqual([
         { reason: API_ERROR, stalledAt: stallStampOf(repo, 's1') },
       ]);
-      expect(eventsOfType(db, 's1', 'steer')).toEqual([{ kind: 'resume', by: 'watch' }]);
+      expect(eventsOfType(db, 's1', EventType.Steer)).toEqual([{ kind: 'resume', by: 'watch' }]);
     });
 
     describe('after a cache hold (decision 179)', () => {
       beforeEach(() => {
-        appendEvent(db, 's1', 'question', { text: 'which ADR number?' });
+        appendEvent(db, 's1', EventType.Question, { text: 'which ADR number?' });
         recordHold(db, repo, 's1');
         // Typed a minute before the idle prompt the stall is stamped with.
         db.prepare("UPDATE events SET created_at = datetime('now', '-12 minutes')").run();
@@ -172,9 +173,9 @@ describe('sweepDeadTurns', () => {
         expect(sweepDeadTurns(db, repo, now())).toEqual([]);
         expect(deadTurnError).not.toHaveBeenCalled();
         expect(steerPane).not.toHaveBeenCalled();
-        expect(eventsOfType(db, 's1', 'turn_died')).toEqual([]);
+        expect(eventsOfType(db, 's1', EventType.TurnDied)).toEqual([]);
 
-        appendEvent(db, 's1', 'steer', { kind: 'answer', by: 'operator' });
+        appendEvent(db, 's1', EventType.Steer, { kind: 'answer', by: 'operator' });
         expect(sweepDeadTurns(db, repo, now())).toEqual([{ id: 's1', reason: API_ERROR }]);
       });
 
@@ -196,7 +197,7 @@ describe('sweepDeadTurns', () => {
       });
 
       it('is resumed when the events file is shorter than at the hold, as one replaced is', () => {
-        appendEvent(db, 's1', 'cache_hold', { idleMs: 3_000_000, eventsBytes: 1_000 });
+        appendEvent(db, 's1', EventType.CacheHold, { idleMs: 3_000_000, eventsBytes: 1_000 });
 
         expect(sweepDeadTurns(db, repo, now())).toEqual([{ id: 's1', reason: API_ERROR }]);
       });
@@ -212,7 +213,7 @@ describe('sweepDeadTurns', () => {
       expect(deadTurnError).not.toHaveBeenCalled();
       expect(conductorPane).not.toHaveBeenCalled();
       expect(steerPane).not.toHaveBeenCalled();
-      expect(eventsOfType(db, 's1', 'turn_died')).toEqual([]);
+      expect(eventsOfType(db, 's1', EventType.TurnDied)).toEqual([]);
 
       saveProjectDormantAt(db, projectId(repo), null);
       vi.mocked(conductorPane).mockReturnValue(undefined);
@@ -225,8 +226,8 @@ describe('sweepDeadTurns', () => {
 
       expect(again).toEqual([]);
       expect(steerPane).toHaveBeenCalledTimes(1);
-      expect(eventsOfType(db, 's1', 'turn_died')).toHaveLength(1);
-      expect(eventsOfType(db, 's1', 'steer')).toHaveLength(1);
+      expect(eventsOfType(db, 's1', EventType.TurnDied)).toHaveLength(1);
+      expect(eventsOfType(db, 's1', EventType.Steer)).toHaveLength(1);
     });
 
     // The DNS-outage case: the resumed turn dies again at once, no hook fires
@@ -242,9 +243,9 @@ describe('sweepDeadTurns', () => {
 
       expect(resumed).toEqual([{ id: 's1', reason: API_ERROR }]);
       expect(steerPane).toHaveBeenCalledTimes(2);
-      const stamps = eventsOfType(db, 's1', 'turn_died').map((event) => event.stalledAt);
+      const stamps = eventsOfType(db, 's1', EventType.TurnDied).map((event) => event.stalledAt);
       expect(stamps).toEqual([stallStampOf(repo, 's1'), stallStampOf(repo, 's1')]);
-      expect(eventsOfType(db, 's1', 'steer')).toHaveLength(2);
+      expect(eventsOfType(db, 's1', EventType.Steer)).toHaveLength(2);
     });
 
     // A session that recovered, worked and died again is a new stall: its
@@ -257,7 +258,7 @@ describe('sweepDeadTurns', () => {
 
       expect(resumed).toEqual([{ id: 's1', reason: API_ERROR }]);
       expect(steerPane).toHaveBeenCalledTimes(2);
-      const stamps = eventsOfType(db, 's1', 'turn_died').map((event) => event.stalledAt);
+      const stamps = eventsOfType(db, 's1', EventType.TurnDied).map((event) => event.stalledAt);
       expect(stamps).toHaveLength(2);
       expect(new Set(stamps).size).toBe(2);
       expect(stamps[1]).toBe(stallStampOf(repo, 's1'));
@@ -273,14 +274,14 @@ describe('sweepDeadTurns', () => {
       expect(resumed).toEqual([
         { id: 's1', reason: API_ERROR, refusal: expect.stringContaining('did not land') },
       ]);
-      expect(eventsOfType(db, 's1', 'turn_died')).toEqual([
+      expect(eventsOfType(db, 's1', EventType.TurnDied)).toEqual([
         {
           reason: API_ERROR,
           stalledAt: stallStampOf(repo, 's1'),
           refusal: expect.stringContaining('did not land'),
         },
       ]);
-      expect(eventsOfType(db, 's1', 'steer')).toEqual([]);
+      expect(eventsOfType(db, 's1', EventType.Steer)).toEqual([]);
       // The refusal is on record, so the next sweep does not type again.
       expect(sweepDeadTurns(db, repo, now())).toEqual([]);
       expect(steerPane).toHaveBeenCalledTimes(1);
@@ -301,15 +302,15 @@ describe('sweepDeadTurns', () => {
         { id: 's1', reason: API_ERROR, refusal: expect.stringContaining('is killed') },
         { id: 's2', reason: API_ERROR },
       ]);
-      expect(eventsOfType(db, 's1', 'turn_died')).toEqual([
+      expect(eventsOfType(db, 's1', EventType.TurnDied)).toEqual([
         {
           reason: API_ERROR,
           stalledAt: stallStampOf(repo, 's1'),
           refusal: expect.stringContaining('is killed'),
         },
       ]);
-      expect(eventsOfType(db, 's1', 'steer')).toEqual([]);
-      expect(eventsOfType(db, 's2', 'steer')).toEqual([{ kind: 'resume', by: 'watch' }]);
+      expect(eventsOfType(db, 's1', EventType.Steer)).toEqual([]);
+      expect(eventsOfType(db, 's2', EventType.Steer)).toEqual([{ kind: 'resume', by: 'watch' }]);
       expect(steerPane).toHaveBeenCalledTimes(1);
       expect(steerPane).toHaveBeenCalledWith(
         expect.objectContaining({ sessionId: 's2' }),
@@ -324,7 +325,7 @@ describe('sweepDeadTurns', () => {
       const [resumed] = sweepDeadTurns(db, repo, now());
 
       expect(resumed?.reason).not.toContain(esc);
-      expect(eventsOfType(db, 's1', 'turn_died')[0].reason).not.toContain(esc);
+      expect(eventsOfType(db, 's1', EventType.TurnDied)[0].reason).not.toContain(esc);
     });
   });
 
@@ -336,7 +337,7 @@ describe('sweepDeadTurns', () => {
 
     expect(deadTurnError).toHaveBeenCalledTimes(1);
     expect(steerPane).not.toHaveBeenCalled();
-    expect(eventsOfType(db, 's1', 'turn_died')).toEqual([]);
+    expect(eventsOfType(db, 's1', EventType.TurnDied)).toEqual([]);
   });
 
   it('does not read the pane of a running session that is not stalled', () => {
@@ -360,7 +361,7 @@ describe('sweepDeadTurns', () => {
     expect(sweepDeadTurns(db, repo, now())).toEqual([]);
 
     expect(deadTurnError).not.toHaveBeenCalled();
-    expect(eventsOfType(db, 's1', 'turn_died')).toEqual([]);
+    expect(eventsOfType(db, 's1', EventType.TurnDied)).toEqual([]);
   });
 
   // A store a session wrote an id like this into: the sweep asks the store
@@ -381,7 +382,7 @@ describe('sweepDeadTurns', () => {
 
     expect(sweepDeadTurns(db, repo, now())).toEqual([]);
     expect(steerPane).not.toHaveBeenCalled();
-    expect(eventsOfType(db, escapingId, 'turn_died')).toEqual([]);
+    expect(eventsOfType(db, escapingId, EventType.TurnDied)).toEqual([]);
   });
 
   describe('the conductor', () => {
@@ -409,7 +410,9 @@ describe('sweepDeadTurns', () => {
       // Filed against no session: the conductor has no row of its own.
       expect(
         db
-          .prepare("SELECT payload FROM events WHERE session_id IS NULL AND type = 'turn_died'")
+          .prepare(
+            `SELECT payload FROM events WHERE session_id IS NULL AND type = '${EventType.TurnDied}'`,
+          )
           .all(),
       ).toEqual([{ payload: JSON.stringify({ target: CONDUCTOR_TARGET, reason: API_ERROR }) }]);
     });
@@ -460,7 +463,9 @@ describe('sweepDeadTurns', () => {
         },
       ]);
       const [row] = db
-        .prepare("SELECT payload FROM events WHERE session_id IS NULL AND type = 'turn_died'")
+        .prepare(
+          `SELECT payload FROM events WHERE session_id IS NULL AND type = '${EventType.TurnDied}'`,
+        )
         .all() as Array<{ payload: string }>;
       expect(JSON.parse(row?.payload ?? '{}')).toMatchObject({
         target: CONDUCTOR_TARGET,

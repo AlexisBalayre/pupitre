@@ -1,6 +1,9 @@
 import type { Database } from 'better-sqlite3';
 import { sanitizeReason } from '../adapters/capability.utils.js';
 import { COMMIT_SHA } from './constants/merge-gate.constants.js';
+import { EventType } from './enums/event-type.enums.js';
+import { GateStageStatus } from './enums/gate-stage-status.enums.js';
+import { MergeStatus } from './enums/merge-status.enums.js';
 import {
   assertPullRequestHead,
   findOpenPullRequest,
@@ -161,7 +164,7 @@ export async function regateMerged(
   const stages: GateStageResult[] = [
     {
       stage: 'worktree-clean',
-      status: 'skipped',
+      status: GateStageStatus.Skipped,
       detail: 'not measured — a re-gate reads the pushed branch, not the session worktree',
     },
   ];
@@ -178,7 +181,7 @@ export async function regateMerged(
     stages.push(
       timedSince(started, {
         stage: 'fresh-base',
-        status: 'fail',
+        status: GateStageStatus.Fail,
         detail:
           `${session.branch} at ${sha} is not based on ${sanitizeReason(target)} at ` +
           `${targetSha}. Rebase it onto ${sanitizeReason(target)}, push it to the PR, then re-gate.`,
@@ -189,7 +192,7 @@ export async function regateMerged(
   stages.push(
     timedSince(started, {
       stage: 'fresh-base',
-      status: 'pass',
+      status: GateStageStatus.Pass,
       detail: `already based on ${target}`,
     }),
   );
@@ -236,11 +239,11 @@ export async function regateMerged(
   }
   // Logged as a transition onto the state the session keeps, so every reader
   // of the newest gate run finds it.
-  appendEvent(db, session.id, 'gate_result', { from: 'merged', to: 'merged', report });
+  appendEvent(db, session.id, EventType.GateResult, { from: 'merged', to: 'merged', report });
   const files = measured.changedPaths;
   recordMerge(db, req.repoPath, session, { sha, target, files, prUrl: regate.prUrl }, false);
   return {
-    status: 'merged',
+    status: MergeStatus.Merged,
     report,
     rejectCount: session.reject_count,
     debtCandidates: measured.debtCandidates,

@@ -9,6 +9,7 @@ import {
 import type { SessionPane } from '../claude/types/session-runtime.types.js';
 import { COMMIT_SHA } from './constants/merge-gate.constants.js';
 import { openThreadCount } from './dashboard.service.js';
+import { EventType } from './enums/event-type.enums.js';
 import { WorktreeRepointedError } from './errors/git-diff.errors.js';
 import {
   isRefusedSteer,
@@ -434,9 +435,9 @@ function roundTheNewestMergeEnded(
   | undefined {
   const events = listEvents(db, sessionId).reverse();
   const [merge, before] = events.filter((row) =>
-    ['fix_round', 'merge', 'landed'].includes(row.type),
+    [EventType.FixRound, EventType.Merge, EventType.Landed].includes(row.type),
   );
-  if (merge?.type !== 'merge' || before?.type !== 'fix_round') return undefined;
+  if (merge?.type !== EventType.Merge || before?.type !== EventType.FixRound) return undefined;
   const merged = decodeEvent(merge);
   const round = decodeEvent(before);
   if (merged.type !== 'merge' || round.type !== 'other') return undefined;
@@ -931,7 +932,7 @@ function assertStillPinned(
   const standing = listEvents(db, sessionId)
     .reverse()
     .find((row) => ['merge', 'landed', 'retired'].includes(row.type));
-  if (standing?.type === 'retired') {
+  if (standing?.type === EventType.Retired) {
     throw new Error(
       `Session ${sanitizeReason(sessionId)} was retired by a run that held the merge lock ` +
         `meanwhile. ${NOT_STARTED}`,
@@ -968,7 +969,7 @@ function takeFixRoundEdge(
   db: Database,
   { id: sessionId, task_id: taskId, tier }: SessionRow,
   specRead: string | undefined,
-  round: Omit<EventPayloads['fix_round'], 'rejectBase'>,
+  round: Omit<EventPayloads[EventType.FixRound], 'rejectBase'>,
 ): number {
   return orNotStarted(
     db.transaction(() => {
@@ -985,7 +986,7 @@ function takeFixRoundEdge(
       const { reject_count: rejectBase } = db
         .prepare('UPDATE sessions SET tmux_target = NULL WHERE id = ? RETURNING reject_count')
         .get(sessionId) as { reject_count: number };
-      appendEvent(db, sessionId, 'fix_round', { ...round, rejectBase });
+      appendEvent(db, sessionId, EventType.FixRound, { ...round, rejectBase });
       return (currentFixRound(db, sessionId) as EventRow).id;
     }),
   );
@@ -1069,7 +1070,7 @@ function relaunchWorker(
     try {
       isDelivered = kickoff(pane, `${compile.compiled.contextMarkdown}\n\n${brief}`);
     } finally {
-      appendEvent(db, session.id, 'respawn', { delivered: isDelivered });
+      appendEvent(db, session.id, EventType.Respawn, { delivered: isDelivered });
     }
   } catch (error) {
     if (hasRowMoved) {

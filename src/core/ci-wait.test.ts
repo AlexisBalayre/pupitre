@@ -14,6 +14,7 @@ import type { Database } from 'better-sqlite3';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { waitForCiReview } from './ci-wait.service.js';
 import { openStore } from './db.client.js';
+import { EventType } from './enums/event-type.enums.js';
 import { RewrittenGitDirError } from './errors/git-diff.errors.js';
 import { projectId } from './paths.utils.js';
 import { CI_WAIT_STAGES, stageProgress } from './progress.utils.js';
@@ -177,7 +178,7 @@ describe('waitForCiReview', { timeout: 20_000 }, () => {
     transitionSession(db, SESSION_ID, 'running');
     transitionSession(db, SESSION_ID, 'awaiting-review');
     transitionSession(db, SESSION_ID, 'merged');
-    appendEvent(db, SESSION_ID, 'merge', {
+    appendEvent(db, SESSION_ID, EventType.Merge, {
       branch: `pup/${SESSION_ID}`,
       sha: HEAD,
       target: 'main',
@@ -619,7 +620,7 @@ describe('waitForCiReview', { timeout: 20_000 }, () => {
     );
 
     // The pin is store text, and the digest holds the PR's head to it.
-    appendEvent(db, 's3', 'merge', {
+    appendEvent(db, 's3', EventType.Merge, {
       branch: 'pup/s3',
       sha: 'not a sha',
       target: 'main',
@@ -631,7 +632,7 @@ describe('waitForCiReview', { timeout: 20_000 }, () => {
         'waited for.',
     );
 
-    appendEvent(db, SESSION_ID, 'landed', { sha: HEAD, target: 'main', prUrl: PR_URL });
+    appendEvent(db, SESSION_ID, EventType.Landed, { sha: HEAD, target: 'main', prUrl: PR_URL });
 
     await expect(wait()).rejects.toThrow(`Session ${SESSION_ID} has already landed.`);
   });
@@ -654,7 +655,7 @@ describe('waitForCiReview', { timeout: 20_000 }, () => {
       branch: 'pup/o1',
       profileHash: 'hash',
     });
-    appendEvent(db, 'o1', 'merge', {
+    appendEvent(db, 'o1', EventType.Merge, {
       branch: 'pup/o1',
       sha: HEAD,
       target: 'main',

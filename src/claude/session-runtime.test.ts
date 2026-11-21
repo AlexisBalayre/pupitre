@@ -75,6 +75,8 @@ import { WorktreeRepointedError } from '../core/errors/git-diff.errors.js';
 import { verifiedWorktreeGitEnv } from '../core/git-diff.client.js';
 import { projectId, projectPaths } from '../core/paths.utils.js';
 import { CONDUCTOR_ROUTE, LADDERS } from './constants/model-ladder.constants.js';
+import { InputBoxState } from './enums/input-box-state.enums.js';
+import { Tier } from './enums/tier.enums.js';
 import {
   ConfigDirRefusedError,
   SessionPaneMissingError,
@@ -233,7 +235,7 @@ const OPTS = {
   worktreePath: '/tmp/repo/.worktrees/s-1',
   env: { vars: {}, configDir: join(homedir(), '.claude') },
   settingsPath: '/tmp/compiled/settings.json',
-  route: LADDERS.standard[0] as ModelRoute,
+  route: LADDERS[Tier.Standard][0] as ModelRoute,
 };
 
 describe('launchArgs', () => {
@@ -258,19 +260,19 @@ describe('launchArgs', () => {
   // Opus (decision 92).
   it.each([
     [
-      'standard',
+      Tier.Standard,
       0,
       ['--model', 'claude-sonnet-5-5', '--effort', 'medium', '--fallback-model', 'claude-opus-5-5'],
     ],
     [
-      'standard',
+      Tier.Standard,
       1,
       ['--model', 'claude-sonnet-5-5', '--effort', 'high', '--fallback-model', 'claude-opus-5-5'],
     ],
-    ['standard', 2, ['--model', 'claude-opus-5-5', '--effort', 'high']],
-    ['standard', 3, ['--model', 'claude-opus-5-5', '--effort', 'xhigh']],
-    ['critical', 0, ['--model', 'claude-opus-5-5', '--effort', 'high']],
-    ['critical', 1, ['--model', 'claude-opus-5-5', '--effort', 'xhigh']],
+    [Tier.Standard, 2, ['--model', 'claude-opus-5-5', '--effort', 'high']],
+    [Tier.Standard, 3, ['--model', 'claude-opus-5-5', '--effort', 'xhigh']],
+    [Tier.Critical, 0, ['--model', 'claude-opus-5-5', '--effort', 'high']],
+    [Tier.Critical, 1, ['--model', 'claude-opus-5-5', '--effort', 'xhigh']],
   ] as const)('opens a %s rung %i window on exactly its model and effort', (tier, rung, flags) => {
     const args = launchArgs({ ...OPTS, route: LADDERS[tier][rung] as ModelRoute });
 
@@ -2216,24 +2218,27 @@ describe('steerPane with a fake tmux on PATH', () => {
 
     it('reads the box as empty, then holding text until Enter submits it', () => {
       landsAfter = 1;
-      expect(readInputBox(CONDUCTOR)).toBe('empty');
+      expect(readInputBox(CONDUCTOR)).toBe(InputBoxState.Empty);
       expect(pasteIntoPane(CONDUCTOR, TELL)).toBe(true);
-      expect(readInputBox(CONDUCTOR)).toBe('holds');
+      expect(readInputBox(CONDUCTOR)).toBe(InputBoxState.Holds);
 
       submitPane(CONDUCTOR);
 
-      expect(readInputBox(CONDUCTOR)).toBe('empty');
+      expect(readInputBox(CONDUCTOR)).toBe(InputBoxState.Empty);
       expect(argvLog()).toContain(`-L ${socket} send-keys -t %5 Enter`);
     });
 
     it('reads the box and the draft it holds from one capture, pressing nothing', () => {
       landsAfter = 1;
-      expect(readInputBoxLook(CONDUCTOR)).toEqual({ state: 'empty', draft: '' });
+      expect(readInputBoxLook(CONDUCTOR)).toEqual({ state: InputBoxState.Empty, draft: '' });
       expect(pasteIntoPane(CONDUCTOR, TELL)).toBe(true);
       const captures = () => argvLog().filter((line) => line.includes('capture-pane')).length;
       const before = captures();
 
-      expect(readInputBoxLook(CONDUCTOR)).toEqual({ state: 'holds', draft: '[Pastedtext#1]' });
+      expect(readInputBoxLook(CONDUCTOR)).toEqual({
+        state: InputBoxState.Holds,
+        draft: '[Pastedtext#1]',
+      });
 
       expect(captures()).toBe(before + 1);
       expect(argvLog().filter((line) => line.includes('send-keys'))).toEqual([]);

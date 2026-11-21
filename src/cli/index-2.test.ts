@@ -152,7 +152,11 @@ vi.mock('../core/session-lifecycle.service.js', async (importOriginal) => ({
 vi.mock('../core/test-slot.service.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../core/test-slot.service.js')>()),
   runSessionTest: vi.fn(async () => 0),
-  sessionTestCommand: vi.fn(() => ({ stage: 'test', command: 'pnpm', args: ['run', 'test'] })),
+  sessionTestCommand: vi.fn(() => ({
+    stage: GateStage.Test,
+    command: 'pnpm',
+    args: ['run', GateStage.Test],
+  })),
 }));
 vi.mock('../core/session-handoff.service.js', () => ({
   HANDOFF_WAIT_DEFAULT_MS: 10 * 60 * 1000,
@@ -182,6 +186,7 @@ import {
   seedSession,
   seedStalledSession,
 } from '@test/helpers/cli-index.mock.js';
+import { GateStage } from '../adapters/enums/gate-stage.enums.js';
 import {
   SessionPaneMissingError,
   SteerNotDeliveredError,
@@ -194,6 +199,9 @@ import {
 import { isConductorRunning } from '../core/conductor.service.js';
 import { DEFAULT_BASE_PROFILE } from '../core/constants/default-profile.constants.js';
 import { insertDecisionRecord } from '../core/decision-record.repository.js';
+import { EventType } from '../core/enums/event-type.enums.js';
+import { GateStageStatus } from '../core/enums/gate-stage-status.enums.js';
+import { InterruptSignal } from '../core/enums/interrupt-signal.enums.js';
 import { MergeLockLostError } from '../core/errors/merge-gate.errors.js';
 import { InvalidProfileError } from '../core/errors/profile.errors.js';
 import { GateInterruptedError } from '../core/errors/sandbox.errors.js';
@@ -1706,7 +1714,7 @@ describe('CLI commands', () => {
       transitionSession(db, 's1', 'running');
       transitionSession(db, 's1', 'awaiting-review');
       transitionSession(db, 's1', 'merged');
-      appendEvent(db, 's1', 'merge', {
+      appendEvent(db, 's1', EventType.Merge, {
         branch: 'pup/s1',
         sha: 'f'.repeat(40),
         target: 'main',
@@ -1786,7 +1794,7 @@ describe('CLI commands', () => {
           sessionId: 's1',
           passed: true,
           sandbox: 'sandbox-exec (macOS)',
-          stages: [{ stage: 'build', status: 'pass' }],
+          stages: [{ stage: GateStage.Build, status: GateStageStatus.Pass }],
         },
       });
 
@@ -1906,7 +1914,9 @@ describe('CLI commands', () => {
 
     it('leaves an interrupt during --abandon-closed to the entry point', async () => {
       useCwd(initRepoWithAdapter());
-      vi.mocked(abandonClosedSession).mockRejectedValue(new GateInterruptedError('SIGINT'));
+      vi.mocked(abandonClosedSession).mockRejectedValue(
+        new GateInterruptedError(InterruptSignal.Sigint),
+      );
 
       const escaped = await buildProgram()
         .parseAsync(['land', 's1', '--abandon-closed'], { from: 'user' })
@@ -2058,7 +2068,7 @@ describe('CLI commands', () => {
 
       logs.length = 0;
       const { db } = resolveProject(repo);
-      appendEvent(db, 's1', 'landed', { sha: 'a'.repeat(40), target: 'main', prUrl: PR });
+      appendEvent(db, 's1', EventType.Landed, { sha: 'a'.repeat(40), target: 'main', prUrl: PR });
       db.close();
       buildProgram().parse(['status'], { from: 'user' });
 
@@ -2155,7 +2165,7 @@ describe('CLI commands', () => {
 
       it('leaves an interrupt during the batch to the entry point', async () => {
         useCwd(initRepoWithAdapter());
-        vi.mocked(landSessions).mockRejectedValue(new GateInterruptedError('SIGINT'));
+        vi.mocked(landSessions).mockRejectedValue(new GateInterruptedError(InterruptSignal.Sigint));
 
         const escaped = await buildProgram()
           .parseAsync(['land', 's1', 's2'], { from: 'user' })
@@ -2356,7 +2366,7 @@ describe('CLI commands', () => {
       transitionSession(db, 's1', 'running');
       transitionSession(db, 's1', 'awaiting-review');
       transitionSession(db, 's1', 'merged');
-      appendEvent(db, 's1', 'merge', {
+      appendEvent(db, 's1', EventType.Merge, {
         branch: 'pup/s1',
         sha: 'f'.repeat(40),
         target: 'main',
@@ -2486,7 +2496,10 @@ describe('CLI commands', () => {
     const PORT = 41_234;
 
     /** The one listener the command added for `signal`, removed again so it outlives no test. */
-    function addedListener(signal: 'SIGINT' | 'SIGTERM', before: unknown[]): unknown {
+    function addedListener(
+      signal: InterruptSignal.Sigint | InterruptSignal.Sigterm,
+      before: unknown[],
+    ): unknown {
       const added = process.listeners(signal).filter((listener) => !before.includes(listener));
       onTestFinished(() => {
         for (const listener of added) process.off(signal, listener);
@@ -2501,10 +2514,12 @@ describe('CLI commands', () => {
      * unwraps a once-listener, so only a delivered signal tells `on` from `once`.
      */
     async function runDashboard(): Promise<void> {
-      const sigints = process.listeners('SIGINT');
-      const sigterms = process.listeners('SIGTERM');
+      const sigints = process.listeners(InterruptSignal.Sigint);
+      const sigterms = process.listeners(InterruptSignal.Sigterm);
       await buildProgram().parseAsync(['dashboard'], { from: 'user' });
-      expect(addedListener('SIGTERM', sigterms)).toBe(addedListener('SIGINT', sigints));
+      expect(addedListener(InterruptSignal.Sigterm, sigterms)).toBe(
+        addedListener(InterruptSignal.Sigint, sigints),
+      );
     }
 
     /** Connections to `server` over an in-memory pair, either side's close closing the other (decision 191). */
@@ -2578,7 +2593,7 @@ describe('CLI commands', () => {
       await reached;
 
       const at = Date.now();
-      process.emit('SIGINT', 'SIGINT');
+      process.emit(InterruptSignal.Sigint, InterruptSignal.Sigint);
       await ended;
       await vi.waitFor(() => expect(store?.open).toBe(false), { timeout: 5_000 });
 
@@ -2601,7 +2616,7 @@ describe('CLI commands', () => {
       useCwd(initRepo());
       await runDashboard();
 
-      process.emit('SIGINT', 'SIGINT');
+      process.emit(InterruptSignal.Sigint, InterruptSignal.Sigint);
 
       expect(logs.slice(2)).toEqual([
         'stopping...',
@@ -2610,7 +2625,7 @@ describe('CLI commands', () => {
       expect(exit).not.toHaveBeenCalled();
 
       // Under once the listener would be gone here, and nothing would exit.
-      expect(() => process.emit('SIGINT', 'SIGINT')).toThrow('exited');
+      expect(() => process.emit(InterruptSignal.Sigint, InterruptSignal.Sigint)).toThrow('exited');
       expect(exit).toHaveBeenCalledWith(130);
       expect(logs.at(-1)).toBe('Stopped without waiting for the running action.');
     });

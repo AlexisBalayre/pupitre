@@ -4,7 +4,11 @@ import { dirname, join } from 'node:path';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import type { Database } from 'better-sqlite3';
 import { beforeEach, describe, expect, it } from 'vitest';
+import { GateStage } from '../adapters/enums/gate-stage.enums.js';
 import { openStore } from './db.client.js';
+import { EventType } from './enums/event-type.enums.js';
+import { GateStageStatus } from './enums/gate-stage-status.enums.js';
+import { MergeStatus } from './enums/merge-status.enums.js';
 import { MalformedTaskSpecError } from './errors/session.errors.js';
 import { buildReviewQueue, buildSessionReview } from './review.service.js';
 import {
@@ -134,7 +138,7 @@ describe('review service', { timeout: 20_000 }, () => {
   it('raises the risk score for logged scope violations and past rejections', () => {
     const worktree = seedSession(db, repo, 's-risky');
     commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
-    appendEvent(db, 's-risky', 'scope_violation', { path: 'docs/oops.md' });
+    appendEvent(db, 's-risky', EventType.ScopeViolation, { path: 'docs/oops.md' });
     incrementRejectCount(db, 's-risky');
 
     const [entry] = buildReviewQueue(db, repo);
@@ -147,9 +151,9 @@ describe('review service', { timeout: 20_000 }, () => {
   it('returns spec, per-file stats, and the last gate report in the detail view', () => {
     const worktree = seedSession(db, repo, 's-detail');
     commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\nexport const extra = 2;\n');
-    const stages = [{ stage: 'build', status: 'fail' as const, detail: 'boom' }];
-    appendEvent(db, 's-detail', 'gate_result', {
-      outcome: 'refused',
+    const stages = [{ stage: GateStage.Build, status: GateStageStatus.Fail, detail: 'boom' }];
+    appendEvent(db, 's-detail', EventType.GateResult, {
+      outcome: MergeStatus.Refused,
       report: { sessionId: 's-detail', passed: false, sandbox: 'none', stages },
     });
 
@@ -180,13 +184,13 @@ describe('review service', { timeout: 20_000 }, () => {
   // no report, so the run before it is the last report on record.
   it('reads past a gate_result whose payload is not JSON instead of throwing', () => {
     seedSession(db, repo, 's-torn');
-    const stages = [{ stage: 'build', status: 'pass' as const }];
-    appendEvent(db, 's-torn', 'gate_result', {
-      outcome: 'refused',
+    const stages = [{ stage: GateStage.Build, status: GateStageStatus.Pass }];
+    appendEvent(db, 's-torn', EventType.GateResult, {
+      outcome: MergeStatus.Refused,
       report: { sessionId: 's-torn', passed: true, sandbox: 'none', stages },
     });
     db.prepare(
-      "INSERT INTO events (session_id, type, payload) VALUES ('s-torn', 'gate_result', '{\"report\":')",
+      `INSERT INTO events (session_id, type, payload) VALUES ('s-torn', '${EventType.GateResult}', '{"report":')`,
     ).run();
 
     expect(buildSessionReview(db, repo, 's-torn').lastGateReport).toEqual({ passed: true, stages });

@@ -27,9 +27,13 @@ vi.mock('./audit.service.js', async (importOriginal) => {
 
 import { BRANCH, commitIn, ORIGIN_URL, PR_URL, SESSION_ID, sh } from '@test/helpers/land.mock.js';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
+import { GateStage } from '../adapters/enums/gate-stage.enums.js';
 import type { Adapter } from '../adapters/types/adapter.types.js';
 import { buildDashboardSnapshot, needsYou } from './dashboard.service.js';
 import { openStore } from './db.client.js';
+import { EventType } from './enums/event-type.enums.js';
+import { InterruptSignal } from './enums/interrupt-signal.enums.js';
+import { MergeStatus } from './enums/merge-status.enums.js';
 import { gitDiffPaths } from './git-diff.client.js';
 import { initProject } from './init.service.js';
 import { landSession } from './land.service.js';
@@ -58,9 +62,9 @@ const passingAdapter: Adapter = {
   id: 'fake',
   detect: () => true,
   gateCommands: () => [
-    { stage: 'build', command: 'true', args: [] },
-    { stage: 'test', command: 'true', args: [] },
-    { stage: 'lint', command: 'true', args: [] },
+    { stage: GateStage.Build, command: 'true', args: [] },
+    { stage: GateStage.Test, command: 'true', args: [] },
+    { stage: GateStage.Lint, command: 'true', args: [] },
   ],
 };
 
@@ -123,7 +127,7 @@ describe('landSession', { timeout: 20_000 }, () => {
   /** What the gate's `--pr` merge leaves: the session merged, its PR on the event. */
   function seedPrMerge(prUrl: string | null = PR_URL): void {
     transitionSession(db, SESSION_ID, 'merged');
-    appendEvent(db, SESSION_ID, 'merge', {
+    appendEvent(db, SESSION_ID, EventType.Merge, {
       branch: BRANCH,
       sha: pinned,
       target: 'main',
@@ -170,7 +174,8 @@ describe('landSession', { timeout: 20_000 }, () => {
     landSession(db, { repoPath: repo, sessionId: SESSION_ID, adapters: [passingAdapter] });
   const mainSha = () => sh(repo, 'git', 'rev-parse', 'main');
   const hasTrackingRef = () => sh(repo, 'git', 'for-each-ref', 'refs/remotes/origin/main') !== '';
-  const landedEvents = () => listEvents(db, SESSION_ID).filter((row) => row.type === 'landed');
+  const landedEvents = () =>
+    listEvents(db, SESSION_ID).filter((row) => row.type === EventType.Landed);
 
   /** Nothing a refusal may touch moved. */
   function expectNothingChanged(mainBefore: string): void {
@@ -322,7 +327,9 @@ describe('landSession', { timeout: 20_000 }, () => {
     ['no target', (pin) => ({ sha: pin })],
   ])('refuses a merge event with %s, changing nothing', async (_label, fields) => {
     transitionSession(db, SESSION_ID, 'merged');
-    db.prepare("INSERT INTO events (session_id, type, payload) VALUES (?, 'merge', ?)").run(
+    db.prepare(
+      `INSERT INTO events (session_id, type, payload) VALUES (?, '${EventType.Merge}', ?)`,
+    ).run(
       SESSION_ID,
       JSON.stringify({ branch: BRANCH, files: [], prUrl: PR_URL, ...fields(pinned) }),
     );
@@ -408,7 +415,7 @@ describe('landSession', { timeout: 20_000 }, () => {
       adapters: [passingAdapter],
       openPr: true,
     });
-    expect(regated.status).toBe('merged');
+    expect(regated.status).toBe(MergeStatus.Merged);
     const merge = mergeOnGitHub(later);
     fakeGh({
       state: 'MERGED',
@@ -554,7 +561,9 @@ describe('landSession', { timeout: 20_000 }, () => {
       const pathWithGh = process.env.PATH;
       process.env.PATH = `${dir}:${pathWithGh}`;
 
-      await expect(land()).rejects.toThrow(expect.objectContaining({ signal: 'SIGTERM' }));
+      await expect(land()).rejects.toThrow(
+        expect.objectContaining({ signal: InterruptSignal.Sigterm }),
+      );
       expect(landedEvents()).toEqual([]);
       expect(existsSync(join(repo, '.git', 'pup-merge.lock'))).toBe(false);
 

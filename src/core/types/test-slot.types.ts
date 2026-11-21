@@ -1,6 +1,4 @@
-/** Who takes a slot: the merge gate goes first, a worker's `pup session test` after it. */
-export type SlotHolderKind = 'gate' | 'worker';
-
+import type { SlotHolderKind } from '../enums/slot-holder-kind.enums.js';
 export interface SlotHolder {
   kind: SlotHolderKind;
   /** The session the run is for, as `pup session test` and the gate name it. */
@@ -38,5 +36,3 @@ export interface SlotRecord extends SlotHolder {
   /** Minted per take, so a release removes only the file it wrote. */
   token: string;
 }
-
-export type WaitSignal = 'SIGINT' | 'SIGTERM' | 'SIGHUP';

@@ -25,6 +25,12 @@ import { PR_URL } from './constants/dashboard.constants.js';
 import { COMMIT_SHA } from './constants/merge-gate.constants.js';
 import { SESSION_ID_PATTERN } from './constants/paths.constants.js';
 import { eventDetail } from './dashboard-events.utils.js';
+import type { ClimbReason } from './enums/climb-reason.enums.js';
+import { EventType } from './enums/event-type.enums.js';
+import { GateStageStatus } from './enums/gate-stage-status.enums.js';
+import { InterruptSignal } from './enums/interrupt-signal.enums.js';
+import { MergeStatus } from './enums/merge-status.enums.js';
+import { SessionActivityKind } from './enums/session-activity-kind.enums.js';
 import { runGit } from './git-diff.client.js';
 import { listLedgerEntries, listOverdueLedgerEntries } from './ledger.repository.js';
 import { getWatcherBeat, listOverlaps } from './overlap.repository.js';
@@ -76,7 +82,6 @@ import type {
 } from './types/dashboard.types.js';
 import type { DebtBaseline, ProjectBaseline } from './types/init.types.js';
 import type { ProjectPaths } from './types/paths.types.js';
-import type { ClimbReason } from './types/routing.types.js';
 import type {
   EventRow,
   QuestionEvent,
@@ -324,7 +329,7 @@ function windowStalled(
 ): boolean {
   let windowFrom = events
     .map((event) => event.type === 'other' && event.eventType)
-    .lastIndexOf('respawn');
+    .lastIndexOf(EventType.Respawn);
   let endedAt = now;
   let running = session.state === 'running';
   if (session.state === 'killed') {
@@ -348,7 +353,8 @@ function windowStalled(
         event.to === 'merged',
     );
     const handedAt = events.findIndex(
-      (event, i) => i > windowFrom && event.type === 'other' && event.eventType === 'fix_round',
+      (event, i) =>
+        i > windowFrom && event.type === 'other' && event.eventType === EventType.FixRound,
     );
     running = windowFrom >= 0 && at >= 0 && (handedAt < 0 || at < handedAt);
     endedAt = Date.parse(toIsoUtc(rows[at]?.created_at ?? ''));
@@ -843,7 +849,8 @@ function ancestry(repoPath: string, sha: string, target: string): 'landed' | 'op
     );
     return past.trim() === '' ? 'landed' : 'open';
   } catch (error) {
-    const timedOut = error instanceof Error && 'signal' in error && error.signal === 'SIGTERM';
+    const timedOut =
+      error instanceof Error && 'signal' in error && error.signal === InterruptSignal.Sigterm;
     return timedOut ? 'unknown' : 'open';
   }
 }
@@ -968,7 +975,7 @@ function dashboardSession(
   const asked = ['running', 'awaiting-review'].includes(row.state)
     ? dashboardQuestion(openQuestion(db, row.id))
     : undefined;
-  const doneId = events.find((event) => event.type === 'session_done')?.id ?? Infinity;
+  const doneId = events.find((event) => event.type === EventType.SessionDone)?.id ?? Infinity;
   const question =
     row.state === 'awaiting-review' && asked !== undefined && asked.id < doneId ? undefined : asked;
   const pr = row.state === 'merged' ? openPullRequest(events) : undefined;
@@ -1025,7 +1032,7 @@ function dashboardSession(
       question !== undefined ||
       row.state === 'blocked' ||
       stalledAgeMs !== undefined ||
-      activity?.kind === 'awaiting-input',
+      activity?.kind === SessionActivityKind.AwaitingInput,
   };
 }
 
@@ -1082,7 +1089,7 @@ function openPullRequest(
   newestFirst: EventRow[],
 ): { url: string | undefined; sha: string | undefined; target: string | undefined } | undefined {
   for (const row of newestFirst) {
-    if (row.type === 'landed' || row.type === 'retired') return undefined;
+    if (row.type === EventType.Landed || row.type === EventType.Retired) return undefined;
     const event = decodeEvent(row);
     if (event.type !== 'merge') continue;
     if (event.prUrl === undefined) return undefined;
@@ -1111,13 +1118,14 @@ function committedFixRound(
   repoPath: string,
   now: number,
 ): DashboardSession['fixCommitted'] {
-  const marks = ['fix_round', 'merge', 'landed', 'retired'];
+  const marks = [EventType.FixRound, EventType.Merge, EventType.Landed, EventType.Retired];
   const at = newestFirst.findIndex((row) => marks.includes(row.type));
   const done = newestFirst
     .slice(0, at)
-    .find((row) => row.type === 'session_done' || row.type === 'steer');
+    .find((row) => row.type === EventType.SessionDone || row.type === EventType.Steer);
   const pin = openPullRequest(newestFirst)?.sha ?? '';
-  const isOpenRound = newestFirst[at]?.type === 'fix_round' && done?.type === 'session_done';
+  const isOpenRound =
+    newestFirst[at]?.type === EventType.FixRound && done?.type === EventType.SessionDone;
   if (!isOpenRound || !isBranchPast(repoPath, session.branch, pin)) return undefined;
   const endedAt = Date.parse(toIsoUtc(done.created_at));
   return Number.isFinite(endedAt) ? { ageMs: Math.max(0, now - endedAt) } : undefined;
@@ -1131,9 +1139,9 @@ function committedFixRound(
  * pup writes are read back; a round from before that decision recorded none.
  */
 function roundStarter(newestFirst: EventRow[]): DashboardSession['fixRound'] {
-  const marks = ['fix_round', 'merge', 'landed', 'retired'];
+  const marks = [EventType.FixRound, EventType.Merge, EventType.Landed, EventType.Retired];
   const row = newestFirst.find((event) => marks.includes(event.type));
-  if (row?.type !== 'fix_round') return undefined;
+  if (row?.type !== EventType.FixRound) return undefined;
   const event = decodeEvent(row);
   if (event.type !== 'other') return undefined;
   const { startedBy, finding } = event.fields;
@@ -1151,7 +1159,7 @@ function roundStarter(newestFirst: EventRow[]): DashboardSession['fixRound'] {
 export function prFixRounds(db: Database, sessionId: string): number {
   let merges = 0;
   for (const row of listEvents(db, sessionId).reverse()) {
-    if (row.type === 'landed') break;
+    if (row.type === EventType.Landed) break;
     const event = decodeEvent(row);
     if (event.type !== 'merge') continue;
     if (event.prUrl === undefined) break;
@@ -1197,7 +1205,7 @@ function newestGateRefused(newestFirst: EventRow[]): boolean {
   for (const row of newestFirst) {
     const event = decodeEvent(row);
     if (event.type === 'steer' || event.type === 'session_done') return false;
-    if (event.type === 'gate_result') return event.outcome === 'refused';
+    if (event.type === 'gate_result') return event.outcome === MergeStatus.Refused;
   }
   return false;
 }
@@ -1215,7 +1223,7 @@ function gateOf(event: SessionEvent, createdAt: string): DashboardGate | undefin
     status: sanitizeReason(status),
     ...(detail === null ? {} : { detail: sanitizeReason(detail) }),
   }));
-  const failed = stages.find((stage) => stage.status === 'fail');
+  const failed = stages.find((stage) => stage.status === GateStageStatus.Fail);
   return {
     passed: event.report.passed,
     ...(failed ? { failedStage: failed.stage } : {}),

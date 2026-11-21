@@ -1,5 +1,5 @@
-export type GateStage = 'build' | 'test' | 'lint';
-
+import type { GateStage } from '../enums/gate-stage.enums.js';
+import type { NestedPackageStage } from '../enums/nested-package-stage.enums.js';
 export interface GateCommand {
   stage: GateStage;
   command: string;
@@ -93,9 +93,6 @@ export interface CapabilityContext {
    */
   gateEnv?: string[];
 }
-
-/** A nested package's own script the gate runs for it (decision 59). */
-export type NestedPackageStage = 'test' | 'typecheck';
 
 /**
  * A nested package the diff touches. Decision 58 leaves its files out of every

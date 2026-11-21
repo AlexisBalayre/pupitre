@@ -10,6 +10,7 @@ import {
   DEBT_COMMAND_TIMEOUT_MS,
   VULTURE_DEAD_CODE_EXIT,
 } from './constants/python-debt.constants.js';
+import { GateStage } from './enums/gate-stage.enums.js';
 import { coveragePyToCoverageReport } from './python-coverage.utils.js';
 import { parseVultureOutput } from './python-debt.utils.js';
 import type {
@@ -20,7 +21,6 @@ import type {
   DeadExport,
   FailingTest,
   GateCommand,
-  GateStage,
 } from './types/adapter.types.js';
 import type { CoveragePyReport } from './types/coverage-py.types.js';
 
@@ -280,7 +280,7 @@ export const pythonAdapter: Adapter = {
     // uv/poetry environments alias it themselves.
     const python = prefix.length > 0 ? 'python' : 'python3';
     commands.push(
-      toCommand('build', [
+      toCommand(GateStage.Build, [
         ...prefix,
         python,
         '-m',
@@ -296,13 +296,13 @@ export const pythonAdapter: Adapter = {
       existsSync(join(repoPath, 'pytest.ini')) ||
       pyproject.includes('pytest') ||
       setupCfg.includes('[tool:pytest]');
-    if (hasPytest) commands.push(toCommand('test', [...prefix, 'pytest']));
+    if (hasPytest) commands.push(toCommand(GateStage.Test, [...prefix, 'pytest']));
 
     const hasRuff =
       existsSync(join(repoPath, 'ruff.toml')) ||
       existsSync(join(repoPath, '.ruff.toml')) ||
       pyproject.includes('ruff');
-    if (hasRuff) commands.push(toCommand('lint', [...prefix, 'ruff', 'check', '.']));
+    if (hasRuff) commands.push(toCommand(GateStage.Lint, [...prefix, 'ruff', 'check', '.']));
 
     return commands;
   },

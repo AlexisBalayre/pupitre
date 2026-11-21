@@ -5,6 +5,7 @@ import {
   RISK_WEIGHT_REJECTION,
   RISK_WEIGHT_SCOPE_VIOLATION,
 } from './constants/review.constants.js';
+import { EventType } from './enums/event-type.enums.js';
 import { currentBranch, gitDiffNumstat, gitDiffPaths } from './git-diff.client.js';
 import { countChangedLines } from './merge-gate.service.js';
 import { filesWorthANotice } from './overlap.service.js';
@@ -21,8 +22,8 @@ function targetBranch(repoPath: string): string {
 
 function scopeViolationCount(db: Database, sessionId: string): number {
   const row = db
-    .prepare("SELECT COUNT(*) AS n FROM events WHERE session_id = ? AND type = 'scope_violation'")
-    .get(sessionId) as { n: number };
+    .prepare('SELECT COUNT(*) AS n FROM events WHERE session_id = ? AND type = ?')
+    .get(sessionId, EventType.ScopeViolation) as { n: number };
   return row.n;
 }
 

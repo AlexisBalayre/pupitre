@@ -1,6 +1,7 @@
 import type { Database } from 'better-sqlite3';
 import { sanitizeReason } from '../adapters/capability.utils.js';
 import { killSession as killTmux } from '../claude/session-runtime.service.js';
+import { EventType } from './enums/event-type.enums.js';
 import { runGit } from './git-diff.client.js';
 import { assertGhAvailable, originRepoSlug, readPullRequestLanding } from './github.client.js';
 import {
@@ -24,7 +25,12 @@ import type { RetireOutcome, RetireRequest } from './types/session-retire.types.
 const UNTOUCHED = 'Nothing was retired.';
 const RETIRE_USE: OriginUse = { command: '`pup retire`', untouched: UNTOUCHED };
 /** The events that start or close out what a merge stands for. */
-const STANDING_EVENTS: readonly string[] = ['merge', 'fix_round', 'landed', 'retired'];
+const STANDING_EVENTS: readonly EventType[] = [
+  EventType.Merge,
+  EventType.FixRound,
+  EventType.Landed,
+  EventType.Retired,
+];
 
 /**
  * `pup retire <session> --superseded-by <pr>` (decision 141): the close-out of
@@ -101,7 +107,7 @@ export async function retireSession(db: Database, req: RetireRequest): Promise<R
         );
       }
       const tornDown = tearDown(req.repoPath, session, sha);
-      appendEvent(db, session.id, 'retired', { prUrl, supersededBy });
+      appendEvent(db, session.id, EventType.Retired, { prUrl, supersededBy });
       return { prUrl, supersededBy, ...tornDown };
     },
     MERGE_LOCK_WAIT_MS,
@@ -117,7 +123,8 @@ function newestStanding(db: Database, sessionId: string, id: string): EventRow |
   const newest = listEvents(db, sessionId)
     .reverse()
     .find((row) => STANDING_EVENTS.includes(row.type));
-  if (newest?.type === 'retired') throw new Error(`Session ${id} has already been retired.`);
+  if (newest?.type === EventType.Retired)
+    throw new Error(`Session ${id} has already been retired.`);
   return newest;
 }
 

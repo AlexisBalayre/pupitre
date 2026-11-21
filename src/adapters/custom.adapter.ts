@@ -8,6 +8,7 @@ import {
   CUSTOM_ADAPTER_CONFIG_PATH,
   CUSTOM_COMMAND_TIMEOUT_MS,
 } from './constants/custom-adapter.constants.js';
+import { GateStage } from './enums/gate-stage.enums.js';
 import {
   CustomAdapterCommandError,
   CustomAdapterConfigError,
@@ -21,11 +22,10 @@ import type {
   DuplicationReport,
   FileComplexity,
   GateCommand,
-  GateStage,
 } from './types/adapter.types.js';
 import type { CustomAdapterConfig } from './types/custom-adapter.types.js';
 
-const GATE_STAGES: GateStage[] = ['build', 'test', 'lint'];
+const GATE_STAGES: GateStage[] = [GateStage.Build, GateStage.Test, GateStage.Lint];
 const CONFIG_KEYS = [
   'id',
   'build',

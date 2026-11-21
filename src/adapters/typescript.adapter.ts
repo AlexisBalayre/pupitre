@@ -17,6 +17,8 @@ import { removeGateDir, runGateChild } from '../core/sandbox.utils.js';
 import { failureSummary, isUnavailable, readPlainFile } from './capability.utils.js';
 import { configLoadsAFile } from './config-module.utils.js';
 import { COVERAGE_RUN_TIMEOUT_MS } from './constants/typescript-debt.constants.js';
+import { GateStage } from './enums/gate-stage.enums.js';
+import { NestedPackageStage } from './enums/nested-package-stage.enums.js';
 import { nestedPackageDirs } from './git-tree.client.js';
 import {
   PACKAGE_MANAGER_CONFIG,
@@ -36,9 +38,7 @@ import type {
   FailingTest,
   FileComplexity,
   GateCommand,
-  GateStage,
   NestedPackage,
-  NestedPackageStage,
   RootFiles,
 } from './types/adapter.types.js';
 import type { IstanbulCoverageMap } from './types/istanbul.types.js';
@@ -56,10 +56,10 @@ import {
 } from './typescript-source.utils.js';
 import { vitestCollection } from './vitest-config.utils.js';
 
-const GATE_STAGES: GateStage[] = ['build', 'test', 'lint'];
+const GATE_STAGES: GateStage[] = [GateStage.Build, GateStage.Test, GateStage.Lint];
 
 /** What a nested package must declare for the gate to measure it (decision 59). */
-const NESTED_STAGES: NestedPackageStage[] = ['test', 'typecheck'];
+const NESTED_STAGES: NestedPackageStage[] = [NestedPackageStage.Test, NestedPackageStage.Typecheck];
 
 const SKIPPED_DIRS = new Set([
   'node_modules',
@@ -601,7 +601,7 @@ export const typescriptAdapter: Adapter = {
       if (scripts[stage]) {
         commands.push({ stage, command: pm, args: ['run', stage] });
       } else if (
-        stage === 'build' &&
+        stage === GateStage.Build &&
         hasTypescript &&
         existsSync(join(repoPath, 'tsconfig.json'))
       ) {
