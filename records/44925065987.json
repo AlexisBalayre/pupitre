@@ -1,0 +1,126 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-21T16:37:44.172Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "44925065987",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/44925065987",
+  "actor": "AlexisBalayre",
+  "commit_sha": "97507f748f2baaa499d72b1f932b704512eb4a6d",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 413,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "conventions",
+    "guards",
+    "simplicity",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "conventions",
+    "guards",
+    "simplicity",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/routing.utils.ts",
+      "line": "12-25",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "Moving merge-gate.constants.ts into src/core/constants/ takes it out of CRITICAL_AREAS: a task scoped to it now routes as standard instead of critical, and `pup land --remeasure` lands commits past the pin that edit it (PROTECTED_PATH_GLOBS included) without asking for --approved-by.",
+      "body": "**This move takes a gate file out of `CRITICAL_AREAS`.** `CRITICAL_AREAS` matches files by path, so moving a file changes what it matches.\n\nThe entry `'src/core/merge-gate*'` cannot match the file's new path. In both matchers `*` stops at `/`:\n- `globAutomaton` loops a `star` only on `notSlash` (`routing.utils.ts:89-91`).\n- `globToRegExpSource` turns `*` into `[^/]*` (`glob.utils.ts:21`).\n\nThe entry matched the old `src/core/merge-gate.constants.ts`. It does not match the new `src/core/constants/merge-gate.constants.ts`, and no other entry covers `src/core/constants/**`. That file holds `PROTECTED_PATH_GLOBS` (the `.claude/**` / `.pupitre/**` backstop from decision 6), `UNTESTED_PATH_GLOBS`, `MERGE_LOCK_DIRNAME`, `GATE_COMMAND_TIMEOUT_MS`, `MAX_REJECTS_BEFORE_BLOCKED` and `COMMIT_SHA`.\n\n```ts\nexport const CRITICAL_AREAS: readonly string[] = [\n  'src/core/merge-gate*',\n  ...\n```\n\nhttps://github.com/AlexisBalayre/pupitre/blob/97507f748f2baaa499d72b1f932b704512eb4a6d/src/core/routing.utils.ts#L12-L25\n\n**What breaks:**\n1. **Tier routing (decision 92).** Before the move, `tierForScope(['src/core/constants/merge-gate.constants.ts'])` returned `'critical'`; now it returns `'standard'`. The worker therefore launches on the cheaper standard ladder.\n2. **Remeasure approval (decision 185).** `land-remeasure.service.ts:36` builds `CRITICAL_PATHS = CRITICAL_AREAS.map(globToRegExp)`. Lines 176-204 require `--approved-by` only when a path changed past the pin matches one of those paths. A commit past the pin that adds a glob to `PROTECTED_PATH_GLOBS` or `UNTESTED_PATH_GLOBS` now lands without the operator's approval.\n\n**No test caught it:** `routing-utils.test.ts` lists only top-level `src/core/*` paths.\n\n**Related, your call:** the store, sandbox, git, regate and profile-compiler types also moved into `src/core/types/*`, which no entry in the list covers. Those files hold types only, so the cost is only tier routing and remeasure approval for edits to them.",
+      "suggestion": "  'src/core/merge-gate*',\n  'src/core/constants/merge-gate.constants.ts',"
+    },
+    {
+      "file": "src/core/git-diff.client.ts",
+      "line": "43",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`export type { DiffFileStat };` is a re-export left behind, against the PR's own \"no re-exports, update every importer\" rule; importers should take `DiffFileStat` from `./types/git-diff.types.js`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0066-a-session-id-is-checked-where-it-becomes.md",
+      "line": "16",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "ADR 0066 still says `SESSION_ID_PATTERN` is exported from `src/core/paths.constants.ts`, which this PR moved to `src/core/constants/paths.constants.ts`; a reader following the path finds nothing.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "The diff passes the size gate (>400 lines, >8 files, >=2 top-level areas), but security ran as one instance. Its changes on the trust boundary are type and constant relocations only, so one directed instance covered them. context, maintainability, workflow-safety and spec were not spawned: no infra or workflow surface was touched, maintainability is off the default roster, and no spec source exists."
+    },
+    {
+      "component": "conventions",
+      "description": "The conventions reviewer did not read docs/conventions/* or the ADRs before reporting, so its findings rest only on the rules stated in the PR body. Two of its findings were dropped in consolidation because they had no concrete trigger: converting existing string-literal unions to enums, and exported constants that remain in service files."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 4.034858725,
+  "duration_ms": 289411,
+  "num_turns": 17,
+  "tokens": {
+    "input": 16,
+    "output": 13107,
+    "cache_read": 367555,
+    "cache_creation": 77498,
+    "total": 458176
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 162,
+      "output": 41588,
+      "cache_read": 4032306,
+      "cache_creation": 353886,
+      "cost_usd": 3.6407932
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 54,
+      "output": 11321,
+      "cache_read": 404612,
+      "cache_creation": 95858,
+      "cost_usd": 0.39342420000000006
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 109,
+      "cache_read": 0,
+      "cache_creation": 4693,
+      "cost_usd": 0.000641325
+    }
+  ],
+  "permission_denials": []
+}
