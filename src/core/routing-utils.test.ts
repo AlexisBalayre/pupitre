@@ -69,18 +69,23 @@ describe('tierForScope', () => {
   });
 
   // The areas match by path: a file extracted out of a critical area into
-  // `src/core/{types,constants,errors}/` stays critical for the tier
+  // `src/core/{types,constants,errors,enums}/` stays critical for the tier
   // (decision 92) and for a remeasure's approval (decision 185).
   it.each([
     'src/core/constants/merge-gate.constants.ts',
     'src/core/errors/merge-gate.errors.ts',
     'src/core/types/merge-gate.types.ts',
+    'src/core/enums/merge-status.enums.ts',
+    'src/core/enums/gate-stage-status.enums.ts',
     'src/core/types/land.types.ts',
     'src/core/types/regate.types.ts',
     'src/core/errors/sandbox.errors.ts',
     'src/core/types/sandbox.types.ts',
+    'src/core/enums/sandbox-mode.enums.ts',
+    'src/core/enums/interrupt-signal.enums.ts',
     'src/core/types/profile-compiler.types.ts',
     'src/core/types/session.types.ts',
+    'src/core/enums/event-type.enums.ts',
     'src/core/errors/session.errors.ts',
     'src/core/types/ledger.types.ts',
     'src/core/types/baseline-history.types.ts',
