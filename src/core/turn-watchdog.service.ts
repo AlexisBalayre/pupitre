@@ -4,6 +4,7 @@ import { sanitizeReason } from '../adapters/capability.utils.js';
 import { SessionPaneMissingError } from '../claude/errors/session-runtime.errors.js';
 import { conductorPane, deadTurnError, steerPane } from '../claude/session-runtime.service.js';
 import { holdIdleCaches, isHoldTurnOpen, lastPrompt } from './cache-hold.service.js';
+import { STALLED_AFTER_MS } from './constants/session-activity.constants.js';
 import { findStalledSessions } from './dashboard.service.js';
 import { isRefusedSteer, TerminalSessionError } from './errors/session-lifecycle.errors.js';
 import { projectId, projectPaths } from './paths.utils.js';
@@ -15,7 +16,6 @@ import {
   isProjectDormant,
   listEvents,
 } from './session.repository.js';
-import { STALLED_AFTER_MS } from './session-activity.constants.js';
 import { sessionPane, steerSession } from './session-lifecycle.service.js';
 import type { SessionRow } from './types/session.types.js';
 import type { ResumedTurn } from './types/turn-watchdog.types.js';

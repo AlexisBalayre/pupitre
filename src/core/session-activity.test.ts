@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { STALLED_AFTER_MS } from './session-activity.constants.js';
+import { STALLED_AFTER_MS } from './constants/session-activity.constants.js';
 import {
   classifySessionActivity,
   formatStaleAge,

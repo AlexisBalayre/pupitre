@@ -240,6 +240,7 @@ import {
   tellConductor,
 } from '../core/conductor.service.js';
 import { DEFAULT_BASE_PROFILE } from '../core/constants/default-profile.constants.js';
+import { STALLED_AFTER_MS } from '../core/constants/session-activity.constants.js';
 import { ConductorTellRefusedError } from '../core/errors/conductor.errors.js';
 import { RewrittenGitDirError } from '../core/errors/git-diff.errors.js';
 import { InvalidProfileError } from '../core/errors/profile.errors.js';
@@ -260,7 +261,6 @@ import {
   listEvents,
   transitionSession,
 } from '../core/session.repository.js';
-import { STALLED_AFTER_MS } from '../core/session-activity.constants.js';
 import {
   hardRespawnSession,
   isHandoffReady,

@@ -202,6 +202,7 @@ import {
 import { listProcesses, recordedPanePids } from '../claude/session-runtime.service.js';
 import { isConductorRunning } from '../core/conductor.service.js';
 import { DEFAULT_BASE_PROFILE } from '../core/constants/default-profile.constants.js';
+import { STALLED_AFTER_MS } from '../core/constants/session-activity.constants.js';
 import { insertDecisionRecord } from '../core/decision-record.repository.js';
 import { MergeLockLostError } from '../core/errors/merge-gate.errors.js';
 import { GateInterruptedError, UndeclaredSandboxError } from '../core/errors/sandbox.errors.js';
@@ -235,7 +236,6 @@ import {
   recordSessionRoute,
   transitionSession,
 } from '../core/session.repository.js';
-import { STALLED_AFTER_MS } from '../core/session-activity.constants.js';
 import { machineLoad } from '../core/session-cap.service.js';
 import {
   awaitHandoffReady,

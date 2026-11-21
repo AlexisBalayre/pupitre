@@ -32,6 +32,7 @@ import {
   transcriptDir,
 } from '../claude/session-runtime.service.js';
 import { CONDUCTOR_BLOCKED_AFTER_MS, markConductorQuestion } from './conductor.service.js';
+import { STALLED_AFTER_MS } from './constants/session-activity.constants.js';
 import {
   blockedReason,
   buildDashboardSnapshot,
@@ -61,7 +62,6 @@ import {
   saveProjectBaseline,
   transitionSession,
 } from './session.repository.js';
-import { STALLED_AFTER_MS } from './session-activity.constants.js';
 import type { CiReview } from './types/dashboard.types.js';
 import type { ProjectBaseline } from './types/init.types.js';
 import type { TaskSpec } from './types/profile.types.js';

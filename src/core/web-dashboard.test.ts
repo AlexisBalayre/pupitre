@@ -36,6 +36,7 @@ import { appendBaselineHistory } from './baseline-history.repository.js';
 import { briefPath } from './brief.service.js';
 import { markConductorQuestion } from './conductor.service.js';
 import { DUPLICATION_RULE_ID } from './constants/merge-gate.constants.js';
+import { STALLED_AFTER_MS } from './constants/session-activity.constants.js';
 import { ACTIONS } from './constants/web-dashboard-actions.constants.js';
 import { buildDashboardSnapshot, needsYou } from './dashboard.service.js';
 import { openStore } from './db.client.js';
@@ -52,7 +53,6 @@ import {
   recordSessionRoute,
   transitionSession,
 } from './session.repository.js';
-import { STALLED_AFTER_MS } from './session-activity.constants.js';
 import { launchHolds, launchRoom, launchRoomLines } from './session-cap.service.js';
 import type { SessionState } from './types/session.types.js';
 import type { DashboardBind, WebDashboard } from './types/web-dashboard.types.js';

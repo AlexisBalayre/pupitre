@@ -17,6 +17,7 @@ import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import { SteerNotDeliveredError } from '../claude/errors/session-runtime.errors.js';
 import { conductorPane, deadTurnError, steerPane } from '../claude/session-runtime.service.js';
 import type { SessionPane } from '../claude/types/session-runtime.types.js';
+import { STALLED_AFTER_MS } from './constants/session-activity.constants.js';
 import { openStore } from './db.client.js';
 import { projectId, projectPaths } from './paths.utils.js';
 import {
@@ -28,7 +29,6 @@ import {
   saveProjectDormantAt,
   transitionSession,
 } from './session.repository.js';
-import { STALLED_AFTER_MS } from './session-activity.constants.js';
 import {
   CONDUCTOR_NUDGE,
   CONDUCTOR_TARGET,
