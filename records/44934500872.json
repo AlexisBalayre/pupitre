@@ -1,0 +1,116 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-21T18:18:59.376Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "44934500872",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/44934500872",
+  "actor": "AlexisBalayre",
+  "commit_sha": "fae2288007c8fe0d3b8154e999a2afa4545c2f64",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 413,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "guards"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "guards"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "simplicity",
+    "workflow-safety"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "97507f748f2baaa499d72b1f932b704512eb4a6d",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/routing.utils.ts",
+      "line": "12-25",
+      "description": "Moving merge-gate.constants.ts into src/core/constants/ takes it out of CRITICAL_AREAS: a task scoped to it now routes as standard instead of critical, and `pup land --remeasure` lands commits past the pin that edit it (PROTECTED_PATH_GLOBS included) without asking for --approved-by.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/routing.utils.ts",
+      "line": "11-12",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new CRITICAL_AREAS JSDoc says extracted types/constants/errors are \"named beside\" their area, but the `*.repository.ts` and `db.client.ts` areas are covered by entries named after concepts (session, ledger, baseline-history, decision-record), and the sentence does not say a future extraction out of a critical file needs its own entry here.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0092-pup-routes-every-window-s-model-and-effort.md",
+      "line": "12-15",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "ADR 0092 still enumerates the 12 original critical-area globs, while this PR grows CRITICAL_AREAS to about 30 entries; a reader taking the ADR as the full list misses the extracted types/constants/errors paths.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "The incremental delta is 2 files and 42 lines (CRITICAL_AREAS entries plus a test), so every area ran as one instance. simplicity, context, maintainability, workflow-safety and spec were not spawned: the delta adds no helper, wrapper, option or branch; it touches no infra or workflow surface; maintainability is off the default roster; and no spec source exists."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.9288754500000003,
+  "duration_ms": 151106,
+  "num_turns": 14,
+  "tokens": {
+    "input": 10,
+    "output": 8338,
+    "cache_read": 209153,
+    "cache_creation": 66785,
+    "total": 284286
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 60,
+      "output": 23379,
+      "cache_read": 974802,
+      "cache_creation": 174907,
+      "cost_usd": 1.7376704
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 30,
+      "output": 4571,
+      "cache_read": 164861,
+      "cache_creation": 51305,
+      "cost_usd": 0.1905186
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 206,
+      "cache_read": 0,
+      "cache_creation": 4666,
+      "cost_usd": 0.00068645
+    }
+  ],
+  "permission_denials": []
+}
