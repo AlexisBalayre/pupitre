@@ -109,4 +109,5 @@
     original globs to about 30 entries. The added ones cover the folders the types, constants and
     errors extracted out of critical files moved to (`src/core/types/`, `src/core/constants/`,
     `src/core/errors/`), so a file moved out of a critical area stays critical. A future
-    extraction out of a critical file needs its own entry; the routing test asserts it.
+    extraction out of a critical file needs its own entry, and its path added to the routing
+    test's list, which pins only the paths it names.
