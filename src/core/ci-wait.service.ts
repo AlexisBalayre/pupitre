@@ -1,5 +1,6 @@
 import type { Database } from 'better-sqlite3';
 import { sanitizeReason } from '../adapters/capability.utils.js';
+import { COMMIT_SHA } from './constants/merge-gate.constants.js';
 import { RewrittenGitDirError } from './errors/git-diff.errors.js';
 import { FORMAT_CHARS } from './fix-round.service.js';
 import { rethrowIfKilled } from './git-diff.client.js';
@@ -7,20 +8,22 @@ import {
   assertGhAvailable,
   isCutOffByNode,
   originRepoSlug,
-  type PullRequestReview,
   readPullRequestReview,
 } from './github.client.js';
-import { COMMIT_SHA } from './merge-gate.constants.js';
 import {
   assertMintedRow,
   assertPullRequestOf,
   newestMerge,
-  type OriginUse,
   pushTarget,
 } from './merge-gate.service.js';
 import { projectId } from './paths.utils.js';
-import { NO_PROGRESS, type StageProgress } from './progress.utils.js';
-import { getSession, getTask, listSessions, type SessionRow } from './session.repository.js';
+import { NO_PROGRESS } from './progress.utils.js';
+import { getSession, getTask, listSessions } from './session.repository.js';
+import type { CiWaitClock, CiWaitOutcome, CiWaitRequest } from './types/ci-wait.types.js';
+import type { PullRequestReview } from './types/github.types.js';
+import type { OriginUse } from './types/merge-gate.types.js';
+import type { StageProgress } from './types/progress.types.js';
+import type { SessionRow } from './types/session.types.js';
 
 const CI_WAIT_USE: OriginUse = { command: '`pup ci wait`', untouched: 'Nothing was waited for.' };
 /** Between two reads of the PR: a review takes minutes, and each read is one GraphQL call. */
@@ -51,34 +54,10 @@ function shown(text: string): string {
   return sanitizeReason(text.replace(FORMAT_CHARS, '')).replace(SYMBOLS, '-');
 }
 
-/** The wait's sense of time, which a test replaces. */
-export interface CiWaitClock {
-  now(): number;
-  sleep(ms: number): Promise<void>;
-}
-
 const REAL_CLOCK: CiWaitClock = {
   now: () => Date.now(),
   sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 };
-
-interface CiWaitRequest {
-  repoPath: string;
-  /** A session id, or the url or number of the PR a session of this project opened. */
-  target: string;
-  timeoutMs: number;
-  pollMs?: number;
-  /** One read's budget, which a test shortens. */
-  readTimeoutMs?: number;
-  clock?: CiWaitClock;
-}
-
-interface CiWaitOutcome {
-  /** False when the timeout ran out before the review of the current head finished. */
-  finished: boolean;
-  /** The one line the caller prints: the digest, or why the wait ended without one. */
-  line: string;
-}
 
 /**
  * `pup ci wait <session|pr>` (decision 90): block, in the caller's foreground,

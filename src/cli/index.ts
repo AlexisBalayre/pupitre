@@ -45,10 +45,11 @@ import {
   stopConductor,
   tellConductor,
 } from '../core/conductor.service.js';
+import { DEFAULT_BASE_PROFILE } from '../core/constants/default-profile.constants.js';
+import { MAX_REJECTS_BEFORE_BLOCKED } from '../core/constants/merge-gate.constants.js';
 import {
   blockedReason,
   buildDashboardSnapshot,
-  type CiReviewLookup,
   CONDUCTOR_TARGET,
   findStalledSessions,
   goalHeadline,
@@ -56,13 +57,11 @@ import {
   openThreadCount,
 } from '../core/dashboard.service.js';
 import {
-  type DecisionRecordRow,
   deleteDecisionRecord,
   getDecisionRecord,
   listDecisionRecords,
   updateDecisionRecordSummary,
 } from '../core/decision-record.repository.js';
-import { DEFAULT_BASE_PROFILE } from '../core/default-profile.constants.js';
 import { ConductorTellRefusedError } from '../core/errors/conductor.errors.js';
 import { RewrittenGitDirError } from '../core/errors/git-diff.errors.js';
 import { IntentRefusedError } from '../core/errors/intent.errors.js';
@@ -89,7 +88,7 @@ import {
 } from '../core/errors/session-lifecycle.errors.js';
 import { SlotWaitInterruptedError } from '../core/errors/test-slot.errors.js';
 import { UsageLimitReachedError } from '../core/errors/usage-limits.errors.js';
-import { ciReviewLookup, type FixRoundOutcome, startFixRound } from '../core/fix-round.service.js';
+import { ciReviewLookup, startFixRound } from '../core/fix-round.service.js';
 import { fleetReading, readFleet, readFleetProjects } from '../core/fleet.service.js';
 import { parseGateEnv } from '../core/gate-env.utils.js';
 import { assertMainCheckout } from '../core/git-diff.client.js';
@@ -98,7 +97,6 @@ import { acceptIntent, createIntent, listIntents, readIntent } from '../core/int
 import { abandonClosedSession, landSession } from '../core/land.service.js';
 import { landSessions } from '../core/land-batch.service.js';
 import { closeLedgerEntry, listLedgerEntries } from '../core/ledger.repository.js';
-import { MAX_REJECTS_BEFORE_BLOCKED } from '../core/merge-gate.constants.js';
 import { runMergeGate } from '../core/merge-gate.service.js';
 import { renderMindMapHtml } from '../core/mind-map.service.js';
 import { launchedAncestor, mergeCallerAncestor } from '../core/operator-guard.service.js';
@@ -117,7 +115,6 @@ import {
   LAND_STAGES,
   MERGE_STAGES,
   RESPAWN_STAGES,
-  type StageProgress,
   stageProgress,
 } from '../core/progress.utils.js';
 import { listProjects, putProjectToSleep, wakeProject } from '../core/project.service.js';
@@ -179,12 +176,15 @@ import { describeSlotWait, runSessionTest, sessionTestCommand } from '../core/te
 import { sweepDeadTurns } from '../core/turn-watchdog.service.js';
 import type { AuditOutcome } from '../core/types/audit.types.js';
 import type { ConductorHandle } from '../core/types/conductor.types.js';
-import type { DashboardSnapshot } from '../core/types/dashboard.types.js';
+import type { CiReviewLookup, DashboardSnapshot } from '../core/types/dashboard.types.js';
+import type { DecisionRecordRow } from '../core/types/decision-record.types.js';
+import type { FixRoundOutcome } from '../core/types/fix-round.types.js';
 import type { RegisteredProject } from '../core/types/fleet.types.js';
 import type { DebtBaseline, InitReport } from '../core/types/init.types.js';
 import type { LandBatchOutcome, LandOutcome } from '../core/types/land.types.js';
 import type { GateReport, MergeOutcome } from '../core/types/merge-gate.types.js';
 import type { TaskId, TaskSpec } from '../core/types/profile.types.js';
+import type { StageProgress } from '../core/types/progress.types.js';
 import type {
   AskOptions,
   RescopeCaller,

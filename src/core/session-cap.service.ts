@@ -4,15 +4,16 @@ import { LockBacklogOverBudgetError, MachineLoadedError } from './errors/session
 import { UsageLimitReachedError } from './errors/usage-limits.errors.js';
 import { loadAllowanceFactor, lockBacklogBudgetMinutes } from './project-config.config.js';
 import { parseJsonOr, toIsoUtc } from './report-data.utils.js';
-import {
-  decodeEvent,
-  listEvents,
-  listSessions,
-  newestEventOf,
-  type SessionRow,
-} from './session.repository.js';
+import { decodeEvent, listEvents, listSessions, newestEventOf } from './session.repository.js';
 import { holdingStates } from './session-state.utils.js';
 import { availableMemoryBytes, MIN_AVAILABLE_MEMORY_BYTES } from './test-slot.service.js';
+import type { SessionRow } from './types/session.types.js';
+import type {
+  LaunchHolds,
+  LaunchRoom,
+  LockBacklog,
+  MachineLoad,
+} from './types/session-cap.types.js';
 import { assertUsageRoom } from './usage-limits.service.js';
 import { percentile } from './usage-report.service.js';
 
@@ -55,42 +56,6 @@ const PRINTABLE_ID = /^[A-Za-z0-9._-]{1,64}$/;
 
 /** The merge-lock uses a session not yet through its gate still needs: its gate, then its land. */
 const USES_BEFORE_GATE = 2;
-
-/** The machine's 1-minute load average and the cores it is held to. */
-export interface MachineLoad {
-  average: number;
-  cores: number;
-  /** The project's `loadAllowanceFactor` the cores are multiplied by: set once by `launchRoom`, from the project's config. */
-  factor: number;
-}
-
-/** The merge-lock work the project's sessions have ahead of them (decision 197). */
-export interface LockBacklog {
-  minutes: number;
-  budgetMinutes: number;
-  /** Gates and lands the working and unlanded sessions still need. */
-  uses: number;
-  /** The median gate run's time within its bounds, `UNTIMED_GATE_MS` while `gatesTimed` is 0. */
-  gateMs: number;
-  gatesTimed: number;
-  /** The merged sessions counted for a land, for the operator to land or close a stale one. */
-  unlanded: string[];
-}
-
-/** Both signals a launch is held to, as `pup status` prints them and `pup launch` reads them. */
-interface LaunchRoom {
-  backlog: LockBacklog;
-  load: MachineLoad;
-}
-
-/**
- * What holds a launch beside the two signals, which `--over-cap` does not
- * lift: the memory floor (decision 96) and the plan's usage hold (decision 156).
- */
-interface LaunchHolds {
-  memoryBytes: number;
-  usageHeld: boolean;
-}
 
 /** The 1-minute load average, 0 on a platform with none, against the cores the gate's own wait uses. */
 export function machineLoad(): MachineLoad {

@@ -239,7 +239,7 @@ import {
   stopConductor,
   tellConductor,
 } from '../core/conductor.service.js';
-import { DEFAULT_BASE_PROFILE } from '../core/default-profile.constants.js';
+import { DEFAULT_BASE_PROFILE } from '../core/constants/default-profile.constants.js';
 import { ConductorTellRefusedError } from '../core/errors/conductor.errors.js';
 import { RewrittenGitDirError } from '../core/errors/git-diff.errors.js';
 import { InvalidProfileError } from '../core/errors/profile.errors.js';

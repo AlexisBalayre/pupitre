@@ -3,7 +3,6 @@ import { dirname, join } from 'node:path';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import type { Database } from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { SessionState } from './db.client.js';
 import { openStore } from './db.client.js';
 import { LockBacklogOverBudgetError, MachineLoadedError } from './errors/session-cap.errors.js';
 import { projectId, projectPaths } from './paths.utils.js';
@@ -19,7 +18,6 @@ import {
   GATE_CEILING_MS,
   GATE_FLOOR_MS,
   LAND_WINDOW_MS,
-  type LockBacklog,
   launchHolds,
   launchRoom,
   launchRoomLines,
@@ -27,6 +25,8 @@ import {
   machineLoad,
   UNTIMED_GATE_MS,
 } from './session-cap.service.js';
+import type { SessionState } from './types/session.types.js';
+import type { LockBacklog } from './types/session-cap.types.js';
 
 const PR = 'https://github.com/o/r/pull/1';
 

@@ -1,4 +1,4 @@
-import type { WaitSignal } from '../test-slot.service.js';
+import type { WaitSignal } from '../types/test-slot.types.js';
 
 /** Thrown out of `withTestSlot` when a session's wait runs out, so nothing runs. */
 export class SlotWaitExpiredError extends Error {}

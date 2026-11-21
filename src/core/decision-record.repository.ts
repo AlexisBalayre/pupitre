@@ -1,23 +1,5 @@
 import type { Database } from 'better-sqlite3';
-
-export interface DecisionRecordRow {
-  id: number;
-  session_id: string;
-  summary: string;
-  alternatives: string | null;
-  conventions: string | null;
-  /** JSON array of repo-relative paths the merge touched. */
-  files: string;
-  created_at: string;
-}
-
-export interface NewDecisionRecordInput {
-  sessionId: string;
-  summary: string;
-  alternatives?: string;
-  conventions?: string;
-  files: string[];
-}
+import type { DecisionRecordRow, NewDecisionRecordInput } from './types/decision-record.types.js';
 
 export function insertDecisionRecord(db: Database, input: NewDecisionRecordInput): number {
   const row = db

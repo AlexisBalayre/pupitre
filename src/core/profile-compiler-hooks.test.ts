@@ -11,7 +11,7 @@ import { dirname, join } from 'node:path';
 import { makeInput } from '@test/helpers/profile-compiler.mock.js';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { HOOK_TIMEOUT_SECONDS } from './profile.constants.js';
+import { HOOK_TIMEOUT_SECONDS } from './constants/profile.constants.js';
 import * as ProfileCompiler from './profile-compiler.service.js';
 
 // Many tests here spawn real git and sh; under load or coverage the 5 s default

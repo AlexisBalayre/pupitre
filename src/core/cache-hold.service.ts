@@ -7,19 +7,13 @@ import {
   runsSessionLaunch,
   submitPane,
 } from '../claude/session-runtime.service.js';
-import { SESSION_ID_PATTERN } from './paths.constants.js';
+import { SESSION_ID_PATTERN } from './constants/paths.constants.js';
 import { projectPaths } from './paths.utils.js';
 import { toIsoUtc } from './report-data.utils.js';
-import {
-  appendEvent,
-  type EventRow,
-  listEvents,
-  listSessions,
-  openQuestion,
-  type SessionRow,
-} from './session.repository.js';
+import { appendEvent, listEvents, listSessions, openQuestion } from './session.repository.js';
 import { classifySessionActivity } from './session-activity.utils.js';
 import { sessionPane } from './session-lifecycle.service.js';
+import type { EventRow, SessionRow } from './types/session.types.js';
 
 /**
  * The cache hold (decision 179): what keeps a worker that waits on someone

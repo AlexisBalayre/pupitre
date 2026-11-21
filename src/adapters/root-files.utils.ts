@@ -1,7 +1,7 @@
 import { lstatSync, readdirSync, readlinkSync } from 'node:fs';
 import { join } from 'node:path';
+import { GATE_COMMAND_TIMEOUT_MS } from '../core/constants/merge-gate.constants.js';
 import { runGit, runGitBytes } from '../core/git-diff.client.js';
-import { GATE_COMMAND_TIMEOUT_MS } from '../core/merge-gate.constants.js';
 import { readPlainFile } from './capability.utils.js';
 import type { RootFiles } from './types/adapter.types.js';
 

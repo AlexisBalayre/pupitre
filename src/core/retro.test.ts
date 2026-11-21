@@ -18,13 +18,9 @@ import { transcriptDir } from '../claude/session-runtime.service.js';
 import { openStore } from './db.client.js';
 import { projectId } from './paths.utils.js';
 import { buildRetro, writeRetro } from './retro.service.js';
-import {
-  formatRetro,
-  type RetroReport,
-  repoRelative,
-  serializeRetro,
-} from './retro-signals.service.js';
+import { formatRetro, repoRelative, serializeRetro } from './retro-signals.service.js';
 import { ensureProject } from './session.repository.js';
+import type { RetroReport } from './types/retro.types.js';
 import { priceOf } from './usage-report.service.js';
 
 const REPO = '/repo';

@@ -5,7 +5,7 @@ import { buildDashboardSnapshot, routeLabel } from './dashboard.service.js';
 import { displayText } from './report-data.utils.js';
 import { getSession } from './session.repository.js';
 import { sessionPane } from './session-lifecycle.service.js';
-import type { DashboardSession } from './types/dashboard.types.js';
+import type { SessionView } from './types/web-dashboard-session.types.js';
 import {
   actionButton,
   actionForm,
@@ -13,12 +13,6 @@ import {
   textAction,
 } from './web-dashboard-actions.service.js';
 import { escapeHtml, hint, section, textOrPrLink } from './web-dashboard-sheet.utils.js';
-
-/** What one render of a session's view reads: its snapshot row and what its window shows. */
-interface SessionView {
-  session: DashboardSession;
-  pane: { text: string } | { hint: string };
-}
 
 /**
  * A session's view (decision 91), or undefined for an id the store does not

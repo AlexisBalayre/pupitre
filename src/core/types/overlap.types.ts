@@ -14,3 +14,9 @@ export interface ScopeConflict {
   sessionId: string;
   files: string[];
 }
+
+/** Sessions appending to one decision file at once, which the radar names in a line. */
+export interface AppendOnlyNote {
+  file: string;
+  sessions: number;
+}

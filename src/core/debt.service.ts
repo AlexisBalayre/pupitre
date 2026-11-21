@@ -7,7 +7,6 @@ import type {
   DeadExport,
   DuplicationReport,
 } from '../adapters/types/adapter.types.js';
-import { repoCoverageRatio } from './coverage.utils.js';
 import {
   COMPLEXITY_COPY_PAIRING_TIMEOUT_MS,
   COMPLEXITY_FILE_FLAG_DELTA,
@@ -15,13 +14,15 @@ import {
   COVERAGE_RATIO_EPSILON,
   DEBT_DETAIL_SAMPLES,
   DUPLICATION_RULE_ID,
-} from './merge-gate.constants.js';
+} from './constants/merge-gate.constants.js';
+import { repoCoverageRatio } from './coverage.utils.js';
 import type {
   DebtFlag,
   DebtGap,
   DebtMeasurement,
   DebtVerdict,
   GateDebtMeasurement,
+  StageVerdict,
 } from './types/debt.types.js';
 import type { DebtBaseline } from './types/init.types.js';
 import type { GateStageResult } from './types/merge-gate.types.js';
@@ -153,13 +154,6 @@ function mergeDuplication(reports: DuplicationReport[]): DuplicationReport {
     blocks: reports.flatMap((r) => r.blocks),
     ...(excluded.length > 0 ? { excludedTestBlocks: excluded.reduce((sum, n) => sum + n, 0) } : {}),
   };
-}
-
-/** One stage's verdict; `ratchet` carries only the metrics that stage owns. */
-interface StageVerdict {
-  stage: GateStageResult;
-  flag?: DebtFlag;
-  ratchet?: DebtBaseline;
 }
 
 /**

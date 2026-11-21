@@ -1,12 +1,7 @@
-import {
-  type Call,
-  callCost,
-  contextOf,
-  percentile,
-  recachedTokens,
-  type ScannedTranscript,
-  type UsageClass,
-} from './usage-report.service.js';
+import type { UsageClass } from './enums/usage-report.enums.js';
+import type { ContextStats, ResetFloor, Step, Transcript } from './types/retro.types.js';
+import type { ScannedTranscript } from './types/usage-report.types.js';
+import { callCost, contextOf, percentile, recachedTokens } from './usage-report.service.js';
 
 // `pup retro` replays each transcript request by request under a lower
 // compaction threshold, so a change of `autoCompactWindow` can be judged by the
@@ -20,52 +15,6 @@ const REPLAY_THRESHOLDS = [100_000, 120_000, 150_000, 200_000];
 
 /** Spend on requests carrying more context than this is reported as a share. */
 const HIGH_CONTEXT = 150_000;
-
-type Transcript = ScannedTranscript['read'];
-
-interface Step {
-  call: Call;
-  context: number;
-  /** The previous request's context, the one before the window included. */
-  previousContext: number | undefined;
-  /** The context a compaction before this request found: the previous one's plus what came after it. */
-  compactedContext: number | undefined;
-  /** An automatic compaction came before this request. */
-  autoReset: boolean;
-  /** A `/compact` came before this request: the replay keeps it whatever the threshold. */
-  manualReset: boolean;
-  /** The request found its cache expired after an idle hour and wrote it again. */
-  idle: boolean;
-}
-
-/** What a reset leaves: the context the request after it reads from the cache and writes. */
-interface ResetFloor {
-  read: number;
-  write: number;
-}
-
-interface ReplayRow {
-  threshold: number;
-  resets: number;
-  cost: number;
-  /** The replayed cost less the actual one: negative is a saving. */
-  change: number;
-  changeShare: number;
-}
-
-export interface ContextStats {
-  cost: number;
-  contextBeforeCompaction: number;
-  contextAfterCompaction: number;
-  growthPerRequest: number;
-  highContextCostShare: number;
-  /** The median context an automatic compaction fired at; 0 when none did. */
-  observedThreshold: number;
-  /** The replay at the observed threshold, the check on the replay itself. */
-  observedReplayCost: number;
-  /** Empty when the window holds no fresh window or automatic compaction to price a reset from. */
-  replay: ReplayRow[];
-}
 
 const sum = (values: number[]): number => values.reduce((n, v) => n + v, 0);
 

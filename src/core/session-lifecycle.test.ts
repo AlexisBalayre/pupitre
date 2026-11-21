@@ -74,8 +74,8 @@ import {
   TELL_MAX_CHARS,
   tellConductor,
 } from './conductor.service.js';
+import { DEFAULT_BASE_PROFILE } from './constants/default-profile.constants.js';
 import { openStore } from './db.client.js';
-import { DEFAULT_BASE_PROFILE } from './default-profile.constants.js';
 import {
   ArmedGitDriverError,
   WorktreeConfigError,
@@ -107,7 +107,6 @@ import {
   listBacklogTasks,
   listEvents,
   openQuestion,
-  type SessionRow,
   transitionSession,
 } from './session.repository.js';
 import { machineLoad } from './session-cap.service.js';
@@ -130,6 +129,7 @@ import {
 } from './session-lifecycle.service.js';
 import { availableMemoryBytes } from './test-slot.service.js';
 import type { TaskId, TaskSpec } from './types/profile.types.js';
+import type { SessionRow } from './types/session.types.js';
 
 // Test repos must not inherit the developer's global git config nor GIT_DIR & co.
 // — when this suite runs inside a git hook (pre-commit), those would redirect

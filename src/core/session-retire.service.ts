@@ -7,36 +7,24 @@ import {
   assertMintedRow,
   assertPullRequestOf,
   MERGE_LOCK_WAIT_MS,
-  type OriginUse,
   pushTarget,
   withMergeLock,
 } from './merge-gate.service.js';
-import {
-  appendEvent,
-  type EventRow,
-  getSession,
-  listEvents,
-  type SessionRow,
-} from './session.repository.js';
+import { appendEvent, getSession, listEvents } from './session.repository.js';
 import {
   assertStillMerged,
   assertUnlockedWorktree,
   deleteBranchIfHeld,
   pinnedPullRequest,
 } from './session-teardown.service.js';
-import type { RetireOutcome } from './types/session-retire.types.js';
+import type { OriginUse } from './types/merge-gate.types.js';
+import type { EventRow, SessionRow } from './types/session.types.js';
+import type { RetireOutcome, RetireRequest } from './types/session-retire.types.js';
 
 const UNTOUCHED = 'Nothing was retired.';
 const RETIRE_USE: OriginUse = { command: '`pup retire`', untouched: UNTOUCHED };
 /** The events that start or close out what a merge stands for. */
 const STANDING_EVENTS: readonly string[] = ['merge', 'fix_round', 'landed', 'retired'];
-
-interface RetireRequest {
-  repoPath: string;
-  sessionId: string;
-  /** The merged PR that re-landed the work: its number, or its url on the session's repo. */
-  supersededBy: string;
-}
 
 /**
  * `pup retire <session> --superseded-by <pr>` (decision 141): the close-out of

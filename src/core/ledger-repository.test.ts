@@ -8,9 +8,9 @@ import {
   insertLedgerEntry,
   listLedgerEntries,
   listOverdueLedgerEntries,
-  type NewLedgerEntryInput,
 } from './ledger.repository.js';
 import { ensureProject } from './session.repository.js';
+import type { NewLedgerEntryInput } from './types/ledger.types.js';
 
 function entryInput(overrides: Partial<NewLedgerEntryInput> = {}): NewLedgerEntryInput {
   return {

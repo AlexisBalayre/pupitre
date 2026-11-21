@@ -1,5 +1,5 @@
-import type { SessionState } from '../db.client.js';
 import type { OverlapPair } from './overlap.types.js';
+import type { SessionState } from './session.types.js';
 import type { SessionActivity } from './session-activity.types.js';
 import type { FindingClass } from './session-lifecycle.types.js';
 
@@ -323,3 +323,28 @@ export interface FleetSummary {
   planned: number;
   merged: number;
 }
+
+/**
+ * One stall: how long the session has been quiet, and the name of the stall
+ * itself. `stalledAt` is the events file's mtime — the clock decision 35 ages a
+ * stall by, which stands still for exactly as long as the session does, so it
+ * names *this* quiet spell and no other. The turn watchdog stamps its
+ * `turn_died` events with it; both readers match against it.
+ */
+export interface StalledSession {
+  id: string;
+  ageMs: number;
+  stalledAt: string;
+}
+
+/**
+ * What the CI review says on a merged session's open PR (decision 90): the
+ * review bot's unresolved threads on the PR's head, or zero when its status
+ * on that head reads clean. A clean status is a claim, not a check.
+ */
+export interface CiReview {
+  openThreads: number;
+}
+
+/** GitHub's answer on a shown session's open PR, undefined when there is none. */
+export type CiReviewLookup = (session: Pick<DashboardSession, 'id'>) => CiReview | undefined;

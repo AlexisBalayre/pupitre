@@ -3,6 +3,7 @@ import { InvalidProfileError } from './errors/profile.errors.js';
 import { globToRegExp } from './glob.utils.js';
 import { scopedPaths } from './scope-audit.utils.js';
 import type { TaskSpec, TaskTicket } from './types/profile.types.js';
+import type { ScopeInFiles } from './types/task-spec.types.js';
 
 /** Control characters that must never reach a generated scope pattern file. */
 const GLOB_UNSAFE = /[\r\n\0]/;
@@ -152,14 +153,6 @@ export function assertPlannableSpec(task: TaskSpec): void {
     assertTicketBounds(task.ticket);
     assertDesignApproved(task.ticket);
   }
-}
-
-/** What a task's scope-in names among the tracked files, as its kickoff lists them. */
-interface ScopeInFiles {
-  /** Tracked files the task may edit, in `tracked`'s order. */
-  files: string[];
-  /** Scope-in globs that match no tracked path and name an editable one: files to create. */
-  toCreate: string[];
 }
 
 /** Candidates `scopedPaths` takes per call, so the deadline is checked between calls. */

@@ -55,8 +55,8 @@ import {
   TELL_MAX_CHARS,
   tellConductor,
 } from './conductor.service.js';
+import { DEFAULT_BASE_PROFILE } from './constants/default-profile.constants.js';
 import { openStore } from './db.client.js';
-import { DEFAULT_BASE_PROFILE } from './default-profile.constants.js';
 import { ConductorTellRefusedError } from './errors/conductor.errors.js';
 import { LaunchRolledBackError, QuestionRefusedError } from './errors/session-lifecycle.errors.js';
 import { recordWatcherBeat } from './overlap.repository.js';

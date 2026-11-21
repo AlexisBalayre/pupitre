@@ -6,10 +6,10 @@ import {
   windowSockets,
 } from '../claude/session-runtime.service.js';
 import type { Tier } from '../claude/types/model-ladder.types.js';
+import { PROTECTED_PATH_GLOBS } from './constants/merge-gate.constants.js';
 import { insertDecisionRecord } from './decision-record.repository.js';
 import { InvalidProfileError } from './errors/profile.errors.js';
 import { globToRegExpSource } from './glob.utils.js';
-import { PROTECTED_PATH_GLOBS } from './merge-gate.constants.js';
 import { scopeConflicts } from './overlap.service.js';
 import { asStringArray, parseJsonOr } from './report-data.utils.js';
 import { asTier, taskTier, tierForScope } from './routing.utils.js';
@@ -26,34 +26,12 @@ import {
   workingSession,
 } from './session.repository.js';
 import { assertPlannableSpec } from './task-spec.utils.js';
-import type { ScopeConflict } from './types/overlap.types.js';
 import type { RescopeCaller } from './types/session-event.types.js';
-
-/**
- * What a rescope did: the globs it appended, none when all were there, the
- * tier it leaves, and the live sessions of other tasks the added globs share
- * files with.
- */
-interface Rescoped {
-  sessionId: string;
-  added: string[];
-  tier: Tier;
-  raised: boolean;
-  overlaps: ScopeConflict[];
-}
+import type { OpenWindow, Reach, Rescoped, TaskRescope } from './types/task-rescope.types.js';
 
 /** Any C0 control, DEL or C1 control: none belongs in a path. */
 // biome-ignore lint/suspicious/noControlCharactersInRegex: matching them is the point
 const CONTROL_CHAR = /[\u0000-\u001f\u007f-\u009f]/;
-
-/** The paths a glob matches, case-insensitively, as the scope-audit reads protected ones. */
-interface Reach {
-  /** The glob before its first wildcard, lower-cased: every path it matches starts with it. */
-  prefix: string;
-  /** The one path it matches, when it has no wildcard. */
-  path?: string;
-  matches: (path: string) => boolean;
-}
 
 /**
  * What `glob` reaches as the matcher reads it: trimmed, one leading `./`
@@ -194,12 +172,6 @@ function listedPane(lines: readonly string[], sessionId: string): string | undef
         listed.join('\t') === name || ` ${started} `.includes(` --name ${name} `),
     )?.[0];
 }
-
-/** Why a rescope cannot rule out an open window: what the refusal names. */
-type OpenWindow =
-  | { kind: 'listed'; sessionId: string; socket: string; pane: string }
-  | { kind: 'unanswered'; socket: string; detail: string }
-  | { kind: 'no-tmux' };
 
 /**
  * Why a window of `sessionIds`, sessions of the project at `repoPath`, may
@@ -354,20 +326,6 @@ export function rescopeTask(
       return { sessionId, added, tier, raised, overlaps };
     })
     .immediate();
-}
-
-/** A rescope as the gate's PR body and the needs-you inbox show it. */
-export interface TaskRescope {
-  /** When it was recorded, as the store holds it. */
-  at: string;
-  sessionId: string;
-  added: string[];
-  tier: string;
-  raised: boolean;
-  /** What was seen of the caller (decision 115): evidence, not proof. */
-  by: string;
-  tty: string | null;
-  tmuxPane: string | null;
 }
 
 /**

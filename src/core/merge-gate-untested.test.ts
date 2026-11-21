@@ -41,10 +41,10 @@ import {
 } from '@test/helpers/merge-gate.mock.js';
 import type { Adapter } from '../adapters/types/adapter.types.js';
 import { typescriptAdapter } from '../adapters/typescript.adapter.js';
+import { DUPLICATION_RULE_ID, UNTESTED_PATH_GLOBS } from './constants/merge-gate.constants.js';
 import { openStore } from './db.client.js';
 import { gitDiffPaths } from './git-diff.client.js';
 import { globToRegExp } from './glob.utils.js';
-import { DUPLICATION_RULE_ID, UNTESTED_PATH_GLOBS } from './merge-gate.constants.js';
 import { runMergeGate } from './merge-gate.service.js';
 import { getProject, saveProjectBaseline } from './session.repository.js';
 import { HELD_SLOT_ENV } from './test-slot.service.js';

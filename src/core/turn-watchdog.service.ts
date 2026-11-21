@@ -14,10 +14,11 @@ import {
   getSession,
   isProjectDormant,
   listEvents,
-  type SessionRow,
 } from './session.repository.js';
 import { STALLED_AFTER_MS } from './session-activity.constants.js';
 import { sessionPane, steerSession } from './session-lifecycle.service.js';
+import type { SessionRow } from './types/session.types.js';
+import type { ResumedTurn } from './types/turn-watchdog.types.js';
 
 /**
  * The turn watchdog: what stands between a sleeping laptop and a fleet that
@@ -55,16 +56,6 @@ export const CONDUCTOR_NUDGE =
 
 /** The conductor's stand-in id in a sweep's result: it has no session row to name. */
 export const CONDUCTOR_TARGET = 'conductor';
-
-/** One dead turn the sweep acted on. */
-interface ResumedTurn {
-  /** The session resumed, or `conductor` for the operator's delegate. */
-  id: string;
-  /** The pane's own error line, sanitized for the terminal (decision 29). */
-  reason: string;
-  /** Why nothing was typed, when the steer was refused; the resume then needs a human. */
-  refusal?: string;
-}
 
 /**
  * One watchdog pass over the fleet: every running session the stall rule

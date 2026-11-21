@@ -35,7 +35,6 @@ import { CONDUCTOR_BLOCKED_AFTER_MS, markConductorQuestion } from './conductor.s
 import {
   blockedReason,
   buildDashboardSnapshot,
-  type CiReview,
   findStalledSessions,
   fleetSummary,
   goalHeadline,
@@ -44,7 +43,6 @@ import {
   routeLabel,
   windowFailureOf,
 } from './dashboard.service.js';
-import type { SessionState } from './db.client.js';
 import { openStore } from './db.client.js';
 import { insertLedgerEntry } from './ledger.repository.js';
 import { recordWatcherBeat, replaceOverlaps } from './overlap.repository.js';
@@ -60,14 +58,14 @@ import {
   insertSession,
   insertTask,
   recordSessionRoute,
-  type SessionRoute,
-  type SessionRow,
   saveProjectBaseline,
   transitionSession,
 } from './session.repository.js';
 import { STALLED_AFTER_MS } from './session-activity.constants.js';
+import type { CiReview } from './types/dashboard.types.js';
 import type { ProjectBaseline } from './types/init.types.js';
 import type { TaskSpec } from './types/profile.types.js';
+import type { SessionRoute, SessionRow, SessionState } from './types/session.types.js';
 
 const NOW = Date.parse('2026-09-13T12:00:00Z');
 

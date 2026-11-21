@@ -1,8 +1,7 @@
 import { describe, expect, it } from 'vitest';
-
-import type { DecisionRecordRow } from './decision-record.repository.js';
 import { renderMindMapHtml } from './mind-map.service.js';
 import type { CodeMapNode } from './types/code-map.types.js';
+import type { DecisionRecordRow } from './types/decision-record.types.js';
 
 const NODES: CodeMapNode[] = [
   {

@@ -9,12 +9,11 @@ import {
   launchSession,
   steerPane,
 } from '../claude/session-runtime.service.js';
-import type { WindowEnv } from '../claude/types/session-runtime.types.js';
 import { HandoffMissingError } from './errors/session-handoff.errors.js';
 import { verifiedWorktreeGitEnv } from './git-diff.client.js';
 import { assertMintedRow } from './merge-gate.service.js';
-import { type ProjectPaths, projectPaths } from './paths.utils.js';
-import { NO_PROGRESS, type StageProgress } from './progress.utils.js';
+import { projectPaths } from './paths.utils.js';
+import { NO_PROGRESS } from './progress.utils.js';
 import { routeFor } from './routing.utils.js';
 import {
   appendEvent,
@@ -23,10 +22,12 @@ import {
   getSession,
   listEvents,
   recordSessionRoute,
-  type SessionRow,
 } from './session.repository.js';
 import { respawnRoute, sessionPane } from './session-lifecycle.service.js';
-import type { RouteOverride } from './types/session-lifecycle.types.js';
+import type { ProjectPaths } from './types/paths.types.js';
+import type { StageProgress } from './types/progress.types.js';
+import type { SessionRow } from './types/session.types.js';
+import type { RespawnArgs } from './types/session-handoff.types.js';
 
 const HANDOFF_POLL_MS = 5_000;
 export const HANDOFF_WAIT_DEFAULT_MS = 10 * 60 * 1000;
@@ -184,19 +185,6 @@ export function awaitHandoffReady(
   }
   return isHandoffReady(db, repoPath, sessionId, pathsBase);
 }
-
-/**
- * What both respawns take: the session, the window env its command resolved
- * (decision 106), and the route override the operator named, if any.
- */
-type RespawnArgs = [
-  db: Database,
-  repoPath: string,
-  sessionId: string,
-  env: WindowEnv,
-  pathsBase?: string,
-  override?: RouteOverride,
-];
 
 /**
  * Replace the session's tmux pane with a fresh `claude` in the same worktree,

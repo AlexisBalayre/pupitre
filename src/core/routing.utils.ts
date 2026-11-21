@@ -1,5 +1,6 @@
 import { LADDERS, TIERS } from '../claude/constants/model-ladder.constants.js';
 import type { ModelRoute, Tier } from '../claude/types/model-ladder.types.js';
+import type { Climb, ClimbReason, GlobAutomaton, GlobToken } from './types/routing.types.js';
 import type { SessionEvent } from './types/session-event.types.js';
 import type { FindingClass } from './types/session-lifecycle.types.js';
 
@@ -47,13 +48,6 @@ export function taskTier(stored: string | null, scopeIn: readonly unknown[]): Ti
   );
 }
 
-type GlobToken =
-  | { kind: 'char'; char: string }
-  | { kind: 'one' }
-  | { kind: 'star' }
-  | { kind: 'globstar' }
-  | { kind: 'dirs' };
-
 /**
  * A scope glob split the way `globToRegExpSource` reads it: normalized the
  * same, and `**` + `/` taken before `**`, before `*`.
@@ -73,16 +67,6 @@ function globTokens(glob: string): GlobToken[] {
     else tokens.push({ kind: 'char', char });
   }
   return tokens;
-}
-
-interface GlobAutomaton {
-  /** Per state, the moves that read one character. */
-  moves: { to: number; reads: (char: string) => boolean }[][];
-  /** Per state, the moves that read nothing. */
-  skips: number[][];
-  accept: number;
-  /** Every literal character, which with `/` and one other is all an intersection has to try. */
-  chars: string[];
 }
 
 const notSlash = (char: string): boolean => char !== '/';
@@ -149,12 +133,6 @@ export function globsIntersect(left: string, right: string): boolean {
   }
   return false;
 }
-
-/**
- * What a window ran into that climbs its task one rung at the next relaunch or
- * respawn, or at the next CI fix round for `repeat-fix-round` (decision 92).
- */
-export type ClimbReason = 'gate-rejection' | 'repeat-fix-round' | 'turn-death' | 'stall';
 
 /**
  * The classes `pup fix --finding` takes, the conductor's word that an open
@@ -269,15 +247,6 @@ export function nextRung(
   const at = Number.isSafeInteger(rung) ? Math.min(Math.max(rung, 0), top) : 0;
   if (failure === undefined || failure === 'blocked') return { rung: at };
   return at < top ? { rung: at + 1, reason: failure } : { topReached: failure };
-}
-
-/** Where a task's next window stands on its ladder, as `climbFrom` reads it. */
-interface Climb {
-  rung: number;
-  /** Why the rung last climbed, kept from the window before when this one does not climb. */
-  reason?: string;
-  /** Set when the window before failed on the top rung: `rung` is the top, and nothing is left to climb. */
-  topReached?: ClimbReason;
 }
 
 /**

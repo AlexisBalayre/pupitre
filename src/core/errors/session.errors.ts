@@ -1,4 +1,4 @@
-import type { SessionState } from '../db.client.js';
+import type { SessionState } from '../types/session.types.js';
 import { InvalidProfileError } from './profile.errors.js';
 
 export class InvalidTransitionError extends Error {

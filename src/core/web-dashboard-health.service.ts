@@ -2,15 +2,26 @@ import type { Database } from 'better-sqlite3';
 
 import { sanitizeReason } from '../adapters/capability.utils.js';
 import { captureDebt, listBaselineHistory } from './baseline-history.repository.js';
-import { type TimeDatum, type TimeMarker, timeLineChart } from './chart.utils.js';
+import { timeLineChart } from './chart.utils.js';
 import { PR_URL } from './constants/dashboard.constants.js';
+import { SESSION_ID_PATTERN } from './constants/paths.constants.js';
 import { debtFigures } from './dashboard.service.js';
-import { SESSION_ID_PATTERN } from './paths.constants.js';
 import { projectId } from './paths.utils.js';
 import { displayText, toIsoUtc } from './report-data.utils.js';
-import { decodeEvent, type EventRow } from './session.repository.js';
-import type { DashboardBaseline } from './types/dashboard.types.js';
+import { decodeEvent } from './session.repository.js';
+import type { TimeDatum, TimeMarker } from './types/chart.types.js';
+import type { EventRow } from './types/session.types.js';
 import type { SessionEvent } from './types/session-event.types.js';
+import type {
+  HealthCapture,
+  HealthMerge,
+  HealthView,
+  Metric,
+  Move,
+  Movement,
+  Point,
+  Series,
+} from './types/web-dashboard-health.types.js';
 import {
   escapeHtml,
   GATE_METRICS,
@@ -19,67 +30,6 @@ import {
   textOrPrLink,
   UNMINTED_LABEL,
 } from './web-dashboard-sheet.utils.js';
-
-type Figures = Omit<DashboardBaseline, 'capturedAt'>;
-type MetricKey = keyof Figures;
-type Metric = (typeof GATE_METRICS)[number];
-
-/** One `baseline_history` capture as the Health sheet reads it. */
-interface HealthCapture {
-  at: number;
-  /** Printed from `at`, so no store text reaches the page through it. */
-  label: string;
-  figures: Figures;
-  /** The rule each figure was counted under: only duplication has one (decision 39). */
-  rules: Partial<Record<MetricKey, string | undefined>>;
-}
-
-/** A session's first merge, the one that landed its work. */
-interface HealthMerge {
-  /** When its work reached the target: the merge, or for a pull request its first `landed` event. */
-  at: number;
-  label: string;
-  /** The session id, or `UNMINTED_LABEL` for one outside the minted shape. */
-  session: string;
-  /** Through `sanitizeReason` and `displayText`, empty for a local merge; a link only in a PR url's shape. */
-  prUrl: string;
-}
-
-interface HealthView {
-  captures: HealthCapture[];
-  merges: HealthMerge[];
-}
-
-/** A capture that measured a metric, and the one it compares with, if any. */
-interface Point {
-  capture: HealthCapture;
-  value: number;
-  previous: Point | undefined;
-}
-
-/** One metric's points, keyed by the capture that measured them. */
-interface Series {
-  metric: Metric;
-  points: Map<HealthCapture, Point>;
-}
-
-/** One metric's change at a capture. */
-interface Move {
-  metric: Metric;
-  before: number;
-  after: number;
-  /** When the capture it is compared with was taken. */
-  since: number;
-}
-
-interface Movement {
-  capture: HealthCapture;
-  moves: Move[];
-  /** The largest relative change among its moves. */
-  size: number;
-  /** The sessions whose merge is placed after the earliest `since` and at or before the capture. */
-  merged: HealthMerge[];
-}
 
 const TOP_MOVES = 10;
 

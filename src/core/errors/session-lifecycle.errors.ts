@@ -4,8 +4,9 @@ import {
   SteerNotDeliveredError,
 } from '../../claude/errors/session-runtime.errors.js';
 import type { ModelRoute, Tier } from '../../claude/types/model-ladder.types.js';
-import type { ClimbReason } from '../routing.utils.js';
 import { MIN_AVAILABLE_MEMORY_BYTES } from '../test-slot.service.js';
+import type { ClimbReason } from '../types/routing.types.js';
+import type { RefusedSteer } from '../types/session-lifecycle.types.js';
 
 export class UnknownTaskError extends Error {
   constructor(taskId: string) {
@@ -67,14 +68,6 @@ export class TerminalSessionError extends Error {
     this.name = 'TerminalSessionError';
   }
 }
-
-/**
- * The two ways a steer, a kickoff included, is refused with nothing typed: the
- * paste never landed whole (decision 45), or the pane recorded at launch is
- * not there to type into (decision 46) — for a launch, a window that died
- * before its context arrived.
- */
-type RefusedSteer = SteerNotDeliveredError | SessionPaneMissingError;
 
 export function isRefusedSteer(error: unknown): error is RefusedSteer {
   return error instanceof SteerNotDeliveredError || error instanceof SessionPaneMissingError;

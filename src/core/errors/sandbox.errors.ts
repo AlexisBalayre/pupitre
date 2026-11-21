@@ -1,4 +1,5 @@
-import { DECLARATION_VAR, type InterruptSignal } from '../sandbox.utils.js';
+import { DECLARATION_VAR } from '../sandbox.utils.js';
+import type { InterruptSignal } from '../types/sandbox.types.js';
 
 /** A refusal with operator instructions in it, so the CLI prints it as one line. */
 export class UndeclaredSandboxError extends Error {

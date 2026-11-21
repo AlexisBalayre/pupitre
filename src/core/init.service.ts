@@ -6,11 +6,14 @@ import {
 } from '../adapters/capability.utils.js';
 import type { Adapter, GateCommand, GateStage } from '../adapters/types/adapter.types.js';
 import { appendBaselineHistory, hasBaselineHistoryEntry } from './baseline-history.repository.js';
+import {
+  GATE_COMMAND_TIMEOUT_MS,
+  GATE_OUTPUT_TAIL_CHARS,
+} from './constants/merge-gate.constants.js';
 import { measureCoverage, measureStaticDebt } from './debt.service.js';
 import { BrokenToolchainError, NoAdapterError } from './errors/init.errors.js';
 import { GateInterruptedError } from './errors/sandbox.errors.js';
 import { runGit } from './git-diff.client.js';
-import { GATE_COMMAND_TIMEOUT_MS, GATE_OUTPUT_TAIL_CHARS } from './merge-gate.constants.js';
 import { projectId, projectPaths } from './paths.utils.js';
 import { runGateChild, sandboxLabel } from './sandbox.utils.js';
 import {
@@ -26,6 +29,7 @@ import type {
   BaselineStageResult,
   InitReport,
   MeasuredBaseline,
+  OriginRecording,
   ProjectBaseline,
 } from './types/init.types.js';
 
@@ -54,15 +58,6 @@ export function readOriginUrl(repoPath: string): string | undefined {
     return undefined;
   }
 }
-
-/**
- * What a `pup init` run may do to the recorded push target (decision 56):
- * `'record'` writes it when nothing is recorded yet and reports a value that
- * disagrees rather than overwriting it, `'re-record'` is the operator's word
- * that origin moved (`pup init --origin-moved`). Both are the operator's: a
- * session cannot reach `pup init` at all (decision 64).
- */
-export type OriginRecording = 'record' | 're-record';
 
 /**
  * Store origin's URL as this checkout has it, and return the finding when it

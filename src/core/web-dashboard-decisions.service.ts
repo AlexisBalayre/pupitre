@@ -1,24 +1,9 @@
 import type { Database } from 'better-sqlite3';
-
+import { SESSION_ID_PATTERN } from './constants/paths.constants.js';
 import { listDecisionRecords } from './decision-record.repository.js';
-import { SESSION_ID_PATTERN } from './paths.constants.js';
 import { asStringArray, parseJsonOr, toIsoUtc } from './report-data.utils.js';
+import type { DecisionSheetRecord } from './types/web-dashboard-decisions.types.js';
 import { escapeHtml, hint, oneLine, section, UNMINTED_LABEL } from './web-dashboard-sheet.utils.js';
-
-/** One decision record as the sheet reads it, every string through `oneLine`. */
-interface DecisionSheetRecord {
-  id: number;
-  /** The session id, or `UNMINTED_LABEL` for one outside the minted shape. */
-  session: string;
-  /** `YYYY-MM-DD` UTC, the day it is grouped under; `NO_DAY` when the stored time does not parse. */
-  day: string;
-  /** `, YYYY-MM-DD HH:MM UTC`, the day kept in the row so the page's filter finds it; empty when the stored time does not parse. */
-  time: string;
-  /** Each a line of the stored text, as `pup log` prints it. */
-  summary: string[];
-  alternatives: string[];
-  files: string[];
-}
 
 const NO_DAY = '(no date recorded)';
 

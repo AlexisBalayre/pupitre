@@ -1,8 +1,8 @@
 import type { Database } from 'better-sqlite3';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { appendBaselineHistory } from './baseline-history.repository.js';
+import { DUPLICATION_RULE_ID } from './constants/merge-gate.constants.js';
 import { openStore } from './db.client.js';
-import { DUPLICATION_RULE_ID } from './merge-gate.constants.js';
 import { projectId } from './paths.utils.js';
 import { appendEvent, ensureProject, insertSession, insertTask } from './session.repository.js';
 import { readHealthSheet, renderHealthSheet } from './web-dashboard-health.service.js';

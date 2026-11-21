@@ -10,9 +10,9 @@ import {
   getSession,
   insertSession,
   insertTask,
-  type SessionRow,
 } from './session.repository.js';
 import { dossierFileName, renderSessionDossierHtml } from './session-dossier.service.js';
+import type { SessionRow } from './types/session.types.js';
 
 const REPO = '/repo';
 const PID = projectId(REPO);

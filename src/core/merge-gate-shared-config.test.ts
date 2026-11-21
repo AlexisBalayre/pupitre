@@ -30,8 +30,8 @@ vi.mock('node:child_process', async (importOriginal) => {
 // Shortened by the test of a fifo swapped in for `.git/config` under the lock,
 // whose git child only the deadline ends.
 const gateTimeout = vi.hoisted(() => ({ ms: undefined as number | undefined }));
-vi.mock('./merge-gate.constants.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('./merge-gate.constants.js')>();
+vi.mock('./constants/merge-gate.constants.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./constants/merge-gate.constants.js')>();
   return {
     ...actual,
     get GATE_COMMAND_TIMEOUT_MS() {
@@ -75,10 +75,10 @@ import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import { nestedPackageDirs } from '../adapters/git-tree.client.js';
 import type { Adapter, CapabilityContext } from '../adapters/types/adapter.types.js';
 import { typescriptAdapter } from '../adapters/typescript.adapter.js';
+import { DUPLICATION_RULE_ID } from './constants/merge-gate.constants.js';
 import { openStore } from './db.client.js';
 import { SharedWorktreeKeyError, WorktreeConfigError } from './errors/git-diff.errors.js';
 import { listLedgerEntries } from './ledger.repository.js';
-import { DUPLICATION_RULE_ID } from './merge-gate.constants.js';
 import { runMergeGate } from './merge-gate.service.js';
 import { projectId } from './paths.utils.js';
 import { TOOLCHAIN_CACHE_DIRNAME } from './sandbox.utils.js';

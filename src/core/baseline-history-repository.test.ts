@@ -7,10 +7,10 @@ import {
   hasBaselineHistoryEntry,
   listBaselineHistory,
   listRecentBaselineHistory,
-  type NewBaselineHistoryInput,
 } from './baseline-history.repository.js';
 import { openStore } from './db.client.js';
 import { ensureProject } from './session.repository.js';
+import type { NewBaselineHistoryInput } from './types/baseline-history.types.js';
 
 function historyInput(overrides: Partial<NewBaselineHistoryInput> = {}): NewBaselineHistoryInput {
   return {

@@ -3,6 +3,8 @@ import { failureSummary, sanitizeReason } from '../adapters/capability.utils.js'
 import type { Adapter } from '../adapters/types/adapter.types.js';
 import { windowLabel } from '../claude/session-runtime.service.js';
 import { auditProject } from './audit.service.js';
+import { COMMIT_SHA, GATE_COMMAND_TIMEOUT_MS } from './constants/merge-gate.constants.js';
+import { SESSION_ID_PATTERN } from './constants/paths.constants.js';
 import {
   assertNoArmedGitDrivers,
   currentBranch,
@@ -13,7 +15,6 @@ import {
 } from './git-diff.client.js';
 import { assertGhAvailable, originRepoSlug, readPullRequestLanding } from './github.client.js';
 import { remeasureMerge } from './land-remeasure.service.js';
-import { COMMIT_SHA, GATE_COMMAND_TIMEOUT_MS } from './merge-gate.constants.js';
 import {
   assertMergeLockHeld,
   assertMintedRow,
@@ -24,15 +25,13 @@ import {
   isAncestor,
   MERGE_LOCK_WAIT_MS,
   newestMerge,
-  type OriginUse,
   pushTarget,
   resolveCommit,
   withMergeLock,
   withScratchGitDir,
 } from './merge-gate.service.js';
-import { SESSION_ID_PATTERN } from './paths.constants.js';
 import { mainLandedMessage } from './profile-compiler.service.js';
-import { NO_PROGRESS, type StageProgress } from './progress.utils.js';
+import { NO_PROGRESS } from './progress.utils.js';
 import { appendEvent, getSession, isPrClosedOnRecord, listSessions } from './session.repository.js';
 import { steerSession } from './session-lifecycle.service.js';
 import {
@@ -42,6 +41,8 @@ import {
   pinnedPullRequest,
 } from './session-teardown.service.js';
 import type { Landable, LandOutcome, LandRequest, PinnedPullRequest } from './types/land.types.js';
+import type { OriginUse } from './types/merge-gate.types.js';
+import type { StageProgress } from './types/progress.types.js';
 
 export const LAND_UNTOUCHED = 'Nothing was landed.';
 const LAND_USE: OriginUse = { command: '`pup land`', untouched: LAND_UNTOUCHED };

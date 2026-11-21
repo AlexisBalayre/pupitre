@@ -4,14 +4,15 @@ import { detectAdapters } from '../adapters/adapter.registry.js';
 import { sanitizeReason } from '../adapters/capability.utils.js';
 import { resolveWindowEnv } from '../claude/session-runtime.service.js';
 import { tellConductor } from './conductor.service.js';
+import { DEFAULT_BASE_PROFILE } from './constants/default-profile.constants.js';
+import { CONFIRMED_ACTIONS } from './constants/web-dashboard-actions.constants.js';
 import { CONDUCTOR_TARGET, openThreadCount } from './dashboard.service.js';
-import { DEFAULT_BASE_PROFILE } from './default-profile.constants.js';
 import { MergeLockLostError } from './errors/merge-gate.errors.js';
 import { startFixRound } from './fix-round.service.js';
 import { landSession } from './land.service.js';
 import { closeLedgerEntry } from './ledger.repository.js';
 import { newestMerge, runMergeGate } from './merge-gate.service.js';
-import { NO_PROGRESS, type StageProgress } from './progress.utils.js';
+import { NO_PROGRESS } from './progress.utils.js';
 import { sandboxLabel } from './sandbox.utils.js';
 import {
   answerConductorQuestion,
@@ -23,37 +24,18 @@ import {
 } from './session-lifecycle.service.js';
 import type { LandOutcome } from './types/land.types.js';
 import type { MergeOutcome } from './types/merge-gate.types.js';
+import type { StageProgress } from './types/progress.types.js';
+import type {
+  ActionFields,
+  ActionName,
+  ConfirmedAction,
+} from './types/web-dashboard-actions.types.js';
 import { escapeHtml } from './web-dashboard-sheet.utils.js';
-
-/** What the page can ask the server to do, each the core call its CLI command makes (decision 91). */
-export const ACTIONS = [
-  'answer',
-  'tell',
-  'steer',
-  'launch',
-  'kill',
-  'merge',
-  'fix',
-  'land',
-  'debt-close',
-] as const;
-export type ActionName = (typeof ACTIONS)[number];
-
-/** The ones that cannot be taken back: the page asks before each runs (decision 91). */
-export const CONFIRMED_ACTIONS = [
-  'kill',
-  'merge',
-  'land',
-  'debt-close',
-] as const satisfies readonly ActionName[];
-export type ConfirmedAction = (typeof CONFIRMED_ACTIONS)[number];
 
 /** Whether the page must ask before `action` runs. */
 export function isConfirmed(action: ActionName): action is ConfirmedAction {
   return (CONFIRMED_ACTIONS as readonly ActionName[]).includes(action);
 }
-
-export type ActionFields = Record<string, string>;
 
 /** A field the action cannot run without, or a refusal naming it. */
 function field(fields: ActionFields, name: string): string {

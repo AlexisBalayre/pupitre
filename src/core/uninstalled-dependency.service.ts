@@ -3,9 +3,9 @@ import { dirname, join, relative } from 'node:path';
 import { parse } from 'yaml';
 import { readPlainFile } from '../adapters/capability.utils.js';
 import type { NestedPackage } from '../adapters/types/adapter.types.js';
+import { GATE_ENVIRONMENT_DIR } from './constants/merge-gate.constants.js';
 import { quotePath } from './debt.service.js';
 import { globToRegExp } from './glob.utils.js';
-import { GATE_ENVIRONMENT_DIR } from './merge-gate.constants.js';
 import { shellWord } from './shell-quote.utils.js';
 
 const NPM = { name: 'npm', lockfile: 'package-lock.json', dirFlag: '--prefix' };

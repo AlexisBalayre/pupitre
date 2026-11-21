@@ -16,6 +16,13 @@ import { GateInterruptedError, UndeclaredSandboxError } from './errors/sandbox.e
 import { CACHE_VAR_SUBDIRS, gateChildEnv } from './gate-env.utils.js';
 import { projectId } from './paths.utils.js';
 import { grantWithin, resolvePath, writeProfile } from './sandbox-profile.utils.js';
+import type {
+  GateChildOptions,
+  InterruptSignal,
+  LiveChild,
+  SandboxMode,
+  SandboxRun,
+} from './types/sandbox.types.js';
 
 /**
  * Containment for the children whose code a session wrote — gate stages,
@@ -53,58 +60,6 @@ const PROBE_COMMAND = '/usr/bin/true';
  * be able to write this is `sandbox-exec` itself.
  */
 const NESTING_REFUSAL = /^sandbox-exec: sandbox_apply:/m;
-
-interface GateChildOptions {
-  /** Working directory, and always writable: the checkout being measured. */
-  cwd: string;
-  /**
-   * The trusted checkout (decision 29's `configPath`). Read-only to the child —
-   * it is the key the toolchain cache is scoped by, nothing more. One repo's
-   * gate must not hand the next repo its package manager, so this is required
-   * rather than optional: every call site knows it, and a cache shared by
-   * default is a cross-repo execution channel. `pup init`/`pup audit` pass the
-   * same path as `cwd`, where the write grant is legitimate.
-   */
-  repoPath: string;
-  /**
-   * The checkout `cwd` must stay under once resolved; the child is refused
-   * otherwise, in every mode (decision 180). The gate passes its checkout, so
-   * a nested package's cwd an earlier child redirected through a link is not
-   * granted the link's target.
-   */
-  root?: string;
-  /** Further writable paths — a capability's report directory, which the child may remove. */
-  writablePaths?: string[];
-  /**
-   * Extra env names the operator allowed with `--gate-env`. Never read from
-   * pup's own environment: an ambient channel (direnv, a CI job, a wrapper
-   * script) is the door that flag exists to close (decision 28, refined).
-   */
-  gateEnv?: string[];
-  /**
-   * Vars pup itself computes and sets for this child — `COVERAGE_FILE` aimed
-   * at a capability's report directory. Values are built from pup's own run
-   * state, such as a temp directory it just created — never copied from a
-   * name in pup's environment or read from anything a session writes; ambient
-   * values stay behind `gateEnv`'s operator flag, so decision 36's one seam
-   * keeps its one answer. Names come from gate-env.utils' closed
-   * `SETTABLE_VARS` list; any other name throws — see there for why the
-   * namespace cannot be denylisted.
-   */
-  env?: Record<string, string>;
-  timeout?: number;
-  maxBuffer?: number;
-  /** Fed to the child's stdin; absent means stdin is closed. */
-  input?: string;
-}
-
-/**
- * `applied` — pup wrapped the child in its own profile. `inherited` — pup is
- * itself sandboxed, so the child runs under *that* profile (see `sandboxMode`).
- * `declared-vm` — no mechanism on this platform, and the operator said the
- * machine pup runs on is the disposable boundary (see `declaredMode`).
- */
-type SandboxMode = 'applied' | 'inherited' | 'declared-vm';
 
 /** True where pup can confine a child at all. Everywhere else it needs the operator's word. */
 export function isSandboxSupported(): boolean {
@@ -438,22 +393,12 @@ function collect(stream: Readable | null, limit: number, overflow: () => void): 
   return chunks;
 }
 
-export type InterruptSignal = 'SIGINT' | 'SIGTERM' | 'SIGHUP';
-
 /**
  * How long a child pup forwarded an interrupt to has to exit before its group
  * is killed: long enough for a runner to stop its workers, short enough that
  * the operator's Ctrl-C still ends the gate when a child ignores it.
  */
 const INTERRUPT_GRACE_MS = 5_000;
-
-interface LiveChild {
-  child: ChildProcess;
-  /** Set when pup forwarded an interrupt to it, so its exit is not read as a stage result. */
-  interruptedBy?: InterruptSignal;
-  /** Kills the group once the grace after the first interrupt runs out. */
-  killTimer?: NodeJS.Timeout;
-}
 
 /** Every gate child still running, the concurrent ones included. */
 const liveChildren = new Set<LiveChild>();
@@ -573,16 +518,6 @@ function movedBack(moved: string, path: string): string {
 
 /** Cache reused across runs; a run's scratch and profile go with the run. */
 export const TOOLCHAIN_CACHE_DIRNAME = 'pup-toolchain-cache';
-
-interface SandboxRun {
-  /** The child's TMPDIR, and everything a run leaves behind. Per run. */
-  scratchDir: string;
-  /**
-   * Holds the generated profiles, each child's in a directory of its own that
-   * its profile denies; no grant reaches the rest, so no child writes any.
-   */
-  policyDir: string;
-}
 
 let run: SandboxRun | undefined;
 let exitListening = false;

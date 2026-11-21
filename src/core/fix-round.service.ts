@@ -7,7 +7,8 @@ import {
   launchSession,
 } from '../claude/session-runtime.service.js';
 import type { SessionPane } from '../claude/types/session-runtime.types.js';
-import { type CiReviewLookup, openThreadCount } from './dashboard.service.js';
+import { COMMIT_SHA } from './constants/merge-gate.constants.js';
+import { openThreadCount } from './dashboard.service.js';
 import { WorktreeRepointedError } from './errors/git-diff.errors.js';
 import {
   isRefusedSteer,
@@ -29,14 +30,11 @@ import {
   fixRoundMarker,
   isCutOffByNode,
   originRepoSlug,
-  type PullRequestReview,
-  type ReviewThread,
   readPullRequestReview,
   readThreadAnswers,
   replyToReviewThread,
   resolveReviewThread,
 } from './github.client.js';
-import { COMMIT_SHA } from './merge-gate.constants.js';
 import {
   assertMintedRow,
   assertPullRequestOf,
@@ -44,42 +42,51 @@ import {
   isAncestor,
   MERGE_LOCK_WAIT_MS,
   newestMerge,
-  type OriginUse,
   plainDetail,
   pushTarget,
   resolveCommitIfPresent,
   withMergeLock,
 } from './merge-gate.service.js';
-import { type ProjectPaths, projectPaths } from './paths.utils.js';
-import { NO_PROGRESS, type StageProgress } from './progress.utils.js';
+import { projectPaths } from './paths.utils.js';
+import { NO_PROGRESS } from './progress.utils.js';
 import { asStringArray } from './report-data.utils.js';
 import { routeFor } from './routing.utils.js';
 import {
   appendEvent,
   currentFixRound,
   decodeEvent,
-  type EventRow,
   getSession,
   getTask,
   listEvents,
   recordSessionRoute,
-  type SessionRoute,
-  type SessionRow,
   transitionSessionAlong,
 } from './session.repository.js';
 import {
   fixRoundRoute,
   killSession,
-  type ProfileSource,
   recompileSessionProfile,
   recordOverlaps,
-  type SessionCompile,
   worktreeCleanup,
   writeSessionProfile,
 } from './session-lifecycle.service.js';
 import { FIX_ROUND_EDGE } from './session-state.utils.js';
-import type { EventPayloads, SessionEvent } from './types/session-event.types.js';
-import type { FindingClass, RouteOverride } from './types/session-lifecycle.types.js';
+import type { CiReviewLookup } from './types/dashboard.types.js';
+import type {
+  FixRoundOutcome,
+  FixRoundRequest,
+  SessionDone,
+  StoredPullRequest,
+  ThreadAnswers,
+  ThreadVerdict,
+  WorkerAnswer,
+} from './types/fix-round.types.js';
+import type { PullRequestReview, ReviewThread } from './types/github.types.js';
+import type { OriginUse } from './types/merge-gate.types.js';
+import type { ProjectPaths } from './types/paths.types.js';
+import type { StageProgress } from './types/progress.types.js';
+import type { EventRow, SessionRoute, SessionRow } from './types/session.types.js';
+import type { EventPayloads } from './types/session-event.types.js';
+import type { ProfileSource, SessionCompile } from './types/session-lifecycle.types.js';
 
 const FIX_USE: OriginUse = { command: '`pup fix`', untouched: 'No fix round was started.' };
 const NOT_STARTED = FIX_USE.untouched;
@@ -115,72 +122,11 @@ const VERDICTS = new Map<string, WorkerAnswer['verdict']>([
   ['addressed', 'fixed'],
   ['declined', 'declined'],
 ]);
-type SessionDone = Extract<SessionEvent, { type: 'session_done' }>;
 /** Every gh call answering a round's threads, together: the gate holds the merge lock meanwhile. */
 const ANSWER_BUDGET_MS = 60_000;
 
-interface FixRoundRequest extends ProfileSource {
-  sessionId: string;
-  /** `--model`/`--effort` over the climbed rung's (decision 92). */
-  override?: RouteOverride;
-  /** Who ran `pup fix`, recorded on the round; only the operator's override lifts a top-rung refusal. */
-  overrideVia: 'operator' | 'conductor';
-  /**
-   * `--finding`: the conductor's word that an open thread is a security hole
-   * or a wrong result, which runs a round refused at the top rung there again
-   * (decision 202). Refused on any other round, from any other caller and
-   * beside an override.
-   */
-  finding?: FindingClass;
-  /** Where the store's per-session files live; `~/.pupitre` unless a test moves them. */
-  pathsBase?: string;
-  /** Wait for a merge lock a live run holds, as `pup fix` does, rather than refuse (decision 88). */
-  wait?: boolean;
-}
-
-export interface FixRoundOutcome {
-  prUrl: string;
-  head: string;
-  threads: number;
-}
-
-/** How the replies a gated fix round posted left its threads (decision 90). */
-interface ThreadAnswers {
-  prUrl: string;
-  sha: string;
-  /** Replied `Addressed in <sha>` and resolved. */
-  addressed: number;
-  /** Answered fixed, but pup cannot show the round changed its file's content: left open. */
-  unverified: number;
-  /** Replied with the worker's reason and left open for the operator. */
-  declined: number;
-  /** Named in the round but answered nowhere in the worker's summary: left open. */
-  unanswered: number;
-  /**
-   * Replied on, by a comment a round relays, after the kickoff read it, on a
-   * file the round's push left as it was: the worker never saw that reply, so
-   * nothing is posted or resolved, and the next round takes the thread with it.
-   */
-  repliedSince: number;
-  /**
-   * Replied on so too, but on a file the push changed, or one git could not
-   * tell: GitHub may outdate the thread, and no round takes an outdated one,
-   * so the worker's answer is posted, saying the reply never reached it, and
-   * nothing is resolved, for the operator to read the reply.
-   */
-  unrelayed: number;
-}
-
 /** The one on-demand review a gated fix round asks for: CI reviews only on opening and on this comment. */
 const REVIEW_ASK = '@claude review';
-
-type ThreadVerdict = Exclude<keyof ThreadAnswers, 'prUrl' | 'sha' | 'repliedSince' | 'unrelayed'>;
-
-/** One thread's answer in the worker's `pup session done` summary. */
-interface WorkerAnswer {
-  verdict: 'fixed' | 'declined';
-  reason: string;
-}
 
 /** The reply each verdict posts on its thread, before the marker; `reason` and `path` are code spans. */
 const REPLIES: Record<ThreadVerdict, (sha: string, reason: string, path: string) => string> = {
@@ -198,15 +144,6 @@ const REPLIES: Record<ThreadVerdict, (sha: string, reason: string, path: string)
 const UNRELAYED_NOTE =
   'A reply posted here after the round read this thread never reached its worker, so pup ' +
   'resolves nothing: left open for the operator.';
-
-/** The PR a merged session's newest merge opened, as the store and origin vouch for it. */
-interface StoredPullRequest {
-  prUrl: string;
-  /** The sha the gate pinned, the one the PR vouches for (decision 82). */
-  pinned: string;
-  /** Origin's `host/owner/name`, which every gh call is pinned to. */
-  repo: string;
-}
 
 /**
  * `pup fix <session>` (decision 90): hand the CI review's open threads on a

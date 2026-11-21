@@ -1,12 +1,13 @@
 import type { Database } from 'better-sqlite3';
 import { sanitizeReason } from '../adapters/capability.utils.js';
 import { PR_URL } from './constants/dashboard.constants.js';
+import { COMMIT_SHA } from './constants/merge-gate.constants.js';
 import { quotePath } from './debt.service.js';
 import { rethrowIfKilled, runGit } from './git-diff.client.js';
-import { COMMIT_SHA } from './merge-gate.constants.js';
 import { newestMerge, resolveCommitIfPresent, timedSince } from './merge-gate.service.js';
 import { listSessions, newestEventOf } from './session.repository.js';
 import { holdingStates } from './session-state.utils.js';
+import type { Competitor } from './types/adr-number.types.js';
 import type { GateStageResult } from './types/merge-gate.types.js';
 
 export const ADR_NUMBER_STAGE = 'adr-number';
@@ -171,22 +172,6 @@ function peerDecisions(
     if (!isOverrun(error)) rethrowIfKilled(error);
     return 'undiffable';
   }
-}
-
-/** Another session's branch that can still land, as the check reads it. */
-interface Competitor {
-  /** The session's branch, which a refusal names. */
-  branch: string;
-  /**
-   * What holds its decisions: the live branch's ref, or the commit an open PR's
-   * gate pinned, undefined when its merge recorded none.
-   */
-  rev: string | undefined;
-  /**
-   * The PR's url, set on a pinned peer: one whose commit git cannot find
-   * refuses the gate, naming the PR, rather than read as absent.
-   */
-  prUrl?: string;
 }
 
 /**

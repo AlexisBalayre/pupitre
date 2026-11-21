@@ -1,19 +1,22 @@
 import type { Database } from 'better-sqlite3';
 
 import { sanitizeReason } from '../adapters/capability.utils.js';
-import { barChart, type ChartDatum } from './chart.utils.js';
+import { barChart } from './chart.utils.js';
+import { SESSION_ID_PATTERN } from './constants/paths.constants.js';
 import { runGit } from './git-diff.client.js';
-import { SESSION_ID_PATTERN } from './paths.constants.js';
 import { projectId } from './paths.utils.js';
 import { asStringArray, displayText, toIsoUtc } from './report-data.utils.js';
 import { scopedPaths } from './scope-audit.utils.js';
-import {
-  decodeEvent,
-  type EventRow,
-  listBacklogTasks,
-  taskSpecForDisplay,
-} from './session.repository.js';
+import { decodeEvent, listBacklogTasks, taskSpecForDisplay } from './session.repository.js';
 import { holdingStates } from './session-state.utils.js';
+import type { EventRow } from './types/session.types.js';
+import type {
+  BacklogTask,
+  PrSession,
+  Tally,
+  TaskOverlap,
+  TasksView,
+} from './types/web-dashboard-tasks.types.js';
 import { actionButton } from './web-dashboard-actions.service.js';
 import {
   clipWords,
@@ -30,66 +33,6 @@ const WEEK_MS = 7 * DAY_MS;
 const GATE_WEEKS = 8;
 /** Shared files an overlap names before it says how many more there are. */
 const OVERLAP_FILES_SHOWN = 3;
-
-/** A live session sharing tracked files with a backlog task, under the gate's own scope rule. */
-interface TaskOverlap {
-  session: string;
-  files: string[];
-}
-
-/** One backlog task, every string through `sanitizeReason` and `displayText`. */
-interface BacklogTask {
-  id: string;
-  /** The goal's first sentence. */
-  goal: string;
-  scope: string[];
-  scopeOut: string[];
-  overlaps: TaskOverlap[];
-}
-
-/** One session that reached a PR, its counts read off its events. */
-interface PrSession {
-  session: string;
-  prUrl: string;
-  /** Gate runs that left a report: the first gate, each rejection, each re-gate. */
-  gates: number;
-  failed: number;
-  /** Every steer but the kickoff, which launched it. */
-  steers: number;
-  respawns: number;
-  /** Gate runs after its first `merge` event, on the PR's new head (decision 86). */
-  regates: number;
-  mergedAt: number;
-  /** From launch to its first `merge` event, in ms; NaN when a time does not parse. */
-  toMerge: number;
-  /** From launch to its first `landed` event, in ms; undefined until `pup land`. */
-  toLanded: number | undefined;
-}
-
-interface TasksView {
-  backlog: BacklogTask[];
-  /** Why the overlaps could not be read, when they could not. */
-  overlapError?: string;
-  sessions: PrSession[];
-  /** Each week's share of gate runs that passed, NaN in a week with none. */
-  passRate: ChartDatum[];
-  runs: { total: number; passed: number };
-  /** Gate runs that failed, by each stage that failed or flagged them. */
-  failures: ChartDatum[];
-}
-
-/** What a session's events add up to, as the read meets them in order. */
-interface Tally {
-  launchedAt: string;
-  gates: number;
-  failed: number;
-  steers: number;
-  respawns: number;
-  regates: number;
-  mergedAt?: string;
-  prUrl?: string;
-  landedAt?: string;
-}
 
 /** Text from the store, safe to print as one line once escaped (decisions 29, 98). */
 const storeText = (text: string): string => displayText(sanitizeReason(text));

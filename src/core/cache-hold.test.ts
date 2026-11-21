@@ -44,11 +44,10 @@ import {
   holdIdleCaches,
   isHoldTurnOpen,
 } from './cache-hold.service.js';
-import { openStore, type SessionState } from './db.client.js';
+import { openStore } from './db.client.js';
 import { projectId, projectPaths } from './paths.utils.js';
 import {
   appendEvent,
-  type EventRow,
   ensureProject,
   insertSession,
   insertTask,
@@ -58,6 +57,7 @@ import {
   transitionSession,
 } from './session.repository.js';
 import { sweepDeadTurns } from './turn-watchdog.service.js';
+import type { EventRow, SessionState } from './types/session.types.js';
 
 const HOLD_AGE_MS = CACHE_HOLD_AFTER_MS + 2 * 60_000;
 const STOP = { hook_event_name: 'Stop' };

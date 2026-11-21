@@ -33,15 +33,10 @@ import {
   snapshotUserConfigHash,
   writeCompiledProfile,
 } from './profile-compiler.service.js';
-import {
-  appendEvent,
-  appendSealedEvent,
-  openQuestion,
-  type QuestionEvent,
-  type StoredQuestion,
-} from './session.repository.js';
+import { appendEvent, appendSealedEvent, openQuestion } from './session.repository.js';
 import type { ConductorHandle, StartConductorRequest } from './types/conductor.types.js';
 import type { ConductorBlocked } from './types/dashboard.types.js';
+import type { QuestionEvent, StoredQuestion } from './types/session.types.js';
 import type { EventPayloads } from './types/session-event.types.js';
 
 /**

@@ -1,7 +1,7 @@
 import { lstatSync } from 'node:fs';
 import { join } from 'node:path';
+import { GATE_COMMAND_TIMEOUT_MS } from '../core/constants/merge-gate.constants.js';
 import { rethrowIfKilled, runGit } from '../core/git-diff.client.js';
-import { GATE_COMMAND_TIMEOUT_MS } from '../core/merge-gate.constants.js';
 import type { CapabilityContext } from './types/adapter.types.js';
 
 const MANIFEST = 'package.json';

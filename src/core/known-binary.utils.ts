@@ -1,13 +1,11 @@
 import { basename } from 'node:path';
+import type { BinaryFormat } from './types/known-binary.types.js';
 
 /**
  * Git's own content rule for a binary file: a NUL in the first 8000 bytes
  * (`buffer_is_binary`). Everything else git calls binary, it was told to.
  */
 const BINARY_SNIFF_BYTES = 8000;
-
-/** A format a diff-size count may skip: the extensions it is committed under, the bytes it opens with. */
-export type BinaryFormat = { extensions: string[]; magic: string[] };
 
 /**
  * The binary formats a diff-size count may skip (decision 154): the

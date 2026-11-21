@@ -6,8 +6,8 @@ import {
   windowLabel,
 } from '../../claude/session-runtime.service.js';
 import { startConductor, stopConductor } from '../../core/conductor.service.js';
+import { DEFAULT_BASE_PROFILE } from '../../core/constants/default-profile.constants.js';
 import { blockedReason } from '../../core/dashboard.service.js';
-import { DEFAULT_BASE_PROFILE } from '../../core/default-profile.constants.js';
 import { LaunchRolledBackError } from '../../core/errors/session-lifecycle.errors.js';
 import { getSession, transitionSession } from '../../core/session.repository.js';
 import {

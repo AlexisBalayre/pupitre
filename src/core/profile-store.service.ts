@@ -1,7 +1,7 @@
 import { existsSync, lstatSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { readPlainFile } from '../adapters/capability.utils.js';
-import { DEFAULT_BASE_PROFILE } from './default-profile.constants.js';
+import { DEFAULT_BASE_PROFILE } from './constants/default-profile.constants.js';
 import { InvalidProfileError } from './errors/profile.errors.js';
 import { UnknownProfileError } from './errors/profile-store.errors.js';
 import { parseProfileLayer } from './profile-compiler.service.js';

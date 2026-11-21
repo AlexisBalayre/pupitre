@@ -19,9 +19,10 @@ import {
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join } from 'node:path';
 
-import { runGit, verifiedWorktreeGitEnv, type WorktreeGitEnv } from '../core/git-diff.client.js';
+import { runGit, verifiedWorktreeGitEnv } from '../core/git-diff.client.js';
 import { projectId, projectPaths } from '../core/paths.utils.js';
 import { shellWord } from '../core/shell-quote.utils.js';
+import type { WorktreeGitEnv } from '../core/types/git-diff.types.js';
 import {
   ConfigDirRefusedError,
   SessionPaneMissingError,

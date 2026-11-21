@@ -16,6 +16,7 @@ import {
 import { dirname, join } from 'node:path';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { LOCKFILE_NAMES } from './constants/merge-gate.constants.js';
 import {
   ArmedGitDriverError,
   RewrittenGitDirError,
@@ -50,7 +51,6 @@ import {
   mayBeKnownBinary,
   spendKnownBinarySkip,
 } from './known-binary.utils.js';
-import { LOCKFILE_NAMES } from './merge-gate.constants.js';
 
 // Same scrub as merge-gate.test: keep the developer's git config and any
 // surrounding hook's GIT_DIR away from the temp repos.
