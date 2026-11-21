@@ -5,7 +5,6 @@ import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import type { Database } from 'better-sqlite3';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ADR_NUMBER_STAGE, adrNumberStage } from './adr-number.service.js';
-import type { SessionState } from './db.client.js';
 import { openStore } from './db.client.js';
 import { runGit } from './git-diff.client.js';
 import {
@@ -15,6 +14,7 @@ import {
   insertTask,
   transitionSession,
 } from './session.repository.js';
+import type { SessionState } from './types/session.types.js';
 
 // The real git, which one test makes an interrupt kill on one branch's diff.
 vi.mock('./git-diff.client.js', async (importOriginal) => {

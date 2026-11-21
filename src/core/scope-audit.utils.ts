@@ -1,10 +1,6 @@
+import { PROTECTED_PATH_GLOBS } from './constants/merge-gate.constants.js';
 import { globToRegExp, globToRegExpSource } from './glob.utils.js';
-import { PROTECTED_PATH_GLOBS } from './merge-gate.constants.js';
-
-export interface ScopeViolation {
-  path: string;
-  reason: 'protected path' | 'matches scope-out' | 'outside scope-in';
-}
+import type { ScopeViolation } from './types/scope-audit.types.js';
 
 /**
  * Check repo-relative diff paths against a task's scope. Precedence: protected

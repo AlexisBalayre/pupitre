@@ -97,3 +97,10 @@ export interface DebtFlag {
   description: string;
   files: string[];
 }
+
+/** One stage's verdict; `ratchet` carries only the metrics that stage owns. */
+export interface StageVerdict {
+  stage: GateStageResult;
+  flag?: DebtFlag;
+  ratchet?: DebtBaseline;
+}

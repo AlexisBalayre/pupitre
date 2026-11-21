@@ -1,4 +1,10 @@
 import type { Adapter } from '../../adapters/types/adapter.types.js';
+import type { PullRequestRef } from './github.types.js';
+import type { DebtBaseline, ProjectBaseline } from './init.types.js';
+import type { LedgerEntryRow } from './ledger.types.js';
+import type { TaskSpec } from './profile.types.js';
+import type { RegatePlan } from './regate.types.js';
+import type { ProjectRow, SessionRow } from './session.types.js';
 
 type GateStageStatus = 'pass' | 'fail' | 'flagged' | 'skipped';
 
@@ -102,3 +108,91 @@ export interface MergeOutcome {
    */
   keptWorktree?: string;
 }
+
+/** A changed path's new mode, and the path it was renamed or copied from if git paired one. */
+export interface RawDiffEntry {
+  mode: string;
+  renamedFrom?: string;
+  copiedFrom?: string;
+}
+
+export type DiffSizeKind = 'source' | 'test' | 'docs';
+
+/**
+ * What the branch's tree tells the diff-size split beyond a path's own name
+ * (decision 110): every path on it, whether a symlink can reach the path,
+ * whether the tree also holds the path, or one of its directories, in another
+ * ASCII case, and whether a Docusaurus config compiles the Markdown under
+ * `docs/`. And every blob's oid and size by path, so the reach checks read
+ * blobs in one batch (decision 154).
+ */
+export interface BranchTree {
+  paths: string[];
+  blobs: Map<string, { oid: string; size: number }>;
+  linked: (path: string) => boolean;
+  foldsOntoAnother: (path: string) => boolean;
+  markdownIsCode: boolean;
+}
+
+export interface MergeLockStatus {
+  command: string;
+  /** When the lock was taken, epoch ms. */
+  since: number;
+  /** The holder's status-line label; empty before its first stage. */
+  stage: string;
+}
+
+/** Which directory a lock is, so a later step can tell it from one swapped in for it. */
+export interface LockIdentity {
+  dev: number;
+  ino: number;
+}
+
+/**
+ * A take of the merge lock: the directory it made, the token it wrote there,
+ * and the status file it made there, held open.
+ */
+export interface LockTake extends LockIdentity {
+  token: string;
+  statusFd: number;
+}
+
+/** What `planMerge` settled before the lock, for the run under it. */
+export interface MergePlan {
+  session: SessionRow;
+  /** `sessionMark` before the plan read anything. */
+  mark: string;
+  sandbox: string;
+  target: string;
+  pullRequest?: PullRequestPlan;
+  regate?: RegatePlan;
+}
+
+/** Who asks `pushTarget`, and what its refusal leaves undone, for the message. */
+export interface OriginUse {
+  command: string;
+  untouched: string;
+}
+
+export interface PullRequestPlan extends PullRequestRef {
+  /** The push target recorded at setup; the push goes here literally (decision 56). */
+  originUrl: string;
+  /** Set when an open PR for this branch already exists and passed adoption checks. */
+  adoptedUrl?: string;
+}
+
+/** What the stages measured, for the caller that lands it. */
+export interface BranchMeasurement {
+  changedPaths: string[];
+  flaggedDebt: FlaggedDebt[];
+  debtCandidates: { id: number; description: string }[];
+  /** The project's open ledger entries, read before this run filed any. */
+  openEntries: LedgerEntryRow[];
+  projectId: string;
+  spec: TaskSpec;
+  project: ProjectRow | undefined;
+  baseline: ProjectBaseline | undefined;
+  ratchet: DebtBaseline;
+}
+
+export type FlaggedDebt = { description: string; files: string[] };

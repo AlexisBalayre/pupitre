@@ -5,20 +5,27 @@ import type { Database } from 'better-sqlite3';
 
 import { sanitizeReason } from '../adapters/capability.utils.js';
 import { transcriptDir } from '../claude/session-runtime.service.js';
+import { UsageClass } from './enums/usage-report.enums.js';
 import { listSessions } from './session.repository.js';
+import type {
+  Bucket,
+  Call,
+  ContentBlock,
+  CostParts,
+  ScannedTranscript,
+  Source,
+  ToolCarry,
+  Transcript,
+  TranscriptEntry,
+  UsageOptions,
+  UsageReport,
+  UsageRow,
+} from './types/usage-report.types.js';
 
 // `pup usage` reads the transcripts Claude Code already writes and prints where
 // the usage went, so the cache analysis of 2026-10-28 can be repeated rather
 // than recalled. It writes nothing: the transcripts and the sessions table are
 // only read.
-
-export enum UsageClass {
-  Worker = 'worker',
-  Conductor = 'conductor',
-  Console = 'console',
-  Subagent = 'subagent',
-  Utility = 'utility',
-}
 
 /** Dollars per million tokens, uncached input and output, by model id prefix. */
 const MODEL_PRICES: Record<string, { input: number; output: number }> = {
@@ -38,107 +45,9 @@ const IDLE_RECACHE_MS = 60 * 60 * 1000;
 /** Tool output is sized at this many characters per token; the transcript holds no count. */
 const CHARS_PER_TOKEN = 4;
 
-interface UsageRow {
-  class: UsageClass;
-  model: string;
-  effort: string;
-  calls: number;
-  cost: number;
-  costShare: number;
-  cacheHitRate: number;
-  cacheReadCostShare: number;
-  cacheWriteCostShare: number;
-  outputCostShare: number;
-  medianContext: number;
-  p90Context: number;
-  firstRequestFloor: number;
-  recaches: number;
-  recachedTokens: number;
-}
-
-export interface ToolCarry {
-  tool: string;
-  /** Set when the carry is split by result size, as `pup retro` does. */
-  sizeBucket?: string;
-  results: number;
-  tokens: number;
-  carriedTokens: number;
-}
-
-interface UsageReport {
-  since: string;
-  totalCost: number;
-  byClass: { class: UsageClass; calls: number; cost: number; costShare: number }[];
-  rows: UsageRow[];
-  toolCarry: ToolCarry[];
-  unpricedModels: string[];
-}
-
 /** The dirs a window of the project may have written to: the project's own, then the operator shell's. */
 export function claudeDirsOf(userDir: string): string[] {
   return [userDir, process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')];
-}
-
-export interface UsageOptions {
-  since: Date;
-  /** Every Claude config dir a window of the project may have written to. */
-  claudeDirs: string[];
-}
-
-export interface Call {
-  at: number;
-  model: string;
-  effort: string;
-  input: number;
-  read: number;
-  write5m: number;
-  write1h: number;
-  output: number;
-}
-
-export interface Bucket {
-  class: UsageClass;
-  model: string;
-  effort: string;
-  calls: Call[];
-  floors: number[];
-  recaches: number;
-  recachedTokens: number;
-  recachedCost: number;
-}
-
-// A session writes its own transcript, so a field that is counted, coerced or
-// printed is `unknown` until it is checked.
-interface TranscriptEntry {
-  type?: string;
-  timestamp?: unknown;
-  subtype?: unknown;
-  requestId?: string;
-  effort?: unknown;
-  entrypoint?: string;
-  compactMetadata?: { trigger?: unknown; preTokens?: unknown };
-  message?: {
-    id?: string;
-    model?: unknown;
-    content?: unknown;
-    usage?: {
-      input_tokens?: unknown;
-      output_tokens?: unknown;
-      cache_read_input_tokens?: unknown;
-      cache_creation_input_tokens?: unknown;
-      cache_creation?: { ephemeral_1h_input_tokens?: unknown };
-    };
-  };
-}
-
-interface ContentBlock {
-  type?: string;
-  id?: string;
-  name?: unknown;
-  input?: unknown;
-  tool_use_id?: string;
-  content?: unknown;
-  text?: unknown;
 }
 
 export function contextOf(call: Call): number {
@@ -147,13 +56,6 @@ export function contextOf(call: Call): number {
 
 export function priceOf(model: string): { input: number; output: number } | undefined {
   return Object.entries(MODEL_PRICES).find(([prefix]) => model.startsWith(prefix))?.[1];
-}
-
-interface CostParts {
-  read: number;
-  write: number;
-  output: number;
-  input: number;
 }
 
 function costOf(call: Call): CostParts {
@@ -230,43 +132,6 @@ function parseCall(entry: TranscriptEntry, at: number): Call | undefined {
     write1h,
     output: countOf(usage.output_tokens),
   };
-}
-
-interface ToolResult {
-  tool: string;
-  tokens: number;
-  /** Calls counted before the result arrived; every later one carries it. */
-  callsBefore: number;
-}
-
-interface FileRead {
-  path: string;
-  /** The offset and limit asked for: reading a file in chunks is not reading it again. */
-  range: string;
-  tokens: number;
-}
-
-interface Compaction {
-  at: number;
-  /** Asked for with `/compact`, not fired by the context reaching the threshold. */
-  manual: boolean;
-  /** The context it found, 0 when the boundary does not say. */
-  preTokens: number;
-}
-
-interface Transcript {
-  calls: Map<string, Call>;
-  /** The last call before the window, when the transcript began before it. */
-  before: Call | undefined;
-  toolNames: Map<string, string>;
-  toolResults: ToolResult[];
-  readPaths: Map<string, { path: string; range: string }>;
-  reads: FileRead[];
-  /** Compactions inside the window, in order. */
-  compactions: Compaction[];
-  conductor: boolean;
-  headless: boolean;
-  sawUser: boolean;
 }
 
 function parseLine(line: string): TranscriptEntry | undefined {
@@ -365,11 +230,6 @@ function readTranscript(file: string, sinceMs: number): Transcript {
   }
   for (const line of text.split('\n')) scanLine(state, line, sinceMs);
   return state;
-}
-
-interface Source {
-  file: string;
-  class: UsageClass;
 }
 
 /** The worktrees' transcript directories: the table's rows plus any removed one, by prefix. */
@@ -537,11 +397,6 @@ function byClassOf(rows: UsageRow[], totalCost: number): UsageReport['byClass'] 
 function unpricedModelsOf(buckets: Bucket[]): string[] {
   const models = buckets.flatMap((b) => b.calls.map((c) => c.model));
   return [...new Set(models.filter((m) => !priceOf(m)))].sort();
-}
-
-export interface ScannedTranscript {
-  class: UsageClass;
-  read: Transcript;
 }
 
 /** Every transcript of the project with a call inside the window, read once. */

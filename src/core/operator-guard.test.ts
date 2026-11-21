@@ -2,9 +2,10 @@ import type { Database } from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { listProcesses, recordedPanePids } from '../claude/session-runtime.service.js';
 import { openStore } from './db.client.js';
-import { launchedAncestor, type MergeCall, mergeCallerAncestor } from './operator-guard.service.js';
+import { launchedAncestor, mergeCallerAncestor } from './operator-guard.service.js';
 import { projectId } from './paths.utils.js';
 import { ensureProject, insertSession, insertTask } from './session.repository.js';
+import type { MergeCall } from './types/operator-guard.types.js';
 
 // The ps boundary and the launch's records, tested against both in the
 // runtime's own suite.

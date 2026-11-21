@@ -201,9 +201,9 @@ import {
 } from '../claude/errors/session-runtime.errors.js';
 import { listProcesses, recordedPanePids } from '../claude/session-runtime.service.js';
 import { isConductorRunning } from '../core/conductor.service.js';
-import type { SessionState } from '../core/db.client.js';
+import { DEFAULT_BASE_PROFILE } from '../core/constants/default-profile.constants.js';
+import { STALLED_AFTER_MS } from '../core/constants/session-activity.constants.js';
 import { insertDecisionRecord } from '../core/decision-record.repository.js';
-import { DEFAULT_BASE_PROFILE } from '../core/default-profile.constants.js';
 import { MergeLockLostError } from '../core/errors/merge-gate.errors.js';
 import { GateInterruptedError, UndeclaredSandboxError } from '../core/errors/sandbox.errors.js';
 import { MalformedTaskSpecError } from '../core/errors/session.errors.js';
@@ -236,7 +236,6 @@ import {
   recordSessionRoute,
   transitionSession,
 } from '../core/session.repository.js';
-import { STALLED_AFTER_MS } from '../core/session-activity.constants.js';
 import { machineLoad } from '../core/session-cap.service.js';
 import {
   awaitHandoffReady,
@@ -260,6 +259,7 @@ import {
   sessionTestCommand,
 } from '../core/test-slot.service.js';
 import type { MergeOutcome } from '../core/types/merge-gate.types.js';
+import type { SessionState } from '../core/types/session.types.js';
 import { startWebDashboard } from '../core/web-dashboard.service.js';
 import { ProjectResolutionError } from './errors/project.errors.js';
 import { buildProgram, fatalExitCode } from './index.js';

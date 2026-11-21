@@ -1,19 +1,9 @@
 import { lstatSync } from 'node:fs';
 import { readPlainFile } from '../adapters/capability.utils.js';
+import { USAGE_WINDOWS } from './constants/usage-limits.constants.js';
 import { UsageLimitReachedError } from './errors/usage-limits.errors.js';
 import { projectPaths } from './paths.utils.js';
-
-/**
- * The plan's usage windows a launch is held for (decision 156), as Claude
- * Code's statusline JSON names them under `rate_limits`, with the share of
- * each at which `pup launch` and `pup new` stop starting windows. Only the 7-day
- * window is on every plan; a plan that has no 5-hour window reports none, and
- * a missing window never holds nor reads as unknown.
- */
-const USAGE_WINDOWS = [
-  { key: 'five_hour', label: '5-hour', short: '5h', holdAt: 85 },
-  { key: 'seven_day', label: '7-day', short: '7d', holdAt: 90 },
-] as const;
+import type { UsageReading, UsageWindow } from './types/usage-limits.types.js';
 
 /** A reading older than this says nothing about now: it counts as unknown and never holds. */
 const USAGE_FRESH_MS = 30 * 60_000;
@@ -24,20 +14,6 @@ const USAGE_FRESH_MS = 30 * 60_000;
  * and it would otherwise stay fresh for as long as it claims.
  */
 const CLOCK_SKEW_MS = 60_000;
-
-type UsageWindowKey = (typeof USAGE_WINDOWS)[number]['key'];
-
-/** One window's share used, 0 to 100, and when it resets, in epoch seconds. */
-interface UsageWindow {
-  usedPercentage: number;
-  resetsAt: number;
-}
-
-/** The latest reading a window's status line wrote; `writtenAt` is the file's mtime, in epoch ms. */
-interface UsageReading {
-  writtenAt: number;
-  windows: Partial<Record<UsageWindowKey, UsageWindow>>;
-}
 
 /** A reset time as UTC to the minute, so every reader of a message sees the same text. */
 export function resetTime(resetsAt: number): string {

@@ -22,15 +22,14 @@ import {
 import { latestContextTokens } from '../claude/transcript.service.js';
 import { conductorBlock, isConductorRunning, openConductorQuestion } from './conductor.service.js';
 import { PR_URL } from './constants/dashboard.constants.js';
+import { COMMIT_SHA } from './constants/merge-gate.constants.js';
+import { SESSION_ID_PATTERN } from './constants/paths.constants.js';
 import { eventDetail } from './dashboard-events.utils.js';
-import type { SessionState } from './db.client.js';
 import { runGit } from './git-diff.client.js';
 import { listLedgerEntries, listOverdueLedgerEntries } from './ledger.repository.js';
-import { COMMIT_SHA } from './merge-gate.constants.js';
 import { getWatcherBeat, listOverlaps } from './overlap.repository.js';
 import { WATCH_STALE_AFTER_MS } from './overlap.service.js';
-import { SESSION_ID_PATTERN } from './paths.constants.js';
-import { type ProjectPaths, projectId, projectPaths } from './paths.utils.js';
+import { projectId, projectPaths } from './paths.utils.js';
 import {
   MAX_AUTO_COMPACT_WINDOW_TOKENS,
   MIN_AUTO_COMPACT_WINDOW_TOKENS,
@@ -38,7 +37,6 @@ import {
 import { asStringArray, displayStages, parseJsonOr, toIsoUtc } from './report-data.utils.js';
 import {
   asTier,
-  type ClimbReason,
   climbFrom,
   FINDING_CLASSES,
   fixRoundWindow,
@@ -47,16 +45,12 @@ import {
 } from './routing.utils.js';
 import {
   decodeEvent,
-  type EventRow,
   getProject,
   listBacklogTasks,
   listEvents,
   listSessions,
   listTasks,
   openQuestion,
-  type QuestionEvent,
-  type SessionRow,
-  type TaskRow,
   taskSpecForDisplay,
 } from './session.repository.js';
 import {
@@ -66,6 +60,7 @@ import {
 } from './session-activity.utils.js';
 import { taskRescopes } from './task-rescope.service.js';
 import type {
+  CiReviewLookup,
   DashboardBaseline,
   DashboardDeadTurn,
   DashboardEvent,
@@ -77,8 +72,18 @@ import type {
   DashboardSnapshot,
   DashboardSteer,
   FleetSummary,
+  StalledSession,
 } from './types/dashboard.types.js';
 import type { DebtBaseline, ProjectBaseline } from './types/init.types.js';
+import type { ProjectPaths } from './types/paths.types.js';
+import type { ClimbReason } from './types/routing.types.js';
+import type {
+  EventRow,
+  QuestionEvent,
+  SessionRow,
+  SessionState,
+  TaskRow,
+} from './types/session.types.js';
 import type { SessionEvent } from './types/session-event.types.js';
 
 /**
@@ -199,19 +204,6 @@ export function fleetSummary(snapshot: DashboardSnapshot): FleetSummary {
  * operator deciding what to do next reads. `pup report` is where the rest is.
  */
 const RECENT_EVENT_COUNT = 5;
-
-/**
- * One stall: how long the session has been quiet, and the name of the stall
- * itself. `stalledAt` is the events file's mtime — the clock decision 35 ages a
- * stall by, which stands still for exactly as long as the session does, so it
- * names *this* quiet spell and no other. The turn watchdog stamps its
- * `turn_died` events with it; both readers match against it.
- */
-interface StalledSession {
-  id: string;
-  ageMs: number;
-  stalledAt: string;
-}
 
 /**
  * The events file a session row names, or nothing when its id fails
@@ -477,22 +469,10 @@ const NEED_ORDER: DashboardNeed['kind'][] = [
   'pr-open',
 ];
 
-/**
- * What the CI review says on a merged session's open PR (decision 90): the
- * review bot's unresolved threads on the PR's head, or zero when its status
- * on that head reads clean. A clean status is a claim, not a check.
- */
-export interface CiReview {
-  openThreads: number;
-}
-
 /** `N open thread(s)`, as the inbox, `pup fix` and the round's kickoff count them. */
 export function openThreadCount(count: number): string {
   return `${count} open thread${count === 1 ? '' : 's'}`;
 }
-
-/** GitHub's answer on a shown session's open PR, undefined when there is none. */
-export type CiReviewLookup = (session: Pick<DashboardSession, 'id'>) => CiReview | undefined;
 
 /**
  * The needs-you inbox (decision 83), read off a snapshot like `fleetSummary`

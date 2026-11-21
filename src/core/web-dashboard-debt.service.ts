@@ -1,32 +1,13 @@
 import type { Database } from 'better-sqlite3';
 
-import { barChart, type ChartDatum } from './chart.utils.js';
+import { barChart } from './chart.utils.js';
 import { listLedgerEntries, listOverdueLedgerEntries } from './ledger.repository.js';
 import { projectId } from './paths.utils.js';
 import { asStringArray, parseJsonOr, toIsoUtc } from './report-data.utils.js';
+import type { ChartDatum } from './types/chart.types.js';
+import type { DebtSheetEntry, RankedFile } from './types/web-dashboard-debt.types.js';
 import { actionButton } from './web-dashboard-actions.service.js';
 import { DAY_MS, escapeHtml, hint, oneLine, section } from './web-dashboard-sheet.utils.js';
-
-/** One open ledger entry as the Debt sheet reads it, every string already through `oneLine`. */
-export interface DebtSheetEntry {
-  id: string;
-  description: string;
-  reason: string;
-  acceptedBy: string;
-  reviewBy: string;
-  /** The files it names, each once; empty when it names none. */
-  files: string[];
-  /** Whole days since it was filed. */
-  ageDays: number;
-  overdue: boolean;
-}
-
-/** A file on the pay-down ranking: its open entries, oldest first, and what they weigh together. */
-interface RankedFile {
-  file: string;
-  weight: number;
-  entries: DebtSheetEntry[];
-}
 
 const TOP_FILES = 10;
 /** Files a row names in full; the rest wait behind its closed details. */

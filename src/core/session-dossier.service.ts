@@ -1,9 +1,8 @@
 import type { Database } from 'better-sqlite3';
-
+import { PAGE_SHELL_CSS, PAGE_SHELL_JS } from './constants/page-shell.constants.js';
+import { PAGE_THEME_CSS } from './constants/page-theme.constants.js';
+import { SESSION_ID_PATTERN } from './constants/paths.constants.js';
 import { listDecisionRecords } from './decision-record.repository.js';
-import { PAGE_SHELL_CSS, PAGE_SHELL_JS } from './page-shell.constants.js';
-import { PAGE_THEME_CSS } from './page-theme.constants.js';
-import { SESSION_ID_PATTERN } from './paths.constants.js';
 import { projectId } from './paths.utils.js';
 import {
   asStringArray,
@@ -12,14 +11,8 @@ import {
   displayText,
   toIsoUtc,
 } from './report-data.utils.js';
-import {
-  decodeEvent,
-  type EventRow,
-  listEvents,
-  listTasks,
-  type SessionRow,
-  taskSpecForDisplay,
-} from './session.repository.js';
+import { decodeEvent, listEvents, listTasks, taskSpecForDisplay } from './session.repository.js';
+import type { EventRow, SessionRow } from './types/session.types.js';
 import type { SessionEvent } from './types/session-event.types.js';
 
 /**

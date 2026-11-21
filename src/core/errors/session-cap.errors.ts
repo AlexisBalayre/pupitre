@@ -1,10 +1,5 @@
-import {
-  allowance,
-  backlogTerms,
-  type LockBacklog,
-  type MachineLoad,
-  minutes,
-} from '../session-cap.service.js';
+import { allowance, backlogTerms, minutes } from '../session-cap.service.js';
+import type { LockBacklog, MachineLoad } from '../types/session-cap.types.js';
 
 /** A launch refused because the merge lock already has more work queued than the project's budget. */
 export class LockBacklogOverBudgetError extends Error {

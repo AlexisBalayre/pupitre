@@ -41,8 +41,8 @@ vi.mock('./task-spec.utils.js', async (importOriginal) => {
 
 // The gate's protected paths, plus a file at the top and one nested: every
 // real entry is a top-level directory, and a refusal must not rely on that.
-vi.mock('./merge-gate.constants.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('./merge-gate.constants.js')>();
+vi.mock('./constants/merge-gate.constants.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./constants/merge-gate.constants.js')>();
   return {
     ...actual,
     PROTECTED_PATH_GLOBS: [...actual.PROTECTED_PATH_GLOBS, 'pup.lock', 'config/pup.lock'],

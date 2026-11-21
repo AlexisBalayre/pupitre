@@ -1,4 +1,4 @@
-import type { SessionState } from '../../core/db.client.js';
+import type { SessionState } from '../../core/types/session.types.js';
 
 /**
  * How often `pup ui` rebuilds the snapshot. Two seconds because of what it

@@ -4,12 +4,8 @@ import { openStore } from './db.client.js';
 import { closeLedgerEntry, insertLedgerEntry } from './ledger.repository.js';
 import { projectId } from './paths.utils.js';
 import { ensureProject } from './session.repository.js';
-import {
-  type DebtSheetEntry,
-  payDownRanking,
-  readDebtSheet,
-  renderDebtSheet,
-} from './web-dashboard-debt.service.js';
+import type { DebtSheetEntry } from './types/web-dashboard-debt.types.js';
+import { payDownRanking, readDebtSheet, renderDebtSheet } from './web-dashboard-debt.service.js';
 
 const REPO = '/repo';
 const NOW = Date.parse('2026-10-26T12:00:00.000Z');

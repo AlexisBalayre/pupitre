@@ -5,12 +5,7 @@ import { isConductorRunning } from './conductor.service.js';
 import { projectId } from './paths.utils.js';
 import { getProject, listSessions, saveProjectDormantAt } from './session.repository.js';
 import { holdingStates } from './session-state.utils.js';
-
-/**
- * What `pup project dormant|wake` answers: a line for stdout, or the refusal
- * the CLI prints on stderr with exit 1. Nothing is written on a refusal.
- */
-type DormancyOutcome = { said: string } | { refusal: string };
+import type { DormancyOutcome } from './types/project.types.js';
 
 /**
  * The registered projects `pup project list` prints, each with whether its

@@ -1,8 +1,9 @@
 import type { Database } from 'better-sqlite3';
 import { sanitizeReason } from '../adapters/capability.utils.js';
-import { type LaunchedAncestor, launchedAncestor } from '../core/operator-guard.service.js';
+import { launchedAncestor } from '../core/operator-guard.service.js';
 import { projectId } from '../core/paths.utils.js';
 import type { FleetReading } from '../core/types/fleet.types.js';
+import type { LaunchedAncestor } from '../core/types/operator-guard.types.js';
 
 /**
  * Refuse an operator-only command run under a window pup opened, a session's

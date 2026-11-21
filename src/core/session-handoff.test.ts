@@ -41,7 +41,6 @@ import {
   insertSession,
   insertTask,
   recordSessionRoute,
-  type SessionRoute,
   transitionSession,
 } from './session.repository.js';
 import {
@@ -51,6 +50,7 @@ import {
   requestHandoff,
   respawnSession,
 } from './session-handoff.service.js';
+import type { SessionRoute } from './types/session.types.js';
 
 /** What a command resolved for its windows; the window itself is mocked here. */
 const WINDOW_ENV = { vars: {}, configDir: '/home/.claude' };

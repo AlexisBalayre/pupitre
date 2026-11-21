@@ -39,6 +39,25 @@ import type {
 import { SteerNotDeliveredError } from '../claude/errors/session-runtime.errors.js';
 import { killSession as killTmux } from '../claude/session-runtime.service.js';
 import { ADR_NUMBER_STAGE, adrNumberStage } from './adr-number.service.js';
+import {
+  COMPLEXITY_COPY_PAIRING_TIMEOUT_MS,
+  DEBT_DETAIL_SAMPLES,
+  DIFF_SIZE_DEPENDENCY_FILES,
+  DIFF_SIZE_DOCS_DIR,
+  DIFF_SIZE_DOCS_EXTENSIONS,
+  DIFF_SIZE_DOCUSAURUS_CONFIG,
+  DIFF_SIZE_FLAG_LINES,
+  DIFF_SIZE_TEST_SUFFIX,
+  GATE_COMMAND_TIMEOUT_MS,
+  GATE_ENVIRONMENT_DIR,
+  GATE_OUTPUT_TAIL_CHARS,
+  LOCKFILE_NAMES,
+  MAX_REJECTS_BEFORE_BLOCKED,
+  MERGE_LOCK_DIRNAME,
+  PR_TITLE_MAX_CHARS,
+  UNTESTED_PATH_GLOBS,
+} from './constants/merge-gate.constants.js';
+import { SESSION_ID_PATTERN } from './constants/paths.constants.js';
 import { patchCoverage } from './coverage.utils.js';
 import { judgeDebt, measureCoverage, measureStaticDebt, quotePath } from './debt.service.js';
 import { draftDecisionRecord } from './decision-record.service.js';
@@ -58,8 +77,6 @@ import {
   assertNoArmedGitDrivers,
   assertNoSharedWorktreeKey,
   assertNoWorktreeConfig,
-  BINARY_FREE_MAX_BYTES,
-  BINARY_FREE_TOTAL_MAX_BYTES,
   checkoutPinned,
   currentBranch,
   gitDiffAddedLines,
@@ -70,7 +87,6 @@ import {
   rethrowIfNoUsableRepo,
   runGit,
   verifiedWorktreeGitEnv,
-  type WorktreeGitEnv,
 } from './git-diff.client.js';
 import {
   assertGhAvailable,
@@ -83,41 +99,13 @@ import {
 } from './github.client.js';
 import { globToRegExp } from './glob.utils.js';
 import { readOriginUrl } from './init.service.js';
+import { BINARY_FREE_MAX_BYTES, BINARY_FREE_TOTAL_MAX_BYTES } from './known-binary.utils.js';
 import { linkStandInEnvironments } from './land-remeasure-environment.service.js';
-import {
-  hasOpenLedgerEntry,
-  insertLedgerEntry,
-  type LedgerEntryRow,
-  listLedgerEntries,
-} from './ledger.repository.js';
-import {
-  COMPLEXITY_COPY_PAIRING_TIMEOUT_MS,
-  DEBT_DETAIL_SAMPLES,
-  DIFF_SIZE_DEPENDENCY_FILES,
-  DIFF_SIZE_DOCS_DIR,
-  DIFF_SIZE_DOCS_EXTENSIONS,
-  DIFF_SIZE_DOCUSAURUS_CONFIG,
-  DIFF_SIZE_FLAG_LINES,
-  DIFF_SIZE_TEST_SUFFIX,
-  GATE_COMMAND_TIMEOUT_MS,
-  GATE_ENVIRONMENT_DIR,
-  GATE_OUTPUT_TAIL_CHARS,
-  LOCKFILE_NAMES,
-  MAX_REJECTS_BEFORE_BLOCKED,
-  MERGE_LOCK_DIRNAME,
-  PR_TITLE_MAX_CHARS,
-  UNTESTED_PATH_GLOBS,
-} from './merge-gate.constants.js';
-import { SESSION_ID_PATTERN } from './paths.constants.js';
+import { hasOpenLedgerEntry, insertLedgerEntry, listLedgerEntries } from './ledger.repository.js';
 import { projectPaths } from './paths.utils.js';
-import {
-  formatElapsed,
-  MERGE_LOCK_STAGE,
-  NO_PROGRESS,
-  type StageProgress,
-} from './progress.utils.js';
+import { formatElapsed, MERGE_LOCK_STAGE, NO_PROGRESS } from './progress.utils.js';
 import { skipsTestsOnUntestedChanges } from './project-config.config.js';
-import { mergeToRegate, planRegate, type RegatePlan, regateMerged } from './regate.service.js';
+import { mergeToRegate, planRegate, regateMerged } from './regate.service.js';
 import { endSandboxRun, removeGateDir, runGateChild, sandboxLabel } from './sandbox.utils.js';
 import { auditScope } from './scope-audit.utils.js';
 import {
@@ -129,31 +117,44 @@ import {
   getTask,
   incrementRejectCount,
   listEvents,
-  type ProjectRow,
   readTaskSpec,
-  type SessionRow,
   saveProjectBaseline,
   transitionSession,
 } from './session.repository.js';
 import { steerSession } from './session-lifecycle.service.js';
 import { shellWord } from './shell-quote.utils.js';
 import { keepFullOutput } from './stage-output.utils.js';
-import { type TaskRescope, taskRescopes } from './task-rescope.service.js';
+import { taskRescopes } from './task-rescope.service.js';
 import {
   describeSlotWait,
   GATE_SLOT_WAIT_MS,
   testRunsElsewhere,
   withTestSlot,
 } from './test-slot.service.js';
-import type { PullRequestRef } from './types/github.types.js';
-import type { DebtBaseline, ProjectBaseline } from './types/init.types.js';
+import type { WorktreeGitEnv } from './types/git-diff.types.js';
+import type { ProjectBaseline } from './types/init.types.js';
 import type {
+  BranchMeasurement,
+  BranchTree,
+  DiffSizeKind,
+  FlaggedDebt,
   GateReport,
   GateStageResult,
+  LockIdentity,
+  LockTake,
+  MergeLockStatus,
   MergeOutcome,
+  MergePlan,
   MergeRequest,
+  OriginUse,
+  PullRequestPlan,
+  RawDiffEntry,
 } from './types/merge-gate.types.js';
 import type { TaskSpec } from './types/profile.types.js';
+import type { StageProgress } from './types/progress.types.js';
+import type { RegatePlan } from './types/regate.types.js';
+import type { SessionRow } from './types/session.types.js';
+import type { TaskRescope } from './types/task-rescope.types.js';
 import { owningLockfile, refuseUninstalled } from './uninstalled-dependency.service.js';
 
 export function isAncestor(repoPath: string, maybeAncestor: string, ref: string): boolean {
@@ -232,13 +233,6 @@ function failingTestNames(adapter: Adapter | undefined, error: unknown): string 
     .slice(0, FAILED_TEST_NAMES_MAX)
     .map(({ file, test }) => (test === undefined ? file : `${file} > ${test}`));
   return plainDetail(names.join('; ') + (more > 0 ? ` (+${more} more)` : ''));
-}
-
-/** A changed path's new mode, and the path it was renamed or copied from if git paired one. */
-interface RawDiffEntry {
-  mode: string;
-  renamedFrom?: string;
-  copiedFrom?: string;
 }
 
 /**
@@ -352,24 +346,6 @@ function targetHolds(repoPath: string, target: string, paths: string[]): string[
     runGit(repoPath, ['ls-tree', '-r', '-z', '--full-tree', '--name-only', target]).split('\0'),
   );
   return paths.filter((path) => held.has(path));
-}
-
-type DiffSizeKind = 'source' | 'test' | 'docs';
-
-/**
- * What the branch's tree tells the diff-size split beyond a path's own name
- * (decision 110): every path on it, whether a symlink can reach the path,
- * whether the tree also holds the path, or one of its directories, in another
- * ASCII case, and whether a Docusaurus config compiles the Markdown under
- * `docs/`. And every blob's oid and size by path, so the reach checks read
- * blobs in one batch (decision 154).
- */
-interface BranchTree {
-  paths: string[];
-  blobs: Map<string, { oid: string; size: number }>;
-  linked: (path: string) => boolean;
-  foldsOntoAnother: (path: string) => boolean;
-  markdownIsCode: boolean;
 }
 
 /**
@@ -785,14 +761,6 @@ const MERGE_LOCK_PID_FILE = 'pid';
  */
 const MERGE_LOCK_STATUS_FILE = 'status';
 
-interface MergeLockStatus {
-  command: string;
-  /** When the lock was taken, epoch ms. */
-  since: number;
-  /** The holder's status-line label; empty before its first stage. */
-  stage: string;
-}
-
 /**
  * Inside the merge lock's directory: a random token fresh to each take, which
  * the run that took it checks before every ref it moves.
@@ -919,25 +887,10 @@ function describeLockWait(
   return `Waiting for the merge lock, held by pid ${holder}${doing}, for up to ${formatDuration(leftMs)}.`;
 }
 
-/** Which directory a lock is, so a later step can tell it from one swapped in for it. */
-interface LockIdentity {
-  dev: number;
-  ino: number;
-}
-
 /** `path`'s identity when it is a real directory, never a link to one; undefined otherwise. */
 function directoryIdentity(path: string): LockIdentity | undefined {
   const stat = lstatSync(path, { throwIfNoEntry: false });
   return stat?.isDirectory() ? { dev: stat.dev, ino: stat.ino } : undefined;
-}
-
-/**
- * A take of the merge lock: the directory it made, the token it wrote there,
- * and the status file it made there, held open.
- */
-interface LockTake extends LockIdentity {
-  token: string;
-  statusFd: number;
 }
 
 /**
@@ -1387,17 +1340,6 @@ export async function runMergeGate(
     req.wait ? MERGE_LOCK_WAIT_MS : 0,
     progress,
   );
-}
-
-/** What `planMerge` settled before the lock, for the run under it. */
-interface MergePlan {
-  session: SessionRow;
-  /** `sessionMark` before the plan read anything. */
-  mark: string;
-  sandbox: string;
-  target: string;
-  pullRequest?: PullRequestPlan;
-  regate?: RegatePlan;
 }
 
 /**
@@ -1891,12 +1833,6 @@ const PUSH_TARGET_HELP =
   'so treat a session that moved it as compromised; if origin really moved, re-record it with ' +
   '`pup init --origin-moved` from the trusted checkout.';
 
-/** Who asks `pushTarget`, and what its refusal leaves undone, for the message. */
-export interface OriginUse {
-  command: string;
-  untouched: string;
-}
-
 const MERGE_PR_USE: OriginUse = { command: '`pup merge --pr`', untouched: 'Nothing was pushed.' };
 
 /**
@@ -1954,13 +1890,6 @@ export function pushTarget(
     );
   }
   return recorded;
-}
-
-export interface PullRequestPlan extends PullRequestRef {
-  /** The push target recorded at setup; the push goes here literally (decision 56). */
-  originUrl: string;
-  /** Set when an open PR for this branch already exists and passed adoption checks. */
-  adoptedUrl?: string;
 }
 
 /**
@@ -2609,22 +2538,6 @@ function replyOnFixRoundThreads(
     );
   }
 }
-
-/** What the stages measured, for the caller that lands it. */
-interface BranchMeasurement {
-  changedPaths: string[];
-  flaggedDebt: FlaggedDebt[];
-  debtCandidates: { id: number; description: string }[];
-  /** The project's open ledger entries, read before this run filed any. */
-  openEntries: LedgerEntryRow[];
-  projectId: string;
-  spec: TaskSpec;
-  project: ProjectRow | undefined;
-  baseline: ProjectBaseline | undefined;
-  ratchet: DebtBaseline;
-}
-
-type FlaggedDebt = { description: string; files: string[] };
 
 /**
  * Whether a failed stage run is the runner's own failing-tests exit, status 1

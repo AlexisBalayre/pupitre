@@ -10,9 +10,9 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join, normalize, relative, sep } from 'node:path';
 import ts from 'typescript';
+import { GATE_ENVIRONMENT_DIR } from '../core/constants/merge-gate.constants.js';
 import { withoutFiles } from '../core/coverage.utils.js';
 import { GateInterruptedError } from '../core/errors/sandbox.errors.js';
-import { GATE_ENVIRONMENT_DIR } from '../core/merge-gate.constants.js';
 import { removeGateDir, runGateChild } from '../core/sandbox.utils.js';
 import { failureSummary, isUnavailable, readPlainFile } from './capability.utils.js';
 import { configLoadsAFile } from './config-module.utils.js';

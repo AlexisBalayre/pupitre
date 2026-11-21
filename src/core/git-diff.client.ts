@@ -14,6 +14,7 @@ import {
 import { basename, join, resolve } from 'node:path';
 
 import { sanitizeReason } from '../adapters/capability.utils.js';
+import { GATE_COMMAND_TIMEOUT_MS } from './constants/merge-gate.constants.js';
 import {
   ArmedGitDriverError,
   RewrittenGitDirError,
@@ -23,15 +24,21 @@ import {
 } from './errors/git-diff.errors.js';
 import { readBlobs } from './git-blobs.client.js';
 import {
-  type BinaryFormat,
   extensionOf,
   formatsNamed,
   knownBinarySize,
   mayBeKnownBinary,
   spendKnownBinarySkip,
 } from './known-binary.utils.js';
-import { GATE_COMMAND_TIMEOUT_MS } from './merge-gate.constants.js';
-import type { DiffFileStat } from './types/git-diff.types.js';
+import type {
+  DiffFileStat,
+  DiffNumstatEntry,
+  DiffSide,
+  DiffSides,
+  RunGitOptions,
+  WorktreeGitEnv,
+} from './types/git-diff.types.js';
+import type { BinaryFormat } from './types/known-binary.types.js';
 
 export type { DiffFileStat };
 
@@ -87,13 +94,6 @@ function scrubbedGitEnv(): NodeJS.ProcessEnv {
       ([key]) => !key.startsWith('GIT_') || INHERITED_GIT_VARS.has(key),
     ),
   );
-}
-
-/** The three variables that pin git to a session worktree's trusted dirs (decision 101). */
-export interface WorktreeGitEnv {
-  GIT_DIR: string;
-  GIT_COMMON_DIR: string;
-  GIT_WORK_TREE: string;
 }
 
 /**
@@ -562,21 +562,6 @@ const DIFF_SAFE_FLAGS = [
 export const GIT_MAX_BUFFER = 64 * 1024 * 1024;
 
 /**
- * What a call site may add to a git spawn. `env` is laid over the scrubbed
- * environment rather than replacing it, so a caller names only what it adds.
- * `timeout` replaces `spawnOptions`' deadline. `reachesRemote` leaves the
- * transports to the operator's config rather than pinning them off. Only
- * `withScratchGitDir` sets it. Neither its git nor any git that git starts
- * reads a config a session can write, once it pins `core.alternateRefsCommand`.
- */
-interface RunGitOptions {
-  env?: NodeJS.ProcessEnv;
-  stdio?: ExecFileSyncOptions['stdio'];
-  timeout?: number;
-  reachesRemote?: boolean;
-}
-
-/**
  * The one way pup runs git: `GIT_SAFE_CONFIG` in argv and `scrubbedGitEnv` in
  * env, which every call site used to remember by hand (decision 73). Output is
  * returned untrimmed — a `-z` listing whose first path starts with a space
@@ -999,19 +984,6 @@ export function gitDiffAddedLines(
   return added;
 }
 
-/** One side of a file's diff as `--raw` lists it: its tree mode and blob oid. */
-type DiffSide = { mode: string; oid: string };
-
-/** A file's `[base, branch]` sides, undefined where it does not exist: never on both. */
-type DiffSides = [DiffSide, DiffSide] | [DiffSide, undefined] | [undefined, DiffSide];
-
-/**
- * A numstat entry. A renamed file carries the path it was `renamedFrom`, and a
- * file numstat could not count (`-\t-`) its `sides`, `[base, branch]`, each
- * undefined where the file does not exist, for `gitDiffBinaryRecount`.
- */
-type DiffNumstatEntry = DiffFileStat & { renamedFrom?: string; sides?: DiffSides };
-
 /** A `--raw` side's mode and oid, undefined for the all-zero mode of a side that does not exist. */
 function rawSide(mode: string, oid: string): DiffSide | undefined {
   return /^0+$/.test(mode) ? undefined : { mode, oid };
@@ -1085,9 +1057,6 @@ export function gitDiffNumstat(
   }
   return stats;
 }
-
-/** The known-binary caps, which the merge gate's diff-size detail names. */
-export { BINARY_FREE_MAX_BYTES, BINARY_FREE_TOTAL_MAX_BYTES } from './known-binary.utils.js';
 
 /**
  * The size of a diff side when it is a binary to skip, false when it is not:

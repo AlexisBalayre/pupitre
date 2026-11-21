@@ -16,8 +16,9 @@ import {
   resolveCommit,
   withMergeLock,
 } from './merge-gate.service.js';
-import { NO_PROGRESS, type StageProgress } from './progress.utils.js';
-import type { Landable, LandBatchOutcome, LandRequest } from './types/land.types.js';
+import { NO_PROGRESS } from './progress.utils.js';
+import type { Interrupt, Landable, LandBatchOutcome, LandRequest } from './types/land.types.js';
+import type { StageProgress } from './types/progress.types.js';
 
 /**
  * `pup land <session> <session> ...` (decision 195): several sessions whose
@@ -138,8 +139,6 @@ function refusalOf(sessionId: string, error: unknown): LandBatchOutcome['refused
   rethrowIfKilled(error);
   return { sessionId, reason: messageOf(error).replaceAll(LAND_UNTOUCHED, BATCH_UNTOUCHED) };
 }
-
-type Interrupt = GateInterruptedError['signal'];
 
 /** The signals `withMergeLock` keeps node alive through while it holds the lock. */
 const INTERRUPTS: readonly Interrupt[] = ['SIGINT', 'SIGTERM', 'SIGHUP'];

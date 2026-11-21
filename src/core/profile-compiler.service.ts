@@ -9,17 +9,6 @@ import { LADDERS, SECURITY_REVIEW_EFFORT } from '../claude/constants/model-ladde
 import { claudeUserDir } from '../claude/session-runtime.service.js';
 import type { ModelRoute } from '../claude/types/model-ladder.types.js';
 import { CONTROL_CHARS, readBrief, workerBrief } from './brief.service.js';
-import { ContextBudgetExceededError, InvalidProfileError } from './errors/profile.errors.js';
-import {
-  GIT_SAFE_CONFIG,
-  POINTER_MAX_BYTES,
-  rethrowIfKilled,
-  runGit,
-  type WorktreeGitEnv,
-  worktreeGitEnv,
-} from './git-diff.client.js';
-import { globsToGrepFile } from './glob.utils.js';
-import { projectPaths, writeStoreFile } from './paths.utils.js';
 import {
   CHARS_PER_TOKEN,
   DEFAULT_CONTEXT_BUDGET_TOKENS,
@@ -30,13 +19,24 @@ import {
   SLIM_CONTEXT_ENV,
   WORKER_SLIM_CONTEXT_ENV,
   WORKER_SUBAGENT_ENV,
-} from './profile.constants.js';
+} from './constants/profile.constants.js';
+import { ContextBudgetExceededError, InvalidProfileError } from './errors/profile.errors.js';
+import {
+  GIT_SAFE_CONFIG,
+  POINTER_MAX_BYTES,
+  rethrowIfKilled,
+  runGit,
+  worktreeGitEnv,
+} from './git-diff.client.js';
+import { globsToGrepFile } from './glob.utils.js';
+import { projectPaths, writeStoreFile } from './paths.utils.js';
 import { refuseUserSandbox } from './profile-compiler-sandbox.service.js';
 import { autoCompactWindowTokens, workerSandboxOn } from './project-config.config.js';
 import { CRITICAL_AREAS } from './routing.utils.js';
 import { shellWord } from './shell-quote.utils.js';
 import { assertPlannableSpec, scopeInFiles } from './task-spec.utils.js';
 import type { ConductorCompileInput } from './types/conductor.types.js';
+import type { WorktreeGitEnv } from './types/git-diff.types.js';
 import type {
   CompiledProfile,
   CompileInput,
@@ -45,6 +45,7 @@ import type {
   TaskSpec,
   TaskTicket,
 } from './types/profile.types.js';
+import type { SessionCompileInput } from './types/profile-compiler.types.js';
 import type { SessionPeer } from './types/session-lifecycle.types.js';
 
 // Paths interpolated into generated shell (single-quoted). A path containing a
@@ -204,9 +205,6 @@ const WORKER_CACHE_VARS: Record<string, string> = {
   POETRY_CACHE_DIR: 'poetry',
   YARN_GLOBAL_FOLDER: 'yarn',
 };
-
-/** What a session's compile takes beyond the task: launch-time facts (decisions 96, 99). */
-type SessionCompileInput = CompileInput & { peers?: SessionPeer[]; testCommand?: GateCommand };
 
 export function parseProfileLayer(yamlText: string): ProfileLayer {
   const raw = parse(yamlText) as Record<string, unknown> | null;

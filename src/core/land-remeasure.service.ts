@@ -2,15 +2,14 @@ import { mkdtempSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import type { Database } from 'better-sqlite3';
-import type { Adapter } from '../adapters/types/adapter.types.js';
-import { quotePath } from './debt.service.js';
-import { currentBranch, rethrowIfKilled, runGit } from './git-diff.client.js';
-import { globToRegExp } from './glob.utils.js';
 import {
   DEBT_DETAIL_SAMPLES,
   GATE_COMMAND_TIMEOUT_MS,
   PROTECTED_PATH_GLOBS,
-} from './merge-gate.constants.js';
+} from './constants/merge-gate.constants.js';
+import { quotePath } from './debt.service.js';
+import { currentBranch, rethrowIfKilled, runGit } from './git-diff.client.js';
+import { globToRegExp } from './glob.utils.js';
 import {
   assertMergeLockHeld,
   debtKind,
@@ -20,7 +19,6 @@ import {
   withScratchGitDir,
 } from './merge-gate.service.js';
 import { projectId } from './paths.utils.js';
-import type { StageProgress } from './progress.utils.js';
 import { CRITICAL_AREAS } from './routing.utils.js';
 import {
   endSandboxRun,
@@ -28,18 +26,11 @@ import {
   sandboxLabel,
   TOOLCHAIN_CACHE_DIRNAME,
 } from './sandbox.utils.js';
-import { decodeEvent, listEvents, type SessionRow } from './session.repository.js';
+import { decodeEvent, listEvents } from './session.repository.js';
+import type { RemeasureRequest } from './types/land.types.js';
 import type { GateReport, GateStageResult } from './types/merge-gate.types.js';
-
-/** What a remeasure reads of `pup land`'s request (decision 185). */
-interface RemeasureRequest {
-  repoPath: string;
-  adapters: Adapter[];
-  gateEnv?: string[];
-  wait?: boolean;
-  /** Who approved commits past the pin that touch a critical area, scrubbed by the caller. */
-  approvedBy?: string;
-}
+import type { StageProgress } from './types/progress.types.js';
+import type { SessionRow } from './types/session.types.js';
 
 /** `CRITICAL_AREAS` as path matchers, for a remeasure's approval (decision 185). */
 const CRITICAL_PATHS = CRITICAL_AREAS.map(globToRegExp);

@@ -12,7 +12,7 @@ import { join } from 'node:path';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import type { Database } from 'better-sqlite3';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { type CiWaitClock, waitForCiReview } from './ci-wait.service.js';
+import { waitForCiReview } from './ci-wait.service.js';
 import { openStore } from './db.client.js';
 import { RewrittenGitDirError } from './errors/git-diff.errors.js';
 import { projectId } from './paths.utils.js';
@@ -25,6 +25,7 @@ import {
   saveProjectOriginUrl,
   transitionSession,
 } from './session.repository.js';
+import type { CiWaitClock } from './types/ci-wait.types.js';
 
 // Test repos must not inherit the developer's global git config nor GIT_DIR & co.
 const GIT_ENV: NodeJS.ProcessEnv = {

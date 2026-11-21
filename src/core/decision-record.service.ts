@@ -2,21 +2,7 @@ import type { Database } from 'better-sqlite3';
 import { runUtility } from '../claude/utility.service.js';
 import { insertDecisionRecord } from './decision-record.repository.js';
 import { appendEvent } from './session.repository.js';
-import type { TaskSpec } from './types/profile.types.js';
-
-export interface DraftDecisionRecordInput {
-  sessionId: string;
-  spec: TaskSpec;
-  files: string[];
-  /** Commit subjects on the merged branch, oldest first. */
-  commitSubjects: string[];
-}
-
-interface DraftedRecord {
-  summary: string;
-  alternatives?: string;
-  conventions?: string;
-}
+import type { DraftDecisionRecordInput, DraftedRecord } from './types/decision-record.types.js';
 
 function draftPrompt(input: DraftDecisionRecordInput): string {
   return [

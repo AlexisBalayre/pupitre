@@ -51,8 +51,8 @@ import {
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import type { Adapter } from '../adapters/types/adapter.types.js';
 import { kickoff } from '../claude/session-runtime.service.js';
+import { DEFAULT_BASE_PROFILE } from './constants/default-profile.constants.js';
 import { openStore } from './db.client.js';
-import { DEFAULT_BASE_PROFILE } from './default-profile.constants.js';
 import { answerFixRoundThreads, ciReviewLookup, startFixRound } from './fix-round.service.js';
 import { landSession } from './land.service.js';
 import { runMergeGate } from './merge-gate.service.js';

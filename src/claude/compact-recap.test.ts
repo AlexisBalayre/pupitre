@@ -4,9 +4,8 @@ import { join } from 'node:path';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import type { Database } from 'better-sqlite3';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { SessionState } from '../core/db.client.js';
+import { MERGE_LOCK_DIRNAME } from '../core/constants/merge-gate.constants.js';
 import { openStore } from '../core/db.client.js';
-import { MERGE_LOCK_DIRNAME } from '../core/merge-gate.constants.js';
 import { projectId } from '../core/paths.utils.js';
 import {
   appendEvent,
@@ -16,6 +15,7 @@ import {
   insertTask,
   transitionSession,
 } from '../core/session.repository.js';
+import type { SessionState } from '../core/types/session.types.js';
 import { conductorRecap, sessionRecap } from './compact-recap.service.js';
 
 // No conductor runs in a test: its question is read against no run, as when none is up.

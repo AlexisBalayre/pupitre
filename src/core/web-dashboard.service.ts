@@ -1,14 +1,22 @@
 import { randomBytes } from 'node:crypto';
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import type { Database } from 'better-sqlite3';
 
 import { CHART_CSS } from './chart.utils.js';
-import { PAGE_SHELL_CSS } from './page-shell.constants.js';
-import { PAGE_THEME_CSS } from './page-theme.constants.js';
-import { SESSION_ID_PATTERN } from './paths.constants.js';
+import { PAGE_SHELL_CSS } from './constants/page-shell.constants.js';
+import { PAGE_THEME_CSS } from './constants/page-theme.constants.js';
+import { SESSION_ID_PATTERN } from './constants/paths.constants.js';
+import { SHEETS } from './constants/web-dashboard-sheet.constants.js';
 import { machineLoad } from './session-cap.service.js';
-import type { ListWindow } from './types/web-dashboard.types.js';
+import type {
+  DashboardBind,
+  ListWindow,
+  PageParts,
+  View,
+  WebDashboard,
+} from './types/web-dashboard.types.js';
+import type { SheetName } from './types/web-dashboard-sheet.types.js';
 import {
   createDashboardAccess,
   hardening,
@@ -25,29 +33,12 @@ import {
   renderSessionBoard,
   renderSessionHead,
 } from './web-dashboard-session.service.js';
-import { escapeHtml, hint, SHEETS, type SheetName } from './web-dashboard-sheet.utils.js';
+import { escapeHtml, hint } from './web-dashboard-sheet.utils.js';
 import { readTasksSheet, renderTasksSheet } from './web-dashboard-tasks.service.js';
 
 /** How often the server re-reads the store for the open streams (decision 91). */
 const DASHBOARD_POLL_MS = 2_000;
 const LOOPBACK = '127.0.0.1';
-
-/** What a page shows: a sheet, or one session's view (decision 91). */
-type View = { sheet: SheetName } | { session: string };
-
-export interface WebDashboard {
-  /** The page, token included: the one url that opens it, in one browser, once. */
-  url: string;
-  /** Stops the server; `onWait` is called first when an action still running holds the close. */
-  close: (onWait?: () => void) => Promise<void>;
-}
-
-/**
- * Puts the dashboard's server where requests reach it, and resolves to the
- * port its url names. A test hands the server in-memory connections instead
- * of a socket, since a sandboxed worker may not listen on loopback (decision 191).
- */
-export type DashboardBind = (server: Server) => Promise<number>;
 
 /** A random port on the loopback address. */
 const bindLoopback: DashboardBind = (server) =>
@@ -291,17 +282,6 @@ function viewOf(url: URL): View | undefined {
   if (named === null) return { sheet: 'overview' };
   const sheet = SHEETS.find((name) => name === named);
   return sheet && { sheet };
-}
-
-/** What a page is made of beside the shell. */
-interface PageParts {
-  title: string;
-  /** The sheet the bar marks as this page; none on a session's view. */
-  current?: SheetName;
-  /** The response's CSP nonce, for its one script and one style. */
-  nonce: string;
-  /** The secret, on the one page the url's token opened (decision 91). */
-  secret?: string;
 }
 
 /**

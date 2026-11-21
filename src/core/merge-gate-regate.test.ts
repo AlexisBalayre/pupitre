@@ -54,8 +54,8 @@ vi.mock('node:os', async (importOriginal) => {
 
 // Shortened by the one test that runs a stage out of its timeout.
 const gateTimeout = vi.hoisted(() => ({ ms: undefined as number | undefined }));
-vi.mock('./merge-gate.constants.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('./merge-gate.constants.js')>();
+vi.mock('./constants/merge-gate.constants.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./constants/merge-gate.constants.js')>();
   return {
     ...actual,
     get GATE_COMMAND_TIMEOUT_MS() {
@@ -113,13 +113,13 @@ import {
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import type { Adapter, CapabilityContext } from '../adapters/types/adapter.types.js';
 import { steerPane } from '../claude/session-runtime.service.js';
+import { DUPLICATION_RULE_ID } from './constants/merge-gate.constants.js';
 import { openStore } from './db.client.js';
 import { ArmedGitDriverError, WorktreeRepointedError } from './errors/git-diff.errors.js';
 import { SessionNotReviewableError } from './errors/merge-gate.errors.js';
 import { GateInterruptedError } from './errors/sandbox.errors.js';
 import { MalformedTaskSpecError } from './errors/session.errors.js';
 import { insertLedgerEntry, listLedgerEntries } from './ledger.repository.js';
-import { DUPLICATION_RULE_ID } from './merge-gate.constants.js';
 import { runMergeGate as runGate } from './merge-gate.service.js';
 import {
   getProject,

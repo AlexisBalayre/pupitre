@@ -1,4 +1,4 @@
-import type { SessionState } from './db.client.js';
+import type { SessionState } from './types/session.types.js';
 
 /**
  * Allowed session state transitions (docs/01-architecture.md, amended by decision 7).

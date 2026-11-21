@@ -1,4 +1,4 @@
-import type { WorktreeGitEnv } from '../../core/git-diff.client.js';
+import type { WorktreeGitEnv } from '../../core/types/git-diff.types.js';
 import type { ModelRoute } from './model-ladder.types.js';
 
 export interface LaunchOptions {

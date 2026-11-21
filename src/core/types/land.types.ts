@@ -1,7 +1,8 @@
 import type { Adapter } from '../../adapters/types/adapter.types.js';
-import type { SessionRow } from '../session.repository.js';
+import type { GateInterruptedError } from '../errors/sandbox.errors.js';
 import type { AuditOutcome } from './audit.types.js';
 import type { GateReport } from './merge-gate.types.js';
+import type { SessionRow } from './session.types.js';
 
 /** What `pup land` did, for the CLI to print (decision 84). */
 export interface LandOutcome {
@@ -92,4 +93,16 @@ export interface Landable extends Omit<PinnedPullRequest, 'repo'> {
   head: string;
   mergeCommit: string;
   pullRef: string;
+}
+
+export type Interrupt = GateInterruptedError['signal'];
+
+/** What a remeasure reads of `pup land`'s request (decision 185). */
+export interface RemeasureRequest {
+  repoPath: string;
+  adapters: Adapter[];
+  gateEnv?: string[];
+  wait?: boolean;
+  /** Who approved commits past the pin that touch a critical area, scrubbed by the caller. */
+  approvedBy?: string;
 }

@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest';
-import type { SessionState } from './db.client.js';
 import {
   canTransition,
   claimedStates,
@@ -7,6 +6,7 @@ import {
   holdingStates,
   isTerminal,
 } from './session-state.utils.js';
+import type { SessionState } from './types/session.types.js';
 
 describe('session state machine', () => {
   it('permits the documented happy path', () => {

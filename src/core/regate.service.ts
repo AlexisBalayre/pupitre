@@ -1,5 +1,6 @@
 import type { Database } from 'better-sqlite3';
 import { sanitizeReason } from '../adapters/capability.utils.js';
+import { COMMIT_SHA } from './constants/merge-gate.constants.js';
 import {
   assertPullRequestHead,
   findOpenPullRequest,
@@ -7,7 +8,6 @@ import {
   rewritePullRequest,
   setGateStatus,
 } from './github.client.js';
-import { COMMIT_SHA } from './merge-gate.constants.js';
 import {
   assertPullRequestOf,
   commitSubjectsBetween,
@@ -17,7 +17,6 @@ import {
   isAncestor,
   measureBranch,
   newestMerge,
-  type PullRequestPlan,
   recordMerge,
   refuseGate,
   resolveCommit,
@@ -26,8 +25,8 @@ import {
   timedSince,
   withLedgerKept,
 } from './merge-gate.service.js';
-import { NO_PROGRESS, type StageProgress } from './progress.utils.js';
-import { appendEvent, isPrClosedOnRecord, type SessionRow } from './session.repository.js';
+import { NO_PROGRESS } from './progress.utils.js';
+import { appendEvent, isPrClosedOnRecord } from './session.repository.js';
 import type { PullRequestRef } from './types/github.types.js';
 import type {
   GateReport,
@@ -35,24 +34,11 @@ import type {
   MergeOutcome,
   MergeRequest,
 } from './types/merge-gate.types.js';
+import type { StageProgress } from './types/progress.types.js';
+import type { MergeToRegate, RegatePlan } from './types/regate.types.js';
+import type { SessionRow } from './types/session.types.js';
 
 const NOT_REGATED = 'Nothing was re-gated.';
-
-/**
- * A re-gate's plan (decision 86): the merged session's open PR, and the head
- * GitHub reports for it, which the local branch must hold when it is pinned.
- */
-export interface RegatePlan extends PullRequestPlan {
-  regate: { head: string; prUrl: string };
-}
-
-interface MergeToRegate {
-  prUrl: string;
-  sha: string;
-  target: string;
-  /** The operator recorded the PR closed unmerged, freeing its ADR numbers (decision 146). */
-  closedOnRecord: boolean;
-}
 
 /**
  * The merge a re-gate starts from (decision 86): the newest `merge` event of a

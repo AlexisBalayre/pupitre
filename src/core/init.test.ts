@@ -7,11 +7,11 @@ import type { Database } from 'better-sqlite3';
 import { afterAll, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import type { Adapter } from '../adapters/types/adapter.types.js';
 import { listBaselineHistory } from './baseline-history.repository.js';
+import { DUPLICATION_RULE_ID } from './constants/merge-gate.constants.js';
 import { openStore } from './db.client.js';
 import { BrokenToolchainError, NoAdapterError } from './errors/init.errors.js';
 import { UndeclaredSandboxError } from './errors/sandbox.errors.js';
 import { initProject } from './init.service.js';
-import { DUPLICATION_RULE_ID } from './merge-gate.constants.js';
 import { projectId } from './paths.utils.js';
 import { endSandboxRun } from './sandbox.utils.js';
 import {

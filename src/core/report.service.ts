@@ -1,10 +1,10 @@
 import type { Database } from 'better-sqlite3';
 
-import { type BaselineHistoryRow, listBaselineHistory } from './baseline-history.repository.js';
+import { listBaselineHistory } from './baseline-history.repository.js';
+import { PAGE_SHELL_CSS, PAGE_SHELL_JS } from './constants/page-shell.constants.js';
+import { PAGE_THEME_CSS } from './constants/page-theme.constants.js';
 import { listDecisionRecords } from './decision-record.repository.js';
 import { listLedgerEntries } from './ledger.repository.js';
-import { PAGE_SHELL_CSS, PAGE_SHELL_JS } from './page-shell.constants.js';
-import { PAGE_THEME_CSS } from './page-theme.constants.js';
 import { projectId } from './paths.utils.js';
 import {
   asStringArray,
@@ -20,12 +20,13 @@ import {
   listEvents,
   listSessions,
   listTasks,
-  type SessionRow,
   taskSpecForDisplay,
 } from './session.repository.js';
 import { dossierFileName } from './session-dossier.service.js';
+import type { BaselineHistoryRow } from './types/baseline-history.types.js';
 import type { DebtBaseline } from './types/init.types.js';
 import type { TaskSpec } from './types/profile.types.js';
+import type { SessionRow } from './types/session.types.js';
 
 /**
  * `pup report --open` (docs/02): the index page of the project report — one

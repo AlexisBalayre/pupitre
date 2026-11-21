@@ -3,9 +3,8 @@ import { join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { readPlainFile, sanitizeReason } from '../adapters/capability.utils.js';
 import { openConductorQuestion } from '../core/conductor.service.js';
-import type { SessionState } from '../core/db.client.js';
+import { MERGE_LOCK_DIRNAME } from '../core/constants/merge-gate.constants.js';
 import { runGit, verifiedWorktreeGitEnv } from '../core/git-diff.client.js';
-import { MERGE_LOCK_DIRNAME } from '../core/merge-gate.constants.js';
 import {
   currentFixRound,
   decodeEvent,
@@ -13,9 +12,8 @@ import {
   listSessions,
   newestEventOf,
   openQuestion,
-  type QuestionEvent,
-  type SessionRow,
 } from '../core/session.repository.js';
+import type { QuestionEvent, SessionRow, SessionState } from '../core/types/session.types.js';
 
 /**
  * What the SessionStart hook on `compact` prints after the summary (decision 199):

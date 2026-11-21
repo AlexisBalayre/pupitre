@@ -1,7 +1,6 @@
 import type { Database } from 'better-sqlite3';
 import { sanitizeReason } from '../adapters/capability.utils.js';
 import type { Tier } from '../claude/types/model-ladder.types.js';
-import type { EventType, SessionState } from './db.client.js';
 import { InvalidProfileError } from './errors/profile.errors.js';
 import { InvalidTransitionError, MalformedTaskSpecError } from './errors/session.errors.js';
 import { asStringArray, parseJsonOr } from './report-data.utils.js';
@@ -9,125 +8,26 @@ import { canTransition, claimedStates } from './session-state.utils.js';
 import { assertPlannableSpec } from './task-spec.utils.js';
 import type { TaskId, TaskSpec, TaskTicket } from './types/profile.types.js';
 import type {
+  DropTaskOutcome,
+  EventRow,
+  NewSessionInput,
+  ProjectRow,
+  QuestionEvent,
+  SessionRoute,
+  SessionRow,
+  SessionState,
+  StoredEventType,
+  StoredQuestion,
+  TaskRow,
+  TaskSpecPatch,
+} from './types/session.types.js';
+import type {
   EventPayloads,
   SessionEvent,
   StoredGateReport,
   StoredGateStage,
   TransitionPayload,
 } from './types/session-event.types.js';
-
-export interface SessionRow {
-  id: string;
-  task_id: string;
-  worktree_path: string;
-  branch: string;
-  tmux_target: string | null;
-  pid: number | null;
-  state: SessionState;
-  profile_hash: string;
-  transcript_path: string | null;
-  reject_count: number;
-  /** The task's tier when the session launched; null on a session launched before routing (decision 92). */
-  tier: string | null;
-  /** Where on its tier's ladder the session's window runs, counted from 0. */
-  rung: number | null;
-  /** The model and effort its window's argv carries. */
-  model: string | null;
-  effort: string | null;
-  /** Why the rung last climbed: a `ClimbReason`, or null on the first rung. */
-  rung_reason: string | null;
-  /** 1 when an explicit --model/--effort overrode the rung's; the rung still tracks the climb. */
-  route_override: number;
-  created_at: string;
-}
-
-/**
- * What a session's window runs on, as the store records it (decision 92). The
- * rung is kept under an override too, so a later relaunch without one climbs
- * from where the task actually stands.
- */
-export interface SessionRoute {
-  tier: Tier;
-  rung: number;
-  model: string;
-  effort: string;
-  reason?: string;
-  override: boolean;
-}
-
-export interface NewSessionInput {
-  id: string;
-  taskId: string;
-  worktreePath: string;
-  branch: string;
-  profileHash: string;
-  tmuxTarget?: string;
-  pid?: number;
-  transcriptPath?: string;
-  route?: SessionRoute;
-}
-
-export interface TaskRow {
-  id: string;
-  project_id: string;
-  /** JSON TaskSpec. */
-  spec: string;
-  role: string | null;
-  origin: string;
-  /** The tier the operator set with `--tier`; null when the scope-in decides it (decision 92). */
-  tier: string | null;
-  /** When `pup plan drop` retired a task with session history; null while it is live (decision 147). */
-  dropped_at: string | null;
-  created_at: string;
-}
-
-/**
- * Every type the store holds: the schema's, `landed`, which `pup land` writes
- * (decision 84), `fix_round`, which `pup fix` writes (decision 90), `rescope`,
- * which `pup plan edit --rescope` writes (decision 115), `retired`, which `pup
- * retire` writes (decision 141), `pr_closed`, which `pup land --abandon-closed`
- * writes (decision 146), and `conductor_start`, the ones `EventType` has yet to
- * join. The `events.type` column takes any text: no CHECK constraint names the
- * types.
- */
-type StoredEventType =
-  | EventType
-  | 'landed'
-  | 'fix_round'
-  | 'rescope'
-  | 'retired'
-  | 'pr_closed'
-  | 'conductor_start';
-
-export interface EventRow {
-  id: number;
-  session_id: string | null;
-  type: StoredEventType;
-  /** JSON object; shape depends on `type`. */
-  payload: string;
-  created_at: string;
-}
-
-export interface ProjectRow {
-  id: string;
-  repo_path: string;
-  /** JSON array of adapter ids. */
-  adapters: string;
-  /** JSON ProjectBaseline; null until `pup init` runs. */
-  baseline: string | null;
-  /**
-   * Origin's URL as the trusted checkout had it when `pup init` recorded it —
-   * the push target `pup merge --pr` is held to. Null until a `pup init` run
-   * the operator made records one (decision 56).
-   */
-  origin_url: string | null;
-  /**
-   * When `pup project dormant` put the project to sleep, or null while it is
-   * active; the fleet views and the radar pass over it (decision 62).
-   */
-  dormant_at: string | null;
-  created_at: string;
-}
 
 export function ensureProject(db: Database, id: string, repoPath: string): void {
   db.prepare('INSERT OR IGNORE INTO projects (id, repo_path) VALUES (?, ?)').run(id, repoPath);
@@ -263,11 +163,6 @@ export function listBacklogTasks(db: Database, projectId: string): TaskRow[] {
     )
     .all(projectId, ...claimed) as TaskRow[];
 }
-
-type DropTaskOutcome =
-  | { kind: 'dropped' }
-  | { kind: 'unknown' }
-  | { kind: 'claimed'; sessionId: string };
 
 /**
  * Take a task off the backlog (decision 147). A task no session ever ran for
@@ -486,10 +381,6 @@ export function readTaskSpec(db: Database, taskId: string): TaskSpec {
 export function taskSpecForDisplay(row: Pick<TaskRow, 'spec'> | undefined): Partial<TaskSpec> {
   return row ? parseJsonOr<Partial<TaskSpec>>(row.spec, {}) : {};
 }
-
-type TaskSpecPatch = Partial<Pick<TaskSpec, 'goal' | 'scopeIn' | 'scopeOut' | 'acceptance'>> & {
-  tier?: Tier;
-};
 
 /**
  * `pup plan edit`: merge the given fields over the stored spec, validate the
@@ -723,12 +614,6 @@ export function appendSealedEvent<TType extends StoredEventType>(
     return id;
   })();
 }
-
-/** A stored `question` event, with the row id that names it to the operator. */
-export type StoredQuestion = Extract<SessionEvent, { type: 'question' }> & { id: number };
-
-/** A `question` event still open, as `openQuestion` reads it: its options always a list. */
-export type QuestionEvent = StoredQuestion & { options: string[] };
 
 /** The most options a question offers: one keystroke each, and the inbox stays a glance (decision 93). */
 export const MAX_QUESTION_OPTIONS = 4;

@@ -1,21 +1,16 @@
 import type { Database } from 'better-sqlite3';
-import { currentBranch, gitDiffNumstat, gitDiffPaths } from './git-diff.client.js';
-import { countChangedLines } from './merge-gate.service.js';
-import { filesWorthANotice } from './overlap.service.js';
 import {
   RISK_WEIGHT_OVERLAP,
   RISK_WEIGHT_PER_100_LINES,
   RISK_WEIGHT_REJECTION,
   RISK_WEIGHT_SCOPE_VIOLATION,
-} from './review.constants.js';
-import {
-  decodeEvent,
-  listEvents,
-  listSessions,
-  readTaskSpec,
-  type SessionRow,
-} from './session.repository.js';
+} from './constants/review.constants.js';
+import { currentBranch, gitDiffNumstat, gitDiffPaths } from './git-diff.client.js';
+import { countChangedLines } from './merge-gate.service.js';
+import { filesWorthANotice } from './overlap.service.js';
+import { decodeEvent, listEvents, listSessions, readTaskSpec } from './session.repository.js';
 import type { ReviewQueueEntry, SessionReviewDetail } from './types/review.types.js';
+import type { SessionRow } from './types/session.types.js';
 import type { StoredGateReport } from './types/session-event.types.js';
 
 function targetBranch(repoPath: string): string {

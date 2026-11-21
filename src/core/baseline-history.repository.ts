@@ -1,24 +1,10 @@
 import type { Database } from 'better-sqlite3';
 import { parseJsonOr } from './report-data.utils.js';
-import type { BaselineStageResult, DebtBaseline } from './types/init.types.js';
-
-export interface BaselineHistoryRow {
-  id: number;
-  project_id: string;
-  /** ISO timestamp copied from ProjectBaseline.capturedAt, not a DB default. */
-  captured_at: string;
-  /** JSON BaselineStageResult[]. */
-  stages: string;
-  /** JSON DebtBaseline; null when no adapter could measure debt. */
-  debt: string | null;
-}
-
-export interface NewBaselineHistoryInput {
-  projectId: string;
-  capturedAt: string;
-  stages: BaselineStageResult[];
-  debt?: DebtBaseline;
-}
+import type {
+  BaselineHistoryRow,
+  NewBaselineHistoryInput,
+} from './types/baseline-history.types.js';
+import type { DebtBaseline } from './types/init.types.js';
 
 export function appendBaselineHistory(db: Database, input: NewBaselineHistoryInput): number {
   const row = db

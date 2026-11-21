@@ -47,8 +47,8 @@ import {
 } from '@test/helpers/fix-round.mock.js';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import { kickoff, killSession, launchSession } from '../claude/session-runtime.service.js';
+import { DEFAULT_BASE_PROFILE } from './constants/default-profile.constants.js';
 import { openStore } from './db.client.js';
-import { DEFAULT_BASE_PROFILE } from './default-profile.constants.js';
 import { startFixRound } from './fix-round.service.js';
 import { landSession } from './land.service.js';
 import { runMergeGate } from './merge-gate.service.js';

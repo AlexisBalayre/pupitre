@@ -7,7 +7,7 @@ import {
   listRecentBaselineHistory,
 } from './baseline-history.repository.js';
 import { briefDestination, readBrief } from './brief.service.js';
-import { barChart, type ChartDatum, sparkline } from './chart.utils.js';
+import { barChart, sparkline } from './chart.utils.js';
 import {
   buildDashboardSnapshot,
   CONDUCTOR_TARGET,
@@ -20,12 +20,8 @@ import { countLedgerEntriesSince, listLedgerEntries } from './ledger.repository.
 import { projectId } from './paths.utils.js';
 import { displayText, parseJsonOr, toIsoUtc } from './report-data.utils.js';
 import { getProject } from './session.repository.js';
-import {
-  launchHolds,
-  launchRoom,
-  launchRoomLines,
-  type machineLoad,
-} from './session-cap.service.js';
+import { launchHolds, launchRoom, launchRoomLines } from './session-cap.service.js';
+import type { ChartDatum } from './types/chart.types.js';
 import type {
   DashboardBaseline,
   DashboardNeed,
@@ -33,6 +29,13 @@ import type {
   DashboardSnapshot,
 } from './types/dashboard.types.js';
 import type { DebtBaseline, ProjectBaseline } from './types/init.types.js';
+import type {
+  FigureTile,
+  MachineLoad,
+  OverviewView,
+  WebDebtEntry,
+} from './types/web-dashboard-overview.types.js';
+import type { SheetName } from './types/web-dashboard-sheet.types.js';
 import { actionButton, answerForms, textAction } from './web-dashboard-actions.service.js';
 import {
   clipWords,
@@ -40,7 +43,6 @@ import {
   escapeHtml,
   GATE_METRICS,
   hint,
-  type SheetName,
   section,
   textOrPrLink,
   UNMINTED_LABEL,
@@ -52,40 +54,6 @@ const MERGE_WEEKS = 8;
 const TREND_CAPTURES = 8;
 /** Planned tasks the Overview lists; the Tasks sheet lists them all. */
 const PLANNED_SHOWN = 3;
-
-/** The machine's load as `pup launch` reads it. */
-type MachineLoad = ReturnType<typeof machineLoad>;
-
-/** One open ledger entry as the page lists it, every field already through `sanitizeReason`. */
-interface WebDebtEntry {
-  id: string;
-  description: string;
-}
-
-/** One figure tile: what it counts, the figure, how it moved over a week, and its captures. */
-interface FigureTile {
-  label: string;
-  figure: string;
-  change: string;
-  trend: ChartDatum[];
-  format: (value: number) => string;
-}
-
-/** What one render of the Overview reads (decision 98). */
-interface OverviewView {
-  snapshot: DashboardSnapshot;
-  needs: DashboardNeed[];
-  openDebt: WebDebtEntry[];
-  /** Fix rounds re-gated per session with an open PR, keyed by session id (decision 86). */
-  fixRounds: Map<string, number>;
-  /** The brief's Destination, or the one line that says why there is none. */
-  goal: { text: string } | { hint: string };
-  tiles: FigureTile[];
-  tasks: { done: number; inFlight: number; planned: number };
-  merges: ChartDatum[];
-  /** `pup status`'s launch verdict, with the load it was read at. */
-  launch: string;
-}
 
 /** The store's reading, and the machine's `load`, for one render of the Overview. */
 export function readOverview(

@@ -3,13 +3,10 @@ import { join, resolve } from 'node:path';
 import type { Database } from 'better-sqlite3';
 
 import { projectPaths, writeStoreFile } from './paths.utils.js';
-import {
-  buildRetroReport,
-  formatRetro,
-  type RetroReport,
-  serializeRetro,
-} from './retro-signals.service.js';
-import { scanUsage, type UsageOptions } from './usage-report.service.js';
+import { buildRetroReport, formatRetro, serializeRetro } from './retro-signals.service.js';
+import type { RetroReport } from './types/retro.types.js';
+import type { UsageOptions } from './types/usage-report.types.js';
+import { scanUsage } from './usage-report.service.js';
 
 const DAY_MS = 86_400_000;
 

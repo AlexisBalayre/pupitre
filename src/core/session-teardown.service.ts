@@ -1,15 +1,10 @@
 import type { Database } from 'better-sqlite3';
 import { sanitizeReason } from '../adapters/capability.utils.js';
+import { COMMIT_SHA } from './constants/merge-gate.constants.js';
 import { rethrowIfKilled, runGit } from './git-diff.client.js';
-import { COMMIT_SHA } from './merge-gate.constants.js';
-import {
-  deleteBranchAt,
-  isAncestor,
-  newestMerge,
-  type OriginUse,
-  resolveCommit,
-} from './merge-gate.service.js';
+import { deleteBranchAt, isAncestor, newestMerge, resolveCommit } from './merge-gate.service.js';
 import { getSession } from './session.repository.js';
+import type { OriginUse } from './types/merge-gate.types.js';
 
 // What `pup land` (decision 84) and `pup retire` (decision 141) share in closing
 // out a merged session's pull request: the merge they start from, the re-check

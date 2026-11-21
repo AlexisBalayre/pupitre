@@ -1,4 +1,4 @@
-import type { ProfileLayer } from './types/profile.types.js';
+import type { ProfileLayer } from '../types/profile.types.js';
 
 /** The always-applied base layer (docs/03-profiles.md). Kept small on purpose. */
 export const DEFAULT_BASE_PROFILE: ProfileLayer = {

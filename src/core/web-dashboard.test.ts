@@ -35,12 +35,13 @@ import { formatDebtTransition } from './audit.service.js';
 import { appendBaselineHistory } from './baseline-history.repository.js';
 import { briefPath } from './brief.service.js';
 import { markConductorQuestion } from './conductor.service.js';
+import { DUPLICATION_RULE_ID } from './constants/merge-gate.constants.js';
+import { STALLED_AFTER_MS } from './constants/session-activity.constants.js';
+import { ACTIONS } from './constants/web-dashboard-actions.constants.js';
 import { buildDashboardSnapshot, needsYou } from './dashboard.service.js';
-import type { SessionState } from './db.client.js';
 import { openStore } from './db.client.js';
 import { persistBaseline } from './init.service.js';
 import { insertLedgerEntry, listLedgerEntries } from './ledger.repository.js';
-import { DUPLICATION_RULE_ID } from './merge-gate.constants.js';
 import { projectId, projectPaths } from './paths.utils.js';
 import {
   appendEvent,
@@ -52,16 +53,13 @@ import {
   recordSessionRoute,
   transitionSession,
 } from './session.repository.js';
-import { STALLED_AFTER_MS } from './session-activity.constants.js';
 import { launchHolds, launchRoom, launchRoomLines } from './session-cap.service.js';
-import {
-  type DashboardBind,
-  listWindow,
-  startWebDashboard,
-  type WebDashboard,
-} from './web-dashboard.service.js';
-import { ACTIONS, runAction } from './web-dashboard-actions.service.js';
-import { type DebtSheetEntry, renderDebtSheet } from './web-dashboard-debt.service.js';
+import type { SessionState } from './types/session.types.js';
+import type { DashboardBind, WebDashboard } from './types/web-dashboard.types.js';
+import type { DebtSheetEntry } from './types/web-dashboard-debt.types.js';
+import { listWindow, startWebDashboard } from './web-dashboard.service.js';
+import { runAction } from './web-dashboard-actions.service.js';
+import { renderDebtSheet } from './web-dashboard-debt.service.js';
 import { renderDecisionsSheet } from './web-dashboard-decisions.service.js';
 import { clipWords, escapeHtml } from './web-dashboard-sheet.utils.js';
 import { renderTasksSheet } from './web-dashboard-tasks.service.js';

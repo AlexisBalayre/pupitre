@@ -64,6 +64,31 @@ describe('tierForScope', () => {
   it('is standard for an empty scope', () => {
     expect(tierForScope([])).toBe('standard');
   });
+
+  // The areas match by path: a file extracted out of a critical area into
+  // `src/core/{types,constants,errors}/` stays critical for the tier
+  // (decision 92) and for a remeasure's approval (decision 185).
+  it.each([
+    'src/core/constants/merge-gate.constants.ts',
+    'src/core/errors/merge-gate.errors.ts',
+    'src/core/types/merge-gate.types.ts',
+    'src/core/types/land.types.ts',
+    'src/core/types/regate.types.ts',
+    'src/core/errors/sandbox.errors.ts',
+    'src/core/types/sandbox.types.ts',
+    'src/core/types/profile-compiler.types.ts',
+    'src/core/types/session.types.ts',
+    'src/core/errors/session.errors.ts',
+    'src/core/types/ledger.types.ts',
+    'src/core/types/baseline-history.types.ts',
+    'src/core/types/decision-record.types.ts',
+    'src/core/errors/git-diff.errors.ts',
+    'src/core/types/git-diff.types.ts',
+    'src/core/types/github.types.ts',
+  ])('keeps %s, moved out of a critical area, critical', (path) => {
+    expect(tierForScope([path])).toBe('critical');
+    expect(CRITICAL_AREAS.map(globToRegExp).some((area) => area.test(path))).toBe(true);
+  });
 });
 
 describe('globsIntersect', () => {

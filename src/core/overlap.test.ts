@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import type { Database } from 'better-sqlite3';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { openStore, type SessionState } from './db.client.js';
+import { openStore } from './db.client.js';
 import {
   getWatcherBeat,
   listOverlaps,
@@ -12,7 +12,6 @@ import {
   replaceOverlaps,
 } from './overlap.repository.js';
 import {
-  type AppendOnlyNote,
   appendOnlyLine,
   filesWorthANotice,
   intersectSessionFiles,
@@ -27,6 +26,8 @@ import {
   insertTask,
   transitionSession,
 } from './session.repository.js';
+import type { AppendOnlyNote } from './types/overlap.types.js';
+import type { SessionState } from './types/session.types.js';
 
 // Test repos must not inherit the developer's global git config nor GIT_DIR & co.
 // — when this suite runs inside a git hook (pre-commit), those would redirect

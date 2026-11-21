@@ -1,8 +1,7 @@
 import { dirname } from 'node:path';
-
-import type { DecisionRecordRow } from './decision-record.repository.js';
-import { PAGE_THEME_CSS } from './page-theme.constants.js';
+import { PAGE_THEME_CSS } from './constants/page-theme.constants.js';
 import type { CodeMapNode, MindMapNodeDatum } from './types/code-map.types.js';
+import type { DecisionRecordRow } from './types/decision-record.types.js';
 
 /**
  * `pup map --open` (docs/05): one self-contained local HTML file — inline CSS

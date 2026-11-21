@@ -14,11 +14,11 @@ import { commitIn, ORIGIN_URL, sh } from '@test/helpers/land.mock.js';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import type { Adapter } from '../adapters/types/adapter.types.js';
 import { auditProject } from './audit.service.js';
+import { MERGE_LOCK_DIRNAME } from './constants/merge-gate.constants.js';
 import { openStore } from './db.client.js';
 import { MergeLockLostError } from './errors/merge-gate.errors.js';
 import { GateInterruptedError } from './errors/sandbox.errors.js';
 import { landSessions } from './land-batch.service.js';
-import { MERGE_LOCK_DIRNAME } from './merge-gate.constants.js';
 import { projectId } from './paths.utils.js';
 import { NO_PROGRESS } from './progress.utils.js';
 import {

@@ -1,16 +1,16 @@
 import { basename, isAbsolute, normalize, relative } from 'node:path';
-
-import { type ContextStats, contextStatsByClass } from './retro-replay.service.js';
-import {
-  addCalls,
-  addToolCarry,
-  type Bucket,
-  contextOf,
-  percentile,
-  type ScannedTranscript,
-  type ToolCarry,
-  type UsageClass,
-} from './usage-report.service.js';
+import type { UsageClass } from './enums/usage-report.enums.js';
+import { contextStatsByClass } from './retro-replay.service.js';
+import type {
+  CarryRow,
+  ClassRow,
+  ContextStats,
+  RepeatedRead,
+  RetroFinding,
+  RetroReport,
+} from './types/retro.types.js';
+import type { Bucket, ScannedTranscript, ToolCarry } from './types/usage-report.types.js';
+import { addCalls, addToolCarry, contextOf, percentile } from './usage-report.service.js';
 
 // `pup retro` reads transcripts that hold prompts, command lines and tool output.
 // Everything below keeps only counts, ratios, sizes, tool names and paths relative
@@ -27,54 +27,6 @@ const SIZE_BUCKETS = [
 const REPEATED_READS = 3;
 const TOP_ROWS = 10;
 const CACHE_HIT_TARGET = 0.9;
-
-interface CarryRow {
-  tool: string;
-  sizeBucket: string;
-  results: number;
-  tokens: number;
-  carriedTokens: number;
-}
-
-/** The cache and compaction counts of a class, with its context statistics and replay. */
-interface ClassRow extends ContextStats {
-  class: UsageClass;
-  transcripts: number;
-  calls: number;
-  contextTokens: number;
-  cacheHitRate: number;
-  recaches: number;
-  recachedTokens: number;
-  recacheCost: number;
-  compactions: number;
-  medianContext: number;
-  firstRequestFloor: number;
-}
-
-interface RepeatedRead {
-  path: string;
-  sessions: number;
-  reads: number;
-  rereadTokens: number;
-}
-
-interface RetroFinding {
-  signal: string;
-  impactTokens: number;
-  evidence: string;
-  why: string;
-  fix: string;
-}
-
-export interface RetroReport {
-  since: string;
-  transcripts: number;
-  findings: RetroFinding[];
-  carry: CarryRow[];
-  classes: ClassRow[];
-  repeatedReads: RepeatedRead[];
-  filesReadRepeatedly: number;
-}
 
 /** Names that reach the report come out of a transcript: keep path and tool-name characters only. */
 function label(text: string): string {

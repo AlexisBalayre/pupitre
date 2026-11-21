@@ -1,4 +1,4 @@
-import type { SessionState } from '../db.client.js';
+import type { SessionState } from '../types/session.types.js';
 
 export class MergeLockHeldError extends Error {
   constructor(lockPath: string) {

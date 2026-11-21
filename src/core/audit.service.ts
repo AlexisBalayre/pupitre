@@ -1,11 +1,11 @@
 import type { Database } from 'better-sqlite3';
 import { sanitizeReason } from '../adapters/capability.utils.js';
 import type { Adapter } from '../adapters/types/adapter.types.js';
+import { COVERAGE_RATIO_EPSILON } from './constants/merge-gate.constants.js';
 import { COVERAGE, DEAD_CODE } from './debt.service.js';
 import { measureBaseline, persistBaseline } from './init.service.js';
-import { COVERAGE_RATIO_EPSILON } from './merge-gate.constants.js';
 import { projectId } from './paths.utils.js';
-import { NO_PROGRESS, type StageProgress } from './progress.utils.js';
+import { NO_PROGRESS } from './progress.utils.js';
 import { getProject } from './session.repository.js';
 import type {
   AuditOutcome,
@@ -22,6 +22,7 @@ import type {
   ProjectBaseline,
 } from './types/init.types.js';
 import type { TaskId, TaskSpec } from './types/profile.types.js';
+import type { StageProgress } from './types/progress.types.js';
 
 function classifyDelta(before: BaselineStageStatus, after: BaselineStageStatus): StageDelta {
   if (before === after) return 'unchanged';

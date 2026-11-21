@@ -32,7 +32,8 @@ vi.mock('./session-lifecycle.service.js', async (importOriginal) => ({
 
 import { detectAdapters } from '../adapters/adapter.registry.js';
 import { tellConductor } from './conductor.service.js';
-import { DEFAULT_BASE_PROFILE } from './default-profile.constants.js';
+import { DEFAULT_BASE_PROFILE } from './constants/default-profile.constants.js';
+import { CONFIRMED_ACTIONS } from './constants/web-dashboard-actions.constants.js';
 import { MergeLockLostError } from './errors/merge-gate.errors.js';
 import { UndeclaredSandboxError } from './errors/sandbox.errors.js';
 import { startFixRound } from './fix-round.service.js';
@@ -48,14 +49,8 @@ import {
   steerSession,
 } from './session-lifecycle.service.js';
 import type { MergeOutcome } from './types/merge-gate.types.js';
-import {
-  type ActionFields,
-  type ActionName,
-  answerForms,
-  CONFIRMED_ACTIONS,
-  confirmationText,
-  runAction,
-} from './web-dashboard-actions.service.js';
+import type { ActionFields, ActionName } from './types/web-dashboard-actions.types.js';
+import { answerForms, confirmationText, runAction } from './web-dashboard-actions.service.js';
 
 const ADAPTER = { id: 'typescript' };
 const WINDOW_ENV = { vars: {}, configDir: '/home/op/.claude' };

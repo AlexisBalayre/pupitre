@@ -1,4 +1,4 @@
-import { STALLED_AFTER_MS } from './session-activity.constants.js';
+import { STALLED_AFTER_MS } from './constants/session-activity.constants.js';
 import type { SessionActivity } from './types/session-activity.types.js';
 
 /**

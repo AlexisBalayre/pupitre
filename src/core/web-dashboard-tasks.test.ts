@@ -4,7 +4,6 @@ import { sh } from '@test/helpers/git.mock.js';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import type { Database } from 'better-sqlite3';
 import { beforeEach, describe, expect, it } from 'vitest';
-import type { SessionState } from './db.client.js';
 import { openStore } from './db.client.js';
 import { projectId } from './paths.utils.js';
 import {
@@ -15,6 +14,7 @@ import {
   transitionSession,
 } from './session.repository.js';
 import type { GateReport } from './types/merge-gate.types.js';
+import type { SessionState } from './types/session.types.js';
 import { listWindow } from './web-dashboard.service.js';
 import { firstSentence, readTasksSheet, renderTasksSheet } from './web-dashboard-tasks.service.js';
 

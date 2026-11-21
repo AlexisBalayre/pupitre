@@ -1,5 +1,5 @@
-import type { SessionState } from '../db.client.js';
 import type { GateReport } from './merge-gate.types.js';
+import type { SessionState } from './session.types.js';
 import type { FindingClass } from './session-lifecycle.types.js';
 
 /**

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Adapter, CapabilityContext } from '../adapters/types/adapter.types.js';
+import { DUPLICATION_RULE_ID } from './constants/merge-gate.constants.js';
 import { judgeDebt, measureCoverage, measureStaticDebt } from './debt.service.js';
-import { DUPLICATION_RULE_ID } from './merge-gate.constants.js';
 import type { DebtMeasurement, DebtVerdict, GateDebtMeasurement } from './types/debt.types.js';
 import type { DebtBaseline } from './types/init.types.js';
 import type { GateStageResult } from './types/merge-gate.types.js';

@@ -17,6 +17,7 @@ import type { Tier } from '../claude/types/model-ladder.types.js';
 import type { SessionPane } from '../claude/types/session-runtime.types.js';
 import { buildCodeMap, buildKnowledgeSlice } from './code-map.service.js';
 import { openConductorQuestion, TELL_MAX_CHARS, tellConductor } from './conductor.service.js';
+import { SESSION_ID_PATTERN } from './constants/paths.constants.js';
 import { windowFailureOf } from './dashboard.service.js';
 import { WorktreeRepointedError } from './errors/git-diff.errors.js';
 import { MachineLoadedError } from './errors/session-cap.errors.js';
@@ -39,8 +40,7 @@ import {
   worktreeGitEnv,
 } from './git-diff.client.js';
 import { filesWorthANotice, scopeConflicts } from './overlap.service.js';
-import { SESSION_ID_PATTERN } from './paths.constants.js';
-import { type ProjectPaths, projectId, projectPaths } from './paths.utils.js';
+import { projectId, projectPaths } from './paths.utils.js';
 import {
   compileProfile,
   peerJoinedMessage,
@@ -48,14 +48,7 @@ import {
   writeCompiledProfile,
 } from './profile-compiler.service.js';
 import { asStringArray } from './report-data.utils.js';
-import {
-  asTier,
-  type ClimbReason,
-  climbFrom,
-  fixRoundFailure,
-  routeFor,
-  taskTier,
-} from './routing.utils.js';
+import { asTier, climbFrom, fixRoundFailure, routeFor, taskTier } from './routing.utils.js';
 import {
   appendEvent,
   claimingSession,
@@ -68,10 +61,7 @@ import {
   listTaskSessions,
   MAX_QUESTION_OPTIONS,
   openQuestion,
-  type QuestionEvent,
   readTaskSpec,
-  type SessionRoute,
-  type SessionRow,
   taskSpecForDisplay,
   transitionSession,
   transitionSessionAlong,
@@ -85,27 +75,24 @@ import {
   sessionTestCommand,
 } from './test-slot.service.js';
 import type { ScopeConflict } from './types/overlap.types.js';
-import type { CompiledProfile, SessionId, TaskSpec } from './types/profile.types.js';
+import type { ProjectPaths } from './types/paths.types.js';
+import type { SessionId, TaskSpec } from './types/profile.types.js';
+import type { ClimbReason } from './types/routing.types.js';
+import type { QuestionEvent, SessionRoute, SessionRow } from './types/session.types.js';
 import type { AskOptions, EventPayloads } from './types/session-event.types.js';
 import type {
+  AnswerWords,
+  CapOverride,
   LaunchTaskRequest,
   NewSessionRequest,
   PlanTaskRequest,
+  ProfileSource,
   RouteOverride,
+  SessionCompile,
   SessionPeer,
+  SteerRecord,
 } from './types/session-lifecycle.types.js';
 import { assertUsageRoom } from './usage-limits.service.js';
-
-/**
- * `--over-cap`: the operator's word that one more session may go past the
- * computed cap (decisions 96, 197); `--over-limit`, that one may start while
- * the plan's usage holds launches (decision 156). Only the operator's: a launch
- * the conductor makes ignores both.
- */
-interface CapOverride {
-  overCap?: boolean;
-  overLimit?: boolean;
-}
 
 /**
  * Refuse a launch past the computed cap or into a machine short of memory
@@ -470,18 +457,6 @@ function sessionWindowRoute(
 }
 
 /**
- * What a session's profile is compiled from besides its task: the base layer
- * and the user config. A role is the launch caller's to pass, and only an API
- * caller does: the task row keeps its name alone, which nothing resolves back.
- */
-export type ProfileSource = Pick<LaunchTaskRequest, 'repoPath' | 'base' | 'windowEnv'>;
-
-/** A session's compiled profile, as the launch and the fix round hand it on. */
-export interface SessionCompile {
-  compiled: CompiledProfile;
-}
-
-/**
  * Compile a session's profile for its compiled dir, without writing it: the
  * launch's compile, and the fix round's (decision 90).
  */
@@ -831,9 +806,6 @@ function questionRead(
   return asked;
 }
 
-/** What an answer says to the asker, without the id the store closes the question by. */
-type AnswerWords = Omit<EventPayloads['answer'], 'questionId'>;
-
 /** The answer as the asker reads it: the question first, so a late answer is never a riddle. */
 function answerMessage(answer: AnswerWords): string {
   const picked = answer.option === undefined ? '' : `option ${answer.option}, `;
@@ -944,17 +916,6 @@ export function sessionPane(row: SessionRow): SessionPane {
   if (row.tmux_target === null) throw new SessionPaneMissingError(row.id, null, 'unrecorded');
   return { sessionId: row.id, paneId: row.tmux_target };
 }
-
-/**
- * How a delivered steer is recorded: what kind of steer it was, and who sent
- * it where the caller can name a sender — a typed steer is not the operator's
- * just because it was typed, and a conductor or session pup can identify is
- * named as one before its word is taken (decisions 44, 47).
- */
-type SteerRecord = {
-  kind: string;
-  by?: string;
-};
 
 /**
  * Steer a session by id, into the pane recorded at its launch. The session

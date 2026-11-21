@@ -3,6 +3,7 @@ import { dirname } from 'node:path';
 import { readPlainFile } from '../adapters/capability.utils.js';
 import { InvalidProfileError } from './errors/profile.errors.js';
 import { projectPaths, writeStoreFile } from './paths.utils.js';
+import type { BriefSection } from './types/brief.types.js';
 
 /**
  * The project brief: the operator's direction, written once and carried into
@@ -142,11 +143,6 @@ export function ensureBrief(repoPath: string): { path: string; created: boolean 
   mkdirSync(dirname(path), { recursive: true });
   writeStoreFile(path, BRIEF_TEMPLATE);
   return { path, created: true };
-}
-
-interface BriefSection {
-  heading: string;
-  body: string;
 }
 
 /**

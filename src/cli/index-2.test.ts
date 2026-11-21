@@ -192,9 +192,8 @@ import {
   readSessionEnv,
 } from '../claude/session-runtime.service.js';
 import { isConductorRunning } from '../core/conductor.service.js';
-import type { SessionState } from '../core/db.client.js';
+import { DEFAULT_BASE_PROFILE } from '../core/constants/default-profile.constants.js';
 import { insertDecisionRecord } from '../core/decision-record.repository.js';
-import { DEFAULT_BASE_PROFILE } from '../core/default-profile.constants.js';
 import { MergeLockLostError } from '../core/errors/merge-gate.errors.js';
 import { InvalidProfileError } from '../core/errors/profile.errors.js';
 import { GateInterruptedError } from '../core/errors/sandbox.errors.js';
@@ -221,6 +220,7 @@ import {
 } from '../core/session-lifecycle.service.js';
 import { retireSession } from '../core/session-retire.service.js';
 import type { LandOutcome } from '../core/types/land.types.js';
+import type { SessionState } from '../core/types/session.types.js';
 import { startWebDashboard } from '../core/web-dashboard.service.js';
 import { buildProgram } from './index.js';
 import { resolveProject } from './project.utils.js';

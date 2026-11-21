@@ -8,9 +8,9 @@ import {
   readFileSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { GATE_ENVIRONMENT_DIR } from './constants/merge-gate.constants.js';
 import { quotePath } from './debt.service.js';
 import { runGit } from './git-diff.client.js';
-import { GATE_ENVIRONMENT_DIR } from './merge-gate.constants.js';
 import { linkEnvironment } from './merge-gate.service.js';
 import { owningLockfile } from './uninstalled-dependency.service.js';
 

@@ -29,13 +29,12 @@ import {
   runSessionTest,
   SESSION_SLOT_WAIT_MS,
   SLOTS_BUSY_STATUS,
-  type SlotHolder,
   sessionTestCommand,
-  type TestSlotOptions,
   testRunsElsewhere,
   vmStatAvailableBytes,
   withTestSlot,
 } from './test-slot.service.js';
+import type { SlotHolder, TestSlotOptions } from './types/test-slot.types.js';
 
 vi.mock('node:crypto', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:crypto')>();

@@ -6,7 +6,7 @@ import { projectId } from './paths.utils.js';
 import { scopedPaths } from './scope-audit.utils.js';
 import { listSessions, readTaskSpec } from './session.repository.js';
 import { holdingStates } from './session-state.utils.js';
-import type { OverlapPair, ScopeConflict } from './types/overlap.types.js';
+import type { AppendOnlyNote, OverlapPair, ScopeConflict } from './types/overlap.types.js';
 
 /** Cadence of the conflict radar; status flags the watcher stale above 3x this. */
 export const WATCH_INTERVAL_MS = 15_000;
@@ -24,12 +24,6 @@ const APPEND_ONLY_DIR = 'docs/adr/';
 /** The shared files worth introducing a peer for; none means no introduction. */
 export function filesWorthANotice(files: string[]): string[] {
   return files.filter((file) => !file.startsWith(APPEND_ONLY_DIR));
-}
-
-/** Sessions appending to one decision file at once, which the radar names in a line. */
-export interface AppendOnlyNote {
-  file: string;
-  sessions: number;
 }
 
 /**

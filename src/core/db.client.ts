@@ -2,33 +2,6 @@ import { lstatSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import Database from 'better-sqlite3';
 
-export type SessionState =
-  | 'queued'
-  | 'running'
-  | 'awaiting-review'
-  | 'merged'
-  | 'killed'
-  | 'rejected'
-  | 'blocked';
-
-export type EventType =
-  | 'tool_call'
-  | 'scope_violation'
-  | 'gate_result'
-  | 'merge'
-  | 'steer'
-  | 'interrupt'
-  | 'config_drift'
-  | 'session_done'
-  | 'question'
-  | 'answer'
-  | 'handoff_ready'
-  | 'respawn'
-  | 'scope_overlap'
-  | 'utility_call'
-  | 'turn_died'
-  | 'cache_hold';
-
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS projects (
   id TEXT PRIMARY KEY,
