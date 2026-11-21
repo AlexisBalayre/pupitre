@@ -105,21 +105,21 @@ export interface CostParts {
   input: number;
 }
 
-export interface ToolResult {
+interface ToolResult {
   tool: string;
   tokens: number;
   /** Calls counted before the result arrived; every later one carries it. */
   callsBefore: number;
 }
 
-export interface FileRead {
+interface FileRead {
   path: string;
   /** The offset and limit asked for: reading a file in chunks is not reading it again. */
   range: string;
   tokens: number;
 }
 
-export interface Compaction {
+interface Compaction {
   at: number;
   /** Asked for with `/compact`, not fired by the context reaching the threshold. */
   manual: boolean;

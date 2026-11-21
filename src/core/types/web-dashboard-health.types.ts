@@ -1,9 +1,9 @@
 import type { GATE_METRICS } from '../web-dashboard-sheet.utils.js';
 import type { DashboardBaseline } from './dashboard.types.js';
 
-export type Figures = Omit<DashboardBaseline, 'capturedAt'>;
+type Figures = Omit<DashboardBaseline, 'capturedAt'>;
 
-export type MetricKey = keyof Figures;
+type MetricKey = keyof Figures;
 
 export type Metric = (typeof GATE_METRICS)[number];
 

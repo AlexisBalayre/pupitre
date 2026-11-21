@@ -11,7 +11,7 @@ export type SessionState =
   | 'rejected'
   | 'blocked';
 
-export type EventType =
+type EventType =
   | 'tool_call'
   | 'scope_violation'
   | 'gate_result'

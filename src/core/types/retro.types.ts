@@ -24,7 +24,7 @@ export interface ResetFloor {
   write: number;
 }
 
-export interface ReplayRow {
+interface ReplayRow {
   threshold: number;
   resets: number;
   cost: number;

@@ -1,6 +1,6 @@
 import type { USAGE_WINDOWS } from '../constants/usage-limits.constants.js';
 
-export type UsageWindowKey = (typeof USAGE_WINDOWS)[number]['key'];
+type UsageWindowKey = (typeof USAGE_WINDOWS)[number]['key'];
 
 /** One window's share used, 0 to 100, and when it resets, in epoch seconds. */
 export interface UsageWindow {
