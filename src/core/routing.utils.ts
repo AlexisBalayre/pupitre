@@ -8,17 +8,34 @@ import type { FindingClass } from './types/session-lifecycle.types.js';
  * Where a change can break the gate, git, tmux, the store, the sandbox, the
  * hooks or profile compilation (decision 92). A task whose scope-in can name
  * any path one of these names is critical; every other task is standard.
+ * An area matches by path, so the types, constants and errors extracted out of
+ * its files into `src/core/{types,constants,errors}/` are named beside it.
  */
 export const CRITICAL_AREAS: readonly string[] = [
   'src/core/merge-gate*',
+  'src/core/constants/merge-gate*',
+  'src/core/errors/merge-gate*',
+  'src/core/types/merge-gate*',
   'src/core/land*',
+  'src/core/types/land*',
   'src/core/regate*',
+  'src/core/types/regate*',
   'src/core/sandbox*',
+  'src/core/errors/sandbox*',
+  'src/core/types/sandbox*',
   'src/core/profile-compiler*',
+  'src/core/types/profile-compiler*',
   'src/core/*.repository.ts',
   'src/core/db.client.ts',
+  'src/core/types/session.types.ts',
+  'src/core/errors/session.errors.ts',
+  'src/core/types/ledger.types.ts',
+  'src/core/types/baseline-history.types.ts',
+  'src/core/types/decision-record.types.ts',
   'src/core/migrations/**',
   'src/core/git*',
+  'src/core/errors/git*',
+  'src/core/types/git*',
   'src/claude/**',
   '.claude/hooks/**',
   '.github/**',
