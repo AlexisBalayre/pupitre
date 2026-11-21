@@ -2,8 +2,6 @@ import type { Database } from 'better-sqlite3';
 
 import type { OverlapPair } from './types/overlap.types.js';
 
-export type { OverlapPair } from './types/overlap.types.js';
-
 /**
  * Overlaps are current state, not history: each watcher scan replaces the
  * whole set in one transaction so status never sees a half-updated radar.

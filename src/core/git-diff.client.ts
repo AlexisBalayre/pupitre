@@ -1058,9 +1058,6 @@ export function gitDiffNumstat(
   return stats;
 }
 
-/** The known-binary caps, which the merge gate's diff-size detail names. */
-export { BINARY_FREE_MAX_BYTES, BINARY_FREE_TOTAL_MAX_BYTES } from './known-binary.utils.js';
-
 /**
  * The size of a diff side when it is a binary to skip, false when it is not:
  * a non-executable regular file (mode 100644, never 100755 or a 120000 symlink) no larger

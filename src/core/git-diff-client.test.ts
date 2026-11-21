@@ -30,8 +30,6 @@ import {
   assertNoArmedGitDrivers,
   assertNoSharedWorktreeKey,
   assertNoWorktreeConfig,
-  BINARY_FREE_MAX_BYTES,
-  BINARY_FREE_TOTAL_MAX_BYTES,
   currentBranch,
   GIT_SAFE_CONFIG,
   gitDiffAddedLines,
@@ -45,6 +43,8 @@ import {
   worktreeGitEnv,
 } from './git-diff.client.js';
 import {
+  BINARY_FREE_MAX_BYTES,
+  BINARY_FREE_TOTAL_MAX_BYTES,
   extensionOf,
   formatsNamed,
   knownBinarySize,
