@@ -1,0 +1,125 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-21T18:28:42.680Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "44935562594",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/44935562594",
+  "actor": "AlexisBalayre",
+  "commit_sha": "92a86bbcb658b57cba79a184256d29b846ea858f",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 414,
+  "action": "review",
+  "reviewers_spawned": [
+    "docs",
+    "conventions"
+  ],
+  "reviewers_returned": [
+    "docs",
+    "conventions"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "context",
+    "maintainability",
+    "spec",
+    "simplicity",
+    "guards",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "docs/test-suite-timing.md",
+      "line": "49, 57-59",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The doc defines the gate's guarantee as 'every test runs against real git and real subprocesses, on every file, on every merge' (line 49). It rates item 7 (affected-tests-only) as the one speedup that 'does change the guarantee' (lines 57, 59). Accepted ADRs already narrow that guarantee, and the doc mentions none of them. ADR 0139 (docs/adr/0139-the-gate-skips-the-test-stage-when-no-testable-file.md:5): 'The gate skips the test stage when no testable file changed'. It is on by default, and a project must set `skipTestsOnUntestedChanges: false` to turn it off. ADR 0175 (docs/adr/0175-the-merge-queue-runs-the-full-suite-and-reverts.md:15-17): 'The full suite runs in the queue, so the gate's test stage ... no longer has to carry it.' ADR 0175 applies once the decision-178 rollout setting is on, and until then ADR 0138 and ADR 0095 govern. ADR 0140 (docs/adr/0140-a-merge-gate-s-test-run-takes-the-machine-no.md:36-39) and ADR 0175 (line 16) record that the pre-commit hook already runs only `vitest related --run` on staged files. Trigger: the operator reads item 7 to decide whether it needs an ADR, using line 49's premise. The doc does not say that part of the premise has already been decided differently. ADR 0175 may already put the full-suite backstop in the merge queue. Item 7's 'full run on a schedule' backstop may therefore overlap an accepted decision. Suggest adding a sentence to line 49 and item 7 that cites decisions 135, 139 and 175, so the proposal is framed as amending them.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/test-suite-timing.md",
+      "line": "52",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Item 2 proposes building the repo, bare origin and commits 'in `beforeAll`' and copying per test. ADR 0100 (docs/adr/0100-every-temp-directory-a-test-makes-is-removed.md:5, 12-15) says: 'Every temp directory a test makes is removed when the test finishes'. It also says: '`tempDir(prefix)` ... is the one way a test makes a temp directory ... It works from a test and from a `beforeEach` ... and throws elsewhere.' A `beforeAll` template directory cannot use `tempDir`, because it throws there. Trigger: the item is implemented as written. The template needs its own `mkdtemp` and `afterAll` cleanup, which reintroduces the leak ADR 0100 retired (327,602 `pup-*` entries and a gate load failure). The per-file `beforeAll` TMPDIR guard that ADR 0100's 2026-10-28 amendment describes is one way to do it. The 'Care is needed' note covers only absolute paths inside `.git`. Suggest adding that the shared template must be created and removed per ADR 0100, for example in `beforeAll`/`afterAll` with a guard like the amendment's.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/test-suite-timing.md",
+      "line": "54",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Item 4 says the ~15 tests that wait 4-10 s for a real timeout take about 63 s in total. Line 45 gives that same 63 s for the top 10 slowest tests (4% of worker time). Fifteen tests of 4 s or more cannot sum to the same figure as the top ten, so the count or the total is wrong. The 40 s saving estimate in the same item rests on that total. A reader sizing the deadline-injection work would not know whether it covers 10 tests or 15.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "The diff is a single new markdown doc (docs/test-suite-timing.md) with no code, so only docs and conventions ran. Skipped: correctness (no logic), security (no trust boundary), context, simplicity, guards and workflow-safety (no source or workflow touched), maintainability (off the default roster), and spec (no closing keyword or linked issue)."
+    },
+    {
+      "component": "conventions",
+      "description": "The reviewer could not run scripts/adr-index.sh because the Bash call needs approval under the CI lock, so it found ADRs with Grep instead. It did not read ADR 0135 or ADR 0101 in full."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.5730608500000001,
+  "duration_ms": 67502,
+  "num_turns": 7,
+  "tokens": {
+    "input": 8,
+    "output": 4533,
+    "cache_read": 144846,
+    "cache_creation": 30439,
+    "total": 179826
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 8,
+      "output": 4533,
+      "cache_read": 144846,
+      "cache_creation": 30439,
+      "cost_usd": 0.3631732
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 20,
+      "output": 5571,
+      "cache_read": 126727,
+      "cache_creation": 56314,
+      "cost_usd": 0.2092077
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 184,
+      "cache_read": 0,
+      "cache_creation": 4702,
+      "cost_usd": 0.0006799499999999999
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "bash scripts/adr-index.sh"
+    }
+  ]
+}
