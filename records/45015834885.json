@@ -1,0 +1,122 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-22T11:14:01.743Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "45015834885",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/45015834885",
+  "actor": "AlexisBalayre",
+  "commit_sha": "da58cc17a7eb0553a37ef8464b8b4c2cb113e6ff",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 420,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "conventions",
+    "guards",
+    "simplicity"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "conventions",
+    "guards",
+    "simplicity"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context",
+    "maintainability",
+    "docs",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "vitest.config.ts",
+      "line": "13",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The `include` narrowed to `['test/**/*.test.ts']`, but three test files still live under `src/adapters/` at HEAD (capability-utils, failing-tests, vitest-config-utils). They existed unchanged at base and the PR does not touch them. vitest no longer collects them, so 27 test cases stop running and no error is raised.",
+      "body": "**Three `src/adapters` test files silently drop out of the run**\n\nThe `include` now covers `test/` only:\n\n```ts\ninclude: ['test/**/*.test.ts'],\n```\n<https://github.com/AlexisBalayre/pupitre/blob/da58cc17a7eb0553a37ef8464b8b4c2cb113e6ff/vitest.config.ts#L13-L13>\n\nThis PR moves only the `src/core` tests. Three test files are still under `src/adapters/` at HEAD, and the PR does not touch them:\n\n- `src/adapters/vitest-config-utils.test.ts` covers `vitestCollection` and the root-files helpers.\n- `src/adapters/failing-tests.test.ts` covers the `failingTests` parsing of vitest, jest and pytest summaries. The gate uses this parser to name a failed stage's tests.\n- `src/adapters/capability-utils.test.ts` covers `readPlainFile`, including the decision-194 refusal of a store file with a second hard link (`soleLink: true`).\n\nTogether they hold 29 `it` call sites, several of them `it.each` tables. The new include does not collect any of them. Vitest raises no error when files fall outside `include`, so the suite still passes. The gate's `test: PASS` also ran under the narrowed include.\n\nNone of these cases is duplicated under `test/`:\n- `test/unit/adapters/capability-utils.test.ts` does not have the `soleLink` hard-link cases.\n- Nothing under `test/` tests `vitestCollection` or the adapters' `failingTests` parsing. `test/unit/adapters/typescript-adapter.test.ts:296` even says that logic is \"tested there\", meaning the `src/` file that no longer runs.\n\nFrom now on, a regression in the hard-link guard, the failing-test parser or the vitest-config reader ships with a green suite.\n\n**Fix:** move the three files into `test/unit/adapters/` before narrowing `include`, and rewrite their `./` imports to `@src/adapters/...`. Fold the `readPlainFile` cases into the existing `test/unit/adapters/capability-utils.test.ts`. Alternatively, keep `'src/**/*.test.ts'` in `include` until a follow-up moves them.",
+      "suggestion": null
+    },
+    {
+      "file": "test/unit/core/pre-commit.test.ts",
+      "line": "7",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "The file tests scripts/pre-commit and has no src/core module to mirror, contrary to testing.md's one-test-per-source-file layout.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 1,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.3604984000000004,
+  "duration_ms": 276358,
+  "num_turns": 17,
+  "tokens": {
+    "input": 16,
+    "output": 10113,
+    "cache_read": 382854,
+    "cache_creation": 47265,
+    "total": 440248
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 132,
+      "output": 32649,
+      "cache_read": 1951313,
+      "cache_creation": 179702,
+      "cost_usd": 2.0840756000000003
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 42,
+      "output": 8960,
+      "cache_read": 278836,
+      "cache_creation": 63302,
+      "cost_usd": 0.2758226
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 12,
+      "cache_read": 0,
+      "cache_creation": 4752,
+      "cost_usd": 0.0006002000000000001
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "git ls-tree -r --name-only HEAD src/core"
+    },
+    {
+      "tool": "Bash",
+      "input": "git diff -M --stat=200 -I \"^import |^} from |^  [A-Za-z_]+,$|^  type [A-Za-z_]+,$|@src/|@test/|^\\s*\\} from '|^import \\{$|^\\s*'\\./|^\\s*'\\.\\./\" 07d45f0e8b93f6841bf2afaedce65f16be681ff0..HEAD -- src/core"
+    },
+    {
+      "tool": "Bash",
+      "input": "git diff -M --stat=200 -I '^import |^} from |^  [A-Za-z_]+,$|^  type [A-Za-z_]+,$|@src/|@test/|^import \\{$|^\\s*.\\./|^\\s*.\\.\\./' 07d45f0e8b93f6841bf2afaedce65f16be681ff0..HEAD -- src/core test/unit/cor"
+    },
+    {
+      "tool": "Bash",
+      "input": "git diff -M -U0 -I '^import |^} from |^  [A-Za-z_]+,|^  type [A-Za-z_]+,|^import [{]|^ *.[.]/|^ *.[.][.]/|vi[.]mock[(]|importOriginal<|importActual<|^ *.@src/[^ ]*.,$|^ *[)];$|^ *const [a-z]+ =$|^ *co"
+    }
+  ]
+}
