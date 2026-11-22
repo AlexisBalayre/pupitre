@@ -1,0 +1,123 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-22T16:15:31.732Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "45042437684",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/45042437684",
+  "actor": "AlexisBalayre",
+  "commit_sha": "7796e51211d3936901b1c718d84ecdc1f38182c6",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 424,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "c9cd149e7bd20fbe73d31ef8f2d321ea94210d49",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "test/unit/core/github-tracker-service.test.ts",
+      "line": "27-66",
+      "description": "Test adequacy: fakeGh ignores the `--jq` filter and the GraphQL `query=` text, so dropping the `or .event == \"renamed\"` clause added by this fix, the `.label.name == \"ready\"` filter, the TSV field order, or the `lastEditedAt` field leaves every test green while real gh lets an edited or wrongly labelled issue through.",
+      "status": "unresolved"
+    },
+    {
+      "file": "src/core/github-tracker.service.ts",
+      "line": "144-154",
+      "description": "listReady takes title and body from the `gh issue list` snapshot (T0). It then reads each issue's events (T1) and lastEditedAt (T2), one issue after another. The checks do not require the label to come before T0. So if the label is re-applied after T0, its approval covers text written after T0, but the returned text is the T0 text, which no writer approved.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/github-tracker.service.ts",
+      "line": "93-96",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The new booleans `open` (parseIssueAnswer's return field, also lines 200 and 226) and `unedited` (in approvedIssue) don't start with is/has/should/can, which general.md's \"Boolean names\" rule asks for. `isOpen` and `isUnedited` would follow it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/github-tracker.service.ts",
+      "line": "22-23",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "ISSUE_QUERY writes `first: 100` and `last: 100` inline, and the 100-event tail matters: a ready label older than it leaves the issue out. general.md says thresholds are not inlined at the use site. A named constant with a JSDoc line, interpolated into the query the way ISSUE_LIST_LIMIT is used, would follow it.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Prior findings[0] (the test fake ignores the gh-side filter) is still unresolved, in a new form. The ready/rename selection now runs in TypeScript, but the GraphQL query text is still not checked by any test. Correctness found that removing `RENAMED_TITLE_EVENT` from `itemTypes`, or changing `last: 100` to `first: 100`, leaves the suite green, and the rename mutant re-approves a renamed title. The `.name === READY_LABEL` check also survives, because the fake only ever emits `ready` labels. It is carried forward and not raised again. Prior prior_importants[0] (the list snapshot vs relabel race) is resolved: title and body now come from the same GraphQL answer as the approval evidence. One simplicity nit was dropped: it was low confidence and proposed removing fail-closed guards from the parsing of untrusted API output. Skipped areas: spec (no closing keyword or linked issue), context and workflow-safety (untouched), maintainability (not on the default roster). Delta is 285 lines in 3 files, so one instance per area."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.7219407250000003,
+  "duration_ms": 161297,
+  "num_turns": 15,
+  "tokens": {
+    "input": 12,
+    "output": 9652,
+    "cache_read": 300581,
+    "cache_creation": 58708,
+    "total": 368953
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 38,
+      "output": 25861,
+      "cache_read": 489991,
+      "cache_creation": 124591,
+      "cost_usd": 1.4144492
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 34,
+      "output": 7452,
+      "cache_read": 173917,
+      "cache_creation": 85948,
+      "cost_usd": 0.3068497
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 110,
+      "cache_read": 0,
+      "cache_creation": 4693,
+      "cost_usd": 0.0006418250000000001
+    }
+  ],
+  "permission_denials": []
+}
