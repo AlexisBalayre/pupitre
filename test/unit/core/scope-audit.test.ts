@@ -64,19 +64,19 @@ describe('auditScope', () => {
 
   describe('a skill named other than its directory (decision 208)', () => {
     const skill = (name: string): string => `---\nname: ${name}\ndescription: x\n---\n# Body\n`;
-    const audit = (path: string, content: string | undefined) =>
+    const audit = (path: string, content: string | null | undefined) =>
       auditScope([path], ['.claude/skills/**'], [], () => content);
 
     it('refuses a SKILL.md that names itself pr-ci-review', () => {
       const path = '.claude/skills/zz/SKILL.md';
 
-      expect(audit(path, skill('pr-ci-review'))).toEqual([{ path, reason: 'protected path' }]);
+      expect(audit(path, skill('pr-ci-review'))).toEqual([{ path, reason: 'misnamed skill' }]);
     });
 
     it('refuses a SKILL.md whose name differs from its directory', () => {
       const path = '.claude/skills/zz/SKILL.md';
 
-      expect(audit(path, skill('tdd'))).toEqual([{ path, reason: 'protected path' }]);
+      expect(audit(path, skill('tdd'))).toEqual([{ path, reason: 'misnamed skill' }]);
     });
 
     it('passes a SKILL.md whose name is its directory, or that has no name', () => {
@@ -87,13 +87,18 @@ describe('auditScope', () => {
 
     it('refuses a SKILL.md the reader cannot read as a plain file', () => {
       const path = '.claude/skills/zz/SKILL.md';
+
+      expect(audit(path, null)).toEqual([{ path, reason: 'misnamed skill' }]);
+    });
+
+    it('lets a failing reader throw rather than read its failure as an answer', () => {
       const read = (): string => {
-        throw new Error(`${path} is not a plain file`);
+        throw new Error('git failed');
       };
 
-      expect(auditScope([path], ['.claude/skills/**'], [], read)).toEqual([
-        { path, reason: 'protected path' },
-      ]);
+      expect(() =>
+        auditScope(['.claude/skills/zz/SKILL.md'], ['.claude/skills/**'], [], read),
+      ).toThrow('git failed');
     });
 
     it('reads only a skill manifest, and only when the scope takes it', () => {

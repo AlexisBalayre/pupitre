@@ -1,4 +1,4 @@
 export interface ScopeViolation {
   path: string;
-  reason: 'protected path' | 'matches scope-out' | 'outside scope-in';
+  reason: 'protected path' | 'matches scope-out' | 'outside scope-in' | 'misnamed skill';
 }

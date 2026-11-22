@@ -307,6 +307,62 @@ function rawDiffEntries(
 }
 
 /**
+ * The scope audit's reader of a changed path as the branch leaves it (decision
+ * 208): the new blob of that path's `--raw` record, read by oid. Never from the
+ * gate's checkout, which a build or test stage can rewrite before the audit
+ * runs, and never by path, since a name that is not UTF-8 decodes to U+FFFD and
+ * can name another file (decision 154). Undefined for a path the branch
+ * deletes. Null for one it leaves as anything but a regular file (a symlink,
+ * whose target Claude Code would load, or a gitlink), and for a decoded path
+ * that names no record or more than one. `--no-renames`, as `gitDiffPaths`
+ * lists, so every path the audit reads has a record of its own; the other
+ * flags are `rawDiffEntries`'s.
+ */
+function branchBlobReader(
+  repoPath: string,
+  target: string,
+  branch: string,
+): (path: string) => string | null | undefined {
+  let sides: Map<string, { mode: string; oid: string }[]> | undefined;
+  const readSides = (): Map<string, { mode: string; oid: string }[]> => {
+    const fields = runGit(repoPath, [
+      '-c',
+      'diff.relative=false',
+      'diff',
+      '--no-relative',
+      '--ignore-submodules=none',
+      '--no-ext-diff',
+      '--no-textconv',
+      '--no-color',
+      '--no-renames',
+      '--no-abbrev',
+      '-z',
+      '--raw',
+      `${target}...${branch}`,
+    ]).split('\0');
+    const read = new Map<string, { mode: string; oid: string }[]>();
+    for (let i = 0; i < fields.length; i++) {
+      const header = fields[i];
+      if (!header?.startsWith(':')) continue;
+      // ":<old mode> <new mode> <old oid> <new oid> <status>", then the one path.
+      const [, mode = '', , oid = ''] = header.slice(1).split(' ');
+      const path = fields[i + 1] ?? '';
+      read.set(path, [...(read.get(path) ?? []), { mode, oid }]);
+      i += 1;
+    }
+    return read;
+  };
+  return (path) => {
+    sides ??= readSides();
+    const [side, ...more] = sides.get(path) ?? [];
+    if (side === undefined || more.length > 0) return null;
+    if (/^0+$/.test(side.mode)) return undefined;
+    if (side.mode !== '100644' && side.mode !== '100755') return null;
+    return runGit(repoPath, ['cat-file', 'blob', side.oid]);
+  };
+}
+
+/**
  * Each renamed or copied path's source, for the complexity stage (decision
  * 145). `-C -C` compares every added file with every file the target holds,
  * so a branch of thousands of generated files could hold the merge lock for
@@ -3263,7 +3319,12 @@ export async function measureBranch(
   progress.stage('scope-audit');
   let started = Date.now();
   const spec = readTaskSpec(db, session.task_id);
-  const violations = auditScope(changedPaths, spec.scopeIn, spec.scopeOut);
+  const violations = auditScope(
+    changedPaths,
+    spec.scopeIn,
+    spec.scopeOut,
+    branchBlobReader(req.repoPath, targetSha, sha),
+  );
   if (violations.length > 0) {
     stages.push(
       timedSince(started, {

@@ -459,6 +459,63 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(outcome.report.stages.at(-1)?.detail).toContain('.pupitre/adapter.yml (protected path)');
   });
 
+  describe('a skill named other than its directory (decision 208)', () => {
+    const scope = { scopeIn: ['src/**', '.claude/skills/**'] };
+    const skill = (name: string): string => `---\nname: ${name}\ndescription: x\n---\n# Body\n`;
+    const refusedAsMisnamed = (outcome: Awaited<ReturnType<typeof merge>>): void => {
+      expect(outcome.status).toBe(MergeStatus.Rejected);
+      expect(outcome.report.stages.at(-1)).toMatchObject({
+        stage: 'scope-audit',
+        status: GateStageStatus.Fail,
+        detail: 'Out-of-scope changes:\n  .claude/skills/zz/SKILL.md (misnamed skill)',
+      });
+    };
+
+    it('refuses a SKILL.md that names itself pr-ci-review', async () => {
+      const worktree = seedSession(db, repo, scope);
+      commitIn(worktree, '.claude/skills/zz/SKILL.md', skill('pr-ci-review'));
+
+      refusedAsMisnamed(await merge());
+    });
+
+    it('reads the committed file, not the checkout a stage rewrote', async () => {
+      const worktree = seedSession(db, repo, scope);
+      commitIn(worktree, '.claude/skills/zz/SKILL.md', skill('pr-ci-review'));
+      const rewriting: Adapter = {
+        ...passingAdapter,
+        gateCommands: () => [
+          {
+            stage: GateStage.Build,
+            command: 'sh',
+            args: ['-c', `printf '%s' '${skill('zz')}' > .claude/skills/zz/SKILL.md`],
+          },
+          { stage: GateStage.Test, command: 'true', args: [] },
+          { stage: GateStage.Lint, command: 'true', args: [] },
+        ],
+      };
+
+      refusedAsMisnamed(await merge(rewriting));
+    });
+
+    it('refuses a SKILL.md committed as a symlink, whatever its target names', async () => {
+      const worktree = seedSession(db, repo, scope);
+      commitIn(worktree, 'src/zz.md', skill('zz'));
+      mkdirSync(join(worktree, '.claude/skills/zz'), { recursive: true });
+      symlinkSync('../../../src/zz.md', join(worktree, '.claude/skills/zz/SKILL.md'));
+      sh(worktree, 'git', 'add', '.');
+      sh(worktree, 'git', 'commit', '-m', 'link the skill');
+
+      refusedAsMisnamed(await merge());
+    });
+
+    it('merges a SKILL.md named as its directory', async () => {
+      const worktree = seedSession(db, repo, scope);
+      commitIn(worktree, '.claude/skills/zz/SKILL.md', skill('zz'));
+
+      expect((await merge()).status).toBe(MergeStatus.Merged);
+    });
+  });
+
   // Decision 146: two files sharing a decision number merge without a conflict.
   it('refuses an ADR number another live session branch adds before any stage runs, with no rejection', async () => {
     commitIn(repo, 'docs/adr/0001-first.md', '# 0001\n');

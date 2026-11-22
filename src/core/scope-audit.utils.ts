@@ -60,17 +60,18 @@ export function isMisnamedSkill(path: string, content: string): boolean {
  * by a scope-in glob is a violation (the gate is a hard backstop, decision 6).
  * A protected path is one under `PROTECTED_PATH_GLOBS` that no exception
  * lifts, or one under `PROTECTED_WITHIN_EXCEPTIONS` (decision 208). Given
- * `readFile`, which returns the diff's content of a path, undefined for one
- * the diff deletes, and throws for one it cannot read as a plain file (a
+ * `readFile`, which returns a path's content as the diff leaves it, undefined
+ * for one the diff deletes, and null for one it cannot read as a plain file (a
  * symlink, whose target Claude Code would load), a skill's `SKILL.md` the
- * scope takes is also protected when it is misnamed (`isMisnamedSkill`) or
- * unreadable.
+ * scope takes is refused as a misnamed skill when `isMisnamedSkill` says so or
+ * its read is null. A reader that throws is not an answer, and its error
+ * propagates.
  */
 export function auditScope(
   paths: string[],
   scopeIn: string[],
   scopeOut: string[] = [],
-  readFile?: (path: string) => string | undefined,
+  readFile?: (path: string) => string | null | undefined,
 ): ScopeViolation[] {
   const protectedRes = caseless(PROTECTED_PATH_GLOBS);
   const exceptionRes = caseless(PROTECTED_PATH_EXCEPTIONS);
@@ -82,13 +83,8 @@ export function auditScope(
     unliftedRes.some((re) => re.test(path));
   const isMisnamed = (path: string): boolean => {
     if (readFile === undefined || !SKILL_MANIFEST.test(path)) return false;
-    let content: string | undefined;
-    try {
-      content = readFile(path);
-    } catch {
-      return true;
-    }
-    return content !== undefined && isMisnamedSkill(path, content);
+    const content = readFile(path);
+    return content === null || (content !== undefined && isMisnamedSkill(path, content));
   };
 
   const violations: ScopeViolation[] = [];
@@ -100,7 +96,7 @@ export function auditScope(
     } else if (!inRes.some((re) => re.test(path))) {
       violations.push({ path, reason: 'outside scope-in' });
     } else if (isMisnamed(path)) {
-      violations.push({ path, reason: 'protected path' });
+      violations.push({ path, reason: 'misnamed skill' });
     }
   }
   return violations;

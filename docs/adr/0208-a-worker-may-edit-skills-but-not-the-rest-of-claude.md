@@ -34,15 +34,19 @@
     *A skill is named by its directory.* Claude Code takes a skill's name, and so its slash
     command, from `name:`, and the CI workflow starts its review with `/pr-ci-review`. A path
     rule alone does not keep that skill: `.claude/skills/zz/SKILL.md` declaring
-    `name: pr-ci-review` sits under the exception and outside the directory kept. So the gate
-    reads each `SKILL.md` the scope takes, as the diff leaves it, and refuses it as a protected
-    path when its frontmatter `name:` is not exactly its directory's, or is `pr-ci-review` in
-    any case (`isMisnamedSkill`). It reads fail-closed: a frontmatter left open, one that is not
-    a single YAML document, a duplicated name or a name that is not a string is refused, and
-    merge keys are applied, so the name a YAML 1.1 reader sees is the one checked. A
-    `SKILL.md` the gate cannot read as a plain file is refused too: a symlink would have Claude
-    Code load its target's frontmatter, which the check never read. A skill with no `name:`
-    takes its directory's and passes.
+    `name: pr-ci-review` sits under the exception and outside the directory kept. So the
+    scope-audit stage reads each `SKILL.md` the scope takes, as the diff leaves it, and refuses
+    it as a misnamed skill when its frontmatter `name:` is not exactly its directory's, or is
+    `pr-ci-review` in any case (`isMisnamedSkill`). It reads fail-closed: a frontmatter left
+    open, one that is not a single YAML document, a duplicated name or a name that is not a
+    string is refused, and merge keys are applied, so the name a YAML 1.1 reader sees is the one
+    checked. The gate reads the blob that the branch diff's `--raw` record names, by oid
+    (`branchBlobReader`). It does not read the gate's checkout, which a build or test stage can
+    rewrite before the audit runs, and it does not look the blob up by path, since a name that
+    is not UTF-8 decodes to U+FFFD and can name another file (decision 154). A `SKILL.md` the
+    branch leaves as anything but a regular file is refused too: a symlink would have Claude
+    Code load its target's frontmatter, which the check never read. So is a decoded path that
+    names no record or more than one. A skill with no `name:` takes its directory's and passes.
     *The rescope follows the gate.* `pup plan edit --rescope` refuses a glob that can share a
     path with a protected glob unless it lies under an exception, and refuses one that lies
     wholly inside `PROTECTED_WITHIN_EXCEPTIONS`. A glob with a wildcard lies under the
@@ -95,6 +99,9 @@
     *Tests.* `scope-audit.test.ts` for a skill's Markdown passing in scope, each protected path
     still flagged (a skill's scripts among them), a `SKILL.md` named `pr-ci-review` or named
     other than its directory refused, a matching one passing, and each fail-closed read;
+    `merge-gate.test.ts` for the scope-audit stage refusing a `SKILL.md` named `pr-ci-review`,
+    still refusing it after a build stage rewrites the checkout's copy, refusing one committed
+    as a symlink, and merging a well-named one;
     `task-rescope.test.ts` for a rescope taking `.claude/skills/**`, refusing each protected
     glob, a skill's script and the CI review's skill, and the gate refusing those under the
     widened scope; `land.test.ts`, unchanged, for the re-measure's adapter paths.
