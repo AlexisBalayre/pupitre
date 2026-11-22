@@ -1,0 +1,133 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-22T15:52:52.150Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "45040341802",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/45040341802",
+  "actor": "AlexisBalayre",
+  "commit_sha": "c9cd149e7bd20fbe73d31ef8f2d321ea94210d49",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 424,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "7e9147b02ce776773acb9fc4a7a4a21946ed5fd1",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/github-tracker.service.ts",
+      "line": "107-113",
+      "description": "`listReady` only checks who last applied `ready`, then returns the issue's current title and body. On a public repo the author can edit both after a write-access collaborator labels it, so the approved issue's work ends up defined by text nobody with write access saw.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/github-tracker.service.ts",
+      "line": "10",
+      "description": "The exported type `GhRunner` is declared in a *.service.ts file; general.md says never to do this and to put it in src/core/types/ (e.g. tracker.types.ts, which this PR adds).",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/github-tracker.service.ts",
+      "line": "144-154",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "listReady takes title and body from the `gh issue list` snapshot (T0). It then reads each issue's events (T1) and lastEditedAt (T2), one issue after another. The checks do not require the label to come before T0. So if the label is re-applied after T0, its approval covers text written after T0, but the returned text is the T0 text, which no writer approved.",
+      "body": "**Re-applying the label during a listReady pass approves text that is never returned, and returns text that was never approved.**\n\nThe commit says the list is read before the checks \"so the returned text is never newer than the check that cleared it\". That is true, but it is not the property that matters. What matters is that the returned text is the text the labeller approved. That holds only if nothing changed between the snapshot (T0) and the approving `labeled` event (L). Nothing checks that L comes before T0:\n\n```ts\nconst issues = parseIssues(args, gh(args));          // T0: title/body snapshot\nreturn issues\n  .filter(({ number }) => {\n    const approval = readyApproval(number);          // T1: may see a label applied after T0\n    return (\n      approval !== undefined &&\n      hasWriteAccess(approval.login) &&\n      unchangedSince(number, approval.at)            // T2: edits only compared against L\n    );\n  })\n  .map(({ issue }) => issue);                        // returns T0 text\n```\n\nTrigger:\n1. A writer labels `ready`.\n2. The author edits the body (or title) to text M. The edit drops the issue, as intended.\n3. A pass starts and `gh issue list` captures M (T0). The label is still on the issue.\n4. The author edits back to a harmless B (E > T0). The writer reviews B, removes `ready` and re-applies it (L > E). This is the re-approval flow the PR documents (\"Applying the label again approves the new text\").\n5. The pass reaches this issue. Events show the last `labeled` at L by a writer, with no `renamed` after it. `lastEditedAt` = E < L, so the issue passes.\n6. listReady returns M, which no writer ever approved.\n\nThe window is not tiny. Each issue costs up to three sequential `gh` calls (events, permission, graphql), with up to 500 issues, so an issue late in the list can be checked minutes after T0. A rename in the same window followed by a relabel slips through the same way, because the title also comes from T0.\n\nEither fix works:\n- Also require the approval to come before the snapshot. For example, add `updatedAt` to the `--json` fields and keep the issue only when `approval.at <= Date.parse(updatedAt)`. This assumes labelling bumps `updatedAt`, which is likely but not verified here.\n- Return the text that was actually checked. Fetch `title body lastEditedAt` plus the latest `LABELED_EVENT`/`RENAMED_TITLE_EVENT` timeline items in one GraphQL query, and return that title/body instead of the list's.\n\nNo test covers this, because the fake gh returns the same data for the whole pass.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/c9cd149e7bd20fbe73d31ef8f2d321ea94210d49/src/core/github-tracker.service.ts#L144-L154",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/types/tracker.types.ts",
+      "line": "19-23",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `listReady` JSDoc says \"applied by someone allowed to start the work after the title and body last changed\". That can be read as the person's permission coming after the edit, when it means the label was applied after the change. It also says \"and\" where the code disqualifies a change to either one. Something like \"applied, not before the title or body last changed, by someone allowed to start the work\" fixes both.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/github-tracker.service.ts",
+      "line": "79-80",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`unchangedSince` sounds like it covers the whole issue, but it only checks the body's `lastEditedAt`. The title is checked in `readyApproval`, so a caller who reads only the name may assume the title is covered here too. A name like `bodyUneditedSince` would remove that reading.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Both prior importants resolved at c9cd149e: GhRunner moved to src/core/types/tracker.types.ts, and listReady now refuses a rename or body edit after the label. The new important is a separate gap in that fix (a race between the T0 list and a relabel), not a re-raise. Simplicity's nit on dropping `.actor != null` at github-tracker.service.ts:60 was not recorded because it repeats the already-posted null-actor nit. The security reviewer looked at the same relabel race and judged it below its bar because the attacker cannot force the writer's relabel; the opus validator confirmed it as reachable through the documented re-approval flow. review-spec skipped: no closing keyword or linked issue. Context, workflow-safety and maintainability skipped: their areas are untouched or off the default roster."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.7705533499999997,
+  "duration_ms": 208508,
+  "num_turns": 17,
+  "tokens": {
+    "input": 16,
+    "output": 11992,
+    "cache_read": 407886,
+    "cache_creation": 53160,
+    "total": 473054
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 46,
+      "output": 30703,
+      "cache_read": 585810,
+      "cache_creation": 116703,
+      "cost_usd": 1.4744009999999999
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 40,
+      "output": 7790,
+      "cache_read": 228564,
+      "cache_creation": 77825,
+      "cost_usd": 0.2953989
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 307,
+      "cache_read": 0,
+      "cache_creation": 4798,
+      "cost_usd": 0.00075345
+    }
+  ],
+  "permission_denials": []
+}
