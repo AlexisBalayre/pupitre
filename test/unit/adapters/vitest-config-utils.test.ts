@@ -1,11 +1,11 @@
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { diskRoot, treeEntriesMatching, treeRoot } from '@src/adapters/root-files.utils.js';
+import { vitestCollection } from '@src/adapters/vitest-config.utils.js';
 import { GIT_ENV } from '@test/helpers/git.mock.js';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import { describe, expect, it } from 'vitest';
-import { diskRoot, treeEntriesMatching, treeRoot } from './root-files.utils.js';
-import { vitestCollection } from './vitest-config.utils.js';
 
 function repoWith(files: Record<string, string>): string {
   const dir = tempDir('pup-vitest-config-');
