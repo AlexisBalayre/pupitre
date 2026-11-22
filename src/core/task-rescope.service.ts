@@ -72,8 +72,10 @@ function overlaps(a: Reach, b: Reach): boolean {
 }
 
 /**
- * Whether every path `own` reaches is one `outer` reaches, for an `outer`
- * that reaches all beneath its prefix, as each `dir/**` exception does.
+ * Whether `own` lies under `outer`: a path when `outer` matches it, a glob
+ * when its fixed prefix lies under `outer`'s. A glob can lie under the skills
+ * exception and still reach paths it does not lift, as `.claude/skills/**`
+ * reaches a skill's scripts.
  */
 function within(own: Reach, outer: Reach): boolean {
   return own.path === undefined ? own.prefix.startsWith(outer.prefix) : outer.matches(own.path);
@@ -89,10 +91,11 @@ const UNLIFTED = PROTECTED_WITHIN_EXCEPTIONS.map(reach);
 
 /**
  * Whether a rescope glob reaches a path the gate protects: one that can share
- * a path with a protected entry and does not lie inside an exception, or one
- * that lies wholly inside a path an exception does not lift. A glob reaching
- * past the latter, as `.claude/skills/**` does, is taken, and the gate still
- * refuses the protected paths it covers.
+ * a path with a protected entry and does not lie under an exception, or one
+ * that lies wholly inside a path an exception does not lift. A glob under the
+ * skills exception that also reaches a skill's scripts or the CI review's
+ * skill, as `.claude/skills/**` does, is taken, and the gate still refuses
+ * the protected paths it covers.
  */
 function reachesProtected(own: Reach): boolean {
   return (
@@ -135,7 +138,7 @@ const PRE_COMMIT = 'scripts/pre-commit';
  * anywhere in the first segment can match every top-level directory,
  * `.github` among them. A protected entry, a file or a directory at any
  * depth, is refused whenever the glob can share a path with it (`overlaps`),
- * unless the glob lies inside an exception (`reachesProtected`).
+ * unless the glob lies under an exception (`reachesProtected`).
  */
 const GLOB_REFUSALS: readonly (readonly [(raw: string, form: string) => boolean, string])[] = [
   [(raw) => CONTROL_CHAR.test(raw), 'contains a control character'],

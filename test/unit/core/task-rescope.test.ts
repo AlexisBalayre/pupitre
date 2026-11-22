@@ -444,6 +444,8 @@ describe('rescopeTask (decision 115)', () => {
     ['.claude/settings.json', 'reaches a path the gate protects whatever the scope'],
     ['.claude/*/SKILL.md', 'reaches a path the gate protects whatever the scope'],
     ['.claude/skills', 'reaches a path the gate protects whatever the scope'],
+    ['.claude/skills/tdd', 'reaches a path the gate protects whatever the scope'],
+    ['.claude/skills/wizard/template.sh', 'reaches a path the gate protects whatever the scope'],
     ['.claude/skills/pr-ci-review/**', 'reaches a path the gate protects whatever the scope'],
     ['.claude/skills/pr-ci-review', 'reaches a path the gate protects whatever the scope'],
     ['.CLAUDE/Skills/PR-CI-Review/SKILL.md', 'reaches a path the gate protects whatever the scope'],
@@ -555,10 +557,15 @@ describe('rescopeTask (decision 115)', () => {
 
     expect(rescopeTask(db, 't-1', globs, CALLER)).toMatchObject({ added: globs });
 
-    // The CI review's skill under the widened scope is still refused at the gate.
+    // A skill's script and the CI review's skill under the widened scope are still refused at the gate.
     const spec = readTaskSpec(db, 't-1');
-    const changed = ['.claude/skills/tdd/SKILL.md', '.claude/skills/pr-ci-review/SKILL.md'];
+    const changed = [
+      '.claude/skills/tdd/SKILL.md',
+      '.claude/skills/wizard/template.sh',
+      '.claude/skills/pr-ci-review/SKILL.md',
+    ];
     expect(auditScope(changed, spec.scopeIn, spec.scopeOut)).toEqual([
+      { path: '.claude/skills/wizard/template.sh', reason: 'protected path' },
       { path: '.claude/skills/pr-ci-review/SKILL.md', reason: 'protected path' },
     ]);
   });

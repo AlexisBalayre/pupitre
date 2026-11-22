@@ -101,18 +101,23 @@ export const COVERAGE_RATIO_EPSILON = 0.005;
 export const PROTECTED_PATH_GLOBS = ['.claude/**', '.pupitre/**'];
 
 /**
- * The allow list carved out of `PROTECTED_PATH_GLOBS` (decision 208): a skill
- * is prose a human merge click and the CI review read, so a session may edit
- * one through its scope like any other file. A new skill directory is allowed
- * without a change here.
+ * The allow list carved out of `PROTECTED_PATH_GLOBS` (decision 208): a
+ * skill's Markdown, which a session may edit through its scope. A new skill
+ * directory is allowed without a change here; a script or template beside a
+ * skill stays protected, and the gate refuses a `SKILL.md` named other than
+ * its directory (`isMisnamedSkill`).
  */
-export const PROTECTED_PATH_EXCEPTIONS = ['.claude/skills/**'];
+export const PROTECTED_PATH_EXCEPTIONS = ['.claude/skills/**/*.md'];
+
+/** The CI review's skill, which the review workflow runs as `/pr-ci-review` (decision 208). */
+export const CI_REVIEW_SKILL = 'pr-ci-review';
 
 /**
  * Paths inside an exception that stay protected (decision 208): the CI
- * review's skill, whose prompt runs with a repo token on every later PR.
+ * review's skill, the prompt every later review starts from. Defence in depth
+ * behind the merge click while the review workflow lets any skill load.
  */
-export const PROTECTED_WITHIN_EXCEPTIONS = ['.claude/skills/pr-ci-review/**'];
+export const PROTECTED_WITHIN_EXCEPTIONS = [`.claude/skills/${CI_REVIEW_SKILL}/**`];
 
 /** Serializes merges per repo (decision 8); lives in .git so it never lands in a diff. */
 export const MERGE_LOCK_DIRNAME = 'pup-merge.lock';
