@@ -1,0 +1,121 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-22T17:53:01.695Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "45051593879",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/45051593879",
+  "actor": "AlexisBalayre",
+  "commit_sha": "07bd50d38e49fd19381dfdfa35c8297fc6b105c0",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 427,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "conventions",
+    "simplicity",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "conventions",
+    "simplicity",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context",
+    "maintainability",
+    "spec",
+    "guards",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "test/unit/core/github-tracker-service.test.ts",
+      "line": "70",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The fake checks only the top-level issue fields and itemTypes against the query. It still returns every nested field (`label`, `actor`, `createdAt`, `__typename`) even when the query no longer selects it. So a query mutant that breaks production approval still passes every test. Narrow `answer`'s JSDoc to \"only the issue fields `query` selects\", or filter the nested node fields too.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "test/unit/core/github-tracker-service.test.ts",
+      "line": "49-51",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`itemType` has exactly one caller (`answer`, line 67), and nothing names a second use. The simpler alternative is to fold it into `answer`'s filter, or to make `timeline` events carry their GraphQL enum value directly, for example a `type: 'RENAMED_TITLE_EVENT'` field next to `__typename`. That removes the helper and its camel-to-snake regex.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Skipped by gate: security (no trust boundary touched), context (no spec/protocol/infra surface), guards (only test files changed), workflow-safety (no workflow change), maintainability (off the default roster), spec (no closing issue or spec source). Consolidator returned no groups, so 0 findings merged."
+    },
+    {
+      "component": "orchestrator",
+      "description": "The validator confirmed the correctness finding's mechanism but showed it is not a regression: the old fake ignored the query entirely, and the PR's named mutants are all killed. The finding was retagged from important to nit, and its invalid `labels.nodes.name` example was removed, because an empty selection set is rejected by GraphQL."
+    },
+    {
+      "component": "validator",
+      "description": "`gh pr diff` was denied by permissions for the validator. It used `git diff <merge_base>..<head>` on the single changed file instead, which is equivalent here."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.116967475,
+  "duration_ms": 142548,
+  "num_turns": 12,
+  "tokens": {
+    "input": 12,
+    "output": 6645,
+    "cache_read": 254101,
+    "cache_creation": 40700,
+    "total": 301458
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 34,
+      "output": 15293,
+      "cache_read": 359807,
+      "cache_creation": 87611,
+      "cost_usd": 0.9381124
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 18,
+      "output": 3276,
+      "cache_read": 64110,
+      "cache_creation": 55599,
+      "cost_usd": 0.1782045
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 133,
+      "cache_read": 0,
+      "cache_creation": 4671,
+      "cost_usd": 0.000650575
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "gh pr diff 427 --repo AlexisBalayre/pupitre"
+    }
+  ]
+}
