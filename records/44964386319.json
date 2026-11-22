@@ -1,0 +1,90 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-22T00:01:26.374Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "44964386319",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/44964386319",
+  "actor": "AlexisBalayre",
+  "commit_sha": "2db039f4855b3d4f0a311bc69a33ba8eab5d7373",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 416,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "guards",
+    "docs",
+    "conventions"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "guards",
+    "docs",
+    "conventions"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context",
+    "maintainability",
+    "spec",
+    "simplicity",
+    "workflow-safety"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "05818eb9763a1cbcfd261f1aae22cf10b3e7f420",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/routing.utils.ts",
+      "line": "19-47",
+      "description": "The critical-area routing list was not updated for the new `src/core/enums/` files, so enum members that were critical-area types now route as standard.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "conventions",
+      "description": "The conventions reviewer did not open the text of docs/conventions/* or ADRs 0092/0185. It relied on the diff's own references to them, so its audit of the 16-line delta was not checked line by line against the written rules. The guards reviewer likewise did not open the ADR text. The correctness reviewer independently confirmed that all five relocated enums are covered and that the exact-path entries match through globTokens."
+    },
+    {
+      "component": "orchestrator",
+      "description": "Skipped security, simplicity, context, maintainability, spec and workflow-safety on this delta. It is 16 lines in src/core/routing.utils.ts and its test: five exact paths added to CRITICAL_AREAS plus a JSDoc tweak. It touches no trust boundary, adds no helper or branch, touches no infra or workflow, and there is no spec source. The consolidator was not spawned because no reviewer returned a finding."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.1488067,
+  "duration_ms": 83025,
+  "num_turns": 12,
+  "tokens": {
+    "input": 10,
+    "output": 4836,
+    "cache_read": 206480,
+    "cache_creation": 61137,
+    "total": 272463
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 28,
+      "output": 9277,
+      "cache_read": 413488,
+      "cache_creation": 101429,
+      "cost_usd": 0.9589056
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 36,
+      "output": 4273,
+      "cache_read": 195816,
+      "cache_creation": 51007,
+      "cost_usd": 0.1899011
+    }
+  ],
+  "permission_denials": []
+}
