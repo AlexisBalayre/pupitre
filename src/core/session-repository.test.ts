@@ -9,6 +9,7 @@ import { ClimbReason } from './enums/climb-reason.enums.js';
 import { EventType } from './enums/event-type.enums.js';
 import { GateStageStatus } from './enums/gate-stage-status.enums.js';
 import { MergeStatus } from './enums/merge-status.enums.js';
+import { SessionState } from './enums/session-state.enums.js';
 import { InvalidProfileError } from './errors/profile.errors.js';
 import { InvalidTransitionError, MalformedTaskSpecError } from './errors/session.errors.js';
 import {
@@ -92,6 +93,23 @@ describe('session repository', () => {
     transitionSession(db, 's1', 'running');
     expect(listSessions(db, ['running']).map((s) => s.id)).toEqual(['s1']);
     expect(listSessions(db)).toHaveLength(2);
+  });
+
+  // The `sessions.state` column holds the members' values, so this pins the
+  // wire strings in SQL text: renaming a value would strand every stored row.
+  it('stores each state as the string the sessions table has always held', () => {
+    for (const state of Object.values(SessionState)) {
+      seedSession(db, state);
+      db.prepare('UPDATE sessions SET state = ? WHERE id = ?').run(state, state);
+    }
+    const stored = db
+      .prepare(
+        `SELECT state FROM sessions WHERE state = id AND state IN
+           ('queued', 'running', 'awaiting-review', 'merged', 'killed', 'rejected', 'blocked')`,
+      )
+      .pluck()
+      .all();
+    expect(stored.sort()).toEqual(Object.values(SessionState).sort());
   });
 
   it('increments the reject count', () => {
