@@ -1,0 +1,115 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-22T00:06:28.959Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "44964399747",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/44964399747",
+  "actor": "AlexisBalayre",
+  "commit_sha": "2db039f4855b3d4f0a311bc69a33ba8eab5d7373",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 416,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "correctness",
+    "security",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/session.repository.ts",
+      "line": "651",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The old query listed the eight event types inline as a SQL literal with one `.iterate(sessionId)`. The diff turns it into eight `?` placeholders and eight `EventType.*` arguments. The same pattern appears in `compact-recap.service.ts`'s `lastGateLine` (`type = ?` bound to `EventType.GateResult`) and in the `UPDATE ... tier = ?` statements. That is a real structural expansion, and each member must now be matched by position to its `?`. A simpler form is a named `const SEALED_TYPES: readonly EventType[] = [...]` spread into `.iterate(sessionId, ...SEALED_TYPES)`, with the placeholders built from `SEALED_TYPES.map(() => '?').join(', ')`. That removes the 8-line argument list and the positional pairing. Leaving the SQL literals as they were is simpler still, since they are plain strings that never reach a TypeScript type check. The cost of the current form is a reader checking that each placeholder lines up with its argument.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Skipped context, maintainability, workflow-safety and spec. No infra, settings or protocol surface is touched. Maintainability is off the standard roster. No .github/workflows file changed. The PR body, commits and closingIssuesReferences name no spec source. Correctness ran as 3 instances (gate/land/routing; session/event/dashboard; cli/claude/audit/debt/init) and security as 2 (input boundaries; sandbox/hooks/routing/gate), because the diff is about 5,250 changed lines across 142 files in 4 top-level areas. The consolidator was not spawned: only one finding came back, so there was nothing to deduplicate. No validator ran, because there were no importants. The prior record (44964386319) has no important findings and its one prior_importants entry is already resolved, so there is nothing to carry forward."
+    },
+    {
+      "component": "docs",
+      "description": "The docs reviewer reported that `git diff <merge_base>..HEAD -- <path>` failed in the sandbox with a `.git/config.worktree.lock` error. It read the whole diff with `gh pr diff 416` instead, so it had no per-file context."
+    },
+    {
+      "component": "guards",
+      "description": "The guards reviewer said it could not read src/core/routing-utils.test.ts, so it did not check the third commit's pin of the five src/core/enums paths. Security instance 2 and the round-2 correctness reviewer covered CRITICAL_AREAS coverage independently."
+    },
+    {
+      "component": "simplicity",
+      "description": "The simplicity reviewer read only the non-test source diffs for 8 files plus src/claude/. It did not cover the rest of the source diff or any test file."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 4.434100000000001,
+  "duration_ms": 224495,
+  "num_turns": 18,
+  "tokens": {
+    "input": 14,
+    "output": 13732,
+    "cache_read": 388250,
+    "cache_creation": 66939,
+    "total": 468935
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 186,
+      "output": 52842,
+      "cache_read": 4135211,
+      "cache_creation": 409459,
+      "cost_usd": 4.1327382
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 52,
+      "output": 8773,
+      "cache_read": 325328,
+      "cache_creation": 72398,
+      "cost_usd": 0.30136179999999996
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "git diff 166b5e9643970fdaf02ca79601587cee74d7083f..HEAD -- src/core/debt.test.ts src/core/adr-number.test.ts | grep -E '^[+-]' | grep -vE '^(\\+\\+\\+|---)' | grep -vE \"GateStageStatus\\.(Pass|Fail|Flagge"
+    }
+  ]
+}
