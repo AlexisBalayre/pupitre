@@ -7,8 +7,8 @@ body:
     attributes:
       value: |
         Every field is required. The rubric says what a filled field looks like and what makes one
-        vague: [docs/tickets/bug.md](https://github.com/AlexisBalayre/pupitre/blob/main/docs/tickets/bug.md). Do not add the `ready` label yourself;
-        the operator applies it once the ticket passes intake.
+        vague: [docs/tickets/bug.md](https://github.com/AlexisBalayre/pupitre/blob/main/docs/tickets/bug.md). The operator or a
+        collaborator with write access applies `ready`; intake then checks the fields and removes the label if any is missing or vague.
   - type: textarea
     id: reproduction
     attributes:
