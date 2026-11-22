@@ -1,0 +1,118 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-22T09:38:52.553Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "45008154280",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/45008154280",
+  "actor": "AlexisBalayre",
+  "commit_sha": "65b3d783989d985f2b8fb9f44c385478fedace6c",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 418,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "conventions",
+    "docs",
+    "guards"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "conventions",
+    "docs",
+    "guards"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context",
+    "maintainability",
+    "spec",
+    "simplicity",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/routing-utils.test.ts",
+      "line": "78-101",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The concept list does not match CRITICAL_AREAS. 'store' and 'hooks' match no file, so their tests pass with an empty list. 14 of the 22 paths the old list pinned are no longer checked by any test, so deleting their CRITICAL_AREAS entries goes unnoticed.",
+      "body": "**The structural check covers fewer paths than the list it replaces.** The test only checks files whose name starts with one of the 7 listed concepts. Checked against `src/core/{types,constants,errors,enums}`:\n\n- **Empty concepts:** `store` and `hooks` match no file. The store's extracted files are named after their repositories (`session.types.ts`, `ledger.types.ts`, ...), and `profile-store.errors.ts` does not start with `store`. With `extracted` empty, `standard` is `[]`, so both tests pass without checking anything.\n- **Paths that lost their check:** the old `it.each` pinned these and no test checks them now: `enums/merge-status.enums.ts`, `enums/gate-stage-status.enums.ts`, `types/land.types.ts`, `types/regate.types.ts`, `enums/interrupt-signal.enums.ts`, `types/session.types.ts`, `enums/session-state.enums.ts`, `errors/session.errors.ts`, `types/ledger.types.ts`, `types/baseline-history.types.ts`, `types/decision-record.types.ts`, `errors/git-diff.errors.ts`, `types/git-diff.types.ts`, `types/github.types.ts`.\n\n**Mutant:** delete `'src/core/types/land*'` from [CRITICAL_AREAS](https://github.com/AlexisBalayre/pupitre/blob/65b3d783989d985f2b8fb9f44c385478fedace6c/src/core/routing.utils.ts#L21-L57). In a glob, `*` never crosses a `/` (`glob.utils.ts:21`), so `src/core/land*` does not cover `types/land.types.ts`. After the deletion, `tierForScope(['src/core/types/land.types.ts'])` returns `Standard` and no test fails. The same goes for a new extraction such as `src/core/enums/git-ref.enums.ts`: `git` is not a concept. So the PR's acceptance criterion holds only for the concepts listed, and two of those check nothing.\n\n**Fix:** use prefixes that match how the critical files are really named, and fail when a concept matches nothing ([L78-L101](https://github.com/AlexisBalayre/pupitre/blob/65b3d783989d985f2b8fb9f44c385478fedace6c/src/core/routing-utils.test.ts#L78-L101)). On today's tree each of these prefixes matches at least one file, and every matched file routes critical. The `.` in `'session.'` keeps out `session-cap` and `session-handoff`. Keep `'session-lifecycle'` in the list only if you keep its new CRITICAL_AREAS globs (see the finding on `routing.utils.ts:45`).\n\n```ts\ndescribe.each([\n  'sandbox', 'merge-gate', 'merge-status', 'gate-stage-status', 'land', 'regate',\n  'interrupt-signal', 'profile-compiler', 'git', 'session.', 'session-state',\n  'event-type', 'ledger', 'baseline-history', 'decision-record',\n])('the %s concept', (concept) => {\n  // ...extracted as before...\n  it('routes every extracted file critical', () => {\n    expect(extracted).not.toEqual([]);\n    // ...standard check as before...\n  });\n});\n```",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/routing.utils.ts",
+      "line": "45-46",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The new entries 'src/core/errors/session-lifecycle*' and 'src/core/types/session-lifecycle*' make two files critical that were standard. Those files were extracted from session-lifecycle.service.ts, which is not a critical area and stays standard. This makes tasks touching them use the critical model ladder and trigger security-review and remeasure-approval requirements.",
+      "body": "**This changes routing; it does not refactor the test.** The two new globs cover exactly `src/core/errors/session-lifecycle.errors.ts` and `src/core/types/session-lifecycle.types.ts`. Both were extracted from `src/core/session-lifecycle.service.ts`, and no CRITICAL_AREAS entry matches that file.\n\nThe rule the test comment cites, that a file extracted out of a critical area stays critical, does not apply here. Decision 92 ([ADR 0092](https://github.com/AlexisBalayre/pupitre/blob/65b3d783989d985f2b8fb9f44c385478fedace6c/docs/adr/0092-pup-routes-every-window-s-model-and-effort.md)) names the gate, git, tmux, the store, the sandbox, the hooks and profile compilation, not the session lifecycle. Its #413 amendment covers only files extracted out of critical files. The task also said to touch `routing.utils.ts` only to add an exported helper. The two entries seem to exist only so the new `session-lifecycle` concept in the test passes.\n\n**What changes for a task whose scope names either file** (for example, rewording `LaunchRolledBackError`, or editing `FindingClass` or `LaunchTaskRequest`):\n- **Routing:** `tierForScope` now returns `Critical` instead of `Standard`, so the task launches on the critical ladder.\n- **Security review:** `profile-compiler.service.ts:1738` lists the new globs in the conductor's security-review section.\n- **Remeasure approval:** `land --remeasure` now refuses without `--approved-by` when commits touch either file (`land-remeasure.service.ts:194-206`).\n\nThe service the code came from is still standard. So a scope naming only `session-lifecycle.service.ts` routes standard, while one naming its error classes routes critical.\n\n**Fix:** remove [these two lines](https://github.com/AlexisBalayre/pupitre/blob/65b3d783989d985f2b8fb9f44c385478fedace6c/src/core/routing.utils.ts#L45-L46) and drop `'session-lifecycle'` from the test's concept list. If the session lifecycle really should be critical, that amends decision 92 and needs an ADR amendment. It should then also cover `src/core/session-lifecycle*`.",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/routing.utils.ts",
+      "line": "16-19",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The JSDoc says a future extraction needs \"its path added to the routing test's list, which pins only the paths it names.\" This PR deletes that path list.",
+      "body": "**This PR makes the CRITICAL_AREAS JSDoc false.** The [JSDoc above CRITICAL_AREAS](https://github.com/AlexisBalayre/pupitre/blob/65b3d783989d985f2b8fb9f44c385478fedace6c/src/core/routing.utils.ts#L16-L19) still tells a maintainer that a future extraction needs \"its path added to the routing test's list, which pins only the paths it names.\"\n\nThe PR deletes that list and replaces it with a per-concept `readdirSync` check, so neither half of the sentence holds now:\n- **Existing concept:** a maintainer who extracts a file under a concept already in the list goes looking for a path list that no longer exists. The test covers the file without any edit.\n- **New concept:** a maintainer who extracts under a new concept has to add the concept name to the test's `describe.each`, and the JSDoc doesn't say so.\n\n`docs/adr/0092-pup-routes-every-window-s-model-and-effort.md` lines 111-113 repeat the claim. That passage is a dated #413 amendment, so add a new dated amendment rather than editing it.",
+      "suggestion": " * out of its files into `src/core/{types,constants,errors,enums}/` are named\n * beside it, and a future extraction out of a critical file needs its own\n * entry here. The routing test checks the extracted files on disk per\n * concept, so a new concept name must also be added to its concept list."
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Skipped review-security: the only non-test change adds two entries to CRITICAL_AREAS, which can make routing stricter but cannot loosen it, so no trust boundary is weakened; correctness owned the routing impact. Skipped review-simplicity (no new file, helper or option), review-context, review-workflow-safety, review-spec (no closing issue) and review-maintainability (off the default roster)."
+    }
+  ],
+  "duplicates_merged": 2,
+  "comments_posted_actual": 3,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.891926275,
+  "duration_ms": 249963,
+  "num_turns": 14,
+  "tokens": {
+    "input": 14,
+    "output": 11975,
+    "cache_read": 314462,
+    "cache_creation": 52568,
+    "total": 379019
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 72,
+      "output": 31677,
+      "cache_read": 829995,
+      "cache_creation": 134498,
+      "cost_usd": 1.6300210000000002
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 44,
+      "output": 8561,
+      "cache_read": 223837,
+      "cache_creation": 61211,
+      "cost_usd": 0.2611092
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 367,
+      "cache_read": 0,
+      "cache_creation": 4899,
+      "cost_usd": 0.0007960749999999999
+    }
+  ],
+  "permission_denials": []
+}
