@@ -1,0 +1,109 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-22T10:30:37.141Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "45012558577",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/45012558577",
+  "actor": "AlexisBalayre",
+  "commit_sha": "98f261a524804a498452feae7e580c8a0da4b8ba",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 419,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "conventions"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "conventions"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context",
+    "maintainability",
+    "docs",
+    "spec",
+    "simplicity",
+    "guards",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "test/unit/claude/compact-recap.test.ts",
+      "line": "1",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "docs/conventions/testing.md §mirror rule: seven moved tests keep their old basenames instead of mirroring their subject (compact-recap.test.ts → compact-recap-service.test.ts; likewise session-runtime-service, transcript-service, ui/actions-service, ui/use-controls-hook, ui/viewport-utils, and claude/constants/model-ladder-constants.test.ts), so a reader who goes looking for a source file's test by its name won't find it.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Gated roster for a test-only pure move: review-correctness and review-conventions ran. security (no trust boundary), guards (no non-test source changed), simplicity (no new constructs), docs (no new prose), context, workflow-safety, maintainability and spec (no spec source) were skipped. The orchestrator folded consolidator group {1..6} and finding 7 (same root cause), so merged_duplicates is 6."
+    },
+    {
+      "component": "conventions",
+      "description": "The reviewer could not run scripts/adr-index.sh (sandbox refused it), so it searched for a test-layout ADR by hand and cited docs/conventions/testing.md and naming.md instead."
+    }
+  ],
+  "duplicates_merged": 6,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.989894525,
+  "duration_ms": 95889,
+  "num_turns": 11,
+  "tokens": {
+    "input": 12,
+    "output": 4796,
+    "cache_read": 266022,
+    "cache_creation": 42038,
+    "total": 312868
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 32,
+      "output": 8194,
+      "cache_read": 572447,
+      "cache_creation": 100696,
+      "cost_usd": 0.9080913999999999
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 10,
+      "output": 2735,
+      "cache_read": 60378,
+      "cache_creation": 19005,
+      "cost_usd": 0.0809203
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 537,
+      "cache_read": 0,
+      "cache_creation": 4913,
+      "cost_usd": 0.0008828250000000001
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "git -C /home/runner/work/pupitre/pupitre diff -M --stat 909f0800d7d7f403fa66a6cc41d23594d882c02b..HEAD"
+    },
+    {
+      "tool": "Bash",
+      "input": "git diff -M --stat 909f0800d7d7f403fa66a6cc41d23594d882c02b..HEAD | cat; bash scripts/adr-index.sh | grep -i -E \"test|layout\""
+    }
+  ]
+}
