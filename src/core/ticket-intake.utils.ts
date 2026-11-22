@@ -2,7 +2,7 @@ import { globToRegExp } from './glob.utils.js';
 import type { TicketType } from './types/profile.types.js';
 
 /** A rule that forces a design on a ticket of any type (decision 176). */
-export type DesignTrigger = 'adr-area' | 'module-boundary' | 'dependency' | 'size';
+type DesignTrigger = 'adr-area' | 'module-boundary' | 'dependency' | 'size';
 
 /** What the intake check needs beyond the issue itself. */
 export interface IntakeContext {
@@ -10,7 +10,7 @@ export interface IntakeContext {
   adrAreas: string[];
 }
 
-export interface IntakeResult {
+interface IntakeResult {
   /** Required headings absent from the body, by their heading text. */
   missing: string[];
   /** Required headings present but holding a placeholder, one word or an empty list item. */
