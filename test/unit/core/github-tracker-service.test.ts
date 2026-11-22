@@ -7,6 +7,22 @@ import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 const REPO = 'github.com/owner/repo';
+/** The one GraphQL query the tracker may send, word for word. */
+const ISSUE_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    issue(number: $number) {
+      url title body state lastEditedAt
+      labels(first: 100) { nodes { name } }
+      timelineItems(itemTypes: [LABELED_EVENT, RENAMED_TITLE_EVENT], last: 100) {
+        nodes {
+          __typename
+          ... on LabeledEvent { createdAt label { name } actor { __typename login } }
+          ... on RenamedTitleEvent { createdAt }
+        }
+      }
+    }
+  }
+}`;
 
 interface FakeIssue {
   number: number;
@@ -14,6 +30,8 @@ interface FakeIssue {
   body: string;
   /** Who applied `ready`, oldest first, the nth at `labelledAt(n)`; `name[bot]` is a bot. */
   labelledBy: string[];
+  /** Other labels applied, each by `login` at `at`. */
+  otherLabels?: { name: string; login: string; at: string }[];
   /** When the title was renamed, if it was. */
   renamedAt?: string;
   /** When the body was last edited, if it was. */
@@ -28,16 +46,18 @@ interface FakeIssue {
 const labelledAt = (n: number): string => `2026-11-${10 + n}T12:00:00Z`;
 
 /** The timeline GitHub's GraphQL API holds for `issue`, oldest event first. */
-function timeline({ labelledBy, renamedAt }: FakeIssue) {
+function timeline({ labelledBy, otherLabels = [], renamedAt }: FakeIssue) {
+  const labelled = (name: string, login: string, createdAt: string) => ({
+    __typename: 'LabeledEvent',
+    createdAt,
+    label: { name },
+    actor: login.endsWith('[bot]')
+      ? { __typename: 'Bot', login: login.slice(0, -'[bot]'.length) }
+      : { __typename: 'User', login },
+  });
   return [
-    ...labelledBy.map((login, n) => ({
-      __typename: 'LabeledEvent',
-      createdAt: labelledAt(n),
-      label: { name: 'ready' },
-      actor: login.endsWith('[bot]')
-        ? { __typename: 'Bot', login: login.slice(0, -'[bot]'.length) }
-        : { __typename: 'User', login },
-    })),
+    ...labelledBy.map((login, n) => labelled('ready', login, labelledAt(n))),
+    ...otherLabels.map(({ name, login, at }) => labelled(name, login, at)),
     ...(renamedAt ? [{ __typename: 'RenamedTitleEvent', createdAt: renamedAt }] : []),
   ].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
@@ -111,6 +131,34 @@ describe('githubTracker.listReady', () => {
         .listReady()
         .map(({ id }) => id),
     ).toEqual(['5']);
+  });
+
+  it('judges who applied ready, not who applied another label after it', () => {
+    const { run } = fakeGh(
+      [
+        {
+          number: 23,
+          title: 'Bug label by a stranger',
+          body: '',
+          labelledBy: ['writer'],
+          otherLabels: [{ name: 'bug', login: 'x', at: '2026-11-10T13:00:00Z' }],
+        },
+        {
+          number: 24,
+          title: 'Bug label by a writer',
+          body: '',
+          labelledBy: ['x'],
+          otherLabels: [{ name: 'bug', login: 'writer', at: '2026-11-10T13:00:00Z' }],
+        },
+      ],
+      { writer: 'write', x: 'none' },
+    );
+
+    expect(
+      githubTracker(REPO, run)
+        .listReady()
+        .map(({ id }) => id),
+    ).toEqual(['23']);
   });
 
   it('skips an issue with no recorded labeller and one a bot labelled, asking no permission for the bot', () => {
@@ -293,9 +341,20 @@ describe('githubTracker.listReady', () => {
     expect(calls[0]?.args).toEqual(
       expect.arrayContaining(['--repo', REPO, '--label', 'ready', '--json', 'number']),
     );
-    expect(calls[1]?.args).toEqual(
-      expect.arrayContaining(['owner=owner', 'name=repo', 'number=9']),
-    );
+    expect(calls[1]?.args).toEqual([
+      'api',
+      'graphql',
+      '--hostname',
+      'github.com',
+      '-f',
+      `query=${ISSUE_QUERY}`,
+      '-f',
+      'owner=owner',
+      '-f',
+      'name=repo',
+      '-F',
+      'number=9',
+    ]);
     for (const { args } of calls.slice(1)) {
       expect(args).toEqual(expect.arrayContaining(['--hostname', 'github.com']));
     }
