@@ -1,0 +1,897 @@
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { endSandboxRun } from '@src/core/sandbox.utils.js';
+import type { Database } from 'better-sqlite3';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('@src/claude/session-runtime.service.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@src/claude/session-runtime.service.js')>()),
+  steerPane: vi.fn(),
+}));
+// The real diff, so a test can fail one call of it and no other.
+vi.mock('@src/core/git-diff.client.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@src/core/git-diff.client.js')>();
+  return { ...actual, gitDiffPaths: vi.fn(actual.gitDiffPaths) };
+});
+// The real scratch git dir, so a test can fail one git call made in it.
+vi.mock('@src/core/merge-gate.service.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@src/core/merge-gate.service.js')>();
+  return { ...actual, withScratchGitDir: vi.fn(actual.withScratchGitDir) };
+});
+// The real gh probe, so a test can act between the store's checks and the lock.
+vi.mock('@src/core/github.client.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@src/core/github.client.js')>();
+  return { ...actual, assertGhAvailable: vi.fn(actual.assertGhAvailable) };
+});
+// The real audit, so a test can make the one after a land throw.
+vi.mock('@src/core/audit.service.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@src/core/audit.service.js')>();
+  return { ...actual, auditProject: vi.fn(actual.auditProject) };
+});
+
+import { GateStage } from '@src/adapters/enums/gate-stage.enums.js';
+import type { Adapter } from '@src/adapters/types/adapter.types.js';
+import { auditProject } from '@src/core/audit.service.js';
+import { openStore } from '@src/core/db.client.js';
+import { EventType } from '@src/core/enums/event-type.enums.js';
+import { SessionState } from '@src/core/enums/session-state.enums.js';
+import { assertGhAvailable } from '@src/core/github.client.js';
+import { abandonClosedSession, landSession } from '@src/core/land.service.js';
+import { withScratchGitDir } from '@src/core/merge-gate.service.js';
+import { projectId } from '@src/core/paths.utils.js';
+import {
+  appendEvent,
+  ensureProject,
+  getProject,
+  insertSession,
+  insertTask,
+  listEvents,
+  saveProjectOriginUrl,
+  transitionSession,
+} from '@src/core/session.repository.js';
+import { BRANCH, commitIn, ORIGIN_URL, PR_URL, SESSION_ID, sh } from '@test/helpers/land.mock.js';
+import { tempDir } from '@test/helpers/temp-dir.mock.js';
+
+// Real git repos, a bare origin and a sandboxed audit per test.
+// The gate children this file runs outside a gate start a sandbox run the
+// gate would have ended, and a test worker exits without the `exit` event
+// that ends it otherwise (decision 100).
+afterAll(() => {
+  endSandboxRun();
+});
+
+const passingAdapter: Adapter = {
+  id: 'fake',
+  detect: () => true,
+  gateCommands: () => [
+    { stage: GateStage.Build, command: 'true', args: [] },
+    { stage: GateStage.Test, command: 'true', args: [] },
+    { stage: GateStage.Lint, command: 'true', args: [] },
+  ],
+};
+
+describe('landSession', { timeout: 20_000 }, () => {
+  let db: Database;
+  let repo: string;
+  let origin: string;
+  let worktree: string;
+  /** The commit the gate pinned and pushed: the branch tip. */
+  let pinned: string;
+  let ghLog: string;
+  let originalPath: string | undefined;
+  /** The audit stores the baseline under the id the repo path gives. */
+  let pid: string;
+
+  beforeEach(() => {
+    db = openStore(':memory:');
+    repo = tempDir('pup-land-repo-');
+    sh(repo, 'git', 'init', '-q', '-b', 'main');
+    commitIn(repo, 'src/app.ts', 'export const app = 1;\n');
+    // GitHub-shaped origin, rewritten by the operator's global config into a
+    // local bare repo so the land's real fetch stays offline.
+    const host = tempDir('pup-land-origin-');
+    origin = join(host, 'owner', 'repo.git');
+    mkdirSync(origin, { recursive: true });
+    sh(origin, 'git', 'init', '-q', '--bare', '-b', 'main');
+    sh(repo, 'git', 'remote', 'add', 'origin', ORIGIN_URL);
+    sh(repo, 'git', 'push', '-q', origin, 'main');
+    const globalConfig = join(host, 'gitconfig');
+    writeFileSync(globalConfig, `[url "${host}/"]\n\tinsteadOf = git@github.com:\n`);
+    vi.stubEnv('GIT_CONFIG_GLOBAL', globalConfig);
+
+    pid = projectId(repo);
+    ensureProject(db, pid, repo);
+    saveProjectOriginUrl(db, pid, ORIGIN_URL);
+    insertTask(db, { id: 'task-s1', projectId: pid, spec: '{}' });
+    worktree = join(repo, '.worktrees', SESSION_ID);
+    sh(repo, 'git', 'worktree', 'add', '-q', '-b', BRANCH, worktree, 'HEAD');
+    pinned = commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
+    sh(repo, 'git', 'push', '-q', origin, BRANCH);
+    insertSession(db, {
+      id: SESSION_ID,
+      taskId: 'task-s1',
+      worktreePath: worktree,
+      branch: BRANCH,
+      profileHash: 'hash',
+    });
+    transitionSession(db, SESSION_ID, SessionState.Running);
+    transitionSession(db, SESSION_ID, SessionState.AwaitingReview);
+
+    ghLog = join(host, 'gh-calls');
+    originalPath = process.env.PATH;
+  });
+
+  afterEach(() => {
+    process.env.PATH = originalPath;
+    vi.unstubAllEnvs();
+  });
+
+  /** What the gate's `--pr` merge leaves: the session merged, its PR on the event. */
+  function seedPrMerge(prUrl: string | null = PR_URL): void {
+    transitionSession(db, SESSION_ID, SessionState.Merged);
+    appendEvent(db, SESSION_ID, EventType.Merge, {
+      branch: BRANCH,
+      sha: pinned,
+      target: 'main',
+      files: ['src/feature.ts'],
+      ...(prUrl === null ? {} : { prUrl }),
+    });
+  }
+
+  /** GitHub's merge button: a merge commit of origin's main and `head` on origin's main. */
+  function mergeOnGitHub(head = pinned): string {
+    const base = sh(origin, 'git', 'rev-parse', 'main');
+    const merge = sh(
+      origin,
+      'git',
+      '-c',
+      'user.email=gh@test',
+      '-c',
+      'user.name=github',
+      'commit-tree',
+      `${head}^{tree}`,
+      '-p',
+      base,
+      '-p',
+      head,
+      '-m',
+      'Merge pull request #7',
+    );
+    sh(origin, 'git', 'update-ref', 'refs/heads/main', merge);
+    return merge;
+  }
+
+  /** A gh on PATH that records its argv and answers `pr view` with this JSON. */
+  function fakeGh(answer: unknown): void {
+    const dir = tempDir('pup-land-gh-');
+    writeFileSync(
+      join(dir, 'gh'),
+      `#!/bin/sh\nprintf '%s\\n' "$*" >> ${ghLog}\necho '${JSON.stringify(answer)}'\n`,
+      { mode: 0o755 },
+    );
+    process.env.PATH = `${dir}:${originalPath}`;
+  }
+
+  const land = () =>
+    landSession(db, { repoPath: repo, sessionId: SESSION_ID, adapters: [passingAdapter] });
+  const mainSha = () => sh(repo, 'git', 'rev-parse', 'main');
+  const hasTrackingRef = () => sh(repo, 'git', 'for-each-ref', 'refs/remotes/origin/main') !== '';
+  const landedEvents = () =>
+    listEvents(db, SESSION_ID).filter((row) => row.type === EventType.Landed);
+
+  /** Nothing a refusal may touch moved. */
+  function expectNothingChanged(mainBefore: string): void {
+    expect(mainSha()).toBe(mainBefore);
+    expect(existsSync(worktree)).toBe(true);
+    expect(sh(repo, 'git', 'branch', '--list', BRANCH)).not.toBe('');
+    expect(landedEvents()).toEqual([]);
+    expect(getProject(db, pid)?.baseline).toBeNull();
+  }
+
+  /** The refusal of a merge commit whose tree is not the pinned content merged onto its base. */
+  const refusal = (merge: string) =>
+    `${merge}, the commit GitHub says merged ${PR_URL}, does not have the tree git gives ` +
+    `merging ${pinned}, the commit the gate pinned`;
+
+  /** A clone of origin, where GitHub's side of a squash or rebase merge is made. */
+  function cloneOrigin(): string {
+    const clone = tempDir('pup-land-clone-');
+    sh(clone, 'git', 'clone', '-q', origin, '.');
+    return clone;
+  }
+
+  /** Another PR merged first: origin's main moves past the base the gate rebased onto. */
+  function moveOriginMain(clone: string): string {
+    const moved = commitIn(clone, 'src/other.ts', 'export const other = 1;\n');
+    sh(clone, 'git', 'push', '-q', 'origin', 'HEAD:main');
+    return moved;
+  }
+
+  /** GitHub's squash button onto origin's main, `edit` run on the squash before its commit. */
+  function squashOnGitHub(clone: string, edit: () => void = () => undefined): string {
+    sh(clone, 'git', 'merge', '--squash', '-q', `origin/${BRANCH}`);
+    edit();
+    sh(clone, 'git', 'add', '-A');
+    sh(
+      clone,
+      'git',
+      '-c',
+      'user.email=gh@test',
+      '-c',
+      'user.name=github',
+      'commit',
+      '-q',
+      '--allow-empty',
+      '-m',
+      'Squashed (#7)',
+    );
+    sh(clone, 'git', 'push', '-q', 'origin', 'HEAD:main');
+    return sh(clone, 'git', 'rev-parse', 'HEAD');
+  }
+
+  // Decision 88: `pup land` waits for a merge lock a live run holds rather
+  // than hand the retry to the operator.
+  it('waits, when asked, for a merge lock a live run holds, then lands', async () => {
+    seedPrMerge();
+    const merge = mergeOnGitHub();
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: pinned,
+      mergeCommit: { oid: merge },
+    });
+    const lock = join(repo, '.git', 'pup-merge.lock');
+    mkdirSync(lock);
+    writeFileSync(join(lock, 'pid'), `${process.pid}\n`);
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    setTimeout(() => rmSync(lock, { recursive: true }), 200);
+
+    try {
+      const outcome = await landSession(db, {
+        repoPath: repo,
+        sessionId: SESSION_ID,
+        adapters: [passingAdapter],
+        wait: true,
+      });
+
+      expect(outcome).toMatchObject({ targetSha: merge, fastForwarded: true });
+      expect(errors.mock.calls.flat()).toContainEqual(
+        expect.stringMatching(/^Waiting for the merge lock, held by pid \d+, for up to /),
+      );
+      expect(existsSync(lock)).toBe(false);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  it('lands without the audit when asked, leaving the baseline for pup audit (decision 132)', async () => {
+    seedPrMerge();
+    const merge = mergeOnGitHub();
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: pinned,
+      mergeCommit: { oid: merge },
+    });
+    vi.mocked(auditProject).mockClear();
+
+    const outcome = await landSession(db, {
+      repoPath: repo,
+      sessionId: SESSION_ID,
+      adapters: [],
+      audit: false,
+    });
+
+    expect(outcome.audit).toBeUndefined();
+    expect(auditProject).not.toHaveBeenCalled();
+    expect(mainSha()).toBe(merge);
+    expect(existsSync(worktree)).toBe(false);
+    expect(landedEvents()).toHaveLength(1);
+  });
+
+  it('refuses a second land of the same session', async () => {
+    seedPrMerge();
+    const merge = mergeOnGitHub();
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: pinned,
+      mergeCommit: { oid: merge },
+    });
+    await land();
+
+    await expect(land()).rejects.toThrow('has already landed');
+    expect(landedEvents()).toHaveLength(1);
+  });
+
+  // The gate's teardown keeps a branch that moved past the pin; so does the land.
+  it('keeps a branch holding commits main does not', async () => {
+    seedPrMerge();
+    const merge = mergeOnGitHub();
+    commitIn(worktree, 'src/later.ts', 'export const later = 1;\n');
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: pinned,
+      mergeCommit: { oid: merge },
+    });
+
+    const outcome = await land();
+
+    expect(outcome.keptBranch).toBe(BRANCH);
+    expect(sh(repo, 'git', 'branch', '--list', BRANCH)).not.toBe('');
+    expect(mainSha()).toBe(merge);
+  });
+
+  it('refuses a merge that opened no PR, changing nothing', async () => {
+    seedPrMerge(null);
+    const before = mainSha();
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: pinned,
+      mergeCommit: { oid: pinned },
+    });
+
+    await expect(land()).rejects.toThrow('opened no pull request');
+    expectNothingChanged(before);
+    expect(existsSync(ghLog)).toBe(false);
+  });
+
+  // The audit runs after the land; with nothing to measure the land must not start.
+  it('refuses with no adapter, changing nothing', async () => {
+    seedPrMerge();
+    mergeOnGitHub();
+    const before = mainSha();
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: pinned,
+      mergeCommit: { oid: pinned },
+    });
+
+    await expect(
+      landSession(db, { repoPath: repo, sessionId: SESSION_ID, adapters: [] }),
+    ).rejects.toThrow(`No adapter for ${repo}; the audit after the land would measure nothing.`);
+    expectNothingChanged(before);
+    expect(existsSync(ghLog)).toBe(false);
+  });
+
+  // The checkout the fast-forward writes must be the target's, as at the gate.
+  it('refuses when the main checkout is on another branch, moving nothing, the tracking ref included', async () => {
+    seedPrMerge();
+    const merge = mergeOnGitHub();
+    sh(repo, 'git', 'checkout', '-q', '-b', 'elsewhere');
+    const before = mainSha();
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: pinned,
+      mergeCommit: { oid: merge },
+    });
+
+    await expect(land()).rejects.toThrow('The main checkout is on elsewhere, not main');
+    expectNothingChanged(before);
+    expect(hasTrackingRef()).toBe(false);
+  });
+
+  it('refuses a merge commit over a head that moved past the pin, changing nothing', async () => {
+    seedPrMerge();
+    const later = commitIn(worktree, 'src/late.ts', 'export const late = 1;\n');
+    sh(repo, 'git', 'push', '-q', origin, BRANCH);
+    const merge = mergeOnGitHub(later);
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: later,
+      mergeCommit: { oid: merge },
+    });
+    const mainBefore = mainSha();
+
+    await expect(land()).rejects.toThrow(
+      /merged with its head at .* not .* the commit the gate pinned; .* re-gated with `pup merge s1 --pr`/,
+    );
+    // Decision 164: the commits past the pin are read on GitHub, never with git
+    // in the repo a session can write.
+    const refusal = await land().catch((error: Error) => error.message);
+    expect(refusal).toContain(
+      `https://github.com/owner/repo/compare/${pinned}...${later}) and, if you vouch for ` +
+        `them, run \`pup land s1 --accept-head ${later}\``,
+    );
+    expect(refusal).not.toMatch(/`git /);
+
+    expectNothingChanged(mainBefore);
+    expect(hasTrackingRef()).toBe(false);
+  });
+
+  /** The PR's head ref GitHub keeps on origin, as `refs/pull/7/head`. */
+  const setPullHead = (head: string) => sh(origin, 'git', 'update-ref', 'refs/pull/7/head', head);
+  const landAccepting = (acceptHead: string) =>
+    landSession(db, {
+      repoPath: repo,
+      sessionId: SESSION_ID,
+      adapters: [passingAdapter],
+      acceptHead,
+    });
+
+  // Decision 164: the operator's word for the commits past the pin.
+  it('lands a merge commit over a moved head the operator accepted', async () => {
+    seedPrMerge();
+    const later = commitIn(worktree, 'src/late.ts', 'export const late = 1;\n');
+    sh(repo, 'git', 'push', '-q', origin, BRANCH);
+    setPullHead(later);
+    const merge = mergeOnGitHub(later);
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: later,
+      mergeCommit: { oid: merge },
+    });
+
+    const outcome = await landAccepting(later);
+
+    expect(outcome).toMatchObject({ mergeCommit: merge, targetSha: merge, fastForwarded: true });
+    expect(mainSha()).toBe(merge);
+    expect(existsSync(worktree)).toBe(false);
+    // The branch at the accepted head is all on main now.
+    expect(sh(repo, 'git', 'branch', '--list', BRANCH)).toBe('');
+    expect(landedEvents()).toHaveLength(1);
+  });
+
+  it('refuses an accepted head that is not the one the PR merged at, changing nothing', async () => {
+    seedPrMerge();
+    const later = commitIn(worktree, 'src/late.ts', 'export const late = 1;\n');
+    sh(repo, 'git', 'push', '-q', origin, BRANCH);
+    setPullHead(later);
+    const merge = mergeOnGitHub(later);
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: later,
+      mergeCommit: { oid: merge },
+    });
+    const mainBefore = mainSha();
+
+    await expect(landAccepting(pinned)).rejects.toThrow(
+      `--accept-head names ${pinned}, but ${PR_URL} merged with its head at ${later}`,
+    );
+    expectNothingChanged(mainBefore);
+    expect(hasTrackingRef()).toBe(false);
+  });
+
+  it('refuses an accepted head that does not descend from the pin, changing nothing', async () => {
+    seedPrMerge();
+    // A fix round that rebased: the same change rewritten onto main, plus one more.
+    const clone = cloneOrigin();
+    commitIn(clone, 'src/feature.ts', 'export const feature = 2;\n');
+    const rebased = commitIn(clone, 'src/late.ts', 'export const late = 1;\n');
+    sh(clone, 'git', 'push', '-q', 'origin', 'HEAD:refs/pull/7/head');
+    const merge = mergeOnGitHub(rebased);
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: rebased,
+      mergeCommit: { oid: merge },
+    });
+    const mainBefore = mainSha();
+
+    await expect(landAccepting(rebased)).rejects.toThrow(
+      `${rebased}, the head ${PR_URL} merged at, does not descend from ${pinned}`,
+    );
+    expectNothingChanged(mainBefore);
+    expect(hasTrackingRef()).toBe(false);
+  });
+
+  it("refuses an accepted head origin's PR ref does not hold, changing nothing", async () => {
+    seedPrMerge();
+    const later = commitIn(worktree, 'src/late.ts', 'export const late = 1;\n');
+    sh(repo, 'git', 'push', '-q', origin, BRANCH);
+    setPullHead(pinned);
+    const merge = mergeOnGitHub(later);
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: later,
+      mergeCommit: { oid: merge },
+    });
+    const mainBefore = mainSha();
+
+    await expect(landAccepting(later)).rejects.toThrow(
+      `origin's refs/pull/7/head is at ${pinned}, not ${later}`,
+    );
+    expectNothingChanged(mainBefore);
+    expect(hasTrackingRef()).toBe(false);
+  });
+
+  // The operator vouched for the commits past the pin, not for a change the merge adds.
+  it('refuses a merge commit with a change beyond the accepted head, changing nothing', async () => {
+    seedPrMerge();
+    const later = commitIn(worktree, 'src/late.ts', 'export const late = 1;\n');
+    sh(repo, 'git', 'push', '-q', origin, BRANCH);
+    setPullHead(later);
+    const clone = cloneOrigin();
+    sh(clone, 'git', 'merge', '--no-ff', '--no-commit', '-q', `origin/${BRANCH}`);
+    const merge = commitIn(clone, 'src/extra.ts', 'x;\n');
+    sh(clone, 'git', 'push', '-q', 'origin', 'HEAD:main');
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: later,
+      mergeCommit: { oid: merge },
+    });
+    const before = mainSha();
+
+    await expect(landAccepting(later)).rejects.toThrow(
+      `${merge}, the commit GitHub says merged ${PR_URL}, does not have the tree git gives ` +
+        `merging ${later}, the head you accepted`,
+    );
+    expectNothingChanged(before);
+    expect(hasTrackingRef()).toBe(false);
+  });
+
+  // gh text: a head outside a sha's shape is neither the pin nor one to accept.
+  it.each([
+    ['no head', {}],
+    ['a head that is not a sha', { headRefOid: 'HEAD~1' }],
+  ])('refuses a MERGED answer with %s, changing nothing', async (_, head) => {
+    seedPrMerge();
+    const merge = mergeOnGitHub();
+    fakeGh({ state: 'MERGED', baseRefName: 'main', ...head, mergeCommit: { oid: merge } });
+    const before = mainSha();
+
+    await expect(land()).rejects.toThrow(
+      `GitHub reports ${PR_URL} merged with an unreadable head. Nothing was landed.`,
+    );
+    expectNothingChanged(before);
+    expect(hasTrackingRef()).toBe(false);
+  });
+
+  // A merge-base that fails other than by "no" (status 1) is git failing, not
+  // an answer: refused as such, as `mergedOnto`'s reads are. The check is asked
+  // with the commit graph off, so a forged one cannot answer it (decision 164).
+  it('refuses, landing nothing, when the ancestry check of an accepted head fails', async () => {
+    seedPrMerge();
+    const later = commitIn(worktree, 'src/late.ts', 'export const late = 1;\n');
+    sh(repo, 'git', 'push', '-q', origin, BRANCH);
+    setPullHead(later);
+    const merge = mergeOnGitHub(later);
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: later,
+      mergeCommit: { oid: merge },
+    });
+    const failure = Object.assign(new Error('fatal: bad object'), { status: 128 });
+    const asked: string[] = [];
+    const real = vi.mocked(withScratchGitDir).getMockImplementation();
+    vi.mocked(withScratchGitDir).mockImplementation((repoPath, prefix, fn) =>
+      (real as typeof withScratchGitDir)(repoPath, prefix, (git) =>
+        fn((args, opts) => {
+          if (args.includes('merge-base')) {
+            asked.push(args.join(' '));
+            throw failure;
+          }
+          return git(args, opts);
+        }),
+      ),
+    );
+    const before = mainSha();
+
+    try {
+      await expect(landAccepting(later)).rejects.toThrow(
+        new RegExp(
+          `^Reading whether ${later} descends from ${pinned} failed\\. Nothing was ` +
+            'landed\\.\\n.*bad object',
+          's',
+        ),
+      );
+    } finally {
+      vi.mocked(withScratchGitDir).mockReset();
+    }
+    expect(asked).toEqual([
+      `-c core.commitGraph=false merge-base --is-ancestor ${pinned} ${later}`,
+    ]);
+    expectNothingChanged(before);
+    expect(hasTrackingRef()).toBe(false);
+  });
+
+  it("refuses a row whose branch is not the session's own, asking gh nothing", async () => {
+    seedPrMerge();
+    db.prepare('UPDATE sessions SET branch = ? WHERE id = ?').run('main', SESSION_ID);
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: pinned,
+      mergeCommit: { oid: pinned },
+    });
+    const mainBefore = mainSha();
+
+    await expect(land()).rejects.toThrow(/names a worktree or branch that is not its own/);
+
+    expect(mainSha()).toBe(mainBefore);
+    expect(sh(repo, 'git', 'branch', '--list', 'main')).not.toBe('');
+    expect(existsSync(ghLog)).toBe(false);
+  });
+
+  // The url is store text: one outside origin's repo would land on another PR's word.
+  it("refuses a PR url outside origin's repo, asking gh nothing", async () => {
+    seedPrMerge('https://github.com/elsewhere/repo/pull/7');
+    const before = mainSha();
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: pinned,
+      mergeCommit: { oid: pinned },
+    });
+
+    await expect(land()).rejects.toThrow('is not a pull request of github.com/owner/repo');
+    expectNothingChanged(before);
+    expect(existsSync(ghLog)).toBe(false);
+  });
+
+  it.each(['OPEN', 'CLOSED'])(
+    'refuses when gh says the PR is %s, changing nothing',
+    async (state) => {
+      seedPrMerge();
+      mergeOnGitHub();
+      const before = mainSha();
+      fakeGh({ state, mergeCommit: null });
+
+      await expect(land()).rejects.toThrow(`${PR_URL} is ${state} on GitHub, not MERGED`);
+      expectNothingChanged(before);
+      expect(hasTrackingRef()).toBe(false);
+    },
+  );
+
+  // Decision 146: any session can close a peer's PR with the shared gh login,
+  // so only the operator's --abandon-closed frees the numbers it holds.
+  describe('a PR closed unmerged', () => {
+    const closedEvents = () =>
+      listEvents(db, SESSION_ID).filter((row) => row.type === EventType.PrClosed);
+    const abandon = () => abandonClosedSession(db, { repoPath: repo, sessionId: SESSION_ID });
+
+    it('refuses a plain land, records nothing and names --abandon-closed', async () => {
+      seedPrMerge();
+      fakeGh({ state: 'CLOSED', mergeCommit: null });
+
+      await expect(land()).rejects.toThrow(
+        `${PR_URL} is CLOSED on GitHub, not MERGED. Check on GitHub who closed it: any session ` +
+          'can close a PR with the shared gh login. If the work is abandoned, run ' +
+          `\`pup land ${SESSION_ID} --abandon-closed\` to free the ADR numbers it holds; if ` +
+          `another PR re-landed it, \`pup retire ${SESSION_ID} --superseded-by <pr>\`. Nothing ` +
+          'was landed.',
+      );
+      expect(closedEvents()).toEqual([]);
+    });
+
+    it('records the close once on --abandon-closed, landing nothing', async () => {
+      seedPrMerge();
+      const before = mainSha();
+      fakeGh({ state: 'CLOSED', mergeCommit: null });
+
+      await expect(abandon()).resolves.toEqual({ prUrl: PR_URL, recorded: true });
+      await expect(abandon()).resolves.toEqual({ prUrl: PR_URL, recorded: false });
+      expect(closedEvents().map((row) => JSON.parse(row.payload))).toEqual([
+        { prUrl: PR_URL, sha: pinned },
+      ]);
+      expectNothingChanged(before);
+    });
+
+    it.each(['OPEN', 'MERGED'])('refuses --abandon-closed when gh says %s', async (state) => {
+      seedPrMerge();
+      fakeGh({ state, mergeCommit: null });
+
+      await expect(abandon()).rejects.toThrow(
+        `${PR_URL} is ${state} on GitHub, not CLOSED; only a PR closed unmerged can be ` +
+          'abandoned. Nothing was recorded.',
+      );
+      expect(closedEvents()).toEqual([]);
+    });
+
+    it('refuses --abandon-closed when a re-gate records a new merge before the lock', async () => {
+      seedPrMerge();
+      fakeGh({ state: 'CLOSED', mergeCommit: null });
+      vi.mocked(assertGhAvailable).mockImplementationOnce(() => {
+        appendEvent(db, SESSION_ID, EventType.Merge, {
+          branch: BRANCH,
+          sha: 'f'.repeat(40),
+          target: 'main',
+          files: ['src/feature.ts'],
+          prUrl: PR_URL,
+        });
+      });
+
+      await expect(abandon()).rejects.toThrow(
+        `Session ${SESSION_ID} recorded another merge or a land while \`pup land\` waited for ` +
+          `the merge lock, so ${PR_URL} is no longer the PR it stands for. Nothing was recorded.`,
+      );
+      expect(closedEvents()).toEqual([]);
+      expect(existsSync(ghLog)).toBe(false);
+    });
+
+    // Merging it on GitHub as asked would skip the re-gate that re-checks the
+    // ADR numbers the record freed.
+    it('refuses a land of a PR reopened at the pin, naming the re-gate', async () => {
+      seedPrMerge();
+      appendEvent(db, SESSION_ID, EventType.PrClosed, { prUrl: PR_URL, sha: pinned });
+      const before = mainSha();
+      fakeGh({ state: 'OPEN', headRefOid: pinned, mergeCommit: null });
+
+      await expect(land()).rejects.toThrow(
+        `${PR_URL} was recorded closed unmerged and is OPEN on GitHub again; its ADR numbers ` +
+          `were free to other gates since. Re-gate it with \`pup merge ${SESSION_ID} --pr\` ` +
+          'before merging it there, then re-run `pup land`. Nothing was landed.',
+      );
+      expectNothingChanged(before);
+      expect(closedEvents()).toHaveLength(1);
+    });
+  });
+
+  // Decision 131: GitHub's squash merges the pinned content onto a main that
+  // moved, so main holds the content the gate measured but not the pinned sha.
+  it('lands a squash of the pinned content onto a moved main, fast-forwarding and auditing', async () => {
+    seedPrMerge();
+    const clone = cloneOrigin();
+    moveOriginMain(clone);
+    const squash = squashOnGitHub(clone);
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: pinned,
+      mergeCommit: { oid: squash },
+    });
+
+    const outcome = await land();
+
+    expect(outcome).toMatchObject({
+      mergeCommit: squash,
+      targetSha: squash,
+      fastForwarded: true,
+      removedWorktree: true,
+    });
+    expect(outcome.keptBranch).toBeUndefined();
+    expect(mainSha()).toBe(squash);
+    expect(sh(repo, 'git', 'status', '--porcelain')).toBe('');
+    expect(readFileSync(join(repo, 'src/feature.ts'), 'utf8')).toContain('feature');
+    expect(readFileSync(join(repo, 'src/other.ts'), 'utf8')).toContain('other');
+    expect(sh(repo, 'git', 'rev-parse', 'refs/remotes/origin/main')).toBe(squash);
+    expect(sh(repo, 'git', 'branch', '--list', BRANCH)).toBe('');
+    expect(getProject(db, pid)?.baseline).not.toBeNull();
+    expect(landedEvents().map((row) => JSON.parse(row.payload))).toEqual([
+      { sha: squash, target: 'main', prUrl: PR_URL },
+    ]);
+  });
+
+  it.each([
+    ['an extra change', (clone: string) => writeFileSync(join(clone, 'src/extra.ts'), 'x;\n')],
+    ['a missing change', (clone: string) => rmSync(join(clone, 'src/feature.ts'))],
+    [
+      'an altered change',
+      (clone: string) =>
+        writeFileSync(join(clone, 'src/feature.ts'), 'export const feature = 2;\n'),
+    ],
+  ])('refuses a squash with %s the gate never measured, changing nothing', async (_, edit) => {
+    seedPrMerge();
+    const clone = cloneOrigin();
+    moveOriginMain(clone);
+    const squash = squashOnGitHub(clone, () => edit(clone));
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: pinned,
+      mergeCommit: { oid: squash },
+    });
+    const before = mainSha();
+
+    await expect(land()).rejects.toThrow(refusal(squash));
+    expectNothingChanged(before);
+    expect(hasTrackingRef()).toBe(false);
+  });
+
+  // A merge-tree that fails other than by a conflict (status 1), as one without
+  // `--write-tree` does, is git failing, not content the gate never measured.
+  // Each read is made with the commit graph off, so a forged one cannot answer it.
+  it.each([
+    ['rev-list', Object.assign(new Error('fatal: bad object'), { status: 128 })],
+    ['merge-tree', Object.assign(new Error('fatal: bad object'), { status: 128 })],
+  ])(
+    'refuses, landing nothing, when %s fails reading what the merge landed',
+    async (failing, failure) => {
+      seedPrMerge();
+      const clone = cloneOrigin();
+      moveOriginMain(clone);
+      const squash = squashOnGitHub(clone);
+      fakeGh({
+        state: 'MERGED',
+        baseRefName: 'main',
+        headRefOid: pinned,
+        mergeCommit: { oid: squash },
+      });
+      const asked: string[] = [];
+      const real = vi.mocked(withScratchGitDir).getMockImplementation();
+      vi.mocked(withScratchGitDir).mockImplementation((repoPath, prefix, fn) =>
+        (real as typeof withScratchGitDir)(repoPath, prefix, (git) =>
+          fn((args, opts) => {
+            if (args.includes(failing)) {
+              asked.push(args.join(' '));
+              throw failure;
+            }
+            return git(args, opts);
+          }),
+        ),
+      );
+      const before = mainSha();
+
+      try {
+        await expect(land()).rejects.toThrow(
+          new RegExp(
+            `^Reading what ${squash} landed failed\\. Nothing was landed\\.\\n.*bad object`,
+            's',
+          ),
+        );
+      } finally {
+        vi.mocked(withScratchGitDir).mockReset();
+      }
+      expect(asked).toHaveLength(1);
+      expect(asked[0]).toMatch(new RegExp(`^-c core\\.commitGraph=false ${failing} `));
+      expectNothingChanged(before);
+      expect(hasTrackingRef()).toBe(false);
+    },
+  );
+
+  // Ancestry alone would take a merge commit carrying changes of its own.
+  it('refuses a merge commit with a change the gate never measured, changing nothing', async () => {
+    seedPrMerge();
+    const clone = cloneOrigin();
+    moveOriginMain(clone);
+    sh(clone, 'git', 'merge', '--no-ff', '--no-commit', '-q', `origin/${BRANCH}`);
+    const merge = commitIn(clone, 'src/extra.ts', 'x;\n');
+    sh(clone, 'git', 'push', '-q', 'origin', 'HEAD:main');
+    expect(sh(clone, 'git', 'rev-list', '--parents', '-n', '1', merge).split(' ')).toContain(
+      pinned,
+    );
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: pinned,
+      mergeCommit: { oid: merge },
+    });
+    const before = mainSha();
+
+    await expect(land()).rejects.toThrow(refusal(merge));
+    expectNothingChanged(before);
+    expect(hasTrackingRef()).toBe(false);
+  });
+
+  // The tree check merges a file both sides changed, which runs a merge driver
+  // the repo's attributes and config name; the scratch git dir reads neither.
+  it('runs no merge driver armed in the repo while checking the tree', async () => {
+    pinned = commitIn(worktree, 'src/app.ts', 'export const app = 2;\n');
+    sh(repo, 'git', 'push', '-q', origin, BRANCH);
+    seedPrMerge();
+    const clone = cloneOrigin();
+    const moved = commitIn(clone, 'src/app.ts', 'export const app = 3;\n');
+    sh(clone, 'git', 'push', '-q', 'origin', 'HEAD:main');
+    writeFileSync(join(clone, 'src/feature.ts'), 'export const feature = 1;\n');
+    const squash = commitIn(clone, 'src/app.ts', 'export const app = 2;\n');
+    sh(clone, 'git', 'push', '-q', 'origin', 'HEAD:main');
+    const marker = join(tempDir('pup-land-driver-'), 'ran');
+    mkdirSync(join(repo, '.git', 'info'), { recursive: true });
+    writeFileSync(join(repo, '.git', 'info', 'attributes'), '* merge=x\n');
+    sh(repo, 'git', 'config', 'merge.x.driver', `touch ${marker}; false`);
+    fakeGh({
+      state: 'MERGED',
+      baseRefName: 'main',
+      headRefOid: pinned,
+      mergeCommit: { oid: squash },
+    });
+    const before = mainSha();
+
+    await expect(land()).rejects.toThrow(refusal(squash));
+    expect(existsSync(marker)).toBe(false);
+    expectNothingChanged(before);
+    // The same merge run by the repo's own git does run it.
+    expect(() => sh(repo, 'git', 'merge-tree', '--write-tree', moved, pinned)).toThrow();
+    expect(existsSync(marker)).toBe(true);
+  });
+});

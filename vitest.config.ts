@@ -10,8 +10,7 @@ export default defineConfig({
     },
   },
   test: {
-    // Both trees while the tests move out of src/ (decision 116).
-    include: ['src/**/*.test.ts', 'test/**/*.test.ts'],
+    include: ['test/**/*.test.ts'],
     // Many tests spawn real git and sh; a worker per core, times several suites at once, swamps
     // the machine and times those tests out. Half the cores, at least two.
     maxWorkers: Math.max(2, Math.floor(availableParallelism() / 2)),

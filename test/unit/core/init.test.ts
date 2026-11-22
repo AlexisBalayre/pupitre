@@ -1,0 +1,546 @@
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { GateStage } from '@src/adapters/enums/gate-stage.enums.js';
+import type { Adapter } from '@src/adapters/types/adapter.types.js';
+import { listBaselineHistory } from '@src/core/baseline-history.repository.js';
+import { DUPLICATION_RULE_ID } from '@src/core/constants/merge-gate.constants.js';
+import { openStore } from '@src/core/db.client.js';
+import { BaselineStageStatus } from '@src/core/enums/baseline-stage-status.enums.js';
+import { OriginRecording } from '@src/core/enums/origin-recording.enums.js';
+import { BrokenToolchainError, NoAdapterError } from '@src/core/errors/init.errors.js';
+import { UndeclaredSandboxError } from '@src/core/errors/sandbox.errors.js';
+import { initProject } from '@src/core/init.service.js';
+import { projectId } from '@src/core/paths.utils.js';
+import { endSandboxRun } from '@src/core/sandbox.utils.js';
+import {
+  ensureProject,
+  getProject,
+  insertSession,
+  insertTask,
+  saveProjectBaseline,
+} from '@src/core/session.repository.js';
+import type { DebtBaseline, ProjectBaseline } from '@src/core/types/init.types.js';
+import { passingAdapter } from '@test/helpers/merge-gate.mock.js';
+import { tempDir } from '@test/helpers/temp-dir.mock.js';
+import type { Database } from 'better-sqlite3';
+import { afterAll, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+
+// Same isolation the other suites use: a test repo must not inherit the
+// developer's global git config, nor the GIT_DIR family a pre-commit run sets.
+const GIT_ENV: NodeJS.ProcessEnv = {
+  ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_'))),
+  GIT_CONFIG_GLOBAL: '/dev/null',
+  GIT_CONFIG_SYSTEM: '/dev/null',
+};
+
+function sh(cwd: string, ...args: string[]): string {
+  return execFileSync(args[0] as string, args.slice(1), { cwd, encoding: 'utf8', env: GIT_ENV });
+}
+
+const ORIGIN_URL = 'git@github.com:owner/repo.git';
+
+/** Turns the fixture into a git repo with an origin, as a real project has. */
+function addOrigin(repo: string, url = ORIGIN_URL): void {
+  sh(repo, 'git', 'init', '-b', 'main');
+  sh(repo, 'git', 'remote', 'add', 'origin', url);
+}
+
+function makeAdapter(overrides: Partial<Adapter> = {}): Adapter {
+  return { ...passingAdapter, ...overrides };
+}
+
+/** A pre-upgrade store: projects.baseline holds a capture no history row records. */
+function seedPreHistoryBaseline(
+  db: Database,
+  pid: string,
+  repoPath: string,
+  debt?: DebtBaseline,
+): ProjectBaseline {
+  ensureProject(db, pid, repoPath);
+  const legacy: ProjectBaseline = {
+    capturedAt: '2026-07-23T08:00:00.000Z',
+    adapters: ['fake'],
+    stages: [{ stage: GateStage.Build, status: BaselineStageStatus.Pass, durationMs: 3 }],
+    ...(debt ? { debt } : {}),
+  };
+  saveProjectBaseline(db, pid, legacy.adapters, JSON.stringify(legacy));
+  return legacy;
+}
+
+/** Pretend to be another platform for one test; `process.platform` is a plain property. */
+function onPlatform(platform: NodeJS.Platform): void {
+  const original = Object.getOwnPropertyDescriptor(process, 'platform') as PropertyDescriptor;
+  Object.defineProperty(process, 'platform', { ...original, value: platform });
+  onTestFinished(() => {
+    Object.defineProperty(process, 'platform', original);
+    vi.unstubAllEnvs();
+  });
+}
+
+// The gate children this file runs outside a gate start a sandbox run the
+// gate would have ended, and a test worker exits without the `exit` event
+// that ends it otherwise (decision 100).
+afterAll(() => {
+  endSandboxRun();
+});
+
+describe('initProject', () => {
+  let db: Database;
+  let repo: string;
+
+  beforeEach(() => {
+    db = openStore(':memory:');
+    repo = tempDir('pup-init-');
+  });
+
+  it('stores a passing baseline on the project row', async () => {
+    const report = await initProject(db, repo, [makeAdapter()]);
+
+    expect(report.baseline.stages.map((s) => s.status)).toEqual([
+      BaselineStageStatus.Pass,
+      BaselineStageStatus.Pass,
+      BaselineStageStatus.Pass,
+    ]);
+    expect(report.findings).toEqual([]);
+    const row = getProject(db, projectId(repo));
+    expect(JSON.parse(row?.adapters ?? '[]')).toEqual(['fake']);
+    const stored = JSON.parse(row?.baseline ?? '{}') as ProjectBaseline;
+    expect(stored.stages).toHaveLength(3);
+  });
+
+  describe('off darwin (decision 78)', () => {
+    it('refuses before detecting or running anything unless the operator declared the VM', () => {
+      onPlatform('linux');
+      vi.stubEnv('PUP_SANDBOX', undefined);
+      const marker = join(repo, 'ran');
+      const detect = vi.fn(() => true);
+      const adapter = makeAdapter({
+        detect,
+        gateCommands: () => [{ stage: GateStage.Build, command: 'touch', args: [marker] }],
+      });
+
+      expect(() => initProject(db, repo, [adapter])).toThrow(UndeclaredSandboxError);
+      expect(detect).not.toHaveBeenCalled();
+      expect(existsSync(marker)).toBe(false);
+      expect(getProject(db, projectId(repo))).toBeUndefined();
+    });
+
+    it('stores the baseline under the declaration and names it', async () => {
+      onPlatform('linux');
+      vi.stubEnv('PUP_SANDBOX', 'vm');
+
+      const report = await initProject(db, repo, [makeAdapter()]);
+
+      expect(report.sandbox).toBe('vm (declared by operator)');
+      expect(report.baseline.stages.map((s) => s.status)).toEqual([
+        BaselineStageStatus.Pass,
+        BaselineStageStatus.Pass,
+        BaselineStageStatus.Pass,
+      ]);
+    });
+  });
+
+  it('records a failing stage and surfaces it as a finding, without throwing', async () => {
+    const adapter = makeAdapter({
+      gateCommands: () => [
+        { stage: GateStage.Build, command: 'true', args: [] },
+        { stage: GateStage.Test, command: 'false', args: [] },
+        { stage: GateStage.Lint, command: 'true', args: [] },
+      ],
+    });
+
+    const report = await initProject(db, repo, [adapter]);
+
+    expect(report.baseline.stages[1]).toMatchObject({
+      stage: GateStage.Test,
+      status: BaselineStageStatus.Fail,
+    });
+    expect(report.findings.some((f) => f.includes('test fails at baseline'))).toBe(true);
+  });
+
+  // One run answers for the test stage and for coverage (decision 95).
+  describe('an adapter whose test run measures coverage too', () => {
+    /** A `coveredTest` that runs `script` in the repo, logging each run to runs.log. */
+    function covering(script: string) {
+      const report = vi.fn(() => ({
+        files: { 'src/a.ts': { covered: [1], instrumented: [1, 2] } },
+      }));
+      const dispose = vi.fn();
+      const coveredTest = vi.fn(() => ({
+        command: 'sh',
+        args: ['-c', `echo run >> runs.log; ${script}`],
+        writablePaths: [],
+        report,
+        dispose,
+      }));
+      return { coveredTest, report, dispose };
+    }
+
+    it('runs the suite once, for the test stage and the coverage ratio both', async () => {
+      const { coveredTest, report, dispose } = covering('exit 0');
+      const coverage = vi.fn(() => ({ unavailable: 'ran the suite a second time' }));
+
+      const result = await initProject(db, repo, [makeAdapter({ coverage, coveredTest })]);
+
+      expect(readFileSync(join(repo, 'runs.log'), 'utf8')).toBe('run\n');
+      expect(coverage).not.toHaveBeenCalled();
+      expect(result.baseline.stages.find((s) => s.stage === GateStage.Test)?.status).toBe(
+        BaselineStageStatus.Pass,
+      );
+      expect(result.baseline.debt?.coverageRatio).toBe(0.5);
+      expect(report).toHaveBeenCalledOnce();
+      expect(dispose).toHaveBeenCalledOnce();
+    });
+
+    it('fails the test stage and leaves coverage unmeasured when that run fails', async () => {
+      const { coveredTest, report, dispose } = covering('exit 1');
+      const coverage = vi.fn(() => ({ files: {} }));
+      const printed = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      onTestFinished(() => printed.mockRestore());
+
+      const result = await initProject(db, repo, [makeAdapter({ coverage, coveredTest })]);
+
+      const tested = result.baseline.stages.find((s) => s.stage === GateStage.Test);
+      expect(tested?.status).toBe(BaselineStageStatus.Fail);
+      // An in-memory store made no project directory, and none is made for it.
+      expect(tested?.detail).toMatch(/^full output not kept: no directory at \S+\n/);
+      expect(result.baseline.debt?.coverageRatio).toBeUndefined();
+      expect(result.baseline.gaps).toEqual([{ adapterId: 'fake', capability: 'coverage' }]);
+      expect(result.findings).toContainEqual(
+        expect.stringContaining('coverage not measured — the instrumented test run failed'),
+      );
+      // A finding becomes a sweep task's goal, which a PR body publishes: the
+      // store's path is printed on the operator's terminal instead.
+      expect(result.findings.join('\n')).not.toContain('full output');
+      expect(printed).toHaveBeenCalledWith(
+        expect.stringMatching(
+          /^The baseline test run failed; full output not kept: no directory at \S+\.$/,
+        ),
+      );
+      expect(report).not.toHaveBeenCalled();
+      expect(coverage).not.toHaveBeenCalled();
+      expect(dispose).toHaveBeenCalledOnce();
+    });
+
+    it('keeps the two runs apart when the test command is another adapter’s', async () => {
+      const { coveredTest } = covering('exit 0');
+      const coverage = vi.fn(() => ({ files: {} }));
+      const measurer = makeAdapter({
+        id: 'measurer',
+        gateCommands: () => [],
+        coverage,
+        coveredTest,
+      });
+
+      await initProject(db, repo, [makeAdapter({ id: 'tester' }), measurer]);
+
+      expect(coveredTest).not.toHaveBeenCalled();
+      expect(coverage).toHaveBeenCalledOnce();
+    });
+  });
+
+  // The test stage passes only if lint and both debt capabilities ran while it
+  // was running (decision 95).
+  it('runs lint and the debt capabilities alongside the test run, reporting in order', async () => {
+    const waitForAll =
+      'i=0; while [ $i -lt 100 ]; do ' +
+      '[ -e lint.ran ] && [ -e dead-code.ran ] && [ -e duplication.ran ] && exit 0; ' +
+      'sleep 0.1; i=$((i+1)); done; echo "ran alone"; exit 2';
+    const adapter = makeAdapter({
+      gateCommands: () => [
+        { stage: GateStage.Build, command: 'true', args: [] },
+        { stage: GateStage.Test, command: 'sh', args: ['-c', waitForAll] },
+        { stage: GateStage.Lint, command: 'sh', args: ['-c', 'touch lint.ran'] },
+      ],
+      deadCode: (ctx) => {
+        writeFileSync(join(ctx.measurePath, 'dead-code.ran'), '');
+        return [];
+      },
+      duplication: (ctx) => {
+        writeFileSync(join(ctx.measurePath, 'duplication.ran'), '');
+        return { duplicatedLines: 0, blocks: [] };
+      },
+    });
+
+    const report = await initProject(db, repo, [adapter]);
+
+    expect(report.baseline.stages.map(({ stage, status }) => `${stage}:${status}`)).toEqual([
+      'build:pass',
+      'test:pass',
+      'lint:pass',
+    ]);
+    expect(report.baseline.debt).toEqual({
+      deadExports: [],
+      duplicatedLines: 0,
+      duplicationRule: DUPLICATION_RULE_ID,
+    });
+  });
+
+  it('marks missing commands as skipped with a not-measured finding', async () => {
+    const adapter = makeAdapter({
+      gateCommands: () => [{ stage: GateStage.Build, command: 'true', args: [] }],
+    });
+
+    const report = await initProject(db, repo, [adapter]);
+
+    expect(report.baseline.stages.map((s) => s.status)).toEqual([
+      BaselineStageStatus.Pass,
+      BaselineStageStatus.Skipped,
+      BaselineStageStatus.Skipped,
+    ]);
+    expect(report.findings).toHaveLength(2);
+  });
+
+  it("records origin's URL on the project row, raw", async () => {
+    addOrigin(repo);
+    // The rewrite `remote get-url` would apply and `config --get` does not:
+    // recording the rewritten value would record whatever a session had
+    // already aimed the repo at (decisions 54, 56).
+    sh(repo, 'git', 'config', 'url./tmp/elsewhere/.insteadOf', ORIGIN_URL);
+
+    const report = await initProject(db, repo, [makeAdapter()]);
+
+    expect(getProject(db, projectId(repo))?.origin_url).toBe(ORIGIN_URL);
+    expect(report.findings).toEqual([]);
+  });
+
+  it('refuses to record a URL nobody could have typed', async () => {
+    // Terminal escapes in a remote URL repaint whatever is printed around it,
+    // and a stored one would be reprinted on every init and audit.
+    addOrigin(repo, `${ORIGIN_URL}\u001b[2Aowned`);
+
+    const report = await initProject(db, repo, [makeAdapter()]);
+
+    expect(getProject(db, projectId(repo))?.origin_url).toBeNull();
+    expect(report.findings[0]).toContain('not a URL anyone could have typed');
+  });
+
+  it('holds the first record on a project whose sessions could have written it', async () => {
+    addOrigin(repo);
+    const pid = projectId(repo);
+    ensureProject(db, pid, repo);
+    insertTask(db, { id: 't1', projectId: pid, spec: '{}' });
+    insertSession(db, {
+      id: 's1',
+      taskId: 't1',
+      worktreePath: join(repo, '.worktrees', 's1'),
+      branch: 'pup/s1',
+      profileHash: 'h',
+    });
+
+    const held = await initProject(db, repo, [makeAdapter()]);
+
+    expect(getProject(db, pid)?.origin_url).toBeNull();
+    expect(held.findings[0]).toContain('--origin-moved');
+    // The flag is how the operator confirms it, first record or later move.
+    const confirmed = await initProject(
+      db,
+      repo,
+      [makeAdapter()],
+      undefined,
+      OriginRecording.ReRecord,
+    );
+    expect(getProject(db, pid)?.origin_url).toBe(ORIGIN_URL);
+    expect(confirmed.findings).toEqual([]);
+  });
+
+  it('records nothing when the repo has no origin', async () => {
+    sh(repo, 'git', 'init', '-b', 'main');
+
+    await initProject(db, repo, [makeAdapter()]);
+
+    expect(getProject(db, projectId(repo))?.origin_url).toBeNull();
+  });
+
+  it('keeps the recorded push target when origin now says something else, and says so', async () => {
+    addOrigin(repo);
+    await initProject(db, repo, [makeAdapter()]);
+    sh(repo, 'git', 'config', 'remote.origin.url', 'git@github.com:attacker/repo.git');
+
+    const report = await initProject(db, repo, [makeAdapter()]);
+
+    expect(getProject(db, projectId(repo))?.origin_url).toBe(ORIGIN_URL);
+    expect(report.findings).toEqual([expect.stringContaining('git@github.com:attacker/repo.git')]);
+    expect(report.findings[0]).toContain('--origin-moved');
+  });
+
+  it('re-records the push target when the operator says origin moved', async () => {
+    addOrigin(repo);
+    await initProject(db, repo, [makeAdapter()]);
+    sh(repo, 'git', 'config', 'remote.origin.url', 'git@github.com:owner/renamed.git');
+
+    const report = await initProject(
+      db,
+      repo,
+      [makeAdapter()],
+      undefined,
+      OriginRecording.ReRecord,
+    );
+
+    expect(getProject(db, projectId(repo))?.origin_url).toBe('git@github.com:owner/renamed.git');
+    expect(report.findings).toEqual([]);
+  });
+
+  it('refreshes the baseline on re-run', async () => {
+    await initProject(db, repo, [
+      makeAdapter({ gateCommands: () => [{ stage: GateStage.Build, command: 'false', args: [] }] }),
+    ]);
+    const second = await initProject(db, repo, [makeAdapter()]);
+
+    expect(second.findings).toEqual([]);
+    const stored = JSON.parse(getProject(db, projectId(repo))?.baseline ?? '{}') as ProjectBaseline;
+    expect(stored.stages.map((s) => s.status)).toEqual([
+      BaselineStageStatus.Pass,
+      BaselineStageStatus.Pass,
+      BaselineStageStatus.Pass,
+    ]);
+  });
+
+  it('captures debt metrics in the baseline when the adapter can measure them', async () => {
+    const adapter = makeAdapter({
+      deadCode: () => [{ file: 'src/a.ts', exportName: 'orphan' }],
+      duplication: () => ({ duplicatedLines: 12, blocks: [] }),
+    });
+
+    await initProject(db, repo, [adapter]);
+
+    const stored = JSON.parse(getProject(db, projectId(repo))?.baseline ?? '{}') as ProjectBaseline;
+    expect(stored.debt).toEqual({
+      deadExports: [{ file: 'src/a.ts', exportName: 'orphan' }],
+      duplicatedLines: 12,
+      duplicationRule: DUPLICATION_RULE_ID,
+    });
+  });
+
+  it('captures the repo coverage ratio when the adapter can measure it', async () => {
+    const adapter = makeAdapter({
+      coverage: () => ({ files: { 'src/a.ts': { covered: [1], instrumented: [1, 2] } } }),
+    });
+
+    await initProject(db, repo, [adapter]);
+
+    const stored = JSON.parse(getProject(db, projectId(repo))?.baseline ?? '{}') as ProjectBaseline;
+    expect(stored.debt?.coverageRatio).toBe(0.5);
+  });
+
+  it('leaves debt metrics out of the baseline when no adapter can measure them', async () => {
+    await initProject(db, repo, [makeAdapter()]);
+
+    const stored = JSON.parse(getProject(db, projectId(repo))?.baseline ?? '{}') as ProjectBaseline;
+    expect(stored.debt).toBeUndefined();
+  });
+
+  it('does not store an empty dead-export baseline when the tooling is unavailable', async () => {
+    await initProject(db, repo, [
+      makeAdapter({ deadCode: () => ({ unavailable: 'vulture missing' }) }),
+    ]);
+
+    const stored = JSON.parse(getProject(db, projectId(repo))?.baseline ?? '{}') as ProjectBaseline;
+    expect(stored.debt?.deadExports).toBeUndefined();
+  });
+
+  it('reports why a capability could not measure, so the gap is visible before any session', async () => {
+    const report = await initProject(db, repo, [
+      makeAdapter({ deadCode: () => ({ unavailable: 'vulture missing' }) }),
+    ]);
+
+    expect(report.findings).toContainEqual(expect.stringContaining('vulture missing'));
+  });
+
+  it('stores an empty dead-export baseline when the tooling measured and found nothing', async () => {
+    // [] is a measurement: it becomes the bar every later session is held to.
+    await initProject(db, repo, [makeAdapter({ deadCode: () => [] })]);
+
+    const stored = JSON.parse(getProject(db, projectId(repo))?.baseline ?? '{}') as ProjectBaseline;
+    expect(stored.debt?.deadExports).toEqual([]);
+  });
+
+  it('stores nothing when the package manager itself cannot load from the toolchain cache', async () => {
+    // The poisoned shape: a corepack install with an empty bin/. The repair
+    // moves it aside before the child runs, and the stage still runs the path
+    // it was handed, so the crash is Node's real missing-entrypoint banner.
+    const tmp = tempDir('pup-cache-root-');
+    vi.stubEnv('TMPDIR', tmp);
+    const install = join(
+      tmp,
+      'pup-toolchain-cache',
+      projectId(repo),
+      'corepack',
+      'v1',
+      'pnpm',
+      '10.34.5',
+    );
+    mkdirSync(join(install, 'bin'), { recursive: true });
+    const pnpm = { command: 'node', args: [join(install, 'bin', 'pnpm.cjs')] };
+    const adapter = makeAdapter({
+      gateCommands: () => [
+        { stage: GateStage.Build, ...pnpm },
+        { stage: GateStage.Test, ...pnpm },
+        { stage: GateStage.Lint, ...pnpm },
+      ],
+    });
+
+    try {
+      await expect(initProject(db, repo, [adapter])).rejects.toThrow(BrokenToolchainError);
+      await expect(initProject(db, repo, [adapter])).rejects.toThrow(install);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    expect(getProject(db, projectId(repo))?.baseline).toBeNull();
+    expect(listBaselineHistory(db, projectId(repo))).toEqual([]);
+  });
+
+  it('throws when no adapter detects the repo', () => {
+    const adapter = makeAdapter({ detect: () => false });
+    expect(() => initProject(db, repo, [adapter])).toThrow(NoAdapterError);
+  });
+
+  it('appends a history row for every capture, first init included', async () => {
+    const first = await initProject(db, repo, [
+      makeAdapter({ duplication: () => ({ duplicatedLines: 12, blocks: [] }) }),
+    ]);
+    const second = await initProject(db, repo, [makeAdapter()]);
+
+    const history = listBaselineHistory(db, projectId(repo));
+    expect(history.map((r) => r.captured_at)).toEqual([
+      first.baseline.capturedAt,
+      second.baseline.capturedAt,
+    ]);
+    expect(JSON.parse(history[0]?.debt ?? '{}')).toEqual({
+      duplicatedLines: 12,
+      duplicationRule: DUPLICATION_RULE_ID,
+    });
+    expect(history[1]?.debt).toBeNull();
+  });
+
+  it('backfills a baseline stored before the history table existed, before overwriting it', async () => {
+    const pid = projectId(repo);
+    const legacy = seedPreHistoryBaseline(db, pid, repo, { duplicatedLines: 184 });
+
+    const report = await initProject(db, repo, [makeAdapter()]);
+
+    const history = listBaselineHistory(db, pid);
+    expect(history.map((r) => r.captured_at)).toEqual([
+      legacy.capturedAt,
+      report.baseline.capturedAt,
+    ]);
+    expect(JSON.parse(history[0]?.debt ?? '{}')).toEqual({ duplicatedLines: 184 });
+  });
+
+  it('does not seed the same pre-history baseline twice across re-runs', async () => {
+    const pid = projectId(repo);
+    const legacy = seedPreHistoryBaseline(db, pid, repo);
+
+    const first = await initProject(db, repo, [makeAdapter()]);
+    const second = await initProject(db, repo, [makeAdapter()]);
+
+    // Exactly one row per capture: an unguarded backfill would re-append the
+    // first run's baseline on the second run, not the legacy one.
+    expect(listBaselineHistory(db, pid).map((r) => r.captured_at)).toEqual([
+      legacy.capturedAt,
+      first.baseline.capturedAt,
+      second.baseline.capturedAt,
+    ]);
+  });
+});
