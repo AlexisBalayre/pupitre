@@ -11,6 +11,7 @@ import { CONDUCTOR_TARGET, openThreadCount } from './dashboard.service.js';
 import { BaselineStageStatus } from './enums/baseline-stage-status.enums.js';
 import { GateStageStatus } from './enums/gate-stage-status.enums.js';
 import { MergeStatus } from './enums/merge-status.enums.js';
+import { SessionState } from './enums/session-state.enums.js';
 import { MergeLockLostError } from './errors/merge-gate.errors.js';
 import { startFixRound } from './fix-round.service.js';
 import { landSession } from './land.service.js';
@@ -153,7 +154,7 @@ export async function runAction(
     case 'kill': {
       const session = field(fields, 'session');
       return [
-        killSession(db, session) === 'merged'
+        killSession(db, session) === SessionState.Merged
           ? killedFixRoundMessage(session)
           : `Killed session ${sanitizeReason(session)}.`,
       ];

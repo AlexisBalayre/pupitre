@@ -80,6 +80,7 @@ import { DUPLICATION_RULE_ID } from './constants/merge-gate.constants.js';
 import { openStore } from './db.client.js';
 import { GateStageStatus } from './enums/gate-stage-status.enums.js';
 import { MergeStatus } from './enums/merge-status.enums.js';
+import { SessionState } from './enums/session-state.enums.js';
 import { SharedWorktreeKeyError, WorktreeConfigError } from './errors/git-diff.errors.js';
 import { listLedgerEntries } from './ledger.repository.js';
 import { runMergeGate } from './merge-gate.service.js';
@@ -237,7 +238,10 @@ describe('the merge gate under a shared-config core.worktree and diff.relative',
     );
     expect(sh(repo, 'git', 'rev-parse', 'pup/s1')).toBe(tip);
     expect(vi.mocked(spawn)).not.toHaveBeenCalled();
-    expect(getSession(db, SESSION_ID)).toMatchObject({ state: 'awaiting-review', reject_count: 0 });
+    expect(getSession(db, SESSION_ID)).toMatchObject({
+      state: SessionState.AwaitingReview,
+      reject_count: 0,
+    });
   });
 
   // Empty, the key stops every git in the repo, the driver check's included.
@@ -475,7 +479,7 @@ describe('the merge gate under a shared-config core.worktree and diff.relative',
 
     await expect(merge(adapter)).rejects.toThrow(/Command failed: git .* ls-tree --full-tree/);
     expect(vi.mocked(spawn)).not.toHaveBeenCalled();
-    expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+    expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.AwaitingReview);
   });
 
   // A session can detach the main checkout's `.git/HEAD` to a commit with no
@@ -569,7 +573,7 @@ describe('the merge gate under a shared-config core.worktree and diff.relative',
       await expect(merge(armingAdapter(armWith))).rejects.toThrow(refusal);
 
       expect(sh(repo, 'git', 'rev-parse', 'main')).toBe(mainTip);
-      expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+      expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.AwaitingReview);
     },
   );
 
@@ -615,7 +619,7 @@ describe('the merge gate under a shared-config core.worktree and diff.relative',
       ).rejects.toThrow(refusal);
 
       expect(sh(bare, 'git', 'for-each-ref', `refs/heads/${BRANCH}`)).toBe('');
-      expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+      expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.AwaitingReview);
     },
   );
 
@@ -667,7 +671,7 @@ describe('the merge gate under a shared-config core.worktree and diff.relative',
     expect(planted.writer).toBeDefined();
     expect(existsSync(join(repo, '.git', 'pup-merge.lock'))).toBe(false);
     expect(sh(repo, 'git', 'rev-parse', 'main')).toBe(mainTip);
-    expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+    expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.AwaitingReview);
     keyRace.around = undefined;
     gateTimeout.ms = undefined;
     expect((await merge(adapter)).status).toBe(MergeStatus.Merged);

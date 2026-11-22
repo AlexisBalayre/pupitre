@@ -56,6 +56,7 @@ import { DEFAULT_BASE_PROFILE } from './constants/default-profile.constants.js';
 import { openStore } from './db.client.js';
 import { EventType } from './enums/event-type.enums.js';
 import { MergeStatus } from './enums/merge-status.enums.js';
+import { SessionState } from './enums/session-state.enums.js';
 import { answerFixRoundThreads, ciReviewLookup, startFixRound } from './fix-round.service.js';
 import { landSession } from './land.service.js';
 import { runMergeGate } from './merge-gate.service.js';
@@ -150,8 +151,8 @@ describe('startFixRound', { timeout: 90_000 }, () => {
       profileHash: 'hash',
       tmuxTarget: '%4',
     });
-    transitionSession(db, SESSION_ID, 'running');
-    transitionSession(db, SESSION_ID, 'awaiting-review');
+    transitionSession(db, SESSION_ID, SessionState.Running);
+    transitionSession(db, SESSION_ID, SessionState.AwaitingReview);
 
     // projectPaths defaults to ~/.pupitre; tests must never write there.
     stateBase = tempDir('pup-fix-state-');
@@ -280,7 +281,7 @@ describe('startFixRound', { timeout: 90_000 }, () => {
    */
   function _seedPrMerge(event: Record<string, unknown> = {}): void {
     sh(repo, 'git', 'worktree', 'remove', '--force', worktree);
-    transitionSession(db, SESSION_ID, 'merged');
+    transitionSession(db, SESSION_ID, SessionState.Merged);
     appendEvent(db, SESSION_ID, EventType.Merge, {
       branch: BRANCH,
       sha: pinned,
@@ -1058,7 +1059,7 @@ describe('startFixRound', { timeout: 90_000 }, () => {
       });
 
       expect(outcome).toMatchObject({ status: MergeStatus.Merged, prUrl: PR_URL });
-      expect(getSession(db, SESSION_ID)?.state).toBe('merged');
+      expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.Merged);
       expect(warn.mock.calls.flat().join(' ')).toContain(
         "Could not answer the fix round's threads on GitHub",
       );
@@ -1097,9 +1098,9 @@ describe('ciReviewLookup', { timeout: 20_000 }, () => {
       branch: BRANCH,
       profileHash: 'hash',
     });
-    transitionSession(db, SESSION_ID, 'running');
-    transitionSession(db, SESSION_ID, 'awaiting-review');
-    transitionSession(db, SESSION_ID, 'merged');
+    transitionSession(db, SESSION_ID, SessionState.Running);
+    transitionSession(db, SESSION_ID, SessionState.AwaitingReview);
+    transitionSession(db, SESSION_ID, SessionState.Merged);
     appendEvent(db, SESSION_ID, EventType.Merge, {
       branch: BRANCH,
       sha: HEAD,

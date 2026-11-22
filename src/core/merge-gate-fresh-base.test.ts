@@ -36,6 +36,7 @@ import { openStore } from './db.client.js';
 import { GateStageStatus } from './enums/gate-stage-status.enums.js';
 import { InterruptSignal } from './enums/interrupt-signal.enums.js';
 import { MergeStatus } from './enums/merge-status.enums.js';
+import { SessionState } from './enums/session-state.enums.js';
 import { runMergeGate } from './merge-gate.service.js';
 import { getSession } from './session.repository.js';
 import { HELD_SLOT_ENV } from './test-slot.service.js';
@@ -140,7 +141,7 @@ describe('fresh-base on a branch no open PR holds (decision 190)', { timeout: 20
 
     expect(outcome.status).toBe(MergeStatus.Rejected);
     expect(outcome.rejectCount).toBe(1);
-    expect(getSession(db, SESSION_ID)?.state).toBe('running');
+    expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.Running);
     const stage = freshBase(outcome.report.stages);
     expect(stage?.status).toBe(GateStageStatus.Fail);
     expect(stage?.detail).toContain('Auto-merge of main hit conflicts');

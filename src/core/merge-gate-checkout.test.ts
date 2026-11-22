@@ -110,6 +110,7 @@ import { openStore } from './db.client.js';
 import { EventType } from './enums/event-type.enums.js';
 import { GateStageStatus } from './enums/gate-stage-status.enums.js';
 import { MergeStatus } from './enums/merge-status.enums.js';
+import { SessionState } from './enums/session-state.enums.js';
 import { ArmedGitDriverError, WorktreeConfigError } from './errors/git-diff.errors.js';
 import { listLedgerEntries } from './ledger.repository.js';
 import { runMergeGate as runGate } from './merge-gate.service.js';
@@ -272,7 +273,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
     expect(outcome.status).toBe(MergeStatus.Merged);
     expect(sh(repo, 'git', 'log', '--oneline', 'main')).toContain('edit src/feature.ts');
-    expect(getSession(db, SESSION_ID)?.state).toBe('merged');
+    expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.Merged);
     // A merged session claims its task, so the task leaves the backlog without
     // anything writing a second copy of that fact (decision 40).
     expect(listBacklogTasks(db, 'proj-1')).toEqual([]);
@@ -304,7 +305,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
     await expect(merge()).rejects.toThrow(/'=' in its name/);
 
-    expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+    expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.AwaitingReview);
   });
 
   // The gate pins the branch to one sha after fresh-base and fast-forwards
@@ -322,7 +323,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       await expect(merge({ ...passingAdapter, gateCommands })).rejects.toThrow(/starts with '-'/);
 
       expect(gateCommands).not.toHaveBeenCalled();
-      expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+      expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.AwaitingReview);
     });
 
     it('measures and merges the branch, not a lightweight tag named like it', async () => {
@@ -354,7 +355,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       );
 
       expect(gateCommands).not.toHaveBeenCalled();
-      expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+      expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.AwaitingReview);
     });
 
     // check-ref-format accepts both, and the name is printed in every refusal.
@@ -373,7 +374,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       );
 
       expect(gateCommands).not.toHaveBeenCalled();
-      expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+      expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.AwaitingReview);
     });
 
     // The rebase runs on whatever the worktree has checked out; detached, it
@@ -438,7 +439,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
       expect(sh(repo, 'git', 'rev-parse', 'main').trim()).toBe(before);
       expect(readFileSync(join(repo, 'src', 'app.ts'), 'utf8')).toBe('export const app = 3;\n');
-      expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+      expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.AwaitingReview);
     });
 
     // Pinned through the symref, the branch would be main itself: an empty
@@ -450,7 +451,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       await expect(merge()).rejects.toThrow(/is a symbolic ref to refs\/heads\/main/);
 
       expect(sh(repo, 'git', 'rev-parse', '--verify', 'refs/heads/main').trim()).not.toBe('');
-      expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+      expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.AwaitingReview);
     });
 
     it('does not merge a commit added to the branch after the stages, and records the pinned sha', async () => {
@@ -631,7 +632,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(sh(repo, 'git', 'rev-parse', 'main').trim()).toBe(moved);
       // The main checkout's files are the target's, untouched.
       expect(existsSync(join(repo, 'src', 'feature.ts'))).toBe(false);
-      expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+      expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.AwaitingReview);
       expect(listEvents(db, SESSION_ID).some((event) => event.type === EventType.Merge)).toBe(
         false,
       );
@@ -657,7 +658,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(existsSync(fired)).toBe(false);
       expect(sh(repo, 'git', 'rev-parse', 'main').trim()).toBe(before);
       expect(existsSync(join(repo, 'src', 'feature.ts'))).toBe(false);
-      expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+      expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.AwaitingReview);
     });
   });
 
@@ -949,7 +950,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       await expect(merge()).rejects.toThrow(ArmedGitDriverError);
       expect(existsSync(fired)).toBe(false);
       // Refused, not rejected: nothing here is the session's to fix by re-steer.
-      expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+      expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.AwaitingReview);
       expect(steerPane).not.toHaveBeenCalled();
     });
 
@@ -1177,7 +1178,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
     expect(outcome.status).toBe(MergeStatus.Blocked);
     expect(outcome.rejectCount).toBe(3);
-    expect(getSession(db, SESSION_ID)?.state).toBe('blocked');
+    expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.Blocked);
     expect(steerPane).not.toHaveBeenCalled();
   });
 
@@ -1195,7 +1196,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     const outcome = await merge(failingBuildAdapter);
 
     expect(outcome.status).toBe(MergeStatus.Blocked);
-    expect(getSession(db, SESSION_ID)?.state).toBe('blocked');
+    expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.Blocked);
     expect(steerPane).not.toHaveBeenCalled();
   });
 
@@ -1630,7 +1631,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         stage: 'typecheck (tools/review)',
         status: GateStageStatus.Pass,
       });
-      expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+      expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.AwaitingReview);
     });
 
     it('records the missing script as debt when the merge accepts it', async () => {
@@ -1818,7 +1819,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         }),
       ),
     ).rejects.toThrow('No push target is recorded');
-    expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+    expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.AwaitingReview);
   });
 
   it("pipes the remote-tracking probe's stderr instead of leaking it, while the push stays inherited", async () => {
@@ -1877,6 +1878,6 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
           }),
       ),
     ).rejects.toThrow('Several open pull requests');
-    expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+    expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.AwaitingReview);
   });
 });

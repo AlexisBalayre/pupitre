@@ -215,6 +215,7 @@ import { EventType } from '../core/enums/event-type.enums.js';
 import { GateStageStatus } from '../core/enums/gate-stage-status.enums.js';
 import { InterruptSignal } from '../core/enums/interrupt-signal.enums.js';
 import { MergeStatus } from '../core/enums/merge-status.enums.js';
+import { SessionState } from '../core/enums/session-state.enums.js';
 import { SlotHolderKind } from '../core/enums/slot-holder-kind.enums.js';
 import { MergeLockLostError } from '../core/errors/merge-gate.errors.js';
 import { GateInterruptedError, UndeclaredSandboxError } from '../core/errors/sandbox.errors.js';
@@ -271,7 +272,6 @@ import {
   sessionTestCommand,
 } from '../core/test-slot.service.js';
 import type { MergeOutcome } from '../core/types/merge-gate.types.js';
-import type { SessionState } from '../core/types/session.types.js';
 import { startWebDashboard } from '../core/web-dashboard.service.js';
 import { ProjectResolutionError } from './errors/project.errors.js';
 import { buildProgram, fatalExitCode } from './index.js';
@@ -531,7 +531,7 @@ describe('CLI commands', () => {
       useCwd(repo);
       seedSession(repo, 's1');
       const { db } = resolveProject(repo);
-      transitionSession(db, 's1', 'running');
+      transitionSession(db, 's1', SessionState.Running);
       appendEvent(db, 's1', EventType.Question, { text: 'rebase\u001b[2J or\nmerge?' });
       db.close();
 
@@ -559,7 +559,7 @@ describe('CLI commands', () => {
       useCwd(repo);
       seedSession(repo, 's1');
       const { db } = resolveProject(repo);
-      transitionSession(db, 's1', 'running');
+      transitionSession(db, 's1', SessionState.Running);
       recordSessionRoute(db, 's1', {
         tier: Tier.Standard,
         rung: 2,
@@ -588,11 +588,11 @@ describe('CLI commands', () => {
       seedSession(repo, 's-asking');
       const { db } = resolveProject(repo);
       for (const id of ['s-pr', 's-local', 's-review']) {
-        transitionSession(db, id, 'running');
-        transitionSession(db, id, 'awaiting-review');
+        transitionSession(db, id, SessionState.Running);
+        transitionSession(db, id, SessionState.AwaitingReview);
       }
       for (const id of ['s-pr', 's-local']) {
-        transitionSession(db, id, 'merged');
+        transitionSession(db, id, SessionState.Merged);
         appendEvent(db, id, EventType.Merge, {
           branch: `pup/${id}`,
           // A sha the repo's unborn main cannot hold: the PR waits on the operator.
@@ -602,7 +602,7 @@ describe('CLI commands', () => {
           ...(id === 's-pr' ? { prUrl: 'https://github.com/o/r/pull/7' } : {}),
         });
       }
-      transitionSession(db, 's-asking', 'running');
+      transitionSession(db, 's-asking', SessionState.Running);
       appendEvent(db, 's-asking', EventType.Question, { text: 'rebase or merge?' });
       const asked = (db.prepare('SELECT max(id) AS id FROM events').get() as { id: number }).id;
       db.close();
@@ -634,8 +634,8 @@ describe('CLI commands', () => {
       useCwd(repo);
       seedSession(repo, 's-review');
       const { db } = resolveProject(repo);
-      transitionSession(db, 's-review', 'running');
-      transitionSession(db, 's-review', 'awaiting-review');
+      transitionSession(db, 's-review', SessionState.Running);
+      transitionSession(db, 's-review', SessionState.AwaitingReview);
       db.close();
 
       buildProgram().parse(['status'], { from: 'user' });
@@ -651,7 +651,7 @@ describe('CLI commands', () => {
       useCwd(repo);
       seedSession(repo, 's1');
       const { db } = resolveProject(repo);
-      transitionSession(db, 's1', 'running');
+      transitionSession(db, 's1', SessionState.Running);
       db.close();
 
       buildProgram().parse(['status'], { from: 'user' });
@@ -666,10 +666,10 @@ describe('CLI commands', () => {
       seedSession(repo, 's-merged');
       seedKilledSession(repo, 's-killed');
       const { db } = resolveProject(repo);
-      transitionSession(db, 's-live', 'running');
-      transitionSession(db, 's-merged', 'running');
-      transitionSession(db, 's-merged', 'awaiting-review');
-      transitionSession(db, 's-merged', 'merged');
+      transitionSession(db, 's-live', SessionState.Running);
+      transitionSession(db, 's-merged', SessionState.Running);
+      transitionSession(db, 's-merged', SessionState.AwaitingReview);
+      transitionSession(db, 's-merged', SessionState.Merged);
       db.close();
 
       buildProgram().parse(['status'], { from: 'user' });
@@ -698,9 +698,9 @@ describe('CLI commands', () => {
       useCwd(repo);
       seedSession(repo, 's-merged');
       const { db } = resolveProject(repo);
-      transitionSession(db, 's-merged', 'running');
-      transitionSession(db, 's-merged', 'awaiting-review');
-      transitionSession(db, 's-merged', 'merged');
+      transitionSession(db, 's-merged', SessionState.Running);
+      transitionSession(db, 's-merged', SessionState.AwaitingReview);
+      transitionSession(db, 's-merged', SessionState.Merged);
       db.close();
 
       buildProgram().parse(['status'], { from: 'user' });
@@ -741,9 +741,13 @@ describe('CLI commands', () => {
         seedStalledSession(repoA, 's-stalled');
         seedDeadTurn(repoA, 's-stalled');
         seedStalledSession(repoA, 's-quiet');
-        seedSessionIn(repoA, 's-review', ['running', 'awaiting-review']);
-        seedSessionIn(repoA, 's-busy', ['running']);
-        seedSessionIn(repoA, 's-done', ['running', 'awaiting-review', 'merged']);
+        seedSessionIn(repoA, 's-review', [SessionState.Running, SessionState.AwaitingReview]);
+        seedSessionIn(repoA, 's-busy', [SessionState.Running]);
+        seedSessionIn(repoA, 's-done', [
+          SessionState.Running,
+          SessionState.AwaitingReview,
+          SessionState.Merged,
+        ]);
         seedBacklogTask(repoA, 't-plan', 'planned in A');
         const debt = seedLedgerEntry(repoB);
         const { db } = resolveProject(repoB);
@@ -961,7 +965,7 @@ describe('CLI commands', () => {
         const repo = initRepo();
         seedSession(repo, 's-asking');
         const { db } = resolveProject(repo);
-        transitionSession(db, 's-asking', 'running');
+        transitionSession(db, 's-asking', SessionState.Running);
         appendEvent(db, 's-asking', EventType.Question, { text: '\u001b[2Jhijack?' });
         db.close();
         useCwd(tempDir('pup-cli-noproj-'));
@@ -995,7 +999,7 @@ describe('CLI commands', () => {
         for (const id of ['\u001b[2Js1', '\u001b[2Js2']) {
           seedSession(repo, id);
           const { db } = resolveProject(repo);
-          transitionSession(db, id, 'running');
+          transitionSession(db, id, SessionState.Running);
           db.close();
         }
         const { db } = resolveProject(repo);
@@ -1022,7 +1026,7 @@ describe('CLI commands', () => {
         // (decision 67), and this case needs a snapshot that fails whole.
         const unreadable = unreadableEventsFile(broken, 's1');
         const { db } = resolveProject(broken);
-        transitionSession(db, 's1', 'running');
+        transitionSession(db, 's1', SessionState.Running);
         db.close();
         seedBacklogTask(fine, 't-plan', 'still here');
         useCwd(tempDir('pup-cli-noproj-'));
@@ -1078,8 +1082,8 @@ describe('CLI commands', () => {
       seedSession(repo, 's-fresh');
       seedSession(repo, 's-stalled');
       const { db } = resolveProject(repo);
-      transitionSession(db, 's-fresh', 'running');
-      transitionSession(db, 's-stalled', 'running');
+      transitionSession(db, 's-fresh', SessionState.Running);
+      transitionSession(db, 's-stalled', SessionState.Running);
       db.close();
       seedEventsFile(repo, 's-fresh', 0);
       seedEventsFile(repo, 's-stalled', STALLED_AFTER_MS + 60_000);
@@ -1098,7 +1102,7 @@ describe('CLI commands', () => {
       useCwd(repo);
       seedSession(repo, 's-fresh');
       const { db } = resolveProject(repo);
-      transitionSession(db, 's-fresh', 'running');
+      transitionSession(db, 's-fresh', SessionState.Running);
       db.close();
       seedEventsFile(repo, 's-fresh', 0);
 
@@ -1471,7 +1475,7 @@ describe('CLI commands', () => {
         // mounted, as this case has always done.
         const unreadable = unreadableEventsFile(broken, 's1', 0o600);
         const { db } = resolveProject(broken);
-        transitionSession(db, 's1', 'running');
+        transitionSession(db, 's1', SessionState.Running);
         db.close();
         useCwd(tempDir('pup-cli-noproj-'));
         stubRender();
@@ -1507,7 +1511,7 @@ describe('CLI commands', () => {
         seedSession(broken, 's1');
         const unreadable = unreadableEventsFile(broken, 's1');
         const { db } = resolveProject(broken);
-        transitionSession(db, 's1', 'running');
+        transitionSession(db, 's1', SessionState.Running);
         db.close();
         vi.stubEnv('PUP_SESSION_ID', '');
         underPane((repoPath) => (repoPath === broken ? 'pup-s1' : undefined));
@@ -1743,7 +1747,7 @@ describe('CLI commands', () => {
       useCwd(repo);
       seedSession(repo, 's1');
       const { db, repoPath } = resolveProject(repo);
-      transitionSession(db, 's1', 'killed');
+      transitionSession(db, 's1', SessionState.Killed);
       const taskId = 't-s1';
       expect(listBacklogTasks(db, projectId(repoPath)).map((t) => t.id)).toEqual([taskId]);
 
@@ -1752,7 +1756,7 @@ describe('CLI commands', () => {
       expect(errors).toEqual([]);
       expect(logs).toContain(`Dropped ${taskId}.`);
       expect(listBacklogTasks(db, projectId(repoPath))).toEqual([]);
-      expect(getSession(db, 's1')?.state).toBe('killed');
+      expect(getSession(db, 's1')?.state).toBe(SessionState.Killed);
       buildProgram().parse(['plan'], { from: 'user' });
       expect(logs.some((line) => line.startsWith(taskId))).toBe(false);
     });
@@ -1762,7 +1766,7 @@ describe('CLI commands', () => {
       useCwd(repo);
       seedSession(repo, 's1');
       const { db } = resolveProject(repo);
-      transitionSession(db, 's1', 'running');
+      transitionSession(db, 's1', SessionState.Running);
       const taskId = 't-s1';
 
       buildProgram().parse(['plan', 'drop', taskId], { from: 'user' });
@@ -1777,7 +1781,7 @@ describe('CLI commands', () => {
       useCwd(repo);
       seedSession(repo, 's\u001b[31m1');
       const { db } = resolveProject(repo);
-      transitionSession(db, 's\u001b[31m1', 'running');
+      transitionSession(db, 's\u001b[31m1', SessionState.Running);
 
       buildProgram().parse(['plan', 'drop', 't-s\u001b[31m1'], { from: 'user' });
 
@@ -2189,8 +2193,8 @@ describe('CLI commands', () => {
         '\u001b[2J/wt',
         NOISY_ID,
       );
-      transitionSession(db, NOISY_ID, 'running');
-      transitionSession(db, NOISY_ID, 'awaiting-review');
+      transitionSession(db, NOISY_ID, SessionState.Running);
+      transitionSession(db, NOISY_ID, SessionState.AwaitingReview);
       appendEvent(db, NOISY_ID, EventType.GateResult, {
         outcome: MergeStatus.Refused,
         report: {
@@ -2322,7 +2326,7 @@ describe('CLI commands', () => {
       ['a session the store does not hold', () => new UnknownSessionError('s1'), 'No session s1.'],
       [
         'a session that has stopped',
-        () => new TerminalSessionError('s1', 'killed', 'interrupt'),
+        () => new TerminalSessionError('s1', SessionState.Killed, 'interrupt'),
         'Session s1 is killed; nothing to interrupt.',
       ],
       [

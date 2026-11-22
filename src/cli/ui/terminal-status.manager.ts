@@ -1,4 +1,5 @@
 import { needsYou } from '../../core/dashboard.service.js';
+import { SessionState } from '../../core/enums/session-state.enums.js';
 import type { DashboardReading } from '../types/snapshot.types.js';
 import type { SessionStatus, TerminalStatus } from '../types/terminal.types.js';
 
@@ -45,7 +46,7 @@ function readTerminalStatus(reading: DashboardReading): TerminalStatus {
   const { projects } = reading;
   const running = projects.reduce(
     (sum, { snapshot }) =>
-      sum + snapshot.sessions.filter((session) => session.state === 'running').length,
+      sum + snapshot.sessions.filter((session) => session.state === SessionState.Running).length,
     0,
   );
   // An open PR is work waiting to land, not a session that has stopped.

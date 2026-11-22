@@ -250,6 +250,7 @@ import { STALLED_AFTER_MS } from '../core/constants/session-activity.constants.j
 import { EventType } from '../core/enums/event-type.enums.js';
 import { GateStageStatus } from '../core/enums/gate-stage-status.enums.js';
 import { MergeStatus } from '../core/enums/merge-status.enums.js';
+import { SessionState } from '../core/enums/session-state.enums.js';
 import { ConductorTellRefusedError } from '../core/errors/conductor.errors.js';
 import { RewrittenGitDirError } from '../core/errors/git-diff.errors.js';
 import { InvalidProfileError } from '../core/errors/profile.errors.js';
@@ -406,7 +407,7 @@ describe('CLI commands', () => {
       useCwd(repo);
       seedSession(repo, 's-stalled');
       const { db } = resolveProject(repo);
-      transitionSession(db, 's-stalled', 'running');
+      transitionSession(db, 's-stalled', SessionState.Running);
       db.close();
       seedEventsFile(repo, 's-stalled', STALLED_AFTER_MS + 60_000);
 
@@ -512,7 +513,7 @@ describe('CLI commands', () => {
       for (const id of ['\u001b[2Js1', '\u001b[2Js2']) {
         seedSession(repo, id);
         const { db } = resolveProject(repo);
-        transitionSession(db, id, 'running');
+        transitionSession(db, id, SessionState.Running);
         db.close();
       }
       vi.mocked(gitDiffPaths).mockReturnValue(['src/a.ts']);
@@ -532,7 +533,7 @@ describe('CLI commands', () => {
         for (const id of ['s1', 's2']) {
           seedSession(repo, id);
           const { db } = resolveProject(repo);
-          transitionSession(db, id, 'running');
+          transitionSession(db, id, SessionState.Running);
           db.close();
         }
       }
@@ -964,7 +965,7 @@ describe('CLI commands', () => {
   });
 
   // Task t-1, claimed by session s1 in `state`.
-  const claimed = (repo: string, state: string, scopeIn = ['src/**']) => {
+  const claimed = (repo: string, state: SessionState, scopeIn = ['src/**']) => {
     const { db, repoPath } = resolveProject(repo);
     ensureProject(db, projectId(repoPath), repoPath);
     insertTask(db, {
@@ -999,7 +1000,7 @@ describe('CLI commands', () => {
     it("appends to a merged task's scope-in, and pup log shows it", () => {
       const repo = initRepo();
       useCwd(repo);
-      const db = claimed(repo, 'merged');
+      const db = claimed(repo, SessionState.Merged);
 
       rescope();
       buildProgram().parse(['log'], { from: 'user' });
@@ -1023,7 +1024,7 @@ describe('CLI commands', () => {
     it('records the caller as an inferred operator, with its tmux pane and no terminal', () => {
       const repo = initRepo();
       useCwd(repo);
-      const db = claimed(repo, 'merged');
+      const db = claimed(repo, SessionState.Merged);
       vi.stubEnv('TMUX_PANE', '%12');
 
       rescope();
@@ -1038,7 +1039,7 @@ describe('CLI commands', () => {
     it('records the terminal on stdin, and no pane a TMUX_PANE does not name', () => {
       const repo = initRepo();
       useCwd(repo);
-      const db = claimed(repo, 'merged');
+      const db = claimed(repo, SessionState.Merged);
       vi.stubEnv('TMUX_PANE', 'pup-s1');
       const real = vi.mocked(execFileSync).getMockImplementation() as typeof execFileSync;
       vi.mocked(execFileSync).mockImplementation(((file: string, ...rest: never[]) =>
@@ -1058,7 +1059,7 @@ describe('CLI commands', () => {
     it('says so when every glob is already in scope, writing nothing', () => {
       const repo = initRepo();
       useCwd(repo);
-      const db = claimed(repo, 'merged');
+      const db = claimed(repo, SessionState.Merged);
 
       buildProgram().parse(['plan', 'edit', 't-1', '--rescope', '--scope', 'src/**'], {
         from: 'user',
@@ -1071,7 +1072,7 @@ describe('CLI commands', () => {
     it('names the tier a rescope raised', () => {
       const repo = initRepo();
       useCwd(repo);
-      const db = claimed(repo, 'merged', ['docs/**']);
+      const db = claimed(repo, SessionState.Merged, ['docs/**']);
       db.prepare(`UPDATE sessions SET tier = '${Tier.Standard}', rung = 1 WHERE id = ?`).run('s1');
 
       buildProgram().parse(
@@ -1089,7 +1090,7 @@ describe('CLI commands', () => {
     it('refuses a glob with a wildcard in its first segment', () => {
       const repo = initRepo();
       useCwd(repo);
-      const db = claimed(repo, 'merged');
+      const db = claimed(repo, SessionState.Merged);
 
       buildProgram().parse(['plan', 'edit', 't-1', '--rescope', '--scope', '**'], {
         from: 'user',
@@ -1103,7 +1104,7 @@ describe('CLI commands', () => {
     it('refuses while the session is running', () => {
       const repo = initRepo();
       useCwd(repo);
-      const db = claimed(repo, 'running');
+      const db = claimed(repo, SessionState.Running);
 
       rescope();
 
@@ -1116,7 +1117,7 @@ describe('CLI commands', () => {
     it('refuses while the session window is still open', () => {
       const repo = initRepo();
       useCwd(repo);
-      const db = claimed(repo, 'awaiting-review');
+      const db = claimed(repo, SessionState.AwaitingReview);
       vi.mocked(listPanes).mockReturnValue(['%3\t\tpup-s1']);
 
       rescope();
@@ -1132,7 +1133,7 @@ describe('CLI commands', () => {
     ])('refuses %s', (_who, variable, value) => {
       const repo = initRepo();
       useCwd(repo);
-      const db = claimed(repo, 'merged');
+      const db = claimed(repo, SessionState.Merged);
       vi.stubEnv(variable, value);
 
       rescope();
@@ -1150,7 +1151,7 @@ describe('CLI commands', () => {
     ])('refuses %s by its process tree when its markers are unset', (_who, name) => {
       const repo = initRepo();
       useCwd(repo);
-      const db = claimed(repo, 'merged');
+      const db = claimed(repo, SessionState.Merged);
       vi.mocked(listProcesses).mockReturnValue(
         new Map([[process.ppid, { parent: 1, args: `claude --name ${name}` }]]),
       );
@@ -1166,7 +1167,7 @@ describe('CLI commands', () => {
     it('refuses when the process tree cannot be read', () => {
       const repo = initRepo();
       useCwd(repo);
-      const db = claimed(repo, 'merged');
+      const db = claimed(repo, SessionState.Merged);
       vi.mocked(listProcesses).mockReturnValue(undefined);
 
       rescope();
@@ -1179,7 +1180,7 @@ describe('CLI commands', () => {
     it('takes no field but --scope, and needs one', () => {
       const repo = initRepo();
       useCwd(repo);
-      claimed(repo, 'merged');
+      claimed(repo, SessionState.Merged);
 
       rescope('--goal', 'other');
       expect(errors).toContain(
@@ -1200,7 +1201,7 @@ describe('CLI commands', () => {
       writeFileSync(join(repo, 'docs', 'a.md'), 'a');
       writeFileSync(join(repo, 'docs', 'b.md'), 'b');
       execFileSync('git', ['-C', repo, 'add', 'docs'], { env: GIT_ENV });
-      const db = claimed(repo, 'merged');
+      const db = claimed(repo, SessionState.Merged);
       const { repoPath } = resolveProject(repo);
       insertTask(db, {
         id: 't-2',
@@ -1239,7 +1240,7 @@ describe('CLI commands', () => {
       {
         command: '`pup plan edit --rescope`',
         args: ['plan', 'edit', 't-1', '--rescope', '--scope', 'docs/**'],
-        seed: (repo: string) => claimed(repo, 'merged').close(),
+        seed: (repo: string) => claimed(repo, SessionState.Merged).close(),
         changed: (db: Database.Database) =>
           JSON.parse(getTask(db, 't-1')?.spec ?? '{}').scopeIn.includes('docs/**'),
       },
@@ -1253,7 +1254,7 @@ describe('CLI commands', () => {
         command: '`pup unblock`',
         args: ['unblock', 's1'],
         seed: (repo: string) => seedBlockedSession(repo, 's1', 'reject cap of 2 reached'),
-        changed: (db: Database.Database) => getSession(db, 's1')?.state === 'running',
+        changed: (db: Database.Database) => getSession(db, 's1')?.state === SessionState.Running,
       },
       {
         command: '`pup kill --respawn`',
@@ -1771,7 +1772,7 @@ describe('CLI commands', () => {
       const repo = initRepo();
       seedSession(repo, 's1');
       const { db } = resolveProject(repo);
-      transitionSession(db, 's1', 'running');
+      transitionSession(db, 's1', SessionState.Running);
       db.close();
       vi.stubEnv('PUP_SESSION_ID', 's1');
       return { repo, worktree: worktreeOf(repo, 's1') };
@@ -1879,7 +1880,7 @@ describe('CLI commands', () => {
       const repo = initRepo();
       seedSession(repo, 's1');
       const { db } = resolveProject(repo);
-      transitionSession(db, 's1', 'running');
+      transitionSession(db, 's1', SessionState.Running);
       db.prepare("UPDATE sessions SET tmux_target = '%7' WHERE id = 's1'").run();
       appendEvent(db, 's1', EventType.Question, {
         text: 'rebase or merge?',
@@ -1953,7 +1954,7 @@ describe('CLI commands', () => {
       useCwd(repo);
       seedSession(repo, 's2');
       const { db } = resolveProject(repo);
-      transitionSession(db, 's2', 'running');
+      transitionSession(db, 's2', SessionState.Running);
       db.close();
 
       buildProgram().parse(['answer', 's2', '1', '--question', '1'], { from: 'user' });
@@ -2377,13 +2378,13 @@ describe('CLI commands', () => {
       const id = registerProject(repo);
       seedSession(repo, 's-live');
       const { db } = resolveProject(repo);
-      transitionSession(db, 's-live', 'running');
+      transitionSession(db, 's-live', SessionState.Running);
       db.close();
       seedKilledSession(repo, 's-gone');
       seedSession(repo, 's-review');
       const review = resolveProject(repo);
-      transitionSession(review.db, 's-review', 'running');
-      transitionSession(review.db, 's-review', 'awaiting-review');
+      transitionSession(review.db, 's-review', SessionState.Running);
+      transitionSession(review.db, 's-review', SessionState.AwaitingReview);
       review.db.close();
       vi.mocked(isConductorRunning).mockReturnValue(true);
       useCwd(repo);
@@ -2405,7 +2406,7 @@ describe('CLI commands', () => {
       errors.length = 0;
       vi.mocked(isConductorRunning).mockReturnValue(false);
       const merged = resolveProject(repo);
-      transitionSession(merged.db, 's-live', 'killed');
+      transitionSession(merged.db, 's-live', SessionState.Killed);
       merged.db.close();
       buildProgram().parse(['project', 'dormant'], { from: 'user' });
       expect(errors).toEqual([
@@ -2414,7 +2415,7 @@ describe('CLI commands', () => {
 
       // Everything stopped: it sleeps.
       const reopened = resolveProject(repo);
-      transitionSession(reopened.db, 's-review', 'merged');
+      transitionSession(reopened.db, 's-review', SessionState.Merged);
       reopened.db.close();
       process.exitCode = undefined;
       buildProgram().parse(['project', 'dormant'], { from: 'user' });
@@ -2650,7 +2651,7 @@ describe('CLI commands', () => {
       ]);
       expect(process.exitCode).toBe(1);
       const { db } = resolveProject(repo);
-      expect(getSession(db, 's1')?.state).toBe('blocked');
+      expect(getSession(db, 's1')?.state).toBe(SessionState.Blocked);
       db.close();
     });
 
@@ -3200,8 +3201,8 @@ describe('CLI commands', () => {
           },
         }),
       );
-      transitionSession(db, 's-ticket', 'running');
-      transitionSession(db, 's-ticket', 'awaiting-review');
+      transitionSession(db, 's-ticket', SessionState.Running);
+      transitionSession(db, 's-ticket', SessionState.AwaitingReview);
       db.close();
 
       buildProgram().parse(['review', 's-ticket'], { from: 'user' });
@@ -3238,8 +3239,8 @@ describe('CLI commands', () => {
           },
         }),
       );
-      transitionSession(db, 's-long', 'running');
-      transitionSession(db, 's-long', 'awaiting-review');
+      transitionSession(db, 's-long', SessionState.Running);
+      transitionSession(db, 's-long', SessionState.AwaitingReview);
       db.close();
 
       buildProgram().parse(['review', 's-long'], { from: 'user' });
@@ -3273,8 +3274,8 @@ describe('CLI commands', () => {
           },
         }),
       );
-      transitionSession(db, 's-bidi', 'running');
-      transitionSession(db, 's-bidi', 'awaiting-review');
+      transitionSession(db, 's-bidi', SessionState.Running);
+      transitionSession(db, 's-bidi', SessionState.AwaitingReview);
       db.close();
 
       buildProgram().parse(['review', 's-bidi'], { from: 'user' });

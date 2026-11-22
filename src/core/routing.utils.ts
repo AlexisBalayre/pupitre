@@ -3,6 +3,7 @@ import { Tier } from '../claude/enums/tier.enums.js';
 import type { ModelRoute } from '../claude/types/model-ladder.types.js';
 import { ClimbReason } from './enums/climb-reason.enums.js';
 import { EventType } from './enums/event-type.enums.js';
+import { SessionState } from './enums/session-state.enums.js';
 import type { Climb, GlobAutomaton, GlobToken } from './types/routing.types.js';
 import type { SessionEvent } from './types/session-event.types.js';
 import type { FindingClass } from './types/session-lifecycle.types.js';
@@ -172,7 +173,7 @@ export const FINDING_CLASSES: readonly FindingClass[] = ['security', 'wrong-resu
 
 function failureOf(event: SessionEvent): ClimbReason | undefined {
   if (event.type === 'turn_died') return ClimbReason.TurnDeath;
-  return event.type === 'gate_result' && event.to === 'rejected'
+  return event.type === 'gate_result' && event.to === SessionState.Rejected
     ? ClimbReason.GateRejection
     : undefined;
 }
@@ -190,12 +191,13 @@ function failureOf(event: SessionEvent): ClimbReason | undefined {
 export function windowFailure(
   events: readonly SessionEvent[],
   stalledAtEnd = false,
-): ClimbReason | 'blocked' | undefined {
-  let failure: ClimbReason | 'blocked' | undefined;
+): ClimbReason | SessionState.Blocked | undefined {
+  let failure: ClimbReason | SessionState.Blocked | undefined;
   for (const event of events) {
     if (event.type === 'other' && event.eventType === EventType.Respawn) failure = undefined;
-    else if (event.type === 'gate_result' && event.to === 'blocked') failure = 'blocked';
-    else if (failure !== 'blocked') failure ??= failureOf(event);
+    else if (event.type === 'gate_result' && event.to === SessionState.Blocked)
+      failure = SessionState.Blocked;
+    else if (failure !== SessionState.Blocked) failure ??= failureOf(event);
   }
   return failure ?? (stalledAtEnd ? ClimbReason.Stall : undefined);
 }
@@ -216,7 +218,7 @@ export function windowFailure(
 export function fixRoundFailure(
   events: readonly SessionEvent[],
   stalledAtEnd = false,
-): ClimbReason | 'blocked' | undefined {
+): ClimbReason | SessionState.Blocked | undefined {
   const { openedAt, repeats, ran } = fixRoundWindow(events);
   if (openedAt >= 0) return windowFailure(ran, stalledAtEnd);
   return repeats ? ClimbReason.RepeatFixRound : undefined;
@@ -272,11 +274,11 @@ export function fixRoundWindow(events: readonly SessionEvent[]): {
 export function nextRung(
   tier: Tier,
   rung: number,
-  failure: ClimbReason | 'blocked' | undefined,
+  failure: ClimbReason | SessionState.Blocked | undefined,
 ): { rung: number; reason?: ClimbReason } | { topReached: ClimbReason } {
   const top = LADDERS[tier].length - 1;
   const at = Number.isSafeInteger(rung) ? Math.min(Math.max(rung, 0), top) : 0;
-  if (failure === undefined || failure === 'blocked') return { rung: at };
+  if (failure === undefined || failure === SessionState.Blocked) return { rung: at };
   return at < top ? { rung: at + 1, reason: failure } : { topReached: failure };
 }
 
@@ -289,7 +291,7 @@ export function nextRung(
 export function climbFrom(
   tier: Tier,
   previous: { tier: string | null; rung: number | null; rung_reason: string | null } | undefined,
-  failure: ClimbReason | 'blocked' | undefined,
+  failure: ClimbReason | SessionState.Blocked | undefined,
 ): Climb {
   if (!previous || asTier(previous.tier) !== tier || previous.rung === null) return { rung: 0 };
   const kept = previous.rung_reason ?? undefined;

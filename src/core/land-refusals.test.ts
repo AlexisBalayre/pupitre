@@ -34,6 +34,7 @@ import { openStore } from './db.client.js';
 import { EventType } from './enums/event-type.enums.js';
 import { InterruptSignal } from './enums/interrupt-signal.enums.js';
 import { MergeStatus } from './enums/merge-status.enums.js';
+import { SessionState } from './enums/session-state.enums.js';
 import { gitDiffPaths } from './git-diff.client.js';
 import { initProject } from './init.service.js';
 import { landSession } from './land.service.js';
@@ -112,8 +113,8 @@ describe('landSession', { timeout: 20_000 }, () => {
       branch: BRANCH,
       profileHash: 'hash',
     });
-    transitionSession(db, SESSION_ID, 'running');
-    transitionSession(db, SESSION_ID, 'awaiting-review');
+    transitionSession(db, SESSION_ID, SessionState.Running);
+    transitionSession(db, SESSION_ID, SessionState.AwaitingReview);
 
     ghLog = join(host, 'gh-calls');
     originalPath = process.env.PATH;
@@ -126,7 +127,7 @@ describe('landSession', { timeout: 20_000 }, () => {
 
   /** What the gate's `--pr` merge leaves: the session merged, its PR on the event. */
   function seedPrMerge(prUrl: string | null = PR_URL): void {
-    transitionSession(db, SESSION_ID, 'merged');
+    transitionSession(db, SESSION_ID, SessionState.Merged);
     appendEvent(db, SESSION_ID, EventType.Merge, {
       branch: BRANCH,
       sha: pinned,
@@ -326,7 +327,7 @@ describe('landSession', { timeout: 20_000 }, () => {
     ['a sha outside the pinned shape', () => ({ sha: '--upload-pack=x', target: 'main' })],
     ['no target', (pin) => ({ sha: pin })],
   ])('refuses a merge event with %s, changing nothing', async (_label, fields) => {
-    transitionSession(db, SESSION_ID, 'merged');
+    transitionSession(db, SESSION_ID, SessionState.Merged);
     db.prepare(
       `INSERT INTO events (session_id, type, payload) VALUES (?, '${EventType.Merge}', ?)`,
     ).run(

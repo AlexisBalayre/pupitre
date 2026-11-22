@@ -134,6 +134,7 @@ import { EventType } from './enums/event-type.enums.js';
 import { GateStageStatus } from './enums/gate-stage-status.enums.js';
 import { InterruptSignal } from './enums/interrupt-signal.enums.js';
 import { MergeStatus } from './enums/merge-status.enums.js';
+import { SessionState } from './enums/session-state.enums.js';
 import { SlotHolderKind } from './enums/slot-holder-kind.enums.js';
 import { RewrittenGitDirError } from './errors/git-diff.errors.js';
 import {
@@ -346,7 +347,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
     await expect(merge(movingAdapter)).rejects.toThrow(/moved from main to elsewhere/);
 
-    expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+    expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.AwaitingReview);
     expect(sh(repo, 'git', 'rev-parse', 'main').trim()).not.toBe(
       sh(worktree, 'git', 'rev-parse', 'HEAD').trim(),
     );
@@ -367,7 +368,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       // Not a git call, not a stage: nothing was spawned at all.
       expect(execFileSync).not.toHaveBeenCalled();
       expect(spawn).not.toHaveBeenCalled();
-      expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+      expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.AwaitingReview);
     });
 
     it('runs the gate under the declaration and names it in the report', async () => {
@@ -431,7 +432,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
     expect(outcome.status).toBe(MergeStatus.Rejected);
     expect(outcome.rejectCount).toBe(1);
-    expect(getSession(db, SESSION_ID)?.state).toBe('running');
+    expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.Running);
     // Into the pane recorded at launch, never a session target (decision 46).
     expect(vi.mocked(steerPane).mock.calls[0]?.[0]).toEqual({
       sessionId: SESSION_ID,
@@ -469,7 +470,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       branch: 'pup/s2',
       profileHash: 'hash',
     });
-    transitionSession(db, 's2', 'running');
+    transitionSession(db, 's2', SessionState.Running);
     commitIn(sibling, 'docs/adr/0002-theirs.md', '# 0002\n');
     commitIn(worktree, 'docs/adr/0002-mine.md', '# 0002\n');
 
@@ -489,7 +490,10 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         '  docs/adr/0002-mine.md: decision 0002 is also added by pup/s2, a session branch that ' +
         'is live or whose PR has not landed; renumber it 0003, the lowest free number',
     });
-    expect(getSession(db, SESSION_ID)).toMatchObject({ state: 'awaiting-review', reject_count: 0 });
+    expect(getSession(db, SESSION_ID)).toMatchObject({
+      state: SessionState.AwaitingReview,
+      reject_count: 0,
+    });
     expect(vi.mocked(steerPane)).not.toHaveBeenCalled();
   });
 
@@ -504,7 +508,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       branch: 'pup/s2',
       profileHash: 'hash',
     });
-    transitionSession(db, 's2', 'running');
+    transitionSession(db, 's2', SessionState.Running);
     // A parentless commit, which git cannot diff against the target.
     const orphan = sh(repo, 'git', 'commit-tree', '-m', 'orphan', 'HEAD^{tree}').trim();
     sh(repo, 'git', 'update-ref', 'refs/heads/pup/s2', orphan);
@@ -763,7 +767,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     mkdirSync(join(repo, '.git', 'pup-merge.lock'));
 
     await expect(merge()).rejects.toThrow(MergeLockHeldError);
-    expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+    expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.AwaitingReview);
   });
 
   describe('a lock moved away under it (decision 88)', () => {
@@ -793,7 +797,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
       expect(sh(repo, 'git', 'rev-parse', 'main').trim()).toBe(mainBefore);
       expect(sh(repo, 'git', 'status', '--porcelain', '--untracked-files=no')).toBe('');
-      expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+      expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.AwaitingReview);
       expect(errors.mock.calls.flat()).toContainEqual(
         expect.stringMatching(/was gone or replaced when this run released it/),
       );
@@ -822,7 +826,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
       expect(sh(repo, 'git', 'rev-parse', BRANCH).trim()).toBe(tip);
       expect(sh(repo, 'git', 'rev-parse', 'main').trim()).toBe(mainBefore);
-      expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+      expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.AwaitingReview);
     });
 
     it('refuses the push of a --pr gate when the lock moved during the stages, opening no PR', async () => {
@@ -843,7 +847,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
       expect(sh(bare, 'git', 'for-each-ref', 'refs/heads')).toBe('');
       expect(ghCalls().some((call) => call.startsWith('pr create'))).toBe(false);
-      expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+      expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.AwaitingReview);
     });
 
     // Moved once main moved: the merge happened, so the error carries the
@@ -888,7 +892,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         detail: expect.stringContaining('src/feature.ts#feature'),
       }),
     );
-    expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+    expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.AwaitingReview);
   });
 
   /**
@@ -1244,7 +1248,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(outcome.prUrl).toContain('--title edit src/feature.ts --body-file');
     expect(sh(repo, 'git', 'rev-parse', 'main').trim()).toBe(mainBefore);
     expect(sh(bare, 'git', 'rev-parse', BRANCH).trim()).not.toBe('');
-    expect(getSession(db, SESSION_ID)?.state).toBe('merged');
+    expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.Merged);
     expect(existsSync(worktree)).toBe(false);
     expect(sh(repo, 'git', 'branch', '--list', BRANCH).trim()).toBe('');
     // The target has not moved, so the bar must not either — the post-PR audit ratchets.
@@ -1322,7 +1326,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     // Refused before the gate ran, so gh was only probed: nothing was pushed
     // and no pull request was opened anywhere.
     expect(ghCalls()).toEqual(['--version']);
-    expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+    expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.AwaitingReview);
   });
 
   it('with openPr adopts an open PR onto the same base and rewrites its description', async () => {
@@ -1424,7 +1428,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     await expect(withFakeGh(statusRefused, () => runMergeGate(db, request))).rejects.toThrow(
       /gh api --method POST .*\/statuses\//,
     );
-    expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+    expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.AwaitingReview);
     expect(listEvents(db, SESSION_ID).some((row) => row.type === EventType.Merge)).toBe(false);
 
     const payloads = `${ghLog}.payloads`;
@@ -1454,7 +1458,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         }),
       ),
     ).rejects.toThrow('fork');
-    expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+    expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.AwaitingReview);
     expect(sh(bare, 'git', 'branch', '--list', BRANCH).trim()).toBe('');
   });
 
@@ -1471,7 +1475,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         }),
       ),
     ).rejects.toThrow('gh');
-    expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+    expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.AwaitingReview);
   });
 
   describe('re-gating a merged session whose PR head moved (decision 86)', () => {
@@ -1621,14 +1625,14 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       );
       expect(merges()).toHaveLength(2);
       expect(merges().at(-1)).toMatchObject({ sha: tip, prUrl: PR_URL, target: 'main' });
-      expect(getSession(db, SESSION_ID)?.state).toBe('merged');
+      expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.Merged);
       // The newest gate run is the re-gate's, logged onto the state it keeps.
       const lastGate = listEvents(db, SESSION_ID)
         .filter((row) => row.type === EventType.GateResult)
         .at(-1);
       expect(JSON.parse(lastGate?.payload ?? '{}')).toMatchObject({
-        from: 'merged',
-        to: 'merged',
+        from: SessionState.Merged,
+        to: SessionState.Merged,
         report: { passed: true },
       });
       // Adopted and rewritten, then read back at the new pin and vouched for
@@ -1733,7 +1737,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(listEvents(db, SESSION_ID)).toHaveLength(events);
       expect(listLedgerEntries(db, 'proj-1')).toHaveLength(ledger);
       expect(prEdits()).toBe(edits);
-      expect(getSession(db, SESSION_ID)?.state).toBe('merged');
+      expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.Merged);
     }
 
     /** The fix round's review worktree removed, and the local branch it held deleted. */
@@ -1798,7 +1802,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
           branch: 'pup/s2',
           profileHash: 'hash',
         });
-        transitionSession(db, 's2', 'running');
+        transitionSession(db, 's2', SessionState.Running);
         commitIn(sibling, 'docs/adr/0002-theirs.md', '# 0002\n');
         const edits = prEdits();
 
@@ -1969,7 +1973,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
       expect(listEvents(db, SESSION_ID)).toHaveLength(events);
       expect(merges().at(-1)?.sha).toBe(pinned);
-      expect(getSession(db, SESSION_ID)?.state).toBe('merged');
+      expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.Merged);
       // Neither the head the gate measured nor the one GitHub reported gets pup-gate.
       expect(ghCalls()).not.toContainEqual(statusOn(tip));
       expect(ghCalls()).not.toContainEqual(statusOn(elsewhere));
@@ -1986,7 +1990,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       );
       expect(merges()).toHaveLength(1);
       expect(merges().at(-1)?.sha).toBe(pinned);
-      expect(getSession(db, SESSION_ID)?.state).toBe('merged');
+      expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.Merged);
       expect(steerPane).not.toHaveBeenCalled();
       expect(prEdits()).toBe(1);
     });
@@ -2130,7 +2134,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(merges()).toHaveLength(1);
       expect(merges().at(-1)?.sha).toBe(pinned);
       expect(prEdits()).toBe(1);
-      expect(getSession(db, SESSION_ID)?.state).toBe('merged');
+      expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.Merged);
       expect(steerPane).not.toHaveBeenCalled();
     });
   });
@@ -2200,7 +2204,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         await expect(merge()).rejects.toThrow(/\.git\/commondir exists.*decision 172/s);
 
         expect(gitSpawns()).toEqual([]);
-        expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+        expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.AwaitingReview);
         rmSync(join(repo, '.git', 'commondir'));
         expect(sh(repo, 'git', 'rev-parse', 'refs/heads/main').trim()).toBe(realMain);
       },
@@ -2225,7 +2229,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
       rmSync(join(repo, '.git', 'commondir'));
       expect(sh(repo, 'git', 'rev-parse', 'refs/heads/main').trim()).toBe(realMain);
-      expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+      expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.AwaitingReview);
       expect(existsSync(worktree)).toBe(true);
     });
 
@@ -2242,7 +2246,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
       rmSync(join(repo, '.git', 'commondir'));
       expect(sh(repo, 'git', 'rev-parse', 'refs/heads/main').trim()).toBe(realBranch);
-      expect(getSession(db, SESSION_ID)?.state).toBe('merged');
+      expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.Merged);
       const recorded = listEvents(db, SESSION_ID).filter((row) => row.type === EventType.Merge);
       expect(recorded).toHaveLength(1);
       expect(JSON.parse(recorded[0]?.payload ?? '{}')).toMatchObject({ sha: realBranch });
@@ -2321,7 +2325,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         expect(gitSpawns()).toEqual([]);
         restore();
         expect(sh(repo, 'git', 'rev-parse', 'refs/heads/main').trim()).toBe(realMain);
-        expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+        expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.AwaitingReview);
       },
     );
 
@@ -2357,7 +2361,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       writeFileSync(head, realHead);
       chmodSync(join(repo, '.git', 'refs'), 0o755);
       expect(sh(repo, 'git', 'rev-parse', 'refs/heads/main').trim()).toBe(realMain);
-      expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+      expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.AwaitingReview);
     });
 
     it('refuses a .git swapped for a gitfile while the stages run, merging nothing', async () => {
@@ -2392,7 +2396,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(gitSpawns().slice(spawnsBeforeSwap).filter(onMain)).toEqual([]);
       restore?.();
       expect(sh(repo, 'git', 'rev-parse', 'refs/heads/main').trim()).toBe(realMain);
-      expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+      expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.AwaitingReview);
     });
 
     it('refuses a .git swapped for a decoy directory while the stages run, merging nothing', async () => {
@@ -2439,7 +2443,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       rmSync(dotGit, { recursive: true });
       renameSync(aside, dotGit);
       expect(sh(repo, 'git', 'rev-parse', 'refs/heads/main').trim()).toBe(realMain);
-      expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+      expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.AwaitingReview);
     });
   });
 });

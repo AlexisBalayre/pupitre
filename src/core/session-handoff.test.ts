@@ -33,6 +33,7 @@ import {
 import { openStore } from './db.client.js';
 import { ClimbReason } from './enums/climb-reason.enums.js';
 import { EventType } from './enums/event-type.enums.js';
+import { SessionState } from './enums/session-state.enums.js';
 import { WorktreeRepointedError } from './errors/git-diff.errors.js';
 import { HandoffMissingError } from './errors/session-handoff.errors.js';
 import { TopRungReachedError } from './errors/session-lifecycle.errors.js';
@@ -120,7 +121,7 @@ describe('session handoff', () => {
       profileHash: 'hash',
       tmuxTarget: '%3',
     });
-    transitionSession(db, 's1', 'running');
+    transitionSession(db, 's1', SessionState.Running);
   });
 
   // projectPaths defaults to ~/.pupitre; tests must never write there.
@@ -265,7 +266,7 @@ describe('session handoff', () => {
   });
 
   it('refuses to request a handoff from a session that is not running', () => {
-    transitionSession(db, 's1', 'killed');
+    transitionSession(db, 's1', SessionState.Killed);
     expect(() => requestHandoff(db, repoPath, 's1', stateBase)).toThrow('only running sessions');
   });
 
@@ -379,11 +380,11 @@ describe('session handoff', () => {
     const state = db.prepare("SELECT state FROM sessions WHERE id = 's1'").get() as {
       state: string;
     };
-    expect(state.state).toBe('running');
+    expect(state.state).toBe(SessionState.Running);
   });
 
   it('refuses a hard respawn on a session that is not running', () => {
-    transitionSession(db, 's1', 'killed');
+    transitionSession(db, 's1', SessionState.Killed);
     expect(() => hardRespawnSession(db, repoPath, 's1', WINDOW_ENV, stateBase)).toThrow(
       'only running sessions',
     );
@@ -458,9 +459,9 @@ describe('session handoff', () => {
         )
         .get();
     const rejectOnce = () => {
-      transitionSession(db, 's1', 'awaiting-review');
-      transitionSession(db, 's1', 'rejected');
-      transitionSession(db, 's1', 'running');
+      transitionSession(db, 's1', SessionState.AwaitingReview);
+      transitionSession(db, 's1', SessionState.Rejected);
+      transitionSession(db, 's1', SessionState.Running);
     };
 
     beforeEach(() => {
@@ -549,8 +550,8 @@ describe('session handoff', () => {
 
     it('never climbs a session the gate parked, even once unblocked', () => {
       recordSessionRoute(db, 's1', STANDARD_FIRST);
-      transitionSession(db, 's1', 'blocked');
-      transitionSession(db, 's1', 'running', { kind: 'operator-unblock' });
+      transitionSession(db, 's1', SessionState.Blocked);
+      transitionSession(db, 's1', SessionState.Running, { kind: 'operator-unblock' });
 
       hardRespawnSession(db, repoPath, 's1', WINDOW_ENV, stateBase);
 

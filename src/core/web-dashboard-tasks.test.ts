@@ -9,6 +9,7 @@ import { openStore } from './db.client.js';
 import { EventType } from './enums/event-type.enums.js';
 import { GateStageStatus } from './enums/gate-stage-status.enums.js';
 import { MergeStatus } from './enums/merge-status.enums.js';
+import { SessionState } from './enums/session-state.enums.js';
 import { projectId } from './paths.utils.js';
 import {
   appendEvent,
@@ -18,7 +19,6 @@ import {
   transitionSession,
 } from './session.repository.js';
 import type { GateReport } from './types/merge-gate.types.js';
-import type { SessionState } from './types/session.types.js';
 import { listWindow } from './web-dashboard.service.js';
 import { firstSentence, readTasksSheet, renderTasksSheet } from './web-dashboard-tasks.service.js';
 
@@ -112,23 +112,23 @@ describe('the Tasks sheet', () => {
   function seedPrSession(sessionId: string): void {
     launch(sessionId);
     appendEvent(db, sessionId, EventType.Steer, { kind: 'kickoff', delivered: true });
-    transitionSession(db, sessionId, 'running');
-    transitionSession(db, sessionId, 'awaiting-review');
-    transitionSession(db, sessionId, 'rejected', {
+    transitionSession(db, sessionId, SessionState.Running);
+    transitionSession(db, sessionId, SessionState.AwaitingReview);
+    transitionSession(db, sessionId, SessionState.Rejected, {
       report: report(sessionId, ['tests', GateStage.Lint]),
     });
     stamp('2026-11-01 12:00:00');
     appendEvent(db, sessionId, EventType.Steer, { kind: 'gate-rejection' });
-    transitionSession(db, sessionId, 'running', { kind: 'gate-rejection-resteer' });
+    transitionSession(db, sessionId, SessionState.Running, { kind: 'gate-rejection-resteer' });
     appendEvent(db, sessionId, EventType.Steer, { kind: 'message', by: 'operator' });
     appendEvent(db, sessionId, EventType.Respawn, { delivered: true });
-    transitionSession(db, sessionId, 'awaiting-review');
-    transitionSession(db, sessionId, 'merged', { report: report(sessionId) });
+    transitionSession(db, sessionId, SessionState.AwaitingReview);
+    transitionSession(db, sessionId, SessionState.Merged, { report: report(sessionId) });
     stamp('2026-11-02 13:00:00');
     merge(sessionId, '2026-11-02 13:30:00');
     appendEvent(db, sessionId, EventType.GateResult, {
-      from: 'merged',
-      to: 'merged',
+      from: SessionState.Merged,
+      to: SessionState.Merged,
       report: report(sessionId),
     });
     stamp('2026-11-03 09:00:00');
@@ -168,11 +168,11 @@ describe('the Tasks sheet', () => {
 
   it('lists only sessions that reached a PR, newest merge first, a PR not landed said so', () => {
     seedPrSession('s-old');
-    launch('s-new', ['running', 'awaiting-review', 'merged']);
+    launch('s-new', [SessionState.Running, SessionState.AwaitingReview, SessionState.Merged]);
     merge('s-new', '2026-11-05 10:30:00', `${PR}8`);
-    launch('s-local', ['running', 'awaiting-review', 'merged']);
+    launch('s-local', [SessionState.Running, SessionState.AwaitingReview, SessionState.Merged]);
     merge('s-local', '2026-11-06 10:00:00', null);
-    launch('s-live', ['running']);
+    launch('s-live', [SessionState.Running]);
 
     const page = render();
 
@@ -192,7 +192,7 @@ describe('the Tasks sheet', () => {
 
   it('charts the pass rate per week and the failures per stage, each with its figure line', () => {
     seedPrSession('s-pr');
-    launch('s-b', ['running', 'awaiting-review']);
+    launch('s-b', [SessionState.Running, SessionState.AwaitingReview]);
     appendEvent(db, 's-b', EventType.GateResult, {
       outcome: MergeStatus.Refused,
       report: report('s-b', ['diff-size']),
@@ -261,9 +261,13 @@ describe('the Tasks sheet', () => {
       writeFileSync(join(repo, file), '');
     }
     sh(repo, 'git', 'add', '.');
-    launch('s-live', ['running'], ['src/a.ts', 'src/b.ts']);
-    launch('s-wide', ['running', 'awaiting-review'], ['src/**']);
-    launch('s-done', ['running', 'awaiting-review', 'merged'], ['src/**']);
+    launch('s-live', [SessionState.Running], ['src/a.ts', 'src/b.ts']);
+    launch('s-wide', [SessionState.Running, SessionState.AwaitingReview], ['src/**']);
+    launch(
+      's-done',
+      [SessionState.Running, SessionState.AwaitingReview, SessionState.Merged],
+      ['src/**'],
+    );
     plan('t-src', 'Touch a.', ['src/**'], ['src/e.ts']);
     plan('t-docs', 'Touch docs.', ['docs/**']);
 
@@ -279,7 +283,7 @@ describe('the Tasks sheet', () => {
   });
 
   it('says once that overlaps could not be read when git cannot list the files', () => {
-    launch('s-live', ['running']);
+    launch('s-live', [SessionState.Running]);
     plan('t-a', 'One.', ['src/**']);
     plan('t-b', 'Two.', ['src/**']);
 
@@ -296,7 +300,7 @@ describe('the Tasks sheet', () => {
     writeFileSync(join(repo, 'src', '<b>x.ts'), '');
     sh(repo, 'git', 'add', '.');
     plan(`t-${evil}`, `${evil}. More.`, [`src/**`, `lib/${evil}`]);
-    launch('s-evil', ['running', 'awaiting-review', 'merged']);
+    launch('s-evil', [SessionState.Running, SessionState.AwaitingReview, SessionState.Merged]);
     appendEvent(db, 's-evil', EventType.GateResult, {
       outcome: MergeStatus.Refused,
       report: {
@@ -308,7 +312,7 @@ describe('the Tasks sheet', () => {
     });
     stamp('2026-11-02 00:00:00');
     merge('s-evil', '2026-11-03 00:00:00', `${PR}${evil}`);
-    launch('s-live', ['running']);
+    launch('s-live', [SessionState.Running]);
 
     const page = render();
 

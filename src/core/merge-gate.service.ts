@@ -66,6 +66,7 @@ import { EventType } from './enums/event-type.enums.js';
 import { GateStageStatus } from './enums/gate-stage-status.enums.js';
 import { InterruptSignal } from './enums/interrupt-signal.enums.js';
 import { MergeStatus } from './enums/merge-status.enums.js';
+import { SessionState } from './enums/session-state.enums.js';
 import { SlotHolderKind } from './enums/slot-holder-kind.enums.js';
 import { ArmedGitDriverError } from './errors/git-diff.errors.js';
 import {
@@ -1364,8 +1365,8 @@ function planMerge(db: Database, req: MergeRequest): MergePlan {
   const session = getSession(db, req.sessionId);
   if (!session) throw new Error(`No session ${req.sessionId}.`);
   const merged =
-    session.state === 'merged' && req.openPr ? mergeToRegate(db, session.id) : undefined;
-  if (session.state !== 'awaiting-review' && !merged) {
+    session.state === SessionState.Merged && req.openPr ? mergeToRegate(db, session.id) : undefined;
+  if (session.state !== SessionState.AwaitingReview && !merged) {
     throw new SessionNotReviewableError(req.sessionId, session.state);
   }
   // A plain merge would fast-forward the round's commits locally and record a
@@ -2440,7 +2441,7 @@ async function gateAndMerge(
       throw withLedgerKept(error, ledgerKept);
     }
   }
-  transitionSession(db, session.id, 'merged', { report });
+  transitionSession(db, session.id, SessionState.Merged, { report });
   // Torn down and recorded before the ratchet and the decision draft: both can
   // throw, and the draft runs `claude -p` for up to two minutes, while the
   // target already holds the sha and `pup status` already reads merged.
@@ -3204,7 +3205,7 @@ export async function measureBranch(
   const flaggedDebt: { description: string; files: string[] }[] = [];
   // A merged session being re-gated has no window to steer (decision 86).
   const acceptHint =
-    session.state === 'merged'
+    session.state === SessionState.Merged
       ? 'Re-run with --accept-debt "<reason>" --review-by "<condition>".'
       : 'Re-run with --accept-debt "<reason>" --review-by "<condition>", or steer the session to address it.';
   const flagDetail = (summary: string): string =>
@@ -3912,9 +3913,9 @@ function rejectOrBlock(db: Database, report: GateReport): MergeOutcome {
   const lifetimeRejects = incrementRejectCount(db, report.sessionId);
   // The round's own count, so the cap and the CLI's "rejection n/2" agree.
   const rejectCount = lifetimeRejects - fixRoundRejectBase(db, report.sessionId, lifetimeRejects);
-  transitionSession(db, report.sessionId, 'rejected', { report });
+  transitionSession(db, report.sessionId, SessionState.Rejected, { report });
   if (rejectCount > MAX_REJECTS_BEFORE_BLOCKED) {
-    transitionSession(db, report.sessionId, 'blocked', {
+    transitionSession(db, report.sessionId, SessionState.Blocked, {
       reason: `reject cap of ${MAX_REJECTS_BEFORE_BLOCKED} reached`,
       rejectCount,
     });
@@ -3929,7 +3930,7 @@ function rejectOrBlock(db: Database, report: GateReport): MergeOutcome {
     // window, no pane recorded — leaves nothing to type into at all. The
     // error's own message names the session, the length and which of the two
     // refusals it was, which is what the human needs before deciding.
-    transitionSession(db, report.sessionId, 'blocked', {
+    transitionSession(db, report.sessionId, SessionState.Blocked, {
       reason:
         error instanceof SteerNotDeliveredError
           ? error.message
@@ -3939,6 +3940,6 @@ function rejectOrBlock(db: Database, report: GateReport): MergeOutcome {
     return { status: MergeStatus.Blocked, report, rejectCount };
   }
   appendEvent(db, report.sessionId, EventType.Steer, { kind: 'gate-rejection' });
-  transitionSession(db, report.sessionId, 'running', { kind: 'gate-rejection-resteer' });
+  transitionSession(db, report.sessionId, SessionState.Running, { kind: 'gate-rejection-resteer' });
   return { status: MergeStatus.Rejected, report, rejectCount };
 }

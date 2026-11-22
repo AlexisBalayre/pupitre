@@ -122,6 +122,7 @@ import { openStore } from './db.client.js';
 import { EventType } from './enums/event-type.enums.js';
 import { GateStageStatus } from './enums/gate-stage-status.enums.js';
 import { MergeStatus } from './enums/merge-status.enums.js';
+import { SessionState } from './enums/session-state.enums.js';
 import { SlotHolderKind } from './enums/slot-holder-kind.enums.js';
 import { ArmedGitDriverError } from './errors/git-diff.errors.js';
 import { MergeLockHeldError, SessionNotReviewableError } from './errors/merge-gate.errors.js';
@@ -433,7 +434,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       writeFileSync(join(repo, '.git', 'info', 'sparse-checkout'), '/src/app.ts\n');
 
       expect((await merge(adapterAfterCut('test -f src/feature.ts').adapter)).status).toBe(
-        'merged',
+        MergeStatus.Merged,
       );
     });
 
@@ -542,7 +543,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         /is a committed link that reaches outside the gate checkout/,
       );
 
-      expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+      expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.AwaitingReview);
     });
 
     // A `..` after a named segment climbs from wherever that segment resolves at
@@ -590,8 +591,8 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
   // The scratch TMPDIR went with the process, which a test worker, the suite's
   // own and the conductor's alike, outlives or leaves without an `exit`.
   describe.each([
-    ['passes', () => passingAdapter, 'merged'],
-    ['refuses', () => failingBuildAdapter, 'rejected'],
+    ['passes', () => passingAdapter, MergeStatus.Merged],
+    ['refuses', () => failingBuildAdapter, MergeStatus.Rejected],
   ] as const)('a gate that %s (decision 100)', (_, adapter, status) => {
     it("removes its checkout and its stage children's scratch TMPDIR before it returns", async () => {
       const worktree = seedSession(db, repo);
@@ -937,7 +938,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(runsOf('test-run')).toBe(1);
       expect(steerPane).not.toHaveBeenCalled();
       const session = getSession(db, SESSION_ID);
-      expect(session?.state).toBe('awaiting-review');
+      expect(session?.state).toBe(SessionState.AwaitingReview);
       expect(session?.reject_count).toBe(0);
       expect(sh(repo, 'git', 'rev-parse', 'main').trim()).toBe(before);
       expect(existsSync(worktree)).toBe(true);
@@ -1066,7 +1067,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(ghCalls().some((call) => /^pr (create|edit|comment)/.test(call))).toBe(false);
       expect(sh(bare, 'git', 'branch', '--list', BRANCH).trim()).toBe('');
       expect(steerPane).not.toHaveBeenCalled();
-      expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+      expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.AwaitingReview);
     });
 
     // A session's own tests can fill the cores until the cap; only load that
@@ -1285,7 +1286,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(outcome.report.stages).toContainEqual(
       expect.objectContaining({ stage: 'diff-size', status: GateStageStatus.Flagged }),
     );
-    expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+    expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.AwaitingReview);
     expect(getSession(db, SESSION_ID)?.reject_count).toBe(0);
     expect(steerPane).not.toHaveBeenCalled();
   });
@@ -1490,7 +1491,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     const outcome = await merge(failingBuildAdapter);
 
     expect(outcome.status).toBe(MergeStatus.Blocked);
-    expect(getSession(db, SESSION_ID)?.state).toBe('blocked');
+    expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.Blocked);
     // A window that is gone keeps the reason it always had.
     expect(blockedReason(db)).toBe('re-steer failed — session unreachable');
   });
@@ -1507,7 +1508,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     const outcome = await merge(failingBuildAdapter);
 
     expect(outcome.status).toBe(MergeStatus.Blocked);
-    expect(getSession(db, SESSION_ID)?.state).toBe('blocked');
+    expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.Blocked);
     const reason = blockedReason(db);
     expect(reason).toContain(SESSION_ID);
     expect(reason).toContain('1234-char');
@@ -1544,7 +1545,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
       await expect(merge()).rejects.toThrow(MergeLockHeldError);
       expect(readFileSync(join(lock(), 'pid'), 'utf8')).toBe(pid());
-      expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+      expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.AwaitingReview);
     });
 
     // Removing a lock a live run holds would let two merges run at once.
@@ -1614,13 +1615,13 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
         await expect(
           mergeAfter(() => {
-            transitionSession(db, SESSION_ID, 'rejected');
-            transitionSession(db, SESSION_ID, 'running');
+            transitionSession(db, SESSION_ID, SessionState.Rejected);
+            transitionSession(db, SESSION_ID, SessionState.Running);
           }),
         ).rejects.toThrow(SessionNotReviewableError);
 
         expect(sh(repo, 'git', 'rev-parse', 'main').trim()).toBe(mainBefore);
-        expect(getSession(db, SESSION_ID)?.state).toBe('running');
+        expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.Running);
         expect(getSession(db, SESSION_ID)?.reject_count).toBe(0);
         expect(
           listEvents(db, SESSION_ID).filter((event) => event.type === EventType.Merge),
@@ -1641,8 +1642,8 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         ) => {
           if (!rejected && args[0] === pidFile) {
             rejected = true;
-            transitionSession(db, SESSION_ID, 'rejected');
-            transitionSession(db, SESSION_ID, 'running');
+            transitionSession(db, SESSION_ID, SessionState.Rejected);
+            transitionSession(db, SESSION_ID, SessionState.Running);
           }
           return real?.(...args);
         }) as never);
@@ -1674,8 +1675,8 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
           const output = real?.(file, args, opts as never);
           if (!rejected && file === 'gh' && args[1] === 'list') {
             rejected = true;
-            transitionSession(db, SESSION_ID, 'rejected');
-            transitionSession(db, SESSION_ID, 'running');
+            transitionSession(db, SESSION_ID, SessionState.Rejected);
+            transitionSession(db, SESSION_ID, SessionState.Running);
           }
           return output;
         }) as never);
@@ -1704,9 +1705,9 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         const worktree = seedSession(db, repo);
         commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
 
-        await expect(mergeAfter(() => transitionSession(db, SESSION_ID, 'merged'))).rejects.toThrow(
-          SessionNotReviewableError,
-        );
+        await expect(
+          mergeAfter(() => transitionSession(db, SESSION_ID, SessionState.Merged)),
+        ).rejects.toThrow(SessionNotReviewableError);
 
         expect(
           listEvents(db, SESSION_ID).filter((event) => event.type === EventType.Merge),
@@ -1723,7 +1724,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
 
     await expect(merge([])).rejects.toThrow(/No adapter for/);
-    expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+    expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.AwaitingReview);
     expect(existsSync(join(repo, '.git', 'pup-merge.lock'))).toBe(false);
   });
 
@@ -1870,7 +1871,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         }),
       ),
     ).rejects.toThrow('release');
-    expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+    expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.AwaitingReview);
   });
 
   describe("the gate's test run takes a test slot (decision 96)", () => {

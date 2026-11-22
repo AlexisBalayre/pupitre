@@ -21,6 +21,7 @@ import { SESSION_ID_PATTERN } from './constants/paths.constants.js';
 import { windowFailureOf } from './dashboard.service.js';
 import type { ClimbReason } from './enums/climb-reason.enums.js';
 import { EventType } from './enums/event-type.enums.js';
+import { SessionState } from './enums/session-state.enums.js';
 import { WorktreeRepointedError } from './errors/git-diff.errors.js';
 import { MachineLoadedError } from './errors/session-cap.errors.js';
 import {
@@ -263,7 +264,7 @@ function peerOf(conflict: ScopeConflict): SessionPeer {
 function overlapsWorthANotice(db: Database, conflicts: ScopeConflict[]): ScopeConflict[] {
   return conflicts.flatMap(({ sessionId, files }) => {
     const shared = filesWorthANotice(files);
-    return shared.length > 0 && getSession(db, sessionId)?.state === 'running'
+    return shared.length > 0 && getSession(db, sessionId)?.state === SessionState.Running
       ? [{ sessionId, files: shared }]
       : [];
   });
@@ -359,7 +360,7 @@ function nextWindowRoute(
   subject: { task: string } | { session: string },
   tier: Tier,
   previous: SessionRow | undefined,
-  failureOf: (previous: SessionRow) => ClimbReason | 'blocked' | undefined,
+  failureOf: (previous: SessionRow) => ClimbReason | SessionState.Blocked | undefined,
   override: RouteOverride,
   operatorDecides = true,
   staysAtTop = false,
@@ -432,7 +433,7 @@ export function fixRoundRoute(
 function sessionWindowRoute(
   db: Database,
   session: SessionRow,
-  failureOf: () => ClimbReason | 'blocked' | undefined,
+  failureOf: () => ClimbReason | SessionState.Blocked | undefined,
   override: RouteOverride,
   isOperator: boolean,
   staysAtTop = false,
@@ -645,7 +646,7 @@ function startSession(
   // The pane id, not the session name: every later steer is addressed to it
   // (decision 46), so it is stored before anything is typed into it.
   db.prepare('UPDATE sessions SET tmux_target = ? WHERE id = ?').run(pane.paneId, sessionId);
-  transitionSession(db, sessionId, 'running', { profileHash: compiled.hash });
+  transitionSession(db, sessionId, SessionState.Running, { profileHash: compiled.hash });
 
   return deliverKickoff(db, sessionId, pane, compiled.contextMarkdown);
 }
@@ -698,7 +699,7 @@ function deliverKickoff(
 /** Mark a session done (run by the agent via `pup session done`). */
 export function markSessionDone(db: Database, sessionId: string, summary: string): void {
   appendEvent(db, sessionId, EventType.SessionDone, { summary });
-  transitionSession(db, sessionId, 'awaiting-review', { summary });
+  transitionSession(db, sessionId, SessionState.AwaitingReview, { summary });
 }
 
 /**
@@ -994,7 +995,10 @@ export function interruptSession(
  * the session stays landable by `pup land` and in the inbox, its task claimed.
  * Returns the state the session ended in.
  */
-export function killSession(db: Database, sessionId: string): 'killed' | 'merged' {
+export function killSession(
+  db: Database,
+  sessionId: string,
+): SessionState.Killed | SessionState.Merged {
   const row = requireSession(db, sessionId);
   // The pane too, not the name alone: a rename from inside the session would
   // leave the name pointing at nothing while the window ran on.
@@ -1013,8 +1017,8 @@ export function killSession(db: Database, sessionId: string): 'killed' | 'merged
     })();
     return FIX_ROUND_EDGE.from;
   }
-  transitionSession(db, sessionId, 'killed');
-  return 'killed';
+  transitionSession(db, sessionId, SessionState.Killed);
+  return SessionState.Killed;
 }
 
 /**

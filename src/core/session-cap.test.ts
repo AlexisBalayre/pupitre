@@ -7,6 +7,7 @@ import { openStore } from './db.client.js';
 import { EventType } from './enums/event-type.enums.js';
 import { GateStageStatus } from './enums/gate-stage-status.enums.js';
 import { MergeStatus } from './enums/merge-status.enums.js';
+import { SessionState } from './enums/session-state.enums.js';
 import { LockBacklogOverBudgetError, MachineLoadedError } from './errors/session-cap.errors.js';
 import { projectId, projectPaths } from './paths.utils.js';
 import {
@@ -28,7 +29,6 @@ import {
   machineLoad,
   UNTIMED_GATE_MS,
 } from './session-cap.service.js';
-import type { SessionState } from './types/session.types.js';
 import type { LockBacklog } from './types/session-cap.types.js';
 
 const PR = 'https://github.com/o/r/pull/1';
@@ -60,11 +60,12 @@ describe('lockBacklog (decision 197)', () => {
     return id;
   }
 
-  const merged = () => session('running', 'awaiting-review', 'merged');
+  const merged = () =>
+    session(SessionState.Running, SessionState.AwaitingReview, SessionState.Merged);
 
   /** A gate run on `id` whose stages took `stageMs`, written as the gate's verdict `edge`. */
   function gateRun(id: string, ...stageMs: unknown[]): void {
-    gateReport(id, { from: 'awaiting-review', to: 'merged' }, ...stageMs);
+    gateReport(id, { from: SessionState.AwaitingReview, to: SessionState.Merged }, ...stageMs);
   }
 
   function gateReport(id: string, edge: object, ...stageMs: unknown[]): void {
@@ -118,11 +119,14 @@ describe('lockBacklog (decision 197)', () => {
   });
 
   it.each<[string, SessionState[]]>([
-    ['queued', []],
+    [SessionState.Queued, []],
     // A fix round puts a merged session back in `running` (`FIX_ROUND_EDGE`).
-    ['running or in a fix round', ['running']],
-    ['rejected', ['running', 'awaiting-review', 'rejected']],
-    ['blocked', ['running', 'blocked']],
+    ['running or in a fix round', [SessionState.Running]],
+    [
+      SessionState.Rejected,
+      [SessionState.Running, SessionState.AwaitingReview, SessionState.Rejected],
+    ],
+    [SessionState.Blocked, [SessionState.Running, SessionState.Blocked]],
   ])('counts a gate and a land for a session %s', (_name, path) => {
     session(...path);
 
@@ -131,7 +135,7 @@ describe('lockBacklog (decision 197)', () => {
 
   // Decision 144: a session in review costs memory, not turns.
   it('counts nothing for a session awaiting review', () => {
-    session('running', 'awaiting-review');
+    session(SessionState.Running, SessionState.AwaitingReview);
 
     expect(lockBacklog(db, repo).uses).toBe(0);
   });
@@ -213,24 +217,24 @@ describe('lockBacklog (decision 197)', () => {
   });
 
   it('counts nothing for a killed session, nor a merged one with no merge recorded', () => {
-    session('running', 'killed');
+    session(SessionState.Running, SessionState.Killed);
     merged();
 
     expect(lockBacklog(db, repo).uses).toBe(0);
   });
 
   it('times each run by its longest stage, the stages running alongside one another', () => {
-    const id = session('running', 'killed');
+    const id = session(SessionState.Running, SessionState.Killed);
     gateRun(id, 60_000, 300_000, 120_000);
 
     expect(lockBacklog(db, repo)).toMatchObject({ gateMs: 300_000, gatesTimed: 1 });
   });
 
   it('takes the median over the newest 30 timed runs', () => {
-    const id = session('running', 'killed');
+    const id = session(SessionState.Running, SessionState.Killed);
     for (let run = 0; run < 30; run++) gateRun(id, 20 * 60_000);
     for (let run = 0; run < 30; run++) gateRun(id, 5 * 60_000);
-    session('running');
+    session(SessionState.Running);
 
     expect(lockBacklog(db, repo)).toEqual({
       minutes: 10,
@@ -248,9 +252,9 @@ describe('lockBacklog (decision 197)', () => {
     ['under the floor', GATE_FLOOR_MS - 1, GATE_FLOOR_MS],
     ['huge', 1e12, GATE_CEILING_MS],
   ])('holds a %s median to its bounds', (_name, forged, bound) => {
-    const id = session('running', 'killed');
+    const id = session(SessionState.Running, SessionState.Killed);
     for (let run = 0; run < 30; run++) gateRun(id, forged);
-    for (let live = 0; live < 8; live++) session('running');
+    for (let live = 0; live < 8; live++) session(SessionState.Running);
 
     expect(lockBacklog(db, repo)).toMatchObject({
       gateMs: bound,
@@ -260,7 +264,7 @@ describe('lockBacklog (decision 197)', () => {
   });
 
   it('reads at most 64 stages of a report', () => {
-    const id = session('running', 'killed');
+    const id = session(SessionState.Running, SessionState.Killed);
     const stages: number[] = Array.from({ length: 100 }, () => 5 * 60_000);
     stages[80] = 50 * 60_000;
     gateRun(id, ...stages);
@@ -269,7 +273,7 @@ describe('lockBacklog (decision 197)', () => {
   });
 
   it('passes over a run with no time, or one a session wrote out of shape', () => {
-    const id = session('running', 'killed');
+    const id = session(SessionState.Running, SessionState.Killed);
     gateRun(id, 600_000);
     gateRun(id);
     gateRun(id, '900000', -1, null, Number.POSITIVE_INFINITY);
@@ -285,14 +289,14 @@ describe('lockBacklog (decision 197)', () => {
   });
 
   it("reads only a report shaped like the gate's verdict on a session in review", () => {
-    const id = session('running', 'killed');
+    const id = session(SessionState.Running, SessionState.Killed);
     gateRun(id, 600_000);
-    gateReport(id, { from: 'awaiting-review', to: 'rejected' }, 900_000);
+    gateReport(id, { from: SessionState.AwaitingReview, to: SessionState.Rejected }, 900_000);
     gateReport(id, {}, 0);
     gateReport(id, { outcome: MergeStatus.Refused }, 0);
-    gateReport(id, { from: 'merged', to: 'merged' }, 0);
-    gateReport(id, { from: 'blocked', to: 'running' }, 0);
-    gateReport(id, { from: 'awaiting-review', to: 'killed' }, 0);
+    gateReport(id, { from: SessionState.Merged, to: SessionState.Merged }, 0);
+    gateReport(id, { from: SessionState.Blocked, to: SessionState.Running }, 0);
+    gateReport(id, { from: SessionState.AwaitingReview, to: SessionState.Killed }, 0);
 
     expect(lockBacklog(db, repo)).toMatchObject({ gateMs: 600_000, gatesTimed: 2 });
   });

@@ -36,6 +36,7 @@ import type { Adapter } from '../adapters/types/adapter.types.js';
 import { auditProject } from './audit.service.js';
 import { openStore } from './db.client.js';
 import { EventType } from './enums/event-type.enums.js';
+import { SessionState } from './enums/session-state.enums.js';
 import { assertGhAvailable } from './github.client.js';
 import { abandonClosedSession, landSession } from './land.service.js';
 import { withScratchGitDir } from './merge-gate.service.js';
@@ -113,8 +114,8 @@ describe('landSession', { timeout: 20_000 }, () => {
       branch: BRANCH,
       profileHash: 'hash',
     });
-    transitionSession(db, SESSION_ID, 'running');
-    transitionSession(db, SESSION_ID, 'awaiting-review');
+    transitionSession(db, SESSION_ID, SessionState.Running);
+    transitionSession(db, SESSION_ID, SessionState.AwaitingReview);
 
     ghLog = join(host, 'gh-calls');
     originalPath = process.env.PATH;
@@ -127,7 +128,7 @@ describe('landSession', { timeout: 20_000 }, () => {
 
   /** What the gate's `--pr` merge leaves: the session merged, its PR on the event. */
   function seedPrMerge(prUrl: string | null = PR_URL): void {
-    transitionSession(db, SESSION_ID, 'merged');
+    transitionSession(db, SESSION_ID, SessionState.Merged);
     appendEvent(db, SESSION_ID, EventType.Merge, {
       branch: BRANCH,
       sha: pinned,

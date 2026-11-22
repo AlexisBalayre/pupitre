@@ -52,6 +52,7 @@ import { DEFAULT_BASE_PROFILE } from './constants/default-profile.constants.js';
 import { openStore } from './db.client.js';
 import { EventType } from './enums/event-type.enums.js';
 import { MergeStatus } from './enums/merge-status.enums.js';
+import { SessionState } from './enums/session-state.enums.js';
 import { startFixRound } from './fix-round.service.js';
 import { landSession } from './land.service.js';
 import { runMergeGate } from './merge-gate.service.js';
@@ -152,8 +153,8 @@ describe('startFixRound', { timeout: 90_000 }, () => {
       profileHash: 'hash',
       tmuxTarget: '%4',
     });
-    transitionSession(db, SESSION_ID, 'running');
-    transitionSession(db, SESSION_ID, 'awaiting-review');
+    transitionSession(db, SESSION_ID, SessionState.Running);
+    transitionSession(db, SESSION_ID, SessionState.AwaitingReview);
 
     // projectPaths defaults to ~/.pupitre; tests must never write there.
     stateBase = tempDir('pup-fix-state-');
@@ -282,7 +283,7 @@ describe('startFixRound', { timeout: 90_000 }, () => {
    */
   function seedPrMerge(event: Record<string, unknown> = {}): void {
     sh(repo, 'git', 'worktree', 'remove', '--force', worktree);
-    transitionSession(db, SESSION_ID, 'merged');
+    transitionSession(db, SESSION_ID, SessionState.Merged);
     appendEvent(db, SESSION_ID, EventType.Merge, {
       branch: BRANCH,
       sha: pinned,
@@ -526,20 +527,23 @@ describe('startFixRound', { timeout: 90_000 }, () => {
     ).rejects.toThrow(
       'Session s1 is in a CI fix round; its commits go back to its open PR. Run `pup merge s1 --pr`.',
     );
-    expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+    expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.AwaitingReview);
   });
 
   // The round's work is abandoned, not the PR it was for (decision 90).
   describe('a fix round ended by pup kill', () => {
     it.each([
-      ['running', () => undefined],
-      ['blocked', () => transitionSession(db, SESSION_ID, 'blocked')],
-      ['awaiting-review', () => transitionSession(db, SESSION_ID, 'awaiting-review')],
+      [SessionState.Running, () => undefined],
+      [SessionState.Blocked, () => transitionSession(db, SESSION_ID, SessionState.Blocked)],
       [
-        'rejected',
+        SessionState.AwaitingReview,
+        () => transitionSession(db, SESSION_ID, SessionState.AwaitingReview),
+      ],
+      [
+        SessionState.Rejected,
         () => {
-          transitionSession(db, SESSION_ID, 'awaiting-review');
-          transitionSession(db, SESSION_ID, 'rejected');
+          transitionSession(db, SESSION_ID, SessionState.AwaitingReview);
+          transitionSession(db, SESSION_ID, SessionState.Rejected);
         },
       ],
     ])(
@@ -552,13 +556,13 @@ describe('startFixRound', { timeout: 90_000 }, () => {
         const from = getSession(db, SESSION_ID)?.state;
         vi.mocked(killSession).mockClear();
 
-        expect(killPupSession(db, SESSION_ID)).toBe('merged');
+        expect(killPupSession(db, SESSION_ID)).toBe(SessionState.Merged);
 
-        expect(getSession(db, SESSION_ID)?.state).toBe('merged');
+        expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.Merged);
         expect(vi.mocked(killSession).mock.calls).toEqual([[SESSION_ID, '%9']]);
         expect(payloads(EventType.GateResult).at(-1)).toEqual({
           from,
-          to: 'merged',
+          to: SessionState.Merged,
           kind: 'fix-round-killed',
         });
         expect(listBacklogTasks(db, projectId(repo)).map((task) => task.id)).not.toContain(
@@ -574,7 +578,7 @@ describe('startFixRound', { timeout: 90_000 }, () => {
       seedPrMerge();
       reviewOnGitHub({ threads: OPEN_THREAD });
       await fix();
-      transitionSession(db, SESSION_ID, 'awaiting-review');
+      transitionSession(db, SESSION_ID, SessionState.AwaitingReview);
       const events = listEvents(db, SESSION_ID).length;
       vi.mocked(killSession).mockImplementationOnce(() => {
         db.prepare("UPDATE sessions SET state = 'merged' WHERE id = ?").run(SESSION_ID);
@@ -602,11 +606,11 @@ describe('startFixRound', { timeout: 90_000 }, () => {
     });
 
     it('kills a session outside a round as before, its task back in the backlog', () => {
-      transitionSession(db, SESSION_ID, 'running');
+      transitionSession(db, SESSION_ID, SessionState.Running);
 
-      expect(killPupSession(db, SESSION_ID)).toBe('killed');
+      expect(killPupSession(db, SESSION_ID)).toBe(SessionState.Killed);
 
-      expect(getSession(db, SESSION_ID)?.state).toBe('killed');
+      expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.Killed);
       expect(listBacklogTasks(db, projectId(repo)).map((task) => task.id)).toContain('task-s1');
     });
   });

@@ -5,6 +5,7 @@ import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import type { Database } from 'better-sqlite3';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { openStore } from './db.client.js';
+import { SessionState } from './enums/session-state.enums.js';
 import {
   getWatcherBeat,
   listOverlaps,
@@ -27,7 +28,6 @@ import {
   transitionSession,
 } from './session.repository.js';
 import type { AppendOnlyNote } from './types/overlap.types.js';
-import type { SessionState } from './types/session.types.js';
 
 // Test repos must not inherit the developer's global git config nor GIT_DIR & co.
 // — when this suite runs inside a git hook (pre-commit), those would redirect
@@ -182,7 +182,7 @@ describe('scanOverlaps', () => {
       branch: `pup/${id}`,
       profileHash: 'x',
     });
-    transitionSession(db, id, 'running');
+    transitionSession(db, id, SessionState.Running);
   }
 
   it('stores the overlap between live sessions editing the same file and beats', () => {
@@ -202,7 +202,7 @@ describe('scanOverlaps', () => {
     seedWorktreeSession('s2', 'src/shared.ts');
     scanOverlaps(db, repo);
 
-    transitionSession(db, 's2', 'killed');
+    transitionSession(db, 's2', SessionState.Killed);
     const pairs = scanOverlaps(db, repo);
 
     expect(pairs).toEqual([]);
@@ -242,16 +242,21 @@ describe('scopeConflicts', () => {
 
   /** Legal transition walks, since a session cannot be dropped into a state. */
   const STEPS_TO: Record<string, SessionState[]> = {
-    queued: [],
-    running: ['running'],
-    'awaiting-review': ['running', 'awaiting-review'],
-    blocked: ['running', 'blocked'],
-    merged: ['running', 'awaiting-review', 'merged'],
-    killed: ['running', 'killed'],
+    [SessionState.Queued]: [],
+    [SessionState.Running]: [SessionState.Running],
+    [SessionState.AwaitingReview]: [SessionState.Running, SessionState.AwaitingReview],
+    [SessionState.Blocked]: [SessionState.Running, SessionState.Blocked],
+    [SessionState.Merged]: [SessionState.Running, SessionState.AwaitingReview, SessionState.Merged],
+    [SessionState.Killed]: [SessionState.Running, SessionState.Killed],
   };
 
   /** A live session holding `scopeIn`, in `state`, via its own task row. */
-  function seedHolder(id: string, scopeIn: string[], state = 'running', scopeOut?: string[]): void {
+  function seedHolder(
+    id: string,
+    scopeIn: string[],
+    state = SessionState.Running,
+    scopeOut?: string[],
+  ): void {
     insertTask(db, {
       id: `task-${id}`,
       projectId: projectId(repo),
@@ -299,30 +304,35 @@ describe('scopeConflicts', () => {
   });
 
   it('does not conflict over a file the holder excludes with scope-out', () => {
-    seedHolder('s1', ['src/core/**'], 'running', ['src/core/gate.service.ts']);
+    seedHolder('s1', ['src/core/**'], SessionState.Running, ['src/core/gate.service.ts']);
 
     expect(scopeConflicts(db, repo, ['src/core/gate.service.ts'])).toEqual([]);
   });
 
   // A session in any of these can still transition back to `running`, so its
   // worktree is still the place that file is being edited.
-  it.each(['queued', 'running', 'awaiting-review', 'blocked'] as const)(
-    'counts a %s session as still holding its scope',
-    (state) => {
-      seedHolder('s1', ['src/core/**'], state);
+  it.each([
+    SessionState.Queued,
+    SessionState.Running,
+    SessionState.AwaitingReview,
+    SessionState.Blocked,
+  ] as const)('counts a %s session as still holding its scope', (state) => {
+    seedHolder('s1', ['src/core/**'], state);
 
-      expect(scopeConflicts(db, repo, ['src/core/gate.service.ts'])).toHaveLength(1);
-    },
-  );
+    expect(scopeConflicts(db, repo, ['src/core/gate.service.ts'])).toHaveLength(1);
+  });
 
   // Merged work is in the target and killed work is abandoned: neither is
   // still writing, so holding the scope any longer would refuse launches
   // forever on a repo that has ever built anything.
-  it.each(['merged', 'killed'] as const)('frees the scope once a session is %s', (state) => {
-    seedHolder('s1', ['src/core/**'], state);
+  it.each([SessionState.Merged, SessionState.Killed])(
+    'frees the scope once a session is %s',
+    (state) => {
+      seedHolder('s1', ['src/core/**'], state);
 
-    expect(scopeConflicts(db, repo, ['src/core/gate.service.ts'])).toEqual([]);
-  });
+      expect(scopeConflicts(db, repo, ['src/core/gate.service.ts'])).toEqual([]);
+    },
+  );
 
   // Scopes are resolved against `git ls-files`, so a glob naming only files
   // that do not exist yet resolves to nothing — the stated ceiling.

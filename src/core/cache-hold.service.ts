@@ -10,6 +10,7 @@ import {
 import { SESSION_ID_PATTERN } from './constants/paths.constants.js';
 import { EventType } from './enums/event-type.enums.js';
 import { SessionActivityKind } from './enums/session-activity-kind.enums.js';
+import { SessionState } from './enums/session-state.enums.js';
 import { projectPaths } from './paths.utils.js';
 import { toIsoUtc } from './report-data.utils.js';
 import { appendEvent, listEvents, listSessions, openQuestion } from './session.repository.js';
@@ -96,7 +97,7 @@ const PROMPT_EVENTS: ReadonlySet<EventType> = new Set([
 export function holdIdleCaches(db: Database, repoPath: string, now: number): string[] {
   const paths = projectPaths(repoPath);
   const held: string[] = [];
-  for (const row of listSessions(db, ['awaiting-review', 'running'])) {
+  for (const row of listSessions(db, [SessionState.AwaitingReview, SessionState.Running])) {
     if (!SESSION_ID_PATTERN.test(row.id)) continue;
     try {
       const due = holdDue(db, row, paths.eventsFile(row.id), now);
@@ -140,7 +141,8 @@ function holdDue(
     const idleMs = now - stat.mtimeMs;
     if (idleMs < CACHE_HOLD_AFTER_MS || idleMs >= CACHE_HOLD_UNTIL_MS) return undefined;
     const events = listEvents(db, row.id).reverse();
-    if (row.state === 'running' && openQuestion(db, row.id) === undefined) return undefined;
+    if (row.state === SessionState.Running && openQuestion(db, row.id) === undefined)
+      return undefined;
     // No hook fires on a submitted prompt, so a turn a prompt started moves the
     // file only at its first tool or its end. Prompted since the file last
     // moved, the window is at work or its turn died, and the tail cannot say

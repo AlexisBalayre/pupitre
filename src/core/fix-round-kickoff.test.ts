@@ -56,6 +56,7 @@ import { openStore } from './db.client.js';
 import { ClimbReason } from './enums/climb-reason.enums.js';
 import { EventType } from './enums/event-type.enums.js';
 import { MergeStatus } from './enums/merge-status.enums.js';
+import { SessionState } from './enums/session-state.enums.js';
 import { WorktreeRepointedError } from './errors/git-diff.errors.js';
 import { startFixRound } from './fix-round.service.js';
 import { landSession } from './land.service.js';
@@ -153,8 +154,8 @@ describe('startFixRound', { timeout: 90_000 }, () => {
       profileHash: 'hash',
       tmuxTarget: '%4',
     });
-    transitionSession(db, SESSION_ID, 'running');
-    transitionSession(db, SESSION_ID, 'awaiting-review');
+    transitionSession(db, SESSION_ID, SessionState.Running);
+    transitionSession(db, SESSION_ID, SessionState.AwaitingReview);
 
     // projectPaths defaults to ~/.pupitre; tests must never write there.
     stateBase = tempDir('pup-fix-state-');
@@ -307,7 +308,7 @@ describe('startFixRound', { timeout: 90_000 }, () => {
    */
   function seedPrMerge(event: Record<string, unknown> = {}): void {
     sh(repo, 'git', 'worktree', 'remove', '--force', worktree);
-    transitionSession(db, SESSION_ID, 'merged');
+    transitionSession(db, SESSION_ID, SessionState.Merged);
     appendEvent(db, SESSION_ID, EventType.Merge, {
       branch: BRANCH,
       sha: pinned,
@@ -420,7 +421,7 @@ describe('startFixRound', { timeout: 90_000 }, () => {
   /** Run a fix round expected to refuse, and assert it wrote and launched nothing. */
   async function expectRefusedUnwritten(
     refusal: RegExp,
-    state = 'merged',
+    state = SessionState.Merged,
     call: () => Promise<unknown> = fix,
   ): Promise<void> {
     const events = listEvents(db, SESSION_ID).length;
@@ -487,7 +488,7 @@ describe('startFixRound', { timeout: 90_000 }, () => {
       head: pinned,
       threads: 2,
     });
-    expect(getSession(db, SESSION_ID)?.state).toBe('running');
+    expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.Running);
     expect(sh(worktree, 'git', 'rev-parse', 'HEAD')).toBe(pinned);
     expect(sh(worktree, 'git', 'symbolic-ref', 'HEAD')).toBe(`refs/heads/${BRANCH}`);
     expect(payloads(EventType.FixRound)).toEqual([
@@ -500,8 +501,8 @@ describe('startFixRound', { timeout: 90_000 }, () => {
       },
     ]);
     expect(payloads(EventType.GateResult).at(-1)).toEqual({
-      from: 'merged',
-      to: 'running',
+      from: SessionState.Merged,
+      to: SessionState.Running,
       kind: 'fix-round',
     });
     expect(payloads(EventType.Respawn)).toEqual([{ delivered: true }]);
@@ -917,7 +918,7 @@ describe('startFixRound', { timeout: 90_000 }, () => {
       // In place of the refusal's own advice, never beside it.
       expect((error as Error).message).not.toMatch(/worktree repair/);
       expect(listEvents(db, SESSION_ID)).toHaveLength(events);
-      expect(getSession(db, SESSION_ID)?.state).toBe('merged');
+      expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.Merged);
       expect(launchSession).not.toHaveBeenCalled();
       expect(existsSync(worktree)).toBe(false);
       expect(sh(repo, 'git', 'worktree', 'list', '--porcelain')).not.toContain(worktree);
@@ -928,7 +929,7 @@ describe('startFixRound', { timeout: 90_000 }, () => {
 
       await fix();
 
-      expect(getSession(db, SESSION_ID)?.state).toBe('running');
+      expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.Running);
       expect(readFileSync(join(worktree, 'src/feature.ts'), 'utf8')).toBe(
         'export const feature = 1;\n',
       );
@@ -1009,7 +1010,7 @@ describe('startFixRound', { timeout: 90_000 }, () => {
       model: LADDERS[Tier.Standard][top]?.model,
       effort: LADDERS[Tier.Standard][top]?.effort,
     });
-    expect(getSession(db, SESSION_ID)).toMatchObject({ state: 'running', rung: top });
+    expect(getSession(db, SESSION_ID)).toMatchObject({ state: SessionState.Running, rung: top });
     expect(payloads(EventType.FixRound).at(-1)).toMatchObject({
       startedBy: 'conductor',
       finding: 'security',
@@ -1024,17 +1025,17 @@ describe('startFixRound', { timeout: 90_000 }, () => {
 
     await expectRefusedUnwritten(
       /top rung .*`pup fix s1 --model <model> --effort <effort>`, or fix the PR by hand\. No fix round was started\.$/,
-      'merged',
+      SessionState.Merged,
       () => fix({}, 'conductor'),
     );
     await expectRefusedUnwritten(
       /`--finding` is the conductor's; .*No fix round was started\.$/,
-      'merged',
+      SessionState.Merged,
       () => fix({}, 'operator', 'wrong-result'),
     );
     await expectRefusedUnwritten(
       /`--finding` keeps the round on the top rung .* takes no `--model` or `--effort`/,
-      'merged',
+      SessionState.Merged,
       () => fix({ model: 'claude-opus-5-5' }, 'conductor', 'security'),
     );
   });
@@ -1048,7 +1049,7 @@ describe('startFixRound', { timeout: 90_000 }, () => {
 
     await expectRefusedUnwritten(
       /not refused at the top rung .*run `pup fix s1` without it\. No fix round was started\.$/,
-      'merged',
+      SessionState.Merged,
       () => fix({}, 'conductor', 'security'),
     );
   });
@@ -1070,6 +1071,9 @@ describe('startFixRound', { timeout: 90_000 }, () => {
     });
 
     expect(outcome).toMatchObject({ status: MergeStatus.Rejected, rejectCount: 1 });
-    expect(getSession(db, SESSION_ID)).toMatchObject({ state: 'running', reject_count: 3 });
+    expect(getSession(db, SESSION_ID)).toMatchObject({
+      state: SessionState.Running,
+      reject_count: 3,
+    });
   });
 });

@@ -1,4 +1,4 @@
-import type { SessionState } from '../../core/types/session.types.js';
+import { SessionState } from '../../core/enums/session-state.enums.js';
 
 /**
  * How often `pup ui` rebuilds the snapshot. Two seconds because of what it
@@ -15,13 +15,13 @@ export const SNAPSHOT_REFRESH_MS = 2_000;
  * the terminal's own foreground rather than spending a colour on history.
  */
 export const STATE_COLOURS: Record<SessionState, string | undefined> = {
-  queued: 'cyan',
-  running: 'green',
-  'awaiting-review': 'yellow',
-  merged: 'gray',
-  killed: 'gray',
-  rejected: 'red',
-  blocked: 'red',
+  [SessionState.Queued]: 'cyan',
+  [SessionState.Running]: 'green',
+  [SessionState.AwaitingReview]: 'yellow',
+  [SessionState.Merged]: 'gray',
+  [SessionState.Killed]: 'gray',
+  [SessionState.Rejected]: 'red',
+  [SessionState.Blocked]: 'red',
 };
 
 /**

@@ -6,6 +6,7 @@ import {
 } from '../../claude/errors/session-runtime.errors.js';
 import type { ModelRoute } from '../../claude/types/model-ladder.types.js';
 import type { ClimbReason } from '../enums/climb-reason.enums.js';
+import type { SessionState } from '../enums/session-state.enums.js';
 import { MIN_AVAILABLE_MEMORY_BYTES } from '../test-slot.service.js';
 import type { RefusedSteer } from '../types/session-lifecycle.types.js';
 
@@ -64,7 +65,7 @@ export class UnknownSessionError extends Error {
  * still takes one: its window is up, and the gate re-steers it on a rejection.
  */
 export class TerminalSessionError extends Error {
-  constructor(sessionId: string, state: string, verb: string) {
+  constructor(sessionId: string, state: SessionState, verb: string) {
     super(`Session ${sessionId} is ${state}; nothing to ${verb}.`);
     this.name = 'TerminalSessionError';
   }

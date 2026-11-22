@@ -5,6 +5,7 @@ import { COMMIT_SHA } from './constants/merge-gate.constants.js';
 import { quotePath } from './debt.service.js';
 import { EventType } from './enums/event-type.enums.js';
 import { GateStageStatus } from './enums/gate-stage-status.enums.js';
+import { SessionState } from './enums/session-state.enums.js';
 import { rethrowIfKilled, runGit } from './git-diff.client.js';
 import { newestMerge, resolveCommitIfPresent, timedSince } from './merge-gate.service.js';
 import { listSessions, newestEventOf } from './session.repository.js';
@@ -212,8 +213,8 @@ function competingBranches(db: Database, sessionId: string): Competitor[] {
       competitors.push({ branch: session.branch, rev: `refs/heads/${session.branch}` });
       continue;
     }
-    if (session.state === 'merged' && isClosedOut(db, session.id)) continue;
-    const merge = session.state === 'merged' ? newestMerge(db, session.id) : undefined;
+    if (session.state === SessionState.Merged && isClosedOut(db, session.id)) continue;
+    const merge = session.state === SessionState.Merged ? newestMerge(db, session.id) : undefined;
     if (typeof merge !== 'object' || merge.prUrl === undefined) continue;
     const rev = COMMIT_SHA.test(String(merge.sha)) ? merge.sha : undefined;
     competitors.push({ branch: session.branch, rev, prUrl: merge.prUrl });

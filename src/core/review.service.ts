@@ -6,6 +6,7 @@ import {
   RISK_WEIGHT_SCOPE_VIOLATION,
 } from './constants/review.constants.js';
 import { EventType } from './enums/event-type.enums.js';
+import { SessionState } from './enums/session-state.enums.js';
 import { currentBranch, gitDiffNumstat, gitDiffPaths } from './git-diff.client.js';
 import { countChangedLines } from './merge-gate.service.js';
 import { filesWorthANotice } from './overlap.service.js';
@@ -105,10 +106,10 @@ function liveSessionDiffs(
 /** The review queue: sessions awaiting review, riskiest first (docs/02-cli.md). */
 export function buildReviewQueue(db: Database, repoPath: string): ReviewQueueEntry[] {
   const target = targetBranch(repoPath);
-  const live = listSessions(db, ['running', 'awaiting-review']);
+  const live = listSessions(db, [SessionState.Running, SessionState.AwaitingReview]);
   const liveDiffs = liveSessionDiffs(repoPath, target, live);
   return live
-    .filter((s) => s.state === 'awaiting-review')
+    .filter((s) => s.state === SessionState.AwaitingReview)
     .map((s) => buildEntry(db, repoPath, target, s, liveDiffs))
     .sort((a, b) => b.risk - a.risk);
 }
@@ -124,7 +125,11 @@ export function buildSessionReview(
   sessionId: string,
 ): SessionReviewDetail {
   const target = targetBranch(repoPath);
-  const live = listSessions(db, ['running', 'awaiting-review', 'blocked']);
+  const live = listSessions(db, [
+    SessionState.Running,
+    SessionState.AwaitingReview,
+    SessionState.Blocked,
+  ]);
   const session = live.find((s) => s.id === sessionId);
   if (!session)
     throw new Error(`No live session ${sessionId} (must be running, awaiting-review, or blocked).`);

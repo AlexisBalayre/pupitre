@@ -38,6 +38,7 @@ import { CONFIRMED_ACTIONS } from './constants/web-dashboard-actions.constants.j
 import { BaselineStageStatus } from './enums/baseline-stage-status.enums.js';
 import { GateStageStatus } from './enums/gate-stage-status.enums.js';
 import { MergeStatus } from './enums/merge-status.enums.js';
+import { SessionState } from './enums/session-state.enums.js';
 import { MergeLockLostError } from './errors/merge-gate.errors.js';
 import { UndeclaredSandboxError } from './errors/sandbox.errors.js';
 import { startFixRound } from './fix-round.service.js';
@@ -132,7 +133,7 @@ const CASES: {
   {
     action: 'kill',
     fields: { session: 's-1' },
-    arrange: () => vi.mocked(killSession).mockReturnValue('killed'),
+    arrange: () => vi.mocked(killSession).mockReturnValue(SessionState.Killed),
     expectCall: [DB, 's-1'],
     lines: ['Killed session s-1.'],
   },

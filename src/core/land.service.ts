@@ -6,6 +6,7 @@ import { auditProject } from './audit.service.js';
 import { COMMIT_SHA, GATE_COMMAND_TIMEOUT_MS } from './constants/merge-gate.constants.js';
 import { SESSION_ID_PATTERN } from './constants/paths.constants.js';
 import { EventType } from './enums/event-type.enums.js';
+import { SessionState } from './enums/session-state.enums.js';
 import {
   assertNoArmedGitDrivers,
   currentBranch,
@@ -419,7 +420,7 @@ function landablePullRequest(
   const session = getSession(db, req.sessionId);
   const id = sanitizeReason(req.sessionId);
   if (!session) throw new Error(`No session ${id}. Nothing was landed.`);
-  if (session.state !== 'merged') {
+  if (session.state !== SessionState.Merged) {
     throw new Error(
       `Session ${id} is ${session.state}, not merged; only a session the gate merged with ` +
         '`--pr` can land. Nothing was landed.',
@@ -517,7 +518,7 @@ function steerOverlappingSessions(
   }
   const unsteered: NonNullable<LandOutcome['unsteered']> = [];
   const name = windowLabel({ sessionId: landedId });
-  for (const peer of listSessions(db, ['running'])) {
+  for (const peer of listSessions(db, [SessionState.Running])) {
     // Store text about to name a ref: only the branch a launch mints is read.
     if (!SESSION_ID_PATTERN.test(peer.id) || peer.branch !== `pup/${peer.id}`) continue;
     let files: string[];

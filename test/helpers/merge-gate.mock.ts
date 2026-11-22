@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { GateStage } from '@src/adapters/enums/gate-stage.enums.js';
 import type { Adapter } from '@src/adapters/types/adapter.types.js';
+import { SessionState } from '@src/core/enums/session-state.enums.js';
 import {
   ensureProject,
   insertSession,
@@ -66,8 +67,8 @@ export function seedSession(db: Database, repo: string, spec: Partial<TaskSpec> 
     profileHash: 'hash',
     tmuxTarget: LAUNCH_PANE,
   });
-  transitionSession(db, SESSION_ID, 'running');
-  transitionSession(db, SESSION_ID, 'awaiting-review');
+  transitionSession(db, SESSION_ID, SessionState.Running);
+  transitionSession(db, SESSION_ID, SessionState.AwaitingReview);
   return worktree;
 }
 
@@ -84,7 +85,7 @@ export function blockedReason(db: Database): string | undefined {
   const rows = listEvents(db, SESSION_ID).map(
     (event) => JSON.parse(event.payload) as { to?: string; reason?: string },
   );
-  return rows.filter((payload) => payload.to === 'blocked').at(-1)?.reason;
+  return rows.filter((payload) => payload.to === SessionState.Blocked).at(-1)?.reason;
 }
 
 /** Every gate stage, each passing. */

@@ -5,6 +5,7 @@ import { listPanes, PROBE_PATH, windowSockets } from '../claude/session-runtime.
 import { openStore } from './db.client.js';
 import { listDecisionRecords } from './decision-record.repository.js';
 import { EventType } from './enums/event-type.enums.js';
+import { SessionState } from './enums/session-state.enums.js';
 import { InvalidProfileError } from './errors/profile.errors.js';
 import { globToRegExp } from './glob.utils.js';
 import { scopeConflicts } from './overlap.service.js';
@@ -70,7 +71,7 @@ const SPEC = {
 
 describe('rescopeTask (decision 115)', () => {
   let db: Database;
-  const launched = (id: string, state: string) => {
+  const launched = (id: string, state: SessionState) => {
     insertSession(db, {
       id,
       taskId: 't-1',
@@ -94,7 +95,7 @@ describe('rescopeTask (decision 115)', () => {
     insertTask(db, { id: 't-1', projectId: 'proj-1', spec: JSON.stringify(SPEC) });
   });
 
-  it.each(['merged', 'awaiting-review'])(
+  it.each([SessionState.Merged, SessionState.AwaitingReview])(
     'appends globs to a task whose session is %s, and records who approved them',
     (state) => {
       launched('s1', state);
@@ -130,18 +131,18 @@ describe('rescopeTask (decision 115)', () => {
 
   // A killed session hands its task back; the merged one still claims it.
   it('records the rescope on the claiming session past a killed retry', () => {
-    launched('s1', 'merged');
-    launched('s2', 'killed');
+    launched('s1', SessionState.Merged);
+    launched('s2', SessionState.Killed);
 
     expect(rescopeTask(db, 't-1', ['docs/**'], CALLER)).toMatchObject({ sessionId: 's1' });
   });
 
   // A blocked session resumes on the profile it was compiled with, and only
   // `pup fix` recompiles one.
-  it.each(['queued', 'running', 'rejected', 'blocked'])(
+  it.each([SessionState.Queued, SessionState.Running, SessionState.Rejected, SessionState.Blocked])(
     'refuses while a session is %s, writing nothing',
     (state) => {
-      launched('s1', 'merged');
+      launched('s1', SessionState.Merged);
       launched('s2', state);
 
       expect(() => rescopeTask(db, 't-1', ['docs/**'], CALLER)).toThrow(
@@ -155,7 +156,7 @@ describe('rescopeTask (decision 115)', () => {
 
   it('refuses a task nobody claimed, and one that does not exist', () => {
     expect(() => rescopeTask(db, 't-1', ['docs/**'], CALLER)).toThrow('No session has claimed t-1');
-    launched('s1', 'killed');
+    launched('s1', SessionState.Killed);
     expect(() => rescopeTask(db, 't-1', ['docs/**'], CALLER)).toThrow('No session has claimed t-1');
     expect(() => rescopeTask(db, 't-gone', ['docs/**'], CALLER)).toThrow('No task t-gone.');
   });
@@ -169,7 +170,7 @@ describe('rescopeTask (decision 115)', () => {
         taskTierStored,
         't-1',
       );
-      launched('s1', 'merged');
+      launched('s1', SessionState.Merged);
       db.prepare(
         `UPDATE sessions SET tier = '${Tier.Standard}', rung = 2, rung_reason = 'ci-fix-round' WHERE id = ?`,
       ).run('s1');
@@ -217,7 +218,7 @@ describe('rescopeTask (decision 115)', () => {
         JSON.stringify({ ...SPEC, scopeIn: ['src/core/merge-gate.service.ts'], scopeOut: [] }),
         't-1',
       );
-      launched('s1', 'merged');
+      launched('s1', SessionState.Merged);
       db.prepare(
         `UPDATE sessions SET tier = '${Tier.Standard}', rung = 2, rung_reason = 'ci-fix-round' WHERE id = ?`,
       ).run('s1');
@@ -255,7 +256,7 @@ describe('rescopeTask (decision 115)', () => {
         JSON.stringify({ ...SPEC, scopeIn: ['docs/**'], scopeOut: [] }),
         't-1',
       );
-      launched('s1', 'merged');
+      launched('s1', SessionState.Merged);
 
       expect(rescopeTask(db, 't-1', ['src/core/merge-gate.service.ts'], CALLER)).toMatchObject({
         tier: Tier.Critical,
@@ -270,7 +271,7 @@ describe('rescopeTask (decision 115)', () => {
         JSON.stringify({ ...SPEC, scopeIn: ['docs/**'], scopeOut: [] }),
         't-1',
       );
-      launched('s1', 'merged');
+      launched('s1', SessionState.Merged);
       db.prepare(`UPDATE sessions SET tier = '${Tier.Critical}', rung = 1 WHERE id = ?`).run('s1');
 
       expect(rescopeTask(db, 't-1', ['src/cli/index.ts'], CALLER)).toMatchObject({
@@ -283,7 +284,7 @@ describe('rescopeTask (decision 115)', () => {
   });
 
   it('writes nothing when every glob is already in scope', () => {
-    launched('s1', 'merged');
+    launched('s1', SessionState.Merged);
 
     expect(rescopeTask(db, 't-1', ['src/core/**'], CALLER)).toEqual({
       sessionId: 's1',
@@ -301,7 +302,7 @@ describe('rescopeTask (decision 115)', () => {
   // in for a gap opening between them: the widened spec still goes through
   // the check, and its refusal writes nothing.
   it('puts the widened spec through the plan check, writing nothing when it refuses', () => {
-    launched('s1', 'merged');
+    launched('s1', SessionState.Merged);
     vi.mocked(assertPlannableSpec).mockImplementation((spec) => {
       if (spec.scopeIn.includes('docs/**')) throw new InvalidProfileError('plan check refused');
     });
@@ -318,7 +319,7 @@ describe('rescopeTask (decision 115)', () => {
 
   // A worker that ran `pup session done` is awaiting review with its window
   // still up: rescoping then would let it keep editing into the wider scope.
-  it.each(['awaiting-review', 'merged'])(
+  it.each([SessionState.AwaitingReview, SessionState.Merged])(
     'refuses while a %s session has its window open, writing nothing',
     (state) => {
       launched('s1', state);
@@ -344,7 +345,7 @@ describe('rescopeTask (decision 115)', () => {
       pane('%9', 'pup-s1', 'x\tpup-other\n%8\t\tpup-other'),
     ],
   ])('finds the window a server lists by %s', (_what, listed) => {
-    launched('s1', 'awaiting-review');
+    launched('s1', SessionState.AwaitingReview);
     // Split as `listPanes` splits tmux's output.
     vi.mocked(listPanes).mockReturnValue(`%1\t\tmine\n${listed}\n`.split('\n'));
 
@@ -354,7 +355,7 @@ describe('rescopeTask (decision 115)', () => {
   // A `%N` names a pane only on the server that minted it: a restarted or
   // another server reuses the session's recorded id for a pane of its own.
   it("passes a window listed nowhere, whatever pane ids and other sessions' names it lists", () => {
-    launched('s1', 'awaiting-review');
+    launched('s1', SessionState.AwaitingReview);
     vi.mocked(listPanes).mockReturnValue([
       '%3\t\tpup-other',
       '%4\t-zsh\tmine',
@@ -372,7 +373,7 @@ describe('rescopeTask (decision 115)', () => {
     ],
     [{ noTmux: true } as const, `No tmux on the window probe's fixed PATH (${PROBE_PATH})`],
   ])('refuses when the probe cannot see the windows (%o), writing nothing', (failure, says) => {
-    launched('s1', 'awaiting-review');
+    launched('s1', SessionState.AwaitingReview);
     vi.mocked(listPanes).mockReturnValue(failure);
 
     expect(() => rescopeTask(db, 't-1', ['docs/**'], CALLER)).toThrow(says);
@@ -388,7 +389,7 @@ describe('rescopeTask (decision 115)', () => {
     ['%1\t\tpup-other', { noTmux: false as const, detail: 'x' }, `${OTHER} did not answer`],
     ['%1\t\tpup-s1', { noTmux: false as const, detail: 'x' }, `${OTHER} did not answer`],
   ])('asks every socket: the first listing %j, the second answering %o', (first, second, says) => {
-    launched('s1', 'awaiting-review');
+    launched('s1', SessionState.AwaitingReview);
     vi.mocked(windowSockets).mockReturnValue([SOCKET, OTHER]);
     vi.mocked(listPanes).mockImplementation((socket) => (socket === SOCKET ? [first] : second));
 
@@ -396,9 +397,9 @@ describe('rescopeTask (decision 115)', () => {
   });
 
   it("looks for every session's window, a merged or killed one's too", () => {
-    launched('s1', 'awaiting-review');
-    launched('s2', 'killed');
-    launched('s3', 'merged');
+    launched('s1', SessionState.AwaitingReview);
+    launched('s2', SessionState.Killed);
+    launched('s3', SessionState.Merged);
 
     rescopeTask(db, 't-1', ['docs/**'], CALLER);
 
@@ -496,14 +497,14 @@ describe('rescopeTask (decision 115)', () => {
     ['src/\u009bx', 'contains a control character'],
     ['src/x\n', 'contains a control character'],
   ])('refuses the glob %j: it %s', (glob, why) => {
-    launched('s1', 'merged');
+    launched('s1', SessionState.Merged);
 
     expect(() => rescopeTask(db, 't-1', ['docs/**', glob], CALLER)).toThrow(why);
     expect(readTaskSpec(db, 't-1').scopeIn).toEqual(['src/core/**']);
   });
 
   it('takes a glob the matcher reads as a plain path', () => {
-    launched('s1', 'merged');
+    launched('s1', SessionState.Merged);
     const globs = [
       './docs/**',
       'src/cli/',
@@ -529,7 +530,7 @@ describe('rescopeTask (decision 115)', () => {
   });
 
   it('takes a glob beside a protected file that can never match it', () => {
-    launched('s1', 'merged');
+    launched('s1', SessionState.Merged);
     const globs = ['config/*.ts', 'config/x/**', 'config/pup.lock/', 'pup', 'pup.lockfile'];
 
     expect(rescopeTask(db, 't-1', globs, CALLER)).toMatchObject({ added: globs });
@@ -537,7 +538,7 @@ describe('rescopeTask (decision 115)', () => {
 
   // What the gate's scope-audit stage runs, on the spec it reads back.
   it('lets a re-gate pass scope-audit for the added paths, scope-out still winning', () => {
-    launched('s1', 'merged');
+    launched('s1', SessionState.Merged);
     const changed = ['src/core/a.ts', 'src/cli/index.ts', 'src/core/secret.ts'];
     const audit = () => {
       const spec = readTaskSpec(db, 't-1');
@@ -565,7 +566,7 @@ describe('rescopeTask (decision 115)', () => {
     };
 
     it("runs the added globs, under the task's scope-out, against the live sessions", () => {
-      launched('s1', 'merged');
+      launched('s1', SessionState.Merged);
 
       rescopeTask(db, 't-1', ['src/cli/index.ts', 'src/core/**'], CALLER);
 
@@ -578,7 +579,7 @@ describe('rescopeTask (decision 115)', () => {
     });
 
     it("records and returns what another task's session shares, writing the rescope too", () => {
-      launched('s1', 'awaiting-review');
+      launched('s1', SessionState.AwaitingReview);
       otherTask('s9');
       vi.mocked(scopeConflicts).mockReturnValue([
         { sessionId: 's1', files: ['src/cli/index.ts'] },
@@ -600,7 +601,7 @@ describe('rescopeTask (decision 115)', () => {
     });
 
     it('records no overlap when the added globs share nothing', () => {
-      launched('s1', 'merged');
+      launched('s1', SessionState.Merged);
 
       expect(rescopeTask(db, 't-1', ['docs/**'], CALLER)).toMatchObject({ overlaps: [] });
       expect(listEvents(db, 's1').map((event) => event.type)).toEqual([EventType.Rescope]);
@@ -608,7 +609,7 @@ describe('rescopeTask (decision 115)', () => {
 
     // A refusal after the write rolls back the rescope; there is nothing to compare.
     it('is not asked when the rescope adds nothing or is refused', () => {
-      launched('s1', 'merged');
+      launched('s1', SessionState.Merged);
       rescopeTask(db, 't-1', ['src/core/**'], CALLER);
       vi.mocked(listPanes).mockReturnValue([pane('%3', 'pup-s1')]);
       expect(() => rescopeTask(db, 't-1', ['docs/**'], CALLER)).toThrow('window is open');

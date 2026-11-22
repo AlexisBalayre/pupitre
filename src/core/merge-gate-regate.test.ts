@@ -120,6 +120,7 @@ import { EventType } from './enums/event-type.enums.js';
 import { GateStageStatus } from './enums/gate-stage-status.enums.js';
 import { InterruptSignal } from './enums/interrupt-signal.enums.js';
 import { MergeStatus } from './enums/merge-status.enums.js';
+import { SessionState } from './enums/session-state.enums.js';
 import { ArmedGitDriverError, WorktreeRepointedError } from './errors/git-diff.errors.js';
 import { SessionNotReviewableError } from './errors/merge-gate.errors.js';
 import { GateInterruptedError } from './errors/sandbox.errors.js';
@@ -351,7 +352,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(refusal).toContain(`main moved from ${before} to ${moved} while the gate ran`);
       expect(refusal).not.toContain('ledger');
       expect(listLedgerEntries(db, 'proj-1')).toEqual([]);
-      expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+      expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.AwaitingReview);
     });
 
     // `assertTargetAt` runs before the HEAD re-read, so a target deleted or
@@ -373,7 +374,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
       expect(refusal).toContain(`main moved from ${before} to nowhere while the gate ran`);
       expect(listLedgerEntries(db, 'proj-1')).toEqual([]);
-      expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+      expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.AwaitingReview);
     });
 
     it('refuses a target turned into a symref during the stages with the symref refusal', async () => {
@@ -393,7 +394,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(refusal).toContain('refs/heads/main is a symbolic ref to refs/heads/other');
       expect(refusal).not.toContain('moved from');
       expect(listLedgerEntries(db, 'proj-1')).toEqual([]);
-      expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+      expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.AwaitingReview);
     });
 
     it('says the ledger entries were kept when a refusal that must stay last fires', async () => {
@@ -420,7 +421,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         'The accepted-debt ledger entry was kept for the retry',
       );
       expect(listLedgerEntries(db, 'proj-1')).toHaveLength(1);
-      expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+      expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.AwaitingReview);
     });
 
     it('says nothing about the ledger on a late refusal when no debt was accepted', async () => {
@@ -526,7 +527,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(failure).toBeInstanceOf(GateInterruptedError);
       expect(Date.now() - started).toBeLessThan(15_000);
       expect(() => process.kill(child.pid as number, 0)).toThrow();
-      expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+      expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.AwaitingReview);
       expect(steerPane).not.toHaveBeenCalled();
       expect(existsSync(join(repo, '.git', 'pup-merge.lock'))).toBe(false);
       expect(checkout).toMatch(GATE_CHECKOUT);
@@ -671,7 +672,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
       await expect(merge()).rejects.toThrow(WorktreeRepointedError);
       expect(existsSync(marker)).toBe(false);
-      expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+      expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.AwaitingReview);
     });
 
     // The gate's checkout gets its admin dir beside the sessions' own, so the
@@ -711,7 +712,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       // The add checked nothing out, so no git read the rewritten pointer.
       expect(readFileSync(listing, 'utf8')).toBe('.git\n');
       expect(existsSync(marker)).toBe(false);
-      expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+      expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.AwaitingReview);
     });
 
     it('holds the pins when the gitfile is swapped after each check', async () => {
@@ -746,7 +747,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(errors.mock.calls.flat().join('\n')).toContain(
         `git worktree remove refused ${worktree}:`,
       );
-      expect(getSession(db, SESSION_ID)?.state).toBe('merged');
+      expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.Merged);
       expect(checks).toBeGreaterThanOrEqual(2);
       expect(existsSync(marker)).toBe(false);
     });
@@ -903,7 +904,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     await expect(merge()).rejects.toThrow(MalformedTaskSpecError);
     await expect(merge()).rejects.toThrow(`Task task-${SESSION_ID} has an unusable spec`);
     expect(existsSync(join(repo, '.git', 'pup-merge.lock'))).toBe(false);
-    expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+    expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.AwaitingReview);
   });
 
   it('records the acceptor the request names, not a hardcoded human', async () => {
@@ -1042,7 +1043,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
   it('throws for a session that is not awaiting review', async () => {
     seedSession(db, repo);
-    transitionSession(db, SESSION_ID, 'running');
+    transitionSession(db, SESSION_ID, SessionState.Running);
 
     await expect(merge()).rejects.toThrow(SessionNotReviewableError);
   });
@@ -1149,7 +1150,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     // First attempt: the probe finds no PR, the push lands, `pr create` dies.
     const ghDyingOnCreate = `${fakeGh([])}\nexit 1\n`;
     await expect(withFakeGh(ghDyingOnCreate, () => runMergeGate(db, request))).rejects.toThrow();
-    expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+    expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.AwaitingReview);
     expect(listLedgerEntries(db, 'proj-1')).toHaveLength(1);
 
     const outcome = await withFakeGh(fakeGh([openPrOnMain]), () => runMergeGate(db, request));
@@ -1187,7 +1188,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(refusal).toContain(`has its head at ${elsewhere}, not at ${pinned}`);
     expect(refusal).toContain('The accepted-debt ledger entry was kept for the retry');
     expect(ghCalls()).toContainEqual(expect.stringContaining('pr view'));
-    expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+    expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.AwaitingReview);
     expect(listEvents(db, SESSION_ID).some((event) => event.type === EventType.Merge)).toBe(false);
   });
 
@@ -1272,7 +1273,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
       expect(outcome.status).toBe(MergeStatus.Rejected);
       expect(outcome.rejectCount).toBe(1);
-      expect(getSession(db, SESSION_ID)?.state).toBe('running');
+      expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.Running);
       expect(outcome.report.stages.at(-1)).toMatchObject({
         stage: 'fresh-base',
         status: GateStageStatus.Fail,
@@ -1754,6 +1755,6 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         }),
       ),
     ).rejects.toThrow('origin');
-    expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
+    expect(getSession(db, SESSION_ID)?.state).toBe(SessionState.AwaitingReview);
   });
 });

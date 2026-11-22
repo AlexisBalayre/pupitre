@@ -10,6 +10,7 @@ import {
 } from './constants/merge-gate.constants.js';
 import { quotePath } from './debt.service.js';
 import { GateStageStatus } from './enums/gate-stage-status.enums.js';
+import { SessionState } from './enums/session-state.enums.js';
 import { currentBranch, rethrowIfKilled, runGit } from './git-diff.client.js';
 import { globToRegExp } from './glob.utils.js';
 import {
@@ -218,7 +219,7 @@ export async function remeasureMerge(
       : newestFirst
           .slice(pinnedAt + 1)
           .find((event) => event.type === 'gate_result' || event.type === 'merge');
-  if (gated?.type !== 'gate_result' || gated.to !== 'merged' || !gated.report?.passed) {
+  if (gated?.type !== 'gate_result' || gated.to !== SessionState.Merged || !gated.report?.passed) {
     throw new Error(
       `No passing gate report into merged is recorded right before the merge of ${sha}, the ` +
         'commit the gate pinned, so a remeasure has no stages to hold the merge to. Nothing was ' +

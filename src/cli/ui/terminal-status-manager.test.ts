@@ -2,6 +2,7 @@ import { Text } from 'ink';
 import { cleanup, render } from 'ink-testing-library';
 import { createElement } from 'react';
 import { afterEach, describe, expect, it } from 'vitest';
+import { SessionState } from '../../core/enums/session-state.enums.js';
 import type { DashboardSession, DashboardSnapshot } from '../../core/types/dashboard.types.js';
 import type { ActionDeps } from '../types/actions.types.js';
 import type { DashboardReading } from '../types/snapshot.types.js';
@@ -18,7 +19,7 @@ function session(overrides: Partial<DashboardSession> = {}): DashboardSession {
   return {
     id: 's-mtzmobsi-1',
     isMintedId: true,
-    state: 'running',
+    state: SessionState.Running,
     branch: 'pup/t-mtzmobsi',
     taskId: 't-mtzmobsi',
     goal: 'a live dashboard',
@@ -59,7 +60,10 @@ describe('createTerminalStatus', () => {
   it('writes the needs-you title and orange status with the top item as detail', () => {
     const out = tty();
     createTerminalStatus(out, ITERM).update(
-      reading(session(), session({ id: 's-mtzmobsi-2', state: 'blocked', rejectCount: 3 })),
+      reading(
+        session(),
+        session({ id: 's-mtzmobsi-2', state: SessionState.Blocked, rejectCount: 3 }),
+      ),
     );
     expect(out.writes).toEqual([
       `${PUSH}${ESC}]2;pup proj · 1 running · 1 need you${BEL}` +
@@ -82,7 +86,7 @@ describe('createTerminalStatus', () => {
     ['the conductor runs', true, '0 need you'],
   ])('counts an awaiting-review session as a need only when %s', (_name, running, count) => {
     const out = tty();
-    const fleet = reading(session({ state: 'awaiting-review' }));
+    const fleet = reading(session({ state: SessionState.AwaitingReview }));
     for (const { snapshot } of fleet.projects) snapshot.conductor.running = running;
     createTerminalStatus(out, { TERM_PROGRAM: 'Apple_Terminal' }).update(fleet);
     expect(out.writes).toEqual([`${PUSH}${ESC}]2;pup proj · 0 running · ${count}${BEL}`]);
@@ -91,7 +95,7 @@ describe('createTerminalStatus', () => {
   // Decision 168: a conductor nothing reaches waits on the operator too.
   it('puts a blocked conductor in the tab as a need, ahead of a blocked session', () => {
     const out = tty();
-    const fleet = reading(session({ state: 'blocked', rejectCount: 3 }));
+    const fleet = reading(session({ state: SessionState.Blocked, rejectCount: 3 }));
     for (const { snapshot } of fleet.projects) {
       snapshot.conductor.running = true;
       snapshot.conductor.blocked = { reason: 'not on main input', ageMs: 720_000 };

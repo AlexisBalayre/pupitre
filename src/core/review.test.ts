@@ -9,6 +9,7 @@ import { openStore } from './db.client.js';
 import { EventType } from './enums/event-type.enums.js';
 import { GateStageStatus } from './enums/gate-stage-status.enums.js';
 import { MergeStatus } from './enums/merge-status.enums.js';
+import { SessionState } from './enums/session-state.enums.js';
 import { MalformedTaskSpecError } from './errors/session.errors.js';
 import { buildReviewQueue, buildSessionReview } from './review.service.js';
 import {
@@ -51,7 +52,7 @@ function seedSession(
   db: Database,
   repo: string,
   sessionId: string,
-  state: 'running' | 'awaiting-review' = 'awaiting-review',
+  state: SessionState.Running | SessionState.AwaitingReview = SessionState.AwaitingReview,
 ): string {
   ensureProject(db, 'proj-1', repo);
   const taskId = `task-${sessionId}`;
@@ -71,8 +72,9 @@ function seedSession(
     branch: `pup/${sessionId}`,
     profileHash: 'hash',
   });
-  transitionSession(db, sessionId, 'running');
-  if (state === 'awaiting-review') transitionSession(db, sessionId, 'awaiting-review');
+  transitionSession(db, sessionId, SessionState.Running);
+  if (state === SessionState.AwaitingReview)
+    transitionSession(db, sessionId, SessionState.AwaitingReview);
   return worktree;
 }
 
@@ -100,7 +102,7 @@ describe('review service', { timeout: 20_000 }, () => {
     commitIn(big, 'src/big.ts', 'const line = 1;\n'.repeat(400));
     const small = seedSession(db, repo, 's-small');
     commitIn(small, 'src/small.ts', 'export const small = 1;\n');
-    const running = seedSession(db, repo, 's-running', 'running');
+    const running = seedSession(db, repo, 's-running', SessionState.Running);
     commitIn(running, 'src/other.ts', 'export const other = 1;\n');
 
     const queue = buildReviewQueue(db, repo);
@@ -126,7 +128,7 @@ describe('review service', { timeout: 20_000 }, () => {
   it('counts overlap when another live session touches the same file', () => {
     const first = seedSession(db, repo, 's-first');
     commitIn(first, 'src/shared.ts', 'export const shared = 1;\n');
-    const second = seedSession(db, repo, 's-second', 'running');
+    const second = seedSession(db, repo, 's-second', SessionState.Running);
     commitIn(second, 'src/shared.ts', 'export const shared = 2;\n');
 
     const [entry] = buildReviewQueue(db, repo);
@@ -162,7 +164,7 @@ describe('review service', { timeout: 20_000 }, () => {
     expect(detail.spec.goal).toBe('goal for s-detail');
     expect(detail.files).toEqual([{ path: 'src/feature.ts', added: 2, deleted: 0 }]);
     expect(detail.lastGateReport).toEqual({ passed: false, stages });
-    expect(detail.state).toBe('awaiting-review');
+    expect(detail.state).toBe(SessionState.AwaitingReview);
   });
 
   // A bare name resolves a same-named tag before the branch; the review names
@@ -198,7 +200,7 @@ describe('review service', { timeout: 20_000 }, () => {
 
   it('throws for a session that is not live', () => {
     seedSession(db, repo, 's-gone');
-    transitionSession(db, 's-gone', 'killed');
+    transitionSession(db, 's-gone', SessionState.Killed);
 
     expect(() => buildSessionReview(db, repo, 's-gone')).toThrow('No live session');
   });
@@ -206,12 +208,12 @@ describe('review service', { timeout: 20_000 }, () => {
   it('shows detail for a blocked session so a human can unblock it', () => {
     const worktree = seedSession(db, repo, 's-blocked');
     commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
-    transitionSession(db, 's-blocked', 'rejected');
-    transitionSession(db, 's-blocked', 'blocked');
+    transitionSession(db, 's-blocked', SessionState.Rejected);
+    transitionSession(db, 's-blocked', SessionState.Blocked);
 
     const detail = buildSessionReview(db, repo, 's-blocked');
 
-    expect(detail.state).toBe('blocked');
+    expect(detail.state).toBe(SessionState.Blocked);
     expect(detail.entry.sessionId).toBe('s-blocked');
   });
 });
