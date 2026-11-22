@@ -1,3 +1,4 @@
+import type { ClimbReason } from '../enums/climb-reason.enums.js';
 export type GlobToken =
   | { kind: 'char'; char: string }
   | { kind: 'one' }
@@ -14,12 +15,6 @@ export interface GlobAutomaton {
   /** Every literal character, which with `/` and one other is all an intersection has to try. */
   chars: string[];
 }
-
-/**
- * What a window ran into that climbs its task one rung at the next relaunch or
- * respawn, or at the next CI fix round for `repeat-fix-round` (decision 92).
- */
-export type ClimbReason = 'gate-rejection' | 'repeat-fix-round' | 'turn-death' | 'stall';
 
 /** Where a task's next window stands on its ladder, as `climbFrom` reads it. */
 export interface Climb {

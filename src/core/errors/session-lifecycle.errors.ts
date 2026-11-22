@@ -1,11 +1,12 @@
 import { LADDERS } from '../../claude/constants/model-ladder.constants.js';
+import type { Tier } from '../../claude/enums/tier.enums.js';
 import {
   SessionPaneMissingError,
   SteerNotDeliveredError,
 } from '../../claude/errors/session-runtime.errors.js';
-import type { ModelRoute, Tier } from '../../claude/types/model-ladder.types.js';
+import type { ModelRoute } from '../../claude/types/model-ladder.types.js';
+import type { ClimbReason } from '../enums/climb-reason.enums.js';
 import { MIN_AVAILABLE_MEMORY_BYTES } from '../test-slot.service.js';
-import type { ClimbReason } from '../types/routing.types.js';
 import type { RefusedSteer } from '../types/session-lifecycle.types.js';
 
 export class UnknownTaskError extends Error {

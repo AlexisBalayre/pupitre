@@ -6,6 +6,7 @@ import { timeLineChart } from './chart.utils.js';
 import { PR_URL } from './constants/dashboard.constants.js';
 import { SESSION_ID_PATTERN } from './constants/paths.constants.js';
 import { debtFigures } from './dashboard.service.js';
+import { EventType } from './enums/event-type.enums.js';
 import { projectId } from './paths.utils.js';
 import { displayText, toIsoUtc } from './report-data.utils.js';
 import { decodeEvent } from './session.repository.js';
@@ -64,13 +65,16 @@ export function readHealthSheet(db: Database, repoPath: string): HealthView {
   const rows = db
     .prepare(
       `SELECT m.session_id, m.type, m.payload, m.created_at,
-         COALESCE((SELECT l.created_at FROM events l WHERE l.type = 'landed'
+         COALESCE((SELECT l.created_at FROM events l WHERE l.type = ?
            AND l.session_id = m.session_id ORDER BY l.id LIMIT 1), '') AS landed_at
        FROM events m WHERE m.id IN
-         (SELECT MIN(id) FROM events WHERE type = 'merge' AND session_id IS NOT NULL GROUP BY session_id)
+         (SELECT MIN(id) FROM events WHERE type = ? AND session_id IS NOT NULL GROUP BY session_id)
        ORDER BY m.id`,
     )
-    .all() as (Pick<EventRow, 'type' | 'payload' | 'created_at'> & {
+    .all(EventType.Landed, EventType.Merge) as (Pick<
+    EventRow,
+    'type' | 'payload' | 'created_at'
+  > & {
     session_id: string;
     landed_at: string;
   })[];

@@ -15,6 +15,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { InterruptSignal } from './enums/interrupt-signal.enums.js';
 import { RewrittenGitDirError } from './errors/git-diff.errors.js';
 import { assertMainCheckout } from './git-diff.client.js';
 import {
@@ -631,7 +632,7 @@ describe('isCutOffByNode', () => {
 
     expect(overflow).toMatchObject({ code: 'ENOBUFS' });
     expect(isCutOffByNode(overflow)).toBe(true);
-    expect(late).toMatchObject({ code: 'ETIMEDOUT', signal: 'SIGTERM' });
+    expect(late).toMatchObject({ code: 'ETIMEDOUT', signal: InterruptSignal.Sigterm });
     expect(isCutOffByNode(late)).toBe(true);
   });
 
@@ -639,7 +640,7 @@ describe('isCutOffByNode', () => {
     const interrupted = thrown(() => execFileSync('sh', ['-c', 'kill -INT $$'], { stdio: 'pipe' }));
     const failed = thrown(() => execFileSync('sh', ['-c', 'exit 3'], { stdio: 'pipe' }));
 
-    expect(interrupted).toMatchObject({ signal: 'SIGINT' });
+    expect(interrupted).toMatchObject({ signal: InterruptSignal.Sigint });
     expect(isCutOffByNode(interrupted)).toBe(false);
     expect(isCutOffByNode(failed)).toBe(false);
     expect(isCutOffByNode(new Error('plain'))).toBe(false);

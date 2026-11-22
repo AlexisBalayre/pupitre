@@ -17,11 +17,14 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => {
     conductorPane: vi.fn(() => undefined),
     // The running conductor's run token, as its window carries it.
     conductorRun: vi.fn(() => 'run-1'),
-    readInputBoxLook: vi.fn(() => ({ state: 'empty', draft: '' })),
+    readInputBoxLook: vi.fn(() => ({ state: InputBoxState.Empty, draft: '' })),
   };
 });
 
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
+import { GateStage } from '../adapters/enums/gate-stage.enums.js';
+import { InputBoxState } from '../claude/enums/input-box-state.enums.js';
+import { Tier } from '../claude/enums/tier.enums.js';
 import {
   claudeUserDir,
   conductorPane,
@@ -45,6 +48,11 @@ import {
   windowFailureOf,
 } from './dashboard.service.js';
 import { openStore } from './db.client.js';
+import { ClimbReason } from './enums/climb-reason.enums.js';
+import { EventType } from './enums/event-type.enums.js';
+import { GateStageStatus } from './enums/gate-stage-status.enums.js';
+import { MergeStatus } from './enums/merge-status.enums.js';
+import { SessionActivityKind } from './enums/session-activity-kind.enums.js';
 import { insertLedgerEntry } from './ledger.repository.js';
 import { recordWatcherBeat, replaceOverlaps } from './overlap.repository.js';
 import { WATCH_STALE_AFTER_MS } from './overlap.service.js';
@@ -75,7 +83,7 @@ function newestEventId(db: Database): number {
 }
 /** The top rung of the critical ladder, which every task here is on: `src/**` touches it all. */
 const CRITICAL_TOP: SessionRoute = {
-  tier: 'critical',
+  tier: Tier.Critical,
   rung: 1,
   model: 'claude-opus-5-5',
   effort: 'xhigh',
@@ -298,7 +306,7 @@ describe('buildDashboardSnapshot', () => {
       expect(buildDashboardSnapshot(db, repo, NOW).conductor.question).toBeUndefined();
 
       vi.mocked(hasConductorWindow).mockReturnValue(true);
-      appendEvent(db, null, 'answer', {
+      appendEvent(db, null, EventType.Answer, {
         question: 'accept the debt?',
         questionId: asked,
         text: 'no',
@@ -316,7 +324,7 @@ describe('buildDashboardSnapshot', () => {
       try {
         expect(buildDashboardSnapshot(db, repo, NOW).conductor.question).toBeUndefined();
 
-        appendEvent(db, null, 'question', { text: 'merge s-9 ungated?', options: ['yes'] });
+        appendEvent(db, null, EventType.Question, { text: 'merge s-9 ungated?', options: ['yes'] });
         expect(buildDashboardSnapshot(db, repo, NOW).conductor.question).toBeUndefined();
       } finally {
         vi.mocked(conductorRun).mockReturnValue('run-1');
@@ -335,16 +343,16 @@ describe('buildDashboardSnapshot', () => {
       afterEach(() => {
         vi.mocked(hasConductorWindow).mockReturnValue(false);
         vi.mocked(conductorPane).mockReturnValue(undefined);
-        vi.mocked(readInputBoxLook).mockReturnValue({ state: 'empty', draft: '' });
+        vi.mocked(readInputBoxLook).mockReturnValue({ state: InputBoxState.Empty, draft: '' });
       });
 
       it.each([
-        ['holds', 'unsent draft'],
-        ['absent', 'not on main input'],
+        [InputBoxState.Holds, 'unsent draft'],
+        [InputBoxState.Absent, 'not on main input'],
       ] as const)('reports a box that %s across ten minutes as %s', (box, reason) => {
         vi.mocked(readInputBoxLook).mockReturnValue({
           state: box,
-          draft: box === 'holds' ? 'draft' : '',
+          draft: box === InputBoxState.Holds ? 'draft' : '',
         });
 
         expect(buildDashboardSnapshot(db, repo, NOW).conductor.blocked).toBeUndefined();
@@ -355,7 +363,7 @@ describe('buildDashboardSnapshot', () => {
       });
 
       it('never reports an empty box at the main prompt', () => {
-        vi.mocked(readInputBoxLook).mockReturnValue({ state: 'empty', draft: '' });
+        vi.mocked(readInputBoxLook).mockReturnValue({ state: InputBoxState.Empty, draft: '' });
 
         buildDashboardSnapshot(db, repo, NOW);
         expect(buildDashboardSnapshot(db, repo, LATER).conductor).not.toHaveProperty('blocked');
@@ -423,7 +431,7 @@ describe('buildDashboardSnapshot', () => {
       const [session] = buildDashboardSnapshot(db, repo, NOW).sessions;
 
       expect(session?.activity).toEqual({
-        kind: 'awaiting-input',
+        kind: SessionActivityKind.AwaitingInput,
         detail: 'Claude needs your permission to use Bash',
       });
       expect(session?.needsHuman).toBe(true);
@@ -444,7 +452,7 @@ describe('buildDashboardSnapshot', () => {
 
       const snapshot = buildDashboardSnapshot(db, repo, NOW);
 
-      expect(snapshot.sessions[0]?.activity).toEqual({ kind: 'idle' });
+      expect(snapshot.sessions[0]?.activity).toEqual({ kind: SessionActivityKind.Idle });
       expect(snapshot.sessions[0]?.needsHuman).toBe(false);
     });
 
@@ -468,7 +476,7 @@ describe('buildDashboardSnapshot', () => {
 
       const snapshot = buildDashboardSnapshot(db, repo, NOW);
 
-      expect(snapshot.sessions[0]?.activity).toEqual({ kind: 'background' });
+      expect(snapshot.sessions[0]?.activity).toEqual({ kind: SessionActivityKind.Background });
       expect(snapshot.sessions[0]?.needsHuman).toBe(false);
       expect(needsYou(snapshot)).toEqual([]);
     });
@@ -562,7 +570,7 @@ describe('buildDashboardSnapshot', () => {
 
       it('carries what the watchdog recorded against the stall the session is in', () => {
         const stalledAt = seedStalled('s1');
-        appendEvent(db, 's1', 'turn_died', { reason: API_ERROR, stalledAt });
+        appendEvent(db, 's1', EventType.TurnDied, { reason: API_ERROR, stalledAt });
 
         const [session] = buildDashboardSnapshot(db, repo, NOW).sessions;
 
@@ -573,7 +581,7 @@ describe('buildDashboardSnapshot', () => {
 
       it('carries the refusal that left the resume for a human', () => {
         const stalledAt = seedStalled('s1');
-        appendEvent(db, 's1', 'turn_died', {
+        appendEvent(db, 's1', EventType.TurnDied, {
           reason: API_ERROR,
           stalledAt,
           refusal: 'did not land',
@@ -586,12 +594,12 @@ describe('buildDashboardSnapshot', () => {
 
       it('is the newest of several resumes of the same stall', () => {
         const stalledAt = seedStalled('s1');
-        appendEvent(db, 's1', 'turn_died', {
+        appendEvent(db, 's1', EventType.TurnDied, {
           reason: API_ERROR,
           stalledAt,
           refusal: 'did not land',
         });
-        appendEvent(db, 's1', 'turn_died', { reason: '⏺ API Error: ENOTFOUND', stalledAt });
+        appendEvent(db, 's1', EventType.TurnDied, { reason: '⏺ API Error: ENOTFOUND', stalledAt });
 
         const { deadTurn } = buildDashboardSnapshot(db, repo, NOW).sessions[0] ?? {};
 
@@ -603,7 +611,7 @@ describe('buildDashboardSnapshot', () => {
       // worked and stalled again for some other reason.
       it('is absent when the record belongs to an earlier stall', () => {
         seedStalled('s1');
-        appendEvent(db, 's1', 'turn_died', {
+        appendEvent(db, 's1', EventType.TurnDied, {
           reason: API_ERROR,
           stalledAt: new Date(NOW - STALLED_AFTER_MS * 5).toISOString(),
         });
@@ -616,7 +624,7 @@ describe('buildDashboardSnapshot', () => {
         seedSession(db, repo, 's-fresh');
         transitionSession(db, 's-fresh', 'running');
         seedEventsFile(repo, 's-fresh', { hook_event_name: 'PostToolUse' });
-        appendEvent(db, 's-fresh', 'turn_died', {
+        appendEvent(db, 's-fresh', EventType.TurnDied, {
           reason: API_ERROR,
           stalledAt: new Date(NOW).toISOString(),
         });
@@ -629,7 +637,7 @@ describe('buildDashboardSnapshot', () => {
 
       it("strips what a terminal would obey out of the pane's own error line", () => {
         const stalledAt = seedStalled('s1');
-        appendEvent(db, 's1', 'turn_died', {
+        appendEvent(db, 's1', EventType.TurnDied, {
           reason: '\u001b[2JAPI Error',
           stalledAt,
           refusal: '\u001b[2Jdid not land',
@@ -789,14 +797,14 @@ describe('buildDashboardSnapshot', () => {
       beforeEach(() => {
         seedSession(db, repo, 's1');
         transitionSession(db, 's1', 'running');
-        appendEvent(db, 's1', 'steer', { kind: 'kickoff', delivered: true });
+        appendEvent(db, 's1', EventType.Steer, { kind: 'kickoff', delivered: true });
       });
 
       it('carries the newest question no steer has answered', () => {
-        appendEvent(db, 's1', 'question', { text: 'first?' });
-        appendEvent(db, 's1', 'question', { text: 'rebase or merge?' });
+        appendEvent(db, 's1', EventType.Question, { text: 'first?' });
+        appendEvent(db, 's1', EventType.Question, { text: 'rebase or merge?' });
         const asked = newestEventId(db);
-        appendEvent(db, 's1', 'tool_call', {});
+        appendEvent(db, 's1', EventType.ToolCall, {});
 
         // Named by its event id, which an answer is bound to.
         expect(questionOf()).toEqual({ id: asked, text: 'rebase or merge?', options: [] });
@@ -804,13 +812,13 @@ describe('buildDashboardSnapshot', () => {
 
       // Decision 93: an open question idles the worker until the operator acts.
       it('needs a human while it is open', () => {
-        appendEvent(db, 's1', 'question', { text: 'rebase or merge?' });
+        appendEvent(db, 's1', EventType.Question, { text: 'rebase or merge?' });
 
         expect(buildDashboardSnapshot(db, repo, NOW).sessions[0]?.needsHuman).toBe(true);
       });
 
       it('carries its options and the one recommended', () => {
-        appendEvent(db, 's1', 'question', {
+        appendEvent(db, 's1', EventType.Question, {
           text: 'rebase or merge?',
           options: ['rebase', 'merge'],
           recommended: 2,
@@ -827,7 +835,7 @@ describe('buildDashboardSnapshot', () => {
       // The payload is session-writable: past four is never an option, and a
       // recommendation that names none marks nothing.
       it('keeps four options and drops a recommendation past them', () => {
-        appendEvent(db, 's1', 'question', {
+        appendEvent(db, 's1', EventType.Question, {
           text: 'which?',
           options: ['a', 'b', 'c', 'd', 'e'],
           recommended: 5,
@@ -841,7 +849,7 @@ describe('buildDashboardSnapshot', () => {
       });
 
       it('scrubs control characters out of each option', () => {
-        appendEvent(db, 's1', 'question', {
+        appendEvent(db, 's1', EventType.Question, {
           text: 'which?',
           options: ['\u001b]0;pwned\u0007rebase', 'merge;\u001b[31m $(whoami)'],
         });
@@ -855,8 +863,11 @@ describe('buildDashboardSnapshot', () => {
       });
 
       it('clears once an answer comes after it', () => {
-        appendEvent(db, 's1', 'question', { text: 'rebase or merge?', options: ['a', 'b'] });
-        appendEvent(db, 's1', 'answer', {
+        appendEvent(db, 's1', EventType.Question, {
+          text: 'rebase or merge?',
+          options: ['a', 'b'],
+        });
+        appendEvent(db, 's1', EventType.Answer, {
           question: 'rebase or merge?',
           questionId: newestEventId(db),
           text: 'b',
@@ -867,8 +878,8 @@ describe('buildDashboardSnapshot', () => {
       });
 
       it("clears once the operator's steer comes after it", () => {
-        appendEvent(db, 's1', 'question', { text: 'rebase or merge?' });
-        appendEvent(db, 's1', 'steer', { kind: 'message', by: 'operator' });
+        appendEvent(db, 's1', EventType.Question, { text: 'rebase or merge?' });
+        appendEvent(db, 's1', EventType.Steer, { kind: 'message', by: 'operator' });
 
         expect(questionOf()).toBeUndefined();
       });
@@ -881,17 +892,17 @@ describe('buildDashboardSnapshot', () => {
         ['the watchdog', { kind: 'resume', by: 'watch' }],
         ['nobody named', { kind: 'message' }],
       ])('stays open past a steer from %s', (_, steer) => {
-        appendEvent(db, 's1', 'question', { text: 'rebase or merge?' });
-        appendEvent(db, 's1', 'steer', steer);
+        appendEvent(db, 's1', EventType.Question, { text: 'rebase or merge?' });
+        appendEvent(db, 's1', EventType.Steer, steer);
 
         expect(questionOf()?.text).toBe('rebase or merge?');
         expect(buildDashboardSnapshot(db, repo, NOW).sessions[0]?.needsHuman).toBe(true);
       });
 
       it('carries a question asked after the last steer', () => {
-        appendEvent(db, 's1', 'question', { text: 'answered?' });
-        appendEvent(db, 's1', 'steer', { kind: 'message', by: 'operator' });
-        appendEvent(db, 's1', 'question', { text: 'and now?' });
+        appendEvent(db, 's1', EventType.Question, { text: 'answered?' });
+        appendEvent(db, 's1', EventType.Steer, { kind: 'message', by: 'operator' });
+        appendEvent(db, 's1', EventType.Question, { text: 'and now?' });
 
         expect(questionOf()?.text).toBe('and now?');
       });
@@ -903,7 +914,7 @@ describe('buildDashboardSnapshot', () => {
       // Nothing can answer a terminal session (steers refuse it), so a question
       // asked before the kill or the merge must not sit on the row for good.
       it.each(['killed', 'merged'] as const)('is absent once the session is %s', (state) => {
-        appendEvent(db, 's1', 'question', { text: 'rebase or merge?' });
+        appendEvent(db, 's1', EventType.Question, { text: 'rebase or merge?' });
         transitionSession(db, 's1', state === 'merged' ? 'awaiting-review' : state);
         if (state === 'merged') transitionSession(db, 's1', 'merged');
 
@@ -911,13 +922,13 @@ describe('buildDashboardSnapshot', () => {
       });
 
       it('is absent when the recorded text is blank', () => {
-        appendEvent(db, 's1', 'question', { text: '  ' });
+        appendEvent(db, 's1', EventType.Question, { text: '  ' });
 
         expect(questionOf()).toBeUndefined();
       });
 
       it('scrubs and cuts the text', () => {
-        appendEvent(db, 's1', 'question', { text: `\u001b[2Jwhich\n${'x'.repeat(400)}` });
+        appendEvent(db, 's1', EventType.Question, { text: `\u001b[2Jwhich\n${'x'.repeat(400)}` });
 
         const question = questionOf()?.text ?? '';
         expect(question).not.toContain('\u001b');
@@ -926,7 +937,7 @@ describe('buildDashboardSnapshot', () => {
       });
 
       it('reads the question under last events', () => {
-        appendEvent(db, 's1', 'question', { text: 'rebase\u0007 or merge?' });
+        appendEvent(db, 's1', EventType.Question, { text: 'rebase\u0007 or merge?' });
 
         expect(
           buildDashboardSnapshot(db, repo, NOW).sessions[0]?.recentEvents.at(-1),
@@ -937,8 +948,8 @@ describe('buildDashboardSnapshot', () => {
     it('reports the newest steer with its kind and its sender', () => {
       seedSession(db, repo, 's1');
       transitionSession(db, 's1', 'running');
-      appendEvent(db, 's1', 'steer', { kind: 'kickoff', delivered: true });
-      appendEvent(db, 's1', 'steer', { kind: 'message', by: 'conductor' });
+      appendEvent(db, 's1', EventType.Steer, { kind: 'kickoff', delivered: true });
+      appendEvent(db, 's1', EventType.Steer, { kind: 'message', by: 'conductor' });
 
       expect(buildDashboardSnapshot(db, repo, NOW).sessions[0]?.lastSteer).toMatchObject({
         kind: 'message',
@@ -949,15 +960,15 @@ describe('buildDashboardSnapshot', () => {
     it('reports the newest real gate run and the stage that failed it', () => {
       seedSession(db, repo, 's1');
       transitionSession(db, 's1', 'running');
-      appendEvent(db, 's1', 'gate_result', {
-        outcome: 'refused',
+      appendEvent(db, 's1', EventType.GateResult, {
+        outcome: MergeStatus.Refused,
         report: {
           sessionId: 's1',
           passed: false,
           sandbox: 'none',
           stages: [
-            { stage: 'lint', status: 'pass' },
-            { stage: 'tests', status: 'fail', detail: '2 failing' },
+            { stage: GateStage.Lint, status: GateStageStatus.Pass },
+            { stage: 'tests', status: GateStageStatus.Fail, detail: '2 failing' },
           ],
         },
       });
@@ -969,8 +980,8 @@ describe('buildDashboardSnapshot', () => {
         passed: false,
         failedStage: 'tests',
         stages: [
-          { stage: 'lint', status: 'pass' },
-          { stage: 'tests', status: 'fail', detail: '2 failing' },
+          { stage: GateStage.Lint, status: GateStageStatus.Pass },
+          { stage: 'tests', status: GateStageStatus.Fail, detail: '2 failing' },
         ],
       });
     });
@@ -980,20 +991,28 @@ describe('buildDashboardSnapshot', () => {
     it("lists the last gate's stages, sanitized", () => {
       seedSession(db, repo, 's1');
       transitionSession(db, 's1', 'running');
-      appendEvent(db, 's1', 'gate_result', {
-        outcome: 'refused',
+      appendEvent(db, 's1', EventType.GateResult, {
+        outcome: MergeStatus.Refused,
         report: {
           sessionId: 's1',
           passed: false,
           sandbox: 'none',
           stages: [
-            { stage: 'tests', status: 'fail', detail: '\u001b[31mFAIL\u001b[0m\n  at a.test.ts' },
+            {
+              stage: 'tests',
+              status: GateStageStatus.Fail,
+              detail: '\u001b[31mFAIL\u001b[0m\n  at a.test.ts',
+            },
           ],
         },
       });
 
       expect(buildDashboardSnapshot(db, repo, NOW).sessions[0]?.lastGate?.stages).toEqual([
-        { stage: 'tests', status: 'fail', detail: '\uFFFD[31mFAIL\uFFFD[0m at a.test.ts' },
+        {
+          stage: 'tests',
+          status: GateStageStatus.Fail,
+          detail: '\uFFFD[31mFAIL\uFFFD[0m at a.test.ts',
+        },
       ]);
     });
 
@@ -1001,19 +1020,19 @@ describe('buildDashboardSnapshot', () => {
       it('carries the newest five, oldest of them first, each with what its payload says', () => {
         seedSession(db, repo, 's1');
         transitionSession(db, 's1', 'running');
-        appendEvent(db, 's1', 'steer', { kind: 'kickoff', delivered: true });
-        appendEvent(db, 's1', 'steer', { kind: 'message', by: 'conductor' });
-        appendEvent(db, 's1', 'interrupt', { steered: false });
-        appendEvent(db, 's1', 'gate_result', {
-          outcome: 'refused',
+        appendEvent(db, 's1', EventType.Steer, { kind: 'kickoff', delivered: true });
+        appendEvent(db, 's1', EventType.Steer, { kind: 'message', by: 'conductor' });
+        appendEvent(db, 's1', EventType.Interrupt, { steered: false });
+        appendEvent(db, 's1', EventType.GateResult, {
+          outcome: MergeStatus.Refused,
           report: {
             sessionId: 's1',
             passed: false,
             sandbox: 'none',
-            stages: [{ stage: 'tests', status: 'fail' }],
+            stages: [{ stage: 'tests', status: GateStageStatus.Fail }],
           },
         });
-        appendEvent(db, 's1', 'session_done', { summary: 'the pane is in' });
+        appendEvent(db, 's1', EventType.SessionDone, { summary: 'the pane is in' });
         transitionSession(db, 's1', 'awaiting-review');
 
         const { recentEvents } = buildDashboardSnapshot(db, repo, NOW).sessions[0] ?? {};
@@ -1086,12 +1105,12 @@ describe('buildDashboardSnapshot', () => {
       it("strips what a terminal would obey out of the session's own words", () => {
         seedSession(db, repo, 's1');
         transitionSession(db, 's1', 'running');
-        appendEvent(db, 's1', 'session_done', { summary: '\u001b[2Jdone\nfor real' });
+        appendEvent(db, 's1', EventType.SessionDone, { summary: '\u001b[2Jdone\nfor real' });
 
         expect(
           buildDashboardSnapshot(db, repo, NOW).sessions[0]?.recentEvents.at(-1),
         ).toMatchObject({
-          type: 'session_done',
+          type: EventType.SessionDone,
           detail: '[2Jdone for real',
         });
       });
@@ -1107,23 +1126,23 @@ describe('buildDashboardSnapshot', () => {
       it('carries the model, effort and rung the row records, the rung counted from 1', () => {
         seedSession(db, repo, 's-routed');
         recordSessionRoute(db, 's-routed', {
-          tier: 'standard',
+          tier: Tier.Standard,
           rung: 1,
           model: 'claude-sonnet-5-5',
           effort: 'high',
-          reason: 'gate-rejection',
+          reason: ClimbReason.GateRejection,
           override: false,
         });
 
         const [session] = buildDashboardSnapshot(db, repo, NOW).sessions;
 
         expect(session?.route).toEqual({
-          tier: 'standard',
+          tier: Tier.Standard,
           model: 'claude-sonnet-5-5',
           effort: 'high',
           rung: 2,
           rungs: 4,
-          reason: 'gate-rejection',
+          reason: ClimbReason.GateRejection,
           override: false,
         });
         expect(session && routeLabel(session)).toBe(
@@ -1164,7 +1183,7 @@ describe('buildDashboardSnapshot', () => {
         seedSession(db, repo, 's1');
         recordSessionRoute(db, 's1', CRITICAL_TOP);
         transitionSession(db, 's1', 'running');
-        appendEvent(db, 's1', 'fix_round', {
+        appendEvent(db, 's1', EventType.FixRound, {
           ...ROUND,
           rejectBase: 0,
           startedBy: 'conductor',
@@ -1183,21 +1202,32 @@ describe('buildDashboardSnapshot', () => {
       it('names the starter alone on a round within the ladder, and only while it is open', () => {
         seedSession(db, repo, 's-open');
         transitionSession(db, 's-open', 'running');
-        appendEvent(db, 's-open', 'fix_round', { ...ROUND, rejectBase: 0, startedBy: 'operator' });
+        appendEvent(db, 's-open', EventType.FixRound, {
+          ...ROUND,
+          rejectBase: 0,
+          startedBy: 'operator',
+        });
         seedSession(db, repo, 's-gated');
         transitionSession(db, 's-gated', 'running');
-        appendEvent(db, 's-gated', 'fix_round', { ...ROUND, rejectBase: 0, startedBy: 'operator' });
-        appendEvent(db, 's-gated', 'merge', { branch: 'pup/s-gated', target: 'main', files: [] });
+        appendEvent(db, 's-gated', EventType.FixRound, {
+          ...ROUND,
+          rejectBase: 0,
+          startedBy: 'operator',
+        });
+        appendEvent(db, 's-gated', EventType.Merge, {
+          branch: 'pup/s-gated',
+          target: 'main',
+          files: [],
+        });
         seedSession(db, repo, 's-before');
         transitionSession(db, 's-before', 'running');
-        appendEvent(db, 's-before', 'fix_round', { ...ROUND, rejectBase: 0 });
+        appendEvent(db, 's-before', EventType.FixRound, { ...ROUND, rejectBase: 0 });
         seedSession(db, repo, 's-forged');
         transitionSession(db, 's-forged', 'running');
         // The store is session-writable: a class pup never records is not shown.
-        db.prepare("INSERT INTO events (session_id, type, payload) VALUES (?, 'fix_round', ?)").run(
-          's-forged',
-          JSON.stringify({ startedBy: 'conductor', finding: '\u001b[31mevil' }),
-        );
+        db.prepare(
+          `INSERT INTO events (session_id, type, payload) VALUES (?, '${EventType.FixRound}', ?)`,
+        ).run('s-forged', JSON.stringify({ startedBy: 'conductor', finding: '\u001b[31mevil' }));
 
         const rounds = Object.fromEntries(
           buildDashboardSnapshot(db, repo, NOW).sessions.map((s) => [s.id, s.fixRound]),
@@ -1227,7 +1257,7 @@ describe('buildDashboardSnapshot', () => {
       }
       transitionSession(db, 's-blocked', 'blocked');
       seedEventsFile(repo, 's-stalled', { hook_event_name: 'Stop' }, STALLED_AFTER_MS + 1000);
-      appendEvent(db, 's-asking', 'question', { text: 'which way?' });
+      appendEvent(db, 's-asking', EventType.Question, { text: 'which way?' });
 
       const ids = buildDashboardSnapshot(db, repo, NOW).sessions.map((s) => s.id);
 
@@ -1475,7 +1505,7 @@ describe('needsYou', () => {
 
   function seedMerge(sessionId: string, prUrl?: string, sha: string | null = UNLANDED_SHA) {
     seedIn(sessionId, ['running', 'awaiting-review', 'merged']);
-    appendEvent(db, sessionId, 'merge', {
+    appendEvent(db, sessionId, EventType.Merge, {
       branch: `pup/${sessionId}`,
       ...(sha === null ? {} : { sha }),
       target: 'main',
@@ -1486,7 +1516,7 @@ describe('needsYou', () => {
 
   /** `pup land`'s event, as it writes it (decision 84). */
   function seedLanded(sessionId: string): void {
-    appendEvent(db, sessionId, 'landed', {
+    appendEvent(db, sessionId, EventType.Landed, {
       sha: 'e'.repeat(40),
       target: 'main',
       prUrl: 'https://github.com/o/r/pull/7',
@@ -1530,7 +1560,7 @@ describe('needsYou', () => {
     it('comes after a question and before every other need', () => {
       seedIn('s-blocked', ['running', 'blocked']);
       seedIn('s-asked', ['running']);
-      appendEvent(db, 's-asked', 'question', { text: 'which way?' });
+      appendEvent(db, 's-asked', EventType.Question, { text: 'which way?' });
 
       const kinds = needsYou(blockedAt({ reason: 'unsent draft' })).map((need) => need.kind);
 
@@ -1635,7 +1665,7 @@ describe('needsYou', () => {
     seedIn('s-blocked', ['running', 'blocked']);
     incrementRejectCount(db, 's-blocked');
     seedIn('s-asking', ['running']);
-    appendEvent(db, 's-asking', 'question', { text: 'rebase or merge?' });
+    appendEvent(db, 's-asking', EventType.Question, { text: 'rebase or merge?' });
     const asked = newestEventId(db);
     seedIn('s-busy', ['running']);
 
@@ -1690,7 +1720,11 @@ describe('needsYou', () => {
     seedIn('s-dead', ['running']);
     seedEventsFile(repo, 's-dead', { hook_event_name: 'PostToolUse' }, STALLED_AFTER_MS + 60_000);
     const stalledAt = new Date(NOW - STALLED_AFTER_MS - 60_000).toISOString();
-    appendEvent(db, 's-dead', 'turn_died', { reason: API_ERROR, stalledAt, refusal: 'no pane' });
+    appendEvent(db, 's-dead', EventType.TurnDied, {
+      reason: API_ERROR,
+      stalledAt,
+      refusal: 'no pane',
+    });
 
     expect(inbox()[0]?.reason).toMatch(
       /^TURN DIED \(API error\) — resume refused at \d{2}:\d{2}, needs a human$/,
@@ -1706,7 +1740,7 @@ describe('needsYou', () => {
 
     it('carries the options, the recommended one, and the answer command', () => {
       seedIn('s1', ['running']);
-      appendEvent(db, 's1', 'question', {
+      appendEvent(db, 's1', EventType.Question, {
         text: 'rebase \u2192 or merge?',
         options: ['rebase \u2705', 'merge'],
         recommended: 1,
@@ -1733,9 +1767,9 @@ describe('needsYou', () => {
     // what the conductor sent back, and nothing else reaches the operator.
     it('lists a question an awaiting-review session asked after it was done', () => {
       seedIn('s1', ['running']);
-      appendEvent(db, 's1', 'session_done', { summary: 'done' });
+      appendEvent(db, 's1', EventType.SessionDone, { summary: 'done' });
       transitionSession(db, 's1', 'awaiting-review');
-      appendEvent(db, 's1', 'question', { text: 'keep main?', options: ['yes', 'no'] });
+      appendEvent(db, 's1', EventType.Question, { text: 'keep main?', options: ['yes', 'no'] });
       const asked = newestEventId(db);
 
       expect(inbox()).toEqual([
@@ -1753,10 +1787,10 @@ describe('needsYou', () => {
 
     it("drops an awaiting-review session's question once answered", () => {
       seedIn('s1', ['running']);
-      appendEvent(db, 's1', 'session_done', { summary: 'done' });
+      appendEvent(db, 's1', EventType.SessionDone, { summary: 'done' });
       transitionSession(db, 's1', 'awaiting-review');
-      appendEvent(db, 's1', 'question', { text: 'keep main?', options: ['yes', 'no'] });
-      appendEvent(db, 's1', 'answer', {
+      appendEvent(db, 's1', EventType.Question, { text: 'keep main?', options: ['yes', 'no'] });
+      appendEvent(db, 's1', EventType.Answer, {
         question: 'keep main?',
         questionId: newestEventId(db),
         text: 'yes',
@@ -1770,8 +1804,8 @@ describe('needsYou', () => {
     // running must not hide the review line, nor a gate refusal behind it.
     it('lists no question an awaiting-review session asked before it was done', () => {
       seedIn('s1', ['running']);
-      appendEvent(db, 's1', 'question', { text: 'keep main?' });
-      appendEvent(db, 's1', 'session_done', { summary: 'done' });
+      appendEvent(db, 's1', EventType.Question, { text: 'keep main?' });
+      appendEvent(db, 's1', EventType.SessionDone, { summary: 'done' });
       transitionSession(db, 's1', 'awaiting-review');
 
       expect(inbox().map((need) => need.kind)).toEqual(['awaiting-review']);
@@ -1779,7 +1813,7 @@ describe('needsYou', () => {
 
     it('lists no question from an awaiting-review session that never reported done', () => {
       seedIn('s1', ['running', 'awaiting-review']);
-      appendEvent(db, 's1', 'question', { text: 'keep main?' });
+      appendEvent(db, 's1', EventType.Question, { text: 'keep main?' });
 
       expect(inbox().map((need) => need.kind)).toEqual(['awaiting-review']);
     });
@@ -1791,7 +1825,7 @@ describe('needsYou', () => {
       ['rejected', ['running', 'awaiting-review', 'rejected'] as SessionState[], []],
     ])('lists no question from a %s session', (_, path, kinds) => {
       seedIn('s1', ['running']);
-      appendEvent(db, 's1', 'question', { text: 'keep main?' });
+      appendEvent(db, 's1', EventType.Question, { text: 'keep main?' });
       for (const state of path.slice(1)) transitionSession(db, 's1', state);
 
       expect(inbox().map((need) => need.kind)).toEqual(kinds);
@@ -1811,7 +1845,7 @@ describe('needsYou', () => {
         'retired',
         () => {
           seedMerge('s1', 'https://github.com/o/r/pull/7');
-          appendEvent(db, 's1', 'retired', {
+          appendEvent(db, 's1', EventType.Retired, {
             prUrl: 'https://github.com/o/r/pull/7',
             supersededBy: 'https://github.com/o/r/pull/8',
           });
@@ -1819,7 +1853,7 @@ describe('needsYou', () => {
       ],
     ])('lists no question from a %s session', (_, seed) => {
       seed();
-      appendEvent(db, 's1', 'question', { text: 'keep main?' });
+      appendEvent(db, 's1', EventType.Question, { text: 'keep main?' });
 
       expect(inbox().map((need) => need.kind)).not.toContain('question');
     });
@@ -1828,7 +1862,7 @@ describe('needsYou', () => {
       vi.mocked(hasConductorWindow).mockReturnValue(true);
       seedIn('s1', ['running', 'blocked']);
       seedIn('s2', ['running']);
-      appendEvent(db, 's2', 'question', { text: 'which way?' });
+      appendEvent(db, 's2', EventType.Question, { text: 'which way?' });
       const asked = markConductorQuestion(db, repo, 'run-1', {
         text: 'accept the debt?',
         options: ['yes', 'no'],
@@ -1856,7 +1890,7 @@ describe('needsYou', () => {
   it('lists a session once, under its first reason', () => {
     seedIn('s1', ['running']);
     seedEventsFile(repo, 's1', { hook_event_name: 'PostToolUse' }, STALLED_AFTER_MS + 60_000);
-    appendEvent(db, 's1', 'question', { text: 'which way?' });
+    appendEvent(db, 's1', EventType.Question, { text: 'which way?' });
 
     expect(inbox().map((need) => need.kind)).toEqual(['question']);
   });
@@ -1868,10 +1902,10 @@ describe('needsYou', () => {
   describe('a claim widened after launch (decision 188)', () => {
     /** As `pup plan edit --rescope` records it on the claiming session. */
     const rescope = (sessionId: string, taskId: string, added: string[]) =>
-      appendEvent(db, sessionId, 'rescope', {
+      appendEvent(db, sessionId, EventType.Rescope, {
         task: taskId,
         added,
-        tier: 'standard',
+        tier: Tier.Standard,
         raised: false,
         by: 'inferred-operator',
         tty: null,
@@ -1893,13 +1927,13 @@ describe('needsYou', () => {
     it('also names them on a gate refused for flagged debt', () => {
       seedIn('s-review', ['running', 'awaiting-review']);
       rescope('s-review', 't-s-review', ['docs/**']);
-      appendEvent(db, 's-review', 'gate_result', {
-        outcome: 'refused',
+      appendEvent(db, 's-review', EventType.GateResult, {
+        outcome: MergeStatus.Refused,
         report: {
           sessionId: 's-review',
           passed: false,
           sandbox: 'none',
-          stages: [{ stage: 'diff-size', status: 'flagged', detail: '900 lines' }],
+          stages: [{ stage: 'diff-size', status: GateStageStatus.Flagged, detail: '900 lines' }],
         },
       });
 
@@ -2013,13 +2047,13 @@ describe('needsYou', () => {
     describe('after a refused gate', () => {
       function seedRefused(sessionId: string): void {
         seedIn(sessionId, ['running', 'awaiting-review']);
-        appendEvent(db, sessionId, 'gate_result', {
-          outcome: 'refused',
+        appendEvent(db, sessionId, EventType.GateResult, {
+          outcome: MergeStatus.Refused,
           report: {
             sessionId,
             passed: false,
             sandbox: 'none',
-            stages: [{ stage: 'diff-size', status: 'flagged', detail: '900 lines' }],
+            stages: [{ stage: 'diff-size', status: GateStageStatus.Flagged, detail: '900 lines' }],
           },
         });
       }
@@ -2046,13 +2080,15 @@ describe('needsYou', () => {
       it('names the failed stage and answers with a steer when a stage failed', () => {
         vi.mocked(hasConductorWindow).mockReturnValue(true);
         seedIn('s-review', ['running', 'awaiting-review']);
-        appendEvent(db, 's-review', 'gate_result', {
-          outcome: 'refused',
+        appendEvent(db, 's-review', EventType.GateResult, {
+          outcome: MergeStatus.Refused,
           report: {
             sessionId: 's-review',
             passed: false,
             sandbox: 'none',
-            stages: [{ stage: 'adr-number', status: 'fail', detail: '0146 is taken' }],
+            stages: [
+              { stage: 'adr-number', status: GateStageStatus.Fail, detail: '0146 is taken' },
+            ],
           },
         });
 
@@ -2069,8 +2105,11 @@ describe('needsYou', () => {
 
       // Neither moves the state, so neither logs a transition after the refusal.
       it.each([
-        ['a steer', (id: string) => appendEvent(db, id, 'steer', { kind: 'message' })],
-        ['a new finish', (id: string) => appendEvent(db, id, 'session_done', { summary: 'x' })],
+        ['a steer', (id: string) => appendEvent(db, id, EventType.Steer, { kind: 'message' })],
+        [
+          'a new finish',
+          (id: string) => appendEvent(db, id, EventType.SessionDone, { summary: 'x' }),
+        ],
       ])("is the conductor's again after %s", (_, after) => {
         vi.mocked(hasConductorWindow).mockReturnValue(true);
         seedRefused('s-review');
@@ -2117,7 +2156,7 @@ describe('needsYou', () => {
 
   it('leaves out a PR once a retired event comes after its merge', () => {
     seedMerge('s-pr', 'https://github.com/o/r/pull/7');
-    appendEvent(db, 's-pr', 'retired', {
+    appendEvent(db, 's-pr', EventType.Retired, {
       prUrl: 'https://github.com/o/r/pull/7',
       supersededBy: 't-other',
     });
@@ -2161,7 +2200,7 @@ describe('needsYou', () => {
   // a plain branch name and a hex sha, and an unasked PR stays listed.
   it('keeps a PR listed under a target or sha git must not be asked about', () => {
     seedIn('s-odd', ['running', 'awaiting-review', 'merged']);
-    appendEvent(db, 's-odd', 'merge', {
+    appendEvent(db, 's-odd', EventType.Merge, {
       branch: 'pup/s-odd',
       sha: '--output=/tmp/x',
       target: 'main~0',
@@ -2298,7 +2337,7 @@ describe('needsYou', () => {
 
   it('lets no question forge a second arrow in its line', () => {
     seedIn('s-asking', ['running']);
-    appendEvent(db, 's-asking', 'question', {
+    appendEvent(db, 's-asking', EventType.Question, {
       text: 'ok  → pup merge s-other ⭢ --pr 🡒 now, if a + b >= c | d',
     });
     const asked = newestEventId(db);
@@ -2310,7 +2349,11 @@ describe('needsYou', () => {
 
   it('reads only the newest merge, so a later local merge closes an older PR', () => {
     seedMerge('s-twice', 'https://github.com/o/r/pull/7');
-    appendEvent(db, 's-twice', 'merge', { branch: 'pup/s-twice', target: 'main', files: [] });
+    appendEvent(db, 's-twice', EventType.Merge, {
+      branch: 'pup/s-twice',
+      target: 'main',
+      files: [],
+    });
 
     expect(inbox()).toEqual([]);
   });
@@ -2348,14 +2391,14 @@ describe('needsYou', () => {
       for (let i = 0; i < fixCommits; i += 1) git('commit', '-q', '--allow-empty', '-m', 'fix');
       git('checkout', '-q', 'main');
       seedMerge(sessionId, `https://github.com/o/r/pull/${endedMin}`, pinned);
-      appendEvent(db, sessionId, 'fix_round', {
+      appendEvent(db, sessionId, EventType.FixRound, {
         prUrl: 'x',
         head: pinned,
         threads: [],
         rejectBase: 0,
       });
       db.prepare("UPDATE sessions SET state = 'running' WHERE id = ?").run(sessionId);
-      appendEvent(db, sessionId, 'session_done', { summary });
+      appendEvent(db, sessionId, EventType.SessionDone, { summary });
       db.prepare('UPDATE events SET created_at = ? WHERE id = last_insert_rowid()').run(
         new Date(NOW - endedMin * MIN).toISOString(),
       );
@@ -2413,7 +2456,7 @@ describe('needsYou', () => {
     it('shows no such line once the re-gate recorded its merge', () => {
       seedFinishedRound('s-regated', 12, 1);
       transitionSession(db, 's-regated', 'merged');
-      appendEvent(db, 's-regated', 'merge', {
+      appendEvent(db, 's-regated', EventType.Merge, {
         branch: 'pup/s-regated',
         sha: git('rev-parse', 'pup/s-regated'),
         target: 'main',
@@ -2427,11 +2470,11 @@ describe('needsYou', () => {
     // A steer hands the worker more to do and leaves it awaiting-review.
     it('shows no such line once a steer follows the round, until a new session_done', () => {
       seedFinishedRound('s-steered', 30, 1);
-      appendEvent(db, 's-steered', 'steer', { kind: 'message', by: 'operator' });
+      appendEvent(db, 's-steered', EventType.Steer, { kind: 'message', by: 'operator' });
 
       expect(inbox().map((need) => need.kind)).toEqual(['awaiting-review']);
 
-      appendEvent(db, 's-steered', 'session_done', { summary: 'done again' });
+      appendEvent(db, 's-steered', EventType.SessionDone, { summary: 'done again' });
       db.prepare('UPDATE events SET created_at = ? WHERE id = last_insert_rowid()').run(
         new Date(NOW - 4 * MIN).toISOString(),
       );
@@ -2455,7 +2498,7 @@ describe('needsYou', () => {
   // The store's half of an open PR's CI review state (decisions 86, 91).
   describe('prFixRounds', () => {
     const regate = (sessionId: string): void => {
-      appendEvent(db, sessionId, 'merge', {
+      appendEvent(db, sessionId, EventType.Merge, {
         branch: `pup/${sessionId}`,
         sha: 'e'.repeat(40),
         target: 'main',
@@ -2480,7 +2523,7 @@ describe('needsYou', () => {
       seedLanded('s-landed');
       seedMerge('s-local');
       seedMerge('s-reopened', 'https://github.com/o/r/pull/8');
-      appendEvent(db, 's-reopened', 'merge', {
+      appendEvent(db, 's-reopened', EventType.Merge, {
         branch: 'pup/s-reopened',
         target: 'main',
         files: [],
@@ -2589,15 +2632,16 @@ describe('windowFailureOf on a merged session', () => {
       NOW,
       fixRoundFailure,
     );
-  const killed = (agoMin: number) => at(agoMin, 'gate_result', { from: 'running', to: 'merged' });
+  const killed = (agoMin: number) =>
+    at(agoMin, EventType.GateResult, { from: 'running', to: 'merged' });
 
   // `fixRoundFailure` scores from the newest respawn the round kept, so the
   // stall is measured from there and not from the round's kickoff.
   it('measures a round stall from a pup respawn inside the round, not its kickoff', () => {
-    at(170, 'merge', { files: [] });
-    at(160, 'fix_round', { threads: ['T1'], rejectBase: 0 });
-    at(150, 'respawn', { delivered: true });
-    at(10, 'respawn', { delivered: true });
+    at(170, EventType.Merge, { files: [] });
+    at(160, EventType.FixRound, { threads: ['T1'], rejectBase: 0 });
+    at(150, EventType.Respawn, { delivered: true });
+    at(10, EventType.Respawn, { delivered: true });
     killed(5);
 
     expect(read()).toBeUndefined();
@@ -2605,14 +2649,14 @@ describe('windowFailureOf on a merged session', () => {
 
   // The retry undone before its window opened is no part of the stall's end.
   it('ends the stall at the round kill, not at a retry undone after it', () => {
-    at(170, 'merge', { files: [] });
-    at(160, 'fix_round', { threads: ['T1'], rejectBase: 0 });
-    at(150, 'respawn', { delivered: true });
+    at(170, EventType.Merge, { files: [] });
+    at(160, EventType.FixRound, { threads: ['T1'], rejectBase: 0 });
+    at(150, EventType.Respawn, { delivered: true });
     killed(20);
-    at(10, 'fix_round', { threads: ['T1'], rejectBase: 0 });
-    at(9, 'respawn', { delivered: false });
+    at(10, EventType.FixRound, { threads: ['T1'], rejectBase: 0 });
+    at(9, EventType.Respawn, { delivered: false });
     killed(8);
 
-    expect(read()).toBe('stall');
+    expect(read()).toBe(ClimbReason.Stall);
   });
 });

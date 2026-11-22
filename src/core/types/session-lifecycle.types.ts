@@ -1,9 +1,10 @@
+import type { Tier } from '../../claude/enums/tier.enums.js';
 import type {
   SessionPaneMissingError,
   SteerNotDeliveredError,
 } from '../../claude/errors/session-runtime.errors.js';
-import type { Tier } from '../../claude/types/model-ladder.types.js';
 import type { WindowEnv } from '../../claude/types/session-runtime.types.js';
+import type { EventType } from '../enums/event-type.enums.js';
 import type { CompiledProfile, ProfileLayer, TaskSpec } from './profile.types.js';
 import type { EventPayloads } from './session-event.types.js';
 
@@ -96,7 +97,7 @@ export interface SessionCompile {
 }
 
 /** What an answer says to the asker, without the id the store closes the question by. */
-export type AnswerWords = Omit<EventPayloads['answer'], 'questionId'>;
+export type AnswerWords = Omit<EventPayloads[EventType.Answer], 'questionId'>;
 
 /**
  * How a delivered steer is recorded: what kind of steer it was, and who sent

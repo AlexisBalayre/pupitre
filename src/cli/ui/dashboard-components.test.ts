@@ -1,6 +1,10 @@
 import { cleanup, render } from 'ink-testing-library';
 import { createElement, type ReactElement } from 'react';
 import { afterEach, describe, expect, it } from 'vitest';
+import { Tier } from '../../claude/enums/tier.enums.js';
+import { ClimbReason } from '../../core/enums/climb-reason.enums.js';
+import { GateStageStatus } from '../../core/enums/gate-stage-status.enums.js';
+import { SessionActivityKind } from '../../core/enums/session-activity-kind.enums.js';
 import type {
   DashboardRoute,
   DashboardSession,
@@ -77,12 +81,12 @@ function sessionFixture(overrides: Partial<DashboardSession> = {}): DashboardSes
 
 /** A standard session one rung up after a rejection (decision 92). */
 const ROUTE: DashboardRoute = {
-  tier: 'standard',
+  tier: Tier.Standard,
   model: 'claude-sonnet-5-5',
   effort: 'high',
   rung: 2,
   rungs: 4,
-  reason: 'gate-rejection',
+  reason: ClimbReason.GateRejection,
   override: false,
 };
 
@@ -195,7 +199,7 @@ describe('dashboard components', () => {
           finishedCount: 0,
           sessions: [
             sessionFixture({
-              activity: { kind: 'working' },
+              activity: { kind: SessionActivityKind.Working },
               stalledAgeMs: 12 * 60 * 1000,
               needsHuman: true,
             }),
@@ -216,7 +220,7 @@ describe('dashboard components', () => {
           finishedCount: 0,
           sessions: [
             sessionFixture({
-              activity: { kind: 'working' },
+              activity: { kind: SessionActivityKind.Working },
               stalledAgeMs: 12 * 60 * 1000,
               needsHuman: true,
               deadTurn: { reason: '⏺ API Error: Connection lost', at: '2026-09-13T10:02:00.000Z' },
@@ -236,7 +240,7 @@ describe('dashboard components', () => {
           finishedCount: 0,
           sessions: [
             sessionFixture({
-              activity: { kind: 'working' },
+              activity: { kind: SessionActivityKind.Working },
               stalledAgeMs: 12 * 60 * 1000,
               needsHuman: true,
               deadTurn: {
@@ -261,7 +265,9 @@ describe('dashboard components', () => {
         createElement(Sessions, {
           finishedCount: 0,
           sessions: [
-            sessionFixture({ activity: { kind: 'awaiting-input', detail: 'Bash permission' } }),
+            sessionFixture({
+              activity: { kind: SessionActivityKind.AwaitingInput, detail: 'Bash permission' },
+            }),
           ],
           selectedIndex: 0,
         }),
@@ -280,7 +286,7 @@ describe('dashboard components', () => {
               lastGate: {
                 passed: false,
                 failedStage: 'tests',
-                stages: [{ stage: 'tests', status: 'fail' }],
+                stages: [{ stage: 'tests', status: GateStageStatus.Fail }],
                 at: '2026-09-13T10:00:00.000Z',
               },
               lastSteer: { kind: 'manual', by: 'operator', at: '2026-09-13T10:01:00.000Z' },
@@ -511,8 +517,8 @@ describe('dashboard components', () => {
                 passed: false,
                 failedStage: 'coverage',
                 stages: [
-                  { stage: 'worktree-clean', status: 'pass' },
-                  { stage: 'coverage', status: 'fail', detail: '71% < 80%' },
+                  { stage: 'worktree-clean', status: GateStageStatus.Pass },
+                  { stage: 'coverage', status: GateStageStatus.Fail, detail: '71% < 80%' },
                 ],
                 at: '2026-09-13T10:00:00.000Z',
               },

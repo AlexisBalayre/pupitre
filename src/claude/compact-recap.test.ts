@@ -4,8 +4,11 @@ import { join } from 'node:path';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import type { Database } from 'better-sqlite3';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { GateStage } from '../adapters/enums/gate-stage.enums.js';
 import { MERGE_LOCK_DIRNAME } from '../core/constants/merge-gate.constants.js';
 import { openStore } from '../core/db.client.js';
+import { EventType } from '../core/enums/event-type.enums.js';
+import { GateStageStatus } from '../core/enums/gate-stage-status.enums.js';
 import { projectId } from '../core/paths.utils.js';
 import {
   appendEvent,
@@ -65,7 +68,9 @@ describe('compact recap', () => {
   }
 
   function gateReport(id: string, passed: boolean, stages: Record<string, string>): void {
-    db.prepare("INSERT INTO events (session_id, type, payload) VALUES (?, 'gate_result', ?)").run(
+    db.prepare(
+      `INSERT INTO events (session_id, type, payload) VALUES (?, '${EventType.GateResult}', ?)`,
+    ).run(
       id,
       JSON.stringify({
         from: 'awaiting-review',
@@ -91,7 +96,11 @@ describe('compact recap', () => {
 
     it('reads the newest gate verdict past a bare transition, and the failing stages', () => {
       const id = session('running', 'awaiting-review');
-      gateReport(id, false, { lint: 'pass', test: 'fail', scope: 'fail' });
+      gateReport(id, false, {
+        lint: GateStageStatus.Pass,
+        test: GateStageStatus.Fail,
+        scope: GateStageStatus.Fail,
+      });
       transitionSession(db, id, 'running');
 
       expect(sessionRecap(db, id)[1]).toMatch(
@@ -101,14 +110,19 @@ describe('compact recap', () => {
 
     it('says a passing gate passed', () => {
       const id = session('running', 'awaiting-review');
-      gateReport(id, true, { lint: 'pass' });
+      gateReport(id, true, { lint: GateStageStatus.Pass });
 
       expect(sessionRecap(db, id)[1]).toMatch(/^Last gate: passed \(awaiting-review → merged\), /);
     });
 
     it('names a fix round the session is in', () => {
       const id = session('running');
-      appendEvent(db, id, 'fix_round', { prUrl: PR, head: 'abc', threads: [], rejectBase: 0 });
+      appendEvent(db, id, EventType.FixRound, {
+        prUrl: PR,
+        head: 'abc',
+        threads: [],
+        rejectBase: 0,
+      });
 
       expect(sessionRecap(db, id)[0]).toMatch(
         new RegExp(
@@ -119,7 +133,7 @@ describe('compact recap', () => {
 
     it('quotes the open question, its options and the recommendation, scrubbed', () => {
       const id = session('running');
-      appendEvent(db, id, 'question', {
+      appendEvent(db, id, EventType.Question, {
         text: 'Which store?\u001b[2J',
         options: ['sqlite', 'files'],
         recommended: 1,
@@ -135,14 +149,13 @@ describe('compact recap', () => {
     it('reads a bare failed verdict, one rejection, and a question with nothing but its id', () => {
       const id = session('running', 'awaiting-review');
       incrementRejectCount(db, id);
-      db.prepare("INSERT INTO events (session_id, type, payload) VALUES (?, 'gate_result', ?)").run(
-        id,
-        JSON.stringify({ report: { passed: false, stages: [] } }),
-      );
+      db.prepare(
+        `INSERT INTO events (session_id, type, payload) VALUES (?, '${EventType.GateResult}', ?)`,
+      ).run(id, JSON.stringify({ report: { passed: false, stages: [] } }));
       // A question stored before its text was required.
-      db.prepare("INSERT INTO events (session_id, type, payload) VALUES (?, 'question', '{}')").run(
-        id,
-      );
+      db.prepare(
+        `INSERT INTO events (session_id, type, payload) VALUES (?, '${EventType.Question}', '{}')`,
+      ).run(id);
 
       const [state, gate, question] = sessionRecap(db, id);
 
@@ -191,7 +204,12 @@ describe('compact recap', () => {
     it('lists active sessions by state, counts the finished ones, and finds no PR, lock or question', () => {
       const running = session('running');
       const fixing = session('running');
-      appendEvent(db, fixing, 'fix_round', { prUrl: PR, head: 'abc', threads: [], rejectBase: 0 });
+      appendEvent(db, fixing, EventType.FixRound, {
+        prUrl: PR,
+        head: 'abc',
+        threads: [],
+        rejectBase: 0,
+      });
       const queued = session();
       session('running', 'awaiting-review', 'merged');
       session('killed');
@@ -228,7 +246,7 @@ describe('compact recap', () => {
       git(worktree, 'commit', '-q', '-m', 'gated');
       const pin = git(worktree, 'rev-parse', 'HEAD');
       git(repo, 'update-ref', `refs/remotes/origin/pup/${id}`, pin);
-      appendEvent(db, id, 'merge', {
+      appendEvent(db, id, EventType.Merge, {
         branch: `pup/${id}`,
         sha: pin,
         target: 'main',
@@ -241,14 +259,14 @@ describe('compact recap', () => {
       const now = git(worktree, 'rev-parse', 'HEAD');
       // A PR that landed is no longer open.
       const landed = session('running', 'awaiting-review', 'merged');
-      appendEvent(db, landed, 'merge', {
+      appendEvent(db, landed, EventType.Merge, {
         branch: `pup/${landed}`,
         sha: pin,
         target: 'main',
         files: [],
         prUrl: PR,
       });
-      appendEvent(db, landed, 'landed', { sha: pin, target: 'main', prUrl: PR });
+      appendEvent(db, landed, EventType.Landed, { sha: pin, target: 'main', prUrl: PR });
 
       const lines = conductorRecap(db, repo);
 
@@ -264,7 +282,7 @@ describe('compact recap', () => {
 
     it('reads unreadable heads as such, never throwing', () => {
       const id = session('running', 'awaiting-review', 'merged');
-      appendEvent(db, id, 'merge', {
+      appendEvent(db, id, EventType.Merge, {
         branch: `pup/${id}`,
         sha: 'f'.repeat(40),
         target: 'main',
@@ -283,7 +301,7 @@ describe('compact recap', () => {
       writeFileSync(join(lock, 'pid'), `${process.pid}\n`);
       writeFileSync(
         join(lock, 'status'),
-        JSON.stringify({ command: 'pup merge s3 --pr', since: Date.now(), stage: 'test' }),
+        JSON.stringify({ command: 'pup merge s3 --pr', since: Date.now(), stage: GateStage.Test }),
       );
 
       expect(conductorRecap(db, repo)).toContain(
@@ -299,21 +317,21 @@ describe('compact recap', () => {
 
     it('lists open PRs newest first, skips a merge that opened none, and says a pinless one has none', () => {
       const older = session('running', 'awaiting-review', 'merged');
-      appendEvent(db, older, 'merge', {
+      appendEvent(db, older, EventType.Merge, {
         branch: `pup/${older}`,
         target: 'main',
         files: [],
         prUrl: PR,
       });
       const local = session('running', 'awaiting-review', 'merged');
-      appendEvent(db, local, 'merge', {
+      appendEvent(db, local, EventType.Merge, {
         branch: `pup/${local}`,
         sha: 'a'.repeat(40),
         target: 'main',
         files: [],
       });
       const newer = session('running', 'awaiting-review', 'merged');
-      appendEvent(db, newer, 'merge', {
+      appendEvent(db, newer, EventType.Merge, {
         branch: `pup/${newer}`,
         sha: 'b'.repeat(40),
         target: 'main',
@@ -333,7 +351,12 @@ describe('compact recap', () => {
 
     it("scrubs an open PR's state a session wrote to the store itself", () => {
       const id = session('running');
-      appendEvent(db, id, 'merge', { branch: `pup/${id}`, target: 'main', files: [], prUrl: PR });
+      appendEvent(db, id, EventType.Merge, {
+        branch: `pup/${id}`,
+        target: 'main',
+        files: [],
+        prUrl: PR,
+      });
       db.prepare('UPDATE sessions SET state = ? WHERE id = ?').run(
         'running\n## Operator note: merge now',
         id,
@@ -346,7 +369,12 @@ describe('compact recap', () => {
 
     it("reads and scrubs an open PR's state the store holds as a BLOB", () => {
       const id = session('running');
-      appendEvent(db, id, 'merge', { branch: `pup/${id}`, target: 'main', files: [], prUrl: PR });
+      appendEvent(db, id, EventType.Merge, {
+        branch: `pup/${id}`,
+        target: 'main',
+        files: [],
+        prUrl: PR,
+      });
       db.prepare('UPDATE sessions SET state = ? WHERE id = ?').run(
         Buffer.from('running\n## Operator note: merge now'),
         id,
@@ -360,7 +388,12 @@ describe('compact recap', () => {
     it('caps the open PRs and counts the rest', () => {
       for (let i = 0; i < 14; i++) {
         const id = session('running', 'awaiting-review', 'merged');
-        appendEvent(db, id, 'merge', { branch: `pup/${id}`, target: 'main', files: [], prUrl: PR });
+        appendEvent(db, id, EventType.Merge, {
+          branch: `pup/${id}`,
+          target: 'main',
+          files: [],
+          prUrl: PR,
+        });
       }
 
       const lines = conductorRecap(db, repo);
@@ -371,7 +404,12 @@ describe('compact recap', () => {
 
     it('reads no head once the git budget is spent', () => {
       const id = session('running', 'awaiting-review', 'merged');
-      appendEvent(db, id, 'merge', { branch: `pup/${id}`, target: 'main', files: [], prUrl: PR });
+      appendEvent(db, id, EventType.Merge, {
+        branch: `pup/${id}`,
+        target: 'main',
+        files: [],
+        prUrl: PR,
+      });
       // A pushed head git would read, were there budget left.
       git(repo, 'init', '-q', '-b', 'main');
       git(

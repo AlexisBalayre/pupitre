@@ -25,6 +25,7 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
 }));
 
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
+import { InputBoxState } from '../claude/enums/input-box-state.enums.js';
 import {
   SessionPaneMissingError,
   SteerNotDeliveredError,
@@ -41,7 +42,7 @@ import {
   readInputBoxLook,
   submitPane,
 } from '../claude/session-runtime.service.js';
-import type { InputBoxLook, InputBoxState } from '../claude/types/pane.types.js';
+import type { InputBoxLook } from '../claude/types/pane.types.js';
 import {
   CI_REVIEW_LOOP,
   CONDUCTOR_BLOCKED_AFTER_MS,
@@ -57,6 +58,7 @@ import {
 } from './conductor.service.js';
 import { DEFAULT_BASE_PROFILE } from './constants/default-profile.constants.js';
 import { openStore } from './db.client.js';
+import { EventType } from './enums/event-type.enums.js';
 import { ConductorTellRefusedError } from './errors/conductor.errors.js';
 import { LaunchRolledBackError, QuestionRefusedError } from './errors/session-lifecycle.errors.js';
 import { recordWatcherBeat } from './overlap.repository.js';
@@ -68,7 +70,7 @@ const REPO = '/repo';
 
 /** A look at the conductor's box finding `state`; a box that holds text shows `draft`. */
 function lookOf(state: InputBoxState, draft = 'draft'): InputBoxLook {
-  return { state, draft: state === 'holds' ? draft : '' };
+  return { state, draft: state === InputBoxState.Holds ? draft : '' };
 }
 
 /** Where the blocked clock is kept, under the `HOME` a test stubs. */
@@ -176,7 +178,7 @@ describe('startConductor', () => {
   // last run's question is closed before the new window can ask one, so a
   // start recorded after the kickoff never closes the new run's first question.
   it('mints a fresh run token per start, and records the start before the window opens', () => {
-    appendEvent(db, null, 'question', { text: 'from the last run?' });
+    appendEvent(db, null, EventType.Question, { text: 'from the last run?' });
     let openAtLaunch: unknown = 'not launched';
     vi.mocked(launchConductor).mockImplementationOnce((opts) => {
       openAtLaunch = openQuestion(db, null);
@@ -189,7 +191,9 @@ describe('startConductor', () => {
     const runs = vi.mocked(launchConductor).mock.calls.map(([opts]) => opts.run);
     expect(runs[0]).not.toBe(runs[1]);
     expect(openAtLaunch).toBeUndefined();
-    const starts = db.prepare("SELECT count(*) AS n FROM events WHERE type = 'conductor_start'");
+    const starts = db.prepare(
+      `SELECT count(*) AS n FROM events WHERE type = '${EventType.ConductorStart}'`,
+    );
     expect(starts.get()).toEqual({ n: 2 });
   });
 
@@ -432,7 +436,7 @@ describe('tellConductor', () => {
   }
 
   it('checks the box is empty, pastes, presses Enter once, and stops once the box is empty again', () => {
-    box('empty', 'empty');
+    box(InputBoxState.Empty, InputBoxState.Empty);
 
     expect(tellConductor(REPO, 'merge t-1 next')).toBe(true);
 
@@ -442,7 +446,7 @@ describe('tellConductor', () => {
   });
 
   it('presses Enter a second time only while text is still in the box', () => {
-    box('empty', 'holds', 'empty');
+    box(InputBoxState.Empty, InputBoxState.Holds, InputBoxState.Empty);
 
     expect(tellConductor(REPO, 'merge t-1 next')).toBe(true);
 
@@ -457,7 +461,7 @@ describe('tellConductor', () => {
   });
 
   it('says it did not land when the second Enter leaves text in the box, and stops there', () => {
-    box('empty', 'holds', 'holds');
+    box(InputBoxState.Empty, InputBoxState.Holds, InputBoxState.Holds);
 
     expect(tellConductor(REPO, 'merge t-1 next')).toBe(false);
 
@@ -465,7 +469,7 @@ describe('tellConductor', () => {
   });
 
   it('presses no second Enter on a dialog that replaced the box, and says it did not land', () => {
-    box('empty', 'absent');
+    box(InputBoxState.Empty, InputBoxState.Absent);
 
     expect(tellConductor(REPO, 'merge t-1 next')).toBe(false);
 
@@ -473,7 +477,7 @@ describe('tellConductor', () => {
   });
 
   it('presses nothing when the paste never shows whole, and says it did not land', () => {
-    box('empty');
+    box(InputBoxState.Empty);
     vi.mocked(pasteIntoPane).mockReturnValueOnce(false);
 
     expect(tellConductor(REPO, 'merge t-1 next')).toBe(false);
@@ -481,7 +485,7 @@ describe('tellConductor', () => {
     expect(submitPane).not.toHaveBeenCalled();
   });
 
-  it.each(['holds', 'absent'] as const)(
+  it.each([InputBoxState.Holds, InputBoxState.Absent])(
     'refuses, sending nothing, when the box %s before the paste',
     (state) => {
       box(state);
@@ -496,7 +500,7 @@ describe('tellConductor', () => {
   );
 
   it('takes a message of exactly the limit', () => {
-    box('empty', 'empty');
+    box(InputBoxState.Empty, InputBoxState.Empty);
 
     expect(tellConductor(REPO, 'x'.repeat(TELL_MAX_CHARS))).toBe(true);
   });
@@ -528,10 +532,10 @@ describe('tellConductor', () => {
 
   it('starts the blocked clock when it refuses, so the bounce counts toward the inbox line', () => {
     const bounced = Date.now();
-    box('holds');
+    box(InputBoxState.Holds);
     expect(() => tellConductor(REPO, 'session t-1 is idle')).toThrow(ConductorTellRefusedError);
 
-    vi.mocked(readInputBoxLook).mockReturnValueOnce(lookOf('holds'));
+    vi.mocked(readInputBoxLook).mockReturnValueOnce(lookOf(InputBoxState.Holds));
     expect(conductorBlock(REPO, bounced + CONDUCTOR_BLOCKED_AFTER_MS + 60_000)).toEqual({
       reason: 'unsent draft',
       ageMs: expect.any(Number),
@@ -539,13 +543,13 @@ describe('tellConductor', () => {
   });
 
   it('drops the clock a look taken mid-paste started, once the tell lands', () => {
-    box('empty');
+    box(InputBoxState.Empty);
     let started = false;
     vi.mocked(pasteIntoPane).mockImplementationOnce((_pane, message) => {
       // A one-shot `pup status` looks while the message sits in the box.
       vi.mocked(readInputBoxLook)
-        .mockReturnValueOnce(lookOf('holds', message))
-        .mockReturnValueOnce(lookOf('empty'));
+        .mockReturnValueOnce(lookOf(InputBoxState.Holds, message))
+        .mockReturnValueOnce(lookOf(InputBoxState.Empty));
       conductorBlock(REPO, Date.now());
       started = existsSync(blockedFile());
       return true;
@@ -559,12 +563,12 @@ describe('tellConductor', () => {
 
   // Every answer queued is a look taken: one left over would answer the next test's first look.
   it.each([
-    ['holds', ['holds', 'holds']],
-    ['absent', ['absent']],
+    [InputBoxState.Holds, [InputBoxState.Holds, InputBoxState.Holds]],
+    [InputBoxState.Absent, [InputBoxState.Absent]],
   ] as const)(
     'starts the clock when its last look finds the box %s, since the next tell bounces there',
     (_state, after) => {
-      box('empty', ...after);
+      box(InputBoxState.Empty, ...after);
 
       expect(tellConductor(REPO, 'merge t-1 next')).toBe(false);
 
@@ -598,14 +602,14 @@ describe('conductorBlock', () => {
   const AFTER = LATER + CONDUCTOR_BLOCKED_AFTER_MS + 60_000;
 
   it('names an unsent draft held for over ten minutes, with its age', () => {
-    looks('holds', 'holds');
+    looks(InputBoxState.Holds, InputBoxState.Holds);
 
     expect(conductorBlock(REPO, T0)).toBeUndefined();
     expect(conductorBlock(REPO, LATER)).toEqual({ reason: 'unsent draft', ageMs: LATER - T0 });
   });
 
   it('names a pane off its main input for over ten minutes', () => {
-    looks('absent', 'absent');
+    looks(InputBoxState.Absent, InputBoxState.Absent);
 
     conductorBlock(REPO, T0);
     expect(conductorBlock(REPO, LATER)).toEqual({ reason: 'not on main input', ageMs: LATER - T0 });
@@ -614,7 +618,11 @@ describe('conductorBlock', () => {
   // Sent unread at 06:41, a new draft typed at 06:52: no look saw the box
   // empty between them, and the second is not eleven minutes old.
   it('starts the clock again when another draft shows', () => {
-    looks(lookOf('holds', 'mergeT1next'), lookOf('holds', 'nowT2'), lookOf('holds', 'nowT2'));
+    looks(
+      lookOf(InputBoxState.Holds, 'mergeT1next'),
+      lookOf(InputBoxState.Holds, 'nowT2'),
+      lookOf(InputBoxState.Holds, 'nowT2'),
+    );
 
     conductorBlock(REPO, T0);
     expect(conductorBlock(REPO, LATER)).toBeUndefined();
@@ -622,8 +630,13 @@ describe('conductorBlock', () => {
   });
 
   it.each([
-    ['a draft gives way to an overlay', 'holds', 'absent', 'not on main input'],
-    ['an overlay gives way to a draft', 'absent', 'holds', 'unsent draft'],
+    [
+      'a draft gives way to an overlay',
+      InputBoxState.Holds,
+      InputBoxState.Absent,
+      'not on main input',
+    ],
+    ['an overlay gives way to a draft', InputBoxState.Absent, InputBoxState.Holds, 'unsent draft'],
   ] as const)(
     'starts the clock again when %s: no look saw what came between',
     (_what, first, then, reason) => {
@@ -636,7 +649,7 @@ describe('conductorBlock', () => {
   );
 
   it('keeps a draft by its hash, never its text', () => {
-    looks(lookOf('holds', 'theoperatorsownnote'));
+    looks(lookOf(InputBoxState.Holds, 'theoperatorsownnote'));
 
     conductorBlock(REPO, T0);
 
@@ -644,14 +657,20 @@ describe('conductorBlock', () => {
   });
 
   it('says nothing at exactly ten minutes', () => {
-    looks('holds', 'holds');
+    looks(InputBoxState.Holds, InputBoxState.Holds);
 
     conductorBlock(REPO, T0);
     expect(conductorBlock(REPO, T0 + CONDUCTOR_BLOCKED_AFTER_MS)).toBeUndefined();
   });
 
   it('never names an empty box at the main prompt, and an empty look resets the clock', () => {
-    looks('empty', 'holds', 'empty', 'holds', 'empty');
+    looks(
+      InputBoxState.Empty,
+      InputBoxState.Holds,
+      InputBoxState.Empty,
+      InputBoxState.Holds,
+      InputBoxState.Empty,
+    );
 
     expect(conductorBlock(REPO, T0)).toBeUndefined();
     conductorBlock(REPO, T0 + 1);
@@ -661,7 +680,7 @@ describe('conductorBlock', () => {
   });
 
   it('only looks: no paste, no Enter, no clear reaches the pane', () => {
-    looks('holds', 'holds');
+    looks(InputBoxState.Holds, InputBoxState.Holds);
 
     conductorBlock(REPO, T0);
     conductorBlock(REPO, LATER);
@@ -672,7 +691,7 @@ describe('conductorBlock', () => {
   });
 
   it('says nothing when no conductor runs', () => {
-    looks('holds');
+    looks(InputBoxState.Holds);
     conductorBlock(REPO, T0);
     vi.mocked(conductorPane).mockReturnValueOnce(undefined);
 
@@ -691,7 +710,7 @@ describe('conductorBlock', () => {
     ['holds no time', 'soon'],
     ['holds a time later than now', String(LATER + 1)],
   ])('starts the clock again when the stored file %s', (_what, stored) => {
-    looks('holds', 'holds');
+    looks(InputBoxState.Holds, InputBoxState.Holds);
     conductorBlock(REPO, T0);
     const [, ...seen] = readFileSync(blockedFile(), 'utf8').split('\n');
     writeFileSync(blockedFile(), [stored, ...seen].join('\n'));
@@ -703,7 +722,7 @@ describe('conductorBlock', () => {
   it('starts the clock again when the stored file holds a time but not what the look saw', () => {
     mkdirSync(join(projectPaths(REPO).root, 'conductor'), { recursive: true });
     writeFileSync(blockedFile(), `${T0}\n`);
-    looks('holds');
+    looks(InputBoxState.Holds);
 
     expect(conductorBlock(REPO, LATER)).toBeUndefined();
     expect(readFileSync(blockedFile(), 'utf8').split('\n')[0]).toBe(String(LATER));
@@ -715,7 +734,7 @@ describe('conductorBlock', () => {
     const target = join(tempDir('pup-planted-'), 'target');
     writeFileSync(target, 'untouched');
     symlinkSync(target, file);
-    looks('holds');
+    looks(InputBoxState.Holds);
 
     conductorBlock(REPO, T0);
 
@@ -778,7 +797,7 @@ describe('markConductorQuestion', () => {
   it('passes over a question row the seal does not cover', () => {
     const id = markConductorQuestion(db, REPO, 'run-1', { text: 'merge?', options: ['no'] });
     const { seal } = openConductorQuestion(db, REPO) ?? {};
-    appendEvent(db, null, 'question', { text: 'merge?', options: ['yes'], seal });
+    appendEvent(db, null, EventType.Question, { text: 'merge?', options: ['yes'], seal });
 
     expect(openConductorQuestion(db, REPO)?.id).toBe(id);
     expect(openConductorQuestion(db, REPO)?.options).toEqual(['no']);

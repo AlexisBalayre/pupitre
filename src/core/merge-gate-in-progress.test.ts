@@ -24,6 +24,8 @@ import {
   sh,
 } from '@test/helpers/merge-gate.mock.js';
 import { openStore } from './db.client.js';
+import { GateStageStatus } from './enums/gate-stage-status.enums.js';
+import { MergeStatus } from './enums/merge-status.enums.js';
 import { runMergeGate } from './merge-gate.service.js';
 import { HELD_SLOT_ENV } from './test-slot.service.js';
 
@@ -76,9 +78,9 @@ describe('fresh-base over rebase or merge state in the worktree (decision 204)',
         adapters: [passingAdapter],
       });
 
-      expect(outcome.status).toBe('rejected');
+      expect(outcome.status).toBe(MergeStatus.Rejected);
       const stage = outcome.report.stages.find((entry) => entry.stage === 'fresh-base');
-      expect(stage?.status).toBe('fail');
+      expect(stage?.status).toBe(GateStageStatus.Fail);
       expect(stage?.detail).toContain(`${planted} is in this worktree's git dir`);
       // `pup merge`, `pup review` and a blocked session show it to unsandboxed readers.
       expect(stage?.detail).toContain('Anyone else should delete it without running git');

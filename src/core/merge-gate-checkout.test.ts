@@ -100,12 +100,16 @@ import {
   untimed,
 } from '@test/helpers/merge-gate.mock.js';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
+import { GateStage } from '../adapters/enums/gate-stage.enums.js';
 import type { Adapter, CapabilityContext, NestedPackage } from '../adapters/types/adapter.types.js';
 import { typescriptAdapter } from '../adapters/typescript.adapter.js';
 import { killSession, steerPane } from '../claude/session-runtime.service.js';
 import { runUtility } from '../claude/utility.service.js';
 import { DUPLICATION_RULE_ID } from './constants/merge-gate.constants.js';
 import { openStore } from './db.client.js';
+import { EventType } from './enums/event-type.enums.js';
+import { GateStageStatus } from './enums/gate-stage-status.enums.js';
+import { MergeStatus } from './enums/merge-status.enums.js';
 import { ArmedGitDriverError, WorktreeConfigError } from './errors/git-diff.errors.js';
 import { listLedgerEntries } from './ledger.repository.js';
 import { runMergeGate as runGate } from './merge-gate.service.js';
@@ -266,7 +270,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
     const outcome = await merge();
 
-    expect(outcome.status).toBe('merged');
+    expect(outcome.status).toBe(MergeStatus.Merged);
     expect(sh(repo, 'git', 'log', '--oneline', 'main')).toContain('edit src/feature.ts');
     expect(getSession(db, SESSION_ID)?.state).toBe('merged');
     // A merged session claims its task, so the task leaves the backlog without
@@ -289,7 +293,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
     const outcome = await merge();
 
-    expect(outcome.status).toBe('merged');
+    expect(outcome.status).toBe(MergeStatus.Merged);
     expect(sh(repo, 'git', 'rev-parse', 'main').trim()).toBe(tip);
   });
 
@@ -332,7 +336,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
       const outcome = await merge();
 
-      expect(outcome.status).toBe('merged');
+      expect(outcome.status).toBe(MergeStatus.Merged);
       expect(sh(repo, 'git', 'rev-parse', 'refs/heads/main').trim()).toBe(tip);
       expect(existsSync(join(repo, 'notes.txt'))).toBe(false);
     });
@@ -397,13 +401,18 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
           }),
         );
 
-        expect(outcome.status).toBe('rejected');
-        expect(outcome.report.stages.at(-1)).toMatchObject({ stage: 'fresh-base', status: 'fail' });
+        expect(outcome.status).toBe(MergeStatus.Rejected);
+        expect(outcome.report.stages.at(-1)).toMatchObject({
+          stage: 'fresh-base',
+          status: GateStageStatus.Fail,
+        });
         expect(outcome.report.stages.at(-1)?.detail).toMatch(/is not based on main at/);
         expect(gateCommands).not.toHaveBeenCalled();
         expect(sh(repo, 'git', 'rev-parse', 'main').trim()).toBe(before);
         expect(ghCalls().some((call) => call.includes('pr create'))).toBe(false);
-        expect(listEvents(db, SESSION_ID).some((event) => event.type === 'merge')).toBe(false);
+        expect(listEvents(db, SESSION_ID).some((event) => event.type === EventType.Merge)).toBe(
+          false,
+        );
       },
     );
 
@@ -413,7 +422,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       sh(repo, 'git', 'config', 'core.sparseCheckout', 'true');
       writeFileSync(join(repo, '.git', 'info', 'sparse-checkout'), 'src/feature.ts\n');
 
-      expect((await merge()).status).toBe('merged');
+      expect((await merge()).status).toBe(MergeStatus.Merged);
 
       expect(existsSync(join(repo, 'src', 'app.ts'))).toBe(true);
       expect(existsSync(join(repo, 'src', 'feature.ts'))).toBe(true);
@@ -460,10 +469,10 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
       const outcome = await merge(lateAdapter);
 
-      expect(outcome.status).toBe('merged');
+      expect(outcome.status).toBe(MergeStatus.Merged);
       expect(sh(repo, 'git', 'rev-parse', 'refs/heads/main').trim()).toBe(pinned);
       expect(existsSync(join(repo, 'src', 'late.ts'))).toBe(false);
-      const mergeEvent = listEvents(db, SESSION_ID).find((event) => event.type === 'merge');
+      const mergeEvent = listEvents(db, SESSION_ID).find((event) => event.type === EventType.Merge);
       expect(JSON.parse(mergeEvent?.payload ?? '{}')).toMatchObject({ sha: pinned });
       // Never measured, so kept for the operator rather than deleted.
       expect(sh(repo, 'git', 'rev-parse', `refs/heads/${BRANCH}`).trim()).not.toBe(pinned);
@@ -483,7 +492,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       await expect(merge()).rejects.toThrow('claude -p crashed');
 
       expect(sh(repo, 'git', 'rev-parse', 'refs/heads/main').trim()).toBe(pinned);
-      const mergeEvent = listEvents(db, SESSION_ID).find((event) => event.type === 'merge');
+      const mergeEvent = listEvents(db, SESSION_ID).find((event) => event.type === EventType.Merge);
       expect(JSON.parse(mergeEvent?.payload ?? '{}')).toMatchObject({ sha: pinned });
       expect(() =>
         sh(repo, 'git', 'rev-parse', '--verify', '--quiet', `refs/heads/${BRANCH}`),
@@ -505,14 +514,14 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       const warn = vi.spyOn(console, 'error').mockImplementation(() => {});
       onTestFinished(() => warn.mockRestore());
 
-      expect((await merge(lateAdapter)).status).toBe('merged');
+      expect((await merge(lateAdapter)).status).toBe(MergeStatus.Merged);
 
       expect(sh(repo, 'git', 'rev-parse', 'refs/heads/main').trim()).toBe(pinned);
       const lines = warn.mock.calls.map((call) => String(call[0]));
       expect(lines.filter((line) => line.includes('left behind'))).toEqual([
         `${BRANCH} moved after the gate pinned ${pinned}: 2 later commits were left behind on it, not merged.`,
       ]);
-      const mergeEvent = listEvents(db, SESSION_ID).find((event) => event.type === 'merge');
+      const mergeEvent = listEvents(db, SESSION_ID).find((event) => event.type === EventType.Merge);
       expect(JSON.parse(mergeEvent?.payload ?? '{}')).toMatchObject({
         sha: pinned,
         leftBehind: 2,
@@ -526,10 +535,10 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       const warn = vi.spyOn(console, 'error').mockImplementation(() => {});
       onTestFinished(() => warn.mockRestore());
 
-      expect((await merge()).status).toBe('merged');
+      expect((await merge()).status).toBe(MergeStatus.Merged);
 
       expect(warn.mock.calls.some((call) => String(call[0]).includes('left behind'))).toBe(false);
-      const mergeEvent = listEvents(db, SESSION_ID).find((event) => event.type === 'merge');
+      const mergeEvent = listEvents(db, SESSION_ID).find((event) => event.type === EventType.Merge);
       const payload = JSON.parse(mergeEvent?.payload ?? '{}');
       expect(payload.sha).toBe(pinned);
       expect(payload).not.toHaveProperty('leftBehind');
@@ -552,11 +561,11 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         process.env.PATH = originalPath;
       });
 
-      expect((await merge()).status).toBe('merged');
+      expect((await merge()).status).toBe(MergeStatus.Merged);
 
       expect(sh(repo, 'git', 'rev-parse', 'refs/heads/main').trim()).toBe(pinned);
       expect(sh(repo, 'git', 'rev-parse', `refs/heads/${BRANCH}`).trim()).toBe(pinned);
-      const mergeEvent = listEvents(db, SESSION_ID).find((event) => event.type === 'merge');
+      const mergeEvent = listEvents(db, SESSION_ID).find((event) => event.type === EventType.Merge);
       expect(JSON.parse(mergeEvent?.payload ?? '{}')).not.toHaveProperty('leftBehind');
     });
 
@@ -574,11 +583,11 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       const warn = vi.spyOn(console, 'error').mockImplementation(() => {});
       onTestFinished(() => warn.mockRestore());
 
-      expect((await merge(deletingAdapter)).status).toBe('merged');
+      expect((await merge(deletingAdapter)).status).toBe(MergeStatus.Merged);
 
       expect(sh(repo, 'git', 'rev-parse', 'refs/heads/main').trim()).toBe(pinned);
       expect(warn.mock.calls.some((call) => String(call[0]).includes('left behind'))).toBe(false);
-      const mergeEvent = listEvents(db, SESSION_ID).find((event) => event.type === 'merge');
+      const mergeEvent = listEvents(db, SESSION_ID).find((event) => event.type === EventType.Merge);
       const payload = JSON.parse(mergeEvent?.payload ?? '{}');
       expect(payload.sha).toBe(pinned);
       expect(payload).not.toHaveProperty('leftBehind');
@@ -623,7 +632,9 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       // The main checkout's files are the target's, untouched.
       expect(existsSync(join(repo, 'src', 'feature.ts'))).toBe(false);
       expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
-      expect(listEvents(db, SESSION_ID).some((event) => event.type === 'merge')).toBe(false);
+      expect(listEvents(db, SESSION_ID).some((event) => event.type === EventType.Merge)).toBe(
+        false,
+      );
       expect(existsSync(worktree)).toBe(true);
     });
 
@@ -718,10 +729,13 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       const outcome = await merge(typescriptAdapter);
 
       expect(runs()).toEqual([expect.stringMatching(/^run --coverage\.enabled /)]);
-      expect(untimed(outcome.report.stages)).toContainEqual({ stage: 'test', status: 'pass' });
+      expect(untimed(outcome.report.stages)).toContainEqual({
+        stage: GateStage.Test,
+        status: GateStageStatus.Pass,
+      });
       expect(untimed(outcome.report.stages)).toContainEqual({
         stage: 'coverage',
-        status: 'pass',
+        status: GateStageStatus.Pass,
         detail: expect.stringContaining('100%'),
       });
     });
@@ -740,9 +754,12 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         'run --reporter=dot',
         expect.stringMatching(/^run --coverage\.enabled /),
       ]);
-      expect(untimed(outcome.report.stages)).toContainEqual({ stage: 'test', status: 'pass' });
+      expect(untimed(outcome.report.stages)).toContainEqual({
+        stage: GateStage.Test,
+        status: GateStageStatus.Pass,
+      });
       expect(outcome.report.stages).toContainEqual(
-        expect.objectContaining({ stage: 'coverage', status: 'pass' }),
+        expect.objectContaining({ stage: 'coverage', status: GateStageStatus.Pass }),
       );
     });
 
@@ -753,14 +770,14 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
       const outcome = await merge(typescriptAdapter);
 
-      expect(outcome.status).toBe('rejected');
+      expect(outcome.status).toBe(MergeStatus.Rejected);
       expect(runs()).toEqual([
         expect.stringMatching(/^run --coverage\.enabled /),
         expect.stringMatching(/^run --coverage\.enabled /),
       ]);
       expect(outcome.report.stages.at(-1)).toMatchObject({
-        stage: 'test',
-        status: 'fail',
+        stage: GateStage.Test,
+        status: GateStageStatus.Fail,
         detail: expect.stringContaining('src/a.test.ts > breaks'),
       });
       expect(outcome.report.stages.map((s) => s.stage)).not.toContain('coverage');
@@ -773,34 +790,34 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
       const adapter = debtAdapter({
         gateCommands: () => [
-          { stage: 'build', command: 'true', args: [] },
-          { stage: 'test', command: 'sh', args: ['-c', 'sleep 0.3'] },
-          { stage: 'lint', command: 'true', args: [] },
+          { stage: GateStage.Build, command: 'true', args: [] },
+          { stage: GateStage.Test, command: 'sh', args: ['-c', 'sleep 0.3'] },
+          { stage: GateStage.Lint, command: 'true', args: [] },
         ],
       });
       seedDebtBaseline({ deadExports: [], duplicatedLines: 0 });
 
       const outcome = await merge(adapter);
 
-      expect(outcome.status).toBe('merged');
+      expect(outcome.status).toBe(MergeStatus.Merged);
       const timed = outcome.report.stages.filter((s) => s.durationMs !== undefined);
       // Coverage skips as "adapter cannot measure": no capability ran.
       expect(outcome.report.stages.filter((s) => s.durationMs === undefined)).toEqual([
-        expect.objectContaining({ stage: 'coverage', status: 'skipped' }),
+        expect.objectContaining({ stage: 'coverage', status: GateStageStatus.Skipped }),
       ]);
       expect(timed.map((s) => s.stage)).toEqual([
         'worktree-clean',
         'fresh-base',
-        'build',
-        'test',
-        'lint',
+        GateStage.Build,
+        GateStage.Test,
+        GateStage.Lint,
         'scope-audit',
         'diff-size',
         'dead-code',
         'duplication',
         'complexity',
       ]);
-      expect(timed.find((s) => s.stage === 'test')?.durationMs).toBeGreaterThanOrEqual(250);
+      expect(timed.find((s) => s.stage === GateStage.Test)?.durationMs).toBeGreaterThanOrEqual(250);
     });
 
     it('prints each time in the report the session is steered with', async () => {
@@ -810,13 +827,17 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         id: 'fake',
         detect: () => true,
         gateCommands: () => [
-          { stage: 'build', command: 'sh', args: ['-c', 'sleep 0.2; echo broke >&2; exit 1'] },
+          {
+            stage: GateStage.Build,
+            command: 'sh',
+            args: ['-c', 'sleep 0.2; echo broke >&2; exit 1'],
+          },
         ],
       };
 
       const outcome = await merge(slowFailure);
 
-      expect(outcome.status).toBe('rejected');
+      expect(outcome.status).toBe(MergeStatus.Rejected);
       const steered = vi.mocked(steerPane).mock.calls[0]?.[1] as string;
       expect(steered).toMatch(/^- worktree-clean: PASS \(\d+\.\ds\)$/m);
       expect(steered).toMatch(/^- build: FAIL \((0\.[2-9]|[1-9]\d*\.\d)s\) — .*broke/m);
@@ -834,7 +855,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       detect: () => true,
       gateCommands: () => [
         {
-          stage: 'build',
+          stage: GateStage.Build,
           command: 'sh',
           args: [
             '-c',
@@ -846,7 +867,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
     const outcome = await merge(colouredAdapter);
 
-    expect(outcome.status).toBe('rejected');
+    expect(outcome.status).toBe(MergeStatus.Rejected);
     const steered = vi.mocked(steerPane).mock.calls[0]?.[1] as string;
     expect(steered).toContain('FAIL expected 1 to be 2');
     expect(steered).not.toContain('\u001b');
@@ -865,7 +886,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       detect: () => true,
       gateCommands: () => [
         {
-          stage: 'build',
+          stage: GateStage.Build,
           command: 'sh',
           args: ['-c', 'test -z "$PUP_TEST_SECRET" && test -n "$PATH"'],
         },
@@ -874,9 +895,9 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
     const outcome = await merge(envProbeAdapter);
 
-    expect(outcome.status).toBe('merged');
+    expect(outcome.status).toBe(MergeStatus.Merged);
     expect(outcome.report.stages).toContainEqual(
-      expect.objectContaining({ stage: 'build', status: 'pass' }),
+      expect.objectContaining({ stage: GateStage.Build, status: GateStageStatus.Pass }),
     );
   });
 
@@ -895,7 +916,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     const outcome = await merge();
 
     // The stale branch forces the rebase path, so pre-rebase would have fired.
-    expect(outcome.status).toBe('merged');
+    expect(outcome.status).toBe(MergeStatus.Merged);
     expect(existsSync(fired)).toBe(false);
   });
 
@@ -969,7 +990,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       commitIn(repo, 'README.md', '# hello\n');
       commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
 
-      expect((await merge()).status).toBe('merged');
+      expect((await merge()).status).toBe(MergeStatus.Merged);
       expect(existsSync(fired)).toBe(false);
     });
   });
@@ -1010,7 +1031,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
     expect(untimed(outcome.report.stages)).toContainEqual({
       stage: 'diff-size',
-      status: 'pass',
+      status: GateStageStatus.Pass,
       detail: '12 source + 0 test + 5 docs changed lines',
     });
   });
@@ -1028,7 +1049,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
     expect(untimed(outcome.report.stages)).toContainEqual({
       stage: 'diff-size',
-      status: 'pass',
+      status: GateStageStatus.Pass,
       detail: '6 source + 0 test + 0 docs changed lines',
     });
   });
@@ -1051,7 +1072,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
     expect(untimed(outcome.report.stages)).toContainEqual({
       stage: 'diff-size',
-      status: 'pass',
+      status: GateStageStatus.Pass,
       detail: '11 source + 0 test + 0 docs changed lines',
     });
   });
@@ -1076,7 +1097,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
       const outcome = await merge();
 
-      expect(outcome.status).toBe('refused');
+      expect(outcome.status).toBe(MergeStatus.Refused);
       expect(outcome.report.stages.find((s) => s.stage === 'diff-size')?.detail).toContain(
         '800 source + 0 test + 0 docs changed lines: source exceeds the 600-line flag',
       );
@@ -1126,7 +1147,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
       expect(untimed(outcome.report.stages)).toContainEqual({
         stage: 'diff-size',
-        status: 'pass',
+        status: GateStageStatus.Pass,
         detail: '0 source + 20 test + 0 docs changed lines',
       });
     });
@@ -1138,10 +1159,10 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
     const outcome = await merge();
 
-    expect(outcome.status).toBe('merged');
+    expect(outcome.status).toBe(MergeStatus.Merged);
     expect(untimed(outcome.report.stages)).toContainEqual({
       stage: 'diff-size',
-      status: 'pass',
+      status: GateStageStatus.Pass,
       detail: '0 source + 700 test + 0 docs changed lines',
     });
   });
@@ -1154,7 +1175,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
     const outcome = await merge(failingBuildAdapter);
 
-    expect(outcome.status).toBe('blocked');
+    expect(outcome.status).toBe(MergeStatus.Blocked);
     expect(outcome.rejectCount).toBe(3);
     expect(getSession(db, SESSION_ID)?.state).toBe('blocked');
     expect(steerPane).not.toHaveBeenCalled();
@@ -1173,7 +1194,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
     const outcome = await merge(failingBuildAdapter);
 
-    expect(outcome.status).toBe('blocked');
+    expect(outcome.status).toBe(MergeStatus.Blocked);
     expect(getSession(db, SESSION_ID)?.state).toBe('blocked');
     expect(steerPane).not.toHaveBeenCalled();
   });
@@ -1203,13 +1224,17 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       // The root build stage runs first and already sees the nested environment.
       const adapter = nestedAdapter({
         gateCommands: () => [
-          { stage: 'build', command: 'test', args: ['-e', 'tools/review/node_modules/marker'] },
-          { stage: 'test', command: 'true', args: [] },
-          { stage: 'lint', command: 'true', args: [] },
+          {
+            stage: GateStage.Build,
+            command: 'test',
+            args: ['-e', 'tools/review/node_modules/marker'],
+          },
+          { stage: GateStage.Test, command: 'true', args: [] },
+          { stage: GateStage.Lint, command: 'true', args: [] },
         ],
       });
 
-      expect((await merge(adapter)).status).toBe('merged');
+      expect((await merge(adapter)).status).toBe(MergeStatus.Merged);
     });
 
     // Linking nothing, the stage would fail on a runner it cannot find, which
@@ -1250,7 +1275,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       const worktree = seedSession(db, repo, NESTED_SCOPE);
       commitIn(worktree, 'tools/review/src/r.ts', 'export const r = 1;\n');
 
-      expect((await merge(nestedAdapter())).status).toBe('merged');
+      expect((await merge(nestedAdapter())).status).toBe(MergeStatus.Merged);
     });
 
     // A package with a lockfile of its own installs on its own; a root that
@@ -1372,7 +1397,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       const worktree = seedSession(db, repo, NESTED_SCOPE);
       commitIn(worktree, 'tools/review/src/r.ts', 'export const r = 1;\n');
 
-      expect((await merge(nestedAdapter())).status).toBe('merged');
+      expect((await merge(nestedAdapter())).status).toBe(MergeStatus.Merged);
     });
 
     // The runtime is looked for in the main checkout: one only the branch
@@ -1405,7 +1430,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       const worktree = seedSession(db, repo, NESTED_SCOPE);
       commitIn(worktree, 'tools/review/src/r.ts', 'export const r = 1;\n');
 
-      expect((await merge(nestedAdapter())).status).toBe('merged');
+      expect((await merge(nestedAdapter())).status).toBe(MergeStatus.Merged);
     });
 
     // A workspace rooted below the repo root hoists its members' dependencies
@@ -1430,7 +1455,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       const worktree = seedSession(db, repo, NESTED_SCOPE);
       commitIn(worktree, 'tools/review/packages/a/src/a.ts', 'export const a = 1;\n');
 
-      expect((await merge(nestedAdapter())).status).toBe('merged');
+      expect((await merge(nestedAdapter())).status).toBe(MergeStatus.Merged);
     });
 
     it("refuses the merge when the package's own test script fails", async () => {
@@ -1440,10 +1465,10 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
       const outcome = await merge(nestedAdapter());
 
-      expect(outcome.status).toBe('rejected');
+      expect(outcome.status).toBe(MergeStatus.Rejected);
       expect(outcome.report.stages.at(-1)).toMatchObject({
         stage: 'test (tools/review)',
-        status: 'fail',
+        status: GateStageStatus.Fail,
         detail: expect.stringContaining('nested-test-ran'),
       });
       expect(sh(repo, 'git', 'log', '--oneline', 'main')).not.toContain('tools/review/src/r.ts');
@@ -1456,10 +1481,10 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
       const outcome = await merge(nestedAdapter());
 
-      expect(outcome.status).toBe('merged');
+      expect(outcome.status).toBe(MergeStatus.Merged);
       const stageNames = outcome.report.stages.map((s) => s.stage);
       expect(
-        stageNames.slice(stageNames.indexOf('lint') + 1, stageNames.indexOf('scope-audit')),
+        stageNames.slice(stageNames.indexOf(GateStage.Lint) + 1, stageNames.indexOf('scope-audit')),
       ).toEqual(['test (tools/review)', 'typecheck (tools/review)']);
     });
 
@@ -1512,7 +1537,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
       const outcome = await merge(nestedAdapter());
 
-      expect(outcome.status).toBe('merged');
+      expect(outcome.status).toBe(MergeStatus.Merged);
       const stageNames = outcome.report.stages.map((s) => s.stage);
       expect(stageNames).toContain('test (tools/review)');
       expect(stageNames).toContain('typecheck (tools/review)');
@@ -1526,7 +1551,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
       const outcome = await merge(nestedAdapter());
 
-      expect(outcome.status).toBe('rejected');
+      expect(outcome.status).toBe(MergeStatus.Rejected);
       expect(outcome.report.stages.at(-1)).toMatchObject({
         stage: 'typecheck (tools/review)',
         detail: expect.stringMatching(/\/(pup-gate-checkout-[^/]+)\/\1\/tools\/review/),
@@ -1544,10 +1569,10 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
       const outcome = await merge(nestedAdapter());
 
-      expect(outcome.status).toBe('merged');
+      expect(outcome.status).toBe(MergeStatus.Merged);
       expect(untimed(outcome.report.stages)).toContainEqual({
         stage: 'test (tools/review)',
-        status: 'pass',
+        status: GateStageStatus.Pass,
       });
     });
 
@@ -1563,10 +1588,10 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
       const outcome = await merge(nestedAdapter());
 
-      expect(outcome.status).toBe('rejected');
+      expect(outcome.status).toBe(MergeStatus.Rejected);
       expect(outcome.report.stages.at(-1)).toMatchObject({
         stage: 'test (tools/review)',
-        status: 'fail',
+        status: GateStageStatus.Fail,
       });
     });
 
@@ -1577,7 +1602,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
       const outcome = await merge(nestedAdapter());
 
-      expect(outcome.status).toBe('merged');
+      expect(outcome.status).toBe(MergeStatus.Merged);
       expect(outcome.report.stages.map((s) => s.stage)).not.toContain('test (tools/review)');
     });
 
@@ -1593,17 +1618,17 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
       const outcome = await merge(nestedAdapter());
 
-      expect(outcome.status).toBe('refused');
+      expect(outcome.status).toBe(MergeStatus.Refused);
       expect(outcome.report.stages).toContainEqual({
         stage: 'test (tools/review)',
-        status: 'flagged',
+        status: GateStageStatus.Flagged,
         detail: expect.stringContaining(
           'not measured — tools/review/package.json declares no test script',
         ),
       });
       expect(untimed(outcome.report.stages)).toContainEqual({
         stage: 'typecheck (tools/review)',
-        status: 'pass',
+        status: GateStageStatus.Pass,
       });
       expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
     });
@@ -1615,7 +1640,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
       const outcome = await merge(nestedAdapter(), { reason: 'tooling', reviewBy: 'next sprint' });
 
-      expect(outcome.status).toBe('merged');
+      expect(outcome.status).toBe(MergeStatus.Merged);
       expect(
         listLedgerEntries(db, 'proj-1').map((e) => [e.description, JSON.parse(e.files)]),
       ).toEqual([
@@ -1647,17 +1672,25 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
       const outcome = await merge(adapter);
 
-      expect(outcome.status).toBe('merged');
+      expect(outcome.status).toBe(MergeStatus.Merged);
       const note = '; 2 changed file(s) in a nested package not measured here (tools/review)';
       expect(untimed(outcome.report.stages)).toEqual(
         expect.arrayContaining([
-          { stage: 'dead-code', status: 'pass', detail: `no new unused exports${note}` },
+          {
+            stage: 'dead-code',
+            status: GateStageStatus.Pass,
+            detail: `no new unused exports${note}`,
+          },
           {
             stage: 'duplication',
-            status: 'pass',
+            status: GateStageStatus.Pass,
             detail: `8 duplicated lines (baseline 12)${note}`,
           },
-          { stage: 'coverage', status: 'pass', detail: `no instrumentable changed lines${note}` },
+          {
+            stage: 'coverage',
+            status: GateStageStatus.Pass,
+            detail: `no instrumentable changed lines${note}`,
+          },
         ]),
       );
     });
@@ -1683,11 +1716,11 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
       const outcome = await merge(adapter);
 
-      expect(outcome.status).toBe('refused');
+      expect(outcome.status).toBe(MergeStatus.Refused);
       expect(outcome.report.stages).toContainEqual(
         expect.objectContaining({
           stage: 'dead-code',
-          status: 'flagged',
+          status: GateStageStatus.Flagged,
           detail:
             '1 new unused export(s): src/feature.ts#feature; 5 changed file(s) in a nested ' +
             'package not measured here (a, c, d, …). Re-run with --accept-debt "<reason>" ' +
@@ -1708,11 +1741,11 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
     const outcome = await merge(adapter);
 
-    expect(outcome.status).toBe('refused');
+    expect(outcome.status).toBe(MergeStatus.Refused);
     expect(outcome.report.stages).toContainEqual(
       expect.objectContaining({
         stage: 'complexity',
-        status: 'flagged',
+        status: GateStageStatus.Flagged,
         detail: expect.stringContaining('src/feature.ts (+38)'),
       }),
     );
@@ -1733,9 +1766,9 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
     const outcome = await merge(adapter);
 
-    expect(outcome.status).toBe('merged');
+    expect(outcome.status).toBe(MergeStatus.Merged);
     expect(outcome.report.stages).toContainEqual(
-      expect.objectContaining({ stage: 'coverage', status: 'pass' }),
+      expect.objectContaining({ stage: 'coverage', status: GateStageStatus.Pass }),
     );
     const stored = JSON.parse(getProject(db, 'proj-1')?.baseline ?? '{}') as ProjectBaseline;
     expect(stored.debt?.coverageRatio).toBeCloseTo(2 / 3);
@@ -1762,7 +1795,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       }),
     );
 
-    expect(outcome.status).toBe('merged');
+    expect(outcome.status).toBe(MergeStatus.Merged);
     expect(outcome.prUrl).toContain('--repo github.com/owner/repo');
     expect(sh(bare, 'git', 'rev-parse', BRANCH).trim()).not.toBe('');
     expect(sh(elsewhere, 'git', 'branch', '--list', BRANCH).trim()).toBe('');
@@ -1804,7 +1837,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       }),
     );
 
-    expect(outcome.status).toBe('merged');
+    expect(outcome.status).toBe(MergeStatus.Merged);
     const probeCall = execFileSyncMock.mock.calls.find(([, callArgs]) =>
       (callArgs as string[] | undefined)?.includes('--verify'),
     );

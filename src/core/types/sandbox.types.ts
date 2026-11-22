@@ -1,4 +1,5 @@
 import type { ChildProcess } from 'node:child_process';
+import type { InterruptSignal } from '../enums/interrupt-signal.enums.js';
 
 export interface GateChildOptions {
   /** Working directory, and always writable: the checkout being measured. */
@@ -43,16 +44,6 @@ export interface GateChildOptions {
   /** Fed to the child's stdin; absent means stdin is closed. */
   input?: string;
 }
-
-/**
- * `applied` — pup wrapped the child in its own profile. `inherited` — pup is
- * itself sandboxed, so the child runs under *that* profile (see `sandboxMode`).
- * `declared-vm` — no mechanism on this platform, and the operator said the
- * machine pup runs on is the disposable boundary (see `declaredMode`).
- */
-export type SandboxMode = 'applied' | 'inherited' | 'declared-vm';
-
-export type InterruptSignal = 'SIGINT' | 'SIGTERM' | 'SIGHUP';
 
 export interface LiveChild {
   child: ChildProcess;

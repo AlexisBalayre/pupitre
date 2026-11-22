@@ -1,5 +1,6 @@
 import type { Database } from 'better-sqlite3';
 import { auditProject } from './audit.service.js';
+import { InterruptSignal } from './enums/interrupt-signal.enums.js';
 import { GateInterruptedError } from './errors/sandbox.errors.js';
 import { rethrowIfKilled } from './git-diff.client.js';
 import {
@@ -141,7 +142,11 @@ function refusalOf(sessionId: string, error: unknown): LandBatchOutcome['refused
 }
 
 /** The signals `withMergeLock` keeps node alive through while it holds the lock. */
-const INTERRUPTS: readonly Interrupt[] = ['SIGINT', 'SIGTERM', 'SIGHUP'];
+const INTERRUPTS: readonly Interrupt[] = [
+  InterruptSignal.Sigint,
+  InterruptSignal.Sigterm,
+  InterruptSignal.Sighup,
+];
 
 /**
  * Lets node run the listener of a signal that arrived during the synchronous

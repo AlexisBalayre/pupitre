@@ -54,6 +54,8 @@ vi.mock('./session-cap.service.js', async (importOriginal) => ({
 }));
 
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
+import { GateStage } from '../adapters/enums/gate-stage.enums.js';
+import { Tier } from '../claude/enums/tier.enums.js';
 import {
   SessionPaneMissingError,
   SteerNotDeliveredError,
@@ -76,6 +78,9 @@ import {
 } from './conductor.service.js';
 import { DEFAULT_BASE_PROFILE } from './constants/default-profile.constants.js';
 import { openStore } from './db.client.js';
+import { ClimbReason } from './enums/climb-reason.enums.js';
+import { EventType } from './enums/event-type.enums.js';
+import { GateStageStatus } from './enums/gate-stage-status.enums.js';
 import {
   ArmedGitDriverError,
   WorktreeConfigError,
@@ -365,7 +370,7 @@ describe('launchTask scope overlap (decision 99)', () => {
 
     // Across every session, not only the newcomer's: one record, not one per side.
     const recorded = db
-      .prepare("SELECT session_id, payload FROM events WHERE type = 'scope_overlap'")
+      .prepare(`SELECT session_id, payload FROM events WHERE type = '${EventType.ScopeOverlap}'`)
       .all() as { session_id: string; payload: string }[];
     expect(recorded).toHaveLength(1);
     expect(recorded[0]?.session_id).toBe('t-1');
@@ -379,7 +384,9 @@ describe('launchTask scope overlap (decision 99)', () => {
     planTask(db, { repoPath: repo, task: spec() });
     seedHolder();
 
-    const overlap = listEvents(db, launch('conductor')).find((e) => e.type === 'scope_overlap');
+    const overlap = listEvents(db, launch('conductor')).find(
+      (e) => e.type === EventType.ScopeOverlap,
+    );
 
     expect(JSON.parse(overlap?.payload ?? '{}').via).toBe('conductor');
   });
@@ -388,7 +395,7 @@ describe('launchTask scope overlap (decision 99)', () => {
     planTask(db, { repoPath: repo, task: spec() });
     seedHolder('s-other', ['docs/**']);
 
-    expect(listEvents(db, launch()).some((e) => e.type === 'scope_overlap')).toBe(false);
+    expect(listEvents(db, launch()).some((e) => e.type === EventType.ScopeOverlap)).toBe(false);
     expect(steerPane).not.toHaveBeenCalled();
   });
 
@@ -438,7 +445,7 @@ describe('launchTask scope overlap (decision 99)', () => {
     );
     expect(
       listEvents(db, 's-a')
-        .filter((e) => e.type === 'steer')
+        .filter((e) => e.type === EventType.Steer)
         .map((e) => JSON.parse(e.payload)),
     ).toEqual([{ kind: 'peer-joined', by: 't-1' }]);
   });
@@ -452,7 +459,7 @@ describe('launchTask scope overlap (decision 99)', () => {
     seedHolder('s-review', ['src/core/**'], '%4');
     transitionSession(db, 's-review', 'awaiting-review');
     seedHolder('s-open', ['src/core/**'], '%5');
-    appendEvent(db, 's-open', 'merge', {
+    appendEvent(db, 's-open', EventType.Merge, {
       branch: 'pup/s-open',
       sha: 'abc123',
       target: 'main',
@@ -469,7 +476,7 @@ describe('launchTask scope overlap (decision 99)', () => {
     expect(kickoffText()).toContain('- `pup-s-run` shares: src/core/github.client.ts');
     expect(kickoffText()).not.toContain('pup-s-review');
     expect(kickoffText()).not.toContain('pup-s-open');
-    const overlap = listEvents(db, sessionId).find((e) => e.type === 'scope_overlap');
+    const overlap = listEvents(db, sessionId).find((e) => e.type === EventType.ScopeOverlap);
     expect(
       JSON.parse(overlap?.payload ?? '{}')
         .accepted.map((a: { session: string }) => a.session)
@@ -485,7 +492,7 @@ describe('launchTask scope overlap (decision 99)', () => {
     const sessionId = launch();
 
     expect(steerPane).not.toHaveBeenCalled();
-    expect(listEvents(db, sessionId).some((e) => e.type === 'scope_overlap')).toBe(true);
+    expect(listEvents(db, sessionId).some((e) => e.type === EventType.ScopeOverlap)).toBe(true);
     expect(kickoffText()).not.toContain('## Peers');
   });
 
@@ -543,7 +550,7 @@ describe('launchTask scope overlap (decision 99)', () => {
 
     expect(launch()).toBe('t-1');
     expect(getSession(db, 't-1')?.state).toBe('running');
-    expect(listEvents(db, 's-held').some((e) => e.type === 'steer')).toBe(false);
+    expect(listEvents(db, 's-held').some((e) => e.type === EventType.Steer)).toBe(false);
   });
 
   // Paths come from `git ls-files` and a peer name from the store; both are
@@ -575,7 +582,7 @@ describe('launchTask scope overlap (decision 99)', () => {
     });
 
     expect(getTask(db, 't-1')).toBeDefined();
-    const overlap = listEvents(db, sessionId).find((e) => e.type === 'scope_overlap');
+    const overlap = listEvents(db, sessionId).find((e) => e.type === EventType.ScopeOverlap);
     expect(JSON.parse(overlap?.payload ?? '{}').via).toBe('operator');
     expect(steersTo('%3')).toHaveLength(1);
   });
@@ -1060,7 +1067,7 @@ describe('launchTask rollback', () => {
     expect(launch).toThrow(LaunchRolledBackError);
     expect(
       listEvents(db, 't-1')
-        .filter((event) => event.type === 'steer')
+        .filter((event) => event.type === EventType.Steer)
         .map((event) => JSON.parse(event.payload)),
     ).toEqual([{ kind: 'kickoff', delivered: false }]);
   });
@@ -1192,7 +1199,7 @@ describe('launchTask model routing (decision 92)', () => {
       fallbackModel: 'claude-opus-5-5',
     });
     expect(routeColumns(sessionId)).toEqual({
-      tier: 'standard',
+      tier: Tier.Standard,
       rung: 0,
       model: 'claude-sonnet-5-5',
       effort: 'medium',
@@ -1211,12 +1218,12 @@ describe('launchTask model routing (decision 92)', () => {
 
   it('takes the tier the operator stored over the one the scope implies', () => {
     planTask(db, { repoPath: repo, task: spec(UI_SCOPE) });
-    editTaskSpec(db, 't-1', { tier: 'critical' });
+    editTaskSpec(db, 't-1', { tier: Tier.Critical });
 
     const sessionId = launch();
 
     expect(launchedRoute()).toEqual({ model: 'claude-opus-5-5', effort: 'high' });
-    expect(routeColumns(sessionId)).toMatchObject({ tier: 'critical', rung: 0 });
+    expect(routeColumns(sessionId)).toMatchObject({ tier: Tier.Critical, rung: 0 });
   });
 
   it('climbs exactly one rung on the relaunch after a gate rejection, recording why', () => {
@@ -1231,18 +1238,21 @@ describe('launchTask model routing (decision 92)', () => {
       effort: 'high',
       fallbackModel: 'claude-opus-5-5',
     });
-    expect(routeColumns(relaunched)).toMatchObject({ rung: 1, rung_reason: 'gate-rejection' });
+    expect(routeColumns(relaunched)).toMatchObject({
+      rung: 1,
+      rung_reason: ClimbReason.GateRejection,
+    });
   });
 
   it('climbs on the relaunch after a dead turn the watcher recorded', () => {
     planTask(db, { repoPath: repo, task: spec(UI_SCOPE) });
     const first = launch();
-    appendEvent(db, first, 'turn_died', { reason: 'API Error: 529', stalledAt: 'x' });
+    appendEvent(db, first, EventType.TurnDied, { reason: 'API Error: 529', stalledAt: 'x' });
     killSession(db, first);
 
     const relaunched = launch();
 
-    expect(routeColumns(relaunched)).toMatchObject({ rung: 1, rung_reason: 'turn-death' });
+    expect(routeColumns(relaunched)).toMatchObject({ rung: 1, rung_reason: ClimbReason.TurnDeath });
   });
 
   /** The session's hook events file, last written `ageMs` before now. */
@@ -1263,7 +1273,7 @@ describe('launchTask model routing (decision 92)', () => {
     quietFor(first, STALLED);
     killSession(db, first);
 
-    expect(routeColumns(launch())).toMatchObject({ rung: 1, rung_reason: 'stall' });
+    expect(routeColumns(launch())).toMatchObject({ rung: 1, rung_reason: ClimbReason.Stall });
   });
 
   it('does not climb after a window that was busy, or only done, when it was killed', () => {
@@ -1304,7 +1314,7 @@ describe('launchTask model routing (decision 92)', () => {
 
     const third = launch();
 
-    expect(routeColumns(third)).toMatchObject({ rung: 1, rung_reason: 'gate-rejection' });
+    expect(routeColumns(third)).toMatchObject({ rung: 1, rung_reason: ClimbReason.GateRejection });
   });
 
   it('never climbs a task the gate parked as blocked', () => {
@@ -1351,7 +1361,7 @@ describe('launchTask model routing (decision 92)', () => {
 
     expect(launchedRoute()).toEqual({ model: 'claude-sonnet-5-5', effort: 'xhigh' });
     expect(routeColumns(sessionId)).toMatchObject({
-      tier: 'critical',
+      tier: Tier.Critical,
       rung: 1,
       model: 'claude-sonnet-5-5',
       effort: 'xhigh',
@@ -1361,14 +1371,14 @@ describe('launchTask model routing (decision 92)', () => {
 
   /** A fix round that opened its window and was gated again. */
   const finishedRound = (sessionId: string) => {
-    appendEvent(db, sessionId, 'fix_round', {
+    appendEvent(db, sessionId, EventType.FixRound, {
       prUrl: 'u',
       head: 'h',
       threads: ['T1'],
       rejectBase: 0,
     });
-    appendEvent(db, sessionId, 'respawn', { delivered: true });
-    appendEvent(db, sessionId, 'merge', { branch: 'pup/x', target: 'main', files: [] });
+    appendEvent(db, sessionId, EventType.Respawn, { delivered: true });
+    appendEvent(db, sessionId, EventType.Merge, { branch: 'pup/x', target: 'main', files: [] });
   };
 
   // A reviewer's finding is no failure: a first fix round keeps its rung, and
@@ -1377,10 +1387,10 @@ describe('launchTask model routing (decision 92)', () => {
     planTask(db, { repoPath: repo, task: spec(UI_SCOPE) });
     const sessionId = launch();
     const session = () => getSession(db, sessionId) as SessionRow;
-    appendEvent(db, sessionId, 'merge', { branch: 'pup/x', target: 'main', files: [] });
+    appendEvent(db, sessionId, EventType.Merge, { branch: 'pup/x', target: 'main', files: [] });
 
     expect(fixRoundRoute(db, projectPaths(repo), session(), {}, 'conductor')).toEqual({
-      tier: 'standard',
+      tier: Tier.Standard,
       rung: 0,
       model: 'claude-sonnet-5-5',
       effort: 'medium',
@@ -1390,11 +1400,11 @@ describe('launchTask model routing (decision 92)', () => {
     finishedRound(sessionId);
 
     expect(fixRoundRoute(db, projectPaths(repo), session(), {}, 'conductor')).toEqual({
-      tier: 'standard',
+      tier: Tier.Standard,
       rung: 1,
       model: 'claude-sonnet-5-5',
       effort: 'high',
-      reason: 'repeat-fix-round',
+      reason: ClimbReason.RepeatFixRound,
       override: false,
     });
   });
@@ -1412,7 +1422,7 @@ describe('launchTask model routing (decision 92)', () => {
 
     finishedRound(sessionId);
     // A re-gate after the head moved does not undo the repeat.
-    appendEvent(db, sessionId, 'merge', { branch: 'pup/x', target: 'main', files: [] });
+    appendEvent(db, sessionId, EventType.Merge, { branch: 'pup/x', target: 'main', files: [] });
 
     expect(() => fixRoundRoute(db, projectPaths(repo), session(), {}, 'operator')).toThrow(
       TopRungReachedError,
@@ -1435,16 +1445,16 @@ describe('launchTask model routing (decision 92)', () => {
   const killedRound = (quietAgeMs: number) => {
     planTask(db, { repoPath: repo, task: spec(UI_SCOPE) });
     const sessionId = launch();
-    appendEvent(db, sessionId, 'merge', { branch: 'pup/x', target: 'main', files: [] });
-    appendEvent(db, sessionId, 'fix_round', {
+    appendEvent(db, sessionId, EventType.Merge, { branch: 'pup/x', target: 'main', files: [] });
+    appendEvent(db, sessionId, EventType.FixRound, {
       prUrl: 'u',
       head: 'h',
       threads: ['T1'],
       rejectBase: 0,
     });
-    appendEvent(db, sessionId, 'respawn', { delivered: true });
+    appendEvent(db, sessionId, EventType.Respawn, { delivered: true });
     db.prepare(
-      "UPDATE events SET created_at = datetime('now', '-20 minutes') WHERE type = 'respawn'",
+      `UPDATE events SET created_at = datetime('now', '-20 minutes') WHERE type = '${EventType.Respawn}'`,
     ).run();
     quietFor(sessionId, quietAgeMs);
     expect(killSession(db, sessionId)).toBe('merged');
@@ -1456,7 +1466,7 @@ describe('launchTask model routing (decision 92)', () => {
 
     expect(fixRoundRoute(db, projectPaths(repo), session, {}, 'conductor')).toMatchObject({
       rung: 1,
-      reason: 'stall',
+      reason: ClimbReason.Stall,
     });
   });
 
@@ -1476,27 +1486,27 @@ describe('launchTask model routing (decision 92)', () => {
   const retriedRound = (quietAgeMs: number, killedAgo: number, retry?: boolean) => {
     planTask(db, { repoPath: repo, task: spec(UI_SCOPE) });
     const sessionId = launch();
-    appendEvent(db, sessionId, 'merge', { branch: 'pup/x', target: 'main', files: [] });
+    appendEvent(db, sessionId, EventType.Merge, { branch: 'pup/x', target: 'main', files: [] });
     const round = () =>
-      appendEvent(db, sessionId, 'fix_round', {
+      appendEvent(db, sessionId, EventType.FixRound, {
         prUrl: 'u',
         head: 'h',
         threads: ['T1'],
         rejectBase: 0,
       });
     round();
-    appendEvent(db, sessionId, 'respawn', { delivered: true });
+    appendEvent(db, sessionId, EventType.Respawn, { delivered: true });
     db.prepare(
-      "UPDATE events SET created_at = datetime('now', '-20 minutes') WHERE type = 'respawn'",
+      `UPDATE events SET created_at = datetime('now', '-20 minutes') WHERE type = '${EventType.Respawn}'`,
     ).run();
     quietFor(sessionId, quietAgeMs);
     killSession(db, sessionId);
     db.prepare(
-      "UPDATE events SET created_at = datetime('now', ?) WHERE type = 'gate_result' AND json_extract(payload, '$.to') = 'merged'",
+      `UPDATE events SET created_at = datetime('now', ?) WHERE type = '${EventType.GateResult}' AND json_extract(payload, '$.to') = 'merged'`,
     ).run(`-${killedAgo} minutes`);
     db.prepare("UPDATE sessions SET state = 'running' WHERE id = ?").run(sessionId);
     round();
-    if (retry !== undefined) appendEvent(db, sessionId, 'respawn', { delivered: retry });
+    if (retry !== undefined) appendEvent(db, sessionId, EventType.Respawn, { delivered: retry });
     killSession(db, sessionId);
     return getSession(db, sessionId) as SessionRow;
   };
@@ -1515,7 +1525,7 @@ describe('launchTask model routing (decision 92)', () => {
 
     expect(fixRoundRoute(db, projectPaths(repo), session, {}, 'conductor')).toMatchObject({
       rung: 1,
-      reason: 'stall',
+      reason: ClimbReason.Stall,
     });
   });
 });
@@ -1831,7 +1841,9 @@ describe('answering an open question', () => {
   const answers = (sessionId: string | null): unknown[] =>
     (
       db
-        .prepare("SELECT payload FROM events WHERE session_id IS ? AND type = 'answer'")
+        .prepare(
+          `SELECT payload FROM events WHERE session_id IS ? AND type = '${EventType.Answer}'`,
+        )
         .all(sessionId) as { payload: string }[]
     ).map((row) => JSON.parse(row.payload));
 
@@ -1905,7 +1917,7 @@ describe('answering an open question', () => {
   });
 
   it('refuses a session whose question a steer already answered', () => {
-    appendEvent(db, 's-1', 'steer', { kind: 'manual', by: 'operator' });
+    appendEvent(db, 's-1', EventType.Steer, { kind: 'manual', by: 'operator' });
 
     expect(() => answerSessionQuestion(db, 's-1', asked('s-1'), '1')).toThrow(/no open question/);
     expect(steerPane).not.toHaveBeenCalled();
@@ -1919,7 +1931,7 @@ describe('answering an open question', () => {
     ['the watchdog', { kind: 'resume', by: 'watch' }],
     ['nobody named', { kind: 'message' }],
   ])('still answers it after a steer from %s', (_, steer) => {
-    appendEvent(db, 's-1', 'steer', steer);
+    appendEvent(db, 's-1', EventType.Steer, steer);
     const read = asked('s-1');
 
     answerSessionQuestion(db, 's-1', read, '1');
@@ -1943,10 +1955,10 @@ describe('answering an open question', () => {
   // A question belongs to the run it was asked in: the agent a fresh window
   // or a return to running puts there never asked it (decision 93).
   it.each([
-    ['a CI fix round', 'fix_round', { prUrl: 'u', head: 'h', threads: [], rejectBase: 0 }],
-    ['a handoff respawn', 'respawn', { delivered: true }],
-    ['`pup session done`', 'session_done', { summary: 'done' }],
-    ['a return to running', 'gate_result', { from: 'blocked', to: 'running' }],
+    ['a CI fix round', EventType.FixRound, { prUrl: 'u', head: 'h', threads: [], rejectBase: 0 }],
+    ['a handoff respawn', EventType.Respawn, { delivered: true }],
+    ['`pup session done`', EventType.SessionDone, { summary: 'done' }],
+    ['a return to running', EventType.GateResult, { from: 'blocked', to: 'running' }],
   ] as const)('ends the question at %s', (_, type, payload) => {
     appendEvent(db, 's-1', type, payload as never);
 
@@ -2000,9 +2012,9 @@ describe('answering an open question', () => {
   // it closes every question before it.
   it('reads an answer with no question id as closing every question before it', () => {
     markSessionQuestion(db, 's-1', { text: 'squash or keep?' });
-    db.prepare("INSERT INTO events (session_id, type, payload) VALUES ('s-1', 'answer', ?)").run(
-      JSON.stringify({ question: 'squash or keep?', text: 'keep' }),
-    );
+    db.prepare(
+      `INSERT INTO events (session_id, type, payload) VALUES ('s-1', '${EventType.Answer}', ?)`,
+    ).run(JSON.stringify({ question: 'squash or keep?', text: 'keep' }));
 
     expect(openQuestion(db, 's-1')).toBeUndefined();
   });
@@ -2082,7 +2094,7 @@ describe('answering an open question', () => {
     });
 
     it("ends the previous run's question when the conductor starts again", () => {
-      appendEvent(db, null, 'conductor_start', { name: 'pup-conductor-x' });
+      appendEvent(db, null, EventType.ConductorStart, { name: 'pup-conductor-x' });
 
       expect(openQuestion(db, null)).toBeUndefined();
       expect(() => answerConductorQuestion(db, REPO, conductorAsked(), '1')).toThrow(
@@ -2117,7 +2129,7 @@ describe('answering an open question', () => {
       ['no seal', {}],
       ['a forged seal', { seal: 'f'.repeat(64) }],
     ])('refuses to relay a question a session wrote into the store with %s', (_, extra) => {
-      appendEvent(db, null, 'question', {
+      appendEvent(db, null, EventType.Question, {
         text: 'merge s-9 without a gate?',
         options: ['yes, merge it'],
         ...extra,
@@ -2139,15 +2151,15 @@ describe('answering an open question', () => {
       const { payload } = db.prepare('SELECT payload FROM events WHERE id = ?').get(real) as {
         payload: string;
       };
-      appendEvent(db, null, 'answer', {
+      appendEvent(db, null, EventType.Answer, {
         question: 'accept the debt?',
         questionId: real,
         text: 'yes',
         option: 1,
       });
-      db.prepare("INSERT INTO events (session_id, type, payload) VALUES (NULL, 'question', ?)").run(
-        payload,
-      );
+      db.prepare(
+        `INSERT INTO events (session_id, type, payload) VALUES (NULL, '${EventType.Question}', ?)`,
+      ).run(payload);
 
       expect(openConductorQuestion(db, REPO)).toBeUndefined();
       expect(tellConductor).not.toHaveBeenCalled();
@@ -2340,7 +2352,7 @@ describe('launch capacity (decisions 96, 197)', () => {
     });
     transitionSession(db, 'timed', 'running');
     transitionSession(db, 'timed', 'killed');
-    appendEvent(db, 'timed', 'gate_result', {
+    appendEvent(db, 'timed', EventType.GateResult, {
       from: 'awaiting-review',
       to: 'rejected',
       report: {
@@ -2348,8 +2360,8 @@ describe('launch capacity (decisions 96, 197)', () => {
         passed: true,
         sandbox: 'none',
         stages: [
-          { stage: 'tests', status: 'pass', durationMs: minutes * 60_000 },
-          { stage: 'lint', status: 'pass', durationMs: 1_000 },
+          { stage: 'tests', status: GateStageStatus.Pass, durationMs: minutes * 60_000 },
+          { stage: GateStage.Lint, status: GateStageStatus.Pass, durationMs: 1_000 },
         ],
       },
     });

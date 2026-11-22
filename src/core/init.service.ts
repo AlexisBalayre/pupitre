@@ -4,13 +4,16 @@ import {
   localContext,
   sanitizeReason,
 } from '../adapters/capability.utils.js';
-import type { Adapter, GateCommand, GateStage } from '../adapters/types/adapter.types.js';
+import { GateStage } from '../adapters/enums/gate-stage.enums.js';
+import type { Adapter, GateCommand } from '../adapters/types/adapter.types.js';
 import { appendBaselineHistory, hasBaselineHistoryEntry } from './baseline-history.repository.js';
 import {
   GATE_COMMAND_TIMEOUT_MS,
   GATE_OUTPUT_TAIL_CHARS,
 } from './constants/merge-gate.constants.js';
 import { measureCoverage, measureStaticDebt } from './debt.service.js';
+import { BaselineStageStatus } from './enums/baseline-stage-status.enums.js';
+import { OriginRecording } from './enums/origin-recording.enums.js';
 import { BrokenToolchainError, NoAdapterError } from './errors/init.errors.js';
 import { GateInterruptedError } from './errors/sandbox.errors.js';
 import { runGit } from './git-diff.client.js';
@@ -29,7 +32,6 @@ import type {
   BaselineStageResult,
   InitReport,
   MeasuredBaseline,
-  OriginRecording,
   ProjectBaseline,
 } from './types/init.types.js';
 
@@ -93,14 +95,18 @@ function recordOriginUrl(
   // has had the chance to write the config first. A project that already ran
   // sessions before this was recorded — every project set up before the column
   // existed — has had exactly that chance, so the operator confirms the value.
-  if (recorded === undefined && recording === 'record' && countProjectSessions(db, pid) > 0) {
+  if (
+    recorded === undefined &&
+    recording === OriginRecording.Record &&
+    countProjectSessions(db, pid) > 0
+  ) {
     return (
       `origin is configured as ${clean}, and sessions have already run here, so the shared ` +
       'config it comes from has been writable by something other than you. Not recorded: ' +
       'confirm it with `pup init --origin-moved`.'
     );
   }
-  if (recorded === undefined || recording === 're-record') {
+  if (recorded === undefined || recording === OriginRecording.ReRecord) {
     saveProjectOriginUrl(db, pid, configured);
     return undefined;
   }
@@ -135,7 +141,7 @@ async function runBaselineStage(
       gateEnv,
       timeout: GATE_COMMAND_TIMEOUT_MS,
     });
-    return { stage, status: 'pass', durationMs: Date.now() - start };
+    return { stage, status: BaselineStageStatus.Pass, durationMs: Date.now() - start };
   } catch (error) {
     if (error instanceof GateInterruptedError) throw error;
     const failure = error as { stdout?: string; stderr?: string; message?: string };
@@ -145,7 +151,7 @@ async function runBaselineStage(
     const kept = keep ? `${keep(output)}\n` : '';
     return {
       stage,
-      status: 'fail',
+      status: BaselineStageStatus.Fail,
       detail: kept + output.slice(-GATE_OUTPUT_TAIL_CHARS),
       durationMs: Date.now() - start,
     };
@@ -164,7 +170,7 @@ export function initProject(
   repoPath: string,
   adapters: Adapter[],
   gateEnv?: string[],
-  recording: OriginRecording = 'record',
+  recording: OriginRecording = OriginRecording.Record,
 ): Promise<InitReport> {
   // Not async, so measureBaseline's refusals still throw (see there).
   return measureBaseline(db, repoPath, adapters, gateEnv, recording).then(
@@ -187,7 +193,7 @@ export function measureBaseline(
   repoPath: string,
   adapters: Adapter[],
   gateEnv?: string[],
-  recording: OriginRecording = 'record',
+  recording: OriginRecording = OriginRecording.Record,
 ): Promise<MeasuredBaseline> {
   // Before anything runs, so a platform pup cannot confine and the operator has
   // not declared refuses whole, not after half a baseline (decision 78).
@@ -233,11 +239,11 @@ async function measureStages(
   const commandFor = (stage: GateStage) => commands.find((c) => c.stage === stage);
 
   // Build first and alone: the test run and lint read what it produced.
-  const build = await run('build', commandFor('build'));
+  const build = await run(GateStage.Build, commandFor(GateStage.Build));
   if (build) assertToolchain([build]);
   // One instrumented run answers for the test stage and for coverage when the
   // adapter whose test command it is measures coverage too (decision 95).
-  const test = commandFor('test');
+  const test = commandFor(GateStage.Test);
   const coverageAdapter = detected.find((a) => a.coverage);
   const covered =
     test && test.adapter === coverageAdapter ? test.adapter.coveredTest?.(ctx) : undefined;
@@ -247,7 +253,7 @@ async function measureStages(
   // finding or a gap's reason, which `pup audit --sweep` puts in the sweep
   // task's goal and its PR body publishes on GitHub.
   const keepTest = (output: string): string => {
-    const kept = keepFullOutput(projectPaths(repoPath).root, 'test', [output]);
+    const kept = keepFullOutput(projectPaths(repoPath).root, GateStage.Test, [output]);
     console.error(`The baseline test run failed; ${kept}.`);
     return kept;
   };
@@ -256,8 +262,8 @@ async function measureStages(
     // run alongside the test run; each settles before anything is read, so no
     // child outlives a refusal (decision 95).
     const running = [
-      run('test', covered ?? test, keepTest),
-      run('lint', commandFor('lint')),
+      run(GateStage.Test, covered ?? test, keepTest),
+      run(GateStage.Lint, commandFor(GateStage.Lint)),
       measureStaticDebt(detected, ctx),
     ] as const;
     const settled = await Promise.allSettled(running);
@@ -269,19 +275,24 @@ async function measureStages(
 
     const stages: BaselineStageResult[] = [];
     for (const [stage, result] of [
-      ['build', build],
-      ['test', tested],
-      ['lint', linted],
+      [GateStage.Build, build],
+      [GateStage.Test, tested],
+      [GateStage.Lint, linted],
     ] as const) {
       if (!result) {
-        stages.push({ stage, status: 'skipped', detail: 'no command available', durationMs: 0 });
+        stages.push({
+          stage,
+          status: BaselineStageStatus.Skipped,
+          detail: 'no command available',
+          durationMs: 0,
+        });
         findings.push(
           `No ${stage} command resolved — the gate will report this stage as "not measured".`,
         );
         continue;
       }
       stages.push(result);
-      if (result.status === 'fail') {
+      if (result.status === BaselineStageStatus.Fail) {
         findings.push(
           `${stage} fails at baseline — the v1 gate hard-fails this stage, so no session can merge until it passes on ${repoPath}.`,
         );
@@ -296,7 +307,7 @@ async function measureStages(
     // (decision 72). A failed instrumented run wrote no coverage worth reading.
     const folded = !covered
       ? undefined
-      : tested?.status === 'pass'
+      : tested?.status === BaselineStageStatus.Pass
         ? covered.report()
         : { unavailable: 'the instrumented test run failed, so its coverage is not read' };
     const { debt, gaps } = await measureCoverage(staticDebt, detected, ctx, folded);
@@ -330,7 +341,8 @@ async function measureStages(
  */
 function assertToolchain(stages: BaselineStageResult[]): void {
   for (const { stage, status, detail } of stages) {
-    const installPath = status === 'fail' ? brokenPackageManagerInstall(detail ?? '') : undefined;
+    const installPath =
+      status === BaselineStageStatus.Fail ? brokenPackageManagerInstall(detail ?? '') : undefined;
     if (installPath) throw new BrokenToolchainError(stage, installPath);
   }
 }

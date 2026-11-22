@@ -27,13 +27,14 @@ import {
   readPlainFile,
   sanitizeReason,
 } from '../adapters/capability.utils.js';
+import { GateStage } from '../adapters/enums/gate-stage.enums.js';
+import { NestedPackageStage } from '../adapters/enums/nested-package-stage.enums.js';
 import type {
   Adapter,
   CapabilityContext,
   CapabilityUnavailable,
   CoverageReport,
   FileComplexity,
-  GateStage,
   NestedPackage,
 } from '../adapters/types/adapter.types.js';
 import { SteerNotDeliveredError } from '../claude/errors/session-runtime.errors.js';
@@ -61,6 +62,11 @@ import { SESSION_ID_PATTERN } from './constants/paths.constants.js';
 import { patchCoverage } from './coverage.utils.js';
 import { judgeDebt, measureCoverage, measureStaticDebt, quotePath } from './debt.service.js';
 import { draftDecisionRecord } from './decision-record.service.js';
+import { EventType } from './enums/event-type.enums.js';
+import { GateStageStatus } from './enums/gate-stage-status.enums.js';
+import { InterruptSignal } from './enums/interrupt-signal.enums.js';
+import { MergeStatus } from './enums/merge-status.enums.js';
+import { SlotHolderKind } from './enums/slot-holder-kind.enums.js';
 import { ArmedGitDriverError } from './errors/git-diff.errors.js';
 import {
   MergeLockHeldError,
@@ -782,7 +788,11 @@ const MERGE_LOCK_PID_POLL_MS = 100;
 const RECLAIM_STALE_MS = 10_000;
 
 /** What node outlives while it holds the merge lock: the interrupts `runGateChild` forwards. */
-const LOCK_SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP'] as const;
+const LOCK_SIGNALS: readonly InterruptSignal[] = [
+  InterruptSignal.Sigint,
+  InterruptSignal.Sigterm,
+  InterruptSignal.Sighup,
+];
 
 const LOAD_POLL_MS = 5000;
 
@@ -1901,7 +1911,7 @@ export function newestMerge(
   sessionId: string,
 ): { prUrl?: string; sha?: string; target?: string } | 'landed' | undefined {
   for (const row of listEvents(db, sessionId).reverse()) {
-    if (row.type === 'landed') return 'landed';
+    if (row.type === EventType.Landed) return 'landed';
     const event = decodeEvent(row);
     if (event.type === 'merge') return event;
   }
@@ -2166,13 +2176,13 @@ async function gateAndMerge(
     stages.push(
       timedSince(started, {
         stage: 'worktree-clean',
-        status: 'fail',
+        status: GateStageStatus.Fail,
         detail: `Uncommitted changes in the worktree:\n${dirty}`,
       }),
     );
     return failed();
   }
-  stages.push(timedSince(started, { stage: 'worktree-clean', status: 'pass' }));
+  stages.push(timedSince(started, { stage: 'worktree-clean', status: GateStageStatus.Pass }));
 
   // Both ends pinned under the lock, and every later git call names a sha
   // (decision 80): the target here, so the rebase or merge, the diffs and the
@@ -2191,7 +2201,7 @@ async function gateAndMerge(
     stages.push(
       timedSince(started, {
         stage: 'fresh-base',
-        status: 'fail',
+        status: GateStageStatus.Fail,
         detail:
           `${sanitizeReason(inProgress)} is in this worktree's git dir: a rebase, merge, ` +
           'cherry-pick or revert is in progress, and the gate runs no git through it. The ' +
@@ -2220,7 +2230,7 @@ async function gateAndMerge(
     stages.push(
       timedSince(started, {
         stage: 'fresh-base',
-        status: 'fail',
+        status: GateStageStatus.Fail,
         detail:
           `${session.branch} no longer contains ${pushed}, which its open PR holds. Bring those ` +
           `commits back (merge ${shellWord(`refs/heads/${sanitizeReason(target)}`)} rather ` +
@@ -2234,7 +2244,7 @@ async function gateAndMerge(
     stages.push(
       timedSince(started, {
         stage: 'fresh-base',
-        status: 'pass',
+        status: GateStageStatus.Pass,
         detail: `already based on ${target}`,
       }),
     );
@@ -2272,7 +2282,7 @@ async function gateAndMerge(
           stages.push(
             timedSince(started, {
               stage: 'fresh-base',
-              status: 'fail',
+              status: GateStageStatus.Fail,
               detail:
                 `Auto-rebase onto ${sanitizeReason(target)} failed and so did its abort: ` +
                 `${state}. The session itself may finish or abort any rebase still in ` +
@@ -2295,7 +2305,7 @@ async function gateAndMerge(
       stages.push(
         timedSince(started, {
           stage: 'fresh-base',
-          status: 'pass',
+          status: GateStageStatus.Pass,
           detail: `auto-rebased onto ${target}`,
         }),
       );
@@ -2309,13 +2319,19 @@ async function gateAndMerge(
         targetSha,
       );
       if (refused) {
-        stages.push(timedSince(started, { stage: 'fresh-base', status: 'fail', detail: refused }));
+        stages.push(
+          timedSince(started, {
+            stage: 'fresh-base',
+            status: GateStageStatus.Fail,
+            detail: refused,
+          }),
+        );
         return failed();
       }
       stages.push(
         timedSince(started, {
           stage: 'fresh-base',
-          status: 'pass',
+          status: GateStageStatus.Pass,
           detail: rebaseConflicted
             ? `auto-merged ${target} after the auto-rebase hit conflicts`
             : `auto-merged ${target}`,
@@ -2335,7 +2351,7 @@ async function gateAndMerge(
     stages.push(
       timedSince(started, {
         stage: 'fresh-base',
-        status: 'fail',
+        status: GateStageStatus.Fail,
         detail:
           `${session.branch} at ${sha} is not based on ${sanitizeReason(target)} at ${targetSha} ` +
           `after the auto-${step}. Check out ${session.branch} in this worktree and ${fix}.`,
@@ -2348,7 +2364,9 @@ async function gateAndMerge(
   const measured = await measureBranch(db, req, session, stages, checkoutDir, pin, progress);
   if (!measured) {
     const adrNumber = stages.find((stage) => stage.stage === ADR_NUMBER_STAGE);
-    return adrNumber?.status === 'fail' ? refuseGate(db, session, sandbox, stages) : failed();
+    return adrNumber?.status === GateStageStatus.Fail
+      ? refuseGate(db, session, sandbox, stages)
+      : failed();
   }
   const { changedPaths, flaggedDebt, debtCandidates, spec, project, baseline } = measured;
 
@@ -2492,7 +2510,7 @@ async function gateAndMerge(
     commitSubjects,
   });
   return {
-    status: 'merged',
+    status: MergeStatus.Merged,
     report,
     rejectCount: session.reject_count,
     debtCandidates,
@@ -2700,9 +2718,9 @@ export async function waitForLoad(
       'or for them to end before its tests.',
   );
   const deadline = Date.now() + GATE_SLOT_WAIT_MS;
-  let interrupted: (typeof LOCK_SIGNALS)[number] | undefined;
+  let interrupted: InterruptSignal | undefined;
   let wake: () => void = () => undefined;
-  const onSignal = (signal: (typeof LOCK_SIGNALS)[number]): void => {
+  const onSignal = (signal: InterruptSignal): void => {
     interrupted = signal;
     wake();
   };
@@ -2851,15 +2869,24 @@ export async function measureBranch(
    */
   const commandStage = async (
     stage: string,
-    command: { stage: string; command: string; args: string[]; writablePaths?: string[] },
+    command: {
+      stage: GateStage | NestedPackageStage;
+      command: string;
+      args: string[];
+      writablePaths?: string[];
+    },
     cwd: string,
   ): Promise<GateStageResult> => {
     // A re-run's time counts: the stage held the lock for both.
     const started = Date.now();
     const first = await runCommand(command, cwd);
-    if (first === undefined) return timedSince(started, { stage, status: 'pass' });
-    if (command.stage !== 'test') {
-      return timedSince(started, { stage, status: 'fail', detail: commandFailureDetail(first) });
+    if (first === undefined) return timedSince(started, { stage, status: GateStageStatus.Pass });
+    if (command.stage !== GateStage.Test && command.stage !== NestedPackageStage.Test) {
+      return timedSince(started, {
+        stage,
+        status: GateStageStatus.Fail,
+        detail: commandFailureDetail(first),
+      });
     }
     const keptFirst = keepFullOutput(sessionDir, stage, [commandFailureOutput(first)]);
     refuseTimeoutUnderLoad(first, loadBeforeSuites, session.id, keptFirst);
@@ -2867,7 +2894,7 @@ export async function measureBranch(
     if (!isRerunnable(first)) {
       return timedSince(started, {
         stage,
-        status: 'fail',
+        status: GateStageStatus.Fail,
         detail: `failing: ${firstFailures}\n${keptFirst}\n${commandFailureDetail(first)}`,
       });
     }
@@ -2876,7 +2903,7 @@ export async function measureBranch(
       progress.note(`The ${stage} stage failed, then passed on its re-run (${keptFirst}).`);
       return timedSince(started, {
         stage,
-        status: 'pass',
+        status: GateStageStatus.Pass,
         detail: `flaky — failed, then passed on its one re-run; failing the first time: ${firstFailures}`,
       });
     }
@@ -2887,7 +2914,7 @@ export async function measureBranch(
     refuseTimeoutUnderLoad(rerun, loadBeforeSuites, session.id, kept, firstFailures);
     return timedSince(started, {
       stage,
-      status: 'fail',
+      status: GateStageStatus.Fail,
       detail:
         `failed twice — failing the first time: ${firstFailures}; ` +
         `on the re-run: ${failingTestNames(primary, rerun)}\n${kept}\n${commandFailureDetail(rerun)}`,
@@ -2898,7 +2925,7 @@ export async function measureBranch(
   // worker's to renumber, refused without a rejection (decision 146).
   const adrNumber = adrNumberStage(db, req.repoPath, session.id, targetSha, sha);
   if (adrNumber) stages.push(adrNumber);
-  if (adrNumber?.status === 'fail') return undefined;
+  if (adrNumber?.status === GateStageStatus.Fail) return undefined;
 
   // One repo has one build, one test and one lint, and the runner that answers
   // for them is the one whose stack detected first (decision 22, which decision
@@ -3006,18 +3033,20 @@ export async function measureBranch(
   const commandFor = (stage: GateStage) => commands.find((c) => c.stage === stage);
   const notMeasured = (stage: string): GateStageResult => ({
     stage,
-    status: 'skipped',
+    status: GateStageStatus.Skipped,
     detail: 'not measured — no command available',
   });
   const nestedStage = (pkg: NestedPackage, stage: string): string =>
     `${stage} (${quotePath(pkg.dir)})`;
 
   // Build first and alone: every stage after it reads what it produced.
-  progress.stage('build');
-  const build = commandFor('build');
-  const built = build ? await commandStage('build', build, checkoutDir) : notMeasured('build');
+  progress.stage(GateStage.Build);
+  const build = commandFor(GateStage.Build);
+  const built = build
+    ? await commandStage(GateStage.Build, build, checkoutDir)
+    : notMeasured(GateStage.Build);
   stages.push(built);
-  if (built.status === 'fail') return undefined;
+  if (built.status === GateStageStatus.Fail) return undefined;
   // The build ran the branch's code in the checkout, and the test run reads
   // what it left there, so the runner's inputs are checked against the pinned
   // sha now, before any suite, and again before the split (decision 143).
@@ -3037,17 +3066,17 @@ export async function measureBranch(
     measurable
       ? {
           stage,
-          status: 'skipped',
+          status: GateStageStatus.Skipped,
           detail: `no testable file changed (${changedPaths.length} files)`,
         }
       : notMeasured(stage);
   // One instrumented run answers for the test stage and for coverage when the
   // adapter whose test command it is measures coverage too (decision 95).
-  const test = untested ? undefined : commandFor('test');
+  const test = untested ? undefined : commandFor(GateStage.Test);
   progress.stage('tests and checks');
   const hasSuite =
     test !== undefined ||
-    nestedPackages.some((pkg) => pkg.commands.some((c) => c.stage === 'test'));
+    nestedPackages.some((pkg) => pkg.commands.some((c) => c.stage === NestedPackageStage.Test));
   // Before the slot and before the stages that run alongside the suites, so
   // the load measured is the machine's and not this gate's own children.
   if (hasSuite && req.wait) await waitForLoad();
@@ -3068,20 +3097,20 @@ export async function measureBranch(
     try {
       if (test) {
         const run = covered ? { ...test, ...covered } : test;
-        const result = await commandStage('test', run, checkoutDir);
-        results.set('test', result);
-        if (result.status === 'fail') return { results };
+        const result = await commandStage(GateStage.Test, run, checkoutDir);
+        results.set(GateStage.Test, result);
+        if (result.status === GateStageStatus.Fail) return { results };
         folded = covered?.report();
       }
     } finally {
       covered?.dispose();
     }
     for (const pkg of nestedPackages) {
-      for (const command of pkg.commands.filter((c) => c.stage === 'test')) {
+      for (const command of pkg.commands.filter((c) => c.stage === NestedPackageStage.Test)) {
         const stage = nestedStage(pkg, command.stage);
         const result = await commandStage(stage, command, join(checkoutDir, pkg.dir));
         results.set(stage, result);
-        if (result.status === 'fail') return { results, folded };
+        if (result.status === GateStageStatus.Fail) return { results, folded };
       }
     }
     return { results, folded };
@@ -3090,7 +3119,7 @@ export async function measureBranch(
   // before any worker (decision 96); the wait is not the stage's time. No
   // suite to run takes no slot.
   const suites = hasSuite
-    ? withTestSlot({ kind: 'gate', label: session.id }, runSuites, {
+    ? withTestSlot({ kind: SlotHolderKind.Gate, label: session.id }, runSuites, {
         onWait: (holders, gatesAhead) => progress.note(describeSlotWait(holders, gatesAhead)),
         // Bounded, as the wait holds the merge lock (decision 96).
         maxWaitMs: GATE_SLOT_WAIT_MS,
@@ -3117,11 +3146,11 @@ export async function measureBranch(
     : runSuites();
   // Alongside the suites: every stage that only reads the checkout, each in a
   // child of its own as before (decision 95).
-  const lint = commandFor('lint');
-  const linted = lint && commandStage('lint', lint, checkoutDir);
+  const lint = commandFor(GateStage.Lint);
+  const linted = lint && commandStage(GateStage.Lint, lint, checkoutDir);
   const typechecks = new Map<string, Promise<GateStageResult>>();
   for (const pkg of nestedPackages) {
-    for (const command of pkg.commands.filter((c) => c.stage !== 'test')) {
+    for (const command of pkg.commands.filter((c) => c.stage !== NestedPackageStage.Test)) {
       const stage = nestedStage(pkg, command.stage);
       typechecks.set(stage, commandStage(stage, command, join(checkoutDir, pkg.dir)));
     }
@@ -3159,15 +3188,17 @@ export async function measureBranch(
   const { results: suiteResults, folded } = await suites;
   for (const [stage, result] of [
     [
-      'test',
-      suiteResults.get('test') ??
-        (untested ? notTested('test', commandFor('test') !== undefined) : undefined),
+      GateStage.Test,
+      suiteResults.get(GateStage.Test) ??
+        (untested
+          ? notTested(GateStage.Test, commandFor(GateStage.Test) !== undefined)
+          : undefined),
     ],
-    ['lint', await linted],
+    [GateStage.Lint, await linted],
   ] as const) {
     const reported = result ?? notMeasured(stage);
     stages.push(reported);
-    if (reported.status === 'fail') return undefined;
+    if (reported.status === GateStageStatus.Fail) return undefined;
   }
 
   const flaggedDebt: { description: string; files: string[] }[] = [];
@@ -3193,11 +3224,11 @@ export async function measureBranch(
       // A nested test is in `suiteResults` here: the chain stops only at a
       // failure, and every earlier one was reported, and returned on, above.
       const result =
-        command.stage === 'test'
+        command.stage === NestedPackageStage.Test
           ? (suiteResults.get(stage) as GateStageResult)
           : await (typechecks.get(stage) as Promise<GateStageResult>);
       stages.push(result);
-      if (result.status === 'fail') return undefined;
+      if (result.status === GateStageStatus.Fail) return undefined;
     }
     for (const stage of pkg.missing) {
       flaggedDebt.push({
@@ -3206,7 +3237,7 @@ export async function measureBranch(
       });
       stages.push({
         stage: `${stage} (${dir})`,
-        status: 'flagged',
+        status: GateStageStatus.Flagged,
         detail: flagDetail(
           `not measured — ${dir}/package.json declares no ${stage} script, and no root stage measures a nested package`,
         ),
@@ -3236,7 +3267,7 @@ export async function measureBranch(
     stages.push(
       timedSince(started, {
         stage: 'scope-audit',
-        status: 'fail',
+        status: GateStageStatus.Fail,
         detail: `Out-of-scope changes:\n${violations
           .map((v) => `  ${quotePath(v.path)} (${v.reason})`)
           .join('\n')}`,
@@ -3247,7 +3278,7 @@ export async function measureBranch(
   stages.push(
     timedSince(started, {
       stage: 'scope-audit',
-      status: 'pass',
+      status: GateStageStatus.Pass,
       detail: `${changedPaths.length} files in scope`,
     }),
   );
@@ -3321,10 +3352,10 @@ export async function measureBranch(
       sizeFindings.length > 0
         ? {
             stage: 'diff-size',
-            status: 'flagged',
+            status: GateStageStatus.Flagged,
             detail: flagDetail(`${split}: ${sizeFindings.join('; ')}`),
           }
-        : { stage: 'diff-size', status: 'pass', detail: split },
+        : { stage: 'diff-size', status: GateStageStatus.Pass, detail: split },
     ),
   );
 
@@ -3374,7 +3405,9 @@ export async function measureBranch(
       continue;
     }
     stages.push(
-      stage.status === 'flagged' ? { ...stage, detail: flagDetail(stage.detail ?? '') } : stage,
+      stage.status === GateStageStatus.Flagged
+        ? { ...stage, detail: flagDetail(stage.detail ?? '') }
+        : stage,
     );
   }
   flaggedDebt.push(...judged.flags);
@@ -3399,8 +3432,8 @@ export function refuseGate(
   stages: GateStageResult[],
 ): MergeOutcome {
   const report: GateReport = { sessionId: session.id, passed: false, sandbox, stages };
-  appendEvent(db, session.id, 'gate_result', { outcome: 'refused', report });
-  return { status: 'refused', report, rejectCount: session.reject_count };
+  appendEvent(db, session.id, EventType.GateResult, { outcome: MergeStatus.Refused, report });
+  return { status: MergeStatus.Refused, report, rejectCount: session.reject_count };
 }
 
 /**
@@ -3516,7 +3549,7 @@ export function recordMerge(
         `later commit${leftBehind === 1 ? ' was' : 's were'} left behind on it, not merged.`,
     );
   }
-  appendEvent(db, session.id, 'merge', {
+  appendEvent(db, session.id, EventType.Merge, {
     branch: session.branch,
     sha,
     target: merge.target,
@@ -3885,7 +3918,7 @@ function rejectOrBlock(db: Database, report: GateReport): MergeOutcome {
       reason: `reject cap of ${MAX_REJECTS_BEFORE_BLOCKED} reached`,
       rejectCount,
     });
-    return { status: 'blocked', report, rejectCount };
+    return { status: MergeStatus.Blocked, report, rejectCount };
   }
   try {
     steerSession(db, report.sessionId, formatGateReport(report));
@@ -3903,9 +3936,9 @@ function rejectOrBlock(db: Database, report: GateReport): MergeOutcome {
           : 're-steer failed — session unreachable',
       rejectCount,
     });
-    return { status: 'blocked', report, rejectCount };
+    return { status: MergeStatus.Blocked, report, rejectCount };
   }
-  appendEvent(db, report.sessionId, 'steer', { kind: 'gate-rejection' });
+  appendEvent(db, report.sessionId, EventType.Steer, { kind: 'gate-rejection' });
   transitionSession(db, report.sessionId, 'running', { kind: 'gate-rejection-resteer' });
-  return { status: 'rejected', report, rejectCount };
+  return { status: MergeStatus.Rejected, report, rejectCount };
 }

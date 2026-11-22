@@ -5,10 +5,13 @@ import { passingAdapter } from '@test/helpers/merge-gate.mock.js';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import type { Database } from 'better-sqlite3';
 import { afterAll, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+import { GateStage } from '../adapters/enums/gate-stage.enums.js';
 import type { Adapter } from '../adapters/types/adapter.types.js';
 import { listBaselineHistory } from './baseline-history.repository.js';
 import { DUPLICATION_RULE_ID } from './constants/merge-gate.constants.js';
 import { openStore } from './db.client.js';
+import { BaselineStageStatus } from './enums/baseline-stage-status.enums.js';
+import { OriginRecording } from './enums/origin-recording.enums.js';
 import { BrokenToolchainError, NoAdapterError } from './errors/init.errors.js';
 import { UndeclaredSandboxError } from './errors/sandbox.errors.js';
 import { initProject } from './init.service.js';
@@ -58,7 +61,7 @@ function seedPreHistoryBaseline(
   const legacy: ProjectBaseline = {
     capturedAt: '2026-07-23T08:00:00.000Z',
     adapters: ['fake'],
-    stages: [{ stage: 'build', status: 'pass', durationMs: 3 }],
+    stages: [{ stage: GateStage.Build, status: BaselineStageStatus.Pass, durationMs: 3 }],
     ...(debt ? { debt } : {}),
   };
   saveProjectBaseline(db, pid, legacy.adapters, JSON.stringify(legacy));
@@ -94,7 +97,11 @@ describe('initProject', () => {
   it('stores a passing baseline on the project row', async () => {
     const report = await initProject(db, repo, [makeAdapter()]);
 
-    expect(report.baseline.stages.map((s) => s.status)).toEqual(['pass', 'pass', 'pass']);
+    expect(report.baseline.stages.map((s) => s.status)).toEqual([
+      BaselineStageStatus.Pass,
+      BaselineStageStatus.Pass,
+      BaselineStageStatus.Pass,
+    ]);
     expect(report.findings).toEqual([]);
     const row = getProject(db, projectId(repo));
     expect(JSON.parse(row?.adapters ?? '[]')).toEqual(['fake']);
@@ -110,7 +117,7 @@ describe('initProject', () => {
       const detect = vi.fn(() => true);
       const adapter = makeAdapter({
         detect,
-        gateCommands: () => [{ stage: 'build', command: 'touch', args: [marker] }],
+        gateCommands: () => [{ stage: GateStage.Build, command: 'touch', args: [marker] }],
       });
 
       expect(() => initProject(db, repo, [adapter])).toThrow(UndeclaredSandboxError);
@@ -126,22 +133,29 @@ describe('initProject', () => {
       const report = await initProject(db, repo, [makeAdapter()]);
 
       expect(report.sandbox).toBe('vm (declared by operator)');
-      expect(report.baseline.stages.map((s) => s.status)).toEqual(['pass', 'pass', 'pass']);
+      expect(report.baseline.stages.map((s) => s.status)).toEqual([
+        BaselineStageStatus.Pass,
+        BaselineStageStatus.Pass,
+        BaselineStageStatus.Pass,
+      ]);
     });
   });
 
   it('records a failing stage and surfaces it as a finding, without throwing', async () => {
     const adapter = makeAdapter({
       gateCommands: () => [
-        { stage: 'build', command: 'true', args: [] },
-        { stage: 'test', command: 'false', args: [] },
-        { stage: 'lint', command: 'true', args: [] },
+        { stage: GateStage.Build, command: 'true', args: [] },
+        { stage: GateStage.Test, command: 'false', args: [] },
+        { stage: GateStage.Lint, command: 'true', args: [] },
       ],
     });
 
     const report = await initProject(db, repo, [adapter]);
 
-    expect(report.baseline.stages[1]).toMatchObject({ stage: 'test', status: 'fail' });
+    expect(report.baseline.stages[1]).toMatchObject({
+      stage: GateStage.Test,
+      status: BaselineStageStatus.Fail,
+    });
     expect(report.findings.some((f) => f.includes('test fails at baseline'))).toBe(true);
   });
 
@@ -171,7 +185,9 @@ describe('initProject', () => {
 
       expect(readFileSync(join(repo, 'runs.log'), 'utf8')).toBe('run\n');
       expect(coverage).not.toHaveBeenCalled();
-      expect(result.baseline.stages.find((s) => s.stage === 'test')?.status).toBe('pass');
+      expect(result.baseline.stages.find((s) => s.stage === GateStage.Test)?.status).toBe(
+        BaselineStageStatus.Pass,
+      );
       expect(result.baseline.debt?.coverageRatio).toBe(0.5);
       expect(report).toHaveBeenCalledOnce();
       expect(dispose).toHaveBeenCalledOnce();
@@ -185,8 +201,8 @@ describe('initProject', () => {
 
       const result = await initProject(db, repo, [makeAdapter({ coverage, coveredTest })]);
 
-      const tested = result.baseline.stages.find((s) => s.stage === 'test');
-      expect(tested?.status).toBe('fail');
+      const tested = result.baseline.stages.find((s) => s.stage === GateStage.Test);
+      expect(tested?.status).toBe(BaselineStageStatus.Fail);
       // An in-memory store made no project directory, and none is made for it.
       expect(tested?.detail).toMatch(/^full output not kept: no directory at \S+\n/);
       expect(result.baseline.debt?.coverageRatio).toBeUndefined();
@@ -233,9 +249,9 @@ describe('initProject', () => {
       'sleep 0.1; i=$((i+1)); done; echo "ran alone"; exit 2';
     const adapter = makeAdapter({
       gateCommands: () => [
-        { stage: 'build', command: 'true', args: [] },
-        { stage: 'test', command: 'sh', args: ['-c', waitForAll] },
-        { stage: 'lint', command: 'sh', args: ['-c', 'touch lint.ran'] },
+        { stage: GateStage.Build, command: 'true', args: [] },
+        { stage: GateStage.Test, command: 'sh', args: ['-c', waitForAll] },
+        { stage: GateStage.Lint, command: 'sh', args: ['-c', 'touch lint.ran'] },
       ],
       deadCode: (ctx) => {
         writeFileSync(join(ctx.measurePath, 'dead-code.ran'), '');
@@ -263,12 +279,16 @@ describe('initProject', () => {
 
   it('marks missing commands as skipped with a not-measured finding', async () => {
     const adapter = makeAdapter({
-      gateCommands: () => [{ stage: 'build', command: 'true', args: [] }],
+      gateCommands: () => [{ stage: GateStage.Build, command: 'true', args: [] }],
     });
 
     const report = await initProject(db, repo, [adapter]);
 
-    expect(report.baseline.stages.map((s) => s.status)).toEqual(['pass', 'skipped', 'skipped']);
+    expect(report.baseline.stages.map((s) => s.status)).toEqual([
+      BaselineStageStatus.Pass,
+      BaselineStageStatus.Skipped,
+      BaselineStageStatus.Skipped,
+    ]);
     expect(report.findings).toHaveLength(2);
   });
 
@@ -314,7 +334,13 @@ describe('initProject', () => {
     expect(getProject(db, pid)?.origin_url).toBeNull();
     expect(held.findings[0]).toContain('--origin-moved');
     // The flag is how the operator confirms it, first record or later move.
-    const confirmed = await initProject(db, repo, [makeAdapter()], undefined, 're-record');
+    const confirmed = await initProject(
+      db,
+      repo,
+      [makeAdapter()],
+      undefined,
+      OriginRecording.ReRecord,
+    );
     expect(getProject(db, pid)?.origin_url).toBe(ORIGIN_URL);
     expect(confirmed.findings).toEqual([]);
   });
@@ -344,7 +370,13 @@ describe('initProject', () => {
     await initProject(db, repo, [makeAdapter()]);
     sh(repo, 'git', 'config', 'remote.origin.url', 'git@github.com:owner/renamed.git');
 
-    const report = await initProject(db, repo, [makeAdapter()], undefined, 're-record');
+    const report = await initProject(
+      db,
+      repo,
+      [makeAdapter()],
+      undefined,
+      OriginRecording.ReRecord,
+    );
 
     expect(getProject(db, projectId(repo))?.origin_url).toBe('git@github.com:owner/renamed.git');
     expect(report.findings).toEqual([]);
@@ -352,13 +384,17 @@ describe('initProject', () => {
 
   it('refreshes the baseline on re-run', async () => {
     await initProject(db, repo, [
-      makeAdapter({ gateCommands: () => [{ stage: 'build', command: 'false', args: [] }] }),
+      makeAdapter({ gateCommands: () => [{ stage: GateStage.Build, command: 'false', args: [] }] }),
     ]);
     const second = await initProject(db, repo, [makeAdapter()]);
 
     expect(second.findings).toEqual([]);
     const stored = JSON.parse(getProject(db, projectId(repo))?.baseline ?? '{}') as ProjectBaseline;
-    expect(stored.stages.map((s) => s.status)).toEqual(['pass', 'pass', 'pass']);
+    expect(stored.stages.map((s) => s.status)).toEqual([
+      BaselineStageStatus.Pass,
+      BaselineStageStatus.Pass,
+      BaselineStageStatus.Pass,
+    ]);
   });
 
   it('captures debt metrics in the baseline when the adapter can measure them', async () => {
@@ -439,9 +475,9 @@ describe('initProject', () => {
     const pnpm = { command: 'node', args: [join(install, 'bin', 'pnpm.cjs')] };
     const adapter = makeAdapter({
       gateCommands: () => [
-        { stage: 'build', ...pnpm },
-        { stage: 'test', ...pnpm },
-        { stage: 'lint', ...pnpm },
+        { stage: GateStage.Build, ...pnpm },
+        { stage: GateStage.Test, ...pnpm },
+        { stage: GateStage.Lint, ...pnpm },
       ],
     });
 

@@ -4,6 +4,9 @@ import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import type { Database } from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { openStore } from './db.client.js';
+import { EventType } from './enums/event-type.enums.js';
+import { GateStageStatus } from './enums/gate-stage-status.enums.js';
+import { MergeStatus } from './enums/merge-status.enums.js';
 import { LockBacklogOverBudgetError, MachineLoadedError } from './errors/session-cap.errors.js';
 import { projectId, projectPaths } from './paths.utils.js';
 import {
@@ -65,7 +68,9 @@ describe('lockBacklog (decision 197)', () => {
   }
 
   function gateReport(id: string, edge: object, ...stageMs: unknown[]): void {
-    db.prepare("INSERT INTO events (session_id, type, payload) VALUES (?, 'gate_result', ?)").run(
+    db.prepare(
+      `INSERT INTO events (session_id, type, payload) VALUES (?, '${EventType.GateResult}', ?)`,
+    ).run(
       id,
       JSON.stringify({
         ...edge,
@@ -75,7 +80,7 @@ describe('lockBacklog (decision 197)', () => {
           sandbox: 'none',
           stages: stageMs.map((durationMs, index) => ({
             stage: `stage-${index}`,
-            status: 'pass',
+            status: GateStageStatus.Pass,
             durationMs,
           })),
         },
@@ -84,7 +89,7 @@ describe('lockBacklog (decision 197)', () => {
   }
 
   function mergeEvent(id: string, prUrl?: string): void {
-    appendEvent(db, id, 'merge', {
+    appendEvent(db, id, EventType.Merge, {
       branch: `pup/${id}`,
       sha: 'abc',
       target: 'main',
@@ -179,15 +184,16 @@ describe('lockBacklog (decision 197)', () => {
   it.each([
     [
       'landed',
-      (id: string) => appendEvent(db, id, 'landed', { sha: 'def', target: 'main', prUrl: PR }),
+      (id: string) =>
+        appendEvent(db, id, EventType.Landed, { sha: 'def', target: 'main', prUrl: PR }),
     ],
     [
       'retired',
-      (id: string) => appendEvent(db, id, 'retired', { prUrl: PR, supersededBy: `${PR}0` }),
+      (id: string) => appendEvent(db, id, EventType.Retired, { prUrl: PR, supersededBy: `${PR}0` }),
     ],
     [
       'closed unmerged',
-      (id: string) => appendEvent(db, id, 'pr_closed', { prUrl: PR, sha: 'abc' }),
+      (id: string) => appendEvent(db, id, EventType.PrClosed, { prUrl: PR, sha: 'abc' }),
     ],
   ])('counts nothing once its PR is %s', (_name, close) => {
     const id = merged();
@@ -200,7 +206,7 @@ describe('lockBacklog (decision 197)', () => {
   it('counts the land again for a re-gate after an earlier land', () => {
     const id = merged();
     mergeEvent(id, PR);
-    appendEvent(db, id, 'landed', { sha: 'def', target: 'main', prUrl: PR });
+    appendEvent(db, id, EventType.Landed, { sha: 'def', target: 'main', prUrl: PR });
     mergeEvent(id, PR);
 
     expect(lockBacklog(db, repo).uses).toBe(1);
@@ -267,14 +273,12 @@ describe('lockBacklog (decision 197)', () => {
     gateRun(id, 600_000);
     gateRun(id);
     gateRun(id, '900000', -1, null, Number.POSITIVE_INFINITY);
-    db.prepare("INSERT INTO events (session_id, type, payload) VALUES (?, 'gate_result', ?)").run(
-      id,
-      'not json',
-    );
-    db.prepare("INSERT INTO events (session_id, type, payload) VALUES (?, 'gate_result', ?)").run(
-      id,
-      JSON.stringify({ report: { stages: 'many' } }),
-    );
+    db.prepare(
+      `INSERT INTO events (session_id, type, payload) VALUES (?, '${EventType.GateResult}', ?)`,
+    ).run(id, 'not json');
+    db.prepare(
+      `INSERT INTO events (session_id, type, payload) VALUES (?, '${EventType.GateResult}', ?)`,
+    ).run(id, JSON.stringify({ report: { stages: 'many' } }));
 
     // The transitions' own gate_result events carry no report and are passed over too.
     expect(lockBacklog(db, repo)).toMatchObject({ gateMs: 600_000, gatesTimed: 1 });
@@ -285,7 +289,7 @@ describe('lockBacklog (decision 197)', () => {
     gateRun(id, 600_000);
     gateReport(id, { from: 'awaiting-review', to: 'rejected' }, 900_000);
     gateReport(id, {}, 0);
-    gateReport(id, { outcome: 'refused' }, 0);
+    gateReport(id, { outcome: MergeStatus.Refused }, 0);
     gateReport(id, { from: 'merged', to: 'merged' }, 0);
     gateReport(id, { from: 'blocked', to: 'running' }, 0);
     gateReport(id, { from: 'awaiting-review', to: 'killed' }, 0);

@@ -12,6 +12,7 @@ import { makeInput } from '@test/helpers/profile-compiler.mock.js';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { HOOK_TIMEOUT_SECONDS } from './constants/profile.constants.js';
+import { EventType } from './enums/event-type.enums.js';
 import * as ProfileCompiler from './profile-compiler.service.js';
 
 // Many tests here spawn real git and sh; under load or coverage the 5 s default
@@ -121,7 +122,7 @@ describe('generated hooks over a merge of the target', () => {
       .split('\n')
       .filter(Boolean)
       .map((line) => JSON.parse(line) as Record<string, string>)
-      .filter((event) => event.type === 'scope_violation')
+      .filter((event) => event.type === EventType.ScopeViolation)
       .map((event) => `${event.path} ${event.reason}`);
   }
 

@@ -4,7 +4,11 @@ import { sh } from '@test/helpers/git.mock.js';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import type { Database } from 'better-sqlite3';
 import { beforeEach, describe, expect, it } from 'vitest';
+import { GateStage } from '../adapters/enums/gate-stage.enums.js';
 import { openStore } from './db.client.js';
+import { EventType } from './enums/event-type.enums.js';
+import { GateStageStatus } from './enums/gate-stage-status.enums.js';
+import { MergeStatus } from './enums/merge-status.enums.js';
 import { projectId } from './paths.utils.js';
 import {
   appendEvent,
@@ -73,15 +77,24 @@ describe('the Tasks sheet', () => {
     passed: failed.length === 0,
     sandbox: 'test',
     stages: [
-      { stage: 'tests', status: failed.includes('tests') ? 'fail' : 'pass' },
-      { stage: 'lint', status: failed.includes('lint') ? 'fail' : 'pass' },
-      { stage: 'diff-size', status: failed.includes('diff-size') ? 'flagged' : 'pass' },
+      {
+        stage: 'tests',
+        status: failed.includes('tests') ? GateStageStatus.Fail : GateStageStatus.Pass,
+      },
+      {
+        stage: GateStage.Lint,
+        status: failed.includes(GateStage.Lint) ? GateStageStatus.Fail : GateStageStatus.Pass,
+      },
+      {
+        stage: 'diff-size',
+        status: failed.includes('diff-size') ? GateStageStatus.Flagged : GateStageStatus.Pass,
+      },
     ],
   });
 
   /** A merge at `at`; a `null` url is a local merge, which opens no PR. */
   function merge(sessionId: string, at: string, prUrl: string | null = PR): void {
-    appendEvent(db, sessionId, 'merge', {
+    appendEvent(db, sessionId, EventType.Merge, {
       branch: `pup/${sessionId}`,
       sha: 'f'.repeat(40),
       target: 'main',
@@ -98,27 +111,33 @@ describe('the Tasks sheet', () => {
    */
   function seedPrSession(sessionId: string): void {
     launch(sessionId);
-    appendEvent(db, sessionId, 'steer', { kind: 'kickoff', delivered: true });
+    appendEvent(db, sessionId, EventType.Steer, { kind: 'kickoff', delivered: true });
     transitionSession(db, sessionId, 'running');
     transitionSession(db, sessionId, 'awaiting-review');
-    transitionSession(db, sessionId, 'rejected', { report: report(sessionId, ['tests', 'lint']) });
+    transitionSession(db, sessionId, 'rejected', {
+      report: report(sessionId, ['tests', GateStage.Lint]),
+    });
     stamp('2026-11-01 12:00:00');
-    appendEvent(db, sessionId, 'steer', { kind: 'gate-rejection' });
+    appendEvent(db, sessionId, EventType.Steer, { kind: 'gate-rejection' });
     transitionSession(db, sessionId, 'running', { kind: 'gate-rejection-resteer' });
-    appendEvent(db, sessionId, 'steer', { kind: 'message', by: 'operator' });
-    appendEvent(db, sessionId, 'respawn', { delivered: true });
+    appendEvent(db, sessionId, EventType.Steer, { kind: 'message', by: 'operator' });
+    appendEvent(db, sessionId, EventType.Respawn, { delivered: true });
     transitionSession(db, sessionId, 'awaiting-review');
     transitionSession(db, sessionId, 'merged', { report: report(sessionId) });
     stamp('2026-11-02 13:00:00');
     merge(sessionId, '2026-11-02 13:30:00');
-    appendEvent(db, sessionId, 'gate_result', {
+    appendEvent(db, sessionId, EventType.GateResult, {
       from: 'merged',
       to: 'merged',
       report: report(sessionId),
     });
     stamp('2026-11-03 09:00:00');
     merge(sessionId, '2026-11-03 09:00:01');
-    appendEvent(db, sessionId, 'landed', { sha: 'a'.repeat(40), target: 'main', prUrl: PR });
+    appendEvent(db, sessionId, EventType.Landed, {
+      sha: 'a'.repeat(40),
+      target: 'main',
+      prUrl: PR,
+    });
     stamp('2026-11-04 10:00:00');
   }
 
@@ -174,12 +193,15 @@ describe('the Tasks sheet', () => {
   it('charts the pass rate per week and the failures per stage, each with its figure line', () => {
     seedPrSession('s-pr');
     launch('s-b', ['running', 'awaiting-review']);
-    appendEvent(db, 's-b', 'gate_result', {
-      outcome: 'refused',
+    appendEvent(db, 's-b', EventType.GateResult, {
+      outcome: MergeStatus.Refused,
       report: report('s-b', ['diff-size']),
     });
     stamp('2026-10-20 08:00:00');
-    appendEvent(db, 's-b', 'gate_result', { outcome: 'refused', report: report('s-b', ['tests']) });
+    appendEvent(db, 's-b', EventType.GateResult, {
+      outcome: MergeStatus.Refused,
+      report: report('s-b', ['tests']),
+    });
     stamp('2025-01-01 00:00:00');
 
     const page = render();
@@ -275,13 +297,13 @@ describe('the Tasks sheet', () => {
     sh(repo, 'git', 'add', '.');
     plan(`t-${evil}`, `${evil}. More.`, [`src/**`, `lib/${evil}`]);
     launch('s-evil', ['running', 'awaiting-review', 'merged']);
-    appendEvent(db, 's-evil', 'gate_result', {
-      outcome: 'refused',
+    appendEvent(db, 's-evil', EventType.GateResult, {
+      outcome: MergeStatus.Refused,
       report: {
         sessionId: 's-evil',
         passed: false,
         sandbox: 'test',
-        stages: [{ stage: evil, status: 'fail' }],
+        stages: [{ stage: evil, status: GateStageStatus.Fail }],
       },
     });
     stamp('2026-11-02 00:00:00');

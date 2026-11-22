@@ -1,5 +1,6 @@
 import { sanitizeReason } from '../adapters/capability.utils.js';
 import { PR_URL } from './constants/dashboard.constants.js';
+import { DebtMetric } from './enums/debt-metric.enums.js';
 import { displayText } from './report-data.utils.js';
 import type { DashboardBaseline } from './types/dashboard.types.js';
 
@@ -88,13 +89,13 @@ export const GATE_METRICS: {
   change: (delta: number) => string;
 }[] = [
   {
-    key: 'coverageRatio',
+    key: DebtMetric.CoverageRatio,
     label: 'coverage',
     format: pct,
     change: (d) => `${signed(Math.round(d * 1000) / 10)} pt`,
   },
-  { key: 'deadExports', label: 'unused exports', format: String, change: signed },
-  { key: 'duplicatedLines', label: 'duplicated lines', format: String, change: signed },
+  { key: DebtMetric.DeadExports, label: 'unused exports', format: String, change: signed },
+  { key: DebtMetric.DuplicatedLines, label: 'duplicated lines', format: String, change: signed },
 ];
 
 export const DAY_MS = 86_400_000;

@@ -1,4 +1,4 @@
-import type { Tier } from '../../claude/types/model-ladder.types.js';
+import type { Tier } from '../../claude/enums/tier.enums.js';
 import type { ScopeConflict } from './overlap.types.js';
 
 /**

@@ -1,8 +1,10 @@
 import type { Database } from 'better-sqlite3';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { Tier } from '../claude/enums/tier.enums.js';
 import { listPanes, PROBE_PATH, windowSockets } from '../claude/session-runtime.service.js';
 import { openStore } from './db.client.js';
 import { listDecisionRecords } from './decision-record.repository.js';
+import { EventType } from './enums/event-type.enums.js';
 import { InvalidProfileError } from './errors/profile.errors.js';
 import { globToRegExp } from './glob.utils.js';
 import { scopeConflicts } from './overlap.service.js';
@@ -100,7 +102,7 @@ describe('rescopeTask (decision 115)', () => {
       expect(rescopeTask(db, 't-1', ['src/cli/index.ts', 'src/core/**'], CALLER)).toEqual({
         sessionId: 's1',
         added: ['src/cli/index.ts'],
-        tier: 'critical',
+        tier: Tier.Critical,
         raised: false,
         overlaps: [],
       });
@@ -109,14 +111,14 @@ describe('rescopeTask (decision 115)', () => {
         ...SPEC,
         scopeIn: ['src/core/**', 'src/cli/index.ts'],
       });
-      const rescope = listEvents(db, 's1').find((event) => event.type === 'rescope');
+      const rescope = listEvents(db, 's1').find((event) => event.type === EventType.Rescope);
       expect(JSON.parse(rescope?.payload ?? '{}')).toEqual({
         task: 't-1',
         added: ['src/cli/index.ts'],
         by: 'inferred-operator',
         tty: '/dev/ttys003',
         tmuxPane: '%4',
-        tier: 'critical',
+        tier: Tier.Critical,
         raised: false,
       });
       const [record] = listDecisionRecords(db);
@@ -169,64 +171,64 @@ describe('rescopeTask (decision 115)', () => {
       );
       launched('s1', 'merged');
       db.prepare(
-        "UPDATE sessions SET tier = 'standard', rung = 2, rung_reason = 'ci-fix-round' WHERE id = ?",
+        `UPDATE sessions SET tier = '${Tier.Standard}', rung = 2, rung_reason = 'ci-fix-round' WHERE id = ?`,
       ).run('s1');
     };
 
-    it.each(['standard', null])(
+    it.each([Tier.Standard, null])(
       'raises a task stored %s and its session to critical, from the bottom rung',
       (stored) => {
         standard(stored);
 
         expect(rescopeTask(db, 't-1', ['src/core/merge-gate.service.ts'], CALLER)).toMatchObject({
-          tier: 'critical',
+          tier: Tier.Critical,
           raised: true,
         });
 
-        expect(getTask(db, 't-1')?.tier).toBe(stored === null ? null : 'critical');
+        expect(getTask(db, 't-1')?.tier).toBe(stored === null ? null : Tier.Critical);
         expect(getSession(db, 's1')).toMatchObject({
-          tier: 'critical',
+          tier: Tier.Critical,
           rung: null,
           rung_reason: null,
         });
-        const rescope = listEvents(db, 's1').find((event) => event.type === 'rescope');
+        const rescope = listEvents(db, 's1').find((event) => event.type === EventType.Rescope);
         expect(JSON.parse(rescope?.payload ?? '{}')).toMatchObject({
-          tier: 'critical',
+          tier: Tier.Critical,
           raised: true,
         });
       },
     );
 
     it('keeps a standard task standard when the added globs are', () => {
-      standard('standard');
+      standard(Tier.Standard);
 
       expect(rescopeTask(db, 't-1', ['src/cli/index.ts'], CALLER)).toMatchObject({
-        tier: 'standard',
+        tier: Tier.Standard,
         raised: false,
       });
-      expect(getTask(db, 't-1')?.tier).toBe('standard');
-      expect(getSession(db, 's1')).toMatchObject({ tier: 'standard', rung: 2 });
+      expect(getTask(db, 't-1')?.tier).toBe(Tier.Standard);
+      expect(getSession(db, 's1')).toMatchObject({ tier: Tier.Standard, rung: 2 });
     });
 
     // `pup plan edit --tier standard` pinned it over a scope already critical:
     // only what the rescope adds can raise it.
     it('keeps a task pinned standard over a critical scope standard when the added globs are', () => {
-      db.prepare("UPDATE tasks SET spec = ?, tier = 'standard' WHERE id = ?").run(
+      db.prepare(`UPDATE tasks SET spec = ?, tier = '${Tier.Standard}' WHERE id = ?`).run(
         JSON.stringify({ ...SPEC, scopeIn: ['src/core/merge-gate.service.ts'], scopeOut: [] }),
         't-1',
       );
       launched('s1', 'merged');
       db.prepare(
-        "UPDATE sessions SET tier = 'standard', rung = 2, rung_reason = 'ci-fix-round' WHERE id = ?",
+        `UPDATE sessions SET tier = '${Tier.Standard}', rung = 2, rung_reason = 'ci-fix-round' WHERE id = ?`,
       ).run('s1');
 
       expect(rescopeTask(db, 't-1', ['docs/**'], CALLER)).toMatchObject({
-        tier: 'standard',
+        tier: Tier.Standard,
         raised: false,
       });
-      expect(getTask(db, 't-1')?.tier).toBe('standard');
+      expect(getTask(db, 't-1')?.tier).toBe(Tier.Standard);
       expect(getSession(db, 's1')).toMatchObject({
-        tier: 'standard',
+        tier: Tier.Standard,
         rung: 2,
         rung_reason: 'ci-fix-round',
       });
@@ -235,15 +237,15 @@ describe('rescopeTask (decision 115)', () => {
     // A relaunch after a kill routes from the task's row, so it is settled
     // from its own stored tier, not from the session's.
     it('raises a task stored standard under a session already critical', () => {
-      standard('standard');
-      db.prepare("UPDATE sessions SET tier = 'critical', rung = 1 WHERE id = ?").run('s1');
+      standard(Tier.Standard);
+      db.prepare(`UPDATE sessions SET tier = '${Tier.Critical}', rung = 1 WHERE id = ?`).run('s1');
 
       expect(rescopeTask(db, 't-1', ['src/core/merge-gate.service.ts'], CALLER)).toMatchObject({
-        tier: 'critical',
+        tier: Tier.Critical,
         raised: true,
       });
-      expect(getTask(db, 't-1')?.tier).toBe('critical');
-      expect(getSession(db, 's1')).toMatchObject({ tier: 'critical', rung: 1 });
+      expect(getTask(db, 't-1')?.tier).toBe(Tier.Critical);
+      expect(getSession(db, 's1')).toMatchObject({ tier: Tier.Critical, rung: 1 });
     });
 
     // A session launched before routing stored no tier on either row: its next
@@ -256,7 +258,7 @@ describe('rescopeTask (decision 115)', () => {
       launched('s1', 'merged');
 
       expect(rescopeTask(db, 't-1', ['src/core/merge-gate.service.ts'], CALLER)).toMatchObject({
-        tier: 'critical',
+        tier: Tier.Critical,
         raised: false,
       });
       expect(getTask(db, 't-1')?.tier).toBeNull();
@@ -264,19 +266,19 @@ describe('rescopeTask (decision 115)', () => {
     });
 
     it('never lowers a critical tier', () => {
-      db.prepare("UPDATE tasks SET spec = ?, tier = 'critical' WHERE id = ?").run(
+      db.prepare(`UPDATE tasks SET spec = ?, tier = '${Tier.Critical}' WHERE id = ?`).run(
         JSON.stringify({ ...SPEC, scopeIn: ['docs/**'], scopeOut: [] }),
         't-1',
       );
       launched('s1', 'merged');
-      db.prepare("UPDATE sessions SET tier = 'critical', rung = 1 WHERE id = ?").run('s1');
+      db.prepare(`UPDATE sessions SET tier = '${Tier.Critical}', rung = 1 WHERE id = ?`).run('s1');
 
       expect(rescopeTask(db, 't-1', ['src/cli/index.ts'], CALLER)).toMatchObject({
-        tier: 'critical',
+        tier: Tier.Critical,
         raised: false,
       });
-      expect(getTask(db, 't-1')?.tier).toBe('critical');
-      expect(getSession(db, 's1')).toMatchObject({ tier: 'critical', rung: 1 });
+      expect(getTask(db, 't-1')?.tier).toBe(Tier.Critical);
+      expect(getSession(db, 's1')).toMatchObject({ tier: Tier.Critical, rung: 1 });
     });
   });
 
@@ -286,7 +288,7 @@ describe('rescopeTask (decision 115)', () => {
     expect(rescopeTask(db, 't-1', ['src/core/**'], CALLER)).toEqual({
       sessionId: 's1',
       added: [],
-      tier: 'critical',
+      tier: Tier.Critical,
       raised: false,
       overlaps: [],
     });
@@ -589,7 +591,7 @@ describe('rescopeTask (decision 115)', () => {
       });
 
       expect(readTaskSpec(db, 't-1').scopeIn).toEqual(['src/core/**', 'src/cli/index.ts']);
-      const overlap = listEvents(db, 's1').find((event) => event.type === 'scope_overlap');
+      const overlap = listEvents(db, 's1').find((event) => event.type === EventType.ScopeOverlap);
       expect(JSON.parse(overlap?.payload ?? '{}')).toEqual({
         via: 'rescope',
         accepted: [{ session: 's9', files: ['src/cli/index.ts', 'docs/adr/README.md'] }],
@@ -601,7 +603,7 @@ describe('rescopeTask (decision 115)', () => {
       launched('s1', 'merged');
 
       expect(rescopeTask(db, 't-1', ['docs/**'], CALLER)).toMatchObject({ overlaps: [] });
-      expect(listEvents(db, 's1').map((event) => event.type)).toEqual(['rescope']);
+      expect(listEvents(db, 's1').map((event) => event.type)).toEqual([EventType.Rescope]);
     });
 
     // A refusal after the write rolls back the rescope; there is nothing to compare.
@@ -629,7 +631,9 @@ describe('taskRescopes (decision 188)', () => {
     });
   const rescope = (sessionId: string, payload: unknown) =>
     db
-      .prepare("INSERT INTO events (session_id, type, payload) VALUES (?, 'rescope', ?)")
+      .prepare(
+        `INSERT INTO events (session_id, type, payload) VALUES (?, '${EventType.Rescope}', ?)`,
+      )
       .run(sessionId, JSON.stringify(payload));
 
   beforeEach(() => {
@@ -643,12 +647,18 @@ describe('taskRescopes (decision 188)', () => {
     session('s1', 't-1');
     session('s2', 't-1');
     session('s9', 't-2');
-    rescope('s1', { task: 't-1', added: ['docs/**'], tier: 'standard', raised: false, ...CALLER });
-    rescope('s9', { task: 't-2', added: ['x/**'], tier: 'standard', raised: false, ...CALLER });
+    rescope('s1', {
+      task: 't-1',
+      added: ['docs/**'],
+      tier: Tier.Standard,
+      raised: false,
+      ...CALLER,
+    });
+    rescope('s9', { task: 't-2', added: ['x/**'], tier: Tier.Standard, raised: false, ...CALLER });
     rescope('s2', {
       task: 't-1',
       added: ['src/core/merge-gate.service.ts'],
-      tier: 'critical',
+      tier: Tier.Critical,
       raised: true,
       by: 'inferred-operator',
       tty: null,
@@ -661,7 +671,7 @@ describe('taskRescopes (decision 188)', () => {
       {
         sessionId: 's1',
         added: ['docs/**'],
-        tier: 'standard',
+        tier: Tier.Standard,
         raised: false,
         by: 'inferred-operator',
         tty: '/dev/ttys003',
@@ -670,7 +680,7 @@ describe('taskRescopes (decision 188)', () => {
       {
         sessionId: 's2',
         added: ['src/core/merge-gate.service.ts'],
-        tier: 'critical',
+        tier: Tier.Critical,
         raised: true,
         by: 'inferred-operator',
         tty: null,

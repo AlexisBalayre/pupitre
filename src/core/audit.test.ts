@@ -2,10 +2,14 @@ import { passingAdapter } from '@test/helpers/merge-gate.mock.js';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import type { Database } from 'better-sqlite3';
 import { afterAll, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+import { GateStage } from '../adapters/enums/gate-stage.enums.js';
 import type { Adapter, CoverageReport } from '../adapters/types/adapter.types.js';
 import { auditProject, buildSweepTask, formatDebtTransition } from './audit.service.js';
 import { listBaselineHistory } from './baseline-history.repository.js';
 import { openStore } from './db.client.js';
+import { BaselineStageStatus } from './enums/baseline-stage-status.enums.js';
+import { DebtMetric } from './enums/debt-metric.enums.js';
+import { StageDelta } from './enums/stage-delta.enums.js';
 import { UndeclaredSandboxError } from './errors/sandbox.errors.js';
 import { initProject } from './init.service.js';
 import { projectId } from './paths.utils.js';
@@ -84,31 +88,49 @@ describe('auditProject', () => {
     await initProject(db, repo, [makeAdapter()]);
     const failingTest = makeAdapter({
       gateCommands: () => [
-        { stage: 'build', command: 'true', args: [] },
-        { stage: 'test', command: 'false', args: [] },
-        { stage: 'lint', command: 'true', args: [] },
+        { stage: GateStage.Build, command: 'true', args: [] },
+        { stage: GateStage.Test, command: 'false', args: [] },
+        { stage: GateStage.Lint, command: 'true', args: [] },
       ],
     });
 
     const report = await auditProject(db, repo, [failingTest]);
 
     expect(report.transitions).toEqual([
-      { stage: 'build', before: 'pass', after: 'pass', delta: 'unchanged' },
-      { stage: 'test', before: 'pass', after: 'fail', delta: 'regressed' },
-      { stage: 'lint', before: 'pass', after: 'pass', delta: 'unchanged' },
+      {
+        stage: GateStage.Build,
+        before: BaselineStageStatus.Pass,
+        after: BaselineStageStatus.Pass,
+        delta: StageDelta.Unchanged,
+      },
+      {
+        stage: GateStage.Test,
+        before: BaselineStageStatus.Pass,
+        after: BaselineStageStatus.Fail,
+        delta: StageDelta.Regressed,
+      },
+      {
+        stage: GateStage.Lint,
+        before: BaselineStageStatus.Pass,
+        after: BaselineStageStatus.Pass,
+        delta: StageDelta.Unchanged,
+      },
     ]);
     expect(report.hasRegression).toBe(true);
     const stored = JSON.parse(getProject(db, projectId(repo))?.baseline ?? '{}') as ProjectBaseline;
-    expect(stored.stages[1]).toMatchObject({ stage: 'test', status: 'fail' });
+    expect(stored.stages[1]).toMatchObject({
+      stage: GateStage.Test,
+      status: BaselineStageStatus.Fail,
+    });
   });
 
   it('reports a stage that went fail -> pass as an improvement, not a regression', async () => {
     await initProject(db, repo, [
       makeAdapter({
         gateCommands: () => [
-          { stage: 'build', command: 'true', args: [] },
-          { stage: 'test', command: 'false', args: [] },
-          { stage: 'lint', command: 'true', args: [] },
+          { stage: GateStage.Build, command: 'true', args: [] },
+          { stage: GateStage.Test, command: 'false', args: [] },
+          { stage: GateStage.Lint, command: 'true', args: [] },
         ],
       }),
     ]);
@@ -116,10 +138,10 @@ describe('auditProject', () => {
     const report = await auditProject(db, repo, [makeAdapter()]);
 
     expect(report.transitions[1]).toEqual({
-      stage: 'test',
-      before: 'fail',
-      after: 'pass',
-      delta: 'improved',
+      stage: GateStage.Test,
+      before: BaselineStageStatus.Fail,
+      after: BaselineStageStatus.Pass,
+      delta: StageDelta.Improved,
     });
     expect(report.hasRegression).toBe(false);
   });
@@ -131,7 +153,11 @@ describe('auditProject', () => {
     expect(report.transitions).toEqual([]);
     expect(report.hasRegression).toBe(false);
     const stored = JSON.parse(getProject(db, projectId(repo))?.baseline ?? '{}') as ProjectBaseline;
-    expect(stored.stages.map((s) => s.status)).toEqual(['pass', 'pass', 'pass']);
+    expect(stored.stages.map((s) => s.status)).toEqual([
+      BaselineStageStatus.Pass,
+      BaselineStageStatus.Pass,
+      BaselineStageStatus.Pass,
+    ]);
   });
 
   it('reports all stages unchanged when nothing moved', async () => {
@@ -139,23 +165,27 @@ describe('auditProject', () => {
 
     const report = await auditProject(db, repo, [makeAdapter()]);
 
-    expect(report.transitions.map((t) => t.delta)).toEqual(['unchanged', 'unchanged', 'unchanged']);
+    expect(report.transitions.map((t) => t.delta)).toEqual([
+      StageDelta.Unchanged,
+      StageDelta.Unchanged,
+      StageDelta.Unchanged,
+    ]);
     expect(report.hasRegression).toBe(false);
   });
 
   it('treats losing a command for a passing stage (pass -> skipped) as a regression', async () => {
     await initProject(db, repo, [makeAdapter()]);
     const buildOnly = makeAdapter({
-      gateCommands: () => [{ stage: 'build', command: 'true', args: [] }],
+      gateCommands: () => [{ stage: GateStage.Build, command: 'true', args: [] }],
     });
 
     const report = await auditProject(db, repo, [buildOnly]);
 
     expect(report.transitions[1]).toEqual({
-      stage: 'test',
-      before: 'pass',
-      after: 'skipped',
-      delta: 'regressed',
+      stage: GateStage.Test,
+      before: BaselineStageStatus.Pass,
+      after: BaselineStageStatus.Skipped,
+      delta: StageDelta.Regressed,
     });
     expect(report.hasRegression).toBe(true);
   });
@@ -170,7 +200,7 @@ describe('auditProject', () => {
     ]);
 
     expect(report.debtTransitions).toEqual([
-      { metric: 'duplicatedLines', before: 182, after: 196, delta: 'regressed' },
+      { metric: DebtMetric.DuplicatedLines, before: 182, after: 196, delta: StageDelta.Regressed },
     ]);
     expect(report.hasRegression).toBe(true);
     const stored = JSON.parse(getProject(db, projectId(repo))?.baseline ?? '{}') as ProjectBaseline;
@@ -187,7 +217,7 @@ describe('auditProject', () => {
     ]);
 
     expect(report.debtTransitions).toEqual([
-      { metric: 'duplicatedLines', before: 196, after: 182, delta: 'improved' },
+      { metric: DebtMetric.DuplicatedLines, before: 196, after: 182, delta: StageDelta.Improved },
     ]);
     expect(report.hasRegression).toBe(false);
   });
@@ -207,7 +237,7 @@ describe('auditProject', () => {
     ]);
 
     expect(report.debtTransitions).toEqual([
-      { metric: 'deadExports', before: 1, after: 2, delta: 'regressed' },
+      { metric: DebtMetric.DeadExports, before: 1, after: 2, delta: StageDelta.Regressed },
     ]);
     expect(report.hasRegression).toBe(true);
   });
@@ -220,7 +250,7 @@ describe('auditProject', () => {
     ]);
 
     expect(report.debtTransitions).toEqual([
-      { metric: 'coverageRatio', before: 0.9, after: 0.8, delta: 'regressed' },
+      { metric: DebtMetric.CoverageRatio, before: 0.9, after: 0.8, delta: StageDelta.Regressed },
     ]);
     expect(report.hasRegression).toBe(true);
   });
@@ -233,7 +263,7 @@ describe('auditProject', () => {
     ]);
 
     expect(report.debtTransitions).toEqual([
-      { metric: 'coverageRatio', before: 0.9, after: 0.899, delta: 'unchanged' },
+      { metric: DebtMetric.CoverageRatio, before: 0.9, after: 0.899, delta: StageDelta.Unchanged },
     ]);
     expect(report.hasRegression).toBe(false);
   });
@@ -403,10 +433,10 @@ describe('auditProject', () => {
 describe('formatDebtTransition', () => {
   it('marks a regressed metric with an old -> new line and a REGRESSED marker', () => {
     const line = formatDebtTransition({
-      metric: 'duplicatedLines',
+      metric: DebtMetric.DuplicatedLines,
       before: 182,
       after: 196,
-      delta: 'regressed',
+      delta: StageDelta.Regressed,
     });
 
     expect(line).toContain('182 -> 196');
@@ -415,10 +445,10 @@ describe('formatDebtTransition', () => {
 
   it('marks an improved metric with an IMPROVED marker', () => {
     const line = formatDebtTransition({
-      metric: 'deadExports',
+      metric: DebtMetric.DeadExports,
       before: 5,
       after: 2,
-      delta: 'improved',
+      delta: StageDelta.Improved,
     });
 
     expect(line).toContain('5 -> 2');
@@ -427,10 +457,10 @@ describe('formatDebtTransition', () => {
 
   it('carries no marker for an unchanged metric', () => {
     const line = formatDebtTransition({
-      metric: 'coverageRatio',
+      metric: DebtMetric.CoverageRatio,
       before: 0.9,
       after: 0.9,
-      delta: 'unchanged',
+      delta: StageDelta.Unchanged,
     });
 
     expect(line).toContain('90% -> 90%');

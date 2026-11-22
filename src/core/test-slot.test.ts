@@ -16,7 +16,10 @@ import { freemem } from 'node:os';
 import { basename, join } from 'node:path';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+import { GateStage } from '../adapters/enums/gate-stage.enums.js';
 import { openStore } from './db.client.js';
+import { InterruptSignal } from './enums/interrupt-signal.enums.js';
+import { SlotHolderKind } from './enums/slot-holder-kind.enums.js';
 import { SlotWaitInterruptedError } from './errors/test-slot.errors.js';
 import { projectId, projectPaths } from './paths.utils.js';
 import { ensureProject, insertSession, insertTask } from './session.repository.js';
@@ -85,7 +88,7 @@ describe('withTestSlot (decision 96)', () => {
 
   /** Start a run in a slot, answering when it began and a way to end it. */
   function run(
-    kind: 'gate' | 'worker',
+    kind: SlotHolderKind,
     label: string,
     log: string[],
     extra: Partial<TestSlotOptions> = {},
@@ -104,9 +107,9 @@ describe('withTestSlot (decision 96)', () => {
 
   it('runs two of three at once and starts the third when one ends', async () => {
     const log: string[] = [];
-    const first = run('worker', 's1', log);
-    const second = run('worker', 's2', log);
-    const third = run('worker', 's3', log);
+    const first = run(SlotHolderKind.Worker, 's1', log);
+    const second = run(SlotHolderKind.Worker, 's2', log);
+    const third = run(SlotHolderKind.Worker, 's3', log);
     await tick();
     expect(log).toEqual(['s1', 's2']);
 
@@ -124,15 +127,17 @@ describe('withTestSlot (decision 96)', () => {
   it('tells the waiting run once who holds the slots', async () => {
     const log: string[] = [];
     const waits: SlotHolder[][] = [];
-    const first = run('worker', 's1', log);
-    const second = run('gate', 's2', log);
-    const third = run('worker', 's3', log, { onWait: (holders) => waits.push(holders) });
+    const first = run(SlotHolderKind.Worker, 's1', log);
+    const second = run(SlotHolderKind.Gate, 's2', log);
+    const third = run(SlotHolderKind.Worker, 's3', log, {
+      onWait: (holders) => waits.push(holders),
+    });
     await tick();
 
     expect(waits).toHaveLength(1);
     expect(waits[0]?.map((h) => [h.kind, h.label, h.pid])).toEqual([
-      ['worker', 's1', process.pid],
-      ['gate', 's2', process.pid],
+      [SlotHolderKind.Worker, 's1', process.pid],
+      [SlotHolderKind.Gate, 's2', process.pid],
     ]);
     for (const held of [first, second, third]) held.end();
     await Promise.all([first.settled, second.settled, third.settled]);
@@ -142,11 +147,11 @@ describe('withTestSlot (decision 96)', () => {
     for (const index of [0, 1]) {
       writeFileSync(
         join(dir, `slot-${index}.lock`),
-        JSON.stringify({ kind: 'worker', label: 'gone', pid: deadPid(), token: 'x' }),
+        JSON.stringify({ kind: SlotHolderKind.Worker, label: 'gone', pid: deadPid(), token: 'x' }),
       );
     }
     const log: string[] = [];
-    const held = run('worker', 's1', log);
+    const held = run(SlotHolderKind.Worker, 's1', log);
     await tick();
 
     expect(log).toEqual(['s1']);
@@ -157,12 +162,12 @@ describe('withTestSlot (decision 96)', () => {
   it.skipIf(process.getuid?.() === 0)(
     "leaves a dead holder's slot it may not move, and runs without one",
     async () => {
-      const dead = { kind: 'worker', label: 'gone', pid: deadPid(), token: 'x' };
+      const dead = { kind: SlotHolderKind.Worker, label: 'gone', pid: deadPid(), token: 'x' };
       writeFileSync(join(dir, 'slot-0.lock'), JSON.stringify(dead));
       chmodSync(dir, 0o500);
       let ran = false;
       await withTestSlot(
-        { kind: 'worker', label: 's1' },
+        { kind: SlotHolderKind.Worker, label: 's1' },
         async () => {
           ran = true;
         },
@@ -175,7 +180,7 @@ describe('withTestSlot (decision 96)', () => {
   );
 
   it('puts back a slot whose holder turns out alive as it is reclaimed, and waits on it', async () => {
-    const live = { kind: 'worker', label: 'live', pid: process.pid, token: 'x' };
+    const live = { kind: SlotHolderKind.Worker, label: 'live', pid: process.pid, token: 'x' };
     writeFileSync(join(dir, 'slot-0.lock'), JSON.stringify(live));
     // Dead at the first look, alive by the time the reclaim re-reads it.
     const kill = vi.spyOn(process, 'kill').mockImplementationOnce(() => {
@@ -185,7 +190,7 @@ describe('withTestSlot (decision 96)', () => {
     const expired = vi.fn();
     let ran = false;
     await withTestSlot(
-      { kind: 'worker', label: 's1' },
+      { kind: SlotHolderKind.Worker, label: 's1' },
       async () => {
         ran = true;
       },
@@ -202,11 +207,16 @@ describe('withTestSlot (decision 96)', () => {
     for (const index of [0, 1]) {
       writeFileSync(
         join(dir, `slot-${index}.lock`),
-        JSON.stringify({ kind: 'worker', label: 'other', pid: process.ppid, token: 'x' }),
+        JSON.stringify({
+          kind: SlotHolderKind.Worker,
+          label: 'other',
+          pid: process.ppid,
+          token: 'x',
+        }),
       );
     }
     const log: string[] = [];
-    const held = run('worker', 's1', log);
+    const held = run(SlotHolderKind.Worker, 's1', log);
     await tick();
     expect(log).toEqual([]);
 
@@ -220,13 +230,13 @@ describe('withTestSlot (decision 96)', () => {
 
   it('serves a waiting gate before every waiting worker, even one that waited longer', async () => {
     const log: string[] = [];
-    const first = run('worker', 's1', log);
-    const second = run('worker', 's2', log);
+    const first = run(SlotHolderKind.Worker, 's1', log);
+    const second = run(SlotHolderKind.Worker, 's2', log);
     await tick();
-    const worker = run('worker', 's3', log);
+    const worker = run(SlotHolderKind.Worker, 's3', log);
     await tick(5);
-    const gate = run('gate', 'gate s9', log);
-    const lateWorker = run('worker', 's4', log);
+    const gate = run(SlotHolderKind.Gate, 'gate s9', log);
+    const lateWorker = run(SlotHolderKind.Worker, 's4', log);
     await tick();
     expect(log).toEqual(['s1', 's2']);
 
@@ -249,8 +259,8 @@ describe('withTestSlot (decision 96)', () => {
   describe('a gate holding a slot (decision 140)', () => {
     it("keeps a worker from the free slot until the gate's run ends", async () => {
       const log: string[] = [];
-      const gate = run('gate', 'gate s9', log);
-      const worker = run('worker', 's1', log);
+      const gate = run(SlotHolderKind.Gate, 'gate s9', log);
+      const worker = run(SlotHolderKind.Worker, 's1', log);
       await tick();
       expect(log).toEqual(['gate s9']);
       expect(readdirSync(dir)).toEqual(['slot-0.lock']);
@@ -266,9 +276,9 @@ describe('withTestSlot (decision 96)', () => {
     it('names the gate a worker waits for, and keeps it waiting once the other slot frees', async () => {
       const log: string[] = [];
       const waits: string[] = [];
-      const first = run('worker', 's1', log);
-      const gate = run('gate', 'gate s9', log);
-      const worker = run('worker', 's2', log, {
+      const first = run(SlotHolderKind.Worker, 's1', log);
+      const gate = run(SlotHolderKind.Gate, 'gate s9', log);
+      const worker = run(SlotHolderKind.Worker, 's2', log, {
         onWait: (holders, gatesAhead) => waits.push(describeSlotWait(holders, gatesAhead)),
       });
       await tick();
@@ -292,23 +302,28 @@ describe('withTestSlot (decision 96)', () => {
     function gateBesideSession(gatePid: number): void {
       writeFileSync(
         join(dir, 'slot-0.lock'),
-        JSON.stringify({ kind: 'gate', label: 't-9', pid: gatePid, token: 'x' }),
+        JSON.stringify({ kind: SlotHolderKind.Gate, label: 't-9', pid: gatePid, token: 'x' }),
       );
       writeFileSync(
         join(dir, 'slot-1.lock'),
-        JSON.stringify({ kind: 'worker', label: 'other', pid: process.ppid, token: 'y' }),
+        JSON.stringify({
+          kind: SlotHolderKind.Worker,
+          label: 'other',
+          pid: process.ppid,
+          token: 'y',
+        }),
       );
     }
 
     it("holds no worker back with a dead gate's slot, reclaiming it", async () => {
       gateBesideSession(deadPid());
       const log: string[] = [];
-      const held = run('worker', 's1', log);
+      const held = run(SlotHolderKind.Worker, 's1', log);
       await tick();
 
       expect(log).toEqual(['s1']);
       expect(JSON.parse(readFileSync(join(dir, 'slot-0.lock'), 'utf8'))).toMatchObject({
-        kind: 'worker',
+        kind: SlotHolderKind.Worker,
         label: 's1',
       });
       held.end();
@@ -318,12 +333,12 @@ describe('withTestSlot (decision 96)', () => {
     it("keeps a worker waiting on a live gate's slot, the control for the dead one", async () => {
       gateBesideSession(process.ppid);
       const log: string[] = [];
-      const held = run('worker', 's1', log);
+      const held = run(SlotHolderKind.Worker, 's1', log);
       await tick();
 
       expect(log).toEqual([]);
       expect(JSON.parse(readFileSync(join(dir, 'slot-0.lock'), 'utf8'))).toMatchObject({
-        kind: 'gate',
+        kind: SlotHolderKind.Gate,
         label: 't-9',
       });
       rmSync(join(dir, 'slot-0.lock'));
@@ -335,8 +350,8 @@ describe('withTestSlot (decision 96)', () => {
 
     it('takes a free slot beside a worker already running', async () => {
       const log: string[] = [];
-      const worker = run('worker', 's1', log);
-      const gate = run('gate', 'gate s9', log);
+      const worker = run(SlotHolderKind.Worker, 's1', log);
+      const gate = run(SlotHolderKind.Gate, 'gate s9', log);
       await tick();
       expect(log).toEqual(['s1', 'gate s9']);
       for (const held of [worker, gate]) held.end();
@@ -346,13 +361,13 @@ describe('withTestSlot (decision 96)', () => {
     it('tells a worker that began waiting on sessions again once a gate queues ahead, and keeps it out of the run', async () => {
       const log: string[] = [];
       const waits: string[] = [];
-      const first = run('worker', 's1', log);
-      const second = run('worker', 's2', log);
-      const worker = run('worker', 's3', log, {
+      const first = run(SlotHolderKind.Worker, 's1', log);
+      const second = run(SlotHolderKind.Worker, 's2', log);
+      const worker = run(SlotHolderKind.Worker, 's3', log, {
         onWait: (holders, gatesAhead) => waits.push(describeSlotWait(holders, gatesAhead)),
       });
       await tick();
-      const gate = run('gate', 'gate s9', log);
+      const gate = run(SlotHolderKind.Gate, 'gate s9', log);
       await tick();
       first.end();
       await first.settled;
@@ -376,16 +391,20 @@ describe('withTestSlot (decision 96)', () => {
 
   it('ends its wait on an interrupt, running nothing and leaving no wait file', async () => {
     const log: string[] = [];
-    const first = run('worker', 's1', log);
-    const second = run('worker', 's2', log);
+    const first = run(SlotHolderKind.Worker, 's1', log);
+    const second = run(SlotHolderKind.Worker, 's2', log);
     await tick();
-    const before = process.listeners('SIGTERM');
-    const gate = run('gate', 'gate s9', log);
+    const before = process.listeners(InterruptSignal.Sigterm);
+    const gate = run(SlotHolderKind.Gate, 'gate s9', log);
     await tick();
-    const [listener] = process.listeners('SIGTERM').filter((fn) => !before.includes(fn));
-    (listener as NodeJS.SignalsListener)('SIGTERM');
+    const [listener] = process
+      .listeners(InterruptSignal.Sigterm)
+      .filter((fn) => !before.includes(fn));
+    (listener as NodeJS.SignalsListener)(InterruptSignal.Sigterm);
 
-    await expect(gate.settled).rejects.toEqual(new SlotWaitInterruptedError('SIGTERM'));
+    await expect(gate.settled).rejects.toEqual(
+      new SlotWaitInterruptedError(InterruptSignal.Sigterm),
+    );
     expect(log).toEqual(['s1', 's2']);
     expect(readdirSync(dir).sort()).toEqual(['slot-0.lock', 'slot-1.lock']);
     for (const held of [first, second]) held.end();
@@ -394,17 +413,21 @@ describe('withTestSlot (decision 96)', () => {
 
   it('ends its wait on a hangup as on SIGINT, taking no slot and leaving none behind', async () => {
     const log: string[] = [];
-    const first = run('worker', 's1', log);
-    const second = run('worker', 's2', log);
+    const first = run(SlotHolderKind.Worker, 's1', log);
+    const second = run(SlotHolderKind.Worker, 's2', log);
     await tick();
-    const before = process.listeners('SIGHUP');
-    const worker = run('worker', 's3', log);
+    const before = process.listeners(InterruptSignal.Sighup);
+    const worker = run(SlotHolderKind.Worker, 's3', log);
     await tick();
-    const [listener] = process.listeners('SIGHUP').filter((fn) => !before.includes(fn));
-    (listener as NodeJS.SignalsListener)('SIGHUP');
+    const [listener] = process
+      .listeners(InterruptSignal.Sighup)
+      .filter((fn) => !before.includes(fn));
+    (listener as NodeJS.SignalsListener)(InterruptSignal.Sighup);
 
-    await expect(worker.settled).rejects.toEqual(new SlotWaitInterruptedError('SIGHUP'));
-    expect(process.listeners('SIGHUP')).toEqual(before);
+    await expect(worker.settled).rejects.toEqual(
+      new SlotWaitInterruptedError(InterruptSignal.Sighup),
+    );
+    expect(process.listeners(InterruptSignal.Sighup)).toEqual(before);
     expect(log).toEqual(['s1', 's2']);
     expect(readdirSync(dir).sort()).toEqual(['slot-0.lock', 'slot-1.lock']);
     for (const held of [first, second]) held.end();
@@ -415,16 +438,18 @@ describe('withTestSlot (decision 96)', () => {
   it('names the gate a worker waits behind', async () => {
     const log: string[] = [];
     const gatesSeen: SlotHolder[][] = [];
-    const first = run('worker', 's1', log);
-    const second = run('worker', 's2', log);
+    const first = run(SlotHolderKind.Worker, 's1', log);
+    const second = run(SlotHolderKind.Worker, 's2', log);
     await tick();
-    const gate = run('gate', 'gate s9', log);
-    const worker = run('worker', 's3', log, {
+    const gate = run(SlotHolderKind.Gate, 'gate s9', log);
+    const worker = run(SlotHolderKind.Worker, 's3', log, {
       onWait: (_holders, gates) => gatesSeen.push(gates),
     });
     await tick();
 
-    expect(gatesSeen).toEqual([[expect.objectContaining({ kind: 'gate', label: 'gate s9' })]]);
+    expect(gatesSeen).toEqual([
+      [expect.objectContaining({ kind: SlotHolderKind.Gate, label: 'gate s9' })],
+    ]);
     for (const held of [first, second, gate, worker]) held.end();
     await Promise.all([first.settled, second.settled, gate.settled, worker.settled]);
   });
@@ -433,13 +458,18 @@ describe('withTestSlot (decision 96)', () => {
     for (const index of [0, 1]) {
       writeFileSync(
         join(dir, `slot-${index}.lock`),
-        JSON.stringify({ kind: 'worker', label: 'hung', pid: process.ppid, token: 'x' }),
+        JSON.stringify({
+          kind: SlotHolderKind.Worker,
+          label: 'hung',
+          pid: process.ppid,
+          token: 'x',
+        }),
       );
     }
     const expired = vi.fn();
     let ran = false;
     await withTestSlot(
-      { kind: 'gate', label: 'gate s1' },
+      { kind: SlotHolderKind.Gate, label: 'gate s1' },
       async () => {
         ran = true;
       },
@@ -457,11 +487,11 @@ describe('withTestSlot (decision 96)', () => {
       for (const index of [0, 1]) {
         writeFileSync(
           join(dir, `slot-${index}.lock`),
-          JSON.stringify({ kind: 'worker', label: 'forged', pid: 1, token: 'x' }),
+          JSON.stringify({ kind: SlotHolderKind.Worker, label: 'forged', pid: 1, token: 'x' }),
         );
       }
       const log: string[] = [];
-      const held = run('worker', 's1', log);
+      const held = run(SlotHolderKind.Worker, 's1', log);
       await tick();
 
       expect(log).toEqual(['s1']);
@@ -473,7 +503,7 @@ describe('withTestSlot (decision 96)', () => {
   it('reclaims a fifo planted as a slot without blocking on it', async () => {
     execFileSync('mkfifo', [join(dir, 'slot-0.lock'), join(dir, 'slot-1.lock')]);
     const log: string[] = [];
-    const held = run('worker', 's1', log);
+    const held = run(SlotHolderKind.Worker, 's1', log);
     await tick();
 
     expect(log).toEqual(['s1']);
@@ -484,7 +514,7 @@ describe('withTestSlot (decision 96)', () => {
   it("reclaims a symlink planted as a slot without following it, even to a live holder's record", async () => {
     const target = join(tempDir('pup-planted-'), 'record.json');
     const record = JSON.stringify({
-      kind: 'worker',
+      kind: SlotHolderKind.Worker,
       label: 'planted',
       pid: process.pid,
       token: 'x',
@@ -493,7 +523,7 @@ describe('withTestSlot (decision 96)', () => {
     symlinkSync(target, join(dir, 'slot-0.lock'));
     symlinkSync(target, join(dir, 'slot-1.lock'));
     const log: string[] = [];
-    const held = run('worker', 's1', log);
+    const held = run(SlotHolderKind.Worker, 's1', log);
     await tick();
 
     expect(log).toEqual(['s1']);
@@ -511,7 +541,7 @@ describe('withTestSlot (decision 96)', () => {
     const unusable = vi.fn();
     let ran = false;
     await withTestSlot(
-      { kind: 'gate', label: 'gate s1' },
+      { kind: SlotHolderKind.Gate, label: 'gate s1' },
       async () => {
         ran = true;
       },
@@ -521,9 +551,9 @@ describe('withTestSlot (decision 96)', () => {
 
     expect(ran).toBe(true);
     expect(unusable).toHaveBeenCalledWith(expect.objectContaining({ code: 'EEXIST' }));
-    await expect(withTestSlot({ kind: 'worker', label: 's1' }, worker, options)).rejects.toThrow(
-      expect.objectContaining({ code: 'EEXIST' }),
-    );
+    await expect(
+      withTestSlot({ kind: SlotHolderKind.Worker, label: 's1' }, worker, options),
+    ).rejects.toThrow(expect.objectContaining({ code: 'EEXIST' }));
     expect(worker).not.toHaveBeenCalled();
     expect(readdirSync(dir)).toEqual([basename(fifo)]);
   });
@@ -532,12 +562,12 @@ describe('withTestSlot (decision 96)', () => {
     const wait = join(dir, 'gate-1-x.wait');
     writeFileSync(
       wait,
-      JSON.stringify({ kind: 'gate', label: 'stale', pid: process.ppid, token: 'x' }),
+      JSON.stringify({ kind: SlotHolderKind.Gate, label: 'stale', pid: process.ppid, token: 'x' }),
     );
     const longAgo = (Date.now() - GATE_SLOT_WAIT_MS - 60_000) / 1000;
     utimesSync(wait, longAgo, longAgo);
     const log: string[] = [];
-    const held = run('worker', 's1', log);
+    const held = run(SlotHolderKind.Worker, 's1', log);
     await tick();
 
     expect(log).toEqual(['s1']);
@@ -551,7 +581,7 @@ describe('withTestSlot (decision 96)', () => {
     const unusable = vi.fn();
     let ran = false;
     await withTestSlot(
-      { kind: 'gate', label: 'gate s1' },
+      { kind: SlotHolderKind.Gate, label: 'gate s1' },
       async () => {
         ran = true;
       },
@@ -568,7 +598,7 @@ describe('withTestSlot (decision 96)', () => {
     const fn = vi.fn(async () => undefined);
 
     await expect(
-      withTestSlot({ kind: 'worker', label: 's1' }, fn, { ...options, dir: planted }),
+      withTestSlot({ kind: SlotHolderKind.Worker, label: 's1' }, fn, { ...options, dir: planted }),
     ).rejects.toThrow();
     expect(fn).not.toHaveBeenCalled();
   });
@@ -576,10 +606,10 @@ describe('withTestSlot (decision 96)', () => {
   it('ignores the wait file of a gate that died waiting', async () => {
     writeFileSync(
       join(dir, 'gate-1-x.wait'),
-      JSON.stringify({ kind: 'gate', label: 'gone', pid: deadPid(), token: 'x' }),
+      JSON.stringify({ kind: SlotHolderKind.Gate, label: 'gone', pid: deadPid(), token: 'x' }),
     );
     const log: string[] = [];
-    const held = run('worker', 's1', log);
+    const held = run(SlotHolderKind.Worker, 's1', log);
     await tick();
 
     expect(log).toEqual(['s1']);
@@ -591,7 +621,7 @@ describe('withTestSlot (decision 96)', () => {
   it('frees the slot when the run throws', async () => {
     await expect(
       withTestSlot(
-        { kind: 'worker', label: 's1' },
+        { kind: SlotHolderKind.Worker, label: 's1' },
         async () => {
           throw new Error('suite failed');
         },
@@ -603,12 +633,17 @@ describe('withTestSlot (decision 96)', () => {
 
   it('leaves a slot another run took since alone', async () => {
     await withTestSlot(
-      { kind: 'worker', label: 's1' },
+      { kind: SlotHolderKind.Worker, label: 's1' },
       async () => {
         // Reclaimed and taken again while this run was still going.
         writeFileSync(
           join(dir, 'slot-0.lock'),
-          JSON.stringify({ kind: 'worker', label: 's2', pid: process.pid, token: 'other' }),
+          JSON.stringify({
+            kind: SlotHolderKind.Worker,
+            label: 's2',
+            pid: process.pid,
+            token: 'other',
+          }),
         );
       },
       options,
@@ -621,7 +656,7 @@ describe('withTestSlot (decision 96)', () => {
     const nested = join(dir, 'nested');
     let ran = false;
     await withTestSlot(
-      { kind: 'gate', label: 'gate s1' },
+      { kind: SlotHolderKind.Gate, label: 'gate s1' },
       async () => {
         ran = true;
       },
@@ -635,7 +670,7 @@ describe('withTestSlot (decision 96)', () => {
     chmodSync(dir, 0o500);
     let ran = false;
     await withTestSlot(
-      { kind: 'gate', label: 'gate s1' },
+      { kind: SlotHolderKind.Gate, label: 'gate s1' },
       async () => {
         ran = true;
       },
@@ -652,7 +687,7 @@ describe('testRunsElsewhere (decision 134)', () => {
     dir = tempDir('pup-slots-');
   });
 
-  const record = (kind: 'gate' | 'worker', pid: number): string =>
+  const record = (kind: SlotHolderKind, pid: number): string =>
     JSON.stringify({ kind, label: 'other', pid, token: 'x' });
 
   it('answers false for slots no run holds, or not made yet', () => {
@@ -661,21 +696,21 @@ describe('testRunsElsewhere (decision 134)', () => {
   });
 
   it('answers true while another live process holds a slot', () => {
-    writeFileSync(join(dir, 'slot-1.lock'), record('worker', process.ppid));
+    writeFileSync(join(dir, 'slot-1.lock'), record(SlotHolderKind.Worker, process.ppid));
 
     expect(testRunsElsewhere({ dir, slots: 2 })).toBe(true);
   });
 
   it("answers true while another live process's gate waits for a slot", () => {
-    writeFileSync(join(dir, 'gate-1-x.wait'), record('gate', process.ppid));
+    writeFileSync(join(dir, 'gate-1-x.wait'), record(SlotHolderKind.Gate, process.ppid));
 
     expect(testRunsElsewhere({ dir, slots: 2 })).toBe(true);
   });
 
   it("leaves out this process's own slot and a dead holder's, reclaiming the dead one", () => {
-    writeFileSync(join(dir, 'slot-0.lock'), record('gate', process.pid));
-    writeFileSync(join(dir, 'slot-1.lock'), record('worker', deadPid()));
-    writeFileSync(join(dir, 'gate-1-x.wait'), record('gate', deadPid()));
+    writeFileSync(join(dir, 'slot-0.lock'), record(SlotHolderKind.Gate, process.pid));
+    writeFileSync(join(dir, 'slot-1.lock'), record(SlotHolderKind.Worker, deadPid()));
+    writeFileSync(join(dir, 'gate-1-x.wait'), record(SlotHolderKind.Gate, deadPid()));
 
     expect(testRunsElsewhere({ dir, slots: 2 })).toBe(false);
     expect(readdirSync(dir)).toEqual(['slot-0.lock']);
@@ -710,7 +745,11 @@ describe('runSessionTest (decision 96)', () => {
     const dir = tempDir('pup-session-test-');
     const out = join(dir, 'args');
     const status = await runSessionTest({
-      command: { stage: 'test', command: 'sh', args: ['-c', `printf '%s\\n' "$@" > '${out}'`] },
+      command: {
+        stage: GateStage.Test,
+        command: 'sh',
+        args: ['-c', `printf '%s\\n' "$@" > '${out}'`],
+      },
       args: ['a.test.ts', 'b c.test.ts'],
       cwd: dir,
       sessionId: 's1',
@@ -737,7 +776,7 @@ describe('runSessionTest (decision 96)', () => {
     writeFileSync(join(dir, 'package.json'), '{"name":"x"}\n');
 
     const status = await runSessionTest({
-      command: { stage: 'test', command: 'false', args: [] },
+      command: { stage: GateStage.Test, command: 'false', args: [] },
       args: ['--related', './sum.ts'],
       cwd: dir,
       sessionId: 's1',
@@ -752,9 +791,9 @@ describe('runSessionTest (decision 96)', () => {
 
   it('passes a stop on to the run, answering the status of a run a signal ended', async () => {
     const dir = tempDir('pup-session-test-');
-    const before = process.listeners('SIGTERM');
+    const before = process.listeners(InterruptSignal.Sigterm);
     const status = runSessionTest({
-      command: { stage: 'test', command: 'sleep', args: ['10'] },
+      command: { stage: GateStage.Test, command: 'sleep', args: ['10'] },
       args: [],
       cwd: dir,
       sessionId: 's1',
@@ -764,13 +803,13 @@ describe('runSessionTest (decision 96)', () => {
     while (!forward) {
       await tick(20);
       [forward] = process
-        .listeners('SIGTERM')
+        .listeners(InterruptSignal.Sigterm)
         .filter((fn) => !before.includes(fn)) as NodeJS.SignalsListener[];
     }
-    forward('SIGTERM');
+    forward(InterruptSignal.Sigterm);
 
     expect(await status).toBe(143);
-    expect(process.listeners('SIGTERM')).toEqual(before);
+    expect(process.listeners(InterruptSignal.Sigterm)).toEqual(before);
     expect(readdirSync(join(dir, 'slots'))).toEqual([]);
   });
 
@@ -781,13 +820,13 @@ describe('runSessionTest (decision 96)', () => {
     // Held by a live gate in another process, the other slot free.
     writeFileSync(
       join(slots, 'slot-0.lock'),
-      JSON.stringify({ kind: 'gate', label: 't-9', pid: process.ppid, token: 'x' }),
+      JSON.stringify({ kind: SlotHolderKind.Gate, label: 't-9', pid: process.ppid, token: 'x' }),
     );
     const ran = join(dir, 'ran');
     const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     onTestFinished(() => errors.mockRestore());
     const status = await runSessionTest({
-      command: { stage: 'test', command: 'touch', args: [ran] },
+      command: { stage: GateStage.Test, command: 'touch', args: [ran] },
       args: [],
       cwd: dir,
       sessionId: 's1',
@@ -813,13 +852,13 @@ describe('runSessionTest (decision 96)', () => {
     mkdirSync(slots);
     writeFileSync(
       join(slots, 'slot-0.lock'),
-      JSON.stringify({ kind: 'gate', label: 't-9', pid: process.ppid, token: 'x' }),
+      JSON.stringify({ kind: SlotHolderKind.Gate, label: 't-9', pid: process.ppid, token: 'x' }),
     );
     const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     onTestFinished(() => errors.mockRestore());
     let status: number | undefined;
     void runSessionTest({
-      command: { stage: 'test', command: 'touch', args: [join(dir, 'ran')] },
+      command: { stage: GateStage.Test, command: 'touch', args: [join(dir, 'ran')] },
       args: [],
       cwd: dir,
       sessionId: 's1',
@@ -850,13 +889,13 @@ describe('runSessionTest (decision 96)', () => {
     const lock = join(slots, 'slot-0.lock');
     writeFileSync(
       lock,
-      JSON.stringify({ kind: 'gate', label: 't-9', pid: process.ppid, token: 'x' }),
+      JSON.stringify({ kind: SlotHolderKind.Gate, label: 't-9', pid: process.ppid, token: 'x' }),
     );
     const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     onTestFinished(() => errors.mockRestore());
     let status: number | undefined;
     void runSessionTest({
-      command: { stage: 'test', command: 'true', args: [] },
+      command: { stage: GateStage.Test, command: 'true', args: [] },
       args: [],
       cwd: dir,
       sessionId: 's1',
@@ -879,18 +918,18 @@ describe('runSessionTest (decision 96)', () => {
 
   it('fails with the error of a command that cannot start, freeing its slot', async () => {
     const dir = tempDir('pup-session-test-');
-    const before = process.listeners('SIGINT');
+    const before = process.listeners(InterruptSignal.Sigint);
 
     await expect(
       runSessionTest({
-        command: { stage: 'test', command: join(dir, 'no-such-runner'), args: [] },
+        command: { stage: GateStage.Test, command: join(dir, 'no-such-runner'), args: [] },
         args: [],
         cwd: dir,
         sessionId: 's1',
         slots: { dir: join(dir, 'slots'), pollMs: 10 },
       }),
     ).rejects.toMatchObject({ code: 'ENOENT' });
-    expect(process.listeners('SIGINT')).toEqual(before);
+    expect(process.listeners(InterruptSignal.Sigint)).toEqual(before);
     expect(readdirSync(join(dir, 'slots'))).toEqual([]);
   });
 });
@@ -983,7 +1022,7 @@ describe('sessionTestCommand (decision 96)', () => {
 
   it("answers the first adapter's test command", () => {
     expect(sessionTestCommand(repoWith('test: make check\n'))).toEqual({
-      stage: 'test',
+      stage: GateStage.Test,
       command: 'sh',
       args: ['-c', 'make check'],
     });

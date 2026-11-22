@@ -23,13 +23,14 @@ import { runGit, verifiedWorktreeGitEnv } from '../core/git-diff.client.js';
 import { projectId, projectPaths } from '../core/paths.utils.js';
 import { shellWord } from '../core/shell-quote.utils.js';
 import type { WorktreeGitEnv } from '../core/types/git-diff.types.js';
+import { InputBoxState } from './enums/input-box-state.enums.js';
 import {
   ConfigDirRefusedError,
   SessionPaneMissingError,
   SteerNotDeliveredError,
 } from './errors/session-runtime.errors.js';
 import { hasUnsubmittedInput, inputBoxLook, inputBoxState, pasteLanded } from './pane.utils.js';
-import type { InputBoxLook, InputBoxState } from './types/pane.types.js';
+import type { InputBoxLook } from './types/pane.types.js';
 import type {
   ClaudeWindowOptions,
   ConductorLaunchOptions,
@@ -1182,24 +1183,24 @@ export function conductorPane(repoProjectId: string): SessionPane | undefined {
  */
 export function steerPane(pane: SessionPane, message: string): void {
   const box = readInputBox(pane);
-  if (box === 'absent') {
+  if (box === InputBoxState.Absent) {
     throw new SteerNotDeliveredError(pane.sessionId, message.length, 'box-absent');
   }
   // A paste appends to whatever the box holds (a draft, a leftover), and the
   // box then never reads as the message alone; start from an empty one, and
   // say so when one cannot be had rather than paste into it and refuse later.
-  if (box === 'holds' && !clearInputBox(pane)) {
+  if (box === InputBoxState.Holds && !clearInputBox(pane)) {
     throw new SteerNotDeliveredError(pane.sessionId, message.length, 'box-not-cleared');
   }
   pasteText(pane, message);
   if (!awaitPasteLanded(pane, message)) {
-    if (readInputBox(pane) !== 'absent') clearInputBox(pane);
+    if (readInputBox(pane) !== InputBoxState.Absent) clearInputBox(pane);
     throw new SteerNotDeliveredError(pane.sessionId, message.length);
   }
   pressEnter(pane);
   for (let retry = 0; retry < SUBMIT_RETRY_LIMIT; retry++) {
     syncSleep(SUBMIT_VERIFY_MS);
-    if (readInputBox(pane) !== 'holds') return;
+    if (readInputBox(pane) !== InputBoxState.Holds) return;
     pressEnter(pane);
   }
 }
@@ -1245,7 +1246,7 @@ export function pasteIntoPane(pane: SessionPane, message: string): boolean {
   if (awaitPasteLanded(pane, message)) return true;
   // A dialog that took the screen is a likely reason the paste never showed,
   // and Ctrl-U there would press keys into it.
-  if (readInputBox(pane) !== 'absent') clearInputBox(pane);
+  if (readInputBox(pane) !== InputBoxState.Absent) clearInputBox(pane);
   return false;
 }
 
@@ -1311,7 +1312,7 @@ function clearInputBox(pane: SessionPane): boolean {
     tmuxAt(pane, ['send-keys', '-t', target, 'C-u']);
     syncSleep(CLEAR_SETTLE_MS);
     const box = readInputBox(pane);
-    if (box !== 'holds') return box === 'empty';
+    if (box !== InputBoxState.Holds) return box === InputBoxState.Empty;
   }
   return false;
 }

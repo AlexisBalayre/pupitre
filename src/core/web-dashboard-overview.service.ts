@@ -16,6 +16,9 @@ import {
   prFixRounds,
   routeLabel,
 } from './dashboard.service.js';
+import { DebtMetric } from './enums/debt-metric.enums.js';
+import { EventType } from './enums/event-type.enums.js';
+import { SessionActivityKind } from './enums/session-activity-kind.enums.js';
 import { countLedgerEntriesSince, listLedgerEntries } from './ledger.repository.js';
 import { projectId } from './paths.utils.js';
 import { displayText, parseJsonOr, toIsoUtc } from './report-data.utils.js';
@@ -168,7 +171,8 @@ function figureTiles(
       const value = figures[metric.key];
       const before = past[metric.key];
       const comparable =
-        metric.key !== 'duplicatedLines' || pastDebt?.duplicationRule === current?.duplicationRule;
+        metric.key !== DebtMetric.DuplicatedLines ||
+        pastDebt?.duplicationRule === current?.duplicationRule;
       const change =
         value === undefined
           ? 'not measured — `pup init` measures it'
@@ -224,10 +228,10 @@ function mergesPerWeek(db: Database, now: number): ChartDatum[] {
   const counts = new Array<number>(MERGE_WEEKS).fill(0);
   const firstMerges = db
     .prepare(
-      `SELECT MIN(created_at) AS at FROM events WHERE type = 'merge'
+      `SELECT MIN(created_at) AS at FROM events WHERE type = ?
        GROUP BY session_id HAVING MIN(created_at) >= datetime(?)`,
     )
-    .all(new Date(end - MERGE_WEEKS * WEEK_MS).toISOString()) as { at: string }[];
+    .all(EventType.Merge, new Date(end - MERGE_WEEKS * WEEK_MS).toISOString()) as { at: string }[];
   for (const { at } of firstMerges) {
     const week = Math.floor((end - Date.parse(toIsoUtc(at))) / WEEK_MS);
     const slot = MERGE_WEEKS - 1 - week;
@@ -469,12 +473,14 @@ function labelOf(session: DashboardSession): string {
 
 function activityText(session: DashboardSession): string {
   if (session.stalledAgeMs !== undefined) return 'stalled — see Needs you';
-  if (session.activity?.kind === 'awaiting-input') {
+  if (session.activity?.kind === SessionActivityKind.AwaitingInput) {
     const detail = sanitizeReason(session.activity.detail ?? '');
     return `waiting on input${detail ? ` (${detail})` : ''}`;
   }
-  if (session.activity?.kind === 'idle') return 'idle (turn ended, no done signal)';
-  if (session.activity?.kind === 'background') return 'working on a background shell';
+  if (session.activity?.kind === SessionActivityKind.Idle)
+    return 'idle (turn ended, no done signal)';
+  if (session.activity?.kind === SessionActivityKind.Background)
+    return 'working on a background shell';
   return '';
 }
 

@@ -20,13 +20,14 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   conductorPane: vi.fn(() => undefined),
   deadTurnError: vi.fn(() => undefined),
   steerPane: vi.fn(),
-  readInputBox: vi.fn(() => 'empty'),
+  readInputBox: vi.fn(() => InputBoxState.Empty),
   pasteIntoPane: vi.fn(() => true),
   runsSessionLaunch: vi.fn(() => true),
   submitPane: vi.fn(),
 }));
 
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
+import { InputBoxState } from '../claude/enums/input-box-state.enums.js';
 import {
   deadTurnError,
   pasteIntoPane,
@@ -45,6 +46,7 @@ import {
   isHoldTurnOpen,
 } from './cache-hold.service.js';
 import { openStore } from './db.client.js';
+import { EventType } from './enums/event-type.enums.js';
 import { projectId, projectPaths } from './paths.utils.js';
 import {
   appendEvent,
@@ -95,7 +97,7 @@ function seedEventsFile(repo: string, id: string, ageMs: number, events = [TOOL,
 
 function holdsOf(db: Database, id: string): unknown[] {
   return listEvents(db, id)
-    .filter((event) => event.type === 'cache_hold')
+    .filter((event) => event.type === EventType.CacheHold)
     .map((event) => JSON.parse(event.payload));
 }
 
@@ -110,7 +112,7 @@ describe('holdIdleCaches (decision 179)', () => {
     repo = tempDir('pup-cache-hold-');
     vi.clearAllMocks();
     vi.mocked(deadTurnError).mockReturnValue(undefined);
-    vi.mocked(readInputBox).mockReturnValue('empty');
+    vi.mocked(readInputBox).mockReturnValue(InputBoxState.Empty);
     vi.mocked(pasteIntoPane).mockReturnValue(true);
     vi.mocked(runsSessionLaunch).mockReturnValue(true);
   });
@@ -133,13 +135,13 @@ describe('holdIdleCaches (decision 179)', () => {
     expect(hold?.idleMs).toBeGreaterThanOrEqual(CACHE_HOLD_AFTER_MS);
     // Where the hold's turn starts writing: the file as it stood when it was typed.
     expect(hold?.eventsBytes).toBe(statSync(projectPaths(repo).eventsFile('s1')).size);
-    expect(listEvents(db, 's1').filter((event) => event.type === 'steer')).toEqual([]);
+    expect(listEvents(db, 's1').filter((event) => event.type === EventType.Steer)).toEqual([]);
   });
 
   it('never gives a blocked worker a turn, even with a question open', () => {
     seedSession(db, repo, 's1', 'blocked');
     seedEventsFile(repo, 's1', HOLD_AGE_MS);
-    appendEvent(db, 's1', 'question', { text: 'which ADR number?' });
+    appendEvent(db, 's1', EventType.Question, { text: 'which ADR number?' });
 
     expect(holdIdleCaches(db, repo, Date.now())).toEqual([]);
     expect(readInputBox).not.toHaveBeenCalled();
@@ -163,7 +165,7 @@ describe('holdIdleCaches (decision 179)', () => {
     });
 
     it('is held while its question is open, and the hold leaves the question open', () => {
-      appendEvent(db, 's1', 'question', { text: 'which ADR number?' });
+      appendEvent(db, 's1', EventType.Question, { text: 'which ADR number?' });
 
       expect(holdIdleCaches(db, repo, Date.now())).toEqual(['s1']);
       expect(openQuestion(db, 's1')?.text).toBe('which ADR number?');
@@ -174,8 +176,8 @@ describe('holdIdleCaches (decision 179)', () => {
     });
 
     it('is not held once a steer answered its question', () => {
-      appendEvent(db, 's1', 'question', { text: 'which ADR number?' });
-      appendEvent(db, 's1', 'steer', { kind: 'manual', by: 'operator' });
+      appendEvent(db, 's1', EventType.Question, { text: 'which ADR number?' });
+      appendEvent(db, 's1', EventType.Steer, { kind: 'manual', by: 'operator' });
 
       expect(holdIdleCaches(db, repo, Date.now())).toEqual([]);
     });
@@ -207,7 +209,7 @@ describe('holdIdleCaches (decision 179)', () => {
   it('types nothing into a box that holds a draft, and records nothing', () => {
     seedSession(db, repo, 's1', 'awaiting-review');
     seedEventsFile(repo, 's1', HOLD_AGE_MS);
-    vi.mocked(readInputBox).mockReturnValue('holds');
+    vi.mocked(readInputBox).mockReturnValue(InputBoxState.Holds);
 
     expect(holdIdleCaches(db, repo, Date.now())).toEqual([]);
     expect(pasteIntoPane).not.toHaveBeenCalled();
@@ -227,7 +229,9 @@ describe('holdIdleCaches (decision 179)', () => {
   it('presses Enter once more when the first left the hold in the box, and records the hold it sent', () => {
     seedSession(db, repo, 's1', 'awaiting-review');
     seedEventsFile(repo, 's1', HOLD_AGE_MS);
-    vi.mocked(readInputBox).mockReturnValueOnce('empty').mockReturnValueOnce('holds');
+    vi.mocked(readInputBox)
+      .mockReturnValueOnce(InputBoxState.Empty)
+      .mockReturnValueOnce(InputBoxState.Holds);
 
     expect(holdIdleCaches(db, repo, Date.now())).toEqual(['s1']);
     expect(submitPane).toHaveBeenCalledTimes(2);
@@ -238,9 +242,9 @@ describe('holdIdleCaches (decision 179)', () => {
     seedSession(db, repo, 's1', 'awaiting-review');
     seedEventsFile(repo, 's1', HOLD_AGE_MS);
     vi.mocked(readInputBox)
-      .mockReturnValueOnce('empty')
-      .mockReturnValueOnce('holds')
-      .mockReturnValueOnce('holds');
+      .mockReturnValueOnce(InputBoxState.Empty)
+      .mockReturnValueOnce(InputBoxState.Holds)
+      .mockReturnValueOnce(InputBoxState.Holds);
 
     expect(holdIdleCaches(db, repo, Date.now())).toEqual([]);
     expect(submitPane).toHaveBeenCalledTimes(2);
@@ -252,7 +256,9 @@ describe('holdIdleCaches (decision 179)', () => {
   it('presses no second Enter into a box gone from the screen', () => {
     seedSession(db, repo, 's1', 'awaiting-review');
     seedEventsFile(repo, 's1', HOLD_AGE_MS);
-    vi.mocked(readInputBox).mockReturnValueOnce('empty').mockReturnValueOnce('absent');
+    vi.mocked(readInputBox)
+      .mockReturnValueOnce(InputBoxState.Empty)
+      .mockReturnValueOnce(InputBoxState.Absent);
 
     expect(holdIdleCaches(db, repo, Date.now())).toEqual(['s1']);
     expect(submitPane).toHaveBeenCalledTimes(1);
@@ -262,7 +268,7 @@ describe('holdIdleCaches (decision 179)', () => {
     seedSession(db, repo, 's1', 'awaiting-review');
     seedEventsFile(repo, 's1', HOLD_AGE_MS);
     for (let hold = 0; hold < CACHE_HOLD_LIMIT; hold++) {
-      appendEvent(db, 's1', 'cache_hold', { idleMs: HOLD_AGE_MS, eventsBytes: 0 });
+      appendEvent(db, 's1', EventType.CacheHold, { idleMs: HOLD_AGE_MS, eventsBytes: 0 });
     }
     // Each hold's turn moved the events file after it.
     db.prepare("UPDATE events SET created_at = datetime('now', '-2 hours')").run();
@@ -295,10 +301,10 @@ describe('holdIdleCaches (decision 179)', () => {
       seedSession(db, repo, id, 'awaiting-review');
       seedEventsFile(repo, id, HOLD_AGE_MS);
     }
-    appendEvent(db, 'steered', 'steer', { kind: 'message', by: 'pup-t-peer' });
-    appendEvent(db, 'respawned', 'respawn', { delivered: true });
+    appendEvent(db, 'steered', EventType.Steer, { kind: 'message', by: 'pup-t-peer' });
+    appendEvent(db, 'respawned', EventType.Respawn, { delivered: true });
     // A steer whose turn moved the events file after it.
-    appendEvent(db, 'earlier', 'steer', { kind: 'message', by: 'pup-t-peer' });
+    appendEvent(db, 'earlier', EventType.Steer, { kind: 'message', by: 'pup-t-peer' });
     db.prepare(
       "UPDATE events SET created_at = datetime('now', '-2 hours') WHERE session_id = 'earlier'",
     ).run();
@@ -311,7 +317,7 @@ describe('holdIdleCaches (decision 179)', () => {
     const deadTurn = '⏺ API Error: Connection lost while your computer was asleep';
     seedSession(db, repo, 's1', 'running');
     seedEventsFile(repo, 's1', HOLD_AGE_MS);
-    appendEvent(db, 's1', 'question', { text: 'which ADR number?' });
+    appendEvent(db, 's1', EventType.Question, { text: 'which ADR number?' });
     vi.mocked(deadTurnError).mockReturnValue(deadTurn);
 
     expect(sweepDeadTurns(db, repo, Date.now())).toEqual([{ id: 's1', reason: deadTurn }]);
@@ -325,7 +331,7 @@ describe('holdIdleCaches (decision 179)', () => {
   it("leaves the hold's dead turn to the operator, though its idle prompt moved the events file", () => {
     seedSession(db, repo, 's1', 'running');
     seedEventsFile(repo, 's1', HOLD_AGE_MS);
-    appendEvent(db, 's1', 'question', { text: 'which ADR number?' });
+    appendEvent(db, 's1', EventType.Question, { text: 'which ADR number?' });
     expect(holdIdleCaches(db, repo, Date.now())).toEqual(['s1']);
     db.prepare("UPDATE events SET created_at = datetime('now', '-12 minutes')").run();
     const eventsFile = projectPaths(repo).eventsFile('s1');
@@ -406,7 +412,7 @@ describe('holdIdleCaches (decision 179)', () => {
       seedSession(db, repo, 's1', 'running');
       seedEventsFile(repo, 's1', HOLD_AGE_MS);
       eventsFile = projectPaths(repo).eventsFile('s1');
-      appendEvent(db, 's1', 'cache_hold', {
+      appendEvent(db, 's1', EventType.CacheHold, {
         idleMs: HOLD_AGE_MS,
         eventsBytes: statSync(eventsFile).size,
       });
@@ -415,7 +421,7 @@ describe('holdIdleCaches (decision 179)', () => {
     });
 
     function holdRow(): EventRow {
-      const [hold] = listEvents(db, 's1').filter((event) => event.type === 'cache_hold');
+      const [hold] = listEvents(db, 's1').filter((event) => event.type === EventType.CacheHold);
       if (!hold) throw new Error('no hold recorded');
       return hold;
     }
@@ -439,7 +445,9 @@ describe('holdIdleCaches (decision 179)', () => {
         JSON.stringify({ idleMs: HOLD_AGE_MS }),
         JSON.stringify({ idleMs: HOLD_AGE_MS, eventsBytes: -1 }),
       ]) {
-        db.prepare("UPDATE events SET payload = ? WHERE type = 'cache_hold'").run(payload);
+        db.prepare(`UPDATE events SET payload = ? WHERE type = '${EventType.CacheHold}'`).run(
+          payload,
+        );
         expect(isHoldTurnOpen(eventsFile, holdRow())).toBe(false);
       }
     });

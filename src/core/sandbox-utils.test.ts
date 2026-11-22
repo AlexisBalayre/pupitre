@@ -32,6 +32,7 @@ vi.mock('node:fs', async (importOriginal) => {
 });
 
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
+import { InterruptSignal } from './enums/interrupt-signal.enums.js';
 import { GateInterruptedError, UndeclaredSandboxError } from './errors/sandbox.errors.js';
 import { projectId } from './paths.utils.js';
 import {
@@ -384,7 +385,7 @@ describe('runGateChild', () => {
     const group = stageGroup(await pidIn(cwd, 'sh.pid'));
     expect(group.alive()).toBe(true);
 
-    pup.kill('SIGTERM');
+    pup.kill(InterruptSignal.Sigterm);
     await new Promise((resolve) => setTimeout(resolve, 500));
     pup.kill('SIGKILL');
 
@@ -403,44 +404,44 @@ describe('runGateChild', () => {
 
     it('stops the child and everything it started, then rejects and stops listening', async () => {
       const cwd = fakeCheckout();
-      const before = process.listeners('SIGTERM');
+      const before = process.listeners(InterruptSignal.Sigterm);
       const run = runGateChild('sh', ['-c', 'sleep 47.7 & echo $! > bg.pid; wait'], {
         cwd,
         repoPath: cwd,
       });
       const grandchild = await pidIn(cwd, 'bg.pid');
 
-      deliver('SIGTERM', before);
+      deliver(InterruptSignal.Sigterm, before);
       const failure = await run.catch((error: unknown) => error);
 
       expect(failure).toBeInstanceOf(GateInterruptedError);
-      expect((failure as GateInterruptedError).signal).toBe('SIGTERM');
+      expect((failure as GateInterruptedError).signal).toBe(InterruptSignal.Sigterm);
       await vi.waitFor(() => expect(alive(grandchild)).toBe(false));
-      expect(process.listeners('SIGTERM')).toEqual(before);
+      expect(process.listeners(InterruptSignal.Sigterm)).toEqual(before);
     });
 
     it('forwards to every child still running, the concurrent ones included', async () => {
       const cwd = fakeCheckout();
-      const before = process.listeners('SIGINT');
+      const before = process.listeners(InterruptSignal.Sigint);
       const runs = ['one', 'two'].map((name) =>
         runGateChild('sh', ['-c', `echo $$ > ${name}.pid; sleep 47.8`], { cwd, repoPath: cwd }),
       );
       await Promise.all([pidIn(cwd, 'one.pid'), pidIn(cwd, 'two.pid')]);
 
-      expect(process.listeners('SIGINT')).toHaveLength(before.length + 1);
-      deliver('SIGINT', before);
+      expect(process.listeners(InterruptSignal.Sigint)).toHaveLength(before.length + 1);
+      deliver(InterruptSignal.Sigint, before);
       const failures = await Promise.all(runs.map((run) => run.catch((error: unknown) => error)));
 
       expect(failures.map((failure) => (failure as GateInterruptedError).signal)).toEqual([
-        'SIGINT',
-        'SIGINT',
+        InterruptSignal.Sigint,
+        InterruptSignal.Sigint,
       ]);
-      expect(process.listeners('SIGINT')).toEqual(before);
+      expect(process.listeners(InterruptSignal.Sigint)).toEqual(before);
     });
 
     it('kills a child that ignores the interrupt once its grace runs out', async () => {
       const cwd = fakeCheckout();
-      const before = process.listeners('SIGINT');
+      const before = process.listeners(InterruptSignal.Sigint);
       const run = runGateChild('sh', ['-c', "trap '' INT; echo $$ > sh.pid; sleep 47.9"], {
         cwd,
         repoPath: cwd,
@@ -449,7 +450,7 @@ describe('runGateChild', () => {
 
       vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
       try {
-        deliver('SIGINT', before);
+        deliver(InterruptSignal.Sigint, before);
         expect(alive(child)).toBe(true);
         vi.runOnlyPendingTimers();
       } finally {

@@ -39,10 +39,13 @@ import {
   sh,
   untimed,
 } from '@test/helpers/merge-gate.mock.js';
+import { GateStage } from '../adapters/enums/gate-stage.enums.js';
 import type { Adapter } from '../adapters/types/adapter.types.js';
 import { typescriptAdapter } from '../adapters/typescript.adapter.js';
 import { DUPLICATION_RULE_ID, UNTESTED_PATH_GLOBS } from './constants/merge-gate.constants.js';
 import { openStore } from './db.client.js';
+import { GateStageStatus } from './enums/gate-stage-status.enums.js';
+import { MergeStatus } from './enums/merge-status.enums.js';
 import { gitDiffPaths } from './git-diff.client.js';
 import { globToRegExp } from './glob.utils.js';
 import { runMergeGate } from './merge-gate.service.js';
@@ -74,9 +77,9 @@ describe('the test stage on a change no test reads (decision 139)', { timeout: 2
     const coverage = vi.fn(() => ({ files: {} }));
     const adapter: Adapter = debtAdapter({
       gateCommands: () => [
-        { stage: 'build', command: 'true', args: [] },
-        { stage: 'test', command: 'false', args: [] },
-        { stage: 'lint', command: 'true', args: [] },
+        { stage: GateStage.Build, command: 'true', args: [] },
+        { stage: GateStage.Test, command: 'false', args: [] },
+        { stage: GateStage.Lint, command: 'true', args: [] },
       ],
       coverage,
     });
@@ -87,7 +90,7 @@ describe('the test stage on a change no test reads (decision 139)', { timeout: 2
     runMergeGate(db, { repoPath: repo, sessionId: SESSION_ID, adapters: [adapter] });
 
   const testStage = (stages: { stage: string; status: string }[]) =>
-    stages.find((stage) => stage.stage === 'test');
+    stages.find((stage) => stage.stage === GateStage.Test);
 
   it('skips the test and coverage stages and runs every other one', async () => {
     const worktree = seedSession(db, repo, { scopeIn: ['**'] });
@@ -97,17 +100,20 @@ describe('the test stage on a change no test reads (decision 139)', { timeout: 2
 
     const outcome = await merge(adapter);
 
-    expect(outcome.status).toBe('merged');
-    const skipped = { status: 'skipped', detail: 'no testable file changed (2 files)' };
+    expect(outcome.status).toBe(MergeStatus.Merged);
+    const skipped = {
+      status: GateStageStatus.Skipped,
+      detail: 'no testable file changed (2 files)',
+    };
     const stages = untimed(outcome.report.stages);
-    expect(stages).toContainEqual({ stage: 'test', ...skipped });
+    expect(stages).toContainEqual({ stage: GateStage.Test, ...skipped });
     expect(stages).toContainEqual({ stage: 'coverage', ...skipped });
     expect(stages.map((stage) => stage.stage)).toEqual([
       'worktree-clean',
       'fresh-base',
-      'build',
-      'test',
-      'lint',
+      GateStage.Build,
+      GateStage.Test,
+      GateStage.Lint,
       'scope-audit',
       'diff-size',
       'dead-code',
@@ -115,8 +121,10 @@ describe('the test stage on a change no test reads (decision 139)', { timeout: 2
       'complexity',
       'coverage',
     ]);
-    expect(stages.filter((stage) => stage.status === 'pass').map((stage) => stage.stage)).toEqual(
-      expect.arrayContaining(['build', 'lint', 'scope-audit', 'diff-size']),
+    expect(
+      stages.filter((stage) => stage.status === GateStageStatus.Pass).map((stage) => stage.stage),
+    ).toEqual(
+      expect.arrayContaining([GateStage.Build, GateStage.Lint, 'scope-audit', 'diff-size']),
     );
     expect(coverage).not.toHaveBeenCalled();
   });
@@ -125,12 +133,15 @@ describe('the test stage on a change no test reads (decision 139)', { timeout: 2
   const untestedAdapter = (overrides: Partial<Adapter> = {}): Adapter =>
     debtAdapter({
       gateCommands: () => [
-        { stage: 'build', command: 'true', args: [] },
-        { stage: 'lint', command: 'true', args: [] },
+        { stage: GateStage.Build, command: 'true', args: [] },
+        { stage: GateStage.Lint, command: 'true', args: [] },
       ],
       ...overrides,
     });
-  const notMeasured = { status: 'skipped', detail: 'not measured — no command available' };
+  const notMeasured = {
+    status: GateStageStatus.Skipped,
+    detail: 'not measured — no command available',
+  };
 
   it('names each stage by what could have measured it when there is no test command', async () => {
     const worktree = seedSession(db, repo, { scopeIn: ['**'] });
@@ -140,10 +151,10 @@ describe('the test stage on a change no test reads (decision 139)', { timeout: 2
     const outcome = await merge(untestedAdapter({ coverage }));
 
     const stages = untimed(outcome.report.stages);
-    expect(stages).toContainEqual({ stage: 'test', ...notMeasured });
+    expect(stages).toContainEqual({ stage: GateStage.Test, ...notMeasured });
     expect(stages).toContainEqual({
       stage: 'coverage',
-      status: 'skipped',
+      status: GateStageStatus.Skipped,
       detail: 'no testable file changed (1 files)',
     });
     expect(coverage).not.toHaveBeenCalled();
@@ -152,7 +163,7 @@ describe('the test stage on a change no test reads (decision 139)', { timeout: 2
   /** The coverage stage judgeCoverage gives an adapter that cannot measure it, on any change. */
   const cannotMeasureCoverage = {
     stage: 'coverage',
-    status: 'skipped',
+    status: GateStageStatus.Skipped,
     detail: 'not measured — adapter cannot measure coverage',
   };
 
@@ -163,7 +174,7 @@ describe('the test stage on a change no test reads (decision 139)', { timeout: 2
     const outcome = await merge(untestedAdapter());
 
     const stages = untimed(outcome.report.stages);
-    expect(stages).toContainEqual({ stage: 'test', ...notMeasured });
+    expect(stages).toContainEqual({ stage: GateStage.Test, ...notMeasured });
     expect(stages).toContainEqual(cannotMeasureCoverage);
   });
 
@@ -172,27 +183,27 @@ describe('the test stage on a change no test reads (decision 139)', { timeout: 2
     commitIn(worktree, '.github/workflows/ci.yml', 'on: push\n');
     const adapter = debtAdapter({
       gateCommands: () => [
-        { stage: 'build', command: 'true', args: [] },
-        { stage: 'test', command: 'false', args: [] },
-        { stage: 'lint', command: 'true', args: [] },
+        { stage: GateStage.Build, command: 'true', args: [] },
+        { stage: GateStage.Test, command: 'false', args: [] },
+        { stage: GateStage.Lint, command: 'true', args: [] },
       ],
     });
 
     const outcome = await merge(adapter);
 
-    expect(outcome.status).toBe('merged');
+    expect(outcome.status).toBe(MergeStatus.Merged);
     const stages = untimed(outcome.report.stages);
     expect(stages).toContainEqual({
-      stage: 'test',
-      status: 'skipped',
+      stage: GateStage.Test,
+      status: GateStageStatus.Skipped,
       detail: 'no testable file changed (1 files)',
     });
     expect(stages).toContainEqual(cannotMeasureCoverage);
   });
 
   it.each([
-    { setting: 'true', status: 'merged', test: 'skipped' },
-    { setting: 'false', status: 'rejected', test: 'fail' },
+    { setting: 'true', status: MergeStatus.Merged, test: GateStageStatus.Skipped },
+    { setting: 'false', status: MergeStatus.Rejected, test: GateStageStatus.Fail },
   ])(
     'with skipTestsOnUntestedChanges: $setting, the test stage is $test',
     async ({ setting, status, test }) => {
@@ -214,8 +225,8 @@ describe('the test stage on a change no test reads (decision 139)', { timeout: 2
 
     const outcome = await merge(failingSuite().adapter);
 
-    expect(outcome.status).toBe('rejected');
-    expect(testStage(outcome.report.stages)?.status).toBe('fail');
+    expect(outcome.status).toBe(MergeStatus.Rejected);
+    expect(testStage(outcome.report.stages)?.status).toBe(GateStageStatus.Fail);
   });
 
   it('runs the test stage when a source file is renamed onto a listed path', async () => {
@@ -226,7 +237,7 @@ describe('the test stage on a change no test reads (decision 139)', { timeout: 2
 
     const outcome = await merge(failingSuite().adapter);
 
-    expect(testStage(outcome.report.stages)?.status).toBe('fail');
+    expect(testStage(outcome.report.stages)?.status).toBe(GateStageStatus.Fail);
   });
 
   it('runs the test stage when a Docusaurus config compiles the changed Markdown', async () => {
@@ -236,7 +247,7 @@ describe('the test stage on a change no test reads (decision 139)', { timeout: 2
 
     const outcome = await merge(failingSuite().adapter);
 
-    expect(testStage(outcome.report.stages)?.status).toBe('fail');
+    expect(testStage(outcome.report.stages)?.status).toBe(GateStageStatus.Fail);
   });
 
   it('runs the test stage when a symlink reaches the changed path', async () => {
@@ -249,7 +260,7 @@ describe('the test stage on a change no test reads (decision 139)', { timeout: 2
 
     const outcome = await merge(failingSuite().adapter);
 
-    expect(testStage(outcome.report.stages)?.status).toBe('fail');
+    expect(testStage(outcome.report.stages)?.status).toBe(GateStageStatus.Fail);
   });
 
   it('leaves the coverage baseline as it was, while the other metrics ratchet', async () => {
@@ -269,7 +280,7 @@ describe('the test stage on a change no test reads (decision 139)', { timeout: 2
 
     const outcome = await merge(failingSuite().adapter);
 
-    expect(outcome.status).toBe('merged');
+    expect(outcome.status).toBe(MergeStatus.Merged);
     const { debt } = JSON.parse(getProject(db, 'proj-1')?.baseline ?? '{}');
     // The ratchet ran: the dead-code findings are new, and coverage kept its bar.
     expect(debt).toMatchObject({ deadExports: [], coverageRatio: 0.8 });
@@ -295,7 +306,7 @@ describe('the test stage on a change no test reads (decision 139)', { timeout: 2
 
     const outcome = await merge(failingSuite().adapter);
 
-    expect(testStage(outcome.report.stages)?.status).toBe('fail');
+    expect(testStage(outcome.report.stages)?.status).toBe(GateStageStatus.Fail);
   });
 
   it('runs the test stage when the tree holds a directory of it in another case', async () => {
@@ -305,7 +316,7 @@ describe('the test stage on a change no test reads (decision 139)', { timeout: 2
 
     const outcome = await merge(failingSuite().adapter);
 
-    expect(testStage(outcome.report.stages)?.status).toBe('fail');
+    expect(testStage(outcome.report.stages)?.status).toBe(GateStageStatus.Fail);
   });
 
   // `--name-only` pairs renames as the shared config says and `--raw -M -l0`
@@ -323,7 +334,7 @@ describe('the test stage on a change no test reads (decision 139)', { timeout: 2
 
     const outcome = await merge(failingSuite().adapter);
 
-    expect(testStage(outcome.report.stages)?.status).toBe('fail');
+    expect(testStage(outcome.report.stages)?.status).toBe(GateStageStatus.Fail);
   });
 
   /** Commits a gitlink to the repo's own HEAD at `path`, with the empty directory checkout leaves. */
@@ -340,7 +351,7 @@ describe('the test stage on a change no test reads (decision 139)', { timeout: 2
 
     const outcome = await merge(failingSuite().adapter);
 
-    expect(testStage(outcome.report.stages)?.status).toBe('fail');
+    expect(testStage(outcome.report.stages)?.status).toBe(GateStageStatus.Fail);
   });
 
   // `diff.ignoreSubmodules`, or a `submodule.<name>.ignore`, drops a gitlink
@@ -353,7 +364,7 @@ describe('the test stage on a change no test reads (decision 139)', { timeout: 2
 
     const outcome = await merge(failingSuite().adapter);
 
-    expect(testStage(outcome.report.stages)?.status).toBe('fail');
+    expect(testStage(outcome.report.stages)?.status).toBe(GateStageStatus.Fail);
   });
 
   // Moving a file out of a nested package changes that package, though
@@ -371,7 +382,7 @@ describe('the test stage on a change no test reads (decision 139)', { timeout: 2
 
     const outcome = await merge(adapter);
 
-    expect(testStage(outcome.report.stages)?.status).toBe('fail');
+    expect(testStage(outcome.report.stages)?.status).toBe(GateStageStatus.Fail);
   });
 
   /** Moves `from` to `to` in the index only, so a case-folding filesystem keeps every spelling. */
@@ -395,7 +406,7 @@ describe('the test stage on a change no test reads (decision 139)', { timeout: 2
 
     const outcome = await merge(failingSuite().adapter);
 
-    expect(testStage(outcome.report.stages)?.status).toBe('fail');
+    expect(testStage(outcome.report.stages)?.status).toBe(GateStageStatus.Fail);
   });
 
   it('runs the test stage when a renamed path folds onto another in the tree', async () => {
@@ -406,7 +417,7 @@ describe('the test stage on a change no test reads (decision 139)', { timeout: 2
 
     const outcome = await merge(failingSuite().adapter);
 
-    expect(testStage(outcome.report.stages)?.status).toBe('fail');
+    expect(testStage(outcome.report.stages)?.status).toBe(GateStageStatus.Fail);
   });
 
   // A session can write the shared config, and a `core.worktree` aimed at `/`
@@ -440,7 +451,7 @@ describe('the test stage on a change no test reads (decision 139)', { timeout: 2
 
       const outcome = await merge(armedSuite(() => aimedAway(worktree)));
 
-      expect(testStage(outcome.report.stages)?.status).toBe('fail');
+      expect(testStage(outcome.report.stages)?.status).toBe(GateStageStatus.Fail);
     });
 
     it('still sees the tree hold the changed path in another case', async () => {
@@ -450,7 +461,7 @@ describe('the test stage on a change no test reads (decision 139)', { timeout: 2
 
       const outcome = await merge(armedSuite(() => aimedAway(worktree)));
 
-      expect(testStage(outcome.report.stages)?.status).toBe('fail');
+      expect(testStage(outcome.report.stages)?.status).toBe(GateStageStatus.Fail);
     });
 
     // Relative to a cwd under the prefix, `git diff` names only the files under
@@ -467,7 +478,7 @@ describe('the test stage on a change no test reads (decision 139)', { timeout: 2
 
       const outcome = await merge(armedSuite(arm));
 
-      expect(testStage(outcome.report.stages)?.status).toBe('fail');
+      expect(testStage(outcome.report.stages)?.status).toBe(GateStageStatus.Fail);
     });
 
     it('still sees a dependency file name Docusaurus', async () => {
@@ -477,7 +488,7 @@ describe('the test stage on a change no test reads (decision 139)', { timeout: 2
 
       const outcome = await merge(armedSuite(() => aimedAway(worktree)));
 
-      expect(testStage(outcome.report.stages)?.status).toBe('fail');
+      expect(testStage(outcome.report.stages)?.status).toBe(GateStageStatus.Fail);
     });
   });
 });

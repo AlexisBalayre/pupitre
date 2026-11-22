@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { readPlainFile } from '../adapters/capability.utils.js';
 import { CONDUCTOR_ROUTE } from '../claude/constants/model-ladder.constants.js';
+import { InputBoxState } from '../claude/enums/input-box-state.enums.js';
 import {
   CONDUCTOR_RUN_VAR,
   conductorName,
@@ -19,6 +20,7 @@ import {
   submitPane,
 } from '../claude/session-runtime.service.js';
 import type { InputBoxLook } from '../claude/types/pane.types.js';
+import { EventType } from './enums/event-type.enums.js';
 import { ConductorTellRefusedError } from './errors/conductor.errors.js';
 import {
   isRefusedSteer,
@@ -105,7 +107,7 @@ export function markConductorQuestion(
   db: Database,
   repoPath: string,
   run: string | undefined,
-  question: EventPayloads['question'],
+  question: EventPayloads[EventType.Question],
 ): number {
   const current = conductorRun(projectId(repoPath));
   if (!run || current === undefined || !sameText(run, current)) {
@@ -114,7 +116,7 @@ export function markConductorQuestion(
         'holds no such token. Nothing was stored.',
     );
   }
-  return appendSealedEvent(db, null, 'question', question, (id) =>
+  return appendSealedEvent(db, null, EventType.Question, question, (id) =>
     questionSeal(run, { ...question, id }),
   );
 }
@@ -198,7 +200,7 @@ export function startConductor(req: StartConductorRequest): ConductorHandle {
   // The new run's start ends the last run's question (decision 93). Recorded
   // before the window opens: one recorded after the kickoff would close a
   // question the new conductor had already asked.
-  appendEvent(req.db, null, 'conductor_start', { name });
+  appendEvent(req.db, null, EventType.ConductorStart, { name });
   const pane = launchConductor({
     projectId: pid,
     repoPath: req.repoPath,
@@ -319,7 +321,7 @@ export function tellConductor(repoPath: string, message: string): boolean {
   if (!pasteIntoPane(pane, message)) return false;
   submitPane(pane);
   let box = readInputBoxLook(pane);
-  if (box.state === 'holds') {
+  if (box.state === InputBoxState.Holds) {
     submitPane(pane);
     box = readInputBoxLook(pane);
   }
@@ -327,7 +329,7 @@ export function tellConductor(repoPath: string, message: string): boolean {
   // a clock that a look taken mid-paste started on the message, and one left in
   // the box, or under a dialog, starts the clock (decision 168).
   noteConductorBox(repoPath, box, Date.now());
-  return box.state === 'empty';
+  return box.state === InputBoxState.Empty;
 }
 
 /**
@@ -367,12 +369,12 @@ function dropBlockedSince(repoPath: string): void {
  */
 function noteConductorBox(repoPath: string, look: InputBoxLook, now: number): number | undefined {
   const file = blockedSinceFile(repoPath);
-  if (look.state === 'empty') {
+  if (look.state === InputBoxState.Empty) {
     dropBlockedSince(repoPath);
     return undefined;
   }
   const sight =
-    look.state === 'holds'
+    look.state === InputBoxState.Holds
       ? `draft ${createHash('sha256').update(look.draft).digest('hex')}`
       : 'overlay';
   try {
@@ -416,7 +418,7 @@ export function conductorBlock(repoPath: string, now: number): ConductorBlocked 
   const since = noteConductorBox(repoPath, look, now);
   if (since === undefined || now - since <= CONDUCTOR_BLOCKED_AFTER_MS) return undefined;
   return {
-    reason: look.state === 'holds' ? 'unsent draft' : 'not on main input',
+    reason: look.state === InputBoxState.Holds ? 'unsent draft' : 'not on main input',
     ageMs: now - since,
   };
 }

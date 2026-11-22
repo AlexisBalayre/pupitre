@@ -3,6 +3,7 @@ import { PAGE_SHELL_CSS, PAGE_SHELL_JS } from './constants/page-shell.constants.
 import { PAGE_THEME_CSS } from './constants/page-theme.constants.js';
 import { SESSION_ID_PATTERN } from './constants/paths.constants.js';
 import { listDecisionRecords } from './decision-record.repository.js';
+import { MergeStatus } from './enums/merge-status.enums.js';
 import { projectId } from './paths.utils.js';
 import {
   asStringArray,
@@ -102,7 +103,7 @@ function timelineDatum(row: EventRow) {
     case 'gate_result': {
       const { report } = event;
       datum.stages = displayStages(report?.stages ?? []);
-      if (event.outcome === 'refused') datum.title = 'gate refused';
+      if (event.outcome === MergeStatus.Refused) datum.title = 'gate refused';
       else if (event.from !== undefined && event.to !== undefined)
         datum.title = displayText(`${event.from} → ${event.to}`);
       else if (report) datum.title = report.passed ? 'gate passed' : 'gate failed';

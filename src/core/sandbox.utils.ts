@@ -12,17 +12,13 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { Readable } from 'node:stream';
+import { InterruptSignal } from './enums/interrupt-signal.enums.js';
+import { SandboxMode } from './enums/sandbox-mode.enums.js';
 import { GateInterruptedError, UndeclaredSandboxError } from './errors/sandbox.errors.js';
 import { CACHE_VAR_SUBDIRS, gateChildEnv } from './gate-env.utils.js';
 import { projectId } from './paths.utils.js';
 import { grantWithin, resolvePath, writeProfile } from './sandbox-profile.utils.js';
-import type {
-  GateChildOptions,
-  InterruptSignal,
-  LiveChild,
-  SandboxMode,
-  SandboxRun,
-} from './types/sandbox.types.js';
+import type { GateChildOptions, LiveChild, SandboxRun } from './types/sandbox.types.js';
 
 /**
  * Containment for the children whose code a session wrote — gate stages,
@@ -67,9 +63,9 @@ export function isSandboxSupported(): boolean {
 }
 
 const MODE_LABELS: Record<SandboxMode, string> = {
-  applied: 'sandbox-exec (macOS)',
-  inherited: 'inherited (pup is itself sandboxed)',
-  'declared-vm': 'vm (declared by operator)',
+  [SandboxMode.Applied]: 'sandbox-exec (macOS)',
+  [SandboxMode.Inherited]: 'inherited (pup is itself sandboxed)',
+  [SandboxMode.DeclaredVm]: 'vm (declared by operator)',
 };
 
 /**
@@ -87,7 +83,7 @@ export const DECLARATION_VAR = 'PUP_SANDBOX';
  * nobody reads the report on a machine that already merged (decision 78).
  */
 function declaredMode(): SandboxMode {
-  if (process.env[DECLARATION_VAR] === 'vm') return 'declared-vm';
+  if (process.env[DECLARATION_VAR] === 'vm') return SandboxMode.DeclaredVm;
   throw new UndeclaredSandboxError();
 }
 
@@ -134,13 +130,13 @@ function sandboxMode(): SandboxMode {
       env: {},
       stdio: ['ignore', 'pipe', 'pipe'],
     });
-    mode = 'applied';
+    mode = SandboxMode.Applied;
   } catch (error) {
     const failure = error as { stderr?: string };
     // Only the nesting refusal degrades to `inherited`. Anything else means the
     // sandbox is broken in a way pup does not understand, so it refuses.
     if (!NESTING_REFUSAL.test(failure.stderr ?? '')) throw error;
-    mode = 'inherited';
+    mode = SandboxMode.Inherited;
   }
   return mode;
 }
@@ -232,7 +228,7 @@ export async function runGateChild(
     let failure: 'ETIMEDOUT' | 'ENOBUFS' | undefined;
     const stop = (code: 'ETIMEDOUT' | 'ENOBUFS'): void => {
       failure ??= code;
-      signalGroup(child, 'SIGTERM');
+      signalGroup(child, InterruptSignal.Sigterm);
       closePipes(child);
       // A child that ignores SIGTERM would otherwise never exit, and `'close'`
       // waits for it; the interrupt path escalates the same way.
@@ -327,13 +323,13 @@ function gateInvocation(
   options: GateChildOptions,
 ): { command: string; args: string[]; env: NodeJS.ProcessEnv } {
   const mode = sandboxMode();
-  const applied = mode === 'applied';
+  const applied = mode === SandboxMode.Applied;
   const { scratchDir, policyDir } = sandboxRun();
   const cacheDir = toolchainCacheDir(options.repoPath);
   // A child runs in the same VM pup was declared to be in, so the declaration
   // is its too — the Linux twin of `inherited`. Without this, pup gating itself
   // would fail its own test stage, which reaches sandboxLabel() (decision 78).
-  const declared = mode === 'declared-vm' ? [DECLARATION_VAR] : [];
+  const declared = mode === SandboxMode.DeclaredVm ? [DECLARATION_VAR] : [];
   const env = gateChildEnv({
     passthrough: [...(options.gateEnv ?? []), ...declared],
     scratchDir,
@@ -412,9 +408,9 @@ const liveChildren = new Set<LiveChild>();
  * scratch directory be removed whole.
  */
 const forwarders: Record<InterruptSignal, () => void> = {
-  SIGINT: () => forwardInterrupt('SIGINT'),
-  SIGTERM: () => forwardInterrupt('SIGTERM'),
-  SIGHUP: () => forwardInterrupt('SIGHUP'),
+  [InterruptSignal.Sigint]: () => forwardInterrupt(InterruptSignal.Sigint),
+  [InterruptSignal.Sigterm]: () => forwardInterrupt(InterruptSignal.Sigterm),
+  [InterruptSignal.Sighup]: () => forwardInterrupt(InterruptSignal.Sighup),
 };
 
 /**

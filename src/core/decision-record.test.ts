@@ -17,6 +17,7 @@ import {
   updateDecisionRecordSummary,
 } from './decision-record.repository.js';
 import { draftDecisionRecord } from './decision-record.service.js';
+import { EventType } from './enums/event-type.enums.js';
 import { ensureProject, insertSession, insertTask } from './session.repository.js';
 import type { TaskId, TaskSpec } from './types/profile.types.js';
 
@@ -131,7 +132,9 @@ describe('draftDecisionRecord', () => {
 
     draftDecisionRecord(db, input);
 
-    const event = db.prepare("SELECT payload FROM events WHERE type = 'utility_call'").get() as {
+    const event = db
+      .prepare(`SELECT payload FROM events WHERE type = '${EventType.UtilityCall}'`)
+      .get() as {
       payload: string;
     };
     expect(JSON.parse(event.payload)).toMatchObject({ kind: 'decision-record-draft', ok: false });

@@ -1,6 +1,7 @@
 import type { Database } from 'better-sqlite3';
 import { runUtility } from '../claude/utility.service.js';
 import { insertDecisionRecord } from './decision-record.repository.js';
+import { EventType } from './enums/event-type.enums.js';
 import { appendEvent } from './session.repository.js';
 import type { DraftDecisionRecordInput, DraftedRecord } from './types/decision-record.types.js';
 
@@ -43,7 +44,7 @@ function parseDraft(output: string): DraftedRecord | undefined {
 export function draftDecisionRecord(db: Database, input: DraftDecisionRecordInput): number {
   const utility = runUtility(draftPrompt(input));
   const drafted = utility.ok ? parseDraft(utility.output) : undefined;
-  appendEvent(db, input.sessionId, 'utility_call', {
+  appendEvent(db, input.sessionId, EventType.UtilityCall, {
     kind: 'decision-record-draft',
     ok: Boolean(drafted),
     detail: drafted ? undefined : utility.output.slice(-500),

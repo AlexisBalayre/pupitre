@@ -1,6 +1,9 @@
 import { LADDERS, TIERS } from '../claude/constants/model-ladder.constants.js';
-import type { ModelRoute, Tier } from '../claude/types/model-ladder.types.js';
-import type { Climb, ClimbReason, GlobAutomaton, GlobToken } from './types/routing.types.js';
+import { Tier } from '../claude/enums/tier.enums.js';
+import type { ModelRoute } from '../claude/types/model-ladder.types.js';
+import { ClimbReason } from './enums/climb-reason.enums.js';
+import { EventType } from './enums/event-type.enums.js';
+import type { Climb, GlobAutomaton, GlobToken } from './types/routing.types.js';
 import type { SessionEvent } from './types/session-event.types.js';
 import type { FindingClass } from './types/session-lifecycle.types.js';
 
@@ -8,16 +11,19 @@ import type { FindingClass } from './types/session-lifecycle.types.js';
  * Where a change can break the gate, git, tmux, the store, the sandbox, the
  * hooks or profile compilation (decision 92). A task whose scope-in can name
  * any path one of these names is critical; every other task is standard.
- * An area matches by path, so the types, constants and errors extracted out of
- * its files into `src/core/{types,constants,errors}/` are named beside it, and
- * a future extraction out of a critical file needs its own entry here, and its
- * path added to the routing test's list, which pins only the paths it names.
+ * An area matches by path, so the types, constants, errors and enums extracted
+ * out of its files into `src/core/{types,constants,errors,enums}/` are named
+ * beside it, and a future extraction out of a critical file needs its own
+ * entry here, and its path added to the routing test's list, which pins only
+ * the paths it names.
  */
 export const CRITICAL_AREAS: readonly string[] = [
   'src/core/merge-gate*',
   'src/core/constants/merge-gate*',
   'src/core/errors/merge-gate*',
   'src/core/types/merge-gate*',
+  'src/core/enums/merge-status.enums.ts',
+  'src/core/enums/gate-stage-status.enums.ts',
   'src/core/land*',
   'src/core/types/land*',
   'src/core/regate*',
@@ -25,11 +31,14 @@ export const CRITICAL_AREAS: readonly string[] = [
   'src/core/sandbox*',
   'src/core/errors/sandbox*',
   'src/core/types/sandbox*',
+  'src/core/enums/sandbox-mode.enums.ts',
+  'src/core/enums/interrupt-signal.enums.ts',
   'src/core/profile-compiler*',
   'src/core/types/profile-compiler*',
   'src/core/*.repository.ts',
   'src/core/db.client.ts',
   'src/core/types/session.types.ts',
+  'src/core/enums/event-type.enums.ts',
   'src/core/errors/session.errors.ts',
   'src/core/types/ledger.types.ts',
   'src/core/types/baseline-history.types.ts',
@@ -47,7 +56,7 @@ export const CRITICAL_AREAS: readonly string[] = [
 export function tierForScope(scopeIn: readonly string[]): Tier {
   const touchesCritical = (glob: string): boolean =>
     CRITICAL_AREAS.some((area) => globsIntersect(glob, area));
-  return scopeIn.some(touchesCritical) ? 'critical' : 'standard';
+  return scopeIn.some(touchesCritical) ? Tier.Critical : Tier.Standard;
 }
 
 /** A tier read back out of the store, or undefined for anything else. */
@@ -161,8 +170,10 @@ export function globsIntersect(left: string, right: string): boolean {
 export const FINDING_CLASSES: readonly FindingClass[] = ['security', 'wrong-result'];
 
 function failureOf(event: SessionEvent): ClimbReason | undefined {
-  if (event.type === 'turn_died') return 'turn-death';
-  return event.type === 'gate_result' && event.to === 'rejected' ? 'gate-rejection' : undefined;
+  if (event.type === 'turn_died') return ClimbReason.TurnDeath;
+  return event.type === 'gate_result' && event.to === 'rejected'
+    ? ClimbReason.GateRejection
+    : undefined;
 }
 
 /**
@@ -181,11 +192,11 @@ export function windowFailure(
 ): ClimbReason | 'blocked' | undefined {
   let failure: ClimbReason | 'blocked' | undefined;
   for (const event of events) {
-    if (event.type === 'other' && event.eventType === 'respawn') failure = undefined;
+    if (event.type === 'other' && event.eventType === EventType.Respawn) failure = undefined;
     else if (event.type === 'gate_result' && event.to === 'blocked') failure = 'blocked';
     else if (failure !== 'blocked') failure ??= failureOf(event);
   }
-  return failure ?? (stalledAtEnd ? 'stall' : undefined);
+  return failure ?? (stalledAtEnd ? ClimbReason.Stall : undefined);
 }
 
 /**
@@ -207,7 +218,7 @@ export function fixRoundFailure(
 ): ClimbReason | 'blocked' | undefined {
   const { openedAt, repeats, ran } = fixRoundWindow(events);
   if (openedAt >= 0) return windowFailure(ran, stalledAtEnd);
-  return repeats ? 'repeat-fix-round' : undefined;
+  return repeats ? ClimbReason.RepeatFixRound : undefined;
 }
 
 /**
@@ -235,9 +246,9 @@ export function fixRoundWindow(events: readonly SessionEvent[]): {
       repeats ||= openedAt >= 0;
       handed = false;
       openedAt = -1;
-    } else if (event.type === 'other' && event.eventType === 'fix_round') {
+    } else if (event.type === 'other' && event.eventType === EventType.FixRound) {
       handed = true;
-    } else if (event.type === 'other' && event.eventType === 'respawn' && handed) {
+    } else if (event.type === 'other' && event.eventType === EventType.Respawn && handed) {
       // The round's own kickoff. One that never landed was rolled back with no
       // route stored, unlike a `pup respawn`'s, so the window before it is
       // still the one that ran.
@@ -245,7 +256,7 @@ export function fixRoundWindow(events: readonly SessionEvent[]): {
       if (event.fields.delivered !== true) return;
       openedAt = at;
     }
-    if (event.type === 'other' && event.eventType === 'respawn') scoredFrom = at;
+    if (event.type === 'other' && event.eventType === EventType.Respawn) scoredFrom = at;
     ran.push(event);
   });
   return { openedAt, scoredFrom, repeats, ran };

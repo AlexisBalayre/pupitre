@@ -156,7 +156,11 @@ vi.mock('../core/test-slot.service.js', async (importOriginal) => ({
   // The memory a status reads, so it does not depend on the machine running it either.
   availableMemoryBytes: vi.fn(() => 16 * 1024 ** 3),
   runSessionTest: vi.fn(async () => 0),
-  sessionTestCommand: vi.fn(() => ({ stage: 'test', command: 'pnpm', args: ['run', 'test'] })),
+  sessionTestCommand: vi.fn(() => ({
+    stage: GateStage.Test,
+    command: 'pnpm',
+    args: ['run', GateStage.Test],
+  })),
 }));
 vi.mock('../core/session-handoff.service.js', () => ({
   HANDOFF_WAIT_DEFAULT_MS: 10 * 60 * 1000,
@@ -195,6 +199,8 @@ import {
   worktreeOf,
 } from '@test/helpers/cli-index.mock.js';
 import { render } from 'ink';
+import { GateStage } from '../adapters/enums/gate-stage.enums.js';
+import { Tier } from '../claude/enums/tier.enums.js';
 import {
   SessionPaneMissingError,
   SteerNotDeliveredError,
@@ -204,6 +210,12 @@ import { isConductorRunning } from '../core/conductor.service.js';
 import { DEFAULT_BASE_PROFILE } from '../core/constants/default-profile.constants.js';
 import { STALLED_AFTER_MS } from '../core/constants/session-activity.constants.js';
 import { insertDecisionRecord } from '../core/decision-record.repository.js';
+import { ClimbReason } from '../core/enums/climb-reason.enums.js';
+import { EventType } from '../core/enums/event-type.enums.js';
+import { GateStageStatus } from '../core/enums/gate-stage-status.enums.js';
+import { InterruptSignal } from '../core/enums/interrupt-signal.enums.js';
+import { MergeStatus } from '../core/enums/merge-status.enums.js';
+import { SlotHolderKind } from '../core/enums/slot-holder-kind.enums.js';
 import { MergeLockLostError } from '../core/errors/merge-gate.errors.js';
 import { GateInterruptedError, UndeclaredSandboxError } from '../core/errors/sandbox.errors.js';
 import { MalformedTaskSpecError } from '../core/errors/session.errors.js';
@@ -520,7 +532,7 @@ describe('CLI commands', () => {
       seedSession(repo, 's1');
       const { db } = resolveProject(repo);
       transitionSession(db, 's1', 'running');
-      appendEvent(db, 's1', 'question', { text: 'rebase\u001b[2J or\nmerge?' });
+      appendEvent(db, 's1', EventType.Question, { text: 'rebase\u001b[2J or\nmerge?' });
       db.close();
 
       buildProgram().parse(['status'], { from: 'user' });
@@ -532,7 +544,7 @@ describe('CLI commands', () => {
       expect(logs.join('\n')).not.toContain('\u001b');
 
       const again = resolveProject(repo).db;
-      appendEvent(again, 's1', 'steer', { kind: 'message', by: 'operator' });
+      appendEvent(again, 's1', EventType.Steer, { kind: 'message', by: 'operator' });
       again.close();
       logs.length = 0;
 
@@ -549,11 +561,11 @@ describe('CLI commands', () => {
       const { db } = resolveProject(repo);
       transitionSession(db, 's1', 'running');
       recordSessionRoute(db, 's1', {
-        tier: 'standard',
+        tier: Tier.Standard,
         rung: 2,
         model: 'claude-opus-5-5',
         effort: 'high',
-        reason: 'gate-rejection',
+        reason: ClimbReason.GateRejection,
         override: false,
       });
       db.close();
@@ -581,7 +593,7 @@ describe('CLI commands', () => {
       }
       for (const id of ['s-pr', 's-local']) {
         transitionSession(db, id, 'merged');
-        appendEvent(db, id, 'merge', {
+        appendEvent(db, id, EventType.Merge, {
           branch: `pup/${id}`,
           // A sha the repo's unborn main cannot hold: the PR waits on the operator.
           sha: 'f'.repeat(40),
@@ -591,7 +603,7 @@ describe('CLI commands', () => {
         });
       }
       transitionSession(db, 's-asking', 'running');
-      appendEvent(db, 's-asking', 'question', { text: 'rebase or merge?' });
+      appendEvent(db, 's-asking', EventType.Question, { text: 'rebase or merge?' });
       const asked = (db.prepare('SELECT max(id) AS id FROM events').get() as { id: number }).id;
       db.close();
       seedLedgerEntry(repo, { reviewBy: '2020-01-01' });
@@ -950,7 +962,7 @@ describe('CLI commands', () => {
         seedSession(repo, 's-asking');
         const { db } = resolveProject(repo);
         transitionSession(db, 's-asking', 'running');
-        appendEvent(db, 's-asking', 'question', { text: '\u001b[2Jhijack?' });
+        appendEvent(db, 's-asking', EventType.Question, { text: '\u001b[2Jhijack?' });
         db.close();
         useCwd(tempDir('pup-cli-noproj-'));
 
@@ -1303,13 +1315,15 @@ describe('CLI commands', () => {
       const repo = initRepo();
       useCwd(repo);
       const { unmount } = stubRender();
-      const before = process.listeners('SIGINT');
+      const before = process.listeners(InterruptSignal.Sigint);
 
       runUi(true);
 
-      const [added] = process.listeners('SIGINT').filter((fn) => !before.includes(fn));
+      const [added] = process
+        .listeners(InterruptSignal.Sigint)
+        .filter((fn) => !before.includes(fn));
       expect(added).toBeDefined();
-      added?.('SIGINT');
+      added?.(InterruptSignal.Sigint);
       expect(unmount).toHaveBeenCalledTimes(1);
     });
 
@@ -1806,7 +1820,7 @@ describe('CLI commands', () => {
       useCwd(repo);
       const { db, repoPath } = resolveProject();
       ensureProject(db, projectId(repoPath), repoPath);
-      const plan = (id: string, scopeIn: unknown, tier?: 'critical' | 'standard') =>
+      const plan = (id: string, scopeIn: unknown, tier?: Tier) =>
         insertTask(db, {
           id,
           projectId: projectId(repoPath),
@@ -1815,7 +1829,7 @@ describe('CLI commands', () => {
         });
       plan('t-ui', ['src/cli/ui/**']);
       plan('t-gate', ['src/core/merge-gate.service.ts']);
-      plan('t-set', ['docs/**'], 'critical');
+      plan('t-set', ['docs/**'], Tier.Critical);
       plan('t-torn', ['docs/**', 7]);
 
       buildProgram().parse(['plan'], { from: 'user' });
@@ -1843,9 +1857,9 @@ describe('CLI commands', () => {
       expect(errors).toContain('--tier takes critical or standard.');
       expect(getTask(db, 't-1')?.tier).toBeNull();
 
-      buildProgram().parse(['plan', 'edit', 't-1', '--tier', 'critical'], { from: 'user' });
+      buildProgram().parse(['plan', 'edit', 't-1', '--tier', Tier.Critical], { from: 'user' });
       expect(logs).toContain('Updated t-1.');
-      expect(getTask(db, 't-1')?.tier).toBe('critical');
+      expect(getTask(db, 't-1')?.tier).toBe(Tier.Critical);
     });
 
     it('hands the tier --tier gives an add to the planner, and refuses any other word', () => {
@@ -1858,10 +1872,10 @@ describe('CLI commands', () => {
       expect(errors).toContain('--tier takes critical or standard.');
       expect(planTask).not.toHaveBeenCalled();
 
-      buildProgram().parse(['plan', 'add', 'goal', '--scope', 'docs/**', '--tier', 'critical'], {
+      buildProgram().parse(['plan', 'add', 'goal', '--scope', 'docs/**', '--tier', Tier.Critical], {
         from: 'user',
       });
-      expect(firstCall(planTask)[1]).toMatchObject({ tier: 'critical' });
+      expect(firstCall(planTask)[1]).toMatchObject({ tier: Tier.Critical });
     });
 
     // The refusal quotes the glob that failed through JSON.stringify, which
@@ -1978,7 +1992,7 @@ describe('CLI commands', () => {
     it('reports a launch refused at the top rung and exits 1 rather than throwing', () => {
       useCwd(initRepo());
       vi.mocked(launchTask).mockImplementation(() => {
-        throw new TopRungReachedError({ task: 't-abc' }, 'critical', 'gate-rejection');
+        throw new TopRungReachedError({ task: 't-abc' }, Tier.Critical, ClimbReason.GateRejection);
       });
 
       buildProgram().parse(['launch', 't-abc'], { from: 'user' });
@@ -2177,13 +2191,15 @@ describe('CLI commands', () => {
       );
       transitionSession(db, NOISY_ID, 'running');
       transitionSession(db, NOISY_ID, 'awaiting-review');
-      appendEvent(db, NOISY_ID, 'gate_result', {
-        outcome: 'refused',
+      appendEvent(db, NOISY_ID, EventType.GateResult, {
+        outcome: MergeStatus.Refused,
         report: {
           sessionId: NOISY_ID,
           passed: false,
           sandbox: 'none',
-          stages: [{ stage: '\u001b[2Jlint', status: 'fail', detail: '\u001b[2Jboom' }],
+          stages: [
+            { stage: '\u001b[2Jlint', status: GateStageStatus.Fail, detail: '\u001b[2Jboom' },
+          ],
         },
       });
       db.close();
@@ -2363,7 +2379,7 @@ describe('CLI commands', () => {
       useCwd(initRepo());
       vi.mocked(isHandoffReady).mockReturnValue(true);
       vi.mocked(respawnSession).mockImplementation(() => {
-        throw new TopRungReachedError({ session: 's1' }, 'standard', 'turn-death');
+        throw new TopRungReachedError({ session: 's1' }, Tier.Standard, ClimbReason.TurnDeath);
       });
 
       buildProgram().parse(['respawn', 's1'], { from: 'user' });
@@ -2508,7 +2524,10 @@ describe('CLI commands', () => {
     const URL_WITH_TOKEN = 'http://127.0.0.1:41234/?token=t0k3n';
 
     /** The one listener the command added for `signal`, removed again so it outlives no test. */
-    function addedListener(signal: 'SIGINT' | 'SIGTERM', before: unknown[]): () => void {
+    function addedListener(
+      signal: InterruptSignal.Sigint | InterruptSignal.Sigterm,
+      before: unknown[],
+    ): () => void {
       const added = process.listeners(signal).filter((listener) => !before.includes(listener));
       onTestFinished(() => {
         for (const listener of added) process.off(signal, listener);
@@ -2522,18 +2541,18 @@ describe('CLI commands', () => {
       useCwd(repo);
       const close = vi.fn(() => Promise.resolve());
       vi.mocked(startWebDashboard).mockResolvedValue({ url: URL_WITH_TOKEN, close });
-      const sigints = process.listeners('SIGINT');
-      const sigterms = process.listeners('SIGTERM');
+      const sigints = process.listeners(InterruptSignal.Sigint);
+      const sigterms = process.listeners(InterruptSignal.Sigterm);
 
       await buildProgram().parseAsync(['dashboard'], { from: 'user' });
-      const stop = addedListener('SIGINT', sigints);
+      const stop = addedListener(InterruptSignal.Sigint, sigints);
 
       expect(firstCall(startWebDashboard)[1]).toBe(repo);
       expect(logs).toEqual([
         `Dashboard on ${URL_WITH_TOKEN}`,
         'Anyone holding this url reads the page; Ctrl-C stops the server.',
       ]);
-      expect(addedListener('SIGTERM', sigterms)).toBe(stop);
+      expect(addedListener(InterruptSignal.Sigterm, sigterms)).toBe(stop);
       stop();
       expect(close).toHaveBeenCalledOnce();
       expect(process.exitCode).toBeUndefined();
@@ -2547,11 +2566,11 @@ describe('CLI commands', () => {
         url: URL_WITH_TOKEN,
         close: () => Promise.resolve(),
       });
-      const sigints = process.listeners('SIGINT');
-      const sigterms = process.listeners('SIGTERM');
+      const sigints = process.listeners(InterruptSignal.Sigint);
+      const sigterms = process.listeners(InterruptSignal.Sigterm);
       await buildProgram().parseAsync(['dashboard', '--open'], { from: 'user' });
-      addedListener('SIGINT', sigints);
-      addedListener('SIGTERM', sigterms);
+      addedListener(InterruptSignal.Sigint, sigints);
+      addedListener(InterruptSignal.Sigterm, sigterms);
     }
 
     /**
@@ -2764,7 +2783,7 @@ describe('CLI commands', () => {
         });
 
         expect(firstCall(runSessionTest)[0]).toMatchObject({
-          command: { stage: 'test', command: 'pnpm', args: ['run', 'test'] },
+          command: { stage: GateStage.Test, command: 'pnpm', args: ['run', GateStage.Test] },
           args: ['src/a.test.ts', '-t', 'slots'],
           cwd: process.cwd(),
           sessionId: 's1',
@@ -2779,8 +2798,8 @@ describe('CLI commands', () => {
         vi.stubEnv('PUP_SESSION_ID', 's1');
         vi.mocked(runSessionTest).mockImplementationOnce(async ({ slots }) => {
           slots?.onWait?.(
-            [{ kind: 'worker', label: 't-2', pid: 4242 }],
-            [{ kind: 'gate', label: 't-3', pid: 4343 }],
+            [{ kind: SlotHolderKind.Worker, label: 't-2', pid: 4242 }],
+            [{ kind: SlotHolderKind.Gate, label: 't-3', pid: 4343 }],
           );
           return 0;
         });
@@ -2798,7 +2817,9 @@ describe('CLI commands', () => {
         seedSession(repo, 's1');
         useCwd(worktreeOf(repo, 's1'));
         vi.stubEnv('PUP_SESSION_ID', 's1');
-        vi.mocked(runSessionTest).mockRejectedValueOnce(new SlotWaitInterruptedError('SIGINT'));
+        vi.mocked(runSessionTest).mockRejectedValueOnce(
+          new SlotWaitInterruptedError(InterruptSignal.Sigint),
+        );
 
         await buildProgram().parseAsync(['session', 'test'], { from: 'user' });
 
@@ -3100,7 +3121,7 @@ describe('CLI commands', () => {
   describe('merge', () => {
     function mergedOutcome(overrides: Partial<MergeOutcome> = {}): MergeOutcome {
       return {
-        status: 'merged',
+        status: MergeStatus.Merged,
         report: { sessionId: 's1', passed: true, sandbox: 'sandbox-exec (macOS)', stages: [] },
         rejectCount: 0,
         ...overrides,
@@ -3116,8 +3137,8 @@ describe('CLI commands', () => {
       it('adds no signal handler of its own while the gate runs', async () => {
         useCwd(initRepoWithAdapter());
         const listening = () => ({
-          int: process.listeners('SIGINT').length,
-          term: process.listeners('SIGTERM').length,
+          int: process.listeners(InterruptSignal.Sigint).length,
+          term: process.listeners(InterruptSignal.Sigterm).length,
         });
         const before = listening();
         let during: ReturnType<typeof listening> | undefined;
@@ -3132,9 +3153,9 @@ describe('CLI commands', () => {
       });
 
       it.each([
-        ['SIGINT', 130],
-        ['SIGTERM', 143],
-        ['SIGHUP', 129],
+        [InterruptSignal.Sigint, 130],
+        [InterruptSignal.Sigterm, 143],
+        [InterruptSignal.Sighup, 129],
       ] as const)('leaves %s to the entry point, which exits %i', async (signal, code) => {
         useCwd(initRepoWithAdapter());
         vi.mocked(runMergeGate).mockRejectedValue(new GateInterruptedError(signal));
@@ -3214,9 +3235,14 @@ describe('CLI commands', () => {
             passed: true,
             sandbox: 'none',
             stages: [
-              { stage: 'build', status: 'pass', durationMs: 1234 },
-              { stage: 'test', status: 'pass', detail: '12 files', durationMs: 41_000 },
-              { stage: 'coverage', status: 'skipped', detail: 'not measured' },
+              { stage: GateStage.Build, status: GateStageStatus.Pass, durationMs: 1234 },
+              {
+                stage: GateStage.Test,
+                status: GateStageStatus.Pass,
+                detail: '12 files',
+                durationMs: 41_000,
+              },
+              { stage: 'coverage', status: GateStageStatus.Skipped, detail: 'not measured' },
             ],
           },
         }),
@@ -3224,8 +3250,8 @@ describe('CLI commands', () => {
 
       await buildProgram().parseAsync(['merge', 's1'], { from: 'user' });
 
-      expect(logs).toContain(`  ${'build'.padEnd(16)} PASS 1.2s`);
-      expect(logs).toContain(`  ${'test'.padEnd(16)} PASS 41.0s  12 files`);
+      expect(logs).toContain(`  ${GateStage.Build.padEnd(16)} PASS 1.2s`);
+      expect(logs).toContain(`  ${GateStage.Test.padEnd(16)} PASS 41.0s  12 files`);
       expect(logs).toContain(`  ${'coverage'.padEnd(16)} SKIPPED  not measured`);
     });
 
@@ -3458,7 +3484,7 @@ describe('CLI commands', () => {
             sessionId: 's1',
             passed: true,
             sandbox: 'sandbox-exec (macOS)',
-            stages: [{ stage: 'lint', status: 'pass' }],
+            stages: [{ stage: GateStage.Lint, status: GateStageStatus.Pass }],
           },
         }),
       );
@@ -3508,12 +3534,14 @@ describe('CLI commands', () => {
     it('reports a re-gate a hard stage refused, naming the stage and the retry', async () => {
       useCwd(initRepoWithAdapter());
       vi.mocked(runMergeGate).mockResolvedValue({
-        status: 'refused',
+        status: MergeStatus.Refused,
         report: {
           sessionId: 's1',
           passed: false,
           sandbox: 'sandbox-exec (macOS)',
-          stages: [{ stage: 'build', status: 'fail', detail: 'tsc exited 2' }],
+          stages: [
+            { stage: GateStage.Build, status: GateStageStatus.Fail, detail: 'tsc exited 2' },
+          ],
         },
         rejectCount: 0,
         regated: true,
@@ -3531,12 +3559,12 @@ describe('CLI commands', () => {
     it('reports a re-gate refused only for a flag as needing --accept-debt, never a steer', async () => {
       useCwd(initRepoWithAdapter());
       vi.mocked(runMergeGate).mockResolvedValue({
-        status: 'refused',
+        status: MergeStatus.Refused,
         report: {
           sessionId: 's1',
           passed: false,
           sandbox: 'sandbox-exec (macOS)',
-          stages: [{ stage: 'diff-size', status: 'flagged', detail: 'big diff' }],
+          stages: [{ stage: 'diff-size', status: GateStageStatus.Flagged, detail: 'big diff' }],
         },
         rejectCount: 0,
         regated: true,
@@ -3637,12 +3665,12 @@ describe('CLI commands', () => {
     it('reports a refused gate and exits 1', async () => {
       useCwd(initRepoWithAdapter());
       vi.mocked(runMergeGate).mockResolvedValue({
-        status: 'refused',
+        status: MergeStatus.Refused,
         report: {
           sessionId: 's1',
           passed: false,
           sandbox: 'sandbox-exec (macOS)',
-          stages: [{ stage: 'diff-size', status: 'flagged', detail: 'big diff' }],
+          stages: [{ stage: 'diff-size', status: GateStageStatus.Flagged, detail: 'big diff' }],
         },
         rejectCount: 0,
       });
@@ -3663,12 +3691,18 @@ describe('CLI commands', () => {
     it('scrubs the gate report it prints', async () => {
       useCwd(initRepoWithAdapter());
       vi.mocked(runMergeGate).mockResolvedValue({
-        status: 'refused',
+        status: MergeStatus.Refused,
         report: {
           sessionId: 's1',
           passed: false,
           sandbox: '\u001b[2Jnone',
-          stages: [{ stage: '\u001b[2Jdiff-size', status: 'flagged', detail: '\u001b[2Jbig diff' }],
+          stages: [
+            {
+              stage: '\u001b[2Jdiff-size',
+              status: GateStageStatus.Flagged,
+              detail: '\u001b[2Jbig diff',
+            },
+          ],
         },
         rejectCount: 0,
       });
@@ -3687,12 +3721,14 @@ describe('CLI commands', () => {
       useCwd(initRepoWithAdapter());
       const paths = Array.from({ length: 12 }, (_, i) => `\u001b[2Jsrc/out-of-scope-${i}.ts`);
       vi.mocked(runMergeGate).mockResolvedValue({
-        status: 'refused',
+        status: MergeStatus.Refused,
         report: {
           sessionId: 's1',
           passed: false,
           sandbox: 'none',
-          stages: [{ stage: 'scope-audit', status: 'flagged', detail: paths.join('\n') }],
+          stages: [
+            { stage: 'scope-audit', status: GateStageStatus.Flagged, detail: paths.join('\n') },
+          ],
         },
         rejectCount: 0,
       });
@@ -3710,7 +3746,7 @@ describe('CLI commands', () => {
     it('reports a rejected gate and exits 1', async () => {
       useCwd(initRepoWithAdapter());
       vi.mocked(runMergeGate).mockResolvedValue({
-        status: 'rejected',
+        status: MergeStatus.Rejected,
         report: { sessionId: 's1', passed: false, sandbox: 'sandbox-exec (macOS)', stages: [] },
         rejectCount: 1,
       });
@@ -3724,7 +3760,7 @@ describe('CLI commands', () => {
     it('reports a blocked gate and exits 1', async () => {
       useCwd(initRepoWithAdapter());
       vi.mocked(runMergeGate).mockResolvedValue({
-        status: 'blocked',
+        status: MergeStatus.Blocked,
         report: { sessionId: 's1', passed: false, sandbox: 'sandbox-exec (macOS)', stages: [] },
         rejectCount: 2,
       });

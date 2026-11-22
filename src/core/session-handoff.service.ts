@@ -9,6 +9,7 @@ import {
   launchSession,
   steerPane,
 } from '../claude/session-runtime.service.js';
+import { EventType } from './enums/event-type.enums.js';
 import { HandoffMissingError } from './errors/session-handoff.errors.js';
 import { verifiedWorktreeGitEnv } from './git-diff.client.js';
 import { assertMintedRow } from './merge-gate.service.js';
@@ -108,7 +109,7 @@ export function requestHandoff(
   // by sitting there unchanged (decision 49).
   rmSync(handoffPath, { force: true });
   steerPane(sessionPane(session), handoffInstructions(handoffPath));
-  appendEvent(db, sessionId, 'steer', { kind: 'handoff-request' });
+  appendEvent(db, sessionId, EventType.Steer, { kind: 'handoff-request' });
   return handoffPath;
 }
 
@@ -164,7 +165,7 @@ export function markHandoffReady(
   const handoffPath = projectPaths(repoPath, pathsBase).handoffFile(sessionId);
   const document = readHandoff(handoffPath);
   if (document === undefined) throw new HandoffMissingError(sessionId, handoffPath);
-  appendEvent(db, sessionId, 'handoff_ready', { hash: hashHandoff(document) });
+  appendEvent(db, sessionId, EventType.HandoffReady, { hash: hashHandoff(document) });
 }
 
 export function awaitHandoffReady(
@@ -310,6 +311,6 @@ function relaunchWindow(
   try {
     delivered = kickoff(pane, contextMarkdown + extras.promptSuffix);
   } finally {
-    appendEvent(db, sessionId, 'respawn', { delivered, ...extras.eventPayload });
+    appendEvent(db, sessionId, EventType.Respawn, { delivered, ...extras.eventPayload });
   }
 }

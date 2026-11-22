@@ -1,7 +1,7 @@
-import type { BaselineStageStatus, ProjectBaseline } from './init.types.js';
-
-/** 'changed' covers fail<->skipped moves: neither passes, so neither word fits. */
-export type StageDelta = 'regressed' | 'improved' | 'changed' | 'unchanged';
+import type { BaselineStageStatus } from '../enums/baseline-stage-status.enums.js';
+import type { DebtMetric } from '../enums/debt-metric.enums.js';
+import type { StageDelta } from '../enums/stage-delta.enums.js';
+import type { ProjectBaseline } from './init.types.js';
 
 export interface StageTransition {
   stage: string;
@@ -9,8 +9,6 @@ export interface StageTransition {
   after: BaselineStageStatus;
   delta: StageDelta;
 }
-
-export type DebtMetric = 'deadExports' | 'duplicatedLines' | 'coverageRatio';
 
 /** deadExports compares counts, not the export identities merge-gate diffs (docs/09 decision 34). */
 export interface DebtTransition {

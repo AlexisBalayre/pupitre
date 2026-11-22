@@ -31,9 +31,13 @@ vi.mock('./session-lifecycle.service.js', async (importOriginal) => ({
 }));
 
 import { detectAdapters } from '../adapters/adapter.registry.js';
+import { GateStage } from '../adapters/enums/gate-stage.enums.js';
 import { tellConductor } from './conductor.service.js';
 import { DEFAULT_BASE_PROFILE } from './constants/default-profile.constants.js';
 import { CONFIRMED_ACTIONS } from './constants/web-dashboard-actions.constants.js';
+import { BaselineStageStatus } from './enums/baseline-stage-status.enums.js';
+import { GateStageStatus } from './enums/gate-stage-status.enums.js';
+import { MergeStatus } from './enums/merge-status.enums.js';
 import { MergeLockLostError } from './errors/merge-gate.errors.js';
 import { UndeclaredSandboxError } from './errors/sandbox.errors.js';
 import { startFixRound } from './fix-round.service.js';
@@ -62,8 +66,13 @@ function gate(status: MergeOutcome['status'], stages: MergeOutcome['report']['st
   return {
     status,
     rejectCount: 1,
-    prUrl: status === 'merged' ? PR : undefined,
-    report: { sessionId: 's-1', passed: status === 'merged', sandbox: 'seatbelt', stages },
+    prUrl: status === MergeStatus.Merged ? PR : undefined,
+    report: {
+      sessionId: 's-1',
+      passed: status === MergeStatus.Merged,
+      sandbox: 'seatbelt',
+      stages,
+    },
   } as MergeOutcome;
 }
 
@@ -133,7 +142,9 @@ const CASES: {
     arrange: () =>
       vi
         .mocked(runMergeGate)
-        .mockResolvedValue(gate('merged', [{ stage: 'build', status: 'pass' }])),
+        .mockResolvedValue(
+          gate(MergeStatus.Merged, [{ stage: GateStage.Build, status: GateStageStatus.Pass }]),
+        ),
     expectCall: [
       DB,
       {
@@ -296,7 +307,7 @@ describe('runAction', () => {
   );
 
   it('gates without debt and with a named approver, scrubbed, always with --pr', async () => {
-    vi.mocked(runMergeGate).mockResolvedValue(gate('merged', []));
+    vi.mocked(runMergeGate).mockResolvedValue(gate(MergeStatus.Merged, []));
 
     await runAction(DB, REPO, 'merge', { session: 's-1' });
     await runAction(DB, REPO, 'merge', {
@@ -323,7 +334,9 @@ describe('runAction', () => {
       progress?.note(
         'The test stage failed, then passed on its re-run (full output: /s/\u001b[31mt.log).',
       );
-      return gate('merged', [{ stage: 'test', status: 'pass', detail: 'flaky' }]);
+      return gate(MergeStatus.Merged, [
+        { stage: GateStage.Test, status: GateStageStatus.Pass, detail: 'flaky' },
+      ]);
     });
 
     await expect(runAction(DB, REPO, 'merge', { session: 's-1' })).resolves.toEqual([
@@ -336,7 +349,9 @@ describe('runAction', () => {
 
   it('shows a flagged gate as a refusal naming the flags', async () => {
     vi.mocked(runMergeGate).mockResolvedValue(
-      gate('refused', [{ stage: 'diff size', status: 'flagged', detail: '812 lines' }]),
+      gate(MergeStatus.Refused, [
+        { stage: 'diff size', status: GateStageStatus.Flagged, detail: '812 lines' },
+      ]),
     );
 
     await expect(runAction(DB, REPO, 'merge', { session: 's-1' })).rejects.toThrow(
@@ -347,17 +362,17 @@ describe('runAction', () => {
   it.each([
     [
       'a failed stage as one accepting debt does not cover',
-      gate('refused', [{ stage: 'build', status: 'fail' }]),
+      gate(MergeStatus.Refused, [{ stage: GateStage.Build, status: GateStageStatus.Fail }]),
       'Merge refused: build failed, which accepting debt does not cover. Steer the session to fix it.',
     ],
     [
       'a rejection with its count',
-      gate('rejected', [{ stage: 'test', status: 'fail' }]),
+      gate(MergeStatus.Rejected, [{ stage: GateStage.Test, status: GateStageStatus.Fail }]),
       'Gate failed; report re-injected into the session (rejection 1/2).',
     ],
     [
       'a parked session with its unblock',
-      gate('blocked', [{ stage: 'test', status: 'fail' }]),
+      gate(MergeStatus.Blocked, [{ stage: GateStage.Test, status: GateStageStatus.Fail }]),
       'Gate failed; session parked as blocked — needs a human, then `pup unblock s-1`.',
     ],
   ])('shows %s, as pup merge words it', async (_case, outcome, verdict) => {
@@ -370,7 +385,7 @@ describe('runAction', () => {
 
   it('names the open debt a passed gate touched, and the decision record it drafted', async () => {
     vi.mocked(runMergeGate).mockResolvedValue({
-      ...gate('merged', []),
+      ...gate(MergeStatus.Merged, []),
       debtCandidates: [{ id: 3, description: 'Oversize \u001b[31mdiff' }],
       decisionRecordId: 12,
     });
@@ -426,10 +441,15 @@ describe('runAction', () => {
         heldOnRegression: true,
         baseline: {
           stages: [
-            { stage: 'build', status: 'fail', detail: 'tsc failed', durationMs: 1 },
             {
-              stage: 'test',
-              status: 'fail',
+              stage: GateStage.Build,
+              status: BaselineStageStatus.Fail,
+              detail: 'tsc failed',
+              durationMs: 1,
+            },
+            {
+              stage: GateStage.Test,
+              status: BaselineStageStatus.Fail,
               detail: 'full output: /s/\u001b[31mtest-output.log\nFAIL  a.test.ts > adds',
               durationMs: 1,
             },
@@ -444,7 +464,9 @@ describe('runAction', () => {
   });
 
   it('reports what the gate did and then refuses when the lock was lost under it', async () => {
-    vi.mocked(runMergeGate).mockRejectedValue(new MergeLockLostError('/lock', gate('merged', [])));
+    vi.mocked(runMergeGate).mockRejectedValue(
+      new MergeLockLostError('/lock', gate(MergeStatus.Merged, [])),
+    );
 
     await expect(runAction(DB, REPO, 'merge', { session: 's-1' })).rejects.toThrow(
       /^Gate passed;[\s\S]*\nThe merge lock at \/lock was gone or replaced/,

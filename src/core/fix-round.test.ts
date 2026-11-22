@@ -50,9 +50,12 @@ import {
 } from '@test/helpers/fix-round.mock.js';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import type { Adapter } from '../adapters/types/adapter.types.js';
+import { Tier } from '../claude/enums/tier.enums.js';
 import { kickoff } from '../claude/session-runtime.service.js';
 import { DEFAULT_BASE_PROFILE } from './constants/default-profile.constants.js';
 import { openStore } from './db.client.js';
+import { EventType } from './enums/event-type.enums.js';
+import { MergeStatus } from './enums/merge-status.enums.js';
 import { answerFixRoundThreads, ciReviewLookup, startFixRound } from './fix-round.service.js';
 import { landSession } from './land.service.js';
 import { runMergeGate } from './merge-gate.service.js';
@@ -278,7 +281,7 @@ describe('startFixRound', { timeout: 90_000 }, () => {
   function _seedPrMerge(event: Record<string, unknown> = {}): void {
     sh(repo, 'git', 'worktree', 'remove', '--force', worktree);
     transitionSession(db, SESSION_ID, 'merged');
-    appendEvent(db, SESSION_ID, 'merge', {
+    appendEvent(db, SESSION_ID, EventType.Merge, {
       branch: BRANCH,
       sha: pinned,
       target: 'main',
@@ -296,7 +299,11 @@ describe('startFixRound', { timeout: 90_000 }, () => {
       adapters: [passingAdapter],
       openPr: true,
     });
-    expect(outcome).toMatchObject({ status: 'merged', prUrl: PR_URL, prWasAdopted: true });
+    expect(outcome).toMatchObject({
+      status: MergeStatus.Merged,
+      prUrl: PR_URL,
+      prWasAdopted: true,
+    });
   }
 
   /** GitHub merging PR #7 at `head` onto origin's main, as `pup land` then reads it. */
@@ -351,7 +358,7 @@ describe('startFixRound', { timeout: 90_000 }, () => {
   const _prompt = (): string => vi.mocked(kickoff).mock.calls.at(-1)?.[1] ?? '';
   /** A window recorded on `rung` of the standard ladder, as a launch records it. */
   const _routeAt = (rung: number) => ({
-    tier: 'standard' as const,
+    tier: Tier.Standard as const,
     rung,
     model: 'claude-sonnet-5-5',
     effort: 'medium',
@@ -362,14 +369,14 @@ describe('startFixRound', { timeout: 90_000 }, () => {
    * older head, so the review's threads now carry ids it never saw.
    */
   const _seedFinishedRound = () => {
-    appendEvent(db, SESSION_ID, 'fix_round', {
+    appendEvent(db, SESSION_ID, EventType.FixRound, {
       prUrl: PR_URL,
       head: '1'.repeat(40),
       threads: ['PRRT_round1'],
       rejectBase: 0,
     });
-    appendEvent(db, SESSION_ID, 'respawn', { delivered: true });
-    appendEvent(db, SESSION_ID, 'merge', {
+    appendEvent(db, SESSION_ID, EventType.Respawn, { delivered: true });
+    appendEvent(db, SESSION_ID, EventType.Merge, {
       branch: BRANCH,
       sha: pinned,
       target: 'main',
@@ -479,7 +486,7 @@ describe('startFixRound', { timeout: 90_000 }, () => {
       meanwhile?.();
       // The round named `PRRT_human` too, as a store edit could have.
       db.prepare(
-        "UPDATE events SET payload = json_set(payload, '$.threads[3]', 'PRRT_human') WHERE type = 'fix_round'",
+        `UPDATE events SET payload = json_set(payload, '$.threads[3]', 'PRRT_human') WHERE type = '${EventType.FixRound}'`,
       ).run();
       const fixed = commitIn(worktree, 'src/fix.ts', 'export const fix = 1;\n');
       answersOnGitHub({ paths, relayed });
@@ -492,11 +499,11 @@ describe('startFixRound', { timeout: 90_000 }, () => {
         });
       for (const said of rejected) {
         markSessionDone(db, SESSION_ID, said);
-        expect(await gate(failingAdapter)).toMatchObject({ status: 'rejected' });
+        expect(await gate(failingAdapter)).toMatchObject({ status: MergeStatus.Rejected });
         afterRejected?.();
       }
       markSessionDone(db, SESSION_ID, summary);
-      expect(await gate(adapter)).toMatchObject({ status: 'merged', prUrl: PR_URL });
+      expect(await gate(adapter)).toMatchObject({ status: MergeStatus.Merged, prUrl: PR_URL });
       return fixed;
     }
 
@@ -663,7 +670,7 @@ describe('startFixRound', { timeout: 90_000 }, () => {
         meanwhile: () => {
           db.prepare(
             "UPDATE events SET payload = json_set(payload, '$.newestComments', json(?)) " +
-              "WHERE type = 'fix_round'",
+              `WHERE type = '${EventType.FixRound}'`,
           ).run(
             JSON.stringify({
               PRRT_fixed: '9999999999',
@@ -809,7 +816,7 @@ describe('startFixRound', { timeout: 90_000 }, () => {
       const amended = commitTree(`${pinned}^{tree}`, 'main', 'feature, amended');
       const rewritten = commitTree(`${fixed}^{tree}`, amended, 'src/fix.ts');
       db.prepare(
-        "UPDATE events SET payload = json_set(payload, '$.sha', ?) WHERE id = (SELECT max(id) FROM events WHERE type = 'merge')",
+        `UPDATE events SET payload = json_set(payload, '$.sha', ?) WHERE id = (SELECT max(id) FROM events WHERE type = '${EventType.Merge}')`,
       ).run(rewritten);
       answersOnGitHub({ paths });
       const resolved = resolves().length;
@@ -1050,7 +1057,7 @@ describe('startFixRound', { timeout: 90_000 }, () => {
         openPr: true,
       });
 
-      expect(outcome).toMatchObject({ status: 'merged', prUrl: PR_URL });
+      expect(outcome).toMatchObject({ status: MergeStatus.Merged, prUrl: PR_URL });
       expect(getSession(db, SESSION_ID)?.state).toBe('merged');
       expect(warn.mock.calls.flat().join(' ')).toContain(
         "Could not answer the fix round's threads on GitHub",
@@ -1060,7 +1067,7 @@ describe('startFixRound', { timeout: 90_000 }, () => {
 
       // A merge whose pin is no sha ends no round it could answer for.
       db.prepare(
-        "UPDATE events SET payload = json_set(payload, '$.sha', 'bad') WHERE type = 'merge'",
+        `UPDATE events SET payload = json_set(payload, '$.sha', 'bad') WHERE type = '${EventType.Merge}'`,
       ).run();
       expect(
         answerFixRoundThreads(db, repo, SESSION_ID, 'github.com/owner/repo', 'a'.repeat(40)),
@@ -1093,7 +1100,7 @@ describe('ciReviewLookup', { timeout: 20_000 }, () => {
     transitionSession(db, SESSION_ID, 'running');
     transitionSession(db, SESSION_ID, 'awaiting-review');
     transitionSession(db, SESSION_ID, 'merged');
-    appendEvent(db, SESSION_ID, 'merge', {
+    appendEvent(db, SESSION_ID, EventType.Merge, {
       branch: BRANCH,
       sha: HEAD,
       target: 'main',

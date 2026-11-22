@@ -62,6 +62,12 @@ import {
   listDecisionRecords,
   updateDecisionRecordSummary,
 } from '../core/decision-record.repository.js';
+import { BaselineStageStatus } from '../core/enums/baseline-stage-status.enums.js';
+import { GateStageStatus } from '../core/enums/gate-stage-status.enums.js';
+import { InterruptSignal } from '../core/enums/interrupt-signal.enums.js';
+import { MergeStatus } from '../core/enums/merge-status.enums.js';
+import { OriginRecording } from '../core/enums/origin-recording.enums.js';
+import { StageDelta } from '../core/enums/stage-delta.enums.js';
 import { ConductorTellRefusedError } from '../core/errors/conductor.errors.js';
 import { RewrittenGitDirError } from '../core/errors/git-diff.errors.js';
 import { IntentRefusedError } from '../core/errors/intent.errors.js';
@@ -374,7 +380,7 @@ function printInitReport(db: Database, report: InitReport, repoPath: string): vo
     console.log(
       `  ${sanitizeReason(s.stage).padEnd(8)} ${sanitizeReason(s.status).toUpperCase().padEnd(8)} ${formatDuration(s.durationMs)}`,
     );
-    if (s.status === 'fail' && s.detail)
+    if (s.status === BaselineStageStatus.Fail && s.detail)
       console.log(`    ${sanitizeReason(s.detail.split('\n').at(-1) ?? '')}`);
   }
   printBaselineTail(db, report);
@@ -468,17 +474,17 @@ function printAuditOutcome(db: Database, report: AuditOutcome, repoPath: string)
   const fresh = new Map(report.baseline.stages.map((s) => [s.stage, s]));
   for (const t of report.transitions) {
     const move =
-      t.delta === 'unchanged'
+      t.delta === StageDelta.Unchanged
         ? t.after.toUpperCase()
         : `${t.before.toUpperCase()} -> ${t.after.toUpperCase()}`;
-    const marker = t.delta === 'unchanged' ? '' : `  ${t.delta.toUpperCase()}`;
+    const marker = t.delta === StageDelta.Unchanged ? '' : `  ${t.delta.toUpperCase()}`;
     const took = fresh.get(t.stage)?.durationMs;
     const timing = took === undefined ? '' : ` ${formatDuration(took)}`;
     console.log(
       `  ${sanitizeReason(t.stage).padEnd(8)} ${sanitizeReason(move).padEnd(16)}${timing}${marker}`,
     );
     const detail = fresh.get(t.stage)?.detail;
-    if (t.delta === 'regressed' && detail)
+    if (t.delta === StageDelta.Regressed && detail)
       for (const line of detail.split('\n')) console.log(`    ${sanitizeReason(line)}`);
   }
   if (report.unmeasured.length > 0) {
@@ -1207,7 +1213,7 @@ export function buildProgram(): Command {
         );
       }
       if (refusedUnsandboxed()) return;
-      const recording = opts.originMoved ? 're-record' : 'record';
+      const recording = opts.originMoved ? OriginRecording.ReRecord : OriginRecording.Record;
       const report = await withPushTargetLine(db, repoPath, () =>
         runOrReportNoAdapter(() =>
           initProject(
@@ -1906,11 +1912,11 @@ export function buildProgram(): Command {
       const restore = (): void => {
         instance.unmount();
       };
-      process.once('SIGINT', restore);
-      process.once('SIGTERM', restore);
+      process.once(InterruptSignal.Sigint, restore);
+      process.once(InterruptSignal.Sigterm, restore);
       void instance.waitUntilExit().then(() => {
-        process.off('SIGINT', restore);
-        process.off('SIGTERM', restore);
+        process.off(InterruptSignal.Sigint, restore);
+        process.off(InterruptSignal.Sigterm, restore);
       });
     });
 
@@ -1959,8 +1965,8 @@ export function buildProgram(): Command {
           )
           .then(() => db.close());
       };
-      process.on('SIGINT', stop);
-      process.on('SIGTERM', stop);
+      process.on(InterruptSignal.Sigint, stop);
+      process.on(InterruptSignal.Sigterm, stop);
       if (!opts.open) return;
       // Detached and unwaited: a browser xdg-open starts in the foreground
       // would hold a synchronous call, and with it the server, until it quits.
@@ -2663,7 +2669,7 @@ export function buildProgram(): Command {
         }
         printGateReport(outcome.report);
         switch (outcome.status) {
-          case 'merged':
+          case MergeStatus.Merged:
             if (outcome.regated && outcome.prUrl) {
               console.log(
                 `Re-gated ${session}; ${outcome.prUrl} now carries this gate report for its new head — merge it there, then run \`pup land ${session}\`.`,
@@ -2694,8 +2700,10 @@ export function buildProgram(): Command {
               reviewDecisionRecord(db, outcome.decisionRecordId);
             }
             break;
-          case 'refused': {
-            const failedStage = outcome.report.stages.find((s) => s.status === 'fail');
+          case MergeStatus.Refused: {
+            const failedStage = outcome.report.stages.find(
+              (s) => s.status === GateStageStatus.Fail,
+            );
             if (outcome.regated && failedStage) {
               console.log(
                 `Re-gate refused: ${sanitizeReason(failedStage.stage)} failed on the new head, and the PR still vouches for the earlier pin only. Fix it on the branch, push, then re-run \`pup merge ${session} --pr\`.`,
@@ -2714,7 +2722,7 @@ export function buildProgram(): Command {
               break;
             }
             const flagged = outcome.report.stages
-              .filter((s) => s.status === 'flagged')
+              .filter((s) => s.status === GateStageStatus.Flagged)
               .map((s) => sanitizeReason(s.stage))
               .join(', ');
             const approvedByHint = conductor ? ' --approved-by <who>' : '';
@@ -2731,19 +2739,19 @@ export function buildProgram(): Command {
             );
             break;
           }
-          case 'rejected':
+          case MergeStatus.Rejected:
             console.log(
               `Gate failed; report re-injected into the session (rejection ${outcome.rejectCount}/2).`,
             );
             break;
-          case 'blocked':
+          case MergeStatus.Blocked:
             console.log(
               `Gate failed; session parked as blocked — needs a human. Address it, then \`pup unblock ${session}\`.`,
             );
             break;
         }
         if (lockLost !== undefined) refuseScrubbed(lockLost);
-        if (outcome.status !== 'merged') process.exitCode = 1;
+        if (outcome.status !== MergeStatus.Merged) process.exitCode = 1;
       },
     );
   program

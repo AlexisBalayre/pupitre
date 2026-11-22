@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { SteerNotDeliveredError } from '@src/claude/errors/session-runtime.errors.js';
 import { resolveProject } from '@src/cli/project.utils.js';
 import { STALLED_AFTER_MS } from '@src/core/constants/session-activity.constants.js';
+import { EventType } from '@src/core/enums/event-type.enums.js';
 import { LaunchRolledBackError } from '@src/core/errors/session-lifecycle.errors.js';
 import { runGit } from '@src/core/git-diff.client.js';
 import { insertLedgerEntry } from '@src/core/ledger.repository.js';
@@ -182,7 +183,7 @@ export function seedDeadTurn(repoPath: string, sessionId: string, refusal?: stri
     statSync(projectPaths(repoPath).eventsFile(sessionId)).mtimeMs,
   ).toISOString();
   const { db } = resolveProject(repoPath);
-  appendEvent(db, sessionId, 'turn_died', {
+  appendEvent(db, sessionId, EventType.TurnDied, {
     reason: '⏺ API Error: Connection lost while your computer was asleep',
     stalledAt,
     ...(refusal ? { refusal } : {}),

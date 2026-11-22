@@ -6,6 +6,7 @@ import { conductorPane, deadTurnError, steerPane } from '../claude/session-runti
 import { holdIdleCaches, isHoldTurnOpen, lastPrompt } from './cache-hold.service.js';
 import { STALLED_AFTER_MS } from './constants/session-activity.constants.js';
 import { findStalledSessions } from './dashboard.service.js';
+import { EventType } from './enums/event-type.enums.js';
 import { isRefusedSteer, TerminalSessionError } from './errors/session-lifecycle.errors.js';
 import { projectId, projectPaths } from './paths.utils.js';
 import { toIsoUtc } from './report-data.utils.js';
@@ -119,7 +120,7 @@ function resumeSession(
   // no prompt. The file's mtime cannot say which, since Claude Code sends its
   // idle prompt a minute after a dead turn as after one that ended.
   const prompt = lastPrompt(listEvents(db, sessionId).reverse());
-  if (prompt?.type === 'cache_hold' && isHoldTurnOpen(eventsFile, prompt)) return undefined;
+  if (prompt?.type === EventType.CacheHold && isHoldTurnOpen(eventsFile, prompt)) return undefined;
   // Stamp AND age: a resume answers this stall for one stall window, not for
   // good. Through an outage the resumed turn dies again at once, no hook
   // fires and the stamp never moves — a stamp alone would leave the session
@@ -150,12 +151,12 @@ function resumeSession(
   // duplicate resume message on the next sweep, which lands in an empty box
   // behind the first and is read as a follow-up; a refusal nobody recorded
   // would cost a steer every fifteen seconds for as long as the outage lasts.
-  appendEvent(db, sessionId, 'turn_died', {
+  appendEvent(db, sessionId, EventType.TurnDied, {
     reason,
     stalledAt,
     ...(refusal ? { refusal } : {}),
   });
-  if (!refusal) appendEvent(db, sessionId, 'steer', { kind: 'resume', by: 'watch' });
+  if (!refusal) appendEvent(db, sessionId, EventType.Steer, { kind: 'resume', by: 'watch' });
   return { id: sessionId, reason, ...(refusal ? { refusal } : {}) };
 }
 
@@ -187,10 +188,10 @@ function nudgeConductor(db: Database, repoPath: string, now: number): ResumedTur
     // died, only that the window could not be read.
     if (reason === undefined) return undefined;
     const refusal = sanitizeReason(error.message);
-    appendEvent(db, null, 'turn_died', { target: CONDUCTOR_TARGET, reason, refusal });
+    appendEvent(db, null, EventType.TurnDied, { target: CONDUCTOR_TARGET, reason, refusal });
     return { id: CONDUCTOR_TARGET, reason, refusal };
   }
-  appendEvent(db, null, 'turn_died', { target: CONDUCTOR_TARGET, reason });
+  appendEvent(db, null, EventType.TurnDied, { target: CONDUCTOR_TARGET, reason });
   return { id: CONDUCTOR_TARGET, reason };
 }
 
@@ -199,9 +200,9 @@ function nudgedRecently(db: Database, now: number): boolean {
   const row = db
     .prepare(
       `SELECT created_at FROM events
-       WHERE session_id IS NULL AND type = 'turn_died' ORDER BY id DESC LIMIT 1`,
+       WHERE session_id IS NULL AND type = ? ORDER BY id DESC LIMIT 1`,
     )
-    .get() as { created_at: string } | undefined;
+    .get(EventType.TurnDied) as { created_at: string } | undefined;
   return row !== undefined && now - Date.parse(toIsoUtc(row.created_at)) < STALLED_AFTER_MS;
 }
 

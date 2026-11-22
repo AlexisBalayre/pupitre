@@ -15,6 +15,7 @@ import { basename, join, resolve } from 'node:path';
 
 import { sanitizeReason } from '../adapters/capability.utils.js';
 import { GATE_COMMAND_TIMEOUT_MS } from './constants/merge-gate.constants.js';
+import { InterruptSignal } from './enums/interrupt-signal.enums.js';
 import {
   ArmedGitDriverError,
   RewrittenGitDirError,
@@ -628,7 +629,12 @@ export function runGitBytes(
 export function rethrowIfKilled(error: unknown): void {
   const signal =
     typeof error === 'object' && error !== null && 'signal' in error ? error.signal : undefined;
-  if (signal === 'SIGINT' || signal === 'SIGTERM' || signal === 'SIGHUP') throw error;
+  if (
+    signal === InterruptSignal.Sigint ||
+    signal === InterruptSignal.Sigterm ||
+    signal === InterruptSignal.Sighup
+  )
+    throw error;
 }
 
 /**

@@ -1,4 +1,5 @@
-import type { ModelRoute, Tier } from '../types/model-ladder.types.js';
+import { Tier } from '../enums/tier.enums.js';
+import type { ModelRoute } from '../types/model-ladder.types.js';
 
 // The models and efforts pup launches `claude` on (decision 92). Every window
 // pup opens and every utility call passes both `--model` and `--effort`, so the
@@ -12,7 +13,7 @@ const OPUS_MODEL = 'claude-opus-5-5';
 const SONNET_MODEL = 'claude-sonnet-5-5';
 const HAIKU_MODEL = 'claude-haiku-5-5';
 
-export const TIERS: readonly Tier[] = ['standard', 'critical'];
+export const TIERS: readonly Tier[] = [Tier.Standard, Tier.Critical];
 
 const sonnet = (effort: string): ModelRoute => ({
   model: SONNET_MODEL,
@@ -28,8 +29,8 @@ const opus = (effort: string): ModelRoute => ({ model: OPUS_MODEL, effort });
  * the operator instead (decision 92).
  */
 export const LADDERS: Readonly<Record<Tier, readonly ModelRoute[]>> = {
-  standard: [sonnet('medium'), sonnet('high'), opus('high'), opus('xhigh')],
-  critical: [opus('high'), opus('xhigh')],
+  [Tier.Standard]: [sonnet('medium'), sonnet('high'), opus('high'), opus('xhigh')],
+  [Tier.Critical]: [opus('high'), opus('xhigh')],
 };
 
 /** `pup conductor start` without `--model`/`--effort`. */

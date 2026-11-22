@@ -2,6 +2,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import { beforeEach, describe, expect, it } from 'vitest';
+import { NestedPackageStage } from '../adapters/enums/nested-package-stage.enums.js';
 import type { NestedPackage } from '../adapters/types/adapter.types.js';
 import { owningLockfile, refuseUninstalled } from './uninstalled-dependency.service.js';
 
@@ -9,7 +10,7 @@ const MEMBER: NestedPackage = {
   dir: 'tools/review',
   changedFiles: ['tools/review/src/r.ts'],
   droppedSources: [],
-  commands: [{ stage: 'test', command: 'npm', args: ['test'] }],
+  commands: [{ stage: NestedPackageStage.Test, command: 'npm', args: ['test'] }],
   missing: [],
 };
 

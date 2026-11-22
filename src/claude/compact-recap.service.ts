@@ -4,6 +4,8 @@ import type { Database } from 'better-sqlite3';
 import { readPlainFile, sanitizeReason } from '../adapters/capability.utils.js';
 import { openConductorQuestion } from '../core/conductor.service.js';
 import { MERGE_LOCK_DIRNAME } from '../core/constants/merge-gate.constants.js';
+import { EventType } from '../core/enums/event-type.enums.js';
+import { GateStageStatus } from '../core/enums/gate-stage-status.enums.js';
 import { runGit, verifiedWorktreeGitEnv } from '../core/git-diff.client.js';
 import {
   currentFixRound,
@@ -68,17 +70,17 @@ export function sessionRecap(db: Database, sessionId: string): string[] {
 function lastGateLine(db: Database, sessionId: string): string {
   const rows = db
     .prepare(
-      "SELECT type, payload, created_at FROM events WHERE session_id = ? AND type = 'gate_result' ORDER BY id DESC",
+      'SELECT type, payload, created_at FROM events WHERE session_id = ? AND type = ? ORDER BY id DESC',
     )
-    .iterate(sessionId) as IterableIterator<{
-    type: 'gate_result';
+    .iterate(sessionId, EventType.GateResult) as IterableIterator<{
+    type: EventType.GateResult;
     payload: string;
     created_at: string;
   }>;
   for (const row of rows) {
     const event = decodeEvent(row);
     if (event.type !== 'gate_result' || !event.report) continue;
-    const failed = event.report.stages.filter((stage) => stage.status === 'fail');
+    const failed = event.report.stages.filter((stage) => stage.status === GateStageStatus.Fail);
     const verdict = event.report.passed
       ? 'passed'
       : `failed${failed.length ? ` at ${listed(failed.map((stage) => sanitizeReason(stage.stage)))}` : ''}`;
@@ -140,8 +142,13 @@ function openPrLines(db: Database, repoPath: string, sessions: SessionRow[]): st
   const open = sessions
     .filter((session) => session.state !== 'killed')
     .flatMap((session) => {
-      const newest = newestEventOf(db, session.id, ['merge', 'landed', 'retired', 'pr_closed']);
-      if (newest?.type !== 'merge') return [];
+      const newest = newestEventOf(db, session.id, [
+        EventType.Merge,
+        EventType.Landed,
+        EventType.Retired,
+        EventType.PrClosed,
+      ]);
+      if (newest?.type !== EventType.Merge) return [];
       const merge = decodeEvent(newest);
       return merge.type === 'merge' && merge.prUrl
         ? [{ session, merge, prUrl: merge.prUrl, at: newest.id }]

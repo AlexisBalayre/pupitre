@@ -1,3 +1,4 @@
+import { GateStage } from '../adapters/enums/gate-stage.enums.js';
 import type { ProgressStream, StageProgress } from './types/progress.types.js';
 /**
  * The one status line a long-running command keeps on stderr (decision 184):
@@ -22,7 +23,7 @@ export const MERGE_STAGES = [
   MERGE_LOCK_STAGE,
   'worktree-clean',
   'fresh-base',
-  'build',
+  GateStage.Build,
   'tests and checks',
   'scope-audit',
   'debt',

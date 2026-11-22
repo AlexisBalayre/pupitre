@@ -16,6 +16,7 @@ import {
   DUPLICATION_RULE_ID,
 } from './constants/merge-gate.constants.js';
 import { repoCoverageRatio } from './coverage.utils.js';
+import { GateStageStatus } from './enums/gate-stage-status.enums.js';
 import type {
   DebtFlag,
   DebtGap,
@@ -250,8 +251,12 @@ function judgeDeadCode(
   const found = measured.debt.deadExports;
   if (found === undefined) {
     return gaps.length === 0
-      ? verdict(stage, 'skipped', 'not measured — adapter cannot detect dead code')
-      : verdict(stage, 'skipped', withNote(measured, `not measured — ${gapReasons(gaps)}`));
+      ? verdict(stage, GateStageStatus.Skipped, 'not measured — adapter cannot detect dead code')
+      : verdict(
+          stage,
+          GateStageStatus.Skipped,
+          withNote(measured, `not measured — ${gapReasons(gaps)}`),
+        );
   }
   // A count missing one adapter's findings still compares soundly — it can only
   // fail to flag — but it must not become the bar: ratcheting it would write
@@ -262,7 +267,7 @@ function judgeDeadCode(
   const known = baseline?.deadExports;
   if (!known) {
     const detail = withNote(measured, 'not measured — no debt baseline; run `pup init`');
-    return verdict(stage, 'skipped', detail, carries);
+    return verdict(stage, GateStageStatus.Skipped, detail, carries);
   }
   const knownKeys = new Set(known.map((d) => `${d.file}\u0000${d.exportName}`));
   const fresh = found.filter((d) => !knownKeys.has(`${d.file}\u0000${d.exportName}`));
@@ -274,10 +279,10 @@ function judgeDeadCode(
     // (decisions 29, 30). A real finding still flags below, because the
     // adapters that did measure found it.
     return gaps.length === 0
-      ? verdict(stage, 'pass', withNote(measured, 'no new unused exports'), carries)
+      ? verdict(stage, GateStageStatus.Pass, withNote(measured, 'no new unused exports'), carries)
       : verdict(
           stage,
-          'skipped',
+          GateStageStatus.Skipped,
           withNote(
             measured,
             `${gapList(gaps)}; the adapters that did measure found no new unused exports`,
@@ -288,7 +293,7 @@ function judgeDeadCode(
   const quoted = samples(fresh.map((d) => `${quotePath(d.file)}#${d.exportName}`));
   return verdict(
     stage,
-    'flagged',
+    GateStageStatus.Flagged,
     withNote(measured, `${fresh.length} new unused export(s): ${quoted}${gapAside(gaps)}`),
     {
       ...carries,
@@ -311,7 +316,11 @@ function judgeDuplication(
   const stage = 'duplication';
   const duplication = measured.duplication;
   if (!duplication) {
-    return verdict(stage, 'skipped', 'not measured — adapter cannot detect duplication');
+    return verdict(
+      stage,
+      GateStageStatus.Skipped,
+      'not measured — adapter cannot detect duplication',
+    );
   }
   // A number counted under an older rule is not a bar, it is a different
   // measurement — comparing across the two passes on the difference. So a
@@ -346,11 +355,11 @@ function judgeDuplication(
       baseline?.duplicatedLines === undefined
         ? 'not measured — no debt baseline; run `pup init`'
         : 'not measured — the stored baseline counts duplication a different way; run `pup audit`';
-    return verdict(stage, 'skipped', withNote(measured, why), carries);
+    return verdict(stage, GateStageStatus.Skipped, withNote(measured, why), carries);
   }
   if (duplication.duplicatedLines <= knownLines) {
     const detail = `${duplication.duplicatedLines} duplicated lines (baseline ${knownLines})${fixtureNote}`;
-    return verdict(stage, 'pass', withNote(measured, detail), carries);
+    return verdict(stage, GateStageStatus.Pass, withNote(measured, detail), carries);
   }
   const changedSet = new Set(changedPaths);
   const touchedBlocks = duplication.blocks.filter((b) =>
@@ -376,7 +385,7 @@ function judgeDuplication(
   const rose = `rose from ${knownLines} to ${duplication.duplicatedLines}`;
   return verdict(
     stage,
-    'flagged',
+    GateStageStatus.Flagged,
     withNote(measured, `duplicated lines ${rose} (e.g. ${quoted})${fixtureNote}`),
     {
       ...carries,
@@ -391,7 +400,11 @@ function judgeDuplication(
 function judgeComplexity(measured: GateDebtMeasurement, sessionId: string): StageVerdict {
   const stage = 'complexity';
   if (!measured.complexity) {
-    return verdict(stage, 'skipped', 'not measured — adapter cannot measure complexity');
+    return verdict(
+      stage,
+      GateStageStatus.Skipped,
+      'not measured — adapter cannot measure complexity',
+    );
   }
   const { sources, copiesPaired, targetHolds } = measured.complexity;
   const unpaired = copiesPaired
@@ -428,13 +441,13 @@ function judgeComplexity(measured: GateDebtMeasurement, sessionId: string): Stag
     const detail =
       `no touched file rose by more than ${COMPLEXITY_FILE_FLAG_DELTA} decision points, ` +
       `and no new file holds more than ${COMPLEXITY_NEW_FILE_FLAG_CAP}${unpaired}`;
-    return verdict(stage, 'pass', detail);
+    return verdict(stage, GateStageStatus.Pass, detail);
   }
   const quoted = samples(risen.map((f) => `${quotePath(f.file)} (${f.label})`));
   const points = risen.reduce((sum, f) => sum + f.points, 0);
   return verdict(
     stage,
-    'flagged',
+    GateStageStatus.Flagged,
     `complexity rose sharply in ${risen.length} touched file(s): ${quoted}${unpaired}`,
     {
       flag: {
@@ -456,7 +469,11 @@ function judgeCoverage(
   const gaps = measured.gaps.filter((g) => g.capability === COVERAGE);
   const report = measured.coverage;
   if (!report && gaps.length === 0) {
-    return verdict(stage, 'skipped', 'not measured — adapter cannot measure coverage');
+    return verdict(
+      stage,
+      GateStageStatus.Skipped,
+      'not measured — adapter cannot measure coverage',
+    );
   }
   const repoRatio = measured.debt.coverageRatio;
   const carries: { ratchet?: DebtBaseline } =
@@ -471,12 +488,16 @@ function judgeCoverage(
     // emptying the report turns the stage off. Changed source plus no
     // measurement is a flag, not a free skip (decision 30).
     if (coverable.length === 0) {
-      return verdict(stage, 'skipped', withNote(measured, `not measured — ${reason}`));
+      return verdict(
+        stage,
+        GateStageStatus.Skipped,
+        withNote(measured, `not measured — ${reason}`),
+      );
     }
     const unmeasured = `${coverable.length} changed source file(s)`;
     return verdict(
       stage,
-      'flagged',
+      GateStageStatus.Flagged,
       withNote(measured, `${unmeasured} went unmeasured — ${reason}`),
       {
         flag: {
@@ -488,7 +509,7 @@ function judgeCoverage(
   }
   if (baselineRatio === undefined) {
     const detail = withNote(measured, 'not measured — no coverage baseline; run `pup init`');
-    return verdict(stage, 'skipped', detail, carries);
+    return verdict(stage, GateStageStatus.Skipped, detail, carries);
   }
   const patch = measured.patch ?? { covered: 0, instrumented: 0, uncovered: [] };
   // Changed code the report never mentions is the loophole patch coverage
@@ -503,7 +524,7 @@ function judgeCoverage(
       ratio === undefined
         ? 'no instrumentable changed lines'
         : `patch coverage ${pct(ratio)} (baseline ${pct(baselineRatio)})`;
-    return verdict(stage, 'pass', withNote(measured, detail), carries);
+    return verdict(stage, GateStageStatus.Pass, withNote(measured, detail), carries);
   }
   // Both are evaluated, never short-circuited: a merge that hides files AND
   // drops patch coverage must record both, or the ledger understates what was
@@ -532,7 +553,7 @@ function judgeCoverage(
       : unreported.length > 0
         ? 'unreported files'
         : `patch coverage ${pct(ratio as number)} below baseline ${pct(baselineRatio)}`;
-  return verdict(stage, 'flagged', withNote(measured, problems.join('; ')), {
+  return verdict(stage, GateStageStatus.Flagged, withNote(measured, problems.join('; ')), {
     ...carries,
     flag: {
       description: `Coverage gap (${cause}) merged from session ${sessionId}`,

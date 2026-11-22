@@ -46,9 +46,12 @@ import {
   type ThreadSeed,
 } from '@test/helpers/fix-round.mock.js';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
+import { Tier } from '../claude/enums/tier.enums.js';
 import { kickoff, killSession, launchSession } from '../claude/session-runtime.service.js';
 import { DEFAULT_BASE_PROFILE } from './constants/default-profile.constants.js';
 import { openStore } from './db.client.js';
+import { EventType } from './enums/event-type.enums.js';
+import { MergeStatus } from './enums/merge-status.enums.js';
 import { startFixRound } from './fix-round.service.js';
 import { landSession } from './land.service.js';
 import { runMergeGate } from './merge-gate.service.js';
@@ -280,7 +283,7 @@ describe('startFixRound', { timeout: 90_000 }, () => {
   function seedPrMerge(event: Record<string, unknown> = {}): void {
     sh(repo, 'git', 'worktree', 'remove', '--force', worktree);
     transitionSession(db, SESSION_ID, 'merged');
-    appendEvent(db, SESSION_ID, 'merge', {
+    appendEvent(db, SESSION_ID, EventType.Merge, {
       branch: BRANCH,
       sha: pinned,
       target: 'main',
@@ -298,7 +301,11 @@ describe('startFixRound', { timeout: 90_000 }, () => {
       adapters: [passingAdapter],
       openPr: true,
     });
-    expect(outcome).toMatchObject({ status: 'merged', prUrl: PR_URL, prWasAdopted: true });
+    expect(outcome).toMatchObject({
+      status: MergeStatus.Merged,
+      prUrl: PR_URL,
+      prWasAdopted: true,
+    });
   }
 
   /** GitHub merging PR #7 at `head` onto origin's main, as `pup land` then reads it. */
@@ -346,14 +353,14 @@ describe('startFixRound', { timeout: 90_000 }, () => {
       base: DEFAULT_BASE_PROFILE,
       windowEnv: { vars: {}, configDir: claudeUserDir },
     });
-  const payloads = (type: string) =>
+  const payloads = (type: EventType) =>
     listEvents(db, SESSION_ID)
       .filter((row) => row.type === type)
       .map((row) => JSON.parse(row.payload) as Record<string, unknown>);
   const prompt = (): string => vi.mocked(kickoff).mock.calls.at(-1)?.[1] ?? '';
   /** A window recorded on `rung` of the standard ladder, as a launch records it. */
   const _routeAt = (rung: number) => ({
-    tier: 'standard' as const,
+    tier: Tier.Standard as const,
     rung,
     model: 'claude-sonnet-5-5',
     effort: 'medium',
@@ -364,14 +371,14 @@ describe('startFixRound', { timeout: 90_000 }, () => {
    * older head, so the review's threads now carry ids it never saw.
    */
   const _seedFinishedRound = () => {
-    appendEvent(db, SESSION_ID, 'fix_round', {
+    appendEvent(db, SESSION_ID, EventType.FixRound, {
       prUrl: PR_URL,
       head: '1'.repeat(40),
       threads: ['PRRT_round1'],
       rejectBase: 0,
     });
-    appendEvent(db, SESSION_ID, 'respawn', { delivered: true });
-    appendEvent(db, SESSION_ID, 'merge', {
+    appendEvent(db, SESSION_ID, EventType.Respawn, { delivered: true });
+    appendEvent(db, SESSION_ID, EventType.Merge, {
       branch: BRANCH,
       sha: pinned,
       target: 'main',
@@ -549,7 +556,7 @@ describe('startFixRound', { timeout: 90_000 }, () => {
 
         expect(getSession(db, SESSION_ID)?.state).toBe('merged');
         expect(vi.mocked(killSession).mock.calls).toEqual([[SESSION_ID, '%9']]);
-        expect(payloads('gate_result').at(-1)).toEqual({
+        expect(payloads(EventType.GateResult).at(-1)).toEqual({
           from,
           to: 'merged',
           kind: 'fix-round-killed',

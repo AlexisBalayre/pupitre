@@ -1,12 +1,12 @@
 import type { Adapter } from '../../adapters/types/adapter.types.js';
+import type { GateStageStatus } from '../enums/gate-stage-status.enums.js';
+import type { MergeStatus } from '../enums/merge-status.enums.js';
 import type { PullRequestRef } from './github.types.js';
 import type { DebtBaseline, ProjectBaseline } from './init.types.js';
 import type { LedgerEntryRow } from './ledger.types.js';
 import type { TaskSpec } from './profile.types.js';
 import type { RegatePlan } from './regate.types.js';
 import type { ProjectRow, SessionRow } from './session.types.js';
-
-type GateStageStatus = 'pass' | 'fail' | 'flagged' | 'skipped';
 
 export interface GateStageResult {
   stage: string;
@@ -67,15 +67,6 @@ export interface MergeRequest {
    */
   wait?: boolean;
 }
-
-/**
- * `merged` landed on the target branch — or, with `openPr`, passed the gate and
- * left pupitre's custody as a pull request; `refused` means the soft diff-size
- * flag blocked the merge but the session stays in awaiting-review (a human
- * decides); `rejected` re-steered the session with the report; `blocked` parked
- * it (reject cap reached or the session was unreachable).
- */
-type MergeStatus = 'merged' | 'refused' | 'rejected' | 'blocked';
 
 export interface MergeOutcome {
   status: MergeStatus;

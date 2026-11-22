@@ -1,5 +1,6 @@
 import type { Database } from 'better-sqlite3';
 import { beforeEach, describe, expect, it } from 'vitest';
+import { GateStage } from '../adapters/enums/gate-stage.enums.js';
 import {
   appendBaselineHistory,
   baselineHistoryAsOf,
@@ -9,6 +10,7 @@ import {
   listRecentBaselineHistory,
 } from './baseline-history.repository.js';
 import { openStore } from './db.client.js';
+import { BaselineStageStatus } from './enums/baseline-stage-status.enums.js';
 import { ensureProject } from './session.repository.js';
 import type { NewBaselineHistoryInput } from './types/baseline-history.types.js';
 
@@ -16,7 +18,7 @@ function historyInput(overrides: Partial<NewBaselineHistoryInput> = {}): NewBase
   return {
     projectId: 'proj-1',
     capturedAt: '2026-08-03T10:00:00.000Z',
-    stages: [{ stage: 'build', status: 'pass', durationMs: 5 }],
+    stages: [{ stage: GateStage.Build, status: BaselineStageStatus.Pass, durationMs: 5 }],
     ...overrides,
   };
 }
@@ -38,7 +40,7 @@ describe('baseline history repository', () => {
     expect(row?.id).toBe(id);
     expect(row?.captured_at).toBe('2026-08-03T10:00:00.000Z');
     expect(JSON.parse(row?.stages ?? '[]')).toEqual([
-      { stage: 'build', status: 'pass', durationMs: 5 },
+      { stage: GateStage.Build, status: BaselineStageStatus.Pass, durationMs: 5 },
     ]);
     expect(JSON.parse(row?.debt ?? '{}')).toEqual({ duplicatedLines: 184, coverageRatio: 0.835 });
   });

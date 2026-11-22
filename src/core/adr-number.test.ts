@@ -6,6 +6,9 @@ import type { Database } from 'better-sqlite3';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ADR_NUMBER_STAGE, adrNumberStage } from './adr-number.service.js';
 import { openStore } from './db.client.js';
+import { EventType } from './enums/event-type.enums.js';
+import { GateStageStatus } from './enums/gate-stage-status.enums.js';
+import { InterruptSignal } from './enums/interrupt-signal.enums.js';
 import { runGit } from './git-diff.client.js';
 import {
   appendEvent,
@@ -96,7 +99,7 @@ describe('adrNumberStage', { timeout: 20_000 }, () => {
   /** The failed stage's lines, or none when the stage passed or was not run. */
   const refusals = (): string[] => {
     const result = stage();
-    return result?.status === 'fail' ? (result.detail ?? '').split('\n') : [];
+    return result?.status === GateStageStatus.Fail ? (result.detail ?? '').split('\n') : [];
   };
 
   it('adds no stage for a branch adding no ADR', () => {
@@ -193,11 +196,11 @@ describe('adrNumberStage', { timeout: 20_000 }, () => {
     commitOn(repo, 'pup/me', 'docs/adr/0003-mine.md');
     expect(stage()).toMatchObject({
       stage: ADR_NUMBER_STAGE,
-      status: 'pass',
+      status: GateStageStatus.Pass,
       detail: 'not checked against pup/orphan: git could not read it against the target',
     });
     commitOn(repo, 'pup/me', 'docs/adr/0004-mine.md');
-    expect(stage()).toMatchObject({ status: 'fail' });
+    expect(stage()).toMatchObject({ status: GateStageStatus.Fail });
     expect(stage()?.detail).toBe(
       'ADR numbers already taken:\n' +
         '  docs/adr/0004-mine.md: decision 0004 is also added by pup/other, a session branch ' +
@@ -244,7 +247,7 @@ describe('adrNumberStage', { timeout: 20_000 }, () => {
   /** Seed `other` as merged with an open PR whose merge event records `sha`. */
   const openPrPeer = (sha?: string): void => {
     seedSession(db, 'other', 'merged');
-    appendEvent(db, 'other', 'merge', {
+    appendEvent(db, 'other', EventType.Merge, {
       branch: 'pup/other',
       ...(sha === undefined ? {} : { sha }),
       target: 'main',
@@ -324,7 +327,7 @@ describe('adrNumberStage', { timeout: 20_000 }, () => {
 
   it("withholds an open PR peer's url that is not a pull request's", () => {
     seedSession(db, 'other', 'merged');
-    appendEvent(db, 'other', 'merge', {
+    appendEvent(db, 'other', EventType.Merge, {
       branch: 'pup/other',
       target: 'main',
       files: [],
@@ -338,7 +341,7 @@ describe('adrNumberStage', { timeout: 20_000 }, () => {
 
   it('ignores a retired PR peer, even once its gated commit is pruned', () => {
     openPrPeer('1'.repeat(40));
-    appendEvent(db, 'other', 'retired', {
+    appendEvent(db, 'other', EventType.Retired, {
       prUrl: 'https://github.com/o/r/pull/1',
       supersededBy: 'https://github.com/o/r/pull/2',
     });
@@ -348,7 +351,7 @@ describe('adrNumberStage', { timeout: 20_000 }, () => {
 
   it('ignores a PR peer abandoned with pup land --abandon-closed, even once its gated commit is pruned', () => {
     openPrPeer('1'.repeat(40));
-    appendEvent(db, 'other', 'pr_closed', {
+    appendEvent(db, 'other', EventType.PrClosed, {
       prUrl: 'https://github.com/o/r/pull/1',
       sha: '1'.repeat(40),
     });
@@ -361,8 +364,8 @@ describe('adrNumberStage', { timeout: 20_000 }, () => {
     const sha = git(repo, 'rev-parse', 'refs/heads/pup/other');
     git(repo, 'branch', '-q', '-D', 'pup/other');
     openPrPeer(sha);
-    appendEvent(db, 'other', 'pr_closed', { prUrl: 'https://github.com/o/r/pull/1', sha });
-    appendEvent(db, 'other', 'merge', {
+    appendEvent(db, 'other', EventType.PrClosed, { prUrl: 'https://github.com/o/r/pull/1', sha });
+    appendEvent(db, 'other', EventType.Merge, {
       branch: 'pup/other',
       sha,
       target: 'main',
@@ -385,19 +388,19 @@ describe('adrNumberStage', { timeout: 20_000 }, () => {
   it('ignores killed sessions, landed PRs, local merges and pup branches no session holds', () => {
     seedSession(db, 'killed', 'killed');
     seedSession(db, 'landed', 'merged');
-    appendEvent(db, 'landed', 'merge', {
+    appendEvent(db, 'landed', EventType.Merge, {
       branch: 'pup/landed',
       target: 'main',
       files: [],
       prUrl: 'https://github.com/o/r/pull/2',
     });
-    appendEvent(db, 'landed', 'landed', {
+    appendEvent(db, 'landed', EventType.Landed, {
       sha: 'abc',
       target: 'main',
       prUrl: 'https://github.com/o/r/pull/2',
     });
     seedSession(db, 'local', 'merged');
-    appendEvent(db, 'local', 'merge', { branch: 'pup/local', target: 'main', files: [] });
+    appendEvent(db, 'local', EventType.Merge, { branch: 'pup/local', target: 'main', files: [] });
     for (const branch of ['killed', 'landed', 'local', 'stray']) {
       commitOn(repo, `pup/${branch}`, `docs/adr/0003-${branch}.md`);
     }
@@ -412,7 +415,7 @@ describe('adrNumberStage', { timeout: 20_000 }, () => {
     const theirs = git(repo, 'rev-parse', 'refs/heads/pup/other');
     const actual =
       await vi.importActual<typeof import('./git-diff.client.js')>('./git-diff.client.js');
-    const interrupt = Object.assign(new Error('git killed'), { signal: 'SIGINT' });
+    const interrupt = Object.assign(new Error('git killed'), { signal: InterruptSignal.Sigint });
     vi.mocked(runGit).mockImplementation((cwd, args, opts) => {
       if (args.some((arg) => arg.endsWith(`...${theirs}`))) throw interrupt;
       return actual.runGit(cwd, args, opts);
@@ -434,7 +437,10 @@ describe('adrNumberStage', { timeout: 20_000 }, () => {
       const actual =
         await vi.importActual<typeof import('./git-diff.client.js')>('./git-diff.client.js');
       // What Node throws for an overrun: SIGTERM, with the code naming why.
-      const overrun = Object.assign(new Error('spawnSync git'), { signal: 'SIGTERM', code });
+      const overrun = Object.assign(new Error('spawnSync git'), {
+        signal: InterruptSignal.Sigterm,
+        code,
+      });
       let peerRead: unknown;
       vi.mocked(runGit).mockImplementation((cwd, args, opts) => {
         if (args.some((arg) => arg.endsWith(`...${theirs}`))) {
@@ -445,7 +451,7 @@ describe('adrNumberStage', { timeout: 20_000 }, () => {
       });
       try {
         expect(stage()).toMatchObject({
-          status: 'pass',
+          status: GateStageStatus.Pass,
           detail: 'not checked against pup/other: git could not read it against the target',
         });
         expect(peerRead).toEqual({ timeout: 10_000 });
@@ -460,7 +466,7 @@ describe('adrNumberStage', { timeout: 20_000 }, () => {
     git(repo, 'symbolic-ref', 'refs/heads/pup/other', 'refs/heads/main');
     commitOn(repo, 'pup/me', 'docs/adr/0003-mine.md');
     expect(stage()).toMatchObject({
-      status: 'pass',
+      status: GateStageStatus.Pass,
       detail: 'not checked against pup/other: git could not read it against the target',
     });
   });
@@ -477,7 +483,7 @@ describe('adrNumberStage', { timeout: 20_000 }, () => {
     );
     commitOn(repo, 'pup/me', 'docs/adr/0003-mine.md');
     expect(stage()).toMatchObject({
-      status: 'pass',
+      status: GateStageStatus.Pass,
       detail:
         'not checked against pup/squatter: it adds 4 decisions, more than the 3 a session ' +
         'branch is checked for',

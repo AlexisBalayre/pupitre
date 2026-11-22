@@ -1,3 +1,4 @@
+import { GateStage } from '@src/adapters/enums/gate-stage.enums.js';
 import type { Adapter } from '@src/adapters/types/adapter.types.js';
 import { commitAs } from './git.mock.js';
 
@@ -23,7 +24,7 @@ export const OTHER_SHA = 'a'.repeat(40);
 export const failingAdapter: Adapter = {
   id: 'fake',
   detect: () => true,
-  gateCommands: () => [{ stage: 'test', command: 'false', args: [] }],
+  gateCommands: () => [{ stage: GateStage.Test, command: 'false', args: [] }],
 };
 
 export interface ThreadSeed {

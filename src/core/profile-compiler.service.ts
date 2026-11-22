@@ -6,6 +6,7 @@ import { parse } from 'yaml';
 import { readPlainFile, sanitizeReason } from '../adapters/capability.utils.js';
 import type { GateCommand } from '../adapters/types/adapter.types.js';
 import { LADDERS, SECURITY_REVIEW_EFFORT } from '../claude/constants/model-ladder.constants.js';
+import { Tier } from '../claude/enums/tier.enums.js';
 import { claudeUserDir } from '../claude/session-runtime.service.js';
 import type { ModelRoute } from '../claude/types/model-ladder.types.js';
 import { CONTROL_CHARS, readBrief, workerBrief } from './brief.service.js';
@@ -20,6 +21,7 @@ import {
   WORKER_SLIM_CONTEXT_ENV,
   WORKER_SUBAGENT_ENV,
 } from './constants/profile.constants.js';
+import { EventType } from './enums/event-type.enums.js';
 import { ContextBudgetExceededError, InvalidProfileError } from './errors/profile.errors.js';
 import {
   GIT_SAFE_CONFIG,
@@ -1269,7 +1271,7 @@ while IFS= read -r LINE; do
   FILE=\${REST#* }
   jq -nc --arg sid "\${PUP_SESSION_ID:-unknown}" --arg path "$FILE" --arg reason "$REASON" \\
     --arg command "$CMD" \\
-    '{type: "scope_violation", pup_session_id: $sid, path: $path, reason: $reason, command: $command}' \\
+    '{type: "${EventType.ScopeViolation}", pup_session_id: $sid, path: $path, reason: $reason, command: $command}' \\
     >> "$EVENTS"
   # printf, never echo: sh's echo would interpret backslashes in a name or command.
   printf 'SCOPE VIOLATION: %s (%s) was written by: %s\\n' "$FILE" "$REASON" "$CMD" >&2
@@ -1752,7 +1754,7 @@ function conductorModelsSection(workerModel: string | undefined, commonDir: stri
     `when a scope-in glob touches any of ${areas}, and standard otherwise; \`pup plan\` lists ` +
     'the tier, and `pup plan add|edit --tier critical|standard` sets one when the risk is not ' +
     'in the paths. Each tier has a ladder, cheapest first — standard: ' +
-    `${ladderText(LADDERS.standard)}; critical: ${ladderText(LADDERS.critical)} — and a ` +
+    `${ladderText(LADDERS[Tier.Standard])}; critical: ${ladderText(LADDERS[Tier.Critical])} — and a ` +
     'relaunch or respawn after a gate rejection, a stall or a dead turn climbs one rung. ' +
     "A CI fix round runs on the rung the session's last window ran on; every later round " +
     'on the same PR climbs one. A blocked task never climbs. ' +

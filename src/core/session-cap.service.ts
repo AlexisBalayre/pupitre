@@ -1,5 +1,6 @@
 import { availableParallelism, loadavg } from 'node:os';
 import type { Database } from 'better-sqlite3';
+import { EventType } from './enums/event-type.enums.js';
 import { LockBacklogOverBudgetError, MachineLoadedError } from './errors/session-cap.errors.js';
 import { UsageLimitReachedError } from './errors/usage-limits.errors.js';
 import { loadAllowanceFactor, lockBacklogBudgetMinutes } from './project-config.config.js';
@@ -96,8 +97,13 @@ export function lockBacklog(db: Database, repoPath: string, now = Date.now()): L
 
 function awaitsLand(db: Database, session: SessionRow, now: number): boolean {
   if (session.state !== 'merged') return false;
-  const newest = newestEventOf(db, session.id, ['merge', 'landed', 'retired', 'pr_closed']);
-  if (newest?.type !== 'merge') return false;
+  const newest = newestEventOf(db, session.id, [
+    EventType.Merge,
+    EventType.Landed,
+    EventType.Retired,
+    EventType.PrClosed,
+  ]);
+  if (newest?.type !== EventType.Merge) return false;
   // A time that does not parse is counted: dropping it would hide the session.
   const at = mergedAt(newest.created_at);
   if (Number.isFinite(at) && now - at >= LAND_WINDOW_MS) return false;
@@ -126,7 +132,7 @@ function mergedAt(createdAt: string): number {
 function gateRunTimes(db: Database): number[] {
   const runs = listSessions(db)
     .flatMap((session) => listEvents(db, session.id))
-    .filter((event) => event.type === 'gate_result')
+    .filter((event) => event.type === EventType.GateResult)
     .sort((a, b) => b.id - a.id);
   const times: number[] = [];
   for (const run of runs) {

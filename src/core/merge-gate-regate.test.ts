@@ -111,10 +111,15 @@ import {
   untimed,
 } from '@test/helpers/merge-gate.mock.js';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
+import { GateStage } from '../adapters/enums/gate-stage.enums.js';
 import type { Adapter, CapabilityContext } from '../adapters/types/adapter.types.js';
 import { steerPane } from '../claude/session-runtime.service.js';
 import { DUPLICATION_RULE_ID } from './constants/merge-gate.constants.js';
 import { openStore } from './db.client.js';
+import { EventType } from './enums/event-type.enums.js';
+import { GateStageStatus } from './enums/gate-stage-status.enums.js';
+import { InterruptSignal } from './enums/interrupt-signal.enums.js';
+import { MergeStatus } from './enums/merge-status.enums.js';
 import { ArmedGitDriverError, WorktreeRepointedError } from './errors/git-diff.errors.js';
 import { SessionNotReviewableError } from './errors/merge-gate.errors.js';
 import { GateInterruptedError } from './errors/sandbox.errors.js';
@@ -300,7 +305,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
     const outcome = await merge();
 
-    expect(outcome.status).toBe('merged');
+    expect(outcome.status).toBe(MergeStatus.Merged);
     expect(sh(repo, 'git', 'rev-parse', 'main').trim()).toBe(tip);
     expect(existsSync(fired)).toBe(false);
   });
@@ -455,9 +460,9 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
       const outcome = await merge(passingAdapter, accept);
 
-      expect(outcome.status).toBe('merged');
+      expect(outcome.status).toBe(MergeStatus.Merged);
       expect(outcome.report.stages.find((stage) => stage.stage === 'diff-size')?.status).toBe(
-        'flagged',
+        GateStageStatus.Flagged,
       );
       expect(listLedgerEntries(db, 'proj-1').map((entry) => entry.description)).toEqual([
         held,
@@ -484,8 +489,11 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
     const outcome = await merge(failingBuildAdapter);
 
-    expect(outcome.status).toBe('rejected');
-    expect(outcome.report.stages.at(-1)).toMatchObject({ stage: 'build', status: 'fail' });
+    expect(outcome.status).toBe(MergeStatus.Rejected);
+    expect(outcome.report.stages.at(-1)).toMatchObject({
+      stage: GateStage.Build,
+      status: GateStageStatus.Fail,
+    });
     expect(outcome.report.stages.map((s) => s.stage)).not.toContain('scope-audit');
     expect(steerPane).toHaveBeenCalled();
   });
@@ -493,13 +501,13 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
   describe('an interrupted gate (decision 95)', () => {
     const sleeping: Adapter = {
       ...passingAdapter,
-      gateCommands: () => [{ stage: 'test', command: 'sh', args: ['-c', 'sleep 47.5'] }],
+      gateCommands: () => [{ stage: GateStage.Test, command: 'sh', args: ['-c', 'sleep 47.5'] }],
     };
 
     it('ends a sleeping stage child on Ctrl-C and unwinds without waiting for it', async () => {
       const worktree = seedSession(db, repo);
       commitIn(worktree, 'src/feature.ts', 'export const feature = 1;\n');
-      const before = process.listeners('SIGINT');
+      const before = process.listeners(InterruptSignal.Sigint);
       const started = Date.now();
 
       const gate = merge(sleeping).catch((error: unknown) => error);
@@ -508,8 +516,10 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       const checkout = (vi.mocked(spawn).mock.calls[0]?.[2] as { cwd?: string } | undefined)?.cwd;
       // What node does with a terminal's Ctrl-C: the lock's listener and the
       // seam's forwarder both run.
-      for (const listener of process.listeners('SIGINT') as NodeJS.SignalsListener[]) {
-        if (!before.includes(listener)) listener('SIGINT');
+      for (const listener of process.listeners(
+        InterruptSignal.Sigint,
+      ) as NodeJS.SignalsListener[]) {
+        if (!before.includes(listener)) listener(InterruptSignal.Sigint);
       }
       const failure = await gate;
 
@@ -521,7 +531,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       expect(existsSync(join(repo, '.git', 'pup-merge.lock'))).toBe(false);
       expect(checkout).toMatch(GATE_CHECKOUT);
       expect(existsSync(checkout as string)).toBe(false);
-      expect(process.listeners('SIGINT')).toEqual(before);
+      expect(process.listeners(InterruptSignal.Sigint)).toEqual(before);
     });
 
     // The crash the interrupt used to end on: a removal that threw over the
@@ -557,8 +567,11 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
       const outcome = await merge(failingBuildAdapter);
 
-      expect(outcome.status).toBe('rejected');
-      expect(outcome.report.stages.at(-1)).toMatchObject({ stage: 'build', status: 'fail' });
+      expect(outcome.status).toBe(MergeStatus.Rejected);
+      expect(outcome.report.stages.at(-1)).toMatchObject({
+        stage: GateStage.Build,
+        status: GateStageStatus.Fail,
+      });
       expect(left).toHaveLength(1);
       expect(warn).toHaveBeenCalledWith(
         `Could not remove ${left[0]} (ENOTEMPTY); it is left behind.`,
@@ -584,7 +597,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
     const outcome = await merge();
 
-    expect(outcome.status).toBe('merged');
+    expect(outcome.status).toBe(MergeStatus.Merged);
     expect(existsSync(fired)).toBe(false);
   });
 
@@ -729,7 +742,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       // itself, refuses the swapped one, and loudly: the worktree is kept and
       // git's refusal printed (decision 88).
       const outcome = await merge();
-      expect(outcome).toMatchObject({ status: 'merged', keptWorktree: worktree });
+      expect(outcome).toMatchObject({ status: MergeStatus.Merged, keptWorktree: worktree });
       expect(errors.mock.calls.flat().join('\n')).toContain(
         `git worktree remove refused ${worktree}:`,
       );
@@ -748,7 +761,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       sh(worktree, 'git', 'commit', '-q', '-m', 'gitlink');
       expectPlainGitFires(worktree, join(sub, 'app.ts'));
 
-      expect((await merge()).status).toBe('merged');
+      expect((await merge()).status).toBe(MergeStatus.Merged);
       expect(existsSync(marker)).toBe(false);
     });
 
@@ -781,7 +794,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       rmSync(marker);
       utimesSync(join(sub, 'app.ts'), later(), later());
 
-      expect((await merge()).status).toBe('rejected');
+      expect((await merge()).status).toBe(MergeStatus.Rejected);
       expect(existsSync(marker)).toBe(false);
     });
 
@@ -844,8 +857,8 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       );
       expect(sh(repo, 'git', 'diff', '--name-only', `main...${BRANCH}`)).toBe('.gitmodules\n');
 
-      expect((await merge()).status).toBe('merged');
-      const merged = listEvents(db, SESSION_ID).find((event) => event.type === 'merge');
+      expect((await merge()).status).toBe(MergeStatus.Merged);
+      const merged = listEvents(db, SESSION_ID).find((event) => event.type === EventType.Merge);
       expect(JSON.parse(merged?.payload ?? '{}')).toMatchObject({
         files: expect.arrayContaining(['.gitmodules', 'src/sub']),
       });
@@ -858,7 +871,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       plantSubmodule(`\tupdate = !touch ${marker}\n`);
 
       const outcome = await merge();
-      expect(outcome.status).toBe('rejected');
+      expect(outcome.status).toBe(MergeStatus.Rejected);
       expect(outcome.report?.stages.at(-1)).toMatchObject({
         stage: 'fresh-base',
         detail: expect.stringContaining("invalid value for 'submodule.sub.update'"),
@@ -873,8 +886,11 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
     const outcome = await merge();
 
-    expect(outcome.status).toBe('rejected');
-    expect(outcome.report.stages.at(-1)).toMatchObject({ stage: 'scope-audit', status: 'fail' });
+    expect(outcome.status).toBe(MergeStatus.Rejected);
+    expect(outcome.report.stages.at(-1)).toMatchObject({
+      stage: 'scope-audit',
+      status: GateStageStatus.Fail,
+    });
     expect(outcome.report.stages.at(-1)?.detail).toContain('notes.txt');
   });
 
@@ -901,7 +917,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       acceptDebt: { reason: 'deadline', reviewBy: 'before v2', acceptedBy: SESSION_ID },
     });
 
-    expect(outcome.status).toBe('merged');
+    expect(outcome.status).toBe(MergeStatus.Merged);
     expect(listLedgerEntries(db, 'proj-1')[0]?.accepted_by).toBe(SESSION_ID);
   });
 
@@ -911,9 +927,9 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
     const outcome = await merge();
 
-    expect(outcome.status).toBe('refused');
+    expect(outcome.status).toBe(MergeStatus.Refused);
     expect(outcome.report.stages).toContainEqual(
-      expect.objectContaining({ stage: 'diff-size', status: 'flagged' }),
+      expect.objectContaining({ stage: 'diff-size', status: GateStageStatus.Flagged }),
     );
   });
 
@@ -943,7 +959,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
     expect(untimed(outcome.report.stages)).toContainEqual({
       stage: 'diff-size',
-      status: 'pass',
+      status: GateStageStatus.Pass,
       detail: '12 source + 2 test + 0 docs changed lines',
     });
   });
@@ -963,7 +979,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
     expect(untimed(outcome.report.stages)).toContainEqual({
       stage: 'diff-size',
-      status: 'pass',
+      status: GateStageStatus.Pass,
       detail: '8 source + 0 test + 0 docs changed lines',
     });
   });
@@ -980,7 +996,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
     expect(untimed(outcome.report.stages)).toContainEqual({
       stage: 'diff-size',
-      status: 'pass',
+      status: GateStageStatus.Pass,
       detail: '7 source + 0 test + 0 docs changed lines',
     });
   });
@@ -999,7 +1015,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
     expect(untimed(outcome.report.stages)).toContainEqual({
       stage: 'diff-size',
-      status: 'pass',
+      status: GateStageStatus.Pass,
       detail: '201 source + 0 test + 0 docs changed lines',
     });
   });
@@ -1019,7 +1035,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
     expect(untimed(outcome.report.stages)).toContainEqual({
       stage: 'diff-size',
-      status: 'pass',
+      status: GateStageStatus.Pass,
       detail: '7 source + 0 test + 2 docs changed lines',
     });
   });
@@ -1058,7 +1074,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
     const outcome = await merge(adapter);
 
-    expect(outcome).toMatchObject({ status: 'merged', keptWorktree: worktree });
+    expect(outcome).toMatchObject({ status: MergeStatus.Merged, keptWorktree: worktree });
     const stored = JSON.parse(getProject(db, 'proj-1')?.baseline ?? '{}') as ProjectBaseline;
     expect(stored.debt?.duplicatedLines).toBe(5);
     expect(existsSync(worktree)).toBe(true);
@@ -1067,7 +1083,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(errors.mock.calls.flat().join('\n')).toContain(
       `git worktree remove refused ${worktree}: fatal: cannot remove a locked working tree`,
     );
-    expect(listEvents(db, SESSION_ID).some((event) => event.type === 'merge')).toBe(true);
+    expect(listEvents(db, SESSION_ID).some((event) => event.type === EventType.Merge)).toBe(true);
   });
 
   it('refuses a changed source file that never reached the coverage report', async () => {
@@ -1083,11 +1099,11 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
     const outcome = await merge(adapter);
 
-    expect(outcome.status).toBe('refused');
+    expect(outcome.status).toBe(MergeStatus.Refused);
     expect(outcome.report.stages).toContainEqual(
       expect.objectContaining({
         stage: 'coverage',
-        status: 'flagged',
+        status: GateStageStatus.Flagged,
         detail: expect.stringContaining('src/feature.ts'),
       }),
     );
@@ -1112,7 +1128,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       }),
     );
 
-    expect(outcome.status).toBe('merged');
+    expect(outcome.status).toBe(MergeStatus.Merged);
     expect(outcome.prUrl).toContain('--repo github.com/owner/renamed');
     expect(sh(moved, 'git', 'rev-parse', BRANCH).trim()).not.toBe('');
     expect(sh(bare, 'git', 'branch', '--list', BRANCH).trim()).toBe('');
@@ -1138,7 +1154,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
     const outcome = await withFakeGh(fakeGh([openPrOnMain]), () => runMergeGate(db, request));
 
-    expect(outcome.status).toBe('merged');
+    expect(outcome.status).toBe(MergeStatus.Merged);
     expect(outcome.prUrl).toBe(openPrOnMain.url);
     expect(listLedgerEntries(db, 'proj-1')).toHaveLength(1);
   });
@@ -1172,7 +1188,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(refusal).toContain('The accepted-debt ledger entry was kept for the retry');
     expect(ghCalls()).toContainEqual(expect.stringContaining('pr view'));
     expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
-    expect(listEvents(db, SESSION_ID).some((event) => event.type === 'merge')).toBe(false);
+    expect(listEvents(db, SESSION_ID).some((event) => event.type === EventType.Merge)).toBe(false);
   });
 
   describe('a stale branch an open PR holds (decision 105)', () => {
@@ -1209,12 +1225,12 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
       const outcome = await withFakeGh(fakeGh([openPrOnMain]), () => runMergeGate(db, request()));
 
-      expect(outcome.status).toBe('merged');
+      expect(outcome.status).toBe(MergeStatus.Merged);
       expect(outcome.prUrl).toBe(openPrOnMain.url);
       expect(outcome.report.stages).toContainEqual(
         expect.objectContaining({
           stage: 'fresh-base',
-          status: 'pass',
+          status: GateStageStatus.Pass,
           detail: 'auto-merged main',
         }),
       );
@@ -1237,7 +1253,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
       const outcome = await withFakeGh(fakeGh([openPrOnMain]), () => runMergeGate(db, request()));
 
-      expect(outcome.status).toBe('merged');
+      expect(outcome.status).toBe(MergeStatus.Merged);
       const edit = ghCalls()
         .filter((call) => call.startsWith('pr edit'))
         .at(-1);
@@ -1254,12 +1270,12 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
       const outcome = await withFakeGh(fakeGh([openPrOnMain]), () => runMergeGate(db, request()));
 
-      expect(outcome.status).toBe('rejected');
+      expect(outcome.status).toBe(MergeStatus.Rejected);
       expect(outcome.rejectCount).toBe(1);
       expect(getSession(db, SESSION_ID)?.state).toBe('running');
       expect(outcome.report.stages.at(-1)).toMatchObject({
         stage: 'fresh-base',
-        status: 'fail',
+        status: GateStageStatus.Fail,
         detail: expect.stringContaining('Auto-merge of main hit conflicts'),
       });
       // git's report a line each, as the worker reads it.
@@ -1284,10 +1300,10 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
       const outcome = await withFakeGh(fakeGh([openPrOnMain]), () => runMergeGate(db, request()));
 
-      expect(outcome.status).toBe('rejected');
+      expect(outcome.status).toBe(MergeStatus.Rejected);
       expect(outcome.report.stages.at(-1)).toMatchObject({
         stage: 'fresh-base',
-        status: 'fail',
+        status: GateStageStatus.Fail,
         detail: expect.stringContaining(`no longer contains ${pushed}`),
       });
       expect(sh(bare, 'git', 'rev-parse', BRANCH).trim()).toBe(pushed);
@@ -1327,7 +1343,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
       const outcome = await withFakeGh(fakeGh([openPrOnMain]), () => runMergeGate(db, request()));
 
-      expect(outcome.status).toBe('merged');
+      expect(outcome.status).toBe(MergeStatus.Merged);
       expect(existsSync(marker)).toBe(false);
       const message = sh(bare, 'git', 'log', '-1', '--format=%B', BRANCH);
       expect(message).not.toContain('TOP-SECRET');
@@ -1344,11 +1360,11 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         runMergeGate(db, { ...request(), adapters: [failingBuildAdapter] }),
       );
 
-      expect(outcome.status).toBe('rejected');
+      expect(outcome.status).toBe(MergeStatus.Rejected);
       expect(outcome.report.stages).toContainEqual(
         expect.objectContaining({
           stage: 'fresh-base',
-          status: 'pass',
+          status: GateStageStatus.Pass,
           detail: 'auto-merged main',
         }),
       );
@@ -1388,10 +1404,10 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
       const outcome = await withFakeGh(fakeGh([openPrOnMain]), () => runMergeGate(db, request()));
 
-      expect(outcome.status).toBe('rejected');
+      expect(outcome.status).toBe(MergeStatus.Rejected);
       expect(outcome.report.stages.at(-1)).toMatchObject({
         stage: 'fresh-base',
-        status: 'fail',
+        status: GateStageStatus.Fail,
         detail: expect.stringContaining(
           `${BRANCH} moved from ${pushed} while the gate merged main`,
         ),
@@ -1413,11 +1429,11 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         runMergeGate(db, { ...request(), adapters: [failingBuildAdapter] }),
       );
 
-      expect(outcome.status).toBe('rejected');
+      expect(outcome.status).toBe(MergeStatus.Rejected);
       expect(outcome.report.stages).toContainEqual(
         expect.objectContaining({
           stage: 'fresh-base',
-          status: 'pass',
+          status: GateStageStatus.Pass,
           detail: 'auto-merged main',
         }),
       );
@@ -1465,10 +1481,10 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
         const outcome = await withFakeGh(fakeGh([openPrOnMain]), () => runMergeGate(db, request()));
 
-        expect(outcome.status).toBe('rejected');
+        expect(outcome.status).toBe(MergeStatus.Rejected);
         expect(outcome.report.stages.at(-1)).toMatchObject({
           stage: 'fresh-base',
-          status: 'fail',
+          status: GateStageStatus.Fail,
           detail: expect.stringContaining(
             `The merge of main failed in this worktree, and ${BRANCH} is back on ${pushed} ` +
               'without it.',
@@ -1523,7 +1539,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         (args) => args.includes('read-tree') && args.includes('-m'),
         () => {
           throw Object.assign(new Error('Command failed: git read-tree'), {
-            signal: 'SIGINT',
+            signal: InterruptSignal.Sigint,
             status: null,
           });
         },
@@ -1552,7 +1568,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
         (args) => args.includes('symbolic-ref') && args.includes(worktree),
         () => {
           throw Object.assign(new Error('Command failed: git symbolic-ref'), {
-            signal: 'SIGINT',
+            signal: InterruptSignal.Sigint,
             status: null,
           });
         },
@@ -1694,7 +1710,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
 
       const outcome = await withFakeGh(fakeGh([]), () => runMergeGate(db, request()));
 
-      expect(outcome.status).toBe('merged');
+      expect(outcome.status).toBe(MergeStatus.Merged);
       expect(outcome.prWasAdopted).toBe(false);
       expect(outcome.report.stages).toContainEqual(
         expect.objectContaining({ stage: 'fresh-base', detail: 'auto-rebased onto main' }),

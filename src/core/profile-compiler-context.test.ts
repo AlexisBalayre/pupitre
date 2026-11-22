@@ -13,6 +13,7 @@ import { makeInput, runHook, task } from '@test/helpers/profile-compiler.mock.js
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { loadCustomAdapter } from '../adapters/custom.adapter.js';
+import { GateStage } from '../adapters/enums/gate-stage.enums.js';
 import { BRIEF_MAX_CHARS, BRIEF_TEMPLATE, briefPath } from './brief.service.js';
 import { DEFAULT_BASE_PROFILE } from './constants/default-profile.constants.js';
 import { ContextBudgetExceededError, InvalidProfileError } from './errors/profile.errors.js';
@@ -1264,7 +1265,7 @@ describe('test runs queue for a slot (decision 96)', () => {
   });
 
   it("refuses the adapter's own test command, its words matched as words", () => {
-    const testCommand = { stage: 'test' as const, command: 'uv', args: ['run', 'pytest'] };
+    const testCommand = { stage: GateStage.Test, command: 'uv', args: ['run', 'pytest'] };
 
     expect(guard('uv run pytest -k slots', { testCommand } as Partial<CompileInput>).status).toBe(
       2,
@@ -1275,14 +1276,14 @@ describe('test runs queue for a slot (decision 96)', () => {
   });
 
   it('escapes the adapter command, so its punctuation is matched literally', () => {
-    const testCommand = { stage: 'test' as const, command: 'make', args: ['test.unit'] };
+    const testCommand = { stage: GateStage.Test, command: 'make', args: ['test.unit'] };
 
     expect(guard('make test.unit', { testCommand } as Partial<CompileInput>).status).toBe(2);
     expect(guard('make testXunit', { testCommand } as Partial<CompileInput>).status).toBe(0);
   });
 
   it('leaves out an adapter command holding a line break rather than refuse every call', () => {
-    const testCommand = { stage: 'test' as const, command: 'make', args: ['\n'] };
+    const testCommand = { stage: GateStage.Test, command: 'make', args: ['\n'] };
 
     expect(guard('git status', { testCommand } as Partial<CompileInput>).status).toBe(0);
     expect(guard('pnpm test', { testCommand } as Partial<CompileInput>).status).toBe(2);
@@ -1297,7 +1298,7 @@ describe('test runs queue for a slot (decision 96)', () => {
       writeFileSync(join(repo, '.pupitre', 'adapter.yml'), JSON.stringify({ test: script }));
       const testCommand = loadCustomAdapter(repo)
         ?.gateCommands(repo)
-        .find((command) => command.stage === 'test');
+        .find((command) => command.stage === GateStage.Test);
       return { testCommand } as Partial<CompileInput>;
     }
 

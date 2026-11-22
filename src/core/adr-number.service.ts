@@ -3,6 +3,8 @@ import { sanitizeReason } from '../adapters/capability.utils.js';
 import { PR_URL } from './constants/dashboard.constants.js';
 import { COMMIT_SHA } from './constants/merge-gate.constants.js';
 import { quotePath } from './debt.service.js';
+import { EventType } from './enums/event-type.enums.js';
+import { GateStageStatus } from './enums/gate-stage-status.enums.js';
 import { rethrowIfKilled, runGit } from './git-diff.client.js';
 import { newestMerge, resolveCommitIfPresent, timedSince } from './merge-gate.service.js';
 import { listSessions, newestEventOf } from './session.repository.js';
@@ -180,8 +182,13 @@ function peerDecisions(
  * (`pup land --abandon-closed`).
  */
 function isClosedOut(db: Database, sessionId: string): boolean {
-  const newest = newestEventOf(db, sessionId, ['merge', 'landed', 'retired', 'pr_closed']);
-  return newest?.type === 'retired' || newest?.type === 'pr_closed';
+  const newest = newestEventOf(db, sessionId, [
+    EventType.Merge,
+    EventType.Landed,
+    EventType.Retired,
+    EventType.PrClosed,
+  ]);
+  return newest?.type === EventType.Retired || newest?.type === EventType.PrClosed;
 }
 
 /**
@@ -418,7 +425,10 @@ export function adrNumberStage(
   if (lines.length === 0) return undefined;
   return timedSince(started, {
     stage: ADR_NUMBER_STAGE,
-    status: refusals.length + unreadPrs.length + misnamed.length > 0 ? 'fail' : 'pass',
+    status:
+      refusals.length + unreadPrs.length + misnamed.length > 0
+        ? GateStageStatus.Fail
+        : GateStageStatus.Pass,
     detail: lines.join('\n'),
   });
 }

@@ -1,9 +1,12 @@
 import type { Database } from 'better-sqlite3';
 import { beforeEach, describe, expect, it } from 'vitest';
-
+import { GateStage } from '../adapters/enums/gate-stage.enums.js';
 import { appendBaselineHistory } from './baseline-history.repository.js';
 import { openStore } from './db.client.js';
 import { insertDecisionRecord } from './decision-record.repository.js';
+import { EventType } from './enums/event-type.enums.js';
+import { GateStageStatus } from './enums/gate-stage-status.enums.js';
+import { MergeStatus } from './enums/merge-status.enums.js';
 import { insertLedgerEntry } from './ledger.repository.js';
 import { projectId } from './paths.utils.js';
 import { renderReportHtml } from './report.service.js';
@@ -125,21 +128,23 @@ describe('renderReportHtml', () => {
 
   it('renders the outcome: session_done summary and the last gate report with stages', () => {
     seedSession(db, 's1', 'ship the widget');
-    appendEvent(db, 's1', 'gate_result', {
-      outcome: 'refused',
+    appendEvent(db, 's1', EventType.GateResult, {
+      outcome: MergeStatus.Refused,
       report: {
         sessionId: 's1',
         passed: false,
         sandbox: 'none',
-        stages: [{ stage: 'test', status: 'fail', detail: '2 failing' }],
+        stages: [{ stage: GateStage.Test, status: GateStageStatus.Fail, detail: '2 failing' }],
       },
     });
-    appendEvent(db, 's1', 'session_done', { summary: 'widget shipped behind a flag' });
+    appendEvent(db, 's1', EventType.SessionDone, { summary: 'widget shipped behind a flag' });
 
     const [session] = embeddedData(renderReportHtml(db, REPO)).sessions;
 
     expect(session.doneSummary).toBe('widget shipped behind a flag');
-    expect(session.gateStages).toEqual([{ stage: 'test', status: 'fail', detail: '2 failing' }]);
+    expect(session.gateStages).toEqual([
+      { stage: GateStage.Test, status: GateStageStatus.Fail, detail: '2 failing' },
+    ]);
   });
 
   it('normalises SQLite timestamps to ISO UTC and keeps capture timestamps as-is', () => {

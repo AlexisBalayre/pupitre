@@ -72,11 +72,14 @@ import {
   untimed,
 } from '@test/helpers/merge-gate.mock.js';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
+import { GateStage } from '../adapters/enums/gate-stage.enums.js';
 import { nestedPackageDirs } from '../adapters/git-tree.client.js';
 import type { Adapter, CapabilityContext } from '../adapters/types/adapter.types.js';
 import { typescriptAdapter } from '../adapters/typescript.adapter.js';
 import { DUPLICATION_RULE_ID } from './constants/merge-gate.constants.js';
 import { openStore } from './db.client.js';
+import { GateStageStatus } from './enums/gate-stage-status.enums.js';
+import { MergeStatus } from './enums/merge-status.enums.js';
 import { SharedWorktreeKeyError, WorktreeConfigError } from './errors/git-diff.errors.js';
 import { listLedgerEntries } from './ledger.repository.js';
 import { runMergeGate } from './merge-gate.service.js';
@@ -279,7 +282,7 @@ describe('the merge gate under a shared-config core.worktree and diff.relative',
 
     expect(stage(outcome, 'scope-audit')).toEqual({
       stage: 'scope-audit',
-      status: 'fail',
+      status: GateStageStatus.Fail,
       detail: 'Out-of-scope changes:\n  notes.txt (outside scope-in)',
     });
   });
@@ -303,7 +306,7 @@ describe('the merge gate under a shared-config core.worktree and diff.relative',
 
     expect(stage(outcome, 'diff-size')).toEqual({
       stage: 'diff-size',
-      status: 'pass',
+      status: GateStageStatus.Pass,
       detail: '10 source + 0 test + 0 docs changed lines',
     });
   });
@@ -324,7 +327,7 @@ describe('the merge gate under a shared-config core.worktree and diff.relative',
     const outcome = await merge(adapter);
 
     expect(stage(outcome, 'dead-code')).toMatchObject({
-      status: 'flagged',
+      status: GateStageStatus.Flagged,
       detail: expect.stringContaining(
         '2 new unused export(s): lib.ts#unused, src/feature.ts#unused',
       ),
@@ -354,7 +357,7 @@ describe('the merge gate under a shared-config core.worktree and diff.relative',
 
     const outcome = await merge(adapter, { reason: 'deadline', reviewBy: 'before v2' });
 
-    expect(stage(outcome, 'duplication')).toMatchObject({ status: 'flagged' });
+    expect(stage(outcome, 'duplication')).toMatchObject({ status: GateStageStatus.Flagged });
     const [entry] = listLedgerEntries(db, 'proj-1');
     expect(JSON.parse(entry?.files ?? '[]')).toEqual(['src/feature.ts']);
   });
@@ -440,15 +443,15 @@ describe('the merge gate under a shared-config core.worktree and diff.relative',
     raceTheChecks();
     const adapter = debtAdapter({
       gateCommands: () => [
-        { stage: 'build', command: 'true', args: [] },
-        { stage: 'test', command: 'false', args: [] },
-        { stage: 'lint', command: 'true', args: [] },
+        { stage: GateStage.Build, command: 'true', args: [] },
+        { stage: GateStage.Test, command: 'false', args: [] },
+        { stage: GateStage.Lint, command: 'true', args: [] },
       ],
     });
 
     const outcome = await merge(adapter);
 
-    expect(stage(outcome, 'test')?.status).toBe('fail');
+    expect(stage(outcome, GateStage.Test)?.status).toBe(GateStageStatus.Fail);
   });
 
   // The trusted listing of nested packages fails while the session holds
@@ -499,8 +502,8 @@ describe('the merge gate under a shared-config core.worktree and diff.relative',
 
     const outcome = await merge(adapter);
 
-    expect(stage(outcome, 'test (tools/review)')?.status).toBe('flagged');
-    expect(stage(outcome, 'typecheck (tools/review)')?.status).toBe('flagged');
+    expect(stage(outcome, 'test (tools/review)')?.status).toBe(GateStageStatus.Flagged);
+    expect(stage(outcome, 'typecheck (tools/review)')?.status).toBe(GateStageStatus.Flagged);
   });
 
   // Complexity's "before" side reads the main checkout: listed at its HEAD, a
@@ -667,7 +670,7 @@ describe('the merge gate under a shared-config core.worktree and diff.relative',
     expect(getSession(db, SESSION_ID)?.state).toBe('awaiting-review');
     keyRace.around = undefined;
     gateTimeout.ms = undefined;
-    expect((await merge(adapter)).status).toBe('merged');
+    expect((await merge(adapter)).status).toBe(MergeStatus.Merged);
   });
 
   // Under git's default rename detection `--name-only` lists a rename's new
@@ -683,7 +686,7 @@ describe('the merge gate under a shared-config core.worktree and diff.relative',
 
     expect(stage(outcome, 'scope-audit')).toEqual({
       stage: 'scope-audit',
-      status: 'fail',
+      status: GateStageStatus.Fail,
       detail: 'Out-of-scope changes:\n  notes/secret.ts (outside scope-in)',
     });
   });
