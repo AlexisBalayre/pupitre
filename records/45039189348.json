@@ -1,0 +1,140 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-22T15:41:16.781Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "45039189348",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/45039189348",
+  "actor": "AlexisBalayre",
+  "commit_sha": "c6972069753379843cf91959184b44101e5e2ef4",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 425,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "5eb4df857fd15a662715ee60bd1a0a25955f096b",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/ticket-intake.utils.ts",
+      "line": "35",
+      "description": "For chore and refactor, `Scope boundary` is marked `area: true`. Both the form and the rubric ask that field to name what the change leaves alone, so paths the ticket stays out of fire the module-boundary and ADR-area triggers.",
+      "status": "unresolved"
+    },
+    {
+      "file": "src/core/ticket-intake.utils.ts",
+      "line": "144-150",
+      "description": "When the area names a file by its GitHub permalink, the extracted path starts with `github.com/<owner>/<repo>/blob/<ref>/`. That path matches no ADR glob and no module, so `adr-area` and `module-boundary` don't fire and the design gate passes when it should fail.",
+      "status": "unresolved"
+    },
+    {
+      "file": "src/core/ticket-intake.utils.ts",
+      "line": "34-60",
+      "description": "The chore/refactor, docs and spike headings in the code don't match the labels in the repo's issue forms. Every form-filed chore, refactor, docs or spike ticket reports a required field as missing, and intake would strip `ready` from even a fully filled ticket.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/ticket-intake.utils.ts",
+      "line": "131-149",
+      "description": "A directory-style area such as `src/cli/ and src/core/` (the form-placeholder style) yields no module and no ADR match, so a bug or chore that crosses modules or touches an ADR area gets `needsDesign: false`.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/ticket-intake.utils.ts",
+      "line": "107-116",
+      "description": "A `# comment` line inside a fenced code block is read as a heading and splits the section there. A shell comment in a reproduction or area block can make a filled field vague, or drop its paths so the design triggers don't fire.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/ticket-intake.utils.ts",
+      "line": "153-159",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "moduleOf's new rule (no extension in the last segment means a directory) treats a test-helper path ending in a sentence period, or a wildcard under test/<kind>/, as a module. That gives a false module-boundary trigger and a design the ticket doesn't need.",
+      "body": "**A false `module-boundary` from the new directory rule in `moduleOf`**\n\n```ts\nconst directories = /\\.\\w+$/.test(parts.at(-1) ?? '') ? parts.length - 1 : parts.length;\nif (parts[0] === 'test' && directories > 2) return parts[2];\n```\n\nThe last segment of `PATH` (line 95) is `[\\w.*-]+`, so it keeps a period that ends a sentence and it matches `*`. Neither passes the `/\\.\\w+$/` extension test, so the new rule counts that segment as a directory. Under `test/<kind>/` that makes `directories` 3, and the file name or the wildcard comes back as a module:\n\n- **Bug:** `Suspected area` is `The bug is in src/core/land.service.ts and its mock test/helpers/land.mock.ts.`\n  - `PATH` yields `test/helpers/land.mock.ts.` and `moduleOf` returns `'land.mock.ts.'`.\n  - The modules are `{core, land.mock.ts.}`, so `module-boundary` fires and `needsDesign` is `true`.\n- **Chore:** `Files in scope` is `src/core/land.service.ts, test/helpers/*`. The modules are `{core, '*'}`, with the same result.\n- **Bare source file:** `src/index.ts.` now returns `'index.ts.'`.\n\nAt 5eb4df85 these paths had only 3 parts (2 for `src/index.ts.`), so they failed the old `parts.length > 3` / `> 2` checks, returned `undefined`, and fired nothing. This commit introduced the regression. `test/helpers/` is a real directory of `*.mock.ts` files and is not a `test/<kind>/<module>` folder. Area fields are free text, so a sentence that ends in a path is ordinary input.\n\n**Fix:** treat an extension followed by an optional period as a file, and treat any segment with a `*` in it as a file glob.\n- `src/core/**` still gives `core`.\n- `test/helpers/*.` and `test/helpers/land*` give `undefined`.\n- Every path in the current tests keeps its module.\n\nA test to pin it: a bug with `Suspected area` set to `src/core/land.service.ts and test/helpers/land.mock.ts.` expects `triggers: []`.\n\n<https://github.com/AlexisBalayre/pupitre/blob/c6972069753379843cf91959184b44101e5e2ef4/src/core/ticket-intake.utils.ts#L153-L159>",
+      "suggestion": "function moduleOf(path: string): string | undefined {\n  const parts = path.split('/');\n  const directories = /\\.\\w+\\.?$|\\*/.test(parts.at(-1) ?? '') ? parts.length - 1 : parts.length;\n  if (parts[0] === 'src' && directories > 1) return parts[1];\n  if (parts[0] === 'test' && directories > 2) return parts[2];\n  return undefined;\n}"
+    },
+    {
+      "file": "src/core/ticket-intake.utils.ts",
+      "line": "108",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`closesFence` has a single caller, the `else if` in `sections()`. It carries a second fence regex (`/^ {0,3}(`{3,}|~{3,})\\s*$/`) that largely repeats `FENCE_OPEN`. Inlining it as `const m = /^ {0,3}(`{3,}|~{3,})\\s*$/.exec(line)?.[1]; if (m && m[0] === fence[0] && m.length >= fence.length) fence = undefined;` removes the helper and its 5-line JSDoc. Its WHY comment, 'same character, at least as long, nothing after', would stay on the inline form. A second caller would justify keeping it, but none exists today. This is a judgment call, since the helper is small and named.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.7374413249999998,
+  "duration_ms": 261063,
+  "num_turns": 15,
+  "tokens": {
+    "input": 14,
+    "output": 11317,
+    "cache_read": 312582,
+    "cache_creation": 59753,
+    "total": 383666
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 48,
+      "output": 29420,
+      "cache_read": 609934,
+      "cache_creation": 119546,
+      "cost_usd": 1.4875677999999999
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 32,
+      "output": 6282,
+      "cache_read": 166257,
+      "cache_creation": 67888,
+      "cost_usd": 0.24922969999999997
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 120,
+      "cache_read": 0,
+      "cache_creation": 4669,
+      "cost_usd": 0.000643825
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "git ls-files src test --format=%(path)"
+    }
+  ]
+}
