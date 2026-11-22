@@ -9,4 +9,4 @@ Its job:
 
 1. Investigate the question against **primary sources** (official docs, source code, specs, first-party APIs), not a secondary write-up of them. Follow every claim back to the source that owns it.
 2. Write the findings to a single Markdown file, citing each claim's source.
-3. Save it to `docs/research/<slug>.md` (slug from the question), creating the folder if needed, and say where.
+3. Save it to `docs/spikes/<YYYY-MM-DD>-<slug>.md` (slug from the question), the folder spike write-ups live in, and say where.

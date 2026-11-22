@@ -7,7 +7,7 @@ description: Diagnosis loop for hard bugs and performance regressions. Use when 
 
 A discipline for hard bugs. Skip phases only when explicitly justified.
 
-When exploring the codebase, take the domain nouns from the `SCHEMA` string in `src/core/db.client.ts` to get a clear mental model of the relevant modules, and check the numbered entries in `docs/09-decisions.md` for the area you're touching.
+When exploring the codebase, take the domain nouns from the `SCHEMA` string in `src/core/db.client.ts` to get a clear mental model of the relevant modules, and check the decisions in `docs/adr/` (found through `bash scripts/adr-index.sh`) for the area you're touching.
 
 ## Redact
 

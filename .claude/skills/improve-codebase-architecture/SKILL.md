@@ -11,7 +11,7 @@ Surface architectural friction and propose **deepening opportunities**: refactor
 This command is _informed_ by the project's domain model and built on a shared design vocabulary:
 
 - Call the Skill tool with "codebase-design" for the architecture vocabulary (**module**, **interface**, **depth**, **seam**, **adapter**, **leverage**, **locality**) and its principles (the deletion test, "the interface is the test surface", "one adapter = hypothetical seam, two = real"). Use these terms exactly in every suggestion, and don't drift into "component," "service," "API," or "boundary."
-- The domain language (the `SCHEMA` nouns in `src/core/db.client.ts`, plus the naming rules in `docs/conventions/`) gives names to good seams; the numbered entries in `docs/09-decisions.md` record decisions this command should not re-litigate.
+- The domain language (the `SCHEMA` nouns in `src/core/db.client.ts`, plus the naming rules in `docs/conventions/`) gives names to good seams; the decisions in `docs/adr/` record decisions this command should not re-litigate.
 
 ## Process
 
@@ -22,7 +22,7 @@ This command is _informed_ by the project's domain model and built on a shared d
 - If the user named a direction (a module, a subsystem, a pain point), take it, and skip the inference below.
 - Otherwise, walk back a good stretch of the commit history (`git log --oneline`) to find the codebase's hot spots, the files and areas that keep coming up, and let those paths pull your attention first. If the changes are scattered with no clear hot spot, widen the net.
 
-Read the `SCHEMA` nouns in `src/core/db.client.ts` and the decisions in `docs/09-decisions.md` for the area you're touching first.
+Read the `SCHEMA` nouns in `src/core/db.client.ts` and the decisions in `docs/adr/` for the area you're touching first.
 
 Then spawn a sub-agent to walk the codebase. Don't follow rigid heuristics; explore organically and note where you experience friction:
 
@@ -51,7 +51,7 @@ For each candidate, render a card with:
 
 End the report with a **Top recommendation** section: which candidate you'd tackle first and why.
 
-**Use the project's own vocabulary (the `SCHEMA` nouns, `docs/09-decisions.md`) for the domain, and the `/codebase-design` vocabulary for the architecture.** If the schema calls it a `session`, talk about "the session lifecycle module," not "the FooBarHandler," and not "the Session service."
+**Use the project's own vocabulary (the `SCHEMA` nouns, `docs/adr/`) for the domain, and the `/codebase-design` vocabulary for the architecture.** If the schema calls it a `session`, talk about "the session lifecycle module," not "the FooBarHandler," and not "the Session service."
 
 **ADR conflicts**: if a candidate contradicts an existing ADR, only surface it when the friction is real enough to warrant revisiting the ADR. Mark it clearly in the card (e.g. a warning callout: _"contradicts ADR-0007, but worth reopening because…"_). Don't list every theoretical refactor an ADR forbids.
 
@@ -65,7 +65,7 @@ Once the user picks a candidate, call the Skill tool with "grilling" to walk the
 
 Side effects happen inline as decisions crystallize; call the Skill tool with "domain-modeling" to keep the domain model current as you go:
 
-- **Naming a deepened module after a concept the project has no word for?** Name it in the decision that introduces it (`docs/09-decisions.md`).
+- **Naming a deepened module after a concept the project has no word for?** Name it in the decision that introduces it (`docs/adr/`).
 - **Sharpening a fuzzy term during the conversation?** Record it right there: the `SCHEMA` JSDoc for a persisted noun, `docs/conventions/naming.md` for a role or stem.
 - **User rejects the candidate with a load-bearing reason?** Offer an ADR, framed as: _"Want me to record this as an ADR so future architecture reviews don't re-suggest it?"_ Only offer when the reason would actually be needed by a future explorer to avoid re-suggesting the same thing; skip ephemeral reasons ("not worth it right now") and self-evident ones.
 - **Want to explore alternative interfaces for the deepened module?** Call the Skill tool with "codebase-design" and use its design-it-twice parallel sub-agent pattern.
