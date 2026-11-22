@@ -1,0 +1,114 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-22T09:15:12.742Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "45006345338",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/45006345338",
+  "actor": "AlexisBalayre",
+  "commit_sha": "67f2796c5b5f0de0a007338ba40b07ddeea9589e",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 417,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "conventions",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "conventions",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context",
+    "maintainability",
+    "spec",
+    "simplicity",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/fix-round-answers.test.ts",
+      "line": "392",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`expectRefusedUnwritten(refusal: RegExp, state = 'merged')` still uses a raw state literal as its default, even though the file already imports `SessionState`. This breaks the PR's own rule that no state literal remains outside the enum file and SQL text. Use `state: SessionState = SessionState.Merged`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/dashboard.service.ts",
+      "line": "1005",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "`state: sanitizeReason(row.state) as SessionState` is the last `as SessionState` cast in src/, which goes against the task's no-cast rule. The line is unchanged and the cast narrows a sanitized string. To drop it, keep `row.state` typed and sanitize only where it is displayed.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "conventions",
+      "description": "The conventions reviewer reported that it never had the text of docs/conventions/*.md in context and opened none of the ADRs, so its two findings are measured against the PR's stated rules rather than the written conventions. Its grep for remaining 'rejected' state literals covered only the first 150 result lines."
+    },
+    {
+      "component": "orchestrator",
+      "description": "Skipped review-security (no trust boundary touched: the change swaps literals for enum members and every SQL state filter stays a bound parameter), review-context (no spec, protocol or infra surface), review-simplicity (the only construct added is the enum file the task prescribes), review-spec (the PR names no closing issue or spec) and review-maintainability (not on the default roster). Correctness ran 2 instances because of the diff size (83 files, about 2,300 changed lines), split between the core lifecycle/gate code and the cli/dashboard code."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.0527000500000003,
+  "duration_ms": 131807,
+  "num_turns": 15,
+  "tokens": {
+    "input": 12,
+    "output": 8706,
+    "cache_read": 263154,
+    "cache_creation": 68418,
+    "total": 340290
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 76,
+      "output": 20207,
+      "cache_read": 1315161,
+      "cache_creation": 182066,
+      "cost_usd": 1.7830602000000004
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 36,
+      "output": 7193,
+      "cache_read": 206574,
+      "cache_creation": 70542,
+      "cost_usd": 0.2690144
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 106,
+      "cache_read": 0,
+      "cache_creation": 4578,
+      "cost_usd": 0.0006254499999999999
+    }
+  ],
+  "permission_denials": []
+}
