@@ -9,6 +9,17 @@ export const GIT_ENV: NodeJS.ProcessEnv = {
   ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_'))),
   GIT_CONFIG_GLOBAL: '/dev/null',
   GIT_CONFIG_SYSTEM: '/dev/null',
+  GIT_CONFIG_NOSYSTEM: '1',
+  // Per-spawn overhead: no fsync, no auto-gc, no fsmonitor daemon.
+  GIT_CONFIG_COUNT: '4',
+  GIT_CONFIG_KEY_0: 'core.fsync',
+  GIT_CONFIG_VALUE_0: 'none',
+  GIT_CONFIG_KEY_1: 'gc.auto',
+  GIT_CONFIG_VALUE_1: '0',
+  GIT_CONFIG_KEY_2: 'core.fsmonitor',
+  GIT_CONFIG_VALUE_2: 'false',
+  GIT_CONFIG_KEY_3: 'init.defaultBranch',
+  GIT_CONFIG_VALUE_3: 'main',
 };
 
 /** Run a command in `cwd` under GIT_ENV; its stdout, trimmed. */
