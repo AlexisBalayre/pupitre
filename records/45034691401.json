@@ -1,0 +1,124 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-22T14:51:45.355Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "45034691401",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/45034691401",
+  "actor": "AlexisBalayre",
+  "commit_sha": "5f68aea03bdf48fba12547d046933d327d909e26",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 423,
+  "action": "review",
+  "reviewers_spawned": [
+    "context",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "context",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "maintainability",
+    "spec",
+    "simplicity",
+    "guards",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": ".github/ISSUE_TEMPLATE/bug.yml",
+      "line": "10-11",
+      "description": "All five issue forms say the operator applies `ready` once the ticket passes intake, which reverses ADR 0176: `ready` is applied first (by the operator or a write-access collaborator) and intake then checks the fields and removes it on failure.",
+      "status": "unresolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "docs/tickets/docs-spike.md",
+      "line": "28",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The \"Testable (docs)\" example cites `pup session ask --option`, a command docs/02-cli.md never mentions, so a filer modelling a ticket on it names a nonexistent command as the checkable claim.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/tickets/chore-refactor.md",
+      "line": "31",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The proof example `pup status --json` uses a `--json` flag docs/02-cli.md does not document, so a chore filer could copy an unrunnable proof check.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".github/ISSUE_TEMPLATE/chore-refactor.yml",
+      "line": "4",
+      "area": "context",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The forms apply labels `feature`, `chore-refactor`, `docs-spike` and `follow-up`, which nothing in the repo creates; GitHub does not create missing labels from a form's `labels:` key, so issues filed from those forms carry no type label until the labels exist.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Re-ask on an unchanged head (5f68aea). Gated roster same as round 1: context, conventions, docs. Skipped correctness and security (no logic or trust boundary: YAML issue forms and markdown only), simplicity (the new files are the deliverable), guards (no non-test source), workflow-safety (.github/ISSUE_TEMPLATE, not .github/workflows), spec (no closing issue or --spec source), maintainability (off the default roster). Prior important 0 (`ready` order) is still present at bug.yml:10-11 and the other four forms. Dropped one context nit (no ISSUE_TEMPLATE/config.yml, so blank issues stay possible) because the reviewer conceded intake still catches them, so nothing goes wrong."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.64549228,
+  "duration_ms": 68023,
+  "num_turns": 10,
+  "tokens": {
+    "input": 10,
+    "output": 4963,
+    "cache_read": 200607,
+    "cache_creation": 36294,
+    "total": 241874
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 10,
+      "output": 4963,
+      "cache_read": 200607,
+      "cache_creation": 36294,
+      "cost_usd": 0.42977339999999997
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 30,
+      "output": 5281,
+      "cache_read": 240161,
+      "cache_creation": 55342,
+      "cost_usd": 0.2152411
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 215,
+      "cache_read": 1933,
+      "cache_creation": 2806,
+      "cost_usd": 0.00047778
+    }
+  ],
+  "permission_denials": []
+}
