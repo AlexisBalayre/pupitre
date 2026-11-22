@@ -11,15 +11,15 @@ import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 
 // Side-effecting boundaries only (tmux/git spawns, `claude -p` sessions, and the
 // multi-stage merge-gate orchestration) — everything else (sqlite repositories,
 // profile-store file reads) is exercised for real, per docs/conventions/testing.md.
-vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
+vi.mock('@src/claude/session-runtime.service.js', async (importOriginal) => ({
   conductorName: (repoProjectId: string) => `pup-conductor-${repoProjectId}`,
   // Not boundaries but the names and attach lines themselves, and the real
   // ones: what these print is the contract under test — the pinned target and
   // the socket the conductor's window is on (decisions 46, 47) — so a fake
   // spelling here would only agree with itself.
-  attachCommand: (await importOriginal<typeof import('../claude/session-runtime.service.js')>())
+  attachCommand: (await importOriginal<typeof import('@src/claude/session-runtime.service.js')>())
     .attachCommand,
-  windowLabel: (await importOriginal<typeof import('../claude/session-runtime.service.js')>())
+  windowLabel: (await importOriginal<typeof import('@src/claude/session-runtime.service.js')>())
     .windowLabel,
   // `pup attach` hands the terminal to tmux; here it hands it to nothing.
   attachWindow: vi.fn(() => 0),
@@ -34,22 +34,25 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   // Not a boundary but a path rule, and the real one: the dashboard checks a
   // stored `transcript_path` against `transcriptDir(worktree)` before reading
   // it (decision 67), so a fake rule here would only agree with itself.
-  transcriptDir: (await importOriginal<typeof import('../claude/session-runtime.service.js')>())
+  transcriptDir: (await importOriginal<typeof import('@src/claude/session-runtime.service.js')>())
     .transcriptDir,
   // The real rule and the real file, under the throwaway HOME: which names
   // `pup init --session-env` refuses and keeps, and the config dir a launch
   // hashes from them, are the contract (decision 106).
-  resolveWindowEnv: (await importOriginal<typeof import('../claude/session-runtime.service.js')>())
-    .resolveWindowEnv,
-  claudeUserDir: (await importOriginal<typeof import('../claude/session-runtime.service.js')>())
+  resolveWindowEnv: (
+    await importOriginal<typeof import('@src/claude/session-runtime.service.js')>()
+  ).resolveWindowEnv,
+  claudeUserDir: (await importOriginal<typeof import('@src/claude/session-runtime.service.js')>())
     .claudeUserDir,
-  sessionEnvAllowed: (await importOriginal<typeof import('../claude/session-runtime.service.js')>())
-    .sessionEnvAllowed,
-  readSessionEnv: (await importOriginal<typeof import('../claude/session-runtime.service.js')>())
+  sessionEnvAllowed: (
+    await importOriginal<typeof import('@src/claude/session-runtime.service.js')>()
+  ).sessionEnvAllowed,
+  readSessionEnv: (await importOriginal<typeof import('@src/claude/session-runtime.service.js')>())
     .readSessionEnv,
-  refusedSessionEnv: (await importOriginal<typeof import('../claude/session-runtime.service.js')>())
-    .refusedSessionEnv,
-  saveSessionEnv: (await importOriginal<typeof import('../claude/session-runtime.service.js')>())
+  refusedSessionEnv: (
+    await importOriginal<typeof import('@src/claude/session-runtime.service.js')>()
+  ).refusedSessionEnv,
+  saveSessionEnv: (await importOriginal<typeof import('@src/claude/session-runtime.service.js')>())
     .saveSessionEnv,
   // The `ps` table and the launches' pane pids an operator-only command walks
   // (decision 188): this suite runs under a session's Claude Code while
@@ -57,7 +60,7 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   listProcesses: vi.fn(() => new Map()),
   recordedPanePids: vi.fn(() => new Map()),
 }));
-vi.mock('../claude/errors/session-runtime.errors.js', async (importOriginal) => ({
+vi.mock('@src/claude/errors/session-runtime.errors.js', async (importOriginal) => ({
   SessionPaneMissingError: class SessionPaneMissingError extends Error {
     readonly sessionId: string;
     constructor(sessionId: string, paneId: string) {
@@ -73,7 +76,7 @@ vi.mock('../claude/errors/session-runtime.errors.js', async (importOriginal) => 
     }
   },
   ConfigDirRefusedError: (
-    await importOriginal<typeof import('../claude/errors/session-runtime.errors.js')>()
+    await importOriginal<typeof import('@src/claude/errors/session-runtime.errors.js')>()
   ).ConfigDirRefusedError,
 }));
 // `render` takes over the terminal and never returns until the operator quits,
@@ -83,7 +86,7 @@ vi.mock('ink', async (importOriginal) => ({
   ...(await importOriginal<typeof import('ink')>()),
   render: vi.fn(),
 }));
-vi.mock('../core/conductor.service.js', () => ({
+vi.mock('@src/core/conductor.service.js', () => ({
   NO_CONDUCTOR_RUNNING:
     'No conductor is running for this project; start one with `pup conductor start`.',
   isConductorRunning: vi.fn(() => false),
@@ -92,53 +95,53 @@ vi.mock('../core/conductor.service.js', () => ({
   stopConductor: vi.fn(),
   tellConductor: vi.fn(() => true),
 }));
-vi.mock('../core/errors/conductor.errors.js', () => ({
+vi.mock('@src/core/errors/conductor.errors.js', () => ({
   ConductorTellRefusedError: class ConductorTellRefusedError extends Error {},
 }));
-vi.mock('../core/git-diff.client.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../core/git-diff.client.js')>()),
+vi.mock('@src/core/git-diff.client.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@src/core/git-diff.client.js')>()),
   // The review queue diffs each seeded branch against main. The seeded
   // sessions' branches are store rows, not refs, in a repo with no commits, so
   // the real diff would refuse them: the queue sees no changed paths instead.
   gitDiffPaths: vi.fn(() => []),
   gitDiffNumstat: vi.fn(() => []),
 }));
-vi.mock('../core/merge-gate.service.js', () => ({
+vi.mock('@src/core/merge-gate.service.js', () => ({
   runMergeGate: vi.fn(),
   // The review queue scores each branch with it. The seeded sessions' branches
   // are rows in a store and not real branches, so there is nothing to count.
   countChangedLines: vi.fn(() => ({ source: 0, test: 0, docs: 0, forged: [] })),
 }));
 // The land's own git and gh work is land.test.ts's, against a real repo.
-vi.mock('../core/land.service.js', () => ({
+vi.mock('@src/core/land.service.js', () => ({
   abandonClosedSession: vi.fn(),
   landSession: vi.fn(),
 }));
-vi.mock('../core/land-batch.service.js', () => ({ landSessions: vi.fn() }));
+vi.mock('@src/core/land-batch.service.js', () => ({ landSessions: vi.fn() }));
 // So is the retire's, in session-retire.test.ts.
-vi.mock('../core/session-retire.service.js', () => ({ retireSession: vi.fn() }));
+vi.mock('@src/core/session-retire.service.js', () => ({ retireSession: vi.fn() }));
 // So is the fix round's, in fix-round.test.ts; `pup status` asks GitHub nothing here.
-vi.mock('../core/fix-round.service.js', () => ({
+vi.mock('@src/core/fix-round.service.js', () => ({
   ciReviewLookup: vi.fn(),
   startFixRound: vi.fn(),
 }));
 // The wait's gh reads and clock are ci-wait.test.ts's.
-vi.mock('../core/ci-wait.service.js', () => ({ waitForCiReview: vi.fn() }));
+vi.mock('@src/core/ci-wait.service.js', () => ({ waitForCiReview: vi.fn() }));
 // The server and its socket are web-dashboard.test.ts's; here it binds nothing,
 // and the one test that serves the real one hands it in-memory connections.
-vi.mock('../core/web-dashboard.service.js', () => ({ startWebDashboard: vi.fn() }));
+vi.mock('@src/core/web-dashboard.service.js', () => ({ startWebDashboard: vi.fn() }));
 // The browser opener is `pup dashboard --open`'s one boundary; every other
 // call, the fixtures' git included, runs for real.
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>();
   return { ...actual, execFileSync: vi.fn(actual.execFileSync), spawn: vi.fn(actual.spawn) };
 });
-vi.mock('../core/session-lifecycle.service.js', async (importOriginal) => ({
+vi.mock('@src/core/session-lifecycle.service.js', async (importOriginal) => ({
   createSession: vi.fn(),
   interruptSession: vi.fn(),
   killSession: vi.fn(),
   LowMemoryError: (
-    await importOriginal<typeof import('../core/errors/session-lifecycle.errors.js')>()
+    await importOriginal<typeof import('@src/core/errors/session-lifecycle.errors.js')>()
   ).LowMemoryError,
   launchTask: vi.fn(),
   markSessionDone: vi.fn(),
@@ -149,8 +152,8 @@ vi.mock('../core/session-lifecycle.service.js', async (importOriginal) => ({
   steerSession: vi.fn(),
 }));
 // The run and its slot are test-slot.test.ts's; here only what the command hands them.
-vi.mock('../core/test-slot.service.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../core/test-slot.service.js')>()),
+vi.mock('@src/core/test-slot.service.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@src/core/test-slot.service.js')>()),
   runSessionTest: vi.fn(async () => 0),
   sessionTestCommand: vi.fn(() => ({
     stage: GateStage.Test,
@@ -158,7 +161,7 @@ vi.mock('../core/test-slot.service.js', async (importOriginal) => ({
     args: ['run', GateStage.Test],
   })),
 }));
-vi.mock('../core/session-handoff.service.js', () => ({
+vi.mock('@src/core/session-handoff.service.js', () => ({
   HANDOFF_WAIT_DEFAULT_MS: 10 * 60 * 1000,
   awaitHandoffReady: vi.fn(),
   hardRespawnSession: vi.fn(),
@@ -167,7 +170,7 @@ vi.mock('../core/session-handoff.service.js', () => ({
   requestHandoff: vi.fn(),
   respawnSession: vi.fn(),
 }));
-vi.mock('../core/errors/session-handoff.errors.js', () => ({
+vi.mock('@src/core/errors/session-handoff.errors.js', () => ({
   HandoffMissingError: class HandoffMissingError extends Error {
     constructor(sessionId: string, handoffPath: string) {
       super(`No handoff at ${handoffPath} for ${sessionId}.`);
@@ -175,6 +178,52 @@ vi.mock('../core/errors/session-handoff.errors.js', () => ({
   },
 }));
 
+import { GateStage } from '@src/adapters/enums/gate-stage.enums.js';
+import {
+  SessionPaneMissingError,
+  SteerNotDeliveredError,
+} from '@src/claude/errors/session-runtime.errors.js';
+import {
+  attachWindow,
+  hasSessionWindow,
+  readSessionEnv,
+} from '@src/claude/session-runtime.service.js';
+import { buildProgram } from '@src/cli/index.js';
+import { resolveProject } from '@src/cli/project.utils.js';
+import { isConductorRunning } from '@src/core/conductor.service.js';
+import { DEFAULT_BASE_PROFILE } from '@src/core/constants/default-profile.constants.js';
+import { insertDecisionRecord } from '@src/core/decision-record.repository.js';
+import { EventType } from '@src/core/enums/event-type.enums.js';
+import { GateStageStatus } from '@src/core/enums/gate-stage-status.enums.js';
+import { InterruptSignal } from '@src/core/enums/interrupt-signal.enums.js';
+import { SessionState } from '@src/core/enums/session-state.enums.js';
+import { MergeLockLostError } from '@src/core/errors/merge-gate.errors.js';
+import { InvalidProfileError } from '@src/core/errors/profile.errors.js';
+import { GateInterruptedError } from '@src/core/errors/sandbox.errors.js';
+import {
+  LaunchRolledBackError,
+  TerminalSessionError,
+  UnknownSessionError,
+} from '@src/core/errors/session-lifecycle.errors.js';
+import { ciReviewLookup, startFixRound } from '@src/core/fix-round.service.js';
+import { abandonClosedSession, landSession } from '@src/core/land.service.js';
+import { landSessions } from '@src/core/land-batch.service.js';
+import { projectId, projectPaths } from '@src/core/paths.utils.js';
+import {
+  appendEvent,
+  ensureProject,
+  getSession,
+  listEvents,
+  transitionSession,
+} from '@src/core/session.repository.js';
+import {
+  createSession,
+  recordSteerMessage,
+  steerSession,
+} from '@src/core/session-lifecycle.service.js';
+import { retireSession } from '@src/core/session-retire.service.js';
+import type { LandOutcome } from '@src/core/types/land.types.js';
+import { startWebDashboard } from '@src/core/web-dashboard.service.js';
 import {
   firstCall,
   GIT_ENV,
@@ -186,52 +235,6 @@ import {
   seedSession,
   seedStalledSession,
 } from '@test/helpers/cli-index.mock.js';
-import { GateStage } from '../adapters/enums/gate-stage.enums.js';
-import {
-  SessionPaneMissingError,
-  SteerNotDeliveredError,
-} from '../claude/errors/session-runtime.errors.js';
-import {
-  attachWindow,
-  hasSessionWindow,
-  readSessionEnv,
-} from '../claude/session-runtime.service.js';
-import { isConductorRunning } from '../core/conductor.service.js';
-import { DEFAULT_BASE_PROFILE } from '../core/constants/default-profile.constants.js';
-import { insertDecisionRecord } from '../core/decision-record.repository.js';
-import { EventType } from '../core/enums/event-type.enums.js';
-import { GateStageStatus } from '../core/enums/gate-stage-status.enums.js';
-import { InterruptSignal } from '../core/enums/interrupt-signal.enums.js';
-import { SessionState } from '../core/enums/session-state.enums.js';
-import { MergeLockLostError } from '../core/errors/merge-gate.errors.js';
-import { InvalidProfileError } from '../core/errors/profile.errors.js';
-import { GateInterruptedError } from '../core/errors/sandbox.errors.js';
-import {
-  LaunchRolledBackError,
-  TerminalSessionError,
-  UnknownSessionError,
-} from '../core/errors/session-lifecycle.errors.js';
-import { ciReviewLookup, startFixRound } from '../core/fix-round.service.js';
-import { abandonClosedSession, landSession } from '../core/land.service.js';
-import { landSessions } from '../core/land-batch.service.js';
-import { projectId, projectPaths } from '../core/paths.utils.js';
-import {
-  appendEvent,
-  ensureProject,
-  getSession,
-  listEvents,
-  transitionSession,
-} from '../core/session.repository.js';
-import {
-  createSession,
-  recordSteerMessage,
-  steerSession,
-} from '../core/session-lifecycle.service.js';
-import { retireSession } from '../core/session-retire.service.js';
-import type { LandOutcome } from '../core/types/land.types.js';
-import { startWebDashboard } from '../core/web-dashboard.service.js';
-import { buildProgram } from './index.js';
-import { resolveProject } from './project.utils.js';
 
 describe('CLI commands', () => {
   const originalExitCode = process.exitCode;
@@ -2542,8 +2545,8 @@ describe('CLI commands', () => {
     }
 
     it('stops on a first SIGINT within 5 seconds while a page holds a live stream and a half-sent post', async () => {
-      const real = await vi.importActual<typeof import('../core/web-dashboard.service.js')>(
-        '../core/web-dashboard.service.js',
+      const real = await vi.importActual<typeof import('@src/core/web-dashboard.service.js')>(
+        '@src/core/web-dashboard.service.js',
       );
       let server: Server | undefined;
       let store: Database.Database | undefined;

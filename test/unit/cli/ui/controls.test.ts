@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // tested against the real store in actions.test.ts, and what this file tests is
 // that the key reaches the right one with the row under the cursor. Splitting
 // them is what keeps a rebind from passing because the action still works.
-vi.mock('./actions.service.js', () => ({
+vi.mock('@src/cli/ui/actions.service.js', () => ({
   answerSelected: vi.fn(() => ({ message: 'Answered.' })),
   attachTo: vi.fn(() => ({ message: 'Detached from pup-s-run-1.' })),
   conductorAttachTarget: vi.fn(() => ({
@@ -34,13 +34,9 @@ vi.mock('./actions.service.js', () => ({
   unblockSelected: vi.fn(() => ({ message: 'Unblocked.' })),
 }));
 
-import { GateStageStatus } from '../../core/enums/gate-stage-status.enums.js';
-import { InterruptSignal } from '../../core/enums/interrupt-signal.enums.js';
-import { SessionState } from '../../core/enums/session-state.enums.js';
-import type { DashboardSession, DashboardSnapshot } from '../../core/types/dashboard.types.js';
-import { MERGE_LOG_LINES } from '../constants/dashboard.constants.js';
-import type { ActionDeps, MergeHandlers } from '../types/actions.types.js';
-import type { DashboardReading } from '../types/snapshot.types.js';
+import { MERGE_LOG_LINES } from '@src/cli/constants/dashboard.constants.js';
+import type { ActionDeps, MergeHandlers } from '@src/cli/types/actions.types.js';
+import type { DashboardReading } from '@src/cli/types/snapshot.types.js';
 import {
   answerSelected,
   attachTo,
@@ -55,8 +51,12 @@ import {
   steerSelected,
   toggleConductor,
   unblockSelected,
-} from './actions.service.js';
-import { App } from './app.component.js';
+} from '@src/cli/ui/actions.service.js';
+import { App } from '@src/cli/ui/app.component.js';
+import { GateStageStatus } from '@src/core/enums/gate-stage-status.enums.js';
+import { InterruptSignal } from '@src/core/enums/interrupt-signal.enums.js';
+import { SessionState } from '@src/core/enums/session-state.enums.js';
+import type { DashboardSession, DashboardSnapshot } from '@src/core/types/dashboard.types.js';
 
 const DEPS = { db: {}, repoPath: '/repo', pupBin: '/abs/pup.js' } as unknown as ActionDeps;
 

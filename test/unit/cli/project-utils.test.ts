@@ -1,20 +1,20 @@
 import { execFileSync } from 'node:child_process';
 import { chmodSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { tempDir } from '@test/helpers/temp-dir.mock.js';
-import Database from 'better-sqlite3';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { openStore } from '../core/db.client.js';
-import { projectId, projectPaths } from '../core/paths.utils.js';
-import { ensureProject } from '../core/session.repository.js';
-import { ProjectResolutionError } from './errors/project.errors.js';
+import { ProjectResolutionError } from '@src/cli/errors/project.errors.js';
 import {
   enclosingProject,
   fleetProjects,
   listRegisteredProjects,
   registryLine,
   resolveProject,
-} from './project.utils.js';
+} from '@src/cli/project.utils.js';
+import { openStore } from '@src/core/db.client.js';
+import { projectId, projectPaths } from '@src/core/paths.utils.js';
+import { ensureProject } from '@src/core/session.repository.js';
+import { tempDir } from '@test/helpers/temp-dir.mock.js';
+import Database from 'better-sqlite3';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const GIT_ENV: NodeJS.ProcessEnv = {
   ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_'))),

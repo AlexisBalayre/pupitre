@@ -1,28 +1,28 @@
-import { cleanup, render } from 'ink-testing-library';
-import { createElement, type ReactElement } from 'react';
-import { afterEach, describe, expect, it } from 'vitest';
-import { Tier } from '../../claude/enums/tier.enums.js';
-import { ClimbReason } from '../../core/enums/climb-reason.enums.js';
-import { GateStageStatus } from '../../core/enums/gate-stage-status.enums.js';
-import { SessionActivityKind } from '../../core/enums/session-activity-kind.enums.js';
-import { SessionState } from '../../core/enums/session-state.enums.js';
+import { Tier } from '@src/claude/enums/tier.enums.js';
+import type { ActionDeps } from '@src/cli/types/actions.types.js';
+import type { DashboardReading } from '@src/cli/types/snapshot.types.js';
+import { App } from '@src/cli/ui/app.component.js';
+import { Backlog } from '@src/cli/ui/backlog.component.js';
+import { Debt } from '@src/cli/ui/debt.component.js';
+import { Detail } from '@src/cli/ui/detail.component.js';
+import { Footer } from '@src/cli/ui/footer.component.js';
+import { Header } from '@src/cli/ui/header.component.js';
+import { MergeLogPane } from '@src/cli/ui/merge-log.component.js';
+import { Prompt, promptLines } from '@src/cli/ui/prompt.component.js';
+import { Radar } from '@src/cli/ui/radar.component.js';
+import { Sessions } from '@src/cli/ui/sessions.component.js';
+import { ClimbReason } from '@src/core/enums/climb-reason.enums.js';
+import { GateStageStatus } from '@src/core/enums/gate-stage-status.enums.js';
+import { SessionActivityKind } from '@src/core/enums/session-activity-kind.enums.js';
+import { SessionState } from '@src/core/enums/session-state.enums.js';
 import type {
   DashboardRoute,
   DashboardSession,
   DashboardSnapshot,
-} from '../../core/types/dashboard.types.js';
-import type { ActionDeps } from '../types/actions.types.js';
-import type { DashboardReading } from '../types/snapshot.types.js';
-import { App } from './app.component.js';
-import { Backlog } from './backlog.component.js';
-import { Debt } from './debt.component.js';
-import { Detail } from './detail.component.js';
-import { Footer } from './footer.component.js';
-import { Header } from './header.component.js';
-import { MergeLogPane } from './merge-log.component.js';
-import { Prompt, promptLines } from './prompt.component.js';
-import { Radar } from './radar.component.js';
-import { Sessions } from './sessions.component.js';
+} from '@src/core/types/dashboard.types.js';
+import { cleanup, render } from 'ink-testing-library';
+import { createElement, type ReactElement } from 'react';
+import { afterEach, describe, expect, it } from 'vitest';
 
 /**
  * Every component renders one fixture snapshot and is asserted on the frame

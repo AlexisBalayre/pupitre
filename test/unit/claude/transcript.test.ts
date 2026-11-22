@@ -1,8 +1,8 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { latestContextTokens } from '@src/claude/transcript.service.js';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import { describe, expect, it } from 'vitest';
-import { latestContextTokens } from './transcript.service.js';
 
 function makeTranscriptDir(lines: object[]): string {
   const dir = tempDir('pup-transcript-');

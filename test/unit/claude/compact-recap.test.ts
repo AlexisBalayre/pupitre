@@ -1,16 +1,14 @@
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { tempDir } from '@test/helpers/temp-dir.mock.js';
-import type { Database } from 'better-sqlite3';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { GateStage } from '../adapters/enums/gate-stage.enums.js';
-import { MERGE_LOCK_DIRNAME } from '../core/constants/merge-gate.constants.js';
-import { openStore } from '../core/db.client.js';
-import { EventType } from '../core/enums/event-type.enums.js';
-import { GateStageStatus } from '../core/enums/gate-stage-status.enums.js';
-import { SessionState } from '../core/enums/session-state.enums.js';
-import { projectId } from '../core/paths.utils.js';
+import { GateStage } from '@src/adapters/enums/gate-stage.enums.js';
+import { conductorRecap, sessionRecap } from '@src/claude/compact-recap.service.js';
+import { MERGE_LOCK_DIRNAME } from '@src/core/constants/merge-gate.constants.js';
+import { openStore } from '@src/core/db.client.js';
+import { EventType } from '@src/core/enums/event-type.enums.js';
+import { GateStageStatus } from '@src/core/enums/gate-stage-status.enums.js';
+import { SessionState } from '@src/core/enums/session-state.enums.js';
+import { projectId } from '@src/core/paths.utils.js';
 import {
   appendEvent,
   ensureProject,
@@ -18,12 +16,14 @@ import {
   insertSession,
   insertTask,
   transitionSession,
-} from '../core/session.repository.js';
-import { conductorRecap, sessionRecap } from './compact-recap.service.js';
+} from '@src/core/session.repository.js';
+import { tempDir } from '@test/helpers/temp-dir.mock.js';
+import type { Database } from 'better-sqlite3';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // No conductor runs in a test: its question is read against no run, as when none is up.
-vi.mock('./session-runtime.service.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('./session-runtime.service.js')>()),
+vi.mock('@src/claude/session-runtime.service.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@src/claude/session-runtime.service.js')>()),
   conductorRun: () => undefined,
 }));
 

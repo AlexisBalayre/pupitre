@@ -1,6 +1,11 @@
+import { InputBoxState } from '@src/claude/enums/input-box-state.enums.js';
+import {
+  hasUnsubmittedInput,
+  inputBoxLook,
+  inputBoxState,
+  pasteLanded,
+} from '@src/claude/pane.utils.js';
 import { describe, expect, it } from 'vitest';
-import { InputBoxState } from './enums/input-box-state.enums.js';
-import { hasUnsubmittedInput, inputBoxLook, inputBoxState, pasteLanded } from './pane.utils.js';
 
 // Fixtures are trimmed captures from live Claude Code 2.1.218, 2.1.263 and
 // 2.1.269 panes. The unstyled ones are `capture-pane -p`; the STYLED_ ones are

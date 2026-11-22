@@ -1,11 +1,11 @@
+import type { ActionDeps } from '@src/cli/types/actions.types.js';
+import { App } from '@src/cli/ui/app.component.js';
+import { clip, windowStart } from '@src/cli/ui/viewport.utils.js';
+import { SessionState } from '@src/core/enums/session-state.enums.js';
+import type { DashboardSession, DashboardSnapshot } from '@src/core/types/dashboard.types.js';
 import { cleanup, render } from 'ink-testing-library';
 import { createElement } from 'react';
 import { afterEach, describe, expect, it } from 'vitest';
-import { SessionState } from '../../core/enums/session-state.enums.js';
-import type { DashboardSession, DashboardSnapshot } from '../../core/types/dashboard.types.js';
-import type { ActionDeps } from '../types/actions.types.js';
-import { App } from './app.component.js';
-import { clip, windowStart } from './viewport.utils.js';
 
 /**
  * Ink clears the whole screen when a frame is as tall as the terminal, so the

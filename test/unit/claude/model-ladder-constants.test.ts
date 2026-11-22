@@ -7,10 +7,10 @@ vi.mock('node:child_process', async (importOriginal) => {
   return { ...actual, execFileSync: vi.fn(() => 'drafted\n') };
 });
 
-import { CONDUCTOR_ROUTE, LADDERS, TIERS } from './constants/model-ladder.constants.js';
-import { launchArgs } from './session-runtime.service.js';
-import type { ModelRoute } from './types/model-ladder.types.js';
-import { runUtility } from './utility.service.js';
+import { CONDUCTOR_ROUTE, LADDERS, TIERS } from '@src/claude/constants/model-ladder.constants.js';
+import { launchArgs } from '@src/claude/session-runtime.service.js';
+import type { ModelRoute } from '@src/claude/types/model-ladder.types.js';
+import { runUtility } from '@src/claude/utility.service.js';
 
 const WINDOW = { sessionId: 's-1', settingsPath: '/tmp/compiled/settings.json' };
 

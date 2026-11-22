@@ -1,13 +1,13 @@
+import type { ActionDeps } from '@src/cli/types/actions.types.js';
+import type { DashboardReading } from '@src/cli/types/snapshot.types.js';
+import { createTerminalStatus } from '@src/cli/ui/terminal-status.manager.js';
+import { useTerminalStatus } from '@src/cli/ui/use-terminal-status.hook.js';
+import { SessionState } from '@src/core/enums/session-state.enums.js';
+import type { DashboardSession, DashboardSnapshot } from '@src/core/types/dashboard.types.js';
 import { Text } from 'ink';
 import { cleanup, render } from 'ink-testing-library';
 import { createElement } from 'react';
 import { afterEach, describe, expect, it } from 'vitest';
-import { SessionState } from '../../core/enums/session-state.enums.js';
-import type { DashboardSession, DashboardSnapshot } from '../../core/types/dashboard.types.js';
-import type { ActionDeps } from '../types/actions.types.js';
-import type { DashboardReading } from '../types/snapshot.types.js';
-import { createTerminalStatus } from './terminal-status.manager.js';
-import { useTerminalStatus } from './use-terminal-status.hook.js';
 
 const ESC = '\u001b';
 const BEL = '\u0007';

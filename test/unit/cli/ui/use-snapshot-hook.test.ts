@@ -1,12 +1,12 @@
+import { SNAPSHOT_REFRESH_MS } from '@src/cli/constants/dashboard.constants.js';
+import type { ActionDeps } from '@src/cli/types/actions.types.js';
+import type { DashboardReading } from '@src/cli/types/snapshot.types.js';
+import { useSnapshot } from '@src/cli/ui/use-snapshot.hook.js';
+import type { DashboardSnapshot } from '@src/core/types/dashboard.types.js';
 import { Text } from 'ink';
 import { cleanup, render } from 'ink-testing-library';
 import { createElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { DashboardSnapshot } from '../../core/types/dashboard.types.js';
-import { SNAPSHOT_REFRESH_MS } from '../constants/dashboard.constants.js';
-import type { ActionDeps } from '../types/actions.types.js';
-import type { DashboardReading } from '../types/snapshot.types.js';
-import { useSnapshot } from './use-snapshot.hook.js';
 
 function readingWith(projectId: string): DashboardReading {
   const snapshot: DashboardSnapshot = {
