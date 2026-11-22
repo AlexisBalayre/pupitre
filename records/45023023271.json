@@ -1,0 +1,115 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-22T12:38:14.360Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "45023023271",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/45023023271",
+  "actor": "AlexisBalayre",
+  "commit_sha": "60032775dd4ff6cb7ae5f58276b134b039b30117",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 422,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "conventions",
+    "simplicity",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "conventions",
+    "simplicity",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context",
+    "maintainability",
+    "spec",
+    "guards",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "docs/test-suite-timing.md",
+      "line": "52",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Speedup item 2 (\"Build the git fixture once per file and copy it per test … `land*` and `merge-gate*`\") is written as a proposal, and this PR implements it. It still reads as a to-do, and the line-37/38 \"per-test fixture is the main suspect\" text is stale for the eight converted files.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "docs",
+      "description": "The `git diff <merge_base>..HEAD -- <path>` scoped read was refused (it needed approval), so the reviewer used the truncated `gh pr diff 422` plus direct file reads, and did not read the eight test files line by line."
+    },
+    {
+      "component": "simplicity",
+      "description": "The `git diff` scoped read was refused (it needed approval). The reviewer read the helper files at head and grepped for callers instead, and did not inspect the eight test files' changed lines beyond the grep hits."
+    },
+    {
+      "component": "conventions",
+      "description": "The reviewer read testing.md and naming.md but not general.md or the ADRs, so those rule sources were not audited."
+    },
+    {
+      "component": "orchestrator",
+      "description": "Skipped review-security (no trust boundary touched; test-only change), review-context (no spec, protocol or infra surface), review-guards (no non-test source changed), review-workflow-safety (no workflow change), review-maintainability (off the default roster) and review-spec (no closing issue or spec source). The consolidator was not spawned because only one finding came back, so there was nothing to group."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.1311706000000001,
+  "duration_ms": 145813,
+  "num_turns": 9,
+  "tokens": {
+    "input": 10,
+    "output": 5302,
+    "cache_read": 195948,
+    "cache_creation": 36096,
+    "total": 237356
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 36,
+      "output": 14873,
+      "cache_read": 506503,
+      "cache_creation": 79631,
+      "cost_usd": 0.9053476
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 44,
+      "output": 5363,
+      "cache_read": 283150,
+      "cache_creation": 57516,
+      "cost_usd": 0.22582299999999997
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "git -C /home/runner/work/pupitre/pupitre diff 06ebb31771c5338a40ff5ce6f08b4187feb870e1..HEAD -- test/helpers"
+    },
+    {
+      "tool": "Bash",
+      "input": "git -C /home/runner/work/pupitre/pupitre diff 06ebb31771c5338a40ff5ce6f08b4187feb870e1..HEAD -- test/helpers docs"
+    },
+    {
+      "tool": "Bash",
+      "input": "git -C /home/runner/work/pupitre/pupitre diff 06ebb31771c5338a40ff5ce6f08b4187feb870e1..HEAD -- test/helpers"
+    }
+  ]
+}
