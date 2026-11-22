@@ -1,0 +1,105 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-22T17:01:19.625Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "45046691648",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/45046691648",
+  "actor": "AlexisBalayre",
+  "commit_sha": "15a0526721827190e0cd671af74c3b4bdd311380",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 426,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "simplicity",
+    "guards"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "simplicity",
+    "guards"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/ticket-intake.utils.ts",
+      "line": "111",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "`PERMALINK` takes the ref as a single segment (`[\\w.-]+\\/`). A link to a branch or tag whose name contains `/` (e.g. `feature/x`, `release/1.2`) is only partly stripped. Example: `https://github.com/acme/tool/blob/feature/x/src/claude/hooks.ts` becomes `x/src/claude/hooks.ts`. That path matches no ADR glob, and `moduleOf` returns undefined for it. So a bug whose Suspected area is that link gets `triggers: []` and `needsDesign: false`, while the bare `src/claude/hooks.ts` fires `adr-area`. This breaks the acceptance criterion \"permalink matches same globs as bare path\" for a realistic input, and the gate passes when it should fire. Before this PR the link didn't match either. The fault is in the new feature, not a regression.",
+      "body": "[`PERMALINK`](https://github.com/AlexisBalayre/pupitre/blob/15a0526721827190e0cd671af74c3b4bdd311380/src/core/ticket-intake.utils.ts#L110-L111) reads exactly one segment as the ref. Many branch and tag names contain `/` (`feature/x`, `release/1.2`), and GitHub writes their URLs as-is: `https://github.com/acme/tool/blob/feature/x/src/claude/hooks.ts`. The strip then leaves `x/src/claude/hooks.ts`. That path matches no ADR glob (`globToRegExp` anchors with `^…$`, so `src/claude/**` and `src/claude/hooks.ts` both miss), the new prefix arm is false, and `moduleOf` reads no module from it. A bug ticket with that Suspected area gets `triggers: []` / `needsDesign: false`, while the bare path fires `adr-area`. That breaks the PR's acceptance criterion \"A GitHub permalink in the area matches the same ADR globs as the bare path\" for a URL copied from a branch view, and it errs toward *not* firing.\n\nThe ref can't be split from the path without knowing the repo's refs. To keep \"erring toward firing\", the permalink case could test every suffix of the remainder after `/(blob|tree)/` as a candidate path for `inAdrArea`. A path that names a real repo directory deep inside another one is unlikely, so over-firing should stay rare. Add a test with a slash ref (`blob/feature/x/src/claude/hooks.ts`).",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/ticket-intake.utils.ts",
+      "line": "111",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "PERMALINK is anchored at `^github\\.com` and only knows `blob`/`tree`, so `www.github.com/...` links and `.../blame/<ref>/...` links (common in bug reports) stay unstripped and still miss the ADR globs their bare path hits; `/^(?:www\\.)?github\\.com\\/[\\w.-]+\\/[\\w.-]+\\/(?:blob|tree|blame)\\/[\\w.-]+\\//` would cover both.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.3106069500000002,
+  "duration_ms": 161331,
+  "num_turns": 15,
+  "tokens": {
+    "input": 12,
+    "output": 8471,
+    "cache_read": 257023,
+    "cache_creation": 42968,
+    "total": 308474
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 42,
+      "output": 21504,
+      "cache_read": 394403,
+      "cache_creation": 98107,
+      "cost_usd": 1.1285676
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 26,
+      "output": 4151,
+      "cache_read": 119019,
+      "cache_creation": 51156,
+      "cost_usd": 0.18135389999999996
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 207,
+      "cache_read": 0,
+      "cache_creation": 4654,
+      "cost_usd": 0.00068545
+    }
+  ],
+  "permission_denials": []
+}
