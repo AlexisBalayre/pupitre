@@ -1,0 +1,183 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-22T15:25:07.947Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "45037672208",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/45037672208",
+  "actor": "AlexisBalayre",
+  "commit_sha": "5eb4df857fd15a662715ee60bd1a0a25955f096b",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 425,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/ticket-intake.utils.ts",
+      "line": "34-60",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The chore/refactor, docs and spike headings in the code don't match the labels in the repo's issue forms. Every form-filed chore, refactor, docs or spike ticket reports a required field as missing, and intake would strip `ready` from even a fully filled ticket.",
+      "body": "GitHub issue forms render each field as `### <label>`. `sections()` matches headings exactly once `normalize()` has run, and `normalize()` never drops a word. Three headings in `REQUIRED_FIELDS` don't match the labels in the issue forms, the rubrics in `docs/tickets/`, or ADR 0176:\n\n- **Chore/refactor:** `chore-refactor.yml`, `docs/tickets/chore-refactor.md` and ADR 0176 all say **\"Proof that behavior is unchanged\"**. The code has `'Proof behavior is unchanged'` (line 36).\n- **Docs and spike:** they share one form, `docs-spike.yml`, whose first field is **\"What changes, or the question\"**. That label normalizes to `what changes or the question`. The code looks up `'What changes'` for docs (line 55) and `'Question'` for spike (line 57), and neither key exists in a form-rendered body.\n- **Docs fields:** ADR 0176 gives docs/spike \"what changes, or the question, the time box and the form of the answer\". Docs tickets currently skip the Time box and Form of the answer checks.\n\n**Trigger:** a correctly filled chore issue gets `missing: ['Proof behavior is unchanged']`. A docs issue gets `missing: ['What changes']` and a spike issue gets `missing: ['Question']`. Decision 176 says intake removes `ready` on a failed check.\n\n**A second effect for docs:** `What changes` is that type's only area field, so `areaText` is empty. A docs ticket never fires the adr-area, module-boundary or `package.json` triggers.\n\nThe tests (lines 45, 50, 55-60) build their bodies from the code's own headings, not from the form labels, so they don't catch this.\n\n**Fix:**\n- Use the form labels verbatim.\n- Give docs and spike the same three fields.\n- Decide which docs field carries the paths. The form describes \"Form of the answer\" as the pages that will hold the change.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/5eb4df857fd15a662715ee60bd1a0a25955f096b/src/core/ticket-intake.utils.ts#L34-L60",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/ticket-intake.utils.ts",
+      "line": "131-149",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "A directory-style area such as `src/cli/ and src/core/` (the form-placeholder style) yields no module and no ADR match, so a bug or chore that crosses modules or touches an ADR area gets `needsDesign: false`.",
+      "body": "The final segment of `PATH` needs at least one character, so `src/cli/ and src/core/` matches as `src/cli` and `src/core`, with no trailing slash. Both halves of the design check then miss.\n\n**Module boundary.** `moduleOf('src/cli')` splits into `['src','cli']`. That fails `parts.length > 2`, so it returns `undefined`, `modules.size` is 0, and `module-boundary` never fires.\n\n```ts\nif (parts[0] === 'src' && parts.length > 2) return parts[1];\nif (parts[0] === 'test' && parts.length > 3) return parts[2];\n```\n\n**ADR area.** `globToRegExp('src/cli/**')` gives `^src/cli/.*$`, which doesn't match `src/cli`. A `./src/cli/ls.ts` path also keeps its `./` on line 149: `moduleOf` strips it, but the ADR test does not, so that path misses as well.\n\n**The forms invite directory answers:**\n- `feature.yml`'s Affected area placeholder is `src/core/, \\`pup plan\\`, decision 40`.\n- `bug.yml` asks for \"the file, module or command you suspect\".\n- `chore-refactor.yml` asks for \"One path or glob per line\".\n\n**Trigger:** a bug with `Suspected area: src/cli/ and src/core/` and `adrAreas: ['src/cli/**']` gets `triggers: []` and `needsDesign: false`. ADR 0176 forces a design on any type that \"touches an ADR area, crosses a module boundary\". Features are unaffected only because they need a design by default.\n\n**Fix:**\n- Strip a leading `./` from each path once, in `triggersFor`.\n- Have `moduleOf` count a path without an extension as a directory.\n- Test each ADR area against both `path` and `` `${path}/` ``.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/5eb4df857fd15a662715ee60bd1a0a25955f096b/src/core/ticket-intake.utils.ts#L131-L149",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/ticket-intake.utils.ts",
+      "line": "107-116",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "A `# comment` line inside a fenced code block is read as a heading and splits the section there. A shell comment in a reproduction or area block can make a filled field vague, or drop its paths so the design triggers don't fire.",
+      "body": "`sections()` runs `HEADING.exec(line)` on every line and never tracks ```` ``` ```` or `~~~` fences. A shell comment such as `# fresh clone` matches `^#{1,6}\\s+(.+?)…`, so everything after it moves into a new section that no check reads.\n\n**Trigger A (a filled field reported vague):** `Reproduction` is ```` ```sh\\n# fresh clone\\npup ls\\n``` ````. The field's value becomes ```` ```sh ````, one word in a non-terse field, so `isVague` returns true. `bug.yml` asks for \"Exact steps from a clean state, with commands\", so a fenced shell block is ordinary input there.\n\n**Trigger B (the design gate wrongly passes):** `Suspected area` is ```` ```\\n# from the stack trace\\nsrc/core/a.ts\\nsrc/cli/b.ts\\n``` ````. The two paths land in a section called `from the stack trace`. `areaText` is then ```` ``` ````, so the result is `triggers: []` and `needsDesign: false`.\n\nGitHub ignores headings inside fences, and an unclosed fence runs to the end of the document. The suggestion below gives the parser the same behaviour.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/5eb4df857fd15a662715ee60bd1a0a25955f096b/src/core/ticket-intake.utils.ts#L107-L116",
+      "suggestion": "  let fenced = false;\n  for (const line of body.split(/\\r?\\n/)) {\n    if (/^\\s*(?:```|~~~)/.test(line)) fenced = !fenced;\n    const heading = fenced ? null : HEADING.exec(line);\n    if (heading) {\n      close();\n      current = normalize(heading[1] ?? '');\n      lines = [];\n    } else {\n      lines.push(line);\n    }\n  }"
+    },
+    {
+      "file": "src/core/ticket-intake.utils.ts",
+      "line": "5",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`DesignTrigger` is a literal union in the exported return type. general.md requires \"a `string` `enum` in the area's `enums/` folder, never a literal union\" for a closed value set.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/ticket-intake.utils.ts",
+      "line": "8",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The exported `IntakeContext` interface is declared in a behavioural `*.utils.ts` file. general.md says \"An exported or reused `type` / `interface` is never declared in a behavioural file\". Move it to `src/core/types/`, or drop it (see the next nit).",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/ticket-intake.utils.ts",
+      "line": "8-11",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`IntakeContext` is a one-field options object with one caller, which is the bloat general.md §Altitude names. Pass `adrAreas: string[]` directly and the interface and the `context.adrAreas` indirection both go away.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/ticket-intake.utils.ts",
+      "line": "147",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "No issue form has an `Estimate` field, so the size trigger fires only when the author hand-writes an `### Estimate` heading. It then reads the first number in the section, so `2 slices, ~900 lines` reads as 2 and `1.5k lines` as 1, and neither fires the over-600 trigger.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/ticket-intake.utils.ts",
+      "line": "85",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `PATH` doc says \"a file name with an extension\", but the regex only matches bare names ending in json, ts, js, md or yaml. A bare `foo.tsx` or `foo.py` in an area field never feeds the triggers. Name the extension set in the doc.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/ticket-intake.utils.ts",
+      "line": "69-70",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`ESTIMATE_HEADING` is used once, and that use wraps it in `normalize()`. Writing `sectionMap.get('estimate')` removes the constant, its doc comment and the extra call.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 3,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.9289392050000005,
+  "duration_ms": 259101,
+  "num_turns": 16,
+  "tokens": {
+    "input": 16,
+    "output": 12499,
+    "cache_read": 322591,
+    "cache_creation": 50799,
+    "total": 385905
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 84,
+      "output": 34758,
+      "cache_read": 822331,
+      "cache_creation": 131469,
+      "cost_usd": 1.6697042000000002
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 36,
+      "output": 8756,
+      "cache_read": 171561,
+      "cache_creation": 61558,
+      "cost_usd": 0.25868310000000005
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 264,
+      "cache_read": 1933,
+      "cache_creation": 3203,
+      "cost_usd": 0.000551905
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "git -C /home/runner/work/pupitre/pupitre diff --stat d17a7100d00cb7cf7cb73ba9f88802b861c6bc6e..HEAD"
+    },
+    {
+      "tool": "Bash",
+      "input": "bash /home/runner/work/pupitre/pupitre/scripts/adr-index.sh"
+    }
+  ]
+}
