@@ -17,7 +17,7 @@ import type { TaskId, TaskSpec } from '@src/core/types/profile.types.js';
 import type { Database } from 'better-sqlite3';
 import { onTestFinished } from 'vitest';
 import { GIT_ENV } from './git.mock.js';
-import { tempDir } from './temp-dir.mock.js';
+import { fixtureCopier, tempDir } from './temp-dir.mock.js';
 
 export { GIT_ENV } from './git.mock.js';
 
@@ -25,13 +25,22 @@ export function sh(cwd: string, ...args: string[]): string {
   return execFileSync(args[0] as string, args.slice(1), { cwd, encoding: 'utf8', env: GIT_ENV });
 }
 
-export function initRepo(): string {
-  const repo = tempDir('pup-gate-');
+function buildRepo(repo: string): void {
   sh(repo, 'git', 'init', '-b', 'main');
   sh(repo, 'git', 'config', 'user.email', 'gate@test');
   sh(repo, 'git', 'config', 'user.name', 'gate-test');
   commitIn(repo, 'src/app.ts', 'export const app = 1;\n');
+}
+
+export function initRepo(): string {
+  const repo = tempDir('pup-gate-');
+  buildRepo(repo);
   return repo;
+}
+
+/** `initRepo` built once per file: call it in a `describe` body, then call the result per test. */
+export function initRepoCopier(): () => string {
+  return fixtureCopier('pup-gate-', buildRepo);
 }
 
 export function commitIn(dir: string, file: string, content: string): void {

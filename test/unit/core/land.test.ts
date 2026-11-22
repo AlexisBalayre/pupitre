@@ -88,7 +88,15 @@ import { HELD_SLOT_ENV } from '@src/core/test-slot.service.js';
 import type { ProjectBaseline } from '@src/core/types/init.types.js';
 import type { LandOutcome } from '@src/core/types/land.types.js';
 import type { GateReport, GateStageResult } from '@src/core/types/merge-gate.types.js';
-import { BRANCH, commitIn, ORIGIN_URL, PR_URL, SESSION_ID, sh } from '@test/helpers/land.mock.js';
+import {
+  BRANCH,
+  commitIn,
+  landFixtureCopier,
+  ORIGIN_URL,
+  PR_URL,
+  SESSION_ID,
+  sh,
+} from '@test/helpers/land.mock.js';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
 
 // Real git repos, a bare origin and a sandboxed audit per test.
@@ -109,6 +117,8 @@ const passingAdapter: Adapter = {
   ],
 };
 
+const newLandFixture = landFixtureCopier();
+
 describe('landSession', { timeout: 20_000 }, () => {
   let db: Database;
   let repo: string;
@@ -123,17 +133,12 @@ describe('landSession', { timeout: 20_000 }, () => {
 
   beforeEach(() => {
     db = openStore(':memory:');
-    repo = tempDir('pup-land-repo-');
-    sh(repo, 'git', 'init', '-q', '-b', 'main');
-    commitIn(repo, 'src/app.ts', 'export const app = 1;\n');
+    const fixture = newLandFixture();
+    repo = fixture.repo;
+    origin = fixture.origin;
     // GitHub-shaped origin, rewritten by the operator's global config into a
     // local bare repo so the land's real fetch stays offline.
-    const host = tempDir('pup-land-origin-');
-    origin = join(host, 'owner', 'repo.git');
-    mkdirSync(origin, { recursive: true });
-    sh(origin, 'git', 'init', '-q', '--bare', '-b', 'main');
-    sh(repo, 'git', 'remote', 'add', 'origin', ORIGIN_URL);
-    sh(repo, 'git', 'push', '-q', origin, 'main');
+    const host = fixture.host;
     const globalConfig = join(host, 'gitconfig');
     writeFileSync(globalConfig, `[url "${host}/"]\n\tinsteadOf = git@github.com:\n`);
     vi.stubEnv('GIT_CONFIG_GLOBAL', globalConfig);

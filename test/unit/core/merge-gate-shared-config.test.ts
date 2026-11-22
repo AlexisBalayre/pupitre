@@ -1,9 +1,8 @@
 import { execFileSync, spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { Database } from 'better-sqlite3';
-import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@src/claude/session-runtime.service.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@src/claude/session-runtime.service.js')>()),
@@ -74,8 +73,6 @@ import { SessionState } from '@src/core/enums/session-state.enums.js';
 import { SharedWorktreeKeyError, WorktreeConfigError } from '@src/core/errors/git-diff.errors.js';
 import { listLedgerEntries } from '@src/core/ledger.repository.js';
 import { runMergeGate } from '@src/core/merge-gate.service.js';
-import { projectId } from '@src/core/paths.utils.js';
-import { TOOLCHAIN_CACHE_DIRNAME } from '@src/core/sandbox.utils.js';
 import {
   getSession,
   saveProjectBaseline,
@@ -93,7 +90,7 @@ import {
   sh,
   untimed,
 } from '@test/helpers/merge-gate.mock.js';
-import { tempDir } from '@test/helpers/temp-dir.mock.js';
+import { fixtureCopier, tempDir } from '@test/helpers/temp-dir.mock.js';
 
 /**
  * Git takes `core.worktree` from the main checkout's own `.git/config`, which a
@@ -105,6 +102,19 @@ import { tempDir } from '@test/helpers/temp-dir.mock.js';
  * runs; and for a session that sets it after the last check, every listing a
  * stage reads is anchored at the root.
  */
+const newHost = fixtureCopier(
+  'pup-shared-key-',
+  (host) => {
+    const repo = join(host, 'repo');
+    mkdirSync(repo);
+    sh(repo, 'git', 'init', '-b', 'main');
+    sh(repo, 'git', 'config', 'user.email', 'gate@test');
+    sh(repo, 'git', 'config', 'user.name', 'gate-test');
+    commitIn(repo, 'src/app.ts', 'export const app = 1;\n');
+  },
+  'repo',
+);
+
 describe('the merge gate under a shared-config core.worktree and diff.relative', {
   timeout: 20_000,
 }, () => {
@@ -115,19 +125,7 @@ describe('the merge gate under a shared-config core.worktree and diff.relative',
     vi.clearAllMocks();
     db = openStore(':memory:');
     // Inside a parent of its own, which the key aims at.
-    const host = tempDir('pup-shared-key-');
-    repo = join(host, 'repo');
-    mkdirSync(repo);
-    onTestFinished(() => {
-      rmSync(join(tmpdir(), TOOLCHAIN_CACHE_DIRNAME, projectId(repo)), {
-        recursive: true,
-        force: true,
-      });
-    });
-    sh(repo, 'git', 'init', '-b', 'main');
-    sh(repo, 'git', 'config', 'user.email', 'gate@test');
-    sh(repo, 'git', 'config', 'user.name', 'gate-test');
-    commitIn(repo, 'src/app.ts', 'export const app = 1;\n');
+    repo = join(newHost(), 'repo');
     // As inside a slot already held, so a gate here never queues behind the
     // machine's real test runs (decision 96).
     vi.stubEnv(HELD_SLOT_ENV, 'merge-gate-shared-config.test');
