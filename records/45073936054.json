@@ -1,0 +1,150 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-22T21:54:49.271Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "45073936054",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/45073936054",
+  "actor": "AlexisBalayre",
+  "commit_sha": "77c0dfe4ff4f3bcc6a48d74abbd91e8262957f48",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 429,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "bc3b5b7bf2fa9a5b6b7cb81cd2f92c0eadcb4ce3",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/constants/merge-gate.constants.ts",
+      "line": "110-115",
+      "description": "PROTECTED_WITHIN_EXCEPTIONS keeps only `.claude/skills/pr-ci-review/**` protected, but the CI review allows a bare `\"Skill\"` permission, so any other worker-merged skill can be loaded by every later CI review with the repo token — the harm ADR 0208 gives as its reason for protecting pr-ci-review.",
+      "status": "unresolved"
+    },
+    {
+      "file": "src/core/constants/merge-gate.constants.ts",
+      "line": "111-115",
+      "description": "The gate protects the CI review's skill by directory, but skills resolve by frontmatter `name:`: a new `.claude/skills/<x>/SKILL.md` declaring `name: pr-ci-review` passes the gate and competes for the `/pr-ci-review` command the workflow runs with the repo token. The ADR's premise that a skill is inert prose is also wrong, since frontmatter like `allowed-tools` is acted on.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/scope-audit.utils.ts",
+      "line": "45-49",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The non-regular-file refusal only runs for a path `isSkillManifest` matches, but `.claude/skills/**/*.md` also lifts `.claude/skills/shadow.md`. Committed as a symlink to a directory (e.g. `../../docs/shadow`, holding a `SKILL.md` with `name: pr-ci-review`), that path is never read and its mode is never checked, so the scope audit passes it.",
+      "body": "**A symlinked skill directory named `*.md` skips the name check**\n\nThe gate checks a path's mode (refusing a symlink or gitlink) only for a path that `isSkillManifest` matches:\n\n```ts\nconst isMisnamed = (path: string): boolean => {\n  if (readFile === undefined || !isSkillManifest(path)) return false;\n  const content = readFile(path);\n  return content === null || (content !== undefined && isMisnamedSkill(path, content));\n};\n```\n\nThe exception `.claude/skills/**/*.md` compiles to `^\\.claude/skills/(?:[^/]+/)*[^/]*\\.md$`, so it also lifts a single entry `.claude/skills/shadow.md`. Take a branch scoped `.claude/skills/**` plus `docs/**` that adds two things:\n\n- `.claude/skills/shadow.md`, a symlink (mode 120000) to `../../docs/shadow`\n- `docs/shadow/SKILL.md`, with `name: pr-ci-review`\n\nHere is what the gate does with them:\n\n- `shadow.md` is lifted and in scope, and `isSkillManifest` is false for it. So `branchBlobReader` is never called and its mode-120000 refusal never runs.\n- `docs/shadow/SKILL.md` is outside `.claude/skills/`, so nothing reads it.\n- `refuseEscapingLinks` keeps the link because its target resolves inside the checkout.\n\nAfter the merge, Claude Code lists `.claude/skills/` and can follow `shadow.md` to the directory. It then registers a skill named `pr-ci-review` from frontmatter the gate never read. ADR 0208 refuses a symlinked `SKILL.md` for exactly this reason (\"a symlink would have Claude Code load its target's frontmatter\"); this case is the same thing one level up. Whether Claude Code follows a symlinked directory entry can't be checked in-tree, hence medium confidence. No test covers a symlinked directory.\n\n**Fix:** read every path the exception lifts, not only manifests. A null read is then refused anywhere under the exception. `isMisnamedSkill` already returns false for a path that is not a manifest, and a deleted path returns `undefined` and still passes.\n\n<https://github.com/AlexisBalayre/pupitre/blob/77c0dfe4ff4f3bcc6a48d74abbd91e8262957f48/src/core/scope-audit.utils.ts#L45-L49>",
+      "suggestion": "  const isMisnamed = (path: string): boolean => {\n    if (readFile === undefined || !exceptionRes.some((re) => re.test(path))) return false;\n    const content = readFile(path);\n    return content === null || (content !== undefined && isMisnamedSkill(path, content));\n  };"
+    },
+    {
+      "file": "src/core/skill-name.utils.ts",
+      "line": "12-35",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The new name check fails open because `FRONTMATTER`/`FRONTMATTER_OPENING` are narrower than Claude Code's frontmatter parser at both delimiters. (A) An opening `---` followed by NBSP, `\\f` or `\\v` before the LF matches neither regex, so `isMisnamedSkill` returns false. (B) A `---` in the middle of a line, as in `name: pr-ci-review---`, does not close the block for the gate, but a lazy reader closes there.",
+      "body": "**The `SKILL.md` name check can be bypassed through frontmatter delimiter mismatches**\n\n`isMisnamedSkill` is safe only if it reads at least the frontmatter Claude Code reads; the comment says it reads \"wider than Claude Code may\". At both delimiters it reads narrower:\n\n```ts\nconst FRONTMATTER = /^﻿?\\s*---[ \\t]*\\r?\\n((?:[\\s\\S]*?\\r?\\n)?)---[ \\t]*(?:\\r?\\n|$)/;\nconst FRONTMATTER_OPENING = /^﻿?\\s*---[ \\t]*\\r?\\n/;\n...\nif (block === null) return FRONTMATTER_OPENING.test(content);\n```\n\n1. **Opening line.** The gate accepts only a space, tab or CR between `---` and the LF. Take `.claude/skills/zz/SKILL.md` = `\"--- \\nname: pr-ci-review\\n---\\n\"` (or `\\f`, `\\v` or another Unicode space after `---`). It matches neither regex, so `isMisnamedSkill` returns `false` and the scope audit passes it. A parser that opens on `^---\\s*\\n`, where JS `\\s` includes NBSP, reads a skill named `pr-ci-review`.\n2. **Closing delimiter.** The gate closes only on a line that starts with `---`. Take `.claude/skills/pr-ci-review---/SKILL.md` = `\"---\\nname: pr-ci-review---\\n---\\n\"`. It is not under `.claude/skills/pr-ci-review/**`, and the gate's name equals the directory, so it passes. A lazy `([\\s\\S]*?)---` closes inside the value and reads `name: pr-ci-review`.\n\nBoth lead to the outcome the check exists to stop: a skill outside the protected directory that answers `/pr-ci-review`. Claude Code's exact parser isn't in-tree, hence medium confidence. The existing test `'a line a looser reader closes on'` covers only a `---` at the start of a line.\n\n**Fix:** fail closed in both places. Refuse any manifest that starts (after an optional BOM and whitespace) with `---` but doesn't match the strict block, which makes `FRONTMATTER_OPENING` obsolete. Refuse any block whose YAML contains `---`. Add both inputs above to `skill-name-utils.test.ts`.\n\n<https://github.com/AlexisBalayre/pupitre/blob/77c0dfe4ff4f3bcc6a48d74abbd91e8262957f48/src/core/skill-name.utils.ts#L12-L35>",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/skill-name.utils.ts",
+      "line": "34-35",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The gate closes frontmatter only at a `---` that starts a line, so `.claude/skills/pr-ci-review---/SKILL.md` with `name: pr-ci-review---` passes: its name equals its directory. A reader that closes at the first `---` anywhere reads `name: pr-ci-review` and registers `/pr-ci-review`.",
+      "body": "**A mid-line `---` lets a skill outside the protected directory answer `/pr-ci-review`**\n\n`FRONTMATTER` only closes at a `---` that starts a line:\n\n```ts\nconst FRONTMATTER = /^﻿?\\s*---[ \\t]*\\r?\\n((?:[\\s\\S]*?\\r?\\n)?)---[ \\t]*(?:\\r?\\n|$)/;\n```\n\nTake a branch that adds `.claude/skills/pr-ci-review---/SKILL.md`:\n\n```\n---\nname: pr-ci-review---\n---\n```\n\nThe gate does this with it:\n\n- The path does not match `.claude/skills/pr-ci-review/**`, which needs a `/` right after the name.\n- The path is lifted by `.claude/skills/**/*.md`.\n- The gate parses `name: pr-ci-review---`. That equals the directory, and lowercased it is not `pr-ci-review`, so `isMisnamedSkill` returns `false` and the file merges.\n\nA reader that closes at the first `---` anywhere, as a lazy `^---\\s*\\n([\\s\\S]*?)---` does, reads `name: pr-ci-review` and registers the slash command the CI workflow runs. That is the shadowing this delta sets out to stop. Claude Code's parser isn't in-tree, hence medium confidence. The test `'a line a looser reader closes on'` covers only a `---` at the start of a line.\n\n**Fix:** fail closed when the YAML block contains `---` anywhere. Any reader that closes earlier then reads a shorter block than the gate did, and the file is refused.\n\n<https://github.com/AlexisBalayre/pupitre/blob/77c0dfe4ff4f3bcc6a48d74abbd91e8262957f48/src/core/skill-name.utils.ts#L34-L35>",
+      "suggestion": "  const block = FRONTMATTER.exec(content);\n  if (block === null) return FRONTMATTER_OPENING.test(content);\n  if (block[1]?.includes('---')) return true;"
+    },
+    {
+      "file": "src/core/task-rescope.service.ts",
+      "line": "80-106",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The rescope still accepts any wildcard glob whose fixed prefix lies under `.claude/skills/`, even after the exception was narrowed to `.claude/skills/**/*.md`. `within` only compares prefixes. So `.claude/skills/wizard/*.sh` or `.claude/skills/**/scripts/*` is taken, though every path it can match is refused by the gate as a protected path, and the literal `.claude/skills/wizard/template.sh` is refused by the rescope. The worker is granted scope it can never merge, which surfaces only as a full gate run ending in rejection. The `reachesProtected` JSDoc (\"also reaches a skill's scripts\") doesn't describe globs that reach nothing else.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "335-343",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`branchBlobReader` spells the shape `{ mode: string; oid: string }[]` out three times: on `sides`, on the `readSides` return type, and on `read`. Changing the record shape means editing all three. A single local type, or dropping the `readSides` return annotation and letting it infer, removes the repetition.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 1,
+  "comments_posted_actual": 3,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 4.092840550000001,
+  "duration_ms": 409503,
+  "num_turns": 19,
+  "tokens": {
+    "input": 14,
+    "output": 21260,
+    "cache_read": 392442,
+    "cache_creation": 96246,
+    "total": 509962
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 130,
+      "output": 83370,
+      "cache_read": 1689148,
+      "cache_creation": 288767,
+      "cost_usd": 3.7383226000000005
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 50,
+      "output": 9979,
+      "cache_read": 329445,
+      "cache_creation": 88336,
+      "cost_usd": 0.35367450000000006
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 395,
+      "cache_read": 0,
+      "cache_creation": 5166,
+      "cost_usd": 0.0008434499999999999
+    }
+  ],
+  "permission_denials": []
+}
