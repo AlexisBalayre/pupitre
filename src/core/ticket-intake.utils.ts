@@ -44,10 +44,7 @@ const DOCS_SPIKE_FIELDS: Field[] = [
   { heading: 'Form of the answer', terse: true, area: true },
 ];
 
-/**
- * Each type's required fields (decision 176), headed by their issue form labels.
- * A type with no area field is read whole.
- */
+/** Each type's required fields (decision 176), headed by their issue form labels. */
 const REQUIRED_FIELDS: Record<TicketType, Field[]> = {
   feature: [
     { heading: 'Goal' },
@@ -66,7 +63,7 @@ const REQUIRED_FIELDS: Record<TicketType, Field[]> = {
   spike: DOCS_SPIKE_FIELDS,
   'follow-up': [
     { heading: 'Source PR', terse: true },
-    { heading: 'Findings' },
+    { heading: 'Findings', area: true },
     { heading: 'Scenarios' },
     { heading: 'Original reviewers', terse: true },
   ],
@@ -78,24 +75,40 @@ const ESTIMATE_HEADING = 'Estimate';
 /** Decision 173's diff-size cap, in source lines per merge. */
 const SIZE_CAP_LINES = 600;
 
-/** A Markdown heading of any level, as GitHub issue forms render each field. */
-const HEADING = /^#{1,6}\s+(.+?)\s*#*\s*$/;
+/**
+ * A Markdown heading of any level, as GitHub issue forms render each field.
+ * Trimming a closing `#` run here would backtrack on a long run of whitespace;
+ * `normalize` drops that run with the other punctuation instead.
+ */
+const HEADING = /^#{1,6}\s+(\S.*)/;
 
 /** A fenced code block's opening line; a backtick fence's info string holds no backtick. */
 const FENCE_OPEN = /^ {0,3}(`{3,}(?=[^`]*$)|~{3,})/;
 
-/** Text that holds a place without answering: what an issue form leaves unanswered too. */
+/**
+ * Text that holds a place without answering: what an issue form leaves unanswered
+ * too, alone or in Markdown emphasis or code, with one closing punctuation mark.
+ */
 const PLACEHOLDER =
-  /^(?:_no response_|tbd|tbc|todo|n\/?a|none|null|nil|unknown|\?+|\.{2,}|…|-+|<[^>]*>|\[[^\]]*\])$/i;
+  /^[*_`]*(?:_no response_|tbd|tbc|todo|n\/?a|none|null|nil|unknown|\?+|\.{2,}|…|-+|<[^>]*>|\[[^\]]*\])[*_`]*[.!:;]?$/i;
 
-/** A list item, checkbox or not, with nothing after its marker. */
-const EMPTY_LIST_ITEM = /^\s*(?:[-*+]|\d+[.)])(?:\s+\[[ xX]?\])?\s*$/m;
+/**
+ * One line holding a list item, checkbox or not, with nothing after its marker.
+ * Tested line by line: across lines, `^\s*` backtracks on a run of blank lines.
+ */
+const EMPTY_LIST_ITEM = /^\s*(?:[-*+]|\d+[.)])(?:\s+\[[ xX]?\])?\s*$/;
 
-/** A path with at least one slash, or a file name with an extension. */
-const PATH = /(?:[\w.-]+\/)+[\w.*-]+|\b[\w-]+\.(?:json|ts|js|md|ya?ml)\b/g;
+/**
+ * A path with at least one slash, or a file name with an extension. A segment
+ * after the first may hold a glob's wildcards; the first is a name or a bare
+ * wildcard, so emphasis around a path is not read into it. A match starts only
+ * where a run of path characters starts, which keeps the scan linear.
+ */
+const PATH =
+  /(?<![\w.-])(?:\*{1,2}|[\w.-]+)\/(?:[\w.*-]+\/)*[\w.*-]+|(?<![\w-])[\w-]+\.(?:json|ts|js|md|ya?ml)\b/g;
 
-/** A checked box that says the work adds a dependency. */
-const DEPENDENCY_BOX = /^\s*[-*+]\s+\[[xX]\].*\bdependenc/im;
+/** One line holding a checked box that says the work adds a dependency. */
+const DEPENDENCY_BOX = /^\s*[-*+]\s+\[[xX]\].*\bdependenc/i;
 
 function normalize(heading: string): string {
   return heading
@@ -111,17 +124,26 @@ function closesFence(line: string, fence: string): boolean {
   return marker !== undefined && marker[0] === fence[0] && marker.length >= fence.length;
 }
 
+/** A section's text, and its lines outside code fences, where a list item can be read. */
+interface Section {
+  text: string;
+  prose: string[];
+}
+
 /**
  * The body's sections, keyed by normalized heading; a repeated heading keeps its first.
  * As on GitHub, a heading inside a code fence is text, and an unclosed fence runs to the end.
  */
-function sections(body: string): Map<string, string> {
-  const found = new Map<string, string>();
+function sections(body: string): Map<string, Section> {
+  const found = new Map<string, Section>();
   let current: string | undefined;
   let lines: string[] = [];
+  let prose: string[] = [];
   let fence: string | undefined;
   const close = (): void => {
-    if (current !== undefined && !found.has(current)) found.set(current, lines.join('\n').trim());
+    if (current !== undefined && !found.has(current)) {
+      found.set(current, { text: lines.join('\n').trim(), prose });
+    }
   };
   for (const line of body.split(/\r?\n/)) {
     const heading = fence === undefined ? HEADING.exec(line) : null;
@@ -129,19 +151,25 @@ function sections(body: string): Map<string, string> {
       close();
       current = normalize(heading[1] ?? '');
       lines = [];
+      prose = [];
       continue;
     }
     lines.push(line);
-    if (fence === undefined) fence = FENCE_OPEN.exec(line)?.[1];
-    else if (closesFence(line, fence)) fence = undefined;
+    if (fence !== undefined) {
+      if (closesFence(line, fence)) fence = undefined;
+      continue;
+    }
+    fence = FENCE_OPEN.exec(line)?.[1];
+    if (fence === undefined) prose.push(line);
   }
   close();
   return found;
 }
 
-function isVague(value: string, terse: boolean): boolean {
-  const text = value.trim();
-  if (text === '' || PLACEHOLDER.test(text) || EMPTY_LIST_ITEM.test(text)) return true;
+/** A `+` or `-` line of a fenced diff is not a list item, so only the prose is read for one. */
+function isVague({ text, prose }: Section, terse: boolean): boolean {
+  if (text === '' || PLACEHOLDER.test(text)) return true;
+  if (prose.some((line) => EMPTY_LIST_ITEM.test(line))) return true;
   return !terse && !/\s/.test(text);
 }
 
@@ -149,38 +177,61 @@ function isVague(value: string, terse: boolean): boolean {
  * The module a path belongs to: its directory under `src/`, or under `test/<kind>/`
  * for a test, so a module's tests stay inside it. Undefined outside both. A path
  * whose last segment has no extension and no wildcard names a directory, as
- * `src/cli/` does; `test/helpers/*` names files.
+ * `src/cli/` does; `test/helpers/*` names files. A wildcard in the module's own
+ * segment, or a `**` segment at or above it, as `src/**` has, reaches several
+ * modules, and the module returned then holds a `*`.
  */
 function moduleOf(path: string): string | undefined {
   const parts = path.split('/');
+  const depth = parts[0] === 'src' ? 1 : parts[0] === 'test' ? 2 : 0;
+  const globstar = parts.indexOf('**');
+  if (globstar !== -1 && globstar <= depth) return '**';
+  if (depth === 0) return undefined;
   const directories = /\.\w+$|\*/.test(parts.at(-1) ?? '') ? parts.length - 1 : parts.length;
-  if (parts[0] === 'src' && directories > 1) return parts[1];
-  if (parts[0] === 'test' && directories > 2) return parts[2];
-  return undefined;
+  return directories > depth ? parts[depth] : undefined;
+}
+
+/** A glob's text before its first wildcard, which starts every path it matches. */
+function literalPrefix(glob: string): string {
+  return glob.split(/[*?]/, 1)[0] ?? '';
 }
 
 function triggersFor(
   body: string,
   areaText: string,
-  sectionMap: Map<string, string>,
+  sectionMap: Map<string, Section>,
   context: IntakeContext,
 ): DesignTrigger[] {
   // PATH keeps the period of a sentence that ends in a path; it is not part of the path.
+  // The lookbehind starts the strip only at a run's first dot, which keeps it linear.
   const paths = (areaText.match(PATH) ?? []).map((path) =>
-    path.replace(/^\.\//, '').replace(/\.+$/, ''),
+    path.replace(/^\.\//, '').replace(/(?<!\.)\.+$/, ''),
   );
-  const adrAreas = context.adrAreas.map((glob) => globToRegExp(glob));
-  const modules = new Set(paths.map(moduleOf).filter((name) => name !== undefined));
-  const estimate = /\d[\d,]*/.exec(sectionMap.get(normalize(ESTIMATE_HEADING)) ?? '');
+  const adrAreas = context.adrAreas.map((glob) => ({
+    pattern: globToRegExp(glob),
+    prefix: literalPrefix(glob.trim().replace(/^\.\//, '')),
+  }));
+  const modules = [...new Set(paths.map(moduleOf).filter((name) => name !== undefined))];
+  const estimate = /\d[\d,]*/.exec(sectionMap.get(normalize(ESTIMATE_HEADING))?.text ?? '');
   // PATH drops a directory's trailing slash, so `src/cli/` must still match `src/cli/**`.
-  const inAdrArea = (path: string): boolean =>
-    adrAreas.some((area) => area.test(path) || area.test(`${path}/`));
+  // A glob shares a path with an area only if one's literal prefix starts the other's:
+  // that check may count a glob in an area it misses, never miss one it reaches.
+  const inAdrArea = (path: string): boolean => {
+    if (!path.includes('*')) {
+      return adrAreas.some(({ pattern }) => pattern.test(path) || pattern.test(`${path}/`));
+    }
+    const prefix = literalPrefix(path);
+    return adrAreas.some(
+      (area) => area.prefix.startsWith(prefix) || prefix.startsWith(area.prefix),
+    );
+  };
   const fired: [DesignTrigger, boolean][] = [
     ['adr-area', paths.some(inAdrArea)],
-    ['module-boundary', modules.size > 1],
+    ['module-boundary', modules.length > 1 || modules.some((name) => name.includes('*'))],
     [
       'dependency',
-      DEPENDENCY_BOX.test(body) || paths.some((path) => /(?:^|\/)package\.json$/.test(path)),
+      body.split(/\r?\n/).some((line) => DEPENDENCY_BOX.test(line)) ||
+        paths.some((path) => /(?:^|\/)package\.json$/.test(path)),
     ],
     ['size', estimate !== null && Number(estimate[0].replace(/,/g, '')) > SIZE_CAP_LINES],
   ];
@@ -206,11 +257,10 @@ export function checkTicketIntake(
     if (value === undefined) missing.push(field.heading);
     else if (isVague(value, field.terse === true)) vague.push(field.heading);
   }
-  const areaFields = fields.filter((field) => field.area === true);
-  const areaText =
-    areaFields.length === 0
-      ? body
-      : areaFields.map((field) => sectionMap.get(normalize(field.heading)) ?? '').join('\n');
+  const areaText = fields
+    .filter((field) => field.area === true)
+    .map((field) => sectionMap.get(normalize(field.heading))?.text ?? '')
+    .join('\n');
   const triggers = triggersFor(body, areaText, sectionMap, context);
   return { missing, vague, triggers, needsDesign: type === 'feature' || triggers.length > 0 };
 }

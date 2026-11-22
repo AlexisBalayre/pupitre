@@ -28,6 +28,12 @@ const BUG = {
   'Suspected area': 'src/cli/ls.command.ts',
 };
 
+const REFACTOR = {
+  'Scope boundary': 'Only the plan service.',
+  'Proof that behavior is unchanged': 'The plan service tests pass unchanged.',
+  'Files in scope': 'src/core/plan.service.ts',
+};
+
 describe('checkTicketIntake required fields', () => {
   it('names a missing feature field', () => {
     const { 'Out of scope': _, ...rest } = FEATURE;
@@ -86,7 +92,7 @@ describe('checkTicketIntake required fields', () => {
 
   it('matches a heading whatever its level, case and punctuation', () => {
     const text = Object.entries(FEATURE)
-      .map(([heading, value]) => `## ${heading.toUpperCase()}:\n${value}`)
+      .map(([heading, value]) => `## ${heading.toUpperCase()}: ##\n${value}`)
       .join('\n');
     expect(checkTicketIntake(text, 'feature', NO_ADR).missing).toEqual([]);
   });
@@ -165,13 +171,29 @@ describe('checkTicketIntake vague fields', () => {
     expect(result).toMatchObject({ missing: [], vague: [] });
   });
 
-  it('still counts a placeholder as vague in a field one word answers', () => {
+  it.each(['n/a', 'TBD.', 'Unknown.', 'N/A.', '_TBD_', '`n/a`', '**none**'])(
+    'still counts the placeholder %s as vague in a field one word answers',
+    (value) => {
+      const result = checkTicketIntake(
+        body({ ...FEATURE, 'Affected area': value }),
+        'feature',
+        NO_ADR,
+      );
+      expect(result.vague).toEqual(['Affected area']);
+    },
+  );
+
+  it('reads no empty list item in the added and removed blank lines of a fenced diff', () => {
     const result = checkTicketIntake(
-      body({ ...FEATURE, 'Affected area': 'n/a' }),
-      'feature',
+      body({
+        ...BUG,
+        'Expected against actual':
+          'Actual: the generated hook gains a block:\n```diff\n exit 0\n+\n+echo stale\n-\n```',
+      }),
+      'bug',
       NO_ADR,
     );
-    expect(result.vague).toEqual(['Affected area']);
+    expect(result).toMatchObject({ missing: [], vague: [] });
   });
 });
 
@@ -284,6 +306,36 @@ describe('checkTicketIntake design', () => {
   });
 
   it.each([
+    ['a globstar under src', 'src/**/*.ts'],
+    ['a wildcard in the module segment', 'src/*/index.ts'],
+    ['a globstar over the whole repository', '**/*.ts'],
+  ])('forces a design on %s, which reaches several modules and the ADR area', (_, glob) => {
+    const result = checkTicketIntake(body({ ...REFACTOR, 'Files in scope': glob }), 'refactor', {
+      adrAreas: ['src/claude/**'],
+    });
+    expect(result).toMatchObject({ triggers: ['adr-area', 'module-boundary'], needsDesign: true });
+  });
+
+  it.each([
+    ['a file the glob matches', 'src/core/*.ts', 'src/core/plan.service.ts'],
+    ['a glob the glob overlaps', 'src/core/**', 'src/core/*.ts'],
+  ])('counts a glob in an ADR area holding %s', (_, glob, area) => {
+    const result = checkTicketIntake(body({ ...REFACTOR, 'Files in scope': glob }), 'refactor', {
+      adrAreas: [area],
+    });
+    expect(result).toMatchObject({ triggers: ['adr-area'], needsDesign: true });
+  });
+
+  it('reads one module and no ADR area in a glob inside one module', () => {
+    const result = checkTicketIntake(
+      body({ ...REFACTOR, 'Files in scope': 'src/core/**/*.ts' }),
+      'refactor',
+      { adrAreas: ['src/claude/**'] },
+    );
+    expect(result).toEqual({ missing: [], vague: [], triggers: [], needsDesign: false });
+  });
+
+  it.each([
     ['a checked dependency box', { ...BUG, Extras: '- [x] Adds a dependency' }],
     ['package.json in the area', { ...BUG, 'Suspected area': 'package.json' }],
   ])('forces a design on %s', (_, fields) => {
@@ -307,7 +359,7 @@ describe('checkTicketIntake design', () => {
     expect(at).toMatchObject({ triggers: [], needsDesign: false });
   });
 
-  it('reads the whole body for triggers on a type with no area field', () => {
+  it("reads a follow-up's findings for triggers", () => {
     const result = checkTicketIntake(
       body({
         'Source PR': '#412',
@@ -319,6 +371,34 @@ describe('checkTicketIntake design', () => {
       NO_ADR,
     );
     expect(result).toMatchObject({ triggers: ['module-boundary'], needsDesign: true });
+  });
+
+  it("reads no trigger in the input a follow-up's scenario runs", () => {
+    const result = checkTicketIntake(
+      body({
+        'Source PR': '#412',
+        Findings: '- [minor] src/core/plan.service.ts:88 the error names the path',
+        Scenarios: '`pup plan add t-1 --scope src/claude/**` prints the path, not the task id.',
+        'Original reviewers': '@reviewer',
+      }),
+      'follow-up',
+      { adrAreas: ['src/claude/**'] },
+    );
+    expect(result).toEqual({ missing: [], vague: [], triggers: [], needsDesign: false });
+  });
+});
+
+describe('checkTicketIntake on a body built to backtrack', () => {
+  it.each([
+    ['a heading line of spaces', `# a${' '.repeat(2_000)}b`],
+    ['a dot run inside a path', body({ ...BUG, 'Suspected area': `a/${'.'.repeat(50_000)}x` })],
+    ['a word with no slash', body({ ...BUG, 'Suspected area': 'a'.repeat(50_000) })],
+    ['a hyphenated word', body({ ...BUG, 'Suspected area': 'a-'.repeat(25_000) })],
+    ['a run of blank lines', body({ ...BUG, Reproduction: `Run it.${'\n'.repeat(50_000)}Again.` })],
+  ])('reads %s in linear time', (_, text) => {
+    const started = Date.now();
+    checkTicketIntake(text, 'bug', NO_ADR);
+    expect(Date.now() - started).toBeLessThan(500);
   });
 });
 
