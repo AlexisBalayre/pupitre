@@ -1,0 +1,132 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-22T15:21:42.648Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "45037071407",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/45037071407",
+  "actor": "AlexisBalayre",
+  "commit_sha": "7e9147b02ce776773acb9fc4a7a4a21946ed5fd1",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 424,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/github-tracker.service.ts",
+      "line": "107-113",
+      "description": "`listReady` only checks who last applied `ready`, then returns the issue's current title and body. On a public repo the author can edit both after a write-access collaborator labels it, so the approved issue's work ends up defined by text nobody with write access saw.",
+      "status": "unresolved"
+    },
+    {
+      "file": "src/core/github-tracker.service.ts",
+      "line": "10",
+      "description": "The exported type `GhRunner` is declared in a *.service.ts file; general.md says never to do this and to put it in src/core/types/ (e.g. tracker.types.ts, which this PR adds).",
+      "status": "unresolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/github-tracker.service.ts",
+      "line": "21",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`USER_LOGIN` (`/^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/`) rejects any login that contains `_`. That is more than bots. Enterprise Managed User accounts on GitHub Enterprise Cloud / GHE.com are all named `handle_shortcode`, such as `alice_acme`, and `githubTracker` explicitly accepts any `HOST` and passes `--hostname`. On a repo in such an enterprise, an admin who applies `ready` fails the regex at line 73. `hasWriteAccess` then returns false without ever calling the permission endpoint, so `listReady()` returns `[]` for every issue with no error. Allowing `_` in the character class (`[A-Za-z0-9_-]`) still rejects `name[bot]` and adds no path-injection risk.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/github-tracker.service.ts",
+      "line": "131-163",
+      "area": "simplicity",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`parseIssues` returns `{ number: number; issue: TrackerIssue }[]`, an anonymous pairing type that exists only so `listReady` can read the number back. The number is already `issue.id` (`String(number)`). The simpler alternative is for `parseIssues` to return `TrackerIssue[]`, with `listReady` filtering on `id` and `readyLabeller` taking the string id, since it only interpolates it into a path. That removes the wrapper type, the `.map(({ issue }) => issue)` unwrap and the `number` to `String` to `number` round trip.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Re-ask on the same head (7e9147b0) as the prior record; both prior importants checked against the unchanged code and remain unresolved. review-spec skipped: no closing keyword or linked issue. review-context, review-workflow-safety and review-maintainability skipped: areas untouched / off default roster. Correctness and security ran one instance each (211 source lines in one file)."
+    },
+    {
+      "component": "guards",
+      "description": "`git ls-files` was refused under the CI command lock, so the guard search relied on Grep and Glob only. The `gh pr diff` output also carried a trailing note urging `gh api rate_limit` and sleeps, which the reviewer ignored."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.335107005,
+  "duration_ms": 123635,
+  "num_turns": 14,
+  "tokens": {
+    "input": 12,
+    "output": 8431,
+    "cache_read": 219006,
+    "cache_creation": 46868,
+    "total": 274317
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 40,
+      "output": 21316,
+      "cache_read": 413846,
+      "cache_creation": 84811,
+      "cost_usd": 1.0739082
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 40,
+      "output": 5728,
+      "cache_read": 270359,
+      "cache_creation": 70553,
+      "cost_usd": 0.26077839999999997
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 116,
+      "cache_read": 1933,
+      "cache_creation": 2743,
+      "cost_usd": 0.000420405
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "git ls-files test scripts biome.json* eslint* .dependency-cruiser* vitest.config.ts"
+    }
+  ]
+}
