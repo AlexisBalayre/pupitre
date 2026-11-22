@@ -1,0 +1,138 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-22T20:23:21.153Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "45065054470",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/45065054470",
+  "actor": "AlexisBalayre",
+  "commit_sha": "bc3b5b7bf2fa9a5b6b7cb81cd2f92c0eadcb4ce3",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 429,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/constants/merge-gate.constants.ts",
+      "line": "110-115",
+      "description": "PROTECTED_WITHIN_EXCEPTIONS keeps only `.claude/skills/pr-ci-review/**` protected, but the CI review allows a bare `\"Skill\"` permission, so any other worker-merged skill can be loaded by every later CI review with the repo token — the harm ADR 0208 gives as its reason for protecting pr-ci-review.",
+      "status": "unresolved"
+    },
+    {
+      "file": "src/core/constants/merge-gate.constants.ts",
+      "line": "111-115",
+      "description": "The gate protects the CI review's skill by directory, but skills resolve by frontmatter `name:`: a new `.claude/skills/<x>/SKILL.md` declaring `name: pr-ci-review` passes the gate and competes for the `/pr-ci-review` command the workflow runs with the repo token. The ADR's premise that a skill is inert prose is also wrong, since frontmatter like `allowed-tools` is acted on.",
+      "status": "unresolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/scope-audit.utils.ts",
+      "line": "34-36",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The new `isProtected` also changes `scopedPaths`, which `scopeInFiles` (src/core/task-spec.utils.ts:190 and :198) uses to build the kickoff's 'Files in scope' section (src/core/profile-compiler.service.ts:433-441). Decision 128 says that section never names a file the session could not commit. Trigger: a task planned with scope-in `.claude/skills/**`, or with `.claude/skills/new-skill/SKILL.md` while no tracked file matches it. Before this PR the section left those paths out because they were protected. Now it lists every tracked `.claude/skills/*` file except pr-ci-review's, and adds the untracked glob as `to be created`. The same session's compiled Edit/Write hook still refuses every `.claude/` path ('BLOCKED: .claude/ is owned by Pupitre and read-only for sessions', profile-compiler.service.ts:910), its Bash guard does too (:977), and its brief says 'Never touch `.claude/`' (:676). So the kickoff tells the session to start from files it is blocked from writing. ADR 0208 says the hooks are not widened yet but does not mention that the kickoff now names these files. Either keep `scopeInFiles` on the hook's rule (leave out `.claude/` paths until the hooks are widened), or add a line to the ADR's 'Not covered here' paragraph.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/scope-audit.utils.ts",
+      "line": "13-15",
+      "area": "security",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The protected checks don't see a path with a newline in its name, and this PR newly lets a rescope reach such a path inside `.claude/skills/pr-ci-review/`. `caseless` builds the regexes without the `s` flag. A `**` glob turns into `.*`, and without `s` the `.` never matches `\\n`, while `$` (no `m` flag) only matches at the very end of the string. So all three checks (`^\\.claude/.*$`, `^\\.claude/skills/.*$`, `^\\.claude/skills/pr-ci-review/.*$`) fail on a path like `.claude/skills/pr-ci-review/<LF>notes.md`, and `isProtected` returns false. A single `*` in a scope glob becomes `[^/]*`, which does match `\\n`. The rescope now accepts `.claude/skills/*/*` (`within` puts it inside the exception, and it is not wholly inside pr-ci-review). Under that scope the gate passes the path. Git allows a newline in a filename. `gitDiffPaths` splits only on NUL. Nothing before scope-audit refuses control characters in changed paths (the control-character refusals cover rescope globs and the target name, not diff paths). Result: a new file lands in the directory decision 208 says only the operator edits. Real impact today is small. A newline name can't overwrite `SKILL.md` or `REVIEW.md`, and Claude Code loads only `SKILL.md` and the files it names. The same hole already existed for `.claude/agents/<LF>x.md` and `.claude/rules/<LF>x.md` (files Claude Code does load) under a plan scope such as `.claude/*/*`, because plan scopes are not checked against protected paths. This PR only adds the rescope route into pr-ci-review. Fix: add the `s` flag in `caseless`, i.e. `new RegExp(globToRegExpSource(g), 'is')`. That closes the protected check, the exception and the pr-ci-review check together. Alternatively, refuse any changed path containing a C0 control character before `auditScope`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/constants/merge-gate.constants.ts",
+      "line": "103-108",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The PROTECTED_PATH_EXCEPTIONS JSDoc says \"a session may edit one through its scope like any other file\", but ADR 0208's own \"Not covered here\" paragraph says the compiled Edit/Write hook, Bash guard and dirty-path re-check in src/core/profile-compiler.service.ts still refuse every `.claude/` path, so a maintainer reading only this constant expects a session skill edit to work; it also names \"a human merge click and the CI review\" as readers where the ADR names the console, the conductor and the CI review. Suggested: \"Skills are prose models read; the gate and `pup plan edit --rescope` let one through scope (decision 208). The session hooks still refuse `.claude/`.\"",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0115-pup-plan-edit-rescope-lets-the-operator-widen.md",
+      "line": "146",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Decision 115 still says the rescope refuses `.claude/**`, but after this PR it accepts `.claude/skills/**` and the refusal message reads \"`.claude/skills/**` lifted, `.claude/skills/pr-ci-review/**` not\"; ADR 0208 amends only 0006, so a reader of 0115 (where the rescope rules live) gets the old rule. Add an \"Amended by 0208\" note to 0115 or list 0115 under 0208's Amends.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.712374625,
+  "duration_ms": 328639,
+  "num_turns": 13,
+  "tokens": {
+    "input": 10,
+    "output": 10873,
+    "cache_read": 216153,
+    "cache_creation": 48621,
+    "total": 275657
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 104,
+      "output": 51289,
+      "cache_read": 1985618,
+      "cache_creation": 166280,
+      "cost_usd": 2.4005826
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 42,
+      "output": 8990,
+      "cache_read": 276722,
+      "cache_creation": 77329,
+      "cost_usd": 0.3109787
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 397,
+      "cache_read": 0,
+      "cache_creation": 4917,
+      "cost_usd": 0.000813325
+    }
+  ],
+  "permission_denials": []
+}
