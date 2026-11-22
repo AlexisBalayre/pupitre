@@ -1,0 +1,95 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-22T11:37:18.848Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "45018037639",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/45018037639",
+  "actor": "AlexisBalayre",
+  "commit_sha": "8f14f78ba3c0759cfab0b84fb8eae5dc9e58e7b1",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 420,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "conventions"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "conventions"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context",
+    "maintainability",
+    "docs",
+    "spec",
+    "simplicity",
+    "guards",
+    "workflow-safety"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "da58cc17a7eb0553a37ef8464b8b4c2cb113e6ff",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "vitest.config.ts",
+      "line": "13",
+      "description": "The `include` narrowed to `['test/**/*.test.ts']`, but three test files still live under `src/adapters/` at HEAD (capability-utils, failing-tests, vitest-config-utils). They existed unchanged at base and the PR does not touch them. vitest no longer collects them, so 27 test cases stop running and no error is raised.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "test/unit/adapters/typescript-adapter.test.ts",
+      "line": "1864-1884",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The pytest `failingTests` case and the `pythonAdapter` half of the \"names nothing in output that holds no summary\" case test `src/adapters/python.adapter.ts`, but they sit in the typescript-adapter test file, although `test/unit/adapters/python-adapter.test.ts` exists.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "No consolidator was spawned because only one finding came back, so there was nothing to deduplicate. Skipped on this test-only delta: security (no trust boundary), guards (no non-test source changed), simplicity (no new construct), docs (comments moved verbatim), context, maintainability, spec, workflow-safety."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.7198685,
+  "duration_ms": 68959,
+  "num_turns": 9,
+  "tokens": {
+    "input": 10,
+    "output": 3745,
+    "cache_read": 211202,
+    "cache_creation": 40140,
+    "total": 255097
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 24,
+      "output": 6761,
+      "cache_read": 311205,
+      "cache_creation": 66392,
+      "cost_usd": 0.649937
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 10,
+      "output": 2015,
+      "cache_read": 41190,
+      "cache_creation": 18257,
+      "cost_usd": 0.06993150000000001
+    }
+  ],
+  "permission_denials": []
+}
