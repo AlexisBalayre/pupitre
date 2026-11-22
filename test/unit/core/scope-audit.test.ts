@@ -33,6 +33,33 @@ describe('auditScope', () => {
     ]);
   });
 
+  // Decision 208: `.claude/skills/**` is an exception, any skill directory included.
+  it('passes a skill under .claude/skills when scope-in covers it', () => {
+    const skill = '.claude/skills/domain-modeling/SKILL.md';
+
+    expect(auditScope([skill, '.claude/skills/new-skill/SKILL.md'], ['.claude/skills/**'])).toEqual(
+      [],
+    );
+    expect(auditScope([skill], ['src/**'])).toEqual([{ path: skill, reason: 'outside scope-in' }]);
+  });
+
+  it.each([
+    '.claude/settings.json',
+    '.claude/settings.local.json',
+    '.claude/agents/x.md',
+    '.claude/hooks/x.sh',
+    '.claude/rules/x.md',
+    '.claude/project.env',
+    '.claude/statusline.sh',
+    '.claude/spot-checks.tsv',
+    '.claude/skills',
+    '.claude/skills/pr-ci-review/SKILL.md',
+    '.CLAUDE/Skills/PR-CI-Review/SKILL.md',
+    '.pupitre/x',
+  ])('still flags %s as protected, even when scope-in covers it', (path) => {
+    expect(auditScope([path], ['**'])).toEqual([{ path, reason: 'protected path' }]);
+  });
+
   it('treats a missing scope-out as empty', () => {
     expect(auditScope(['src/net/client.ts'], scopeIn)).toEqual([]);
   });

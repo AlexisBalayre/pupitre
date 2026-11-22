@@ -6,7 +6,11 @@ import {
   windowLabel,
   windowSockets,
 } from '../claude/session-runtime.service.js';
-import { PROTECTED_PATH_GLOBS } from './constants/merge-gate.constants.js';
+import {
+  PROTECTED_PATH_EXCEPTIONS,
+  PROTECTED_PATH_GLOBS,
+  PROTECTED_WITHIN_EXCEPTIONS,
+} from './constants/merge-gate.constants.js';
 import { insertDecisionRecord } from './decision-record.repository.js';
 import { EventType } from './enums/event-type.enums.js';
 import { InvalidProfileError } from './errors/profile.errors.js';
@@ -67,8 +71,36 @@ function overlaps(a: Reach, b: Reach): boolean {
   return true;
 }
 
-/** The gate's protected paths. */
+/**
+ * Whether every path `own` reaches is one `outer` reaches, for an `outer`
+ * that reaches all beneath its prefix, as each `dir/**` exception does.
+ */
+function within(own: Reach, outer: Reach): boolean {
+  return own.path === undefined ? own.prefix.startsWith(outer.prefix) : outer.matches(own.path);
+}
+
+/**
+ * The gate's protected paths, the exceptions lifted from them and the paths
+ * inside an exception that stay protected (decision 208).
+ */
 const PROTECTED = PROTECTED_PATH_GLOBS.map(reach);
+const EXCEPTIONS = PROTECTED_PATH_EXCEPTIONS.map(reach);
+const UNLIFTED = PROTECTED_WITHIN_EXCEPTIONS.map(reach);
+
+/**
+ * Whether a rescope glob reaches a path the gate protects: one that can share
+ * a path with a protected entry and does not lie inside an exception, or one
+ * that lies wholly inside a path an exception does not lift. A glob reaching
+ * past the latter, as `.claude/skills/**` does, is taken, and the gate still
+ * refuses the protected paths it covers.
+ */
+function reachesProtected(own: Reach): boolean {
+  return (
+    (PROTECTED.some((guarded) => overlaps(own, guarded)) &&
+      !EXCEPTIONS.some((lifted) => within(own, lifted))) ||
+    UNLIFTED.some((guarded) => within(own, guarded))
+  );
+}
 
 /** What a rescope glob reaches: a path without a wildcard stands for itself and all beneath it. */
 function rescopeReach(glob: string): Reach[] {
@@ -102,7 +134,8 @@ const PRE_COMMIT = 'scripts/pre-commit';
  * what the matcher drops. A wildcard
  * anywhere in the first segment can match every top-level directory,
  * `.github` among them. A protected entry, a file or a directory at any
- * depth, is refused whenever the glob can share a path with it (`overlaps`).
+ * depth, is refused whenever the glob can share a path with it (`overlaps`),
+ * unless the glob lies inside an exception (`reachesProtected`).
  */
 const GLOB_REFUSALS: readonly (readonly [(raw: string, form: string) => boolean, string])[] = [
   [(raw) => CONTROL_CHAR.test(raw), 'contains a control character'],
@@ -126,8 +159,9 @@ const GLOB_REFUSALS: readonly (readonly [(raw: string, form: string) => boolean,
     "reaches `.github`, whose workflows run with the repo's secrets",
   ],
   [
-    (raw) => rescopeReach(raw).some((own) => PROTECTED.some((guarded) => overlaps(own, guarded))),
-    `reaches a path the gate protects whatever the scope (${PROTECTED_PATH_GLOBS.join(', ')})`,
+    (raw) => rescopeReach(raw).some(reachesProtected),
+    `reaches a path the gate protects whatever the scope (${PROTECTED_PATH_GLOBS.join(', ')}; ` +
+      `${PROTECTED_PATH_EXCEPTIONS.join(', ')} lifted, ${PROTECTED_WITHIN_EXCEPTIONS.join(', ')} not)`,
   ],
   [
     // `scripts/pre-commit` by a glob that matches it, or by a directory above

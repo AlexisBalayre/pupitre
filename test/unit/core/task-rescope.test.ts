@@ -440,6 +440,13 @@ describe('rescopeTask (decision 115)', () => {
     ['.claude/hooks/scope-guard.sh', 'reaches a path the gate protects whatever the scope'],
     ['./.CLAUDE', 'reaches a path the gate protects whatever the scope'],
     ['.pupitre/adapter.yml', 'reaches a path the gate protects whatever the scope'],
+    // Outside the skills exception, or inside it on the CI review's skill (decision 208).
+    ['.claude/settings.json', 'reaches a path the gate protects whatever the scope'],
+    ['.claude/*/SKILL.md', 'reaches a path the gate protects whatever the scope'],
+    ['.claude/skills', 'reaches a path the gate protects whatever the scope'],
+    ['.claude/skills/pr-ci-review/**', 'reaches a path the gate protects whatever the scope'],
+    ['.claude/skills/pr-ci-review', 'reaches a path the gate protects whatever the scope'],
+    ['.CLAUDE/Skills/PR-CI-Review/SKILL.md', 'reaches a path the gate protects whatever the scope'],
     // A protected file, at the top and nested, and any glob that can reach it.
     ['pup.lock', 'reaches a path the gate protects whatever the scope'],
     ['./PUP.LOCK', 'reaches a path the gate protects whatever the scope'],
@@ -535,6 +542,25 @@ describe('rescopeTask (decision 115)', () => {
     const globs = ['config/*.ts', 'config/x/**', 'config/pup.lock/', 'pup', 'pup.lockfile'];
 
     expect(rescopeTask(db, 't-1', globs, CALLER)).toMatchObject({ added: globs });
+  });
+
+  it('takes a glob inside the skills exception (decision 208)', () => {
+    launched('s1', SessionState.Merged);
+    const globs = [
+      '.claude/skills/**',
+      '.claude/skills/',
+      '.claude/skills/domain-modeling/SKILL.md',
+      './.Claude/Skills/new-skill/**',
+    ];
+
+    expect(rescopeTask(db, 't-1', globs, CALLER)).toMatchObject({ added: globs });
+
+    // The CI review's skill under the widened scope is still refused at the gate.
+    const spec = readTaskSpec(db, 't-1');
+    const changed = ['.claude/skills/tdd/SKILL.md', '.claude/skills/pr-ci-review/SKILL.md'];
+    expect(auditScope(changed, spec.scopeIn, spec.scopeOut)).toEqual([
+      { path: '.claude/skills/pr-ci-review/SKILL.md', reason: 'protected path' },
+    ]);
   });
 
   // What the gate's scope-audit stage runs, on the spec it reads back.
