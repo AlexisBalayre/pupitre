@@ -1,0 +1,155 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-22T16:30:24.345Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "45043545999",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/45043545999",
+  "actor": "AlexisBalayre",
+  "commit_sha": "f048a55139c50f3c2888a0f77d2741d33a4801df",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 425,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "guards"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "guards"
+  ],
+  "reviewers_skipped": [
+    "conventions",
+    "context",
+    "maintainability",
+    "docs",
+    "spec",
+    "simplicity",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/ticket-intake.utils.ts",
+      "line": "175-179",
+      "description": "The adr-area check only asks whether a ticket path lies inside an ADR glob, never whether the ADR area lies inside the ticket's path. A directory or single-star glob that covers an ADR-governed file or subdirectory fires nothing, so a chore or bug skips the design that decision 176 requires.",
+      "status": "unresolved"
+    },
+    {
+      "file": "src/core/ticket-intake.utils.ts",
+      "line": "169-171",
+      "description": "The new `.replace(/\\.+$/, '')` runs on each PATH match. A match with a long run of dots that is not at its end takes quadratic time. One `a/<65,530 dots>x` in an area field costs about 2.1e9 start-and-backtrack steps of V8 irregexp time on the event loop. PATH itself handles this input in linear time, so the cost comes only from this delta.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/ticket-intake.utils.ts",
+      "line": "81-82",
+      "description": "`HEADING` runs on every line outside a fence. Its lazy capture is followed by `\\s*#*\\s*$`, so a single line like `# a` + N spaces + `b` costs about N³/6 backtracking steps and blocks the event loop of whatever process runs intake.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/ticket-intake.utils.ts",
+      "line": "88-89",
+      "description": "PLACEHOLDER only matches the bare token, so in a terse field a placeholder with a trailing period or Markdown wrapping passes as filled: Affected area `TBD.`, Suspected area `Unknown.`, Source PR `N/A.` or Time box `` `n/a` `` are reported complete, while the same text without the period is flagged vague.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/ticket-intake.utils.ts",
+      "line": "92, 142-146",
+      "description": "EMPTY_LIST_ITEM is tested with the `m` flag across the whole field, code fences included, so any pasted unified diff that adds or removes a blank line (a line that is just `+` or `-`) marks a fully filled Reproduction, Expected against actual, Findings, Scenarios or Proof field as vague.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/ticket-intake.utils.ts",
+      "line": "153-176",
+      "description": "A path-like glob such as `src/**/*.ts` or `src/**` in `Files in scope` (the form asks for \"One path or glob per line\") becomes the single module `**` and matches no ADR glob, so a repo-wide refactor fires neither trigger.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/ticket-intake.utils.ts",
+      "line": "67-72, 205-209",
+      "description": "Follow-up has no `area` field, so its whole body feeds the triggers. The scope globs and paths used as inputs in `Scenarios` then fire adr-area or module-boundary falsely. `Findings`, which the form defines as \"the file and line it points at\", is the real area field.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/ticket-intake.utils.ts",
+      "line": "144-150",
+      "description": "When the area names a file by its GitHub permalink, the extracted path starts with `github.com/<owner>/<repo>/blob/<ref>/`. That path matches no ADR glob and no module, so `adr-area` and `module-boundary` don't fire and the design gate passes when it should fail.",
+      "status": "unresolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/ticket-intake.utils.ts",
+      "line": "101-108, 207-209",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "PATH lets a path's last segment hold `*`, so closing emphasis is read into the path: `**src/cli** and **src/core**` becomes `src/cli**` and `src/core**`, moduleOf takes each as a file glob and returns undefined, and the module-boundary trigger does not fire. A plain `src/cli and src/core` fires it.",
+      "body": "**Concern.** The PATH doc comment says emphasis around a path is not read into it. That holds only for the opening run: the lookbehind and the `\\*{1,2}` first-segment rule skip a leading `**`. The closing run is still consumed, because the last segment's class `[\\w.*-]+` allows `*`.\n\nTrace for a bug ticket with `Suspected area: **src/cli** and **src/core**` and no ADR areas:\n- PATH matches `src/cli**` and `src/core**`.\n- `moduleOf('src/cli**')`: the last part `cli**` matches `/\\.\\w+$|\\*/`, so `directories = parts.length - 1 = 1`. Since `1 > depth (1)` is false, it returns `undefined`. The same happens for `src/core**`.\n- `modules = []`, so module-boundary is false and the result is `triggers: []`, `needsDesign: false`.\n\nWithout the asterisks, the same text gives modules `cli` and `core`, fires module-boundary and needs a design. Italic `*src/cli*` fails the same way. So a ticket crossing a module boundary skips the design that decision 176 forces, and the check reports success when it should fail.\n\n**Same root cause, other effects:**\n- Underscore emphasis is worse. `_` is in `\\w`, so `__src/claude/hooks.ts__` keeps `__src` as its first segment. moduleOf then returns undefined at depth 0, and since the path holds no `*`, the ADR glob test `^src/claude/.*$` fails. Both module-boundary and adr-area are missed.\n- Bold on a file path, e.g. `**src/core/plan.service.ts**`, sends the path down the wildcard branch of `inAdrArea`. There the prefix check counts it in any ADR area whose literal prefix it starts, e.g. `src/core/*.sql`. This is an over-count, not a miss.\n\nThe tests at lines 174 and following check `**none**` and `_TBD_` as placeholders, but no test puts emphasis around a path.\n\nCited code: https://github.com/AlexisBalayre/pupitre/blob/f048a55139c50f3c2888a0f77d2741d33a4801df/src/core/ticket-intake.utils.ts#L101-L108 and https://github.com/AlexisBalayre/pupitre/blob/f048a55139c50f3c2888a0f77d2741d33a4801df/src/core/ticket-intake.utils.ts#L207-L209\n\n```ts\nconst PATH =\n  /(?<![\\w.-])(?:\\*{1,2}|[\\w.-]+)\\/(?:[\\w.*-]+\\/)*[\\w.*-]+|(?<![\\w-])[\\w-]+\\.(?:json|ts|js|md|ya?ml)\\b/g;\n...\n  const paths = (areaText.match(PATH) ?? []).map((path) =>\n    path.replace(/^\\.\\//, '').replace(/(?<!\\.)\\.+$/, ''),\n  );\n```\n\n**About the suggestion.** It removes a bold run (`**`) stuck to a name character at the end of the path, after the period has been removed. A real `**` glob segment always follows a `/`, so it is not touched. The strip runs in linear time: only the first `*` of a run passes the lookbehind. It leaves single-star italics alone, because `src/core/plan*` is a plausible real glob. Underscore emphasis needs its own handling: stripping a leading `_` would break names like `__tests__/`.",
+      "suggestion": "  const paths = (areaText.match(PATH) ?? []).map((path) =>\n    path\n      .replace(/^\\.\\//, '')\n      .replace(/(?<!\\.)\\.+$/, '')\n      .replace(/(?<=[\\w.-])\\*\\*$/, ''),\n  );"
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Round 4 importants-only budget: only correctness, security (the untrusted issue body is input handling) and guards ran. The round budget skipped conventions, docs, simplicity, context and maintainability. spec was skipped because there is no closing issue or --spec source, and workflow-safety because no workflow changed. The consolidator was not spawned because the reviewers returned only one finding."
+    },
+    {
+      "component": "orchestrator",
+      "description": "Kept the reviewer's `**`-only suggestion. The validator confirmed the finding and the suggestion. It noted that single-star italics (`*src/cli*`) are still missed, and offered a `\\*{1,2}` variant that would also strip a real trailing glob star. That trade-off is left to the author."
+    },
+    {
+      "component": "guards",
+      "description": "The guards reviewer reported that `git diff --stat` needed approval in the sandbox, so it read the file directly instead of the diff."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.2640536000000004,
+  "duration_ms": 387671,
+  "num_turns": 12,
+  "tokens": {
+    "input": 10,
+    "output": 8775,
+    "cache_read": 245216,
+    "cache_creation": 61921,
+    "total": 315922
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 66,
+      "output": 51631,
+      "cache_read": 787231,
+      "cache_creation": 159829,
+      "cost_usd": 2.1752382
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 16,
+      "output": 2487,
+      "cache_read": 104984,
+      "cache_creation": 21366,
+      "cost_usd": 0.08881540000000002
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "git -C /home/runner/work/pupitre/pupitre diff --stat ef1877b1c260043b5257844b7d66c641fbcc5e4f..HEAD"
+    },
+    {
+      "tool": "Bash",
+      "input": "git ls-tree -d --name-only HEAD test/ test/unit/ test/integration/ src/"
+    }
+  ]
+}
