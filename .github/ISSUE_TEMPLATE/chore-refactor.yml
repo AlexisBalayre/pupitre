@@ -1,0 +1,45 @@
+name: Chore or refactor
+description: A change that leaves behavior as it is. No design unless a trigger of decision 176 fires.
+title: "chore: "
+labels: [chore-refactor]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Every field is required. The rubric says what a filled field looks like and what makes one
+        vague: [docs/tickets/chore-refactor.md](https://github.com/AlexisBalayre/pupitre/blob/main/docs/tickets/chore-refactor.md). Do not add the
+        `ready` label yourself; the operator applies it once the ticket passes intake.
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Kind
+      options:
+        - chore
+        - refactor
+    validations:
+      required: true
+  - type: textarea
+    id: scope_boundary
+    attributes:
+      label: Scope boundary
+      description: Where the change stops. Name what is left as it is, even if it is tempting to touch.
+    validations:
+      required: true
+  - type: textarea
+    id: behavior_unchanged_proof
+    attributes:
+      label: Proof that behavior is unchanged
+      description: The existing tests, commands or outputs that pass before and after, unchanged.
+      placeholder: test/unit/core/plan-service.test.ts passes without edits
+    validations:
+      required: true
+  - type: textarea
+    id: files_in_scope
+    attributes:
+      label: Files in scope
+      description: One path or glob per line. Nothing outside these may change.
+      placeholder: |
+        src/core/plan.service.ts
+        test/unit/core/plan-service.test.ts
+    validations:
+      required: true

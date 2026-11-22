@@ -1,0 +1,38 @@
+name: Bug
+description: Behavior that differs from what the code or docs promise. The reproduction becomes a failing test first (decision 176).
+title: "fix: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Every field is required. The rubric says what a filled field looks like and what makes one
+        vague: [docs/tickets/bug.md](https://github.com/AlexisBalayre/pupitre/blob/main/docs/tickets/bug.md). Do not add the `ready` label yourself;
+        the operator applies it once the ticket passes intake.
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Exact steps from a clean state, with commands, inputs and the commit or version. It must be precise enough to become a failing test.
+      placeholder: |
+        1. On main at 9d2ae7b8, run `pup plan add t-1 --scope 'src/**'`
+        2. Run `pup launch t-1`
+    validations:
+      required: true
+  - type: textarea
+    id: expected_vs_actual
+    attributes:
+      label: Expected against actual
+      description: What should happen, and what happens instead, with the exact output or exit code.
+      placeholder: |
+        Expected: the session starts.
+        Actual: exits 1 with "scope collides with t-0".
+    validations:
+      required: true
+  - type: textarea
+    id: suspected_area
+    attributes:
+      label: Suspected area
+      description: The file, module or command you suspect, and why. Write "unknown" with what you ruled out if you have no lead.
+    validations:
+      required: true

@@ -1,0 +1,42 @@
+name: Feature
+description: New behavior. Gets a design by default (decision 176).
+title: "feat: "
+labels: [feature]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Every field is required. The rubric says what a filled field looks like and what makes one
+        vague: [docs/tickets/feature.md](https://github.com/AlexisBalayre/pupitre/blob/main/docs/tickets/feature.md). Do not add the `ready` label
+        yourself; the operator applies it once the ticket passes intake.
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: The outcome for the user or operator, in one or two sentences. Not the implementation.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance_criteria
+    attributes:
+      label: Acceptance criteria
+      description: One testable criterion per line, at most 20, each under 500 characters. Each names an input, an action and an observable result.
+      placeholder: |
+        - `pup plan add` with no `--scope` exits 2 and prints "scope is required"
+    validations:
+      required: true
+  - type: textarea
+    id: out_of_scope
+    attributes:
+      label: Out of scope
+      description: What this ticket will not do, even though a reader might expect it to.
+    validations:
+      required: true
+  - type: textarea
+    id: affected_area
+    attributes:
+      label: Affected area
+      description: The modules, commands or paths the change lands in, and any ADR it touches.
+      placeholder: src/core/, `pup plan`, decision 40
+    validations:
+      required: true

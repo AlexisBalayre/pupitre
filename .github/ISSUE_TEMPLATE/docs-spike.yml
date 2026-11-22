@@ -1,0 +1,43 @@
+name: Docs or spike
+description: A docs change, or a time-boxed question whose answer is a document. No design unless a trigger of decision 176 fires.
+title: "docs: "
+labels: [docs-spike]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Every field is required. The rubric says what a filled field looks like and what makes one
+        vague: [docs/tickets/docs-spike.md](https://github.com/AlexisBalayre/pupitre/blob/main/docs/tickets/docs-spike.md). Do not add the `ready`
+        label yourself; the operator applies it once the ticket passes intake.
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Kind
+      options:
+        - docs
+        - spike
+    validations:
+      required: true
+  - type: textarea
+    id: change_or_question
+    attributes:
+      label: What changes, or the question
+      description: For docs, the claim or section that changes and why. For a spike, the one question the spike answers.
+    validations:
+      required: true
+  - type: input
+    id: time_box
+    attributes:
+      label: Time box
+      description: The most effort to spend before stopping and reporting, in hours or session turns.
+      placeholder: 2 hours
+    validations:
+      required: true
+  - type: textarea
+    id: answer_form
+    attributes:
+      label: Form of the answer
+      description: For docs, the page or pages that will hold the change. For a spike, the file and its shape (a table, a recommendation with options, a decision draft).
+      placeholder: docs/spikes/2026-11-22-<topic>.md, ending with a recommendation and its cost
+    validations:
+      required: true
