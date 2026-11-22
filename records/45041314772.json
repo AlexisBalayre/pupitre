@@ -1,0 +1,144 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-22T16:04:02.739Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "45041314772",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/45041314772",
+  "actor": "AlexisBalayre",
+  "commit_sha": "f1b1927eb2968f4d80e2dabc6fd8397876be97ea",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 425,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "guards"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "guards"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "simplicity",
+    "workflow-safety"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "c6972069753379843cf91959184b44101e5e2ef4",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/ticket-intake.utils.ts",
+      "line": "81-82",
+      "description": "`HEADING` runs on every line outside a fence. Its lazy capture is followed by `\\s*#*\\s*$`, so a single line like `# a` + N spaces + `b` costs about N³/6 backtracking steps and blocks the event loop of whatever process runs intake.",
+      "status": "unresolved"
+    },
+    {
+      "file": "src/core/ticket-intake.utils.ts",
+      "line": "88-89",
+      "description": "PLACEHOLDER only matches the bare token, so in a terse field a placeholder with a trailing period or Markdown wrapping passes as filled: Affected area `TBD.`, Suspected area `Unknown.`, Source PR `N/A.` or Time box `` `n/a` `` are reported complete, while the same text without the period is flagged vague.",
+      "status": "unresolved"
+    },
+    {
+      "file": "src/core/ticket-intake.utils.ts",
+      "line": "92, 142-146",
+      "description": "EMPTY_LIST_ITEM is tested with the `m` flag across the whole field, code fences included, so any pasted unified diff that adds or removes a blank line (a line that is just `+` or `-`) marks a fully filled Reproduction, Expected against actual, Findings, Scenarios or Proof field as vague.",
+      "status": "unresolved"
+    },
+    {
+      "file": "src/core/ticket-intake.utils.ts",
+      "line": "153-176",
+      "description": "A path-like glob such as `src/**/*.ts` or `src/**` in `Files in scope` (the form asks for \"One path or glob per line\") becomes the single module `**` and matches no ADR glob, so a repo-wide refactor fires neither trigger.",
+      "status": "unresolved"
+    },
+    {
+      "file": "src/core/ticket-intake.utils.ts",
+      "line": "67-72, 205-209",
+      "description": "Follow-up has no `area` field, so its whole body feeds the triggers. The scope globs and paths used as inputs in `Scenarios` then fire adr-area or module-boundary falsely. `Findings`, which the form defines as \"the file and line it points at\", is the real area field.",
+      "status": "unresolved"
+    },
+    {
+      "file": "src/core/ticket-intake.utils.ts",
+      "line": "153-159",
+      "description": "moduleOf's new rule (no extension in the last segment means a directory) treats a test-helper path ending in a sentence period, or a wildcard under test/<kind>/, as a module. That gives a false module-boundary trigger and a design the ticket doesn't need.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/ticket-intake.utils.ts",
+      "line": "35",
+      "description": "For chore and refactor, `Scope boundary` is marked `area: true`. Both the form and the rubric ask that field to name what the change leaves alone, so paths the ticket stays out of fire the module-boundary and ADR-area triggers.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/ticket-intake.utils.ts",
+      "line": "144-150",
+      "description": "When the area names a file by its GitHub permalink, the extracted path starts with `github.com/<owner>/<repo>/blob/<ref>/`. That path matches no ADR glob and no module, so `adr-area` and `module-boundary` don't fire and the design gate passes when it should fail.",
+      "status": "unresolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/ticket-intake.utils.ts",
+      "line": "169-171",
+      "area": "security",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The new `.replace(/\\.+$/, '')` runs on each PATH match. A match with a long run of dots that is not at its end takes quadratic time. One `a/<65,530 dots>x` in an area field costs about 2.1e9 start-and-backtrack steps of V8 irregexp time on the event loop. PATH itself handles this input in linear time, so the cost comes only from this delta.",
+      "body": "**ReDoS: the new trailing-period strip is quadratic on a dot run inside a path**\n\n```ts\nconst paths = (areaText.match(PATH) ?? []).map((path) =>\n  path.replace(/^\\.\\//, '').replace(/\\.+$/, ''),\n);\n```\n\n`/\\.+$/` has no start anchor, so irregexp tries a match at every dot. PATH's segments (`[\\w.-]+` and `[\\w.*-]+`) accept any number of dots, so one PATH match can hold a long dot run followed by a non-dot.\n\n**Trigger:** a bug whose `Suspected area` is `a/` + N dots + `x`. Any area field works, and so does anywhere in a follow-up body, since that type is read whole.\n- **PATH is linear on this input.** It returns the single match `a/....x` after one O(N) backoff. The earlier PATH concern needs input with no slash, and this input is not that case.\n- **`/\\.+$/` is quadratic on that match.** From each dot, the greedy `\\.+` runs to `x`, then backs off one dot at a time, and `$` fails at every step. V8's end-anchor shortcut only applies when the maximum match length is under 1024, and `\\.+` has no bound. Node's linear fallback engine is off by default.\n- **Total:** about N²/2 steps. GitHub caps an issue body at 65,536 characters, so N can reach about 65,530, which is about 2.1e9 steps: seconds of blocked event loop on every check. The author can edit the body after `ready`, so the check can be made to run again.\n\nBefore this delta, the input was linear end to end.\n\n**Fix:** a lookbehind lets a match start only at the first dot of a run. Every other start fails in O(1), so the strip runs in linear time. It still removes every trailing dot, and an all-dot string still becomes empty.\n\n<https://github.com/AlexisBalayre/pupitre/blob/f1b1927eb2968f4d80e2dabc6fd8397876be97ea/src/core/ticket-intake.utils.ts#L169-L171>",
+      "suggestion": "  const paths = (areaText.match(PATH) ?? []).map((path) =>\n    path.replace(/^\\.\\//, '').replace(/(?<!\\.)\\.+$/, ''),\n  );"
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Consolidator not spawned: the reviewers returned a single finding in total, so there was nothing to group. review-simplicity was skipped because the delta adds no file, helper, option or branch. Context, maintainability, spec and workflow-safety were skipped because their gates did not hold."
+    },
+    {
+      "component": "conventions",
+      "description": "The conventions reviewer reported that it did not open general.md or naming.md before concluding there were no findings, so any rule from those docs was checked only from memory."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.5352575,
+  "duration_ms": 207781,
+  "num_turns": 14,
+  "tokens": {
+    "input": 12,
+    "output": 9197,
+    "cache_read": 252496,
+    "cache_creation": 61166,
+    "total": 322871
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 42,
+      "output": 28313,
+      "cache_read": 411298,
+      "cache_creation": 113573,
+      "cost_usd": 1.4000506
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 26,
+      "output": 3292,
+      "cache_read": 123549,
+      "cache_creation": 35952,
+      "cost_usd": 0.13520690000000002
+    }
+  ],
+  "permission_denials": []
+}
