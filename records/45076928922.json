@@ -1,0 +1,143 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-22T22:35:30.058Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "45076928922",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/45076928922",
+  "actor": "AlexisBalayre",
+  "commit_sha": "496289b02a35010be37f5d5120862f5f1ef4b9f5",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 429,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "guards"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "guards"
+  ],
+  "reviewers_skipped": [
+    "conventions",
+    "context",
+    "maintainability",
+    "docs",
+    "spec",
+    "simplicity",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/skill-name.utils.ts",
+      "line": "33",
+      "description": "The strict frontmatter form still allows a lone CR (and NEL/LS/PS) inside the YAML. yaml v2 does not treat a lone CR as a line break, but the YAML 1.2 spec and js-yaml do. So `---\\ndescription: x #\\rname: pr-ci-review\\n---\\n` in `.claude/skills/zz/SKILL.md` reads as a comment to the gate, which sees no `name:` and passes it. A reader that breaks lines on CR sees `name: pr-ci-review`.",
+      "status": "unresolved"
+    },
+    {
+      "file": "src/core/skill-name.utils.ts",
+      "line": "29",
+      "description": "A nested manifest such as `.claude/skills/a/pr-ci-review/SKILL.md` with no `name:` passes. The gate's own model (ADR: no `name:` means the skill takes its directory's) names it `pr-ci-review`, yet only the declared name is compared to CI_REVIEW_SKILL, and PROTECTED_WITHIN_EXCEPTIONS covers only the top-level directory.",
+      "status": "unresolved"
+    },
+    {
+      "file": "src/core/constants/merge-gate.constants.ts",
+      "line": "110-115",
+      "description": "PROTECTED_WITHIN_EXCEPTIONS keeps only `.claude/skills/pr-ci-review/**` protected, but the CI review allows a bare `\"Skill\"` permission, so any other worker-merged skill can be loaded by every later CI review with the repo token — the harm ADR 0208 gives as its reason for protecting pr-ci-review.",
+      "status": "unresolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/merge-gate.service.ts",
+      "line": "3322-3327",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The misnamed-skill check only reads the tree the gate pinned. `pup land` later accepts GitHub's merge of that same tree onto a target that has since moved, and never runs the check on the landed file. Two PRs that each pass the check can therefore land a `SKILL.md` whose `name:` resolves to `pr-ci-review`.",
+      "body": "**The content check does not survive `pup land` once the target has moved**\n\nThe gate runs the check once, on `targetSha..sha`:\n\n```ts\nconst violations = auditScope(\n  changedPaths,\n  spec.scopeIn,\n  spec.scopeOut,\n  branchBlobReader(req.repoPath, targetSha, sha),\n);\n```\n\nOn the PR path, `land.service.ts` refuses only a moved *head* (lines 183-195), and it refuses `--remeasure` when the head has not moved (176-181). `mergedOnto` (652-696) takes the base as `mergeCommit~N`, wherever GitHub actually merged. It accepts the merge when `merge-tree base head` equals the merge commit's tree. That confirms GitHub merged the way git would, but nothing reads what the merged content says, and nothing after lines 290-306 calls `auditScope` or `isMisnamedSkill`.\n\nPath-only checks were safe here, because a clean 3-way merge cannot create a path neither side has. This PR adds the first check that reads file **content**, and a clean merge can produce content neither side had.\n\n**Trigger** (uses only the merge-key semantics ADR 0208 names). Main has `.claude/skills/x/SKILL.md` with `name: x` and a few other frontmatter lines.\n\n- PR B deletes `name: x`. With no `name:`, it passes the gate.\n- PR A adds `<<: {name: pr-ci-review}` on a line separated from `name: x` by untouched lines. The explicit key wins, so A's name is `x` and it passes.\n- A lands. GitHub then merges B cleanly onto the moved base, and `pup land` accepts it.\n- The landed manifest's `name` resolves to `pr-ci-review`.\n\nAn anchor redefinition (`k1: &a x` … `name: *a` in one PR, `k2: &a pr-ci-review` in the other) gets there the same way.\n\nThis is the shadowing of `/pr-ci-review` from outside the protected directory that decision 208 says the stage refuses. ADR 0208 also says the stage reads each `SKILL.md` \"as the diff leaves it\", and this shows that is not what lands. The ADR names the merge click as the boundary, but each diff looks harmless when read alone.\n\n**Fix.** When the merge lands on a commit other than the gate's `targetSha`, re-run the content check in `landUnderLock` against `mergeCommit`'s blobs. That means `isMisnamedSkill` plus the regular-file check, over the lifted paths changed between `landedOn` and `mergeCommit`. Alternatively, require a re-measure whenever such a path is in that diff.\n\n<https://github.com/AlexisBalayre/pupitre/blob/496289b02a35010be37f5d5120862f5f1ef4b9f5/src/core/merge-gate.service.ts#L3322-L3327>\n<https://github.com/AlexisBalayre/pupitre/blob/496289b02a35010be37f5d5120862f5f1ef4b9f5/src/core/land.service.ts#L290-L306>",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/scope-audit.utils.ts",
+      "line": "43",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The exception `.claude/skills/**/*.md` also lets through `CLAUDE.md` and `CLAUDE.local.md` placed under `.claude/skills/`. Claude Code loads those as project instructions whenever it reads a file in that directory, without the Skill tool, so the workflow narrowing that decision 208 relies on would not stop them.",
+      "body": "**The skills exception lets through memory files that are not skills**\n\n```ts\nexport const PROTECTED_PATH_EXCEPTIONS = ['.claude/skills/**/*.md'];\n```\n\n`**/` can match zero directories, so `.claude/skills/CLAUDE.md` and `.claude/skills/<dir>/CLAUDE.md` are lifted. Neither is a `SKILL.md`, so `isMisnamedSkill` returns `false` straight away. A regular file passes the plain-file check, and under scope `.claude/skills/**` the gate merges it.\n\nClaude Code loads a `CLAUDE.md` in a subdirectory as instructions when a session reads a file there. That needs no Skill invocation. Once the file is merged it is part of the base, so the CI action's config restore keeps it. Every later CI review reads `.claude/skills/pr-ci-review/REVIEW.md`, which its `SKILL.md` links, so a `.claude/skills/CLAUDE.md` above that file would steer the review that runs with the repo token. The operator's console and the conductor read `.claude/skills/` too.\n\nThis is not the open bare-`Skill` concern. ADR 0208 says narrowing the workflow's allow to `Skill(pr-ci-review)` \"would close that\", but this route does not go through the Skill tool. It also gets around the `pr-ci-review/**` protection without touching that directory.\n\nWhether Claude Code loads nested memory files on demand is documented behaviour, but it is not in-tree, hence medium confidence.\n\n**Fix.** Keep memory filenames out of the lift in `isLifted`. Putting them in `PROTECTED_WITHIN_EXCEPTIONS` would instead make `reachesProtected` refuse the `.claude/skills/**` rescope.\n\n<https://github.com/AlexisBalayre/pupitre/blob/496289b02a35010be37f5d5120862f5f1ef4b9f5/src/core/scope-audit.utils.ts#L43-L46>\n<https://github.com/AlexisBalayre/pupitre/blob/496289b02a35010be37f5d5120862f5f1ef4b9f5/src/core/constants/merge-gate.constants.ts#L111>",
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Round 4 importants-only budget: conventions, docs, context, simplicity and maintainability were not spawned; spec skipped (no spec source), workflow-safety skipped (no .github/workflows change)."
+    },
+    {
+      "component": "orchestrator",
+      "description": "Consolidator returned merged: 0 for two importants; no dedup applied."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 2,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 3.9469170999999994,
+  "duration_ms": 575821,
+  "num_turns": 14,
+  "tokens": {
+    "input": 14,
+    "output": 10089,
+    "cache_read": 303052,
+    "cache_creation": 58075,
+    "total": 371230
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 166,
+      "output": 79737,
+      "cache_read": 3461874,
+      "cache_creation": 280792,
+      "cost_usd": 3.8659637999999994
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 14,
+      "output": 2137,
+      "cache_read": 88776,
+      "cache_creation": 20005,
+      "cost_usd": 0.0802881
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 142,
+      "cache_read": 0,
+      "cache_creation": 4752,
+      "cost_usd": 0.0006652
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "git grep -n -o -E \".{0,160}(\\.claude/|skill).{0,160}\" HEAD -- .claude/skills/pr-ci-review/SKILL.md"
+    },
+    {
+      "tool": "Bash",
+      "input": "bash /home/runner/work/pupitre/pupitre/scripts/adr-index.sh"
+    },
+    {
+      "tool": "Bash",
+      "input": "git ls-tree -r --name-only HEAD .claude/skills/pr-ci-review"
+    }
+  ]
+}
