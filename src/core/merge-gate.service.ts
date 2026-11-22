@@ -243,18 +243,37 @@ function failingTestNames(adapter: Adapter | undefined, error: unknown): string 
 }
 
 /**
- * The branch diff's `--raw` entries by new path. `-M` and `-l0` are passed
- * rather than left to `diff.renames` and `diff.renameLimit`, which sit in the
- * shared config a session can write, so a rename onto a test name is paired
- * whatever that config says: a limit of 1 skipped inexact pairing as soon as a
- * second file was added. `--no-relative`, with `diff.relative` pinned off, for
- * the same reason: aimed by a `core.worktree` elsewhere, a relative listing
- * names only the files under the cwd's prefix, and that prefix stripped, so a
- * source change would vanish from the untested skip (decision 139).
- * `--ignore-submodules=none` because `diff.ignoreSubmodules` there, or a
- * `submodule.<name>.ignore`, would drop a gitlink change the same way. `copies`
- * adds `-C -C`, which pairs a copy of any file the target holds, changed on the
- * branch or not.
+ * The git argv every `--raw` read of the branch diff starts with, kept in one
+ * place because each flag overrides shared config a session can write.
+ * `--no-relative`, with `diff.relative` pinned off: aimed by a `core.worktree`
+ * elsewhere, a relative listing names only the files under the cwd's prefix,
+ * and that prefix stripped, so a source change would vanish from the untested
+ * skip (decision 139). `--ignore-submodules=none` because `diff.ignoreSubmodules`
+ * there, or a `submodule.<name>.ignore`, would drop a gitlink change the same
+ * way. Each caller says how renames are read: `rawDiffEntries` pairs them,
+ * `branchBlobReader` passes `--no-renames`.
+ */
+const RAW_BRANCH_DIFF_ARGS = [
+  '-c',
+  'diff.relative=false',
+  'diff',
+  '--no-relative',
+  '--ignore-submodules=none',
+  '--no-ext-diff',
+  '--no-textconv',
+  '--no-color',
+  '-z',
+  '--raw',
+] as const;
+
+/**
+ * The branch diff's `--raw` entries by new path, read with
+ * `RAW_BRANCH_DIFF_ARGS`. `-M` and `-l0` are passed rather than left to
+ * `diff.renames` and `diff.renameLimit`, which sit in the shared config a
+ * session can write, so a rename onto a test name is paired whatever that
+ * config says: a limit of 1 skipped inexact pairing as soon as a second file
+ * was added. `copies` adds `-C -C`, which pairs a copy of any file the target
+ * holds, changed on the branch or not.
  */
 function rawDiffEntries(
   repoPath: string,
@@ -265,17 +284,7 @@ function rawDiffEntries(
   const fields = runGit(
     repoPath,
     [
-      '-c',
-      'diff.relative=false',
-      'diff',
-      '--no-relative',
-      '--ignore-submodules=none',
-      '--no-ext-diff',
-      '--no-textconv',
-      '--no-color',
-      '--no-relative',
-      '-z',
-      '--raw',
+      ...RAW_BRANCH_DIFF_ARGS,
       '-M',
       ...(copies ? ['-C', '-C'] : []),
       '-l0',
@@ -314,9 +323,9 @@ function rawDiffEntries(
  * can name another file (decision 154). Undefined for a path the branch
  * deletes. Null for one it leaves as anything but a regular file (a symlink,
  * whose target Claude Code would load, or a gitlink), and for a decoded path
- * that names no record or more than one. `--no-renames`, as `gitDiffPaths`
- * lists, so every path the audit reads has a record of its own; the other
- * flags are `rawDiffEntries`'s.
+ * that names no record or more than one. Read with `RAW_BRANCH_DIFF_ARGS` and
+ * `--no-renames`, as `gitDiffPaths` lists, so every path the audit reads has a
+ * record of its own, and `--no-abbrev` for whole oids.
  */
 function branchBlobReader(
   repoPath: string,
@@ -326,18 +335,9 @@ function branchBlobReader(
   let sides: Map<string, { mode: string; oid: string }[]> | undefined;
   const readSides = (): Map<string, { mode: string; oid: string }[]> => {
     const fields = runGit(repoPath, [
-      '-c',
-      'diff.relative=false',
-      'diff',
-      '--no-relative',
-      '--ignore-submodules=none',
-      '--no-ext-diff',
-      '--no-textconv',
-      '--no-color',
+      ...RAW_BRANCH_DIFF_ARGS,
       '--no-renames',
       '--no-abbrev',
-      '-z',
-      '--raw',
       `${target}...${branch}`,
     ]).split('\0');
     const read = new Map<string, { mode: string; oid: string }[]>();

@@ -98,7 +98,8 @@
     guard sees that skill's `hooks` and inline commands.
     *Tests.* `scope-audit.test.ts` for a skill's Markdown passing in scope, each protected path
     still flagged (a skill's scripts among them), a `SKILL.md` named `pr-ci-review` or named
-    other than its directory refused, a matching one passing, and each fail-closed read;
+    other than its directory refused, and a matching one passing; `skill-name-utils.test.ts`
+    for each fail-closed read of `isMisnamedSkill` (`skill-name.utils.ts`);
     `merge-gate.test.ts` for the scope-audit stage refusing a `SKILL.md` named `pr-ci-review`,
     still refusing it after a build stage rewrites the checkout's copy, refusing one committed
     as a symlink, and merging a well-named one;
