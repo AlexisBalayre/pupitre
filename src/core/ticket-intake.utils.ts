@@ -107,6 +107,9 @@ const EMPTY_LIST_ITEM = /^\s*(?:[-*+]|\d+[.)])(?:\s+\[[ xX]?\])?\s*$/;
 const PATH =
   /(?<![\w.-])(?:\*{1,2}|[\w.-]+)\/(?:[\w.*-]+\/)*[\w.*-]+|(?<![\w-])[\w-]+\.(?:json|ts|js|md|ya?ml)\b/g;
 
+/** A GitHub permalink's text before the repository path: host, owner, repo, view and ref. */
+const PERMALINK = /^github\.com\/[\w.-]+\/[\w.-]+\/(?:blob|tree)\/[\w.-]+\//;
+
 /** One line holding a checked box that says the work adds a dependency. */
 const DEPENDENCY_BOX = /^\s*[-*+]\s+\[[xX]\].*\bdependenc/i;
 
@@ -204,8 +207,12 @@ function triggersFor(
 ): DesignTrigger[] {
   // PATH keeps the period of a sentence that ends in a path; it is not part of the path.
   // The lookbehind starts the strip only at a run's first dot, which keeps it linear.
+  // PATH starts a permalink's match at its host, so the strip leaves the repository path.
   const paths = (areaText.match(PATH) ?? []).map((path) =>
-    path.replace(/^\.\//, '').replace(/(?<!\.)\.+$/, ''),
+    path
+      .replace(PERMALINK, '')
+      .replace(/^\.\//, '')
+      .replace(/(?<!\.)\.+$/, ''),
   );
   const adrAreas = context.adrAreas.map((glob) => ({
     pattern: globToRegExp(glob),
@@ -213,12 +220,17 @@ function triggersFor(
   }));
   const modules = [...new Set(paths.map(moduleOf).filter((name) => name !== undefined))];
   const estimate = /\d[\d,]*/.exec(sectionMap.get(normalize(ESTIMATE_HEADING))?.text ?? '');
-  // PATH drops a directory's trailing slash, so `src/cli/` must still match `src/cli/**`.
+  // PATH drops a directory's trailing slash, so `src/cli/` must still match `src/cli/**`,
+  // and a literal path may name a directory holding an ADR area, as `src/claude` holds
+  // `src/claude/hooks/**`: the area's literal prefix then starts with the path and a `/`.
   // A glob shares a path with an area only if one's literal prefix starts the other's:
   // that check may count a glob in an area it misses, never miss one it reaches.
   const inAdrArea = (path: string): boolean => {
     if (!path.includes('*')) {
-      return adrAreas.some(({ pattern }) => pattern.test(path) || pattern.test(`${path}/`));
+      return adrAreas.some(
+        ({ pattern, prefix }) =>
+          pattern.test(path) || pattern.test(`${path}/`) || prefix.startsWith(`${path}/`),
+      );
     }
     const prefix = literalPrefix(path);
     return adrAreas.some(

@@ -326,6 +326,45 @@ describe('checkTicketIntake design', () => {
     expect(result).toMatchObject({ triggers: ['adr-area'], needsDesign: true });
   });
 
+  it.each([
+    ['refactor', REFACTOR, 'Files in scope', 'src/claude/*.ts', 'src/claude/hooks.ts'],
+    ['bug', BUG, 'Suspected area', 'src/claude/', 'src/claude/hooks/**'],
+  ] as const)(
+    'forces a design on a %s area holding an ADR area',
+    (type, fields, heading, area, adr) => {
+      const result = checkTicketIntake(body({ ...fields, [heading]: area }), type, {
+        adrAreas: [adr],
+      });
+      expect(result).toMatchObject({ triggers: ['adr-area'], needsDesign: true });
+    },
+  );
+
+  it.each([
+    ['a directory sharing a name prefix', 'src/cla'],
+    ['a sibling directory', 'src/core/'],
+    ['a glob in a sibling directory', 'src/core/*.ts'],
+  ])('reads no ADR area in %s', (_, area) => {
+    const result = checkTicketIntake(body({ ...BUG, 'Suspected area': area }), 'bug', {
+      adrAreas: ['src/claude/hooks/**', 'src/claude/hooks.ts'],
+    });
+    expect(result.triggers).toEqual([]);
+  });
+
+  it.each([
+    ['a blob permalink', 'https://github.com/acme/tool/blob/main/src/claude/hooks.ts#L12'],
+    ['a tree permalink', 'https://github.com/acme/tool/tree/3d35d70/src/claude/'],
+  ])('matches %s as the bare path', (_, area) => {
+    const adrAreas = ['src/claude/hooks.ts', 'src/claude/**'];
+    const bare = area.replace(/^https:\/\/github\.com\/[^/]+\/[^/]+\/[^/]+\/[^/]+\//, '');
+    for (const adr of adrAreas) {
+      const context = { adrAreas: [adr] };
+      const linked = checkTicketIntake(body({ ...BUG, 'Suspected area': area }), 'bug', context);
+      const plain = checkTicketIntake(body({ ...BUG, 'Suspected area': bare }), 'bug', context);
+      expect(linked.triggers).toEqual(['adr-area']);
+      expect(linked).toEqual(plain);
+    }
+  });
+
   it('reads one module and no ADR area in a glob inside one module', () => {
     const result = checkTicketIntake(
       body({ ...REFACTOR, 'Files in scope': 'src/core/**/*.ts' }),
