@@ -1,6 +1,5 @@
+import { askedLines, optionLines } from '@src/cli/ui/question.utils.js';
 import { describe, expect, it } from 'vitest';
-
-import { askedLines, optionLines } from './question.utils.js';
 
 describe('optionLines', () => {
   it('numbers the options from 1 and marks the recommended one', () => {

@@ -11,15 +11,15 @@ import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 
 // Side-effecting boundaries only (tmux/git spawns, `claude -p` sessions, and the
 // multi-stage merge-gate orchestration) — everything else (sqlite repositories,
 // profile-store file reads) is exercised for real, per docs/conventions/testing.md.
-vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
+vi.mock('@src/claude/session-runtime.service.js', async (importOriginal) => ({
   conductorName: (repoProjectId: string) => `pup-conductor-${repoProjectId}`,
   // Not boundaries but the names and attach lines themselves, and the real
   // ones: what these print is the contract under test — the pinned target and
   // the socket the conductor's window is on (decisions 46, 47) — so a fake
   // spelling here would only agree with itself.
-  attachCommand: (await importOriginal<typeof import('../claude/session-runtime.service.js')>())
+  attachCommand: (await importOriginal<typeof import('@src/claude/session-runtime.service.js')>())
     .attachCommand,
-  windowLabel: (await importOriginal<typeof import('../claude/session-runtime.service.js')>())
+  windowLabel: (await importOriginal<typeof import('@src/claude/session-runtime.service.js')>())
     .windowLabel,
   // `pup attach` hands the terminal to tmux; here it hands it to nothing.
   attachWindow: vi.fn(() => 0),
@@ -34,22 +34,25 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   // Not a boundary but a path rule, and the real one: the dashboard checks a
   // stored `transcript_path` against `transcriptDir(worktree)` before reading
   // it (decision 67), so a fake rule here would only agree with itself.
-  transcriptDir: (await importOriginal<typeof import('../claude/session-runtime.service.js')>())
+  transcriptDir: (await importOriginal<typeof import('@src/claude/session-runtime.service.js')>())
     .transcriptDir,
   // The real rule and the real file, under the throwaway HOME: which names
   // `pup init --session-env` refuses and keeps, and the config dir a launch
   // hashes from them, are the contract (decision 106).
-  resolveWindowEnv: (await importOriginal<typeof import('../claude/session-runtime.service.js')>())
-    .resolveWindowEnv,
-  claudeUserDir: (await importOriginal<typeof import('../claude/session-runtime.service.js')>())
+  resolveWindowEnv: (
+    await importOriginal<typeof import('@src/claude/session-runtime.service.js')>()
+  ).resolveWindowEnv,
+  claudeUserDir: (await importOriginal<typeof import('@src/claude/session-runtime.service.js')>())
     .claudeUserDir,
-  sessionEnvAllowed: (await importOriginal<typeof import('../claude/session-runtime.service.js')>())
-    .sessionEnvAllowed,
-  readSessionEnv: (await importOriginal<typeof import('../claude/session-runtime.service.js')>())
+  sessionEnvAllowed: (
+    await importOriginal<typeof import('@src/claude/session-runtime.service.js')>()
+  ).sessionEnvAllowed,
+  readSessionEnv: (await importOriginal<typeof import('@src/claude/session-runtime.service.js')>())
     .readSessionEnv,
-  refusedSessionEnv: (await importOriginal<typeof import('../claude/session-runtime.service.js')>())
-    .refusedSessionEnv,
-  saveSessionEnv: (await importOriginal<typeof import('../claude/session-runtime.service.js')>())
+  refusedSessionEnv: (
+    await importOriginal<typeof import('@src/claude/session-runtime.service.js')>()
+  ).refusedSessionEnv,
+  saveSessionEnv: (await importOriginal<typeof import('@src/claude/session-runtime.service.js')>())
     .saveSessionEnv,
   // The `ps` table and the launches' pane pids an operator-only command walks
   // (decision 188): this suite runs under a session's Claude Code while
@@ -57,7 +60,7 @@ vi.mock('../claude/session-runtime.service.js', async (importOriginal) => ({
   listProcesses: vi.fn(() => new Map()),
   recordedPanePids: vi.fn(() => new Map()),
 }));
-vi.mock('../claude/errors/session-runtime.errors.js', async (importOriginal) => ({
+vi.mock('@src/claude/errors/session-runtime.errors.js', async (importOriginal) => ({
   SessionPaneMissingError: class SessionPaneMissingError extends Error {
     readonly sessionId: string;
     constructor(sessionId: string, paneId: string) {
@@ -73,7 +76,7 @@ vi.mock('../claude/errors/session-runtime.errors.js', async (importOriginal) => 
     }
   },
   ConfigDirRefusedError: (
-    await importOriginal<typeof import('../claude/errors/session-runtime.errors.js')>()
+    await importOriginal<typeof import('@src/claude/errors/session-runtime.errors.js')>()
   ).ConfigDirRefusedError,
 }));
 // `render` takes over the terminal and never returns until the operator quits,
@@ -83,7 +86,7 @@ vi.mock('ink', async (importOriginal) => ({
   ...(await importOriginal<typeof import('ink')>()),
   render: vi.fn(),
 }));
-vi.mock('../core/conductor.service.js', () => ({
+vi.mock('@src/core/conductor.service.js', () => ({
   NO_CONDUCTOR_RUNNING:
     'No conductor is running for this project; start one with `pup conductor start`.',
   conductorBlock: vi.fn(),
@@ -93,52 +96,52 @@ vi.mock('../core/conductor.service.js', () => ({
   stopConductor: vi.fn(),
   tellConductor: vi.fn(() => true),
 }));
-vi.mock('../core/errors/conductor.errors.js', () => ({
+vi.mock('@src/core/errors/conductor.errors.js', () => ({
   ConductorTellRefusedError: class ConductorTellRefusedError extends Error {},
 }));
-vi.mock('../core/git-diff.client.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../core/git-diff.client.js')>()),
+vi.mock('@src/core/git-diff.client.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@src/core/git-diff.client.js')>()),
   // The review queue diffs each seeded branch against main. The seeded
   // sessions' branches are store rows, not refs, in a repo with no commits, so
   // the real diff would refuse them: the queue sees no changed paths instead.
   gitDiffPaths: vi.fn(() => []),
   gitDiffNumstat: vi.fn(() => []),
 }));
-vi.mock('../core/merge-gate.service.js', () => ({
+vi.mock('@src/core/merge-gate.service.js', () => ({
   runMergeGate: vi.fn(),
   // The review queue scores each branch with it. The seeded sessions' branches
   // are rows in a store and not real branches, so there is nothing to count.
   countChangedLines: vi.fn(() => ({ source: 0, test: 0, docs: 0, forged: [] })),
 }));
 // The land's own git and gh work is land.test.ts's, against a real repo.
-vi.mock('../core/land.service.js', () => ({ landSession: vi.fn() }));
+vi.mock('@src/core/land.service.js', () => ({ landSession: vi.fn() }));
 // So is the fix round's, in fix-round.test.ts; `pup status` asks GitHub nothing here.
-vi.mock('../core/fix-round.service.js', () => ({
+vi.mock('@src/core/fix-round.service.js', () => ({
   ciReviewLookup: vi.fn(),
   startFixRound: vi.fn(),
 }));
 // The wait's gh reads and clock are ci-wait.test.ts's.
-vi.mock('../core/ci-wait.service.js', () => ({ waitForCiReview: vi.fn() }));
+vi.mock('@src/core/ci-wait.service.js', () => ({ waitForCiReview: vi.fn() }));
 // The server and its socket are web-dashboard.test.ts's; here it binds nothing.
-vi.mock('../core/web-dashboard.service.js', () => ({ startWebDashboard: vi.fn() }));
+vi.mock('@src/core/web-dashboard.service.js', () => ({ startWebDashboard: vi.fn() }));
 // The browser opener is `pup dashboard --open`'s one boundary; every other
 // call, the fixtures' git included, runs for real.
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>();
   return { ...actual, execFileSync: vi.fn(actual.execFileSync), spawn: vi.fn(actual.spawn) };
 });
-vi.mock('../core/session-lifecycle.service.js', async (importOriginal) => ({
+vi.mock('@src/core/session-lifecycle.service.js', async (importOriginal) => ({
   createSession: vi.fn(),
   interruptSession: vi.fn(),
   killSession: vi.fn(),
   LowMemoryError: (
-    await importOriginal<typeof import('../core/errors/session-lifecycle.errors.js')>()
+    await importOriginal<typeof import('@src/core/errors/session-lifecycle.errors.js')>()
   ).LowMemoryError,
   launchTask: vi.fn(),
   markSessionDone: vi.fn(),
   markSessionQuestion: vi.fn(),
   planTask: vi.fn(),
-  askedQuestion: (await importOriginal<typeof import('../core/session-lifecycle.service.js')>())
+  askedQuestion: (await importOriginal<typeof import('@src/core/session-lifecycle.service.js')>())
     .askedQuestion,
   recordSteerMessage: vi.fn(),
   sessionPane: vi.fn(),
@@ -147,12 +150,12 @@ vi.mock('../core/session-lifecycle.service.js', async (importOriginal) => ({
 // The run and its slot are test-slot.test.ts's; here only what the command hands them.
 // The machine's load reading only: a status test must not depend on how busy
 // the machine running it is (decision 197).
-vi.mock('../core/session-cap.service.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../core/session-cap.service.js')>()),
+vi.mock('@src/core/session-cap.service.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@src/core/session-cap.service.js')>()),
   machineLoad: vi.fn(() => ({ average: 0.5, cores: 8 })),
 }));
-vi.mock('../core/test-slot.service.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../core/test-slot.service.js')>()),
+vi.mock('@src/core/test-slot.service.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@src/core/test-slot.service.js')>()),
   // The memory a status reads, so it does not depend on the machine running it either.
   availableMemoryBytes: vi.fn(() => 16 * 1024 ** 3),
   runSessionTest: vi.fn(async () => 0),
@@ -162,7 +165,7 @@ vi.mock('../core/test-slot.service.js', async (importOriginal) => ({
     args: ['run', GateStage.Test],
   })),
 }));
-vi.mock('../core/session-handoff.service.js', () => ({
+vi.mock('@src/core/session-handoff.service.js', () => ({
   HANDOFF_WAIT_DEFAULT_MS: 10 * 60 * 1000,
   awaitHandoffReady: vi.fn(),
   hardRespawnSession: vi.fn(),
@@ -171,7 +174,7 @@ vi.mock('../core/session-handoff.service.js', () => ({
   requestHandoff: vi.fn(),
   respawnSession: vi.fn(),
 }));
-vi.mock('../core/errors/session-handoff.errors.js', () => ({
+vi.mock('@src/core/errors/session-handoff.errors.js', () => ({
   HandoffMissingError: class HandoffMissingError extends Error {
     constructor(sessionId: string, handoffPath: string) {
       super(`No handoff at ${handoffPath} for ${sessionId}.`);
@@ -179,6 +182,84 @@ vi.mock('../core/errors/session-handoff.errors.js', () => ({
   },
 }));
 
+import { GateStage } from '@src/adapters/enums/gate-stage.enums.js';
+import { Tier } from '@src/claude/enums/tier.enums.js';
+import {
+  SessionPaneMissingError,
+  SteerNotDeliveredError,
+} from '@src/claude/errors/session-runtime.errors.js';
+import { listProcesses, recordedPanePids } from '@src/claude/session-runtime.service.js';
+import { ProjectResolutionError } from '@src/cli/errors/project.errors.js';
+import { buildProgram, fatalExitCode } from '@src/cli/index.js';
+import { resolveProject } from '@src/cli/project.utils.js';
+import type { DashboardReading, ProjectReading } from '@src/cli/types/snapshot.types.js';
+import { isConductorRunning } from '@src/core/conductor.service.js';
+import { DEFAULT_BASE_PROFILE } from '@src/core/constants/default-profile.constants.js';
+import { STALLED_AFTER_MS } from '@src/core/constants/session-activity.constants.js';
+import { insertDecisionRecord } from '@src/core/decision-record.repository.js';
+import { ClimbReason } from '@src/core/enums/climb-reason.enums.js';
+import { EventType } from '@src/core/enums/event-type.enums.js';
+import { GateStageStatus } from '@src/core/enums/gate-stage-status.enums.js';
+import { InterruptSignal } from '@src/core/enums/interrupt-signal.enums.js';
+import { MergeStatus } from '@src/core/enums/merge-status.enums.js';
+import { SessionState } from '@src/core/enums/session-state.enums.js';
+import { SlotHolderKind } from '@src/core/enums/slot-holder-kind.enums.js';
+import { MergeLockLostError } from '@src/core/errors/merge-gate.errors.js';
+import { GateInterruptedError, UndeclaredSandboxError } from '@src/core/errors/sandbox.errors.js';
+import { MalformedTaskSpecError } from '@src/core/errors/session.errors.js';
+import {
+  LockBacklogOverBudgetError,
+  MachineLoadedError,
+} from '@src/core/errors/session-cap.errors.js';
+import { HandoffMissingError } from '@src/core/errors/session-handoff.errors.js';
+import {
+  LaunchRolledBackError,
+  TaskAlreadyClaimedError,
+  TerminalSessionError,
+  TopRungReachedError,
+  UnknownSessionError,
+  UnknownTaskError,
+} from '@src/core/errors/session-lifecycle.errors.js';
+import { SlotWaitInterruptedError } from '@src/core/errors/test-slot.errors.js';
+import { startFixRound } from '@src/core/fix-round.service.js';
+import { insertLedgerEntry } from '@src/core/ledger.repository.js';
+import { runMergeGate } from '@src/core/merge-gate.service.js';
+import { replaceOverlaps } from '@src/core/overlap.repository.js';
+import { projectId } from '@src/core/paths.utils.js';
+import {
+  appendEvent,
+  ensureProject,
+  getSession,
+  getTask,
+  insertTask,
+  listBacklogTasks,
+  recordSessionRoute,
+  transitionSession,
+} from '@src/core/session.repository.js';
+import { machineLoad } from '@src/core/session-cap.service.js';
+import {
+  awaitHandoffReady,
+  isHandoffReady,
+  markHandoffReady,
+  requestHandoff,
+  respawnSession,
+} from '@src/core/session-handoff.service.js';
+import {
+  createSession,
+  interruptSession,
+  launchTask,
+  markSessionDone,
+  markSessionQuestion,
+  planTask,
+  steerSession,
+} from '@src/core/session-lifecycle.service.js';
+import {
+  availableMemoryBytes,
+  runSessionTest,
+  sessionTestCommand,
+} from '@src/core/test-slot.service.js';
+import type { MergeOutcome } from '@src/core/types/merge-gate.types.js';
+import { startWebDashboard } from '@src/core/web-dashboard.service.js';
 import {
   firstCall,
   HANDOFF_WAIT_DEFAULT_MS,
@@ -199,84 +280,6 @@ import {
   worktreeOf,
 } from '@test/helpers/cli-index.mock.js';
 import { render } from 'ink';
-import { GateStage } from '../adapters/enums/gate-stage.enums.js';
-import { Tier } from '../claude/enums/tier.enums.js';
-import {
-  SessionPaneMissingError,
-  SteerNotDeliveredError,
-} from '../claude/errors/session-runtime.errors.js';
-import { listProcesses, recordedPanePids } from '../claude/session-runtime.service.js';
-import { isConductorRunning } from '../core/conductor.service.js';
-import { DEFAULT_BASE_PROFILE } from '../core/constants/default-profile.constants.js';
-import { STALLED_AFTER_MS } from '../core/constants/session-activity.constants.js';
-import { insertDecisionRecord } from '../core/decision-record.repository.js';
-import { ClimbReason } from '../core/enums/climb-reason.enums.js';
-import { EventType } from '../core/enums/event-type.enums.js';
-import { GateStageStatus } from '../core/enums/gate-stage-status.enums.js';
-import { InterruptSignal } from '../core/enums/interrupt-signal.enums.js';
-import { MergeStatus } from '../core/enums/merge-status.enums.js';
-import { SessionState } from '../core/enums/session-state.enums.js';
-import { SlotHolderKind } from '../core/enums/slot-holder-kind.enums.js';
-import { MergeLockLostError } from '../core/errors/merge-gate.errors.js';
-import { GateInterruptedError, UndeclaredSandboxError } from '../core/errors/sandbox.errors.js';
-import { MalformedTaskSpecError } from '../core/errors/session.errors.js';
-import {
-  LockBacklogOverBudgetError,
-  MachineLoadedError,
-} from '../core/errors/session-cap.errors.js';
-import { HandoffMissingError } from '../core/errors/session-handoff.errors.js';
-import {
-  LaunchRolledBackError,
-  TaskAlreadyClaimedError,
-  TerminalSessionError,
-  TopRungReachedError,
-  UnknownSessionError,
-  UnknownTaskError,
-} from '../core/errors/session-lifecycle.errors.js';
-import { SlotWaitInterruptedError } from '../core/errors/test-slot.errors.js';
-import { startFixRound } from '../core/fix-round.service.js';
-import { insertLedgerEntry } from '../core/ledger.repository.js';
-import { runMergeGate } from '../core/merge-gate.service.js';
-import { replaceOverlaps } from '../core/overlap.repository.js';
-import { projectId } from '../core/paths.utils.js';
-import {
-  appendEvent,
-  ensureProject,
-  getSession,
-  getTask,
-  insertTask,
-  listBacklogTasks,
-  recordSessionRoute,
-  transitionSession,
-} from '../core/session.repository.js';
-import { machineLoad } from '../core/session-cap.service.js';
-import {
-  awaitHandoffReady,
-  isHandoffReady,
-  markHandoffReady,
-  requestHandoff,
-  respawnSession,
-} from '../core/session-handoff.service.js';
-import {
-  createSession,
-  interruptSession,
-  launchTask,
-  markSessionDone,
-  markSessionQuestion,
-  planTask,
-  steerSession,
-} from '../core/session-lifecycle.service.js';
-import {
-  availableMemoryBytes,
-  runSessionTest,
-  sessionTestCommand,
-} from '../core/test-slot.service.js';
-import type { MergeOutcome } from '../core/types/merge-gate.types.js';
-import { startWebDashboard } from '../core/web-dashboard.service.js';
-import { ProjectResolutionError } from './errors/project.errors.js';
-import { buildProgram, fatalExitCode } from './index.js';
-import { resolveProject } from './project.utils.js';
-import type { DashboardReading, ProjectReading } from './types/snapshot.types.js';
 
 describe('CLI commands', () => {
   const originalExitCode = process.exitCode;

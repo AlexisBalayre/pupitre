@@ -1,6 +1,6 @@
+import { runOrReportNoAdapter } from '@src/cli/no-adapter-guard.utils.js';
+import { NoAdapterError } from '@src/core/errors/init.errors.js';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { NoAdapterError } from '../core/errors/init.errors.js';
-import { runOrReportNoAdapter } from './no-adapter-guard.utils.js';
 
 describe('runOrReportNoAdapter', () => {
   const originalExitCode = process.exitCode;

@@ -15,53 +15,28 @@ vi.mock('node:child_process', async (importOriginal) => ({
   ...(await importOriginal<typeof import('node:child_process')>()),
   spawnSync: vi.fn(() => ({ status: 0 })),
 }));
-vi.mock('../../core/session-lifecycle.service.js', () => ({
+vi.mock('@src/core/session-lifecycle.service.js', () => ({
   answerSessionQuestion: vi.fn(() => ({ question: 'which?', text: 'merge', option: 2 })),
   interruptSession: vi.fn(),
   killSession: vi.fn(),
   launchTask: vi.fn(() => 's-launched-1'),
   steerSession: vi.fn(),
 }));
-vi.mock('../../core/session-handoff.service.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../core/session-handoff.service.js')>()),
+vi.mock('@src/core/session-handoff.service.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@src/core/session-handoff.service.js')>()),
   isHandoffReady: vi.fn(() => true),
   requestHandoff: vi.fn(() => '/store/handoff.md'),
   respawnSession: vi.fn(),
 }));
-vi.mock('../../core/conductor.service.js', () => ({
+vi.mock('@src/core/conductor.service.js', () => ({
   startConductor: vi.fn(() => ({ name: 'pup-conductor-x', paneId: '%3' })),
   stopConductor: vi.fn(),
 }));
 
 import { spawnSync } from 'node:child_process';
-import { tempDir } from '@test/helpers/temp-dir.mock.js';
-import { SteerNotDeliveredError } from '../../claude/errors/session-runtime.errors.js';
-import { saveSessionEnv } from '../../claude/session-runtime.service.js';
-import { startConductor, stopConductor } from '../../core/conductor.service.js';
-import { openStore } from '../../core/db.client.js';
-import { SessionState } from '../../core/enums/session-state.enums.js';
-import { LaunchRolledBackError } from '../../core/errors/session-lifecycle.errors.js';
-import {
-  ensureProject,
-  getSession,
-  insertSession,
-  insertTask,
-  transitionSession,
-} from '../../core/session.repository.js';
-import {
-  isHandoffReady,
-  requestHandoff,
-  respawnSession,
-} from '../../core/session-handoff.service.js';
-import {
-  answerSessionQuestion,
-  interruptSession,
-  killSession,
-  launchTask,
-  steerSession,
-} from '../../core/session-lifecycle.service.js';
-import type { DashboardSnapshot } from '../../core/types/dashboard.types.js';
-import type { ActionDeps } from '../types/actions.types.js';
+import { SteerNotDeliveredError } from '@src/claude/errors/session-runtime.errors.js';
+import { saveSessionEnv } from '@src/claude/session-runtime.service.js';
+import type { ActionDeps } from '@src/cli/types/actions.types.js';
 import {
   answerSelected,
   attachTo,
@@ -76,7 +51,32 @@ import {
   steerSelected,
   toggleConductor,
   unblockSelected,
-} from './actions.service.js';
+} from '@src/cli/ui/actions.service.js';
+import { startConductor, stopConductor } from '@src/core/conductor.service.js';
+import { openStore } from '@src/core/db.client.js';
+import { SessionState } from '@src/core/enums/session-state.enums.js';
+import { LaunchRolledBackError } from '@src/core/errors/session-lifecycle.errors.js';
+import {
+  ensureProject,
+  getSession,
+  insertSession,
+  insertTask,
+  transitionSession,
+} from '@src/core/session.repository.js';
+import {
+  isHandoffReady,
+  requestHandoff,
+  respawnSession,
+} from '@src/core/session-handoff.service.js';
+import {
+  answerSessionQuestion,
+  interruptSession,
+  killSession,
+  launchTask,
+  steerSession,
+} from '@src/core/session-lifecycle.service.js';
+import type { DashboardSnapshot } from '@src/core/types/dashboard.types.js';
+import { tempDir } from '@test/helpers/temp-dir.mock.js';
 
 const REPO = '/repo/pupitre';
 const SESSION = 's-live-1';

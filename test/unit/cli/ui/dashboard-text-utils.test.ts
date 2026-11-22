@@ -1,10 +1,10 @@
+import { Tier } from '@src/claude/enums/tier.enums.js';
+import { activityLabel, needLines, sessionLine } from '@src/cli/ui/dashboard-text.utils.js';
+import { ClimbReason } from '@src/core/enums/climb-reason.enums.js';
+import { SessionActivityKind } from '@src/core/enums/session-activity-kind.enums.js';
+import { SessionState } from '@src/core/enums/session-state.enums.js';
+import type { DashboardNeed, DashboardSession } from '@src/core/types/dashboard.types.js';
 import { describe, expect, it } from 'vitest';
-import { Tier } from '../../claude/enums/tier.enums.js';
-import { ClimbReason } from '../../core/enums/climb-reason.enums.js';
-import { SessionActivityKind } from '../../core/enums/session-activity-kind.enums.js';
-import { SessionState } from '../../core/enums/session-state.enums.js';
-import type { DashboardNeed, DashboardSession } from '../../core/types/dashboard.types.js';
-import { activityLabel, needLines, sessionLine } from './dashboard-text.utils.js';
 
 /** A running session with nothing to say, for the one label under test to fill in. */
 function sessionFixture(overrides: Partial<DashboardSession> = {}): DashboardSession {
