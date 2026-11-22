@@ -1,0 +1,137 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-22T15:57:53.743Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "45040357301",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/45040357301",
+  "actor": "AlexisBalayre",
+  "commit_sha": "c9cd149e7bd20fbe73d31ef8f2d321ea94210d49",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 424,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/github-tracker.service.ts",
+      "line": "144-154",
+      "description": "listReady takes title and body from the `gh issue list` snapshot (T0). It then reads each issue's events (T1) and lastEditedAt (T2), one issue after another. The checks do not require the label to come before T0. So if the label is re-applied after T0, its approval covers text written after T0, but the returned text is the T0 text, which no writer approved.",
+      "status": "unresolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "test/unit/core/github-tracker-service.test.ts",
+      "line": "27-66",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "Test adequacy: fakeGh ignores the `--jq` filter and the GraphQL `query=` text, so dropping the `or .event == \"renamed\"` clause added by this fix, the `.label.name == \"ready\"` filter, the TSV field order, or the `lastEditedAt` field leaves every test green while real gh lets an edited or wrongly labelled issue through.",
+      "body": "**The approval logic that runs inside gh is never exercised by the tests.**\n\n`fakeGh` picks its answer from `args[1]` alone. It never reads the `--jq` argument or the GraphQL `query=` argument:\n\n- For `.../events` it always returns TSV rows in its own `[event, created_at, login]` order, built straight from `FakeIssue`. It includes `renamed` rows whether or not the filter asks for them.\n- For `graphql` it always answers `{lastEditedAt: ...}`, whatever the query asks for.\n\nNo test pins those strings either. The argv test (L222-248) only checks `args.slice(0, 2)` and `arrayContaining(...)` subsets. The \"real gh runner\" block (L327-374) never reaches the events or graphql calls.\n\nSo these mutants of [`github-tracker.service.ts` L60](https://github.com/AlexisBalayre/pupitre/blob/c9cd149e7bd20fbe73d31ef8f2d321ea94210d49/src/core/github-tracker.service.ts#L60-L60) and [L12-14](https://github.com/AlexisBalayre/pupitre/blob/c9cd149e7bd20fbe73d31ef8f2d321ea94210d49/src/core/github-tracker.service.ts#L12-L14) all pass the whole suite:\n\n1. **Remove `or .event == \"renamed\"`.** This reverts the fix in c9cd149e. Real gh then sends no `renamed` rows, so an issue renamed after a writer's label **gets listed**. This is the exact regression the commit is meant to stop.\n2. **Remove `.label.name == \"ready\"`.** If a writer adds `bug` after a triager added `ready`, the `bug` event counts as the approval, so the issue **gets listed**.\n3. **Reorder the jq array fields.** Real output then never matches, so every issue is silently **skipped**.\n4. **Change `lastEditedAt` to `createdAt` in `LAST_EDITED_QUERY`.** Real gh answers without `lastEditedAt`, so every pass **throws** `TrackerUnavailableError`.\n\nMutants 1 and 2 let an unapproved issue through. Mutants 3 and 4 cause a silent skip or an outage instead. In all four cases the suite stays green.\n\nTwo possible fixes:\n\n- **Cheapest:** assert the exact `--jq` and `query=` strings in the argv test. This is brittle, but it kills all four mutants.\n- **Better:** have the fake return raw REST events JSON, and do the `ready`/`renamed` selection in TypeScript, so the real selection runs under test.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/c9cd149e7bd20fbe73d31ef8f2d321ea94210d49/test/unit/core/github-tracker-service.test.ts#L27-L66",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/github-tracker.service.ts",
+      "line": "60",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The jq label match `.label.name == \"ready\"` is case-sensitive, but GitHub label names (and, I believe, `gh issue list --label ready`) are not. In a repo whose label is `Ready`, every listed issue gets no approval, and listReady quietly returns [] with no error.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/github-tracker.service.ts",
+      "line": "195-198",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`listReady` checks who applied `ready`, but it passes every other label through `labels` without saying who applied it, and the interface doesn't say these labels are unverified. A triage collaborator can add `design-approved` to an issue a writer marked ready. This code counts triage as read. But under decisions 176/187, `design-approved` is the operator's validation and the ticket copy keeps its labels. So intake (not built yet) could take that label from `TrackerIssue.labels` without checking who added it, unless the interface documents that labels are unverified or returns who added them.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/errors/tracker.errors.ts",
+      "line": "3-6",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `rateLimited` constructor parameter and field have no reader in `src` and one reader in the tests. The only reader is a single assertion at `github-tracker-service.test.ts:281`. The rate-limit case is already told apart by its message, \"GitHub rate limited … try again\", which that same assertion also checks.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "This was a re-ask on the head the prior record already reviewed (c9cd149e), so the prior important (the race between the T0 list snapshot and a relabel) stays unresolved and was not raised again. The diff is 637 lines, but 374 of them are test lines and 263 are source in one module, so correctness and security ran one instance each instead of two. The validator confirmed the test-adequacy important, with one correction: only mutants 1 and 2 let an issue through against real gh. Mutants 3 and 4 cause a silent skip or an exception. The posted body states this, and the description was kept verbatim. Skipped areas: spec (no closing keyword or linked issue), context and workflow-safety (their areas are untouched), and maintainability (off the default roster)."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.8902579299999998,
+  "duration_ms": 236880,
+  "num_turns": 15,
+  "tokens": {
+    "input": 12,
+    "output": 11027,
+    "cache_read": 288646,
+    "cache_creation": 51327,
+    "total": 351012
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 56,
+      "output": 34195,
+      "cache_read": 612336,
+      "cache_creation": 123747,
+      "cost_usd": 1.5793071999999997
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 44,
+      "output": 7314,
+      "cache_read": 278887,
+      "cache_creation": 83741,
+      "cost_usd": 0.3104692
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 193,
+      "cache_read": 1933,
+      "cache_creation": 2924,
+      "cost_usd": 0.00048153
+    }
+  ],
+  "permission_denials": []
+}
