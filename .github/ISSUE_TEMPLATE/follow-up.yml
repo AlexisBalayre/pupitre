@@ -1,0 +1,41 @@
+name: Follow-up
+description: Review findings left open by a merged PR. The factory files one per merged PR (decision 176).
+title: "follow-up: #"
+labels: [follow-up]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Every field is required. The rubric says what a filled field looks like and what makes one
+        vague: [docs/tickets/follow-up.md](https://github.com/AlexisBalayre/pupitre/blob/main/docs/tickets/follow-up.md). The operator or a
+        collaborator with write access applies `ready`; intake then checks the fields and removes the label if any is missing or vague.
+  - type: input
+    id: source_pr
+    attributes:
+      label: Source PR
+      description: The merged PR the findings come from.
+      placeholder: "#422"
+    validations:
+      required: true
+  - type: textarea
+    id: findings
+    attributes:
+      label: Findings
+      description: Every minor, pre-existing and declined finding of the review, one per line, each tagged with its kind and the file and line it points at.
+      placeholder: "- [minor] src/core/plan.service.ts:88 the error names the path, not the task"
+    validations:
+      required: true
+  - type: textarea
+    id: scenarios
+    attributes:
+      label: Scenarios
+      description: For each finding, the input or sequence that shows it, and what should happen instead.
+    validations:
+      required: true
+  - type: textarea
+    id: original_reviewers
+    attributes:
+      label: Original reviewers
+      description: Who reviewed the source PR, human or agent, so the fix goes back to the same eyes.
+    validations:
+      required: true
