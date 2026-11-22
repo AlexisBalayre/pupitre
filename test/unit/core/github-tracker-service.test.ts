@@ -12,49 +12,63 @@ interface FakeIssue {
   number: number;
   title: string;
   body: string;
-  /** Who applied `ready`, oldest first, the nth at `labelledAt(n)`. */
+  /** Who applied `ready`, oldest first, the nth at `labelledAt(n)`; `name[bot]` is a bot. */
   labelledBy: string[];
   /** When the title was renamed, if it was. */
   renamedAt?: string;
   /** When the body was last edited, if it was. */
   editedAt?: string;
+  /** `OPEN` unless given. */
+  state?: string;
+  /** `ready` and `bug` unless given. */
+  labels?: string[];
 }
 
 /** When the `n`th application of `ready`, counting from 0, happened. */
 const labelledAt = (n: number): string => `2026-11-${10 + n}T12:00:00Z`;
 
-/** A gh answering from `issues` and `permissions`, logging each call. */
+/** The timeline GitHub's GraphQL API holds for `issue`, oldest event first. */
+function timeline({ labelledBy, renamedAt }: FakeIssue) {
+  return [
+    ...labelledBy.map((login, n) => ({
+      __typename: 'LabeledEvent',
+      createdAt: labelledAt(n),
+      label: { name: 'ready' },
+      actor: login.endsWith('[bot]')
+        ? { __typename: 'Bot', login: login.slice(0, -'[bot]'.length) }
+        : { __typename: 'User', login },
+    })),
+    ...(renamedAt ? [{ __typename: 'RenamedTitleEvent', createdAt: renamedAt }] : []),
+  ].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
+/** A gh answering from `issues` and `permissions` as they are at each call, logging each call. */
 function fakeGh(issues: FakeIssue[], permissions: Record<string, string>) {
   const calls: { args: readonly string[]; input?: string }[] = [];
   const run: GhRunner = (args, input) => {
     calls.push({ args, input });
     const path = args[1] ?? '';
     if (args[0] === 'issue' && args[1] === 'list') {
-      return JSON.stringify(
-        issues.map(({ number, title, body }) => ({
-          number,
-          title,
-          body,
-          url: `https://github.com/owner/repo/issues/${number}`,
-          labels: [{ name: 'ready' }, { name: 'bug' }],
-        })),
-      );
+      return JSON.stringify(issues.map(({ number, title, body }) => ({ number, title, body })));
     }
     if (args[0] === 'api' && path === 'graphql') {
       const number = args.find((arg) => arg.startsWith('number='))?.slice('number='.length);
       const issue = issues.find((candidate) => String(candidate.number) === number);
       return JSON.stringify({
-        data: { repository: { issue: issue && { lastEditedAt: issue.editedAt ?? null } } },
+        data: {
+          repository: {
+            issue: issue && {
+              url: `https://github.com/owner/repo/issues/${issue.number}`,
+              title: issue.title,
+              body: issue.body,
+              state: issue.state ?? 'OPEN',
+              lastEditedAt: issue.editedAt ?? null,
+              labels: { nodes: (issue.labels ?? ['ready', 'bug']).map((name) => ({ name })) },
+              timelineItems: { nodes: timeline(issue) },
+            },
+          },
+        },
       });
-    }
-    const events = /^repos\/owner\/repo\/issues\/(\d+)\/events$/.exec(path);
-    if (args[0] === 'api' && events) {
-      const issue = issues.find(({ number }) => number === Number(events[1]));
-      const rows = [
-        ...(issue?.labelledBy ?? []).map((login, n) => ['labeled', labelledAt(n), login]),
-        ...(issue?.renamedAt ? [['renamed', issue.renamedAt, '']] : []),
-      ].sort((a, b) => String(a[1]).localeCompare(String(b[1])));
-      return rows.map((row) => `${row.join('\t')}\n`).join('');
     }
     const permission = /^repos\/owner\/repo\/collaborators\/([^/]+)\/permission$/.exec(path);
     if (args[0] === 'api' && permission) {
@@ -189,7 +203,47 @@ describe('githubTracker.listReady', () => {
     ).toEqual(['16', '18']);
   });
 
-  it('refuses an answer that does not say when the issue was last edited', () => {
+  it('returns the text the approving answer showed, not text listed before the label was applied again', () => {
+    // Listed while the body is M, edited after the label; before the issue's
+    // own answer the author edits it back to B and a writer relabels it.
+    const issue: FakeIssue = {
+      number: 20,
+      title: 'Harmless',
+      body: 'M',
+      labelledBy: ['w'],
+      editedAt: '2026-11-10T13:00:00Z',
+    };
+    const { run: answers } = fakeGh([issue], { w: 'write' });
+    const run: GhRunner = (args, input) => {
+      const output = answers(args, input);
+      if (args[1] === 'list') {
+        Object.assign(issue, {
+          body: 'B',
+          editedAt: '2026-11-10T14:00:00Z',
+          labelledBy: ['w', 'w'],
+        });
+      }
+      return output;
+    };
+
+    expect(githubTracker(REPO, run).listReady()).toEqual([
+      expect.objectContaining({ id: '20', title: 'Harmless', body: 'B' }),
+    ]);
+  });
+
+  it('skips an issue its own answer shows closed or no longer labelled ready', () => {
+    const { run } = fakeGh(
+      [
+        { number: 21, title: 'Closed', body: '', labelledBy: ['w'], state: 'CLOSED' },
+        { number: 22, title: 'Unlabelled', body: '', labelledBy: ['w'], labels: ['bug'] },
+      ],
+      { w: 'write' },
+    );
+
+    expect(githubTracker(REPO, run).listReady()).toEqual([]);
+  });
+
+  it('refuses an answer without the issue fields', () => {
     const { run: answers } = fakeGh([{ number: 19, title: 'a', body: '', labelledBy: ['w'] }], {
       w: 'write',
     });
@@ -197,7 +251,7 @@ describe('githubTracker.listReady', () => {
       args[1] === 'graphql' ? '{"data":{"repository":{"issue":null}}}' : answers(args, input);
 
     expect(() => githubTracker(REPO, run).listReady()).toThrow(
-      new TrackerUnavailableError('`gh api graphql` did not answer when issue 19 was last edited.'),
+      new TrackerUnavailableError('`gh api graphql` answered issue 19 without its fields.'),
     );
   });
 
@@ -232,14 +286,14 @@ describe('githubTracker.listReady', () => {
 
     expect(calls.map(({ args }) => args.slice(0, 2))).toEqual([
       ['issue', 'list'],
-      ['api', 'repos/owner/repo/issues/9/events'],
+      ['api', 'graphql'],
       ['api', 'repos/owner/repo/collaborators/operator/permission'],
       ['api', 'graphql'],
-      ['api', 'repos/owner/repo/issues/10/events'],
-      ['api', 'graphql'],
     ]);
-    expect(calls[0]?.args).toEqual(expect.arrayContaining(['--repo', REPO, '--label', 'ready']));
-    expect(calls[3]?.args).toEqual(
+    expect(calls[0]?.args).toEqual(
+      expect.arrayContaining(['--repo', REPO, '--label', 'ready', '--json', 'number']),
+    );
+    expect(calls[1]?.args).toEqual(
       expect.arrayContaining(['owner=owner', 'name=repo', 'number=9']),
     );
     for (const { args } of calls.slice(1)) {
@@ -285,7 +339,7 @@ describe('githubTracker.listReady', () => {
     expect(() => githubTracker(REPO, () => 'not json').listReady()).toThrow(
       TrackerUnavailableError,
     );
-    expect(() => githubTracker(REPO, () => '[{"number":1}]').listReady()).toThrow(
+    expect(() => githubTracker(REPO, () => '[{"title":"a"}]').listReady()).toThrow(
       TrackerUnavailableError,
     );
   });

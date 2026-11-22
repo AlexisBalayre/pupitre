@@ -19,7 +19,8 @@ export interface Tracker {
   /**
    * Open issues carrying the ready label, applied by someone allowed to start
    * the work after the title and body last changed: an edit since the label
-   * leaves the issue out until the label is applied again.
+   * leaves the issue out until the label is applied again. The title and body
+   * returned are the ones that check saw.
    */
   listReady(): TrackerIssue[];
   comment(issueId: string, body: string): void;

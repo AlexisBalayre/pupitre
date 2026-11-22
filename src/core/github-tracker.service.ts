@@ -7,10 +7,28 @@ import type { GhRunner, Tracker, TrackerIssue } from './types/tracker.types.js';
 // an argv array pinned to one repo; issue text comes back as data fields only.
 // An author can edit their issue without write access and the edit leaves no
 // labeled event, so a title or body changed since the label is not approved.
+// The issue list only names candidates: each issue's text and the evidence
+// that approves it come from one answer, so the text returned is the text checked.
 
 const READY_LABEL = 'ready';
-const LAST_EDITED_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
-  repository(owner: $owner, name: $name) { issue(number: $number) { lastEditedAt } }
+/**
+ * One issue with its latest label and rename events. A ready label applied
+ * before the last 100 of them falls out of that tail and leaves the issue out.
+ */
+const ISSUE_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    issue(number: $number) {
+      url title body state lastEditedAt
+      labels(first: 100) { nodes { name } }
+      timelineItems(itemTypes: [LABELED_EVENT, RENAMED_TITLE_EVENT], last: 100) {
+        nodes {
+          __typename
+          ... on LabeledEvent { createdAt label { name } actor { __typename login } }
+          ... on RenamedTitleEvent { createdAt }
+        }
+      }
+    }
+  }
 }`;
 /** `permission` of GitHub's collaborator endpoint: maintain reads as write, triage as read. */
 const WRITE_PERMISSIONS = new Set(['admin', 'write']);
@@ -19,7 +37,7 @@ const GH_COMMAND_TIMEOUT_MS = 60_000;
 const GH_MAX_BUFFER = 64 * 1024 * 1024;
 /** `HOST/OWNER/REPO`, as `originRepoSlug` derives it. */
 const REPO_SLUG = /^([A-Za-z0-9.-]+)\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/;
-/** A user login; a bot's `name[bot]` fails it, and no bot has write access of its own. */
+/** A user login, safe to put in an API path. */
 const USER_LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/;
 const ISSUE_NUMBER = /^[1-9][0-9]*$/;
 const RATE_LIMIT = /rate limit/i;
@@ -53,38 +71,18 @@ export function githubTracker(repo: string, run: GhRunner = runGh): Tracker {
   };
 
   /**
-   * Who last applied the ready label to issue `number`, and when in epoch ms;
-   * none if nobody did or the title was renamed after.
+   * Issue `number` and the login that approved it, if one answer shows it open
+   * and labelled ready, a user's latest application of the label coming after
+   * its last rename and its last edit.
    */
-  const readyApproval = (number: number): { login: string; at: number } | undefined => {
-    const select = `.[] | select((.event == "labeled" and .label.name == ${JSON.stringify(READY_LABEL)} and .actor != null) or .event == "renamed") | [.event, .created_at, (.actor.login // "")] | @tsv`;
-    const events = gh([
-      'api',
-      `${apiPath}/issues/${number}/events`,
-      '--hostname',
-      host,
-      '--paginate',
-      '--jq',
-      select,
-    ]);
-    let approval: { login: string; at: number } | undefined;
-    for (const line of events.split('\n')) {
-      const [event, createdAt = '', login = ''] = line.split('\t');
-      if (event === 'labeled') approval = { login, at: Date.parse(createdAt) };
-      if (event === 'renamed') approval = undefined;
-    }
-    return approval;
-  };
-
-  /** Whether issue `number`'s body has gone unedited since `since`, in epoch ms. */
-  const unchangedSince = (number: number, since: number): boolean => {
+  const approvedIssue = (number: number): { issue: TrackerIssue; labeller: string } | undefined => {
     const args = [
       'api',
       'graphql',
       '--hostname',
       host,
       '-f',
-      `query=${LAST_EDITED_QUERY}`,
+      `query=${ISSUE_QUERY}`,
       '-f',
       `owner=${owner}`,
       '-f',
@@ -92,17 +90,11 @@ export function githubTracker(repo: string, run: GhRunner = runGh): Tracker {
       '-F',
       `number=${number}`,
     ];
-    const answer = parseJson(args, gh(args)) as {
-      data?: { repository?: { issue?: { lastEditedAt?: unknown } | null } | null };
-    } | null;
-    const editedAt = answer?.data?.repository?.issue?.lastEditedAt;
-    if (editedAt === null) return true;
-    if (typeof editedAt !== 'string') {
-      throw new TrackerUnavailableError(
-        `\`gh api graphql\` did not answer when issue ${number} was last edited.`,
-      );
-    }
-    return Date.parse(editedAt) < since;
+    const { issue, open, editedAt, timeline } = parseIssueAnswer(args, number, gh(args));
+    const approval = readyApproval(timeline);
+    if (!open || !issue.labels.includes(READY_LABEL) || !approval) return undefined;
+    const unedited = editedAt === null || Date.parse(editedAt) < approval.at;
+    return unedited ? { issue, labeller: approval.login } : undefined;
   };
 
   const writers = new Map<string, boolean>();
@@ -139,19 +131,12 @@ export function githubTracker(repo: string, run: GhRunner = runGh): Tracker {
         '--limit',
         String(ISSUE_LIST_LIMIT),
         '--json',
-        'number,url,title,body,labels',
+        'number',
       ];
-      const issues = parseIssues(args, gh(args));
-      return issues
-        .filter(({ number }) => {
-          const approval = readyApproval(number);
-          return (
-            approval !== undefined &&
-            hasWriteAccess(approval.login) &&
-            unchangedSince(number, approval.at)
-          );
-        })
-        .map(({ issue }) => issue);
+      return parseNumbers(args, gh(args)).flatMap((number) => {
+        const approved = approvedIssue(number);
+        return approved && hasWriteAccess(approved.labeller) ? [approved.issue] : [];
+      });
     },
 
     comment(issueId, body) {
@@ -169,34 +154,79 @@ function issueNumber(issueId: string): string {
   return issueId;
 }
 
-/** gh's issue list as tracker issues, each beside its number; any other shape is a refusal. */
-function parseIssues(
-  args: readonly string[],
-  output: string,
-): { number: number; issue: TrackerIssue }[] {
+/**
+ * Who last applied the ready label in `timeline`, oldest event first, and when
+ * in epoch ms; none if a rename followed it or no user applied it.
+ */
+function readyApproval(timeline: readonly unknown[]): { login: string; at: number } | undefined {
+  let approval: { login: string; at: number } | undefined;
+  for (const node of timeline) {
+    const { __typename: event, createdAt, label, actor } = (node ?? {}) as Record<string, unknown>;
+    if (event === 'RenamedTitleEvent') approval = undefined;
+    if (event === 'LabeledEvent' && (label as { name?: unknown } | null)?.name === READY_LABEL) {
+      const { __typename: kind, login } = (actor ?? {}) as Record<string, unknown>;
+      const at = Date.parse(String(createdAt));
+      approval =
+        kind === 'User' && typeof login === 'string' && Number.isFinite(at)
+          ? { login, at }
+          : undefined;
+    }
+  }
+  return approval;
+}
+
+/** The issue numbers in gh's issue list; any other shape is a refusal. */
+function parseNumbers(args: readonly string[], output: string): number[] {
   const parsed = parseJson(args, output);
   if (!Array.isArray(parsed)) {
     throw new TrackerUnavailableError(`\`gh ${args[0]} ${args[1]}\` did not answer a list.`);
   }
   return parsed.map((entry: unknown) => {
-    const { number, url, title, body, labels } = (entry ?? {}) as Record<string, unknown>;
-    if (
-      typeof number !== 'number' ||
-      !Number.isInteger(number) ||
-      typeof url !== 'string' ||
-      typeof title !== 'string' ||
-      typeof body !== 'string' ||
-      !Array.isArray(labels)
-    ) {
+    const number = (entry as { number?: unknown } | null)?.number;
+    if (typeof number !== 'number' || !Number.isInteger(number)) {
       throw new TrackerUnavailableError(
-        `\`gh ${args[0]} ${args[1]}\` answered an issue without its fields.`,
+        `\`gh ${args[0]} ${args[1]}\` answered an issue without its number.`,
       );
     }
-    const names = labels
-      .map((label: unknown) => (label as { name?: unknown } | null)?.name)
-      .filter((label): label is string => typeof label === 'string');
-    return { number, issue: { id: String(number), url, title, body, labels: names } };
+    return number;
   });
+}
+
+/** Issue `number` as gh's GraphQL answer holds it; an answer without its fields is a refusal. */
+function parseIssueAnswer(
+  args: readonly string[],
+  number: number,
+  output: string,
+): { issue: TrackerIssue; open: boolean; editedAt: string | null; timeline: unknown[] } {
+  const answer = parseJson(args, output) as {
+    data?: { repository?: { issue?: unknown } | null } | null;
+  } | null;
+  const { url, title, body, state, lastEditedAt, labels, timelineItems } = (answer?.data?.repository
+    ?.issue ?? {}) as Record<string, unknown>;
+  const labelNodes = (labels as { nodes?: unknown } | null)?.nodes;
+  const timeline = (timelineItems as { nodes?: unknown } | null)?.nodes;
+  if (
+    typeof url !== 'string' ||
+    typeof title !== 'string' ||
+    typeof body !== 'string' ||
+    typeof state !== 'string' ||
+    (lastEditedAt !== null && typeof lastEditedAt !== 'string') ||
+    !Array.isArray(labelNodes) ||
+    !Array.isArray(timeline)
+  ) {
+    throw new TrackerUnavailableError(
+      `\`gh api graphql\` answered issue ${number} without its fields.`,
+    );
+  }
+  const names = labelNodes
+    .map((label: unknown) => (label as { name?: unknown } | null)?.name)
+    .filter((label): label is string => typeof label === 'string');
+  return {
+    issue: { id: String(number), url, title, body, labels: names },
+    open: state === 'OPEN',
+    editedAt: lastEditedAt,
+    timeline,
+  };
 }
 
 /** The output of gh `args` as JSON; output that is not JSON is a refusal. */
