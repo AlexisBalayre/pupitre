@@ -1,0 +1,184 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-22T15:18:37.301Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "45037048892",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/45037048892",
+  "actor": "AlexisBalayre",
+  "commit_sha": "7e9147b02ce776773acb9fc4a7a4a21946ed5fd1",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 424,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/github-tracker.service.ts",
+      "line": "107-113",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "`listReady` only checks who last applied `ready`, then returns the issue's current title and body. On a public repo the author can edit both after a write-access collaborator labels it, so the approved issue's work ends up defined by text nobody with write access saw.",
+      "body": "**The label is checked, but the text it approved is not.** ADR 176 ([`docs/adr/0176-…`](https://github.com/AlexisBalayre/pupitre/blob/7e9147b02ce776773acb9fc4a7a4a21946ed5fd1/docs/adr/0176-a-ticket-has-a-type-and-only-some-types-need.md)) says: \"Only an issue carrying `ready`, applied by the operator or a collaborator with write access, is read.\" `Tracker.listReady` promises issues \"applied by someone allowed to start the work\". The code checks only *who* last applied the label. It then returns the issue's *current* title and body from `gh issue list`:\n\n```ts\nconst issues = parseIssues(args, gh(args));\nreturn issues\n  .filter(({ number }) => {\n    const labeller = readyLabeller(number);\n    return labeller !== undefined && hasWriteAccess(labeller);\n  })\n  .map(({ issue }) => issue);\n```\n\nAn issue's author can always edit its title and body, whatever their repo permission. A body edit adds no event to `/issues/{n}/events`, so `readyLabeller` cannot see it.\n\n**How it happens:**\n1. An outsider files a harmless chore or docs issue.\n2. A writer reads it and applies `ready`.\n3. Before the next `listReady`, the author rewrites the goal, acceptance criteria and files in scope, keeping every required field filled in.\n4. `listReady` returns the new text with the writer's approval still attached.\n\nADR 187 says bug, chore, docs, refactor, spike and follow-up tickets with no design trigger need no `design-approved`. For those types, `ready` is the only human checkpoint. Intake checks only that the required fields are there. Quoting the text as data stops it from acting as instructions to the agent, but the text still decides what gets built.\n\nThe codebase already treats edited GitHub text as untrusted for PR threads (`isEdited` / `isEditedByOther` in `src/core/github.client.ts`). Two independent reviewers (correctness and security) raised this.\n\n**Possible fix:** have the jq filter also emit the `created_at` of the last `ready` `labeled` event. Then refuse an issue whose `lastEditedAt` (GraphQL) or latest `renamed` event comes after it. The writer then approves the new text by applying the label again.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/7e9147b02ce776773acb9fc4a7a4a21946ed5fd1/src/core/github-tracker.service.ts#L53-L69\nhttps://github.com/AlexisBalayre/pupitre/blob/7e9147b02ce776773acb9fc4a7a4a21946ed5fd1/src/core/github-tracker.service.ts#L107-L113",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/github-tracker.service.ts",
+      "line": "10",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The exported type `GhRunner` is declared in a *.service.ts file; general.md says never to do this and to put it in src/core/types/ (e.g. tracker.types.ts, which this PR adds).",
+      "body": "`docs/conventions/general.md` §Type separation says: \"Exported types live in `*.types.ts` under the area's `types/` folder — `src/core/types/`… **Never inline an exported or reused `type`/`interface` in a `*.service.ts` or `*.routes.ts` file**\". `naming.md` repeats it: \"Every exported type or interface is in a `*.types.ts` / `*.interface.ts` file… none is declared inline in a `service`, `routes` or other behavioural file.\"\n\n`export type GhRunner = (args: readonly string[], input?: string) => string;` is exported straight from the service, and the test imports it from there. No other file in `src/core` declares an exported type inline. The only similar lines (`git-diff.client.ts`, `coverage.utils.ts`) re-export types that live in `types/`.\n\n**Fix:** move `GhRunner` and its JSDoc into `src/core/types/tracker.types.ts`, which this PR already adds and the service already imports. Then use `import type` in the service and the test, or re-export it from the service as general.md suggests.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/7e9147b02ce776773acb9fc4a7a4a21946ed5fd1/src/core/github-tracker.service.ts#L9-L10",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/github-tracker.service.ts",
+      "line": "55",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The jq filter drops `labeled` events whose `actor` is null before `.at(-1)` picks the latest. If the newest `ready` application has a null actor, an earlier writer's application wins and the issue is accepted when it should be rejected. Emitting a sentinel such as `(.actor.login // \"-\")`, which fails `USER_LOGIN`, would keep the newest event and reject it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/github-tracker.service.ts",
+      "line": "102-103",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Once more than 500 open issues carry `ready`, gh returns the newest 500 (it lists newest-created first). The oldest ready issues are dropped with no signal, so they never reach intake. `github.client.ts` refuses a read past its page in the same situation; the same refusal could apply when `issues.length === ISSUE_LIST_LIMIT`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/github-tracker.service.ts",
+      "line": "28",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The service spawns `gh` itself with `execFileSync` and duplicates GH_COMMAND_TIMEOUT_MS and GH_MAX_BUFFER from src/core/github.client.ts, although naming.md assigns `gh` wrappers to the `client` role.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/github-tracker.service.ts",
+      "line": "26",
+      "area": "guards",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "ADR 0089 says every gh pup runs uses the main checkout as its cwd under pinnedGitEnv(), and decision 172 adds the ghInCheckout checks (src/core/github.client.ts:61-94). runGh sets no cwd and skips those checks, so gh inherits pup's process cwd. The explicit --repo/--hostname probably keeps gh from running git. Either take the repo path and wrap the call in ghInCheckout, or note that it is deliberately cwd-free.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/github-tracker.service.ts",
+      "line": "18-19",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`REPO_SLUG` re-parses a `HOST/OWNER/REPO` string that `originRepoSlug` already produced, with a third regex and a dot-segment branch. Taking `host` and `repo` as two parameters, or splitting once on `/`, would remove both.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/errors/tracker.errors.ts",
+      "line": "5",
+      "area": "simplicity",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`TrackerUnavailableError.rateLimited` has no reader in `src`; only one test asserts it, and the message already says \"rate limited\". Drop the field until intake branches on it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/github-tracker.service.ts",
+      "line": "71-92",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The closure-level `writers` Map is cleared at the start of every `listReady`, so it only dedupes within one call. A local Map created inside `listReady` would drop the `clear()` call and the shared mutable state.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "review-spec skipped: the PR has no closing keyword or linked issue, so there was no spec source (its acceptance list is in the PR body only). review-context and review-workflow-safety skipped: their areas are untouched. Correctness and security ran one instance each despite ~472 changed lines, because only 211 of them are source in one file and a split would have overlapped."
+    },
+    {
+      "component": "platform",
+      "description": "The GitHub API rate limit was reported exhausted early in the run, so reviewers were briefed to read through git diff instead of gh. Later gh pr view calls still worked."
+    }
+  ],
+  "duplicates_merged": 2,
+  "comments_posted_actual": 2,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 2.3188974499999992,
+  "duration_ms": 268193,
+  "num_turns": 15,
+  "tokens": {
+    "input": 14,
+    "output": 14638,
+    "cache_read": 354331,
+    "cache_creation": 57529,
+    "total": 426512
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 66,
+      "output": 39688,
+      "cache_read": 860737,
+      "cache_creation": 159027,
+      "cost_usd": 1.9338933999999997
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 46,
+      "output": 10936,
+      "cache_read": 263411,
+      "cache_creation": 99285,
+      "cost_usd": 0.38400560000000006
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 659,
+      "cache_read": 0,
+      "cache_creation": 5350,
+      "cost_usd": 0.00099845
+    }
+  ],
+  "permission_denials": []
+}
