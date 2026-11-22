@@ -14,6 +14,8 @@ interface FakeIssue {
   body: string;
   /** Who applied `ready`, oldest first, the nth at `labelledAt(n)`; `name[bot]` is a bot. */
   labelledBy: string[];
+  /** Other labels applied, each by `login` at `at`. */
+  otherLabels?: { name: string; login: string; at: string }[];
   /** When the title was renamed, if it was. */
   renamedAt?: string;
   /** When the body was last edited, if it was. */
@@ -28,18 +30,46 @@ interface FakeIssue {
 const labelledAt = (n: number): string => `2026-11-${10 + n}T12:00:00Z`;
 
 /** The timeline GitHub's GraphQL API holds for `issue`, oldest event first. */
-function timeline({ labelledBy, renamedAt }: FakeIssue) {
+function timeline({ labelledBy, otherLabels = [], renamedAt }: FakeIssue) {
+  const labelled = (name: string, login: string, createdAt: string) => ({
+    __typename: 'LabeledEvent',
+    createdAt,
+    label: { name },
+    actor: login.endsWith('[bot]')
+      ? { __typename: 'Bot', login: login.slice(0, -'[bot]'.length) }
+      : { __typename: 'User', login },
+  });
   return [
-    ...labelledBy.map((login, n) => ({
-      __typename: 'LabeledEvent',
-      createdAt: labelledAt(n),
-      label: { name: 'ready' },
-      actor: login.endsWith('[bot]')
-        ? { __typename: 'Bot', login: login.slice(0, -'[bot]'.length) }
-        : { __typename: 'User', login },
-    })),
+    ...labelledBy.map((login, n) => labelled('ready', login, labelledAt(n))),
+    ...otherLabels.map(({ name, login, at }) => labelled(name, login, at)),
     ...(renamedAt ? [{ __typename: 'RenamedTitleEvent', createdAt: renamedAt }] : []),
   ].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
+/** The `__typename` of a timeline node as GraphQL's `itemTypes` names it. */
+const itemType = (typename: string): string =>
+  typename.replace(/([a-z])([A-Z])/g, '$1_$2').toUpperCase();
+
+/**
+ * GitHub's GraphQL answer for `issue`, holding only the fields `query` selects
+ * and the timeline events of the `itemTypes` it asks for.
+ */
+function answer(issue: FakeIssue, query: string) {
+  const itemTypes = /itemTypes:\s*\[([^\]]*)\]/.exec(query)?.[1]?.split(/[\s,]+/) ?? [];
+  const fields: Record<string, unknown> = {
+    url: `https://github.com/owner/repo/issues/${issue.number}`,
+    title: issue.title,
+    body: issue.body,
+    state: issue.state ?? 'OPEN',
+    lastEditedAt: issue.editedAt ?? null,
+    labels: { nodes: (issue.labels ?? ['ready', 'bug']).map((name) => ({ name })) },
+    timelineItems: {
+      nodes: timeline(issue).filter(({ __typename }) => itemTypes.includes(itemType(__typename))),
+    },
+  };
+  return Object.fromEntries(
+    Object.entries(fields).filter(([field]) => new RegExp(`\\b${field}\\b`).test(query)),
+  );
 }
 
 /** A gh answering from `issues` and `permissions` as they are at each call, logging each call. */
@@ -54,21 +84,8 @@ function fakeGh(issues: FakeIssue[], permissions: Record<string, string>) {
     if (args[0] === 'api' && path === 'graphql') {
       const number = args.find((arg) => arg.startsWith('number='))?.slice('number='.length);
       const issue = issues.find((candidate) => String(candidate.number) === number);
-      return JSON.stringify({
-        data: {
-          repository: {
-            issue: issue && {
-              url: `https://github.com/owner/repo/issues/${issue.number}`,
-              title: issue.title,
-              body: issue.body,
-              state: issue.state ?? 'OPEN',
-              lastEditedAt: issue.editedAt ?? null,
-              labels: { nodes: (issue.labels ?? ['ready', 'bug']).map((name) => ({ name })) },
-              timelineItems: { nodes: timeline(issue) },
-            },
-          },
-        },
-      });
+      const query = args.find((arg) => arg.startsWith('query='))?.slice('query='.length) ?? '';
+      return JSON.stringify({ data: { repository: { issue: issue && answer(issue, query) } } });
     }
     const permission = /^repos\/owner\/repo\/collaborators\/([^/]+)\/permission$/.exec(path);
     if (args[0] === 'api' && permission) {
@@ -111,6 +128,34 @@ describe('githubTracker.listReady', () => {
         .listReady()
         .map(({ id }) => id),
     ).toEqual(['5']);
+  });
+
+  it('judges who applied ready, not who applied another label after it', () => {
+    const { run } = fakeGh(
+      [
+        {
+          number: 23,
+          title: 'Bug label by a stranger',
+          body: '',
+          labelledBy: ['writer'],
+          otherLabels: [{ name: 'bug', login: 'x', at: '2026-11-10T13:00:00Z' }],
+        },
+        {
+          number: 24,
+          title: 'Bug label by a writer',
+          body: '',
+          labelledBy: ['x'],
+          otherLabels: [{ name: 'bug', login: 'writer', at: '2026-11-10T13:00:00Z' }],
+        },
+      ],
+      { writer: 'write', x: 'none' },
+    );
+
+    expect(
+      githubTracker(REPO, run)
+        .listReady()
+        .map(({ id }) => id),
+    ).toEqual(['23']);
   });
 
   it('skips an issue with no recorded labeller and one a bot labelled, asking no permission for the bot', () => {
@@ -293,9 +338,20 @@ describe('githubTracker.listReady', () => {
     expect(calls[0]?.args).toEqual(
       expect.arrayContaining(['--repo', REPO, '--label', 'ready', '--json', 'number']),
     );
-    expect(calls[1]?.args).toEqual(
-      expect.arrayContaining(['owner=owner', 'name=repo', 'number=9']),
-    );
+    expect(calls[1]?.args).toEqual([
+      'api',
+      'graphql',
+      '--hostname',
+      'github.com',
+      '-f',
+      expect.stringMatching(/^query=/),
+      '-f',
+      'owner=owner',
+      '-f',
+      'name=repo',
+      '-F',
+      'number=9',
+    ]);
     for (const { args } of calls.slice(1)) {
       expect(args).toEqual(expect.arrayContaining(['--hostname', 'github.com']));
     }
