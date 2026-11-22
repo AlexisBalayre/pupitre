@@ -1,0 +1,130 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-22T20:16:43.167Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "45064873481",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/45064873481",
+  "actor": "AlexisBalayre",
+  "commit_sha": "bc3b5b7bf2fa9a5b6b7cb81cd2f92c0eadcb4ce3",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 429,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/constants/merge-gate.constants.ts",
+      "line": "110-115",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "PROTECTED_WITHIN_EXCEPTIONS keeps only `.claude/skills/pr-ci-review/**` protected, but the CI review allows a bare `\"Skill\"` permission, so any other worker-merged skill can be loaded by every later CI review with the repo token — the harm ADR 0208 gives as its reason for protecting pr-ci-review.",
+      "body": "ADR 0208 keeps `.claude/skills/pr-ci-review/**` protected because \"its prompt runs with a repo token on every later PR, so an edit to it would act with that token on code the edit's reviewer never saw.\" But the CI review's prompt is bigger than that one directory. The workflow's managed settings allow the Skill tool unrestricted:\n\n```json\n\"allow\": [\n  \"Skill\",\n```\n<https://github.com/AlexisBalayre/pupitre/blob/bc3b5b7bf2fa9a5b6b7cb81cd2f92c0eadcb4ce3/.github/workflows/claude-code-review.yml#L299-L300>\n\nand nothing in those settings disables project skills or narrows the listing. Because the action restores `.claude/` from base, every skill merged earlier is listed in every later review, and the model (or its subagents) can invoke one based on its `description`.\n\nWith this PR, a worker task scoped to `.claude/skills/**` can merge, say, `.claude/skills/tdd/SKILL.md` with a description like \"use when reviewing a diff\" and a body telling the reviewer to drop findings. `auditScope` passes it:\n\n```ts\nexport const PROTECTED_PATH_EXCEPTIONS = ['.claude/skills/**'];\nexport const PROTECTED_WITHIN_EXCEPTIONS = ['.claude/skills/pr-ci-review/**'];\n```\n<https://github.com/AlexisBalayre/pupitre/blob/bc3b5b7bf2fa9a5b6b7cb81cd2f92c0eadcb4ce3/src/core/constants/merge-gate.constants.ts#L103-L115>\n\nThe ADR's \"Who reads a skill\" section only shows that a PR cannot steer *its own* review. It does not cover later reviews, and that is the reason it gives for protecting pr-ci-review. Its fallback argument (the CI review and the merge click read the edit) applies equally to a pr-ci-review edit, which the ADR still refuses.\n\nPossible fixes: narrow the CI lock's allow to `Skill(pr-ci-review)` so no other skill can load in CI, or state in the ADR why another skill loaded in a later CI review is acceptable when pr-ci-review is not. (`tools/review/**` is already unprotected and runs in later CI, so the project may already accept \"the merge click reviews it\". If so, say so, and describe the pr-ci-review carve-out as defense in depth rather than the boundary.)",
+      "suggestion": null
+    },
+    {
+      "file": "src/core/constants/merge-gate.constants.ts",
+      "line": "111-115",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The gate protects the CI review's skill by directory, but skills resolve by frontmatter `name:`: a new `.claude/skills/<x>/SKILL.md` declaring `name: pr-ci-review` passes the gate and competes for the `/pr-ci-review` command the workflow runs with the repo token. The ADR's premise that a skill is inert prose is also wrong, since frontmatter like `allowed-tools` is acted on.",
+      "body": "The gate checks only paths, never file content (`isProtected` in `scope-audit.utils.ts`), and exempts only the `pr-ci-review` directory:\n\n```ts\nexport const PROTECTED_WITHIN_EXCEPTIONS = ['.claude/skills/pr-ci-review/**'];\n```\n<https://github.com/AlexisBalayre/pupitre/blob/bc3b5b7bf2fa9a5b6b7cb81cd2f92c0eadcb4ce3/src/core/constants/merge-gate.constants.ts#L109-L115>\n\nThe CI review doesn't find its skill by directory. The workflow starts it with the prompt `/pr-ci-review` (`.github/workflows/claude-code-review.yml` L352-353). Every skill in this repo declares a frontmatter `name:` (`.claude/skills/pr-ci-review/SKILL.md:2` has `name: pr-ci-review`), and Claude Code uses that name for the slash command. So a worker can merge `.claude/skills/zz/SKILL.md` with `name: pr-ci-review`. It sits under the exception and outside the unlifted directory, so `auditScope` passes it. After merge it competes for `/pr-ci-review` in every later token-bearing run. Which of two same-named skills wins is Claude Code behaviour (medium confidence), but neither the gate nor the workflow pins it.\n\nThe ADR's premise is also inaccurate: \"a skill is prose a model reads, not config pup or Claude Code acts on\" (<https://github.com/AlexisBalayre/pupitre/blob/bc3b5b7bf2fa9a5b6b7cb81cd2f92c0eadcb4ce3/docs/adr/0208-a-worker-may-edit-skills-but-not-the-rest-of-claude.md#L10-L11>). This repo's skills carry `allowed-tools` (e.g. `daily-note` grants `Write, Edit`) and `disable-model-invocation`. CI cancels `allowed-tools` via `allowManagedPermissionRulesOnly`, but the operator's console and the conductor, which the ADR lists as readers, still honour it.\n\nPossible fixes: have the gate refuse a `SKILL.md` under the exception whose `name:` differs from its directory (or that equals `pr-ci-review`); pin the CI skill (e.g. `Skill(pr-ci-review)` plus a check of its path); and correct the ADR's statement that skills are inert prose, naming the frontmatter fields Claude Code acts on.",
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0006-bash-scope-checking-is-best-effort.md",
+      "line": "3-4",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "ADR 0208 says it amends 0006, but 0006 has no reciprocal `- Amended by: [0208](0208-a-worker-may-edit-skills-but-not-the-rest-of-claude.md)` line under its Status, which the repo adds elsewhere (e.g. 0040, 0063, 0101). A reader of decision 6, which defines the protected paths, won't learn that `.claude/skills/**` is now carved out.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/constants/merge-gate.constants.ts",
+      "line": "96-101",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The unchanged PROTECTED_PATH_GLOBS JSDoc still says \"Paths no session may touch regardless of scope\", which is now false for `.claude/skills/**`. A reader of that constant alone would conclude a session can never edit a skill; mention that PROTECTED_PATH_EXCEPTIONS lifts some of them.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 1,
+  "comments_posted_actual": 2,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 3.042590225000001,
+  "duration_ms": 324008,
+  "num_turns": 16,
+  "tokens": {
+    "input": 14,
+    "output": 14245,
+    "cache_read": 322862,
+    "cache_creation": 70412,
+    "total": 407533
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 110,
+      "output": 52471,
+      "cache_read": 1599162,
+      "cache_creation": 238111,
+      "cost_usd": 2.7714834
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 34,
+      "output": 6811,
+      "cache_read": 219040,
+      "cache_creation": 72077,
+      "cost_usd": 0.27027450000000003
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 391,
+      "cache_read": 0,
+      "cache_creation": 5093,
+      "cost_usd": 0.0008323250000000001
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "git grep -n -o -E \".{0,200}(skills?/|\\.claude/agents|subagent_type|agents/).{0,200}\" bc3b5b7bf2fa9a5b6b7cb81cd2f92c0eadcb4ce3 -- .claude/skills/pr-ci-review"
+    }
+  ]
+}
