@@ -7,22 +7,6 @@ import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 const REPO = 'github.com/owner/repo';
-/** The one GraphQL query the tracker may send, word for word. */
-const ISSUE_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
-  repository(owner: $owner, name: $name) {
-    issue(number: $number) {
-      url title body state lastEditedAt
-      labels(first: 100) { nodes { name } }
-      timelineItems(itemTypes: [LABELED_EVENT, RENAMED_TITLE_EVENT], last: 100) {
-        nodes {
-          __typename
-          ... on LabeledEvent { createdAt label { name } actor { __typename login } }
-          ... on RenamedTitleEvent { createdAt }
-        }
-      }
-    }
-  }
-}`;
 
 interface FakeIssue {
   number: number;
@@ -62,6 +46,32 @@ function timeline({ labelledBy, otherLabels = [], renamedAt }: FakeIssue) {
   ].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
 
+/** The `__typename` of a timeline node as GraphQL's `itemTypes` names it. */
+const itemType = (typename: string): string =>
+  typename.replace(/([a-z])([A-Z])/g, '$1_$2').toUpperCase();
+
+/**
+ * GitHub's GraphQL answer for `issue`, holding only the fields `query` selects
+ * and the timeline events of the `itemTypes` it asks for.
+ */
+function answer(issue: FakeIssue, query: string) {
+  const itemTypes = /itemTypes:\s*\[([^\]]*)\]/.exec(query)?.[1]?.split(/[\s,]+/) ?? [];
+  const fields: Record<string, unknown> = {
+    url: `https://github.com/owner/repo/issues/${issue.number}`,
+    title: issue.title,
+    body: issue.body,
+    state: issue.state ?? 'OPEN',
+    lastEditedAt: issue.editedAt ?? null,
+    labels: { nodes: (issue.labels ?? ['ready', 'bug']).map((name) => ({ name })) },
+    timelineItems: {
+      nodes: timeline(issue).filter(({ __typename }) => itemTypes.includes(itemType(__typename))),
+    },
+  };
+  return Object.fromEntries(
+    Object.entries(fields).filter(([field]) => new RegExp(`\\b${field}\\b`).test(query)),
+  );
+}
+
 /** A gh answering from `issues` and `permissions` as they are at each call, logging each call. */
 function fakeGh(issues: FakeIssue[], permissions: Record<string, string>) {
   const calls: { args: readonly string[]; input?: string }[] = [];
@@ -74,21 +84,8 @@ function fakeGh(issues: FakeIssue[], permissions: Record<string, string>) {
     if (args[0] === 'api' && path === 'graphql') {
       const number = args.find((arg) => arg.startsWith('number='))?.slice('number='.length);
       const issue = issues.find((candidate) => String(candidate.number) === number);
-      return JSON.stringify({
-        data: {
-          repository: {
-            issue: issue && {
-              url: `https://github.com/owner/repo/issues/${issue.number}`,
-              title: issue.title,
-              body: issue.body,
-              state: issue.state ?? 'OPEN',
-              lastEditedAt: issue.editedAt ?? null,
-              labels: { nodes: (issue.labels ?? ['ready', 'bug']).map((name) => ({ name })) },
-              timelineItems: { nodes: timeline(issue) },
-            },
-          },
-        },
-      });
+      const query = args.find((arg) => arg.startsWith('query='))?.slice('query='.length) ?? '';
+      return JSON.stringify({ data: { repository: { issue: issue && answer(issue, query) } } });
     }
     const permission = /^repos\/owner\/repo\/collaborators\/([^/]+)\/permission$/.exec(path);
     if (args[0] === 'api' && permission) {
@@ -347,7 +344,7 @@ describe('githubTracker.listReady', () => {
       '--hostname',
       'github.com',
       '-f',
-      `query=${ISSUE_QUERY}`,
+      expect.stringMatching(/^query=/),
       '-f',
       'owner=owner',
       '-f',
