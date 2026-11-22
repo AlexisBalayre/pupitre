@@ -39,8 +39,10 @@
     path when its frontmatter `name:` is not exactly its directory's, or is `pr-ci-review` in
     any case (`isMisnamedSkill`). It reads fail-closed: a frontmatter left open, one that is not
     a single YAML document, a duplicated name or a name that is not a string is refused, and
-    merge keys are applied, so the name a YAML 1.1 reader sees is the one checked. A skill with
-    no `name:` takes its directory's and passes.
+    merge keys are applied, so the name a YAML 1.1 reader sees is the one checked. A
+    `SKILL.md` the gate cannot read as a plain file is refused too: a symlink would have Claude
+    Code load its target's frontmatter, which the check never read. A skill with no `name:`
+    takes its directory's and passes.
     *The rescope follows the gate.* `pup plan edit --rescope` refuses a glob that can share a
     path with a protected glob unless it lies under an exception, and refuses one that lies
     wholly inside `PROTECTED_WITHIN_EXCEPTIONS`. A glob with a wildcard lies under the

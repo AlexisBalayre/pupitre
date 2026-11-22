@@ -60,9 +60,11 @@ export function isMisnamedSkill(path: string, content: string): boolean {
  * by a scope-in glob is a violation (the gate is a hard backstop, decision 6).
  * A protected path is one under `PROTECTED_PATH_GLOBS` that no exception
  * lifts, or one under `PROTECTED_WITHIN_EXCEPTIONS` (decision 208). Given
- * `readFile`, the diff's content of a path (undefined for one it deletes), a
- * skill's `SKILL.md` the scope takes is also protected when it is misnamed
- * (`isMisnamedSkill`).
+ * `readFile`, which returns the diff's content of a path, undefined for one
+ * the diff deletes, and throws for one it cannot read as a plain file (a
+ * symlink, whose target Claude Code would load), a skill's `SKILL.md` the
+ * scope takes is also protected when it is misnamed (`isMisnamedSkill`) or
+ * unreadable.
  */
 export function auditScope(
   paths: string[],
@@ -79,7 +81,13 @@ export function auditScope(
     (protectedRes.some((re) => re.test(path)) && !exceptionRes.some((re) => re.test(path))) ||
     unliftedRes.some((re) => re.test(path));
   const isMisnamed = (path: string): boolean => {
-    const content = SKILL_MANIFEST.test(path) ? readFile?.(path) : undefined;
+    if (readFile === undefined || !SKILL_MANIFEST.test(path)) return false;
+    let content: string | undefined;
+    try {
+      content = readFile(path);
+    } catch {
+      return true;
+    }
     return content !== undefined && isMisnamedSkill(path, content);
   };
 

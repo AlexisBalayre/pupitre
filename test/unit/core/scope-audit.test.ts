@@ -85,6 +85,17 @@ describe('auditScope', () => {
       expect(audit('.claude/skills/zz/SKILL.md', undefined)).toEqual([]);
     });
 
+    it('refuses a SKILL.md the reader cannot read as a plain file', () => {
+      const path = '.claude/skills/zz/SKILL.md';
+      const read = (): string => {
+        throw new Error(`${path} is not a plain file`);
+      };
+
+      expect(auditScope([path], ['.claude/skills/**'], [], read)).toEqual([
+        { path, reason: 'protected path' },
+      ]);
+    });
+
     it('reads only a skill manifest, and only when the scope takes it', () => {
       const read = vi.fn(() => skill('pr-ci-review'));
 
