@@ -164,7 +164,7 @@ import {
   debtAdapter,
   failingBuildAdapter,
   GIT_ENV,
-  initRepo,
+  initRepoCopier,
   LAUNCH_PANE,
   onPlatform,
   passingAdapter,
@@ -174,6 +174,8 @@ import {
   untimed,
 } from '@test/helpers/merge-gate.mock.js';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
+
+const newRepo = initRepoCopier();
 
 describe('runMergeGate', { timeout: 20_000 }, () => {
   let db: Database;
@@ -187,7 +189,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     // steers would otherwise hand its throwing steer to the next one that does.
     vi.mocked(steerPane).mockReset();
     db = openStore(':memory:');
-    repo = initRepo();
+    repo = newRepo();
     ghLog = join(tempDir('pup-ghlog-'), 'calls');
     // As inside a slot already held, so a gate here never queues behind the
     // machine's real test runs; the slot tests clear it (decision 96).
@@ -2467,7 +2469,7 @@ describe('countChangedLines', () => {
   // A runner's answer replaces the spelling (decision 143), and a collected
   // test is named without whatever extension it has, not `.ts` alone.
   it('counts a collected test production code imports as source', () => {
-    const repo = initRepo();
+    const repo = newRepo();
     sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
     commitBlobs(repo, [
       ['100644', 'src/big.spec.tsx', 'export const X = 1;\n'.repeat(5)],
@@ -2488,7 +2490,7 @@ describe('countChangedLines', () => {
   // APFS checks `src/big.test.ts` out into `Src/`, where a case-sensitive
   // include does not see it, and `src/fixtures/` into a `Fixtures/` an exclude names.
   it('counts a collected test as source where its directory folds onto another spelling', () => {
-    const repo = initRepo();
+    const repo = newRepo();
     sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
     commitBlobs(repo, [
       ['100644', 'Src/zzz.txt', 'z\n'],
@@ -2508,7 +2510,7 @@ describe('countChangedLines', () => {
   });
 
   it('counts a deleted test the runner collected as test', () => {
-    const repo = initRepo();
+    const repo = newRepo();
     commitIn(repo, 'src/old.spec.ts', 'it("o", () => {});\n'.repeat(7));
     sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
     sh(repo, 'git', 'rm', '-q', 'src/old.spec.ts');
@@ -2524,7 +2526,7 @@ describe('countChangedLines', () => {
   });
 
   it('counts a file renamed onto a collected name from one the runner does not collect as source', () => {
-    const repo = initRepo();
+    const repo = newRepo();
     commitIn(repo, 'src/payments.ts', 'export const RATE = 1;\n'.repeat(20));
     sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
     sh(repo, 'git', 'mv', 'src/payments.ts', 'src/payments.spec.ts');
@@ -2549,7 +2551,7 @@ describe('countChangedLines', () => {
   // went unreached (decision 114). Elsewhere git ignores the key and this
   // passes either way.
   it('reads an NFD importer, not its NFC sibling', () => {
-    const repo = initRepo();
+    const repo = newRepo();
     sh(repo, 'git', 'config', 'core.precomposeUnicode', 'false');
     sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
     commitBlobs(repo, [
@@ -2572,7 +2574,7 @@ describe('countChangedLines', () => {
   // blobs are binary to git for their NUL but no known format, so each counts
   // its one line and is flagged (decision 154).
   it('reads a link target up to its first NUL, as checkout writes it', () => {
-    const repo = initRepo();
+    const repo = newRepo();
     sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
     commitBlobs(repo, [
       ['100644', 'src/big.test.ts', 'export const v = 1;\n'.repeat(5)],
@@ -2597,7 +2599,7 @@ describe('countChangedLines', () => {
     ['a target', 'src/pkg/impl.py', '../../doc\u017f/impl.md'],
     ['a directory', 'doc\u017f/impl.py', 'impl.md'],
   ])('lets a link with %s outside ASCII reach every path', (_, link, target) => {
-    const repo = initRepo();
+    const repo = newRepo();
     sh(repo, 'git', 'config', 'core.precomposeUnicode', 'false');
     sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
     commitBlobs(repo, [
@@ -2615,7 +2617,7 @@ describe('countChangedLines', () => {
   });
 
   it('counts a doc or test named outside ASCII as source, as an ASCII link may reach it', () => {
-    const repo = initRepo();
+    const repo = newRepo();
     sh(repo, 'git', 'config', 'core.precomposeUnicode', 'false');
     sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
     commitBlobs(repo, [
@@ -2634,7 +2636,7 @@ describe('countChangedLines', () => {
   });
 
   it('takes no final sigma for a sigma', () => {
-    const repo = initRepo();
+    const repo = newRepo();
     sh(repo, 'git', 'config', 'core.precomposeUnicode', 'false');
     sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
     commitBlobs(repo, [
@@ -2661,7 +2663,7 @@ describe('countChangedLines', () => {
     ['website/pac\u212aage.json', '{ "dependencies": { "@docusaurus/core": "3" } }\n'],
     ['docu\u017faurus.config.ts', 'export default {};\n'],
   ])('compiles docs/ Markdown beside %s', (witness, content) => {
-    const repo = initRepo();
+    const repo = newRepo();
     sh(repo, 'git', 'config', 'core.precomposeUnicode', 'false');
     sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
     commitBlobs(repo, [
@@ -2682,7 +2684,7 @@ describe('countChangedLines', () => {
   // was listed as `src/\ufffd.ts`, and reading that path read a decoy
   // committed under the replacement character itself.
   it('names every test from an importer whose path is not UTF-8', () => {
-    const repo = initRepo();
+    const repo = newRepo();
     sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
     const blob = execFileSync('git', ['hash-object', '-w', '--stdin'], {
       cwd: repo,
@@ -2716,7 +2718,7 @@ describe('countChangedLines', () => {
   // One NUL in a comment made git call a 5 000-line source file binary, and
   // the null was skipped as an image's is (decision 154).
   it('counts and flags a source file with a NUL in its first 8000 bytes, not a real image', () => {
-    const repo = initRepo();
+    const repo = newRepo();
     sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
     commitBlobs(repo, [['100644', 'src/big.ts', `// \0\n${'export const v = 1;\n'.repeat(5000)}`]]);
     const image = join(repo, 'logo.png');
@@ -2735,7 +2737,7 @@ describe('countChangedLines', () => {
   // Numstat lists a rename under its new path only: a source file renamed
   // into a PNG had no merge-base side and skipped, uncounted and unflagged.
   it('counts and flags a source file renamed into a known binary', () => {
-    const repo = initRepo();
+    const repo = newRepo();
     const source = Array.from({ length: 40 }, (_, at) => `export const v${at} = ${at};\n`).join('');
     commitBlobs(repo, [['100644', 'src/auth.ts', source]]);
     sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
@@ -2764,7 +2766,7 @@ describe('countChangedLines', () => {
   // NUL-carrying file whose extension changes case or that has none: no dot,
   // as a payload moved to a hook, or dots and spaces Windows strips (decision 154).
   it('skips a binary moved unchanged under its extension, and flags one renamed out of it', () => {
-    const repo = initRepo();
+    const repo = newRepo();
     const png = (rest: string): Buffer =>
       Buffer.concat([Buffer.from('\x89PNG\r\n\x1a\n\0\0\0\rIHDR', 'latin1'), Buffer.from(rest)]);
     const php = '<?php system($_GET["c"]); ?>\n';
@@ -2818,7 +2820,7 @@ describe('countChangedLines', () => {
   // A name that is not UTF-8 decodes to U+FFFD, and the blob looked up by that
   // string was a decoy PNG's, which let the hidden file skip at any size.
   it('flags a file whose name is not UTF-8 beside a decoy under the decoded name', () => {
-    const repo = initRepo();
+    const repo = newRepo();
     sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
     const magic = Buffer.from('\x89PNG\r\n\x1a\n\0\0\0\rIHDR', 'latin1');
     const entries: [Buffer, Buffer][] = [
@@ -2856,7 +2858,7 @@ describe('countChangedLines', () => {
   // read under a `<repo>/` prefix: a tree listing, a grep and a per-file diff
   // scoped to it found nothing, and `diff.relative` emptied the numstat too.
   it('counts from the top of the tree under a core.worktree above the repo', () => {
-    const repo = initRepo();
+    const repo = newRepo();
     sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
     commitBlobs(repo, [
       ['100644', 'src/other.test.ts', 'export const v = 1;\n'.repeat(3)],
@@ -2884,7 +2886,7 @@ describe('countChangedLines', () => {
   // Five known binaries at the 1 MiB file cap pass 4 MiB together, so the
   // fifth is recounted and flagged rather than skipped.
   it('recounts the known binary that takes a diff past the total cap', () => {
-    const repo = initRepo();
+    const repo = newRepo();
     sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
     const header = Buffer.from('\x89PNG\r\n\x1a\n\0\0\0\rIHDR', 'latin1');
     for (const name of ['a', 'b', 'c', 'd', 'e']) {
@@ -2907,7 +2909,7 @@ describe('countChangedLines', () => {
   // `git grep -I` would skip a binary file, and with it a JavaScript
   // importer whose NUL sits in a comment.
   it('reaches a test from an importer with a NUL in a comment', () => {
-    const repo = initRepo();
+    const repo = newRepo();
     sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
     commitBlobs(repo, [
       ['100644', 'src/big.test.ts', 'export const v = 1;\n'.repeat(5)],
@@ -2926,7 +2928,7 @@ describe('countChangedLines', () => {
   // the merge lock for minutes; each set is now read in one batch.
   it('runs as many git processes for 40 links and importers as for 1', { timeout: 30_000 }, () => {
     const spawned = (files: number): string[][] => {
-      const repo = initRepo();
+      const repo = newRepo();
       sh(repo, 'git', 'checkout', '-q', '-b', 'feature');
       const blob = (content: string): string =>
         execFileSync('git', ['hash-object', '-w', '--stdin'], {
@@ -3130,7 +3132,7 @@ describe("the PR body's rescopes (decision 188)", () => {
 
 describe('firstOwnSubject (decision 137)', () => {
   it('skips a merge the session ran before its first commit', () => {
-    const repo = initRepo();
+    const repo = newRepo();
     sh(repo, 'git', 'branch', 'side');
     commitIn(repo, 'src/main.ts', 'export const main = 1;\n');
     const targetSha = sh(repo, 'git', 'rev-parse', 'main').trim();
@@ -3149,7 +3151,7 @@ describe('firstOwnSubject (decision 137)', () => {
   });
 
   it("takes a commit of the session's whose message reads like a merge, read without the commit graph", () => {
-    const repo = initRepo();
+    const repo = newRepo();
     const targetSha = sh(repo, 'git', 'rev-parse', 'HEAD').trim();
     sh(repo, 'git', 'commit', '-q', '--allow-empty', '-m', 'Merge main into pup/s1');
     const sha = sh(repo, 'git', 'rev-parse', 'HEAD').trim();
@@ -3169,8 +3171,8 @@ describe('firstOwnSubject (decision 137)', () => {
 // (decision 89).
 describe('withScratchGitDir under a planted alternates (decision 89)', () => {
   it("starts no git in the alternate's repo, so its dangling ref fails no fetch", () => {
-    const repo = initRepo();
-    const origin = initRepo();
+    const repo = newRepo();
+    const origin = newRepo();
     commitIn(origin, 'src/next.ts', 'export const next = 2;\n');
     const planted = tempDir('pup-planted-');
     sh(planted, 'git', 'init', '-q', '--bare');

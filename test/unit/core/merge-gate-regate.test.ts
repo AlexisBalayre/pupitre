@@ -130,7 +130,7 @@ import {
   debtAdapter,
   failingBuildAdapter,
   GATE_CHECKOUT,
-  initRepo,
+  initRepoCopier,
   passingAdapter,
   SESSION_ID,
   seedSession,
@@ -138,6 +138,8 @@ import {
   untimed,
 } from '@test/helpers/merge-gate.mock.js';
 import { tempDir } from '@test/helpers/temp-dir.mock.js';
+
+const newRepo = initRepoCopier();
 
 describe('runMergeGate', { timeout: 20_000 }, () => {
   let db: Database;
@@ -151,7 +153,7 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     // steers would otherwise hand its throwing steer to the next one that does.
     vi.mocked(steerPane).mockReset();
     db = openStore(':memory:');
-    repo = initRepo();
+    repo = newRepo();
     ghLog = join(tempDir('pup-ghlog-'), 'calls');
     // As inside a slot already held, so a gate here never queues behind the
     // machine's real test runs; the slot tests clear it (decision 96).
