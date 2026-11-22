@@ -16,8 +16,15 @@ export interface TrackerIssue {
  * more, so a tracker other than GitHub Issues can stand behind it.
  */
 export interface Tracker {
-  /** Open issues carrying the ready label, applied by someone allowed to start the work. */
+  /**
+   * Open issues carrying the ready label, applied by someone allowed to start
+   * the work after the title and body last changed: an edit since the label
+   * leaves the issue out until the label is applied again.
+   */
   listReady(): TrackerIssue[];
   comment(issueId: string, body: string): void;
   removeLabel(issueId: string, label: string): void;
 }
+
+/** Runs `gh` with `args`, `input` over stdin when given, and returns its stdout. */
+export type GhRunner = (args: readonly string[], input?: string) => string;

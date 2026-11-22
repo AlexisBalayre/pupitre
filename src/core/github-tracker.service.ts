@@ -1,15 +1,17 @@
 import { execFileSync } from 'node:child_process';
 import { TrackerUnavailableError } from './errors/tracker.errors.js';
 import { pinnedGitEnv } from './git-diff.client.js';
-import type { Tracker, TrackerIssue } from './types/tracker.types.js';
+import type { GhRunner, Tracker, TrackerIssue } from './types/tracker.types.js';
 
 // GitHub Issues behind the tracker interface of decision 176. Every gh call is
 // an argv array pinned to one repo; issue text comes back as data fields only.
-
-/** Runs `gh` with `args`, `input` over stdin when given, and returns its stdout. */
-export type GhRunner = (args: readonly string[], input?: string) => string;
+// An author can edit their issue without write access and the edit leaves no
+// labeled event, so a title or body changed since the label is not approved.
 
 const READY_LABEL = 'ready';
+const LAST_EDITED_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) { issue(number: $number) { lastEditedAt } }
+}`;
 /** `permission` of GitHub's collaborator endpoint: maintain reads as write, triage as read. */
 const WRITE_PERMISSIONS = new Set(['admin', 'write']);
 const ISSUE_LIST_LIMIT = 500;
@@ -50,10 +52,13 @@ export function githubTracker(repo: string, run: GhRunner = runGh): Tracker {
     }
   };
 
-  /** Login of whoever last applied the ready label to issue `number`, if anyone did. */
-  const readyLabeller = (number: number): string | undefined => {
-    const select = `.[] | select(.event == "labeled" and .label.name == ${JSON.stringify(READY_LABEL)} and .actor != null) | .actor.login`;
-    const logins = gh([
+  /**
+   * Who last applied the ready label to issue `number`, and when in epoch ms;
+   * none if nobody did or the title was renamed after.
+   */
+  const readyApproval = (number: number): { login: string; at: number } | undefined => {
+    const select = `.[] | select((.event == "labeled" and .label.name == ${JSON.stringify(READY_LABEL)} and .actor != null) or .event == "renamed") | [.event, .created_at, (.actor.login // "")] | @tsv`;
+    const events = gh([
       'api',
       `${apiPath}/issues/${number}/events`,
       '--hostname',
@@ -61,11 +66,43 @@ export function githubTracker(repo: string, run: GhRunner = runGh): Tracker {
       '--paginate',
       '--jq',
       select,
-    ])
-      .split('\n')
-      .map((line) => line.trim())
-      .filter((line) => line !== '');
-    return logins.at(-1);
+    ]);
+    let approval: { login: string; at: number } | undefined;
+    for (const line of events.split('\n')) {
+      const [event, createdAt = '', login = ''] = line.split('\t');
+      if (event === 'labeled') approval = { login, at: Date.parse(createdAt) };
+      if (event === 'renamed') approval = undefined;
+    }
+    return approval;
+  };
+
+  /** Whether issue `number`'s body has gone unedited since `since`, in epoch ms. */
+  const unchangedSince = (number: number, since: number): boolean => {
+    const args = [
+      'api',
+      'graphql',
+      '--hostname',
+      host,
+      '-f',
+      `query=${LAST_EDITED_QUERY}`,
+      '-f',
+      `owner=${owner}`,
+      '-f',
+      `name=${name}`,
+      '-F',
+      `number=${number}`,
+    ];
+    const answer = parseJson(args, gh(args)) as {
+      data?: { repository?: { issue?: { lastEditedAt?: unknown } | null } | null };
+    } | null;
+    const editedAt = answer?.data?.repository?.issue?.lastEditedAt;
+    if (editedAt === null) return true;
+    if (typeof editedAt !== 'string') {
+      throw new TrackerUnavailableError(
+        `\`gh api graphql\` did not answer when issue ${number} was last edited.`,
+      );
+    }
+    return Date.parse(editedAt) < since;
   };
 
   const writers = new Map<string, boolean>();
@@ -107,8 +144,12 @@ export function githubTracker(repo: string, run: GhRunner = runGh): Tracker {
       const issues = parseIssues(args, gh(args));
       return issues
         .filter(({ number }) => {
-          const labeller = readyLabeller(number);
-          return labeller !== undefined && hasWriteAccess(labeller);
+          const approval = readyApproval(number);
+          return (
+            approval !== undefined &&
+            hasWriteAccess(approval.login) &&
+            unchangedSince(number, approval.at)
+          );
         })
         .map(({ issue }) => issue);
     },
@@ -133,12 +174,7 @@ function parseIssues(
   args: readonly string[],
   output: string,
 ): { number: number; issue: TrackerIssue }[] {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(output);
-  } catch {
-    throw new TrackerUnavailableError(`Cannot parse \`gh ${args[0]} ${args[1]}\` output as JSON.`);
-  }
+  const parsed = parseJson(args, output);
   if (!Array.isArray(parsed)) {
     throw new TrackerUnavailableError(`\`gh ${args[0]} ${args[1]}\` did not answer a list.`);
   }
@@ -161,6 +197,15 @@ function parseIssues(
       .filter((label): label is string => typeof label === 'string');
     return { number, issue: { id: String(number), url, title, body, labels: names } };
   });
+}
+
+/** The output of gh `args` as JSON; output that is not JSON is a refusal. */
+function parseJson(args: readonly string[], output: string): unknown {
+  try {
+    return JSON.parse(output);
+  } catch {
+    throw new TrackerUnavailableError(`Cannot parse \`gh ${args[0]} ${args[1]}\` output as JSON.`);
+  }
 }
 
 /** One refusal for any gh failure, naming a rate limit as such. */
