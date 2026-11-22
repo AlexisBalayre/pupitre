@@ -42,6 +42,8 @@ export const CRITICAL_AREAS: readonly string[] = [
   'src/core/enums/session-state.enums.ts',
   'src/core/enums/event-type.enums.ts',
   'src/core/errors/session.errors.ts',
+  'src/core/errors/session-lifecycle*',
+  'src/core/types/session-lifecycle*',
   'src/core/types/ledger.types.ts',
   'src/core/types/baseline-history.types.ts',
   'src/core/types/decision-record.types.ts',

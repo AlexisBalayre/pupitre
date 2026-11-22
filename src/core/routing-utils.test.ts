@@ -1,3 +1,5 @@
+import { readdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { LADDERS } from '../claude/constants/model-ladder.constants.js';
 import { Tier } from '../claude/enums/tier.enums.js';
@@ -71,33 +73,31 @@ describe('tierForScope', () => {
 
   // The areas match by path: a file extracted out of a critical area into
   // `src/core/{types,constants,errors,enums}/` stays critical for the tier
-  // (decision 92) and for a remeasure's approval (decision 185).
-  it.each([
-    'src/core/constants/merge-gate.constants.ts',
-    'src/core/errors/merge-gate.errors.ts',
-    'src/core/types/merge-gate.types.ts',
-    'src/core/enums/merge-status.enums.ts',
-    'src/core/enums/gate-stage-status.enums.ts',
-    'src/core/types/land.types.ts',
-    'src/core/types/regate.types.ts',
-    'src/core/errors/sandbox.errors.ts',
-    'src/core/types/sandbox.types.ts',
-    'src/core/enums/sandbox-mode.enums.ts',
-    'src/core/enums/interrupt-signal.enums.ts',
-    'src/core/types/profile-compiler.types.ts',
-    'src/core/types/session.types.ts',
-    'src/core/enums/session-state.enums.ts',
-    'src/core/enums/event-type.enums.ts',
-    'src/core/errors/session.errors.ts',
-    'src/core/types/ledger.types.ts',
-    'src/core/types/baseline-history.types.ts',
-    'src/core/types/decision-record.types.ts',
-    'src/core/errors/git-diff.errors.ts',
-    'src/core/types/git-diff.types.ts',
-    'src/core/types/github.types.ts',
-  ])('keeps %s, moved out of a critical area, critical', (path) => {
-    expect(tierForScope([path])).toBe(Tier.Critical);
-    expect(CRITICAL_AREAS.map(globToRegExp).some((area) => area.test(path))).toBe(true);
+  // (decision 92) and for a remeasure's approval (decision 185). The
+  // directories are listed on disk, so a new extraction fails here unaided.
+  describe.each([
+    'sandbox',
+    'merge-gate',
+    'session-lifecycle',
+    'store',
+    'hooks',
+    'profile-compiler',
+    'event-type',
+  ])('the %s concept', (concept) => {
+    const extracted = ['types', 'constants', 'errors', 'enums'].flatMap((dir) =>
+      readdirSync(join(import.meta.dirname, dir))
+        .filter((name) => name.startsWith(concept))
+        .map((name) => `src/core/${dir}/${name}`),
+    );
+
+    it('routes every extracted file critical', () => {
+      const standard = extracted.filter(
+        (path) =>
+          tierForScope([path]) !== Tier.Critical ||
+          !CRITICAL_AREAS.map(globToRegExp).some((area) => area.test(path)),
+      );
+      expect(standard).toEqual([]);
+    });
   });
 });
 
