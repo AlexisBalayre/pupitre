@@ -104,8 +104,9 @@ export const PROTECTED_PATH_GLOBS = ['.claude/**', '.pupitre/**'];
  * The allow list carved out of `PROTECTED_PATH_GLOBS` (decision 208): a
  * skill's Markdown, which a session may edit through its scope. A new skill
  * directory is allowed without a change here; a script or template beside a
- * skill stays protected, and the gate refuses a `SKILL.md` named other than
- * its directory (`isMisnamedSkill`).
+ * skill stays protected. The gate refuses a lifted path the branch leaves as
+ * anything but a plain file, and a `SKILL.md` outside the one form it accepts
+ * or named other than its directory (`isMisnamedSkill`).
  */
 export const PROTECTED_PATH_EXCEPTIONS = ['.claude/skills/**/*.md'];
 

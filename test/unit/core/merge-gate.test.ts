@@ -459,16 +459,19 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
     expect(outcome.report.stages.at(-1)?.detail).toContain('.pupitre/adapter.yml (protected path)');
   });
 
-  describe('a skill named other than its directory (decision 208)', () => {
+  describe('what the skills exception lifts is read (decision 208)', () => {
     const scope = { scopeIn: ['src/**', '.claude/skills/**'] };
     const skill = (name: string): string => `---\nname: ${name}\ndescription: x\n---\n# Body\n`;
-    const refusedAsMisnamed = (outcome: Awaited<ReturnType<typeof merge>>): void => {
+    const refused = (outcome: Awaited<ReturnType<typeof merge>>, change: string): void => {
       expect(outcome.status).toBe(MergeStatus.Rejected);
       expect(outcome.report.stages.at(-1)).toMatchObject({
         stage: 'scope-audit',
         status: GateStageStatus.Fail,
-        detail: 'Out-of-scope changes:\n  .claude/skills/zz/SKILL.md (misnamed skill)',
+        detail: `Out-of-scope changes:\n  ${change}`,
       });
+    };
+    const refusedAsMisnamed = (outcome: Awaited<ReturnType<typeof merge>>): void => {
+      refused(outcome, '.claude/skills/zz/SKILL.md (misnamed skill)');
     };
 
     it('refuses a SKILL.md that names itself pr-ci-review', async () => {
@@ -505,7 +508,18 @@ describe('runMergeGate', { timeout: 20_000 }, () => {
       sh(worktree, 'git', 'add', '.');
       sh(worktree, 'git', 'commit', '-m', 'link the skill');
 
-      refusedAsMisnamed(await merge());
+      refused(await merge(), '.claude/skills/zz/SKILL.md (not a plain file)');
+    });
+
+    it('refuses a lifted name committed as a symlink to a directory the audit never reads', async () => {
+      const worktree = seedSession(db, repo, { scopeIn: ['.claude/skills/**', 'docs/**'] });
+      commitIn(worktree, 'docs/shadow/SKILL.md', skill('pr-ci-review'));
+      mkdirSync(join(worktree, '.claude/skills'), { recursive: true });
+      symlinkSync('../../docs/shadow', join(worktree, '.claude/skills/shadow.md'));
+      sh(worktree, 'git', 'add', '.');
+      sh(worktree, 'git', 'commit', '-m', 'link a skill directory');
+
+      refused(await merge(), '.claude/skills/shadow.md (not a plain file)');
     });
 
     it('merges a SKILL.md named as its directory', async () => {

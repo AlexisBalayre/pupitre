@@ -36,17 +36,28 @@
     rule alone does not keep that skill: `.claude/skills/zz/SKILL.md` declaring
     `name: pr-ci-review` sits under the exception and outside the directory kept. So the
     scope-audit stage reads each `SKILL.md` the scope takes, as the diff leaves it, and refuses
-    it as a misnamed skill when its frontmatter `name:` is not exactly its directory's, or is
-    `pr-ci-review` in any case (`isMisnamedSkill`). It reads fail-closed: a frontmatter left
-    open, one that is not a single YAML document, a duplicated name or a name that is not a
-    string is refused, and merge keys are applied, so the name a YAML 1.1 reader sees is the one
-    checked. The gate reads the blob that the branch diff's `--raw` record names, by oid
-    (`branchBlobReader`). It does not read the gate's checkout, which a build or test stage can
-    rewrite before the audit runs, and it does not look the blob up by path, since a name that
-    is not UTF-8 decodes to U+FFFD and can name another file (decision 154). A `SKILL.md` the
-    branch leaves as anything but a regular file is refused too: a symlink would have Claude
-    Code load its target's frontmatter, which the check never read. So is a decoded path that
-    names no record or more than one. A skill with no `name:` takes its directory's and passes.
+    it as a misnamed skill unless it is a well-named skill in the one form the gate accepts
+    (`isMisnamedSkill`). The gate does not try to read frontmatter the way Claude Code might:
+    its parser is not in-tree, and a guess at it fails open wherever it reads narrower. The
+    gate accepts this form and refuses everything else: the file opens on a line of exactly
+    three dashes ended by a bare LF (no BOM, no leading blank, no space or CR after them);
+    the block closes on the first later line of exactly three dashes; the YAML between them
+    holds no other run of three dashes, mid-line or not, so a reader that closes earlier
+    cannot read a shorter block than the gate did; it parses as one YAML document, with merge
+    keys applied as a YAML 1.1 reader applies them; and its `name:` is absent or exactly its
+    directory's string and not `pr-ci-review` in any case. A manifest with no frontmatter, a
+    duplicated name or a name that is not a string is refused. A skill with no `name:` takes
+    its directory's and passes. The gate reads the blob that the branch diff's `--raw` record
+    names, by oid (`branchBlobReader`). It does not read the gate's checkout, which a build or
+    test stage can rewrite before the audit runs, and it does not look the blob up by path,
+    since a name that is not UTF-8 decodes to U+FFFD and can name another file (decision 154).
+    *Every lifted path is a plain file.* The stage reads every path the exception lifts and the
+    scope takes, not only a `SKILL.md`, and refuses one the branch leaves as anything but a
+    regular file, as not a plain file. A symlink there is a name Claude Code can follow to
+    content the gate never read: a symlinked `SKILL.md` loads its target's frontmatter, and
+    `.claude/skills/shadow.md` linked to a directory holding a `SKILL.md` named `pr-ci-review`
+    could be listed as a skill. A gitlink is refused the same way, and so is a decoded path
+    that names no record or more than one.
     *The rescope follows the gate.* `pup plan edit --rescope` refuses a glob that can share a
     path with a protected glob unless it lies under an exception, and refuses one that lies
     wholly inside `PROTECTED_WITHIN_EXCEPTIONS`. A glob with a wildcard lies under the
@@ -57,11 +68,13 @@
     is taken), a skill's script and `.claude/skills/pr-ci-review/**` are refused. A taken glob
     that also covers a script or the CI review's skill, as `.claude/skills/**` does, does not
     let them through: the gate still refuses those paths, whatever the scope.
-    *What the gate checks, and what it does not.* It checks two things in a skill: its path
-    against the allow list, and its `name:` against its directory. It does not read
-    `allowed-tools`, `hooks`, `description`, `disable-model-invocation` or an inline command.
-    Those are reviewed only by the human merge click and the CI review reading the diff, as
-    any source change is. A check of that content is a follow-up, not part of this decision.
+    *What the gate checks, and what it does not.* It checks three things in a skill: its path
+    against the allow list, that each lifted path is a plain file, and its manifest's form and
+    `name:` against its directory. It does not check `allowed-tools`, `hooks`, `description`,
+    `disable-model-invocation`, or an inline command, the shell injection a skill's body can
+    carry. Those are reviewed only by the human merge click and the CI review reading the
+    diff, as any source change is. A check of that content is a follow-up, not part of this
+    decision.
     *Who reads a skill.* The operator's console session and the conductor read
     `.claude/skills/` from the main checkout, so a worker's skill reaches them only once it
     merges. There it can grant tools, register hooks and run its inline commands with the
@@ -97,12 +110,15 @@
     in that worker's own session when its profile keeps the Skill tool, and whether the Bash
     guard sees that skill's `hooks` and inline commands.
     *Tests.* `scope-audit.test.ts` for a skill's Markdown passing in scope, each protected path
-    still flagged (a skill's scripts among them), a `SKILL.md` named `pr-ci-review` or named
-    other than its directory refused, and a matching one passing; `skill-name-utils.test.ts`
-    for each fail-closed read of `isMisnamedSkill` (`skill-name.utils.ts`);
-    `merge-gate.test.ts` for the scope-audit stage refusing a `SKILL.md` named `pr-ci-review`,
-    still refusing it after a build stage rewrites the checkout's copy, refusing one committed
-    as a symlink, and merging a well-named one;
+    still flagged (a skill's scripts among them), a `SKILL.md` named `pr-ci-review`, named
+    other than its directory or with no frontmatter refused, a matching one passing, and every
+    lifted path read and refused when it is not a plain file; `skill-name-utils.test.ts` for
+    each form `isMisnamedSkill` refuses (`skill-name.utils.ts`), among them an opening line
+    with a space, NBSP, form feed or vertical tab after the dashes and a name holding three
+    dashes mid-line, and each it accepts; `merge-gate.test.ts` for the scope-audit stage
+    refusing a `SKILL.md` named `pr-ci-review`, still refusing it after a build stage rewrites
+    the checkout's copy, refusing one committed as a symlink and a `.claude/skills/shadow.md`
+    committed as a symlink to a directory, and merging a well-named one;
     `task-rescope.test.ts` for a rescope taking `.claude/skills/**`, refusing each protected
     glob, a skill's script and the CI review's skill, and the gate refusing those under the
     widened scope; `land.test.ts`, unchanged, for the re-measure's adapter paths.

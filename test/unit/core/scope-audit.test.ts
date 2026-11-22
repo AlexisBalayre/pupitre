@@ -62,7 +62,7 @@ describe('auditScope', () => {
     expect(auditScope([path], ['**'])).toEqual([{ path, reason: 'protected path' }]);
   });
 
-  describe('a skill named other than its directory (decision 208)', () => {
+  describe('what the exception lifts is read (decision 208)', () => {
     const skill = (name: string): string => `---\nname: ${name}\ndescription: x\n---\n# Body\n`;
     const audit = (path: string, content: string | null | undefined) =>
       auditScope([path], ['.claude/skills/**'], [], () => content);
@@ -79,16 +79,24 @@ describe('auditScope', () => {
       expect(audit(path, skill('tdd'))).toEqual([{ path, reason: 'misnamed skill' }]);
     });
 
-    it('passes a SKILL.md whose name is its directory, or that has no name', () => {
+    it('passes a SKILL.md whose name is its directory, that has no name, or that is deleted', () => {
       expect(audit('.claude/skills/zz/SKILL.md', skill('zz'))).toEqual([]);
-      expect(audit('.claude/skills/zz/SKILL.md', '# No frontmatter\n')).toEqual([]);
+      expect(audit('.claude/skills/zz/SKILL.md', '---\ndescription: x\n---\n')).toEqual([]);
       expect(audit('.claude/skills/zz/SKILL.md', undefined)).toEqual([]);
     });
 
-    it('refuses a SKILL.md the reader cannot read as a plain file', () => {
+    it('refuses a SKILL.md outside the one frontmatter form accepted', () => {
       const path = '.claude/skills/zz/SKILL.md';
 
-      expect(audit(path, null)).toEqual([{ path, reason: 'misnamed skill' }]);
+      expect(audit(path, '# No frontmatter\n')).toEqual([{ path, reason: 'misnamed skill' }]);
+    });
+
+    it.each([
+      '.claude/skills/zz/SKILL.md',
+      '.claude/skills/zz/notes.md',
+      '.claude/skills/shadow.md',
+    ])('refuses %s when the reader cannot read it as a plain file', (path) => {
+      expect(audit(path, null)).toEqual([{ path, reason: 'not a plain file' }]);
     });
 
     it('lets a failing reader throw rather than read its failure as an answer', () => {
@@ -101,12 +109,15 @@ describe('auditScope', () => {
       ).toThrow('git failed');
     });
 
-    it('reads only a skill manifest, and only when the scope takes it', () => {
+    it('reads every path the exception lifts, and only when the scope takes it', () => {
       const read = vi.fn(() => skill('pr-ci-review'));
 
       expect(auditScope(['.claude/skills/zz/notes.md'], ['.claude/skills/**'], [], read)).toEqual(
         [],
       );
+      expect(read).toHaveBeenCalledWith('.claude/skills/zz/notes.md');
+      read.mockClear();
+      expect(auditScope(['docs/zz/SKILL.md'], ['docs/**'], [], read)).toEqual([]);
       expect(auditScope(['.claude/skills/zz/SKILL.md'], ['src/**'], [], read)).toEqual([
         { path: '.claude/skills/zz/SKILL.md', reason: 'outside scope-in' },
       ]);

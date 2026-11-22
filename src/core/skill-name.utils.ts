@@ -5,37 +5,35 @@ import { CI_REVIEW_SKILL } from './constants/merge-gate.constants.js';
 const SKILL_MANIFEST = /^\.claude\/skills\/(?:[^/]+\/)*([^/]+)\/skill\.md$/i;
 
 /**
- * A frontmatter block, read wider than Claude Code may (a BOM or blank lines
- * before it) so the check reads at least what it reads; group 1 is the YAML,
- * undefined when the block is empty.
+ * The one frontmatter form the gate accepts: the file opens on a line of
+ * exactly `---` ended by a bare LF, and the block closes on the first later
+ * line of exactly `---`. Group 1 is the YAML between them, empty or ending in
+ * a LF; a `---` anywhere in it is refused apart.
  */
-const FRONTMATTER = /^﻿?\s*---[ \t]*\r?\n((?:[\s\S]*?\r?\n)?)---[ \t]*(?:\r?\n|$)/;
-const FRONTMATTER_OPENING = /^﻿?\s*---[ \t]*\r?\n/;
-
-/** Whether `path` is a skill's `SKILL.md` under `.claude/skills/`, in any case (decision 208). */
-export function isSkillManifest(path: string): boolean {
-  return SKILL_MANIFEST.test(path);
-}
+const FRONTMATTER = /^---\n((?:[^\n]*\n)*?)---(?:\n|$)/;
 
 /**
- * Whether a skill's `SKILL.md` declares a frontmatter `name:` other than its
- * directory's, or the CI review's (decision 208). Claude Code takes a skill's
- * name, and so its slash command, from `name:`, so a skill named other than
- * its directory could answer `/pr-ci-review` from outside the directory the
- * gate keeps. Read fail-closed: a frontmatter left open, one that is not a
- * single YAML document, or a `name:` that is not exactly the directory's
- * string is refused. A skill with no `name:` takes its directory's. Merge keys
- * are applied, as a YAML 1.1 reader applies them. Any other path is not a
- * skill's manifest and passes.
+ * Whether a skill's `SKILL.md` is anything but a well-named skill in the one
+ * form the gate accepts (decision 208). Claude Code takes a skill's name, and
+ * so its slash command, from `name:`, so a skill named other than its
+ * directory could answer `/pr-ci-review` from outside the directory the gate
+ * keeps. Rather than guess how Claude Code reads frontmatter, the gate accepts
+ * one strict form and refuses the rest: a manifest passes only if it matches
+ * `FRONTMATTER`, holds no other `---` in its YAML, parses as one YAML document
+ * (merge keys applied, as a YAML 1.1 reader applies them), and has no `name:`
+ * or one exactly its directory's string that is not `pr-ci-review` in any
+ * case. Any other path is not a skill's manifest and passes.
  */
 export function isMisnamedSkill(path: string, content: string): boolean {
   const directory = SKILL_MANIFEST.exec(path)?.[1];
   if (directory === undefined) return false;
   const block = FRONTMATTER.exec(content);
-  if (block === null) return FRONTMATTER_OPENING.test(content);
+  if (block === null) return true;
+  const [, yaml = ''] = block;
+  if (yaml.includes('---')) return true;
   let front: unknown;
   try {
-    front = parse(block[1] ?? '', { merge: true });
+    front = parse(yaml, { merge: true });
   } catch {
     return true;
   }

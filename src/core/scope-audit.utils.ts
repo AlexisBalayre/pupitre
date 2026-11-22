@@ -4,7 +4,7 @@ import {
   PROTECTED_WITHIN_EXCEPTIONS,
 } from './constants/merge-gate.constants.js';
 import { globToRegExp, globToRegExpSource } from './glob.utils.js';
-import { isMisnamedSkill, isSkillManifest } from './skill-name.utils.js';
+import { isMisnamedSkill } from './skill-name.utils.js';
 import type { ScopeViolation } from './types/scope-audit.types.js';
 
 /**
@@ -22,11 +22,12 @@ function caseless(globs: readonly string[]): RegExp[] {
  * A protected path is one under `PROTECTED_PATH_GLOBS` that no exception
  * lifts, or one under `PROTECTED_WITHIN_EXCEPTIONS` (decision 208). Given
  * `readFile`, which returns a path's content as the diff leaves it, undefined
- * for one the diff deletes, and null for one it cannot read as a plain file (a
- * symlink, whose target Claude Code would load), a skill's `SKILL.md` the
- * scope takes is refused as a misnamed skill when `isMisnamedSkill` says so or
- * its read is null. A reader that throws is not an answer, and its error
- * propagates.
+ * for one the diff deletes, and null for one it cannot read as a plain file,
+ * every path an exception lifts and the scope takes is read. A null read is
+ * refused as not a plain file: a symlink or gitlink there is a name Claude
+ * Code can follow to content the gate never read. A skill's `SKILL.md` is
+ * refused as a misnamed skill when `isMisnamedSkill` says so. A reader that
+ * throws is not an answer, and its error propagates.
  */
 export function auditScope(
   paths: string[],
@@ -39,13 +40,16 @@ export function auditScope(
   const unliftedRes = caseless(PROTECTED_WITHIN_EXCEPTIONS);
   const inRes = scopeIn.map(globToRegExp);
   const outRes = scopeOut.map(globToRegExp);
+  const isLifted = (path: string): boolean => exceptionRes.some((re) => re.test(path));
   const isProtected = (path: string): boolean =>
-    (protectedRes.some((re) => re.test(path)) && !exceptionRes.some((re) => re.test(path))) ||
+    (protectedRes.some((re) => re.test(path)) && !isLifted(path)) ||
     unliftedRes.some((re) => re.test(path));
-  const isMisnamed = (path: string): boolean => {
-    if (readFile === undefined || !isSkillManifest(path)) return false;
+  const contentViolation = (path: string): ScopeViolation['reason'] | undefined => {
+    if (readFile === undefined || !isLifted(path)) return undefined;
     const content = readFile(path);
-    return content === null || (content !== undefined && isMisnamedSkill(path, content));
+    if (content === null) return 'not a plain file';
+    if (content !== undefined && isMisnamedSkill(path, content)) return 'misnamed skill';
+    return undefined;
   };
 
   const violations: ScopeViolation[] = [];
@@ -56,8 +60,9 @@ export function auditScope(
       violations.push({ path, reason: 'matches scope-out' });
     } else if (!inRes.some((re) => re.test(path))) {
       violations.push({ path, reason: 'outside scope-in' });
-    } else if (isMisnamed(path)) {
-      violations.push({ path, reason: 'misnamed skill' });
+    } else {
+      const reason = contentViolation(path);
+      if (reason !== undefined) violations.push({ path, reason });
     }
   }
   return violations;
