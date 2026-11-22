@@ -1,0 +1,89 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-22T15:05:53.057Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "45036195331",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/45036195331",
+  "actor": "AlexisBalayre",
+  "commit_sha": "4a3eb8d10802c44b2a8b6a059aa6cf78db24febd",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 423,
+  "action": "review",
+  "reviewers_spawned": [
+    "docs",
+    "conventions"
+  ],
+  "reviewers_returned": [
+    "docs",
+    "conventions"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "context",
+    "maintainability",
+    "spec",
+    "simplicity",
+    "guards",
+    "workflow-safety"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "5f68aea03bdf48fba12547d046933d327d909e26",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": ".github/ISSUE_TEMPLATE/bug.yml",
+      "line": "10-11",
+      "description": "All five issue forms say the operator applies `ready` once the ticket passes intake, which reverses ADR 0176: `ready` is applied first (by the operator or a write-access collaborator) and intake then checks the fields and removes it on failure.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "The delta (5f68aea..4a3eb8d) is one sentence reworded identically in the five issue forms (10 lines, prose only), so the gated roster is docs and conventions. Skipped: correctness and security (no logic and no trust boundary), context (no protocol or infra surface in the delta), simplicity (no new construct), guards (no non-test source), workflow-safety (ISSUE_TEMPLATE is not .github/workflows), spec (no closing issue or --spec source), and maintainability (off the default roster). Prior important prior_importants[0] (the `ready` order) is resolved: all five forms now say `ready` is applied first and intake then checks it and removes it, which matches ADR 0176 lines 10-12."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.5559291000000001,
+  "duration_ms": 58424,
+  "num_turns": 15,
+  "tokens": {
+    "input": 18,
+    "output": 4550,
+    "cache_read": 403843,
+    "cache_creation": 37782,
+    "total": 446193
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 18,
+      "output": 4550,
+      "cache_read": 403843,
+      "cache_creation": 37782,
+      "cost_usd": 0.4740966
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 10,
+      "output": 1458,
+      "cache_read": 41675,
+      "cache_creation": 25226,
+      "cost_usd": 0.0818325
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "bash scripts/adr-index.sh"
+    }
+  ]
+}
