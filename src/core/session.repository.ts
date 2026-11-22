@@ -2,6 +2,7 @@ import type { Database } from 'better-sqlite3';
 import { sanitizeReason } from '../adapters/capability.utils.js';
 import { Tier } from '../claude/enums/tier.enums.js';
 import { EventType } from './enums/event-type.enums.js';
+import { SessionState } from './enums/session-state.enums.js';
 import { InvalidProfileError } from './errors/profile.errors.js';
 import { InvalidTransitionError, MalformedTaskSpecError } from './errors/session.errors.js';
 import { asStringArray, parseJsonOr } from './report-data.utils.js';
@@ -16,7 +17,6 @@ import type {
   QuestionEvent,
   SessionRoute,
   SessionRow,
-  SessionState,
   StoredQuestion,
   TaskRow,
   TaskSpecPatch,
@@ -230,7 +230,10 @@ export function updateTaskSpec(db: Database, id: string, spec: string, tier?: Ti
  * named here. A live window in any of them is
  * still refused, by the caller that can probe tmux.
  */
-const RESCOPABLE_STATES: readonly SessionState[] = ['awaiting-review', 'merged'];
+const RESCOPABLE_STATES: readonly SessionState[] = [
+  SessionState.AwaitingReview,
+  SessionState.Merged,
+];
 
 /**
  * States in which a session is at work on its task, its hooks compiled from
@@ -677,7 +680,7 @@ export function openQuestion(
     // `pup answer`'s steer: the answer recorded after it says which question it closes.
     if (event.type === 'steer' && event.by === 'operator' && event.kind === 'answer') continue;
     if (event.type === 'steer' && event.by !== 'operator') continue;
-    if (event.type === 'gate_result' && event.to !== 'running') continue;
+    if (event.type === 'gate_result' && event.to !== SessionState.Running) continue;
     if (event.type !== 'question') return undefined;
     const asked = { ...event, id: row.id };
     if (!accept(asked)) continue;

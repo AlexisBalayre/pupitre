@@ -14,6 +14,7 @@ import { tempDir } from '@test/helpers/temp-dir.mock.js';
 import { killSession } from '../claude/session-runtime.service.js';
 import { openStore } from './db.client.js';
 import { EventType } from './enums/event-type.enums.js';
+import { SessionState } from './enums/session-state.enums.js';
 import { projectId } from './paths.utils.js';
 import {
   appendEvent,
@@ -103,8 +104,8 @@ describe('retireSession', { timeout: 20_000 }, () => {
       profileHash: 'hash',
       tmuxTarget: PANE,
     });
-    transitionSession(db, SESSION_ID, 'running');
-    transitionSession(db, SESSION_ID, 'awaiting-review');
+    transitionSession(db, SESSION_ID, SessionState.Running);
+    transitionSession(db, SESSION_ID, SessionState.AwaitingReview);
     vi.mocked(killSession).mockReset();
     ghLog = join(tempDir('pup-retire-gh-log-'), 'gh-calls');
     originalPath = process.env.PATH;
@@ -116,7 +117,7 @@ describe('retireSession', { timeout: 20_000 }, () => {
 
   /** What the gate's `--pr` merge leaves: the session merged, its PR on the event. */
   function seedPrMerge(prUrl: string | null = PR_URL): void {
-    transitionSession(db, SESSION_ID, 'merged');
+    transitionSession(db, SESSION_ID, SessionState.Merged);
     appendEvent(db, SESSION_ID, EventType.Merge, {
       branch: BRANCH,
       sha: pinned,
@@ -294,7 +295,7 @@ describe('retireSession', { timeout: 20_000 }, () => {
     ['no pinned sha', { target: 'main' }],
     ['no target', { sha: 'PINNED' }],
   ])('refuses a merge event that names %s, asking GitHub nothing', async (_name, pin) => {
-    transitionSession(db, SESSION_ID, 'merged');
+    transitionSession(db, SESSION_ID, SessionState.Merged);
     // Written raw: a target-less merge is an old or torn row no writer makes now.
     const payload = { branch: BRANCH, files: [], prUrl: PR_URL, ...pin };
     db.prepare(
@@ -526,9 +527,9 @@ describe('session teardown helpers', { timeout: 20_000 }, () => {
       branch: BRANCH,
       profileHash: 'hash',
     });
-    transitionSession(db, SESSION_ID, 'running');
-    transitionSession(db, SESSION_ID, 'awaiting-review');
-    transitionSession(db, SESSION_ID, 'merged');
+    transitionSession(db, SESSION_ID, SessionState.Running);
+    transitionSession(db, SESSION_ID, SessionState.AwaitingReview);
+    transitionSession(db, SESSION_ID, SessionState.Merged);
   });
 
   function seedMerge(pin: { sha?: string; target: string; prUrl?: string }): void {

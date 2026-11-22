@@ -47,6 +47,7 @@ import {
 } from './cache-hold.service.js';
 import { openStore } from './db.client.js';
 import { EventType } from './enums/event-type.enums.js';
+import { SessionState } from './enums/session-state.enums.js';
 import { projectId, projectPaths } from './paths.utils.js';
 import {
   appendEvent,
@@ -59,7 +60,7 @@ import {
   transitionSession,
 } from './session.repository.js';
 import { sweepDeadTurns } from './turn-watchdog.service.js';
-import type { EventRow, SessionState } from './types/session.types.js';
+import type { EventRow } from './types/session.types.js';
 
 const HOLD_AGE_MS = CACHE_HOLD_AFTER_MS + 2 * 60_000;
 const STOP = { hook_event_name: 'Stop' };
@@ -82,8 +83,9 @@ function seedSession(db: Database, repo: string, id: string, state: SessionState
     profileHash: 'hash',
     tmuxTarget: '%7',
   });
-  transitionSession(db, id, 'running');
-  if (state === 'awaiting-review' || state === 'blocked') transitionSession(db, id, state);
+  transitionSession(db, id, SessionState.Running);
+  if (state === SessionState.AwaitingReview || state === SessionState.Blocked)
+    transitionSession(db, id, state);
 }
 
 /** The session's hook events on disk, the file's mtime aged by `ageMs`. */
@@ -123,7 +125,7 @@ describe('holdIdleCaches (decision 179)', () => {
   });
 
   it('holds a worker awaiting review once its idle nears the hour, and records no steer', () => {
-    seedSession(db, repo, 's1', 'awaiting-review');
+    seedSession(db, repo, 's1', SessionState.AwaitingReview);
     seedEventsFile(repo, 's1', HOLD_AGE_MS);
 
     expect(holdIdleCaches(db, repo, Date.now())).toEqual(['s1']);
@@ -139,7 +141,7 @@ describe('holdIdleCaches (decision 179)', () => {
   });
 
   it('never gives a blocked worker a turn, even with a question open', () => {
-    seedSession(db, repo, 's1', 'blocked');
+    seedSession(db, repo, 's1', SessionState.Blocked);
     seedEventsFile(repo, 's1', HOLD_AGE_MS);
     appendEvent(db, 's1', EventType.Question, { text: 'which ADR number?' });
 
@@ -149,9 +151,9 @@ describe('holdIdleCaches (decision 179)', () => {
   });
 
   it('holds nothing before the hold window, and nothing once the cache may have gone', () => {
-    seedSession(db, repo, 'early', 'awaiting-review');
+    seedSession(db, repo, 'early', SessionState.AwaitingReview);
     seedEventsFile(repo, 'early', CACHE_HOLD_AFTER_MS - 60_000);
-    seedSession(db, repo, 'late', 'awaiting-review');
+    seedSession(db, repo, 'late', SessionState.AwaitingReview);
     seedEventsFile(repo, 'late', CACHE_HOLD_UNTIL_MS + 60_000);
 
     expect(holdIdleCaches(db, repo, Date.now())).toEqual([]);
@@ -160,7 +162,7 @@ describe('holdIdleCaches (decision 179)', () => {
 
   describe('a running worker', () => {
     beforeEach(() => {
-      seedSession(db, repo, 's1', 'running');
+      seedSession(db, repo, 's1', SessionState.Running);
       seedEventsFile(repo, 's1', HOLD_AGE_MS);
     });
 
@@ -184,7 +186,7 @@ describe('holdIdleCaches (decision 179)', () => {
   });
 
   it('is not held while its turn is still at work', () => {
-    seedSession(db, repo, 's1', 'awaiting-review');
+    seedSession(db, repo, 's1', SessionState.AwaitingReview);
     seedEventsFile(repo, 's1', HOLD_AGE_MS, [STOP, TOOL]);
 
     expect(holdIdleCaches(db, repo, Date.now())).toEqual([]);
@@ -194,7 +196,7 @@ describe('holdIdleCaches (decision 179)', () => {
   // A restarted tmux server numbers its panes from %0 again, so the recorded
   // %7 can be one of the operator's own panes (decision 115).
   it("types nothing into a pane that no longer runs the session's launch, and records nothing", () => {
-    seedSession(db, repo, 's1', 'awaiting-review');
+    seedSession(db, repo, 's1', SessionState.AwaitingReview);
     seedEventsFile(repo, 's1', HOLD_AGE_MS);
     vi.mocked(runsSessionLaunch).mockReturnValue(false);
 
@@ -207,7 +209,7 @@ describe('holdIdleCaches (decision 179)', () => {
   });
 
   it('types nothing into a box that holds a draft, and records nothing', () => {
-    seedSession(db, repo, 's1', 'awaiting-review');
+    seedSession(db, repo, 's1', SessionState.AwaitingReview);
     seedEventsFile(repo, 's1', HOLD_AGE_MS);
     vi.mocked(readInputBox).mockReturnValue(InputBoxState.Holds);
 
@@ -217,7 +219,7 @@ describe('holdIdleCaches (decision 179)', () => {
   });
 
   it('records nothing when the paste never landed, so the next sweep tries again', () => {
-    seedSession(db, repo, 's1', 'awaiting-review');
+    seedSession(db, repo, 's1', SessionState.AwaitingReview);
     seedEventsFile(repo, 's1', HOLD_AGE_MS);
     vi.mocked(pasteIntoPane).mockReturnValue(false);
 
@@ -227,7 +229,7 @@ describe('holdIdleCaches (decision 179)', () => {
   });
 
   it('presses Enter once more when the first left the hold in the box, and records the hold it sent', () => {
-    seedSession(db, repo, 's1', 'awaiting-review');
+    seedSession(db, repo, 's1', SessionState.AwaitingReview);
     seedEventsFile(repo, 's1', HOLD_AGE_MS);
     vi.mocked(readInputBox)
       .mockReturnValueOnce(InputBoxState.Empty)
@@ -239,7 +241,7 @@ describe('holdIdleCaches (decision 179)', () => {
   });
 
   it('records no hold still in the box after its second Enter, so the next sweep holds again', () => {
-    seedSession(db, repo, 's1', 'awaiting-review');
+    seedSession(db, repo, 's1', SessionState.AwaitingReview);
     seedEventsFile(repo, 's1', HOLD_AGE_MS);
     vi.mocked(readInputBox)
       .mockReturnValueOnce(InputBoxState.Empty)
@@ -254,7 +256,7 @@ describe('holdIdleCaches (decision 179)', () => {
   });
 
   it('presses no second Enter into a box gone from the screen', () => {
-    seedSession(db, repo, 's1', 'awaiting-review');
+    seedSession(db, repo, 's1', SessionState.AwaitingReview);
     seedEventsFile(repo, 's1', HOLD_AGE_MS);
     vi.mocked(readInputBox)
       .mockReturnValueOnce(InputBoxState.Empty)
@@ -265,7 +267,7 @@ describe('holdIdleCaches (decision 179)', () => {
   });
 
   it(`lets a window lapse after ${CACHE_HOLD_LIMIT} holds in a row, until something else is recorded`, () => {
-    seedSession(db, repo, 's1', 'awaiting-review');
+    seedSession(db, repo, 's1', SessionState.AwaitingReview);
     seedEventsFile(repo, 's1', HOLD_AGE_MS);
     for (let hold = 0; hold < CACHE_HOLD_LIMIT; hold++) {
       appendEvent(db, 's1', EventType.CacheHold, { idleMs: HOLD_AGE_MS, eventsBytes: 0 });
@@ -275,14 +277,14 @@ describe('holdIdleCaches (decision 179)', () => {
 
     expect(holdIdleCaches(db, repo, Date.now())).toEqual([]);
 
-    transitionSession(db, 's1', 'rejected');
-    transitionSession(db, 's1', 'running');
-    transitionSession(db, 's1', 'awaiting-review');
+    transitionSession(db, 's1', SessionState.Rejected);
+    transitionSession(db, 's1', SessionState.Running);
+    transitionSession(db, 's1', SessionState.AwaitingReview);
     expect(holdIdleCaches(db, repo, Date.now())).toEqual(['s1']);
   });
 
   it('holds a window once until the turn it started moves the events file', () => {
-    seedSession(db, repo, 's1', 'awaiting-review');
+    seedSession(db, repo, 's1', SessionState.AwaitingReview);
     seedEventsFile(repo, 's1', HOLD_AGE_MS);
 
     expect(holdIdleCaches(db, repo, Date.now())).toEqual(['s1']);
@@ -298,7 +300,7 @@ describe('holdIdleCaches (decision 179)', () => {
 
   it('types nothing into a turn a prompt started that no hook has shown yet', () => {
     for (const id of ['steered', 'respawned', 'earlier']) {
-      seedSession(db, repo, id, 'awaiting-review');
+      seedSession(db, repo, id, SessionState.AwaitingReview);
       seedEventsFile(repo, id, HOLD_AGE_MS);
     }
     appendEvent(db, 'steered', EventType.Steer, { kind: 'message', by: 'pup-t-peer' });
@@ -315,7 +317,7 @@ describe('holdIdleCaches (decision 179)', () => {
 
   it('is not held by the sweep that resumed its dead turn', () => {
     const deadTurn = '⏺ API Error: Connection lost while your computer was asleep';
-    seedSession(db, repo, 's1', 'running');
+    seedSession(db, repo, 's1', SessionState.Running);
     seedEventsFile(repo, 's1', HOLD_AGE_MS);
     appendEvent(db, 's1', EventType.Question, { text: 'which ADR number?' });
     vi.mocked(deadTurnError).mockReturnValue(deadTurn);
@@ -329,7 +331,7 @@ describe('holdIdleCaches (decision 179)', () => {
   // A dead turn fires no Stop, but Claude Code sends its idle prompt a minute
   // later all the same, so the stall is stamped after the hold.
   it("leaves the hold's dead turn to the operator, though its idle prompt moved the events file", () => {
-    seedSession(db, repo, 's1', 'running');
+    seedSession(db, repo, 's1', SessionState.Running);
     seedEventsFile(repo, 's1', HOLD_AGE_MS);
     appendEvent(db, 's1', EventType.Question, { text: 'which ADR number?' });
     expect(holdIdleCaches(db, repo, Date.now())).toEqual(['s1']);
@@ -346,7 +348,7 @@ describe('holdIdleCaches (decision 179)', () => {
   });
 
   it('runs on the watcher sweep, and never in a dormant project', () => {
-    seedSession(db, repo, 's1', 'awaiting-review');
+    seedSession(db, repo, 's1', SessionState.AwaitingReview);
     seedEventsFile(repo, 's1', HOLD_AGE_MS);
     saveProjectDormantAt(db, projectId(repo), new Date().toISOString());
 
@@ -361,13 +363,13 @@ describe('holdIdleCaches (decision 179)', () => {
   describe('an events file the session replaced', () => {
     /** `bad` waits with its events file replaced by `plant`; `good` waits with a real one. */
     function seedPair(plant: (eventsFile: string) => void): void {
-      seedSession(db, repo, 'bad', 'awaiting-review');
+      seedSession(db, repo, 'bad', SessionState.AwaitingReview);
       seedEventsFile(repo, 'bad', HOLD_AGE_MS);
       const eventsFile = projectPaths(repo).eventsFile('bad');
       plant(eventsFile);
       const at = new Date(Date.now() - HOLD_AGE_MS);
       utimesSync(eventsFile, at, at);
-      seedSession(db, repo, 'good', 'awaiting-review');
+      seedSession(db, repo, 'good', SessionState.AwaitingReview);
       seedEventsFile(repo, 'good', HOLD_AGE_MS);
     }
 
@@ -409,7 +411,7 @@ describe('holdIdleCaches (decision 179)', () => {
     let eventsFile: string;
 
     beforeEach(() => {
-      seedSession(db, repo, 's1', 'running');
+      seedSession(db, repo, 's1', SessionState.Running);
       seedEventsFile(repo, 's1', HOLD_AGE_MS);
       eventsFile = projectPaths(repo).eventsFile('s1');
       appendEvent(db, 's1', EventType.CacheHold, {
@@ -460,14 +462,14 @@ describe('holdIdleCaches (decision 179)', () => {
     });
 
     it('is held from its tail', () => {
-      seedSession(db, repo, 's1', 'awaiting-review');
+      seedSession(db, repo, 's1', SessionState.AwaitingReview);
       seedEventsFile(repo, 's1', HOLD_AGE_MS, [oversized(TOOL), TOOL, STOP]);
 
       expect(holdIdleCaches(db, repo, Date.now())).toEqual(['s1']);
     });
 
     it('is read no further back than its tail: a turn end larger than it is never seen', () => {
-      seedSession(db, repo, 's1', 'awaiting-review');
+      seedSession(db, repo, 's1', SessionState.AwaitingReview);
       // Read whole, the two turn ends are an ended turn, and the window is held.
       seedEventsFile(repo, 's1', HOLD_AGE_MS, [TOOL, STOP, oversized(STOP)]);
 
@@ -477,9 +479,9 @@ describe('holdIdleCaches (decision 179)', () => {
   });
 
   it('skips a window whose pane fails, and holds the next one', () => {
-    seedSession(db, repo, 's1', 'awaiting-review');
+    seedSession(db, repo, 's1', SessionState.AwaitingReview);
     seedEventsFile(repo, 's1', HOLD_AGE_MS);
-    seedSession(db, repo, 's2', 'awaiting-review');
+    seedSession(db, repo, 's2', SessionState.AwaitingReview);
     seedEventsFile(repo, 's2', HOLD_AGE_MS);
     vi.mocked(readInputBox).mockImplementationOnce(() => {
       throw new Error('tmux: no server running');

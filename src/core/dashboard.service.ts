@@ -31,6 +31,7 @@ import { GateStageStatus } from './enums/gate-stage-status.enums.js';
 import { InterruptSignal } from './enums/interrupt-signal.enums.js';
 import { MergeStatus } from './enums/merge-status.enums.js';
 import { SessionActivityKind } from './enums/session-activity-kind.enums.js';
+import { SessionState } from './enums/session-state.enums.js';
 import { runGit } from './git-diff.client.js';
 import { listLedgerEntries, listOverdueLedgerEntries } from './ledger.repository.js';
 import { getWatcherBeat, listOverlaps } from './overlap.repository.js';
@@ -82,13 +83,7 @@ import type {
 } from './types/dashboard.types.js';
 import type { DebtBaseline, ProjectBaseline } from './types/init.types.js';
 import type { ProjectPaths } from './types/paths.types.js';
-import type {
-  EventRow,
-  QuestionEvent,
-  SessionRow,
-  SessionState,
-  TaskRow,
-} from './types/session.types.js';
+import type { EventRow, QuestionEvent, SessionRow, TaskRow } from './types/session.types.js';
 import type { SessionEvent } from './types/session-event.types.js';
 
 /**
@@ -197,9 +192,9 @@ export function fleetSummary(snapshot: DashboardSnapshot): FleetSummary {
     snapshot.sessions.filter((session) => session.state === state).length;
   return {
     needsYou: needsYou(snapshot),
-    running: count('running'),
+    running: count(SessionState.Running),
     planned: snapshot.backlog.length,
-    merged: count('merged'),
+    merged: count(SessionState.Merged),
   };
 }
 
@@ -277,7 +272,7 @@ function transcriptDirOf(
 export function findStalledSessions(db: Database, repoPath: string, now: number): StalledSession[] {
   const paths = projectPaths(repoPath);
   const stalled: StalledSession[] = [];
-  for (const row of listSessions(db, ['running'])) {
+  for (const row of listSessions(db, [SessionState.Running])) {
     const eventsFile = eventsFileOf(paths, row.id);
     if (!eventsFile || !existsSync(eventsFile)) continue;
     const mtimeMs = statSync(eventsFile).mtimeMs;
@@ -306,8 +301,8 @@ export function windowFailureOf(
   read: (
     events: SessionEvent[],
     stalledAtEnd: boolean,
-  ) => ClimbReason | 'blocked' | undefined = windowFailure,
-): ClimbReason | 'blocked' | undefined {
+  ) => ClimbReason | SessionState.Blocked | undefined = windowFailure,
+): ClimbReason | SessionState.Blocked | undefined {
   const rows = listEvents(db, session.id);
   const events = rows.map(decodeEvent);
   return read(events, windowStalled(paths, session, rows, events, now));
@@ -331,15 +326,15 @@ function windowStalled(
     .map((event) => event.type === 'other' && event.eventType)
     .lastIndexOf(EventType.Respawn);
   let endedAt = now;
-  let running = session.state === 'running';
-  if (session.state === 'killed') {
+  let running = session.state === SessionState.Running;
+  if (session.state === SessionState.Killed) {
     const at = events
       .map((event) => event.type === 'gate_result' && event.to)
-      .lastIndexOf('killed');
+      .lastIndexOf(SessionState.Killed);
     const kill = events[at];
     endedAt = Date.parse(toIsoUtc(rows[at]?.created_at ?? ''));
-    running = kill?.type === 'gate_result' && kill.from === 'running';
-  } else if (session.state === 'merged') {
+    running = kill?.type === 'gate_result' && kill.from === SessionState.Running;
+  } else if (session.state === SessionState.Merged) {
     // The window `fixRoundFailure` scores, ended by the first kill back to
     // `merged` before another round is handed: a later undone retry's kill is
     // not its end.
@@ -349,8 +344,8 @@ function windowStalled(
       (event, i) =>
         i > windowFrom &&
         event.type === 'gate_result' &&
-        event.from === 'running' &&
-        event.to === 'merged',
+        event.from === SessionState.Running &&
+        event.to === SessionState.Merged,
     );
     const handedAt = events.findIndex(
       (event, i) =>
@@ -383,7 +378,7 @@ function topRungFailure(
   task: TaskRow | undefined,
   now: number,
 ): ClimbReason | undefined {
-  if (row.state !== 'killed' || !task || task.dropped_at !== null) return undefined;
+  if (row.state !== SessionState.Killed || !task || task.dropped_at !== null) return undefined;
   const tier = taskTier(task.tier, asStringArray(taskSpecForDisplay(task).scopeIn));
   return climbFrom(tier, row, windowFailureOf(db, paths, row, now)).topReached;
 }
@@ -453,7 +448,7 @@ export function goalHeadline(goal: string | undefined): string {
  */
 function sortRank(session: DashboardSession): number {
   if (session.question !== undefined) return 2;
-  return session.state === 'blocked' || session.stalledAgeMs !== undefined ? 1 : 0;
+  return session.state === SessionState.Blocked || session.stalledAgeMs !== undefined ? 1 : 0;
 }
 
 /**
@@ -615,7 +610,7 @@ function needOf(
       ...questionNeed(asked),
     };
   }
-  if (session.state === 'blocked') {
+  if (session.state === SessionState.Blocked) {
     return need(
       'blocked',
       `blocked (${session.rejectCount} rejections)`,
@@ -644,14 +639,14 @@ function needOf(
   // A stage that failed refused the gate before any debt was weighed, such as
   // a taken ADR number (decision 146): only the session's fix gets it through.
   const failedStage = session.gateRefused ? session.lastGate?.failedStage : undefined;
-  if (session.state === 'awaiting-review' && failedStage !== undefined) {
+  if (session.state === SessionState.AwaitingReview && failedStage !== undefined) {
     return need(
       'awaiting-review',
       `gate refused: ${failedStage} failed`,
       command(`pup steer ${id} "..."`),
     );
   }
-  if (session.state === 'awaiting-review' && session.gateRefused) {
+  if (session.state === SessionState.AwaitingReview && session.gateRefused) {
     return need(
       'awaiting-review',
       'gate refused on flagged debt',
@@ -672,7 +667,7 @@ function needOf(
       command(`pup merge ${id} --pr`),
     );
   }
-  if (session.state === 'awaiting-review' && !gating) {
+  if (session.state === SessionState.AwaitingReview && !gating) {
     return need(
       'awaiting-review',
       'awaiting review',
@@ -953,14 +948,18 @@ function dashboardSession(
   // Decision 2: hook events, never pane contents. Nothing to classify for a
   // session that is not running, or has yet to fire a hook.
   const eventsText =
-    row.state === 'running' && eventsFile !== undefined ? readSessionFile(eventsFile) : undefined;
+    row.state === SessionState.Running && eventsFile !== undefined
+      ? readSessionFile(eventsFile)
+      : undefined;
   const activity = eventsText === undefined ? undefined : classifySessionActivity(eventsText);
   const stalledAgeMs = stall?.ageMs;
   // Only a running session has a context window to fill; a merged one's last
   // transcript is history, and reading it is I/O per row for nothing.
   const transcripts = transcriptDirOf(row.worktree_path, row.transcript_path, claudeDir);
   const contextTokens =
-    row.state === 'running' && transcripts ? latestContextTokens(transcripts) : undefined;
+    row.state === SessionState.Running && transcripts
+      ? latestContextTokens(transcripts)
+      : undefined;
   const compactAtTokens =
     contextTokens !== undefined && settingsFile !== undefined
       ? compactionPoint(settingsFile)
@@ -972,24 +971,26 @@ function dashboardSession(
   // done, while merging main or fixing what a reviewer sent back. Only those:
   // the inbox lists a session once, under a question first, so an older one
   // must not hide a refused gate or an unblock. Any other state fails closed.
-  const asked = ['running', 'awaiting-review'].includes(row.state)
+  const asked = [SessionState.Running, SessionState.AwaitingReview].includes(row.state)
     ? dashboardQuestion(openQuestion(db, row.id))
     : undefined;
   const doneId = events.find((event) => event.type === EventType.SessionDone)?.id ?? Infinity;
   const question =
-    row.state === 'awaiting-review' && asked !== undefined && asked.id < doneId ? undefined : asked;
-  const pr = row.state === 'merged' ? openPullRequest(events) : undefined;
+    row.state === SessionState.AwaitingReview && asked !== undefined && asked.id < doneId
+      ? undefined
+      : asked;
+  const pr = row.state === SessionState.Merged ? openPullRequest(events) : undefined;
   const openPr = pr && !isLanded(pr.target, pr.sha) ? { url: pr.url } : undefined;
   const lastGate = newestGate(events);
-  const gateRefused = row.state === 'awaiting-review' && newestGateRefused(events);
+  const gateRefused = row.state === SessionState.AwaitingReview && newestGateRefused(events);
   // A refused gate's line comes first, and the inbox sorts on this alone.
   const fixCommitted =
-    row.state === 'awaiting-review' && !gateRefused ? fixRoundOf(events) : undefined;
+    row.state === SessionState.AwaitingReview && !gateRefused ? fixRoundOf(events) : undefined;
   // Only for the stall the session is in now: an hour-old resume belongs to a
   // stall the session has worked its way out of since.
   const deadTurn = stall && newestDeadTurn(events, stall.stalledAt);
   const route = dashboardRoute(row, topReached);
-  const fixRound = ['running', 'awaiting-review'].includes(row.state)
+  const fixRound = [SessionState.Running, SessionState.AwaitingReview].includes(row.state)
     ? roundStarter(events)
     : undefined;
   const rescoped = taskRescopes(db, row.task_id).flatMap((rescope) => rescope.added);
@@ -1030,7 +1031,7 @@ function dashboardSession(
     // An open question idles the worker as surely as a block (decision 93).
     needsHuman:
       question !== undefined ||
-      row.state === 'blocked' ||
+      row.state === SessionState.Blocked ||
       stalledAgeMs !== undefined ||
       activity?.kind === SessionActivityKind.AwaitingInput,
   };
@@ -1285,7 +1286,7 @@ export function debtFigures(
  */
 export function blockedReason(db: Database, sessionId: string): string | undefined {
   for (const event of listEvents(db, sessionId).reverse().map(decodeEvent)) {
-    if (event.type !== 'gate_result' || event.to !== 'blocked') continue;
+    if (event.type !== 'gate_result' || event.to !== SessionState.Blocked) continue;
     // Sanitized like every other stored text a reader prints: the reason quotes
     // a steer refusal, and the report that refused to land is the session's own
     // output (decision 29).

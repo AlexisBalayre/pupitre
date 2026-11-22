@@ -6,6 +6,7 @@ import { insertDecisionRecord } from './decision-record.repository.js';
 import { EventType } from './enums/event-type.enums.js';
 import { GateStageStatus } from './enums/gate-stage-status.enums.js';
 import { MergeStatus } from './enums/merge-status.enums.js';
+import { SessionState } from './enums/session-state.enums.js';
 import { projectId } from './paths.utils.js';
 import {
   appendEvent,
@@ -91,7 +92,10 @@ describe('renderSessionDossierHtml', () => {
         },
       }),
     );
-    appendEvent(db, 's1', EventType.GateResult, { from: 'running', to: 'awaiting-review' });
+    appendEvent(db, 's1', EventType.GateResult, {
+      from: SessionState.Running,
+      to: SessionState.AwaitingReview,
+    });
     appendEvent(db, 's1', EventType.SessionDone, { summary: 'widget shipped' });
 
     const data = embeddedData(renderSessionDossierHtml(db, REPO, session));

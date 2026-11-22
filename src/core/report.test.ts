@@ -7,6 +7,7 @@ import { insertDecisionRecord } from './decision-record.repository.js';
 import { EventType } from './enums/event-type.enums.js';
 import { GateStageStatus } from './enums/gate-stage-status.enums.js';
 import { MergeStatus } from './enums/merge-status.enums.js';
+import { SessionState } from './enums/session-state.enums.js';
 import { insertLedgerEntry } from './ledger.repository.js';
 import { projectId } from './paths.utils.js';
 import { renderReportHtml } from './report.service.js';
@@ -59,7 +60,7 @@ describe('renderReportHtml', () => {
     expect(embeddedData(html).sessions).toEqual([
       expect.objectContaining({
         id: 's1',
-        state: 'queued',
+        state: SessionState.Queued,
         branch: 'pup/s1',
         goal: 'Improve the parser so nested templates survive',
         scopeIn: ['src/**'],

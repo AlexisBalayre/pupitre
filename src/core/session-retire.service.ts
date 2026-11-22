@@ -2,6 +2,7 @@ import type { Database } from 'better-sqlite3';
 import { sanitizeReason } from '../adapters/capability.utils.js';
 import { killSession as killTmux } from '../claude/session-runtime.service.js';
 import { EventType } from './enums/event-type.enums.js';
+import { SessionState } from './enums/session-state.enums.js';
 import { runGit } from './git-diff.client.js';
 import { assertGhAvailable, originRepoSlug, readPullRequestLanding } from './github.client.js';
 import {
@@ -50,7 +51,7 @@ export async function retireSession(db: Database, req: RetireRequest): Promise<R
   const session = getSession(db, req.sessionId);
   const id = sanitizeReason(req.sessionId);
   if (!session) throw new Error(`No session ${id}. ${UNTOUCHED}`);
-  if (session.state !== 'merged') {
+  if (session.state !== SessionState.Merged) {
     throw new Error(
       `Session ${id} is ${sanitizeReason(session.state)}, not merged; only a session whose PR ` +
         `was closed unmerged can be retired. ${UNTOUCHED}`,

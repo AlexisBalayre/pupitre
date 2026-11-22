@@ -1,7 +1,7 @@
 import { EventType } from '../enums/event-type.enums.js';
 import type { MergeStatus } from '../enums/merge-status.enums.js';
+import type { SessionState } from '../enums/session-state.enums.js';
 import type { GateReport } from './merge-gate.types.js';
-import type { SessionState } from './session.types.js';
 import type { FindingClass } from './session-lifecycle.types.js';
 
 /**

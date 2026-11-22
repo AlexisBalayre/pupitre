@@ -1,3 +1,5 @@
+import { SessionState } from '../enums/session-state.enums.js';
+
 /**
  * The layout rules and client-side helpers the report's index and the session
  * dossier pages share, interpolated into each template at BUILD time like
@@ -65,7 +67,7 @@ export const PAGE_SHELL_JS = `  const el = (tag, cls) => {
   };
   // The state column is unchecked TEXT: an unknown state keeps the neutral
   // chip — classList.add would throw on whitespace and blank the whole page.
-  const KNOWN_STATES = ['queued', 'running', 'awaiting-review', 'merged', 'killed', 'rejected', 'blocked'];
+  const KNOWN_STATES = ${JSON.stringify(Object.values(SessionState))};
   const stateChip = (node, state) => {
     node.textContent = state;
     if (KNOWN_STATES.includes(state)) node.classList.add('state-' + state);

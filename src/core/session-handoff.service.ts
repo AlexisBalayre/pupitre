@@ -10,6 +10,7 @@ import {
   steerPane,
 } from '../claude/session-runtime.service.js';
 import { EventType } from './enums/event-type.enums.js';
+import { SessionState } from './enums/session-state.enums.js';
 import { HandoffMissingError } from './errors/session-handoff.errors.js';
 import { verifiedWorktreeGitEnv } from './git-diff.client.js';
 import { assertMintedRow } from './merge-gate.service.js';
@@ -67,7 +68,7 @@ function hashHandoff(document: string): string {
 function requireRunning(db: Database, sessionId: string): SessionRow {
   const session = getSession(db, sessionId);
   if (!session) throw new Error(`No session ${sessionId}.`);
-  if (session.state !== 'running') {
+  if (session.state !== SessionState.Running) {
     throw new Error(`Session ${sessionId} is ${session.state}; only running sessions respawn.`);
   }
   // A respawn kicks off from the compiled context alone, without the round's

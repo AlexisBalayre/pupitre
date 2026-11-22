@@ -39,6 +39,7 @@ import { SteerNotDeliveredError } from '../../claude/errors/session-runtime.erro
 import { saveSessionEnv } from '../../claude/session-runtime.service.js';
 import { startConductor, stopConductor } from '../../core/conductor.service.js';
 import { openStore } from '../../core/db.client.js';
+import { SessionState } from '../../core/enums/session-state.enums.js';
 import { LaunchRolledBackError } from '../../core/errors/session-lifecycle.errors.js';
 import {
   ensureProject,
@@ -99,7 +100,7 @@ describe('dashboard actions', () => {
       branch: `pup/${SESSION}`,
       profileHash: 'hash',
     });
-    transitionSession(db, SESSION, 'running');
+    transitionSession(db, SESSION, SessionState.Running);
     deps = { db, repoPath: REPO, pupBin: '/abs/path/to/pup.js' };
   });
 
@@ -246,7 +247,7 @@ describe('dashboard actions', () => {
 
   describe('unblock', () => {
     beforeEach(() => {
-      transitionSession(db, SESSION, 'blocked', {
+      transitionSession(db, SESSION, SessionState.Blocked, {
         reason: '3 rejections: the gate stopped steering',
       });
     });
@@ -259,14 +260,14 @@ describe('dashboard actions', () => {
     });
 
     it('says so plainly when the block carried no reason', () => {
-      transitionSession(db, 's-live-1', 'running');
+      transitionSession(db, 's-live-1', SessionState.Running);
       expect(selectedBlockedReason(deps, 's-nothing')).toBe('(no reason recorded)');
     });
 
     it('returns the session to running, leaving the reject count alone', () => {
       const result = unblockSelected(deps, SESSION);
 
-      expect(getSession(db, SESSION)?.state).toBe('running');
+      expect(getSession(db, SESSION)?.state).toBe(SessionState.Running);
       expect(result.message).toContain('untouched');
     });
 
@@ -275,14 +276,14 @@ describe('dashboard actions', () => {
     // looks away. `awaiting-review -> running` is a legal edge, so a stale `y`
     // would quietly reopen a branch that is waiting to be merged.
     it('refuses a session that stopped being blocked while the prompt was open', () => {
-      transitionSession(db, SESSION, 'running', { kind: 'operator-unblock' });
-      transitionSession(db, SESSION, 'awaiting-review');
+      transitionSession(db, SESSION, SessionState.Running, { kind: 'operator-unblock' });
+      transitionSession(db, SESSION, SessionState.AwaitingReview);
 
       const result = unblockSelected(deps, SESSION);
 
       expect(result.failed).toBe(true);
       expect(result.message).toContain('is awaiting-review; only blocked sessions unblock');
-      expect(getSession(db, SESSION)?.state).toBe('awaiting-review');
+      expect(getSession(db, SESSION)?.state).toBe(SessionState.AwaitingReview);
     });
 
     it('refuses a session that is no longer there at all', () => {

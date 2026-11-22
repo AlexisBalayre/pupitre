@@ -1,6 +1,7 @@
 import { availableParallelism, loadavg } from 'node:os';
 import type { Database } from 'better-sqlite3';
 import { EventType } from './enums/event-type.enums.js';
+import { SessionState } from './enums/session-state.enums.js';
 import { LockBacklogOverBudgetError, MachineLoadedError } from './errors/session-cap.errors.js';
 import { UsageLimitReachedError } from './errors/usage-limits.errors.js';
 import { loadAllowanceFactor, lockBacklogBudgetMinutes } from './project-config.config.js';
@@ -75,7 +76,7 @@ export function lockBacklog(db: Database, repoPath: string, now = Date.now()): L
   let uses = 0;
   const unlanded: string[] = [];
   for (const session of listSessions(db)) {
-    if (session.state === 'awaiting-review') continue;
+    if (session.state === SessionState.AwaitingReview) continue;
     if (holdingStates().includes(session.state)) uses += USES_BEFORE_GATE;
     else if (awaitsLand(db, session, now)) {
       uses += 1;
@@ -96,7 +97,7 @@ export function lockBacklog(db: Database, repoPath: string, now = Date.now()): L
 }
 
 function awaitsLand(db: Database, session: SessionRow, now: number): boolean {
-  if (session.state !== 'merged') return false;
+  if (session.state !== SessionState.Merged) return false;
   const newest = newestEventOf(db, session.id, [
     EventType.Merge,
     EventType.Landed,
@@ -148,7 +149,10 @@ function gateRunTimes(db: Database): number[] {
 /** A transition the gate writes when it rules on a session in review. */
 function isGateVerdict(payload: unknown): boolean {
   const { from, to } = (payload ?? {}) as { from?: unknown; to?: unknown };
-  return from === 'awaiting-review' && (to === 'merged' || to === 'rejected');
+  return (
+    from === SessionState.AwaitingReview &&
+    (to === SessionState.Merged || to === SessionState.Rejected)
+  );
 }
 
 function longestStage(payload: unknown): number | undefined {

@@ -3,6 +3,7 @@ import { LADDERS } from '../claude/constants/model-ladder.constants.js';
 import { Tier } from '../claude/enums/tier.enums.js';
 import { ClimbReason } from './enums/climb-reason.enums.js';
 import { EventType } from './enums/event-type.enums.js';
+import { SessionState } from './enums/session-state.enums.js';
 import { globToRegExp } from './glob.utils.js';
 import {
   asTier,
@@ -85,6 +86,7 @@ describe('tierForScope', () => {
     'src/core/enums/interrupt-signal.enums.ts',
     'src/core/types/profile-compiler.types.ts',
     'src/core/types/session.types.ts',
+    'src/core/enums/session-state.enums.ts',
     'src/core/enums/event-type.enums.ts',
     'src/core/errors/session.errors.ts',
     'src/core/types/ledger.types.ts',
@@ -181,9 +183,21 @@ describe('taskTier', () => {
   });
 });
 
-const rejected: SessionEvent = { type: 'gate_result', from: 'awaiting-review', to: 'rejected' };
-const blocked: SessionEvent = { type: 'gate_result', from: 'rejected', to: 'blocked' };
-const regated: SessionEvent = { type: 'gate_result', from: 'merged', to: 'merged' };
+const rejected: SessionEvent = {
+  type: 'gate_result',
+  from: SessionState.AwaitingReview,
+  to: SessionState.Rejected,
+};
+const blocked: SessionEvent = {
+  type: 'gate_result',
+  from: SessionState.Rejected,
+  to: SessionState.Blocked,
+};
+const regated: SessionEvent = {
+  type: 'gate_result',
+  from: SessionState.Merged,
+  to: SessionState.Merged,
+};
 const died: SessionEvent = { type: 'turn_died', reason: 'API Error', stalledAt: 'x' };
 const respawned: SessionEvent = { type: 'other', eventType: EventType.Respawn, fields: {} };
 const steered: SessionEvent = { type: 'steer', kind: 'gate-rejection' };
@@ -196,9 +210,12 @@ describe('windowFailure', () => {
 
   it('is nothing for a window that ran into nothing', () => {
     expect(windowFailure([])).toBeUndefined();
-    expect(windowFailure([steered, { type: 'gate_result', from: 'running', to: 'merged' }])).toBe(
-      undefined,
-    );
+    expect(
+      windowFailure([
+        steered,
+        { type: 'gate_result', from: SessionState.Running, to: SessionState.Merged },
+      ]),
+    ).toBe(undefined);
   });
 
   // A reviewer's finding is no failure of capability: only a repeat climbs, by fixRoundFailure.
@@ -213,9 +230,9 @@ describe('windowFailure', () => {
   });
 
   it('lets a block win over every failure, so a parked task never climbs', () => {
-    expect(windowFailure([rejected, rejected, blocked])).toBe('blocked');
-    expect(windowFailure([blocked, died])).toBe('blocked');
-    expect(windowFailure([blocked], true)).toBe('blocked');
+    expect(windowFailure([rejected, rejected, blocked])).toBe(SessionState.Blocked);
+    expect(windowFailure([blocked, died])).toBe(SessionState.Blocked);
+    expect(windowFailure([blocked], true)).toBe(SessionState.Blocked);
   });
 
   // No event records a stall: the caller says whether the window ended in one.
@@ -239,7 +256,11 @@ describe('fixRoundFailure', () => {
     fields: { delivered },
   });
   const merge: SessionEvent = { type: 'merge', files: [] };
-  const killed: SessionEvent = { type: 'gate_result', from: 'running', to: 'merged' };
+  const killed: SessionEvent = {
+    type: 'gate_result',
+    from: SessionState.Running,
+    to: SessionState.Merged,
+  };
 
   it('is nothing on a first round, whatever the window before it ran into', () => {
     expect(fixRoundFailure([merge])).toBeUndefined();
@@ -320,7 +341,7 @@ describe('climbFrom', () => {
       rung: 2,
       reason: ClimbReason.GateRejection,
     });
-    expect(climbFrom(Tier.Standard, climbed, 'blocked')).toEqual({
+    expect(climbFrom(Tier.Standard, climbed, SessionState.Blocked)).toEqual({
       rung: 2,
       reason: ClimbReason.GateRejection,
     });
@@ -400,7 +421,7 @@ describe('nextRung', () => {
 
   it('stays on its rung with no failure, and after a block', () => {
     expect(nextRung(Tier.Standard, 1, undefined)).toEqual({ rung: 1 });
-    expect(nextRung(Tier.Standard, 1, 'blocked')).toEqual({ rung: 1 });
+    expect(nextRung(Tier.Standard, 1, SessionState.Blocked)).toEqual({ rung: 1 });
   });
 
   it('hands a failure on the top rung back for the operator instead of climbing', () => {

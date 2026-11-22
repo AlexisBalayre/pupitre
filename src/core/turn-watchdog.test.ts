@@ -20,6 +20,7 @@ import type { SessionPane } from '../claude/types/session-runtime.types.js';
 import { STALLED_AFTER_MS } from './constants/session-activity.constants.js';
 import { openStore } from './db.client.js';
 import { EventType } from './enums/event-type.enums.js';
+import { SessionState } from './enums/session-state.enums.js';
 import { projectId, projectPaths } from './paths.utils.js';
 import {
   appendEvent,
@@ -74,7 +75,7 @@ function seedRunningSession(
     profileHash: 'hash',
     ...(options.pane === null ? {} : { tmuxTarget: options.pane ?? '%7' }),
   });
-  transitionSession(db, sessionId, 'running');
+  transitionSession(db, sessionId, SessionState.Running);
 }
 
 /** One hook event on disk, with the file's mtime aged by `ageMs` (decision 35). */
@@ -292,7 +293,7 @@ describe('sweepDeadTurns', () => {
       seedEventsFile(repo, 's2', STALL_AGE_MS);
       // The operator kills s1 between the sweep listing it and its resume.
       vi.mocked(deadTurnError).mockImplementation((pane: SessionPane) => {
-        if (pane.sessionId === 's1') transitionSession(db, 's1', 'killed');
+        if (pane.sessionId === 's1') transitionSession(db, 's1', SessionState.Killed);
         return API_ERROR;
       });
 

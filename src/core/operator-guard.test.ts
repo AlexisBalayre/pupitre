@@ -2,6 +2,7 @@ import type { Database } from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { listProcesses, recordedPanePids } from '../claude/session-runtime.service.js';
 import { openStore } from './db.client.js';
+import { SessionState } from './enums/session-state.enums.js';
 import { launchedAncestor, mergeCallerAncestor } from './operator-guard.service.js';
 import { projectId } from './paths.utils.js';
 import { ensureProject, insertSession, insertTask } from './session.repository.js';
@@ -23,7 +24,7 @@ describe('launchedAncestor (decisions 115, 188)', () => {
       .mocked(listProcesses)
       .mockReturnValue(new Map(rows.map(([pid, parent, args]) => [pid, { parent, args }])));
   const CLAUDE = '/Users/me/.local/bin/claude --model m --effort e';
-  const session = (id: string, state: string) => {
+  const session = (id: string, state: SessionState) => {
     insertSession(db, {
       id,
       taskId: 't-1',
@@ -88,11 +89,17 @@ describe('launchedAncestor (decisions 115, 188)', () => {
 
     // A record outlives its window, and its pid can be reused once that is gone.
     it('reads the records of the sessions that can hold a window, and no other', () => {
-      for (const state of ['queued', 'running', 'awaiting-review', 'rejected', 'blocked']) {
+      for (const state of [
+        SessionState.Queued,
+        SessionState.Running,
+        SessionState.AwaitingReview,
+        SessionState.Rejected,
+        SessionState.Blocked,
+      ]) {
         session(`s-${state}`, state);
       }
-      session('s-merged', 'merged');
-      session('s-killed', 'killed');
+      session('s-merged', SessionState.Merged);
+      session('s-killed', SessionState.Killed);
       tree([process.ppid, 1, '/bin/zsh']);
 
       launchedAncestor(db, '/repo');
@@ -110,8 +117,8 @@ describe('launchedAncestor (decisions 115, 188)', () => {
 
     // A store written by hand: an id outside the minted shape names no path.
     it('skips a session id outside the minted shape', () => {
-      session('s1', 'running');
-      session('../x', 'running');
+      session('s1', SessionState.Running);
+      session('../x', SessionState.Running);
       tree([process.ppid, 1, '/bin/zsh']);
 
       launchedAncestor(db, '/repo');

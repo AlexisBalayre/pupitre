@@ -1,4 +1,4 @@
-import type { SessionState } from '../types/session.types.js';
+import type { SessionState } from '../enums/session-state.enums.js';
 import { InvalidProfileError } from './profile.errors.js';
 
 export class InvalidTransitionError extends Error {

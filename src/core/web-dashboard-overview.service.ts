@@ -19,6 +19,7 @@ import {
 import { DebtMetric } from './enums/debt-metric.enums.js';
 import { EventType } from './enums/event-type.enums.js';
 import { SessionActivityKind } from './enums/session-activity-kind.enums.js';
+import { SessionState } from './enums/session-state.enums.js';
 import { countLedgerEntriesSince, listLedgerEntries } from './ledger.repository.js';
 import { projectId } from './paths.utils.js';
 import { displayText, parseJsonOr, toIsoUtc } from './report-data.utils.js';
@@ -203,10 +204,15 @@ function figureTiles(
  * Planned section lists.
  */
 function taskCounts(snapshot: DashboardSnapshot): OverviewView['tasks'] {
-  const done = new Set(snapshot.sessions.filter((s) => s.state === 'merged').map((s) => s.taskId));
+  const done = new Set(
+    snapshot.sessions.filter((s) => s.state === SessionState.Merged).map((s) => s.taskId),
+  );
   const inFlight = new Set(
     snapshot.sessions
-      .filter((s) => s.state !== 'merged' && s.state !== 'killed' && !done.has(s.taskId))
+      .filter(
+        (s) =>
+          s.state !== SessionState.Merged && s.state !== SessionState.Killed && !done.has(s.taskId),
+      )
       .map((s) => s.taskId),
   );
   return { done: done.size, inFlight: inFlight.size, planned: snapshot.backlog.length };
@@ -244,7 +250,13 @@ function mergesPerWeek(db: Database, now: number): ChartDatum[] {
 }
 
 /** The order the sessions' states are listed in: what has stopped first, finished work last. */
-const STATE_ORDER = ['blocked', 'running', 'awaiting-review', 'queued', 'rejected'];
+const STATE_ORDER = [
+  SessionState.Blocked,
+  SessionState.Running,
+  SessionState.AwaitingReview,
+  SessionState.Queued,
+  SessionState.Rejected,
+];
 
 /**
  * The Overview, a page to act from: the status strip, what needs the operator
@@ -301,8 +313,11 @@ function statusStrip(view: OverviewView): string {
     `<li><span class="v">${n}</span> ${escapeHtml(label)}</li>`;
   return (
     '<section class="strip"><ul>' +
-    count(sessions.filter((s) => s.state === 'running').length, 'running') +
-    count(sessions.filter((s) => s.state === 'awaiting-review').length, 'awaiting review') +
+    count(sessions.filter((s) => s.state === SessionState.Running).length, 'running') +
+    count(
+      sessions.filter((s) => s.state === SessionState.AwaitingReview).length,
+      'awaiting review',
+    ) +
     count(view.needs.length, 'need you') +
     count(openPrs(view).size, 'open PRs') +
     `<li class="launch">${escapeHtml(view.launch)}</li></ul></section>`
@@ -420,7 +435,9 @@ function viewLink(sessionId: string, sessionHref: (sessionId: string) => string)
 }
 
 function sessionsSection(view: OverviewView, sessionHref: (sessionId: string) => string): string {
-  const live = view.snapshot.sessions.filter((s) => s.state !== 'merged' && s.state !== 'killed');
+  const live = view.snapshot.sessions.filter(
+    (s) => s.state !== SessionState.Merged && s.state !== SessionState.Killed,
+  );
   if (live.length === 0) return section('Sessions', hint('Nothing running.'));
   const states = [
     ...STATE_ORDER.filter((state) => live.some((s) => s.state === state)),

@@ -4,6 +4,7 @@ import { SteerNotDeliveredError } from '@src/claude/errors/session-runtime.error
 import { resolveProject } from '@src/cli/project.utils.js';
 import { STALLED_AFTER_MS } from '@src/core/constants/session-activity.constants.js';
 import { EventType } from '@src/core/enums/event-type.enums.js';
+import { SessionState } from '@src/core/enums/session-state.enums.js';
 import { LaunchRolledBackError } from '@src/core/errors/session-lifecycle.errors.js';
 import { runGit } from '@src/core/git-diff.client.js';
 import { insertLedgerEntry } from '@src/core/ledger.repository.js';
@@ -122,7 +123,7 @@ export function rolledBackLaunch(sessionId: string): LaunchRolledBackError {
 export function seedKilledSession(repoPath: string, sessionId: string): void {
   seedSession(repoPath, sessionId);
   const { db } = resolveProject(repoPath);
-  transitionSession(db, sessionId, 'killed');
+  transitionSession(db, sessionId, SessionState.Killed);
   db.close();
 }
 
@@ -135,9 +136,9 @@ export function seedBlockedSession(
 ): void {
   seedSession(repoPath, sessionId);
   const { db } = resolveProject(repoPath);
-  transitionSession(db, sessionId, 'running');
+  transitionSession(db, sessionId, SessionState.Running);
   for (let i = 0; i < rejectCount; i += 1) incrementRejectCount(db, sessionId);
-  transitionSession(db, sessionId, 'blocked', { reason, rejectCount });
+  transitionSession(db, sessionId, SessionState.Blocked, { reason, rejectCount });
   db.close();
 }
 
@@ -172,7 +173,7 @@ export function seedStalledSession(repoPath: string, sessionId: string): void {
   seedSession(repoPath, sessionId);
   const { db } = resolveProject(repoPath);
   db.prepare('UPDATE sessions SET tmux_target = ? WHERE id = ?').run('%7', sessionId);
-  transitionSession(db, sessionId, 'running');
+  transitionSession(db, sessionId, SessionState.Running);
   db.close();
   seedEventsFile(repoPath, sessionId, STALLED_AFTER_MS + 60_000);
 }

@@ -2,6 +2,7 @@ import type { Database } from 'better-sqlite3';
 import { SessionPaneMissingError } from '../claude/errors/session-runtime.errors.js';
 import { capturePane } from '../claude/session-runtime.service.js';
 import { buildDashboardSnapshot, routeLabel } from './dashboard.service.js';
+import { SessionState } from './enums/session-state.enums.js';
 import { displayText } from './report-data.utils.js';
 import { getSession } from './session.repository.js';
 import { sessionPane } from './session-lifecycle.service.js';
@@ -35,10 +36,11 @@ export function readSessionView(
 /** What the worker's window shows, or why there is nothing to show. */
 function readPane(db: Database, sessionId: string): SessionView['pane'] {
   const row = getSession(db, sessionId);
-  if (!row || row.state === 'killed') return { hint: 'No window: the session was killed.' };
+  if (!row || row.state === SessionState.Killed)
+    return { hint: 'No window: the session was killed.' };
   // Its window closed at the merge, and the pane id it kept can name another
   // window once tmux restarts (a fix round runs as `running`, with its own pane).
-  if (row.state === 'merged')
+  if (row.state === SessionState.Merged)
     return { hint: 'No window: the session merged and its window closed.' };
   try {
     return { text: capturePane(sessionPane(row)) };
@@ -102,13 +104,13 @@ export function renderSessionHead({ session }: SessionView): string {
     '<input type="text" name="reason" placeholder="accept flags as debt: reason">' +
       '<input type="text" name="reviewBy" placeholder="review by">' +
       '<input type="text" name="approver" value="human" placeholder="approver">' +
-      `<button type="submit">${escapeHtml(session.state === 'merged' ? 'Re-gate the PR' : 'Gate and open a PR')}</button>`,
+      `<button type="submit">${escapeHtml(session.state === SessionState.Merged ? 'Re-gate the PR' : 'Gate and open a PR')}</button>`,
     'act wide',
   );
   const actions =
-    session.state === 'killed'
+    session.state === SessionState.Killed
       ? []
-      : session.state === 'merged'
+      : session.state === SessionState.Merged
         ? [
             actionButton('fix', fields, 'Start a fix round'),
             merge,

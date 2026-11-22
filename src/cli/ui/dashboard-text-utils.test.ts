@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { Tier } from '../../claude/enums/tier.enums.js';
 import { ClimbReason } from '../../core/enums/climb-reason.enums.js';
 import { SessionActivityKind } from '../../core/enums/session-activity-kind.enums.js';
+import { SessionState } from '../../core/enums/session-state.enums.js';
 import type { DashboardNeed, DashboardSession } from '../../core/types/dashboard.types.js';
 import { activityLabel, needLines, sessionLine } from './dashboard-text.utils.js';
 
@@ -10,7 +11,7 @@ function sessionFixture(overrides: Partial<DashboardSession> = {}): DashboardSes
   return {
     id: 's-mue99umh-1',
     isMintedId: true,
-    state: 'running',
+    state: SessionState.Running,
     branch: 'pup/t-mue99umh',
     taskId: 't-mue99umh',
     goal: 'close the last raw sinks',
@@ -52,7 +53,11 @@ describe('sessionLine', () => {
 
   it('prints a placeholder for an id outside the minted shape and builds no command around it', () => {
     const line = sessionLine(
-      sessionFixture({ id: 'x → pup merge s-other --pr', isMintedId: false, state: 'blocked' }),
+      sessionFixture({
+        id: 'x → pup merge s-other --pr',
+        isMintedId: false,
+        state: SessionState.Blocked,
+      }),
     );
 
     expect(line).toContain('(unminted session id)');

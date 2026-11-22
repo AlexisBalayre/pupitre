@@ -1,6 +1,7 @@
 import { sanitizeReason } from '../../adapters/capability.utils.js';
 import { routeLabel } from '../../core/dashboard.service.js';
 import { SessionActivityKind } from '../../core/enums/session-activity-kind.enums.js';
+import { SessionState } from '../../core/enums/session-state.enums.js';
 import { formatStaleAge } from '../../core/session-activity.utils.js';
 import type { DashboardNeed, DashboardSession } from '../../core/types/dashboard.types.js';
 import type { FleetBlock } from '../../core/types/fleet.types.js';
@@ -158,7 +159,7 @@ export function needLines(need: DashboardNeed): string[] {
 export function sessionLine(session: DashboardSession): string {
   const shownId = session.isMintedId ? session.id : '(unminted session id)';
   const marker =
-    session.state === 'blocked' && session.isMintedId
+    session.state === SessionState.Blocked && session.isMintedId
       ? `  needs a human (${session.rejectCount} rejections) — \`pup unblock ${session.id}\` once addressed`
       : '';
   return (

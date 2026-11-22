@@ -1,4 +1,4 @@
-import type { SessionState } from '../types/session.types.js';
+import type { SessionState } from '../enums/session-state.enums.js';
 
 export class MergeLockHeldError extends Error {
   constructor(lockPath: string) {

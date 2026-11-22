@@ -4,6 +4,7 @@ import { COMMIT_SHA } from './constants/merge-gate.constants.js';
 import { EventType } from './enums/event-type.enums.js';
 import { GateStageStatus } from './enums/gate-stage-status.enums.js';
 import { MergeStatus } from './enums/merge-status.enums.js';
+import { SessionState } from './enums/session-state.enums.js';
 import {
   assertPullRequestHead,
   findOpenPullRequest,
@@ -239,7 +240,11 @@ export async function regateMerged(
   }
   // Logged as a transition onto the state the session keeps, so every reader
   // of the newest gate run finds it.
-  appendEvent(db, session.id, EventType.GateResult, { from: 'merged', to: 'merged', report });
+  appendEvent(db, session.id, EventType.GateResult, {
+    from: SessionState.Merged,
+    to: SessionState.Merged,
+    report,
+  });
   const files = measured.changedPaths;
   recordMerge(db, req.repoPath, session, { sha, target, files, prUrl: regate.prUrl }, false);
   return {

@@ -202,6 +202,7 @@ import { insertDecisionRecord } from '../core/decision-record.repository.js';
 import { EventType } from '../core/enums/event-type.enums.js';
 import { GateStageStatus } from '../core/enums/gate-stage-status.enums.js';
 import { InterruptSignal } from '../core/enums/interrupt-signal.enums.js';
+import { SessionState } from '../core/enums/session-state.enums.js';
 import { MergeLockLostError } from '../core/errors/merge-gate.errors.js';
 import { InvalidProfileError } from '../core/errors/profile.errors.js';
 import { GateInterruptedError } from '../core/errors/sandbox.errors.js';
@@ -228,7 +229,6 @@ import {
 } from '../core/session-lifecycle.service.js';
 import { retireSession } from '../core/session-retire.service.js';
 import type { LandOutcome } from '../core/types/land.types.js';
-import type { SessionState } from '../core/types/session.types.js';
 import { startWebDashboard } from '../core/web-dashboard.service.js';
 import { buildProgram } from './index.js';
 import { resolveProject } from './project.utils.js';
@@ -843,7 +843,7 @@ describe('CLI commands', () => {
       useCwd(repo);
       seedSession(repo, '\u001b[2Js1');
       const { db } = resolveProject(repo);
-      transitionSession(db, '\u001b[2Js1', 'running');
+      transitionSession(db, '\u001b[2Js1', SessionState.Running);
       db.close();
       stubEditor();
 
@@ -1195,7 +1195,7 @@ describe('CLI commands', () => {
       ['a session the store does not hold', () => new UnknownSessionError('s1'), 'No session s1.'],
       [
         'a session that has stopped',
-        () => new TerminalSessionError('s1', 'killed', 'steer'),
+        () => new TerminalSessionError('s1', SessionState.Killed, 'steer'),
         'Session s1 is killed; nothing to steer.',
       ],
       [
@@ -1229,7 +1229,7 @@ describe('CLI commands', () => {
       useCwd(repo);
       seedKilledSession(repo, 's1');
       vi.mocked(recordSteerMessage).mockImplementation(() => {
-        throw new TerminalSessionError('s1', 'killed', 'steer');
+        throw new TerminalSessionError('s1', SessionState.Killed, 'steer');
       });
 
       buildProgram().parse(['steer', 's1', 'do X instead', '--sent'], { from: 'user' });
@@ -1285,11 +1285,11 @@ describe('CLI commands', () => {
 
       buildProgram().parse(['unblock', 's1'], { from: 'user' });
 
-      expect(stateOf(repo, 's1')).toBe('running');
+      expect(stateOf(repo, 's1')).toBe(SessionState.Running);
       expect(unblockEvent(repo, 's1')).toMatchObject({
         kind: 'operator-unblock',
-        from: 'blocked',
-        to: 'running',
+        from: SessionState.Blocked,
+        to: SessionState.Running,
       });
       expect(logs[0]).toBe('Session s1 was blocked: reject cap of 2 reached');
       expect(errors).toEqual([]);
@@ -1314,14 +1314,14 @@ describe('CLI commands', () => {
       useCwd(repo);
       seedSession(repo, 's1');
       const { db } = resolveProject(repo);
-      transitionSession(db, 's1', 'running');
-      transitionSession(db, 's1', 'blocked');
+      transitionSession(db, 's1', SessionState.Running);
+      transitionSession(db, 's1', SessionState.Blocked);
       db.close();
 
       buildProgram().parse(['unblock', 's1'], { from: 'user' });
 
       expect(logs[0]).toBe('Session s1 was blocked: (no reason recorded)');
-      expect(stateOf(repo, 's1')).toBe('running');
+      expect(stateOf(repo, 's1')).toBe(SessionState.Running);
     });
 
     it('records the operator reason on the event', () => {
@@ -1373,12 +1373,18 @@ describe('CLI commands', () => {
     // Every state but `blocked`, reached the way the state machine allows, so
     // the refusal covers the whole surface and not just the neighbouring one.
     it.each([
-      ['queued', []],
-      ['running', ['running']],
-      ['awaiting-review', ['running', 'awaiting-review']],
-      ['merged', ['running', 'awaiting-review', 'merged']],
-      ['rejected', ['running', 'awaiting-review', 'rejected']],
-      ['killed', ['killed']],
+      [SessionState.Queued, []],
+      [SessionState.Running, [SessionState.Running]],
+      [SessionState.AwaitingReview, [SessionState.Running, SessionState.AwaitingReview]],
+      [
+        SessionState.Merged,
+        [SessionState.Running, SessionState.AwaitingReview, SessionState.Merged],
+      ],
+      [
+        SessionState.Rejected,
+        [SessionState.Running, SessionState.AwaitingReview, SessionState.Rejected],
+      ],
+      [SessionState.Killed, [SessionState.Killed]],
     ] as [SessionState, SessionState[]][])(
       'refuses a session that is %s, not blocked',
       (state, steps) => {
@@ -1421,7 +1427,7 @@ describe('CLI commands', () => {
       expect(errors).toEqual(['`pup unblock` is operator-only; sessions cannot unblock sessions.']);
       expect(logs).toEqual([]);
       expect(process.exitCode).toBe(1);
-      expect(stateOf(repo, 's1')).toBe('blocked');
+      expect(stateOf(repo, 's1')).toBe(SessionState.Blocked);
     });
   });
 
@@ -1711,9 +1717,9 @@ describe('CLI commands', () => {
     function seedOpenPr(repo: string): void {
       seedSession(repo, 's1');
       const { db } = resolveProject(repo);
-      transitionSession(db, 's1', 'running');
-      transitionSession(db, 's1', 'awaiting-review');
-      transitionSession(db, 's1', 'merged');
+      transitionSession(db, 's1', SessionState.Running);
+      transitionSession(db, 's1', SessionState.AwaitingReview);
+      transitionSession(db, 's1', SessionState.Merged);
       appendEvent(db, 's1', EventType.Merge, {
         branch: 'pup/s1',
         sha: 'f'.repeat(40),
@@ -2363,9 +2369,9 @@ describe('CLI commands', () => {
     function seedOpenPr(repo: string): void {
       seedSession(repo, 's1');
       const { db } = resolveProject(repo);
-      transitionSession(db, 's1', 'running');
-      transitionSession(db, 's1', 'awaiting-review');
-      transitionSession(db, 's1', 'merged');
+      transitionSession(db, 's1', SessionState.Running);
+      transitionSession(db, 's1', SessionState.AwaitingReview);
+      transitionSession(db, 's1', SessionState.Merged);
       appendEvent(db, 's1', EventType.Merge, {
         branch: 'pup/s1',
         sha: 'f'.repeat(40),

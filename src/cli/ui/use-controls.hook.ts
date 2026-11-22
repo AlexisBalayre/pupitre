@@ -2,6 +2,7 @@ import type { ChildProcess } from 'node:child_process';
 import { type Key, useApp, useInput } from 'ink';
 import { useRef, useState } from 'react';
 import { InterruptSignal } from '../../core/enums/interrupt-signal.enums.js';
+import { SessionState } from '../../core/enums/session-state.enums.js';
 import { HANDOFF_WAIT_DEFAULT_MS } from '../../core/session-handoff.service.js';
 import { HANDOFF_POLL_MS, MERGE_LOG_LINES } from '../constants/dashboard.constants.js';
 import type { ActionDeps, ActionResult, AttachTarget } from '../types/actions.types.js';
@@ -377,7 +378,7 @@ export function useControls({
       case 'u': {
         if (!sessionRow) return say('Nothing to unblock: the cursor is not on a session.', true);
         const { session: blocked, project: owner } = sessionRow;
-        if (blocked.state !== 'blocked') {
+        if (blocked.state !== SessionState.Blocked) {
           return say(`${blocked.id} is ${blocked.state}; only blocked sessions unblock.`, true);
         }
         // The reason first, and read from the store rather than typed by the
@@ -402,7 +403,7 @@ export function useControls({
       case 'm': {
         if (!sessionRow) return say('Nothing to merge: the cursor is not on a session.', true);
         const { session: finished, project: owner } = sessionRow;
-        if (finished.state !== 'awaiting-review') {
+        if (finished.state !== SessionState.AwaitingReview) {
           return say(`${finished.id} is ${finished.state}; only a finished branch merges.`, true);
         }
         const id = finished.id;

@@ -81,6 +81,7 @@ import { openStore } from './db.client.js';
 import { ClimbReason } from './enums/climb-reason.enums.js';
 import { EventType } from './enums/event-type.enums.js';
 import { GateStageStatus } from './enums/gate-stage-status.enums.js';
+import { SessionState } from './enums/session-state.enums.js';
 import {
   ArmedGitDriverError,
   WorktreeConfigError,
@@ -270,22 +271,24 @@ describe('launchTask claim guard', () => {
 
   // Relaunching a claimed task mints a second session with a fresh
   // reject_count, stepping over the cap that parked the first one (decision 7).
-  it.each(['running', 'awaiting-review', 'blocked', 'merged'] as const)(
-    'refuses a task whose session is %s',
-    (state) => {
-      planTask(db, { repoPath: REPO, task: spec() });
-      insertSession(db, {
-        id: 's1',
-        taskId: 't-1',
-        worktreePath: '/repo/.worktrees/s1',
-        branch: 'pup/s1',
-        profileHash: 'hash',
-      });
-      db.prepare('UPDATE sessions SET state = ? WHERE id = ?').run(state, 's1');
+  it.each([
+    SessionState.Running,
+    SessionState.AwaitingReview,
+    SessionState.Blocked,
+    SessionState.Merged,
+  ] as const)('refuses a task whose session is %s', (state) => {
+    planTask(db, { repoPath: REPO, task: spec() });
+    insertSession(db, {
+      id: 's1',
+      taskId: 't-1',
+      worktreePath: '/repo/.worktrees/s1',
+      branch: 'pup/s1',
+      profileHash: 'hash',
+    });
+    db.prepare('UPDATE sessions SET state = ? WHERE id = ?').run(state, 's1');
 
-      expect(launch).toThrow(TaskAlreadyClaimedError);
-    },
-  );
+    expect(launch).toThrow(TaskAlreadyClaimedError);
+  });
 
   it('names the claiming session so the operator knows what to kill', () => {
     planTask(db, { repoPath: REPO, task: spec() });
@@ -296,7 +299,7 @@ describe('launchTask claim guard', () => {
       branch: 'pup/s1',
       profileHash: 'hash',
     });
-    transitionSession(db, 's1', 'running');
+    transitionSession(db, 's1', SessionState.Running);
 
     expect(launch).toThrow(/session s1/);
   });
@@ -338,7 +341,7 @@ describe('launchTask scope overlap (decision 99)', () => {
       profileHash: 'hash',
     });
     db.prepare('UPDATE sessions SET tmux_target = ? WHERE id = ?').run(pane, id);
-    transitionSession(db, id, 'running');
+    transitionSession(db, id, SessionState.Running);
   }
 
   const launch = (overlapVia?: 'operator' | 'conductor') =>
@@ -359,7 +362,7 @@ describe('launchTask scope overlap (decision 99)', () => {
     seedHolder();
 
     expect(launch()).toBe('t-1');
-    expect(getSession(db, 't-1')?.state).toBe('running');
+    expect(getSession(db, 't-1')?.state).toBe(SessionState.Running);
   });
 
   it('writes one scope_overlap event naming both sessions and the shared files', () => {
@@ -457,7 +460,7 @@ describe('launchTask scope overlap (decision 99)', () => {
     planTask(db, { repoPath: repo, task: spec() });
     seedHolder('s-run', ['src/core/**'], '%3');
     seedHolder('s-review', ['src/core/**'], '%4');
-    transitionSession(db, 's-review', 'awaiting-review');
+    transitionSession(db, 's-review', SessionState.AwaitingReview);
     seedHolder('s-open', ['src/core/**'], '%5');
     appendEvent(db, 's-open', EventType.Merge, {
       branch: 'pup/s-open',
@@ -466,7 +469,7 @@ describe('launchTask scope overlap (decision 99)', () => {
       files: ['src/core/github.client.ts'],
       prUrl: 'https://github.com/owner/repo/pull/8',
     });
-    transitionSession(db, 's-open', 'blocked');
+    transitionSession(db, 's-open', SessionState.Blocked);
 
     const sessionId = launch();
 
@@ -517,11 +520,11 @@ describe('launchTask scope overlap (decision 99)', () => {
   it("lists only running peers in a fix round's kickoff and returns every overlap for the record", () => {
     planTask(db, { repoPath: repo, task: spec() });
     launch();
-    transitionSession(db, 't-1', 'awaiting-review');
-    transitionSession(db, 't-1', 'merged');
+    transitionSession(db, 't-1', SessionState.AwaitingReview);
+    transitionSession(db, 't-1', SessionState.Merged);
     seedHolder('s-run', ['src/core/**'], '%3');
     seedHolder('s-review', ['src/core/**'], '%4');
-    transitionSession(db, 's-review', 'awaiting-review');
+    transitionSession(db, 's-review', SessionState.AwaitingReview);
 
     const { compiled, conflicts } = recompileSessionProfile(
       db,
@@ -549,7 +552,7 @@ describe('launchTask scope overlap (decision 99)', () => {
     });
 
     expect(launch()).toBe('t-1');
-    expect(getSession(db, 't-1')?.state).toBe('running');
+    expect(getSession(db, 't-1')?.state).toBe(SessionState.Running);
     expect(listEvents(db, 's-held').some((e) => e.type === EventType.Steer)).toBe(false);
   });
 
@@ -1022,7 +1025,7 @@ describe('launchTask rollback', () => {
     // The clause each front end punctuates its own retry onto.
     expect(error.rolledBack).toBe('Launch rolled back (session t-1 killed)');
     expect(killTmux).toHaveBeenCalledWith('t-1', '%7');
-    expect(getSession(db, 't-1')?.state).toBe('killed');
+    expect(getSession(db, 't-1')?.state).toBe(SessionState.Killed);
   });
 
   // The whole point of the kill: a claimed task no relaunch could take, and an
@@ -1055,7 +1058,7 @@ describe('launchTask rollback', () => {
         'session was killed',
     );
     expect(killTmux).toHaveBeenCalledWith('t-1', '%7');
-    expect(getSession(db, 't-1')?.state).toBe('killed');
+    expect(getSession(db, 't-1')?.state).toBe(SessionState.Killed);
     expect(listBacklogTasks(db, projectId(repo)).map((task) => task.id)).toEqual(['t-1']);
   });
 
@@ -1097,7 +1100,7 @@ describe('launchTask rollback', () => {
 
     expect(launch).toThrow(TypeError);
     expect(killTmux).not.toHaveBeenCalled();
-    expect(getSession(db, 't-1')?.state).toBe('running');
+    expect(getSession(db, 't-1')?.state).toBe(SessionState.Running);
   });
 });
 
@@ -1182,8 +1185,8 @@ describe('launchTask model routing (decision 92)', () => {
       .get(sessionId);
   /** The session's window ran into a gate rejection, and the operator killed it. */
   const rejectAndKill = (sessionId: string) => {
-    transitionSession(db, sessionId, 'awaiting-review');
-    transitionSession(db, sessionId, 'rejected');
+    transitionSession(db, sessionId, SessionState.AwaitingReview);
+    transitionSession(db, sessionId, SessionState.Rejected);
     killSession(db, sessionId);
   };
   const UI_SCOPE = { scopeIn: ['src/cli/ui/**'] };
@@ -1283,7 +1286,7 @@ describe('launchTask model routing (decision 92)', () => {
     killSession(db, busy);
     const done = launch();
     quietFor(done, STALLED);
-    transitionSession(db, done, 'awaiting-review');
+    transitionSession(db, done, SessionState.AwaitingReview);
     killSession(db, done);
 
     expect(routeColumns(launch())).toMatchObject({ rung: 0, rung_reason: null });
@@ -1320,9 +1323,9 @@ describe('launchTask model routing (decision 92)', () => {
   it('never climbs a task the gate parked as blocked', () => {
     planTask(db, { repoPath: repo, task: spec(UI_SCOPE) });
     const first = launch();
-    transitionSession(db, first, 'awaiting-review');
-    transitionSession(db, first, 'rejected');
-    transitionSession(db, first, 'blocked');
+    transitionSession(db, first, SessionState.AwaitingReview);
+    transitionSession(db, first, SessionState.Rejected);
+    transitionSession(db, first, SessionState.Blocked);
     killSession(db, first);
 
     expect(routeColumns(launch())).toMatchObject({ rung: 0, rung_reason: null });
@@ -1457,7 +1460,7 @@ describe('launchTask model routing (decision 92)', () => {
       `UPDATE events SET created_at = datetime('now', '-20 minutes') WHERE type = '${EventType.Respawn}'`,
     ).run();
     quietFor(sessionId, quietAgeMs);
-    expect(killSession(db, sessionId)).toBe('merged');
+    expect(killSession(db, sessionId)).toBe(SessionState.Merged);
     return getSession(db, sessionId) as SessionRow;
   };
 
@@ -1546,7 +1549,7 @@ describe('steer, interrupt and kill by session id', () => {
       profileHash: 'hash',
       tmuxTarget: '%7',
     });
-    transitionSession(db, 's-1', 'running');
+    transitionSession(db, 's-1', SessionState.Running);
   });
 
   it('addresses the pane recorded at launch, never the session', () => {
@@ -1583,10 +1586,10 @@ describe('steer, interrupt and kill by session id', () => {
   // row belongs to whatever holds it now. Refused in core, so `pup steer` and
   // the dashboard's `s` refuse the same sessions.
   it.each([
-    ['merged', ['awaiting-review', 'merged']],
-    ['killed', ['killed']],
+    [SessionState.Merged, [SessionState.AwaitingReview, SessionState.Merged]],
+    [SessionState.Killed, [SessionState.Killed]],
   ])('refuses a %s session, and sends nothing', (state, steps) => {
-    for (const step of steps) transitionSession(db, 's-1', step as 'merged');
+    for (const step of steps) transitionSession(db, 's-1', step);
 
     expect(() => steerSession(db, 's-1', 'do X')).toThrow(
       `Session s-1 is ${state}; nothing to steer.`,
@@ -1698,7 +1701,7 @@ describe('steer, interrupt and kill by session id', () => {
     killSession(db, 's-1');
 
     expect(killTmux).toHaveBeenCalledWith('s-1', '%7');
-    expect(getSession(db, 's-1')?.state).toBe('killed');
+    expect(getSession(db, 's-1')?.state).toBe(SessionState.Killed);
   });
 
   // Decision 76: asking is not finishing. The worker ends its turn and the
@@ -1707,7 +1710,7 @@ describe('steer, interrupt and kill by session id', () => {
     markSessionQuestion(db, 's-1', { text: 'rebase onto main or merge it?' });
 
     expect(events('question')).toEqual([{ text: 'rebase onto main or merge it?' }]);
-    expect(getSession(db, 's-1')?.state).toBe('running');
+    expect(getSession(db, 's-1')?.state).toBe(SessionState.Running);
   });
 
   it('records the options a question offers and the one it recommends', () => {
@@ -1826,7 +1829,7 @@ describe('answering an open question', () => {
       profileHash: 'hash',
       tmuxTarget: '%7',
     });
-    transitionSession(db, 's-1', 'running');
+    transitionSession(db, 's-1', SessionState.Running);
     markSessionQuestion(db, 's-1', {
       text: 'rebase or merge?',
       options: ['rebase onto main', 'merge main in'],
@@ -1947,7 +1950,7 @@ describe('answering an open question', () => {
   });
 
   it('refuses a session that has stopped', () => {
-    transitionSession(db, 's-1', 'killed');
+    transitionSession(db, 's-1', SessionState.Killed);
 
     expect(() => answerSessionQuestion(db, 's-1', asked('s-1'), '1')).toThrow(TerminalSessionError);
   });
@@ -1958,7 +1961,11 @@ describe('answering an open question', () => {
     ['a CI fix round', EventType.FixRound, { prUrl: 'u', head: 'h', threads: [], rejectBase: 0 }],
     ['a handoff respawn', EventType.Respawn, { delivered: true }],
     ['`pup session done`', EventType.SessionDone, { summary: 'done' }],
-    ['a return to running', EventType.GateResult, { from: 'blocked', to: 'running' }],
+    [
+      'a return to running',
+      EventType.GateResult,
+      { from: SessionState.Blocked, to: SessionState.Running },
+    ],
   ] as const)('ends the question at %s', (_, type, payload) => {
     appendEvent(db, 's-1', type, payload as never);
 
@@ -1967,10 +1974,10 @@ describe('answering an open question', () => {
   });
 
   it('keeps the question through a block, and ends it at the unblock', () => {
-    transitionSession(db, 's-1', 'blocked');
+    transitionSession(db, 's-1', SessionState.Blocked);
     expect(openQuestion(db, 's-1')).toBeDefined();
 
-    transitionSession(db, 's-1', 'running', { kind: 'operator-unblock' });
+    transitionSession(db, 's-1', SessionState.Running, { kind: 'operator-unblock' });
 
     expect(openQuestion(db, 's-1')).toBeUndefined();
   });
@@ -2222,7 +2229,7 @@ describe('launchTask without an MCP config', () => {
 
     // The module mocks are file-wide and never cleared: the last call is this test's.
     const settingsPath = vi.mocked(launchSession).mock.calls.at(-1)?.[0].settingsPath as string;
-    expect(getSession(db, sessionId)?.state).toBe('running');
+    expect(getSession(db, sessionId)?.state).toBe(SessionState.Running);
     expect(existsSync(settingsPath)).toBe(true);
     expect(existsSync(join(dirname(settingsPath), 'mcp.json'))).toBe(false);
     expect(vi.mocked(kickoff).mock.calls.at(-1)?.[1]).not.toContain('## Code graph');
@@ -2319,7 +2326,11 @@ describe('launch capacity (decisions 96, 197)', () => {
   /** `count` sessions in `state`, each on a task of its own sharing no file with `t-1`. */
   function seedSessions(
     count: number,
-    state: 'running' | 'awaiting-review' | 'blocked' | 'killed' = 'running',
+    state:
+      | SessionState.Running
+      | SessionState.AwaitingReview
+      | SessionState.Blocked
+      | SessionState.Killed = SessionState.Running,
   ): void {
     for (let index = 0; index < count; index++) {
       const id = `s-${state}-${index}`;
@@ -2335,8 +2346,8 @@ describe('launch capacity (decisions 96, 197)', () => {
         branch: `pup/${id}`,
         profileHash: 'hash',
       });
-      transitionSession(db, id, 'running');
-      if (state !== 'running') transitionSession(db, id, state);
+      transitionSession(db, id, SessionState.Running);
+      if (state !== SessionState.Running) transitionSession(db, id, state);
     }
   }
 
@@ -2350,11 +2361,11 @@ describe('launch capacity (decisions 96, 197)', () => {
       branch: 'pup/timed',
       profileHash: 'hash',
     });
-    transitionSession(db, 'timed', 'running');
-    transitionSession(db, 'timed', 'killed');
+    transitionSession(db, 'timed', SessionState.Running);
+    transitionSession(db, 'timed', SessionState.Killed);
     appendEvent(db, 'timed', EventType.GateResult, {
-      from: 'awaiting-review',
-      to: 'rejected',
+      from: SessionState.AwaitingReview,
+      to: SessionState.Rejected,
       report: {
         sessionId: 'timed',
         passed: true,
@@ -2409,7 +2420,7 @@ describe('launch capacity (decisions 96, 197)', () => {
     seedSessions(3);
     expect(launch('conductor')).toBe('t-1');
 
-    seedSessions(1, 'blocked');
+    seedSessions(1, SessionState.Blocked);
     planTask(db, { repoPath: repo, task: spec({ id: 't-2' as TaskId }) });
     expect(() =>
       launchTask(db, {
@@ -2438,7 +2449,7 @@ describe('launch capacity (decisions 96, 197)', () => {
   // Decision 144: a session in review costs memory, not turns.
   it('does not count sessions awaiting review', () => {
     timeGate(10);
-    seedSessions(4, 'awaiting-review');
+    seedSessions(4, SessionState.AwaitingReview);
     seedSessions(3);
 
     expect(launch('conductor')).toBe('t-1');
@@ -2447,7 +2458,7 @@ describe('launch capacity (decisions 96, 197)', () => {
   it('does not count killed sessions', () => {
     timeGate(10);
     seedSessions(3);
-    seedSessions(4, 'killed');
+    seedSessions(4, SessionState.Killed);
 
     expect(launch('operator')).toBe('t-1');
   });
@@ -2539,8 +2550,8 @@ describe('launch capacity (decisions 96, 197)', () => {
     /** `t-1`'s session, merged, as a fix round finds it. */
     function mergedSession(): SessionRow {
       launch('operator');
-      transitionSession(db, 't-1', 'awaiting-review');
-      transitionSession(db, 't-1', 'merged');
+      transitionSession(db, 't-1', SessionState.AwaitingReview);
+      transitionSession(db, 't-1', SessionState.Merged);
       return getSession(db, 't-1') as SessionRow;
     }
 

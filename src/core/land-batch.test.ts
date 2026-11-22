@@ -19,6 +19,7 @@ import { MERGE_LOCK_DIRNAME } from './constants/merge-gate.constants.js';
 import { openStore } from './db.client.js';
 import { EventType } from './enums/event-type.enums.js';
 import { InterruptSignal } from './enums/interrupt-signal.enums.js';
+import { SessionState } from './enums/session-state.enums.js';
 import { MergeLockLostError } from './errors/merge-gate.errors.js';
 import { GateInterruptedError } from './errors/sandbox.errors.js';
 import { landSessions } from './land-batch.service.js';
@@ -99,9 +100,9 @@ describe('landSessions (decision 195)', { timeout: 30_000 }, () => {
         branch: `pup/${id}`,
         profileHash: 'hash',
       });
-      transitionSession(db, id, 'running');
-      transitionSession(db, id, 'awaiting-review');
-      transitionSession(db, id, 'merged');
+      transitionSession(db, id, SessionState.Running);
+      transitionSession(db, id, SessionState.AwaitingReview);
+      transitionSession(db, id, SessionState.Merged);
       appendEvent(db, id, EventType.Merge, {
         branch: `pup/${id}`,
         sha,

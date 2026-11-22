@@ -1,5 +1,5 @@
 import type { Database } from 'better-sqlite3';
-
+import { SessionState } from './enums/session-state.enums.js';
 import { currentBranch, gitDiffPaths, runGit } from './git-diff.client.js';
 import { recordWatcherBeat, replaceOverlaps } from './overlap.repository.js';
 import { projectId } from './paths.utils.js';
@@ -94,7 +94,7 @@ export function scanOverlaps(
 ): OverlapPair[] | undefined {
   const target = currentBranch(repoPath);
   if (!target) return undefined;
-  const live = listSessions(db, ['running', 'awaiting-review']);
+  const live = listSessions(db, [SessionState.Running, SessionState.AwaitingReview]);
   const filesBySession: Record<string, string[]> = {};
   for (const session of live) {
     try {

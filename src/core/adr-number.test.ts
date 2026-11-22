@@ -9,6 +9,7 @@ import { openStore } from './db.client.js';
 import { EventType } from './enums/event-type.enums.js';
 import { GateStageStatus } from './enums/gate-stage-status.enums.js';
 import { InterruptSignal } from './enums/interrupt-signal.enums.js';
+import { SessionState } from './enums/session-state.enums.js';
 import { runGit } from './git-diff.client.js';
 import {
   appendEvent,
@@ -17,7 +18,6 @@ import {
   insertTask,
   transitionSession,
 } from './session.repository.js';
-import type { SessionState } from './types/session.types.js';
 
 // The real git, which one test makes an interrupt kill on one branch's diff.
 vi.mock('./git-diff.client.js', async (importOriginal) => {
@@ -51,13 +51,17 @@ function commitOn(repo: string, branch: string, ...files: string[]): void {
 }
 
 const PATHS: Record<SessionState, SessionState[]> = {
-  queued: [],
-  running: ['running'],
-  'awaiting-review': ['running', 'awaiting-review'],
-  rejected: ['running', 'awaiting-review', 'rejected'],
-  blocked: ['running', 'blocked'],
-  merged: ['running', 'awaiting-review', 'merged'],
-  killed: ['killed'],
+  [SessionState.Queued]: [],
+  [SessionState.Running]: [SessionState.Running],
+  [SessionState.AwaitingReview]: [SessionState.Running, SessionState.AwaitingReview],
+  [SessionState.Rejected]: [
+    SessionState.Running,
+    SessionState.AwaitingReview,
+    SessionState.Rejected,
+  ],
+  [SessionState.Blocked]: [SessionState.Running, SessionState.Blocked],
+  [SessionState.Merged]: [SessionState.Running, SessionState.AwaitingReview, SessionState.Merged],
+  [SessionState.Killed]: [SessionState.Killed],
 };
 
 function seedSession(db: Database, id: string, state: SessionState): void {
@@ -85,7 +89,7 @@ describe('adrNumberStage', { timeout: 20_000 }, () => {
     git(repo, 'config', 'user.name', 'adr-test');
     commitOn(repo, 'main', 'docs/adr/0001-first.md', 'docs/adr/0002-second.md');
     ensureProject(db, 'proj', repo);
-    seedSession(db, 'me', 'awaiting-review');
+    seedSession(db, 'me', SessionState.AwaitingReview);
   });
 
   const stage = () =>
@@ -109,13 +113,13 @@ describe('adrNumberStage', { timeout: 20_000 }, () => {
 
   it('passes a free number, and edits to a decision already on the target', () => {
     commitOn(repo, 'pup/me', 'docs/adr/0003-mine.md', 'docs/adr/0002-second.md');
-    seedSession(db, 'other', 'running');
+    seedSession(db, 'other', SessionState.Running);
     commitOn(repo, 'pup/other', 'docs/adr/0004-theirs.md');
     expect(stage()).toBeUndefined();
   });
 
   it('passes a slug-only rename of a decision on the target', () => {
-    seedSession(db, 'other', 'running');
+    seedSession(db, 'other', SessionState.Running);
     commitOn(repo, 'pup/other', 'docs/adr/0003-theirs.md');
     git(repo, 'checkout', '-q', '-b', 'pup/me', 'main');
     git(repo, 'mv', 'docs/adr/0002-second.md', 'docs/adr/0002-renamed.md');
@@ -159,7 +163,7 @@ describe('adrNumberStage', { timeout: 20_000 }, () => {
   });
 
   it('refuses a slug rename another session branch also makes of the same decision', () => {
-    seedSession(db, 'other', 'running');
+    seedSession(db, 'other', SessionState.Running);
     for (const [branch, slug] of [
       ['pup/other', 'b'],
       ['pup/me', 'a'],
@@ -187,11 +191,11 @@ describe('adrNumberStage', { timeout: 20_000 }, () => {
   });
 
   it('skips a competing branch git cannot diff, naming it, and still checks the rest', () => {
-    seedSession(db, 'orphan', 'running');
+    seedSession(db, 'orphan', SessionState.Running);
     // A parentless commit shares no merge base with the target.
     const orphan = git(repo, 'commit-tree', '-m', 'orphan', 'main^{tree}');
     git(repo, 'update-ref', 'refs/heads/pup/orphan', orphan);
-    seedSession(db, 'other', 'running');
+    seedSession(db, 'other', SessionState.Running);
     commitOn(repo, 'pup/other', 'docs/adr/0004-theirs.md');
     commitOn(repo, 'pup/me', 'docs/adr/0003-mine.md');
     expect(stage()).toMatchObject({
@@ -218,7 +222,7 @@ describe('adrNumberStage', { timeout: 20_000 }, () => {
   });
 
   it('counts a decision renamed onto a taken number as the add of its new name', () => {
-    seedSession(db, 'other', 'running');
+    seedSession(db, 'other', SessionState.Running);
     commitOn(repo, 'pup/other', 'docs/adr/0003-theirs.md');
     git(repo, 'checkout', '-q', '-b', 'pup/me', 'main');
     git(repo, 'mv', 'docs/adr/0002-second.md', 'docs/adr/0003-second.md');
@@ -230,23 +234,26 @@ describe('adrNumberStage', { timeout: 20_000 }, () => {
     ]);
   });
 
-  it.each(['queued', 'running', 'awaiting-review', 'rejected', 'blocked'] as const)(
-    'refuses a number a %s session branch adds, naming it',
-    (state) => {
-      seedSession(db, 'other', state);
-      commitOn(repo, 'pup/other', 'docs/adr/0003-theirs.md');
-      commitOn(repo, 'pup/me', 'docs/adr/0003-mine.md');
-      expect(refusals()).toEqual([
-        'ADR numbers already taken:',
-        '  docs/adr/0003-mine.md: decision 0003 is also added by pup/other, a session branch that ' +
-          'is live or whose PR has not landed; renumber it 0004, the lowest free number',
-      ]);
-    },
-  );
+  it.each([
+    SessionState.Queued,
+    SessionState.Running,
+    SessionState.AwaitingReview,
+    SessionState.Rejected,
+    SessionState.Blocked,
+  ] as const)('refuses a number a %s session branch adds, naming it', (state) => {
+    seedSession(db, 'other', state);
+    commitOn(repo, 'pup/other', 'docs/adr/0003-theirs.md');
+    commitOn(repo, 'pup/me', 'docs/adr/0003-mine.md');
+    expect(refusals()).toEqual([
+      'ADR numbers already taken:',
+      '  docs/adr/0003-mine.md: decision 0003 is also added by pup/other, a session branch that ' +
+        'is live or whose PR has not landed; renumber it 0004, the lowest free number',
+    ]);
+  });
 
   /** Seed `other` as merged with an open PR whose merge event records `sha`. */
   const openPrPeer = (sha?: string): void => {
-    seedSession(db, 'other', 'merged');
+    seedSession(db, 'other', SessionState.Merged);
     appendEvent(db, 'other', EventType.Merge, {
       branch: 'pup/other',
       ...(sha === undefined ? {} : { sha }),
@@ -326,7 +333,7 @@ describe('adrNumberStage', { timeout: 20_000 }, () => {
   });
 
   it("withholds an open PR peer's url that is not a pull request's", () => {
-    seedSession(db, 'other', 'merged');
+    seedSession(db, 'other', SessionState.Merged);
     appendEvent(db, 'other', EventType.Merge, {
       branch: 'pup/other',
       target: 'main',
@@ -386,8 +393,8 @@ describe('adrNumberStage', { timeout: 20_000 }, () => {
   });
 
   it('ignores killed sessions, landed PRs, local merges and pup branches no session holds', () => {
-    seedSession(db, 'killed', 'killed');
-    seedSession(db, 'landed', 'merged');
+    seedSession(db, 'killed', SessionState.Killed);
+    seedSession(db, 'landed', SessionState.Merged);
     appendEvent(db, 'landed', EventType.Merge, {
       branch: 'pup/landed',
       target: 'main',
@@ -399,7 +406,7 @@ describe('adrNumberStage', { timeout: 20_000 }, () => {
       target: 'main',
       prUrl: 'https://github.com/o/r/pull/2',
     });
-    seedSession(db, 'local', 'merged');
+    seedSession(db, 'local', SessionState.Merged);
     appendEvent(db, 'local', EventType.Merge, { branch: 'pup/local', target: 'main', files: [] });
     for (const branch of ['killed', 'landed', 'local', 'stray']) {
       commitOn(repo, `pup/${branch}`, `docs/adr/0003-${branch}.md`);
@@ -409,7 +416,7 @@ describe('adrNumberStage', { timeout: 20_000 }, () => {
   });
 
   it('lets an interrupt that kills a competing diff through, rather than skip the branch', async () => {
-    seedSession(db, 'other', 'running');
+    seedSession(db, 'other', SessionState.Running);
     commitOn(repo, 'pup/other', 'docs/adr/0004-theirs.md');
     commitOn(repo, 'pup/me', 'docs/adr/0003-mine.md');
     const theirs = git(repo, 'rev-parse', 'refs/heads/pup/other');
@@ -430,7 +437,7 @@ describe('adrNumberStage', { timeout: 20_000 }, () => {
   it.each(['ETIMEDOUT', 'ENOBUFS'])(
     'skips a competing branch whose read Node killed with %s, not reading it as an interrupt',
     async (code) => {
-      seedSession(db, 'other', 'running');
+      seedSession(db, 'other', SessionState.Running);
       commitOn(repo, 'pup/other', 'docs/adr/0003-theirs.md');
       commitOn(repo, 'pup/me', 'docs/adr/0003-mine.md');
       const theirs = git(repo, 'rev-parse', 'refs/heads/pup/other');
@@ -462,7 +469,7 @@ describe('adrNumberStage', { timeout: 20_000 }, () => {
   );
 
   it('skips a competing branch that is a symbolic ref, naming it', () => {
-    seedSession(db, 'other', 'running');
+    seedSession(db, 'other', SessionState.Running);
     git(repo, 'symbolic-ref', 'refs/heads/pup/other', 'refs/heads/main');
     commitOn(repo, 'pup/me', 'docs/adr/0003-mine.md');
     expect(stage()).toMatchObject({
@@ -472,7 +479,7 @@ describe('adrNumberStage', { timeout: 20_000 }, () => {
   });
 
   it('leaves a competing branch adding more than three decisions unchecked, with a note', () => {
-    seedSession(db, 'squatter', 'running');
+    seedSession(db, 'squatter', SessionState.Running);
     commitOn(
       repo,
       'pup/squatter',
@@ -500,7 +507,7 @@ describe('adrNumberStage', { timeout: 20_000 }, () => {
   });
 
   it('still refuses clashes after a session points core.worktree elsewhere', () => {
-    seedSession(db, 'other', 'running');
+    seedSession(db, 'other', SessionState.Running);
     commitOn(repo, 'pup/other', 'docs/adr/0003-theirs.md');
     commitOn(repo, 'pup/me', 'docs/adr/0002-mine.md', 'docs/adr/0003-mine.md');
     // A cwd prefix of the repo's own name: a bare `docs/adr/` pathspec or
@@ -595,7 +602,7 @@ describe('adrNumberStage', { timeout: 20_000 }, () => {
   });
 
   it('suggests a distinct free number per clash, past every number taken', () => {
-    seedSession(db, 'other', 'running');
+    seedSession(db, 'other', SessionState.Running);
     commitOn(repo, 'pup/other', 'docs/adr/0003-theirs.md', 'docs/adr/0004-theirs.md');
     commitOn(
       repo,

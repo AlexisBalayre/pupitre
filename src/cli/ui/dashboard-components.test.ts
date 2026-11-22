@@ -5,6 +5,7 @@ import { Tier } from '../../claude/enums/tier.enums.js';
 import { ClimbReason } from '../../core/enums/climb-reason.enums.js';
 import { GateStageStatus } from '../../core/enums/gate-stage-status.enums.js';
 import { SessionActivityKind } from '../../core/enums/session-activity-kind.enums.js';
+import { SessionState } from '../../core/enums/session-state.enums.js';
 import type {
   DashboardRoute,
   DashboardSession,
@@ -65,7 +66,7 @@ function sessionFixture(overrides: Partial<DashboardSession> = {}): DashboardSes
   return {
     id: 's-mtzmobsi-1',
     isMintedId: true,
-    state: 'running',
+    state: SessionState.Running,
     branch: 'pup/t-mtzmobsi',
     taskId: 't-mtzmobsi',
     goal: 'a live Ink dashboard',
@@ -167,7 +168,9 @@ describe('dashboard components', () => {
       const frame = frameOf(
         createElement(Sessions, {
           finishedCount: 0,
-          sessions: [sessionFixture({ state: 'blocked', rejectCount: 3, needsHuman: true })],
+          sessions: [
+            sessionFixture({ state: SessionState.Blocked, rejectCount: 3, needsHuman: true }),
+          ],
           selectedIndex: -1,
         }),
       );
@@ -509,7 +512,7 @@ describe('dashboard components', () => {
           row: {
             kind: 'session',
             session: sessionFixture({
-              state: 'awaiting-review',
+              state: SessionState.AwaitingReview,
               origin: 'conductor',
               scope: ['src/core/**', 'docs/02-cli.md'],
               acceptance: ['the snapshot carries it', 'Enter opens the pane'],
@@ -740,8 +743,8 @@ describe('dashboard components', () => {
   describe('app', () => {
     const populated = snapshotFixture({
       sessions: [
-        sessionFixture({ state: 'blocked', rejectCount: 2, needsHuman: true }),
-        sessionFixture({ id: 's-done-1', state: 'merged', goal: 'already landed' }),
+        sessionFixture({ state: SessionState.Blocked, rejectCount: 2, needsHuman: true }),
+        sessionFixture({ id: 's-done-1', state: SessionState.Merged, goal: 'already landed' }),
       ],
       backlog: [
         {

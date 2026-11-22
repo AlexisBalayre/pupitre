@@ -8,6 +8,7 @@ vi.mock('./conductor.service.js', () => ({ isConductorRunning: vi.fn(() => false
 
 import { isConductorRunning } from './conductor.service.js';
 import { openStore } from './db.client.js';
+import { SessionState } from './enums/session-state.enums.js';
 import { projectId } from './paths.utils.js';
 import { listProjects, putProjectToSleep, wakeProject } from './project.service.js';
 import {
@@ -92,9 +93,9 @@ describe('putProjectToSleep', () => {
 
   it('refuses while the conductor or a holding session is live, naming each, and writes nothing', () => {
     seedSession('s-live');
-    transitionSession(db, 's-live', 'running');
+    transitionSession(db, 's-live', SessionState.Running);
     seedSession('s-gone');
-    transitionSession(db, 's-gone', 'killed');
+    transitionSession(db, 's-gone', SessionState.Killed);
     vi.mocked(isConductorRunning).mockReturnValue(true);
 
     expect(putProjectToSleep(db, repo, NOW)).toEqual({

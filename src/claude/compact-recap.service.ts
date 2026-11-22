@@ -6,6 +6,7 @@ import { openConductorQuestion } from '../core/conductor.service.js';
 import { MERGE_LOCK_DIRNAME } from '../core/constants/merge-gate.constants.js';
 import { EventType } from '../core/enums/event-type.enums.js';
 import { GateStageStatus } from '../core/enums/gate-stage-status.enums.js';
+import { SessionState } from '../core/enums/session-state.enums.js';
 import { runGit, verifiedWorktreeGitEnv } from '../core/git-diff.client.js';
 import {
   currentFixRound,
@@ -15,7 +16,7 @@ import {
   newestEventOf,
   openQuestion,
 } from '../core/session.repository.js';
-import type { QuestionEvent, SessionRow, SessionState } from '../core/types/session.types.js';
+import type { QuestionEvent, SessionRow } from '../core/types/session.types.js';
 
 /**
  * What the SessionStart hook on `compact` prints after the summary (decision 199):
@@ -29,11 +30,11 @@ const MAX_LISTED = 12;
 
 /** The states the conductor sees named one by one; the rest are counted (decision 199). */
 const NAMED_STATES: readonly SessionState[] = [
-  'running',
-  'queued',
-  'blocked',
-  'rejected',
-  'awaiting-review',
+  SessionState.Running,
+  SessionState.Queued,
+  SessionState.Blocked,
+  SessionState.Rejected,
+  SessionState.AwaitingReview,
 ];
 
 /**
@@ -120,7 +121,7 @@ export function conductorRecap(db: Database, repoPath: string): string[] {
     );
     lines.push(`  ${state} (${inState.length}): ${listed(ids)}`);
   }
-  const counted = (['merged', 'killed'] as const)
+  const counted = [SessionState.Merged, SessionState.Killed]
     .map((state) => `${state} ${sessions.filter((session) => session.state === state).length}`)
     .join(', ');
   lines.push(`  counted only: ${counted}`);
@@ -140,7 +141,7 @@ export function conductorRecap(db: Database, repoPath: string): string[] {
  */
 function openPrLines(db: Database, repoPath: string, sessions: SessionRow[]): string[] {
   const open = sessions
-    .filter((session) => session.state !== 'killed')
+    .filter((session) => session.state !== SessionState.Killed)
     .flatMap((session) => {
       const newest = newestEventOf(db, session.id, [
         EventType.Merge,

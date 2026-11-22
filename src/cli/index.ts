@@ -67,6 +67,7 @@ import { GateStageStatus } from '../core/enums/gate-stage-status.enums.js';
 import { InterruptSignal } from '../core/enums/interrupt-signal.enums.js';
 import { MergeStatus } from '../core/enums/merge-status.enums.js';
 import { OriginRecording } from '../core/enums/origin-recording.enums.js';
+import { SessionState } from '../core/enums/session-state.enums.js';
 import { StageDelta } from '../core/enums/stage-delta.enums.js';
 import { ConductorTellRefusedError } from '../core/errors/conductor.errors.js';
 import { RewrittenGitDirError } from '../core/errors/git-diff.errors.js';
@@ -1670,7 +1671,9 @@ export function buildProgram(): Command {
       // decide whether that is worth a restart (decision 57).
       // Scrubbed like every other store-read id printed here (decisions 29, 61):
       // this line names rows a session wrote, on the operator's terminal.
-      const running = listSessions(db, ['running']).map((session) => sanitizeReason(session.id));
+      const running = listSessions(db, [SessionState.Running]).map((session) =>
+        sanitizeReason(session.id),
+      );
       const conductor = isConductorRunning(repoPath) ? [conductorName(projectId(repoPath))] : [];
       const already = [...conductor, ...running];
       console.log(
@@ -2044,7 +2047,9 @@ export function buildProgram(): Command {
     if (usage) console.log(usage);
     const sessions = shouldShowHistory
       ? snapshot.sessions
-      : snapshot.sessions.filter((s) => s.state !== 'merged' && s.state !== 'killed');
+      : snapshot.sessions.filter(
+          (s) => s.state !== SessionState.Merged && s.state !== SessionState.Killed,
+        );
     if (sessions.length === 0 && snapshot.backlog.length === 0) {
       console.log('Nothing running and nothing planned.');
       return;
@@ -2102,7 +2107,7 @@ export function buildProgram(): Command {
   /** The watcher's radar: same-file overlaps between live sessions (docs/08 v1.2). */
   function printConflictRadar(snapshot: DashboardSnapshot): void {
     const live = snapshot.sessions.filter(
-      (s) => s.state === 'running' || s.state === 'awaiting-review',
+      (s) => s.state === SessionState.Running || s.state === SessionState.AwaitingReview,
     );
     const view = radarView(snapshot.overlaps);
     for (const pair of view.pairs) {
@@ -2330,7 +2335,7 @@ export function buildProgram(): Command {
         return;
       }
       console.log(
-        killSession(db, session) === 'merged'
+        killSession(db, session) === SessionState.Merged
           ? killedFixRoundMessage(session)
           : `Killed session ${session}.`,
       );
@@ -2363,7 +2368,7 @@ export function buildProgram(): Command {
       if (!row) return refuse(`No session ${session}.`);
       // Not `canTransition`: `queued -> running` is a legal edge that this
       // command must still refuse, because there is no block to lift.
-      if (row.state !== 'blocked') {
+      if (row.state !== SessionState.Blocked) {
         return refuse(`Session ${session} is ${row.state}; only blocked sessions unblock.`);
       }
       // Printed before the transition and read out of the store rather than
@@ -2374,7 +2379,7 @@ export function buildProgram(): Command {
       console.log(
         `Session ${session} was blocked: ${blockedReason(db, session) ?? '(no reason recorded)'}`,
       );
-      transitionSession(db, session, 'running', {
+      transitionSession(db, session, SessionState.Running, {
         kind: 'operator-unblock',
         ...(opts.reason ? { reason: opts.reason } : {}),
       });

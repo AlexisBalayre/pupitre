@@ -47,6 +47,7 @@ import { ClimbReason } from './enums/climb-reason.enums.js';
 import { DebtMetric } from './enums/debt-metric.enums.js';
 import { EventType } from './enums/event-type.enums.js';
 import { GateStageStatus } from './enums/gate-stage-status.enums.js';
+import { SessionState } from './enums/session-state.enums.js';
 import { StageDelta } from './enums/stage-delta.enums.js';
 import { persistBaseline } from './init.service.js';
 import { insertLedgerEntry, listLedgerEntries } from './ledger.repository.js';
@@ -62,7 +63,6 @@ import {
   transitionSession,
 } from './session.repository.js';
 import { launchHolds, launchRoom, launchRoomLines } from './session-cap.service.js';
-import type { SessionState } from './types/session.types.js';
 import type { DashboardBind, WebDashboard } from './types/web-dashboard.types.js';
 import type { DebtSheetEntry } from './types/web-dashboard-debt.types.js';
 import { listWindow, startWebDashboard } from './web-dashboard.service.js';
@@ -313,7 +313,11 @@ describe('startWebDashboard', () => {
 
   /** A `--pr` merge whose pinned sha this temp dir, no git repo, cannot show landed. */
   function seedMerge(sessionId: string, prUrl: string): void {
-    seedSession(sessionId, ['running', 'awaiting-review', 'merged']);
+    seedSession(sessionId, [
+      SessionState.Running,
+      SessionState.AwaitingReview,
+      SessionState.Merged,
+    ]);
     appendEvent(db, sessionId, EventType.Merge, {
       branch: `pup/${sessionId}`,
       sha: 'f'.repeat(40),
@@ -408,7 +412,7 @@ describe('startWebDashboard', () => {
     });
 
     it('serves the page as a shell holding nothing from the store', async () => {
-      seedSession('s-asking', ['running']);
+      seedSession('s-asking', [SessionState.Running]);
       appendEvent(db, 's-asking', EventType.Question, { text: 'rebase or merge?' });
 
       const shell = (await get(home(), NO_SECRET)).body;
@@ -550,8 +554,8 @@ describe('startWebDashboard', () => {
       vi.mocked(hasConductorWindow).mockReturnValue(true);
       seedMerge('s-pr', PR);
       appendEvent(db, 's-pr', EventType.GateResult, {
-        from: 'merged',
-        to: 'merged',
+        from: SessionState.Merged,
+        to: SessionState.Merged,
         report: {
           sessionId: 's-pr',
           passed: true,
@@ -566,13 +570,13 @@ describe('startWebDashboard', () => {
         files: ['src/a.ts'],
         prUrl: PR,
       });
-      seedSession('s-review', ['running', 'awaiting-review']);
-      seedSession('s-blocked', ['running', 'blocked']);
+      seedSession('s-review', [SessionState.Running, SessionState.AwaitingReview]);
+      seedSession('s-blocked', [SessionState.Running, SessionState.Blocked]);
       incrementRejectCount(db, 's-blocked');
-      seedSession('s-asking', ['running']);
+      seedSession('s-asking', [SessionState.Running]);
       appendEvent(db, 's-asking', EventType.Steer, { kind: 'kickoff', by: 'conductor' });
       appendEvent(db, 's-asking', EventType.Question, { text: 'rebase or merge?' });
-      seedSession('s-done', ['running', 'killed']);
+      seedSession('s-done', [SessionState.Running, SessionState.Killed]);
       insertTask(db, {
         id: 't-planned',
         projectId: projectId(repo),
@@ -646,7 +650,7 @@ describe('startWebDashboard', () => {
     });
 
     it('puts the review in the inbox when no conductor runs to gate it', async () => {
-      seedSession('s-review', ['running', 'awaiting-review']);
+      seedSession('s-review', [SessionState.Running, SessionState.AwaitingReview]);
 
       const page = await readPage(home());
 
@@ -654,8 +658,8 @@ describe('startWebDashboard', () => {
     });
 
     it('opens on one status strip: the counts, then the launch verdict with the load', async () => {
-      seedSession('s-run', ['running']);
-      seedSession('s-review', ['running', 'awaiting-review']);
+      seedSession('s-run', [SessionState.Running]);
+      seedSession('s-review', [SessionState.Running, SessionState.AwaitingReview]);
       seedMerge('s-pr', PR);
 
       const page = await readPage(home());
@@ -717,7 +721,7 @@ describe('startWebDashboard', () => {
 
     it('cuts a long goal and a long question at a word, never mid-word', async () => {
       const words = Array.from({ length: 60 }, (_, i) => `word${i}`).join(' ');
-      seedSession('s-long', ['running'], words);
+      seedSession('s-long', [SessionState.Running], words);
       appendEvent(db, 's-long', EventType.Question, { text: words });
 
       const page = await readPage(home());
@@ -752,7 +756,7 @@ describe('startWebDashboard', () => {
 
     // Decision 188: the scope a merge is gated on, three globs and a count.
     it('prints a merge line with its widened scope whole', async () => {
-      seedSession('s-wide', ['running', 'awaiting-review']);
+      seedSession('s-wide', [SessionState.Running, SessionState.AwaitingReview]);
       appendEvent(db, 's-wide', EventType.Rescope, {
         task: 't-s-wide',
         added: [
@@ -776,7 +780,7 @@ describe('startWebDashboard', () => {
     });
 
     it('says a card has no goal rather than printing an empty line', async () => {
-      seedSession('s-blank', ['running'], '');
+      seedSession('s-blank', [SessionState.Running], '');
 
       const page = await readPage(home());
 
@@ -803,7 +807,11 @@ describe('startWebDashboard', () => {
     });
 
     it('escapes a goal and a question holding markup and control characters', async () => {
-      seedSession('s1', ['running'], '<img src=x onerror=alert(1)>\u001b[31mred\u009b2J');
+      seedSession(
+        's1',
+        [SessionState.Running],
+        '<img src=x onerror=alert(1)>\u001b[31mred\u009b2J',
+      );
       appendEvent(db, 's1', EventType.Question, { text: '</script><script>alert(2)</script>' });
 
       const page = await readPage(home());
@@ -817,13 +825,13 @@ describe('startWebDashboard', () => {
     });
 
     it('says what each running session is doing, as the hook events tell it', async () => {
-      seedSession('s-asks', ['running']);
+      seedSession('s-asks', [SessionState.Running]);
       seedHookEvent('s-asks', { hook_event_name: 'Notification', message: 'Allow\u001b Bash?' });
-      seedSession('s-idle', ['running']);
+      seedSession('s-idle', [SessionState.Running]);
       seedHookEvent('s-idle', { hook_event_name: 'Stop' });
-      seedSession('s-quiet', ['running']);
+      seedSession('s-quiet', [SessionState.Running]);
       seedHookEvent('s-quiet', { hook_event_name: 'PostToolUse' }, STALLED_AFTER_MS + 60_000);
-      seedSession('s-shell', ['running']);
+      seedSession('s-shell', [SessionState.Running]);
       seedHookEvent('s-shell', [
         {
           hook_event_name: 'PostToolUse',
@@ -843,7 +851,7 @@ describe('startWebDashboard', () => {
 
     // Decision 92: the same words `pup status` prints for the route.
     it('says what each session runs on, its rung, and why it climbed there', async () => {
-      seedSession('s-climbed', ['running']);
+      seedSession('s-climbed', [SessionState.Running]);
       recordSessionRoute(db, 's-climbed', {
         tier: Tier.Critical,
         rung: 1,
@@ -852,7 +860,7 @@ describe('startWebDashboard', () => {
         reason: ClimbReason.TurnDeath,
         override: false,
       });
-      seedSession('s-old', ['running']);
+      seedSession('s-old', [SessionState.Running]);
 
       const page = await readPage(home());
 
@@ -863,7 +871,7 @@ describe('startWebDashboard', () => {
     });
 
     it('prints a placeholder for an id outside the minted shape, and pins no debt on it', async () => {
-      seedSession('s 1', ['running']);
+      seedSession('s 1', [SessionState.Running]);
       insertLedgerEntry(db, {
         projectId: projectId(repo),
         description: 'Oversize diff (812 lines) merged from session s 1',
@@ -882,7 +890,7 @@ describe('startWebDashboard', () => {
     it('makes a link of a pull request url and of nothing else', async () => {
       seedMerge('s-evil', 'https://evil.example/x" onclick="alert(1)');
       seedMerge('s-js', 'javascript:alert(1)//github.com/o/r/pull/1');
-      seedSession('s-ask', ['running']);
+      seedSession('s-ask', [SessionState.Running]);
       appendEvent(db, 's-ask', EventType.Question, { text: `see ${PR}` });
 
       const page = await readPage(home());
@@ -1057,7 +1065,7 @@ describe('startWebDashboard', () => {
       db.prepare(
         `UPDATE events SET created_at = datetime('now', '-15 days') WHERE session_id = 's-b' AND type = '${EventType.Merge}' AND id = (SELECT MIN(id) FROM events WHERE session_id = 's-b' AND type = '${EventType.Merge}')`,
       ).run();
-      seedSession('s-run', ['running']);
+      seedSession('s-run', [SessionState.Running]);
       insertTask(db, {
         id: 't-planned',
         projectId: projectId(repo),
@@ -1083,7 +1091,7 @@ describe('startWebDashboard', () => {
       const evil = '<img src=x onerror=alert(1)>\u001b[31m\u009b2J';
       writeBrief(`## Destination\n${evil}\n`);
       fileDebt(`Oversize diff ${evil}`, [`src/${evil}.ts`], { reason: evil, acceptedBy: evil });
-      seedSession('s-evil', ['running'], evil);
+      seedSession('s-evil', [SessionState.Running], evil);
 
       for (const page of [await readPage(home()), await readPage(sheetUrl('debt'))]) {
         expect(page).not.toContain('<img');
@@ -1122,7 +1130,7 @@ describe('startWebDashboard', () => {
       const spoof = 'src/evil\u202egnp.ts';
       writeBrief(`## Destination\nreach ${spoof}\n`);
       // Filed against a live session, so its row on the Overview shows the entry too.
-      seedSession('s-live', ['running']);
+      seedSession('s-live', [SessionState.Running]);
       fileDebt(
         `Nested package ${spoof} changed with no build script, merged from session s-live`,
         [spoof],
@@ -1172,7 +1180,7 @@ describe('startWebDashboard', () => {
           expect(first).toContain('Nothing waits on you.');
 
           const arriving = overview.next();
-          seedSession('s-new', ['running']);
+          seedSession('s-new', [SessionState.Running]);
           appendEvent(db, 's-new', EventType.Question, { text: 'still live?' });
 
           expect(await arriving).toMatch(/question #\d+: still live\?/);
@@ -1209,7 +1217,7 @@ describe('startWebDashboard', () => {
 
         const arriving = stream.next();
         const changedAt = Date.now();
-        seedSession('s-new', ['running']);
+        seedSession('s-new', [SessionState.Running]);
         appendEvent(db, 's-new', EventType.Question, { text: 'which way?' });
         const frame = await arriving;
 
@@ -1386,7 +1394,7 @@ describe('startWebDashboard', () => {
     ])(
       'asks before %s runs, and runs nothing on the first post',
       async (action, fields, question) => {
-        seedSession('s-live', ['running']);
+        seedSession('s-live', [SessionState.Running]);
         const id = seedDebt();
 
         const answer = (
@@ -1397,7 +1405,7 @@ describe('startWebDashboard', () => {
         expect(String(answer.confirm)).toContain(question);
         expect(answer.confirmNonce).toEqual(expect.any(String));
         expect(answer.nonce).toEqual(expect.any(String));
-        expect(getSession(db, 's-live')?.state).toBe('running');
+        expect(getSession(db, 's-live')?.state).toBe(SessionState.Running);
         expect(isOpen(id)).toBe(true);
       },
     );
@@ -1473,7 +1481,7 @@ describe('startWebDashboard', () => {
     });
 
     it('refuses debt fields `pup merge` refuses before asking, and keeps the page able to act', async () => {
-      seedSession('s-live', ['running']);
+      seedSession('s-live', [SessionState.Running]);
 
       const answer = (
         await post(actionUrl(), {
@@ -1634,7 +1642,7 @@ describe('startWebDashboard', () => {
     });
 
     it('binds a confirmation to its fields whatever order the form sends them in', async () => {
-      seedSession('s-live', ['running']);
+      seedSession('s-live', [SessionState.Running]);
       const asked = (
         await post(actionUrl(), {
           action: 'merge',
@@ -1711,7 +1719,7 @@ describe('startWebDashboard', () => {
 
     it('puts the actions on the sheets: answers, a tell, launches and closes', async () => {
       vi.mocked(hasConductorWindow).mockReturnValue(true);
-      seedSession('s-asking', ['running']);
+      seedSession('s-asking', [SessionState.Running]);
       appendEvent(db, 's-asking', EventType.Question, {
         text: 'rebase or merge?',
         options: ['rebase', 'merge'],
@@ -1765,7 +1773,7 @@ describe('startWebDashboard', () => {
     });
 
     it("shows the worker's pane escaped, with a copyable attach line and its actions", async () => {
-      seedWindow('s-1', ['running']);
+      seedWindow('s-1', [SessionState.Running]);
       vi.mocked(capturePane).mockReturnValue(
         '> <script>alert(1)</script>\n\u001b[31mred\u202e & done\n',
       );
@@ -1790,7 +1798,7 @@ describe('startWebDashboard', () => {
     });
 
     it('refreshes the pane over its stream as the window changes', async () => {
-      seedWindow('s-1', ['running']);
+      seedWindow('s-1', [SessionState.Running]);
       vi.mocked(capturePane).mockReturnValue('first <b>screen</b>');
       const stream = await openStream(viewEvents('s-1'));
       try {
@@ -1809,7 +1817,7 @@ describe('startWebDashboard', () => {
     });
 
     it('says the window is gone rather than failing, when tmux has no pane', async () => {
-      seedWindow('s-1', ['running']);
+      seedWindow('s-1', [SessionState.Running]);
       vi.mocked(capturePane).mockImplementation(() => {
         throw new SessionPaneMissingError('s-1', '%5', 'gone');
       });
@@ -1821,7 +1829,7 @@ describe('startWebDashboard', () => {
     });
 
     it('says the pane could not be read when tmux fails another way', async () => {
-      seedWindow('s-1', ['running']);
+      seedWindow('s-1', [SessionState.Running]);
       vi.mocked(capturePane).mockImplementation(() => {
         throw new Error('tmux: server exited');
       });
@@ -1830,7 +1838,7 @@ describe('startWebDashboard', () => {
     });
 
     it('says a killed session has no window, and offers nothing to act on', async () => {
-      seedWindow('s-k', ['running', 'killed']);
+      seedWindow('s-k', [SessionState.Running, SessionState.Killed]);
 
       const page = await readPage(viewUrl('s-k'));
 
@@ -1869,7 +1877,7 @@ describe('startWebDashboard', () => {
     });
 
     it('serves the same shell for an id the store does not hold, and says so on its stream', async () => {
-      seedWindow('s-1', ['running']);
+      seedWindow('s-1', [SessionState.Running]);
       const shell = (body: string): string =>
         body.replace(/nonce-?="?[^"';]+/g, '').replace(/s-(1|none)/g, '');
 

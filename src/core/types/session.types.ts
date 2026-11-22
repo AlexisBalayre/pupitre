@@ -1,16 +1,8 @@
 import type { Tier } from '../../claude/enums/tier.enums.js';
 import type { EventType } from '../enums/event-type.enums.js';
+import type { SessionState } from '../enums/session-state.enums.js';
 import type { TaskSpec } from './profile.types.js';
 import type { SessionEvent } from './session-event.types.js';
-
-export type SessionState =
-  | 'queued'
-  | 'running'
-  | 'awaiting-review'
-  | 'merged'
-  | 'killed'
-  | 'rejected'
-  | 'blocked';
 
 export interface SessionRow {
   id: string;

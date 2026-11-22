@@ -8,6 +8,7 @@ import {
 import { startConductor, stopConductor } from '../../core/conductor.service.js';
 import { DEFAULT_BASE_PROFILE } from '../../core/constants/default-profile.constants.js';
 import { blockedReason } from '../../core/dashboard.service.js';
+import { SessionState } from '../../core/enums/session-state.enums.js';
 import { LaunchRolledBackError } from '../../core/errors/session-lifecycle.errors.js';
 import { getSession, transitionSession } from '../../core/session.repository.js';
 import {
@@ -157,7 +158,7 @@ export function interruptSelected(deps: ActionDeps, sessionId: string): ActionRe
  */
 export function killSelected(deps: ActionDeps, sessionId: string): ActionResult {
   return attempt(() =>
-    killSession(deps.db, sessionId) === 'merged'
+    killSession(deps.db, sessionId) === SessionState.Merged
       ? killedFixRoundMessage(sessionId)
       : `Killed ${sessionId}; its task is back in the backlog.`,
   );
@@ -185,10 +186,10 @@ export function unblockSelected(deps: ActionDeps, sessionId: string): ActionResu
     // it acts, and so does this.
     const row = getSession(deps.db, sessionId);
     if (!row) throw new Error(`No session ${sessionId}.`);
-    if (row.state !== 'blocked') {
+    if (row.state !== SessionState.Blocked) {
       throw new Error(`Session ${sessionId} is ${row.state}; only blocked sessions unblock.`);
     }
-    transitionSession(deps.db, sessionId, 'running', { kind: 'operator-unblock' });
+    transitionSession(deps.db, sessionId, SessionState.Running, { kind: 'operator-unblock' });
     return `Unblocked ${sessionId}; its window is untouched.`;
   });
 }

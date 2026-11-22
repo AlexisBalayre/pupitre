@@ -65,6 +65,7 @@ import { EventType } from './enums/event-type.enums.js';
 import { GateStageStatus } from './enums/gate-stage-status.enums.js';
 import { InterruptSignal } from './enums/interrupt-signal.enums.js';
 import { MergeStatus } from './enums/merge-status.enums.js';
+import { SessionState } from './enums/session-state.enums.js';
 import { MergeLockLostError } from './errors/merge-gate.errors.js';
 import { GateInterruptedError } from './errors/sandbox.errors.js';
 import { TerminalSessionError } from './errors/session-lifecycle.errors.js';
@@ -152,8 +153,8 @@ describe('landSession', { timeout: 20_000 }, () => {
       branch: BRANCH,
       profileHash: 'hash',
     });
-    transitionSession(db, SESSION_ID, 'running');
-    transitionSession(db, SESSION_ID, 'awaiting-review');
+    transitionSession(db, SESSION_ID, SessionState.Running);
+    transitionSession(db, SESSION_ID, SessionState.AwaitingReview);
 
     ghLog = join(host, 'gh-calls');
     originalPath = process.env.PATH;
@@ -167,7 +168,12 @@ describe('landSession', { timeout: 20_000 }, () => {
   /** What the gate's `--pr` merge leaves: the session merged, its PR on the event. */
   function seedPrMerge(prUrl: string | null = PR_URL, report?: GateReport): void {
     // The gate files its report on the way to merged, before the merge event.
-    transitionSession(db, SESSION_ID, 'merged', report === undefined ? undefined : { report });
+    transitionSession(
+      db,
+      SESSION_ID,
+      SessionState.Merged,
+      report === undefined ? undefined : { report },
+    );
     appendEvent(db, SESSION_ID, EventType.Merge, {
       branch: BRANCH,
       sha: pinned,
@@ -264,7 +270,7 @@ describe('landSession', { timeout: 20_000 }, () => {
         profileHash: 'hash',
         ...(pane ? { tmuxTarget: `%${id}` } : {}),
       });
-      transitionSession(db, id, 'running');
+      transitionSession(db, id, SessionState.Running);
     }
 
     async function landMerged(): Promise<LandOutcome> {
@@ -344,7 +350,8 @@ describe('landSession', { timeout: 20_000 }, () => {
       seedPeer('s4', 'src/feature.ts');
       seedPeer('s2', 'src/feature.ts');
       vi.mocked(steerPane).mockImplementation((pane) => {
-        if (pane.paneId === '%s4') throw new TerminalSessionError('s4', 'killed', 'steer');
+        if (pane.paneId === '%s4')
+          throw new TerminalSessionError('s4', SessionState.Killed, 'steer');
       });
 
       const outcome = await landMerged();
@@ -468,7 +475,7 @@ describe('landSession', { timeout: 20_000 }, () => {
         JSON.stringify({ id: 'task-s2', goal: 'g', scopeIn: ['src/**'], acceptance: ['a'] }),
         'task-s2',
       );
-      transitionSession(db, 's2', 'awaiting-review');
+      transitionSession(db, 's2', SessionState.AwaitingReview);
       seedPrMerge();
       const merge = mergeOnGitHub();
       fakeGh({
@@ -579,12 +586,12 @@ describe('landSession', { timeout: 20_000 }, () => {
     it('steers running sessions only, not one awaiting review, rejected or blocked', async () => {
       seedPeer('s2', 'src/feature.ts');
       seedPeer('s3', 'src/feature.ts');
-      transitionSession(db, 's3', 'awaiting-review');
+      transitionSession(db, 's3', SessionState.AwaitingReview);
       seedPeer('s4', 'src/feature.ts');
-      transitionSession(db, 's4', 'awaiting-review');
-      transitionSession(db, 's4', 'rejected');
+      transitionSession(db, 's4', SessionState.AwaitingReview);
+      transitionSession(db, 's4', SessionState.Rejected);
       seedPeer('s5', 'src/feature.ts');
-      transitionSession(db, 's5', 'blocked');
+      transitionSession(db, 's5', SessionState.Blocked);
 
       await landMerged();
 
@@ -684,7 +691,7 @@ describe('landSession', { timeout: 20_000 }, () => {
   });
 
   it('refuses a merged session with no merge event, changing nothing', async () => {
-    transitionSession(db, SESSION_ID, 'merged');
+    transitionSession(db, SESSION_ID, SessionState.Merged);
     const before = mainSha();
 
     await expect(land()).rejects.toThrow('opened no pull request');
@@ -1456,8 +1463,8 @@ describe('landSession', { timeout: 20_000 }, () => {
     it('holds the merge to the report before the pin, not a failing one after it', async () => {
       const { merge } = mergeMovedHead();
       appendEvent(db, SESSION_ID, EventType.GateResult, {
-        from: 'merged',
-        to: 'merged',
+        from: SessionState.Merged,
+        to: SessionState.Merged,
         report: { ...passingReport([]), passed: false },
       });
       measuredAs();
@@ -1478,7 +1485,7 @@ describe('landSession', { timeout: 20_000 }, () => {
 
     it("refuses a pin's merge with no report of its own, never borrowing an older pin's", async () => {
       // The older pin's report and merge, then the newer pin's merge alone.
-      transitionSession(db, SESSION_ID, 'merged', { report: passingReport() });
+      transitionSession(db, SESSION_ID, SessionState.Merged, { report: passingReport() });
       recordPin('a'.repeat(40));
       recordPin(pinned);
       mergeAt(commitIn(worktree, 'src/fix.ts', 'export const fix = 1;\n'));
@@ -1491,7 +1498,7 @@ describe('landSession', { timeout: 20_000 }, () => {
     // The gate kills the pane and removes the worktree between its report and
     // its merge event; an event another hand writes then carries no report.
     it('reads the report past an event of another type before the merge', async () => {
-      transitionSession(db, SESSION_ID, 'merged', { report: passingReport() });
+      transitionSession(db, SESSION_ID, SessionState.Merged, { report: passingReport() });
       appendEvent(db, SESSION_ID, EventType.Steer, { kind: 'peer' });
       recordPin(pinned);
       const { merge } = mergeAt(commitIn(worktree, 'src/fix.ts', 'export const fix = 1;\n'));
@@ -1505,8 +1512,8 @@ describe('landSession', { timeout: 20_000 }, () => {
       mergeMovedHead(undefined, undefined, pinnedStages.slice(0, 3));
       // A re-gate re-pinning the same sha, its report listing scope-audit.
       appendEvent(db, SESSION_ID, EventType.GateResult, {
-        from: 'merged',
-        to: 'merged',
+        from: SessionState.Merged,
+        to: SessionState.Merged,
         report: passingReport(),
       });
       recordPin(pinned);
@@ -1522,8 +1529,8 @@ describe('landSession', { timeout: 20_000 }, () => {
     it('holds the merge to the report before the pin, not a passing one after it', async () => {
       mergeMovedHead();
       appendEvent(db, SESSION_ID, EventType.GateResult, {
-        from: 'merged',
-        to: 'merged',
+        from: SessionState.Merged,
+        to: SessionState.Merged,
         report: passingReport(pinnedStages.filter(({ stage }) => stage !== 'scope-audit')),
       });
       const before = mainSha();
@@ -1536,10 +1543,10 @@ describe('landSession', { timeout: 20_000 }, () => {
     });
 
     it('refuses when the report before the pin went into a state other than merged', async () => {
-      transitionSession(db, SESSION_ID, 'merged', { report: passingReport() });
+      transitionSession(db, SESSION_ID, SessionState.Merged, { report: passingReport() });
       appendEvent(db, SESSION_ID, EventType.GateResult, {
-        from: 'merged',
-        to: 'blocked',
+        from: SessionState.Merged,
+        to: SessionState.Blocked,
         report: passingReport(),
       });
       appendEvent(db, SESSION_ID, EventType.Merge, {

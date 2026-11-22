@@ -36,6 +36,7 @@ vi.mock('./actions.service.js', () => ({
 
 import { GateStageStatus } from '../../core/enums/gate-stage-status.enums.js';
 import { InterruptSignal } from '../../core/enums/interrupt-signal.enums.js';
+import { SessionState } from '../../core/enums/session-state.enums.js';
 import type { DashboardSession, DashboardSnapshot } from '../../core/types/dashboard.types.js';
 import { MERGE_LOG_LINES } from '../constants/dashboard.constants.js';
 import type { ActionDeps, MergeHandlers } from '../types/actions.types.js';
@@ -63,7 +64,7 @@ function sessionFixture(overrides: Partial<DashboardSession> = {}): DashboardSes
   return {
     id: 's-run-1',
     isMintedId: true,
-    state: 'running',
+    state: SessionState.Running,
     branch: 'pup/t-run',
     taskId: 't-run',
     goal: 'the work in flight',
@@ -381,7 +382,9 @@ describe('dashboard controls', () => {
   });
 
   describe('unblock', () => {
-    const blocked = snapshotFixture({ sessions: [sessionFixture({ state: 'blocked' })] });
+    const blocked = snapshotFixture({
+      sessions: [sessionFixture({ state: SessionState.Blocked })],
+    });
 
     // Unblocking is a claim that the block was addressed, so the reason comes
     // first and comes out of the store.
@@ -441,7 +444,7 @@ describe('dashboard controls', () => {
 
   describe('merge', () => {
     const reviewable = snapshotFixture({
-      sessions: [sessionFixture({ state: 'awaiting-review' })],
+      sessions: [sessionFixture({ state: SessionState.AwaitingReview })],
     });
 
     it('runs the gate as a child and fills the log pane as it writes', async () => {
@@ -557,8 +560,8 @@ describe('dashboard controls', () => {
       repoPath: '/repo-b',
       conductor: { running: true, name: 'pup-conductor-bbbbbbbbbbbb', attachCommand: 'tmux …' },
       sessions: [
-        sessionFixture({ id: 's-b-blocked', state: 'blocked' }),
-        sessionFixture({ id: 's-b-review', state: 'awaiting-review' }),
+        sessionFixture({ id: 's-b-blocked', state: SessionState.Blocked }),
+        sessionFixture({ id: 's-b-review', state: SessionState.AwaitingReview }),
       ],
       backlog: [{ id: 't-b-plan', goal: 'B', scope: [], acceptance: [], origin: 'human' }],
     });
@@ -746,7 +749,7 @@ describe('dashboard controls', () => {
     // Enter on a finished merge log closes the log, as it did before the pane.
     it('leaves Enter to a merge log that is open', async () => {
       const instance = mount(
-        snapshotFixture({ sessions: [sessionFixture({ state: 'awaiting-review' })] }),
+        snapshotFixture({ sessions: [sessionFixture({ state: SessionState.AwaitingReview })] }),
       );
       await press(instance, 'm', 'y');
       const handlers = vi.mocked(runMerge).mock.calls[0]?.[2] as MergeHandlers;

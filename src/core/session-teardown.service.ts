@@ -1,6 +1,7 @@
 import type { Database } from 'better-sqlite3';
 import { sanitizeReason } from '../adapters/capability.utils.js';
 import { COMMIT_SHA } from './constants/merge-gate.constants.js';
+import { SessionState } from './enums/session-state.enums.js';
 import { rethrowIfKilled, runGit } from './git-diff.client.js';
 import { deleteBranchAt, isAncestor, newestMerge, resolveCommit } from './merge-gate.service.js';
 import { getSession } from './session.repository.js';
@@ -51,7 +52,7 @@ export function assertStillMerged(
   use: OriginUse,
 ): void {
   const now = getSession(db, sessionId)?.state;
-  if (now !== 'merged') {
+  if (now !== SessionState.Merged) {
     throw new Error(
       (now === undefined
         ? `Session ${id} was removed from the store`

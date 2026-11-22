@@ -9,6 +9,7 @@ import { ClimbReason } from './enums/climb-reason.enums.js';
 import { EventType } from './enums/event-type.enums.js';
 import { GateStageStatus } from './enums/gate-stage-status.enums.js';
 import { MergeStatus } from './enums/merge-status.enums.js';
+import { SessionState } from './enums/session-state.enums.js';
 import { InvalidProfileError } from './errors/profile.errors.js';
 import { InvalidTransitionError, MalformedTaskSpecError } from './errors/session.errors.js';
 import {
@@ -60,14 +61,14 @@ describe('session repository', () => {
 
   it('creates and reads a session in queued state', () => {
     seedSession(db, 's1');
-    expect(getSession(db, 's1')?.state).toBe('queued');
+    expect(getSession(db, 's1')?.state).toBe(SessionState.Queued);
   });
 
   it('transitions through the happy path and logs each move as an event', () => {
     seedSession(db, 's1');
-    transitionSession(db, 's1', 'running');
-    transitionSession(db, 's1', 'awaiting-review');
-    expect(getSession(db, 's1')?.state).toBe('awaiting-review');
+    transitionSession(db, 's1', SessionState.Running);
+    transitionSession(db, 's1', SessionState.AwaitingReview);
+    expect(getSession(db, 's1')?.state).toBe(SessionState.AwaitingReview);
     const events = db
       .prepare(
         `SELECT payload FROM events WHERE session_id = 's1' AND type = '${EventType.GateResult}'`,
@@ -75,23 +76,40 @@ describe('session repository', () => {
       .all() as { payload: string }[];
     expect(events).toHaveLength(2);
     expect(JSON.parse(events[1]?.payload ?? '{}')).toMatchObject({
-      from: 'running',
-      to: 'awaiting-review',
+      from: SessionState.Running,
+      to: SessionState.AwaitingReview,
     });
   });
 
   it('rejects an illegal transition and leaves state unchanged', () => {
     seedSession(db, 's1');
-    expect(() => transitionSession(db, 's1', 'merged')).toThrow(InvalidTransitionError);
-    expect(getSession(db, 's1')?.state).toBe('queued');
+    expect(() => transitionSession(db, 's1', SessionState.Merged)).toThrow(InvalidTransitionError);
+    expect(getSession(db, 's1')?.state).toBe(SessionState.Queued);
   });
 
   it('filters listSessions by state', () => {
     seedSession(db, 's1');
     seedSession(db, 's2');
-    transitionSession(db, 's1', 'running');
-    expect(listSessions(db, ['running']).map((s) => s.id)).toEqual(['s1']);
+    transitionSession(db, 's1', SessionState.Running);
+    expect(listSessions(db, [SessionState.Running]).map((s) => s.id)).toEqual(['s1']);
     expect(listSessions(db)).toHaveLength(2);
+  });
+
+  // The `sessions.state` column holds the members' values, so this pins the
+  // wire strings in SQL text: renaming a value would strand every stored row.
+  it('stores each state as the string the sessions table has always held', () => {
+    for (const state of Object.values(SessionState)) {
+      seedSession(db, state);
+      db.prepare('UPDATE sessions SET state = ? WHERE id = ?').run(state, state);
+    }
+    const stored = db
+      .prepare(
+        `SELECT state FROM sessions WHERE state = id AND state IN
+           ('queued', 'running', 'awaiting-review', 'merged', 'killed', 'rejected', 'blocked')`,
+      )
+      .pluck()
+      .all();
+    expect(stored.sort()).toEqual(Object.values(SessionState).sort());
   });
 
   it('increments the reject count', () => {
@@ -135,12 +153,12 @@ describe('session repository', () => {
   // The fix round's edge is `pup fix`'s alone (decision 90).
   it('refuses merged -> running, and stores the fix round event pup fix writes', () => {
     seedSession(db, 's1');
-    transitionSession(db, 's1', 'running');
-    transitionSession(db, 's1', 'awaiting-review');
-    transitionSession(db, 's1', 'merged');
+    transitionSession(db, 's1', SessionState.Running);
+    transitionSession(db, 's1', SessionState.AwaitingReview);
+    transitionSession(db, 's1', SessionState.Merged);
 
-    expect(() => transitionSession(db, 's1', 'running')).toThrow(InvalidTransitionError);
-    expect(getSession(db, 's1')?.state).toBe('merged');
+    expect(() => transitionSession(db, 's1', SessionState.Running)).toThrow(InvalidTransitionError);
+    expect(getSession(db, 's1')?.state).toBe(SessionState.Merged);
 
     const round = {
       prUrl: 'https://github.com/o/r/pull/1',
@@ -210,22 +228,26 @@ describe('the backlog', () => {
 
   // Every state a session can reach means the task is spoken for, except
   // `killed` — abandoned work is worth relaunching (decision 40).
-  it.each(['queued', 'running', 'awaiting-review', 'rejected', 'blocked', 'merged'] as const)(
-    'drops a task whose session is %s',
-    (state) => {
-      planned('t-1');
-      insertSession(db, {
-        id: 's1',
-        taskId: 't-1',
-        worktreePath: '/repo/.worktrees/s1',
-        branch: 'pup/s1',
-        profileHash: 'hash',
-      });
-      db.prepare('UPDATE sessions SET state = ? WHERE id = ?').run(state, 's1');
+  it.each([
+    SessionState.Queued,
+    SessionState.Running,
+    SessionState.AwaitingReview,
+    SessionState.Rejected,
+    SessionState.Blocked,
+    SessionState.Merged,
+  ] as const)('drops a task whose session is %s', (state) => {
+    planned('t-1');
+    insertSession(db, {
+      id: 's1',
+      taskId: 't-1',
+      worktreePath: '/repo/.worktrees/s1',
+      branch: 'pup/s1',
+      profileHash: 'hash',
+    });
+    db.prepare('UPDATE sessions SET state = ? WHERE id = ?').run(state, 's1');
 
-      expect(listBacklogTasks(db, 'proj-1')).toEqual([]);
-    },
-  );
+    expect(listBacklogTasks(db, 'proj-1')).toEqual([]);
+  });
 
   it('returns a task to the backlog when its session is killed', () => {
     planned('t-1');
@@ -236,10 +258,10 @@ describe('the backlog', () => {
       branch: 'pup/s1',
       profileHash: 'hash',
     });
-    transitionSession(db, 's1', 'running');
+    transitionSession(db, 's1', SessionState.Running);
     expect(listBacklogTasks(db, 'proj-1')).toEqual([]);
 
-    transitionSession(db, 's1', 'killed');
+    transitionSession(db, 's1', SessionState.Killed);
 
     expect(listBacklogTasks(db, 'proj-1').map((t) => t.id)).toEqual(['t-1']);
   });
@@ -274,7 +296,7 @@ describe('the backlog', () => {
         branch: `pup/${id}`,
         profileHash: 'hash',
       });
-      transitionSession(db, id, 'killed');
+      transitionSession(db, id, SessionState.Killed);
     }
     expect(listBacklogTasks(db, 'proj-1').map((t) => t.id)).toEqual(['t-1']);
 
@@ -298,7 +320,7 @@ describe('the backlog', () => {
       branch: 'pup/s1',
       profileHash: 'hash',
     });
-    transitionSession(db, 's1', 'running');
+    transitionSession(db, 's1', SessionState.Running);
 
     expect(claimingSession(db, 't-1')).toBe('s1');
   });
@@ -315,7 +337,7 @@ describe('the backlog', () => {
       branch: 'pup/s1',
       profileHash: 'hash',
     });
-    transitionSession(db, 's1', 'running');
+    transitionSession(db, 's1', SessionState.Running);
 
     expect(dropTask(db, 't-1')).toEqual({ kind: 'claimed', sessionId: 's1' });
     expect(getTask(db, 't-1')?.dropped_at).toBeNull();
@@ -326,13 +348,13 @@ describe('the backlog', () => {
   // Decision 115: a claimed spec moves only once no session is at work on it,
   // and the guard sits in the statement, so a launch after the check still wins.
   it.each([
-    ['queued', false],
-    ['running', false],
-    ['rejected', false],
-    ['blocked', false],
-    ['awaiting-review', true],
-    ['merged', true],
-    ['killed', true],
+    [SessionState.Queued, false],
+    [SessionState.Running, false],
+    [SessionState.Rejected, false],
+    [SessionState.Blocked, false],
+    [SessionState.AwaitingReview, true],
+    [SessionState.Merged, true],
+    [SessionState.Killed, true],
   ] as const)('rescopes a claimed task whose session is %s: %s', (state, rescoped) => {
     planned('t-1');
     insertSession(db, {
@@ -447,7 +469,7 @@ describe('task tier and session route (decision 92)', () => {
   it('refuses to re-tier a task a session has claimed', () => {
     insertTask(db, { id: 't-1', projectId: 'proj-1', spec: JSON.stringify(SPEC) });
     session('s1');
-    transitionSession(db, 's1', 'running');
+    transitionSession(db, 's1', SessionState.Running);
 
     expect(editTaskSpec(db, 't-1', { tier: Tier.Critical })).toBe('claimed');
     expect(getTask(db, 't-1')?.tier).toBeNull();
@@ -756,10 +778,12 @@ describe('decodeEvent', () => {
   });
 
   it('reads a bare transition as a gate result without a report', () => {
-    expect(gate({ from: 'running', to: 'blocked', reason: 'reject cap' })).toEqual({
+    expect(
+      gate({ from: SessionState.Running, to: SessionState.Blocked, reason: 'reject cap' }),
+    ).toEqual({
       type: 'gate_result',
-      from: 'running',
-      to: 'blocked',
+      from: SessionState.Running,
+      to: SessionState.Blocked,
       reason: 'reject cap',
     });
   });

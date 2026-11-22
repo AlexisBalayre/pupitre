@@ -1,6 +1,7 @@
 import { cleanup, render } from 'ink-testing-library';
 import { createElement } from 'react';
 import { afterEach, describe, expect, it } from 'vitest';
+import { SessionState } from '../../core/enums/session-state.enums.js';
 import type { DashboardSession, DashboardSnapshot } from '../../core/types/dashboard.types.js';
 import type { ActionDeps } from '../types/actions.types.js';
 import { App } from './app.component.js';
@@ -18,7 +19,7 @@ function sessionAt(index: number): DashboardSession {
   return {
     id: `s-live${index}-1`,
     isMintedId: true,
-    state: 'running',
+    state: SessionState.Running,
     branch: `pup/t-live${index}`,
     taskId: `t-live${index}`,
     goal: `live goal ${index}`,

@@ -15,6 +15,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { waitForCiReview } from './ci-wait.service.js';
 import { openStore } from './db.client.js';
 import { EventType } from './enums/event-type.enums.js';
+import { SessionState } from './enums/session-state.enums.js';
 import { RewrittenGitDirError } from './errors/git-diff.errors.js';
 import { projectId } from './paths.utils.js';
 import { CI_WAIT_STAGES, stageProgress } from './progress.utils.js';
@@ -175,9 +176,9 @@ describe('waitForCiReview', { timeout: 20_000 }, () => {
       branch: `pup/${SESSION_ID}`,
       profileHash: 'hash',
     });
-    transitionSession(db, SESSION_ID, 'running');
-    transitionSession(db, SESSION_ID, 'awaiting-review');
-    transitionSession(db, SESSION_ID, 'merged');
+    transitionSession(db, SESSION_ID, SessionState.Running);
+    transitionSession(db, SESSION_ID, SessionState.AwaitingReview);
+    transitionSession(db, SESSION_ID, SessionState.Merged);
     appendEvent(db, SESSION_ID, EventType.Merge, {
       branch: `pup/${SESSION_ID}`,
       sha: HEAD,

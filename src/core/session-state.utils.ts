@@ -1,4 +1,4 @@
-import type { SessionState } from './types/session.types.js';
+import { SessionState } from './enums/session-state.enums.js';
 
 /**
  * Allowed session state transitions (docs/01-architecture.md, amended by decision 7).
@@ -10,13 +10,18 @@ import type { SessionState } from './types/session.types.js';
  * and, outside this table, `FIX_ROUND_EDGE`'s merged -> running (`pup fix`, decision 90).
  */
 const TRANSITIONS: Record<SessionState, readonly SessionState[]> = {
-  queued: ['running', 'killed'],
-  running: ['awaiting-review', 'killed', 'blocked'],
-  'awaiting-review': ['merged', 'rejected', 'running', 'killed'],
-  rejected: ['running', 'blocked', 'killed'],
-  blocked: ['running', 'killed'],
-  merged: [],
-  killed: [],
+  [SessionState.Queued]: [SessionState.Running, SessionState.Killed],
+  [SessionState.Running]: [SessionState.AwaitingReview, SessionState.Killed, SessionState.Blocked],
+  [SessionState.AwaitingReview]: [
+    SessionState.Merged,
+    SessionState.Rejected,
+    SessionState.Running,
+    SessionState.Killed,
+  ],
+  [SessionState.Rejected]: [SessionState.Running, SessionState.Blocked, SessionState.Killed],
+  [SessionState.Blocked]: [SessionState.Running, SessionState.Killed],
+  [SessionState.Merged]: [],
+  [SessionState.Killed]: [],
 };
 
 export function canTransition(from: SessionState, to: SessionState): boolean {
@@ -31,24 +36,27 @@ export function canTransition(from: SessionState, to: SessionState): boolean {
  * `TRANSITIONS`, so `canTransition` refuses it and no `transitionSession`
  * caller can take it: only `transitionSessionAlong` does.
  */
-export const FIX_ROUND_EDGE = { from: 'merged', to: 'running' } as const satisfies {
+export const FIX_ROUND_EDGE = {
+  from: SessionState.Merged,
+  to: SessionState.Running,
+} as const satisfies {
   from: SessionState;
   to: SessionState;
 };
 
 /**
  * States meaning a task is spoken for, so it is out of the backlog and its spec
- * is frozen. Derived from `TRANSITIONS` rather than listed, because that record
- * is exhaustive over `SessionState`: a state added later is claimed by default,
+ * is frozen. Derived from the enum rather than listed, so a state added later
+ * is claimed by default,
  * and the unsafe direction would be a task with a live session reappearing in
  * the backlog to be launched twice. `killed` is the one deliberate exclusion —
  * abandoned work returns to the backlog (decision 40).
  */
 export function claimedStates(): SessionState[] {
-  return (Object.keys(TRANSITIONS) as SessionState[]).filter((state) => state !== 'killed');
+  return Object.values(SessionState).filter((state) => state !== SessionState.Killed);
 }
 
-const TERMINAL_STATES: readonly SessionState[] = ['merged', 'killed'];
+const TERMINAL_STATES: readonly SessionState[] = [SessionState.Merged, SessionState.Killed];
 
 export function isTerminal(state: SessionState): boolean {
   return TERMINAL_STATES.includes(state);

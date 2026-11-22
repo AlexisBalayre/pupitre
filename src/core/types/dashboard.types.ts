@@ -1,5 +1,5 @@
+import type { SessionState } from '../enums/session-state.enums.js';
 import type { OverlapPair } from './overlap.types.js';
-import type { SessionState } from './session.types.js';
 import type { SessionActivity } from './session-activity.types.js';
 import type { FindingClass } from './session-lifecycle.types.js';
 
