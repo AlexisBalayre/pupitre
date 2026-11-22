@@ -1,0 +1,135 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-22T22:24:47.874Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "45076912086",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/45076912086",
+  "actor": "AlexisBalayre",
+  "commit_sha": "496289b02a35010be37f5d5120862f5f1ef4b9f5",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 429,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "77c0dfe4ff4f3bcc6a48d74abbd91e8262957f48",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/scope-audit.utils.ts",
+      "line": "45-49",
+      "description": "The non-regular-file refusal only runs for a path `isSkillManifest` matches, but `.claude/skills/**/*.md` also lifts `.claude/skills/shadow.md`. Committed as a symlink to a directory (e.g. `../../docs/shadow`, holding a `SKILL.md` with `name: pr-ci-review`), that path is never read and its mode is never checked, so the scope audit passes it.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/skill-name.utils.ts",
+      "line": "12-35",
+      "description": "The new name check fails open because `FRONTMATTER`/`FRONTMATTER_OPENING` are narrower than Claude Code's frontmatter parser at both delimiters. (A) An opening `---` followed by NBSP, `\\f` or `\\v` before the LF matches neither regex, so `isMisnamedSkill` returns false. (B) A `---` in the middle of a line, as in `name: pr-ci-review---`, does not close the block for the gate, but a lazy reader closes there.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/skill-name.utils.ts",
+      "line": "34-35",
+      "description": "The gate closes frontmatter only at a `---` that starts a line, so `.claude/skills/pr-ci-review---/SKILL.md` with `name: pr-ci-review---` passes: its name equals its directory. A reader that closes at the first `---` anywhere reads `name: pr-ci-review` and registers `/pr-ci-review`.",
+      "status": "resolved"
+    },
+    {
+      "file": "src/core/constants/merge-gate.constants.ts",
+      "line": "110-115",
+      "description": "PROTECTED_WITHIN_EXCEPTIONS keeps only `.claude/skills/pr-ci-review/**` protected, but the CI review allows a bare `\"Skill\"` permission, so any other worker-merged skill can be loaded by every later CI review with the repo token — the harm ADR 0208 gives as its reason for protecting pr-ci-review.",
+      "status": "unresolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/skill-name.utils.ts",
+      "line": "33",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The strict frontmatter form still allows a lone CR (and NEL/LS/PS) inside the YAML. yaml v2 does not treat a lone CR as a line break, but the YAML 1.2 spec and js-yaml do. So `---\\ndescription: x #\\rname: pr-ci-review\\n---\\n` in `.claude/skills/zz/SKILL.md` reads as a comment to the gate, which sees no `name:` and passes it. A reader that breaks lines on CR sees `name: pr-ci-review`.",
+      "body": "**A lone CR inside the frontmatter lets two readers see different names**\n\nADR 0208 says the gate accepts one strict form so that no reader can read a shorter or different block than the gate does. `FRONTMATTER` requires a bare LF on the opening line, but it reads each YAML line as `[^\\n]*\\n`. That lets a lone `\\r` (and U+0085/U+2028/U+2029) sit inside the block, and the only extra check is for `---`:\n\n```ts\nconst FRONTMATTER = /^---\\n((?:[^\\n]*\\n)*?)---(?:\\n|$)/;\n...\nconst [, yaml = ''] = block;\nif (yaml.includes('---')) return true;\n```\n\n**Trigger.** A worker commits `.claude/skills/zz/SKILL.md` containing `---\\ndescription: x #\\rname: pr-ci-review\\n---\\n`.\n\n- **The gate.** yaml `^2.9` ends a line only on `\\n` and strips only a CR that comes right before an LF. It reads `#\\rname: pr-ci-review` as one comment, so `front` is `{ description: 'x' }`. There is no `name`, `isMisnamedSkill` returns `false`, and the file merges.\n- **Another reader.** The YAML 1.2 spec (`b-break` includes a bare carriage return) and js-yaml (`is_EOL` covers 0x0D) both break the line at the CR. They read `name: pr-ci-review`, which gives a skill outside the protected directory that answers `/pr-ci-review`.\n- **NEL/LS/PS.** These are line breaks only in YAML 1.1. The ADR already models YAML 1.1 for merge keys, so refusing them too is consistent.\n- **Block scalar.** `description: |\\n  a\\rname: pr-ci-review\\n` is the same root cause.\n\nClaude Code's frontmatter parser is not in-tree, hence medium confidence. The existing tests cover CR only in the CRLF cases. Refusing these characters affects none of the 29 skills in the repo, since none contains a CR.\n\n<https://github.com/AlexisBalayre/pupitre/blob/496289b02a35010be37f5d5120862f5f1ef4b9f5/src/core/skill-name.utils.ts#L13-L33>",
+      "suggestion": "  if (yaml.includes('---') || /[\\r\\u0085  ]/.test(yaml)) return true;"
+    },
+    {
+      "file": "src/core/skill-name.utils.ts",
+      "line": "29",
+      "area": "security",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "A nested manifest such as `.claude/skills/a/pr-ci-review/SKILL.md` with no `name:` passes. The gate's own model (ADR: no `name:` means the skill takes its directory's) names it `pr-ci-review`, yet only the declared name is compared to CI_REVIEW_SKILL, and PROTECTED_WITHIN_EXCEPTIONS covers only the top-level directory.",
+      "body": "**A nested `pr-ci-review` directory with no `name:` gets past the gate**\n\n`SKILL_MANIFEST` matches a manifest at any depth and takes the leaf directory as the skill's name. When `name:` is absent, `isMisnamedSkill` returns `false`, and the `CI_REVIEW_SKILL` comparison only runs on a declared name:\n\n```ts\nconst directory = SKILL_MANIFEST.exec(path)?.[1];\nif (directory === undefined) return false;\n...\nif (front === null || typeof front !== 'object' || !('name' in front)) return false;\nconst { name } = front;\nreturn typeof name !== 'string' || name.toLowerCase() === CI_REVIEW_SKILL || name !== directory;\n```\n\n`PROTECTED_WITHIN_EXCEPTIONS` is `` [`.claude/skills/${CI_REVIEW_SKILL}/**`] ``, which compiles to the anchored `^\\.claude/skills/pr\\-ci\\-review/.*$`.\n\n**Trigger.** A worker with scope `.claude/skills/**` commits `.claude/skills/a/pr-ci-review/SKILL.md` containing `---\\ndescription: x\\n---\\n`.\n\n- The path is lifted, and the protected regex cannot match it because of the extra segment.\n- The file is plain and in the strict form, and it has no `name`, so the merge passes.\n- ADR 0208 says \"A skill with no `name:` takes its directory's\", and the test \"reads the directory a SKILL.md sits in, at any depth\" treats nested manifests as skills. By that model this skill is `pr-ci-review`.\n- The same file with `name: pr-ci-review` written out is refused, so the gate disagrees with itself.\n- A nested `a/PR-CI-REVIEW/` gets through the same way.\n\nWhether Claude Code discovers skills below the top level is not in-tree, hence medium confidence.\n\n**Fix.** Refuse a manifest whose directory is `pr-ci-review` in any case. A legitimate edit to the top-level `.claude/skills/pr-ci-review/SKILL.md` is unaffected, because `isProtected` refuses that path before any content check runs.\n\n<https://github.com/AlexisBalayre/pupitre/blob/496289b02a35010be37f5d5120862f5f1ef4b9f5/src/core/skill-name.utils.ts#L28-L42>",
+      "suggestion": "  if (directory === undefined) return false;\n  if (directory.toLowerCase() === CI_REVIEW_SKILL) return true;"
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "conventions",
+      "description": "The conventions reviewer read docs/conventions/general.md but not testing.md, and did not read the ADR 0208 or test-file diffs, so testing conventions for the delta's test changes went unchecked."
+    }
+  ],
+  "duplicates_merged": 1,
+  "comments_posted_actual": 2,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 3.0204986000000003,
+  "duration_ms": 362225,
+  "num_turns": 19,
+  "tokens": {
+    "input": 18,
+    "output": 13806,
+    "cache_read": 468144,
+    "cache_creation": 66763,
+    "total": 548731
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 104,
+      "output": 61972,
+      "cache_read": 1522233,
+      "cache_creation": 215672,
+      "cost_usd": 2.8229516
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 20,
+      "output": 3719,
+      "cache_read": 92243,
+      "cache_creation": 60160,
+      "cost_usd": 0.19685429999999998
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 148,
+      "cache_read": 0,
+      "cache_creation": 4948,
+      "cost_usd": 0.0006927
+    }
+  ],
+  "permission_denials": []
+}
