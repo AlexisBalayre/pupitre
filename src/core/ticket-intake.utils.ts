@@ -33,11 +33,21 @@ interface Field {
 
 const CHORE_FIELDS: Field[] = [
   { heading: 'Scope boundary', area: true },
-  { heading: 'Proof behavior is unchanged' },
+  { heading: 'Proof that behavior is unchanged' },
   { heading: 'Files in scope', terse: true, area: true },
 ];
 
-/** Each type's required fields (decision 176). A type with no area field is read whole. */
+/** Docs and spike share one issue form; for docs, the form of the answer is the pages changed. */
+const DOCS_SPIKE_FIELDS: Field[] = [
+  { heading: 'What changes, or the question', area: true },
+  { heading: 'Time box', terse: true },
+  { heading: 'Form of the answer', terse: true, area: true },
+];
+
+/**
+ * Each type's required fields (decision 176), headed by their issue form labels.
+ * A type with no area field is read whole.
+ */
 const REQUIRED_FIELDS: Record<TicketType, Field[]> = {
   feature: [
     { heading: 'Goal' },
@@ -52,12 +62,8 @@ const REQUIRED_FIELDS: Record<TicketType, Field[]> = {
   ],
   chore: CHORE_FIELDS,
   refactor: CHORE_FIELDS,
-  docs: [{ heading: 'What changes', area: true }],
-  spike: [
-    { heading: 'Question' },
-    { heading: 'Time box', terse: true },
-    { heading: 'Form of the answer' },
-  ],
+  docs: DOCS_SPIKE_FIELDS,
+  spike: DOCS_SPIKE_FIELDS,
   'follow-up': [
     { heading: 'Source PR', terse: true },
     { heading: 'Findings' },
@@ -74,6 +80,9 @@ const SIZE_CAP_LINES = 600;
 
 /** A Markdown heading of any level, as GitHub issue forms render each field. */
 const HEADING = /^#{1,6}\s+(.+?)\s*#*\s*$/;
+
+/** A fenced code block's opening line; a backtick fence's info string holds no backtick. */
+const FENCE_OPEN = /^ {0,3}(`{3,}(?=[^`]*$)|~{3,})/;
 
 /** Text that holds a place without answering: what an issue form leaves unanswered too. */
 const PLACEHOLDER =
@@ -96,23 +105,35 @@ function normalize(heading: string): string {
     .trim();
 }
 
-/** The body's sections, keyed by normalized heading; a repeated heading keeps its first. */
+/** Whether a line closes the fence it opened: same character, at least as long, nothing after. */
+function closesFence(line: string, fence: string): boolean {
+  const marker = /^ {0,3}(`{3,}|~{3,})\s*$/.exec(line)?.[1];
+  return marker !== undefined && marker[0] === fence[0] && marker.length >= fence.length;
+}
+
+/**
+ * The body's sections, keyed by normalized heading; a repeated heading keeps its first.
+ * As on GitHub, a heading inside a code fence is text, and an unclosed fence runs to the end.
+ */
 function sections(body: string): Map<string, string> {
   const found = new Map<string, string>();
   let current: string | undefined;
   let lines: string[] = [];
+  let fence: string | undefined;
   const close = (): void => {
     if (current !== undefined && !found.has(current)) found.set(current, lines.join('\n').trim());
   };
   for (const line of body.split(/\r?\n/)) {
-    const heading = HEADING.exec(line);
+    const heading = fence === undefined ? HEADING.exec(line) : null;
     if (heading) {
       close();
       current = normalize(heading[1] ?? '');
       lines = [];
-    } else {
-      lines.push(line);
+      continue;
     }
+    lines.push(line);
+    if (fence === undefined) fence = FENCE_OPEN.exec(line)?.[1];
+    else if (closesFence(line, fence)) fence = undefined;
   }
   close();
   return found;
@@ -126,12 +147,14 @@ function isVague(value: string, terse: boolean): boolean {
 
 /**
  * The module a path belongs to: its directory under `src/`, or under `test/<kind>/`
- * for a test, so a module's tests stay inside it. Undefined outside both.
+ * for a test, so a module's tests stay inside it. Undefined outside both. A path
+ * whose last segment has no extension names a directory, as `src/cli/` does.
  */
 function moduleOf(path: string): string | undefined {
-  const parts = path.replace(/^\.?\//, '').split('/');
-  if (parts[0] === 'src' && parts.length > 2) return parts[1];
-  if (parts[0] === 'test' && parts.length > 3) return parts[2];
+  const parts = path.split('/');
+  const directories = /\.\w+$/.test(parts.at(-1) ?? '') ? parts.length - 1 : parts.length;
+  if (parts[0] === 'src' && directories > 1) return parts[1];
+  if (parts[0] === 'test' && directories > 2) return parts[2];
   return undefined;
 }
 
@@ -141,12 +164,15 @@ function triggersFor(
   sectionMap: Map<string, string>,
   context: IntakeContext,
 ): DesignTrigger[] {
-  const paths = areaText.match(PATH) ?? [];
+  const paths = (areaText.match(PATH) ?? []).map((path) => path.replace(/^\.\//, ''));
   const adrAreas = context.adrAreas.map((glob) => globToRegExp(glob));
   const modules = new Set(paths.map(moduleOf).filter((name) => name !== undefined));
   const estimate = /\d[\d,]*/.exec(sectionMap.get(normalize(ESTIMATE_HEADING)) ?? '');
+  // PATH drops a directory's trailing slash, so `src/cli/` must still match `src/cli/**`.
+  const inAdrArea = (path: string): boolean =>
+    adrAreas.some((area) => area.test(path) || area.test(`${path}/`));
   const fired: [DesignTrigger, boolean][] = [
-    ['adr-area', paths.some((path) => adrAreas.some((area) => area.test(path)))],
+    ['adr-area', paths.some(inAdrArea)],
     ['module-boundary', modules.size > 1],
     [
       'dependency',

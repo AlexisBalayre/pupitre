@@ -1,9 +1,12 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { checkTicketIntake, type IntakeContext } from '@src/core/ticket-intake.utils.js';
+import type { TicketType } from '@src/core/types/profile.types.js';
 import { describe, expect, it } from 'vitest';
 
 const NO_ADR: IntakeContext = { adrAreas: [] };
+
+const ROOT = join(import.meta.dirname, '..', '..', '..');
 
 /** An issue body as GitHub issue forms render it: one `###` heading per field. */
 function body(fields: Record<string, string>): string {
@@ -17,6 +20,12 @@ const FEATURE = {
   'Acceptance criteria': '- Pausing keeps the slice list\n- A paused ticket launches nothing',
   'Out of scope': 'Pausing a live session.',
   'Affected area': '`src/core/queue.service.ts`',
+};
+
+const BUG = {
+  Reproduction: 'Run `pup ls` with no tasks.',
+  'Expected against actual': 'An empty table, not a crash.',
+  'Suspected area': 'src/cli/ls.command.ts',
 };
 
 describe('checkTicketIntake required fields', () => {
@@ -42,17 +51,24 @@ describe('checkTicketIntake required fields', () => {
       type,
       NO_ADR,
     );
-    expect(result.missing).toEqual(['Proof behavior is unchanged']);
+    expect(result.missing).toEqual(['Proof that behavior is unchanged']);
   });
 
   it('names a missing docs field', () => {
-    const result = checkTicketIntake(body({ Goal: 'Better docs.' }), 'docs', NO_ADR);
-    expect(result.missing).toEqual(['What changes']);
+    const result = checkTicketIntake(
+      body({
+        'What changes, or the question': 'The rubric says ready comes first.',
+        'Form of the answer': 'docs/tickets/bug.md',
+      }),
+      'docs',
+      NO_ADR,
+    );
+    expect(result.missing).toEqual(['Time box']);
   });
 
   it('names a missing spike field', () => {
     const result = checkTicketIntake(
-      body({ Question: 'Can the gate share a cache?', 'Time box': '2h' }),
+      body({ 'What changes, or the question': 'Can the gate share a cache?', 'Time box': '2h' }),
       'spike',
       NO_ADR,
     );
@@ -73,6 +89,50 @@ describe('checkTicketIntake required fields', () => {
       .map(([heading, value]) => `## ${heading.toUpperCase()}:\n${value}`)
       .join('\n');
     expect(checkTicketIntake(text, 'feature', NO_ADR).missing).toEqual([]);
+  });
+
+  it.each([
+    ['feature', 'feature'],
+    ['bug', 'bug'],
+    ['chore', 'chore-refactor'],
+    ['refactor', 'chore-refactor'],
+    ['docs', 'docs-spike'],
+    ['spike', 'docs-spike'],
+    ['follow-up', 'follow-up'],
+  ] as [TicketType, string][])('finds every %s field under its %s.yml form label', (type, form) => {
+    const yaml = readFileSync(join(ROOT, '.github', 'ISSUE_TEMPLATE', `${form}.yml`), 'utf8');
+    const labels = [...yaml.matchAll(/^\s+label:\s*(.+?)\s*$/gm)].map((match) =>
+      (match[1] ?? '').replace(/^(['"])(.*)\1$/, '$2'),
+    );
+    const filled = Object.fromEntries(labels.map((label) => [label, 'Filled in for the test.']));
+    expect(checkTicketIntake(body(filled), type, NO_ADR)).toMatchObject({ missing: [], vague: [] });
+  });
+
+  it('reads no heading inside a code fence', () => {
+    const result = checkTicketIntake(
+      body({ ...BUG, Reproduction: '```sh\n# fresh clone\npup ls\n```' }),
+      'bug',
+      NO_ADR,
+    );
+    expect(result).toMatchObject({ missing: [], vague: [] });
+  });
+
+  it('opens no fence on a line of inline code', () => {
+    const result = checkTicketIntake(
+      body({ ...BUG, Reproduction: '```pup ls``` with no tasks.' }),
+      'bug',
+      NO_ADR,
+    );
+    expect(result).toMatchObject({ missing: [], vague: [] });
+  });
+
+  it('runs an unclosed fence to the end of the body', () => {
+    const result = checkTicketIntake(
+      body({ ...BUG, Reproduction: '```sh\npup ls' }),
+      'bug',
+      NO_ADR,
+    );
+    expect(result.missing).toEqual(['Expected against actual', 'Suspected area']);
   });
 });
 
@@ -116,12 +176,6 @@ describe('checkTicketIntake vague fields', () => {
 });
 
 describe('checkTicketIntake design', () => {
-  const BUG = {
-    Reproduction: 'Run `pup ls` with no tasks.',
-    'Expected against actual': 'An empty table, not a crash.',
-    'Suspected area': 'src/cli/ls.command.ts',
-  };
-
   it('gives a feature a design with no trigger', () => {
     const result = checkTicketIntake(body(FEATURE), 'feature', NO_ADR);
     expect(result).toEqual({ missing: [], vague: [], triggers: [], needsDesign: true });
@@ -144,6 +198,50 @@ describe('checkTicketIntake design', () => {
       NO_ADR,
     );
     expect(result).toMatchObject({ triggers: ['module-boundary'], needsDesign: true });
+  });
+
+  it.each([
+    ['a directory with a trailing slash', 'src/cli/'],
+    ['a path under ./', './src/cli/ls.ts'],
+  ])('forces a design on %s in an ADR area', (_, area) => {
+    const result = checkTicketIntake(body({ ...BUG, 'Suspected area': area }), 'bug', {
+      adrAreas: ['src/cli/**'],
+    });
+    expect(result).toMatchObject({ triggers: ['adr-area'], needsDesign: true });
+  });
+
+  it('forces a design when directories cross a module boundary', () => {
+    const result = checkTicketIntake(
+      body({ ...BUG, 'Suspected area': 'src/cli/ and src/core/' }),
+      'bug',
+      NO_ADR,
+    );
+    expect(result).toMatchObject({ triggers: ['module-boundary'], needsDesign: true });
+  });
+
+  it('reads the paths of a fenced area past a comment line', () => {
+    const result = checkTicketIntake(
+      body({
+        ...BUG,
+        'Suspected area': '```\n# from the stack trace\nsrc/core/a.ts\nsrc/cli/b.ts\n```',
+      }),
+      'bug',
+      NO_ADR,
+    );
+    expect(result).toMatchObject({ triggers: ['module-boundary'], needsDesign: true });
+  });
+
+  it('reads the pages of a docs ticket for triggers', () => {
+    const result = checkTicketIntake(
+      body({
+        'What changes, or the question': 'Say ready is applied first.',
+        'Time box': '1h',
+        'Form of the answer': 'docs/tickets/bug.md',
+      }),
+      'docs',
+      { adrAreas: ['docs/tickets/**'] },
+    );
+    expect(result).toMatchObject({ missing: [], vague: [], triggers: ['adr-area'] });
   });
 
   it('keeps a module and its tests inside one module', () => {
