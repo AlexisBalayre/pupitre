@@ -1,0 +1,107 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-22T14:49:44.739Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "45034658690",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/45034658690",
+  "actor": "AlexisBalayre",
+  "commit_sha": "5f68aea03bdf48fba12547d046933d327d909e26",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 423,
+  "action": "review",
+  "reviewers_spawned": [
+    "context",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "context",
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "maintainability",
+    "spec",
+    "simplicity",
+    "guards",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": ".github/ISSUE_TEMPLATE/bug.yml",
+      "line": "10-11",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "important",
+      "description": "All five issue forms say the operator applies `ready` once the ticket passes intake, which reverses ADR 0176: `ready` is applied first (by the operator or a write-access collaborator) and intake then checks the fields and removes it on failure.",
+      "body": "**Who applies `ready`, and when, is backwards relative to decision 176.**\n\nEach form's header says:\n\n> Do not add the `ready` label yourself; the operator applies it once the ticket passes intake.\n\n[ADR 0176](https://github.com/AlexisBalayre/pupitre/blob/5f68aea03bdf48fba12547d046933d327d909e26/docs/adr/0176-a-ticket-has-a-type-and-only-some-types-need.md#L10-L12) says the opposite order:\n\n> Only an issue carrying `ready`, applied by the operator or a collaborator with write access, is read. An intake agent checks the required fields before the label counts. On a failed check it comments which fields are missing or vague and removes the label.\n\nSo the label is what *triggers* intake. An operator or write-access collaborator who takes the form literally waits for intake to pass before labelling, and intake never starts. The form also drops the write-access collaborators the ADR allows. The rubrics under `docs/tickets/` already describe the ADR's order (\"before the `ready` label counts\"), so form and rubric now contradict each other.\n\nSame sentence in all five forms: [bug.yml](https://github.com/AlexisBalayre/pupitre/blob/5f68aea03bdf48fba12547d046933d327d909e26/.github/ISSUE_TEMPLATE/bug.yml#L10-L11), `chore-refactor.yml`, `docs-spike.yml`, `feature.yml`, `follow-up.yml` (lines 10-11). The suggestion fixes `bug.yml`. Make the same change in the other four, keeping each form's own rubric link.",
+      "suggestion": "        vague: [docs/tickets/bug.md](https://github.com/AlexisBalayre/pupitre/blob/main/docs/tickets/bug.md). The operator or a\n        collaborator with write access applies `ready`; intake then checks the fields and removes the label if any is missing or vague."
+    },
+    {
+      "file": ".github/ISSUE_TEMPLATE/bug.yml",
+      "line": "20-21",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Example commands and paths don't exist. The bug.yml placeholder `pup plan add t-1 --scope 'src/**'` passes a task id, but docs/02-cli.md:54 defines `pup plan add \"<goal>\"`. chore-refactor.yml (lines 32, 40-41) and docs/tickets/chore-refactor.md (lines 33-37) name `src/core/plan.service.ts`, `plan-store.service.ts` and `test/unit/core/plan-service.test.ts`, and none of those files exist. Use real commands and paths, or mark the examples as illustrative.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Gated roster: spawned context (issue-form schema/ADR interplay), conventions, docs. Skipped correctness and security (no code logic and no trust boundary: only YAML issue forms and markdown), simplicity (the new files are the requested deliverable), guards (no non-test source), workflow-safety (.github/ISSUE_TEMPLATE, not .github/workflows), spec (no closing issue or --spec source), maintainability (off the default roster)."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.9468036499999998,
+  "duration_ms": 119202,
+  "num_turns": 13,
+  "tokens": {
+    "input": 16,
+    "output": 7206,
+    "cache_read": 327039,
+    "cache_creation": 53826,
+    "total": 388087
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 16,
+      "output": 7206,
+      "cache_read": 327039,
+      "cache_creation": 53826,
+      "cost_usd": 0.6401998
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 40,
+      "output": 9791,
+      "cache_read": 281349,
+      "cache_creation": 71933,
+      "cost_usd": 0.30595740000000005
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 123,
+      "cache_read": 0,
+      "cache_creation": 4678,
+      "cost_usd": 0.00064645
+    }
+  ],
+  "permission_denials": []
+}
