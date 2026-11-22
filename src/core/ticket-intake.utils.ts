@@ -32,7 +32,7 @@ interface Field {
 }
 
 const CHORE_FIELDS: Field[] = [
-  { heading: 'Scope boundary', area: true },
+  { heading: 'Scope boundary' },
   { heading: 'Proof that behavior is unchanged' },
   { heading: 'Files in scope', terse: true, area: true },
 ];
@@ -148,11 +148,12 @@ function isVague(value: string, terse: boolean): boolean {
 /**
  * The module a path belongs to: its directory under `src/`, or under `test/<kind>/`
  * for a test, so a module's tests stay inside it. Undefined outside both. A path
- * whose last segment has no extension names a directory, as `src/cli/` does.
+ * whose last segment has no extension and no wildcard names a directory, as
+ * `src/cli/` does; `test/helpers/*` names files.
  */
 function moduleOf(path: string): string | undefined {
   const parts = path.split('/');
-  const directories = /\.\w+$/.test(parts.at(-1) ?? '') ? parts.length - 1 : parts.length;
+  const directories = /\.\w+$|\*/.test(parts.at(-1) ?? '') ? parts.length - 1 : parts.length;
   if (parts[0] === 'src' && directories > 1) return parts[1];
   if (parts[0] === 'test' && directories > 2) return parts[2];
   return undefined;
@@ -164,7 +165,10 @@ function triggersFor(
   sectionMap: Map<string, string>,
   context: IntakeContext,
 ): DesignTrigger[] {
-  const paths = (areaText.match(PATH) ?? []).map((path) => path.replace(/^\.\//, ''));
+  // PATH keeps the period of a sentence that ends in a path; it is not part of the path.
+  const paths = (areaText.match(PATH) ?? []).map((path) =>
+    path.replace(/^\.\//, '').replace(/\.+$/, ''),
+  );
   const adrAreas = context.adrAreas.map((glob) => globToRegExp(glob));
   const modules = new Set(paths.map(moduleOf).filter((name) => name !== undefined));
   const estimate = /\d[\d,]*/.exec(sectionMap.get(normalize(ESTIMATE_HEADING)) ?? '');

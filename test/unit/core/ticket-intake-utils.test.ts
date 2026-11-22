@@ -254,6 +254,36 @@ describe('checkTicketIntake design', () => {
   });
 
   it.each([
+    ['a test helper ending a sentence', 'src/core/land.service.ts and test/helpers/land.mock.ts.'],
+    ['a wildcard of test helpers', 'src/core/land.service.ts, test/helpers/*'],
+  ])('reads no module in %s', (_, area) => {
+    const result = checkTicketIntake(body({ ...BUG, 'Suspected area': area }), 'bug', NO_ADR);
+    expect(result.triggers).toEqual([]);
+  });
+
+  it('drops the period of a sentence that ends in a path', () => {
+    const result = checkTicketIntake(
+      body({ ...BUG, 'Suspected area': 'The crash is in src/cli/ls.command.ts.' }),
+      'bug',
+      { adrAreas: ['src/cli/*.ts'] },
+    );
+    expect(result).toMatchObject({ triggers: ['adr-area'], needsDesign: true });
+  });
+
+  it('reads no trigger in the paths a scope boundary leaves alone', () => {
+    const result = checkTicketIntake(
+      body({
+        'Scope boundary': 'Only the plan service; src/cli/plan.command.ts stays as it is.',
+        'Proof that behavior is unchanged': 'The plan service tests pass unchanged.',
+        'Files in scope': 'src/core/plan.service.ts',
+      }),
+      'refactor',
+      { adrAreas: ['src/cli/**'] },
+    );
+    expect(result).toEqual({ missing: [], vague: [], triggers: [], needsDesign: false });
+  });
+
+  it.each([
     ['a checked dependency box', { ...BUG, Extras: '- [x] Adds a dependency' }],
     ['package.json in the area', { ...BUG, 'Suspected area': 'package.json' }],
   ])('forces a design on %s', (_, fields) => {
