@@ -365,6 +365,54 @@ describe('checkTicketIntake design', () => {
     }
   });
 
+  it.each([
+    'https://github.com/acme/tool/blob/feature/x/src/claude/hooks.ts#L12',
+    'https://github.com/acme/tool/blob/release/1.2/src/claude/hooks.ts',
+    'https://github.com/acme/tool/tree/feature/x/src/claude/',
+  ])('fires adr-area for a permalink whose ref holds a slash: %s', (area) => {
+    const result = checkTicketIntake(body({ ...BUG, 'Suspected area': area }), 'bug', {
+      adrAreas: ['src/claude/hooks.ts', 'src/claude/**'],
+    });
+    expect(result.triggers).toEqual(['adr-area']);
+  });
+
+  it('reads a SHA permalink as one path, not its inner suffixes', () => {
+    const result = checkTicketIntake(
+      body({
+        ...BUG,
+        'Suspected area': 'https://github.com/acme/tool/blob/3d35d70/src/core/claude/hooks.ts',
+      }),
+      'bug',
+      { adrAreas: ['claude/**'] },
+    );
+    expect(result.triggers).toEqual([]);
+  });
+
+  it('reads no ref segment that starts with a dot', () => {
+    const result = checkTicketIntake(
+      body({
+        ...BUG,
+        'Suspected area':
+          'https://github.com/acme/tool/blob/main/.claude-pr/.claude/hooks/README.md',
+      }),
+      'bug',
+      { adrAreas: ['.claude/**'] },
+    );
+    expect(result.triggers).toEqual([]);
+  });
+
+  it('reads no ADR area in a slash-ref permalink outside the area', () => {
+    const result = checkTicketIntake(
+      body({
+        ...BUG,
+        'Suspected area': 'https://github.com/acme/tool/blob/feature/x/src/core/a.ts',
+      }),
+      'bug',
+      { adrAreas: ['src/claude/**'] },
+    );
+    expect(result.triggers).toEqual([]);
+  });
+
   it('reads one module and no ADR area in a glob inside one module', () => {
     const result = checkTicketIntake(
       body({ ...REFACTOR, 'Files in scope': 'src/core/**/*.ts' }),
