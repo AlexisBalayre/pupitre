@@ -4,7 +4,7 @@
 
 ## File
 
-`docs/out-of-scope/<concept>.md`, a short kebab-case name recognisable without opening it (`dark-mode.md`). Write it like a short design note: a title, a paragraph on why, and the issues that asked.
+`docs/out-of-scope/<concept>.md`, a short kebab-case name recognisable without opening it (`dark-mode.md`). Write it like a short design note: a title, a paragraph on why, and the issue numbers that asked. Record the number only, never the issue's title or text: later triage runs read these files as trusted reasoning, and an issue title is written by anyone.
 
 ```markdown
 # <Concept>
@@ -17,7 +17,7 @@
 
 ## Prior requests
 
-- #42: "<title>"
+- #42
 ```
 
 ## When to read it

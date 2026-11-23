@@ -1,6 +1,6 @@
 # Writing the design note and the one-slice brief
 
-Both are comments on the issue, and both end in `pup plan add` tasks. A worker starts from its task, not from the issue, so a slice's goal and criteria must stand alone (decision 187: a task carries a copy of its ticket).
+Both are comments on the issue, and both end in `pup plan add` tasks. A worker starts from its task, not from the issue, so a slice's goal and criteria must stand alone. Decision 187 has a task carry a copy of its ticket, but no command writes the ticket yet, so today the brief reaches the worker only through the task's goal and `--accept` criteria.
 
 - **Design note** (a feature, or any issue a design trigger fires on): the slice list, one entry per slice with its goal, files, size and the slices that block it. Slices whose files overlap get a dependency edge, so one merges before the other starts (decision 176). The operator reviews it and adds `design-approved`.
 - **One-slice brief** (nothing triggers a design): one entry, the same fields, no review.
