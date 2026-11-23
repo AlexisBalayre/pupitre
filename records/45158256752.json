@@ -1,0 +1,129 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-23T10:45:32.789Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "45158256752",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/45158256752",
+  "actor": "AlexisBalayre",
+  "commit_sha": "882a7c789ff68458726c17f635c8597d0d8c603b",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 445,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "simplicity",
+    "guards"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "simplicity",
+    "guards"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "src/core/ticket-intake.utils.ts",
+      "line": "210-220",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The suffix expansion also runs on commit-SHA permalinks, so a SHA link now fires adr-area or module-boundary where the same bare path does not. The ref-is-one-segment behavior regresses for GitHub's default permalink form.",
+      "body": "**The suffix expansion also runs on permalinks pinned to a commit SHA, and a SHA can never hold a slash.**\n\nhttps://github.com/AlexisBalayre/pupitre/blob/882a7c789ff68458726c17f635c8597d0d8c603b/src/core/ticket-intake.utils.ts#L210-L220\n\n```ts\n    const candidates =\n      rest === path\n        ? [rest]\n        : rest.split('/').map((_, index, segments) => segments.slice(index).join('/'));\n```\n\n`PERMALINK` now stops at `/(blob|tree)/`, so the SHA stays in `rest`. Before this change, `.../blob/3d35d70/X` gave exactly one candidate, `X`. It now gives every inner suffix of `X` as well. The ADR globs are anchored (`^...$`, `src/core/glob.utils.ts:25`), and each suffix is tested as if it were a path from the repository root.\n\nGitHub's \"Copy permalink\" and the `y` key both produce SHA links, so this is the common case. The PR's acceptance says \"a permalink with a one-segment ref behaves as before\", and the existing test `matches %s as the bare path` asserts that a link gives the same result as its bare path. That test only passes because its fixtures start at `src/` right after the ref.\n\n**Triggers (none of them fired before this change, and none fires for the bare path):**\n- **adr-area via a nested directory:** `.../blob/3d35d70/.claude-pr/.claude/hooks/README.md` with area `.claude/**`. The suffix `.claude/hooks/README.md` matches.\n- **adr-area via a bare filename:** `.../blob/<sha>/tools/review/tsconfig.json` with area `tsconfig.json`. The suffix `tsconfig.json` matches.\n- **module-boundary:** `.../blob/<sha>/packages/a/src/ui/x.ts` together with `.../blob/<sha>/packages/b/src/api/y.ts`. The suffixes give the modules `ui` and `api`.\n- **adr-area via the prefix check:** `.../blob/<sha>/lib/src` with area `src/claude/**`. The prefix check `prefix.startsWith(`${path}/`)` fires on the suffix `src`.\n\nEach of these sets `needsDesign` on a bug or chore whose real path triggers nothing.\n\nA named one-segment ref such as `main` has the same over-firing. That can't be told apart from `feature/x`, so it is the accepted cost of \"erring toward firing\". A SHA is unambiguous, though, and only for a named ref is the start of the path unknown. A regression test with a nested SHA link would pin this down, for example `https://github.com/acme/tool/blob/3d35d70/packages/a/src/claude/x.ts` with `adrAreas: ['src/claude/**']`, expecting `[]`.",
+      "suggestion": "  // PATH starts a permalink's match at its host. A commit SHA holds no slash, so the path\n  // follows it; a named ref may (`feature/x`) and the path after it cannot be told from it,\n  // so every suffix of the remainder is a candidate, erring toward firing.\n  const paths = (areaText.match(PATH) ?? []).flatMap((path) => {\n    const rest = path.replace(PERMALINK, '');\n    const segments = rest.split('/');\n    const candidates =\n      rest === path\n        ? [rest]\n        : segments.length > 1 && /^[0-9a-f]{7,40}$/i.test(segments[0] ?? '')\n          ? [segments.slice(1).join('/')]\n          : segments.map((_, index) => segments.slice(index).join('/'));\n    return candidates.map((candidate) => candidate.replace(/^\\.\\//, '').replace(/(?<!\\.)\\.+$/, ''));\n  });"
+    },
+    {
+      "file": "src/core/ticket-intake.utils.ts",
+      "line": "218",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "For a permalink on a named ref (the suffix case), the candidates are not limited to suffixes that could start a real path. Git forbids a ref component that begins with '.', so for `blob/main/.claude-pr/.claude/hooks/README.md` the suffix `.claude/hooks/README.md` would need the ref `main/.claude-pr`, which cannot exist. That suffix still fires an ADR area `.claude/**`. Dropping the split points where the ref's last segment starts with '.' removes this false fire even for named refs.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/ticket-intake.utils.ts",
+      "line": "213-220",
+      "area": "security",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Latent quadratic blowup on untrusted input. Nothing calls checkTicketIntake in production yet. For a permalink with N segments, the new flatMap builds all N suffixes with slice(index).join('/'), which is O(N^2) characters held in memory at once, and then runs each suffix through moduleOf and the ADR-area regexes. Example: an issue body near GitHub's 65,536-character limit whose area is `https://github.com/a/b/blob/` followed by `a/` repeated about 32,700 times yields about 32,700 candidates totalling about 1e9 characters. This is the file's first super-linear step, in a file that otherwise goes out of its way to stay linear. Cap how many leading segments can be ref segments (real refs hold few slashes) before the intake agent calls this.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Skipped by gate: review-context (no spec/protocol/infra surface), review-workflow-safety (no .github/workflows change), review-spec (no spec source: the PR closes no issue), review-maintainability (off the default roster)."
+    },
+    {
+      "component": "validator",
+      "description": "The validator's `gh pr view 445` call was denied, so it could not read the PR's acceptance criteria itself and relied on the brief's quote of them."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.7555675,
+  "duration_ms": 253960,
+  "num_turns": 15,
+  "tokens": {
+    "input": 18,
+    "output": 11293,
+    "cache_read": 365663,
+    "cache_creation": 46159,
+    "total": 423133
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 62,
+      "output": 36606,
+      "cache_read": 700950,
+      "cache_creation": 112021,
+      "cost_usd": 1.57114
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 28,
+      "output": 4436,
+      "cache_read": 130813,
+      "cache_creation": 50492,
+      "cost_usd": 0.1837273
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 198,
+      "cache_read": 0,
+      "cache_creation": 4808,
+      "cost_usd": 0.0007002
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "gh pr view 445 --repo AlexisBalayre/pupitre"
+    }
+  ]
+}
