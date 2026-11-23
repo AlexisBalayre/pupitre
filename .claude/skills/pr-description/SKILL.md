@@ -18,9 +18,8 @@ section it does not need. A body is a few lines per section, never a wall of tex
 | tests only (`test`) | `templates/test.md` | Why, Before/After rate |
 | a speed-up (`perf`) | `templates/perf.md` | Measurement table, Trade-off |
 | a revert | `templates/revert.md` (title type `chore`) | Why, Next |
-| a task from a `pup` session | `templates/session.md` | Task, Gate, Scope |
 
-No template fits: use the base body below.
+No template fits: use the base body below. A PR a `pup` session opened has its body written by pup itself (`prBody()`), so this skill is for the PRs you open by hand.
 
 Base body:
 
@@ -39,13 +38,13 @@ Base body:
 
 <only if non-obvious: what a merge reaches>
 
-Lands decision NN. Follow-up to #NNNN.
+Closes #N. Lands decision NN. Follow-up to #NNNN.
 ```
 
-> **This repo has no issue tracker.** There is no ticket id in the title and no `Closes` line.
-> A PR anchors itself to the numbered entry in `docs/adr/` it lands or sharpens
-> (`Lands decision 56.`) and to the PRs it follows from (`Follow-up to #93.`); drop the closing
-> line when neither applies. The tracker wording below is kept for reuse in a repo that has one.
+> A PR born from a GitHub issue ends with `Closes #N`, so merging closes the issue; GitHub fills
+> the link. It also anchors itself to the numbered entry in `docs/adr/` it lands or sharpens
+> (`Lands decision 56.`) and to the PRs it follows from (`Follow-up to #93.`). Drop each line that
+> does not apply.
 
 ## Sections
 
@@ -144,7 +143,7 @@ Communicate *what changed and why* at a glance, specific enough that a reviewer 
   Mixed diff: pick the user-visible win, mention the rest in the Summary.
 - **`<scope>`**: optional but usually present. Lowercase kebab, naming the component or area touched. Common scopes in this repo: `gate`, `cli`, `ui`, `conductor`, `watch`, `profile`, `init`, `store`, `adapters`, `claude`, `report`, `tooling`, `skills`, `deps`. Multi-scope `(gate,cli)` only when both are non-trivial. Drop the scope when the change is repo-wide.
 - **`<summary>`**: imperative present tense, lowercase first word, no trailing period. Proper nouns keep their case (`Biome`, `SQLite`, `Vitest`, `GitHub`); double quotes around identifiers are fine.
-- **Follow-ups** end the summary with `(follow-up to #NNNN)`. There is no tracker id.
+- **Follow-ups** end the summary with `(follow-up to #NNNN)`. The issue it closes goes in the body (`Closes #N`), never in the title.
 
 **Lint:**
 
@@ -166,8 +165,8 @@ Communicate *what changed and why* at a glance, specific enough that a reviewer 
 ## Body rules
 
 - **No em-dash** (`—` / `–`). Hyphen or colon.
-- **No hardcoded hostnames/URLs.** Derive from config; link tracker issues by id/URL only.
-- **Anchor, don't close.** End the body with `Lands decision NN.` when the PR adds or sharpens an entry in `docs/adr/`, and `Follow-up to #NNNN.` when it continues an earlier PR; GitHub links the `#NNNN`. No `Closes` line: there is no tracker to close anything on.
+- **No hardcoded hostnames/URLs.** Derive from config; link issues as `#N`.
+- **Anchor and close.** End the body with `Closes #N.` when the PR is born from an issue (one line per issue), `Lands decision NN.` when it adds or sharpens an entry in `docs/adr/`, and `Follow-up to #NNNN.` when it continues an earlier PR; GitHub links each `#N`.
 - **No attribution footer.** Never add `🤖 Generated with Claude Code` (or any agent attribution) to the PR body. The `Co-Authored-By` trailer on commits is the only attribution.
 
 The Summary diagram guidance is adapted from Dex Horthy's `show-me` skill (humanlayer/skills).
