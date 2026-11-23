@@ -1,0 +1,140 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-23T10:57:58.299Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "45160283485",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/45160283485",
+  "actor": "AlexisBalayre",
+  "commit_sha": "d1d1f9d5d06e068644ca612420d4f1cd2a1ef392",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 446,
+  "action": "review",
+  "reviewers_spawned": [
+    "docs",
+    "conventions"
+  ],
+  "reviewers_returned": [
+    "docs",
+    "conventions"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "context",
+    "maintainability",
+    "spec",
+    "simplicity",
+    "guards",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "docs/guide/gate-and-debt.md",
+      "line": "17",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "important",
+      "description": "Gate pipeline diagram routes a taken ADR number to \"Rejected: re-steered; blocked after 2\", but decision 146 makes it a refusal: no rejection counted, nothing steered.",
+      "body": "The pipeline diagram sends `adr -->|taken| rej`, and `rej` is *\"Rejected: report re-steered into the session; blocked after 2\"*, which loops back to running.\n\nDecision 146 says the opposite ([ADR 146 L58-60](https://github.com/AlexisBalayre/pupitre/blob/d1d1f9d5d06e068644ca612420d4f1cd2a1ef392/docs/adr/0146-the-gate-refuses-an-adr-number-the-target-or.md#L58-L60)): *\"A refusal, not a rejection. … it consumes no rejection: the gate records it as `refused` (`refuseGate`), the session keeps its state and its reject count, and nothing is steered.\"* The source agrees ([merge-gate.service.ts L2925-2929](https://github.com/AlexisBalayre/pupitre/blob/d1d1f9d5d06e068644ca612420d4f1cd2a1ef392/src/core/merge-gate.service.ts#L2925-L2929)). An ADR-number failure goes to `refuseGate`, not `failed()`.\n\nThis matters because a reader who hits a duplicate ADR number will wait for the worker to be re-steered. In fact nothing steers it, so they have to renumber the ADR or steer the session themselves. The page's own prose (around L33-35) says the clash \"refuses the merge\", so the diagram also contradicts the text.\n\nThe soft-flag edge (`soft -->|yes, no --accept-debt| rej`, L25) has the same problem. It also goes through `refuseGate` ([L2374](https://github.com/AlexisBalayre/pupitre/blob/d1d1f9d5d06e068644ca612420d4f1cd2a1ef392/src/core/merge-gate.service.ts#L2367-L2374)).\n\nThe fix: point both edges at a separate `refused` node (recorded, nothing merged, no rejection counted, nothing steered).",
+      "suggestion": null
+    },
+    {
+      "file": "docs/guide/concepts.md",
+      "line": "45-46",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "important",
+      "description": "Guide says `pup launch` and `pup kill` refuse everyone but the operator; the source lets the conductor launch and plain-kill, refusing it only `kill --respawn`.",
+      "body": "concepts.md L45-46 defines the operator, then says *\"Some commands refuse everyone else: `pup launch` and `pup kill` ([42])\"*. commands.md L53 also marks `pup kill <session> [--respawn]` as *(operator)*.\n\nThe source and the later decision say otherwise:\n- `pup launch` refuses only a calling **session**: *\"Admitting work belongs to the operator and the conductor\"* ([index.ts L1416-1422](https://github.com/AlexisBalayre/pupitre/blob/d1d1f9d5d06e068644ca612420d4f1cd2a1ef392/src/cli/index.ts#L1416-L1422)).\n- `pup kill` refuses the conductor only for `--respawn`: *\"The plain kill is the conductor's; the hard respawn is not.\"* ([index.ts L2296-2311](https://github.com/AlexisBalayre/pupitre/blob/d1d1f9d5d06e068644ca612420d4f1cd2a1ef392/src/cli/index.ts#L2296-L2311)).\n- [ADR 47](https://github.com/AlexisBalayre/pupitre/blob/d1d1f9d5d06e068644ca612420d4f1cd2a1ef392/docs/adr/0047-a-conductor-session-is-the-operator-s-delegate.md) widened ADR 42's tier so the conductor can plan, create, launch and kill.\n\nThe guide also contradicts itself. commands.md L35 marks `pup launch` as *(operator or conductor)*, and concepts.md L43 says the conductor holds every operator power except the merge.\n\nThis matters because a reader would think the conductor cannot launch or kill workers, and would step in by hand for no reason.\n\nThe fix: in concepts.md, say that worker sessions cannot run `pup launch` and `pup kill`, and cite ADR 47 with ADR 42. In commands.md L53, say a plain kill is operator or conductor and `--respawn` is operator only.",
+      "suggestion": null
+    },
+    {
+      "file": "docs/guide/commands.md",
+      "line": "34",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The `pup new` row has no operator/conductor marker, though `pup new` refuses worker sessions (src/cli/index.ts L1262); mark who may run it, as other rows do.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/guide/concepts.md",
+      "line": "72-95",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The lifecycle diagram shows `merged --> running: pup fix` but leaves out the return edge. A `pup kill` on a fixing session sends it back to `merged`, not `killed` (session-state.utils.ts L39-45), so the PR stays landable.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [
+    {
+      "file": "docs/guide/gate-and-debt.md",
+      "line": "14, 28",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "Mermaid node labels contain an unquoted `;`, which mermaid parses as a statement separator, so the pipeline diagram may fail to render.",
+      "refutation": "In mermaid's flowchart grammar, `[` and `{` enter a text lexer state whose TEXT token excludes only brackets, braces, parens, pipe and double quote. So `;` inside node text is plain label text, and SEMI is recognised only between statements. The `;` problem applies to sequence diagrams, not flowchart labels. This rests on grammar knowledge, since the validator could not render the diagram; a live-editor check would settle it."
+    }
+  ],
+  "process_issues": [
+    {
+      "component": "docs",
+      "description": "The docs reviewer ran out of budget before covering everything. It did not read best-practices.md, troubleshooting.md, docs/guide/README.md or the README.md diff. It checked only a sample of ADR links and some flag spellings (it did not check merge --approved-by or the land --accept-head/--remeasure/--abandon-closed flags). Those pages and flags went unreviewed for accuracy this round."
+    },
+    {
+      "component": "orchestrator",
+      "description": "Spawned only docs and conventions because the PR changes markdown only. Skipped correctness, security, context, simplicity, guards and maintainability (no code changed), workflow-safety (no workflow change) and spec (no --spec and no closing issue; the PR body's acceptance list is not a spec source under the protocol)."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 2,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.026763555,
+  "duration_ms": 145192,
+  "num_turns": 10,
+  "tokens": {
+    "input": 10,
+    "output": 8218,
+    "cache_read": 200330,
+    "cache_creation": 38297,
+    "total": 246855
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 10,
+      "output": 8218,
+      "cache_read": 200330,
+      "cache_creation": 38297,
+      "cost_usd": 0.510842
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 66,
+      "output": 15185,
+      "cache_read": 808244,
+      "cache_creation": 113053,
+      "cost_usd": 0.5154389
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 199,
+      "cache_read": 1933,
+      "cache_creation": 2909,
+      "cost_usd": 0.000482655
+    }
+  ],
+  "permission_denials": []
+}
