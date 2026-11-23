@@ -60,12 +60,11 @@ A rule fires on the first Read, Edit, or Write of a matching path (not on MCP re
 │   ├── tdd/   diagnosing-bugs/   wizard/   research/             # engineering
 │   ├── improve-codebase-architecture/                            # engineering (manual)
 │   ├── grilling/   grill-me/   grill-with-docs/                  # thinking / design
-│   ├── codebase-design/   domain-modeling/   zoom-out/   prototype/
+│   ├── codebase-design/   domain-modeling/   prototype/
 │   ├── pr-description/   pr-ci-review/                           # PR & review
 │   ├── address-review-comments/   review-retro/
-│   ├── writing-for-agents/   retro/   handoff/   caveman/        # meta / workflow
-│   ├── wait-what/
-│   └── obsidian-vault/   daily-note/                             # personal integrations (.env)
+│   ├── writing-for-agents/   retro/   handoff/                   # meta / workflow
+│   └── wait-what/
 │
 ├── agents/                # Custom subagents for specialized tasks
 │   ├── convention-checker.md                                     # proactive
