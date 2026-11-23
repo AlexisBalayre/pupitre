@@ -1,112 +1,68 @@
 ---
 name: to-tickets
-description: Break a plan, spec, or the current conversation into a set of tracer-bullet tickets, each declaring its blocking edges, published to the configured tracker (edges as text in one file per ticket locally, or native blocking links on a real tracker).
+description: Break an approved feature ticket, a plan, or the current conversation into tracer-bullet slices with their dependency edges, then plan one pup task per slice and launch the ones that are free.
 disable-model-invocation: true
 ---
 
 # To Tickets
 
-Break a plan, spec, or conversation into a set of **tickets**: tracer-bullet vertical slices, each declaring the tickets that **block** it.
-
-## Tracker
-
-Publish through the issue-tracker MCP server when one is configured. The `mcp__linear-server__*` tool names below are placeholders: swap them for your tracker's tools. Read the IDs from `.env` (see `.env.example`), never hardcode them:
-
-- **Assignee:** `${TRACKER_ASSIGNEE_ID}`
-- **Team:** `${TRACKER_TEAM_ID}`
-- **Project:** `${TRACKER_PROJECT_ID}`
-- **Issue prefix:** `${TRACKER_ISSUE_PREFIX}`
-
-No tracker configured (no MCP server, or the IDs are blank): publish local files under `docs/plans/<feature-slug>/` instead (step 5). `docs/plans/` is local-only; `scripts/pre-commit` refuses to commit it.
+Break a feature ticket, plan or conversation into **slices**: tracer-bullet vertical cuts, each naming the slices that block it. Then plan one pup task per slice (`pup plan add`) and launch the free ones. A slice is the unit of a worker session: one fresh session per slice, never steered after its PR merges (decision 176).
 
 ## Process
 
 ### 1. Gather context
 
-Work from whatever is already in the conversation context. If the user passes a reference as an argument, fetch it and read its full body and comments: an issue ID or URL via `mcp__linear-server__get_issue`, a spec path (e.g. `docs/plans/<feature-slug>/spec.md`) with Read.
+Work from whatever is already in the conversation. If the user passes a reference, read it in full: an issue number or URL with `gh issue view <n> --comments`, a design note or spike path with Read. A feature ticket should carry `design-approved` (decision 176) before you slice it; if it does not, say so and stop, unless the user says it is a one-slice change that needs no design.
 
 ### 2. Explore the codebase (optional)
 
-If you have not already explored the codebase, do so to understand the current state of the code. Ticket titles and descriptions should use the project's own vocabulary (the `SCHEMA` nouns in `src/core/db.client.ts`, `docs/09-decisions.md`), and respect the decisions in `docs/09-decisions.md` for the area you're touching.
+If you have not already explored the codebase, do so to understand the current state of the code. Slice titles and goals use the project's own vocabulary (the `SCHEMA` nouns in `src/core/db.client.ts`, the decisions in `docs/adr/`, found through `bash scripts/adr-index.sh`) and respect the decisions covering the area you're touching.
 
 Look for opportunities to prefactor the code to make the implementation easier. "Make the change easy, then make the easy change."
 
 ### 3. Draft vertical slices
 
-Break the work into **tracer bullet** tickets.
-
 <vertical-slice-rules>
 
 - Each slice cuts a narrow but COMPLETE path through every layer (schema, API, UI, tests): vertical, NOT a horizontal slice of one layer
 - A completed slice is demoable or verifiable on its own
-- Each slice is sized to fit in a single fresh context window
-- Any prefactoring should be done first
+- Each slice is sized to fit one fresh session's context window
+- Any prefactoring is its own slice, first
 
 </vertical-slice-rules>
 
-Give each ticket its **blocking edges**: the other tickets that must complete before it can start. A ticket with no blockers can start immediately.
+For each slice, write down:
 
-**Wide refactors are the exception to vertical slicing.** A **wide refactor** is one mechanical change (rename a column, retype a shared symbol) whose **blast radius** fans across the whole codebase, so a single edit breaks thousands of call sites at once and no vertical slice can land green. Don't force it into a tracer bullet; sequence it as **expand-contract**. First expand: add the new form beside the old so nothing breaks. Then migrate the call sites over in batches sized by blast radius (per package, per directory), each batch its own ticket blocked by the expand, keeping CI green batch to batch because the old form still exists. Finally contract: delete the old form once no caller remains, in a ticket blocked by every migrate batch. When even the batches can't stay green alone, keep the sequence but let them share an integration branch that all block a final integrate-and-verify ticket; green is promised only there.
+- **Goal**: the end-to-end behaviour it makes work, and the decision number it records, if any.
+- **Scope-in**: the globs the session may edit. Name every file the slice touches, including the test files that encode a contract it changes: a task that tightens a contract and leaves its old tests out of scope is blocked at commit.
+- **Size**: small, medium or large, by files and tests touched.
+- **Blocked by**: the slices that must land first. **Two slices whose scope-in overlap get an edge**, so one merges before the other starts. A slice with no blockers can start now.
+- **Acceptance**: checkable sentences, one per criterion. A criterion starting with `--` parses as an option: reword it.
+
+**Wide refactors are the exception to vertical slicing.** A **wide refactor** is one mechanical change (rename a column, retype a shared symbol) whose **blast radius** fans across the whole codebase, so a single edit breaks thousands of call sites at once and no vertical slice can land green. Sequence it as **expand-contract**: first expand (add the new form beside the old, so nothing breaks), then migrate the call sites in batches sized by blast radius, each its own slice blocked by the expand, and finally contract (delete the old form once no caller remains) in a slice blocked by every batch.
 
 ### 4. Quiz the user
 
-Present the proposed breakdown as a numbered list. For each ticket, show:
+Present the breakdown as a numbered list. For each slice show the title, what it delivers, its scope-in, its size and what blocks it. Ask:
 
-- **Title**: short descriptive name
-- **Blocked by**: which other tickets (if any) must complete first
-- **What it delivers**: the end-to-end behaviour this ticket makes work
+- Does the granularity feel right (too coarse or too fine)?
+- Does each slice only depend on slices that genuinely gate it, and does every overlap have its edge?
+- Should any slices be merged or split?
 
-Ask the user:
+Iterate until the user approves the breakdown. When the slice list belongs in a design note on the ticket, post it there with `gh issue comment <n> --body-file <file>` (a file outside the repo) so the design review sees the same list.
 
-- Does the granularity feel right? (too coarse / too fine)
-- Are the blocking edges correct: does each ticket only depend on tickets that genuinely gate it?
-- Should any tickets be merged or split further?
+### 5. Plan and launch
 
-Iterate until the user approves the breakdown.
+Record one task per approved slice, blockers first:
 
-### 5. Publish the tickets to the configured tracker
+```sh
+pup plan add "<goal>" --scope <glob>... --accept "<criterion>"...
+```
 
-Publish the approved tickets. The tickets are the same either way; only the shape of the blocking edges changes:
+`pup plan` lists the backlog with each task's tier. Pass `--tier critical` only when the scope-in does not already imply it. Then launch the **frontier**, the slices whose blockers are all landed: `pup launch <task>`. It refuses while the merge lock's backlog is over budget, the load is above the allowance, memory is under the floor or the usage window is held; do not pass `--over-cap` or `--over-limit` yourself, and wait or tell the operator instead. For a purely linear chain, that means top to bottom.
 
-- **Local files** (no tracker) → write one file per ticket under `docs/plans/<feature-slug>/issues/<NN>-<slug>.md`, numbered from `01` in dependency order (blockers first). Each file's "Blocked by" lists the numbers/titles it depends on. Use the per-ticket file template below: one ticket per file, never a single combined file.
-- **Issue-tracker MCP** → publish one issue per ticket with `mcp__linear-server__save_issue`, in dependency order (blockers first) so each ticket's blocking edges can reference real identifiers. Set `parentId` to the source issue when the source was one, and wire each blocker as a native relation through `save_issue`'s `blockedBy` field: the tracker renders the frontier visually, so the human sees what's takeable without opening every ticket. The body's "Blocked by" section stays as the human-readable summary.
+From here the loop is pup's: the gate, `pup ci wait` and `pup fix` (the conductor runs them when it is up), then the merge. Read `skills/pup/LOOP.md` before your first gate or steer. When a slice lands, launch the next slice it unblocked. Never watch a PR's checks by hand (`gh pr checks --watch` is forbidden).
 
-Work the **frontier**: any ticket whose blockers are all done. For a purely linear chain that means top to bottom.
+Do NOT close or modify the parent issue: a slice's PR closes it with `Closes #N`, and only the last slice should.
 
-Do NOT close or modify any parent issue.
-
-<local-ticket-template>
-
-# <NN>: <Ticket title>
-
-**What to build:** the end-to-end behaviour this ticket makes work, from the user's perspective, not a layer-by-layer implementation list.
-
-**Blocked by:** the numbers/titles of the tickets that gate this one, or "None (can start immediately)".
-
-- [ ] Acceptance criterion 1
-- [ ] Acceptance criterion 2
-
-</local-ticket-template>
-
-<issue-template>
-
-## Parent
-
-A reference to the parent issue on the tracker (`${TRACKER_ISSUE_PREFIX}-XXXX`; if the source was not an existing issue, omit this section).
-
-## What to build
-
-The end-to-end behaviour this ticket makes work, from the user's perspective, not layer-by-layer implementation.
-
-## Acceptance criteria
-
-- [ ] Criterion 1
-- [ ] Criterion 2
-
-## Blocked by
-
-- A reference to each blocking ticket, or "None (can start immediately)".
-
-</issue-template>
-
-In either form, avoid specific file paths or code snippets: they go stale fast. Exception: if a prototype produced a snippet that encodes a decision more precisely than prose can (state machine, reducer, schema, type shape), inline it and note briefly that it came from a prototype. Trim to the decision-rich parts, not a working demo, just the important bits.
+In every slice, avoid specific code snippets: they go stale fast. Exception: if a prototype produced a snippet that encodes a decision more precisely than prose can (state machine, reducer, schema, type shape), inline it and note briefly that it came from a prototype.
