@@ -39,13 +39,15 @@ removed by pup. Nothing runs on a shared checkout.
 **Scope.** The globs the session may edit. A PreToolUse hook refuses other edits; Bash is checked
 best-effort and re-checked after each call ([decision 6](../adr/0006-bash-scope-checking-is-best-effort.md), [decision 63](../adr/0063-every-bash-call-is-re-checked-against-the.md)).
 
-**Conductor.** One optional Claude session that plans, launches, steers and reports. It holds every
-operator power except the merge ([decision 47](../adr/0047-a-conductor-session-is-the-operator-s-delegate.md)).
+**Conductor.** One optional Claude session that plans, launches, steers and reports. It acts for the
+operator on sessions, but is refused the commands marked *operator* in the [command guide](commands.md),
+the local merge among them ([decision 47](../adr/0047-a-conductor-session-is-the-operator-s-delegate.md)).
 
-**Operator.** You, or a Claude window you opened by hand. Some commands refuse everyone else:
-`pup kill --respawn` ([42](../adr/0042-pup-launch-and-pup-kill-are-operator-only.md)), `pup merge` (the local form; the conductor may gate with `--pr`, [75](../adr/0075-the-conductor-gates-a-branch-with-pup-merge.md)) and `pup respawn` ([44](../adr/0044-a-session-reports-only-its-own-state-and.md)),
+**Operator.** You, or a Claude window you opened by hand. Some commands refuse everyone else, and
+the [command guide](commands.md) marks each. Among them:
+`pup kill --respawn` ([47](../adr/0047-a-conductor-session-is-the-operator-s-delegate.md)), `pup merge` (the local form; the conductor may gate with `--pr`, [75](../adr/0075-the-conductor-gates-a-branch-with-pup-merge.md)) and `pup respawn` ([44](../adr/0044-a-session-reports-only-its-own-state-and.md)),
 `pup audit` ([48](../adr/0048-pup-audit-is-operator-only-the-thing-that.md)), `pup init` ([64](../adr/0064-pup-init-is-operator-only-like-pup-audit.md)), `pup dashboard` ([91](../adr/0091-pup-dashboard-serves-a-read-only-live-page.md)),
-`pup usage` ([122](../adr/0122-pup-usage-reports-where-the-claude-usage-went-from-the.md)) and `pup retro` ([150](../adr/0150-pup-retro-reads-the-claude-code-traces-locally-and.md)).
+`pup usage` ([122](../adr/0122-pup-usage-reports-where-the-claude-usage-went-from-the.md)), `pup retro` ([150](../adr/0150-pup-retro-reads-the-claude-code-traces-locally-and.md)), `pup unblock`, `pup answer`, `pup attach`, `pup watch`, `pup brief` and `pup retire`.
 
 **Gate.** The pipeline `pup merge` runs on a branch. See [the gate and debt](gate-and-debt.md).
 

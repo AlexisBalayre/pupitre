@@ -19,9 +19,7 @@ flowchart TD
   hard -->|fail| rej
   hard --> scope{scope-audit<br/>diff vs scope-in and scope-out}
   scope -->|violation| rej
-  scope --> caps{diff-size over 600 source lines<br/>or complexity over cap}
-  caps -->|yes| rej
-  caps --> soft{duplication, dead exports,<br/>coverage flagged?}
+  scope --> soft{diff-size, complexity, duplication,<br/>dead exports, coverage flagged?}
   soft -->|yes, no --accept-debt| refuse
   soft -->|clean, or accepted| kt[Knowledge transaction]
   kt --> out([merged, or PR opened])
@@ -45,11 +43,17 @@ Stages in order, from the source:
 
 | Flag | Counts | `--accept-debt` clears it? |
 | --- | --- | --- |
-| diff-size | more than 600 changed source lines; tests, lockfiles and docs excluded ([110](../adr/0110-the-diff-size-flag-counts-source-lines-only.md)) | No: split the task ([173](../adr/0173-the-diff-size-and-complexity-caps-are-hard-and.md)) |
-| complexity | +15 decision points on a touched file, 50 for a new file | No ([173](../adr/0173-the-diff-size-and-complexity-caps-are-hard-and.md), [145](../adr/0145-the-complexity-stage-judges-a-new-file-on-its.md)) |
+| diff-size | more than 600 changed source lines; tests, lockfiles and docs excluded ([110](../adr/0110-the-diff-size-flag-counts-source-lines-only.md)) | Yes today; see below |
+| complexity | +15 decision points on a touched file, 50 for a new file ([145](../adr/0145-the-complexity-stage-judges-a-new-file-on-its.md)) | Yes today; see below |
 | duplication | new duplicated normalized lines in production code ([21](../adr/0021-debt-delta-three-soft-stages-with-a-merge.md), [39](../adr/0039-duplication-does-not-count-test-fixture-duplication.md)) | Yes |
 | dead exports | unused exports newly introduced ([21](../adr/0021-debt-delta-three-soft-stages-with-a-merge.md)) | Yes |
 | coverage | patch coverage of changed code vs the baseline ([23](../adr/0023-patch-coverage-lands-as-the-fourth-soft-stage.md), [30](../adr/0030-changed-code-absent-from-the-coverage-report-is.md)) | Yes |
+
+[Decision 173](../adr/0173-the-diff-size-and-complexity-caps-are-hard-and.md) makes diff-size and
+complexity hard (split the task, no `--accept-debt`) once the rollout of
+[decision 178](../adr/0178-each-rework-step-ships-behind-a-project-setting-and.md) is on for a project.
+The gate has no such switch yet: `src/core/merge-gate.service.ts` still files both as flags that
+`--accept-debt` clears. Split oversize tasks anyway.
 
 A stage that could not measure says so ("not measured"); it never passes silently
 ([decision 29](../adr/0029-capabilities-take-a-two-path-context-and-say.md), [53](../adr/0053-a-null-numstat-is-a-measurement-not-a.md)).

@@ -22,9 +22,9 @@ registry; a dormant project is hidden unless you pass `--dormant` ([decision 62]
 | --- | --- |
 | `pup plan` / `pup plan list` | The backlog: tasks with no session yet |
 | `pup plan add "<goal>" --scope <glob...> --scope-out <glob...> --accept <criterion...> [--tier critical\|standard]` | Add a task. *Operator or conductor* |
-| `pup plan edit <task> [--goal ...] [--rescope --scope ...]` | Change a task; `--rescope` only widens scope-in of a claimed task ([decision 115](../adr/0115-pup-plan-edit-rescope-lets-the-operator-widen.md)) |
-| `pup plan drop <task>` | Retire a task ([decision 147](../adr/0147-pup-plan-drop-retires-a-task-whose-sessions-were-all.md)) |
-| `pup brief show\|edit` | The project brief (*operator*) |
+| `pup plan edit <task> [--goal ...] [--scope-out ...] [--accept ...] [--tier ...]`, or `pup plan edit <task> --rescope --scope <glob...>` | Change a task; `--rescope` (*operator*, and alone on the command) only appends to the scope-in of a claimed task ([decision 115](../adr/0115-pup-plan-edit-rescope-lets-the-operator-widen.md)) |
+| `pup plan drop <task>` | Retire a task whose sessions were all killed ([decision 147](../adr/0147-pup-plan-drop-retires-a-task-whose-sessions-were-all.md)) |
+| `pup brief show\|edit` | The project brief; both refused to sessions and the conductor (*operator*) |
 | `pup intent new\|show\|list\|accept` | Intents; `accept` is *operator* ([decision 126](../adr/0126-an-intent-is-a-file-under-docs-intent-the.md)) |
 
 ## Launch
@@ -33,8 +33,8 @@ registry; a dormant project is hidden unless you pass `--dormant` ([decision 62]
 | --- | --- |
 | `pup new <goal> --scope ... --accept ...` | Create the task, compile a profile, make the worktree, start the session (*refuses worker sessions*) |
 | `pup launch <task>` | Start a session for a task already in the backlog (*operator or conductor*) |
-| `pup conductor start` | Start the conductor; `stop`, `tell <message>` and `recap` also take an action ([decision 85](../adr/0085-pup-attach-hands-the-terminal-to-the-conductor.md)) |
-| `pup attach [session]` | Put this terminal on the conductor's or a session's tmux window; Ctrl-b d detaches |
+| `pup conductor start` | Start the conductor (*operator*). `stop` and `tell <message>` are *operator* too; `recap` prints the fleet as the store and git hold it and is also open to the conductor; the conductor asks you with `ask <question> [--option ... --recommend <n>]` ([decision 85](../adr/0085-pup-attach-hands-the-terminal-to-the-conductor.md)) |
+| `pup attach [session]` | (*operator*) Put this terminal on the conductor's or a session's tmux window; Ctrl-b d detaches |
 
 `pup new` and `pup launch` take `--model` and `--effort` to override the routed ones
 ([decision 92](../adr/0092-pup-routes-every-window-s-model-and-effort.md)). They are refused while the merge lock's backlog, the machine's load or the
@@ -48,8 +48,8 @@ plan's usage windows are over their limits; `--over-cap` and `--over-limit` over
 | `pup steer <session> <message>` | Type a correction into a running session. It cannot stop a turn already under way ([decision 4](../adr/0004-steering-cannot-force-interrupt-a-mid-turn-agent.md)) |
 | `pup interrupt <session> [message]` | Press Escape on the in-flight tool call, optionally with a message ([decision 37](../adr/0037-force-interrupt-is-its-own-command-and-every.md)) |
 | `pup answer <target> <reply>` | Answer a session's open question, or the conductor's with target `conductor`; a reply may be an option's number (*operator*; [decision 93](../adr/0093-a-question-offers-numbered-options-and-pup-answer.md)) |
-| `pup unblock <session> [--reason <text>]` | Return a blocked session to running once you dealt with the block |
-| `pup respawn <session>` | Ask for a handoff, then relaunch on a fresh context (*operator*; [decision 200](../adr/0200-compaction-is-the-default-context-reset-respawn-is.md)) |
+| `pup unblock <session> [--reason <text>]` | Return a blocked session to running once you dealt with the block (*operator*) |
+| `pup respawn <session> [--wait <seconds>]` | Ask for a handoff, then relaunch on a fresh context (*operator*; [decision 200](../adr/0200-compaction-is-the-default-context-reset-respawn-is.md)) |
 | `pup kill <session> [--respawn]` | Stop a session (*operator or conductor*); `--respawn` relaunches it fresh with no handoff (*operator*) |
 
 ## Status
@@ -58,7 +58,7 @@ plan's usage windows are over their limits; `--over-cap` and `--over-limit` over
 | --- | --- |
 | `pup status` | What needs you first, then live sessions by state, planned work and overdue debt. `--history` adds merged and killed ([decision 83](../adr/0083-pup-status-opens-with-a-needs-you-inbox.md)) |
 | `pup ui` | The same in a live terminal dashboard, plus backlog, debt and the conflict radar ([decision 52](../adr/0052-pup-ui-is-ink-over-one-snapshot-and.md)) |
-| `pup watch [--once\|--start\|--stop]` | The conflict radar: same-file overlaps between live diffs. `--start` runs it in a detached tmux session ([decision 20](../adr/0020-conflict-radar-is-a-tmux-supervised-watcher-daemon.md)) |
+| `pup watch [--once\|--start\|--stop]` | (*operator*) The conflict radar: same-file overlaps between live diffs. `--start` runs it in a detached tmux session ([decision 20](../adr/0020-conflict-radar-is-a-tmux-supervised-watcher-daemon.md)) |
 | `pup dashboard [--open]` | A live web page on 127.0.0.1 behind a per-run token (*operator*). It answers, steers, launches, gates and lands too ([decision 91](../adr/0091-pup-dashboard-serves-a-read-only-live-page.md), [98](../adr/0098-pup-dashboard-is-a-set-of-sheets-figures.md)) |
 
 ## Review
@@ -107,6 +107,8 @@ sequenceDiagram
 `pup land <sessions...>` (after the PR merged on GitHub) fast-forwards main, cleans up each session
 and audits once ([decision 84](../adr/0084-pup-land-session-closes-the-github-half-of.md), [195](../adr/0195-pup-land-takes-several-sessions-and-audits-once.md)). Refusals and their flags:
 
+`pup land` is open to the operator and the conductor, but the three flags below are *operator* only:
+
 | Situation | Flag |
 | --- | --- |
 | PR head moved past the pinned sha, you read the commits between | `--accept-head <sha>` ([decision 164](../adr/0164-pup-land-takes-a-moved-head-on-the-operator-s-word.md)) |
@@ -114,14 +116,14 @@ and audits once ([decision 84](../adr/0084-pup-land-session-closes-the-github-ha
 | PR closed unmerged on GitHub | `--abandon-closed` |
 | Several lands, one audit | `--no-audit`, then `pup audit` once |
 
-`pup retire <session> --superseded-by <pr>` closes a merged session whose PR was closed because
+`pup retire <session> --superseded-by <pr>` (*operator*) closes a merged session whose PR was closed because
 another PR re-landed the work ([decision 141](../adr/0141-pup-retire-closes-out-a-session-whose-pr-another.md)).
 
 ## Fix
 
-`pup ci wait <session-or-PR>` blocks until the CI review finished on the PR's current head and
-prints one digest line. `pup fix <session>` hands the open review threads of a merged session's PR
-back to its worker in a fresh window; then `pup merge <session> --pr` re-gates the pushed fix and
+`pup ci wait <session-or-PR> [--timeout <minutes>]` blocks until the CI review finished on the PR's current head and
+prints one digest line. `pup fix <session>` (*operator or conductor*) hands the open review threads of a merged session's PR
+back to its worker in a fresh window (`--finding` is the conductor's alone, for a round past the top rung, [decision 202](../adr/0202-the-conductor-runs-a-fix-round-past-the-top-rung-for.md)); then `pup merge <session> --pr` re-gates the pushed fix and
 `pup land` lands it ([decision 90](../adr/0090-pup-fix-session-hands-the-ci-review-s.md), [86](../adr/0086-pup-merge-session-pr-re-gates-a-merged.md), [151](../adr/0151-ci-review-runs-at-opening-and-on-demand-only.md)).
 
 ### Conductor, worker and CI review

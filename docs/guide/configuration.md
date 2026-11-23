@@ -30,7 +30,7 @@ Unknown keys are an error. Defaults apply when the file or a key is absent.
 | --- | --- | --- |
 | `skipTestsOnUntestedChanges` | `true` | The gate skips the test stage when no testable file changed ([139](../adr/0139-the-gate-skips-the-test-stage-when-no-testable-file.md)) |
 | `workerSandbox` | `false` | Run a worker's Bash in Claude Code's sandbox; macOS only, an error elsewhere ([191](../adr/0191-a-worker-s-bash-calls-can-run-in-claude-code-s.md)) |
-| `lockBacklogBudgetMinutes` | `60` | Launches are refused past this many minutes of queued merge-lock use; 1 to 1440 ([197](../adr/0197-launches-follow-the-merge-lock-s-backlog-and-the.md)) |
+| `lockBacklogBudgetMinutes` | `60` | Launches are refused past this many minutes of queued merge-lock use; above 0, up to 1440 ([197](../adr/0197-launches-follow-the-merge-lock-s-backlog-and-the.md)) |
 | `loadAllowanceFactor` | `1` | Multiplier on the machine-load limit for launches; 1 to 3, an out-of-range value falls back to 1 ([197](../adr/0197-launches-follow-the-merge-lock-s-backlog-and-the.md)) |
 | `autoCompactWindow` | `150000` | The context size Claude Code compacts around; 100000 to 1000000 ([200](../adr/0200-compaction-is-the-default-context-reset-respawn-is.md)) |
 
@@ -90,6 +90,6 @@ pup profile show base   # one layer
 
 ## Routing: model and effort
 
-Each task has a tier: *critical* when a scope-in glob can name a file in the gate, git, store,
-sandbox, hooks or profile compilation (`CRITICAL_AREAS` in `src/core/routing.utils.ts`), else
+Each task has a tier: *critical* when a scope-in glob can name a file in the gate, land, regate, git, store,
+sandbox, profile compiler or `src/claude/**` (`CRITICAL_AREAS` in `src/core/routing.utils.ts`), else
 *standard*. `--tier` on `pup plan add|edit` overrides it. See [best practices](best-practices.md#model-tiers-and-the-rung-ladder).
