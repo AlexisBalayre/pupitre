@@ -1,0 +1,110 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-23T09:18:38.278Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "45145517764",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/45145517764",
+  "actor": "AlexisBalayre",
+  "commit_sha": "6ec84cd940b9fdfac5e369f31010b9900cf6b841",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 440,
+  "action": "review",
+  "reviewers_spawned": [
+    "docs",
+    "conventions"
+  ],
+  "reviewers_returned": [
+    "docs",
+    "conventions"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "context",
+    "maintainability",
+    "spec",
+    "simplicity",
+    "guards",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": ".claude/skills/teach/RESOURCES-FORMAT.md",
+      "line": "3, 17-21, 29, 32",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The format file is ported verbatim and keeps a 'Wisdom (Communities)' group, a 'Record community preferences' rule and a strength-training example. SKILL.md line 17 says the sources are this repo's own docs, ADRs, `skills/pup/` and `pup --help`, so no communities exist. `writing-for-agents` §Pruning says: 'Check every line for relevance: does it still bear on what the document does?' Cost: an agent writing RESOURCES.md follows 'Group by Knowledge / Wisdom' and 'Record community preferences', and so may go looking for communities or ask the learner about them. Suggest dropping the Wisdom group and the community rule, or noting in SKILL.md that the Wisdom group is optional. The same applies to the fitness-flavoured examples in MISSION-FORMAT.md, where a pupitre example would anchor better.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/skills/teach/LEARNING-RECORD-FORMAT.md",
+      "line": "36, 45",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Line 36 uses an Obsidian-style wikilink, `[[MISSION.md]]`, and line 45 uses an `LR-NNNN` id. Neither fits this repo. The files are named `NNNN-slug.md` and the other cross-links in these files are plain markdown. The house rule is 'Hardcode repo specifics', and the related-file links in the other three files are plain markdown. Cost: an agent may write `Status: superseded by LR-0003` while the file is actually `0003-slug.md`, and may emit a wikilink that does not resolve. Suggest `[MISSION.md](../MISSION.md)` and `superseded by 0003-slug.md`.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "consolidator",
+      "description": "Consolidator returned group '1, 2' (two distinct root causes: unported Wisdom/communities content vs wikilink/LR id format) while reporting merged: 0; the self-contradictory answer was ignored and both findings kept separate."
+    },
+    {
+      "component": "orchestrator",
+      "description": "Skipped review-correctness, review-security, review-context, review-simplicity, review-guards, review-workflow-safety, review-spec: docs-only PR (four new markdown files under .claude/skills/teach/), no logic, trust boundary, infra, guard-covered source, workflow, or linked spec source. The spike task T14 was checked by review-conventions."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.5681354550000001,
+  "duration_ms": 57146,
+  "num_turns": 9,
+  "tokens": {
+    "input": 10,
+    "output": 4852,
+    "cache_read": 192097,
+    "cache_creation": 32122,
+    "total": 229081
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 10,
+      "output": 4852,
+      "cache_read": 192097,
+      "cache_creation": 32122,
+      "cost_usd": 0.3924754
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 22,
+      "output": 5258,
+      "cache_read": 146474,
+      "cache_creation": 43203,
+      "cost_usd": 0.17527890000000002
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 12,
+      "cache_read": 1933,
+      "cache_creation": 2845,
+      "cost_usd": 0.000381155
+    }
+  ],
+  "permission_denials": []
+}
