@@ -1,0 +1,133 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-23T12:53:00.546Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "45178138108",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/45178138108",
+  "actor": "AlexisBalayre",
+  "commit_sha": "d6ba49d1b19a350a6d1c961eaa3ebf844168b90a",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 449,
+  "action": "review",
+  "reviewers_spawned": [
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "context",
+    "maintainability",
+    "spec",
+    "simplicity",
+    "guards",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "docs/adr/0208-three-architecture-review-candidates-are-set-aside.md",
+      "line": "17-19",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Session-window adapter: decision 207 never mentions a window race or `tmux_target`, so a reader who follows \"decision 207's executor seam is the place that fixes the window race once\" finds nothing that backs it. Say that the seam should absorb the `tmux_target`/state-transition coupling, or cite the decision that governs that coupling.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0208-three-architecture-review-candidates-are-set-aside.md",
+      "line": "11-14",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Landable head: \"each rebuild the pinned-sha, `descendsFrom` and target-fetch checks\" overstates the duplication. `descendsFrom` is private to `land.service.ts`, `regate.service.ts` uses `isAncestor`, and `merge-gate.service.ts` has its own fetch logic. Name the checks each file has, or say \"overlapping ancestry and fetch checks\", since the reopen test depends on which copies exist.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/adr/0208-three-architecture-review-candidates-are-set-aside.md",
+      "line": "22-23",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "\"the two direct `execFileSync` calls for `tty` and `open`\": `src/cli/index.ts` has three call sites, `tty` at L1103 and `open`/`xdg-open` at L3074 and L3102. Write \"the direct `execFileSync` calls for `tty` and `open`/`xdg-open`\" or \"the three direct calls\".",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "validator",
+      "description": "The validator confirmed the docs reviewer's one important (ADR 0208 L17-19, the decision 207 cross-reference) at reduced severity: 0208 makes a design recommendation, not a false claim about 207's content. The orchestrator recorded it as a nit."
+    },
+    {
+      "component": "orchestrator",
+      "description": "The change is a single new ADR markdown file with no code logic, trust boundary, infra surface, workflow, or spec source. The gates therefore skipped the correctness, security, context, simplicity, guards, workflow-safety, maintainability, and spec reviewers."
+    },
+    {
+      "component": "conventions",
+      "description": "Bash refused `scripts/adr-index.sh` under the CI lock, so the reviewers could not run the index script that the PR's test plan cites. They checked the numbering by listing `docs/adr/` instead."
+    }
+  ],
+  "duplicates_merged": 1,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.6929870250000001,
+  "duration_ms": 87422,
+  "num_turns": 10,
+  "tokens": {
+    "input": 12,
+    "output": 4940,
+    "cache_read": 239922,
+    "cache_creation": 33903,
+    "total": 278777
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 12,
+      "output": 4940,
+      "cache_read": 239922,
+      "cache_creation": 33903,
+      "cost_usd": 0.4180564
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 34,
+      "output": 9703,
+      "cache_read": 251828,
+      "cache_creation": 60790,
+      "cost_usd": 0.2742558
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 144,
+      "cache_read": 0,
+      "cache_creation": 4821,
+      "cost_usd": 0.000674825
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "bash /home/runner/work/pupitre/pupitre/scripts/adr-index.sh"
+    },
+    {
+      "tool": "Bash",
+      "input": "bash /home/runner/work/pupitre/pupitre/scripts/adr-index.sh"
+    }
+  ]
+}
