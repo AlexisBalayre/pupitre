@@ -1,0 +1,81 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-23T12:55:03.504Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "45178162748",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/45178162748",
+  "actor": "AlexisBalayre",
+  "commit_sha": "d6ba49d1b19a350a6d1c961eaa3ebf844168b90a",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 449,
+  "action": "review",
+  "reviewers_spawned": [
+    "conventions",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "conventions",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "context",
+    "maintainability",
+    "spec",
+    "simplicity",
+    "guards",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "This round re-reviewed head d6ba49d1, the head round 1 already reviewed. The change is one new ADR markdown file with no code logic, trust boundary, infra surface, workflow or spec source, so the gates skipped the correctness, security, context, simplicity, guards, workflow-safety, maintainability and spec reviewers. The prior record had no importants, so prior_importants is empty. Reviewers were told not to re-raise round 1's three nits."
+    },
+    {
+      "component": "conventions",
+      "description": "The conventions reviewer did not read docs/conventions/* or the domain-modeling skill. It checked the ADR format only against sibling ADRs 0206 and 0207."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.4607393,
+  "duration_ms": 40328,
+  "num_turns": 8,
+  "tokens": {
+    "input": 10,
+    "output": 3376,
+    "cache_read": 196975,
+    "cache_creation": 32631,
+    "total": 232992
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 10,
+      "output": 3376,
+      "cache_read": 196975,
+      "cache_creation": 32631,
+      "cost_usd": 0.36800299999999997
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 16,
+      "output": 2779,
+      "cache_read": 95668,
+      "cache_creation": 22139,
+      "cost_usd": 0.09273630000000001
+    }
+  ],
+  "permission_denials": []
+}
