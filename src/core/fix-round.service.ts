@@ -41,13 +41,12 @@ import {
   assertPullRequestOf,
   assertTargetName,
   isAncestor,
-  MERGE_LOCK_WAIT_MS,
   newestMerge,
   plainDetail,
   pushTarget,
   resolveCommitIfPresent,
-  withMergeLock,
 } from './merge-gate.service.js';
+import { MERGE_LOCK_WAIT_MS, withMergeLock } from './merge-lock.service.js';
 import { projectPaths } from './paths.utils.js';
 import { NO_PROGRESS } from './progress.utils.js';
 import { asStringArray } from './report-data.utils.js';

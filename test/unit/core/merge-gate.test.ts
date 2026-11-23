@@ -131,16 +131,15 @@ import { GateInterruptedError, UndeclaredSandboxError } from '@src/core/errors/s
 import { initProject } from '@src/core/init.service.js';
 import { insertLedgerEntry, listLedgerEntries } from '@src/core/ledger.repository.js';
 import {
-  assertMergeLockHeld,
   countChangedLines,
   firstOwnSubject,
   pullRequestText,
   resolveCommitIfPresent,
   runMergeGate as runGate,
   waitForLoad,
-  withMergeLock,
   withScratchGitDir,
 } from '@src/core/merge-gate.service.js';
+import { assertMergeLockHeld, withMergeLock } from '@src/core/merge-lock.service.js';
 import { MERGE_STAGES, stageProgress } from '@src/core/progress.utils.js';
 import {
   appendEvent,

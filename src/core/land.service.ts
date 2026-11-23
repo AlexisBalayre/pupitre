@@ -18,20 +18,18 @@ import {
 import { assertGhAvailable, originRepoSlug, readPullRequestLanding } from './github.client.js';
 import { remeasureMerge } from './land-remeasure.service.js';
 import {
-  assertMergeLockHeld,
   assertMintedRow,
   assertPullRequestOf,
   assertTargetName,
   fastForward,
   inProgressGitState,
   isAncestor,
-  MERGE_LOCK_WAIT_MS,
   newestMerge,
   pushTarget,
   resolveCommit,
-  withMergeLock,
   withScratchGitDir,
 } from './merge-gate.service.js';
+import { assertMergeLockHeld, MERGE_LOCK_WAIT_MS, withMergeLock } from './merge-lock.service.js';
 import { mainLandedMessage } from './profile-compiler.service.js';
 import { NO_PROGRESS } from './progress.utils.js';
 import { appendEvent, getSession, isPrClosedOnRecord, listSessions } from './session.repository.js';

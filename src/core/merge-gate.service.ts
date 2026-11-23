@@ -153,8 +153,6 @@ import type { SessionRow } from './types/session.types.js';
 import type { TaskRescope } from './types/task-rescope.types.js';
 import { owningLockfile, refuseUninstalled } from './uninstalled-dependency.service.js';
 
-export { assertMergeLockHeld, MERGE_LOCK_WAIT_MS, withMergeLock };
-
 export function isAncestor(repoPath: string, maybeAncestor: string, ref: string): boolean {
   try {
     runGit(repoPath, ['merge-base', '--is-ancestor', maybeAncestor, ref]);
