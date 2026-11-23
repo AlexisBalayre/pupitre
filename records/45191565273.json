@@ -1,0 +1,84 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-23T14:13:27.145Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "45191565273",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/45191565273",
+  "actor": "AlexisBalayre",
+  "commit_sha": "60b76cabb251815d23c5366e6db09a4a3bacabe3",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 450,
+  "action": "review",
+  "reviewers_spawned": [
+    "docs",
+    "conventions"
+  ],
+  "reviewers_returned": [
+    "docs",
+    "conventions"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "context",
+    "maintainability",
+    "spec",
+    "simplicity",
+    "guards",
+    "workflow-safety"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "9f1fa292d74d4a688ca0ffdcb8d73084497cd256",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "docs/spikes/2026-11-23-dashboard-rebuild.md",
+      "line": "611-626",
+      "description": "Slice 8's scope glob `src/core/project-registry*.service.ts` matches no file, and `pup project list` does not hide dormant projects as the slice claims.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Docs-only delta: a 3+/2- prose edit to the slice 8 criterion in docs/spikes/2026-11-23-dashboard-rebuild.md. Spawned docs and conventions only. Skipped correctness, security, context, simplicity, guards, maintainability and workflow-safety because the delta changes no logic, source, trust boundary or workflow. Skipped spec because nothing names a closing issue or --spec. Prior-record entry prior_importants[1] (slice 8) is now resolved: src/cli/index.ts L1788-1795 and src/cli/project.utils.ts registryLine L129-141 show that `pup project list` prints every project and marks dormant ones `dormant since <date>`, which matches the new text. prior_importants[0] was already marked resolved in the prior record, so it gets no verdict here."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.46218960000000003,
+  "duration_ms": 36077,
+  "num_turns": 14,
+  "tokens": {
+    "input": 22,
+    "output": 3422,
+    "cache_read": 415677,
+    "cache_creation": 31688,
+    "total": 450809
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 22,
+      "output": 3422,
+      "cache_read": 415677,
+      "cache_creation": 31688,
+      "cost_usd": 0.4051674
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 8,
+      "output": 373,
+      "cache_read": 27187,
+      "cache_creation": 20223,
+      "cost_usd": 0.057022199999999995
+    }
+  ],
+  "permission_denials": []
+}
