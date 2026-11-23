@@ -1,0 +1,94 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-23T10:03:29.098Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "45152246489",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/45152246489",
+  "actor": "AlexisBalayre",
+  "commit_sha": "6be377eabba8e0ca2e3f2cd08ca8c3304e5690a1",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 443,
+  "action": "review",
+  "reviewers_spawned": [
+    "docs",
+    "conventions"
+  ],
+  "reviewers_returned": [
+    "docs",
+    "conventions"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "context",
+    "maintainability",
+    "spec",
+    "simplicity",
+    "guards",
+    "workflow-safety"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "7b0c67cab0a87a2a5c71509cb5b9dc73a829cb0b",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "skills/pup/LOOP.md",
+      "line": "14-16",
+      "description": "The new sentence makes it sound as if the conductor reviews every session by pinned commit, and its \"so\" leaves out the actual reason. Decision 118 and the kickoff only give the conductor a security review of sessions that touch critical areas.",
+      "status": "resolved"
+    },
+    {
+      "file": "skills/pup/SKILL.md",
+      "line": "37-38",
+      "description": "The pup skill is meant for any registered repo, but `/triage`, `/teach` and `/review-session` only exist in pupitre's own `.claude/skills/`. In any other repo the console is pointed at skills that aren't there.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Spawned only docs and conventions. The delta 7b0c67ca..6be377ea changes prose in two markdown skill files (+6/-5): no logic, trust boundary, workflow, new construct or spec source. So correctness, security, context, simplicity, guards, workflow-safety, maintainability and spec were skipped. Both prior importants are resolved. LOOP.md now limits the conductor's review to a critical-area security review by pinned commit, which matches the kickoff's 'Security review:' bullet in src/core/profile-compiler.service.ts:1775 and ADR 0118. SKILL.md and LOOP.md now scope /triage, /teach and /review-session to pupitre's checkout."
+    },
+    {
+      "component": "conventions",
+      "description": "The Grep tool cut off the long line 48 of .claude/skills/triage/SKILL.md, so the conventions reviewer could not confirm the /triage row's claim 'only then does it offer pup plan add per slice'. The docs reviewer did confirm that claim against step 8 of the triage skill."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.5807947,
+  "duration_ms": 51163,
+  "num_turns": 12,
+  "tokens": {
+    "input": 16,
+    "output": 3787,
+    "cache_read": 306165,
+    "cache_creation": 37929,
+    "total": 347897
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 16,
+      "output": 3787,
+      "cache_read": 306165,
+      "cache_creation": 37929,
+      "cost_usd": 0.440469
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 20,
+      "output": 2725,
+      "cache_read": 144107,
+      "cache_creation": 39450,
+      "cost_usd": 0.1403257
+    }
+  ],
+  "permission_denials": []
+}
