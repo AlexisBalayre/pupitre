@@ -1,0 +1,96 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-23T11:22:58.977Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "45164221288",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/45164221288",
+  "actor": "AlexisBalayre",
+  "commit_sha": "37d8345f6dd090620f8b29ca0bdfc504f5d07d7a",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 446,
+  "action": "review",
+  "reviewers_spawned": [
+    "docs",
+    "conventions"
+  ],
+  "reviewers_returned": [
+    "docs",
+    "conventions"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "context",
+    "maintainability",
+    "spec",
+    "simplicity",
+    "guards",
+    "workflow-safety"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "f7526cb68e953ce987473c1da637f3a6138ea15b",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "docs/guide/concepts.md",
+      "line": "46",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`pup kill --respawn` is cited to ADR 42, but the ADR that governs the conductor being refused it is 47 (with 188 for the enforcement); 42 only covers sessions.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Round 3 reviewed only the incremental delta: 2 markdown files, +4/-3, applying three round-2 nits. The prior record has no important findings and no unresolved prior_importants, so prior_importants is empty. Only docs and conventions were spawned, because the delta is prose only. Correctness, security, context, simplicity, guards and maintainability were skipped because no code changed, workflow-safety because no workflow changed, and spec because there is no spec source. Both reviewers checked the rerouted refuse edge and the new end node against refuseGate and ADRs 21, 102 and 146, and checked the blocked --> merged edge against ADR 90. All of these hold. The consolidator merged the two reviewers' ADR 42 citation nits into one. No importants, so no validators ran. HEAD matched the PR head 37d8345f at consolidation."
+    }
+  ],
+  "duplicates_merged": 1,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.6809220000000001,
+  "duration_ms": 76472,
+  "num_turns": 10,
+  "tokens": {
+    "input": 10,
+    "output": 3822,
+    "cache_read": 209633,
+    "cache_creation": 38517,
+    "total": 251982
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 10,
+      "output": 3822,
+      "cache_read": 209633,
+      "cache_creation": 38517,
+      "cost_usd": 0.4265426
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 34,
+      "output": 8450,
+      "cache_read": 319297,
+      "cache_creation": 54886,
+      "cost_usd": 0.2537127
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 155,
+      "cache_read": 0,
+      "cache_creation": 4712,
+      "cost_usd": 0.0006667
+    }
+  ],
+  "permission_denials": []
+}
