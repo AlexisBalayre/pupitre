@@ -119,7 +119,7 @@ paths:
 
 Skills are directories with a `SKILL.md` that Claude discovers automatically. Claude sees the description at session start (tiny context cost) and loads the full content when the skill is relevant.
 
-This repo ships **29 skills** across planning, engineering, thinking/design, PR & review, meta, and personal integrations. The **[skill catalog](skills/README.md)** lists when each one fires and how to invoke it (auto-trigger, `/slash-command`, Claude-only, or manual-only).
+This repo ships skills across planning, engineering, thinking/design, PR & review, and meta. The **[skill catalog](skills/README.md)** lists when each one fires and how to invoke it (auto-trigger, `/slash-command`, Claude-only, or manual-only).
 
 **Frontmatter options:**
 - `name` — identifier and `/slash-command` name
@@ -177,7 +177,7 @@ Shell scripts that run outside the LLM loop on lifecycle events. Zero context co
 - `1` — error (shown to user, continues)
 - `2` — **block the operation** (PreToolUse: prevents tool; Stop: feedback to Claude)
 
-**Project profile:** hooks never hardcode the toolchain. They read `.claude/project.env` (committed: Biome, tsc, pnpm, the naming regex, the trunk) through `hooks/lib/project-env.sh`, which parses `KEY=value` lines for a fixed key set and never sources the file, so a checkout cannot run code inside a hook. An empty key turns its check off. `.env` (gitignored) is only for personal-integration skills.
+**Project profile:** hooks never hardcode the toolchain. They read `.claude/project.env` (committed: Biome, tsc, pnpm, the naming regex, the trunk) through `hooks/lib/project-env.sh`, which parses `KEY=value` lines for a fixed key set and never sources the file, so a checkout cannot run code inside a hook. An empty key turns its check off.
 
 **When to add a hook:** For deterministic checks that should always run. If it doesn't need LLM reasoning, it's a hook.
 
