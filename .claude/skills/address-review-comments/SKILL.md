@@ -8,6 +8,8 @@ argument-hint: "[PR number — defaults to the current branch's PR]"
 
 Take the open review comments on a PR from "what is the reviewer really asking" through to an implemented, replied-to resolution. You steer; the human decides every judgment call. Handles every open thread, human or bot. Closed and resolved threads are context only.
 
+A PR pup opened is the exception: `pup fix` owns its threads and replies on them itself (decision 90), so this skill never replies on top of it. Use it for PRs pup did not open.
+
 ## Process
 
 ### 1. Gather
