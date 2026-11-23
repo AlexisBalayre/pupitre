@@ -107,8 +107,8 @@ const EMPTY_LIST_ITEM = /^\s*(?:[-*+]|\d+[.)])(?:\s+\[[ xX]?\])?\s*$/;
 const PATH =
   /(?<![\w.-])(?:\*{1,2}|[\w.-]+)\/(?:[\w.*-]+\/)*[\w.*-]+|(?<![\w-])[\w-]+\.(?:json|ts|js|md|ya?ml)\b/g;
 
-/** A GitHub permalink's text before the repository path: host, owner, repo, view and ref. */
-const PERMALINK = /^github\.com\/[\w.-]+\/[\w.-]+\/(?:blob|tree)\/[\w.-]+\//;
+/** A GitHub permalink's text before its ref and repository path: host, owner, repo and view. */
+const PERMALINK = /^github\.com\/[\w.-]+\/[\w.-]+\/(?:blob|tree)\//;
 
 /** One line holding a checked box that says the work adds a dependency. */
 const DEPENDENCY_BOX = /^\s*[-*+]\s+\[[xX]\].*\bdependenc/i;
@@ -207,13 +207,17 @@ function triggersFor(
 ): DesignTrigger[] {
   // PATH keeps the period of a sentence that ends in a path; it is not part of the path.
   // The lookbehind starts the strip only at a run's first dot, which keeps it linear.
-  // PATH starts a permalink's match at its host, so the strip leaves the repository path.
-  const paths = (areaText.match(PATH) ?? []).map((path) =>
-    path
-      .replace(PERMALINK, '')
-      .replace(/^\.\//, '')
-      .replace(/(?<!\.)\.+$/, ''),
-  );
+  // PATH starts a permalink's match at its host. A ref may hold slashes (`feature/x`) and the
+  // path after it cannot be told from them, so every suffix of the remainder is a candidate,
+  // erring toward firing.
+  const paths = (areaText.match(PATH) ?? []).flatMap((path) => {
+    const rest = path.replace(PERMALINK, '');
+    const candidates =
+      rest === path
+        ? [rest]
+        : rest.split('/').map((_, index, segments) => segments.slice(index).join('/'));
+    return candidates.map((candidate) => candidate.replace(/^\.\//, '').replace(/(?<!\.)\.+$/, ''));
+  });
   const adrAreas = context.adrAreas.map((glob) => ({
     pattern: globToRegExp(glob),
     prefix: literalPrefix(glob.trim().replace(/^\.\//, '')),
