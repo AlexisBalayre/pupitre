@@ -1,9 +1,9 @@
-# 0208. The conductor's prompt cache is not held by `pup watch` (2026-11-23)
+# 0209. The conductor's prompt cache is not held by `pup watch` (2026-11-23)
 
 - Status: accepted
 - Amends: [0179](0179-pup-watch-holds-a-waiting-worker-s-prompt-cache.md)
 
-208. **The conductor's prompt cache is not held by `pup watch` (2026-11-23).**
+209. **The conductor's prompt cache is not held by `pup watch` (2026-11-23).**
     The retro of 2026-11-23 counted 4 conductor requests that came after an idle hour and wrote
     the whole context back: 308865 tokens, about 3.09 USD in a week. Decision 179 holds a waiting
     worker's cache and rejects holding the conductor. This looked at whether that rejection
