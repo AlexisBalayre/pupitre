@@ -1,0 +1,90 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-23T16:34:29.894Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "45217633262",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/45217633262",
+  "actor": "AlexisBalayre",
+  "commit_sha": "b96d550ea65b0cd60fb59ebc31bb62a911159839",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 452,
+  "action": "review",
+  "reviewers_spawned": [
+    "docs",
+    "conventions"
+  ],
+  "reviewers_returned": [
+    "docs",
+    "conventions"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "context",
+    "maintainability",
+    "spec",
+    "simplicity",
+    "guards",
+    "workflow-safety"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "8cc84690b70ea5b8124e52596f3bc14489eb4e0d",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "docs/spikes/2026-11-23-subagent-cache.md",
+      "line": "29-35",
+      "description": "Ranked fix 1 adds a rule to the session prompt's Searching section, which only routes questions to `Explore` subagents (2 of 111); the short-lived waste in cause 1 comes from `general-purpose` subagents (108 of 111), and the ready-to-add task wrongly calls the change a template edit with no code change.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "docs/spikes/2026-11-23-subagent-cache.md",
+      "line": "62",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The ranked list still sells fix 1 as \"About 5 USD per retro window for one line of prompt. This can be a small task\". That contradicts the reworded Effort bullet (line 35) and the plan-add blockquote (line 64), which both say the change is code and tests, not a template edit, and that finding the origin of the launches comes first. A reader who skims only the ranked list, which is the ranking they are meant to act on, will still size fix 1 as a one-line prompt tweak. Suggestion: replace \"for one line of prompt. This can be a small task\" with \"for a small code and test change, after finding where the `general-purpose` launches originate\".",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.6112700999999999,
+  "duration_ms": 39053,
+  "num_turns": 11,
+  "tokens": {
+    "input": 10,
+    "output": 3270,
+    "cache_read": 180743,
+    "cache_creation": 50623,
+    "total": 234646
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 10,
+      "output": 3270,
+      "cache_read": 180743,
+      "cache_creation": 50623,
+      "cost_usd": 0.5065726
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 16,
+      "output": 2411,
+      "cache_read": 76005,
+      "cache_creation": 29182,
+      "cost_usd": 0.10469749999999999
+    }
+  ],
+  "permission_denials": []
+}
