@@ -1,0 +1,88 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-23T12:35:21.898Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "45175427892",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/45175427892",
+  "actor": "AlexisBalayre",
+  "commit_sha": "e624e1f56c777b2bc567f2f37576f6abfda7992f",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 447,
+  "action": "review",
+  "reviewers_spawned": [
+    "docs",
+    "conventions"
+  ],
+  "reviewers_returned": [
+    "docs",
+    "conventions"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "context",
+    "maintainability",
+    "spec",
+    "simplicity",
+    "guards",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": ".claude/skills/writing-for-agents/SKILL.md",
+      "line": "93",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The new house rule says a commit editing a skill file updates its ledger row, but this commit adds a ninth house rule without updating the writing-for-agents deviation list in docs/skills-upstream.md:221, which still enumerates only the eight earlier rules; add \"ledger upkeep\" there.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "platform",
+      "description": "The conventions reviewer found that .claude-pr/skills/writing-for-agents/SKILL.md was missing from the preserved PR config copy. It read the PR's version from the git diff instead, so the review was not degraded."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.4693679000000001,
+  "duration_ms": 43361,
+  "num_turns": 8,
+  "tokens": {
+    "input": 8,
+    "output": 3534,
+    "cache_read": 147074,
+    "cache_creation": 30472,
+    "total": 181088
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 8,
+      "output": 3534,
+      "cache_read": 147074,
+      "cache_creation": 30472,
+      "cost_usd": 0.3439028
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 12,
+      "output": 2598,
+      "cache_read": 43186,
+      "cache_creation": 38057,
+      "cost_usd": 0.1254651
+    }
+  ],
+  "permission_denials": []
+}
