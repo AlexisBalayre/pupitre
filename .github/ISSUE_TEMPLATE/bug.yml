@@ -6,24 +6,29 @@ body:
   - type: markdown
     attributes:
       value: |
-        Every field is required. The rubric says what a filled field looks like and what makes one
+        Every field but Estimate and Dependency is required. The rubric says what a filled field looks like and what makes one
         vague: [docs/tickets/bug.md](https://github.com/AlexisBalayre/pupitre/blob/main/docs/tickets/bug.md). The operator or a
         collaborator with write access applies `ready`; intake then checks the fields and removes the label if any is missing or vague.
+        A one-word answer or a placeholder ("TBD", "n/a", "unknown", "-") counts as vague.
   - type: textarea
     id: reproduction
     attributes:
       label: Reproduction
-      description: Exact steps from a clean state, with commands, inputs and the commit or version. It must be precise enough to become a failing test.
+      description: >-
+        Numbered steps from a clean state, with the commit or version, every command and every input: precise enough to become
+        the failing test written before the fix.
+        Good: "1. On main at 9d2ae7b8, run `pup plan add t-1 --scope 'src/**'` 2. Run `pup launch t-1`."
+        Vague: "Set up a session in my repo, then launch it; it fails sometimes."
       placeholder: |
-        1. On main at 9d2ae7b8, run `pup plan add t-1 --scope 'src/**'`
-        2. Run `pup launch t-1`
+        1. On main at <commit>, run `...`
+        2. Run `...`
     validations:
       required: true
   - type: textarea
     id: expected_vs_actual
     attributes:
       label: Expected against actual
-      description: What should happen, and what happens instead, with the exact output or exit code.
+      description: What should happen, and what happens instead, with the exact output or exit code. Not "it breaks" or "it hangs".
       placeholder: |
         Expected: the session starts.
         Actual: exits 1 with "scope collides with t-0".
@@ -33,6 +38,19 @@ body:
     id: suspected_area
     attributes:
       label: Suspected area
-      description: The file, module or command you suspect, and why. Write "unknown" with what you ruled out if you have no lead.
+      description: The file, module or command you suspect, and why. With no lead, name what you ruled out; a bare "unknown" is vague.
+      placeholder: "src/core/task-spec.utils.ts: the collision check reads merged tasks as live"
     validations:
       required: true
+  - type: input
+    id: estimate
+    attributes:
+      label: Estimate
+      description: Optional. The source lines you expect the fix to change, as a number. Over 600 forces a design (decision 173).
+      placeholder: 40 lines
+  - type: checkboxes
+    id: dependency
+    attributes:
+      label: Dependency
+      options:
+        - label: Adds a dependency (forces a design)

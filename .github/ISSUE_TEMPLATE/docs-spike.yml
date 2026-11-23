@@ -6,9 +6,10 @@ body:
   - type: markdown
     attributes:
       value: |
-        Every field is required. The rubric says what a filled field looks like and what makes one
+        Every field but Estimate and Dependency is required. The rubric says what a filled field looks like and what makes one
         vague: [docs/tickets/docs-spike.md](https://github.com/AlexisBalayre/pupitre/blob/main/docs/tickets/docs-spike.md). The operator or a
         collaborator with write access applies `ready`; intake then checks the fields and removes the label if any is missing or vague.
+        A one-word answer or a placeholder ("TBD", "n/a", "-") counts as vague.
   - type: dropdown
     id: kind
     attributes:
@@ -22,14 +23,18 @@ body:
     id: change_or_question
     attributes:
       label: What changes, or the question
-      description: For docs, the claim or section that changes and why. For a spike, the one question the spike answers.
+      description: >-
+        For docs, the claim or section that changes and why. For a spike, the one question it answers, asked so that an answer
+        closes it.
+        Good: "Can workers run in a container without losing hooks?"
+        Vague: "Look into containers."
     validations:
       required: true
   - type: input
     id: time_box
     attributes:
       label: Time box
-      description: The most effort to spend before stopping and reporting, in hours or session turns.
+      description: The most effort to spend, as a number and a unit (hours or session turns). When it runs out, stop and report what is known.
       placeholder: 2 hours
     validations:
       required: true
@@ -37,7 +42,19 @@ body:
     id: answer_form
     attributes:
       label: Form of the answer
-      description: For docs, the page or pages that will hold the change. For a spike, the file and its shape (a table, a recommendation with options, a decision draft).
+      description: For docs, the page or pages that will hold the change. For a spike, the file under docs/spikes/ and its shape (a table, a recommendation with options, a decision draft).
       placeholder: docs/spikes/2026-11-22-<topic>.md, ending with a recommendation and its cost
     validations:
       required: true
+  - type: input
+    id: estimate
+    attributes:
+      label: Estimate
+      description: Optional. The source lines you expect to change, as a number. Over 600 forces a design (decision 173).
+      placeholder: 80 lines
+  - type: checkboxes
+    id: dependency
+    attributes:
+      label: Dependency
+      options:
+        - label: Adds a dependency (forces a design)
