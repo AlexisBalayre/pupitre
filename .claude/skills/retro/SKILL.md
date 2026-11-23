@@ -6,6 +6,8 @@ disable-model-invocation: true
 
 The user has asked for a **retrospective**. You are suggesting improvements to the coding agent's **environment** to improve future runs. (The CI review pipeline has its own retrospective over its run records: `/review-retro`.)
 
+For where the tokens went across sessions, run `pup retro` first (it reads the project transcripts); this skill is the per-session read of one.
+
 ## Steps
 
 1. Call the Skill tool with `writing-for-agents` for the writing style guide.
