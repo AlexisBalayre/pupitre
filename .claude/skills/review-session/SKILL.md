@@ -1,6 +1,6 @@
 ---
 name: review-session
-description: Review a worker session's branch before the gate, on a Standards axis and a Spec axis in two parallel subagents, and report a must-fix and nice-to-have list for one pup steer. Use when a session reads awaiting-review and before pup merge --pr.
+description: Review a worker session's branch before the gate on a Standards axis and a Spec axis, and report a must-fix list for one pup steer.
 disable-model-invocation: true
 ---
 
@@ -25,7 +25,7 @@ The diff is `main...HEAD` (three-dot, against the merge-base) in `.worktrees/<ta
 
 ### 2. Find the spec
 
-`pup review <session>` prints the ticket's slice criteria (decision 187) and the file list. `pup plan` shows the task's goal and scope-in; `gh issue view <n>` reads an issue the commit or the goal names. If there is no spec, the Spec subagent is skipped and the report says "no spec available".
+`pup review <session>` prints the task's `goal:`, `scope-in:`, `scope-out:` and `acceptance:`, and the ticket's slice criteria when the task carries a ticket (decision 187; no command writes tickets yet, so most tasks print none). Do not use `pup plan`: it lists only unclaimed tasks, and this session's is claimed. `gh issue view <n>` reads an issue the commits or the goal name. If there is no spec, the Spec subagent is skipped and the report says "no spec available".
 
 ### 3. Find the standards
 
