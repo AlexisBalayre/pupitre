@@ -4,10 +4,10 @@
 
 208. **Three architecture-review candidates are set aside (2026-11-23).**
     The `/improve-codebase-architecture` review of 2026-11-23 scanned the files that changed most
-    since 2026-10-20 and ranked six deepening candidates. Three were taken up as tasks: one
-    teardown module, a stage runner split out of `measureBranch`, and the merge lock extracted
-    from `merge-gate.service.ts`. This decision records the other three so a later review does not
-    re-suggest them without new evidence. Each says what would reopen it.
+    since 2026-10-20 and ranked six deepening candidates. The merge lock, extracted from
+    `merge-gate.service.ts`, became a task; a single teardown module and a stage runner split out
+    of `measureBranch` stay open candidates. This decision records three others so a later review
+    does not re-suggest them without new evidence. Each says what would reopen it.
     *Landable head.* Land, regate, land-remeasure and the gate each rebuild the pinned-sha,
     `descendsFrom` and target-fetch checks (`land.service.ts`, `regate.service.ts`,
     `merge-gate.service.ts`). The review did not trace whether the copies are exact duplicates, and
