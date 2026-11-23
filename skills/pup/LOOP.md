@@ -10,7 +10,10 @@
 
 Review the diff `main...HEAD` in the worktree yourself, or with a security-minded subagent when
 the change touches hook generation, profile compilation, the gate, or anything that shells out.
-Ask for file:line evidence and a must-fix versus nice-to-have split. Mutation probes (plant a
+Ask for file:line evidence and a must-fix versus nice-to-have split. The console review before
+`pup merge --pr` is the `/review-session` skill. The conductor does not run it: its window loads
+user settings only (decision 118, `docs/adr/0118-*`), so it reviews by pinned commit through its
+kickoff. Mutation probes (plant a
 regression in a backup COPY of the file, run the test, restore from the copy, never
 `git checkout --`) are the most reliable check that a new test guards anything.
 
