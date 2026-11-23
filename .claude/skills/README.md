@@ -64,4 +64,4 @@ issue to tasks; the operator, not a skill, adds `ready` and `design-approved`.
 | `teach` | Learn to drive the pup loop (plan, launch, steer, review, gate, CI, fix, land, audit) in a gitignored workspace, practised on a scratch project. | Manual only (`/teach`) |
 | `wait-what` | A message didn't land: the agent re-pitches it with context, plain language, and the project's own terms. | Manual only (`/wait-what`) |
 
-The planning, engineering, thinking and meta skills track [mattpocock/skills](https://github.com/mattpocock/skills), adapted to this repo's docs layout (`docs/adr/`, `docs/conventions/`) and `.claude/project.env`.
+The planning, engineering, thinking and meta skills track [mattpocock/skills](https://github.com/mattpocock/skills), adapted to this repo's docs layout (`docs/adr/`, `docs/conventions/`) and `.claude/project.env`. [`docs/skills-upstream.md`](../../docs/skills-upstream.md) records the pinned upstream commit and how each file here stands against it (verbatim, adapted or local only); `bash scripts/skills-drift.sh` checks it.
