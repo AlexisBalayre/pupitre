@@ -1,0 +1,101 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-23T09:08:39.476Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "45144029421",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/45144029421",
+  "actor": "AlexisBalayre",
+  "commit_sha": "98bdbd4c3df7b6f307de95ad35184ddbc4fa0135",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 435,
+  "action": "review",
+  "reviewers_spawned": [
+    "docs",
+    "conventions"
+  ],
+  "reviewers_returned": [
+    "docs",
+    "conventions"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "context",
+    "maintainability",
+    "spec",
+    "simplicity",
+    "guards",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": ".claude/skills/implement/SKILL.md",
+      "line": "9",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "important",
+      "description": "\"`pup plan` lists its goal, scope-in and acceptance criteria\" is wrong: `pup plan` only prints each task's id, tier, goal headline and scope-in globs. No `pup plan` verb shows the acceptance criteria.",
+      "body": "The new sentence says `pup plan` lists a task's \"goal, scope-in and acceptance criteria\". It does not list acceptance criteria. Bare `pup plan` runs the `list` verb (`src/cli/index.ts` L1295). That verb prints only the id, the tier, the first line of the goal (`goalHeadline`) and the scope-in globs:\n\nhttps://github.com/AlexisBalayre/pupitre/blob/98bdbd4c3df7b6f307de95ad35184ddbc4fa0135/src/cli/index.ts#L1308-L1325\n\nThe other verbs are `add`, `drop` and `edit`. They write acceptance criteria through `--accept`, but none of them shows them. Line 15 then tells the agent to check \"every acceptance criterion\" for a `pup plan` task, and the command this line names never shows those criteria. An agent following it will either invent criteria or decide the task has none.\n\nThe only CLI command that prints `acceptance:` is `pup review <session>`, and it needs a session, so it does not work for a backlog task that hasn't been launched:\n\nhttps://github.com/AlexisBalayre/pupitre/blob/98bdbd4c3df7b6f307de95ad35184ddbc4fa0135/src/cli/index.ts#L2505-L2515\n\nTwo fixes: state only what `pup plan` shows, or add a way to read a task's acceptance criteria.",
+      "suggestion": "If the user passes an issue number or URL, read it in full with `gh issue view <n> --comments` and state its title before starting. If the reference is ambiguous, ask. For a `pup plan` task, `pup plan` lists only its goal headline and scope-in globs, not its acceptance criteria: ask the operator for those."
+    },
+    {
+      "file": ".claude/skills/implement/SKILL.md",
+      "line": "17",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "important",
+      "description": "\"Open the PR with `/pr-description`, writing `Closes #<n>`\" contradicts `/pr-description`, which still says this repo has no tracker and the PR must carry no `Closes` line.",
+      "body": "Line 17 tells the agent to open the PR with `/pr-description` and write `Closes #<n>` for an issue. This PR leaves `/pr-description` unchanged, and that skill still says the opposite:\n\n- [L45-L48](https://github.com/AlexisBalayre/pupitre/blob/98bdbd4c3df7b6f307de95ad35184ddbc4fa0135/.claude/skills/pr-description/SKILL.md#L45-L48): \"**This repo has no issue tracker.** There is no ticket id in the title and no `Closes` line.\"\n- [L170](https://github.com/AlexisBalayre/pupitre/blob/98bdbd4c3df7b6f307de95ad35184ddbc4fa0135/.claude/skills/pr-description/SKILL.md#L170): \"No `Closes` line: there is no tracker to close anything on.\"\n\nAn agent running `/implement` on an issue hands off to `/pr-description`, which tells it to drop the `Closes` line, so the issue never auto-closes. Decision 176 makes GitHub Issues the tracker, and `to-tickets` already writes `Closes #N`, so `pr-description` is the stale side. The spike plans that rewrite as T8 (`docs/spikes/2026-11-22-skills-rework.md`). T8 does not depend on T7, so nothing makes it land first, and the two skills disagree from the moment this PR merges.\n\nOptions:\n- Fold T8's `pr-description` change into this PR.\n- Land T8 first.\n- Hold off on the `Closes` clause here until T8 lands.",
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 1,
+  "comments_posted_actual": 2,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.75804395,
+  "duration_ms": 92131,
+  "num_turns": 12,
+  "tokens": {
+    "input": 16,
+    "output": 7419,
+    "cache_read": 329793,
+    "cache_creation": 37717,
+    "total": 374945
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 16,
+      "output": 7419,
+      "cache_read": 329793,
+      "cache_creation": 37717,
+      "cost_usd": 0.5161386
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 48,
+      "output": 8619,
+      "cache_read": 252054,
+      "cache_creation": 51904,
+      "cost_usd": 0.2412514
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 106,
+      "cache_read": 0,
+      "cache_creation": 4806,
+      "cost_usd": 0.00065395
+    }
+  ],
+  "permission_denials": []
+}
