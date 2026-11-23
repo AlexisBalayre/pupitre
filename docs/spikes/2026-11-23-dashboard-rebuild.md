@@ -451,8 +451,8 @@ Everything not listed stands.
   figures live on Debt and Health.
 
 Decision 123 (the Health sheet) is untouched apart from its place in the nav. The
-amendments land as a new decision per slice that makes them (slices 1, 2, 4, 7
-and 8), written in `docs/adr/` by the slice, since this spike may not.
+amendments land as one consolidated decision, written once before slice 1 as an
+operator PR (see "Decided by the operator"); the slices do not write decisions.
 
 ## Slice plan
 
@@ -466,8 +466,7 @@ loop, 6 to 8 add the rest. Each block is written for `pup plan add --scope
 ### 1. Design system and shell
 
 Scope-in: `src/core/web-dashboard*.service.ts`, `src/core/web-dashboard*.utils.ts`,
-`src/core/constants/web-dashboard*.constants.ts`, `test/unit/core/web-dashboard*.test.ts`,
-`docs/adr/**`
+`src/core/constants/web-dashboard*.constants.ts`, `test/unit/core/web-dashboard*.test.ts`
 - The page's one nonce'd `<style>` carries the spike's token layer and component
   classes; the report pages' shell is no longer used by the dashboard.
 - Every existing sheet renders under the new shell: skip link, banner with nav
@@ -478,7 +477,7 @@ Scope-in: `src/core/web-dashboard*.service.ts`, `src/core/web-dashboard*.utils.t
 - State chips carry glyph, word and colour on every sheet that shows a state.
 - Keyboard: `?`, `g` then a letter, `j`/`k`, `Enter`, `/`, `Esc` work as the table
   says, are ignored in fields and dialogs, and no key runs an action.
-- A decision amends 91 (theme tokens and shell) and 98 (sheet names and bar);
+- The consolidated decision covers this amendment of 91 (theme tokens and shell) and 98 (sheet names and bar);
   `bash scripts/adr-index.sh --check` passes.
 - Existing dashboard tests pass unchanged apart from markup they asserted.
 
@@ -486,7 +485,7 @@ Scope-in: `src/core/web-dashboard*.service.ts`, `src/core/web-dashboard*.utils.t
 
 Scope-in: `src/core/web-dashboard.service.ts`, `src/core/web-dashboard-desk.service.ts`,
 `src/core/web-dashboard-sheet.utils.ts`, `src/core/types/web-dashboard.types.ts`,
-`test/unit/core/web-dashboard*.test.ts`, `docs/adr/**`
+`test/unit/core/web-dashboard*.test.ts`
 - A screen is a list of regions with stable ids; a stream sends all regions on
   connect and afterwards only regions whose rendered HTML changed; an unchanged
   store sends nothing; a region that cannot render does not end or starve the
@@ -504,7 +503,7 @@ Scope-in: `src/core/web-dashboard.service.ts`, `src/core/web-dashboard-desk.serv
 - The stream is still read with `fetch` and the secret header; a dropped stream
   shows `reconnecting`, retries at 1, 2, 4, 10 s, and on reconnect resends every
   region.
-- A decision amends 91 (whole-board swap, whole-board hold).
+- The consolidated decision covers this amendment of 91 (whole-board swap, whole-board hold).
 
 ### 3. Home: needs me, live sessions, the rest
 
@@ -533,8 +532,7 @@ Scope-in: `src/core/web-dashboard-overview.service.ts`,
 
 Scope-in: `src/core/web-dashboard-session.service.ts`,
 `src/core/web-dashboard-desk.service.ts`, `src/core/web-dashboard-actions.service.ts`,
-`src/core/constants/web-dashboard-actions.constants.ts`, `test/unit/core/web-dashboard*.test.ts`,
-`docs/adr/**`
+`src/core/constants/web-dashboard-actions.constants.ts`, `test/unit/core/web-dashboard*.test.ts`
 - `?session=<id>` shows state chip, goal, branch, context against its compaction
   point, the worker pane (read as decision 91 reads it), steer form, recent events,
   acceptance, scope with rescoped globs and the route, in the mockup's layout.
@@ -548,7 +546,7 @@ Scope-in: `src/core/web-dashboard-session.service.ts`,
   its button and keeps the typed text.
 - An id outside the minted shape is 404; one the store does not hold says so on
   the stream; the attach line has a copy button.
-- A decision amends 91 (browser confirm becomes a dialog).
+- The consolidated decision covers this amendment of 91 (browser confirm becomes a dialog).
 
 ### 5. Review screen
 
@@ -593,8 +591,7 @@ Scope-in: `src/core/web-dashboard-tasks.service.ts`, `src/core/web-dashboard-deb
 
 Scope-in: `src/core/web-dashboard-usage*.service.ts`, `src/core/usage-report*.service.ts`,
 `src/core/web-dashboard.service.ts`, `src/core/web-dashboard-sheet.utils.ts`,
-`test/unit/core/web-dashboard*.test.ts`, `test/unit/core/usage-report*.test.ts`,
-`docs/adr/**`
+`test/unit/core/web-dashboard*.test.ts`, `test/unit/core/usage-report*.test.ts`
 - `?sheet=usage` shows total, today and cache hit rate, cost by class with a share
   bar, and cost by model and effort with median context and recaches, for a window
   chosen by a `since` link set (7, 30 days), defaulting to 7.
@@ -605,14 +602,14 @@ Scope-in: `src/core/web-dashboard-usage*.service.ts`, `src/core/usage-report*.se
 - Only aggregates reach the page: no transcript text, prompt, tool argument or path
   outside the project; a planted transcript line holding markup appears nowhere.
 - The Home Project figure *spend today* reads the same cached report.
-- A decision amends 91 (what the page shows is no longer one snapshot).
+- The consolidated decision covers this amendment of 91 (what the page shows is no longer one snapshot).
 - The figures agree with `pup usage --json` for the same window, asserted in a test.
 
 ### 8. Projects
 
-Scope-in: `src/core/web-dashboard-projects*.service.ts`, `src/core/project-registry*.service.ts`,
+Scope-in: `src/core/web-dashboard-projects*.service.ts`, `src/cli/project.utils.ts`, `src/core/project.service.ts`, `src/core/fleet.service.ts`,
 `src/core/web-dashboard.service.ts`, `src/core/web-dashboard-sheet.utils.ts`,
-`test/unit/core/web-dashboard*.test.ts`, `docs/adr/**`
+`test/unit/core/web-dashboard*.test.ts`
 - `?sheet=projects` lists each registered project with needs-you count, running,
   open PRs and open debt, a dormant one as such and one whose conductor is out of
   reach flagged `bad`, as in the mockup; the current project is marked.
@@ -623,7 +620,7 @@ Scope-in: `src/core/web-dashboard-projects*.service.ts`, `src/core/project-regis
   to run `pup --project <id> dashboard`.
 - A dormant project is hidden unless the page's *show dormant* link is followed, as
   `pup project list` does.
-- A decision amends 91 (the page's reach beyond one project's store, read-only).
+- The consolidated decision covers this amendment of 91 (the page's reach beyond one project's store, read-only).
 
 ## Risks
 
