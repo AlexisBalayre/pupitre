@@ -87,6 +87,6 @@ You win twice: fewer tokens, and a sharper hook for the agent to hang its thinki
 - **Point at the repo's docs, never a parallel store.** The design lives in `docs/00`–`08`, the resolved decisions in `docs/adr/` (which wins over `00`–`08`), the coding rules in `docs/conventions/`, and the domain nouns in the `SCHEMA` string of `src/core/db.client.ts`; documents reference those (the way `domain-modeling` does), and never create a `CONTEXT.md` or a glossary.
 - **`AGENTS.md` is tool-neutral; `CLAUDE.md` is the Claude Code layer** that imports it (`@AGENTS.md`) and adds only what is Claude Code-specific. Area conventions live once in `docs/conventions/<area>.md` and reach Claude Code through a pure loader in `.claude/rules/`, so neither file restates them.
 - **Default new skills to user-invoked** (`disable-model-invocation: true`). Keep model-invocation only when natural task phrasing must trigger the skill, or another skill calls it.
-- **Scope tools with `allowed-tools`** frontmatter when a skill touches external systems (issue trackers, code-quality platforms).
+- **Scope tools with `allowed-tools`** frontmatter when a skill touches external systems (GitHub Issues through `gh`, code-quality platforms).
 - **No em/en dashes in prose you write** (titles exempt); use commas, colons, or parentheses.
 - **Description limits**: third person, max 1024 chars, and one line for user-invoked skills.

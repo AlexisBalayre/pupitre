@@ -42,7 +42,6 @@ There is no issue tracker here (`pup plan` is the backlog), so these write local
 | `grill-with-docs` | Thin wrapper: grilling plus `domain-modeling`, so the decisions log and naming docs are updated as decisions land. | Manual only (`/grill-with-docs`) |
 | `codebase-design` | Shared vocabulary for deep modules: interfaces, seams, testability, design-it-twice. Other skills call it. | Auto or `/codebase-design` |
 | `domain-modeling` | Build and sharpen the domain model (`docs/09-decisions.md`, the `SCHEMA` nouns in `src/core/db.client.ts`, `docs/conventions/naming.md`) while discussing terminology or decisions. | Auto or `/domain-modeling` |
-| `zoom-out` | You're unfamiliar with an area and want a higher-level map of the relevant modules and callers. | Manual only (`/zoom-out`) |
 
 ## PR & review — from branch to merged
 
@@ -61,15 +60,5 @@ There is no issue tracker here (`pup plan` is the backlog), so these write local
 | `retro` | After a session: read its transcript and suggest fixes to the agent's environment (missing checks, conventions, navigation pointers, no-op instructions, costly tool calls), most severe first. | Manual only (`/retro`) |
 | `handoff` | Compact the current conversation into a handoff document for another agent or a fresh session. | Manual only (`/handoff`) |
 | `wait-what` | A message didn't land: the agent re-pitches it with context, plain language, and the project's own terms. | Manual only (`/wait-what`) |
-| `caveman` | Ultra-compressed replies (~75% fewer tokens) with full technical accuracy; "caveman mode", "be brief". | Auto or `/caveman` |
 
 The planning, engineering, thinking and meta skills track [mattpocock/skills](https://github.com/mattpocock/skills), adapted to this repo's docs layout (`docs/09-decisions.md`, `docs/conventions/`) and `.claude/project.env`.
-
-## Personal integrations — configure via `.env`
-
-These touch your own tools, so set their values in `.env` (see `.env.example`).
-
-| Skill | When to use | Invoke |
-| :---- | :---------- | :----- |
-| `obsidian-vault` | Find, create, or organize notes in your Obsidian vault. Needs `OBSIDIAN_VAULT`. | Auto or `/obsidian-vault` |
-| `daily-note` | Daily Obsidian logbook notes (`--plan` / `--summary` / `--status` / `--checkin`), synced with Git. Needs `OBSIDIAN_VAULT` + `OBSIDIAN_DAILY_DIR`; its tracker sync is inert here (no tracker MCP in this repo). | Manual only (`/daily-note`) |
