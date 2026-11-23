@@ -1,0 +1,137 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-23T11:36:47.108Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "45166258085",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/45166258085",
+  "actor": "AlexisBalayre",
+  "commit_sha": "bdd951cf13add61959feb577dcf82260e0c2d5c8",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 445,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "simplicity",
+    "guards"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "security",
+    "conventions",
+    "docs",
+    "simplicity",
+    "guards"
+  ],
+  "reviewers_skipped": [
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "882a7c789ff68458726c17f635c8597d0d8c603b",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "src/core/ticket-intake.utils.ts",
+      "line": "210-220",
+      "description": "The suffix expansion also runs on commit-SHA permalinks, so a SHA link now fires adr-area or module-boundary where the same bare path does not. The ref-is-one-segment behavior regresses for GitHub's default permalink form.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "src/core/ticket-intake.utils.ts",
+      "line": "227-229",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The dot-segment guard `!segments[length - 1]?.startsWith('.')` only looks at the last segment of each candidate ref. A longer ref that still contains a dot segment gets through. For `https://github.com/acme/tool/blob/main/.template/app/src/claude/hooks.ts` with ADR area `src/claude/**`, the ref `main/.template` is dropped, but `main/.template/app` is accepted. That gives the candidate `src/claude/hooks.ts`, so adr-area fires even though the real path is outside the area. The new test only passes because the wrongly accepted candidate there, `README.md`, misses `.claude/**`. Fix: check every ref segment, `segments.slice(0, length).every((segment) => !segment.startsWith('.'))`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/ticket-intake.utils.ts",
+      "line": "114, 225-226",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`SHA_REF` (`/^[0-9a-f]{7,40}$/i`) reads any first segment of 7 or more hex or digit characters as a SHA, so only ref length 1 is tried. A date-named slash branch such as `https://github.com/acme/tool/blob/20241123/hotfix/src/claude/hooks.ts` with ADR area `src/claude/**` now gives only `hotfix/src/claude/hooks.ts` and no longer fires adr-area. The previous commit fired here, and missing it is a false negative, against the PR's 'err toward firing'. Fix: take the SHA shortcut only when the segment holds a letter, or is the full 40 characters.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/ticket-intake.utils.ts",
+      "line": "117",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The `MAX_REF_SEGMENTS` JSDoc says \"The most slashes a permalink's ref is read as holding\", but the constant counts segments. Ref lengths 1 to 4 means at most 4 segments, which is 3 slashes. Someone tuning the cap or writing a boundary test from the comment would be off by one. Suggested wording: \"The most segments a permalink's ref is read as holding; real refs hold few, and it bounds the candidates.\"",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/ticket-intake.utils.ts",
+      "line": "222-229",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`refLengths` is a nested ternary whose literal `[1]` SHA branch repeats what the `Array.from(...).filter(...)` branch computes with a cap of 1, so a reader has to check the two agree. Using the SHA test only to pick the cap (`const cap = SHA_REF.test(segments[0] ?? '') ? 1 : MAX_REF_SEGMENTS;`) leaves one way to generate candidates. It also stops a bare SHA link with no path, such as `blob/3d35d70`, from producing an empty-string candidate.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Skipped by gate: review-context (no spec, protocol or infra surface), review-workflow-safety (no .github/workflows change), review-spec (no spec source: the PR closes no issue), review-maintainability (not on the default roster). No validator ran because no important finding survived."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.3227191000000003,
+  "duration_ms": 156293,
+  "num_turns": 15,
+  "tokens": {
+    "input": 12,
+    "output": 9692,
+    "cache_read": 267926,
+    "cache_creation": 47974,
+    "total": 325604
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 36,
+      "output": 22570,
+      "cache_read": 382139,
+      "cache_creation": 91417,
+      "cost_usd": 1.1289788
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 30,
+      "output": 5028,
+      "cache_read": 113941,
+      "cache_creation": 52483,
+      "cost_usd": 0.19294159999999996
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 364,
+      "cache_read": 0,
+      "cache_creation": 4932,
+      "cost_usd": 0.0007987
+    }
+  ],
+  "permission_denials": []
+}
