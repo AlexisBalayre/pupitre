@@ -376,6 +376,31 @@ describe('checkTicketIntake design', () => {
     expect(result.triggers).toEqual(['adr-area']);
   });
 
+  it('reads a SHA permalink as one path, not its inner suffixes', () => {
+    const result = checkTicketIntake(
+      body({
+        ...BUG,
+        'Suspected area': 'https://github.com/acme/tool/blob/3d35d70/src/core/claude/hooks.ts',
+      }),
+      'bug',
+      { adrAreas: ['claude/**'] },
+    );
+    expect(result.triggers).toEqual([]);
+  });
+
+  it('reads no ref segment that starts with a dot', () => {
+    const result = checkTicketIntake(
+      body({
+        ...BUG,
+        'Suspected area':
+          'https://github.com/acme/tool/blob/main/.claude-pr/.claude/hooks/README.md',
+      }),
+      'bug',
+      { adrAreas: ['.claude/**'] },
+    );
+    expect(result.triggers).toEqual([]);
+  });
+
   it('reads no ADR area in a slash-ref permalink outside the area', () => {
     const result = checkTicketIntake(
       body({

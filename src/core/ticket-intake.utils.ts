@@ -110,6 +110,12 @@ const PATH =
 /** A GitHub permalink's text before its ref and repository path: host, owner, repo and view. */
 const PERMALINK = /^github\.com\/[\w.-]+\/[\w.-]+\/(?:blob|tree)\//;
 
+/** A commit SHA names no further ref segments, so the path starts right after it. */
+const SHA_REF = /^[0-9a-f]{7,40}$/i;
+
+/** The most slashes a permalink's ref is read as holding; real refs hold few, and it bounds the candidates. */
+const MAX_REF_SEGMENTS = 4;
+
 /** One line holding a checked box that says the work adds a dependency. */
 const DEPENDENCY_BOX = /^\s*[-*+]\s+\[[xX]\].*\bdependenc/i;
 
@@ -207,15 +213,21 @@ function triggersFor(
 ): DesignTrigger[] {
   // PATH keeps the period of a sentence that ends in a path; it is not part of the path.
   // The lookbehind starts the strip only at a run's first dot, which keeps it linear.
-  // PATH starts a permalink's match at its host. A ref may hold slashes (`feature/x`) and the
-  // path after it cannot be told from them, so every suffix of the remainder is a candidate,
-  // erring toward firing.
+  // PATH starts a permalink's match at its host. A named ref may hold slashes (`feature/x`) and
+  // the path after it cannot be told from them, so each split within MAX_REF_SEGMENTS is a
+  // candidate, erring toward firing. A ref segment never starts with a dot.
   const paths = (areaText.match(PATH) ?? []).flatMap((path) => {
     const rest = path.replace(PERMALINK, '');
-    const candidates =
+    const segments = rest.split('/');
+    const refLengths =
       rest === path
-        ? [rest]
-        : rest.split('/').map((_, index, segments) => segments.slice(index).join('/'));
+        ? [0]
+        : SHA_REF.test(segments[0] ?? '')
+          ? [1]
+          : Array.from({ length: MAX_REF_SEGMENTS }, (_, index) => index + 1).filter(
+              (length) => length < segments.length && !segments[length - 1]?.startsWith('.'),
+            );
+    const candidates = refLengths.map((length) => segments.slice(length).join('/'));
     return candidates.map((candidate) => candidate.replace(/^\.\//, '').replace(/(?<!\.)\.+$/, ''));
   });
   const adrAreas = context.adrAreas.map((glob) => ({
