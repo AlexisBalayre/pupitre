@@ -6,7 +6,7 @@ disable-model-invocation: true
 
 Implement the work described by the user by hand: one GitHub issue, one `pup plan` task, or the conversation. This is the console's path for a change too small to plan as tasks; a task pup launched is a worker's job, and `/to-tickets` plans the larger ones.
 
-If the user passes an issue number or URL, read it in full with `gh issue view <n> --comments` and state its title before starting. If the reference is ambiguous, ask. For a `pup plan` task, `pup plan` lists its goal, scope-in and acceptance criteria.
+If the user passes an issue number or URL, read it in full with `gh issue view <n> --comments` and state its title before starting. If the reference is ambiguous, ask. For a `pup plan` task, `pup plan` lists only its goal headline and scope-in globs, not its acceptance criteria: ask the operator for those.
 
 Call the Skill tool with "tdd" where possible, at pre-agreed seams.
 
