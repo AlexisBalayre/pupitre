@@ -1,0 +1,122 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-23T09:02:22.247Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "45143052043",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/45143052043",
+  "actor": "AlexisBalayre",
+  "commit_sha": "dc7b1719baeb4527c6d45486beb143c012c66baf",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 434,
+  "action": "review",
+  "reviewers_spawned": [
+    "conventions",
+    "docs",
+    "context"
+  ],
+  "reviewers_returned": [
+    "conventions",
+    "docs",
+    "context"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "maintainability",
+    "spec",
+    "simplicity",
+    "guards",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": ".claude/skills/wayfinder/SKILL.md",
+      "line": "83",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The claim read-back (\"a second assignee means another session claimed it too\") cannot detect a collision between sessions on the same GitHub account: both `--add-assignee @me` add the same login, so both sessions read back one assignee and work the same ticket.",
+      "body": "**Claim read-back misses the main collision case**\n\nLine 83 says:\n\n> Read the assignees back: a second assignee means another session claimed it too, so unclaim yours and take the next ticket.\n\nThe skill describes one user running the sessions: L67 claims \"by assigning it to the dev driving the map\", and L143 says \"The user may run unblocked tickets in parallel\". Those sessions authenticate as the same `gh` user, so `@me` is the same login in each. An issue's assignees are a set of distinct users, and `--add-assignee` on a user who is already assigned changes nothing. Say two sessions claim the same frontier ticket at about the same time. Each one reads back a single assignee, itself, concludes it won, and works the ticket. The check only fires when the other session runs under a different GitHub account. The agent trusts a guard that does nothing in the setup the skill describes. The line also doesn't name the read-back command.\n\nTo fix it, state that limit and name the command. If same-account sessions need protecting too, use a claim marker each session can tell apart, for example a claim comment where the earliest `created_at` wins.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/dc7b1719baeb4527c6d45486beb143c012c66baf/.claude/skills/wayfinder/SKILL.md#L83-L83 (see also #L67 and #L143)",
+      "suggestion": "- **Claim**: `gh issue edit <n> --add-assignee @me`, the session's first write. Then run `gh issue view <n> --json assignees`: another login in the list means a different account claimed it first, so remove yours (`gh issue edit <n> --remove-assignee @me`) and take the next ticket. Sessions on the same account can't see each other this way, so the human keeps those from picking the same ticket."
+    },
+    {
+      "file": ".claude/skills/wayfinder/SKILL.md",
+      "line": "80-82",
+      "area": "context",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "\"The map's open children are `gh api repos/{owner}/{repo}/issues/<map-number>/sub_issues`\" is not what that GET returns. As I know the endpoint, it takes no `state` filter and lists open and closed sub-issues, 30 per page by default. Closed tickets pile up on a map (each resolution closes one), so with more than 30 children the open frontier tickets can fall off page 1, and nothing in the text says to filter on `.state` either. Add `--paginate` and `--jq '.[] | select(.state==\"open\")'`. The `blocked_by` GET on line 81 has the same all-states and paging shape.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/skills/wayfinder/SKILL.md",
+      "line": "84",
+      "area": "context",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "\"append a context pointer ... with `gh issue edit <map> --body-file <file>`\" replaces the whole map body, and line 143 says other sessions edit the map concurrently. If two sessions resolve tickets at once, each rewrites the body from the copy it loaded at session start, so the later write silently drops the other's Decisions-so-far line. Parallel research resolutions (step 5) hit the same path. The text should say to re-fetch the body immediately before writing (`gh issue view <map> --json body --jq .body`), append, and write straight back.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": ".claude/skills/wayfinder/SKILL.md",
+      "line": "21, 25, 29, 69, 80, 129",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The PR now calls tickets \"sub-issue\" at L57 and L82 but still says \"child issues\", \"children\" and \"Child ticket\" elsewhere. Since the API term is `sub_issues`, a reader may think these are two different things. Use \"sub-issue\" throughout.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 2,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.9088358749999998,
+  "duration_ms": 124198,
+  "num_turns": 13,
+  "tokens": {
+    "input": 14,
+    "output": 9365,
+    "cache_read": 321836,
+    "cache_creation": 45344,
+    "total": 376559
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 14,
+      "output": 9365,
+      "cache_read": 321836,
+      "cache_creation": 45344,
+      "cost_usd": 0.6144752
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 30,
+      "output": 7797,
+      "cache_read": 126616,
+      "cache_creation": 81121,
+      "cost_usd": 0.2934941000000001
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 466,
+      "cache_read": 0,
+      "cache_creation": 5067,
+      "cost_usd": 0.0008665750000000001
+    }
+  ],
+  "permission_denials": []
+}
