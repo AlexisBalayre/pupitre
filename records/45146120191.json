@@ -1,0 +1,77 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-23T09:24:15.633Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "45146120191",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/45146120191",
+  "actor": "AlexisBalayre",
+  "commit_sha": "ac2e7e099ffa0c2ce31a9f12c64f75196326a9fc",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 439,
+  "action": "review",
+  "reviewers_spawned": [
+    "docs",
+    "conventions"
+  ],
+  "reviewers_returned": [
+    "docs",
+    "conventions"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "context",
+    "maintainability",
+    "spec",
+    "simplicity",
+    "guards",
+    "workflow-safety"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "591cb482a0738862d4df22970df8576f8a6a4b0b",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Skipped correctness, security, context, simplicity, guards, workflow-safety and maintainability: the delta is 4 changed prose lines in one docs-only skill file, with no code logic, no workflow change and no new source. Skipped spec: there is no closing issue and no --spec. The prior record has no important findings and no unresolved prior_importants, so prior_importants is empty."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.48000290000000007,
+  "duration_ms": 42174,
+  "num_turns": 10,
+  "tokens": {
+    "input": 10,
+    "output": 3160,
+    "cache_read": 200128,
+    "cache_creation": 33398,
+    "total": 236696
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 10,
+      "output": 3160,
+      "cache_read": 200128,
+      "cache_creation": 33398,
+      "cost_usd": 0.37044960000000005
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 18,
+      "output": 2826,
+      "cache_read": 119798,
+      "cache_creation": 27711,
+      "cost_usd": 0.10955329999999999
+    }
+  ],
+  "permission_denials": []
+}
