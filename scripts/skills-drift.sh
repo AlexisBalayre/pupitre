@@ -20,8 +20,7 @@ pin=$(sed -n 's/^- Pinned commit: `\([0-9a-f]*\)`$/\1/p' "$LEDGER")
 [ -n "$pin" ] || { echo "$LEDGER has no pinned commit" >&2; exit 1; }
 
 if [ "$since" -eq 1 ]; then
-  git -C "$up" diff --name-only "$pin" HEAD -- skills
-  exit 0
+  exec git -C "$up" diff --name-only "$pin" HEAD -- skills
 fi
 
 fail=0
@@ -37,6 +36,7 @@ done < <(find "$SKILLS_DIR" -type f | sort)
 
 while IFS='|' read -r rel path status; do
   [ -n "$rel" ] || continue
+  case $status in verbatim | adapted | "local only") ;; *) bad "$rel has status '$status', not verbatim, adapted or local only"; continue ;; esac
   [ -f "$SKILLS_DIR/$rel" ] || { bad "$rel is in $LEDGER but gone"; continue; }
   if [ "$status" = adapted ]; then
     # one deviation bullet at least, under the file's own heading

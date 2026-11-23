@@ -61,6 +61,13 @@ git -C "$dir/up" add -A; git -C "$dir/up" -c user.name=t -c user.email=t@t commi
 expect "since-pin lists the upstream change" 0 --since-pin "$dir/up"
 [ "$out" = "skills/a/NEW.md" ] || { echo "FAIL: since-pin printed '$out'"; fail=1; }
 
+fixture; ledger "| \`a/SKILL.md\` | \`skills/a/SKILL.md\` | Verbatim |"
+expect "an unknown status fails" 1
+case $out in *"a/SKILL.md has status"*) ;; *) echo "FAIL: unknown status not named: $out"; fail=1 ;; esac
+
+fixture; run --since-pin "$dir/nowhere" >/dev/null
+[ $? -ne 0 ] || { echo "FAIL: since-pin on a path that is not a repo passed"; fail=1; }
+
 fixture; expect "no checkout still checks the rows" 0
 
 exit $fail

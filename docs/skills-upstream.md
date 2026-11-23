@@ -1,6 +1,6 @@
 # Skills upstream ledger
 
-The skills under `.claude/skills/` began as a copy of an upstream collection. This file records how each local file stands against it, so drift is a visible choice and not an accident. `scripts/skills-drift.sh <upstream-checkout>` reads it. The rules are in [the skills rework spike](spikes/2026-11-22-skills-rework.md), section "Staying in step with upstream".
+The skills under `.claude/skills/` began as a copy of an upstream collection. This file records how each local file stands against it, so drift is a visible choice and not an accident. `bash scripts/skills-drift.sh <upstream-checkout>` reads it. The rules are in [the skills rework spike](spikes/2026-11-22-skills-rework.md), section "Staying in step with upstream".
 
 - Upstream repository: `https://github.com/mattpocock/skills`
 - Pinned commit: `abeeaf95660ba9e8b7c753eb38f441ca707a8823`
