@@ -671,3 +671,11 @@ Scope-in: `src/core/web-dashboard-projects*.service.ts`, `src/core/project-regis
    decisions 91 or 98, which puts `docs/adr/**` in their scope. Do you prefer that,
    or one consolidated amendment written once by you or the conductor before slice 1
    starts?
+
+## Decided by the operator (2026-11-23)
+
+1. **Home label and URL.** Rename Overview to Home. `?sheet=overview` and `?sheet=tasks` stop working, with no aliases.
+2. **Projects across stores.** Keep slice 8: a read-only fleet screen that reads other projects' stores for counts only.
+3. **Cost honesty.** The word *estimate* sits beside every dollar figure on the Usage screen. An unpriced model is counted and not costed.
+4. **ADR bookkeeping.** One consolidated decision amends 91 and 98, written once before slice 1 as an operator PR. The slices do not carry `docs/adr/**` in their scope.
+5. **Defaults taken.** The review diffstat is a new function over `git diff --numstat`. Land enables on today's local merged check, with no GitHub call. The `g` and `j`/`k` keys stay in slice 1. There are no browser notifications and no sound.
