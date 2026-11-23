@@ -1,4 +1,4 @@
-# Decision Format
+# ADR Format
 
 Decisions live in `docs/adr/`, one file each: `NNNN-short-kebab-title.md`. The number is the
 decision's number, so every "decision N" reference elsewhere stays valid. `docs/adr/README.md`
@@ -16,11 +16,12 @@ it, though correcting an outright-wrong passage is welcome.
 - Status: accepted
 - Amends: [MMMM](MMMM-the-amended-file.md)
 
-NNNN. **Short statement of what was decided (YYYY-MM-DD).** One to five sentences: the context,
+N. **Short statement of what was decided (YYYY-MM-DD).** One to five sentences: the context,
     what was chosen, and why the obvious alternative was not.
 ```
 
-- Line 1 is `# NNNN. Title`, and the title is the decision phrased as a claim
+- Line 1 is `# NNNN. Title` with the four-digit padded number; the bold lead restates it unpadded
+  (`N.`), as `# 0146.` is followed by `146. **...**`. The title is the decision phrased as a claim
   (`Coverage is patch coverage against a ratcheting baseline`, not `Coverage decision`). A reader
   skimming only titles should learn what was decided.
 - `- Status:` is `accepted`, or `superseded by [NNNN](...)`. `bash scripts/adr-index.sh --check`
