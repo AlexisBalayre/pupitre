@@ -1,0 +1,109 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-23T11:00:57.771Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "45160327792",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/45160327792",
+  "actor": "AlexisBalayre",
+  "commit_sha": "d1d1f9d5d06e068644ca612420d4f1cd2a1ef392",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 446,
+  "action": "review",
+  "reviewers_spawned": [
+    "docs",
+    "conventions"
+  ],
+  "reviewers_returned": [
+    "docs",
+    "conventions"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "context",
+    "maintainability",
+    "spec",
+    "simplicity",
+    "guards",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "docs/guide/gate-and-debt.md",
+      "line": "17",
+      "description": "Gate pipeline diagram routes a taken ADR number to \"Rejected: re-steered; blocked after 2\", but decision 146 makes it a refusal: no rejection counted, nothing steered.",
+      "status": "unresolved"
+    },
+    {
+      "file": "docs/guide/concepts.md",
+      "line": "45-46",
+      "description": "Guide says `pup launch` and `pup kill` refuse everyone but the operator; the source lets the conductor launch and plain-kill, refusing it only `kill --respawn`.",
+      "status": "unresolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "docs/guide/best-practices.md",
+      "line": "125-128",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "\"Review rounds\" says round 2 is the last and leftovers become follow-up tickets (174, 90), with no condition attached. ADR 0174 L32-36 applies that only once the decision-178 setting is on; until then decisions 90 and 151 govern. The section also leaves out the never-deferred Security/Data Protection high. Add the condition, or link 0174 without restating it.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Re-ask on the head round 1 already reviewed (d1d1f9d5). Both prior importants (the ADR 146 refusal routing in gate-and-debt.md, and the launch/kill tier in concepts.md/commands.md) are unchanged, so they stay unresolved. Spawned docs and conventions only, aimed at the pages round 1 left unread, because the PR is markdown-only. Skipped correctness, security, context, simplicity, guards and maintainability (no code changed), workflow-safety (no workflow change) and spec (no spec source). Skipped the consolidator because there was only one finding."
+    },
+    {
+      "component": "docs",
+      "description": "The docs reviewer checked best-practices.md, troubleshooting.md, docs/guide/README.md, README.md, `merge --approved-by` and the `land` flags, and found nothing wrong. It ran out of budget before reading getting-started.md or configuration.md. It also did not verify these best-practices.md items: the measured figures (78%, 80%, 23%, 8.6M tokens, ~84 USD, 38% of 3,218 turns), the 'at most 40' kickoff file cap (no match in src/core/*kickoff*.ts), and the 'four lines' and '12 lines' claims."
+    },
+    {
+      "component": "conventions",
+      "description": "Glob returned only 100 of the 198 ADR files, so the conventions reviewer checked only a subset of the cited decision numbers."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.6703192000000001,
+  "duration_ms": 69893,
+  "num_turns": 8,
+  "tokens": {
+    "input": 10,
+    "output": 4592,
+    "cache_read": 206838,
+    "cache_creation": 36893,
+    "total": 248333
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 10,
+      "output": 4592,
+      "cache_read": 206838,
+      "cache_creation": 36893,
+      "cost_usd": 0.42839160000000004
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 28,
+      "output": 8024,
+      "cache_read": 292741,
+      "cache_creation": 52943,
+      "cost_usd": 0.24192760000000002
+    }
+  ],
+  "permission_denials": []
+}
