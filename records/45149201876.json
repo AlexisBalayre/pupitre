@@ -1,0 +1,112 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-23T09:48:31.799Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "45149201876",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/45149201876",
+  "actor": "AlexisBalayre",
+  "commit_sha": "7b0c67cab0a87a2a5c71509cb5b9dc73a829cb0b",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 443,
+  "action": "review",
+  "reviewers_spawned": [
+    "docs",
+    "conventions"
+  ],
+  "reviewers_returned": [
+    "docs",
+    "conventions"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "context",
+    "maintainability",
+    "spec",
+    "simplicity",
+    "guards",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "skills/pup/LOOP.md",
+      "line": "14-16",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The new sentence makes it sound as if the conductor reviews every session by pinned commit, and its \"so\" leaves out the actual reason. Decision 118 and the kickoff only give the conductor a security review of sessions that touch critical areas.",
+      "body": "The added text reads: *\"The conductor does not run it: its window loads user settings only (decision 118, `docs/adr/0118-*`), so it reviews by pinned commit through its kickoff.\"* It has two problems:\n\n- **The scope is missing.** ADR 0118 describes the conductor's pinned-commit review as a *security* review \"of a critical session's diff\" ([ADR L8-L12](https://github.com/AlexisBalayre/pupitre/blob/7b0c67cab0a87a2a5c71509cb5b9dc73a829cb0b/docs/adr/0118-the-conductor-s-security-review-runs-a-general-purpose.md#L8-L12)). The kickoff runs it only \"on a session whose diff touches the gate, git, tmux or the store\" ([profile-compiler.service.ts L1775-L1776](https://github.com/AlexisBalayre/pupitre/blob/7b0c67cab0a87a2a5c71509cb5b9dc73a829cb0b/src/core/profile-compiler.service.ts#L1775-L1776)). As written, a console operator can read this as \"the conductor already reviewed every session it drives\" and skip `/review-session` on a standard-tier session that nobody reviewed before the gate.\n- **The \"so\" gives the wrong cause.** Loading user settings only is why a project agent spawns nothing in that window ([ADR L21-L28](https://github.com/AlexisBalayre/pupitre/blob/7b0c67cab0a87a2a5c71509cb5b9dc73a829cb0b/docs/adr/0118-the-conductor-s-security-review-runs-a-general-purpose.md#L21-L28)). It is not why the review pins commits; pinning guards against commondir decoys, armed diff drivers and planted tags (ADR L48-L85). The source sentence in [`.claude/skills/review-session/SKILL.md` L9](https://github.com/AlexisBalayre/pupitre/blob/7b0c67cab0a87a2a5c71509cb5b9dc73a829cb0b/.claude/skills/review-session/SKILL.md#L9) joins the two facts with \"and\" and keeps the \"a project agent spawns nothing there\" clause. This sentence drops that clause.",
+      "suggestion": "`pup merge --pr` is the `/review-session` skill. The conductor does not run it: its window loads\nuser settings only, so a project agent spawns nothing there (decision 118, `docs/adr/0118-*`);\nits kickoff instead has it security-review a critical-area session by pinned commit. Mutation\nprobes (plant a"
+    },
+    {
+      "file": "skills/pup/SKILL.md",
+      "line": "37-38",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "important",
+      "description": "The pup skill is meant for any registered repo, but `/triage`, `/teach` and `/review-session` only exist in pupitre's own `.claude/skills/`. In any other repo the console is pointed at skills that aren't there.",
+      "body": "`skills/pup/` is linked into `~/.claude/skills` ([README.md L81](https://github.com/AlexisBalayre/pupitre/blob/7b0c67cab0a87a2a5c71509cb5b9dc73a829cb0b/README.md#L81)). It drives pupitre \"from any shell\", and its own text covers other repos (\"Inside a registered repo: every command acts on that project\", `pup init` for onboarding a repo, \"Gotchas that are not repo-specific\").\n\nThe three skills this PR names exist only at `.claude/skills/{review-session,triage,teach}/` in pupitre's checkout, and nothing in `src/` ships them anywhere else. The spike ([docs/spikes/2026-11-22-skills-rework.md L36-L39](https://github.com/AlexisBalayre/pupitre/blob/7b0c67cab0a87a2a5c71509cb5b9dc73a829cb0b/docs/spikes/2026-11-22-skills-rework.md#L36-L39)) says only `pup` is linked into `~/.claude/skills`. Two of the skills also depend on files only pupitre has:\n- triage uses `docs/tickets/<type>.md` and writes to `docs/out-of-scope/`.\n- teach keeps its workspace in `docs/scratch/teach/` and teaches from pupitre's `docs/00`–`08`.\n\nThe row **\"Learn pupitre, first time on a repo\"** invites running `/teach` in a freshly onboarded repo, where it doesn't exist. Even inside pupitre the wording misleads, because the spike describes teach as onboarding to pupitre itself. These rows ([SKILL.md L37-L38](https://github.com/AlexisBalayre/pupitre/blob/7b0c67cab0a87a2a5c71509cb5b9dc73a829cb0b/skills/pup/SKILL.md#L37-L38)) and the `/review-session` sentence in [LOOP.md L13-L14](https://github.com/AlexisBalayre/pupitre/blob/7b0c67cab0a87a2a5c71509cb5b9dc73a829cb0b/skills/pup/LOOP.md#L13-L14) are the first lines in the pup skill that send the console to a project-local skill. Scope them to pupitre's own checkout, e.g. \"(in pupitre's checkout)\".",
+      "suggestion": null
+    },
+    {
+      "file": "skills/pup/SKILL.md",
+      "line": "37",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The right column, \"`/triage`: the way an issue becomes a planned task\", just repeats the left column. It leaves out the one thing a reader needs: triage only proposes and stops until the operator adds `ready`, and only then offers `pup plan add`. Something like \"`/triage` (proposes; the operator labels `ready`, then it offers `pup plan add` per slice)\" would fix that.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "platform",
+      "description": "The first two spawns of review-docs and review-conventions on their default sonnet model both failed with API 529 Overloaded. On the third attempt both ran on opus (model override), and both validators ran on opus as well, not the sonnet tier."
+    },
+    {
+      "component": "orchestrator",
+      "description": "Spawned only docs and conventions: the PR changes prose in two markdown skill files (+6/-1), with no logic, trust boundary, workflow, new construct, or spec source. correctness, security, context, simplicity, guards, workflow-safety, maintainability and spec were skipped because their gates do not hold."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 2,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.6648691499999995,
+  "duration_ms": 413257,
+  "num_turns": 15,
+  "tokens": {
+    "input": 18,
+    "output": 12739,
+    "cache_read": 402727,
+    "cache_creation": 43647,
+    "total": 459131
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 84,
+      "output": 30267,
+      "cache_read": 977211,
+      "cache_creation": 146410,
+      "cost_usd": 1.6641091999999995
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 319,
+      "cache_read": 0,
+      "cache_creation": 4802,
+      "cost_usd": 0.00075995
+    }
+  ],
+  "permission_denials": []
+}
