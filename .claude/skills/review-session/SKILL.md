@@ -6,16 +6,16 @@ disable-model-invocation: true
 
 # Review a session before the gate
 
-LOOP.md §2 as a skill. Run it from the main checkout on a session that reads `awaiting-review`, whether you are the console or the conductor. It reviews one branch before `pup merge --pr` and ends in one `pup steer`. It sits beside `/pr-ci-review`, not over it:
+LOOP.md §2 as a skill. Run it as the console, from the main checkout, on a session that reads `awaiting-review`. The conductor does not run it: its window loads user settings only, so a project agent spawns nothing there (decision 118), and it reviews by pinned commit through its own kickoff. It reviews one branch before `pup merge --pr` and ends in one `pup steer`. It sits beside `/pr-ci-review`, not over it:
 
 | | review-session | pr-ci-review |
 | --- | --- | --- |
 | When | before `pup merge --pr` | on the PR, in CI, after the gate |
-| Who runs it | console or conductor, locally | `claude-code-action` |
+| Who runs it | the console, locally | `claude-code-action` |
 | Output | a must-fix and nice-to-have list for one `pup steer` | inline threads that `pup fix` hands back |
 | Cost | two subagents | the area roster plus a consolidator and validators |
 
-It never gates and never merges: those stay the operator's or the conductor's next command.
+It never gates and never merges: those stay the operator's next command.
 
 ## Process
 
@@ -51,7 +51,7 @@ Start each with a fresh context, in the foreground, both calls in one message. U
 - **Standards**: the `review-conventions` agent. Give it the diff command, the commit list, the standards files from step 3 and the smell baseline pasted in full (it has no other access to it). Ask for each place the diff breaks a documented standard (cite the file and rule), and each baseline smell (name it, quote the hunk), keeping hard violations apart from judgement calls. Under 400 words.
 - **Spec**: the `review-spec` agent. Give it the diff command, the commit list and the spec text. Ask for requirements missing or partial, behaviour nobody asked for, and requirements that look implemented but wrong, quoting the spec line for each. Under 400 words.
 
-When the diff touches hook generation, profile compilation, the gate or anything that shells out (`git`, `gh`, `tmux`, `claude -p`), add the `security-reviewer` agent as a third subagent, as LOOP.md §2 asks.
+When the diff touches hook generation, profile compilation, the gate or anything that shells out (`git`, `gh`, `tmux`, `claude -p`), add the `security-reviewer` agent as a third subagent: LOOP.md §2 asks for a security-minded review of such a diff.
 
 ### 5. Report
 
