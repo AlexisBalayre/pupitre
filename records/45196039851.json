@@ -1,0 +1,210 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-23T14:39:49.623Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "45196039851",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/45196039851",
+  "actor": "AlexisBalayre",
+  "commit_sha": "763843807579b400ca3ee74fb19d87f048527d87",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 453,
+  "action": "review",
+  "reviewers_spawned": [
+    "docs",
+    "conventions",
+    "context"
+  ],
+  "reviewers_returned": [
+    "docs",
+    "conventions",
+    "context"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "maintainability",
+    "spec",
+    "simplicity",
+    "guards",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "docs/spikes/2026-11-23-ticket-pipeline.md",
+      "line": "359",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The spike says \"New decision 208 (the next free number)\", but docs/adr/0208-three-architecture-review-candidates-are-set-aside.md already exists, and the latest decision is 208, so the next free number is 209.",
+      "body": "**Decision 208 is already taken.** The spike says `New decision 208 (the next free number) carries the pipeline`, and line 494 repeats `decision 208`. But [`docs/adr/0208-three-architecture-review-candidates-are-set-aside.md`](https://github.com/AlexisBalayre/pupitre/blob/763843807579b400ca3ee74fb19d87f048527d87/docs/adr/0208-three-architecture-review-candidates-are-set-aside.md) was accepted just before this spike (commits b5847fa5, d6ba49d1), and nothing in `docs/adr/` is numbered above it, so the next free number is 209.\n\nThe follow-up task that writes the ADR would collide with the existing 208, and every `decision 208` reference in this spike would point at the architecture-review decision. Change both mentions to 209:\n\n- https://github.com/AlexisBalayre/pupitre/blob/763843807579b400ca3ee74fb19d87f048527d87/docs/spikes/2026-11-23-ticket-pipeline.md#L359-L359\n- https://github.com/AlexisBalayre/pupitre/blob/763843807579b400ca3ee74fb19d87f048527d87/docs/spikes/2026-11-23-ticket-pipeline.md#L494-L494 (`After task 7, the 187 and 176 amendments and decision 209 are written in`)",
+      "suggestion": "New decision 209 (the next free number) carries the pipeline. It amends:"
+    },
+    {
+      "file": "docs/spikes/2026-11-23-ticket-pipeline.md",
+      "line": "483",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "important",
+      "description": "Task 7's scope-in lists src/core/session-repository.ts, but the real file is src/core/session.repository.ts.",
+      "body": "**Task 7 scopes a file that does not exist.** The scope-in lists `src/core/session-repository.ts`. The real file is [`src/core/session.repository.ts`](https://github.com/AlexisBalayre/pupitre/blob/763843807579b400ca3ee74fb19d87f048527d87/src/core/session.repository.ts#L91), which uses the `kebab-case.role.ts` naming. Its `insertTask` is the function that writes tasks, so it is the file `pup plan from-ticket` needs.\n\nThe spike presents its slices as ready for `pup plan add`, and scope-in becomes the scope hook's allowlist. A worker planned from this glob would be blocked from editing the repository it has to change.\n\nThe test glob on the same line, `test/core/ticket-plan*.test.ts`, has the separate `test/unit/` problem noted in the nits below.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/763843807579b400ca3ee74fb19d87f048527d87/docs/spikes/2026-11-23-ticket-pipeline.md#L482-L483",
+      "suggestion": "  `src/core/session.repository.ts`, `test/core/ticket-plan*.test.ts`"
+    },
+    {
+      "file": "docs/spikes/2026-11-23-ticket-pipeline.md",
+      "line": "393-483",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The slice plan's test scope-in globs use test/core/... (and dotted names such as design-note.utils.test.ts), but docs/conventions/naming.md puts tests under test/unit/<path> with the dash form, so planned tasks would scope-block their own tests.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/spikes/2026-11-23-ticket-pipeline.md",
+      "line": "52",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The label table says pup removes `specified` on a rejection or an approval, but T9 says nothing is written until T11 and the rejection section has the operator remove `specified` by hand; the spike contradicts itself on who removes it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/spikes/2026-11-23-ticket-pipeline.md",
+      "line": "127-128",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The spike and task 1 call for a `retryable` TrackerUnavailableError, but the class in src/core/errors/tracker.errors.ts has `rateLimited` and no `retryable` field.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/spikes/2026-11-23-ticket-pipeline.md",
+      "line": "421-439",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Tasks 3 and 4 scope `src/core/migrations/**`, which does not exist; the schema lives in src/core/db.client.ts, which neither task lists, so the worker cannot touch the real schema file.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/spikes/2026-11-23-ticket-pipeline.md",
+      "line": "162-191",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The specifier session is launched with no task, but decision 40 makes sessions.task_id NOT NULL; the spike should give it a synthetic task or list decision 40 among the amended decisions.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/spikes/2026-11-23-ticket-pipeline.md",
+      "line": "148-152",
+      "area": "context",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Rejection-reason comments are trusted on authorAssociation OWNER/MEMBER/COLLABORATOR, which does not imply write access, unlike the `ready` gate's admin/write permission check; use the same permission check or the tickets.operator login.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/spikes/2026-11-23-ticket-pipeline.md",
+      "line": "154",
+      "area": "context",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Defaulting tickets.operator to the repo owner fails on an org-owned repo, since an org never appears as a label event's User actor, so every design-approved would be removed; default to the `gh api user` login instead.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/spikes/2026-11-23-ticket-pipeline.md",
+      "line": "85-93",
+      "area": "context",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "T1 refuses to comment to a labeller without write access, but T9 comments to anyone but the operator who applies design-approved, which triage-level users can do; make T9 silent for labellers without write access.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/spikes/2026-11-23-ticket-pipeline.md",
+      "line": "116-125",
+      "area": "context",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The rate-limit estimate is off: three `gh issue list` calls per 60 s is about 180 an hour, not about 60. They go over GraphQL with a permission call per issue, and the updatedAt skip needs a field Tracker.listReady does not return, which task 1 does not add.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Docs-only PR (one new spike file, no code). Skipped correctness, security, simplicity, guards and maintainability because there is no source change. Skipped workflow-safety because no workflow is touched. Skipped spec because there is no closing issue or --spec source; the PR body's Goal/Acceptance was not treated as a spec source."
+    }
+  ],
+  "duplicates_merged": 2,
+  "comments_posted_actual": 2,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.14210453,
+  "duration_ms": 136357,
+  "num_turns": 12,
+  "tokens": {
+    "input": 14,
+    "output": 8857,
+    "cache_read": 311351,
+    "cache_creation": 39644,
+    "total": 359866
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 14,
+      "output": 8857,
+      "cache_read": 311351,
+      "cache_creation": 39644,
+      "cost_usd": 0.5566182
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 64,
+      "output": 20455,
+      "cache_read": 699128,
+      "cache_creation": 124136,
+      "cost_usd": 0.5849307999999999
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 261,
+      "cache_read": 1933,
+      "cache_creation": 3244,
+      "cost_usd": 0.00055553
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "cat src/core/errors/tracker.errors.ts; ls docs/adr | grep -E \"^0(209|21)\"; grep -n \"SIZE_CAP\\|100 lines\" -r docs/adr/0173* docs/adr/0176* | head; grep -n \"interface Tracker\" -A12 src/core/types/*.ts |"
+    },
+    {
+      "tool": "Bash",
+      "input": "bash /home/runner/work/pupitre/pupitre/scripts/adr-index.sh"
+    },
+    {
+      "tool": "Bash",
+      "input": "git -C /home/runner/work/pupitre/pupitre ls-files src/core | grep -E \"session-repository|repository|task-spec|tracker|overlap|ticket|profile.constants|migrations\" | head -40"
+    }
+  ]
+}
