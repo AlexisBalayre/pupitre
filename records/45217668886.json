@@ -1,0 +1,110 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-23T16:35:08.599Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "45217668886",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/45217668886",
+  "actor": "AlexisBalayre",
+  "commit_sha": "5130357ccc0ee1ab1e411a4ef1b15439eedebc3f",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 453,
+  "action": "review",
+  "reviewers_spawned": [
+    "docs",
+    "conventions"
+  ],
+  "reviewers_returned": [
+    "docs",
+    "conventions"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "context",
+    "maintainability",
+    "spec",
+    "simplicity",
+    "guards",
+    "workflow-safety"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "763843807579b400ca3ee74fb19d87f048527d87",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "docs/spikes/2026-11-23-ticket-pipeline.md",
+      "line": "359",
+      "description": "The spike says \"New decision 208 (the next free number)\", but docs/adr/0208-three-architecture-review-candidates-are-set-aside.md already exists, and the latest decision is 208, so the next free number is 209.",
+      "status": "resolved"
+    },
+    {
+      "file": "docs/spikes/2026-11-23-ticket-pipeline.md",
+      "line": "483",
+      "description": "Task 7's scope-in lists src/core/session-repository.ts, but the real file is src/core/session.repository.ts.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "docs/spikes/2026-11-23-ticket-pipeline.md",
+      "line": "359",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The spike now calls decision 210 \"(the next free number)\", but docs/adr/ tops out at 0208 and nothing claims 209. If another open PR holds 209, say so. Otherwise the task that writes the ADR (line 494) either leaves a gap or contradicts the spike.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "The delta since the last review is docs only: a 9-line edit to one spike file. Correctness, security, simplicity, guards and maintainability were skipped because no source changed. Workflow-safety was skipped because no workflow changed, and context because the delta touches no spec, protocol or infra surface. Spec was skipped because the PR has no closing issue. The consolidator and validators were skipped because the round raised one nit and no important."
+    },
+    {
+      "component": "conventions",
+      "description": "Dropped one conventions nit before recording. It said the test/unit/core/github-tracker*.test.ts and task-*.test.ts globs could scope-block new test files. But both globs match existing files, and the reviewer never read naming.md or testing.md, so the nit named no mechanism."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.5894008000000001,
+  "duration_ms": 58966,
+  "num_turns": 12,
+  "tokens": {
+    "input": 12,
+    "output": 4759,
+    "cache_read": 262626,
+    "cache_creation": 39155,
+    "total": 306552
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 12,
+      "output": 4759,
+      "cache_read": 262626,
+      "cache_creation": 39155,
+      "cost_usd": 0.46099320000000005
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 22,
+      "output": 3554,
+      "cache_read": 167511,
+      "cache_creation": 30429,
+      "cost_usd": 0.12840760000000004
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "bash scripts/adr-index.sh"
+    }
+  ]
+}
