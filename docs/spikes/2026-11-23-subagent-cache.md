@@ -31,8 +31,8 @@ Totals: 20.9M tokens read from the cache, 6.38M written (about 64 USD), 1.2k unc
 21 subagents made 2 calls or fewer (41 calls). They wrote 516k tokens and read almost nothing back. A further 26 made exactly 3 calls. The cache is built and then discarded.
 
 - Saving: about 0.5M tokens, about 5 USD in the window, if those tasks ran inline in the parent, where the cache is already warm.
-- Fix: a change in how pup briefs sessions. The Searching section of the session prompt sends every where-is-X question to a subagent. Add a rule not to launch a subagent for a task of one or two tool calls, such as reading a known file or one grep.
-- Effort: small. One line in the prompt template.
+- Fix: add a rule not to launch a subagent for a task of one or two tool calls, such as reading a known file or one grep. Where it goes is not settled: the Searching section of the session prompt (`SESSION_SEARCHING` in `src/core/profile-compiler.service.ts`) only routes questions to `Explore` subagents, which are 2 of the 111, while the short-lived waste comes from `general-purpose` subagents (108 of 111). The only place pup itself names `general-purpose` is the conductor's security review (`SECURITY_REVIEW_AGENT`). The spike did not find where the other `general-purpose` launches originate; most are probably the worker's own choice of agent type. Finding that out comes first.
+- Effort: small once the origin is known. The text is a constant in `profile-compiler.service.ts` asserted by `test/unit/core/profile-compiler.test.ts` and `profile-compiler-context.test.ts`, so the change is code and tests, not a template edit.
 
 ### 2. First request of each subagent
 
@@ -61,7 +61,7 @@ Ruled out for subagents. In all 499 follow-up calls, the cache read was at least
 
 1. **Stop launching subagents for one or two call tasks** (cause 1). About 5 USD per retro window for one line of prompt. This can be a small task, and the text below is ready for `pup plan add`:
 
-   > Add one rule to the Searching section of the session prompt template: do not launch a subagent for a task that takes one or two tool calls (reading a known file, one grep or glob); do those directly. Keep the Explore rule for questions that need a sweep of many files. Success: after a week, fewer than 5% of subagents in `pup retro` make 2 calls or fewer (21 of 111, about 19%, before). Only the prompt template changes, with no code change.
+   > First find where the 21 short-lived `general-purpose` subagents come from: read the session transcripts that launched them and say whether the worker chose the type or a pup prompt told it to. Then add one rule where they originate, most likely a constant in `src/core/profile-compiler.service.ts` with its assertions in `test/unit/core/profile-compiler.test.ts` and `profile-compiler-context.test.ts`: do not launch a subagent for a task that takes one or two tool calls (reading a known file, one grep or glob); do those directly. Keep the Explore rule for questions that need a sweep of many files. Success: after a week, fewer than 5% of subagents in `pup retro` make 2 calls or fewer (21 of 111, about 19%, before). This is a code and test change.
 
 2. **Ask subagents for ranged reads and short answers** (cause 4). Possible saving of a few USD to tens of USD, but unmeasured and hard to attribute. This can be a small task, but measure first.
 3. **Batch launches inside the cache lifetime** (cause 2). Ceiling about 12 USD, needs pup scheduling work. Leave it.
