@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Usage — pup dashboard</title>
+<link rel="stylesheet" href="dashboard.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="bar">
+  <span class="project">pupitre</span>
+  <nav aria-label="Screens">
+    <a href="home.html">Home <span class="chip attn">3</span></a>
+    <a href="backlog.html">Backlog</a>
+    <a href="debt.html">Debt</a>
+    <a href="usage.html">Usage</a>
+    <a href="projects.html">Projects</a>
+  </nav>
+  <span class="live" role="status"><span class="chip ok">live</span> updated 14:02:12</span>
+</header>
+
+<main id="main">
+  <h1>Usage and cost</h1>
+  <p class="hint">Since <strong>7 days ago</strong> · read from Claude transcripts, refreshed once a minute · prices are estimates</p>
+  <div class="grid" data-region="usage-figures">
+    <div class="panel figure"><span class="value">$126.40</span><span class="label">total, 7 days</span></div>
+    <div class="panel figure"><span class="value">$18.20</span><span class="label">today</span></div>
+    <div class="panel figure"><span class="value">91%</span><span class="label">cache hit rate</span></div>
+  </div>
+  <section class="panel" aria-labelledby="cls-h">
+    <header><h2 id="cls-h">Where it goes, by class</h2></header>
+    <table>
+      <caption class="sr-only">Cost by session class</caption>
+      <thead><tr><th scope="col">Class</th><th class="num" scope="col">Calls</th><th class="num" scope="col">Cost</th><th scope="col">Share</th></tr></thead>
+      <tbody>
+        <tr><td>worker</td><td class="num">2 140</td><td class="num">$88.10</td><td><span class="track"><span class="bar-mark w-70"></span></span> 70%</td></tr>
+        <tr><td>conductor</td><td class="num">610</td><td class="num">$29.30</td><td><span class="track"><span class="bar-mark w-25"></span></span> 23%</td></tr>
+        <tr><td>utility</td><td class="num">930</td><td class="num">$9.00</td><td><span class="track"><span class="bar-mark w-10"></span></span> 7%</td></tr>
+      </tbody>
+    </table>
+  </section>
+  <section class="panel" aria-labelledby="mdl-h">
+    <header><h2 id="mdl-h">By model and effort</h2></header>
+    <table>
+      <thead><tr><th scope="col">Model</th><th scope="col">Effort</th><th class="num" scope="col">Cost</th><th class="num" scope="col">Median context</th><th class="num" scope="col">Recaches</th></tr></thead>
+      <tbody>
+        <tr><td>sonnet</td><td>medium</td><td class="num">$71.20</td><td class="num">92k</td><td class="num">14</td></tr>
+        <tr><td>opus</td><td>high</td><td class="num">$55.20</td><td class="num">141k</td><td class="num">31</td></tr>
+      </tbody>
+    </table>
+    <div class="error" role="alert">1 model has no price: <code>claude-example</code>. Its calls are counted but not costed.</div>
+  </section>
+</main>
+</body>
+</html>

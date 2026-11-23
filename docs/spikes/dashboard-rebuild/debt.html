@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Debt — pup dashboard</title>
+<link rel="stylesheet" href="dashboard.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="bar">
+  <span class="project">pupitre</span>
+  <nav aria-label="Screens">
+    <a href="home.html">Home <span class="chip attn">3</span></a>
+    <a href="backlog.html">Backlog</a>
+    <a href="debt.html">Debt</a>
+    <a href="usage.html">Usage</a>
+    <a href="projects.html">Projects</a>
+  </nav>
+  <span class="live" role="status"><span class="chip ok">live</span> updated 14:02:12</span>
+</header>
+
+<main id="main">
+  <h1>Debt</h1>
+  <div class="grid" data-region="debt-figures">
+    <div class="panel figure"><span class="value">12</span><span class="label">open entries</span><span class="delta">4 filed this week</span></div>
+    <div class="panel figure"><span class="value">2</span><span class="label">overdue</span><span class="delta"><span class="chip bad">overdue</span> review-by passed</span></div>
+    <div class="panel figure"><span class="value">38 d</span><span class="label">oldest open</span><span class="delta">src/core/gate.service.ts</span></div>
+  </div>
+  <section class="panel" aria-labelledby="top-h">
+    <header><h2 id="top-h">Files carrying the most</h2></header>
+    <table>
+      <caption class="sr-only">Files ranked by age-weighted open entries</caption>
+      <thead><tr><th scope="col">File</th><th class="num" scope="col">Entries</th><th scope="col">Weight</th></tr></thead>
+      <tbody>
+        <tr><td class="mono">src/core/gate.service.ts</td><td class="num">4</td><td><span class="track"><span class="bar-mark w-90"></span></span></td></tr>
+        <tr><td class="mono">src/cli/index.ts</td><td class="num">3</td><td><span class="track"><span class="bar-mark w-60"></span></span></td></tr>
+        <tr><td class="mono">src/core/dashboard.service.ts</td><td class="num">2</td><td><span class="track"><span class="bar-mark w-30"></span></span></td></tr>
+      </tbody>
+    </table>
+  </section>
+  <section class="panel" aria-labelledby="ent-h" data-region="debt-entries">
+    <header><h2 id="ent-h">Open entries, pay-down order</h2>
+      <label class="sr-only" for="f">Filter entries</label><input id="f" type="search" placeholder="Filter ( / )"></header>
+    <ul class="rows">
+      <li class="row"><span class="chip bad">overdue</span>
+        <span><span class="title">oversize diff: +612 lines</span><br><span class="meta">gate.service.ts · accepted by human · review by 2026-11-10 · 38 d</span></span>
+        <button type="button" class="btn danger">Close…</button></li>
+      <li class="row"><span class="chip">open</span>
+        <span><span class="title">complexity rise in runGate</span><br><span class="meta">gate.service.ts · accepted by human · review by 2026-12-15 · 9 d</span></span>
+        <button type="button" class="btn danger">Close…</button></li>
+    </ul>
+  </section>
+</main>
+</body>
+</html>

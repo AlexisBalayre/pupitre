@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>t-mwt7a1 — Session — pup dashboard</title>
+<link rel="stylesheet" href="dashboard.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="bar">
+  <span class="project">pupitre</span>
+  <nav aria-label="Screens">
+    <a href="home.html">Home <span class="chip attn">3</span></a>
+    <a href="backlog.html">Backlog</a>
+    <a href="debt.html">Debt</a>
+    <a href="usage.html">Usage</a>
+    <a href="projects.html">Projects</a>
+  </nav>
+  <span class="live" role="status"><span class="chip ok">live</span> updated 14:02:09</span>
+</header>
+
+<main id="main">
+  <p class="crumbs"><a href="home.html">Home</a> / Sessions / t-mwt7a1</p>
+  <header class="actions between">
+    <div>
+      <h1>Split the usage report reader</h1>
+      <p class="hint"><span class="chip run">running</span> running tests · branch <code>pup/t-mwt7a1</code> · context 63% (compacts at 80%)</p>
+    </div>
+    <div class="actions">
+      <button type="button" class="btn danger">Kill…</button>
+    </div>
+  </header>
+
+  <div class="split">
+    <div class="stack">
+      <section class="panel" aria-labelledby="pane-h" data-region="pane">
+        <header><h2 id="pane-h">Worker pane</h2><span class="count">refreshes while open</span></header>
+        <pre class="pane" tabindex="0" aria-label="Worker terminal output, read only">● Read(src/core/usage-report.service.ts)
+● Edit(src/core/usage-report.service.ts)
+  ⎿ Updated with 18 additions and 41 removals
+● Bash(pup session test test/unit/core/usage-report.test.ts)
+  ⎿ waiting for a test slot…</pre>
+        <p class="hint">Attach in a terminal: <code>pup attach t-mwt7a1</code> <button type="button" class="btn">Copy</button></p>
+      </section>
+
+      <section class="panel" aria-labelledby="steer-h">
+        <header><h2 id="steer-h">Steer</h2><span class="hint">sent as a manual steer by you</span></header>
+        <form class="stack">
+          <label for="steer">Message to the worker</label>
+          <textarea id="steer" placeholder="e.g. keep the public export, move only the parser"></textarea>
+          <div class="actions"><button type="button" class="btn primary">Send steer</button>
+            <span class="hint">Text you have typed holds live updates for this panel only.</span></div>
+        </form>
+      </section>
+
+      <section class="panel" aria-labelledby="ev-h" data-region="events">
+        <header><h2 id="ev-h">Recent events</h2></header>
+        <ul class="rows">
+          <li class="row"><span class="meta">14:01</span><span>tool: Bash (pup session test)</span><span class="meta">hook</span></li>
+          <li class="row"><span class="meta">13:58</span><span>steer: “keep the public export”</span><span class="meta">operator</span></li>
+          <li class="row"><span class="meta">13:40</span><span>gate: refused, oversize diff</span><span class="meta">rejected ×1</span></li>
+        </ul>
+      </section>
+    </div>
+
+    <aside class="stack" aria-label="Task">
+      <section class="panel">
+        <h2>Acceptance</h2>
+        <ul class="list">
+          <li>reader split into parse and aggregate</li>
+          <li>no change to <code>pup usage --json</code></li>
+          <li>lint passes</li>
+        </ul>
+      </section>
+      <section class="panel">
+        <h2>Scope</h2>
+        <p class="mono">src/core/usage-report*<br>test/unit/core/usage-report*</p>
+        <p class="hint">Widened after launch: <code>src/core/types/usage-report.types.ts</code></p>
+      </section>
+      <section class="panel">
+        <h2>Route</h2>
+        <p class="hint">model sonnet · effort medium · top rung no</p>
+      </section>
+    </aside>
+  </div>
+</main>
+</body>
+</html>

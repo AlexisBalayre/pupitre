@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Home — pup dashboard</title>
+<link rel="stylesheet" href="dashboard.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="bar">
+  <span class="project">pupitre</span>
+  <nav aria-label="Screens">
+    <a href="home.html" aria-current="page">Home <span class="chip attn">3</span></a>
+    <a href="backlog.html">Backlog</a>
+    <a href="debt.html">Debt</a>
+    <a href="usage.html">Usage</a>
+    <a href="projects.html">Projects</a>
+  </nav>
+  <span class="live" role="status"><span class="chip ok">live</span> updated 14:02:07</span>
+</header>
+
+<main id="main">
+  <h1 class="sr-only">Home</h1>
+
+  <!-- 1. Needs me: first, always rendered, calm when empty -->
+  <section class="panel first" aria-labelledby="needs-h" data-region="needs">
+    <header><h2 id="needs-h">Needs me</h2><span class="count">3 items, oldest first</span></header>
+
+    <article class="need" data-key="s-mwt2k1">
+      <div class="actions"><span class="chip attn">question</span><a href="session.html"><strong>t-mwt2k1</strong></a>
+        <span class="meta hint">waiting 12 min</span></div>
+      <p class="title">Should the retry live in the adapter or the caller?</p>
+      <form class="actions" aria-label="Answer t-mwt2k1">
+        <button type="button" class="btn primary">1 · In the adapter (recommended)</button>
+        <button type="button" class="btn">2 · In the caller</button>
+        <label class="sr-only" for="a1">Answer in words</label>
+        <input id="a1" type="text" placeholder="Or answer in words" size="28">
+        <button type="button" class="btn">Send</button>
+      </form>
+    </article>
+
+    <article class="need" data-key="s-mws3q9">
+      <div class="actions"><span class="chip attn">gate refused</span><a href="review.html"><strong>t-mws3q9</strong></a>
+        <span class="meta hint">awaiting review 41 min</span></div>
+      <p class="why">Gate flagged 1 oversize diff (+612 lines). Accepting it as debt takes you.</p>
+      <div class="actions"><a class="btn primary" href="review.html">Review and decide</a>
+        <button type="button" class="btn">Steer</button></div>
+    </article>
+
+    <article class="need" data-key="pr-446">
+      <div class="actions"><span class="chip ok">PR open</span><a href="session.html"><strong>t-mwt27tfu</strong></a>
+        <span class="meta hint">CI passed, 0 fix rounds</span></div>
+      <p class="why">Merge the PR on GitHub, then land here.</p>
+      <div class="actions"><a class="btn primary" href="https://github.com/" rel="noopener noreferrer">Open PR #446</a>
+        <button type="button" class="btn" aria-disabled="true">Land (after merge)</button></div>
+    </article>
+  </section>
+
+  <div class="split">
+    <!-- 2. Live sessions, grouped by state -->
+    <section class="panel" aria-labelledby="live-h" data-region="sessions">
+      <header><h2 id="live-h">Live sessions</h2><span class="count">5 sessions · load 1.4</span></header>
+
+      <h3 class="group-label">Blocked (1)</h3>
+      <ul class="rows">
+        <li class="row" data-key="s-mwt1x2"><span class="chip bad">blocked</span>
+          <span><a class="title" href="session.html">Rotate the signing key</a><br><span class="meta">t-mwt1x2 · hook refused 3 times</span></span>
+          <a class="btn" href="session.html">Steer</a></li>
+      </ul>
+
+      <h3 class="group-label">Running (3)</h3>
+      <ul class="rows">
+        <li class="row" data-selected data-key="s-mwt9m3"><span class="chip run">running</span>
+          <span><a class="title" href="session.html">Design spike: dashboard rebuild</a><br><span class="meta">t-mwt9m3 · editing docs/spikes · context 41%</span></span>
+          <a class="btn" href="session.html">Open</a></li>
+        <li class="row" data-key="s-mwt7a1"><span class="chip run">running</span>
+          <span><a class="title" href="session.html">Split the usage report reader</a><br><span class="meta">t-mwt7a1 · running tests · context 63%</span></span>
+          <a class="btn" href="session.html">Open</a></li>
+        <li class="row" data-key="s-mwt8b4"><span class="chip attn">stalled</span>
+          <span><a class="title" href="session.html">Fix flaky radar test</a><br><span class="meta">t-mwt8b4 · quiet 9 min</span></span>
+          <a class="btn" href="session.html">Nudge</a></li>
+      </ul>
+
+      <h3 class="group-label">Awaiting review (1)</h3>
+      <ul class="rows">
+        <li class="row" data-key="s-mws3q9"><span class="chip attn">review</span>
+          <span><a class="title" href="review.html">Cap conductor replies</a><br><span class="meta">t-mws3q9 · listed under Needs me</span></span>
+          <a class="btn" href="review.html">Review</a></li>
+      </ul>
+    </section>
+
+    <!-- 3. The rest: next, project health, cost -->
+    <div class="stack">
+      <section class="panel" aria-labelledby="next-h" data-region="next">
+        <header><h2 id="next-h">Next up</h2><span class="count">7 in backlog</span></header>
+        <ul class="rows">
+          <li class="row"><span class="chip">queued</span><span class="title">Add pup plan lint</span><button type="button" class="btn">Launch</button></li>
+          <li class="row"><span class="chip">queued</span><span class="title">Radar heartbeat docs</span><button type="button" class="btn">Launch</button></li>
+        </ul>
+        <a href="backlog.html">All 7 tasks</a>
+      </section>
+
+      <section class="panel" aria-labelledby="proj-h" data-region="project">
+        <header><h2 id="proj-h">Project</h2></header>
+        <div class="grid">
+          <div class="figure"><span class="value">12</span><span class="label">open debt</span><span class="delta">2 overdue ▲</span></div>
+          <div class="figure"><span class="value">83.4%</span><span class="label">coverage</span><span class="delta">+0.6 pt this week</span></div>
+          <div class="figure"><span class="value">$18.20</span><span class="label">spend today</span><a href="usage.html" class="delta">Usage</a></div>
+        </div>
+      </section>
+    </div>
+  </div>
+</main>
+
+<footer class="crumbs foot">
+  <kbd>j</kbd>/<kbd>k</kbd> move · <kbd>Enter</kbd> open · <kbd>a</kbd> answer · <kbd>g</kbd> then <kbd>h</kbd> <kbd>b</kbd> <kbd>d</kbd> <kbd>u</kbd> <kbd>p</kbd> go · <kbd>?</kbd> all shortcuts
+</footer>
+</body>
+</html>
