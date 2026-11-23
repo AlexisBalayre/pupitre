@@ -356,7 +356,7 @@ planning; tasks hold the earlier text") and the operator decides.
 
 ## Decisions this pipeline amends
 
-New decision 208 (the next free number) carries the pipeline. It amends:
+New decision 210 (the next free number) carries the pipeline. It amends:
 
 - **176** (ticket types, design, `ready`). Names the poller as the intake
   agent's runtime; adds the `specified` and `needs-info` states and the
@@ -391,7 +391,7 @@ task 4; the operator launches in order until then.
 - Goal: tracker can add a label, list comments, edit a comment and read label
   events for any label with their actors.
 - Scope-in: `src/core/github-tracker.service.ts`, `src/core/types/tracker.types.ts`,
-  `test/core/github-tracker*.test.ts`
+  `test/unit/core/github-tracker*.test.ts`
 - Accept:
   - `Tracker` has `addLabel`, `listComments` (id, author login, `authorAssociation`,
     body, updated time) and `updateComment`, each an argv array pinned to one repo.
@@ -405,7 +405,7 @@ task 4; the operator launches in order until then.
 
 - Goal: a pure parser and renderer for the design note with its marker and slice list.
 - Scope-in: `src/core/design-note.utils.ts`, `src/core/types/design-note.types.ts`,
-  `test/core/design-note.utils.test.ts`
+  `test/unit/core/design-note.utils.test.ts`
 - Accept:
   - A note over 8,000 characters, a slice with over 20 criteria, or a format
     character is refused naming the field (187, 206).
@@ -420,7 +420,7 @@ task 4; the operator launches in order until then.
 - Goal: `ticket_runs` rows and a tick that applies T1 to T6, T9, T10, T12 and T14.
 - Scope-in: `src/core/ticket-poller.service.ts`, `src/core/ticket-run.repository.ts`,
   `src/core/migrations/**`, `src/core/types/ticket-run.types.ts`,
-  `test/core/ticket-poller*.test.ts`
+  `test/unit/core/ticket-poller*.test.ts`
 - Accept:
   - Against a fake tracker, a ticket labelled by a non-collaborator, a bot, or
     before its last edit is never read, commented on or launched.
@@ -436,7 +436,7 @@ task 4; the operator launches in order until then.
 
 - Goal: a task can name tasks it waits for, and launch refuses until they merge.
 - Scope-in: `src/core/*.repository.ts` limited to task files, `src/core/task-spec.utils.ts`,
-  `src/core/migrations/**`, `src/cli/index.ts`, `test/core/task-*.test.ts`
+  `src/core/migrations/**`, `src/cli/index.ts`, `test/unit/core/task-*.test.ts`
 - Accept:
   - `pup plan add --after <task>` stores an edge; an unknown task, a task
     already merged-in-error or a cycle is refused naming it.
@@ -450,7 +450,7 @@ task 4; the operator launches in order until then.
   and the command it ends with.
 - Scope-in: `src/core/profile-compiler.service.ts`, `src/claude/constants/model-ladder.constants.ts`,
   `src/core/constants/profile.constants.ts`, `src/core/specifier-kickoff.utils.ts`,
-  `src/cli/index.ts`, `test/core/profile-compiler*.test.ts`, `test/core/specifier-kickoff.test.ts`
+  `src/cli/index.ts`, `test/unit/core/profile-compiler*.test.ts`, `test/unit/core/specifier-kickoff.test.ts`
 - Accept:
   - The compiled specifier profile denies `Edit`, `Write`, `NotebookEdit` and
     `gh`, and its scope-in is empty.
@@ -466,7 +466,7 @@ task 4; the operator launches in order until then.
 
 - Goal: stored notes are posted or replaced in place, and `pup watch` runs a tick.
 - Scope-in: `src/core/ticket-poller.service.ts`, `src/cli/index.ts`,
-  `src/core/overlap.service.ts`, `src/core/constants/**`, `test/core/ticket-poller*.test.ts`
+  `src/core/overlap.service.ts`, `src/core/constants/**`, `test/unit/core/ticket-poller*.test.ts`
 - Accept:
   - With `tickets` off, `pup watch` makes no tracker call.
   - With it on, a tick runs every 60 s regardless of the 15 s sweep.
@@ -480,7 +480,7 @@ task 4; the operator launches in order until then.
 - Goal: an operator command that turns an approved design, or a no-design
   ticket, into tasks with the ticket copy of decision 187.
 - Scope-in: `src/cli/index.ts`, `src/core/ticket-plan.service.ts`,
-  `src/core/session-repository.ts`, `test/core/ticket-plan*.test.ts`
+  `src/core/session.repository.ts`, `test/unit/core/ticket-plan*.test.ts`
 - Accept:
   - Refused with its T9 reason when `design-approved` is missing, stale, not the
     operator's, or the note's `rev` differs.
@@ -491,7 +491,7 @@ task 4; the operator launches in order until then.
   - A one-slice ticket plans one task with no `design-approved` check; a
     called-from-a-session run is refused (decision 188).
 
-After task 7, the 187 and 176 amendments and decision 208 are written in
+After task 7, the 187 and 176 amendments and decision 210 are written in
 `docs/adr/` by a separate task (this spike may not edit it), and the `/triage`
 skill's steps 7 and 8 are rewritten to point at the pipeline (`.claude/`, also
 out of this spike's scope).
