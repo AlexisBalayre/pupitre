@@ -1,14 +1,13 @@
 # Best practices: Claude Code inside pupitre
 
 Each practice names the decision behind it; the reasoning and the measurements are in the
-[decision records](../adr/README.md), not repeated here. Figures quoted are the ones those
-decisions record from `pup usage` and `pup retro`.
+[decision records](../adr/README.md), not repeated here.
 
 ## Size the task, and scope it narrowly
 
-- **One task, one reviewable slice.** The gate refuses a diff over 600 source lines and a touched
-  file that gains more than 15 decision points (50 for a new file), and `--accept-debt` no longer
-  clears either. Oversize PRs drew the most review findings, so split before launching
+- **One task, one reviewable slice.** The gate flags a diff over 600 source lines and a touched
+  file that gains more than 15 decision points (50 for a new file). Today `--accept-debt` clears
+  both; decision 173 makes them hard once its rollout is on ([gate and debt](gate-and-debt.md)). Split before launching
   ([173](../adr/0173-the-diff-size-and-complexity-caps-are-hard-and.md), [110](../adr/0110-the-diff-size-flag-counts-source-lines-only.md)).
 - **Scope-in is the smallest set of globs that does the job.** The hook enforces it, and the
   kickoff lists the tracked files the globs match (at most 40), so a wide glob is also a longer
@@ -36,7 +35,7 @@ pup picks the model and effort from the tier ([92](../adr/0092-pup-routes-every-
 | standard | sonnet medium, sonnet high, opus high, opus xhigh |
 | critical | opus high, opus xhigh |
 
-A turn that died, a gate rejection or a stall climbs one rung; a block does not. Past the top rung
+A relaunch or respawn after a rejection, a dead turn or a stall climbs one rung, and so does a repeat fix round; a block does not. Past the top rung
 the task goes to you, except a security or wrong-result review finding, which the conductor runs
 once more at the top ([202](../adr/0202-the-conductor-runs-a-fix-round-past-the-top-rung-for.md)). pup never picks a Fable model or `max` effort. A worker's
 subagents are pinned to Haiku at low effort ([152](../adr/0152-a-worker-s-settings-pin-its-subagents-to-haiku-at-low.md)). Override a launch with `--model` and
@@ -45,9 +44,7 @@ the climb.
 
 ## Context hygiene
 
-- **Compaction is the default reset.** Blind-graded, compaction kept 78% of the facts and a
-  handoff respawn 80%, and resetting near 120k to 150k instead of 267k would have cut 23% of
-  spend ([200](../adr/0200-compaction-is-the-default-context-reset-respawn-is.md), [192](../adr/0192-pup-retro-replays-each-transcript-under-lower-compaction.md)). Keep `autoCompactWindow` at its 150000 default unless
+- **Compaction is the default reset.** The measurements behind it are in ([200](../adr/0200-compaction-is-the-default-context-reset-respawn-is.md), [192](../adr/0192-pup-retro-replays-each-transcript-under-lower-compaction.md)). Keep `autoCompactWindow` at its 150000 default unless
   you measure otherwise ([configuration](configuration.md#project-settings-pupitreprojectyml)).
 - **After a compaction the session re-reads live state** (branch, commits, gate result) from a
   hook, not from the summary ([199](../adr/0199-a-compaction-restarts-from-live-state-read-by-a.md)).
@@ -62,16 +59,14 @@ the climb.
 
 ## Parallelism and load
 
-The merge lock, not the number of windows, is the limit: over seven days 73 sessions took it for
-126 gates and 135 lands at about 6 to 7 minutes of tests each, and one land's timing test failed at
-a load average of 37 on 8 cores ([197](../adr/0197-launches-follow-the-merge-lock-s-backlog-and-the.md)). So launches follow the lock's backlog and the
+The merge lock, not the number of windows, is the limit ([197](../adr/0197-launches-follow-the-merge-lock-s-backlog-and-the.md)). Launches follow the lock's backlog and the
 machine's load, not a fixed count. Tune with `lockBacklogBudgetMinutes` and
 `loadAllowanceFactor` in `.pupitre/project.yml`. Related details:
 
 - Test runs queue for a few machine-wide slots and a gate's test run takes the machine
   ([96](../adr/0096-test-runs-queue-for-a-few-machine-wide.md), [140](../adr/0140-a-merge-gate-s-test-run-takes-the-machine-no.md)); workers run only related tests, at nice 10 ([94](../adr/0094-worker-windows-run-at-nice-10-workers-run.md)).
 - Launches also hold while the plan's usage windows run low ([156](../adr/0156-launches-hold-while-the-plan-s-usage-windows-run-low.md)).
-- A session awaiting review does not count against the limits ([144](../adr/0144-the-session-cap-counts-working-sessions-not-those.md)). Review promptly.
+- A session awaiting review does not count against the limits ([144](../adr/0144-the-session-cap-counts-working-sessions-not-those.md), [197](../adr/0197-launches-follow-the-merge-lock-s-backlog-and-the.md)). Review promptly.
 - `--over-cap` and `--over-limit` are overrides for you, not defaults.
 
 ## CLAUDE.md, AGENTS.md and conventions: keep them lean
@@ -98,15 +93,15 @@ Do not add hooks of your own to a profile that weaken these: `deny` can only add
 ## Subagents and skills
 
 Send where-is and how-does questions to an Explore subagent, which runs no git or shell and is
-pinned to Haiku at low effort: 38% of 3,218 worker turns were search or read turns, mostly on Opus
+pinned to Haiku at low effort: search and read turns were a large share of worker turns
 ([152](../adr/0152-a-worker-s-settings-pin-its-subagents-to-haiku-at-low.md), [129](../adr/0129-workers-and-the-conductor-learn-the-code-through-an-explore.md)). Dispatch independent work to subagents in their own worktree
 (`isolation: worktree`, see [workflow](../workflow.md)). In your own Claude window, link the shipped
 `pup` skill so you drive pup in conversation ([70](../adr/0070-the-operator-console-is-a-plain-claude-code.md)).
 
 ## Prompt caching and where the spend goes
 
-A worker's prompt cache lives an hour. One week had 93 worker requests after a longer idle that
-re-wrote the whole context at the write price: 8.6M tokens, about 84 USD. `pup watch` therefore
+A worker's prompt cache lives an hour; a request after a longer idle re-writes the whole context
+at the write price. `pup watch` therefore
 holds a waiting worker's cache from 50 minutes of quiet ([179](../adr/0179-pup-watch-holds-a-waiting-worker-s-prompt-cache.md)); run `pup watch --start`
 whenever sessions wait on you. To see the spend:
 
