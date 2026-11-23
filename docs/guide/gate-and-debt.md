@@ -22,10 +22,10 @@ flowchart TD
   scope --> caps{diff-size over 600 source lines<br/>or complexity over cap}
   caps -->|yes| rej
   caps --> soft{duplication, dead exports,<br/>coverage flagged?}
-  soft -->|yes, no --accept-debt| rej
+  soft -->|yes, no --accept-debt| refuse
   soft -->|clean, or accepted| kt[Knowledge transaction]
   kt --> out([merged, or PR opened])
-  refuse --> endr
+  refuse --> kept([session keeps its state])
   rej[Rejected: report re-steered into the session;<br/>blocked after 2] --> endr([back to running])
 ```
 
