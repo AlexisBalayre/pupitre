@@ -1,0 +1,81 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-23T09:08:58.081Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "45144216446",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/45144216446",
+  "actor": "AlexisBalayre",
+  "commit_sha": "ef7a74121cec4ecba6c84c8038494fa0ac54377a",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 436,
+  "action": "review",
+  "reviewers_spawned": [
+    "docs",
+    "conventions"
+  ],
+  "reviewers_returned": [
+    "docs",
+    "conventions"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "context",
+    "maintainability",
+    "spec",
+    "simplicity",
+    "guards",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Reviewer briefs pointed to `.claude-pr/skills/pr-description/SKILL.md`, but the PR's preserved copy lives at `.claude-pr/.claude/skills/pr-description/SKILL.md`. Both reviewers fell back to `gh pr diff` plus the base copy. The orchestrator then grepped the PR copy for leftover tracker/`session.md`/`Closes` wording and found none, which closes the gap."
+    },
+    {
+      "component": "orchestrator",
+      "description": "Gated roster for this docs-only skill change (one markdown file edited, one template deleted, no logic, no trust boundary, no workflow, no spec source through closing keywords): only docs and conventions ran. Correctness, security, context, simplicity, guards, workflow-safety, maintainability and spec were skipped as untouched."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.5014557,
+  "duration_ms": 47630,
+  "num_turns": 9,
+  "tokens": {
+    "input": 12,
+    "output": 3610,
+    "cache_read": 242403,
+    "cache_creation": 32439,
+    "total": 278464
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 12,
+      "output": 3610,
+      "cache_read": 242403,
+      "cache_creation": 32439,
+      "cost_usd": 0.38024059999999993
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 20,
+      "output": 4145,
+      "cache_read": 108001,
+      "cache_creation": 27570,
+      "cost_usd": 0.12121509999999999
+    }
+  ],
+  "permission_denials": []
+}
