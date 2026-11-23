@@ -618,8 +618,9 @@ Scope-in: `src/core/web-dashboard-projects*.service.ts`, `src/cli/project.utils.
 - Nothing from a project but name, state and counts reaches the page; no link and
   no button carries a token or acts on another project; the page tells the operator
   to run `pup --project <id> dashboard`.
-- A dormant project is hidden unless the page's *show dormant* link is followed, as
-  `pup project list` does.
+- A dormant project is hidden unless the page's *show dormant* link is followed. This
+  is the page's own choice: `pup project list` shows every project and marks a
+  dormant one `dormant since <date>`.
 - The consolidated decision covers this amendment of 91 (the page's reach beyond one project's store, read-only).
 
 ## Risks
