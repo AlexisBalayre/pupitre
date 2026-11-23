@@ -90,3 +90,4 @@ You win twice: fewer tokens, and a sharper hook for the agent to hang its thinki
 - **Scope tools with `allowed-tools`** frontmatter when a skill touches external systems (GitHub Issues through `gh`, code-quality platforms).
 - **No em/en dashes in prose you write** (titles exempt); use commas, colons, or parentheses.
 - **Description limits**: third person, max 1024 chars, and one line for user-invoked skills.
+- **A commit that edits a skill file updates its row in `docs/skills-upstream.md`**, and a new skill file gets a row. `bash scripts/skills-drift.sh` fails on a file with no row.
