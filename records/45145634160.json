@@ -1,0 +1,88 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-23T09:21:08.923Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "45145634160",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/45145634160",
+  "actor": "AlexisBalayre",
+  "commit_sha": "c211ccb4f0b831c33522e6897087b3dc79e8c860",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 441,
+  "action": "review",
+  "reviewers_spawned": [
+    "docs",
+    "conventions"
+  ],
+  "reviewers_returned": [
+    "docs",
+    "conventions"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "context",
+    "maintainability",
+    "spec",
+    "simplicity",
+    "guards",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": ".claude/agents/review-conventions.md",
+      "line": "14",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "pre-existing",
+      "description": "review-conventions.md still says there are 'exactly three' convention files although docs/conventions/shell.md now exists. It is stale for the same reason as the convention-checker line this PR fixes, so the conventions reviewer could treat shell.md as a doc it doesn't know.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Same head re-reviewed (round 2, prior record 45145629988 had no importants). Gated roster for a one-line, prose-only change to an agent prompt: correctness, security, context, simplicity, guards, workflow-safety, maintainability and spec were skipped. The diff has no logic, trust boundary, infra, new construct, source file or workflow, and the PR names no spec source. The consolidator was skipped because only one finding came back and there was nothing to group."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.40816009999999997,
+  "duration_ms": 36030,
+  "num_turns": 10,
+  "tokens": {
+    "input": 10,
+    "output": 3255,
+    "cache_read": 192029,
+    "cache_creation": 30772,
+    "total": 226066
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 10,
+      "output": 3255,
+      "cache_read": 192029,
+      "cache_creation": 30772,
+      "cost_usd": 0.3497218
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 10,
+      "output": 1505,
+      "cache_read": 49108,
+      "cache_creation": 15383,
+      "cost_usd": 0.058438300000000006
+    }
+  ],
+  "permission_denials": []
+}
