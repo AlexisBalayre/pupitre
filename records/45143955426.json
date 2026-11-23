@@ -1,0 +1,91 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-23T09:07:59.699Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "45143955426",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/45143955426",
+  "actor": "AlexisBalayre",
+  "commit_sha": "db419254464a277c668a190379e9ab53d9308ee8",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 434,
+  "action": "review",
+  "reviewers_spawned": [
+    "docs",
+    "conventions",
+    "context"
+  ],
+  "reviewers_returned": [
+    "docs",
+    "conventions",
+    "context"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "maintainability",
+    "spec",
+    "simplicity",
+    "guards",
+    "workflow-safety"
+  ],
+  "review_mode": "incremental",
+  "incremental_from_sha": "dc7b1719baeb4527c6d45486beb143c012c66baf",
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": ".claude/skills/wayfinder/SKILL.md",
+      "line": "83",
+      "description": "The claim read-back (\"a second assignee means another session claimed it too\") cannot detect a collision between sessions on the same GitHub account: both `--add-assignee @me` add the same login, so both sessions read back one assignee and work the same ticket.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": ".claude/skills/wayfinder/SKILL.md",
+      "line": "67",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The Tickets section still says the assignee is the claim, but the updated Claim bullet (line 83) says the assignee alone cannot tell sessions apart and the earliest `claimed:` comment decides. Line 138 (\"assign it to yourself before any work\") has the same gap. Rewrite both to describe the assignee-plus-marker-comment protocol, or point to the Claim bullet.",
+      "body": "The new [Claim bullet](https://github.com/AlexisBalayre/pupitre/blob/db419254464a277c668a190379e9ab53d9308ee8/.claude/skills/wayfinder/SKILL.md#L83) says \"Sessions share one GitHub login, so the assignee alone cannot tell two claimers apart\". It now settles a claim by the earliest `claimed:` comment. Two other places in the file still describe the old assignee-only claim:\n\n- [Line 67](https://github.com/AlexisBalayre/pupitre/blob/db419254464a277c668a190379e9ab53d9308ee8/.claude/skills/wayfinder/SKILL.md#L67) defines the claim: \"That assignee _is_ the claim: an open, unassigned ticket is unclaimed.\"\n- [Line 138](https://github.com/AlexisBalayre/pupitre/blob/db419254464a277c668a190379e9ab53d9308ee8/.claude/skills/wayfinder/SKILL.md#L138) is the step an agent actually runs in *Work through the map*: \"**Claim it**: assign it to yourself before any work.\"\n\nLine 138 reads as a complete instruction and does not point to line 83, and line 67 tells the agent the assignee settles the claim. So two sessions on the same login that follow step 2 both assign the ticket, each sees itself as the assignee, and both work it. Neither posts the marker or reads the comments back. That is the race the line-83 change was meant to close.\n\nKeep the protocol in one place. On line 67, drop \"That assignee _is_ the claim\" and point to the Claim bullet in [Wayfinding operations](#wayfinding-operations). On line 138, write something like \"**Claim it** (the Claim operation: assign, post the `claimed:` marker, read back) before any work.\" Line 82's frontier filter on assignees can stay, because a claimer still assigns first.",
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.7374098000000001,
+  "duration_ms": 86420,
+  "num_turns": 16,
+  "tokens": {
+    "input": 16,
+    "output": 7139,
+    "cache_read": 357710,
+    "cache_creation": 43023,
+    "total": 407888
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 16,
+      "output": 7139,
+      "cache_read": 357710,
+      "cache_creation": 43023,
+      "cost_usd": 0.55857
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 24,
+      "output": 4448,
+      "cache_read": 66843,
+      "cache_creation": 51051,
+      "cost_usd": 0.1788398
+    }
+  ],
+  "permission_denials": []
+}
