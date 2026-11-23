@@ -1,0 +1,152 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-23T14:46:40.413Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "45197253371",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/45197253371",
+  "actor": "AlexisBalayre",
+  "commit_sha": "90abfdcd46ad3f2cef4609d5b6bea249f6669dfc",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 454,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "correctness",
+    "context",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "correctness",
+    "context",
+    "conventions",
+    "simplicity",
+    "guards",
+    "docs"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": ".github/ISSUE_TEMPLATE/follow-up.yml",
+      "line": "12",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The new intro line in all five forms says any one-word answer counts as vague. Intake exempts its terse fields from that rule (src/core/ticket-intake.utils.ts:37,43-44,53,58,65,68), so a lone `#422` in Source PR, `2h` in Time box, or one path in Suspected area, Affected area, Files in scope or Form of the answer passes. follow-up.yml's own Source PR asks for a one-word `#NNN`, which contradicts its header. The rubrics already add 'where the field asks for a sentence'; the five form headers should say the same.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "scripts/ticket-check.test.sh",
+      "line": "77-80",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The 'an empty list item is vague' case passes because of PLACEHOLDER's `-+` branch, not the empty-list-item rule: `'- '` trims to `-`. Deleting EMPTY_LIST_ITEM in ticket-intake.utils.ts would not fail it, and the comment above it claims coverage the test lacks. Use a value such as `$'src/a.ts\\n- '` so only the empty-list-item rule can flag it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "scripts/ticket-check.sh",
+      "line": "15",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`[ -f \"$file\" ]` is false for a pipe, so `ticket-check.sh bug <(gh issue view 12 --json body -q .body)` is refused with 'no file at /dev/fd/63' and exit 2. `[ -r \"$file\" ] && [ ! -d \"$file\" ]` would accept it and still reject a missing path.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/tickets/chore-refactor.md",
+      "line": "15",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The Proof bullet ('the checks that exist today, tests, commands or outputs, and pass before and after without edits') reads as a garbled list. The form's wording ('Checks that exist today and pass before and after without edits: test files, commands or outputs') is clearer, and the rubric should use it.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "scripts/ticket-check.sh",
+      "line": "34",
+      "area": "simplicity",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The INTAKE_MODULE and TICKET_TYPE env vars could be positional arguments. `node -e \"$check\" <module> <type>` exposes them as process.argv[1] and [2], which removes the env-var prefix.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "src/core/ticket-intake.utils.ts",
+      "line": "238",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "pre-existing",
+      "description": "The Estimate parse keeps only the first number, so '400-800 lines' reads as 400 and '1.2k lines' reads as 1. The size trigger (> 600), and the design it forces, then stay off. Every form now renders an `### Estimate` heading, so this parse runs on every form-filed ticket.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Skipped review-security: the only executable change is a local dev shell script that passes its arguments to node through env vars, with no trust boundary. Skipped review-workflow-safety: no .github/workflows change. Skipped review-maintainability: off the default roster. Skipped review-spec: there is no --spec and no closing issue reference; the PR body's goal was used only as intent. Dropped a simplicity nit proposing deletion of the grep divergence guard in ticket-check.test.sh: it had no concrete cost, and the task asked for that guard."
+    }
+  ],
+  "duplicates_merged": 2,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.8879834250000003,
+  "duration_ms": 144854,
+  "num_turns": 15,
+  "tokens": {
+    "input": 12,
+    "output": 11707,
+    "cache_read": 277173,
+    "cache_creation": 49442,
+    "total": 338334
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 46,
+      "output": 29531,
+      "cache_read": 588279,
+      "cache_creation": 115207,
+      "cost_usd": 1.4328208000000002
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 50,
+      "output": 14042,
+      "cache_read": 352598,
+      "cache_creation": 111402,
+      "cost_usd": 0.4542848
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 476,
+      "cache_read": 0,
+      "cache_creation": 5117,
+      "cost_usd": 0.000877825
+    }
+  ],
+  "permission_denials": []
+}
