@@ -1,0 +1,163 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-23T10:37:42.801Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "45157076280",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/45157076280",
+  "actor": "AlexisBalayre",
+  "commit_sha": "689600db648fa027942705f6cfcc0743e5213908",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 444,
+  "action": "review",
+  "reviewers_spawned": [
+    "correctness",
+    "conventions",
+    "simplicity",
+    "docs",
+    "guards"
+  ],
+  "reviewers_returned": [
+    "correctness",
+    "conventions",
+    "simplicity",
+    "docs",
+    "guards"
+  ],
+  "reviewers_skipped": [
+    "security",
+    "context",
+    "maintainability",
+    "spec",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "scripts/skills-drift.sh",
+      "line": "40",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "important",
+      "description": "A status cell that is not exactly `verbatim`, `adapted` or `local only` (for example `Verbatim`) skips the deviation check and the verbatim check. The script still exits 0.",
+      "body": "**Unknown ledger statuses silently skip every check.** The script only ever compares `status` to three exact strings, and anything else falls through as \"not adapted, not verbatim\":\n\n```bash\nif [ \"$status\" = adapted ]; then ... fi              # deviation check skipped\n[ -n \"$up\" ] && [ \"$status\" != \"local only\" ] || continue\n...\nif [ \"$status\" = verbatim ]; then ... else echo \"$rel: $changed changed lines\"; fi\n```\n\n**Trigger:** `docs/skills-upstream.md` defines a closed set of statuses and says they are edited by hand (\"A commit that edits a skill file updates its row in the same commit\"). Take a row typed `Verbatim`, or one with a stray qualifier, whose file has drifted:\n- With a checkout, the script prints `X changed lines` the way it does for an adapted row, and it never calls `bad`.\n- Without a checkout, it checks nothing for that row.\n\nEither way the script exits 0, so it misses exactly the drift it exists to catch. The tests do not cover an unknown status, and the script stays out of CI, so nothing else catches it.\n\n**Fix:** reject unknown statuses right after the gone-file check. A test case (a `Verbatim` row expecting exit 1) would lock it in.\n\nhttps://github.com/AlexisBalayre/pupitre/blob/689600db648fa027942705f6cfcc0743e5213908/scripts/skills-drift.sh#L40-L46",
+      "suggestion": "  [ -f \"$SKILLS_DIR/$rel\" ] || { bad \"$rel is in $LEDGER but gone\"; continue; }\n  case $status in verbatim|adapted|\"local only\") ;; *) bad \"$rel has unknown status '$status'\"; continue ;; esac"
+    },
+    {
+      "file": "scripts/skills-drift.sh",
+      "line": "22-25",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "`--since-pin` always exits 0, even when `git diff` fails (pin missing from a shallow clone, or a path that is not a repo), so a failure looks like \"nothing changed upstream\". Use `exec git -C \"$up\" diff --name-only \"$pin\" HEAD -- skills` in place of the git line and `exit 0`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "scripts/skills-drift.sh",
+      "line": "1",
+      "area": "correctness",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "The script is committed as 100644, but `docs/skills-upstream.md` line 3 says to run `scripts/skills-drift.sh <upstream-checkout>` directly, which fails with \"Permission denied\". Either `chmod +x` it or write the invocation as `bash scripts/skills-drift.sh`, like `adr-index.sh`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "scripts/skills-drift.sh",
+      "line": "23",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "`--since-pin` uses `git diff --name-only` with rename detection on. If upstream moves a pinned file, the output lists only the new path, never the upstream path the ledger records, so a re-sync can miss that a tracked file moved. Add `--no-renames`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "scripts/skills-drift.test.sh",
+      "line": "14",
+      "area": "correctness",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The fixture's `git commit` calls (lines 14 and 61) do not override `commit.gpgsign`. On a machine with global signing and a signer that is unavailable or prompts, the commit fails, the pin is empty, and every case fails with \"has no pinned commit\". Add `-c commit.gpgsign=false`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "scripts/skills-drift.sh",
+      "line": "31",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The comment `# Every local file has a row.` restates the loop below it and its `bad \"... has no row\"` message. Under the AGENTS.md comment rule it should be deleted.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "scripts/skills-drift.sh",
+      "line": "41",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The comment `# one deviation bullet at least, under the file's own heading` narrates the awk line and the `bad \"... no deviation line\"` message after it. Under the AGENTS.md comment rule it should be deleted.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "review-security skipped: the change is a dev-only shell script that reads a ledger and an upstream checkout path the operator passes in. It crosses no trust boundary. review-context, review-spec (no closing issue or --spec; the acceptance criteria are only in the PR body), review-workflow-safety and review-maintainability did not meet their gates."
+    },
+    {
+      "component": "orchestrator",
+      "description": "Validation confirmed the `--since-pin` exit-code finding but rated it minor: no automation reads the exit code, and stderr shows git's fatal error. It was downgraded from important to nit."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 1,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.5098900249999996,
+  "duration_ms": 208557,
+  "num_turns": 13,
+  "tokens": {
+    "input": 12,
+    "output": 10368,
+    "cache_read": 260480,
+    "cache_creation": 45472,
+    "total": 316332
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 34,
+      "output": 27327,
+      "cache_read": 402843,
+      "cache_creation": 104120,
+      "cost_usd": 1.2842605999999994
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 30,
+      "output": 5665,
+      "cache_read": 180906,
+      "cache_creation": 60037,
+      "cost_usd": 0.2248931
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 229,
+      "cache_read": 0,
+      "cache_creation": 4973,
+      "cost_usd": 0.000736325
+    }
+  ],
+  "permission_denials": []
+}
