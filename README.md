@@ -133,6 +133,20 @@ If you only want to see six terminals at once, one of the multiplexers is lighte
 
 Pupitre has been developed with Pupitre since its second week. Its own pull requests go through its own gate, its backlog is driven by its own conductor, and every design choice that mattered is a numbered file in [`docs/adr/`](docs/adr/README.md), including the ones that went wrong first. If you want to see what a session-hardened merge gate looks like, read the decisions on scope hooks, push-target pinning and the debt ratchet.
 
+## Guide
+
+New here? The [guide](docs/guide/README.md) is the short path in.
+
+| | |
+| --- | --- |
+| [Getting started](docs/guide/getting-started.md) | Install, `pup init`, your first task end to end |
+| [Concepts](docs/guide/concepts.md) | Session, worktree, conductor, gate, debt, profile, intent, ledger |
+| [Command guide](docs/guide/commands.md) | Every command by workflow, with the PR loop |
+| [The gate and debt](docs/guide/gate-and-debt.md) | What `pup merge` checks and what can be accepted as debt |
+| [Configuration and profiles](docs/guide/configuration.md) | Project settings, profile layers, what is compiled per session |
+| [Best practices](docs/guide/best-practices.md) | Using Claude Code well inside Pupitre: fast, accurate, cheap |
+| [Troubleshooting](docs/guide/troubleshooting.md) | Refusals and stuck states, and what to do |
+
 ## Design docs
 
 | | |
