@@ -31,7 +31,7 @@ registry; a dormant project is hidden unless you pass `--dormant` ([decision 62]
 
 | Command | Use |
 | --- | --- |
-| `pup new <goal> --scope ... --accept ...` | Create the task, compile a profile, make the worktree, start the session |
+| `pup new <goal> --scope ... --accept ...` | Create the task, compile a profile, make the worktree, start the session (*refuses worker sessions*) |
 | `pup launch <task>` | Start a session for a task already in the backlog (*operator or conductor*) |
 | `pup conductor start` | Start the conductor; `stop`, `tell <message>` and `recap` also take an action ([decision 85](../adr/0085-pup-attach-hands-the-terminal-to-the-conductor.md)) |
 | `pup attach [session]` | Put this terminal on the conductor's or a session's tmux window; Ctrl-b d detaches |
@@ -50,7 +50,7 @@ plan's usage windows are over their limits; `--over-cap` and `--over-limit` over
 | `pup answer <target> <reply>` | Answer a session's open question, or the conductor's with target `conductor`; a reply may be an option's number (*operator*; [decision 93](../adr/0093-a-question-offers-numbered-options-and-pup-answer.md)) |
 | `pup unblock <session> [--reason <text>]` | Return a blocked session to running once you dealt with the block |
 | `pup respawn <session>` | Ask for a handoff, then relaunch on a fresh context (*operator*; [decision 200](../adr/0200-compaction-is-the-default-context-reset-respawn-is.md)) |
-| `pup kill <session> [--respawn]` | Stop a session (*operator*); `--respawn` relaunches it fresh with no handoff |
+| `pup kill <session> [--respawn]` | Stop a session (*operator or conductor*); `--respawn` relaunches it fresh with no handoff (*operator*) |
 
 ## Status
 

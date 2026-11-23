@@ -123,8 +123,7 @@ change to routing, compaction or the kickoff by the numbers it moves ([178](../a
 A rejected session is re-steered with the gate report, at most twice before it is blocked for you
 ([7](../adr/0007-rejection-re-steer-is-capped-at-2.md), [15](../adr/0015-rebase-conflict-re-steers-count-toward-the-reject.md)): at that point steer with a different instruction or split the task
 rather than a third retry. For the PR, the CI review runs at opening and on demand
-([151](../adr/0151-ci-review-runs-at-opening-and-on-demand-only.md)); `pup fix` hands open threads back, and round 2 is the last: whatever is still open
-becomes a follow-up ticket ([174](../adr/0174-review-runs-in-stages-and-an-important-finding-needs.md), [90](../adr/0090-pup-fix-session-hands-the-ci-review-s.md)). Count every unresolved thread as open
+([151](../adr/0151-ci-review-runs-at-opening-and-on-demand-only.md)); `pup fix` hands open threads back to the session's worker ([90](../adr/0090-pup-fix-session-hands-the-ci-review-s.md)). Once a project turns on the staged review of [174](../adr/0174-review-runs-in-stages-and-an-important-finding-needs.md), round 2 is the last and leftovers become follow-up tickets, but a Security or Data Protection high is never deferred. Count every unresolved thread as open
 ([163](../adr/0163-every-unresolved-non-outdated-review-thread-counts-as-open.md)), and do not trade a thread for a flag with `--accept-debt` ([173](../adr/0173-the-diff-size-and-complexity-caps-are-hard-and.md)).
 
 ## One fresh session per task

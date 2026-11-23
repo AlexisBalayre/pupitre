@@ -14,7 +14,7 @@ flowchart TD
   clean --> base{fresh-base<br/>rebase onto target;<br/>merge for an open PR branch}
   base -->|conflict| rej
   base --> adr{adr-number free?}
-  adr -->|taken| rej
+  adr -->|taken| refuse[Refused: no rejection counted,<br/>nothing steered<br/>decision 146]
   adr --> hard[build, test, lint<br/>plus nested packages' test and typecheck]
   hard -->|fail| rej
   hard --> scope{scope-audit<br/>diff vs scope-in and scope-out}
@@ -25,6 +25,7 @@ flowchart TD
   soft -->|yes, no --accept-debt| rej
   soft -->|clean, or accepted| kt[Knowledge transaction]
   kt --> out([merged, or PR opened])
+  refuse --> endr
   rej[Rejected: report re-steered into the session;<br/>blocked after 2] --> endr([back to running])
 ```
 

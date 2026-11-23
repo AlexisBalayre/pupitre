@@ -43,7 +43,7 @@ best-effort and re-checked after each call ([decision 6](../adr/0006-bash-scope-
 operator power except the merge ([decision 47](../adr/0047-a-conductor-session-is-the-operator-s-delegate.md)).
 
 **Operator.** You, or a Claude window you opened by hand. Some commands refuse everyone else:
-`pup launch` and `pup kill` ([42](../adr/0042-pup-launch-and-pup-kill-are-operator-only.md)), `pup merge` (the local form; the conductor may gate with `--pr`, [75](../adr/0075-the-conductor-gates-a-branch-with-pup-merge.md)) and `pup respawn` ([44](../adr/0044-a-session-reports-only-its-own-state-and.md)),
+`pup kill --respawn`, `pup merge` (the local form; the conductor may gate with `--pr`, [75](../adr/0075-the-conductor-gates-a-branch-with-pup-merge.md)) and `pup respawn` ([44](../adr/0044-a-session-reports-only-its-own-state-and.md)),
 `pup audit` ([48](../adr/0048-pup-audit-is-operator-only-the-thing-that.md)), `pup init` ([64](../adr/0064-pup-init-is-operator-only-like-pup-audit.md)), `pup dashboard` ([91](../adr/0091-pup-dashboard-serves-a-read-only-live-page.md)),
 `pup usage` ([122](../adr/0122-pup-usage-reports-where-the-claude-usage-went-from-the.md)) and `pup retro` ([150](../adr/0150-pup-retro-reads-the-claude-code-traces-locally-and.md)).
 
@@ -89,6 +89,7 @@ stateDiagram-v2
   blocked --> running: pup unblock
   blocked --> killed
   merged --> running: pup fix
+  running --> merged: pup kill of a fix round
   merged --> [*]
   killed --> [*]
   state "awaiting-review" as awaiting_review
