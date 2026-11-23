@@ -11,7 +11,7 @@ Verify the specified files against the project's architectural and style guideli
 
 ## 1. Contextual Mapping
 
-`docs/conventions/` contains exactly three files — `general.md`, `naming.md`, `testing.md`. There is no per-area convention doc. Do not cite one that does not exist.
+`docs/conventions/` contains exactly four files — `general.md`, `naming.md`, `shell.md`, `testing.md`. `shell.md` is the obligations for a session's own Bash calls, not a rule for source files, so do not audit a file against it. There is no per-area convention doc. Do not cite one that does not exist.
 
 For architectural obligations, map the path to its design doc:
 
