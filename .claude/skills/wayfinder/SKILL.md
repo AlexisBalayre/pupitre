@@ -1,10 +1,10 @@
 ---
 name: wayfinder
-description: Plan a huge chunk of work (more than one agent session can hold) as a shared map of decision tickets on your issue tracker, and resolve them one at a time until the way to the destination is clear.
+description: Plan a huge chunk of work (more than one agent session can hold) as a shared map of decision tickets as GitHub issues, and resolve them one at a time until the way to the destination is clear.
 disable-model-invocation: true
 ---
 
-A loose idea has arrived, too big for one agent session, and wrapped in fog: the way from here to the **destination** isn't visible yet. Wayfinding is about finding that way, not charging at the destination. This skill charts the way as a **shared map** on the repo's issue tracker, then works its **decision tickets** (questions whose resolution is a decision, not slices of a build to execute) one at a time until the route is clear.
+A loose idea has arrived, too big for one agent session, and wrapped in fog: the way from here to the **destination** isn't visible yet. Wayfinding is about finding that way, not charging at the destination. This skill charts the way as a **shared map** of GitHub issues, then works its **decision tickets** (questions whose resolution is a decision, not slices of a build to execute) one at a time until the route is clear.
 
 The destination varies per effort, and naming it is the first act of charting: it shapes every ticket. It might be a spec to hand off and iterate on, a decision to lock before planning starts, or a change made in place like a data-structure migration. The map is domain-agnostic: engineering work, course content, whatever fits the shape.
 
@@ -18,11 +18,11 @@ Every map and ticket is an issue, so it has a **name**: its title. In everything
 
 ## The Map
 
-The map is a single issue on this repo's issue tracker, labelled `wayfinder:map`, the canonical artifact. Its tickets are child issues of the map.
+The map is a single GitHub issue on this repo, labelled `wayfinder:map`, the canonical artifact. Its tickets are child issues of the map.
 
 The map is an **index**, not a store. It lists the decisions made and points at the tickets that hold their detail; a decision lives in exactly one place, its ticket, so the map never restates it, only gists it and links.
 
-**Where the map, its child tickets, blocking, and frontier queries physically live is tracker-specific**: see [Wayfinding operations](#wayfinding-operations).
+The commands for the map, its child tickets, blocking and the frontier are in [Wayfinding operations](#wayfinding-operations).
 
 ### The map body
 
@@ -54,7 +54,7 @@ The whole map at low resolution, loaded once per session. Open tickets are **not
 
 ### Tickets
 
-Each ticket is a **child issue** of the map; the tracker's issue id is its identity. Its body is the question, sized to one 100K token agent session:
+Each ticket is a **sub-issue** of the map; its issue number is its identity. Its body is the question, sized to one 100K token agent session:
 
 ```markdown
 ## Question
@@ -64,33 +64,26 @@ Each ticket is a **child issue** of the map; the tracker's issue id is its ident
 
 Each ticket carries a `wayfinder:<type>` label, one of `research`, `prototype`, `grilling`, `task` (see [Ticket Types](#ticket-types)).
 
-A session **claims** a ticket by assigning it to the dev driving the map, **first**, before any work, so concurrent sessions skip it. That assignee _is_ the claim: an open, unassigned ticket is unclaimed.
+A session **claims** a ticket **first**, before any work, so concurrent sessions skip it, by the Claim operation in [Wayfinding operations](#wayfinding-operations): it assigns the ticket and posts a marker comment, and the earliest marker holds it. An open, unassigned ticket is unclaimed.
 
-Blocking uses the tracker's **native** dependency relationship: essential because it renders the frontier _visually_ in the tracker's own UI, so the human sees what's takeable without opening the map. Only a tracker that lacks native blocking falls back to a body convention. A ticket is **unblocked** when every ticket blocking it is closed; the **frontier** is the open, unblocked, unclaimed children, the edge of the known.
+Blocking uses GitHub's **native** dependency relationship: essential because it renders the frontier _visually_ in GitHub's own UI, so the human sees what's takeable without opening the map. A ticket is **unblocked** when every ticket blocking it is closed; the **frontier** is the open, unblocked, unclaimed children, the edge of the known.
 
 The answer isn't part of the body; it's recorded on resolution (see [Work through the map](#work-through-the-map)). Assets created while resolving a ticket are linked from the issue, not pasted in.
 
 ## Wayfinding operations
 
-With an issue-tracker MCP server configured, use it; otherwise fall back to local markdown.
+GitHub Issues through `gh`, which infers the repo from the checkout. There are no ids to configure. The labels `wayfinder:map`, `wayfinder:research`, `wayfinder:prototype`, `wayfinder:grilling` and `wayfinder:task` must exist: check with `gh label list`, and if one is missing tell the operator instead of creating it. Write every body to a file outside the repo and pass it with `--body-file`; never splice text into the command line.
 
-**Issue-tracker MCP.** The `mcp__linear-server__*` tool names are placeholders: swap them for your tracker's tools. Team, project, and assignee IDs come from `.env` (`TRACKER_TEAM_ID`, `TRACKER_PROJECT_ID`, `TRACKER_ASSIGNEE_ID`), never hardcoded.
+Sub-issue and blocking relations have no `gh issue` flag, so they go through `gh api`, which takes an issue's numeric `id` (not its number): `gh api repos/{owner}/{repo}/issues/<n> --jq .id`.
 
-- **Map**: one issue labelled `wayfinder:map`, created with `mcp__linear-server__save_issue`.
-- **Child ticket**: an issue whose `parentId` is the map, labelled `wayfinder:<type>`.
-- **Blocking**: the native relation, set through `save_issue`'s `blockedBy` field. A ticket is unblocked when every blocker is closed.
-- **Frontier query**: `mcp__linear-server__list_issues` for the map's open children; drop any with an open blocker or an assignee; first in map order wins.
-- **Claim**: `save_issue` with the assignee set to `${TRACKER_ASSIGNEE_ID}`, the session's first write.
-- **Resolve**: post the answer as a comment (`mcp__linear-server__create_comment`), move the issue to a closed state with `save_issue`, then append a context pointer (gist + link) to the map's Decisions-so-far.
+- **Map**: one issue labelled `wayfinder:map`, `gh issue create --label wayfinder:map --title "<destination, short>" --body-file <file>`.
+- **Child ticket**: create the issue with `--label wayfinder:<type>`, then attach it to the map: `gh api repos/{owner}/{repo}/issues/<map-number>/sub_issues -X POST -F sub_issue_id=<child-id>`. The map's open children are `gh api repos/{owner}/{repo}/issues/<map-number>/sub_issues`.
+- **Blocking**: the native relation, `gh api repos/{owner}/{repo}/issues/<n>/dependencies/blocked_by -X POST -F issue_id=<blocker-id>`. A ticket is unblocked when every issue in `gh api repos/{owner}/{repo}/issues/<n>/dependencies/blocked_by` is closed.
+- **Frontier query**: the map's open sub-issues, minus any with an open blocker or an assignee; first in map order wins.
+- **Claim**: `gh issue edit <n> --add-assignee @me`, then post a claim comment with a marker unique to this session (`gh issue comment <n> --body "claimed: <your session id or a random token>"`), as the session's first writes. Sessions share one GitHub login, so the assignee alone cannot tell two claimers apart. Read the comments back: the earliest `claimed:` comment holds the ticket, and if it is not yours, leave yours and take the next ticket.
+- **Resolve**: post the answer with `gh issue comment <n> --body-file <file>`, close it with `gh issue close <n>`, then append a context pointer (gist + link) to the map's Decisions-so-far with `gh issue edit <map> --body-file <file>`. A resolution that binds the codebase (a persisted noun, a gate rule, a module boundary) also gets its decision file under `docs/adr/` through the "domain-modeling" skill; the map links it, it does not restate it.
 
-**Local markdown** (the case here: there is no issue tracker in this repo, and `pup plan` is a backlog of executable tasks, not decision tickets). The map is a file with one child file per ticket, under `docs/plans/<effort>/`. That path is local-only: `scripts/pre-commit` refuses to commit it.
-
-- **Map**: `docs/plans/<effort>/map.md` (the map body above).
-- **Child ticket**: `docs/plans/<effort>/issues/NN-<slug>.md`, numbered from `01`, with the question in the body. A `Type:` line records the ticket type (`research`/`prototype`/`grilling`/`task`); a `Status:` line records `claimed`/`resolved`.
-- **Blocking**: a `Blocked by: NN, NN` line near the top. A ticket is unblocked when every file it lists is `resolved`.
-- **Frontier**: scan `docs/plans/<effort>/issues/` for files that are open, unblocked, and unclaimed; first by number wins.
-- **Claim**: set `Status: claimed` and save before any work.
-- **Resolve**: append the answer under an `## Answer` heading, set `Status: resolved`, then append a context pointer (gist + link) to the map's Decisions-so-far in `map.md`. A resolution that binds the codebase (a persisted noun, a gate rule, a module boundary) also gets its numbered entry in `docs/09-decisions.md` through the "domain-modeling" skill; the map links it, it does not restate it.
+Planning a build is `/to-tickets`' job, not this map's: a map's tickets are decisions, and `pup plan` holds the executable tasks.
 
 ## Ticket Types
 
@@ -139,12 +132,12 @@ User invokes with a loose idea.
 
 ### Work through the map
 
-User invokes with a map (URL, issue id, or `map.md` path). A ticket is **optional**: without one, you pick the next decision, not the user.
+User invokes with a map (URL or issue number). A ticket is **optional**: without one, you pick the next decision, not the user.
 
 1. Load the **map**: the low-res view, not every ticket body.
-2. Choose the ticket. If the user named one, use it. Otherwise take the first frontier ticket in order. **Claim it**: assign it to yourself before any work.
-3. Resolve it as the type its `wayfinder:<type>` label (locally, its `Type:` line) names (see [Ticket Types](#ticket-types)). Read the label, not just the body: the body never states the type. **Zoom as needed**: fetch the full body of any related or closed ticket on demand; call the Skill tool for whichever skills the `## Notes` block names. If in doubt, call the Skill tool twice, for "grilling" and "domain-modeling".
+2. Choose the ticket. If the user named one, use it. Otherwise take the first frontier ticket in order. **Claim it** (the Claim operation: assign, post the `claimed:` marker, read back) before any work.
+3. Resolve it as the type its `wayfinder:<type>` label names (see [Ticket Types](#ticket-types)). Read the label, not just the body: the body never states the type. **Zoom as needed**: fetch the full body of any related or closed ticket on demand; call the Skill tool for whichever skills the `## Notes` block names. If in doubt, call the Skill tool twice, for "grilling" and "domain-modeling".
 4. Record the resolution: post the answer as a **resolution comment**, **close** the issue, and **append a context pointer** to the map's Decisions-so-far.
 5. Add newly-surfaced tickets (create-then-wire); graduate any fog the answer has made specifiable, clearing each graduated patch from **Not yet specified** so it lives only as its new ticket. If the answer reveals that a ticket (this one or another) sits beyond the destination, **rule it out of scope** rather than resolving it on the route. If the decision invalidates other parts of the map, update or delete those tickets.
 
-The user may run unblocked tickets in parallel, so expect other sessions to be editing the tracker concurrently.
+The user may run unblocked tickets in parallel, so expect other sessions to be editing the map concurrently.
