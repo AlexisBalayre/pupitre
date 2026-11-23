@@ -6,37 +6,54 @@ body:
   - type: markdown
     attributes:
       value: |
-        Every field is required. The rubric says what a filled field looks like and what makes one
+        Every field but Estimate and Dependency is required. The rubric says what a filled field looks like and what makes one
         vague: [docs/tickets/feature.md](https://github.com/AlexisBalayre/pupitre/blob/main/docs/tickets/feature.md). The operator or a
         collaborator with write access applies `ready`; intake then checks the fields and removes the label if any is missing or vague.
+        A one-word answer or a placeholder ("TBD", "n/a", "none", "-") counts as vague.
   - type: textarea
     id: goal
     attributes:
       label: Goal
-      description: The outcome for the user or operator, in one or two sentences. Not the implementation.
+      description: The outcome for the user or operator, in one or two sentences, so a reader can tell when it is reached. Not the implementation.
     validations:
       required: true
   - type: textarea
     id: acceptance_criteria
     attributes:
       label: Acceptance criteria
-      description: One testable criterion per line, at most 20, each under 500 characters. Each names an input, an action and an observable result.
+      description: >-
+        One criterion per line, at most 20, each under 500 characters: a starting state, an action and a result a test can check.
+        Good: "`pup plan add` with no `--scope` exits 2 and prints `scope is required`."
+        Vague: "Planning is easier and errors are clearer."
       placeholder: |
-        - `pup plan add` with no `--scope` exits 2 and prints "scope is required"
+        - A task whose ticket lacks `design-approved` is refused at launch, naming the task
     validations:
       required: true
   - type: textarea
     id: out_of_scope
     attributes:
       label: Out of scope
-      description: What this ticket will not do, even though a reader might expect it to.
+      description: The nearby behavior that stays as it is, though a reader might expect it to change. Name at least one; "none" is vague.
+      placeholder: No change to `pup plan edit`; it keeps accepting tasks without a scope.
     validations:
       required: true
   - type: textarea
     id: affected_area
     attributes:
       label: Affected area
-      description: The modules, commands or paths the change lands in, and any ADR it touches.
+      description: The paths, modules or commands the change lands in, and any decision it touches. A path, not "core" or "the CLI".
       placeholder: src/core/, `pup plan`, decision 40
     validations:
       required: true
+  - type: input
+    id: estimate
+    attributes:
+      label: Estimate
+      description: Optional. The source lines you expect to change, as a number. Over 600 means slicing (decision 173).
+      placeholder: 150 lines
+  - type: checkboxes
+    id: dependency
+    attributes:
+      label: Dependency
+      options:
+        - label: Adds a dependency (the design must name it and why)

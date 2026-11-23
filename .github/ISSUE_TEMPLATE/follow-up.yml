@@ -6,14 +6,15 @@ body:
   - type: markdown
     attributes:
       value: |
-        Every field is required. The rubric says what a filled field looks like and what makes one
+        Every field but Estimate and Dependency is required. The rubric says what a filled field looks like and what makes one
         vague: [docs/tickets/follow-up.md](https://github.com/AlexisBalayre/pupitre/blob/main/docs/tickets/follow-up.md). The operator or a
         collaborator with write access applies `ready`; intake then checks the fields and removes the label if any is missing or vague.
+        A one-word answer or a placeholder ("TBD", "n/a", "-") counts as vague.
   - type: input
     id: source_pr
     attributes:
       label: Source PR
-      description: The merged PR the findings come from.
+      description: The merged PR the findings come from, as `#NNN`.
       placeholder: "#422"
     validations:
       required: true
@@ -21,7 +22,7 @@ body:
     id: findings
     attributes:
       label: Findings
-      description: Every minor, pre-existing and declined finding of the review, one per line, each tagged with its kind and the file and line it points at.
+      description: Every minor, pre-existing and declined finding of the review, one per line, each tagged with its kind and the file and line it points at. A list, not a summary such as "a few nits".
       placeholder: "- [minor] src/core/plan.service.ts:88 the error names the path, not the task"
     validations:
       required: true
@@ -29,13 +30,28 @@ body:
     id: scenarios
     attributes:
       label: Scenarios
-      description: For each finding, the input or sequence that shows it, and what should happen instead.
+      description: >-
+        For each finding, one line: the input or sequence that shows it, and what should happen instead.
+        Good: "`pup plan add` with a scope of `../x` prints the task id in the refusal; today it prints only the path."
+        Vague: "Edge cases in the scope parser."
     validations:
       required: true
   - type: textarea
     id: original_reviewers
     attributes:
       label: Original reviewers
-      description: Who reviewed the source PR, human or agent, so the fix goes back to the same eyes.
+      description: Each reviewer of the source PR by handle, human or agent, so the fix goes back to the same eyes. Not a group such as "the team".
     validations:
       required: true
+  - type: input
+    id: estimate
+    attributes:
+      label: Estimate
+      description: Optional. The source lines you expect the fixes to change, as a number. Over 600 forces a design (decision 173).
+      placeholder: 60 lines
+  - type: checkboxes
+    id: dependency
+    attributes:
+      label: Dependency
+      options:
+        - label: Adds a dependency (forces a design)
