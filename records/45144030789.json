@@ -1,0 +1,98 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-23T09:11:07.722Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "45144030789",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/45144030789",
+  "actor": "AlexisBalayre",
+  "commit_sha": "98bdbd4c3df7b6f307de95ad35184ddbc4fa0135",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 435,
+  "action": "review",
+  "reviewers_spawned": [
+    "docs",
+    "conventions"
+  ],
+  "reviewers_returned": [
+    "docs",
+    "conventions"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "context",
+    "maintainability",
+    "spec",
+    "simplicity",
+    "guards",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": ".claude/skills/implement/SKILL.md",
+      "line": "9",
+      "description": "\"`pup plan` lists its goal, scope-in and acceptance criteria\" is wrong: `pup plan` only prints each task's id, tier, goal headline and scope-in globs. No `pup plan` verb shows the acceptance criteria.",
+      "status": "resolved"
+    },
+    {
+      "file": ".claude/skills/implement/SKILL.md",
+      "line": "17",
+      "description": "\"Open the PR with `/pr-description`, writing `Closes #<n>`\" contradicts `/pr-description`, which still says this repo has no tracker and the PR must carry no `Closes` line.",
+      "status": "resolved"
+    }
+  ],
+  "findings": [],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "platform",
+      "description": "The checkout HEAD was 98bdbd4c, but the PR head is e37ec961 (fix commit a6c4fb2 plus a merge of main), and a6c4fb2 was not in the local object store. Reviewers and prior-important checks used `gh pr diff 435` as the authoritative text. The `.claude-pr/` copy of implement/SKILL.md was the stale 98bdbd4c version."
+    },
+    {
+      "component": "conventions",
+      "description": "The conventions reviewer did not open ADR 0176 or search for in-repo skill-writing guidance. It checked the diff only against the spike's T7 entry and AGENTS.md. The PR is a 4-line docs-only change, so the risk is low, but conventions coverage was shallow."
+    },
+    {
+      "component": "orchestrator",
+      "description": "Skipped correctness, security, context, simplicity, guards, workflow-safety, maintainability and spec. The diff is 4 changed prose lines in one skill file, with no code, no trust boundary, no workflow and no closing issue."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.5564627,
+  "duration_ms": 61605,
+  "num_turns": 14,
+  "tokens": {
+    "input": 16,
+    "output": 5568,
+    "cache_read": 352237,
+    "cache_creation": 37760,
+    "total": 395581
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 16,
+      "output": 5568,
+      "cache_read": 352237,
+      "cache_creation": 37760,
+      "cost_usd": 0.4839514
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 12,
+      "output": 1503,
+      "cache_read": 66923,
+      "cache_creation": 20306,
+      "cost_usd": 0.0725113
+    }
+  ],
+  "permission_denials": []
+}
