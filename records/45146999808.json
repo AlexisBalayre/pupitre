@@ -1,0 +1,77 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-23T09:28:14.321Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "45146999808",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/45146999808",
+  "actor": "AlexisBalayre",
+  "commit_sha": "36e9111113e07204c4092e37fdc5d12963bf66a6",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 442,
+  "action": "review",
+  "reviewers_spawned": [
+    "docs",
+    "conventions"
+  ],
+  "reviewers_returned": [
+    "docs",
+    "conventions"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "context",
+    "maintainability",
+    "spec",
+    "simplicity",
+    "guards",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [],
+  "refuted_findings": [],
+  "process_issues": [
+    {
+      "component": "orchestrator",
+      "description": "Briefs told reviewers the PR copies of restored config sit at `.claude-pr/<path relative to .claude>` (e.g. `.claude-pr/skills/README.md`). They actually sit at `.claude-pr/.claude/skills/...`, so each reviewer's first Read failed and it had to find the files with a glob. The results were not affected. The skill's §2/§5 wording `.claude-pr/<path>` is ambiguous on this point."
+    }
+  ],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.6412532999999999,
+  "duration_ms": 53897,
+  "num_turns": 9,
+  "tokens": {
+    "input": 10,
+    "output": 4480,
+    "cache_read": 205651,
+    "cache_creation": 38744,
+    "total": 248885
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 10,
+      "output": 4480,
+      "cache_read": 205651,
+      "cache_creation": 38744,
+      "cost_usd": 0.4407222
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 28,
+      "output": 5546,
+      "cache_read": 228701,
+      "cache_creation": 48858,
+      "cost_usd": 0.2005311
+    }
+  ],
+  "permission_denials": []
+}
