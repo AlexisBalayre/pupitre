@@ -5,13 +5,8 @@ import { EventType } from './enums/event-type.enums.js';
 import { SessionState } from './enums/session-state.enums.js';
 import { runGit } from './git-diff.client.js';
 import { assertGhAvailable, originRepoSlug, readPullRequestLanding } from './github.client.js';
-import {
-  assertMintedRow,
-  assertPullRequestOf,
-  MERGE_LOCK_WAIT_MS,
-  pushTarget,
-  withMergeLock,
-} from './merge-gate.service.js';
+import { assertMintedRow, assertPullRequestOf, pushTarget } from './merge-gate.service.js';
+import { MERGE_LOCK_WAIT_MS, withMergeLock } from './merge-lock.service.js';
 import { appendEvent, getSession, listEvents } from './session.repository.js';
 import {
   assertStillMerged,

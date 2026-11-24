@@ -10,13 +10,8 @@ import {
   LAND_UNTOUCHED,
   landUnderLock,
 } from './land.service.js';
-import {
-  assertMergeLockHeld,
-  isAncestor,
-  MERGE_LOCK_WAIT_MS,
-  resolveCommit,
-  withMergeLock,
-} from './merge-gate.service.js';
+import { isAncestor, resolveCommit } from './merge-gate.service.js';
+import { assertMergeLockHeld, MERGE_LOCK_WAIT_MS, withMergeLock } from './merge-lock.service.js';
 import { NO_PROGRESS } from './progress.utils.js';
 import type { Interrupt, Landable, LandBatchOutcome, LandRequest } from './types/land.types.js';
 import type { StageProgress } from './types/progress.types.js';

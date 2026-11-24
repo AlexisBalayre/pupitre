@@ -14,13 +14,13 @@ import { SessionState } from './enums/session-state.enums.js';
 import { currentBranch, rethrowIfKilled, runGit } from './git-diff.client.js';
 import { globToRegExp } from './glob.utils.js';
 import {
-  assertMergeLockHeld,
   debtKind,
   isAncestor,
   measureBranch,
   resolveCommit,
   withScratchGitDir,
 } from './merge-gate.service.js';
+import { assertMergeLockHeld } from './merge-lock.service.js';
 import { projectId } from './paths.utils.js';
 import { CRITICAL_AREAS } from './routing.utils.js';
 import {
