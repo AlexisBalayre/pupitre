@@ -1,0 +1,177 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-24T16:16:55.233Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "45434472710",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/45434472710",
+  "actor": "AlexisBalayre",
+  "commit_sha": "8b80fb687a6f35093d0de2bb5df97a4f140cb274",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 457,
+  "action": "review",
+  "reviewers_spawned": [
+    "docs",
+    "conventions",
+    "context"
+  ],
+  "reviewers_returned": [
+    "docs",
+    "conventions",
+    "context"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "maintainability",
+    "spec",
+    "simplicity",
+    "guards",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [],
+  "findings": [
+    {
+      "file": "docs/spikes/2026-11-24-opencode-harness.md",
+      "line": "360",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The operator's answer 1 requires a container or VM executor before any opencode worker runs. The plan above it was never amended, so the slice plan contradicts it and would put opencode workers on the host shell.",
+      "body": "**The slice plan contradicts the operator's answer 1, which was recorded beneath it.**\n\n[Answer 1 (L360)](https://github.com/AlexisBalayre/pupitre/blob/8b80fb687a6f35093d0de2bb5df97a4f140cb274/docs/spikes/2026-11-24-opencode-harness.md#L360) says \"no opencode worker runs on the host shell\" and that the container executor of decision 207 \"comes before ... slice 3\". The body above it was not updated:\n\n- [L139](https://github.com/AlexisBalayre/pupitre/blob/8b80fb687a6f35093d0de2bb5df97a4f140cb274/docs/spikes/2026-11-24-opencode-harness.md#L139) still says a remote opencode worker is \"out of scope here\".\n- [L177](https://github.com/AlexisBalayre/pupitre/blob/8b80fb687a6f35093d0de2bb5df97a4f140cb274/docs/spikes/2026-11-24-opencode-harness.md#L177) still says a VM is \"a separate slice, not assumed here\".\n- Open question 2 at L350 still treats the container as a conditional.\n- The [build order (L286-292)](https://github.com/AlexisBalayre/pupitre/blob/8b80fb687a6f35093d0de2bb5df97a4f140cb274/docs/spikes/2026-11-24-opencode-harness.md#L286-L292) has no executor step, and neither do slices 1-8. Slice 3 still launches \"on a private server in tmux\", and its acceptance criteria say nothing about containment.\n- Answer 1 calls slice 3 \"the permission and sandbox slice\". Slice 3 is actually launch, steer and the event bridge; slice 4 is the permission slice.\n- [Decision 207](https://github.com/AlexisBalayre/pupitre/blob/8b80fb687a6f35093d0de2bb5df97a4f140cb274/docs/adr/0207-a-worker-runs-behind-an-executor-seam-and-the.md) keeps its remote executor off until decision 12 is amended and a new dependency is approved. It also limits egress to `api.anthropic.com` and nothing else. The OpenAI and Google keys of answer 3 could not reach their providers there.\n\nThe heading says this plan is ready for `pup plan add`. Anyone who files it gets no container slice and no dependency edge, so slice 3 can run an opencode worker on the host. The operator ruled that out.\n\nTo fix it:\n- Add an executor slice before slice 3, covering the decision 207 executor, the decision 12 amendment and the egress allowlist for non-Anthropic providers.\n- Make slice 3 depend on that slice.\n- Correct the \"slice 3\" label in answer 1.\n- Update L139, L177, the build order and Q2 to match.",
+      "suggestion": null
+    },
+    {
+      "file": "docs/spikes/2026-11-24-opencode-harness.md",
+      "line": "316-317",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "important",
+      "description": "Slice 1 renames `src/claude` to `src/harness/` and promises \"no changed assertions other than import paths\". Its scope-in omits the roughly 50 test files that import `src/claude/`, so a worker following it would be scope-blocked or leave the suite broken.",
+      "body": "**Slice 1's scope-in cannot cover its own rename.**\n\n[Slice 1](https://github.com/AlexisBalayre/pupitre/blob/8b80fb687a6f35093d0de2bb5df97a4f140cb274/docs/spikes/2026-11-24-opencode-harness.md#L316-L317) moves `src/claude` to `src/harness/`. Its acceptance requires the full suite to pass with no changed assertions other than import paths. The scope-in lists only `test/unit/claude/**` and `test/unit/harness/**` for tests.\n\nAbout 50 test files outside those globs import or `vi.mock` `src/claude/` paths. Examples:\n- [`test/helpers/cli-index.mock.ts:3`](https://github.com/AlexisBalayre/pupitre/blob/8b80fb687a6f35093d0de2bb5df97a4f140cb274/test/helpers/cli-index.mock.ts#L3)\n- `test/unit/cli/index-2.test.ts` and `index-3.test.ts`\n- `test/unit/cli/ui/*`\n- about 35 files under `test/unit/core/`\n\n[`auditScope`](https://github.com/AlexisBalayre/pupitre/blob/8b80fb687a6f35093d0de2bb5df97a4f140cb274/src/core/scope-audit.utils.ts) flags any path outside the scope-in globs, and the merge gate runs it. A worker on this slice can either edit those tests and fail the gate, or leave them alone and break the suite.\n\nTo fix it, add `test/unit/**` and `test/helpers/**` to slice 1's scope-in, or move the rename into its own slice with a test-wide scope.",
+      "suggestion": null
+    },
+    {
+      "file": "docs/spikes/2026-11-24-opencode-harness.md",
+      "line": "44",
+      "area": "context",
+      "confidence": "high",
+      "tag": "important",
+      "description": "The spike says the turn watchdog \"does not change\" because the adapter writes SSE into `events.jsonl`. In fact `sweepDeadTurns` uses `events.jsonl` only to find stalled sessions; dead-turn detection and recovery go through the Claude pane.",
+      "body": "**Dead-turn recovery reads the Claude pane, so an opencode worker would never be recovered.**\n\n[L44](https://github.com/AlexisBalayre/pupitre/blob/8b80fb687a6f35093d0de2bb5df97a4f140cb274/docs/spikes/2026-11-24-opencode-harness.md#L44) says that bridging SSE into `events.jsonl` means \"`classifySessionActivity`, `isSessionStalled` and the turn watchdog do not change\". That is true for stall detection only. Recovery works differently:\n\n- In [`turn-watchdog.service.ts`](https://github.com/AlexisBalayre/pupitre/blob/8b80fb687a6f35093d0de2bb5df97a4f140cb274/src/core/turn-watchdog.service.ts#L129-L136), `resumeSession` calls `readDeadTurn(row)`.\n- [`readDeadTurn`](https://github.com/AlexisBalayre/pupitre/blob/8b80fb687a6f35093d0de2bb5df97a4f140cb274/src/core/turn-watchdog.service.ts#L214-L217) calls `deadTurnError(sessionPane(row))`, which parses the Claude pane for an API error.\n- When that returns `undefined`, `resumeSession` returns without steering.\n- `sweepDeadTurns` also calls `holdIdleCaches` (pane `readInputBox`/`pasteIntoPane`) and `nudgeConductor` (pane `deadTurnError`/`steerPane`).\n\nTrigger: an opencode turn dies on a provider error or a server drop and never emits `session.idle`. The events file goes quiet and the session is flagged stalled. `deadTurnError` never matches the opencode TUI, so the watchdog never resumes the turn, which is the failure the watchdog exists to fix.\n\nThe spike also contradicts itself:\n- [L112](https://github.com/AlexisBalayre/pupitre/blob/8b80fb687a6f35093d0de2bb5df97a4f140cb274/docs/spikes/2026-11-24-opencode-harness.md#L112) says `isTurnRunning` replaces the pane read in `deadTurnError`.\n- [L138](https://github.com/AlexisBalayre/pupitre/blob/8b80fb687a6f35093d0de2bb5df97a4f140cb274/docs/spikes/2026-11-24-opencode-harness.md#L138) says `deadTurnError` stays Claude-only.\n\nNo slice owns this: slice 3's acceptance (L325) never exercises the watchdog, and slice 7 covers only the conductor.\n\nTo fix it:\n- Drop the \"watchdog does not change\" claim.\n- Add a harness-dispatched dead-turn check to the interface, for example one fed by `session.execution.failed`.\n- Gate `holdIdleCaches` on the harness.\n- Give both changes to a slice whose acceptance resumes a dead opencode turn.\n- Reconcile L112 with L138.",
+      "suggestion": null
+    },
+    {
+      "file": "docs/spikes/2026-11-24-opencode-harness.md",
+      "line": "336",
+      "area": "docs",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Slice 6's scope-in lists `src/core/session.types.ts`, which does not exist, so a worker cannot edit the file that stores the harness on the task and session rows.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/spikes/2026-11-24-opencode-harness.md",
+      "line": "345",
+      "area": "conventions",
+      "confidence": "high",
+      "tag": "nit",
+      "description": "Slice 8 omits 74, 191, 199, 122 and 150 from the decisions it amends, although the amendment table at lines 311-312 lists them. No slice amends decision 207's `api.anthropic.com`-only egress rule, which the OpenAI and Google keys of answer 3 need.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/spikes/2026-11-24-opencode-harness.md",
+      "line": "63",
+      "area": "context",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Several pane-level consumers are missing from the Harness interface: `steerPane` in session-handoff, `capturePane` in web-dashboard-session, and `readInputBoxLook` in conductor and dashboard. Slice 1's acceptance (\"no core file imports session-runtime.service\") therefore cannot be met unless they move onto `Harness` or are listed as Claude-only exceptions.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/spikes/2026-11-24-opencode-harness.md",
+      "line": "328",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Slice 4 modifies the compiler's sandbox emission, but its scope-in omits `src/core/profile-compiler-sandbox.service.ts`, which holds that code and imports `session-runtime.service`.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/spikes/2026-11-24-opencode-harness.md",
+      "line": "350-364",
+      "area": "docs",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Open questions 2, 5 and 7 are still listed as open although the operator's answers settle them. The Critical-tier refusal rule at L251 is not reconciled with answer 1, which puts every opencode worker in a container.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/spikes/2026-11-24-opencode-harness.md",
+      "line": "363",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Slice 1 renames `src/claude` to `src/harness/`, but no slice's scope includes AGENTS.md. It still says \"src/claude/ is the ONLY module that touches Claude Code\", so it would contradict the new layout.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 1,
+  "comments_posted_actual": 3,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 1.4477732749999992,
+  "duration_ms": 154346,
+  "num_turns": 12,
+  "tokens": {
+    "input": 10,
+    "output": 11265,
+    "cache_read": 190654,
+    "cache_creation": 60083,
+    "total": 262012
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 10,
+      "output": 11265,
+      "cache_read": 190654,
+      "cache_creation": 60083,
+      "cost_usd": 0.7441348
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 60,
+      "output": 19591,
+      "cache_read": 549619,
+      "cache_creation": 180656,
+      "cost_usd": 0.7026319000000002
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 666,
+      "cache_read": 0,
+      "cache_creation": 5387,
+      "cost_usd": 0.001006575
+    }
+  ],
+  "permission_denials": [
+    {
+      "tool": "Bash",
+      "input": "bash /home/runner/work/pupitre/pupitre/scripts/adr-index.sh"
+    }
+  ]
+}
