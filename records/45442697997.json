@@ -1,0 +1,131 @@
+{
+  "schema_version": 8,
+  "timestamp": "2026-11-24T16:58:04.103Z",
+  "repository": "AlexisBalayre/pupitre",
+  "run_id": "45442697997",
+  "run_url": "https://github.com/AlexisBalayre/pupitre/actions/runs/45442697997",
+  "actor": "AlexisBalayre",
+  "commit_sha": "8b80fb687a6f35093d0de2bb5df97a4f140cb274",
+  "base_ref": "main",
+  "source": "pr",
+  "pr_number": 457,
+  "action": "review",
+  "reviewers_spawned": [
+    "docs",
+    "conventions",
+    "context"
+  ],
+  "reviewers_returned": [
+    "docs",
+    "conventions",
+    "context"
+  ],
+  "reviewers_skipped": [
+    "correctness",
+    "security",
+    "maintainability",
+    "spec",
+    "simplicity",
+    "guards",
+    "workflow-safety"
+  ],
+  "review_mode": "full",
+  "incremental_from_sha": null,
+  "review_depth": "standard",
+  "review_areas": [],
+  "prior_importants": [
+    {
+      "file": "docs/spikes/2026-11-24-opencode-harness.md",
+      "line": "360",
+      "description": "The operator's answer 1 requires a container or VM executor before any opencode worker runs. The plan above it was never amended, so the slice plan contradicts it and would put opencode workers on the host shell.",
+      "status": "unresolved"
+    },
+    {
+      "file": "docs/spikes/2026-11-24-opencode-harness.md",
+      "line": "316-317",
+      "description": "Slice 1 renames `src/claude` to `src/harness/` and promises \"no changed assertions other than import paths\". Its scope-in omits the roughly 50 test files that import `src/claude/`, so a worker following it would be scope-blocked or leave the suite broken.",
+      "status": "unresolved"
+    },
+    {
+      "file": "docs/spikes/2026-11-24-opencode-harness.md",
+      "line": "44",
+      "description": "The spike says the turn watchdog \"does not change\" because the adapter writes SSE into `events.jsonl`. In fact `sweepDeadTurns` uses `events.jsonl` only to find stalled sessions; dead-turn detection and recovery go through the Claude pane.",
+      "status": "unresolved"
+    }
+  ],
+  "findings": [
+    {
+      "file": "docs/spikes/2026-11-24-opencode-harness.md",
+      "line": "239, 250, 351, 362",
+      "area": "context",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Operator answer 3 (L362) says 'An Anthropic API key stays out.' The ladder example still uses `anthropic/claude-sonnet-5-5#medium` and `#high` (L239), the refusal rule at L250 still lets an `anthropic` provider through when `ANTHROPIC_API_KEY` is set, and open question 3 (L351) still treats Anthropic keys as allowed. Under the recorded decision, the example should use OpenAI or Google models and the rule should refuse any `anthropic/*` model outright.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/spikes/2026-11-24-opencode-harness.md",
+      "line": "183, 244, 276, 316-337",
+      "area": "context",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "The design adds per-session state to the session row: the opencode DB path (L183), the harness id copied at launch (L244) and the pinned opencode version (L276). No slice's scope-in lists the files that define that row: `src/core/db.client.ts`, `src/core/session.repository.ts`, `src/core/session-lifecycle.service.ts` and `src/core/types/*.types.ts`. Scope-enforce would block the worker that adds the columns.",
+      "body": null,
+      "suggestion": null
+    },
+    {
+      "file": "docs/spikes/2026-11-24-opencode-harness.md",
+      "line": "315-317",
+      "area": "conventions",
+      "confidence": "medium",
+      "tag": "nit",
+      "description": "Slice 1 moves `src/claude` to `src/harness/`, but accepted decision 207 says `src/claude` stays the only module that touches Claude Code. Slice 8 amends that decision only after slice 2, so slice 1 would merge against the unamended ADR. The 207 amendment should land first, or together with slice 1.",
+      "body": null,
+      "suggestion": null
+    }
+  ],
+  "refuted_findings": [],
+  "process_issues": [],
+  "duplicates_merged": 0,
+  "comments_posted_actual": 0,
+  "is_error": false,
+  "incomplete_reason": null,
+  "cost_usd": 0.9517976499999999,
+  "duration_ms": 88773,
+  "num_turns": 11,
+  "tokens": {
+    "input": 12,
+    "output": 6805,
+    "cache_read": 274751,
+    "cache_creation": 42558,
+    "total": 324126
+  },
+  "model_usage": [
+    {
+      "model": "claude-opus-5-5",
+      "input": 12,
+      "output": 6805,
+      "cache_read": 274751,
+      "cache_creation": 42558,
+      "cost_usd": 0.5315622000000001
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "input": 44,
+      "output": 10176,
+      "cache_read": 588275,
+      "cache_creation": 103559,
+      "cost_usd": 0.4195730000000001
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "input": 2,
+      "output": 119,
+      "cache_read": 0,
+      "cache_creation": 4822,
+      "cost_usd": 0.00066245
+    }
+  ],
+  "permission_denials": []
+}
