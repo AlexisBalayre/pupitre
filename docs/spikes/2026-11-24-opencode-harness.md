@@ -354,3 +354,11 @@ Acceptance: one decision for the harness adapter amending 1, 2, 5, 10, 11, 12, 1
 6. **Should the conductor wait?** The recommendation is to build slices 1 to 6 and run workers for a few weeks first. The conductor holds merge authority, and its guard is the weakest part of the opencode permission model.
 7. **Rename `src/claude`?** Decision 207 says `src/claude` is the only module that touches Claude Code. The recommendation is to rename to `src/harness/` and amend that sentence. The alternative is `src/claude` and `src/opencode` side by side, which leaves the interface with no home.
 8. **Which cost ceiling for API-key sessions?** Decision 177's budget exists for tickets. Is it enough, or does a per-day cap per harness belong in the same slice as the reader?
+
+## Decided by the operator (2026-11-24)
+
+1. **Sandbox gap.** A worker on opencode runs only inside a container or VM. The container executor of decision 207 comes before the permission and sandbox slice (slice 3); no opencode worker runs on the host shell.
+2. **Conductor.** Workers first. The conductor on opencode waits until workers have run for a few weeks, and then allows only API-hosted models at Sonnet class or better.
+3. **Keys.** OpenAI and Google API keys, set by the operator in their own shell environment. The worker inherits a key only for opencode sessions, and no session or agent reads, stores or prints one. An Anthropic API key stays out.
+4. **Seam name.** Rename `src/claude` to `src/harness/` with the Claude Code and opencode adapters beneath it, and amend the sentence in decision 207.
+5. **Still open.** The local-model install and probe (question 1), the model floor for a worker (question 4) and the cost ceiling for API-key sessions (question 8) are not decided.
